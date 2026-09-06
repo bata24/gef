@@ -124688,25 +124688,6 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
         self.kmem_cache_offset_node = None
         self.kmem_cache_node_step = None
 
-        def set_kmem_cache_offset_from_node(offset):
-            self.kmem_cache_offset_node = offset
-            if kversion < "7.1":
-                self.kmem_cache_offset_barn = None
-                self.kmem_cache_node_step = current_arch.ptrsize
-            else:
-                self.kmem_cache_offset_barn = offset - current_arch.ptrsize
-                self.kmem_cache_node_step = current_arch.ptrsize * 2
-
-        def set_kmem_cache_offset_from_barn(offset):
-            if kversion < "7.1":
-                self.kmem_cache_offset_barn = None
-                self.kmem_cache_offset_node = offset
-                self.kmem_cache_node_step = current_arch.ptrsize
-            else:
-                self.kmem_cache_offset_barn = offset
-                self.kmem_cache_offset_node = offset + current_arch.ptrsize
-                self.kmem_cache_node_step = current_arch.ptrsize * 2
-
         """
         struct kmem_cache {
             ...
@@ -124737,29 +124718,28 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
         }
         """
 
-        kmem_caches = self.parse_kmem_caches_for_initialize()
+        # helper functions
 
-        # heuristic way 1 (SPINLOCK_MAGIC)
-        if is_64bit():
-            # kmem_cache_node[0]->list_lock has SPINLOCK_MAGIC when CONFIG_DEBUG_SPINLOCK=y
-            start_offset = self.kmem_cache_offset_list + current_arch.ptrsize * 2 # sizeof(kmem_cache.list)
-            search_range = 0x100 if "5.9" <= kversion else 0x200
-            for candidate_offset in range(start_offset, start_offset + search_range, current_arch.ptrsize):
-                kmem_cache_top = kmem_caches[0] - self.kmem_cache_offset_list
+        def set_kmem_cache_offset_from_node(offset):
+            self.kmem_cache_offset_node = offset
+            if kversion < "7.1":
+                self.kmem_cache_offset_barn = None
+                self.kmem_cache_node_step = current_arch.ptrsize
+            else:
+                self.kmem_cache_offset_barn = offset - current_arch.ptrsize
+                self.kmem_cache_node_step = current_arch.ptrsize * 2
+            return
 
-                x = read_int_from_memory(kmem_cache_top + candidate_offset)
-                if not is_valid_addr(x):
-                    continue
-                y = read_int_from_memory(x)
-                if y != 0xdead_4ead_0000_0000: # SPINLOCK_MAGIC
-                    continue
-
-                # found
-                self.meta.append((self.quiet_info, "offset of node is found by heuristic way1"))
-                set_kmem_cache_offset_from_barn(candidate_offset)
-                return
-
-        # helper functions (for way2, way4)
+        def set_kmem_cache_offset_from_barn(offset):
+            if kversion < "7.1":
+                self.kmem_cache_offset_barn = None
+                self.kmem_cache_offset_node = offset
+                self.kmem_cache_node_step = current_arch.ptrsize
+            else:
+                self.kmem_cache_offset_barn = offset
+                self.kmem_cache_offset_node = offset + current_arch.ptrsize
+                self.kmem_cache_node_step = current_arch.ptrsize * 2
+            return
 
         def get_next_valid_ptr_offset(addr, in_range=5):
             """Return the nearest valid pointer within a specified range."""
@@ -124808,7 +124788,65 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
                 return False
             return True
 
+        def detect_random_seq_before_node():
+            """Detect random_seq placed before node, from the resolved node offset."""
+            # random_seq exists just before node if CONFIG_SLAB_FREELIST_RANDOM=y, but
+            # kasan_info (12 bytes), useroffset and usersize (4 bytes each), and cpu_stats
+            # (a pointer) may be inserted between them. So search backwards up to 32 bytes.
+            # Some caches have no random_seq even if it is enabled, so decide by majority.
+            if self.kmem_cache_offset_random_seq is not None:
+                return
+            if self.kmem_cache_offset_barn is not None:
+                offset_node = self.kmem_cache_offset_barn
+            else:
+                offset_node = self.kmem_cache_offset_node
+            offset_after_list = self.kmem_cache_offset_list + current_arch.ptrsize * 2
+            start_offset = max(offset_after_list, offset_node - current_arch.ptrsize - 32)
+
+            sample_caches = kmem_caches[:16]
+            candidates = []
+            for candidate_offset in range(start_offset, offset_node, current_arch.ptrsize):
+                random_seq_count = 0
+                for kmem_cache in sample_caches:
+                    kmem_cache_top = kmem_cache - self.kmem_cache_offset_list
+                    try:
+                        x = read_int_from_memory(kmem_cache_top + candidate_offset)
+                        if is_valid_addr(x) and is_random_seq(x):
+                            random_seq_count += 1
+                    except gdb.MemoryError:
+                        pass
+                if random_seq_count > len(sample_caches) // 2:
+                    candidates.append(candidate_offset)
+
+            # If there are multiple candidates, the layout is ambiguous, so do not guess.
+            if len(candidates) == 1:
+                self.kmem_cache_offset_random_seq = candidates[0]
+            return
+
         # helper functions end
+
+        kmem_caches = self.parse_kmem_caches_for_initialize()
+
+        # heuristic way 1 (SPINLOCK_MAGIC)
+        if is_64bit():
+            # kmem_cache_node[0]->list_lock has SPINLOCK_MAGIC when CONFIG_DEBUG_SPINLOCK=y
+            start_offset = self.kmem_cache_offset_list + current_arch.ptrsize * 2 # sizeof(kmem_cache.list)
+            search_range = 0x100 if "5.9" <= kversion else 0x200
+            for candidate_offset in range(start_offset, start_offset + search_range, current_arch.ptrsize):
+                kmem_cache_top = kmem_caches[0] - self.kmem_cache_offset_list
+
+                x = read_int_from_memory(kmem_cache_top + candidate_offset)
+                if not is_valid_addr(x):
+                    continue
+                y = read_int_from_memory(x)
+                if y != 0xdead_4ead_0000_0000: # SPINLOCK_MAGIC
+                    continue
+
+                # found
+                self.meta.append((self.quiet_info, "offset of node is found by heuristic way1"))
+                set_kmem_cache_offset_from_barn(candidate_offset)
+                detect_random_seq_before_node()
+                return
 
         # heuristic way 2 (remote_node_defrag_ratio == 1000)
         if is_64bit():
@@ -124907,31 +124945,9 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
                 found = False
 
             if found:
-                # random_seq is placed just before user_offset if CONFIG_SLAB_FREELIST_RANDOM=y.
-                # way1, way2 and way4 are 64-bit only, so this is the only chance to detect it on 32-bit.
-                # kasan_info may be inserted between them if CONFIG_KASAN=y (sizeof: 8 or 12).
-                # Some caches have no random_seq even if it is enabled, so decide by majority.
-                sample_caches = kmem_caches[:16]
-                for sizeof_kasan_info in [0, 8, 12]:
-                    if sizeof_kasan_info % current_arch.ptrsize: # random_seq is a pointer
-                        continue
-                    offset_random_seq = candidate_offset - sizeof_kasan_info - current_arch.ptrsize
-                    if offset_random_seq < start_offset:
-                        continue
-                    random_seq_count = 0
-                    for kmem_cache in sample_caches:
-                        kmem_cache_top = kmem_cache - self.kmem_cache_offset_list
-                        x = read_int_from_memory(kmem_cache_top + offset_random_seq)
-                        try:
-                            if is_valid_addr(x) and is_random_seq(x):
-                                random_seq_count += 1
-                        except gdb.MemoryError:
-                            pass
-                    if random_seq_count > len(sample_caches) // 2:
-                        self.kmem_cache_offset_random_seq = offset_random_seq
-                        break
                 self.meta.append((self.quiet_info, "offset of node is found by heuristic way3"))
                 set_kmem_cache_offset_from_barn(node_offset)
+                detect_random_seq_before_node()
                 return
 
         # heuristic way 4 (detect random_seq)
@@ -125026,6 +125042,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
                     msg += "min_diff:{:#x}".format(min_diff)
                     self.meta.append((self.quiet_info, "offset of node is found by heuristic way5 ({:s})".format(msg)))
                     set_kmem_cache_offset_from_node(offset_after_list + offset_node_from_after_list)
+                    detect_random_seq_before_node()
                     return
         return
 
