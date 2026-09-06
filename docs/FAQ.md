@@ -243,8 +243,6 @@ To use these commands fully, you need to manually install the necessary packages
 |`heap try-realloc`|-|`capstone`, `unicorn`, `setuptools`(python 3.12+)|-|
 |`heap try-calloc`|-|`capstone`, `unicorn`, `setuptools`(python 3.12+)|-|
 |`asm`|-|`keystone-engine`|-|
-|`base-n-decode`|-|`codext`|-|
-|`base-n-encode`|-|`codext`|-|
 |`hash`(FSB hash) |-|`gmpy2`|-|
 |`hash`(for faster) |-|`cffi`|-|
 |`filetype-memory`|`file`|`magika`|-|

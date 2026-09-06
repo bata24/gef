@@ -6598,21 +6598,6 @@ class ModuleLoader:
         return wrapper
 
 
-    def load_codext(f):
-        """Decorator wrapper to load codext."""
-
-        @functools.wraps(f)
-        def wrapper(*args, **kwargs):
-            try:
-                __import__("codext")
-                return f(*args, **kwargs)
-            except ImportError as err:
-                msg = "Missing `codext` package for Python, try installing with `pip install codext`"
-                raise ImportWarning(msg) from err
-
-        return wrapper
-
-
     def load_angr(f):
         """Decorator wrapper to load angr."""
 
@@ -122376,6 +122361,454 @@ class Crc32revCommand(GenericCommand):
         return
 
 
+class BaseNCodec:
+    """The base encodings used by base-n-encode/decode, without an external module."""
+
+    UPPER = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+    LOWER = "abcdefghijklmnopqrstuvwxyz"
+    DIGITS = "0123456789"
+    CHARSETS = {
+        "base1": "A",
+        "base3": "123",
+        "base10": DIGITS,
+        "base26": UPPER,
+        "base36": DIGITS + UPPER,
+        "base58-bitcoin": "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz",
+        "base58-flickr": "123456789abcdefghijkmnopqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ",
+        "base58-ripple": "rpshnaf39wBUDNEGHJKLM4PQRST7VWXYZ2bcdeCg65jkm8oFqi1tuvAxyz",
+        "base62": DIGITS + UPPER + LOWER,
+        "base63": DIGITS + UPPER + LOWER + "_",
+        "base67": UPPER + LOWER + DIGITS + "-_.!~",
+    }
+    POWER_CHARSETS = {
+        "base2": "01",
+        "base4": "1234",
+        "base8": "abcdefgh",
+        "base16": DIGITS + "ABCDEF",
+        "base32": UPPER + "234567",
+        "base32-crockford": DIGITS + "ABCDEFGHJKMNPQRSTVWXYZ",
+        "base32-geohash": DIGITS + "bcdefghjkmnpqrstuvwxyz",
+        "base32-hex": DIGITS + UPPER[:22],
+        "base32-z": "ybndrfg8ejkmcpqxot1uwisza345h769",
+        "base64": UPPER + LOWER + DIGITS + "+/",
+        "base64-url": UPPER + LOWER + DIGITS + "-_",
+    }
+    BASE45 = DIGITS + UPPER + " $%*+-./:"
+    BASE91 = UPPER + LOWER + DIGITS + "!#$%&()*+,./:;<=>?@[]^_`{|}~\""
+    BASE85_ASCII = "!\"#$%&'()*+,-./" + DIGITS + ":;<=>?@" + UPPER + "[\\]^_`" + LOWER[:21]
+    BASE85 = {
+        "base85": BASE85_ASCII,
+        "base85-adobe": BASE85_ASCII,
+        "base85-xbtoa": BASE85_ASCII,
+        "base85-ipv6": DIGITS + UPPER + LOWER + "!#$%&()*+-;<=>?@^_`{|}~",
+        "base85-xml": DIGITS + UPPER + LOWER[:-1] + "!#$()*+,-./:;=?@^`{|}~z_",
+        "base85-zeromq": DIGITS + LOWER + UPPER + ".-:+=^!/*?&<>()[]{}@%$#",
+    }
+    BAD122 = (0, 10, 13, 34, 38, 92)
+
+    @staticmethod
+    def as_bytes(value):
+        if isinstance(value, bytes):
+            return value
+        try:
+            return value.encode("latin-1")
+        except UnicodeEncodeError:
+            return value.encode("utf-8")
+
+    @staticmethod
+    def as_text(value):
+        if isinstance(value, str):
+            return value
+        try:
+            return value.decode("utf-8")
+        except UnicodeDecodeError:
+            return value.decode("latin-1")
+
+    @staticmethod
+    def int_to_bytes(value):
+        size = max(1, (value.bit_length() + 7) // 8)
+        return value.to_bytes(size, "big")
+
+    @staticmethod
+    def encode_generic(data, charset):
+        value = int.from_bytes(data, "big")
+        if len(charset) == 1:
+            if value > 1024 * 1024 * 1024:
+                raise ValueError("Input exceeded size limit")
+            return (charset * value).encode("latin-1")
+        if len(charset) == 10:
+            return str(value).encode()
+        result = ""
+        while value:
+            value, digit = divmod(value, len(charset))
+            result = charset[digit] + result
+        return result.encode("latin-1")
+
+    @staticmethod
+    def decode_generic(text, charset):
+        if not text:
+            return b""
+        if len(charset) == 1:
+            return BaseNCodec.int_to_bytes(len(text))
+        if len(charset) == 10:
+            return BaseNCodec.int_to_bytes(int(text))
+        value = 0
+        for char in text.replace("\r\n", "").replace("\n", ""):
+            try:
+                digit = charset.index(char)
+            except ValueError as exc:
+                raise ValueError("Invalid base character {!r}".format(char)) from exc
+            value = value * len(charset) + digit
+        return BaseNCodec.int_to_bytes(value)
+
+    @staticmethod
+    def encode_power(data, charset):
+        bits_per_char = int(math.log2(len(charset)))
+        bits = "".join("{:08b}".format(value) for value in data)
+        result = ""
+        for pos in range(0, len(bits), bits_per_char):
+            chunk = bits[pos:pos + bits_per_char]
+            result += charset[int(chunk.ljust(bits_per_char, "0"), 2)]
+        quantum = bits_per_char
+        while quantum % 8:
+            quantum += bits_per_char
+        while len(result) * bits_per_char % quantum:
+            result += "="
+        return result.encode()
+
+    @staticmethod
+    def decode_power(text, charset):
+        text = re.sub(r"\s", "", text)
+        if not text:
+            return b""
+        if len(charset) == 16:
+            if any(char in text for char in "abcdef"):
+                charset = charset.lower()
+            elif any(char in text for char in "ABCDEF"):
+                charset = charset.upper()
+        bits_per_char = int(math.log2(len(charset)))
+        padding = len(text) - len(text.rstrip("="))
+        bits = ""
+        for char in text:
+            if char == "=":
+                bits += "0" * bits_per_char
+                continue
+            try:
+                digit = charset.index(char)
+            except ValueError as exc:
+                raise ValueError("Invalid base character {!r}".format(char)) from exc
+            bits += format(digit, "0{:d}b".format(bits_per_char))
+        if len(bits) % 8:
+            raise ValueError("Incorrect padding")
+        result = bytes(int(bits[pos:pos + 8], 2) for pos in range(0, len(bits), 8))
+        trim = math.ceil(padding * bits_per_char / 8)
+        return result[:-trim] if trim else result
+
+    @staticmethod
+    def encode45(data):
+        result = ""
+        for pos in range(0, len(data), 2):
+            if pos + 1 == len(data):
+                value = data[pos]
+                result += BaseNCodec.BASE45[value % 45] + BaseNCodec.BASE45[value // 45]
+                break
+            value = data[pos] * 256 + data[pos + 1]
+            result += BaseNCodec.BASE45[value % 45]
+            result += BaseNCodec.BASE45[value // 45 % 45]
+            result += BaseNCodec.BASE45[value // (45 * 45)]
+        return result.encode()
+
+    @staticmethod
+    def decode45(text):
+        result = bytearray()
+        for pos in range(0, len(text), 3):
+            block = text[pos:pos + 3]
+            if len(block) == 1:
+                raise ValueError("Incorrect base45 length")
+            try:
+                value = sum(BaseNCodec.BASE45.index(char) * 45 ** i for i, char in enumerate(block))
+            except ValueError as exc:
+                raise ValueError("Invalid base45 character") from exc
+            if len(block) == 2:
+                if value > 255:
+                    raise ValueError("Invalid base45 value")
+                result.append(value)
+            else:
+                if value > 65535:
+                    raise ValueError("Invalid base45 value")
+                result.extend((value >> 8, value & 0xff))
+        return bytes(result)
+
+    @staticmethod
+    def update_xbtoa(values, data):
+        check_xor, check_sum, check_rot = values
+        for value in data:
+            check_xor ^= value
+            check_sum += value + 1
+            check_rot <<= 1
+            if check_rot & 0x80000000:
+                check_rot += 1
+            check_rot += value
+        return check_xor, check_sum, check_rot
+
+    @staticmethod
+    def encode85(data, name):
+        if not data:
+            return b""
+        charset = BaseNCodec.BASE85[name]
+        xbtoa = name == "base85-xbtoa"
+        checks = (0, 0, 0)
+        result = ""
+        padding = (4 - len(data) % 4) % 4
+        for pos in range(0, len(data), 4):
+            block = data[pos:pos + 4]
+            if xbtoa:
+                checks = BaseNCodec.update_xbtoa(checks, block)
+            if len(block) == 4 and block == b"\0\0\0\0" and charset.endswith("stu"):
+                result += "z"
+                continue
+            if len(block) == 4 and block == b"    " and xbtoa:
+                result += "y"
+                continue
+            value = int.from_bytes(block.ljust(4, b"\0"), "big")
+            encoded = ""
+            while len(encoded) < 5:
+                value, digit = divmod(value, 85)
+                encoded = charset[digit] + encoded
+            result += encoded
+        if not xbtoa and padding:
+            result = result[:-padding]
+        if charset.endswith("stu") and result.endswith("!!!!!"):
+            result = result[:-5] + "z"
+        if name == "base85-adobe":
+            result = "<~" + result + "~>"
+        elif xbtoa:
+            check_xor, check_sum, check_rot = checks
+            body = "\n".join(result[pos:pos + 78] for pos in range(0, len(result), 78))
+            result = "xbtoa Begin\n{:s}\nxbtoa End N {:d} {:x} E {:x} S {:x} R {:x}".format(
+                body, len(data), len(data), check_xor, check_sum, check_rot,
+            )
+        return result.encode()
+
+    @staticmethod
+    def decode85(text, name):
+        if not text:
+            return b""
+        charset = BaseNCodec.BASE85[name]
+        xbtoa = name == "base85-xbtoa"
+        expected = None
+        if name == "base85-adobe" and text.startswith("<~") and text.endswith("~>"):
+            text = text[2:-2]
+        elif xbtoa:
+            match = re.search(
+                r"\nxbtoa\s+[eE]nd N (\d+) ([0-9a-fA-F]+) E ([0-9a-fA-F]+) S ([0-9a-fA-F]+) R ([0-9a-fA-F]+)\s*$",
+                text,
+            )
+            if not re.match(r"^xbtoa\s+[bB]egin\n", text) or match is None:
+                raise ValueError("Bad or missing xbtoa parameters")
+            expected = match.groups()
+            text = "".join(text.split("\n")[1:-1]).replace(" ", "")
+        result = bytearray()
+        padding = 0
+        pos = 0
+        while pos < len(text):
+            if text[pos] == "z" and charset.endswith("stu"):
+                result.extend(b"\0\0\0\0")
+                pos += 1
+                continue
+            if text[pos] == "y" and xbtoa:
+                result.extend(b"    ")
+                pos += 1
+                continue
+            block = text[pos:pos + 5]
+            padding = 5 - len(block) if len(block) < 5 else 0
+            values = []
+            for char in block:
+                try:
+                    values.append(charset.index(char))
+                except ValueError as exc:
+                    raise ValueError("Invalid base85 character {!r}".format(char)) from exc
+            values.extend([255] * padding)
+            value = sum(digit * 85 ** power for power, digit in enumerate(reversed(values)))
+            result.extend((value & 0xffffffff).to_bytes(4, "big"))
+            pos += 5
+        if padding:
+            del result[-padding:]
+        if xbtoa:
+            data_len = int(expected[0])
+            del result[data_len:]
+            checks = BaseNCodec.update_xbtoa((0, 0, 0), result)
+            actual = (str(len(result)), format(len(result), "x")) + tuple(format(value, "x") for value in checks)
+            if tuple(value.lower() for value in expected) != actual:
+                raise ValueError("An xbtoa check value does not match")
+        return bytes(result)
+
+    @staticmethod
+    def encode91(data):
+        value = 0
+        bit_count = 0
+        result = ""
+        for byte in data:
+            value |= byte << bit_count
+            bit_count += 8
+            if bit_count > 13:
+                chunk = value & 8191
+                if chunk > 88:
+                    value >>= 13
+                    bit_count -= 13
+                else:
+                    chunk = value & 16383
+                    value >>= 14
+                    bit_count -= 14
+                result += BaseNCodec.BASE91[chunk % 91] + BaseNCodec.BASE91[chunk // 91]
+        if bit_count:
+            result += BaseNCodec.BASE91[value % 91]
+            if bit_count > 7 or value > 90:
+                result += BaseNCodec.BASE91[value // 91]
+        return result.encode()
+
+    @staticmethod
+    def decode91(text):
+        text = text.replace("\r\n", "").replace("\n", "")
+        value = 0
+        bit_count = 0
+        pending = -1
+        result = bytearray()
+        for char in text:
+            try:
+                digit = BaseNCodec.BASE91.index(char)
+            except ValueError as exc:
+                raise ValueError("Invalid base91 character {!r}".format(char)) from exc
+            if pending < 0:
+                pending = digit
+                continue
+            pending += digit * 91
+            value |= pending << bit_count
+            bit_count += 13 if pending & 8191 > 88 else 14
+            while bit_count > 7:
+                result.append(value & 255)
+                value >>= 8
+                bit_count -= 8
+            pending = -1
+        if pending >= 0:
+            result.append((value | pending << bit_count) & 255)
+        return bytes(result).rstrip(b"\0")
+
+    @staticmethod
+    def encode100(data):
+        result = bytearray()
+        for value in data:
+            result.extend((240, 159, (value + 55) // 64 + 143, (value + 55) % 64 + 128))
+        return bytes(result)
+
+    @staticmethod
+    def decode100(data):
+        data = data.replace(b"\r\n", b"").replace(b"\n", b"")
+        if len(data) % 4:
+            raise ValueError("Bad input (length should be multiple of 4)")
+        result = bytearray()
+        for pos in range(0, len(data), 4):
+            high = ((data[pos + 2] - 143) * 64) % 256
+            result.append((data[pos + 3] - 128 + high - 55) & 255)
+        return bytes(result)
+
+    @staticmethod
+    def get_122_chunk(data, index, bit):
+        if index >= len(data):
+            return index, bit, None
+        available = 8 - bit
+        if available >= 7:
+            value = data[index] >> (available - 7) & 127
+            bit += 7
+        else:
+            value = (data[index] & ((1 << available) - 1)) << (7 - available)
+            index += 1
+            value |= data[index] >> (8 - (7 - available)) if index < len(data) else 0
+            bit = 7 - available
+        if bit >= 8:
+            bit -= 8
+            index += 1
+        return index, bit, value
+
+    @staticmethod
+    def encode122(data):
+        result = bytearray()
+        index = 0
+        bit = 0
+        while index < len(data):
+            index, bit, value = BaseNCodec.get_122_chunk(data, index, bit)
+            if value not in BaseNCodec.BAD122:
+                result.append(value)
+                continue
+            bad_index = BaseNCodec.BAD122.index(value)
+            index, bit, next_value = BaseNCodec.get_122_chunk(data, index, bit)
+            if next_value is None:
+                next_value = value
+                bad_index = 7
+            result.extend((194 | bad_index << 2 | int(bool(next_value & 64)), 128 | next_value & 63))
+        return bytes(result)
+
+    @staticmethod
+    def decode122(data):
+        text = BaseNCodec.as_text(data)
+        chunks = []
+        for char in text:
+            value = ord(char)
+            if value >= 128:
+                bad_index = value >> 8 & 7
+                if bad_index < len(BaseNCodec.BAD122):
+                    chunks.append(BaseNCodec.BAD122[bad_index])
+                chunks.append(value & 127)
+            else:
+                chunks.append(value)
+        bits = "".join(format(value, "07b") for value in chunks)
+        result = bytes(int(bits[pos:pos + 8].ljust(8, "0"), 2) for pos in range(0, len(bits), 8))
+        return result.rstrip(b"\0")
+
+    @staticmethod
+    def encode(data, name):
+        data = BaseNCodec.as_bytes(data)
+        if not data:
+            return b""
+        if name in BaseNCodec.CHARSETS:
+            return BaseNCodec.encode_generic(data, BaseNCodec.CHARSETS[name])
+        if name in BaseNCodec.POWER_CHARSETS:
+            return BaseNCodec.encode_power(data, BaseNCodec.POWER_CHARSETS[name])
+        if name == "base45":
+            return BaseNCodec.encode45(data)
+        if name in BaseNCodec.BASE85:
+            return BaseNCodec.encode85(data, name)
+        if name == "base91":
+            return BaseNCodec.encode91(data)
+        if name == "base100":
+            return BaseNCodec.encode100(data)
+        if name == "base122":
+            return BaseNCodec.encode122(data)
+        raise ValueError("Unknown base encoding: {:s}".format(name))
+
+    @staticmethod
+    def decode(data, name):
+        data = BaseNCodec.as_bytes(data)
+        if not data:
+            return b""
+        if name == "base100":
+            return BaseNCodec.decode100(data)
+        if name == "base122":
+            return BaseNCodec.decode122(data)
+        text = BaseNCodec.as_text(data)
+        if name in BaseNCodec.CHARSETS:
+            return BaseNCodec.decode_generic(text, BaseNCodec.CHARSETS[name])
+        if name in BaseNCodec.POWER_CHARSETS:
+            return BaseNCodec.decode_power(text, BaseNCodec.POWER_CHARSETS[name])
+        if name == "base45":
+            return BaseNCodec.decode45(text)
+        if name in BaseNCodec.BASE85:
+            return BaseNCodec.decode85(text, name)
+        if name == "base91":
+            return BaseNCodec.decode91(text)
+        raise ValueError("Unknown base encoding: {:s}".format(name))
+
+
 @register_command
 class BaseNDecodeCommand(GenericCommand, BufferingOutput):
     """The base command to decode baseN."""
@@ -122408,9 +122841,8 @@ class BaseNDecodeCommand(GenericCommand, BufferingOutput):
         return
 
     def get_valid_base_decode_funcs(self):
-        import codext
         for bname in self.baseN:
-            bfunc = lambda x, bname=bname: codext.decode(x, bname)
+            bfunc = lambda x, bname=bname: BaseNCodec.decode(x, bname)
             yield (bname, bfunc)
         return None
 
@@ -122446,7 +122878,6 @@ class BaseNDecodeMemoryCommand(BaseNDecodeCommand):
 
     @parse_args
     @only_if_gdb_running
-    @ModuleLoader.load_codext
     def do_invoke(self, args):
         self.out = []
         self.out.append("Address: {:#x}".format(args.location))
@@ -122492,7 +122923,6 @@ class BaseNDecodeValueCommand(BaseNDecodeCommand):
         return
 
     @parse_args
-    @ModuleLoader.load_codext
     def do_invoke(self, args):
         if args.hex: # "41414141" -> b"\x41\x41\x41\x41"
             value = GefUtil.fromhex_ignore_invalid(args.value)
@@ -122548,9 +122978,8 @@ class BaseNEncodeCommand(GenericCommand, BufferingOutput):
         return
 
     def get_valid_base_encode_funcs(self):
-        import codext
         for bname in self.baseN:
-            bfunc = lambda x, bname=bname: codext.encode(x, bname)
+            bfunc = lambda x, bname=bname: BaseNCodec.encode(x, bname)
             yield (bname, bfunc)
         return None
 
@@ -122586,7 +123015,6 @@ class BaseNEncodeMemoryCommand(BaseNEncodeCommand):
 
     @parse_args
     @only_if_gdb_running
-    @ModuleLoader.load_codext
     def do_invoke(self, args):
         self.out = []
         self.out.append("Address: {:#x}".format(args.location))
@@ -122635,7 +123063,6 @@ class BaseNEncodeValueCommand(BaseNEncodeCommand):
         return
 
     @parse_args
-    @ModuleLoader.load_codext
     def do_invoke(self, args):
         if args.hex: # "41414141" -> b"\x41\x41\x41\x41"
             value = GefUtil.fromhex_ignore_invalid(args.value)
@@ -162420,9 +162847,6 @@ class GefAvailableCommandListCommand(GenericCommand, BufferingOutput):
                 continue
             if not self.check_load_package(decorators, "@ModuleLoader.load_binwalk", "binwalk"):
                 self.add_out(cmdline, False, "binwalk package is unavailable")
-                continue
-            if not self.check_load_package(decorators, "@ModuleLoader.load_codext", "codext"):
-                self.add_out(cmdline, False, "codext package is unavailable")
                 continue
             if not self.check_load_package(decorators, "@ModuleLoader.load_angr", "angr"):
                 self.add_out(cmdline, False, "angr package is unavailable")
