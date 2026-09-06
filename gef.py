@@ -77170,7 +77170,8 @@ class KernelPciDeviceCommand(GenericCommand, BufferingOutput):
                     # parse resource address
                     resource_i_start = read_int_from_memory(resource_i + 8 * 0)
                     resource_i_end = read_int_from_memory(resource_i + 8 * 1)
-                    resource_i_size = resource_i_end - resource_i_start
+                    # struct resource uses an inclusive end address, matching resource_size().
+                    resource_i_size = resource_i_end - resource_i_start + 1
 
                     if resource_i_start != 0 and resource_i_end != 0:
                         # parse resource flags
@@ -77185,7 +77186,7 @@ class KernelPciDeviceCommand(GenericCommand, BufferingOutput):
                         else:
                             type_str = "???"
 
-                        self.out.append("  [{:d}] {:7s}: {:#010x}-{:#010x} ({:#010x}) flags:{:#x} ({:s})".format(
+                        self.out.append("  [{:d}] {:7s}: {:#010x}-{:#010x} (sz:{:#010x}) flags:{:#x} ({:s})".format(
                             i, type_str, resource_i_start, resource_i_end, resource_i_size, resource_i_flags, flag_str,
                         ))
 
