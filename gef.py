@@ -60428,7 +60428,10 @@ class KernelConstsX64(KernelConstsBase):
             if self.CONFIG_DYNAMIC_MEMORY_LAYOUT:
                 return self.page_offset_base
             else:
-                return self.__PAGE_OFFSET_BASE_L4
+                if self.CONFIG_X86_5LEVEL:
+                    return self.__PAGE_OFFSET_BASE_L5
+                else:
+                    return self.__PAGE_OFFSET_BASE_L4
         elif "6.16" <= self.kversion:
                 return self.page_offset_base
         return None
@@ -60521,7 +60524,10 @@ class KernelConstsX64(KernelConstsBase):
                 else:
                     return self.VMALLOC_SIZE_TB_L4
             else:
-                return self.VMALLOC_SIZE_TB_L4
+                if self.CONFIG_X86_5LEVEL:
+                    return self.VMALLOC_SIZE_TB_L5
+                else:
+                    return self.VMALLOC_SIZE_TB_L4
         elif "6.16" <= self.kversion:
             if self.CONFIG_X86_5LEVEL:
                 return self.VMALLOC_SIZE_TB_L5
@@ -60582,7 +60588,10 @@ class KernelConstsX64(KernelConstsBase):
             if self.CONFIG_DYNAMIC_MEMORY_LAYOUT:
                 return self.vmalloc_base
             else:
-                return self.__VMALLOC_BASE_L4
+                if self.CONFIG_X86_5LEVEL:
+                    return self.__VMALLOC_BASE_L5
+                else:
+                    return self.__VMALLOC_BASE_L4
         elif "6.16" <= self.kversion:
             return self.vmalloc_base
         return None
@@ -60673,7 +60682,10 @@ class KernelConstsX64(KernelConstsBase):
             if self.CONFIG_DYNAMIC_MEMORY_LAYOUT:
                 return self.vmemmap_base
             else:
-                return self.__VMEMMAP_BASE_L4
+                if self.CONFIG_X86_5LEVEL:
+                    return self.__VMEMMAP_BASE_L5
+                else:
+                    return self.__VMEMMAP_BASE_L4
         elif "6.16" <= self.kversion:
             return self.vmemmap_base
         return None
@@ -135061,6 +135073,8 @@ class KsymaddrRemoteCommand(GenericCommand, BufferingOutput):
 
         config = configparser.ConfigParser()
         config.read(cfg_file_name)
+        if "parameters" not in config:
+            return False
         for param_name in param_names:
             if param_name not in config["parameters"]:
                 return False
