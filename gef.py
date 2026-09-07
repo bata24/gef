@@ -66058,6 +66058,115 @@ KFU = KernelAddressHeuristicFinderUtil # for convenience using from python-inter
 class Kernel:
     """A collection of utility functions that are related to kernel specific features."""
 
+    class Kinfo:
+        """Resolved kernel memory layout."""
+
+        fields = (
+            "maps",
+            "text_base", "text_end",
+            "ro_base", "ro_end",
+            "rw_base", "rw_end",
+            "rwx",
+        )
+
+        def __init__(self, maps=None,
+                     text_base=None, text_end=None,
+                     ro_base=None, ro_end=None,
+                     rw_base=None, rw_end=None,
+                     rwx=False):
+            self.maps = maps
+            self.text_base = text_base
+            self.text_end = text_end
+            self.ro_base = ro_base
+            self.ro_end = ro_end
+            self.rw_base = rw_base
+            self.rw_end = rw_end
+            self.rwx = rwx
+            return
+
+        @property
+        def text_size(self):
+            """Return the size of the kernel text area."""
+            if self.text_base is None or self.text_end is None:
+                return None
+            return self.text_end - self.text_base
+
+        @property
+        def ro_size(self):
+            """Return the size of the kernel read-only area."""
+            if self.ro_base is None or self.ro_end is None:
+                return None
+            return self.ro_end - self.ro_base
+
+        @property
+        def rw_size(self):
+            """Return the size of the kernel read-write area."""
+            if self.rw_base is None or self.rw_end is None:
+                return None
+            return self.rw_end - self.rw_base
+
+        @property
+        def has_none(self):
+            """Return whether any part of the kernel memory layout is unresolved."""
+            return any(getattr(self, field) is None for field in self.fields)
+
+        def replace(self, **changes):
+            """Return a copy with the specified fields replaced."""
+            values = {field: getattr(self, field) for field in self.fields}
+            values.update(changes)
+            return type(self)(**values)
+
+        @classmethod
+        def build(cls, values, apply_data_range_hint=True):
+            """Build a Kinfo and optionally refine its data range from the iomem resource tree."""
+            kinfo = cls(**values)
+            if apply_data_range_hint:
+                return kinfo.with_data_range_hint()
+            return kinfo
+
+        def with_data_range_hint(self):
+            """Return a copy whose data range is refined from the iomem resource tree."""
+            if not (is_qemu_system() or is_vmware()) or not self.ro_base:
+                return self
+
+            try:
+                res = gdb.execute("kdevio --quiet --no-pager", to_string=True)
+                resources = re.findall(r"\s(0x[0-9a-f]+)-(0x[0-9a-f]+)\s+Kernel (data|bss)\s", Color.remove_color(res))
+                data = next((x for x in resources if x[2] == "data"), None)
+                if data is None:
+                    return self
+
+                phys_start = int(data[0], 16)
+                phys_end = max(int(x[1], 16) for x in resources)
+                phys_ro_base = Kernel.v2p(self.ro_base)
+                if phys_ro_base is None:
+                    return self
+
+                rw_base = AddressUtil.normalize_address(self.ro_base + phys_start - phys_ro_base)
+                rw_end = AddressUtil.normalize_address(rw_base + phys_end - phys_start + 1)
+                if self.ro_end <= rw_base < rw_end and is_valid_addr(rw_end - 1):
+                    return self.replace(rw_base=rw_base, rw_end=rw_end)
+            except (gdb.error, gdb.MemoryError, StopIteration, ValueError):
+                pass
+            return self
+
+        def with_kallsyms_ro_end(self):
+            """Return a copy whose no-NX rodata end is refined from already parsed kallsyms."""
+            if not self.rwx:
+                return self
+
+            # Do not trigger a parse here: kallsyms parsing itself needs the unrefined layout.
+            ret = Symbol.get_kallsyms(parse=False)
+            if ret is None:
+                return self
+
+            _, kallsyms_map = ret
+            for symbol in ("__end_rodata", "_edata"):
+                ro_end = next((addr for addr in kallsyms_map.get(symbol, []) if self.ro_base < addr < self.ro_end), None)
+                if ro_end is not None:
+                    return self.replace(ro_end=ro_end)
+            return self
+
     class ListHead:
         """Parse Linux circular doubly-linked lists.
 
@@ -66702,37 +66811,6 @@ class Kernel:
 
     # No caching intentionally
     @staticmethod
-    def get_kernel_data_range_hint(kinfo):
-        """Resolve the kernel .data/.bss range from the iomem resource tree."""
-        if not (is_qemu_system() or is_vmware()) or not kinfo.ro_base:
-            return None
-
-        try:
-            res = gdb.execute("kdevio --quiet --no-pager", to_string=True)
-            resources = re.findall(
-                r"\s(0x[0-9a-f]+)-(0x[0-9a-f]+)\s+Kernel (data|bss)\s",
-                Color.remove_color(res),
-            )
-            data = next((x for x in resources if x[2] == "data"), None)
-            if data is None:
-                return None
-
-            phys_start = int(data[0], 16)
-            phys_end = max(int(x[1], 16) for x in resources)
-            phys_ro_base = Kernel.v2p(kinfo.ro_base)
-            if phys_ro_base is None:
-                return None
-
-            rw_base = AddressUtil.normalize_address(kinfo.ro_base + phys_start - phys_ro_base)
-            rw_end = AddressUtil.normalize_address(rw_base + phys_end - phys_start + 1)
-            if kinfo.ro_end <= rw_base < rw_end and is_valid_addr(rw_end - 1):
-                return rw_base, rw_end
-        except (gdb.error, gdb.MemoryError, StopIteration, ValueError):
-            pass
-        return None
-
-    @staticmethod
-    @Cache.cache_this_session
     def get_kernel_layout(apply_data_range_hint=True):
         """Resolve the kernel memory layout.
 
@@ -66740,84 +66818,42 @@ class Kernel:
         to refine the kernel .data/.bss range. GEF internals disable it while
         resolving symbols and resources to avoid circular dependencies.
         """
+        # This wrapper is intentionally not cached: kallsyms may become available
+        # after the base layout has already been cached.
+        return Kernel.get_kernel_layout_cached(apply_data_range_hint).with_kallsyms_ro_end()
+
+    @staticmethod
+    @Cache.cache_this_session
+    def get_kernel_layout_cached(apply_data_range_hint=True):
         dic = {
-            "maps": None,
-            "text_base": None,
-            "text_size": None,
-            "text_end": None,
-            "ro_base": None,
-            "ro_size": None,
-            "ro_end": None,
-            "rw_base": None,
-            "rw_size": None,
-            "rw_end": None,
-            "rwx": False,
-            "has_none": False,
+            "maps": None, "text_base": None, "text_end": None, "ro_base": None, "ro_end": None,
+            "rw_base": None, "rw_end": None, "rwx": False,
         }
-        Kinfo = collections.namedtuple("Kinfo", dic.keys())
-
-        def build_kinfo():
-            dic["has_none"] = None in dic.values()
-            kinfo = Kinfo(*dic.values())
-            if not apply_data_range_hint:
-                return kinfo
-
-            data_hint = Kernel.get_kernel_data_range_hint(kinfo)
-            if data_hint is None:
-                return kinfo
-
-            rw_base, rw_end = data_hint
-            kinfo = kinfo._replace(
-                rw_base=rw_base,
-                rw_size=rw_end - rw_base,
-                rw_end=rw_end,
-            )
-            return kinfo._replace(has_none=None in kinfo[:-1])
 
         if is_kdb():
             # no-symbol, but monitor may be used
             dic["text_base"] = Symbol.get_symbol_by_monitor("_stext")
             dic["text_end"] = Symbol.get_symbol_by_monitor("_etext")
-            if dic["text_base"] and dic["text_end"]:
-                dic["text_size"] = dic["text_end"] - dic["text_base"]
-
             dic["rw_base"] = Symbol.get_symbol_by_monitor("_sdata")
             dic["rw_end"] = Symbol.get_symbol_by_monitor("_edata")
-            if dic["rw_base"] and dic["rw_end"]:
-                dic["rw_size"] = dic["rw_end"] - dic["rw_base"]
-
             dic["ro_base"] = Symbol.get_symbol_by_monitor("__start_rodata")
-            dic["ro_end"] = Symbol.get_symbol_by_monitor("__end_rodata_aligned") or \
-                            Symbol.get_symbol_by_monitor("__end_rodata")
-            if dic["ro_base"] and dic["ro_end"]:
-                dic["ro_size"] = dic["ro_end"] - dic["ro_base"]
-
-            return build_kinfo()
+            dic["ro_end"] = Symbol.get_symbol_by_monitor("__end_rodata_aligned") or Symbol.get_symbol_by_monitor("__end_rodata")
+            return Kernel.Kinfo.build(dic, apply_data_range_hint)
 
         if is_kgdb():
             # use symbol
             dic["text_base"] = Symbol.get_ksymaddr("_stext")
             dic["text_end"] = Symbol.get_ksymaddr("_etext")
-            if dic["text_base"] and dic["text_end"]:
-                dic["text_size"] = dic["text_end"] - dic["text_base"]
-
             dic["rw_base"] = Symbol.get_ksymaddr("_sdata")
             dic["rw_end"] = Symbol.get_ksymaddr("_edata")
-            if dic["rw_base"] and dic["rw_end"]:
-                dic["rw_size"] = dic["rw_end"] - dic["rw_base"]
-
             dic["ro_base"] = Symbol.get_ksymaddr("__start_rodata")
-            dic["ro_end"] = Symbol.get_ksymaddr("__end_rodata_aligned") or \
-                            Symbol.get_ksymaddr("__end_rodata")
-            if dic["ro_base"] and dic["ro_end"]:
-                dic["ro_size"] = dic["ro_end"] - dic["ro_base"]
-
-            return build_kinfo()
+            dic["ro_end"] = Symbol.get_ksymaddr("__end_rodata_aligned") or Symbol.get_ksymaddr("__end_rodata")
+            return Kernel.Kinfo.build(dic, apply_data_range_hint)
 
         # Could not find the maps, so fast return
         dic["maps"] = Kernel.get_maps()
         if dic["maps"] is None:
-            return build_kinfo()
+            return Kernel.Kinfo.build(dic, apply_data_range_hint)
 
         # 1a. search for the kernel base exact way
         if is_x86():
@@ -66826,7 +66862,6 @@ class Kernel:
                 for i, (vaddr, size, _perm) in enumerate(dic["maps"]):
                     if vaddr <= div0_handler < vaddr + size:
                         dic["text_base"] = vaddr
-                        dic["text_size"] = size
                         dic["text_end"] = vaddr + size
                         text_base_map_index = i
                         break
@@ -66837,7 +66872,6 @@ class Kernel:
                 for i, (vaddr, size, _perm) in enumerate(dic["maps"]):
                     if vaddr <= vbar < vaddr + size:
                         dic["text_base"] = vaddr
-                        dic["text_size"] = size
                         dic["text_end"] = vaddr + size
                         text_base_map_index = i
                         break
@@ -66848,7 +66882,6 @@ class Kernel:
                 for i, (vaddr, size, _perm) in enumerate(dic["maps"]):
                     if vaddr <= stvec < vaddr + size:
                         dic["text_base"] = vaddr
-                        dic["text_size"] = size
                         dic["text_end"] = vaddr + size
                         text_base_map_index = i
                         break
@@ -66862,7 +66895,6 @@ class Kernel:
             for i, (vaddr, size, perm) in enumerate(dic["maps"]):
                 if perm == "R-X" and size >= TEXT_REGION_MIN_SIZE:
                     dic["text_base"] = vaddr
-                    dic["text_size"] = size
                     dic["text_end"] = vaddr + size
                     text_base_map_index = i
                     break
@@ -66871,13 +66903,12 @@ class Kernel:
                 for i, (vaddr, size, perm) in enumerate(dic["maps"]):
                     if perm == "RWX" and size >= TEXT_REGION_MIN_SIZE:
                         dic["text_base"] = vaddr
-                        dic["text_size"] = size
                         dic["text_end"] = vaddr + size
                         text_base_map_index = i
                         break
                 else:
                     # Not found, so fast return
-                    return build_kinfo()
+                    return Kernel.Kinfo.build(dic, apply_data_range_hint)
 
         # 2a. search for the kernel RO base
         # If the `-enable-kvm` option for qemu-system is not enabled,
@@ -66902,13 +66933,11 @@ class Kernel:
                     data = read_memory(vaddr, get_pagesize())
                     if b"Linux version" in data:
                         dic["ro_base"] = vaddr
-                        dic["ro_size"] = size
                         dic["ro_end"] = vaddr + size
                         ro_base_map_index = text_base_map_index + 1 + i
                 elif dic["ro_end"] == vaddr:
                     # merge contiguous region.
                     # This is important because .rodata may be split into GLOBAL and non-GLOBAL areas.
-                    dic["ro_size"] += size
                     dic["ro_end"] += size
                     ro_base_map_index = text_base_map_index + 1 + i
                 else:
@@ -66931,13 +66960,11 @@ class Kernel:
                     if dic["ro_base"] is None:
                         if size >= RO_REGION_MIN_SIZE:
                             dic["ro_base"] = vaddr
-                            dic["ro_size"] = size
                             dic["ro_end"] = vaddr + size
                             ro_base_map_index = text_base_map_index + 1 + i
                     elif dic["ro_end"] == vaddr:
                         # merge contiguous region.
                         # This is important because .rodata may be split into GLOBAL and non-GLOBAL areas.
-                        dic["ro_size"] += size
                         dic["ro_end"] += size
                         ro_base_map_index = text_base_map_index + 1 + i
                     else:
@@ -66957,7 +66984,7 @@ class Kernel:
         if dic["ro_base"] is None:
             dic["rwx"] = True
             start = dic["text_base"] + get_pagesize() * 8
-            end = dic["text_base"] + dic["text_size"]
+            end = dic["text_end"]
             block_size = 0x20
             zero_data = b"\0" * block_size
             for addr in range(start, end, get_pagesize()):
@@ -66966,19 +66993,16 @@ class Kernel:
                     data = read_memory(addr, get_pagesize())
                     if b"Linux version" in data:
                         dic["ro_base"] = addr
-                        dic["ro_size"] = end - addr
                         dic["ro_end"] = end
-                        dic["text_size"] -= dic["ro_size"]
                         dic["text_end"] = addr
                         # In this case, rw_base is not detected.
                         # This is because ksymaddr-remote appears to provide better results.
                         dic["rw_base"] = 0
-                        dic["rw_size"] = 0
                         dic["rw_end"] = 0
                         break
             else:
                 # Not found, so fast return
-                return build_kinfo()
+                return Kernel.Kinfo.build(dic, apply_data_range_hint)
 
         else:
             # 3. Search for the kernel RW base.
@@ -66991,11 +67015,10 @@ class Kernel:
                         if dic["rw_base"] is None:
                             if size >= RW_REGION_MIN_SIZE:
                                 dic["rw_base"] = vaddr
-                                dic["rw_size"] = size
                                 dic["rw_end"] = vaddr + size
                                 break
 
-        return build_kinfo()
+        return Kernel.Kinfo.build(dic, apply_data_range_hint)
 
     @staticmethod
     @Cache.cache_this_session(cache_None=False)
