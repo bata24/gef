@@ -60590,7 +60590,11 @@ class KernelConstsX64(KernelConstsBase):
     @property
     def VMEMORY_END(self):
         if "6.1" <= self.kversion:
-            return self.VMALLOC_START + (self.VMALLOC_SIZE_TB << 40)
+            vmalloc_start = self.VMALLOC_START
+            if vmalloc_start is not None:
+                vmemory_end = vmalloc_start + (self.VMALLOC_SIZE_TB << 40)
+                if vmemory_end <= 0xffff_ffff_ffff_ffff:
+                    return vmemory_end
         return None
 
     @property
@@ -60605,12 +60609,20 @@ class KernelConstsX64(KernelConstsBase):
         if "3.0" <= self.kversion < "4.8":
             return 0xffff_e900_0000_0000
         elif "4.8" <= self.kversion < "6.1":
-            return self.VMALLOC_START + (self.VMALLOC_SIZE_TB << 40)
+            vmalloc_start = self.VMALLOC_START
+            if vmalloc_start is not None:
+                vmalloc_end = vmalloc_start + (self.VMALLOC_SIZE_TB << 40)
+                if vmalloc_end <= 0xffff_ffff_ffff_ffff:
+                    return vmalloc_end
         elif "6.1" <= self.kversion:
             if not self.CONFIG_KMSAN:
                 return self.VMEMORY_END
             else:
-                return self.VMALLOC_START + self.VMALLOC_QUARTER_SIZE
+                vmalloc_start = self.VMALLOC_START
+                if vmalloc_start is not None:
+                    vmalloc_end = vmalloc_start + self.VMALLOC_QUARTER_SIZE
+                    if vmalloc_end <= 0xffff_ffff_ffff_ffff:
+                        return vmalloc_end
         return None
 
     @property
@@ -63226,6 +63238,7 @@ class KernelAddressHeuristicFinder:
                 return read_int_from_memory(vmalloc_base)
 
         kversion = Kernel.kernel_version()
+        vmalloc_start = None
         if is_x86_64():
             # plan 2 (fixed address)
             if kversion and kversion < "4.8":
@@ -63252,9 +63265,28 @@ class KernelAddressHeuristicFinder:
                 page_offset_base_0 = read_int_from_memory(page_offset_base)
                 page_offset_base_a = read_int_from_memory(page_offset_base + current_arch.ptrsize)
                 if page_offset_base_0 < page_offset_base_b:
-                    return page_offset_base_b
-                if page_offset_base_0 < page_offset_base_a:
-                    return page_offset_base_a
+                    vmalloc_start = page_offset_base_b
+                elif page_offset_base_0 < page_offset_base_a:
+                    vmalloc_start = page_offset_base_a
+
+                # vmemmap_base may be adjacent to page_offset_base instead.  If
+                # the used vmap tree is available, make sure it is contained in
+                # the candidate vmalloc range before accepting the candidate.
+                if vmalloc_start is not None:
+                    res = gdb.execute("vmalloc-dump --quiet --no-pager --only-used", to_string=True)
+                    if res:
+                        res = Color.remove_color(res)
+                        lines = res.splitlines()
+                        if len(lines) >= 2:
+                            _, _, vrange, _, *_ = lines[1].split()
+                            s, _ = vrange.split("-")
+                            s = int(s, 16)
+                            vmalloc_size_tb = KernelAddressHeuristicFinder.consts().VMALLOC_SIZE_TB
+                            if vmalloc_size_tb is not None:
+                                vmalloc_size = vmalloc_size_tb << 40
+                                if vmalloc_start <= s < vmalloc_start + vmalloc_size:
+                                    return vmalloc_start
+                                vmalloc_start = None
 
         # plan 4 (from vmalloc-dump)
         if kversion and "5.2" <= kversion:
@@ -63275,7 +63307,7 @@ class KernelAddressHeuristicFinder:
                         return e
 
         # plan 5 (from vmalloc-dump and pagewalk)
-        if kversion and kversion < "6.9":
+        if kversion:
             res = gdb.execute("vmalloc-dump --quiet --no-pager --only-used", to_string=True)
             """
             [vmalloc-dump; x64]
@@ -63323,7 +63355,7 @@ class KernelAddressHeuristicFinder:
                                     return s
                     else:
                         return s
-        return None
+        return vmalloc_start if is_x86_64() else None
 
     @staticmethod
     @switch_to_intel_syntax
