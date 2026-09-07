@@ -65580,7 +65580,10 @@ class KernelAddressHeuristicFinder:
             if addr:
                 res = gdb.execute("x/30i {:#x}".format(addr), to_string=True)
                 if is_x86_64():
-                    g = KernelAddressHeuristicFinderUtil.x64_qword_ptr_rip_base(res)
+                    g = itertools.chain(
+                        KernelAddressHeuristicFinderUtil.x64_qword_ptr_rip_base(res),
+                        KernelAddressHeuristicFinderUtil.x64_x86_any_const(res),
+                    )
                 elif is_x86_32():
                     g = KernelAddressHeuristicFinderUtil.x86_noptr_ds(res)
                 elif is_arm64():
@@ -65588,7 +65591,8 @@ class KernelAddressHeuristicFinder:
                 elif is_arm32():
                     g = KernelAddressHeuristicFinderUtil.arm32_movw_movt(res, read_valid=True)
                 for x in g:
-                    return x
+                    if KernelAddressHeuristicFinderUtil.is_in_kernel_image(x) and is_double_link_list(x):
+                        return x
         return None
 
     @staticmethod
@@ -76982,7 +76986,7 @@ class KernelPciDeviceCommand(GenericCommand, BufferingOutput):
         # pci_root_buses
         self.pci_root_buses = KernelAddressHeuristicFinder.get_pci_root_buses()
         if not self.pci_root_buses:
-            self.meta.append((self.quiet_err, "Could not find pci_root_buses (maybe, CONFIG_PCI is not set)"))
+            self.meta.append((self.quiet_err, "Could not find pci_root_buses"))
             return None
         self.meta.append((self.quiet_info, "pci_root_buses: {:#x}".format(self.pci_root_buses)))
 
