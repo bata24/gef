@@ -62366,6 +62366,17 @@ class KernelAddressHeuristicFinder:
 
         kversion = Kernel.kernel_version()
 
+        def looks_like_init_net(x):
+            if not KernelAddressHeuristicFinderUtil.is_in_kernel_image(x):
+                return False
+            net_namespace_list = Symbol.get_ksymaddr("net_namespace_list")
+            if net_namespace_list is None:
+                return True
+            first_net = read_int_from_memory(net_namespace_list)
+            if first_net == net_namespace_list:
+                return True
+            return x <= first_net < x + get_pagesize()
+
         # plan 2 (available v2.6.35 or later)
         if kversion and "2.6.35" <= kversion:
             addr = Symbol.get_ksymaddr("net_initial_ns")
@@ -62380,7 +62391,8 @@ class KernelAddressHeuristicFinder:
                 elif is_arm32():
                     g = KernelAddressHeuristicFinderUtil.arm32_movw_movt(res)
                 for x in g:
-                    return x
+                    if looks_like_init_net(x):
+                        return x
 
         # plan 3 (available v2.6.24 or later)
         if kversion and "2.6.24" <= kversion:
@@ -62400,7 +62412,23 @@ class KernelAddressHeuristicFinder:
                         continue
                     if read_cstring_from_memory(x) == "%s%d":
                         continue
-                    return x
+                    if looks_like_init_net(x):
+                        return x
+
+        # plan 4 (available v2.6.35 or later)
+        if kversion and "2.6.35" <= kversion:
+            addr = Symbol.get_ksymaddr("alloc_netdev_mqs")
+            if addr:
+                res = gdb.execute("x/200i {:#x}".format(addr), to_string=True)
+                if is_x86_64() or is_x86_32():
+                    g = KernelAddressHeuristicFinderUtil.x64_x86_any_const(res)
+                elif is_arm64():
+                    g = KernelAddressHeuristicFinderUtil.aarch64_adrp_add(res)
+                elif is_arm32():
+                    g = KernelAddressHeuristicFinderUtil.arm32_movw_movt(res)
+                for x in g:
+                    if looks_like_init_net(x):
+                        return x
         return None
 
     @staticmethod
