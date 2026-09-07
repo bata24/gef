@@ -15415,7 +15415,7 @@ def set_arch(arch_str=None):
 
     current_arch = arches[key]()
     Cache.reset_gef_caches(all=True)
-    return
+    return current_arch
 
 
 class Auxv:
@@ -65832,11 +65832,11 @@ class KernelAddressHeuristicFinder:
                     )
                 direction = TlsCommand.get_direction()
                 # x64/x86:
-                #   debugfs_list
-                #   debugfs_list_mutex
+                #   dmabuf_list
+                #   dmabuf_list_mutex
                 # arm64/arm32:
-                #   debugfs_list_mutex
-                #   debugfs_list
+                #   dmabuf_list_mutex
+                #   dmabuf_list
                 for x in g:
                     if is_x86():
                         count = 1
@@ -65844,7 +65844,7 @@ class KernelAddressHeuristicFinder:
                         count = 2
                     for i in range(2, 30):
                         v = x + current_arch.ptrsize * direction * i
-                        # here, x points &debugfs_list_mutex
+                        # here, x points &dmabuf_list_mutex
                         if is_double_link_list(v):
                             count -= 1
                             if count == 0:
@@ -68932,7 +68932,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
         0xffffffffbb4545b0|+0x0030|+006: 0x000001ffffffffff
         0xffffffffbb4545b8|+0x0038|+007: 0x000001ffffffffff
         0xffffffffbb4545c0|+0x0040|+008: 0x000001ffffffffff  // cap_bset
-        0xffffffffbb4545c8|+0x0048|+009: 0x0000000000000000  // cap_ambilent
+        0xffffffffbb4545c8|+0x0048|+009: 0x0000000000000000  // cap_ambient
         0xffffffffbb4545d0|+0x0050|+010: 0x0000000000000000  // jit_keyring
         0xffffffffbb4545d8|+0x0058|+011: 0x0000000000000000  // session_keyring
         0xffffffffbb4545e0|+0x0060|+012: 0x0000000000000000  // process_keyring
@@ -68996,7 +68996,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
         0xc1aabc1c|+0x003c|+015: 0x000001ff
         0xc1aabc20|+0x0040|+016: 0xffffffff  // cap_bset
         0xc1aabc24|+0x0044|+017: 0x000001ff
-        0xc1aabc28|+0x0048|+018: 0x00000000  // cap_abmient
+        0xc1aabc28|+0x0048|+018: 0x00000000  // cap_ambient
         0xc1aabc2c|+0x004c|+019: 0x00000000
         0xc1aabc30|+0x0050|+020: 0x00000000  // jit_keyring
         0xc1aabc34|+0x0054|+021: 0x00000000  // session_keyring
@@ -71833,7 +71833,7 @@ class KernelModuleCommand(GenericCommand, BufferingOutput):
         if self.module_addrs == []:
             self.quiet_err("Could not find any modules")
             return
-        self.quiet_info("Num of modules: {:#x}".format(len(self.module_addrs)))
+        self.quiet_info("Num of modules: {:d}".format(len(self.module_addrs)))
 
         # module->kallsyms
         if args.resolve_symbol or args.apply_symbol:
@@ -72348,7 +72348,7 @@ class KernelModuleLoadCommand(GenericCommand):
         if module_addrs == []:
             self.quiet_err("Could not find any modules")
             return
-        self.quiet_info("Num of modules: {:#x}".format(len(module_addrs)))
+        self.quiet_info("Num of modules: {:d}".format(len(module_addrs)))
 
         if args.meta:
             return
@@ -132352,9 +132352,9 @@ class KernelBpfCommand(GenericCommand, BufferingOutput):
         # parse progs, maps
         try:
             progs = self.prog_xarray.parse()
-            self.meta.append((self.quiet_info, "Num of progs: {:#x}".format(len(progs))))
+            self.meta.append((self.quiet_info, "Num of progs: {:d}".format(len(progs))))
             maps = self.map_xarray.parse()
-            self.meta.append((self.quiet_info, "Num of maps: {:#x}".format(len(maps))))
+            self.meta.append((self.quiet_info, "Num of maps: {:d}".format(len(maps))))
         except gdb.MemoryError:
             self.meta.append((self.quiet_err, "Not found"))
             return None
@@ -163285,11 +163285,13 @@ class GefSetArchCommand(GenericCommand):
             return
 
         try:
-            set_arch(args.arch)
-            info("set_arch({:s}) is successfully".format(args.arch))
+            if set_arch(args.arch) is None:
+                err("set_arch({:s}) failed".format(args.arch))
+                return
+            info("set_arch({:s}) succeeded".format(args.arch))
             Cache.reset_gef_caches(all=True)
         except OSError:
-            err("set_arch({:s}) is failed".format(args.arch))
+            err("set_arch({:s}) failed".format(args.arch))
         return
 
 
