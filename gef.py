@@ -132442,157 +132442,237 @@ class KernelBpfCommand(GenericCommand, BufferingOutput):
             };
             """
             # bpf_array->union_array
-            value_size = read_int32_from_memory(maps[0] + self.offset_value_size)
-            value_size_aligned_8 = align(value_size, 8)
-            max_entries = read_int32_from_memory(maps[0] + self.offset_max_entries)
-            k = 1
-            while k < max_entries:
-                k <<= 1
-            index_mask = k - 1
+            # Only an array map has the elem_size/index_mask pair, so scan every array map instead of assuming maps[0] is one.
+            # The offset is a layout constant, so the first map that resolves it is enough.
+            self.offset_union_array = None
+            for m in maps:
+                if read_int32_from_memory(m + self.offset_map_type) != 2: # BPF_MAP_TYPE_ARRAY
+                    continue
+                value_size = read_int32_from_memory(m + self.offset_value_size)
+                value_size_aligned_8 = align(value_size, 8)
+                max_entries = read_int32_from_memory(m + self.offset_max_entries)
+                k = 1
+                while k < max_entries:
+                    k <<= 1
+                index_mask = k - 1
 
-            sizeof_cache_line = 0x40 # ?
-            base = maps[0] + sizeof_cache_line * 3
-            for i in range(100):
-                pos = base + current_arch.ptrsize * i
-                x = read_int32_from_memory(pos)
-                y = read_int32_from_memory(pos + 4)
-                if x == value_size_aligned_8 and y == index_mask:
-                    self.offset_union_array = (pos - maps[0]) + 4 * 2 + current_arch.ptrsize
-                    self.meta.append((self.quiet_info, "offsetof(bpf_array, union_array): {:#x}".format(self.offset_union_array)))
+                sizeof_cache_line = 0x40 # ?
+                base = m + sizeof_cache_line * 3
+                for i in range(100):
+                    pos = base + current_arch.ptrsize * i
+                    x = read_int32_from_memory(pos)
+                    y = read_int32_from_memory(pos + 4)
+                    if x == value_size_aligned_8 and y == index_mask:
+                        self.offset_union_array = (pos - m) + 4 * 2 + current_arch.ptrsize
+                        break
+                if self.offset_union_array is not None:
                     break
+            if self.offset_union_array is None:
+                # Keep going; the array column is the only thing that cannot be shown.
+                self.meta.append((self.quiet_warn, "Could not find offsetof(bpf_array, union_array)"))
             else:
-                return None
+                self.meta.append((self.quiet_info, "offsetof(bpf_array, union_array): {:#x}".format(self.offset_union_array)))
         return True
+
+    # include/uapi/linux/bpf.h
+    defined_prog_types = [
+        "UNSPEC",
+        "SOCKET_FILTER",
+        "KPROBE",
+        "SCHED_CLS",
+        "SCHED_ACT",
+        "TRACEPOINT",
+        "XDP",
+        "PERF_EVENT",
+        "CGROUP_SKB",
+        "CGROUP_SOCK",
+        "LWT_IN",
+        "LWT_OUT",
+        "LWT_XMIT",
+        "SOCK_OPS",
+        "SK_SKB",
+        "CGROUP_DEVICE",
+        "SK_MSG",
+        "RAW_TRACEPOINT",
+        "CGROUP_SOCK_ADDR",
+        "LWT_SEG6LOCAL",
+        "LIRC_MODE2",
+        "SK_REUSEPORT",
+        "FLOW_DISSECTOR",
+        "CGROUP_SYSCTL",
+        "RAW_TRACEPOINT_WRITABLE",
+        "CGROUP_SOCKOPT",
+        "TRACING",
+        "STRUCT_OPS",
+        "EXT",
+        "LSM",
+        "SK_LOOKUP",
+        "SYSCALL",
+        "NETFILTER",
+    ]
+
+    defined_attach_types = [
+        "CGROUP_INET_INGRESS",
+        "CGROUP_INET_EGRESS",
+        "CGROUP_INET_SOCK_CREATE",
+        "CGROUP_SOCK_OPS",
+        "SK_SKB_STREAM_PARSER",
+        "SK_SKB_STREAM_VERDICT",
+        "CGROUP_DEVICE",
+        "SK_MSG_VERDICT",
+        "CGROUP_INET4_BIND",
+        "CGROUP_INET6_BIND",
+        "CGROUP_INET4_CONNECT",
+        "CGROUP_INET6_CONNECT",
+        "CGROUP_INET4_POST_BIND",
+        "CGROUP_INET6_POST_BIND",
+        "CGROUP_UDP4_SENDMSG",
+        "CGROUP_UDP6_SENDMSG",
+        "LIRC_MODE2",
+        "FLOW_DISSECTOR",
+        "CGROUP_SYSCTL",
+        "CGROUP_UDP4_RECVMSG",
+        "CGROUP_UDP6_RECVMSG",
+        "CGROUP_GETSOCKOPT",
+        "CGROUP_SETSOCKOPT",
+        "TRACE_RAW_TP",
+        "TRACE_FENTRY",
+        "TRACE_FEXIT",
+        "MODIFY_RETURN",
+        "LSM_MAC",
+        "TRACE_ITER",
+        "CGROUP_INET4_GETPEERNAME",
+        "CGROUP_INET6_GETPEERNAME",
+        "CGROUP_INET4_GETSOCKNAME",
+        "CGROUP_INET6_GETSOCKNAME",
+        "XDP_DEVMAP",
+        "CGROUP_INET_SOCK_RELEASE",
+        "XDP_CPUMAP",
+        "SK_LOOKUP",
+        "XDP",
+        "SK_SKB_VERDICT",
+        "SK_REUSEPORT_SELECT",
+        "SK_REUSEPORT_SELECT_OR_MIGRATE",
+        "PERF_EVENT",
+        "TRACE_KPROBE_MULTI",
+        "LSM_CGROUP",
+        "STRUCT_OPS",
+        "NETFILTER",
+        "TCX_INGRESS",
+        "TCX_EGRESS",
+        "TRACE_UPROBE_MULTI",
+        "CGROUP_UNIX_CONNECT",
+        "CGROUP_UNIX_SENDMSG",
+        "CGROUP_UNIX_RECVMSG",
+        "CGROUP_UNIX_GETPEERNAME",
+        "CGROUP_UNIX_GETSOCKNAME",
+        "NETKIT_PRIMARY",
+        "NETKIT_PEER",
+        "TRACE_KPROBE_SESSION",
+        "TRACE_UPROBE_SESSION",
+        "TRACE_FSESSION",
+        "TRACE_FENTRY_MULTI",
+        "TRACE_FEXIT_MULTI",
+        "TRACE_FSESSION_MULTI",
+    ]
+
+    def dump_bpf_progs_func(self, orig_prog, bpf_func, jited_len):
+        if self.seccomp_tools_command and is_valid_addr(orig_prog):
+            # use seccomp-tools or ceccomp
+            cnt = read_int16_from_memory(orig_prog)
+            prog = read_int_from_memory(orig_prog + current_arch.ptrsize)
+            data = read_memory(prog, cnt * 8)
+            tmp_fd, tmp_path = GefUtil.mkstemp(prefix="kbpf")
+            with os.fdopen(tmp_fd, "wb") as fdw:
+                fdw.write(data)
+            ret = GefUtil.gef_execute_external(self.seccomp_tools_command + [tmp_path], as_list=True)
+            self.out.extend(ret)
+            os.unlink(tmp_path)
+            return
+
+        if is_valid_addr(bpf_func):
+            try:
+                __import__("capstone")
+                # use capstone
+                data = read_memory(bpf_func, jited_len)
+                dump_count = 0
+                for insn in Disasm.capstone_disassemble(bpf_func, jited_len, code=data.hex()):
+                    msg = insn.colored_text(10)
+                    self.out.append(msg)
+                    dump_count += insn.size
+                    if dump_count >= jited_len:
+                        return
+            except ImportError:
+                ret = gdb.execute("x/40i {:#x}".format(bpf_func), to_string=True).rstrip()
+                self.out.append(ret)
+                self.out.append("...")
+                return
+
+        self.err_add_out("Memory read error")
+        return
 
     def dump_bpf_progs(self, progs):
         self.out.append(titlify("prog_idr"))
-        fmt = "{:3s} {:18s} {:23s} {:24s} {:18s} {:18s} {:18s} {:9s} {:18s}"
+        fmt = "{:3s} {:18s} {:23s} {:30s} {:18s} {:18s} {:18s} {:9s} {:18s}"
         legend = ["#", "bpf_prog", "bpf_prog_type", "bpf_attach_type", "tag", "bpf_prog_aux", "bpf_func", "jited_len", "orig_prog"]
         self.out.append(GefUtil.make_legend(fmt.format(*legend)))
 
-        defined_prog_types = [
-            "UNSPEC",
-            "SOCKET_FILTER",
-            "KPROBE",
-            "SCHED_CLS",
-            "SCHED_ACT",
-            "TRACEPOINT",
-            "XDP",
-            "PERF_EVENT",
-            "CGROUP_SKB",
-            "CGROUP_SOCK",
-            "LWT_IN",
-            "LWT_OUT",
-            "LWT_XMIT",
-            "SOCK_OPS",
-            "SK_SKB",
-            "CGROUP_DEVICE",
-            "SK_MSG",
-            "RAW_TRACEPOINT",
-            "CGROUP_SOCK_ADDR",
-            "LWT_SEG6LOCAL",
-            "LIRC_MODE2",
-            "SK_REUSEPORT",
-            "FLOW_DISSECTOR",
-            "CGROUP_SYSCTL",
-            "RAW_TRACEPOINT_WRITABLE",
-            "CGROUP_SOCKOPT",
-            "TRACING",
-            "STRUCT_OPS",
-            "EXT",
-            "LSM",
-            "SK_LOOKUP",
-        ]
-
-        defined_attach_types = [
-            "CGROUP_INET_INGRESS",
-            "CGROUP_INET_EGRESS",
-            "CGROUP_INET_SOCK_CREATE",
-            "CGROUP_SOCK_OPS",
-            "SK_SKB_STREAM_PARSER",
-            "SK_SKB_STREAM_VERDICT",
-            "CGROUP_DEVICE",
-            "SK_MSG_VERDICT",
-            "CGROUP_INET4_BIND",
-            "CGROUP_INET6_BIND",
-            "CGROUP_INET4_CONNECT",
-            "CGROUP_INET6_CONNECT",
-            "CGROUP_INET4_POST_BIND",
-            "CGROUP_INET6_POST_BIND",
-            "CGROUP_UDP4_SENDMSG",
-            "CGROUP_UDP6_SENDMSG",
-            "LIRC_MODE2",
-            "FLOW_DISSECTOR",
-            "CGROUP_SYSCTL",
-            "CGROUP_UDP4_RECVMSG",
-            "CGROUP_UDP6_RECVMSG",
-            "CGROUP_GETSOCKOPT",
-            "CGROUP_SETSOCKOPT",
-            "TRACE_RAW_TP",
-            "TRACE_FENTRY",
-            "TRACE_FEXIT",
-            "MODIFY_RETURN",
-            "LSM_MAC",
-            "TRACE_ITER",
-            "CGROUP_INET4_GETPEERNAME",
-            "CGROUP_INET6_GETPEERNAME",
-            "CGROUP_INET4_GETSOCKNAME",
-            "CGROUP_INET6_GETSOCKNAME",
-            "XDP_DEVMAP",
-            "CGROUP_INET_SOCK_RELEASE",
-            "XDP_CPUMAP",
-            "SK_LOOKUP",
-            "XDP",
-        ]
-
-        fmt = "{:<3d} {:#018x} {:23s} {:24s} {:#018x} {:#018x} {:#018x} {:<#9x} {:#018x}"
+        fmt = "{:<3d} {:#018x} {:23s} {:30s} {:#018x} {:#018x} {:#018x} {:<#9x} {:#018x}"
         for i, prog in enumerate(progs):
             bpf_type = read_int32_from_memory(prog + self.offset_prog_type)
             bpf_attach_type = read_int32_from_memory(prog + self.offset_expected_attach_type)
             jited_len = read_int32_from_memory(prog + self.offset_jited_len)
             orig_prog = read_int_from_memory(prog + self.offset_orig_prog)
-            t1 = defined_prog_types[bpf_type]
-            t2 = defined_attach_types[bpf_attach_type]
+            t1 = self.defined_prog_types[bpf_type] if bpf_type < len(self.defined_prog_types) else "???"
+            t2 = self.defined_attach_types[bpf_attach_type] if bpf_attach_type < len(self.defined_attach_types) else "???"
             tag = read_int64_from_memory(prog + self.offset_tag)
             aux = read_int_from_memory(prog + self.offset_aux)
             bpf_func = read_int_from_memory(prog + self.offset_bpf_func)
             self.out.append(fmt.format(i, prog, t1, t2, tag, aux, bpf_func, jited_len, orig_prog))
 
             if self.args.verbose:
-                # dump func
-                if self.seccomp_tools_command and is_valid_addr(orig_prog):
-                    # use seccomp-tools or ceccomp
-                    cnt = read_int16_from_memory(orig_prog)
-                    prog = read_int_from_memory(orig_prog + current_arch.ptrsize)
-                    data = read_memory(prog, cnt * 8)
-                    tmp_fd, tmp_path = GefUtil.mkstemp(prefix="kbpf")
-                    with os.fdopen(tmp_fd, "wb") as fdw:
-                        fdw.write(data)
-                    ret = GefUtil.gef_execute_external(
-                        self.seccomp_tools_command + [tmp_path], as_list=True,
-                    )
-                    self.out.extend(ret)
-                    os.unlink(tmp_path)
-                elif is_valid_addr(bpf_func):
-                    try:
-                        __import__("capstone")
-                        # use capstone
-                        data = read_memory(bpf_func, jited_len)
-                        dump_count = 0
-                        for insn in Disasm.capstone_disassemble(bpf_func, jited_len, code=data.hex()):
-                            msg = insn.colored_text(10)
-                            self.out.append(msg)
-                            dump_count += insn.size
-                            if dump_count >= jited_len:
-                                break
-                    except ImportError:
-                        ret = gdb.execute("x/40i {:#x}".format(bpf_func), to_string=True).rstrip()
-                        self.out.append(ret)
-                        self.out.append("...")
-                else:
-                    self.err_add_out("Memory read error")
+                self.dump_bpf_progs_func(orig_prog, bpf_func, jited_len)
                 self.out.append(titlify(""))
         return
+
+    defined_map_types = [
+        "UNSPEC",
+        "HASH",
+        "ARRAY",
+        "PROG_ARRAY",
+        "PERF_EVENT_ARRAY",
+        "PERCPU_HASH",
+        "PERCPU_ARRAY",
+        "STACK_TRACE",
+        "CGROUP_ARRAY",
+        "LRU_HASH",
+        "LRU_PERCPU_HASH",
+        "LPM_TRIE",
+        "ARRAY_OF_MAPS",
+        "HASH_OF_MAPS",
+        "DEVMAP",
+        "SOCKMAP",
+        "CPUMAP",
+        "XSKMAP",
+        "SOCKHASH",
+        "CGROUP_STORAGE",
+        "REUSEPORT_SOCKARRAY",
+        "PERCPU_CGROUP_STORAGE",
+        "QUEUE",
+        "STACK",
+        "SK_STORAGE",
+        "DEVMAP_HASH",
+        "STRUCT_OPS",
+        "RINGBUF",
+        "INODE_STORAGE",
+        "TASK_STORAGE",
+        "BLOOM_FILTER",
+        "USER_RINGBUF",
+        "CGRP_STORAGE",
+        "ARENA",
+        "INSN_ARRAY",
+        "RHASH",
+    ]
 
     def dump_bpf_maps(self, maps):
         self.out.append(titlify("map_idr"))
@@ -132600,50 +132680,23 @@ class KernelBpfCommand(GenericCommand, BufferingOutput):
         legend = ["#", "bpf_map", "bpf_map_type", "key_size", "value_size", "max_ents", "array"]
         self.out.append(GefUtil.make_legend(fmt.format(*legend)))
 
-        defined_map_types = [
-            "UNSPEC",
-            "HASH",
-            "ARRAY",
-            "PROG_ARRAY",
-            "PERF_EVENT_ARRAY",
-            "PERCPU_HASH",
-            "PERCPU_ARRAY",
-            "STACK_TRACE",
-            "CGROUP_ARRAY",
-            "LRU_HASH",
-            "LRU_PERCPU_HASH",
-            "LPM_TRIE",
-            "ARRAY_OF_MAPS",
-            "HASH_OF_MAPS",
-            "DEVMAP",
-            "SOCKMAP",
-            "CPUMAP",
-            "XSKMAP",
-            "SOCKHASH",
-            "CGROUP_STORAGE",
-            "REUSEPORT_SOCKARRAY",
-            "PERCPU_CGROUP_STORAGE",
-            "QUEUE",
-            "STACK",
-            "SK_STORAGE",
-            "DEVMAP_HASH",
-            "STRUCT_OPS",
-            "RINGBUF",
-            "INODE_STORAGE",
-        ]
-
-        fmt = "{:<3d} {:#018x} {:21s} {:#010x} {:#010x} {:#010x} {:#018x}"
+        fmt = "{:<3d} {:#018x} {:21s} {:#010x} {:#010x} {:#010x} {:18s}"
         for i, m in enumerate(maps):
             map_type = read_int32_from_memory(m + self.offset_map_type)
-            t1 = defined_map_types[map_type]
+            t1 = self.defined_map_types[map_type] if map_type < len(self.defined_map_types) else "???"
             key_size = read_int32_from_memory(m + self.offset_key_size)
             val_size = read_int32_from_memory(m + self.offset_value_size)
             max_ents = read_int32_from_memory(m + self.offset_max_entries)
-            union_array = m + self.offset_union_array
-            self.out.append(fmt.format(i, m, t1, key_size, val_size, max_ents, union_array))
+            if self.offset_union_array is None:
+                union_array = None
+                array = "???"
+            else:
+                union_array = m + self.offset_union_array
+                array = "{:#018x}".format(union_array)
+            self.out.append(fmt.format(i, m, t1, key_size, val_size, max_ents, array))
 
             if self.args.verbose:
-                if map_type == 2: # ARRAY
+                if union_array is not None and map_type == 2: # ARRAY
                     res = gdb.execute("dereference -n {:#x} {:#x}".format(union_array, max_ents), to_string=True)
                     self.out.append(res.rstrip())
         return
