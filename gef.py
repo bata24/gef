@@ -69706,14 +69706,14 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
             pass
 
         # slow path
-        current = dentry
-        while True:
+        if not is_valid_addr(dentry) or dentry & (current_arch.ptrsize - 1):
+            return None
+
+        for current in range(dentry, dentry + 0x100, current_arch.ptrsize):
             name = read_int_from_memory(current)
             if 0 < name - current <= 0x20:
-                offset_d_iname = name - dentry
-                break
-            current += current_arch.ptrsize
-        return offset_d_iname
+                return name - dentry
+        return None
 
     @Cache.cache_this_session(cache_None=False)
     def get_offset_d_inode(self, offset_d_iname):
@@ -69775,6 +69775,9 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
             ...
         };
         """
+        if not is_valid_addr(inode) or inode & (current_arch.ptrsize - 1):
+            return None
+
         # fast path
         try:
             return GefUtil.parse_and_eval_unsigned("&((struct inode*)0).i_ino")
@@ -70272,7 +70275,12 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
             return None
         self.meta.append((self.quiet_info, "offsetof(vm_area_struct, vm_file): {:#x}".format(self.offset_vm_file)))
 
-        self.offset_mnt = self.get_offset_mnt(self.get_init_vm_file(task_addrs))
+        init_vm_file = self.get_init_vm_file(task_addrs)
+        if not is_valid_addr(init_vm_file) or init_vm_file & (current_arch.ptrsize - 1):
+            self.meta.append((self.quiet_err, "Could not find a valid vm_file"))
+            return None
+
+        self.offset_mnt = self.get_offset_mnt(init_vm_file)
         if self.offset_mnt is None:
             self.meta.append((self.quiet_err, "Could not find file->f_path.mnt"))
             return None
@@ -70281,8 +70289,15 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
         self.offset_dentry = self.get_offset_dentry(self.offset_mnt)
         self.meta.append((self.quiet_info, "offsetof(file, f_path.dentry): {:#x}".format(self.offset_dentry)))
 
-        dentry = read_int_from_memory(self.get_init_vm_file(task_addrs) + self.offset_dentry)
+        dentry = read_int_from_memory(init_vm_file + self.offset_dentry)
+        if not is_valid_addr(dentry) or dentry & (current_arch.ptrsize - 1):
+            self.meta.append((self.quiet_err, "Could not find a valid dentry"))
+            return None
+
         self.offset_d_iname = self.get_offset_d_iname(dentry)
+        if self.offset_d_iname is None:
+            self.meta.append((self.quiet_err, "Could not find dentry->d_iname"))
+            return None
         self.meta.append((self.quiet_info, "offsetof(dentry, d_iname): {:#x}".format(self.offset_d_iname)))
 
         self.offset_d_inode = self.get_offset_d_inode(self.offset_d_iname)
@@ -70292,7 +70307,14 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
         self.meta.append((self.quiet_info, "offsetof(dentry, d_parent): {:#x}".format(self.offset_d_parent)))
 
         inode = read_int_from_memory(dentry + self.offset_d_inode)
+        if not is_valid_addr(inode) or inode & (current_arch.ptrsize - 1):
+            self.meta.append((self.quiet_err, "Could not find a valid inode"))
+            return None
+
         self.offset_i_ino = self.get_offset_i_ino(inode)
+        if self.offset_i_ino is None:
+            self.meta.append((self.quiet_err, "Could not find inode->i_ino"))
+            return None
         self.meta.append((self.quiet_info, "offsetof(inode, i_ino): {:#x}".format(self.offset_i_ino)))
         return True
 
