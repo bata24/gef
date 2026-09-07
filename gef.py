@@ -31253,7 +31253,7 @@ class KernelChecksecCommand(GenericCommand):
             value for value in [
                 kinfo.text_base, kinfo.text_end, kinfo.ro_base, kinfo.ro_end,
                 kinfo.rw_base, kinfo.rw_end,
-            ] if value is not None
+            ] if value not in (None, 0)
         ]
         kernel_area = (min(kernel_bounds), max(kernel_bounds)) if kernel_bounds else None
         categories = {"kernel": [], "module": [], "other": []}
@@ -32035,17 +32035,22 @@ class KernelChecksecCommand(GenericCommand):
 
     def check_CONFIG_RANDSTRUCT(self):
         cfg = "CONFIG_RANDSTRUCT"
-        # In cases where kallsyms could be resolved, but ksysctl could not be resolved correctly,
-        # it is assumed that the structure is strange.
-        # Each structure parsed by ksysctl has no difference among kernel versions, except for `struct ctl_dir.inodes`.
-        # Additionally, the first member of struct ctl_table is a *char procname, which will almost certainly
-        # readable something. If this fails, it can be determined that the randstruct is used.
+        kversion = Kernel.kernel_version()
+        if kversion is not None and kversion < "4.13":
+            additional = "implemented from Linux 4.13"
+            gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Unsupported", "bold red"), additional))
+            return
+
+        # If kallsyms can be resolved but ksysctl cannot, the structure layout may be unusual.
+        # The structures parsed by ksysctl are stable across kernel versions, except for
+        # `struct ctl_dir.inodes`. Also, the first member of `struct ctl_table` is a
+        # `const char *procname`, which will almost certainly point to readable data.
+        # Therefore, a ksysctl failure is a useful RANDSTRUCT signal, but it is not sufficient
+        # positive evidence by itself because unrelated finder failures can produce the same result.
         ksysctl_ret = Kernel.get_ksysctl("kernel.version")
-        if not ksysctl_ret:
-            additional = "ksysctl was failed"
-            gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Enabled", "bold green"), additional))
-            warn(Color.boldify("With `CONFIG_RANDSTRUCT=y`, identifying structure members may be unreliable."))
-            warn(Color.boldify("As a result, many GEF commands will not work correctly."))
+        if ksysctl_ret is None:
+            additional = "ksysctl failed"
+            gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.grayify("Unknown"), additional))
         else:
             additional = "ksysctl was successful"
             gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Disabled", "bold red"), additional))
