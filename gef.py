@@ -71234,30 +71234,6 @@ class KernelModuleCommand(GenericCommand, BufferingOutput):
             entries = [x for x in entries if is_valid_addr(x)]
         return entries, meta
 
-    def get_offset_name(self, module_addrs):
-        # fast path
-        try:
-            return GefUtil.parse_and_eval_unsigned("&((struct module*)0).name")
-        except gdb.error:
-            pass
-
-        # slow_path
-        for i in range(0x10):
-            offset_name = i * current_arch.ptrsize
-            valid = True
-            for module in module_addrs:
-                if not is_ascii_string(module + offset_name):
-                    valid = False
-                    break
-                s = read_cstring_from_memory(module + offset_name)
-                if len(s) < 2:
-                    valid = False
-                    break
-            if valid:
-                return offset_name
-
-        return None
-
     def get_offset_mem(self, module_addrs): # v6.4~
         """
         ac3b43283923440900b4f36ca5f9f0b1ca43b70e changed the module layout information structure
@@ -71714,10 +71690,7 @@ class KernelModuleCommand(GenericCommand, BufferingOutput):
             return None
 
         # module->name
-        self.offset_name = self.get_offset_name(module_addrs)
-        if self.offset_name is None:
-            self.meta.append((self.quiet_err, "Could not find module->name[MODULE_NAME_LEN]"))
-            return None
+        self.offset_name = current_arch.ptrsize * 3 # state + list_head
         self.meta.append((self.quiet_info, "offsetof(module, name): {:#x}".format(self.offset_name)))
 
         # modules->{mem,mem_size,module_core}
@@ -72000,30 +71973,6 @@ class KernelModuleLoadCommand(GenericCommand):
             # `struct module` layout heuristics
             entries = [x for x in entries if is_valid_addr(x)]
         return entries, meta
-
-    def get_offset_name(self, module_addrs):
-        # fast path
-        try:
-            return GefUtil.parse_and_eval_unsigned("&((struct module*)0).name")
-        except gdb.error:
-            pass
-
-        # slow_path
-        for i in range(0x100):
-            offset_name = i * current_arch.ptrsize
-            valid = True
-            for module in module_addrs:
-                if not is_ascii_string(module + offset_name):
-                    valid = False
-                    break
-                s = read_cstring_from_memory(module + offset_name)
-                if len(s) < 2:
-                    valid = False
-                    break
-            if valid:
-                return offset_name
-
-        return None
 
     def get_offset_sect_attrs(self, module_addr):
         """
@@ -72330,10 +72279,7 @@ class KernelModuleLoadCommand(GenericCommand):
             return None
 
         # module->name
-        self.offset_name = self.get_offset_name(module_addrs)
-        if self.offset_name is None:
-            self.meta.append((self.quiet_err, "Could not find module->name[MODULE_NAME_LEN]"))
-            return None
+        self.offset_name = current_arch.ptrsize * 3 # state + list_head
         self.meta.append((self.quiet_info, "offsetof(module, name): {:#x}".format(self.offset_name)))
 
         # Find requested module
