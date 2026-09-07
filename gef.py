@@ -67193,7 +67193,7 @@ class Kernel:
                 # If CONFIG_SLUB_TINY=y, calculate_sheaf_capacity is a small function that returns 0.
                 calculate_sheaf_capacity_size = Kernel.get_func_size_kallsyms("calculate_sheaf_capacity")
                 if calculate_sheaf_capacity_size is None:
-                    return "Unknown"
+                    return "SLUB"
                 if calculate_sheaf_capacity_size <= 0x20:
                     return "SLUB_TINY"
                 else:
