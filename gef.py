@@ -64515,8 +64515,36 @@ class KernelAddressHeuristicFinder:
         return None
 
     @staticmethod
+    def file_system_type_link_offset(kversion):
+        # name, padded fs_flags, mount, kill_sb, owner
+        if kversion < "5.1":
+            return current_arch.ptrsize * 5
+        # v5.1 added init_fs_context and parameters
+        if kversion < "6.20":
+            return current_arch.ptrsize * 7
+        # v6.20 removed mount
+        return current_arch.ptrsize * 6
+
+    @staticmethod
     @switch_to_intel_syntax
     def get_file_systems():
+
+        def looks_like_file_systems(addr):
+            try:
+                first_node = read_int_from_memory(addr)
+                if not is_valid_addr(first_node):
+                    return False
+                fs_type = first_node
+                if "7.2" <= kversion:
+                    if read_int_from_memory(first_node + current_arch.ptrsize) != addr:
+                        return False
+                    fs_type -= KernelAddressHeuristicFinder.file_system_type_link_offset(kversion)
+                name_addr = read_int_from_memory(fs_type)
+                return is_valid_addr(name_addr) and bool(read_cstring_from_memory(name_addr))
+            except gdb.MemoryError:
+                pass
+            return False
+
         # plan 1 (directly)
         if KernelAddressHeuristicFinder.USE_DIRECTLY:
             x = Symbol.get_ksymaddr("file_systems")
@@ -64527,9 +64555,12 @@ class KernelAddressHeuristicFinder:
 
         # plan 2 (available v2.5.7 or later)
         if kversion and "2.5.7" <= kversion:
-            addr = Symbol.get_ksymaddr("unregister_filesystem")
-            if addr:
-                res = gdb.execute("x/20i {:#x}".format(addr), to_string=True)
+            anchors = (("unregister_filesystem", 20), ("register_filesystem", 60))
+            for symbol, instruction_count in anchors:
+                addr = Symbol.get_ksymaddr(symbol)
+                if not addr:
+                    continue
+                res = gdb.execute("x/{:d}i {:#x}".format(instruction_count, addr), to_string=True)
                 if is_x86_64():
                     g = KernelAddressHeuristicFinderUtil.x64_qword_ptr_rip_base(res, read_valid=True)
                 elif is_x86_32():
@@ -64545,7 +64576,8 @@ class KernelAddressHeuristicFinder:
                         KernelAddressHeuristicFinderUtil.arm32_ldr_pc_relative(res, read_valid=True),
                     )
                 for x in g:
-                    return x
+                    if looks_like_file_systems(x):
+                        return x
         return None
 
     @staticmethod
@@ -75656,10 +75688,11 @@ class KernelFileSystemsCommand(GenericCommand, BufferingOutput):
             int fs_flags;
             int (*init_fs_context)(struct fs_context *); // v5.1~
             const struct fs_parameter_spec *parameters; // v5.1~
-            struct dentry *(*mount) (struct file_system_type *, int, const char *, void *);
+            struct dentry *(*mount) (struct file_system_type *, int, const char *, void *); // ~v6.19
             void (*kill_sb) (struct super_block *);
             struct module *owner;
-            struct file_system_type * next;
+            struct file_system_type * next; // ~v7.1
+            struct hlist_node list; // v7.2~
             struct hlist_head fs_supers;
             struct lock_class_key s_lock_key;
             struct lock_class_key s_umount_key;
@@ -75676,42 +75709,17 @@ class KernelFileSystemsCommand(GenericCommand, BufferingOutput):
         self.offset_name = 0
         self.meta.append((self.quiet_info, "offsetof(file_system_type, name): {:#x}".format(self.offset_name)))
 
-        # file_system_type->next
-        best_next = None
-        best_score = (1, False)
-        for i in range(10):
-            offset_next = current_arch.ptrsize * i
-            current = read_int_from_memory(self.file_systems)
-            seen = set()
-            for _scan_index in range(0x1000): # avoid unbounded scan
-                if current == 0:
-                    break
-                if current in seen or not is_valid_addr(current):
-                    break
-                name_addr = read_int_from_memory(current)
-                if not is_valid_addr(name_addr):
-                    break
-                name = read_cstring_from_memory(name_addr)
-                if not name:
-                    break
-                seen.add(current)
-                current = read_int_from_memory(current + offset_next)
+        kversion = Kernel.kernel_version()
+        if "7.2" <= kversion:
+            link_member = "list"
+        else:
+            link_member = "next"
+        self.offset_link = KernelAddressHeuristicFinder.file_system_type_link_offset(kversion)
+        self.offset_hlist_node = self.offset_link if "7.2" <= kversion else 0
+        self.meta.append((self.quiet_info, "offsetof(file_system_type, {:s}): {:#x}".format(link_member, self.offset_link)))
 
-            # A registered module can be unreadable through the QEMU gdbstub.
-            # Prefer the candidate that yields the longest valid prefix instead
-            # of rejecting the whole chain when its tail cannot be read.
-            score = (len(seen), current == 0)
-            if score > best_score:
-                best_next = offset_next
-                best_score = score
-
-        if best_next is None:
-            self.meta.append((self.quiet_err, "Could not find file_system_type->next"))
-            return None
-        self.offset_next = best_next
-        self.meta.append((self.quiet_info, "offsetof(file_system_type, next): {:#x}".format(self.offset_next)))
-
-        self.offset_fs_supers = self.offset_next + current_arch.ptrsize
+        list_size = current_arch.ptrsize * (2 if self.offset_hlist_node else 1)
+        self.offset_fs_supers = self.offset_link + list_size
         self.meta.append((self.quiet_info, "offsetof(file_system_type, fs_supers): {:#x}".format(self.offset_fs_supers)))
 
         """
@@ -75732,6 +75740,8 @@ class KernelFileSystemsCommand(GenericCommand, BufferingOutput):
 
         # super_block->s_instances
         current = read_int_from_memory(self.file_systems)
+        if current:
+            current -= self.offset_hlist_node
         while True:
             if current == 0:
                 self.meta.append((self.quiet_err, "Could not find file_systems who has valid fs_supers"))
@@ -75739,7 +75749,9 @@ class KernelFileSystemsCommand(GenericCommand, BufferingOutput):
             fs_supers = read_int_from_memory(current + self.offset_fs_supers)
             if is_valid_addr(fs_supers):
                 break
-            current = read_int_from_memory(current + self.offset_next)
+            current = read_int_from_memory(current + self.offset_link)
+            if current:
+                current -= self.offset_hlist_node
 
         for i in range(1, 100):
             offset_base = current_arch.ptrsize * i
@@ -75797,7 +75809,6 @@ class KernelFileSystemsCommand(GenericCommand, BufferingOutput):
         } __randomize_layout; // v4.13~
         """
         # super_block->s_mounts
-        kversion = Kernel.kernel_version()
         if kversion < "3.12":
             current = fs_supers - current_arch.ptrsize * 2
             double_link_list_count = 0
@@ -76108,6 +76119,8 @@ class KernelFileSystemsCommand(GenericCommand, BufferingOutput):
             self.out.append(GefUtil.make_legend(fmt.format(*legend)))
 
         fst = read_int_from_memory(self.file_systems)
+        if fst:
+            fst -= self.offset_hlist_node
         seen = set()
         while fst != 0:
             if fst in seen:
@@ -76120,7 +76133,9 @@ class KernelFileSystemsCommand(GenericCommand, BufferingOutput):
             # parse file_system_type
             self.parse_file_system_type(fst)
             # go to next
-            fst = read_int_from_memory(fst + self.offset_next)
+            fst = read_int_from_memory(fst + self.offset_link)
+            if fst:
+                fst -= self.offset_hlist_node
         return
 
     @parse_args
