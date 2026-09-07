@@ -62837,8 +62837,8 @@ class KernelAddressHeuristicFinder:
 
         kversion = Kernel.kernel_version()
 
-        # plan 2 (available v3.3 or later)
-        if kversion and "3.3" <= kversion:
+        # plan 2 (available v3.2 or later)
+        if kversion and "3.2" <= kversion:
             addr = Symbol.get_ksymaddr("nr_iowait_cpu")
             if addr:
                 res = gdb.execute("x/20i {:#x}".format(addr), to_string=True)
