@@ -135067,8 +135067,10 @@ class KsymaddrRemoteCommand(GenericCommand, BufferingOutput):
             config["parameters"] = {}
 
         config["parameters"].update(self.config_updates)
-        with open(cfg_file_name, "w") as cfg_file:
+        cfg_fd, cfg_tmp_name = tempfile.mkstemp(dir=GEF_TEMP_DIR, prefix="ksymaddr-remote-")
+        with os.fdopen(cfg_fd, "w") as cfg_file:
             config.write(cfg_file)
+        os.replace(cfg_tmp_name, cfg_file_name)
         return
 
     def get_saved_config(self, param_names):
