@@ -62944,7 +62944,8 @@ class KernelAddressHeuristicFinder:
                 elif is_arm32():
                     g = KernelAddressHeuristicFinderUtil.arm32_movw_movt(res)
                 for x in KernelAddressHeuristicFinderUtil.filter_in_kernel_image(g):
-                    return x
+                    if is_double_link_list(x):
+                        return x
 
         # plan 3 (available v5.9 or later)
         if kversion and "5.9" <= kversion:
@@ -62960,7 +62961,8 @@ class KernelAddressHeuristicFinder:
                 elif is_arm32():
                     g = KernelAddressHeuristicFinderUtil.arm32_movw_movt_add(res)
                 for x in KernelAddressHeuristicFinderUtil.filter_in_kernel_image(g):
-                    return x
+                    if is_double_link_list(x):
+                        return x
 
         # plan 4 (available v4.10 or before and CONFIG_MEMCG=y)
         if kversion and kversion < "4.11":
@@ -62976,7 +62978,8 @@ class KernelAddressHeuristicFinder:
                 elif is_arm32():
                     g = KernelAddressHeuristicFinderUtil.arm32_movw_movt(res)
                 for x in KernelAddressHeuristicFinderUtil.filter_in_kernel_image(g):
-                    return x
+                    if is_double_link_list(x):
+                        return x
 
         # plan 5 (available v3.11 ~ v4.10 and CONFIG_SLABINFO=y)
         if kversion and "3.11" <= kversion < "4.11":
@@ -62994,7 +62997,8 @@ class KernelAddressHeuristicFinder:
                     # TODO
                     g = []
                 for x in KernelAddressHeuristicFinderUtil.filter_in_kernel_image(g):
-                    return x
+                    if is_double_link_list(x):
+                        return x
 
         # plan 6 (available if CONFIG_SLAB=y)
         addr = Symbol.get_ksymaddr("cache_reap")
@@ -63011,7 +63015,8 @@ class KernelAddressHeuristicFinder:
             elif is_arm32():
                 g = KernelAddressHeuristicFinderUtil.arm32_ldr_pc_relative(res, skip=1)
             for x in KernelAddressHeuristicFinderUtil.filter_in_kernel_image(g):
-                return x
+                if is_double_link_list(x):
+                    return x
 
         # plan 7 (available v2.6.24 ~ v3.10 and CONFIG_SLABINFO=y)
         if kversion and "2.6.24" <= kversion < "3.11":
@@ -63030,9 +63035,7 @@ class KernelAddressHeuristicFinder:
                         # TODO
                         g = []
                     for x in KernelAddressHeuristicFinderUtil.filter_in_kernel_image(g):
-                        v1 = read_int_from_memory(x)
-                        v2 = read_int_from_memory(x + current_arch.ptrsize)
-                        if is_valid_addr(v1) and is_valid_addr(v2):
+                        if is_double_link_list(x):
                             return x
 
         # plan 8 (available v4.11 ~ v6.11)
@@ -125807,6 +125810,10 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
         else:
             self.meta.append((self.quiet_info, "slab_caches: {:#x}".format(self.slab_caches)))
 
+        if not self.parse_kmem_caches_for_initialize():
+            self.meta.append((self.quiet_err, "No entries in `slab_caches`"))
+            return None
+
         # resolve __per_cpu_offset
         __per_cpu_offset = KernelAddressHeuristicFinder.get_per_cpu_offset()
         if __per_cpu_offset is None:
@@ -129850,6 +129857,8 @@ class KmemCacheAliasCommand(GenericCommand, BufferingOutput):
         used_names = []
         for line in res.splitlines():
             r = re.search(r"(\d+)\s+\(0x\S+\)\s+(\d+)\s+\(0x\S+\)\s+(\S+)\s+0x\S+$", line)
+            if r is None:
+                continue
             object_size = int(r.group(1))
             chunk_size = int(r.group(2))
             name = r.group(3)
