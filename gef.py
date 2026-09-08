@@ -63094,6 +63094,7 @@ class KernelAddressHeuristicFinder:
                 g = itertools.chain(
                     KernelAddressHeuristicFinderUtil.aarch64_adrp_add(res),
                     KernelAddressHeuristicFinderUtil.aarch64_adrp_add_ldr(res),
+                    KernelAddressHeuristicFinderUtil.aarch64_adrp_ldr(res),
                 )
             elif is_arm32():
                 g = itertools.chain(
@@ -64699,8 +64700,8 @@ class KernelAddressHeuristicFinder:
 
         kversion = Kernel.kernel_version()
 
-        # plan 2 (available v5.13 or later)
-        if kversion and "5.13" <= kversion:
+        # plan 2 (available v5.10 or later)
+        if kversion and "5.10" <= kversion:
             addr = Symbol.get_ksymaddr("kmsg_dump_rewind")
             if addr:
                 res = gdb.execute("x/60i {:#x}".format(addr), to_string=True)
