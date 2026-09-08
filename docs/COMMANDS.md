@@ -6898,7 +6898,7 @@ mimalloc heap free-list viewer (x64 only).
 ### Syntax
 
 ```text
-usage: mimalloc-heap-dump [-h] [-hh] [-m MI_HEAP_MAIN] [-D] [-n]
+usage: mimalloc-heap-dump [-h] [-hh] [-m MI_HEAP_MAIN] [-D] [--meta] [-n]
 
 options:
   -h, --help            show this help message and exit
@@ -6906,6 +6906,7 @@ options:
   -m, --mi-heap-main MI_HEAP_MAIN
                         the address of _mi_heap_main (v2.x) / heap_main (v3.x).
   -D, --dump-chunk      dump each chunks.
+  --meta                display offset information.
   -n, --no-pager        do not use the pager.
 ```
 
@@ -7829,17 +7830,20 @@ options:
 
 ## kversion
 
-Display kernel version string.
+Display or override the kernel version.
 
 
 ### Syntax
 
 ```text
-usage: kversion [-h] [-r] [-q]
+usage: kversion [-h] [-r] [-q] [VERSION]
+
+positional arguments:
+  VERSION       use this kernel version (e.g. 6.18.0).
 
 options:
   -h, --help    show this help message and exit
-  -r, --rescan  do not use cache.
+  -r, --rescan  clear the version override and do not use cache.
   -q, --quiet   enable quiet mode.
 ```
 
@@ -8096,7 +8100,7 @@ Convert between slab-virtual addresses and page addresses.
 ### Syntax
 
 ```text
-usage: slab-virtual [-h] [-r] [-q] {to_virt,to_page,from_virt,from_page} ADDRESS
+usage: slab-virtual [-h] [--meta] [-r] [-q] [{to_virt,to_page,from_virt,from_page}] [ADDRESS]
 
 positional arguments:
   {to_virt,to_page,from_virt,from_page}
@@ -8105,6 +8109,7 @@ positional arguments:
 
 options:
   -h, --help            show this help message and exit
+  --meta                display offset information.
   -r, --rescan          do not use cache.
   -q, --quiet           quiet execution.
 ```
@@ -8239,7 +8244,7 @@ Load the kernel module without a load address.
 ### Syntax
 
 ```text
-usage: kmod-load [-h] [-n] [-q] name path
+usage: kmod-load [-h] [--meta] [-n] [-q] name path
 
 positional arguments:
   name            name of the loaded module to search for by `kmod`.
@@ -8247,6 +8252,7 @@ positional arguments:
 
 options:
   -h, --help      show this help message and exit
+  --meta          display offset information.
   -n, --no-pager  do not use the pager.
   -q, --quiet     enable quiet mode.
 ```
@@ -8589,13 +8595,14 @@ Dump the BPF information.
 ### Syntax
 
 ```text
-usage: kbpf [-h] [-hh] [-p] [-m] [-n] [-v] [-q]
+usage: kbpf [-h] [-hh] [-p] [-m] [--meta] [-n] [-v] [-q]
 
 options:
   -h, --help          show this help message and exit
   -hh, --help-simple  show help without ASCII diagram.
   -p, --only-progs    print progs only.
   -m, --only-maps     print maps only.
+  --meta              display offset information.
   -n, --no-pager      do not use the pager.
   -v, --verbose       enable verbose mode.
   -q, --quiet         show result only.
@@ -8795,11 +8802,12 @@ Dump DMA-BUF information.
 ### Syntax
 
 ```text
-usage: kdmabuf [-h] [-hh] [-n] [-q]
+usage: kdmabuf [-h] [-hh] [--meta] [-n] [-q]
 
 options:
   -h, --help          show this help message and exit
   -hh, --help-simple  show help without ASCII diagram.
+  --meta              display offset information.
   -n, --no-pager      do not use the pager.
   -q, --quiet         show result only.
 ```
@@ -8945,13 +8953,14 @@ Dump filesystems.
 ### Syntax
 
 ```text
-usage: kfilesystems [-h] [-hh] [-s] [-n] [-q]
+usage: kfilesystems [-h] [-hh] [-s] [--meta] [-n] [-q]
 
 options:
   -h, --help            show this help message and exit
   -hh, --help-simple    show help without ASCII diagram.
   -s, --skip-mount-path
                         skip resolving path.
+  --meta                display offset information.
   -n, --no-pager        do not use the pager.
   -q, --quiet           enable quiet mode.
 ```
@@ -8992,12 +9001,13 @@ Dump IPCs information (System V semaphore, message queue and shared memory).
 ### Syntax
 
 ```text
-usage: kipcs [-h] [-hh] [-v] [-n] [-q]
+usage: kipcs [-h] [-hh] [-v] [--meta] [-n] [-q]
 
 options:
   -h, --help          show this help message and exit
   -hh, --help-simple  show help without ASCII diagram.
   -v, --verbose       dump the beginning of msg_msg.
+  --meta              display offset information.
   -n, --no-pager      do not use the pager.
   -q, --quiet         show result only.
 ```
@@ -9038,11 +9048,12 @@ Dump IRQ (interrupt request) information.
 ### Syntax
 
 ```text
-usage: kirq [-h] [-hh] [-n] [-v] [-q]
+usage: kirq [-h] [-hh] [--meta] [-n] [-v] [-q]
 
 options:
   -h, --help          show this help message and exit
   -hh, --help-simple  show help without ASCII diagram.
+  --meta              display offset information.
   -n, --no-pager      do not use the pager.
   -v, --verbose       enable verbose mode.
   -q, --quiet         show result only.
@@ -9081,7 +9092,7 @@ Display kernel module list.
 ### Syntax
 
 ```text
-usage: kmod [-h] [-hh] [-s | -a] [--symbol-unsort] [-f FILTER] [-n] [-q]
+usage: kmod [-h] [-hh] [-s | -a] [--symbol-unsort] [-f FILTER] [--meta] [-n] [-q]
 
 options:
   -h, --help            show this help message and exit
@@ -9090,6 +9101,7 @@ options:
   -a, --apply-symbol    try to apply symbol in the form 'module_name.symbol'.
   --symbol-unsort       print resolved symbols without sorting by address.
   -f, --filter FILTER   REGEXP filter.
+  --meta                display offset information.
   -n, --no-pager        do not use the pager.
   -q, --quiet           enable quiet mode.
 ```
@@ -9148,11 +9160,12 @@ Dump net device information.
 ### Syntax
 
 ```text
-usage: knetdev [-h] [-hh] [-n] [-q]
+usage: knetdev [-h] [-hh] [--meta] [-n] [-q]
 
 options:
   -h, --help          show this help message and exit
   -hh, --help-simple  show help without ASCII diagram.
+  --meta              display offset information.
   -n, --no-pager      do not use the pager.
   -q, --quiet         show result only.
 ```
@@ -9227,10 +9240,11 @@ Dump the PCI devices.
 ### Syntax
 
 ```text
-usage: kpcidev [-h] [-n] [-v] [-q]
+usage: kpcidev [-h] [--meta] [-n] [-v] [-q]
 
 options:
   -h, --help      show this help message and exit
+  --meta          display offset information.
   -n, --no-pager  do not use the pager.
   -v, --verbose   enable verbose mode.
   -q, --quiet     enable quiet mode.
@@ -9281,7 +9295,7 @@ Dump pipe information.
 ### Syntax
 
 ```text
-usage: kpipe [-h] [-hh] [-i INODE_FILTER] [-f FILE_FILTER] [-n] [-q]
+usage: kpipe [-h] [-hh] [-i INODE_FILTER] [-f FILE_FILTER] [--meta] [-n] [-q]
 
 options:
   -h, --help            show this help message and exit
@@ -9290,6 +9304,7 @@ options:
                         filter by specific struct inode.
   -f, --file-filter FILE_FILTER
                         filter by specific struct file.
+  --meta                display offset information.
   -n, --no-pager        do not use the pager.
   -q, --quiet           show result only.
 ```
@@ -9339,7 +9354,7 @@ Dump the sysctl parameters.
 ### Syntax
 
 ```text
-usage: ksysctl [-h] [-hh] [-f FILTER] [-s] [-e] [-r] [-v] [-n] [-q]
+usage: ksysctl [-h] [-hh] [-f FILTER] [-s] [-e] [--meta] [-r] [-v] [-n] [-q]
 
 options:
   -h, --help           show this help message and exit
@@ -9347,6 +9362,7 @@ options:
   -f, --filter FILTER  REGEXP filter.
   -s, --skip-symlink   do not follow symlink (net.* and user.*).
   -e, --exact          use exact match.
+  --meta               display offset information.
   -r, --rescan         do not use cache.
   -v, --verbose        dump zero-sized entries and proc_handler too.
   -n, --no-pager       do not use the pager.
@@ -9403,11 +9419,12 @@ Dump the timer.
 ### Syntax
 
 ```text
-usage: ktimer [-h] [-hh] [-n] [-q]
+usage: ktimer [-h] [-hh] [--meta] [-n] [-q]
 
 options:
   -h, --help          show this help message and exit
   -hh, --help-simple  show help without ASCII diagram.
+  --meta              display offset information.
   -n, --no-pager      do not use the pager.
   -q, --quiet         enable quiet mode.
 ```
@@ -9487,7 +9504,7 @@ Resolves which buddy block an address belongs to.
 ### Syntax
 
 ```text
-usage: buddy-contains [-h] [-p] [-L] [-Q] [-M] [--MIGRATE_PCPTYPES {3,4}] [-r] [-q] ADDRESS
+usage: buddy-contains [-h] [-p] [-L] [-Q] [-M] [--MIGRATE_PCPTYPES {3,4}] [--meta] [-r] [-q] ADDRESS
 
 positional arguments:
   ADDRESS               target address.
@@ -9500,6 +9517,7 @@ options:
   -M, --use-physmap     use physmap for virt -> phys translation (x64/arm64 only).
   --MIGRATE_PCPTYPES {3,4}
                         use specify value; linux: 3, android: 4 (2023~).
+  --meta                display offset information.
   -r, --rescan          do not use cache.
   -q, --quiet           show result only.
 ```
@@ -9535,7 +9553,7 @@ Dump the zone of the page allocator (buddy allocator) free-list.
 ### Syntax
 
 ```text
-usage: buddy-dump [-h] [-hh] [-z {DMA,DMA32,Normal,HighMem,Movable,Device}] [-o ORDER_FILTER] [-m MTYPE_FILTER] [-p PCP_INDEX_FILTER] [-P] [-F] [--cpu CPU] [-s] [-S] [-Q] [-M] [--MIGRATE_PCPTYPES {3,4}] [-r] [-c N] [-v] [-vv] [-n] [-q]
+usage: buddy-dump [-h] [-hh] [-z {DMA,DMA32,Normal,HighMem,Movable,Device}] [-o ORDER_FILTER] [-m MTYPE_FILTER] [-p PCP_INDEX_FILTER] [-P] [-F] [--cpu CPU] [-s] [-S] [-Q] [-M] [--MIGRATE_PCPTYPES {3,4}] [--meta] [-r] [-c N] [-v] [-vv] [-n] [-q]
 
 options:
   -h, --help            show this help message and exit
@@ -9557,6 +9575,7 @@ options:
   -M, --use-physmap     use physmap for virt -> phys translation to speed up (when KGDB mode, x64/arm64 only).
   --MIGRATE_PCPTYPES {3,4}
                         use specify value; linux: 3, android: 4 (2023~).
+  --meta                display offset information.
   -r, --rescan          do not use cache.
   -c, --count N         max entries to read per list (default: 5, 0=unlimited). -s/-S/-v/-vv override this to 0.
   -v, --verbose         show all entries for non-sort mode. equivalent to -c 0.
@@ -9627,7 +9646,7 @@ Resolve the slab cache (kmem_cache) alias.
 ### Syntax
 
 ```text
-usage: kmem-cache-alias [-h] [-s] [-m] [-n] [-q] [names ...]
+usage: kmem-cache-alias [-h] [-s] [-m] [--meta] [-n] [-q] [names ...]
 
 positional arguments:
   names               filter by specific cache name(s) (substring match).
@@ -9636,6 +9655,7 @@ options:
   -h, --help          show this help message and exit
   -s, --sort-by-size  sort by object size.
   -m, --merged-only   show only merged caches grouped by physical cache.
+  --meta              display offset information.
   -n, --no-pager      do not use the pager.
   -q, --quiet         show result only.
 ```
@@ -9656,16 +9676,16 @@ Resolve the slab cache (kmem_cache) that an object belongs to (for slab/slub/slu
 ### Syntax
 
 ```text
-usage: slab-contains [-h] [-r] [-v] [-q] ADDRESS
+usage: slab-contains [-h] [-r] [--meta] [-q] ADDRESS
 
 positional arguments:
-  ADDRESS        target address.
+  ADDRESS       target address.
 
 options:
-  -h, --help     show this help message and exit
-  -r, --rescan   do not use cache.
-  -v, --verbose  enable verbose mode.
-  -q, --quiet    show result only.
+  -h, --help    show this help message and exit
+  -r, --rescan  do not use cache.
+  --meta        display offset information.
+  -q, --quiet   show result only.
 ```
 
 ### Notes
@@ -10148,7 +10168,7 @@ Call predefined system-calls and print kmalloc-N chunks allocated and freed (x64
 ### Syntax
 
 ```text
-usage: kmalloc-allocated-by [-h] [-f FILTER] [-N] [-t] [-d] [-v]
+usage: kmalloc-allocated-by [-h] [-f FILTER] [-N] [-t] [-d] [--meta]
 
 options:
   -h, --help           show this help message and exit
@@ -10156,7 +10176,7 @@ options:
   -N, --print-null     display free(NULL).
   -t, --backtrace      display backtrace.
   -d, --dump-chunk     dump the first 0x40 bytes of each chunk.
-  -v, --verbose        print meta information.
+  --meta               display offset information.
 ```
 
 ### Examples
@@ -10183,7 +10203,7 @@ Collect and display information when kmalloc/kfree.
 ### Syntax
 
 ```text
-usage: kmalloc-tracer [-h] [-f FILTER] [-T TASK_NAME] [-N] [-t] [-d] [-p] [-v]
+usage: kmalloc-tracer [-h] [-f FILTER] [-T TASK_NAME] [-N] [-t] [-d] [-p] [--meta]
 
 options:
   -h, --help            show this help message and exit
@@ -10195,7 +10215,7 @@ options:
   -d, --dump-chunk      dump the first 0x40 bytes of each chunk.
   -p, --enable-page-allocator-trace
                         in addition to kmalloc and kfree, it also monitors __alloc_pages and __free_pages.
-  -v, --verbose         print meta information.
+  --meta                display offset information.
 ```
 
 ### Examples
@@ -10234,7 +10254,7 @@ options:
   -e, --exclude EXCLUDE
                         function exclude filter (REGEXP).
   -c, --commit          actually perform ktrace.
-  -q, --quiet           skip tqdm and displaying function name.
+  -q, --quiet           skip the progress bar and displaying function name.
 ```
 
 ### Notes
@@ -11218,11 +11238,12 @@ Dump memory regions for qemu-system.
 ### Syntax
 
 ```text
-usage: qemu-system-memory-region-dump [-h] [-s] [-n] [-q]
+usage: qemu-system-memory-region-dump [-h] [-s] [--meta] [-n] [-q]
 
 options:
   -h, --help      show this help message and exit
   -s, --smart     show only entries where read or write is not the default.
+  --meta          display offset information.
   -n, --no-pager  do not use the pager.
   -q, --quiet     enable quiet mode.
 ```
@@ -11502,7 +11523,7 @@ options:
 
 ## gef reset-cache
 
-Reset all caches (both Cache.cache_until_next and Cache.cache_this_session).
+Reset all caches.
 
 - Alias: `reset-cache`
 
