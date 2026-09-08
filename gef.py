@@ -59311,6 +59311,11 @@ class KernelAddressHeuristicFinderUtil:
         return KernelAddressHeuristicFinderUtil.common_addr_gen(res, regexp, skip, skip_msb_check, read_valid)
 
     @staticmethod
+    def x64_x86_add_reg_const(res, reg=r"\w+", skip=0, skip_msb_check=False, read_valid=False):
+        regexp = r"add\s+" + reg + r"\s*,\s*(0x\w+)"
+        return KernelAddressHeuristicFinderUtil.common_addr_gen(res, regexp, skip, skip_msb_check, read_valid)
+
+    @staticmethod
     def x64_lea_reg_const(res, reg=r"\w+", skip=0, skip_msb_check=False, read_valid=False):
         regexp = r"lea\s+" + reg + r"\s*,\s*\[.*([+-]0x\w+)\]"
         return KernelAddressHeuristicFinderUtil.common_addr_gen(res, regexp, skip, skip_msb_check, read_valid)
@@ -65412,6 +65417,61 @@ class KernelAddressHeuristicFinder:
         return None
 
     @staticmethod
+    def is_timer_base(timer_base, cpu):
+        """Check the layout invariants of `struct timer_base`."""
+        ptrsize = current_arch.ptrsize
+        unpack = u64 if ptrsize == 8 else u32
+
+        try:
+            header = read_memory(timer_base, 0x200)
+        except gdb.MemoryError:
+            return False
+
+        # Fields inserted by lockdep and PREEMPT_RT move `clk`, so find the stable tail:
+        #   unsigned long clk, next_expiry;
+        #   unsigned int cpu;
+        #   bool next_expiry_recalc, is_idle, timers_pending;
+        #   unsigned long pending_map[];
+        #   struct hlist_head vectors[WHEEL_SIZE];
+        for offset_clk in range(0, len(header) - ptrsize * 2 - 8, ptrsize):
+            clk = unpack(header[offset_clk:offset_clk + ptrsize])
+            next_expiry = unpack(header[offset_clk + ptrsize:offset_clk + ptrsize * 2])
+            offset_cpu = offset_clk + ptrsize * 2
+            if u32(header[offset_cpu:offset_cpu + 4]) != cpu:
+                continue
+            if any(x > 1 for x in header[offset_cpu + 4:offset_cpu + 7]):
+                continue
+            if clk == 0 or next_expiry == 0:
+                continue
+
+            # time_before(next_expiry, clk), with unsigned-long wraparound.
+            bits = ptrsize * 8
+            if ((next_expiry - clk) & ((1 << bits) - 1)) >= (1 << (bits - 1)):
+                continue
+
+            # Since the v4.8 timer-wheel rewrite WHEEL_SIZE is 512 or 576, depending on HZ.
+            for wheel_size in (512, 576):
+                offset_vectors = offset_cpu + 8 + wheel_size // 8
+                try:
+                    vectors = slice_unpack(read_memory(timer_base + offset_vectors, wheel_size * ptrsize), ptrsize)
+                except gdb.MemoryError:
+                    continue
+
+                for i, first in enumerate(vectors):
+                    if first == 0:
+                        continue
+                    head = timer_base + offset_vectors + i * ptrsize
+                    try:
+                        valid = is_valid_addr(first) and read_int_from_memory(first + ptrsize) == head
+                    except gdb.MemoryError:
+                        valid = False
+                    if not valid:
+                        break
+                else:
+                    return True
+        return False
+
+    @staticmethod
     @switch_to_intel_syntax
     def get_timer_bases():
         # plan 1 (directly)
@@ -65438,6 +65498,7 @@ class KernelAddressHeuristicFinder:
                 if is_x86_64():
                     g = itertools.chain(
                         KernelAddressHeuristicFinderUtil.x64_x86_mov_reg_const(res, skip_msb_check=True),
+                        KernelAddressHeuristicFinderUtil.x64_x86_add_reg_const(res, skip_msb_check=True),
                         KernelAddressHeuristicFinderUtil.x64_lea_reg_const(res, skip_msb_check=True),
                     )
                     g2 = KernelAddressHeuristicFinderUtil.x64_qword_ptr_rip_base(res)
@@ -65469,15 +65530,21 @@ class KernelAddressHeuristicFinder:
                             if abs(x - hrtimer_bases) < 0x10000:
                                 return x
 
-                __per_cpu_offset = KernelAddressHeuristicFinder.get_per_cpu_offset()
-                if __per_cpu_offset:
+                per_cpu_offset = KernelAddressHeuristicFinder.get_per_cpu_offset()
+                if per_cpu_offset:
                     # pattern1: per_cpu
                     # pattern1-a:
                     # 0xffffffff8cf25b05 <run_timer_softirq+5>:  mov rdi,0x24b40 <-- timer_bases
                     # pattern1-b:
                     # 0xffffffffa440831e <run_timer_softirq+46>: lea rbx,[rax+0x22400]
+                    cpu_offset = Kernel.get_each_cpu_offset(per_cpu_offset)
                     for x in g:
-                        if not is_valid_addr(x) and (x & 0x7) == 0:
+                        if x & (current_arch.ptrsize - 1):
+                            continue
+                        if cpu_offset and all(
+                            KernelAddressHeuristicFinder.is_timer_base(AddressUtil.normalize_address(offset + x), cpu)
+                            for cpu, offset in enumerate(cpu_offset)
+                        ):
                             return x
                 else:
                     # pattern2: not per_cpu
@@ -65549,6 +65616,7 @@ class KernelAddressHeuristicFinder:
                 if is_x86_64():
                     g = itertools.chain(
                         KernelAddressHeuristicFinderUtil.x64_x86_mov_reg_const(res, skip_msb_check=True),
+                        KernelAddressHeuristicFinderUtil.x64_x86_add_reg_const(res, skip_msb_check=True),
                         KernelAddressHeuristicFinderUtil.x64_x86_byte_ptr(res, skip_msb_check=True),
                         KernelAddressHeuristicFinderUtil.x64_lea_reg_const(res, skip_msb_check=True),
                     )
@@ -65586,8 +65654,8 @@ class KernelAddressHeuristicFinder:
                         if KernelAddressHeuristicFinder.find_clock_base_anchor(addr_cpu0):
                             return x
 
-                __per_cpu_offset = KernelAddressHeuristicFinder.get_per_cpu_offset()
-                if __per_cpu_offset:
+                per_cpu_offset = KernelAddressHeuristicFinder.get_per_cpu_offset()
+                if per_cpu_offset:
                     # pattern1: per_cpu
                     # pattern1-a:
                     # 0xffffffff9b127acb: mov rbx,0x27040 <-- hrtimer_bases
@@ -65596,6 +65664,7 @@ class KernelAddressHeuristicFinder:
                     # The exact value is 0x25b80, but don't worry about a slight deviation.
                     # pattern1-c:
                     # 0xffffffff818f57b5 <hrtimer_run_queues+21>: lea rbx,[rax+0x1df00]
+                    cpu_offset = Kernel.get_each_cpu_offset(per_cpu_offset)
                     for x in g:
                         # v7.1 accesses via a register, so the displacement of the BYTE PTR is
                         # the offset in the structure. It is too small to be `hrtimer_bases`.
@@ -65603,7 +65672,10 @@ class KernelAddressHeuristicFinder:
                         # 0xffffffffb5f81a4f <hrtimer_run_queues+31>: movzx eax,BYTE PTR [rbx+0x10]
                         if x < 0x1000:
                             continue
-                        if not is_valid_addr(x) and (x & 0x7) == 0:
+                        if cpu_offset and all(
+                            KernelAddressHeuristicFinder.find_clock_base_anchor(AddressUtil.normalize_address(offset + x))
+                            for offset in cpu_offset
+                        ):
                             return x
                 else:
                     # pattern2: not per_cpu
