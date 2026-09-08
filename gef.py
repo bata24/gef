@@ -131605,6 +131605,9 @@ class BuddyContainsCommand(BuddyDumpCommand):
         if args.meta:
             return
 
+        # migratetype_names
+        self.resolve_migratetype_names()
+
         self.sizeof_struct_page = KernelAddressHeuristicFinder.consts().sizeof_struct_page
         if self.sizeof_struct_page is None:
             self.quiet_err("Could not find sizeof(struct page)")
@@ -131613,6 +131616,7 @@ class BuddyContainsCommand(BuddyDumpCommand):
         # doit
         self.buddy_contains()
         return
+
 
 @register_command
 class KernelPipeCommand(GenericCommand, BufferingOutput):
