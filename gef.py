@@ -14844,6 +14844,7 @@ class EventHandler:
     def exit_handler(_event):
         """GDB event handler for exit cases."""
         Cache.reset_gef_caches(all=True)
+        Kernel.assumed_version = None
         EventHandler.kpti_transition_active = False
         return
 
@@ -67287,9 +67288,15 @@ class Kernel:
         def __str__(self):
             return "{:d}.{:d}.{:d}".format(*self.version_tuple)
 
+    assumed_version = None
+
     @staticmethod
     @Cache.cache_this_session(cache_None=False)
     def kernel_version():
+        # use user specified version
+        if Kernel.assumed_version is not None:
+            return Kernel.assumed_version
+
         # fast path
         linux_banner = None
         if is_kdb():
@@ -67601,13 +67608,14 @@ class KernelbaseCommand(GenericCommand):
 
 @register_command
 class KernelVersionCommand(GenericCommand):
-    """Display kernel version string."""
+    """Display or override the kernel version."""
 
     _cmdline_ = "kversion"
     _category_ = "06-c. Qemu-system/KGDB Cooperation - Linux Basic"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
-    parser.add_argument("-r", "--rescan", action="store_true", help="do not use cache.")
+    parser.add_argument("version", nargs="?", metavar="VERSION", help="use this kernel version (e.g. 6.18.0).")
+    parser.add_argument("-r", "--rescan", action="store_true", help="clear the version override and do not use cache.")
     parser.add_argument("-q", "--quiet", action="store_true", help="enable quiet mode.")
     _syntax_ = parser.format_help()
 
@@ -67618,6 +67626,22 @@ class KernelVersionCommand(GenericCommand):
     @only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
         if args.rescan:
+            Kernel.assumed_version = None
+            Cache.reset_gef_caches(all=True)
+
+        # override by user specified version
+        if args.version is not None:
+            match = re.fullmatch(r"v?(\d+)\.(\d+)(?:\.(\d+))?", args.version)
+            if match is None:
+                message = "Invalid kernel version: {!r} (expected MAJOR.MINOR[.PATCH])"
+                self.quiet_err(message.format(args.version))
+                return
+
+            detected = Kernel.kernel_version()
+            address = detected.address if detected is not None else 0
+            version_string = (detected.version_string if detected is not None else "Linux version {:s} (user specified)".format(args.version))
+            major, minor, patch = (int(value) if value is not None else 0 for value in match.groups())
+            Kernel.assumed_version = Kernel.KernelVersion(address, version_string, major, minor, patch)
             Cache.reset_gef_caches(all=True)
 
         self.quiet_info("Wait for memory scan")
@@ -67627,7 +67651,10 @@ class KernelVersionCommand(GenericCommand):
             return
 
         self.out = []
-        self.out.append("{:#x}: {:s}".format(kversion.address, kversion.version_string))
+        if kversion.address:
+            self.out.append("{:#x}: {:s}".format(kversion.address, kversion.version_string))
+        if Kernel.assumed_version is not None:
+            self.out.append("User-specified kernel version: {:s}".format(str(kversion)))
         if self.out:
             gef_print("\n".join(self.out))
         return
