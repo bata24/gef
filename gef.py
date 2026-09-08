@@ -62084,6 +62084,13 @@ class KernelAddressHeuristicFinder:
         return None
 
     @staticmethod
+    def dereference_current_task(current_task, cpu_base=None):
+        if cpu_base is not None:
+            current_task = AddressUtil.normalize_address(cpu_base + current_task)
+        task = read_int_from_memory(current_task)
+        return task if is_valid_addr(task) else None
+
+    @staticmethod
     @cpu_context_dependent
     def get_current_task_for_current_thread():
         if is_arm32():
@@ -62265,16 +62272,12 @@ class KernelAddressHeuristicFinder:
         elif is_x86_64() or is_x86_32():
             current_task = KernelAddressHeuristicFinder.get_current_task()
             if current_task:
-                if AddressUtil.is_msb_on(current_task) and is_valid_addr(current_task):
-                    # no __per_cpu_offset
-                    current = read_int_from_memory(current_task)
-                else:
-                    # use __per_cpu_offset
-                    p = KernelAddressHeuristicFinder.get_per_cpu_offset()
-                    if p and is_valid_addr(p):
-                        cpu_base = read_int_from_memory(p)
-                        current_ptr = AddressUtil.normalize_address(cpu_base + current_task)
-                        current = read_int_from_memory(current_ptr)
+                p = KernelAddressHeuristicFinder.get_per_cpu_offset()
+                if p and is_valid_addr(p):
+                    cpu_base = read_int_from_memory(p)
+                    current = KernelAddressHeuristicFinder.dereference_current_task(current_task, cpu_base)
+                elif AddressUtil.is_msb_on(current_task) and is_valid_addr(current_task):
+                    current = KernelAddressHeuristicFinder.dereference_current_task(current_task)
 
         init_task = get_init_task_from_current(current)
         if init_task is not None:
@@ -66777,9 +66780,23 @@ class Kernel:
         0xffffffff93980690|+0x0010|+002: 0xffffffff93d0d000
         Therefore, when the same address is repeated, it is considered to be the end.
         """
+        nr_cpu_ids = None
+        ret = Symbol.get_kallsyms(parse=False)
+        if ret is not None:
+            _, kallsyms_map = ret
+            addresses = kallsyms_map.get("nr_cpu_ids", [])
+            for address in addresses:
+                try:
+                    candidate = read_int32_from_memory(address)
+                except gdb.MemoryError:
+                    continue
+                if 0 < candidate <= 0x1_0000:
+                    nr_cpu_ids = candidate
+                    break
+
         cpu_offset = []
         i = 0
-        while True:
+        while nr_cpu_ids is None or i < nr_cpu_ids:
             off = read_int_from_memory(__per_cpu_offset + i * current_arch.ptrsize)
             """
             off itself may refer to inaccessible memory.
@@ -67711,14 +67728,14 @@ class KernelCurrentCommand(GenericCommand):
             self.quiet_info("current_task: {:#x}".format(current_task))
             task_offset = current_task
             for i, cpu_base in enumerate(cpu_bases):
-                task = read_int_from_memory(AddressUtil.normalize_address(cpu_base + task_offset))
-                if not is_valid_addr(task):
+                task = KernelAddressHeuristicFinder.dereference_current_task(task_offset, cpu_base)
+                if task is None:
                     break
                 gef_print("current (cpu{:d}): {:#x} {:s}".format(i, task, self.get_comm_str(task)))
         else:
             # pattern 2: current_task is the address that stores a pointer to the current task (not per_cpu).
-            task = read_int_from_memory(current_task)
-            if is_valid_addr(task):
+            task = KernelAddressHeuristicFinder.dereference_current_task(current_task)
+            if task is not None:
                 self.quiet_info("__per_cpu_offset is unused")
                 gef_print("current: {:#x} {:s}".format(task, self.get_comm_str(task)))
             else:
