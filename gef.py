@@ -136023,6 +136023,15 @@ class KsymaddrRemoteCommand(GenericCommand, BufferingOutput):
                 element_va = self.ro_base + position + i * offset_byte_size
                 kernel_addresses.append(element_va + offset)
 
+            # Non-relocatable 32-bit kernels store absolute addresses in the same table.
+            if address_byte_size == offset_byte_size:
+                text_base = Kernel.get_kernel_layout(apply_data_range_hint=False).text_base
+                if text_base not in kernel_addresses:
+                    fmt = "{:s}{:d}I".format(endianness_marker, self.num_symbols)
+                    absolute_addresses = struct.unpack(fmt, kallsyms_offsets_data)
+                    if text_base in absolute_addresses:
+                        kernel_addresses = absolute_addresses
+
         # It seems ok.
         self.offset_kallsyms_addresses_or_offsets = position
         self.kernel_addresses = kernel_addresses
