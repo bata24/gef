@@ -62064,6 +62064,7 @@ class KernelAddressHeuristicFinder:
                         KernelAddressHeuristicFinderUtil.x64_qword_ptr_ds(res),
                         KernelAddressHeuristicFinderUtil.x64_qword_ptr_gs(res, skip_msb_check=True),
                         KernelAddressHeuristicFinderUtil.x64_qword_ptr_gs_rip_base(res, skip_msb_check=True),
+                        KernelAddressHeuristicFinderUtil.x64_qword_ptr_rip_base(res),
                     )
                 elif is_x86_32():
                     g = itertools.chain(
