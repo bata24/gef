@@ -60901,7 +60901,14 @@ class KernelConstsArm32(KernelConstsBase):
     def CONFIG_PAGE_OFFSET(self):
         if hasattr(self, "cached_PAGE_OFFSET"):
             return self.cached_PAGE_OFFSET
-        kern_min = Kernel.get_maps()[0][0]
+
+        # TTBR0 may contain privileged firmware mappings below PAGE_OFFSET,
+        # especially when LPAE is enabled. Use the resolved kernel image
+        # instead of assuming that the first pagewalk mapping is lowmem.
+        kinfo = Kernel.get_kernel_layout(apply_data_range_hint=False)
+        if kinfo.text_base is None:
+            return None
+        kern_min = kinfo.text_base
         if 0xc000_0000 - 0x0100_0000 <= kern_min:
             # 0xbf000000-0xc0000000 is kernel module area.
             # Even if it is VMSPLIT_3G, this is used.
@@ -60954,6 +60961,10 @@ class KernelConstsArm32(KernelConstsBase):
         if hasattr(self, "cached_high_memory"):
             return self.cached_high_memory
 
+        page_offset = self.PAGE_OFFSET
+        if page_offset is None:
+            return None
+
         res = PageMap.get_page_maps_by_pagewalk("pagewalk --quiet --no-pager --disable-color")
         res = sorted(set(res.splitlines()))
         res = list(filter(lambda line: line.endswith("]"), res))
@@ -60964,7 +60975,7 @@ class KernelConstsArm32(KernelConstsBase):
         for line in res:
             line = line.split()
             vaddr_start = int(line[0].split("-")[0], 16)
-            if vaddr_start < self.PAGE_OFFSET:
+            if vaddr_start < page_offset:
                 continue
             dic = {
                 "vaddr_start": vaddr_start,
@@ -62097,6 +62108,8 @@ class KernelAddressHeuristicFinder:
         if is_arm32():
             # plan 1 (from special register)
             page_offset = KernelAddressHeuristicFinder.get_PAGE_OFFSET()
+            if page_offset is None:
+                return None
             r = get_register("$TPIDRURO")
             if r and r >= page_offset and is_valid_addr(r):
                 return r
@@ -63526,7 +63539,10 @@ class KernelAddressHeuristicFinder:
         if kversion and "2.4" <= kversion:
             addr = Symbol.get_ksymaddr("free_pages")
             if addr:
-                res = gdb.execute("x/40i {:#x}".format(addr), to_string=True)
+                try:
+                    res = gdb.execute("x/40i {:#x}".format(addr), to_string=True)
+                except gdb.MemoryError:
+                    return None
                 if is_x86_32():
                     # 0xc12f491b <free_pages+27>:  mov    eax,DWORD PTR [eax*8-0x3d19e3a0]
                     # gef> x/w -0x3d19e3a0
@@ -63543,7 +63559,10 @@ class KernelAddressHeuristicFinder:
                     # 0xc22b43c0 <mem_section>:   0x00000000
                     g = KernelAddressHeuristicFinderUtil.arm32_movw_movt(res, allow_cc=True)
                 for x in g:
-                    v = read_int_from_memory(x)
+                    try:
+                        v = read_int_from_memory(x)
+                    except gdb.MemoryError:
+                        continue
                     if v and not is_valid_addr(v):
                         continue
                     return x
@@ -63559,7 +63578,10 @@ class KernelAddressHeuristicFinder:
         if KernelAddressHeuristicFinder.USE_DIRECTLY:
             addr = Symbol.get_ksymaddr("mem_map")
             if addr:
-                v = read_int_from_memory(addr)
+                try:
+                    v = read_int_from_memory(addr)
+                except gdb.MemoryError:
+                    return None
                 if v != 0:
                     return v
                 return None
@@ -63570,7 +63592,10 @@ class KernelAddressHeuristicFinder:
         if kversion and "2.4" <= kversion:
             addr = Symbol.get_ksymaddr("free_pages")
             if addr:
-                res = gdb.execute("x/40i {:#x}".format(addr), to_string=True)
+                try:
+                    res = gdb.execute("x/40i {:#x}".format(addr), to_string=True)
+                except gdb.MemoryError:
+                    return None
                 if is_x86_32():
                     g = itertools.chain(
                         # 0xd3bf91d9 <free_pages+13>:  mov    ecx,DWORD PTR ds:0xd4f337c4
@@ -63589,7 +63614,10 @@ class KernelAddressHeuristicFinder:
                         KernelAddressHeuristicFinderUtil.arm32_ldr_pc_relative(res),
                     )
                 for x in g:
-                    v = read_int_from_memory(x)
+                    try:
+                        v = read_int_from_memory(x)
+                    except gdb.MemoryError:
+                        continue
                     if v != 0 and is_valid_addr(v):
                         return v
         return None
@@ -66924,6 +66952,21 @@ class Kernel:
                 if r:
                     return r
 
+        elif is_arm32():
+            # The vector page is copied independently of the kernel image. Its
+            # second page starts with pointers to core exception handlers, so it
+            # remains a reliable hint even when execution is stopped in a module.
+            vbar = get_register("$VBAR") or get_register("$VBAR_EL1") or 0
+            sctlr = get_register("$SCTLR") or get_register("$SCTLR_EL1") or 0
+            vector_base = vbar or (0xffff_0000 if sctlr & (1 << 13) else 0)
+            try:
+                data = read_memory(vector_base + get_pagesize(), 0x10)
+            except gdb.MemoryError:
+                data = b""
+            for handler in slice_unpack(data, 4):
+                if 0x4000_0000 <= handler < 0xff00_0000 and handler & 3 == 0 and is_valid_addr(handler):
+                    return handler
+
         elif is_arm64():
             # `VBAR` register has interrupt vector address
             vbar = get_register("$VBAR") or get_register("$VBAR_EL1")
@@ -66990,6 +67033,16 @@ class Kernel:
             if div0_handler is not None:
                 for i, (vaddr, size, _perm) in enumerate(dic["maps"]):
                     if vaddr <= div0_handler < vaddr + size:
+                        dic["text_base"] = vaddr
+                        dic["text_end"] = vaddr + size
+                        text_base_map_index = i
+                        break
+
+        elif is_arm32():
+            vector_handler = Kernel.get_kernel_base_hint()
+            if vector_handler is not None:
+                for i, (vaddr, size, _perm) in enumerate(dic["maps"]):
+                    if vaddr <= vector_handler < vaddr + size:
                         dic["text_base"] = vaddr
                         dic["text_end"] = vaddr + size
                         text_base_map_index = i
@@ -67167,7 +67220,7 @@ class Kernel:
 
         # fast path
         hint = Kernel.get_kernel_base_hint()
-        if hint: # invalid if arm32
+        if hint:
             stext = resolve_syms_safely(["_stext"])
             if stext:
                 handler = None
@@ -67268,16 +67321,16 @@ class Kernel:
                 data = read_memory(start, end - start)
             except gdb.MemoryError:
                 continue
-            data = "".join([chr(x) for x in data])
-            r = re.findall(r"(Linux version (?:\d+\.[\d.]*\d)[ -~]+)", data)
-            if not r:
+            # linux_banner ends with a newline and NUL. Requiring both avoids
+            # shorter build strings and stale copies elsewhere in the image.
+            matches = list(re.finditer(rb"(Linux version (\d)\.(\d+)\.(\d+)[ -~]+\n)\0", data))
+            if not matches:
                 continue
+            r = max(matches, key=lambda match: len(match.group(1)))
 
-            version_string = r[0]
-            address = start + data.find(version_string)
-
-            r = re.search(r"Linux version (\d)\.(\d+)\.(\d+)", version_string)
-            major, minor, patch = int(r.group(1)), int(r.group(2)), int(r.group(3))
+            version_string = r.group(1).decode("ascii").rstrip()
+            address = start + r.start(1)
+            major, minor, patch = int(r.group(2)), int(r.group(3)), int(r.group(4))
 
             return Kernel.KernelVersion(address, version_string, major, minor, patch)
         return None
@@ -151033,18 +151086,27 @@ class PagewalkArmCommand(PagewalkCommand):
             x1 = get_x(T1SZ)
             pl1_base = ((TTBR1_EL1 & 0xff_ffff_ffff) >> x1) << x1
             if T1SZ == 0:
-                pl1_vabase = 2 ** (32 - T0SZ)
+                # T0SZ selects the TTBR0/TTBR1 boundary, but the TTBR1 first
+                # level table is still indexed by VA[31:30].
+                pl1_table_vabase = 0
+                pl1_range_start = 2 ** (32 - T0SZ)
             else:
-                pl1_vabase = (2 ** 32) - (2 ** (32 - T1SZ))
+                pl1_table_vabase = (2 ** 32) - (2 ** (32 - T1SZ))
+                pl1_range_start = pl1_table_vabase
             self.quiet_info_add_out("$TTBR1_EL1{}: {:#x}".format(self.suffix, TTBR1_EL1))
             self.quiet_info_add_out("$TTBCR{}: {:#x}".format(self.suffix, TTBCR))
             self.quiet_info_add_out("T1SZ: {:#x}".format(T1SZ))
             self.quiet_info_add_out("PL1 base: {:#x}".format(pl1_base))
-            self.quiet_info_add_out("PL1 va_base: {:#x}".format(pl1_vabase))
+            self.quiet_info_add_out("PL1 table va_base: {:#x}".format(pl1_table_vabase))
+            self.quiet_info_add_out("PL1 range start: {:#x}".format(pl1_range_start))
             if not self.args.use_cache or not self.ttbr1_mappings:
                 self.flags_strings_cache = {}
-                self.do_pagewalk_long(pl1_base, pl1_vabase)
+                self.do_pagewalk_long(pl1_base, pl1_table_vabase)
                 self.flags_strings_cache = None
+                self.mappings = [
+                    mapping for mapping in self.mappings
+                    if mapping[0] + mapping[2] * mapping[3] > pl1_range_start
+                ]
                 self.merging()
                 self.ttbr1_mappings = self.mappings.copy()
             self.make_out(self.ttbr1_mappings)
@@ -154079,10 +154141,15 @@ class KernelVMMapCommand(GenericCommand, BufferingOutput):
         for line in res.splitlines():
             if not line:
                 continue
-            line = line.split()
-            module_name = line[1]
-            module_base = int(line[2], 16)
-            module_size = align_to_pagesize(int(line[3], 16))
+            fields = line.split()
+            if len(fields) != 4:
+                continue
+            try:
+                module_base = int(fields[2], 16)
+                module_size = align_to_pagesize(int(fields[3], 16))
+            except ValueError:
+                continue
+            module_name = fields[1]
             description = "kernel module ({:s})".format(module_name)
             self.insert_region(module_base, module_size, description)
         return
