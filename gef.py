@@ -56692,6 +56692,7 @@ class KernelMagicCommand(GenericCommand):
 
     def magic_kernel(self):
         info("Wait for memory scan")
+        kversion = Kernel.kernel_version()
         constants = KernelAddressHeuristicFinder.consts()
         if constants is None:
             err("Failed to resolve kernel version")
@@ -63678,7 +63679,10 @@ class KernelAddressHeuristicFinder:
 
         # plan 2 (available v4.16.8 or later)
         if kversion and "4.16.8" <= kversion:
-            addr = Symbol.get_ksymaddr("mark_tsc_unstable.part.0") or Symbol.get_ksymaddr("mark_tsc_unstable.cold")
+            # The compiler-split bodies may hold the actual clocksource_tsc reference.
+            addr = (Symbol.get_ksymaddr("mark_tsc_unstable.part.0") or
+                    Symbol.get_ksymaddr("mark_tsc_unstable.cold") or
+                    Symbol.get_ksymaddr("mark_tsc_unstable"))
             if addr:
                 res = gdb.execute("x/20i {:#x}".format(addr), to_string=True)
                 if is_x86_64():
@@ -64083,15 +64087,9 @@ class KernelAddressHeuristicFinder:
             if x:
                 return x
 
-        # plan 2 (from ksysctl)
-        if KernelAddressHeuristicFinder.USE_KSYSCTL:
-            x = Kernel.get_ksysctl("vm.mmap_min_addr")
-            if x:
-                return x
-
         kversion = Kernel.kernel_version()
 
-        # plan 3 (available v4.19.27 or later)
+        # plan 2 (available v4.19.27 or later)
         if kversion and "4.19.27" <= kversion:
             addr = Symbol.get_ksymaddr("expand_downwards")
             if addr:
@@ -64106,6 +64104,15 @@ class KernelAddressHeuristicFinder:
                     g = KernelAddressHeuristicFinderUtil.arm32_movw_movt(res)
                 for x in g:
                     return x
+
+        # plan 3 (from ksysctl)
+        # vm.mmap_min_addr points to dac_mmap_min_addr, which may be lower than the
+        # effective mmap_min_addr when CONFIG_LSM_MMAP_MIN_ADDR is set.  Use it only
+        # as a fallback when the effective value cannot be found from kernel code.
+        if KernelAddressHeuristicFinder.USE_KSYSCTL:
+            x = Kernel.get_ksysctl("vm.mmap_min_addr")
+            if x:
+                return x
         return None
 
     @staticmethod
@@ -65173,6 +65180,8 @@ class KernelAddressHeuristicFinder:
         if "6.9" <= kversion:
             return None
 
+        fallback = None
+
         # plan 2 (available v4.7~)
         if kversion and "4.7" <= kversion:
             addr = Symbol.get_ksymaddr("register_vmap_purge_notifier")
@@ -65219,7 +65228,8 @@ class KernelAddressHeuristicFinder:
                         if is_double_link_list(a, min_len=5):
                             count -= 1
                         if count == 0:
-                            return a
+                            fallback = a
+                            break
 
         # plan 3 (available v3.10 ~ v6.3: vread, v6.4~: vread_iter)
         if kversion and "3.17" <= kversion:
@@ -65278,7 +65288,7 @@ class KernelAddressHeuristicFinder:
                 for x in g:
                     if is_double_link_list(x):
                         return x
-        return None
+        return fallback
 
     @staticmethod
     @switch_to_intel_syntax
@@ -67636,6 +67646,195 @@ class Kernel:
         if r:
             return int(r.group(1), 16)
         return None
+
+
+@register_command
+class KernelAddressHeuristicSelftestCommand(GenericCommand, BufferingOutput):
+    """Compare kernel-address heuristic finders with kallsyms results."""
+
+    _cmdline_ = "ks-selftest"
+    _category_ = "06-c. Qemu-system/KGDB Cooperation - Linux Basic"
+
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
+    parser.add_argument("-q", "--quiet", action="store_true", help="enable quiet mode.")
+    parser.add_argument("--failures-only", action="store_true", help="show only failed finders.")
+    _syntax_ = parser.format_help()
+
+    _note_ = [
+        "False means explicitly unsupported; None means not found; '-' means unavailable or not run.",
+        "$ks_selftest_failures is nonzero if the test cannot run, otherwise it is the number of failed results.",
+    ]
+    _note_ = "\n".join(_note_)
+
+    @staticmethod
+    def direct_symbol_name(finder_name):
+        if finder_name == "get_sys_call_table_x86":
+            if is_x86_64():
+                return "ia32_sys_call_table"
+            if is_x86_32():
+                return "sys_call_table"
+            return None
+
+        exceptions = {
+            "get_sys_call_table_x64": "sys_call_table",
+            "get_sys_call_table_x32": "x32_sys_call_table",
+            "get_sys_call_table_arm32": "sys_call_table",
+            "get_sys_call_table_arm64": "sys_call_table",
+            "get_sys_call_table_arm64_compat": "compat_sys_call_table",
+            "get_per_cpu_offset": "__per_cpu_offset",
+            "get_current_clocksource": "curr_clocksource",
+            "get_vmap_nodes_busy_head": "vmap_nodes",
+        }
+        return exceptions.get(finder_name, finder_name[len("get_"):])
+
+    @staticmethod
+    def finders():
+        finders = []
+        for name in dir(KernelAddressHeuristicFinder):
+            if not name.startswith("get_"):
+                continue
+            finder = getattr(KernelAddressHeuristicFinder, name)
+            implementation = finder
+            while hasattr(implementation, "__wrapped__"):
+                implementation = implementation.__wrapped__
+            if "USE_DIRECTLY" in implementation.__code__.co_names:
+                finders.append((name, finder))
+        return finders
+
+    @staticmethod
+    def invoke_finder(finder, args):
+        try:
+            return finder(*args), None
+        except Exception as exception:
+            return None, "{:s}: {:s}".format(type(exception).__name__, str(exception))
+
+    @staticmethod
+    def format_result(value, error, available=True):
+        if error is not None:
+            return "ERROR"
+        if not available:
+            return "-"
+        if value is None:
+            return "None"
+        if isinstance(value, bool):
+            return str(value)
+        if isinstance(value, int):
+            return "{:#x}".format(value)
+        return str(value)
+
+    @parse_args
+    @only_if_gdb_running
+    @only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
+    @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
+    @only_if_in_kernel_or_kpti_disabled
+    def do_invoke(self, args):
+        gdb.set_convenience_variable("ks_selftest_failures", -1)
+        self.quiet_info("Wait for kallsyms and heuristic scans")
+
+        direct_results = {}
+        heuristic_results = {}
+        errors = []
+        original_use_directly = KernelAddressHeuristicFinder.USE_DIRECTLY
+
+        try:
+            KernelAddressHeuristicFinder.USE_DIRECTLY = True
+            Cache.reset_gef_caches(all=True)
+            if Symbol.get_kallsyms() is None:
+                self.quiet_err("Could not read kallsyms")
+                return
+
+            for name, finder in self.finders():
+                symbol_name = self.direct_symbol_name(name)
+                symbol_address = Symbol.get_ksymaddr(symbol_name) if symbol_name is not None else None
+                if symbol_address is None:
+                    direct_results[name] = (None, None, False, ())
+                    continue
+
+                finder_args = ()
+                if name == "get_current_clocksource":
+                    try:
+                        current_clocksource = read_int_from_memory(symbol_address)
+                    except (gdb.MemoryError, MemoryError) as exception:
+                        message = "{:s}: {:s}".format(type(exception).__name__, str(exception))
+                        direct_results[name] = (None, message, True, ())
+                        errors.append("{:s} direct: {:s}".format(name, message))
+                        continue
+                    finder_args = ((current_clocksource,),)
+
+                value, error = self.invoke_finder(finder, finder_args)
+                direct_results[name] = (value, error, True, finder_args)
+                if error is not None:
+                    errors.append("{:s} direct: {:s}".format(name, error))
+
+            KernelAddressHeuristicFinder.USE_DIRECTLY = False
+            Cache.reset_gef_caches(all=True)
+
+            for name, finder in self.finders():
+                direct, error, available, finder_args = direct_results[name]
+                if not available or error is not None or direct is None or direct is False:
+                    heuristic_results[name] = (None, None)
+                    continue
+                value, error = self.invoke_finder(finder, finder_args)
+                heuristic_results[name] = (value, error)
+                if error is not None:
+                    errors.append("{:s} heuristic: {:s}".format(name, error))
+        finally:
+            KernelAddressHeuristicFinder.USE_DIRECTLY = original_use_directly
+            Cache.reset_gef_caches(all=True)
+
+        rows = []
+        verdict_counts = collections.Counter()
+        for name, _ in self.finders():
+            direct, direct_error, available, _ = direct_results[name]
+            heuristic, heuristic_error = heuristic_results[name]
+            if (not available or direct is False or heuristic is False or
+                    (direct is None and direct_error is None)):
+                verdict = "n/a"
+            elif direct_error is not None or heuristic_error is not None:
+                verdict = "ERROR"
+            elif direct == heuristic:
+                verdict = "OK"
+            elif heuristic is None:
+                verdict = "MISS"
+            else:
+                verdict = "MISMATCH"
+            verdict_counts[verdict] += 1
+            rows.append((
+                name,
+                self.format_result(direct, direct_error, available),
+                self.format_result(
+                    heuristic, heuristic_error,
+                    available and direct is not None and direct is not False,
+                ),
+                verdict,
+            ))
+
+        failure_verdicts = ("MISS", "MISMATCH", "ERROR")
+        failure_count = sum(verdict_counts[verdict] for verdict in failure_verdicts)
+        gdb.set_convenience_variable("ks_selftest_failures", failure_count)
+        visible_rows = [row for row in rows if row[-1] in failure_verdicts] if args.failures_only else rows
+
+        headers = ("finder", "direct", "heuristic", "verdict")
+        widths = [max(len(row[i]) for row in [headers] + visible_rows) for i in range(len(headers))]
+        row_format = "  ".join("{{:<{:d}s}}".format(width) for width in widths)
+        self.out = [GefUtil.make_legend(row_format.format(*headers))]
+        for row in visible_rows:
+            line = row_format.format(*row)
+            if row[-1] in failure_verdicts:
+                line = Color.colorify(line, "yellow bold")
+            self.out.append(line)
+        self.out.append("")
+        self.out.append("  ".join(
+            "{:s}: {:d}".format(verdict, verdict_counts[verdict])
+            for verdict in ("OK", "MISS", "MISMATCH", "ERROR", "n/a")
+        ))
+        if errors:
+            self.out.append("")
+            self.out.append(GefUtil.make_legend("errors"))
+            self.out.extend(errors)
+        self.print_output(check_terminal_size=True)
+        return
 
 
 @register_command
