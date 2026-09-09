@@ -76406,8 +76406,14 @@ class KernelFileSystemsCommand(GenericCommand, BufferingOutput):
         return mount
 
     def get_mount_point(self, mnt_instance):
+        if not is_valid_addr(mnt_instance):
+            return None
         mount = self.get_mount(mnt_instance)
+        if not is_valid_addr(mount):
+            return None
         vfsmnt = mount + self.offset_mount_mnt
+        if not is_valid_addr(vfsmnt):
+            return None
         dentry = read_int_from_memory(vfsmnt + self.offset_vfsmount_mnt_root)
 
         if not is_valid_addr(dentry):
@@ -76467,8 +76473,17 @@ class KernelFileSystemsCommand(GenericCommand, BufferingOutput):
         return mount, filepath
 
     def get_dev_name(self, mnt_instance):
+        if not is_valid_addr(mnt_instance):
+            return None
         mnt = mnt_instance - self.offset_mount_mnt_instance
-        devname_p = read_int_from_memory(mnt + self.offset_mount_mnt_devname)
+        if not is_valid_addr(mnt):
+            return None
+        devname_addr = mnt + self.offset_mount_mnt_devname
+        if not is_valid_addr(devname_addr):
+            return None
+        devname_p = read_int_from_memory(devname_addr)
+        if not is_valid_addr(devname_p):
+            return None
         devname = read_cstring_from_memory(devname_p)
         return devname
 
