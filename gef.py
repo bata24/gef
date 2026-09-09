@@ -148060,57 +148060,59 @@ class VBARCommand(GenericCommand, BufferingOutput):
         vbars = self.get_vbar_arm64()
         max_width = max(len(x[2]) for x in self.A64_VECTOR_NAMES)
 
-        def get_EL():
-            CPSR = get_register("$cpsr") & 0xffff_ffff
-            return (CPSR >> 2) & 0b11
-
-        base_EL = get_EL()
+        base_CPSR = get_register("$cpsr") & 0xffff_ffff
+        base_EL = (base_CPSR >> 2) & 0b11
 
         for regname, vbar in vbars:
             self.out.append(titlify(regname))
 
-            # switch EL
-            if regname == "$VBAR" and base_EL != 1:
-                gdb.execute("switch-el 1", to_string=True)
-            elif regname == "$VBAR_EL2" and base_EL != 2:
-                gdb.execute("switch-el 2", to_string=True)
-            elif regname == "$VBAR_EL3" and base_EL != 3:
-                gdb.execute("switch-el 3", to_string=True)
-            else:
-                gdb.execute("switch-el {:d}".format(base_EL), to_string=True)
-
-            # address check
-            if not is_valid_addr(vbar):
-                if vbar is None:
-                    self.err_add_out("Invalid VBAR address: None")
-                else:
-                    self.err_add_out("Invalid VBAR address: {:#x}".format(vbar))
+            # Skip unavailable ELs before changing CPSR.
+            if vbar is None:
+                self.err_add_out("Invalid VBAR address: None")
                 continue
 
-            # read each entry
-            for ofs, sz, s in self.A64_VECTOR_NAMES:
-                if self.args.verbose:
-                    # full
-                    pos = 0
-                    while pos < sz:
-                        insn = get_insn(vbar + ofs + pos)
-                        insn_str = insn.colored_text(4)
-                        if pos == 0:
-                            s = Color.colorify(s.ljust(max_width), "bold")
-                            self.out.append("[{:+#06x}] {:s}: {:s}".format(ofs, s, insn_str))
-                        else:
-                            s = " " * max_width
-                            self.out.append("{:8s} {:s}: {:s}".format("", s, insn_str))
-                        pos += insn.size
-                else:
-                    # compact
-                    insn = get_insn(vbar + ofs)
-                    insn_str = insn.colored_text(4)
-                    s = Color.colorify(s.ljust(max_width), "bold")
-                    self.out.append("[{:+#06x}] {:s}: {:s}".format(ofs, s, insn_str))
+            target_EL = {
+                "$VBAR": 1,
+                "$VBAR_EL2": 2,
+                "$VBAR_EL3": 3,
+            }.get(regname, base_EL)
 
-        # revert
-        gdb.execute("switch-el {:d}".format(base_EL), to_string=True)
+            try:
+                # switch EL
+                if target_EL != base_EL:
+                    target_CPSR = base_CPSR & ~(0b11 << 2)
+                    target_CPSR |= target_EL << 2
+                    SwitchELCommand.set_cpsr(target_CPSR)
+
+                # address check
+                if not is_valid_addr(vbar):
+                    self.err_add_out("Invalid VBAR address: {:#x}".format(vbar))
+                    continue
+
+                # read each entry
+                for ofs, sz, s in self.A64_VECTOR_NAMES:
+                    if self.args.verbose:
+                        # full
+                        pos = 0
+                        while pos < sz:
+                            insn = get_insn(vbar + ofs + pos)
+                            insn_str = insn.colored_text(4)
+                            if pos == 0:
+                                s = Color.colorify(s.ljust(max_width), "bold")
+                                self.out.append("[{:+#06x}] {:s}: {:s}".format(ofs, s, insn_str))
+                            else:
+                                s = " " * max_width
+                                self.out.append("{:8s} {:s}: {:s}".format("", s, insn_str))
+                            pos += insn.size
+                    else:
+                        # compact
+                        insn = get_insn(vbar + ofs)
+                        insn_str = insn.colored_text(4)
+                        s = Color.colorify(s.ljust(max_width), "bold")
+                        self.out.append("[{:+#06x}] {:s}: {:s}".format(ofs, s, insn_str))
+            finally:
+                if target_EL != base_EL:
+                    SwitchELCommand.set_cpsr(base_CPSR)
         return
 
     @parse_args
@@ -153636,6 +153638,11 @@ class SwitchELCommand(GenericCommand):
                         help="Exception Level to change to.")
     _syntax_ = parser.format_help()
 
+    @staticmethod
+    def set_cpsr(cpsr):
+        gdb.parse_and_eval("$cpsr = {:#x}".format(cpsr))
+        return
+
     def switch_el(self, target_el):
         # current EL
         CPSR = get_register("$cpsr") & 0xffff_ffff
@@ -153659,7 +153666,7 @@ class SwitchELCommand(GenericCommand):
         if target_el != CurrentEL:
             CPSR = CPSR & ~(0b11 << 2) # clear EL
             CPSR |= target_el << 2 # set desired EL
-            gdb.parse_and_eval("$cpsr = {:#x}".format(CPSR))
+            self.set_cpsr(CPSR)
             info("Moving to EL{:d}".format(target_el))
         else:
             info("Already at EL{:d}".format(target_el))
