@@ -56692,7 +56692,10 @@ class KernelMagicCommand(GenericCommand):
 
     def magic_kernel(self):
         info("Wait for memory scan")
-        kversion = Kernel.kernel_version()
+        constants = KernelAddressHeuristicFinder.consts()
+        if constants is None:
+            err("Failed to resolve kernel version")
+            return
 
         kinfo = Kernel.get_kernel_layout()
         maps = kinfo.maps
@@ -56889,7 +56892,7 @@ class KernelMagicCommand(GenericCommand):
                 phys_base = None
             self.print_kernel_value("phys_base (load delta)", phys_base)
 
-            start_kernel_map = KernelAddressHeuristicFinder.consts().START_KERNEL_map
+            start_kernel_map = constants.START_KERNEL_map
             if phys_base is None or start_kernel_map is None:
                 kbase_phys = None
             else:
@@ -61996,6 +61999,8 @@ class KernelAddressHeuristicFinder:
     def consts():
         # each property memoizes its own value on the returned object, so dropping the
         # object here drops every one of them
+        if Kernel.kernel_version() is None:
+            return None
         if is_x86_64():
             return KernelConstsX64()
         elif is_x86_32():
@@ -154583,6 +154588,10 @@ class PageCommand(GenericCommand):
     @Cache.cache_this_session(cache_None=False)
     def initialize():
         info("Wait for memory scan")
+
+        if KernelAddressHeuristicFinder.consts() is None:
+            err("Failed to resolve kernel version")
+            return None
 
         PageCommand.PAGE_SHIFT = KernelAddressHeuristicFinder.consts().PAGE_SHIFT
 
