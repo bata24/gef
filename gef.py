@@ -59469,6 +59469,32 @@ class KernelAddressHeuristicFinderUtil:
                     yield w
 
     @staticmethod
+    def aarch64_adrp_ldrb(res, skip=0, skip_msb_check=False, read_valid=False):
+        # Use this when the global is a `bool`/`u8`, which is loaded by `ldrb` instead of `ldr`.
+        bases = {}
+        for line in res.splitlines():
+            m = re.search(r"adrp\s+(\w+),\s*(0x\w+)", line)
+            if m:
+                reg = m.group(1)
+                v = int(m.group(2), 16)
+                bases[reg] = v
+                continue
+            m = re.search(r"ldrb\s+\w+,\s*\[(\w+)(?:,\s*#(\d+))?\]", line)
+            if m:
+                srcreg = m.group(1)
+                v = int(m.group(2), 0) if m.group(2) else 0
+                if srcreg in bases:
+                    w = AddressUtil.normalize_address(bases[srcreg] + v)
+                    if not skip_msb_check and not AddressUtil.is_msb_on(w):
+                        continue
+                    if read_valid and not is_valid_addr_addr(w):
+                        continue
+                    if skip > 0:
+                        skip -= 1
+                        continue
+                    yield w
+
+    @staticmethod
     def aarch64_adrp_str(res, skip=0, skip_msb_check=False, read_valid=False):
         bases = {}
         for line in res.splitlines():
@@ -64133,10 +64159,14 @@ class KernelAddressHeuristicFinder:
 
         kversion = Kernel.kernel_version()
 
-        # plan 2 (available v5.0 ~ v6.3)
-        if kversion and "5.0" <= kversion < "6.4":
-            addr = Symbol.get_ksymaddr("show_sid")
-            if addr:
+        # plan 2 (available v4.19 ~ v6.3, while the callee still takes &selinux_state as 1st arg)
+        # show_sid() is a plain static helper and is inlined away in some builds, but
+        # selinux_capset() is an LSM hook whose address is taken, so it always stays a symbol.
+        if kversion and "4.19" <= kversion < "6.4":
+            for name in ["show_sid", "selinux_capset"]:
+                addr = Symbol.get_ksymaddr(name)
+                if addr is None:
+                    continue
                 res = gdb.execute("x/20i {:#x}".format(addr), to_string=True)
                 if is_x86_64():
                     g = KernelAddressHeuristicFinderUtil.x64_x86_mov_reg_const(res, "rdi")
@@ -64155,6 +64185,29 @@ class KernelAddressHeuristicFinder:
                             return v
                     else:
                         return x
+
+        # plan 3 (available v6.4 or later)
+        # v6.4 dropped the `struct selinux_state *` argument, so show_sid() no longer holds the
+        # address. avc_denied() reads `selinux_state.enforcing` (= offset 0) via enforcing_enabled().
+        if kversion and "6.4" <= kversion:
+            addr = Symbol.get_ksymaddr("avc_denied")
+            if addr:
+                res = gdb.execute("x/32i {:#x}".format(addr), to_string=True)
+                if is_x86_64():
+                    g = KernelAddressHeuristicFinderUtil.x64_any_ptr_rip_base(res)
+                elif is_x86_32():
+                    g = KernelAddressHeuristicFinderUtil.x86_noptr_ds(res)
+                elif is_arm64():
+                    g = KernelAddressHeuristicFinderUtil.aarch64_adrp_ldrb(res)
+                elif is_arm32():
+                    g = KernelAddressHeuristicFinderUtil.arm32_movw_movt(res)
+                for x in g:
+                    # `enforcing` and the following `initialized` are bool, so reject other globals.
+                    try:
+                        if read_int8_from_memory(x) in [0, 1] and read_int8_from_memory(x + 1) in [0, 1]:
+                            return x
+                    except (gdb.MemoryError, MemoryError):
+                        continue
         return None
 
     @staticmethod
