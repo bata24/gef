@@ -59371,6 +59371,11 @@ class KernelAddressHeuristicFinderUtil:
         return KernelAddressHeuristicFinderUtil.common_addr_gen(res, regexp, skip, skip_msb_check, read_valid)
 
     @staticmethod
+    def x64_lea_array_base(res, skip=0, skip_msb_check=False, read_valid=False):
+        regexp = r"lea\s+\w+\s*,\s*\[.*\*8([-+]0x\w+)\]"
+        return KernelAddressHeuristicFinderUtil.common_addr_gen(res, regexp, skip, skip_msb_check, read_valid)
+
+    @staticmethod
     def x86_dword_ptr_array4_base(res, skip=0, skip_msb_check=False, read_valid=False):
         regexp = r"DWORD PTR \[.*\*4([+-]0x\w+)\]"
         return KernelAddressHeuristicFinderUtil.common_addr_gen(res, regexp, skip, skip_msb_check, read_valid)
@@ -63886,9 +63891,13 @@ class KernelAddressHeuristicFinder:
         if kversion and "2.6.37" <= kversion:
             addr = Symbol.get_ksymaddr("tty_register_ldisc")
             if addr:
-                res = gdb.execute("x/20i {:#x}".format(addr), to_string=True)
+                instruction_count = 40 if is_x86_64() else 20
+                res = gdb.execute("x/{:d}i {:#x}".format(instruction_count, addr), to_string=True)
                 if is_x86_64():
-                    g = KernelAddressHeuristicFinderUtil.x64_qword_ptr_array_base(res)
+                    g = itertools.chain(
+                        KernelAddressHeuristicFinderUtil.x64_qword_ptr_array_base(res),
+                        KernelAddressHeuristicFinderUtil.x64_lea_array_base(res),
+                    )
                 elif is_x86_32():
                     g = KernelAddressHeuristicFinderUtil.x86_dword_ptr_array4_base(res)
                 elif is_arm64():
@@ -63906,14 +63915,14 @@ class KernelAddressHeuristicFinder:
                         if kversion < "5.13":
                             w = read_int32_from_memory(v)
                             if w == 0x00005403: # magic
-                                return x
+                                return x + current_arch.ptrsize * i
                         else:
                             w = read_int_from_memory(v)
                             if not is_valid_addr(w):
                                 continue
                             s = read_cstring_from_memory(w) # name
                             if s and len(s) > 2:
-                                return x
+                                return x + current_arch.ptrsize * i
         return None
 
     @staticmethod
