@@ -67047,7 +67047,8 @@ class Kernel:
             # remains a reliable hint even when execution is stopped in a module.
             vbar = get_register("$VBAR") or get_register("$VBAR_EL1") or 0
             sctlr = get_register("$SCTLR") or get_register("$SCTLR_EL1") or 0
-            vector_base = vbar or (0xffff_0000 if sctlr & (1 << 13) else 0)
+            # SCTLR.V overrides VBAR and selects the high-vector page.
+            vector_base = 0xffff_0000 if sctlr & (1 << 13) else vbar
             try:
                 data = read_memory(vector_base + get_pagesize(), 0x10)
             except gdb.MemoryError:
