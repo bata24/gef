@@ -32231,6 +32231,8 @@ class KernelChecksecCommand(GenericCommand):
         cfg = "vm.mmap_min_addr"
         mmap_min_addr = KernelAddressHeuristicFinder.get_mmap_min_addr()
         if mmap_min_addr is None:
+            mmap_min_addr = KernelAddressHeuristicFinder.get_dac_mmap_min_addr()
+        if mmap_min_addr is None:
             additional = "{:s}: Not found".format(cfg)
             gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.grayify("Unknown"), additional))
             return
@@ -59361,6 +59363,11 @@ class KernelAddressHeuristicFinderUtil:
         return KernelAddressHeuristicFinderUtil.common_addr_gen(res, regexp, skip, skip_msb_check, read_valid)
 
     @staticmethod
+    def x64_qword_ptr_rip_base_store(res, skip=0, skip_msb_check=False, read_valid=False):
+        regexp = r"QWORD PTR \[rip\+0x\w+\],[^#]*#\s*(0x\w+)"
+        return KernelAddressHeuristicFinderUtil.common_addr_gen(res, regexp, skip, skip_msb_check, read_valid)
+
+    @staticmethod
     def x64_qword_ptr_gs_rip_base(res, skip=0, skip_msb_check=False, read_valid=False):
         regexp = r"QWORD PTR gs:\[rip\+0x\w+\].*#\s*(0x\w+)"
         return KernelAddressHeuristicFinderUtil.common_addr_gen(res, regexp, skip, skip_msb_check, read_valid)
@@ -59411,6 +59418,11 @@ class KernelAddressHeuristicFinderUtil:
         return KernelAddressHeuristicFinderUtil.common_addr_gen(res, regexp, skip, skip_msb_check, read_valid)
 
     @staticmethod
+    def x86_noptr_ds_store(res, skip=0, skip_msb_check=False, read_valid=False):
+        regexp = r"ds:\s*(0x\w+)\s*,"
+        return KernelAddressHeuristicFinderUtil.common_addr_gen(res, regexp, skip, skip_msb_check, read_valid)
+
+    @staticmethod
     def x86_mov_noptr_ds(res, skip=0, skip_msb_check=False, read_valid=False):
         regexp = r"mov.*ds:\s*(0x\w+)"
         return KernelAddressHeuristicFinderUtil.common_addr_gen(res, regexp, skip, skip_msb_check, read_valid)
@@ -59436,6 +59448,31 @@ class KernelAddressHeuristicFinderUtil:
                 v = int(m.group(2), 0)
                 if srcreg in bases:
                     w = AddressUtil.normalize_address(bases[srcreg] + v)
+                    if not skip_msb_check and not AddressUtil.is_msb_on(w):
+                        continue
+                    if read_valid and not is_valid_addr_addr(w):
+                        continue
+                    if skip > 0:
+                        skip -= 1
+                        continue
+                    yield w
+
+    @staticmethod
+    def aarch64_adrp_str(res, skip=0, skip_msb_check=False, read_valid=False):
+        bases = {}
+        for line in res.splitlines():
+            m = re.search(r"adrp\s+(\w+),\s*(0x\w+)", line)
+            if m:
+                reg = m.group(1)
+                v = int(m.group(2), 16)
+                bases[reg] = v
+                continue
+            m = re.search(r"str\s+\w+,\s*\[(\w+)(?:,\s*#(\d+))?\]", line)
+            if m:
+                dstreg = m.group(1)
+                v = int(m.group(2), 0) if m.group(2) else 0
+                if dstreg in bases:
+                    w = AddressUtil.normalize_address(bases[dstreg] + v)
                     if not skip_msb_check and not AddressUtil.is_msb_on(w):
                         continue
                     if read_valid and not is_valid_addr_addr(w):
@@ -59610,6 +59647,45 @@ class KernelAddressHeuristicFinderUtil:
                     yield w
 
     @staticmethod
+    def arm32_movw_movt_str(res, skip=0, skip_msb_check=False, read_valid=False, allow_cc=False):
+        bases = {}
+        add1time = {}
+        for line in res.splitlines():
+            if allow_cc:
+                m = re.search(r"movw(?:cc)?\s+(\w+),.+[;@]\s*(0x\w+)", line)
+            else:
+                m = re.search(r"movw\s+(\w+),.+[;@]\s*(0x\w+)", line)
+            if m:
+                reg = m.group(1)
+                v = int(m.group(2), 16)
+                bases[reg] = v
+                continue
+            if allow_cc:
+                m = re.search(r"movt(?:cc)?\s+(\w+),.+[;@]\s*(0x\w+)", line)
+            else:
+                m = re.search(r"movt\s+(\w+),.+[;@]\s*(0x\w+)", line)
+            if m:
+                reg = m.group(1)
+                v = int(m.group(2), 16) << 16
+                if reg in bases:
+                    add1time[reg] = bases[reg] + v
+                    continue
+            m = re.search(r"str\s+\w+,\s*\[(\w+)(?:,\s*#(\d+))?\]", line)
+            if m:
+                reg = m.group(1)
+                v = int(m.group(2), 0) if m.group(2) else 0
+                if reg in add1time:
+                    w = AddressUtil.normalize_address(add1time[reg] + v)
+                    if not skip_msb_check and not AddressUtil.is_msb_on(w):
+                        continue
+                    if read_valid and not is_valid_addr_addr(w):
+                        continue
+                    if skip > 0:
+                        skip -= 1
+                        continue
+                    yield w
+
+    @staticmethod
     def arm32_movw_movt_add(res, skip=0, skip_msb_check=False, read_valid=False):
         bases = {}
         add1time = {}
@@ -59699,6 +59775,31 @@ class KernelAddressHeuristicFinderUtil:
                 reg = m.group(1)
                 if reg in bases:
                     w = AddressUtil.normalize_address(bases[reg])
+                    if read_valid and not is_valid_addr_addr(w):
+                        continue
+                    if skip <= 0:
+                        yield w
+                    skip -= 1
+                    continue
+
+    @staticmethod
+    def arm32_ldr_pc_relative_str(res, skip=0, read_valid=False):
+        bases = {}
+        for line in res.splitlines():
+            m = re.search(r"ldr\s+(\w+),\s*\[pc,\s*#(\d+)\]", line)
+            if m:
+                reg = m.group(1)
+                ofs = AddressUtil.normalize_address(int(m.group(2), 0))
+                pos = AddressUtil.normalize_address(int(line.split()[0].replace(":", ""), 16))
+                v = read_int_from_memory(pos + 4 * 2 + ofs)
+                bases[reg] = v
+                continue
+            m = re.search(r"str\s+\w+,\s*\[(\w+)(?:,\s*#(\d+))?\]", line)
+            if m:
+                reg = m.group(1)
+                ofs = AddressUtil.normalize_address(int(m.group(2), 0)) if m.group(2) else 0
+                if reg in bases:
+                    w = AddressUtil.normalize_address(bases[reg] + ofs)
                     if read_valid and not is_valid_addr_addr(w):
                         continue
                     if skip <= 0:
@@ -64114,10 +64215,37 @@ class KernelAddressHeuristicFinder:
                 for x in g:
                     return x
 
-        # plan 3 (from ksysctl)
-        # vm.mmap_min_addr points to dac_mmap_min_addr, which may be lower than the
-        # effective mmap_min_addr when CONFIG_LSM_MMAP_MIN_ADDR is set.  Use it only
-        # as a fallback when the effective value cannot be found from kernel code.
+        # plan 3 (available v2.6.26 or later)
+        # mmap_min_addr_handler() is the only non-init writer of mmap_min_addr, so the
+        # store destination tells it apart from the dac_mmap_min_addr it loads first.
+        addr = Symbol.get_ksymaddr("mmap_min_addr_handler")
+        if addr:
+            res = gdb.execute("x/40i {:#x}".format(addr), to_string=True)
+            if is_x86_64():
+                g = KernelAddressHeuristicFinderUtil.x64_qword_ptr_rip_base_store(res)
+            elif is_x86_32():
+                g = KernelAddressHeuristicFinderUtil.x86_noptr_ds_store(res)
+            elif is_arm64():
+                g = KernelAddressHeuristicFinderUtil.aarch64_adrp_str(res)
+            elif is_arm32():
+                g = itertools.chain(
+                    KernelAddressHeuristicFinderUtil.arm32_movw_movt_str(res),
+                    KernelAddressHeuristicFinderUtil.arm32_ldr_pc_relative_str(res),
+                )
+            for x in g:
+                return x
+        return None
+
+    @staticmethod
+    @switch_to_intel_syntax
+    def get_dac_mmap_min_addr():
+        # plan 1 (directly)
+        if KernelAddressHeuristicFinder.USE_DIRECTLY:
+            x = Symbol.get_ksymaddr("dac_mmap_min_addr")
+            if x:
+                return x
+
+        # plan 2 (from ksysctl)
         if KernelAddressHeuristicFinder.USE_KSYSCTL:
             x = Kernel.get_ksysctl("vm.mmap_min_addr")
             if x:
