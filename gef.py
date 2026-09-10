@@ -6371,6 +6371,18 @@ class Symbol:
         return list(kallsyms_map.get(sym, []))
 
     @staticmethod
+    def get_ksymaddr_startswith(prefix):
+        """e.g., 'mark_tsc_unstable' -> [0xffffffff9543da30, 0xffffffff9543da90]
+
+        gcc numbers a split body arbitrarily (`foo.part.11`, `foo.cold.3`, ...),
+        so the exact name of the piece holding the reference is not predictable."""
+        ret = Symbol.get_kallsyms()
+        if ret is None:
+            return []
+        kallsyms, kallsyms_map = ret
+        return [addr for addr, name, _typ in kallsyms if name.startswith(prefix)]
+
+    @staticmethod
     def get_symbol_by_monitor(symbol):
         if not is_kdb():
             return None
@@ -63818,21 +63830,29 @@ class KernelAddressHeuristicFinder:
             if x:
                 return x
 
-        kversion = Kernel.kernel_version()
+        def looks_like_clocksource_tsc(addr):
+            for offset in range(0, 0x80, current_arch.ptrsize):
+                if not is_valid_addr(addr + offset):
+                    return False
+                name_addr = read_int_from_memory(addr + offset)
+                if not is_valid_addr(name_addr):
+                    continue
+                try:
+                    if read_cstring_from_memory(name_addr) == "tsc":
+                        return True
+                except gdb.MemoryError:
+                    pass
+            return False
 
-        # plan 2 (available v4.16.8 or later)
-        if kversion and "4.16.8" <= kversion:
-            # The compiler-split bodies may hold the actual clocksource_tsc reference.
-            addr = (Symbol.get_ksymaddr("mark_tsc_unstable.part.0") or
-                    Symbol.get_ksymaddr("mark_tsc_unstable.cold") or
-                    Symbol.get_ksymaddr("mark_tsc_unstable"))
-            if addr:
-                res = gdb.execute("x/20i {:#x}".format(addr), to_string=True)
-                if is_x86_64():
-                    g = KernelAddressHeuristicFinderUtil.x64_x86_mov_reg_const(res, "rdi", skip=2)
-                elif is_x86_32():
-                    g = KernelAddressHeuristicFinderUtil.x64_x86_mov_reg_const(res, "eax", skip=1)
-                for x in g:
+        # plan 2
+        # The compiler-split bodies may hold the actual clocksource_tsc reference.
+        # `&clocksource_tsc` is passed after the pr_info() call and after
+        # `&clocksource_tsc_early`, so the position of the candidate is not stable.
+        # Tell them apart by the `name` member instead.
+        for addr in Symbol.get_ksymaddr_startswith("mark_tsc_unstable"):
+            res = gdb.execute("x/40i {:#x}".format(addr), to_string=True)
+            for x in KernelAddressHeuristicFinderUtil.x64_x86_mov_reg_const(res):
+                if looks_like_clocksource_tsc(x):
                     return x
         return None
 
