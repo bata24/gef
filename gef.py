@@ -64445,6 +64445,20 @@ class KernelAddressHeuristicFinder:
         if not is_arm64():
             return None
 
+        def looks_like_vdso_info(addr):
+            if addr % current_arch.ptrsize != 0 or not is_valid_addr(addr):
+                return False
+            try:
+                name = read_int_from_memory(addr)
+                code_start = read_int_from_memory(addr + current_arch.ptrsize)
+                return (is_valid_addr(name)
+                        and read_cstring_from_memory(name) == "vdso"
+                        and code_start % get_pagesize() == 0
+                        and is_valid_addr(code_start)
+                        and read_memory(code_start, 4) == b"\x7fELF")
+            except (gdb.MemoryError, MemoryError):
+                return False
+
         # plan 1 (directly)
         if KernelAddressHeuristicFinder.USE_DIRECTLY:
             x = Symbol.get_ksymaddr("vdso_info")
@@ -64461,10 +64475,15 @@ class KernelAddressHeuristicFinder:
         if kversion and "5.8" <= kversion:
             addr = Symbol.get_ksymaddr("__vdso_init")
             if addr:
-                res = gdb.execute("x/20i {:#x}".format(addr), to_string=True)
-                g = KernelAddressHeuristicFinderUtil.aarch64_adrp_add(res)
-                for x in g:
-                    return x
+                try:
+                    res = gdb.execute("x/20i {:#x}".format(addr), to_string=True)
+                except gdb.MemoryError:
+                    res = None
+                if res:
+                    g = KernelAddressHeuristicFinderUtil.aarch64_adrp_add(res)
+                    for x in g:
+                        if looks_like_vdso_info(x):
+                            return x
 
         # plan 3 (from .rodata)
         """
