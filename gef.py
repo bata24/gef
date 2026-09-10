@@ -59368,6 +59368,12 @@ class KernelAddressHeuristicFinderUtil:
         return KernelAddressHeuristicFinderUtil.common_addr_gen(res, regexp, skip, skip_msb_check, read_valid)
 
     @staticmethod
+    def x64_any_ptr_rip_base(res, skip=0, skip_msb_check=False, read_valid=False):
+        # Use this when the C type of the global changes between versions. (e.g., `bool` -> `int`)
+        regexp = r"(?:BYTE|WORD|DWORD|QWORD) PTR \[rip\+0x\w+\].*#\s*(0x\w+)"
+        return KernelAddressHeuristicFinderUtil.common_addr_gen(res, regexp, skip, skip_msb_check, read_valid)
+
+    @staticmethod
     def x64_qword_ptr_rip_base_store(res, skip=0, skip_msb_check=False, read_valid=False):
         regexp = r"QWORD PTR \[rip\+0x\w+\],[^#]*#\s*(0x\w+)"
         return KernelAddressHeuristicFinderUtil.common_addr_gen(res, regexp, skip, skip_msb_check, read_valid)
@@ -64168,7 +64174,7 @@ class KernelAddressHeuristicFinder:
             if addr:
                 res = gdb.execute("x/20i {:#x}".format(addr), to_string=True)
                 if is_x86_64():
-                    g = KernelAddressHeuristicFinderUtil.x64_qword_ptr_rip_base(res)
+                    g = KernelAddressHeuristicFinderUtil.x64_any_ptr_rip_base(res)
                 elif is_x86_32():
                     g = KernelAddressHeuristicFinderUtil.x86_noptr_ds(res)
                 elif is_arm64():
@@ -64177,6 +64183,21 @@ class KernelAddressHeuristicFinder:
                     g = KernelAddressHeuristicFinderUtil.arm32_movw_movt_ldr(res)
                 for x in g:
                     return x
+
+        # plan 3 (param_get_aauint has no apparmor_enabled check before v4.12)
+        addr = Symbol.get_ksymaddr("param_get_mode")
+        if addr:
+            res = gdb.execute("x/20i {:#x}".format(addr), to_string=True)
+            if is_x86_64():
+                g = KernelAddressHeuristicFinderUtil.x64_any_ptr_rip_base(res)
+            elif is_x86_32():
+                g = KernelAddressHeuristicFinderUtil.x86_noptr_ds(res)
+            elif is_arm64():
+                g = KernelAddressHeuristicFinderUtil.aarch64_adrp_ldr(res)
+            elif is_arm32():
+                g = KernelAddressHeuristicFinderUtil.arm32_movw_movt_ldr(res)
+            for x in g:
+                return x
         return None
 
     @staticmethod
@@ -64196,7 +64217,7 @@ class KernelAddressHeuristicFinder:
             if addr:
                 res = gdb.execute("x/20i {:#x}".format(addr), to_string=True)
                 if is_x86_64():
-                    g = KernelAddressHeuristicFinderUtil.x64_dword_ptr_rip_base(res, skip=1)
+                    g = KernelAddressHeuristicFinderUtil.x64_any_ptr_rip_base(res, skip=1)
                 elif is_x86_32():
                     g = KernelAddressHeuristicFinderUtil.x86_noptr_ds(res, skip=1)
                 elif is_arm64():
