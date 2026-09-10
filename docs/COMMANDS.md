@@ -7828,6 +7828,30 @@ options:
   -h, --help  show this help message and exit
 ```
 
+## ks-selftest
+
+Compare kernel-address heuristic finders with kallsyms results.
+
+
+### Syntax
+
+```text
+usage: ks-selftest [-h] [-n] [-q] [--failures-only]
+
+options:
+  -h, --help       show this help message and exit
+  -n, --no-pager   do not use the pager.
+  -q, --quiet      enable quiet mode.
+  --failures-only  show only failed finders.
+```
+
+### Notes
+
+```text
+False means explicitly unsupported; None means not found; '-' means unavailable or not run.
+$ks_selftest_failures is nonzero if the test cannot run, otherwise it is the number of failed results.
+```
+
 ## kversion
 
 Display or override the kernel version.
@@ -9419,11 +9443,13 @@ Dump the timer.
 ### Syntax
 
 ```text
-usage: ktimer [-h] [-hh] [--meta] [-n] [-q]
+usage: ktimer [-h] [-hh] [--classic-only | --hr-only] [--meta] [-n] [-q]
 
 options:
   -h, --help          show this help message and exit
   -hh, --help-simple  show help without ASCII diagram.
+  --classic-only      dump only classic timers.
+  --hr-only           dump only high-resolution timers.
   --meta              display offset information.
   -n, --no-pager      do not use the pager.
   -q, --quiet         enable quiet mode.
