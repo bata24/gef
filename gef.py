@@ -63943,7 +63943,61 @@ class KernelAddressHeuristicFinder:
             if x:
                 return x
 
-        # plan 2 nothing
+        kversion = Kernel.kernel_version()
+
+        # plan 2 (search for the memory; available v4.2 or later)
+        # `capability_hooks` is referenced only from `capability_init()`, which is __init and
+        # already freed, so there is no instruction to follow. Search the data area for the
+        # `hook` members instead. The head of the array is always these 3 entries.
+        if kversion and "4.2" <= kversion:
+            hooks = ["cap_capable", "cap_settime", "cap_ptrace_access_check"]
+            hooks = [Symbol.get_ksymaddr(x) for x in hooks]
+            image_range = KernelAddressHeuristicFinderUtil.get_kernel_image_range()
+            kinfo = Kernel.get_kernel_layout(apply_data_range_hint=False)
+            start = kinfo.ro_base or kinfo.text_base # `capability_hooks` is never in .text
+            if all(hooks) and start:
+                if image_range and start < image_range[1]:
+                    end = image_range[1]
+                else:
+                    # An old (=RWX) kernel has no detectable .data range. Scan a bounded area
+                    # following .rodata, where `capability_hooks` is defined.
+                    end = (kinfo.ro_end or start) + 0x1000000
+                ptrsize = current_arch.ptrsize
+                pack = p32 if ptrsize == 4 else p64
+                hooks = [pack(x) for x in hooks]
+                chunk_size = 0x100000
+                # The area has unmapped holes, so read it chunk by chunk and pad the
+                # unreadable pages with zero to keep the offset of the readable pages.
+                for addr in range(start, end, chunk_size - ptrsize * 40):
+                    size = min(chunk_size, end - addr)
+                    try:
+                        data = read_memory(addr, size)
+                    except (gdb.MemoryError, MemoryError):
+                        data = b""
+                        pagesize = get_pagesize()
+                        for offset in range(0, size, pagesize):
+                            n = min(pagesize, size - offset)
+                            try:
+                                data += read_memory(addr + offset, n)
+                            except (gdb.MemoryError, MemoryError):
+                                data += b"\0" * n
+                    pos = -1
+                    while True:
+                        pos = data.find(hooks[0], pos + 1)
+                        if pos == -1:
+                            break
+                        if pos % ptrsize:
+                            continue
+                        # sizeof(security_hook_list) is 3 pointers from v6.12 (`scalls`, `hook`,
+                        # `lsmid`), otherwise 4 pointers or more (`list`, `head`, `hook`,
+                        # optional `lsm` and padding), so detect it from the array itself.
+                        for stride in range(ptrsize * 3, ptrsize * 17, ptrsize):
+                            if data[pos + stride:pos + stride + ptrsize] != hooks[1]:
+                                continue
+                            if data[pos + stride * 2:pos + stride * 2 + ptrsize] != hooks[2]:
+                                continue
+                            offset_hook = ptrsize if stride == ptrsize * 3 else ptrsize * 3
+                            return addr + pos - offset_hook
         return None
 
     @staticmethod
