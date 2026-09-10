@@ -6372,15 +6372,17 @@ class Symbol:
 
     @staticmethod
     def get_ksymaddr_startswith(prefix):
-        """e.g., 'mark_tsc_unstable' -> [0xffffffff9543da30, 0xffffffff9543da90]
+        """e.g., 'mark_tsc_unstable' -> [0xffffffff9543da90, 0xffffffff9543da30]
 
         gcc numbers a split body arbitrarily (`foo.part.11`, `foo.cold.3`, ...),
-        so the exact name of the piece holding the reference is not predictable."""
+        so the exact name of the piece holding the reference is not predictable.
+        The exact match comes first, then the split pieces in address order."""
         ret = Symbol.get_kallsyms()
         if ret is None:
             return []
         kallsyms, kallsyms_map = ret
-        return [addr for addr, name, _typ in kallsyms if name.startswith(prefix)]
+        exact = list(kallsyms_map.get(prefix, []))
+        return exact + [addr for addr, name, _typ in kallsyms if name != prefix and name.startswith(prefix)]
 
     @staticmethod
     def get_symbol_by_monitor(symbol):
@@ -64314,8 +64316,7 @@ class KernelAddressHeuristicFinder:
 
         # plan 2 (available v5.4 or later)
         if kversion and "5.4" <= kversion:
-            addr = Symbol.get_ksymaddr("lock_kernel_down")
-            if addr:
+            for addr in Symbol.get_ksymaddr_startswith("lock_kernel_down"):
                 res = gdb.execute("x/10i {:#x}".format(addr), to_string=True)
                 if is_x86_64():
                     g = KernelAddressHeuristicFinderUtil.x64_dword_ptr_rip_base(res)
@@ -64754,8 +64755,7 @@ class KernelAddressHeuristicFinder:
 
         # plan 2 (available v5.8 or later)
         if kversion and "5.8" <= kversion:
-            addr = Symbol.get_ksymaddr("__vdso_init")
-            if addr:
+            for addr in Symbol.get_ksymaddr_startswith("__vdso_init"):
                 try:
                     res = gdb.execute("x/20i {:#x}".format(addr), to_string=True)
                 except gdb.MemoryError:
@@ -64829,8 +64829,7 @@ class KernelAddressHeuristicFinder:
 
         # plan 2 (available v5.3 or later)
         if kversion and "5.3" <= kversion:
-            addr = Symbol.get_ksymaddr("__vdso_init")
-            if addr:
+            for addr in Symbol.get_ksymaddr_startswith("__vdso_init"):
                 res = gdb.execute("x/20i {:#x}".format(addr), to_string=True)
                 g = KernelAddressHeuristicFinderUtil.aarch64_adrp_add(res)
                 for x in g:
