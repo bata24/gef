@@ -59358,6 +59358,11 @@ class KernelAddressHeuristicFinderUtil:
         return KernelAddressHeuristicFinderUtil.common_addr_gen(res, regexp, skip, skip_msb_check, read_valid)
 
     @staticmethod
+    def x64_byte_ptr_rip_base(res, skip=0, skip_msb_check=False, read_valid=False):
+        regexp = r"BYTE PTR \[rip\+0x\w+\].*#\s*(0x\w+)"
+        return KernelAddressHeuristicFinderUtil.common_addr_gen(res, regexp, skip, skip_msb_check, read_valid)
+
+    @staticmethod
     def x64_qword_ptr_rip_base(res, skip=0, skip_msb_check=False, read_valid=False):
         regexp = r"QWORD PTR \[rip\+0x\w+\].*#\s*(0x\w+)"
         return KernelAddressHeuristicFinderUtil.common_addr_gen(res, regexp, skip, skip_msb_check, read_valid)
@@ -65642,15 +65647,15 @@ class KernelAddressHeuristicFinder:
         return None
 
     @staticmethod
-    def is_timer_base(timer_base, cpu):
-        """Check the layout invariants of `struct timer_base`."""
+    def find_timer_base_clk(timer_base, cpu):
+        """Check the layout invariants of `struct timer_base`, and return the offset of `clk`."""
         ptrsize = current_arch.ptrsize
         unpack = u64 if ptrsize == 8 else u32
 
         try:
             header = read_memory(timer_base, 0x200)
         except gdb.MemoryError:
-            return False
+            return None
 
         # Fields inserted by lockdep and PREEMPT_RT move `clk`, so find the stable tail:
         #   unsigned long clk, next_expiry;
@@ -65666,12 +65671,13 @@ class KernelAddressHeuristicFinder:
                 continue
             if any(x > 1 for x in header[offset_cpu + 4:offset_cpu + 7]):
                 continue
-            if clk == 0 or next_expiry == 0:
+            if clk == 0:
                 continue
 
-            # time_before(next_expiry, clk), with unsigned-long wraparound.
+            # time_before(next_expiry, clk), with unsigned-long wraparound. `next_expiry` is
+            # left 0 with CONFIG_NO_HZ_COMMON=n, where nothing updates it.
             bits = ptrsize * 8
-            if ((next_expiry - clk) & ((1 << bits) - 1)) >= (1 << (bits - 1)):
+            if next_expiry and ((next_expiry - clk) & ((1 << bits) - 1)) >= (1 << (bits - 1)):
                 continue
 
             # Since the v4.8 timer-wheel rewrite WHEEL_SIZE is 512 or 576, depending on HZ.
@@ -65693,8 +65699,8 @@ class KernelAddressHeuristicFinder:
                     if not valid:
                         break
                 else:
-                    return True
-        return False
+                    return offset_clk
+        return None
 
     @staticmethod
     @switch_to_intel_syntax
@@ -65762,12 +65768,16 @@ class KernelAddressHeuristicFinder:
                     # 0xffffffff8cf25b05 <run_timer_softirq+5>:  mov rdi,0x24b40 <-- timer_bases
                     # pattern1-b:
                     # 0xffffffffa440831e <run_timer_softirq+46>: lea rbx,[rax+0x22400]
+                    # `run_timer_softirq()` walks `timer_bases[]` from the tail on some versions,
+                    # so scan the candidates in ascending order to get the head of the array.
+                    # 0xffffffffad545e60 <run_timer_softirq+96>: add rdi,0x1f540 <-- timer_bases[2]
+                    # 0xffffffffad545e1a <run_timer_softirq+26>: lea rax,[rdi+0x1d040] <-- timer_bases
                     cpu_offset = Kernel.get_each_cpu_offset(per_cpu_offset)
-                    for x in g:
+                    for x in sorted(g):
                         if x & (current_arch.ptrsize - 1):
                             continue
                         if cpu_offset and all(
-                            KernelAddressHeuristicFinder.is_timer_base(AddressUtil.normalize_address(offset + x), cpu)
+                            KernelAddressHeuristicFinder.find_timer_base_clk(AddressUtil.normalize_address(offset + x), cpu) is not None
                             for cpu, offset in enumerate(cpu_offset)
                         ):
                             return x
@@ -65777,21 +65787,32 @@ class KernelAddressHeuristicFinder:
                     # 0xffffffff8aa6e457 <run_timer_softirq+7>:  cmp rax,QWORD PTR [rip+0x7ce92a] # 0xffffffff8b23cd88 <timer_bases+8>
                     # 0xffffffff8aa6e474 <run_timer_softirq+36>: mov rdx,QWORD PTR [rip+0x7cfb85] # 0xffffffff8b23e000 <jiffies_64>
                     # 0xffffffff8aa6e47b <run_timer_softirq+43>: mov rax,QWORD PTR [rip+0x7ce906] # 0xffffffff8b23cd88 <timer_bases+8>
-                    jiffies = KernelAddressHeuristicFinder.get_jiffies()
-                    addrs = [x for x in g2 if (is_valid_addr(x) and (not jiffies or jiffies != x))]
-                    if addrs:
-                        return min(addrs)
+                    # `__run_timers()` is usually inlined, so only the members are referenced and
+                    # `&timer_bases[0]` itself may not appear at all. Snap a candidate back to the
+                    # head via the offset of `clk`; `raw_spinlock_t` is an empty struct here
+                    # because this pattern means CONFIG_SMP=n, so `clk` follows `running_timer`
+                    # at the very head of the structure.
+                    bases = []
+                    for x in sorted(set(g2)):
+                        if x & (current_arch.ptrsize - 1) or not is_valid_addr(x):
+                            continue
+                        offset_clk = KernelAddressHeuristicFinder.find_timer_base_clk(x, 0)
+                        if offset_clk is not None:
+                            bases.append(x + offset_clk - current_arch.ptrsize)
+                    if bases:
+                        return min(bases)
         return None
 
     @staticmethod
     def find_clock_base_anchor(hrtimer_cpu_base):
         """Find `clock_base[]` by the back-pointer `clock_base[i].cpu_base`.
 
-        Return (offset of clock_base[0], sizeof(struct hrtimer_clock_base)). The offset is
-        measured from the argument, which may include a slight deviation from the real
-        `&hrtimer_cpu_base` (see `get_hrtimer_bases()`).
+        Return (offset of clock_base[0], sizeof(struct hrtimer_clock_base), real
+        `&hrtimer_cpu_base`). The offset is measured from the argument, which may point at
+        a member instead of the head (see `get_hrtimer_bases()`).
         """
         ptrsize = current_arch.ptrsize
+        hrtimer_cpu_base &= ~(ptrsize - 1)
 
         # Collect every pointer that points back into `hrtimer_cpu_base` itself. With
         # CONFIG_DEBUG_LOCK_ALLOC these are not only `clock_base[i].cpu_base`: `lock.dep_map.key`
@@ -65819,7 +65840,7 @@ class KernelAddressHeuristicFinder:
             except gdb.MemoryError:
                 continue
             if index == [0, 1, 2, 3]:
-                return offset, size
+                return offset, size, v
         return None
 
     @staticmethod
@@ -65833,8 +65854,8 @@ class KernelAddressHeuristicFinder:
 
         kversion = Kernel.kernel_version()
 
-        # plan 2 (available v4.8 or later)
-        if kversion and "4.8" <= kversion:
+        # plan 2 (available v3.10 or later; HRTIMER_BASE_TAI makes `clock_base[]` 4 elements)
+        if kversion and "3.10" <= kversion:
             addr = Symbol.get_ksymaddr("hrtimer_run_queues")
             if addr:
                 res = gdb.execute("x/20i {:#x}".format(addr), to_string=True)
@@ -65876,8 +65897,9 @@ class KernelAddressHeuristicFinder:
                             addr_cpu0 = AddressUtil.normalize_address(cpu_offset[0] + x)
                         else:
                             addr_cpu0 = x
-                        if KernelAddressHeuristicFinder.find_clock_base_anchor(addr_cpu0):
-                            return x
+                        anchor = KernelAddressHeuristicFinder.find_clock_base_anchor(addr_cpu0)
+                        if anchor:
+                            return AddressUtil.normalize_address(x - (addr_cpu0 - anchor[2]))
 
                 per_cpu_offset = KernelAddressHeuristicFinder.get_per_cpu_offset()
                 if per_cpu_offset:
@@ -65886,7 +65908,8 @@ class KernelAddressHeuristicFinder:
                     # 0xffffffff9b127acb: mov rbx,0x27040 <-- hrtimer_bases
                     # pattern1-b:
                     # 0xffffffffa440b87d <hrtimer_run_queues+13>: test BYTE PTR [rax+0x25b90],0x1
-                    # The exact value is 0x25b80, but don't worry about a slight deviation.
+                    # The exact value is 0x25b80. Such a candidate points at a member, so it is
+                    # snapped back to the head by the `clock_base[i].cpu_base` back-pointer.
                     # pattern1-c:
                     # 0xffffffff818f57b5 <hrtimer_run_queues+21>: lea rbx,[rax+0x1df00]
                     cpu_offset = Kernel.get_each_cpu_offset(per_cpu_offset)
@@ -65895,22 +65918,35 @@ class KernelAddressHeuristicFinder:
                         # the offset in the structure. It is too small to be `hrtimer_bases`.
                         # 0xffffffffb5f81a48 <hrtimer_run_queues+24>: lea rbx,[rax-0x471d1540]
                         # 0xffffffffb5f81a4f <hrtimer_run_queues+31>: movzx eax,BYTE PTR [rbx+0x10]
-                        if x < 0x1000:
+                        if x < 0x1000 or not cpu_offset:
                             continue
-                        if cpu_offset and all(
+                        addr_cpu0 = AddressUtil.normalize_address(cpu_offset[0] + x)
+                        anchor = KernelAddressHeuristicFinder.find_clock_base_anchor(addr_cpu0)
+                        if anchor and all(
                             KernelAddressHeuristicFinder.find_clock_base_anchor(AddressUtil.normalize_address(offset + x))
-                            for offset in cpu_offset
+                            for offset in cpu_offset[1:]
                         ):
-                            return x
+                            return AddressUtil.normalize_address(x - (addr_cpu0 - anchor[2]))
                 else:
                     # pattern2: not per_cpu
                     # 0xffffffffbb8668bc <hrtimer_run_queues+12>: mov rdx,0xffffffffbc046138
                     # 0xffffffffbb8668c3 <hrtimer_run_queues+19>: mov rcx,0xffffffffbc046178
                     # 0xffffffffbb8668ca <hrtimer_run_queues+26>: mov rsi,0xffffffffbc0460f8
                     # 0xffffffffbb8668d1 <hrtimer_run_queues+33>: mov rdi,0xffffffffbc046048 <-- hrtimer_bases+8
-                    addrs = [x for x in g2 if is_valid_addr(x)]
-                    if addrs:
-                        return min(addrs)
+                    # Newer x86_64 compilers keep the structure in memory instead, and then the
+                    # only candidates are rip-relative operands.
+                    # 0xffffffff9cedbb5c <hrtimer_run_queues+92>: mov rax,QWORD PTR [rip+0xe57795] # 0xffffffff9dd332f8
+                    if is_x86_64():
+                        g2 = itertools.chain(
+                            g2,
+                            KernelAddressHeuristicFinderUtil.x64_byte_ptr_rip_base(res),
+                            KernelAddressHeuristicFinderUtil.x64_dword_ptr_rip_base(res),
+                            KernelAddressHeuristicFinderUtil.x64_qword_ptr_rip_base(res),
+                        )
+                    for x in sorted({x for x in g2 if is_valid_addr(x)}):
+                        anchor = KernelAddressHeuristicFinder.find_clock_base_anchor(x)
+                        if anchor:
+                            return anchor[2]
         return None
 
     @staticmethod
@@ -77094,21 +77130,27 @@ class KernelTimerCommand(GenericCommand, BufferingOutput):
             struct hlist_head vectors[WHEEL_SIZE];
         } ____cacheline_aligned;
         """
-        self.roughly_sizeof_timer_base = 0
+        self.sizeof_timer_base = 0
         if self.nr_bases > 1:
             timer_base = self.per_cpu_timer_bases[0]
 
-            i = 512
-            while True:
-                try:
-                    v = read_int_from_memory(timer_base + current_arch.ptrsize * i)
-                except gdb.MemoryError:
-                    self.classic_timer_meta.append((self.quiet_err, "Memory read error"))
-                    return None
-                if v != 0 and not is_valid_addr(v):
-                    self.roughly_sizeof_timer_base = current_arch.ptrsize * i
-                    break
-                i += 1
+            # Look for the first member that is neither NULL nor a pointer. Which member that is
+            # depends on the config: `lock` keeps the ticket counter on ARM32 and the magic with
+            # CONFIG_DEBUG_SPINLOCK, otherwise the first one is `clk`. Running the same scan
+            # from `timer_bases[0]` calibrates that, so the difference is the exact stride.
+            found = []
+            for i in (0, 512):
+                while True:
+                    try:
+                        v = read_int_from_memory(timer_base + current_arch.ptrsize * i)
+                    except gdb.MemoryError:
+                        self.classic_timer_meta.append((self.quiet_err, "Memory read error"))
+                        return None
+                    if v != 0 and not is_valid_addr(v):
+                        found.append(current_arch.ptrsize * i)
+                        break
+                    i += 1
+            self.sizeof_timer_base = found[1] - found[0]
 
         # jiffies
         self.jiffies = KernelAddressHeuristicFinder.get_jiffies()
@@ -77244,11 +77286,10 @@ class KernelTimerCommand(GenericCommand, BufferingOutput):
         # head and the stride of `clock_base[]` directly. Unlike the calculation from `get_time`
         # below, it is exact even when the tail of `struct hrtimer_clock_base` is padded up to
         # the alignment (~v4.15), and it is the only way for v6.18 or later where `get_time`
-        # has been removed. Note that `hrtimer_cpu_base` may include a slight deviation
-        # (see `get_hrtimer_bases()`), but it cancels out because the offset is measured from it.
+        # has been removed.
         anchor = KernelAddressHeuristicFinder.find_clock_base_anchor(hrtimer_cpu_base)
         if anchor:
-            self.offset_clock_base, self.sizeof_hrtimer_clock_base = anchor
+            self.offset_clock_base, self.sizeof_hrtimer_clock_base, _ = anchor
         elif "6.18" <= kversion:
             self.hrtimer_meta.append((self.quiet_err, "clock_base: Not found"))
             return None
@@ -77487,7 +77528,7 @@ class KernelTimerCommand(GenericCommand, BufferingOutput):
         for cpu, timer_base in enumerate(self.per_cpu_timer_bases):
             # dump timer_list
             for base_n in range(self.nr_bases):
-                tb = timer_base + self.roughly_sizeof_timer_base * base_n
+                tb = timer_base + self.sizeof_timer_base * base_n
                 self.out.append(titlify("cpu{:d} timer_base[{:d}]: {:#x}".format(cpu, base_n, tb)))
 
                 # print legend
