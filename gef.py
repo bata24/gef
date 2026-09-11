@@ -62792,7 +62792,11 @@ class KernelAddressHeuristicFinder:
                 elif is_x86_32():
                     g = KernelAddressHeuristicFinderUtil.x86_dword_ptr_array4_base(res)
                 elif is_arm64():
-                    g = KernelAddressHeuristicFinderUtil.aarch64_adrp_add(res)
+                    # gcc splits the page offset into two adds in some builds
+                    g = itertools.chain(
+                        KernelAddressHeuristicFinderUtil.aarch64_adrp_add_add(res),
+                        KernelAddressHeuristicFinderUtil.aarch64_adrp_add(res),
+                    )
                 elif is_arm32():
                     g = itertools.chain(
                         KernelAddressHeuristicFinderUtil.arm32_movw_movt_ldr(res),
@@ -63849,7 +63853,9 @@ class KernelAddressHeuristicFinder:
                         # gef> x/w 0xc1d9b4c0
                         # 0xc1d9b4c0 <mem_map>:   0xcbdd9000
                         KernelAddressHeuristicFinderUtil.arm32_movw_movt(res),
-                        KernelAddressHeuristicFinderUtil.arm32_ldr_pc_relative(res),
+                        # The literal must be dereferenced; a bare `ldr rX, [pc, #N]` in a slow path
+                        # just materializes an unrelated pointer (e.g. a __FILE__ string).
+                        KernelAddressHeuristicFinderUtil.arm32_ldr_pc_relative_ldr(res),
                     )
                 for x in g:
                     try:
@@ -66565,8 +66571,18 @@ class KernelAddressHeuristicFinder:
                 elif is_x86_32():
                     g = KernelAddressHeuristicFinderUtil.x64_x86_mov_reg_const(res)
                 elif is_arm64():
-                    g = KernelAddressHeuristicFinderUtil.aarch64_adrp_add(res)
+                    # irq_to_desc() is only a few instructions long, so cut the disassembly at
+                    # its end. Otherwise the next function (irq_lock_sparse) offers
+                    # &sparse_irq_lock as a candidate.
+                    res = re.split(r"\bret\b", res, maxsplit=1)[0]
+                    # &sparse_irqs may be built as adrp + add + add.
+                    g = itertools.chain(
+                        KernelAddressHeuristicFinderUtil.aarch64_adrp_add_add(res),
+                        KernelAddressHeuristicFinderUtil.aarch64_adrp_add(res),
+                    )
                 elif is_arm32():
+                    # cut at the return or the tail call, for the same reason as arm64
+                    res = re.split(r"\bb\s+0x|\bbx\s+lr\b|\b(?:pop|ldm)\w*\b[^\n]*\bpc\b", res, maxsplit=1)[0]
                     g = itertools.chain(
                         KernelAddressHeuristicFinderUtil.arm32_movw_movt(res),
                         KernelAddressHeuristicFinderUtil.arm32_ldr_pc_relative(res),
