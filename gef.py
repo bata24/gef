@@ -64819,7 +64819,9 @@ class KernelAddressHeuristicFinder:
         if kversion and "4.2" <= kversion:
             addr = Symbol.get_ksymaddr("compat_arch_setup_additional_pages")
             if addr:
-                res = gdb.execute("x/20i {:#x}".format(addr), to_string=True)
+                # Both vdso_image_32 and vdso_image_x32 are loaded here; their branch
+                # order varies, so use a window long enough to reach the later one.
+                res = gdb.execute("x/40i {:#x}".format(addr), to_string=True)
                 g = KernelAddressHeuristicFinderUtil.x64_x86_mov_reg_const(res, "rdi", read_valid=True)
                 for x in g:
                     v = read_int_from_memory(x)
@@ -64846,7 +64848,9 @@ class KernelAddressHeuristicFinder:
             if is_x86_64():
                 addr = Symbol.get_ksymaddr("compat_arch_setup_additional_pages")
                 if addr:
-                    res = gdb.execute("x/20i {:#x}".format(addr), to_string=True)
+                    # Both vdso images are loaded here in version-dependent order,
+                    # so use a window long enough to reach the later one.
+                    res = gdb.execute("x/40i {:#x}".format(addr), to_string=True)
                     g = KernelAddressHeuristicFinderUtil.x64_x86_mov_reg_const(res, "rdi", read_valid=True)
                     for x in g:
                         v = read_int_from_memory(x)
