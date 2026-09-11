@@ -63363,6 +63363,24 @@ class KernelAddressHeuristicFinder:
             x = Kernel.get_ksysctl("kernel.modprobe")
             if KernelAddressHeuristicFinderUtil.is_in_kernel_image(x):
                 return x
+
+        # plan 3 (from a referencing function; used when register_sysctl is inlined away so ksysctl cannot start)
+        # call_modprobe() reads modprobe_path as argv[0]; it is inlined into __request_module in some builds.
+        # Only x86 has a byte-selective pattern here; on other arches the array base is indistinguishable
+        # from unrelated globals, so plan 3 is skipped and ksysctl (plan 2) is relied upon.
+        if is_x86():
+            for name in ["call_modprobe", "__request_module"]:
+                addr = Symbol.get_ksymaddr(name)
+                if addr is None:
+                    continue
+                res = gdb.execute("x/40i {:#x}".format(addr), to_string=True)
+                if is_x86_64():
+                    g = KernelAddressHeuristicFinderUtil.x64_byte_ptr_rip_base(res)
+                elif is_x86_32():
+                    g = KernelAddressHeuristicFinderUtil.x86_noptr_ds(res)
+                for x in g:
+                    if KernelAddressHeuristicFinderUtil.is_in_kernel_image(x):
+                        return x
         return None
 
     @staticmethod
@@ -63395,6 +63413,25 @@ class KernelAddressHeuristicFinder:
             x = Kernel.get_ksysctl("kernel.core_pattern")
             if KernelAddressHeuristicFinderUtil.is_in_kernel_image(x):
                 return x
+
+        # plan 3 (from a referencing function; used when register_sysctl is inlined away so ksysctl cannot start)
+        # format_corename() parses core_pattern; it is inlined into do_coredump in some builds, where the
+        # reference sits deep in the function, so use a wider window for the fallback. Only x86 has a
+        # byte-selective pattern here; on other arches the array base is indistinguishable from unrelated
+        # globals, so plan 3 is skipped and ksysctl (plan 2) is relied upon.
+        if is_x86():
+            for name, n in [("format_corename", 30), ("do_coredump", 200)]:
+                addr = Symbol.get_ksymaddr(name)
+                if addr is None:
+                    continue
+                res = gdb.execute("x/{:d}i {:#x}".format(n, addr), to_string=True)
+                if is_x86_64():
+                    g = KernelAddressHeuristicFinderUtil.x64_byte_ptr_rip_base(res)
+                elif is_x86_32():
+                    g = KernelAddressHeuristicFinderUtil.x86_noptr_ds(res)
+                for x in g:
+                    if KernelAddressHeuristicFinderUtil.is_in_kernel_image(x):
+                        return x
         return None
 
     @staticmethod
