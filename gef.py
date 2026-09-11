@@ -59955,33 +59955,34 @@ class KernelAddressHeuristicFinderUtil:
         return None
 
     @staticmethod
+    def disassemble_until_next_symbol(addr, count):
+        """Disassemble up to `count` instructions from `addr`, dropping what belongs to the next symbol.
+
+        A window wide enough for a KCOV build overruns a short function, and the
+        constants of the neighbors are indistinguishable from the ones of the anchor."""
+        res = gdb.execute("x/{:d}i {:#x}".format(count, addr), to_string=True)
+        ret = Symbol.get_kallsyms()
+        if ret is None:
+            return res
+        kallsyms, _kallsyms_map = ret
+        end = min([a for a, _name, _typ in kallsyms if a > addr], default=None)
+        if end is None:
+            return res
+        lines = []
+        for line in res.splitlines():
+            m = re.match(r"\s*(?:=>)?\s*(0x[0-9a-f]+)", line)
+            if m and int(m.group(1), 16) >= end:
+                break
+            lines.append(line)
+        return "\n".join(lines)
+
+    @staticmethod
     def collect_idr_candidates(prefix):
         """Return the address constants materialized by the functions whose name starts with `prefix`."""
-        def disassemble_until_next_symbol(addr, count):
-            """Disassemble up to `count` instructions from `addr`, dropping what belongs to the next symbol.
-
-            A window wide enough for a KCOV build overruns a short function, and the
-            constants of the neighbors are indistinguishable from the ones of the anchor."""
-            res = gdb.execute("x/{:d}i {:#x}".format(count, addr), to_string=True)
-            ret = Symbol.get_kallsyms()
-            if ret is None:
-                return res
-            kallsyms, _kallsyms_map = ret
-            end = min([a for a, _name, _typ in kallsyms if a > addr], default=None)
-            if end is None:
-                return res
-            lines = []
-            for line in res.splitlines():
-                m = re.match(r"\s*(?:=>)?\s*(0x[0-9a-f]+)", line)
-                if m and int(m.group(1), 16) >= end:
-                    break
-                lines.append(line)
-            return "\n".join(lines)
-
         candidates = []
         for addr in Symbol.get_ksymaddr_startswith(prefix):
             # KCOV builds interleave __sanitizer_cov_trace_* calls, pushing the idr past 40 insns
-            res = disassemble_until_next_symbol(addr, 60)
+            res = KernelAddressHeuristicFinderUtil.disassemble_until_next_symbol(addr, 60)
             if is_x86_64() or is_x86_32():
                 g = KernelAddressHeuristicFinderUtil.x64_x86_mov_reg_const(res)
             elif is_arm64():
@@ -66378,36 +66379,17 @@ class KernelAddressHeuristicFinder:
         if kversion and "6.10" <= kversion:
             return None
 
-        # plan 2 (available v5.10 ~ v6.9)
-        if kversion and "5.10" <= kversion < "6.10":
-            addr = Symbol.get_ksymaddr("dma_buf_file_release")
-            if addr:
-                res = gdb.execute("x/30i {:#x}".format(addr), to_string=True)
-                if is_x86_64():
-                    g = KernelAddressHeuristicFinderUtil.x64_x86_mov_reg_const(res)
-                elif is_x86_32():
-                    g = KernelAddressHeuristicFinderUtil.x64_x86_mov_reg_const(res)
-                elif is_arm64():
-                    g = itertools.chain(
-                        KernelAddressHeuristicFinderUtil.aarch64_adrp_add(res),
-                        KernelAddressHeuristicFinderUtil.aarch64_adrp_add_add(res),
-                    )
-                elif is_arm32():
-                    g = itertools.chain(
-                        KernelAddressHeuristicFinderUtil.arm32_movw_movt(res),
-                        KernelAddressHeuristicFinderUtil.arm32_ldr_pc_relative(res),
-                    )
-                for x in g:
-                    # here, x points &db_list.lock
-                    v = x - current_arch.ptrsize * 2
-                    if is_double_link_list(v):
-                        return v
-
-        # plan 3 (available v3.17 ~ v5.9)
-        if kversion and "3.17" <= kversion < "5.10":
-            addr = Symbol.get_ksymaddr("dma_buf_release")
-            if addr:
-                res = gdb.execute("x/30i {:#x}".format(addr), to_string=True)
+        # plan 2 (available v3.17 or later)
+        # v5.7 moved the list_del out of `dma_buf_release()` into `dma_buf_file_release()`,
+        # but some v5.4 stable trees carry that split too, so try both anchors in order
+        # instead of picking one by version.
+        if kversion and "3.17" <= kversion:
+            for anchor in ("dma_buf_file_release", "dma_buf_release"):
+                addr = Symbol.get_ksymaddr(anchor)
+                if addr is None:
+                    continue
+                # KASAN builds push &db_list.lock past the 30th instruction
+                res = KernelAddressHeuristicFinderUtil.disassemble_until_next_symbol(addr, 60)
                 if is_x86_64():
                     g = KernelAddressHeuristicFinderUtil.x64_x86_mov_reg_const(res)
                 elif is_x86_32():
@@ -66442,8 +66424,8 @@ class KernelAddressHeuristicFinder:
 
         kversion = Kernel.kernel_version()
 
-        # plan 2 (available v6.10 ~ v6.15)
-        if kversion and "6.10" <= kversion < "6.16":
+        # plan 2 (available v6.10 or later, until `dmabuf_list` replaces `debugfs_list`)
+        if kversion and "6.10" <= kversion and not Symbol.get_ksymaddr("dma_buf_iter_begin"):
             addr = Symbol.get_ksymaddr("dma_buf_file_release")
             if addr:
                 res = gdb.execute("x/30i {:#x}".format(addr), to_string=True)
@@ -66493,12 +66475,17 @@ class KernelAddressHeuristicFinder:
             if x:
                 return x
 
-        kversion = Kernel.kernel_version()
+        # `dmabuf_list` replaced `debugfs_list` together with the exported iterator. Mainline did
+        # that in v6.16, but a tree based on v6.15 can carry it already, so the iterator itself
+        # tells the two layouts apart where the version does not.
+        has_iterator = bool(Symbol.get_ksymaddr("dma_buf_iter_begin"))
 
-        # plan 2 (available v6.16 or later)
-        if kversion and "6.16" <= kversion:
-            addr = Symbol.get_ksymaddr("dma_buf_iter_begin")
-            if addr:
+        # plan 2 (available since the dmabuf iterator was added)
+        if has_iterator:
+            for anchor in ("dma_buf_iter_begin", "dma_buf_iter_next"):
+                addr = Symbol.get_ksymaddr(anchor)
+                if addr is None:
+                    continue
                 res = gdb.execute("x/30i {:#x}".format(addr), to_string=True)
                 if is_x86_64():
                     g = KernelAddressHeuristicFinderUtil.x64_x86_any_const(res)
@@ -66515,13 +66502,16 @@ class KernelAddressHeuristicFinder:
                         KernelAddressHeuristicFinderUtil.arm32_ldr_pc_relative(res),
                     )
                 # x64/x86 embeds &dmabuf_list itself as an immediate,
-                # so it works even if dmabuf_list_mutex is placed far away in .bss
+                # so it works even if dmabuf_list_mutex is placed far away in .bss.
+                # ARM forms the head of the loop in `dma_buf_iter_begin()` with a pre-indexed
+                # load, which leaves no constant to pick up; `dma_buf_iter_next()` compares
+                # against the same head with a plain add / literal, so try both anchors.
                 for x in g:
                     if is_double_link_list(x):
                         return x
 
-        # plan 3 (available v6.16 or later)
-        if kversion and "6.16" <= kversion:
+        # plan 3 (available since the dmabuf iterator was added)
+        if has_iterator:
             addr = Symbol.get_ksymaddr("dma_buf_file_release")
             if addr:
                 res = gdb.execute("x/30i {:#x}".format(addr), to_string=True)
@@ -134572,22 +134562,23 @@ class KernelDmaBufCommand(GenericCommand, BufferingOutput):
         if kversion is None:
             self.meta.append((err, "Could not find kernel version"))
             return None
-        if "5.10" <= kversion < "6.10":
-            self.db_list = KernelAddressHeuristicFinder.get_db_list()
-        elif "6.10" <= kversion < "6.16":
+        # The list was `db_list` until v6.10 renamed it to `debugfs_list`, then renamed again to
+        # `dmabuf_list` when the iterator was exported. The latter rename is in v6.16 upstream but
+        # a tree based on v6.15 can carry it, so ask for the iterator instead of the version.
+        if Symbol.get_ksymaddr("dma_buf_iter_begin"):
+            name = "dmabuf_list"
+            self.db_list = KernelAddressHeuristicFinder.get_dmabuf_list()
+        elif "6.10" <= kversion:
+            name = "debugfs_list"
             self.db_list = KernelAddressHeuristicFinder.get_debugfs_list()
         else:
-            self.db_list = KernelAddressHeuristicFinder.get_dmabuf_list()
+            name = "db_list"
+            self.db_list = KernelAddressHeuristicFinder.get_db_list()
         if self.db_list is None:
             self.meta.append((err, "Could not find db_list (maybe DMA_SHARED_BUFFER=n)"))
             return None
 
-        if "5.10" <= kversion < "6.10":
-            self.meta.append((self.quiet_info, "db_list: {:#x}".format(self.db_list)))
-        elif "6.10" <= kversion < "6.16":
-            self.meta.append((self.quiet_info, "debugfs_list: {:#x}".format(self.db_list)))
-        else:
-            self.meta.append((self.quiet_info, "dmabuf_list: {:#x}".format(self.db_list)))
+        self.meta.append((self.quiet_info, "{:s}: {:#x}".format(name, self.db_list)))
 
         first_dma_buf = read_int_from_memory(self.db_list)
         if first_dma_buf == self.db_list:
