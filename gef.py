@@ -59902,36 +59902,100 @@ class KernelAddressHeuristicFinderUtil:
                 yield x
 
     @staticmethod
-    def is_idr(x):
-        """Return True if `x` is the base of a `struct idr` whose xarray is populated.
-
-        `xa_node->array` points back to the xarray itself, so it identifies the base address.
-        It cannot decide anything while the xarray is empty or holds a single entry,
-        but the caller cannot use the result in that case either."""
-        cls = Kernel.XArray
-        cls.initialize_layout()
-        for offset in range(0, current_arch.ptrsize * 20, cls.ptrsize):
-            if not is_valid_addr(x + offset):
-                return False
-            if cls.cache_head_offset(x + offset, read_int_from_memory(x + offset)):
-                return True
-        return False
-
-    @staticmethod
-    def select_idr(gen):
+    def select_idr(candidates):
         """Return the candidate that is really a `struct idr`, not the adjacent `*_idr_lock`.
 
         The anchor functions take the lock before touching the idr, so newer kernels
         materialize `&*_idr_lock` first. The lock lives in .bss and the idr in .data,
         so adopting the lock is not a slight deviation the caller can absorb.
-        Fall back to the first candidate to keep the legacy behavior."""
-        first = None
-        for x in gen:
-            if first is None:
-                first = x
-            if KernelAddressHeuristicFinderUtil.is_idr(x):
-                return x
-        return first
+        Return None if no candidate can be verified."""
+        def is_idr(x):
+            """Return True if `x` is the base of a `struct idr` whose xarray is populated.
+
+            `xa_node->array` points back to the xarray itself, so it identifies the base address.
+            It cannot decide anything while the xarray is empty or holds a single entry."""
+            cls = Kernel.XArray
+            cls.initialize_layout()
+            for offset in range(0, current_arch.ptrsize * 20, cls.ptrsize):
+                if not is_valid_addr(x + offset):
+                    return False
+                if cls.cache_head_offset(x + offset, read_int_from_memory(x + offset)):
+                    return True
+            return False
+
+        def has_idr_marker(x):
+            """Return True if `x` holds the IDR_RT_MARKER that IDR_INIT() stores into xa_flags.
+
+            The marker is ROOT_IS_IDR plus the free mark of the empty tree, so only the
+            low flag bits and one or two bits at __GFP_BITS_SHIFT (23 to 27 depending on
+            the version and CONFIG_LOCKDEP) are ever set, and xa_head follows it.
+            This recognizes an idr that `is_idr()` cannot see because it is still empty.
+            The offset of xa_flags depends on sizeof(spinlock_t), which grows a lot with
+            CONFIG_DEBUG_SPINLOCK, so it is searched instead of assumed."""
+            for offset in range(0, current_arch.ptrsize * 9, 4):
+                if not is_valid_addr(x + offset):
+                    return False
+                v = u32(read_memory(x + offset, 4))
+                if v >> 16 == 0 or (v & 0xFF00) or (v & 0xFF) not in (0, 4):
+                    continue
+                head_addr = x + align(offset + 4, current_arch.ptrsize)
+                if not is_valid_addr(head_addr):
+                    return False
+                head = read_int_from_memory(head_addr)
+                if head == 0 or is_valid_addr(head):
+                    return True
+            return False
+
+        # `is_idr()` scans a wide window of a .bss neighborhood, so it hits the lock by
+        # chance on some boots. Let the exact marker decide first.
+        for check in (has_idr_marker, is_idr):
+            for x in candidates:
+                if check(x):
+                    return x
+        return None
+
+    @staticmethod
+    def collect_idr_candidates(prefix):
+        """Return the address constants materialized by the functions whose name starts with `prefix`."""
+        def disassemble_until_next_symbol(addr, count):
+            """Disassemble up to `count` instructions from `addr`, dropping what belongs to the next symbol.
+
+            A window wide enough for a KCOV build overruns a short function, and the
+            constants of the neighbors are indistinguishable from the ones of the anchor."""
+            res = gdb.execute("x/{:d}i {:#x}".format(count, addr), to_string=True)
+            ret = Symbol.get_kallsyms()
+            if ret is None:
+                return res
+            kallsyms, _kallsyms_map = ret
+            end = min([a for a, _name, _typ in kallsyms if a > addr], default=None)
+            if end is None:
+                return res
+            lines = []
+            for line in res.splitlines():
+                m = re.match(r"\s*(?:=>)?\s*(0x[0-9a-f]+)", line)
+                if m and int(m.group(1), 16) >= end:
+                    break
+                lines.append(line)
+            return "\n".join(lines)
+
+        candidates = []
+        for addr in Symbol.get_ksymaddr_startswith(prefix):
+            # KCOV builds interleave __sanitizer_cov_trace_* calls, pushing the idr past 40 insns
+            res = disassemble_until_next_symbol(addr, 60)
+            if is_x86_64() or is_x86_32():
+                g = KernelAddressHeuristicFinderUtil.x64_x86_mov_reg_const(res)
+            elif is_arm64():
+                # gcc splits the page offset into two adds in some builds
+                g = itertools.chain(
+                    KernelAddressHeuristicFinderUtil.aarch64_adrp_add_add(res),
+                    KernelAddressHeuristicFinderUtil.aarch64_adrp_add(res),
+                )
+            elif is_arm32():
+                g = KernelAddressHeuristicFinderUtil.arm32_ldr_pc_relative(res)
+            else:
+                return []
+            candidates += list(g)
+        return candidates
 
 
 class KernelConstsBase:
@@ -65459,24 +65523,16 @@ class KernelAddressHeuristicFinder:
         kversion = Kernel.kernel_version()
 
         # plan 2 (available v4.13 or later)
-        # In certain cases it may return `prog_idr_lock` instead of `prog_idr`.
-        # It was not possible to distinguish them because their structures are very similar.
-        # However, `prog_idr` and `prog_idr_lock` are placed consecutively.
+        # When no candidate can be verified, `prog_idr_lock` is returned instead of `prog_idr`.
         # Even if there is a slight deviation, there is no problem because the member
         # identification logic of the caller (`kbpf` command) works.
         if kversion and "4.13" <= kversion:
-            addr = Symbol.get_ksymaddr("bpf_prog_free_id.part.0") or Symbol.get_ksymaddr("bpf_prog_free_id")
-            if addr:
-                res = gdb.execute("x/20i {:#x}".format(addr), to_string=True)
-                if is_x86_64():
-                    g = KernelAddressHeuristicFinderUtil.x64_x86_mov_reg_const(res)
-                elif is_x86_32():
-                    g = KernelAddressHeuristicFinderUtil.x64_x86_mov_reg_const(res)
-                elif is_arm64():
-                    g = KernelAddressHeuristicFinderUtil.aarch64_adrp_add_add(res)
-                elif is_arm32():
-                    g = KernelAddressHeuristicFinderUtil.arm32_ldr_pc_relative(res)
-                return KernelAddressHeuristicFinderUtil.select_idr(g)
+            candidates = KernelAddressHeuristicFinderUtil.collect_idr_candidates("bpf_prog_free_id")
+            if not candidates:
+                # bpf_prog_free_id() is inlined into its only caller in some builds
+                candidates = KernelAddressHeuristicFinderUtil.collect_idr_candidates("__bpf_prog_put")
+            if candidates:
+                return KernelAddressHeuristicFinderUtil.select_idr(candidates) or candidates[0]
         return None
 
     @staticmethod
@@ -65491,24 +65547,16 @@ class KernelAddressHeuristicFinder:
         kversion = Kernel.kernel_version()
 
         # plan 2 (available v4.13 or later)
-        # In certain cases it may return `map_idr_lock` instead of `map_idr`.
-        # It was not possible to distinguish them because their structures are very similar.
-        # However, `map_idr` and `map_idr_lock` are placed consecutively.
+        # When no candidate can be verified, `map_idr_lock` is returned instead of `map_idr`.
         # Even if there is a slight deviation, there is no problem because the member
         # identification logic of the caller (`kbpf` command) works.
         if kversion and "4.13" <= kversion:
-            addr = Symbol.get_ksymaddr("bpf_map_free_id")
-            if addr:
-                res = gdb.execute("x/20i {:#x}".format(addr), to_string=True)
-                if is_x86_64():
-                    g = KernelAddressHeuristicFinderUtil.x64_x86_mov_reg_const(res)
-                elif is_x86_32():
-                    g = KernelAddressHeuristicFinderUtil.x64_x86_mov_reg_const(res)
-                elif is_arm64():
-                    g = KernelAddressHeuristicFinderUtil.aarch64_adrp_add_add(res)
-                elif is_arm32():
-                    g = KernelAddressHeuristicFinderUtil.arm32_ldr_pc_relative(res)
-                return KernelAddressHeuristicFinderUtil.select_idr(g)
+            candidates = KernelAddressHeuristicFinderUtil.collect_idr_candidates("bpf_map_free_id")
+            if not candidates:
+                # bpf_map_free_id() is inlined into its only caller in some builds
+                candidates = KernelAddressHeuristicFinderUtil.collect_idr_candidates("__bpf_map_put")
+            if candidates:
+                return KernelAddressHeuristicFinderUtil.select_idr(candidates) or candidates[0]
         return None
 
     @staticmethod
