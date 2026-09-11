@@ -64328,6 +64328,38 @@ class KernelAddressHeuristicFinder:
                     g = KernelAddressHeuristicFinderUtil.arm32_movw_movt(res)
                 for x in g:
                     return x
+
+        # plan 3 (lock_kernel_down is fully inlined in some builds, but the LSM hook always remains)
+        if kversion and "5.4" <= kversion:
+            addr = Symbol.get_ksymaddr("lockdown_is_locked_down")
+            if addr:
+                # KCOV builds interleave __sanitizer_cov_trace_* calls, pushing the load past 10 insns
+                res = gdb.execute("x/20i {:#x}".format(addr), to_string=True)
+                if is_x86_64():
+                    g = KernelAddressHeuristicFinderUtil.x64_any_ptr_rip_base(res)
+                elif is_x86_32():
+                    g = KernelAddressHeuristicFinderUtil.x86_noptr_ds(res)
+                elif is_arm64():
+                    g = KernelAddressHeuristicFinderUtil.aarch64_adrp_ldr(res)
+                elif is_arm32():
+                    g = KernelAddressHeuristicFinderUtil.arm32_movw_movt(res)
+                for x in g:
+                    return x
+
+        # plan 4 (before v5.4, distro backports export __kernel_is_locked_down instead)
+        addr = Symbol.get_ksymaddr("__kernel_is_locked_down")
+        if addr:
+            res = gdb.execute("x/10i {:#x}".format(addr), to_string=True)
+            if is_x86_64():
+                g = KernelAddressHeuristicFinderUtil.x64_any_ptr_rip_base(res)
+            elif is_x86_32():
+                g = KernelAddressHeuristicFinderUtil.x86_noptr_ds(res)
+            elif is_arm64():
+                g = KernelAddressHeuristicFinderUtil.aarch64_adrp_ldrb(res)
+            elif is_arm32():
+                g = KernelAddressHeuristicFinderUtil.arm32_movw_movt(res)
+            for x in g:
+                return x
         return None
 
     @staticmethod
