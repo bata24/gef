@@ -62653,9 +62653,13 @@ class KernelAddressHeuristicFinder:
         kversion = Kernel.kernel_version()
 
         # plan 2 (available v2.6.39 or later)
+        # has_capability() is inlined since v6.15, so prefer has_capability_noaudit()
+        # which loads &init_user_ns the same way and is always present in kallsyms.
         if kversion and "2.6.39" <= kversion:
-            addr = Symbol.get_ksymaddr("has_capability")
-            if addr:
+            for sym in ("has_capability_noaudit", "has_capability"):
+                addr = Symbol.get_ksymaddr(sym)
+                if not addr:
+                    continue
                 res = gdb.execute("x/20i {:#x}".format(addr), to_string=True)
                 if is_x86_64():
                     g = KernelAddressHeuristicFinderUtil.x64_x86_mov_reg_const(res)
