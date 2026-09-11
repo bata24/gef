@@ -125843,6 +125843,31 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
                 return False
             return True
 
+        def is_kmem_cache_node(addr, search_size=0x80):
+            # kmem_cache_node always embeds the `partial` list_head (and `full` if
+            # CONFIG_SLUB_DEBUG=y). An empty list_head points to itself, otherwise the
+            # first element points back to the head. Neither random_seq nor a random
+            # value has such a structure.
+            try:
+                data = read_memory(addr, search_size + current_arch.ptrsize)
+            except gdb.MemoryError:
+                return False
+            data = slice_unpack(data, current_arch.ptrsize)
+            for i in range(len(data) - 1):
+                head = addr + current_arch.ptrsize * i
+                next_, prev = data[i], data[i + 1]
+                if next_ == prev == head:
+                    return True
+                if not is_valid_addr(next_) or not is_valid_addr(prev):
+                    continue
+                try:
+                    if read_int_from_memory(next_ + current_arch.ptrsize) == head:
+                        if read_int_from_memory(prev) == head:
+                            return True
+                except gdb.MemoryError:
+                    pass
+            return False
+
         def detect_random_seq_before_node():
             """Detect random_seq placed before node, from the resolved node offset."""
             # random_seq exists just before node if CONFIG_SLAB_FREELIST_RANDOM=y, but
@@ -125998,6 +126023,25 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
 
             if user_offset_user_size_non_zero_flag is False:
                 found = False
+
+            # The relationship above is weak. On 32-bit, kobj.kref (1) and the state
+            # bitfields (3) that follow it also satisfy it, and then node_offset lands on
+            # random_seq. So confirm that the candidate really points to kmem_cache_node.
+            if found:
+                if kversion < "7.1":
+                    offset_node_ptr = node_offset
+                else:
+                    offset_node_ptr = node_offset + current_arch.ptrsize # skip barn
+                for kmem_cache in kmem_caches[:16]:
+                    kmem_cache_top = kmem_cache - self.kmem_cache_offset_list
+                    try:
+                        node_ptr = read_int_from_memory(kmem_cache_top + offset_node_ptr)
+                    except gdb.MemoryError:
+                        found = False
+                        break
+                    if not is_kmem_cache_node(node_ptr):
+                        found = False
+                        break
 
             if found:
                 self.meta.append((self.quiet_info, "offset of node is found by heuristic way3"))
