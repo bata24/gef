@@ -62926,16 +62926,20 @@ class KernelAddressHeuristicFinder:
             # Not introduced
             return None
 
-        if kversion and "6.6.26" <= kversion:
-            # On x64, each entry is embedded in `x32_sys_call` as call instruction.
-            # So x32_sys_call_table is no longer in use, and removed from 6.6.26.
-            return None
+        # x32_sys_call_table was replaced by the `x32_sys_call` switch in mainline v6.9
+        # (backported to stable trees from v6.6.26), but non-LTS branches such as v6.7
+        # still keep the array. Do not gate on the version: plan 2 disassembles
+        # do_syscall_64 and only matches when the array actually exists.
 
         # plan 2 (available v5.4 or later)
         if kversion and "5.4" <= kversion:
             addr = Symbol.get_ksymaddr("do_syscall_64")
             if addr:
-                res = gdb.execute("x/30i {:#x}".format(addr), to_string=True)
+                # The x32 dispatch (2nd array-base access) follows the 64-bit one and
+                # the possibly inlined exit-work path, so disassemble the whole function
+                # to reach it without spilling into the next symbol.
+                size = Kernel.get_func_size_kallsyms("do_syscall_64") or 0x200
+                res = gdb.execute("disassemble {:#x},{:#x}".format(addr, addr + size), to_string=True)
                 g = KernelAddressHeuristicFinderUtil.x64_qword_ptr_array_base(res, skip=1)
                 for x in g:
                     return x
@@ -62960,8 +62964,11 @@ class KernelAddressHeuristicFinder:
 
         if kversion and "6.6.26" <= kversion:
             if is_x86_64():
-                # On x64, ia32_sys_call_table is removed from 6.6.26.
-                return None
+                # ia32_sys_call_table was replaced by the `ia32_sys_call` switch in
+                # mainline v6.9 (backported to stable trees from v6.6.26), but non-LTS
+                # branches such as v6.7 still keep the array. Fall through to plan 3,
+                # which only matches when the array actually exists.
+                pass
             else:
                 # On i386, each entry is embedded in `ia32_sys_call` as call instruction.
                 # So sys_call_table is no longer in use, but it still remains.
