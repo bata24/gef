@@ -68521,7 +68521,7 @@ class KernelAddressHeuristicSelftestCommand(GenericCommand, BufferingOutput):
         row_format = "  ".join("{{:<{:d}s}}".format(width) for width in widths)
         self.out = [GefUtil.make_legend(row_format.format(*headers))]
         for row in visible_rows:
-            line = row_format.format(*row)
+            line = row_format.format(*row).rstrip()
             if row[-1] in failure_verdicts:
                 line = Color.colorify(line, "yellow bold")
             self.out.append(line)
@@ -77934,7 +77934,7 @@ class KernelTimerCommand(GenericCommand, BufferingOutput):
                     self.out.append(titlify("cpu{:d} hrtimer_clock_base[{:d}]: {:#x}  [{:s}]".format(
                         cpu, base_n, htb,
                         clockid_dict.get(clockid, "UNKNOWN"),
-                    ).rstrip()))
+                    )).rstrip())
                 else:
                     get_time = read_int_from_memory(htb + self.offset_get_time)
                     self.out.append(titlify("cpu{:d} hrtimer_clock_base[{:d}]: {:#x}  [{:s}; get_time: {:#x}{:s}]".format(
@@ -77942,7 +77942,7 @@ class KernelTimerCommand(GenericCommand, BufferingOutput):
                         clockid_dict.get(clockid, "UNKNOWN"),
                         get_time,
                         Symbol.get_symbol_string(get_time, nosymbol_string=" <NO_SYMBOL>"),
-                    ).rstrip()))
+                    )).rstrip())
 
                 # print legend
                 if not self.args.quiet:
@@ -80700,7 +80700,7 @@ class GdtInfoCommand(GenericCommand, BufferingOutput):
                 regstr = ""
 
             # print
-            self.out.append("{:<2d} {:20s} {:s} {:s}".format(i, segname, estr, regstr))
+            self.out.append("{:<2d} {:20s} {:s} {:s}".format(i, segname, estr, regstr).rstrip())
 
             i += 1
         return
@@ -133958,7 +133958,7 @@ class KernelBpfCommand(GenericCommand, BufferingOutput):
             else:
                 union_array = m + self.offset_union_array
                 array = "{:#018x}".format(union_array)
-            self.out.append(fmt.format(i, m, t1, key_size, val_size, max_ents, array))
+            self.out.append(fmt.format(i, m, t1, key_size, val_size, max_ents, array).rstrip())
 
             if self.args.verbose:
                 if union_array is not None and map_type == 2: # ARRAY
@@ -149374,7 +149374,7 @@ class QemuRegistersCommand(GenericCommand, BufferingOutput):
         res = gdb.execute("monitor info registers", to_string=True).strip()
         self.out.append(titlify("info registers"))
         for line in res.splitlines():
-            self.out.append(line)
+            self.out.append(line.rstrip())
 
         if is_x86():
             if not self.args.verbose:
