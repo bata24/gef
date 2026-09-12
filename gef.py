@@ -59595,10 +59595,16 @@ class KernelAddressHeuristicFinderUtil:
                 continue
             m = re.search(r"add\s+(\w+),\s*(\w+),\s*#(0x\w+)", line)
             if m:
+                dstreg = m.group(1)
                 srcreg = m.group(2)
                 v = int(m.group(3), 16)
+                w = None
                 if srcreg in bases:
                     w = AddressUtil.normalize_address(bases[srcreg] + v)
+                # the add leaves a page offset in dstreg, so a following add must not restart
+                # from the adrp page (`aarch64_adrp_add_add` handles that sequence)
+                bases.pop(dstreg, None)
+                if w is not None:
                     if not skip_msb_check and not AddressUtil.is_msb_on(w):
                         continue
                     if read_valid and not is_valid_addr_addr(w):
@@ -64739,28 +64745,12 @@ class KernelAddressHeuristicFinder:
 
         kversion = Kernel.kernel_version()
 
-        # plan 2 (available v4.19.27 or later)
-        if kversion and "4.19.27" <= kversion:
-            addr = Symbol.get_ksymaddr("expand_downwards")
-            if addr:
-                res = gdb.execute("x/20i {:#x}".format(addr), to_string=True)
-                if is_x86_64():
-                    g = KernelAddressHeuristicFinderUtil.x64_qword_ptr_rip_base(res)
-                elif is_x86_32():
-                    g = KernelAddressHeuristicFinderUtil.x86_noptr_ds(res)
-                elif is_arm64():
-                    g = KernelAddressHeuristicFinderUtil.aarch64_adrp_ldr(res)
-                elif is_arm32():
-                    g = KernelAddressHeuristicFinderUtil.arm32_movw_movt(res)
-                for x in g:
-                    return x
-
-        # plan 3 (available v2.6.26 or later)
+        # plan 2 (available v2.6.26 or later)
         # mmap_min_addr_handler() is the only non-init writer of mmap_min_addr, so the
         # store destination tells it apart from the dac_mmap_min_addr it loads first.
         addr = Symbol.get_ksymaddr("mmap_min_addr_handler")
         if addr:
-            res = gdb.execute("x/40i {:#x}".format(addr), to_string=True)
+            res = KernelAddressHeuristicFinderUtil.disassemble_until_next_symbol(addr, 100)
             if is_x86_64():
                 g = KernelAddressHeuristicFinderUtil.x64_qword_ptr_rip_base_store(res)
             elif is_x86_32():
@@ -64774,6 +64764,25 @@ class KernelAddressHeuristicFinder:
                 )
             for x in g:
                 return x
+
+        # plan 3 (available v4.19.27 or later, but not on the 4.20 branch before v4.20.14)
+        # expand_downwards() also loads stack_guard_gap, so a build without the inlined
+        # mmap_min_addr check yields that instead. Keep this behind the exact store above.
+        if kversion and "4.19.27" <= kversion:
+            addr = Symbol.get_ksymaddr("expand_downwards")
+            if addr:
+                # KASAN/KCOV builds interleave instrumentation, pushing &mmap_min_addr past 80 insns
+                res = KernelAddressHeuristicFinderUtil.disassemble_until_next_symbol(addr, 200)
+                if is_x86_64():
+                    g = KernelAddressHeuristicFinderUtil.x64_qword_ptr_rip_base(res)
+                elif is_x86_32():
+                    g = KernelAddressHeuristicFinderUtil.x86_noptr_ds(res)
+                elif is_arm64():
+                    g = KernelAddressHeuristicFinderUtil.aarch64_adrp_ldr(res)
+                elif is_arm32():
+                    g = KernelAddressHeuristicFinderUtil.arm32_movw_movt(res)
+                for x in g:
+                    return x
         return None
 
     @staticmethod
