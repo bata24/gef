@@ -37,23 +37,22 @@ Numerous other commands have been added and enhanced. Enjoy!
 - May work, but not recommended: Ubuntu 20.04-23.10.
 
 ### Install
+__The installer has been refactored. I recommend re-installing.__ (2026-09-13)
+
 - Run the following command:
     ```bash
+    # Run as the user who will use GEF
+    # However, for various reasons, I recommend installing it as the root user
     wget -q https://raw.githubusercontent.com/bata24/gef/dev/install-uv.sh -O- | sh
+
+    # Install GEF in a different directory
+    wget -q https://raw.githubusercontent.com/bata24/gef/dev/install-uv.sh -O- | env GEF_INSTALL_DIR="/path/to/gef" sh
     ```
     - Notes
         - By default, `gef.py` is installed to `$HOME/.gef/gef.py`.
-        - The required Python packages are installed to `$HOME/.gef/.venv-gef`.
+        - The required Python packages are installed to `$HOME/.gef/venv-gef`.
         - GEF's installation directory is registered in `$HOME/.gdbinit`.
-        - As a non-root user, `sudo` is used only to install system packages.
-        - For more installation options (for non-`root` user, etc), see [docs/FAQ.md](docs/FAQ.md).
-
-- To change GEF's installation directory, set `GEF_INSTALL_DIR` to an absolute path:
-    ```bash
-    wget -q https://raw.githubusercontent.com/bata24/gef/dev/install-uv.sh -O- | env GEF_INSTALL_DIR="$HOME/gef" sh
-    ```
-    - This changes the location of `gef.py`, the virtual environment, and `gef.venv.conf`.
-    - System packages, the `uv` executable, and `$HOME/.gdbinit` are not relocated.
+        - For more installation options and non-`root` user's limitations, see [docs/FAQ.md](docs/FAQ.md).
 
 - Or, quick trial (no installation):
     ```bash
@@ -61,8 +60,7 @@ Numerous other commands have been added and enhanced. Enjoy!
     echo "source $(pwd)/gef.py" >> ~/.gdbinit
     ```
     - Notes
-        - Most features work fine even without external tools or `root` privileges.
-        - For limitations, see [docs/FAQ.md](docs/FAQ.md).
+        - Most features work fine even without external tools.
 
 ### Upgrade
 ```bash
@@ -82,8 +80,6 @@ sed -i -e '/from gef import/d' "$HOME/.gdbinit"
 
 ### Dependencies
 Please refer to [install-uv.sh](install-uv.sh) for installation requirements.
-The full installers use a prebuilt `ceccomp` package and do not build it from source.
-On systems with glibc older than 2.38, neither `ceccomp` nor `seccomp-tools` is installed.
 
 ## Added / Improved Features
 

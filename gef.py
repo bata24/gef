@@ -165443,11 +165443,9 @@ class GefUtil:
             env_path = os.getenv("PATH", env_path_default)
             env_path = env_path.split(os.pathsep)
 
-            if hasattr(Gef, "GEF_VENV_BIN_PATH"):
-                env_path.insert(0, Gef.GEF_VENV_BIN_PATH)
-
             if "/usr/local/bin" not in env_path:
-                env_path.insert(0, "/usr/local/bin") # for rp-lin, vmlinux-to-elf
+                env_path.append("/usr/local/bin") # for manually installed tools
+            env_path.append(os.path.join(os.path.dirname(GEF_FILEPATH), "bin"))
 
             for path in env_path:
                 exe_file = os.path.join(path.strip('"'), program)
@@ -165749,23 +165747,14 @@ class Gef:
                     sys.path = to_add + sys.path
                     continue
 
-                if line.startswith("GEF_VENV_BIN_PATH="):
-                    Gef.GEF_VENV_BIN_PATH = line[len("GEF_VENV_BIN_PATH="):] # used by GefUtil.which()
-                    continue
-
-                if line.startswith("GEF_VENV_GEM_HOME="):
-                    Gef.GEF_VENV_GEM_HOME = line[len("GEF_VENV_GEM_HOME="):]
-                    os.environ["GEM_HOME"] = Gef.GEF_VENV_GEM_HOME
-                    continue
-
             if hasattr(Gef, "GEF_VENV_SYS_PATH"):
                 return True
             return False
 
         def create_skip_config():
-            # If .venv-gef is in the default location, it is likely that the user simply forgot to activate the venv.
+            # If venv-gef is in the default location, it is likely that the user simply forgot to activate the venv.
             # Therefore, for convenience, skip-venv-check is not created.
-            default_venv = os.path.join(os.path.dirname(GEF_FILEPATH), ".venv-gef")
+            default_venv = os.path.join(os.path.dirname(GEF_FILEPATH), "venv-gef")
             if os.path.exists(default_venv):
                 return
 

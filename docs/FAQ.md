@@ -18,6 +18,7 @@
 
 ## Where is `gef.py`?
 By default, GEF (`gef.py`) is placed at `$HOME/.gef/gef.py`.
+If `$HOME` is unset, root uses `/root`; installation stops for other users.
 
 GEF is primarily a single file (`gef.py`). Optional configuration and helper files may accompany it.
 
@@ -62,8 +63,9 @@ This is the new installer that creates and uses a Python virtual environment (`v
 It installs the same packages as `install-no-uv.sh` (previously named simply `install.sh`).
 The key difference is that Python packages are installed into the virtual environment.
 
-By default, it installs into `$HOME/.gef/.venv-gef`.
-External tools such as `rp++` (`rp-lin`) and `one_gadget` are also installed under this directory (`$HOME/.gef/.venv-gef/bin`).
+By default, it installs into `$HOME/.gef/venv-gef`.
+This directory contains only the Python environment.
+External tools go in `$HOME/.gef/bin`, with Ruby gems in `$HOME/.gef/gems` (see below).
 
 Usage:
 ```
@@ -71,20 +73,20 @@ Usage:
 wget -q https://raw.githubusercontent.com/bata24/gef/dev/install-uv.sh -O- | sh
 
 # Install GEF in a different directory
-wget -q https://raw.githubusercontent.com/bata24/gef/dev/install-uv.sh -O- | env GEF_INSTALL_DIR="$HOME/gef" sh
+wget -q https://raw.githubusercontent.com/bata24/gef/dev/install-uv.sh -O- | env GEF_INSTALL_DIR="/path/to/gef" sh
 ```
 
-`GEF_INSTALL_DIR` must be an absolute path. It changes the location of `gef.py`,
-the virtual environment, and `gef.venv.conf`; system packages, the `uv`
-executable, and `$HOME/.gdbinit` remain in their default locations. When run as
-a non-root user, the installer uses `sudo` only for system packages.
+`GEF_INSTALL_DIR` must be an absolute path.
+It changes the location of `gef.py`, the virtual environment, external tools, Ruby gems, and `gef.venv.conf`;
+system packages, the `uv` executable, and `$HOME/.gdbinit` remain in their default locations.
+When run as a non-root user, the installer uses `sudo` only for system packages.
 
 ## What is `install-no-uv.sh`?
 This is the old installer that was used before the `uv`-based installation became available.
 
 This installer is not currently recommended, but it still works.
-On systems protected by PEP 668, it automatically passes
-`--break-system-packages` to `pip3`.
+On systems protected by PEP 668, it automatically passes `--break-system-packages` to pip.
+Python packages are installed system-wide; external tools and Ruby gems use the same local directories as `install-uv.sh`.
 
 Usage:
 ```
@@ -118,15 +120,21 @@ This is the path information file required by GEF that is automatically generate
 It is not generated if you use `install-no-uv.sh` or `install-minimal.sh`.
 Place this file in the same directory as `gef.py`.
 
-It contains three pieces of path information:
-- `GEF_VENV_GEM_HOME`
-    - Sets `GEM_HOME` so Ruby `gem`-installed tools can be discovered and used by GEF.
-- `GEF_VENV_SYS_PATH`
-    - By default, GEF searches globally installed Python packages.
-    - Prepend this path to `sys.path` so that packages inside the `venv` take precedence.
-- `GEF_VENV_BIN_PATH`
-    - By default, GEF searches for executables using the `$PATH` environment variable (the actual process is a bit more complicated).
-    - GEF will prepend the specified path to the search directories before searching.
+It contains only `GEF_VENV_SYS_PATH`, which adds the Python environment's
+directories to GDB's `sys.path`.
+
+## Where are external tools installed?
+Both full installers install `one_gadget` and `rp-lin` under `$GEF_INSTALL_DIR/bin` (by default, `$HOME/.gef/bin`) unless they are already available on `PATH`.
+Ruby gems are installed under `$GEF_INSTALL_DIR/gems`.
+
+The `bin/one_gadget` launcher sets `GEM_HOME` and `GEM_PATH` only for its own process.
+GEF leaves GDB's Ruby environment and `PATH` unchanged.
+To find a tool, GEF searches `PATH`, then `/usr/local/bin` if needed, then the `bin` directory beside `gef.py`.
+No virtual environment activation or shell setup is needed.
+
+Older installations kept these tools in `venv-gef` and used `GEF_VENV_BIN_PATH` and `GEF_VENV_GEM_HOME`.
+Those settings are no longer read.
+Upgrading `gef.py` alone does not move the old tools; use a fresh full installation to get the new layout, or provide the tools on `PATH`.
 
 
 # About the Installation
