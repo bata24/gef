@@ -62811,20 +62811,29 @@ class KernelAddressHeuristicFinder:
         if kversion and "3.7.5" <= kversion:
             addr = Symbol.get_ksymaddr("find_module_all")
             if addr:
-                res = gdb.execute("x/20i {:#x}".format(addr), to_string=True)
+                # KCOV builds interleave __sanitizer_cov_trace_* calls, pushing &modules past 40 insns
+                res = KernelAddressHeuristicFinderUtil.disassemble_until_next_symbol(addr, 60)
                 if is_x86_64():
                     g = KernelAddressHeuristicFinderUtil.x64_qword_ptr_rip_base(res)
                 elif is_x86_32():
                     g = KernelAddressHeuristicFinderUtil.x86_noptr_ds(res)
                 elif is_arm64():
-                    g = KernelAddressHeuristicFinderUtil.aarch64_adrp_add_ldr(res)
+                    # &modules is not always folded into the ldr displacement; newer gcc
+                    # materializes it with adrp + add (+ add) and loads with no displacement
+                    g = itertools.chain(
+                        KernelAddressHeuristicFinderUtil.aarch64_adrp_add_ldr(res),
+                        KernelAddressHeuristicFinderUtil.aarch64_adrp_add_add(res),
+                        KernelAddressHeuristicFinderUtil.aarch64_adrp_add(res),
+                    )
                 elif is_arm32():
                     g = itertools.chain(
                         KernelAddressHeuristicFinderUtil.arm32_movw_movt_ldr(res),
                         KernelAddressHeuristicFinderUtil.arm32_ldr_pc_relative_ldr(res),
                     )
                 for x in g:
-                    return x
+                    # modules is a list_head, so it passes even when no module is loaded
+                    if is_double_link_list(x):
+                        return x
         return None
 
     @staticmethod
@@ -64266,7 +64275,8 @@ class KernelAddressHeuristicFinder:
         if kversion and "4.6" <= kversion:
             addr = Symbol.get_ksymaddr("n_tty_inherit_ops")
             if addr:
-                res = gdb.execute("x/20i {:#x}".format(addr), to_string=True)
+                # KASAN/KCOV builds interleave instrumentation, pushing &n_tty_ops past 20 insns
+                res = KernelAddressHeuristicFinderUtil.disassemble_until_next_symbol(addr, 40)
                 if is_x86_64():
                     g = KernelAddressHeuristicFinderUtil.x64_x86_mov_reg_const(res)
                 elif is_x86_32():
@@ -64275,7 +64285,11 @@ class KernelAddressHeuristicFinder:
                         KernelAddressHeuristicFinderUtil.x64_x86_mov_reg_const(res),
                     )
                 elif is_arm64():
-                    g = KernelAddressHeuristicFinderUtil.aarch64_adrp_add(res)
+                    # &n_tty_ops may be built as adrp + add + add
+                    g = itertools.chain(
+                        KernelAddressHeuristicFinderUtil.aarch64_adrp_add_add(res),
+                        KernelAddressHeuristicFinderUtil.aarch64_adrp_add(res),
+                    )
                 elif is_arm32():
                     g = KernelAddressHeuristicFinderUtil.arm32_movw_movt(res)
                 for x in g:
