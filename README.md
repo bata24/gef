@@ -33,20 +33,27 @@ Numerous other commands have been added and enhanced. Enjoy!
 ## Setup
 
 ### Supported Environment
-- Verified on Ubuntu 24.04-26.04.
-- Expected to work on Ubuntu 22.04-23.10.
-- Might work on Ubuntu 20.04-21.10, though not recommended.
+- Recommended: Ubuntu 24.04-26.04, Debian stable, and Arch Linux.
+- May work, but not recommended: Ubuntu 20.04-23.10.
 
 ### Install
 - Run the following command:
     ```bash
-    wget -q https://raw.githubusercontent.com/bata24/gef/dev/install-uv.sh -O- | sudo sh
+    wget -q https://raw.githubusercontent.com/bata24/gef/dev/install-uv.sh -O- | sh
     ```
     - Notes
-        - To simplify installation, `gef.py` is always installed to `/root/.gef/gef.py`
-        - The required Python packages are in `/root/.gef/.venv-gef`.
-        - GEF's directory (`/root/.gef`) is also registered in `/root/.gdbinit`.
+        - By default, `gef.py` is installed to `$HOME/.gef/gef.py`.
+        - The required Python packages are installed to `$HOME/.gef/.venv-gef`.
+        - GEF's installation directory is registered in `$HOME/.gdbinit`.
+        - As a non-root user, `sudo` is used only to install system packages.
         - For more installation options (for non-`root` user, etc), see [docs/FAQ.md](docs/FAQ.md).
+
+- To change GEF's installation directory, set `GEF_INSTALL_DIR` to an absolute path:
+    ```bash
+    wget -q https://raw.githubusercontent.com/bata24/gef/dev/install-uv.sh -O- | env GEF_INSTALL_DIR="$HOME/gef" sh
+    ```
+    - This changes the location of `gef.py`, the virtual environment, and `gef.venv.conf`.
+    - System packages, the `uv` executable, and `$HOME/.gdbinit` are not relocated.
 
 - Or, quick trial (no installation):
     ```bash
@@ -59,22 +66,24 @@ Numerous other commands have been added and enhanced. Enjoy!
 
 ### Upgrade
 ```bash
-python3 /root/.gef/gef.py --upgrade
+python3 "$HOME/.gef/gef.py" --upgrade
 ```
 
 - Note
-    - If you get errors after upgrading, it may be due to old config. Try renaming `/root/.gef.rc`.
+    - If you get errors after upgrading, it may be due to old config. Try renaming `$HOME/.gef.rc`.
 
 ### Uninstall
 ```bash
-rm -rf /root/.gef
-rm -f /root/.gef.rc
+rm -rf "$HOME/.gef"
+rm -f "$HOME/.gef.rc"
 rm -rf /tmp/gef
-sed -i -e '/from gef import/d' /root/.gdbinit
+sed -i -e '/from gef import/d' "$HOME/.gdbinit"
 ```
 
 ### Dependencies
 Please refer to [install-uv.sh](install-uv.sh) for installation requirements.
+The full installers use a prebuilt `ceccomp` package and do not build it from source.
+On systems with glibc older than 2.38, neither `ceccomp` nor `seccomp-tools` is installed.
 
 ## Added / Improved Features
 

@@ -1,105 +1,217 @@
 #!/bin/sh
-set -ex
+set -eu
 
-echo "[+] Initialize"
-GDBINIT_PATH="/root/.gdbinit"
-GEF_DIR="/root/.gef"
+GEF_URL="https://raw.githubusercontent.com/bata24/gef/dev/gef.py"
+RP_URL="https://github.com/0vercl0k/rp/releases/download/v2.1.5/rp-lin-clang.zip"
+UV_INSTALLER_URL="https://astral.sh/uv/install.sh"
+CECCOMP_DEB_VERSION="4.2.2-1"
+CECCOMP_DEB_BASE_URL="https://deb.debian.org/debian/pool/main/c/ceccomp"
+ONE_GADGET_VERSION="1.9.0"
+if [ -z "${HOME:-}" ]; then
+    if [ "$(id -u)" = "0" ]; then
+        export HOME="/root"
+    else
+        echo "[-] HOME is not set." >&2
+        exit 1
+    fi
+fi
+GEF_DIR="${GEF_INSTALL_DIR:-${HOME}/.gef}"
 GEF_PATH="${GEF_DIR}/gef.py"
+GDBINIT_PATH="${HOME}/.gdbinit"
 GEF_VENV_CONF_PATH="${GEF_DIR}/gef.venv.conf"
 GEF_VENV_PATH="${GEF_DIR}/.venv-gef"
 GEF_VENV_BIN_PATH="${GEF_VENV_PATH}/bin"
+GEF_TMP=""
+RP_TMP=""
+CECCOMP_TMP=""
 
-echo "[+] User check"
-if [ "$(id -u)" != "0" ]; then
-    echo "[-] Detected non-root user."
-    echo "[-] INSTALLATION FAILED"
+fail() {
+    echo "[-] $*" >&2
     exit 1
+}
+
+run_as_root() {
+    if [ "$(id -u)" = "0" ]; then
+        "$@"
+    else
+        sudo "$@"
+    fi
+}
+
+cleanup() {
+    if [ -n "${GEF_TMP}" ]; then
+        rm -f "${GEF_TMP}"
+    fi
+    if [ -n "${RP_TMP}" ]; then
+        rm -f "${RP_TMP}"
+    fi
+    if [ -n "${CECCOMP_TMP}" ]; then
+        rm -f "${CECCOMP_TMP}"
+    fi
+}
+trap cleanup 0 HUP INT TERM
+
+echo "[+] Initialize"
+case "${GEF_DIR}" in
+    /*) ;;
+    *) fail "GEF_INSTALL_DIR must be an absolute path: ${GEF_DIR}" ;;
+esac
+
+echo "[+] Privilege check"
+if [ "$(id -u)" != "0" ] && ! command -v sudo >/dev/null 2>&1; then
+    fail "sudo is required to install system packages. Install it as root first."
 fi
 
-echo "[+] Check if another gef is installed"
+echo "[+] Check if another GEF is installed"
 if [ -e "${GEF_PATH}" ]; then
-    echo "[-] ${GEF_PATH} already exists. Please delete or rename."
-    echo "[-] INSTALLATION FAILED"
-    exit 1
+    fail "${GEF_PATH} already exists. Please delete or rename it."
 fi
 
-echo "[+] Create .gef directory"
-if [ ! -e "${GEF_DIR}" ]; then
-    mkdir -p "${GEF_DIR}"
+STARTUP_COMMAND="python sys.path.insert(0, \"${GEF_DIR}\"); from gef import *; Gef.main()"
+ADD_STARTUP_COMMAND=1
+if [ -f "${GDBINIT_PATH}" ]; then
+    if grep -Fqx "${STARTUP_COMMAND}" "${GDBINIT_PATH}"; then
+        ADD_STARTUP_COMMAND=0
+    elif grep -Eq '^[[:space:]]*(python .*from gef import|source[[:space:]]+.*gef\.py)' "${GDBINIT_PATH}"; then
+        fail "Another GEF startup command exists in ${GDBINIT_PATH}."
+    fi
 fi
 
-echo "[+] apt"
-apt-get update
-DEBIAN_FRONTEND=noninteractive apt-get install -y tzdata
-apt-get install -y gdb-multiarch wget unzip
-apt-get install -y binutils python3-dev gcc make ruby-dev git file colordiff imagemagick
+echo "[+] Create GEF directory"
+mkdir -p "${GEF_DIR}"
 
-# Since installing bpftool fails inside a container, it is excluded.
-if [ ! -f /.dockerenv ]; then
-    apt-get install -y bpftool
+echo "[+] Install system packages"
+if command -v apt-get >/dev/null 2>&1; then
+    run_as_root apt-get update
+    run_as_root env DEBIAN_FRONTEND=noninteractive apt-get install -y \
+        tzdata gdb-multiarch wget unzip \
+        binutils python3-dev gcc make ruby-dev git file colordiff imagemagick
+
+    # Installing bpftool fails inside a container, so it is excluded there.
+    if [ ! -f /.dockerenv ]; then
+        run_as_root apt-get install -y bpftool
+    fi
+
+    echo "[+] Install ceccomp"
+    if ! command -v ceccomp >/dev/null 2>&1; then
+        if apt-cache show ceccomp >/dev/null 2>&1; then
+            run_as_root env DEBIAN_FRONTEND=noninteractive apt-get install -y ceccomp
+        elif dpkg --compare-versions "$(dpkg-query -W -f='${Version}' libc6)" ge 2.38; then
+            CECCOMP_ARCH=$(dpkg --print-architecture)
+            CECCOMP_TMP=$(mktemp /tmp/ceccomp.XXXXXX.deb)
+            wget -q "${CECCOMP_DEB_BASE_URL}/ceccomp_${CECCOMP_DEB_VERSION}_${CECCOMP_ARCH}.deb" -O "${CECCOMP_TMP}"
+            run_as_root env DEBIAN_FRONTEND=noninteractive apt-get install -y "${CECCOMP_TMP}"
+            rm -f "${CECCOMP_TMP}"
+            CECCOMP_TMP=""
+        else
+            echo "[!] Skip ceccomp: glibc 2.38 or newer is required."
+        fi
+    fi
+    GDB_COMMAND="gdb-multiarch"
+elif command -v pacman >/dev/null 2>&1; then
+    # Arch Linux does not support partial upgrades.
+    run_as_root pacman -Syu --needed --noconfirm \
+        tzdata gdb wget unzip binutils python \
+        gcc make ruby git file colordiff imagemagick ceccomp
+
+    if [ ! -f /.dockerenv ]; then
+        run_as_root pacman -S --needed --noconfirm bpf
+    fi
+    GDB_COMMAND="gdb"
+else
+    fail "Supported package managers are apt-get and pacman."
 fi
 
-# Installing binwalk requires a large number of packages and takes a significant amount of time,
-# so please enable it only when necessary.
-#apt-get install -y binwalk
+GDB_BIN=$(command -v "${GDB_COMMAND}" || true)
+if [ -z "${GDB_BIN}" ]; then
+    fail "Installing ${GDB_COMMAND} failed."
+fi
+
+# binwalk is omitted because it requires many packages and takes a long time to install.
 
 echo "[+] Install uv"
-if [ -z "$(command -v uv)" ]; then
-    wget -qO- https://astral.sh/uv/install.sh | sh
-    . $HOME/.local/bin/env
+UV_BIN=$(command -v uv || true)
+if [ -z "${UV_BIN}" ]; then
+    mkdir -p "${HOME}/.local/bin"
+    wget -qO- "${UV_INSTALLER_URL}" \
+        | env UV_INSTALL_DIR="${HOME}/.local/bin" UV_NO_MODIFY_PATH=1 sh
+    UV_BIN="${HOME}/.local/bin/uv"
+fi
+if [ ! -x "${UV_BIN}" ]; then
+    fail "Installing uv failed."
 fi
 
 echo "[+] Setup venv"
 if [ ! -e "${GEF_VENV_PATH}" ]; then
-    uv venv "${GEF_VENV_PATH}"
+    "${UV_BIN}" venv "${GEF_VENV_PATH}"
 fi
-. "${GEF_VENV_PATH}/bin/activate"
 
 echo "[+] pip3"
-uv pip install "filebytes @ git+https://github.com/sashs/filebytes.git" # for Ubuntu 26.04
-uv pip install setuptools unicorn capstone ropper keystone-engine magika angr pillow pyzbar cffi gmpy2
-
-# The GEF installer installs `seccomp-tools` if neither `ceccomp` nor `seccomp-tools` is found.
-# I recomend `ceccomp`, but its build is not simple. Install it manually if needed.
-echo "[+] Install seccomp-tools"
-if [ -z "$(command -v seccomp-tools)" ] && [ -z "$(command -v ceccomp)" ]; then
-    gem install -i "${GEF_VENV_PATH}" seccomp-tools
-fi
+"${UV_BIN}" pip install --python "${GEF_VENV_BIN_PATH}/python" \
+    "filebytes @ git+https://github.com/sashs/filebytes.git" \
+    setuptools unicorn capstone ropper keystone-engine magika \
+    angr pillow pyzbar cffi gmpy2
 
 echo "[+] Install one_gadget"
-if [ -z "$(command -v one_gadget)" ]; then
-    gem install -i "${GEF_VENV_PATH}" one_gadget
+if ! command -v one_gadget >/dev/null 2>&1; then
+    gem install -i "${GEF_VENV_PATH}" one_gadget -v "${ONE_GADGET_VERSION}"
 fi
 
 echo "[+] Install rp++"
-if [ "$(uname -m)" = "x86_64" ]; then
-    if [ -z "$(command -v rp-lin)" ]; then
-        wget -q https://github.com/0vercl0k/rp/releases/download/v2.1.5/rp-lin-clang.zip -P /tmp
-        unzip /tmp/rp-lin-clang.zip -d "${GEF_VENV_BIN_PATH}"
-        rm /tmp/rp-lin-clang.zip
-    fi
+if [ "$(uname -m)" = "x86_64" ] \
+    && ! command -v rp-lin >/dev/null 2>&1 \
+    && [ ! -e "${GEF_VENV_BIN_PATH}/rp-lin" ]; then
+    RP_TMP=$(mktemp /tmp/rp-lin-clang.XXXXXX.zip)
+    wget -q "${RP_URL}" -O "${RP_TMP}"
+    unzip "${RP_TMP}" -d "${GEF_VENV_BIN_PATH}"
+    rm -f "${RP_TMP}"
+    RP_TMP=""
 fi
 
-echo "[+] Download gef"
-wget -q https://raw.githubusercontent.com/bata24/gef/dev/gef.py -O "${GEF_PATH}"
-if [ ! -s "${GEF_PATH}" ]; then
-    echo "[-] Downloading ${GEF_PATH} failed."
-    rm -f "${GEF_PATH}"
-    echo "[-] INSTALLATION FAILED"
-    exit 1
+echo "[+] Download GEF"
+GEF_TMP=$(mktemp "${GEF_DIR}/.gef.py.XXXXXX")
+wget -q "${GEF_URL}" -O "${GEF_TMP}"
+if [ ! -s "${GEF_TMP}" ]; then
+    fail "Downloading ${GEF_PATH} failed."
 fi
+mv "${GEF_TMP}" "${GEF_PATH}"
+GEF_TMP=""
 
-echo "[+] Setup gef"
-STARTUP_COMMAND="python sys.path.insert(0, \"${GEF_DIR}\"); from gef import *; Gef.main()"
-if [ ! -e "${GDBINIT_PATH}" ] || [ -z "$(grep "from gef import" "${GDBINIT_PATH}")" ]; then
-    echo "${STARTUP_COMMAND}" >> "${GDBINIT_PATH}"
+echo "[+] Setup GEF"
+if [ "${ADD_STARTUP_COMMAND}" -eq 1 ]; then
+    printf '%s\n' "${STARTUP_COMMAND}" >> "${GDBINIT_PATH}"
 fi
 
 echo "[+] Setup venv path hint file"
-GEF_VENV_SYS_PATH=$(python3 -c 'import sys,subprocess;a=subprocess.getoutput("gdb-multiarch -q -nx -ex \"pi sys.path\" -ex q");print(":".join(set(sys.path)-set(eval(a))-set([""])))')
-echo "GEF_VENV_GEM_HOME=${GEF_VENV_PATH}" >> ${GEF_VENV_CONF_PATH}
-echo "GEF_VENV_SYS_PATH=${GEF_VENV_SYS_PATH}" >> ${GEF_VENV_CONF_PATH}
-echo "GEF_VENV_BIN_PATH=${GEF_VENV_BIN_PATH}" >> ${GEF_VENV_CONF_PATH}
+GEF_VENV_SYS_PATH=$(
+    "${GEF_VENV_BIN_PATH}/python" - "${GDB_BIN}" <<'PYTHON'
+import ast
+import os
+import subprocess
+import sys
+
+gdb_output = subprocess.check_output(
+    [
+        sys.argv[1],
+        "-q",
+        "-nx",
+        "-batch",
+        "-ex",
+        "pi import sys; print(repr(sys.path))",
+    ],
+    text=True,
+)
+gdb_paths = set(ast.literal_eval(gdb_output.strip()))
+venv_paths = [path for path in sys.path if path and path not in gdb_paths]
+
+print(os.pathsep.join(venv_paths))
+PYTHON
+)
+
+{
+    printf 'GEF_VENV_GEM_HOME=%s\n' "${GEF_VENV_PATH}"
+    printf 'GEF_VENV_SYS_PATH=%s\n' "${GEF_VENV_SYS_PATH}"
+    printf 'GEF_VENV_BIN_PATH=%s\n' "${GEF_VENV_BIN_PATH}"
+} > "${GEF_VENV_CONF_PATH}"
 
 echo "[+] INSTALLATION SUCCESSFUL"
-exit 0
