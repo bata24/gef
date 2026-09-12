@@ -17,7 +17,7 @@
 # About GEF's Files or Directories
 
 ## Where is `gef.py`?
-By default, GEF (`gef.py`) is placed at `/root/.gef/gef.py`.
+By default, GEF (`gef.py`) is placed at `$HOME/.gef/gef.py`.
 
 GEF is primarily a single file (`gef.py`). Optional configuration and helper files may accompany it.
 
@@ -35,13 +35,13 @@ By including the following command to load `gef.py`, GEF will be loaded automati
 There are two ways to load GEF from `.gdbinit`; either one works.
 ```
 # New style
-python sys.path.insert(0, "/root/.gef"); from gef import *; Gef.main()
+python sys.path.insert(0, "/home/user/.gef"); from gef import *; Gef.main()
 
 # Old style
-source /root/.gef/gef.py
+source /home/user/.gef/gef.py
 
 # Another old style
-source /root/.gdbinit-gef.py  # In the old installer, GEF was located here
+source /home/user/.gdbinit-gef.py  # In the old installer, GEF was located here
 ```
 
 Notes:
@@ -62,31 +62,37 @@ This is the new installer that creates and uses a Python virtual environment (`v
 It installs the same packages as `install-no-uv.sh` (previously named simply `install.sh`).
 The key difference is that Python packages are installed into the virtual environment.
 
-By default, it installs into `/root/.gef/.venv-gef`.
-External tools such as `rp++`(`rp-lin`), `seccomp-tools`, etc. are also installed under this directory (`/root/.gef/.venv-gef/bin`).
+By default, it installs into `$HOME/.gef/.venv-gef`.
+External tools such as `rp++` (`rp-lin`) and `one_gadget` are also installed under this directory (`$HOME/.gef/.venv-gef/bin`).
 
 Usage:
 ```
-# Run the following commands as `root` or `sudo`
-wget -q https://raw.githubusercontent.com/bata24/gef/dev/install-uv.sh -O- | sudo sh
+# Run as the user who will use GEF
+wget -q https://raw.githubusercontent.com/bata24/gef/dev/install-uv.sh -O- | sh
+
+# Install GEF in a different directory
+wget -q https://raw.githubusercontent.com/bata24/gef/dev/install-uv.sh -O- | env GEF_INSTALL_DIR="$HOME/gef" sh
 ```
+
+`GEF_INSTALL_DIR` must be an absolute path. It changes the location of `gef.py`,
+the virtual environment, and `gef.venv.conf`; system packages, the `uv`
+executable, and `$HOME/.gdbinit` remain in their default locations. When run as
+a non-root user, the installer uses `sudo` only for system packages.
 
 ## What is `install-no-uv.sh`?
 This is the old installer that was used before the `uv`-based installation became available.
 
 This installer is not currently recommended, but it still works.
+On systems protected by PEP 668, it automatically passes
+`--break-system-packages` to `pip3`.
 
 Usage:
 ```
-# Run the following commands as `root` or `sudo`
+# Run as the user who will use GEF
+wget -q https://raw.githubusercontent.com/bata24/gef/dev/install-no-uv.sh -O- | sh
 
-# On Ubuntu 23.04 or later, global Python package installation via pip3 is restricted.
-# Use the --break-system-packages option.
-wget -q https://raw.githubusercontent.com/bata24/gef/dev/install-no-uv.sh -O- \
-| sed -e 's/pip3 install/pip3 install --break-system-packages/g' | sudo sh
-
-# For Ubuntu 22.10 or earlier
-wget -q https://raw.githubusercontent.com/bata24/gef/dev/install-no-uv.sh -O- | sudo sh
+# Install GEF in a different directory
+wget -q https://raw.githubusercontent.com/bata24/gef/dev/install-no-uv.sh -O- | env GEF_INSTALL_DIR="$HOME/gef" sh
 ```
 
 ## What is `install-minimal.sh`?
@@ -96,8 +102,11 @@ Most core features work, but commands that depend on extra Python packages or ex
 
 Usage:
 ```
-# Run the following commands as `root` or `sudo`
-wget -q https://raw.githubusercontent.com/bata24/gef/dev/install-minimal.sh -O- | sudo sh
+# Run as the user who will use GEF
+wget -q https://raw.githubusercontent.com/bata24/gef/dev/install-minimal.sh -O- | sh
+
+# Install GEF in a different directory
+wget -q https://raw.githubusercontent.com/bata24/gef/dev/install-minimal.sh -O- | env GEF_INSTALL_DIR="$HOME/gef" sh
 ```
 
 Notes:
@@ -136,14 +145,14 @@ There are three installers.
     - Because this method is very simple, it can also be performed manually.
 - Normal install
     - This is the installation method provided by `install-no-uv.sh`.
-    - This uses `python3-pip` to install Python packages globally.
+    - This uses `python3-pip` to install Python packages system-wide.
     - This is a full installation, so you can use almost all the features that GEF provides.
     - This installer is not currently recommended, but it still works.
     - This method was used before the `uv`-based installation became available.
 
 For an explanation of each installer, see [About GEF's Files or Directories](#about-gefs-files-or-directories).
 
-## Why does GEF need to run as `root`?
+## Why might GEF need to run as `root`?
 Some GDB stubs require GEF to gather information and to read or write process memory through `/proc`, which typically needs root privileges.
 
 Examples:
@@ -156,55 +165,36 @@ Examples:
     - If this is unavailable, GEF falls back to slower memory access through `gdb`.
 - qemu-system (ARM32/ARM64): Reads and writes secure-world memory.
 
-As a result, running GEF as an unprivileged user is not currently tested.
+GEF itself and its installers can run as a normal user. Only the features above
+need GDB to run with root privileges.
 
-If you prefer not to run GEF as `root`, you have two options:
-- Install and run it inside a container (e.g., Docker).
-- Install it as a normal user using the steps below.
-
-## How to change the location of GEF? / How can I run GEF as a non-`root` user?
-This is NOT officially supported; proceed at your own risk. Future updates may break this workflow.
+## How to change the location of GEF?
+Set `GEF_INSTALL_DIR` to an absolute path when running any of the installers:
 
 ```
-# First, download GEF install script
-wget -q https://raw.githubusercontent.com/bata24/gef/dev/install-uv.sh -P /tmp
-
-# apt-get install as root
-sudo apt-get update
-sudo apt-get install <needed-package>   # see /tmp/install-uv.sh
-
-# 1. replace GDBINIT_PATH and GEF_DIR as you wanted
-# 2. remove root user check
-# 3. remove apt-get install
-vim /tmp/install-uv.sh
-
-# install
-sh /tmp/install-uv.sh
-
-# Delete /tmp/gef directory (if it exists)
-sudo rm -rf /tmp/gef
+wget -q https://raw.githubusercontent.com/bata24/gef/dev/install-uv.sh -O- | env GEF_INSTALL_DIR="$HOME/gef" sh
 ```
 
-Alternative simple method (no external tools; simple loading):
+This controls the GEF files stored together under one directory. It does not
+relocate system packages, the `uv` executable, or `$HOME/.gdbinit`.
+
+## How can I run GEF as a non-`root` user?
+Run an installer normally, without wrapping the whole command in `sudo`:
 
 ```
-# Download
-wget -q https://raw.githubusercontent.com/bata24/gef/dev/gef.py -O ~/.gdbinit-gef.py
-
-# Add path to .gdbinit
-echo "source $HOME/.gdbinit-gef.py" >> ~/.gdbinit
+wget -q https://raw.githubusercontent.com/bata24/gef/dev/install-uv.sh -O- | sh
 ```
 
-Notes:
-- GEF is designed to have as few dependencies as possible. Many commands should work with just `gef.py` without any additional external tools.
-- If you do not install external tools, the features that will not be available are listed below.
+The full installers use `sudo` for APT or pacman and other system-wide tools.
+APT cannot install packages for only one user. If Debian does not have `sudo`,
+install it as root first. `install-minimal.sh` does not need `sudo`.
 
 ## If I do not install external tools, which commands will no longer be available?
 The following is a breakdown. It may not be comprehensive.
 
 To use these commands fully, you need to manually install the necessary packages and tools.
 
-|GEF command/feature|Required apt package|Required python3 package|Required other tools|
+|GEF command/feature|Required system package|Required python3 package|Required other tools|
 |:---|:---|:---|:---|
 |(`gef`)|`gdb` or `gdb-multiarch`|-|-|
 |`got`|`binutils` (`objdump`, `readelf`)|-|-|
@@ -213,8 +203,8 @@ To use these commands fully, you need to manually install the necessary packages
 |`ksymaddr-remote-apply`|`binutils` (`objcopy`)|-|-|
 |`kmod -a`|`binutils` (`objcopy`)|-|-|
 |`ksymaddr-remote --vmlinux-file`|`binutils` (`nm`)|-|-|
-|`ktypes`|`bpftool`|-|-|
-|`ktypes-load`|`bpftool`,`gcc`|-|-|
+|`ktypes`|`bpftool` (Debian/Ubuntu), `bpf` (Arch)|-|-|
+|`ktypes-load`|`bpftool`,`gcc` (Debian/Ubuntu), `bpf`,`gcc` (Arch)|-|-|
 |`qemu-device-info`|`binutils` (`nm`)|-|-|
 |`rp`|-|-|`rp++`|
 |`rp --kernel`|`binutils` (`nm`), `grep`|-|`rp++`|
@@ -252,7 +242,7 @@ To use these commands fully, you need to manually install the necessary packages
 Notes:
 - To save installation time, the GEF installer does not install `binwalk` by default. This is because it has many package dependencies.
 - The GEF installer does no longer install `bpftool` when run inside a Docker container because `bpftool` is intended to run in the host.
-- The GEF installer installs `seccomp-tools` if neither `ceccomp` nor `seccomp-tools` is found. I recommend `ceccomp`, but its build is not simple. Install it manually if needed.
+- The full installers prefer prebuilt `ceccomp` packages and never build it from source. Ubuntu 26.04 and Arch use their native package; other supported systems with glibc 2.38 or newer use Debian's compatible binary package. On older systems, neither `ceccomp` nor `seccomp-tools` is installed.
 - The GEF installer does no longer install `vmlinux-to-elf` because in many cases you can use `ks-apply` instead.
 
 ## Is there a lighter version with fewer features?
@@ -269,7 +259,10 @@ There is no such version. But you can adjust it yourself.
 ## Does GEF work properly on operating systems other than Ubuntu?
 Yes, it generally works on most standard Linux distributions; however, not every command is validated on every distribution.
 
-I have used it on Debian, and some users are running it on Arch Linux.
+The installers support Ubuntu, Debian, and Arch Linux. They use `apt-get` on
+Debian-based systems and `pacman` on Arch Linux. On Arch Linux, they run a full
+`pacman -Syu` upgrade because partial upgrades are not supported.
+
 It also seems to be working fine on WSL2 (Ubuntu) so far.
 However, I have not confirmed that all commands work correctly.
 
@@ -283,13 +276,13 @@ Similarly, this GEF cannot be used at the same time as `peda` or `pwndbg`.
 Make sure you only load one of them.
 
 ## GDB will not load GEF.
-Start GDB as the `root` user or with `sudo`.
-By default, GEF is installed under `/root/.gef`, so non-`root` sessions will not find it unless you change the install paths or update your `.gdbinit` to point to the actual location.
+Make sure GDB is run by the same user who installed GEF. The installer writes to
+that user's `$HOME/.gdbinit` and installs GEF under `$HOME/.gef` by default.
 
 ## GDB still does not load GEF, even as the `root` user.
 It is likely that your GDB does not support integration with `python3`.
 
-This can happen if you are not using the GDB provided by Ubuntu's `apt` package manager. For example:
+This can happen if you are not using the GDB provided by your distribution's package manager. For example:
 - You built it yourself from source code
 - You are using a version that someone else prepared for a specific architecture
 
