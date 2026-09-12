@@ -64648,7 +64648,7 @@ class KernelAddressHeuristicFinder:
         if anchor is None or ret is None:
             return get_from_check_profile()
         kallsyms, _kallsyms_map = ret
-        hooks = set(a for a, name, typ in kallsyms if name.startswith("tomoyo_") and typ in "tT")
+        hooks = {a for a, name, typ in kallsyms if name.startswith("tomoyo_") and typ in "tT"}
 
         ptrsize = current_arch.ptrsize
         unpack = u32 if ptrsize == 4 else u64
@@ -64664,8 +64664,7 @@ class KernelAddressHeuristicFinder:
                     data += read_memory(base + offset, pagesize)
                 except (gdb.MemoryError, MemoryError):
                     data += b"\0" * pagesize
-        found = set(base + i for i in range(0, len(data) - ptrsize, ptrsize)
-                    if unpack(data[i:i + ptrsize]) in hooks)
+        found = {base + i for i in range(0, len(data) - ptrsize, ptrsize) if unpack(data[i:i + ptrsize]) in hooks}
 
         # sizeof(security_hook_list) is 3 pointers from v6.12 (`scalls`, `hook`, `lsmid`),
         # otherwise 4 pointers or more (`list`, `head`, `hook`, optional `lsm` and padding),
@@ -64694,10 +64693,9 @@ class KernelAddressHeuristicFinder:
         # of a text pointer to skip the plain function tables, then the arrays are the runs
         # left at the same stride.
         kinfo = Kernel.get_kernel_layout()
-        pointers = set(base + i for i in range(0, len(data) - ptrsize, ptrsize)
-                       if kinfo.text_base <= unpack(data[i:i + ptrsize]) < kinfo.text_end)
-        pointers = set(x for x in pointers
-                       if x - ptrsize not in pointers and x + ptrsize not in pointers)
+        pointers = {base + i for i in range(0, len(data) - ptrsize, ptrsize)
+                       if kinfo.text_base <= unpack(data[i:i + ptrsize]) < kinfo.text_end}
+        pointers = {x for x in pointers if x - ptrsize not in pointers and x + ptrsize not in pointers}
         align = 0x20
         for head in pointers:
             if head - stride in pointers:
