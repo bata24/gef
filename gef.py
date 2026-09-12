@@ -65444,7 +65444,11 @@ class KernelAddressHeuristicFinder:
             if addr:
                 res = gdb.execute("x/80i {:#x}".format(addr), to_string=True)
                 if is_x86_64():
-                    g = KernelAddressHeuristicFinderUtil.x64_dword_ptr_rip_base(res)
+                    seqs = set(KernelAddressHeuristicFinderUtil.x64_qword_ptr_rip_base(res))
+                    g = (
+                        x for x in KernelAddressHeuristicFinderUtil.x64_dword_ptr_rip_base(res)
+                        if x + current_arch.ptrsize in seqs
+                    )
                 elif is_x86_32():
                     g = KernelAddressHeuristicFinderUtil.x86_mov_noptr_ds(res)
                 elif is_arm64():
@@ -66947,7 +66951,7 @@ class KernelAddressHeuristicFinder:
             # plan 3 (available in 6.6-based from vaddr_ranges_debug_start)
             addr = Symbol.get_ksymaddr("vaddr_ranges_debug_start")
             if addr:
-                res = gdb.execute("x/8i {:#x}".format(addr), to_string=True)
+                res = gdb.execute("x/20i {:#x}".format(addr), to_string=True)
                 if is_x86_64():
                     g = KernelAddressHeuristicFinderUtil.x64_qword_ptr_rip_base(res)
                 elif is_x86_32():
@@ -66976,12 +66980,18 @@ class KernelAddressHeuristicFinder:
             if addr:
                 return addr
 
-        # plan 2 (from vaddr_ranges_first_valid_slab)
-        addr = Symbol.get_ksymaddr("vaddr_ranges_first_valid_slab")
-        if addr:
-            res = gdb.execute("x/10i {:#x}".format(addr), to_string=True)
+        # plan 2 (from vaddr_ranges_first_valid_slab or vaddr_ranges_debug_start)
+        anchors = (
+            ("vaddr_ranges_first_valid_slab", 10, 0),
+            ("vaddr_ranges_debug_start", 20, 1),
+        )
+        for symbol, instruction_count, skip in anchors:
+            addr = Symbol.get_ksymaddr(symbol)
+            if not addr:
+                continue
+            res = gdb.execute("x/{:d}i {:#x}".format(instruction_count, addr), to_string=True)
             if is_x86_64():
-                g = KernelAddressHeuristicFinderUtil.x64_qword_ptr_rip_base(res)
+                g = KernelAddressHeuristicFinderUtil.x64_qword_ptr_rip_base(res, skip=skip)
             elif is_x86_32():
                 # TODO
                 g = []
