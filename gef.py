@@ -59393,6 +59393,15 @@ class KernelAddressHeuristicFinderUtil:
         return KernelAddressHeuristicFinderUtil.common_addr_gen(res, regexp, skip, skip_msb_check, read_valid)
 
     @staticmethod
+    def x64_qword_ptr_disp_store(res, skip=0, skip_msb_check=False, read_valid=False):
+        # Use this when the symbol is folded into the displacement of a store.
+        # (e.g., `mov QWORD PTR [rax-0x63ea2fe0],r14` where rax is a per-cpu base)
+        # The 8 digits keep the stack slots (`[rbp-0x20]`) out, and rip-relative belongs to
+        # `x64_qword_ptr_rip_base_store` because there the displacement is not the address.
+        regexp = r"QWORD PTR \[(?!rip)\w+([-+]0x\w{8,})\]\s*,"
+        return KernelAddressHeuristicFinderUtil.common_addr_gen(res, regexp, skip, skip_msb_check, read_valid)
+
+    @staticmethod
     def x64_qword_ptr_gs_rip_base(res, skip=0, skip_msb_check=False, read_valid=False):
         regexp = r"QWORD PTR gs:\[rip\+0x\w+\].*#\s*(0x\w+)"
         return KernelAddressHeuristicFinderUtil.common_addr_gen(res, regexp, skip, skip_msb_check, read_valid)
@@ -62283,7 +62292,13 @@ class KernelAddressHeuristicFinder:
             if addr:
                 res = gdb.execute("x/30i {:#x}".format(addr), to_string=True)
                 if is_x86_64():
-                    g = KernelAddressHeuristicFinderUtil.x64_x86_mov_reg_const(res, skip_msb_check=True)
+                    # Some builds fold `per_cpu(current_task, cpu) = idle` into the store displacement
+                    # instead of materializing `&current_task` first. The store is the more specific
+                    # form, so try it before the plain constant (which may be a UBSAN descriptor).
+                    g = itertools.chain(
+                        KernelAddressHeuristicFinderUtil.x64_qword_ptr_disp_store(res),
+                        KernelAddressHeuristicFinderUtil.x64_x86_mov_reg_const(res, skip_msb_check=True),
+                    )
                 elif is_x86_32():
                     g = KernelAddressHeuristicFinderUtil.x64_x86_mov_reg_const(res, skip_msb_check=True)
                 for x in g:
@@ -62656,7 +62671,9 @@ class KernelAddressHeuristicFinder:
         if kversion and "2.6.35" <= kversion:
             addr = Symbol.get_ksymaddr("net_initial_ns")
             if addr:
-                res = gdb.execute("x/20i {:#x}".format(addr), to_string=True)
+                # `net_initial_ns` is only 3 instructions long, so the window reaches the neighbors
+                # and `aarch64_adrp_add` pairs the adrp of this function with their add.
+                res = KernelAddressHeuristicFinderUtil.disassemble_until_next_symbol(addr, 20)
                 if is_x86_64():
                     g = KernelAddressHeuristicFinderUtil.x64_x86_mov_reg_const(res)
                 elif is_x86_32():
