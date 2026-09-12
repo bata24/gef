@@ -63405,6 +63405,21 @@ class KernelAddressHeuristicFinder:
             x = Kernel.get_ksysctl("kernel.poweroff_cmd")
             if KernelAddressHeuristicFinderUtil.is_in_kernel_image(x):
                 return x
+
+        # plan 3 (from a referencing function; used when register_sysctl is inlined away so ksysctl cannot start)
+        # __orderly_poweroff() runs poweroff_cmd via run_cmd(); when run_cmd is inlined it appears as
+        # `mov reg, poweroff_cmd` inside poweroff_work_func. Only x86 loads the array base as an immediate;
+        # poweroff_cmd points at a command-line string, so it is picked out by the ASCII-string check.
+        if is_x86():
+            for name in ["poweroff_work_func", "__orderly_poweroff"]:
+                addr = Symbol.get_ksymaddr(name)
+                if addr is None:
+                    continue
+                res = gdb.execute("x/60i {:#x}".format(addr), to_string=True)
+                g = KernelAddressHeuristicFinderUtil.x64_x86_mov_reg_const(res)
+                for x in g:
+                    if KernelAddressHeuristicFinderUtil.is_in_kernel_image(x) and is_ascii_string(x):
+                        return x
         return None
 
     @staticmethod
@@ -64693,10 +64708,19 @@ class KernelAddressHeuristicFinder:
         kversion = Kernel.kernel_version()
 
         # plan 3 (available v3.11 or later)
+        # syslog_action_restricted() reads dmesg_restrict; it is usually inlined into
+        # check_syslog_permissions. On some x86 builds that function is split into a
+        # `check_syslog_permissions.part.0` (no plain symbol) and the read stays in do_syslog,
+        # which needs a wide window because the reference sits well after the fast-path return.
         if kversion and "3.11" <= kversion:
-            addr = Symbol.get_ksymaddr("check_syslog_permissions")
-            if addr:
-                res = gdb.execute("x/20i {:#x}".format(addr), to_string=True)
+            anchors = [("check_syslog_permissions", 40)]
+            if is_x86():
+                anchors.append(("do_syslog", 80))
+            for name, n in anchors:
+                addr = Symbol.get_ksymaddr(name)
+                if addr is None:
+                    continue
+                res = gdb.execute("x/{:d}i {:#x}".format(n, addr), to_string=True)
                 if is_x86_64():
                     g = KernelAddressHeuristicFinderUtil.x64_dword_ptr_rip_base(res)
                 elif is_x86_32():
