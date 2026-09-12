@@ -66639,6 +66639,16 @@ class KernelAddressHeuristicFinder:
 
         # plan 2 (available v6.10 or later, until `dmabuf_list` replaces `debugfs_list`)
         if kversion and "6.10" <= kversion and not Symbol.get_ksymaddr("dma_buf_iter_begin"):
+            # Some x64 builds place debugfs_list before debugfs_list_mutex, while others place it
+            # after the mutex. dma_buf_debug_show() references the list head itself when iterating.
+            if is_x86_64():
+                addr = Symbol.get_ksymaddr("dma_buf_debug_show")
+                if addr:
+                    res = KernelAddressHeuristicFinderUtil.disassemble_until_next_symbol(addr, 100)
+                    for x in KernelAddressHeuristicFinderUtil.x64_x86_any_const(res):
+                        if is_double_link_list(x):
+                            return x
+
             addr = Symbol.get_ksymaddr("dma_buf_file_release")
             if addr:
                 res = gdb.execute("x/30i {:#x}".format(addr), to_string=True)
