@@ -59986,7 +59986,10 @@ class KernelAddressHeuristicFinderUtil:
                 if not is_valid_addr(x + offset):
                     return False
                 v = u32(read_memory(x + offset, 4))
-                if v >> 16 == 0 or (v & 0xFF00) or (v & 0xFF) not in (0, 4):
+                marker = v & ~0xFF
+                if ((v & 0xFF) not in (0, 4)
+                        or not any(marker == bits << shift
+                                   for bits in (1, 3) for shift in range(23, 28))):
                     continue
                 head_addr = x + align(offset + 4, current_arch.ptrsize)
                 if not is_valid_addr(head_addr):
@@ -64577,6 +64580,42 @@ class KernelAddressHeuristicFinder:
             if x:
                 return x
 
+        def get_from_check_profile():
+            """Handle builds that keep `tomoyo_enabled` outside the hook array."""
+            addr = Symbol.get_ksymaddr("tomoyo_check_profile")
+            if addr is None or not is_x86_64():
+                return None
+            res = KernelAddressHeuristicFinderUtil.disassemble_until_next_symbol(
+                addr, 20,
+            )
+
+            # Some v5.3 builds put a 32-byte slot for tomoyo_enabled between the
+            # io-buffer list and tomoyo_ss instead of next to tomoyo_hooks[].
+            for ss in KernelAddressHeuristicFinderUtil.x64_x86_mov_reg_const(res):
+                x = ss - 0x20
+                try:
+                    if (read_int32_from_memory(x) in [0, 1]
+                            and read_memory(x + 4, 0x1C) == b"\0" * 0x1C
+                            and is_double_link_list(x - 0x20)):
+                        return x
+                except (gdb.MemoryError, MemoryError):
+                    pass
+
+            # Before DEFINE_LSM(tomoyo), tomoyo_enabled follows tomoyo_last_pid and
+            # precedes the tomoyo_policy_loaded byte written by this function.
+            kversion = Kernel.kernel_version()
+            if kversion and kversion < "5.1":
+                policy_loads = KernelAddressHeuristicFinderUtil.x64_byte_ptr_rip_base(res)
+                for policy_loaded in policy_loads:
+                    x = policy_loaded - 8
+                    try:
+                        if (read_int32_from_memory(x) in [0, 1]
+                                and read_memory(x + 4, 4) == b"\0" * 4):
+                            return x
+                    except (gdb.MemoryError, MemoryError):
+                        pass
+            return None
+
         # plan 2 (search for the memory; available v5.1 or later)
         # `tomoyo_enabled` is held only by DEFINE_LSM(tomoyo) in `.lsm_info.init` and read only
         # by tomoyo_interface_init(), both freed by free_initmem(), so no instruction points at
@@ -64607,7 +64646,7 @@ class KernelAddressHeuristicFinder:
                 break
         ret = Symbol.get_kallsyms()
         if anchor is None or ret is None:
-            return None
+            return get_from_check_profile()
         kallsyms, _kallsyms_map = ret
         hooks = set(a for a, name, typ in kallsyms if name.startswith("tomoyo_") and typ in "tT")
 
@@ -64643,7 +64682,7 @@ class KernelAddressHeuristicFinder:
                 if len(run) > len(entries):
                     entries, stride = run, step
         if len(entries) < 8:
-            return None
+            return get_from_check_profile()
         offset_hook = ptrsize if stride == ptrsize * 3 else ptrsize * 3
         start = entries[0] - offset_hook
         end = entries[-1] - offset_hook + stride
@@ -64689,7 +64728,7 @@ class KernelAddressHeuristicFinder:
                         return x
         except (gdb.MemoryError, MemoryError):
             pass
-        return None
+        return get_from_check_profile()
 
     @staticmethod
     @switch_to_intel_syntax
@@ -65789,16 +65828,13 @@ class KernelAddressHeuristicFinder:
         kversion = Kernel.kernel_version()
 
         # plan 2 (available v4.13 or later)
-        # When no candidate can be verified, `prog_idr_lock` is returned instead of `prog_idr`.
-        # Even if there is a slight deviation, there is no problem because the member
-        # identification logic of the caller (`kbpf` command) works.
         if kversion and "4.13" <= kversion:
             candidates = KernelAddressHeuristicFinderUtil.collect_idr_candidates("bpf_prog_free_id")
             if not candidates:
                 # bpf_prog_free_id() is inlined into its only caller in some builds
                 candidates = KernelAddressHeuristicFinderUtil.collect_idr_candidates("__bpf_prog_put")
             if candidates:
-                return KernelAddressHeuristicFinderUtil.select_idr(candidates) or candidates[0]
+                return KernelAddressHeuristicFinderUtil.select_idr(candidates)
         return None
 
     @staticmethod
@@ -65813,16 +65849,13 @@ class KernelAddressHeuristicFinder:
         kversion = Kernel.kernel_version()
 
         # plan 2 (available v4.13 or later)
-        # When no candidate can be verified, `map_idr_lock` is returned instead of `map_idr`.
-        # Even if there is a slight deviation, there is no problem because the member
-        # identification logic of the caller (`kbpf` command) works.
         if kversion and "4.13" <= kversion:
             candidates = KernelAddressHeuristicFinderUtil.collect_idr_candidates("bpf_map_free_id")
             if not candidates:
                 # bpf_map_free_id() is inlined into its only caller in some builds
                 candidates = KernelAddressHeuristicFinderUtil.collect_idr_candidates("__bpf_map_put")
             if candidates:
-                return KernelAddressHeuristicFinderUtil.select_idr(candidates) or candidates[0]
+                return KernelAddressHeuristicFinderUtil.select_idr(candidates)
         return None
 
     @staticmethod
