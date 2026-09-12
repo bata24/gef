@@ -6385,6 +6385,20 @@ class Symbol:
         return exact + [addr for addr, name, _typ in kallsyms if name != prefix and name.startswith(prefix)]
 
     @staticmethod
+    def get_ksymaddr_with_split_suffix(prefix):
+        """e.g., 'insert_vmap_area_augment' -> [0xffffdb0414861840]
+
+        Same as `get_ksymaddr_startswith()`, except an unrelated longer symbol
+        (`free_vmap_area` vs `free_vmap_area_noflush`) is not taken for a split piece.
+        gcc always separates the suffix it appends with a dot."""
+        ret = Symbol.get_kallsyms()
+        if ret is None:
+            return []
+        kallsyms, kallsyms_map = ret
+        exact = list(kallsyms_map.get(prefix, []))
+        return exact + [addr for addr, name, _typ in kallsyms if name.startswith(prefix + ".")]
+
+    @staticmethod
     def get_symbol_by_monitor(symbol):
         if not is_kdb():
             return None
@@ -65785,13 +65799,21 @@ class KernelAddressHeuristicFinder:
         if kversion is None or kversion < "6.9":
             return None
 
-        offset = ((current_arch.ptrsize * 3 * 256 + 5 + current_arch.ptrsize - 1)
-                  & ~(current_arch.ptrsize - 1)) + current_arch.ptrsize
+        def busy_head(node, min_len):
+            # `struct vmap_node` starts with `pool[MAX_VA_SIZE_PAGES]`, then `pool_lock` and
+            # `skip_populate`, then `busy.root` and `busy.head`. The gap before `busy` depends
+            # on `sizeof(spinlock_t)`, which grows with the lock debug options.
+            base = node + current_arch.ptrsize * 3 * 256
+            for i in range(16):
+                head = base + current_arch.ptrsize * i
+                if is_double_link_list(head, min_len=min_len):
+                    return head
+            return None
 
         if KernelAddressHeuristicFinder.USE_DIRECTLY:
             x = Symbol.get_ksymaddr("vmap_nodes")
             if x:
-                return read_int_from_memory(x) + offset
+                return busy_head(read_int_from_memory(x), 0)
 
         def indirect_heads(sources):
             for source in sources:
@@ -65801,7 +65823,9 @@ class KernelAddressHeuristicFinder:
                         break
                     vmap_nodes = read_int_from_memory(node_addr)
                     if is_valid_addr(vmap_nodes):
-                        yield vmap_nodes + offset
+                        head = busy_head(vmap_nodes, 5)
+                        if head:
+                            yield head
 
         addr = Symbol.get_ksymaddr("find_vmap_area")
         if addr:
@@ -65823,7 +65847,11 @@ class KernelAddressHeuristicFinder:
                     KernelAddressHeuristicFinderUtil.x64_x86_mov_reg_const(res, read_valid=True),
                 )
             elif is_arm64():
-                g = KernelAddressHeuristicFinderUtil.aarch64_adrp_add(res)
+                # some builds load `vmap_nodes` with `adrp`+`ldr`, never materializing its address
+                g = itertools.chain(
+                    KernelAddressHeuristicFinderUtil.aarch64_adrp_add(res),
+                    KernelAddressHeuristicFinderUtil.aarch64_adrp_ldr(res),
+                )
             elif is_arm32():
                 g = itertools.chain(
                     KernelAddressHeuristicFinderUtil.arm32_movw_movt(res),
@@ -65847,7 +65875,32 @@ class KernelAddressHeuristicFinder:
         if kversion is None or kversion < "5.2":
             return None
 
-        # plan 2 (available v4.7~; here, always True)
+        # plan 2 (a function that is handed `&free_vmap_area_list` materializes it directly)
+        # The scan of plan 3 has two blind spots this plan does not have: `purge_vmap_area_list`
+        # also sits between `vmap_area_list` and `free_vmap_area_list` and is counted whenever it
+        # is not empty, and v7.1 may place `vmap_notify_list` and `free_vmap_area_list` in
+        # different sections, which puts the latter out of reach of a forward scan.
+        for name in ("insert_vmap_area_augment", "free_vmap_area"):
+            for addr in Symbol.get_ksymaddr_with_split_suffix(name):
+                # ARM keeps the constant in a literal pool and reads it ~210 instructions in
+                res = KernelAddressHeuristicFinderUtil.disassemble_until_next_symbol(addr, 500)
+                if is_x86_64() or is_x86_32():
+                    g = KernelAddressHeuristicFinderUtil.x64_x86_any_const(res)
+                elif is_arm64():
+                    g = itertools.chain(
+                        KernelAddressHeuristicFinderUtil.aarch64_adrp_add(res),
+                        KernelAddressHeuristicFinderUtil.aarch64_adrp_add_add(res),
+                    )
+                elif is_arm32():
+                    g = itertools.chain(
+                        KernelAddressHeuristicFinderUtil.arm32_movw_movt(res),
+                        KernelAddressHeuristicFinderUtil.arm32_ldr_pc_relative(res),
+                    )
+                for x in g:
+                    if is_double_link_list(x, min_len=3):
+                        return x
+
+        # plan 3 (available v4.7~; here, always True)
         addr = Symbol.get_ksymaddr("register_vmap_purge_notifier")
         if addr:
             res = gdb.execute("x/10i {:#x}".format(addr), to_string=True)
@@ -65898,25 +65951,6 @@ class KernelAddressHeuristicFinder:
                     if count == 0:
                         return a
 
-        # plan 3 (free_vmap_area directly references the free tree/list)
-        # v7.1 may place vmap_notify_list and free_vmap_area_list in different
-        # sections, so the bounded scan from register_vmap_purge_notifier above
-        # can no longer reach the latter.
-        addr = Symbol.get_ksymaddr("free_vmap_area")
-        if addr:
-            res = gdb.execute("x/200i {:#x}".format(addr), to_string=True)
-            if is_x86_64() or is_x86_32():
-                g = KernelAddressHeuristicFinderUtil.x64_x86_any_const(res)
-            elif is_arm64():
-                g = KernelAddressHeuristicFinderUtil.aarch64_adrp_add(res)
-            elif is_arm32():
-                g = itertools.chain(
-                    KernelAddressHeuristicFinderUtil.arm32_movw_movt(res),
-                    KernelAddressHeuristicFinderUtil.arm32_ldr_pc_relative(res),
-                )
-            for x in g:
-                if is_double_link_list(x, min_len=3):
-                    return x
         return None
 
     @staticmethod
