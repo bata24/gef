@@ -59532,6 +59532,33 @@ class KernelAddressHeuristicFinderUtil:
                     yield w
 
     @staticmethod
+    def aarch64_adrp_ldrsw(res, skip=0, skip_msb_check=False, read_valid=False):
+        # Use this when the global is an `int` that feeds a 64-bit operand, which makes the
+        # compiler load it by `ldrsw` instead of `ldr`.
+        bases = {}
+        for line in res.splitlines():
+            m = re.search(r"adrp\s+(\w+),\s*(0x\w+)", line)
+            if m:
+                reg = m.group(1)
+                v = int(m.group(2), 16)
+                bases[reg] = v
+                continue
+            m = re.search(r"ldrsw\s+\w+,\s*\[(\w+)(?:,\s*#(\d+))?\]", line)
+            if m:
+                srcreg = m.group(1)
+                v = int(m.group(2), 0) if m.group(2) else 0
+                if srcreg in bases:
+                    w = AddressUtil.normalize_address(bases[srcreg] + v)
+                    if not skip_msb_check and not AddressUtil.is_msb_on(w):
+                        continue
+                    if read_valid and not is_valid_addr_addr(w):
+                        continue
+                    if skip > 0:
+                        skip -= 1
+                        continue
+                    yield w
+
+    @staticmethod
     def aarch64_adrp_str(res, skip=0, skip_msb_check=False, read_valid=False):
         bases = {}
         for line in res.splitlines():
@@ -64536,7 +64563,118 @@ class KernelAddressHeuristicFinder:
             if x:
                 return x
 
-        # plan 2 nothing
+        # plan 2 (search for the memory; available v5.1 or later)
+        # `tomoyo_enabled` is held only by DEFINE_LSM(tomoyo) in `.lsm_info.init` and read only
+        # by tomoyo_interface_init(), both freed by free_initmem(), so no instruction points at
+        # it. It is emitted next to `tomoyo_hooks[]` and `tomoyo_blob_sizes`, so search around
+        # `tomoyo_blob_sizes`, which tomoyo_task() still materializes, for the array and take
+        # the slot next to it. It holds 0 whenever TOMOYO is not the active LSM, so the value
+        # cannot tell the slot apart from the padding.
+        anchor = None
+        for name in ["tomoyo_task_free", "tomoyo_task_alloc", "tomoyo_cred_prepare"]:
+            addr = Symbol.get_ksymaddr(name)
+            if addr is None:
+                continue
+            res = gdb.execute("x/20i {:#x}".format(addr), to_string=True)
+            if is_x86_64():
+                g = KernelAddressHeuristicFinderUtil.x64_dword_ptr_rip_base(res)
+            elif is_x86_32():
+                g = KernelAddressHeuristicFinderUtil.x86_noptr_ds(res)
+            elif is_arm64():
+                # `lbs_task` is an `int` used as an offset, so it can be loaded either way
+                g = itertools.chain(
+                    KernelAddressHeuristicFinderUtil.aarch64_adrp_ldrsw(res),
+                    KernelAddressHeuristicFinderUtil.aarch64_adrp_ldr(res),
+                )
+            elif is_arm32():
+                g = KernelAddressHeuristicFinderUtil.arm32_movw_movt_ldr(res)
+            anchor = next(iter(g), None)
+            if anchor is not None:
+                break
+        ret = Symbol.get_kallsyms()
+        if anchor is None or ret is None:
+            return None
+        kallsyms, _kallsyms_map = ret
+        hooks = set(a for a, name, typ in kallsyms if name.startswith("tomoyo_") and typ in "tT")
+
+        ptrsize = current_arch.ptrsize
+        unpack = u32 if ptrsize == 4 else u64
+        window = 0x8000 # the whole `.data..ro_after_init` block of tomoyo.c fits in this
+        base = (anchor & ~(ptrsize - 1)) - window # keep the window aligned to the pointer slots
+        try:
+            data = read_memory(base, window * 2)
+        except (gdb.MemoryError, MemoryError):
+            data = b""
+            pagesize = get_pagesize()
+            for offset in range(0, window * 2, pagesize):
+                try:
+                    data += read_memory(base + offset, pagesize)
+                except (gdb.MemoryError, MemoryError):
+                    data += b"\0" * pagesize
+        found = set(base + i for i in range(0, len(data) - ptrsize, ptrsize)
+                    if unpack(data[i:i + ptrsize]) in hooks)
+
+        # sizeof(security_hook_list) is 3 pointers from v6.12 (`scalls`, `hook`, `lsmid`),
+        # otherwise 4 pointers or more (`list`, `head`, `hook`, optional `lsm` and padding),
+        # so detect it from the array itself. `tomoyo_operations` also holds tomoyo functions,
+        # so adopt the longest run to avoid mistaking a file_operations for the array.
+        entries, stride = [], None
+        for step in [ptrsize * n for n in [3, 4, 5]]:
+            for head in found:
+                if head - step in found:
+                    continue
+                run = [head]
+                while run[-1] + step in found:
+                    run.append(run[-1] + step)
+                if len(run) > len(entries):
+                    entries, stride = run, step
+        if len(entries) < 8:
+            return None
+        offset_hook = ptrsize if stride == ptrsize * 3 else ptrsize * 3
+        start = entries[0] - offset_hook
+        end = entries[-1] - offset_hook + stride
+
+        # How much padding is in front of the array depends on the alignment the compiler gives
+        # it, which is 32 in most builds but not all. It is a build-wide property and the other
+        # LSMs keep their hook array in the same section, so take the alignment all of them
+        # satisfy. Only the `hook` member of an entry points into .text, so drop the neighbors
+        # of a text pointer to skip the plain function tables, then the arrays are the runs
+        # left at the same stride.
+        kinfo = Kernel.get_kernel_layout()
+        pointers = set(base + i for i in range(0, len(data) - ptrsize, ptrsize)
+                       if kinfo.text_base <= unpack(data[i:i + ptrsize]) < kinfo.text_end)
+        pointers = set(x for x in pointers
+                       if x - ptrsize not in pointers and x + ptrsize not in pointers)
+        align = 0x20
+        for head in pointers:
+            if head - stride in pointers:
+                continue
+            count = 1
+            while head + count * stride in pointers:
+                count += 1
+            if count >= 8:
+                array_base = head - offset_hook
+                align = min(align, array_base & -array_base)
+
+        # The compiler is free to order the 3 objects, and `tomoyo_enabled` is 4 bytes, so it
+        # takes whichever slot the other two leave next to the array.
+        try:
+            if start - 0x20 <= anchor < start:
+                # `tomoyo_blob_sizes` is in front of the array. `tomoyo_enabled` only fits there
+                # when `lbs_task` is its last member, which ends the struct 4 bytes early.
+                x = start - 4 if anchor == start - 8 else end
+                if read_int32_from_memory(x) in [0, 1]:
+                    return x
+            else:
+                # `tomoyo_blob_sizes` is behind the array, so `tomoyo_enabled` heads the block
+                # and the alignment padding of the array follows it. The value is 0 whenever
+                # TOMOYO is not the active LSM, so only the padding tells the slot apart.
+                x = start - align
+                if read_int32_from_memory(x) in [0, 1]:
+                    if read_memory(x + 4, align - 4) == b"\0" * (align - 4):
+                        return x
+        except (gdb.MemoryError, MemoryError):
+            pass
         return None
 
     @staticmethod
