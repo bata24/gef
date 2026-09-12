@@ -16,6 +16,8 @@ if [ -z "${HOME:-}" ]; then
 fi
 GEF_DIR="${GEF_INSTALL_DIR:-${HOME}/.gef}"
 GEF_PATH="${GEF_DIR}/gef.py"
+GEF_BIN_DIR="${GEF_DIR}/bin"
+GEF_GEM_DIR="${GEF_DIR}/gems"
 GDBINIT_PATH="${HOME}/.gdbinit"
 GEF_TMP=""
 RP_TMP=""
@@ -74,7 +76,7 @@ if [ -f "${GDBINIT_PATH}" ]; then
 fi
 
 echo "[+] Create GEF directory"
-mkdir -p "${GEF_DIR}"
+mkdir -p "${GEF_BIN_DIR}"
 
 echo "[+] Install system packages"
 if command -v apt-get >/dev/null 2>&1; then
@@ -134,16 +136,23 @@ run_as_root python3 -m pip install ${PIP_OPTIONS} \
 
 echo "[+] Install one_gadget"
 if ! command -v one_gadget >/dev/null 2>&1; then
-    run_as_root gem install --bindir /usr/local/bin one_gadget -v "${ONE_GADGET_VERSION}"
+    gem install --no-document --install-dir "${GEF_GEM_DIR}" --bindir "${GEF_GEM_DIR}/bin" one_gadget -v "${ONE_GADGET_VERSION}"
+    # Expand paths when the launcher runs, so it also works after relocation.
+    # shellcheck disable=SC2016
+    printf '%s\n' '#!/bin/sh
+set -eu
+GEF_DIR=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+GEM_HOME="${GEF_DIR}/gems" GEM_PATH="${GEF_DIR}/gems" exec "${GEF_DIR}/gems/bin/one_gadget" "$@"' > "${GEF_BIN_DIR}/one_gadget"
+    chmod +x "${GEF_BIN_DIR}/one_gadget"
 fi
 
 echo "[+] Install rp++"
 if [ "$(uname -m)" = "x86_64" ] \
     && ! command -v rp-lin >/dev/null 2>&1 \
-    && [ ! -e /usr/local/bin/rp-lin ]; then
+    && [ ! -e "${GEF_BIN_DIR}/rp-lin" ]; then
     RP_TMP=$(mktemp /tmp/rp-lin-clang.XXXXXX.zip)
     wget -q "${RP_URL}" -O "${RP_TMP}"
-    run_as_root unzip "${RP_TMP}" -d /usr/local/bin
+    unzip "${RP_TMP}" -d "${GEF_BIN_DIR}"
     rm -f "${RP_TMP}"
     RP_TMP=""
 fi

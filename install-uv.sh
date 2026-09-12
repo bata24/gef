@@ -17,10 +17,11 @@ if [ -z "${HOME:-}" ]; then
 fi
 GEF_DIR="${GEF_INSTALL_DIR:-${HOME}/.gef}"
 GEF_PATH="${GEF_DIR}/gef.py"
+GEF_BIN_DIR="${GEF_DIR}/bin"
+GEF_GEM_DIR="${GEF_DIR}/gems"
 GDBINIT_PATH="${HOME}/.gdbinit"
 GEF_VENV_CONF_PATH="${GEF_DIR}/gef.venv.conf"
-GEF_VENV_PATH="${GEF_DIR}/.venv-gef"
-GEF_VENV_BIN_PATH="${GEF_VENV_PATH}/bin"
+GEF_VENV_PATH="${GEF_DIR}/venv-gef"
 GEF_TMP=""
 RP_TMP=""
 CECCOMP_TMP=""
@@ -78,7 +79,7 @@ if [ -f "${GDBINIT_PATH}" ]; then
 fi
 
 echo "[+] Create GEF directory"
-mkdir -p "${GEF_DIR}"
+mkdir -p "${GEF_BIN_DIR}"
 
 echo "[+] Install system packages"
 if command -v apt-get >/dev/null 2>&1; then
@@ -147,23 +148,30 @@ if [ ! -e "${GEF_VENV_PATH}" ]; then
 fi
 
 echo "[+] pip3"
-"${UV_BIN}" pip install --python "${GEF_VENV_BIN_PATH}/python" \
+"${UV_BIN}" pip install --python "${GEF_VENV_PATH}/bin/python" \
     "filebytes @ git+https://github.com/sashs/filebytes.git" \
     setuptools unicorn capstone ropper keystone-engine magika \
     angr pillow pyzbar cffi gmpy2
 
 echo "[+] Install one_gadget"
 if ! command -v one_gadget >/dev/null 2>&1; then
-    gem install -i "${GEF_VENV_PATH}" one_gadget -v "${ONE_GADGET_VERSION}"
+    gem install --no-document --install-dir "${GEF_GEM_DIR}" --bindir "${GEF_GEM_DIR}/bin" one_gadget -v "${ONE_GADGET_VERSION}"
+    # Expand paths when the launcher runs, so it also works after relocation.
+    # shellcheck disable=SC2016
+    printf '%s\n' '#!/bin/sh
+set -eu
+GEF_DIR=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+GEM_HOME="${GEF_DIR}/gems" GEM_PATH="${GEF_DIR}/gems" exec "${GEF_DIR}/gems/bin/one_gadget" "$@"' > "${GEF_BIN_DIR}/one_gadget"
+    chmod +x "${GEF_BIN_DIR}/one_gadget"
 fi
 
 echo "[+] Install rp++"
 if [ "$(uname -m)" = "x86_64" ] \
     && ! command -v rp-lin >/dev/null 2>&1 \
-    && [ ! -e "${GEF_VENV_BIN_PATH}/rp-lin" ]; then
+    && [ ! -e "${GEF_BIN_DIR}/rp-lin" ]; then
     RP_TMP=$(mktemp /tmp/rp-lin-clang.XXXXXX.zip)
     wget -q "${RP_URL}" -O "${RP_TMP}"
-    unzip "${RP_TMP}" -d "${GEF_VENV_BIN_PATH}"
+    unzip "${RP_TMP}" -d "${GEF_BIN_DIR}"
     rm -f "${RP_TMP}"
     RP_TMP=""
 fi
@@ -184,7 +192,7 @@ fi
 
 echo "[+] Setup venv path hint file"
 GEF_VENV_SYS_PATH=$(
-    "${GEF_VENV_BIN_PATH}/python" - "${GDB_BIN}" <<'PYTHON'
+    "${GEF_VENV_PATH}/bin/python" - "${GDB_BIN}" <<'PYTHON'
 import ast
 import os
 import subprocess
@@ -208,10 +216,6 @@ print(os.pathsep.join(venv_paths))
 PYTHON
 )
 
-{
-    printf 'GEF_VENV_GEM_HOME=%s\n' "${GEF_VENV_PATH}"
-    printf 'GEF_VENV_SYS_PATH=%s\n' "${GEF_VENV_SYS_PATH}"
-    printf 'GEF_VENV_BIN_PATH=%s\n' "${GEF_VENV_BIN_PATH}"
-} > "${GEF_VENV_CONF_PATH}"
+printf 'GEF_VENV_SYS_PATH=%s\n' "${GEF_VENV_SYS_PATH}" > "${GEF_VENV_CONF_PATH}"
 
 echo "[+] INSTALLATION SUCCESSFUL"
