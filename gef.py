@@ -64337,6 +64337,9 @@ class KernelAddressHeuristicFinder:
                         KernelAddressHeuristicFinderUtil.arm32_ldr_pc_relative(res),
                     )
                 for x in g:
+                    # a small displacement (e.g. `[rax*8-0x28]`) normalizes to an unreadable address
+                    if not is_valid_addr(x):
+                        continue
                     for i in range(2):
                         v = read_int_from_memory(x + current_arch.ptrsize * i)
                         if not is_valid_addr(v):
