@@ -66277,7 +66277,10 @@ class KernelAddressHeuristicFinder:
                         KernelAddressHeuristicFinderUtil.x64_x86_add_reg_const(res, skip_msb_check=True),
                         KernelAddressHeuristicFinderUtil.x64_lea_reg_const(res, skip_msb_check=True),
                     )
-                    g2 = KernelAddressHeuristicFinderUtil.x64_qword_ptr_rip_base(res)
+                    g2 = itertools.chain(
+                        KernelAddressHeuristicFinderUtil.x64_qword_ptr_rip_base(res),
+                        KernelAddressHeuristicFinderUtil.x64_x86_mov_reg_const(res),
+                    )
                 elif is_x86_32():
                     g = KernelAddressHeuristicFinderUtil.x64_x86_mov_reg_const(res, skip_msb_check=True)
                     g2 = KernelAddressHeuristicFinderUtil.x64_x86_dword_ptr_src(res)
@@ -66337,6 +66340,10 @@ class KernelAddressHeuristicFinder:
                     # head via the offset of `clk`; `raw_spinlock_t` is an empty struct here
                     # because this pattern means CONFIG_SMP=n, so `clk` follows `running_timer`
                     # at the very head of the structure.
+                    # When it is not inlined, each `&timer_bases[i]` is passed as an absolute
+                    # immediate instead, so the mov candidates are needed as well.
+                    # 0xffffffff95ead669 <run_timer_softirq>:    mov rdi,0xffffffff96b39700 <-- timer_bases
+                    # 0xffffffff95ead675 <run_timer_softirq+12>: mov rdi,0xffffffff96b3a980 <-- timer_bases[1]
                     bases = []
                     for x in sorted(set(g2)):
                         if x & (current_arch.ptrsize - 1) or not is_valid_addr(x):
@@ -77850,31 +77857,29 @@ class KernelTimerCommand(GenericCommand, BufferingOutput):
         anchor = KernelAddressHeuristicFinder.find_clock_base_anchor(hrtimer_cpu_base)
         if anchor:
             self.offset_clock_base, self.sizeof_hrtimer_clock_base, _ = anchor
-        elif "6.18" <= kversion:
-            self.hrtimer_meta.append((self.quiet_err, "clock_base: Not found"))
-            return None
         self.offset_clockid = current_arch.ptrsize + 4 # cpu_base, index
 
-        if kversion < "6.18":
-            ktime_get = Symbol.get_ksymaddr("ktime_get")
-            ktime_get_real = Symbol.get_ksymaddr("ktime_get_real")
-            ktime_get_ofs = None
-            ktime_get_real_ofs = None
-            i = 0
-            while True:
-                ofs = current_arch.ptrsize * i
+        # A merge-window build names the previous release (`6.17.0-11846-g...`) but already has
+        # the next layout, so look for `get_time` instead of deciding by version alone.
+        ktime_get = Symbol.get_ksymaddr("ktime_get")
+        ktime_get_real = Symbol.get_ksymaddr("ktime_get_real")
+        ktime_get_ofs = None
+        ktime_get_real_ofs = None
+        if kversion < "6.18" and ktime_get and ktime_get_real:
+            limit = self.offset_clock_base + self.sizeof_hrtimer_clock_base * 2 if anchor else 0x400
+            for ofs in range(0, limit, current_arch.ptrsize):
                 try:
                     v = read_int_from_memory(hrtimer_cpu_base + ofs)
                 except gdb.MemoryError:
-                    self.hrtimer_meta.append((self.quiet_err, "Memory read error"))
-                    return None
+                    break
                 if v == ktime_get:
                     ktime_get_ofs = ofs
                 elif v == ktime_get_real:
                     ktime_get_real_ofs = ofs
                 if ktime_get_ofs and ktime_get_real_ofs:
                     break
-                i += 1
+
+        if ktime_get_ofs and ktime_get_real_ofs:
             if not anchor:
                 # fallback: `get_time` and `offset` are the last members of the structure
                 self.sizeof_hrtimer_clock_base = ktime_get_real_ofs - ktime_get_ofs
@@ -77882,9 +77887,12 @@ class KernelTimerCommand(GenericCommand, BufferingOutput):
                 self.offset_clock_base = clock_base_1 - self.sizeof_hrtimer_clock_base
             self.offset_get_time = ktime_get_ofs - self.offset_clock_base
             self.offset_rb_root = self.offset_get_time - current_arch.ptrsize * 2
-        else:
+        elif anchor:
             self.offset_get_time = None # removed at v6.18
             self.resolve_offset_rb_root(hrtimer_cpu_base + self.offset_clock_base)
+        else:
+            self.hrtimer_meta.append((self.quiet_err, "clock_base: Not found"))
+            return None
 
         # struct hrtimer: `{rb_node, expires}, _softexpires, function, base, state, ...`
         self.offset_expires = current_arch.ptrsize * 3
