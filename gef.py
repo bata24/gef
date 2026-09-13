@@ -65811,7 +65811,12 @@ class KernelAddressHeuristicFinder:
                     0xffff00007fbf0a60|+0x00a0|+020: 0x0000000000002000
                     0xffff00007fbf0a68|+0x00a8|+021: 0xffffdfab1b792690  ->  0x0000000000414d44 ('DMA'?)
                     """
-                    v = read_int_from_memory(x)
+                    # A small displacement (e.g. `[rbx+rdx*8-0x28]`) normalizes to
+                    # 0xffffffffffffffXX, which passes the MSB check but is not readable.
+                    try:
+                        v = read_int_from_memory(x)
+                    except gdb.MemoryError:
+                        continue
                     if not v or not is_valid_addr(v):
                         continue
                     # avoid false positive
@@ -65850,7 +65855,11 @@ class KernelAddressHeuristicFinder:
                         KernelAddressHeuristicFinderUtil.arm32_ldr_pc_relative(res)
                     )
                 for x in g:
-                    v = read_int_from_memory(x)
+                    # the candidate itself may be unreadable (e.g. a sign-extended small constant)
+                    try:
+                        v = read_int_from_memory(x)
+                    except gdb.MemoryError:
+                        continue
                     if v and is_valid_addr(v):
                         continue
                     return x
