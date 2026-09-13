@@ -66332,11 +66332,17 @@ class KernelAddressHeuristicFinder:
             if clk == 0:
                 continue
 
-            # time_before(next_expiry, clk), with unsigned-long wraparound. `next_expiry` is
+            # `next_expiry` is a jiffies value that __next_timer_interrupt() keeps within
+            # NEXT_TIMER_MAX_DELTA of `clk`, but it is not always ahead of it: before v5.14 only
+            # the idle path refreshes it, so it stays stale while the cpu keeps running. It is
             # left 0 with CONFIG_NO_HZ_COMMON=n, where nothing updates it.
             bits = ptrsize * 8
-            if next_expiry and ((next_expiry - clk) & ((1 << bits) - 1)) >= (1 << (bits - 1)):
-                continue
+            if next_expiry:
+                diff = (next_expiry - clk) & ((1 << bits) - 1)
+                if diff >= (1 << (bits - 1)):
+                    diff -= 1 << bits
+                if abs(diff) > (1 << 30) - 1:
+                    continue
 
             # Since the v4.8 timer-wheel rewrite WHEEL_SIZE is 512 or 576, depending on HZ.
             for wheel_size in (512, 576):
