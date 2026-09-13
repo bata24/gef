@@ -59407,6 +59407,13 @@ class KernelAddressHeuristicFinderUtil:
         return KernelAddressHeuristicFinderUtil.common_addr_gen(res, regexp, skip, skip_msb_check, read_valid)
 
     @staticmethod
+    def x64_qword_ptr_disp_load(res, skip=0, skip_msb_check=False, read_valid=False):
+        # The load side of `x64_qword_ptr_disp_store`.
+        # (e.g., `mov rsi,QWORD PTR [rax-0x7df3ef38]` where rax is an array index already scaled)
+        regexp = r",\s*QWORD PTR \[(?!rip)\w+([-+]0x\w{8,})\]"
+        return KernelAddressHeuristicFinderUtil.common_addr_gen(res, regexp, skip, skip_msb_check, read_valid)
+
+    @staticmethod
     def x64_qword_ptr_disp_store(res, skip=0, skip_msb_check=False, read_valid=False):
         # Use this when the symbol is folded into the displacement of a store.
         # (e.g., `mov QWORD PTR [rax-0x63ea2fe0],r14` where rax is a per-cpu base)
@@ -66054,11 +66061,15 @@ class KernelAddressHeuristicFinder:
                 return busy_head(read_int_from_memory(x), 0)
 
         def indirect_heads(sources):
-            for source in sources:
-                for i in range(128):
+            # `nr_vmap_nodes` is materialized before `vmap_nodes` in every build seen, so draining
+            # a source before trying the next one lets the neighbors of `nr_vmap_nodes` answer
+            # first. Sweep slot by slot, which gives an exact candidate the first word.
+            sources = list(sources)
+            for i in range(128):
+                for source in sources:
                     node_addr = source + current_arch.ptrsize * i
                     if not is_valid_addr(node_addr):
-                        break
+                        continue
                     vmap_nodes = read_int_from_memory(node_addr)
                     if is_valid_addr(vmap_nodes):
                         head = busy_head(vmap_nodes, 5)
@@ -66070,6 +66081,11 @@ class KernelAddressHeuristicFinder:
             res = gdb.execute("x/100i {:#x}".format(addr), to_string=True)
             direct_heads = ()
             if is_x86_64():
+                # Static vmap_nodes[]: find_vmap_area reads busy.root.rb_node directly.
+                direct_heads = (
+                    root + current_arch.ptrsize
+                    for root in KernelAddressHeuristicFinderUtil.x64_qword_ptr_disp_load(res, read_valid=True)
+                )
                 g = itertools.chain(
                     KernelAddressHeuristicFinderUtil.x64_qword_ptr_rip_base(res, read_valid=True),
                     KernelAddressHeuristicFinderUtil.x64_x86_mov_reg_const(res, read_valid=True),
@@ -66085,8 +66101,10 @@ class KernelAddressHeuristicFinder:
                     KernelAddressHeuristicFinderUtil.x64_x86_mov_reg_const(res, read_valid=True),
                 )
             elif is_arm64():
-                # some builds load `vmap_nodes` with `adrp`+`ldr`, never materializing its address
+                # some builds never materialize the address of `vmap_nodes`: they `ldr` it off an
+                # `adrp` page, or off an `adrp`+`add` base that belongs to a neighboring symbol
                 g = itertools.chain(
+                    KernelAddressHeuristicFinderUtil.aarch64_adrp_add_ldr(res),
                     KernelAddressHeuristicFinderUtil.aarch64_adrp_add(res),
                     KernelAddressHeuristicFinderUtil.aarch64_adrp_ldr(res),
                 )
