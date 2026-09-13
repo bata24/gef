@@ -59488,7 +59488,7 @@ class KernelAddressHeuristicFinderUtil:
         return KernelAddressHeuristicFinderUtil.common_addr_gen(res, regexp, skip, skip_msb_check, read_valid)
 
     @staticmethod
-    def aarch64_adrp_ldr(res, skip=0, skip_msb_check=False, read_valid=False):
+    def aarch64_adrp_ldr(res, skip=0, skip_msb_check=False, read_valid=False, allow_add=False):
         bases = {}
         for line in res.splitlines():
             m = re.search(r"adrp\s+(\w+),\s*(0x\w+)", line)
@@ -59497,6 +59497,20 @@ class KernelAddressHeuristicFinderUtil:
                 v = int(m.group(2), 16)
                 bases[reg] = v
                 continue
+            if allow_add:
+                # A displacement too large for the ldr is folded into an add first. Unlike
+                # `aarch64_adrp_add_ldr` this keeps the candidates in instruction order, which
+                # matters when the same function also has a plain adrp + ldr.
+                m = re.search(r"add\s+(\w+),\s*(\w+),\s*#(0x\w+)", line)
+                if m:
+                    dstreg = m.group(1)
+                    srcreg = m.group(2)
+                    v = int(m.group(3), 16)
+                    if srcreg in bases:
+                        bases[dstreg] = bases[srcreg] + v
+                    else:
+                        bases.pop(dstreg, None)
+                    continue
             m = re.search(r"ldr\s+\w+,\s*\[(\w+),\s*#(\d+)\]", line)
             if m:
                 srcreg = m.group(1)
@@ -64857,6 +64871,31 @@ class KernelAddressHeuristicFinder:
             x = Kernel.get_ksysctl("vm.unprivileged_userfaultfd")
             if x:
                 return x
+
+        kversion = Kernel.kernel_version()
+
+        # plan 3 (available v5.2 or later)
+        # A kernel built without CONFIG_SYSCTL has no sysctl tree at all, so plan 2 can never
+        # answer. The userfaultfd(2) entry is the only non-init reader. Its body lands either in
+        # `__se_sys_userfaultfd` or, when that is inlined, in the arch syscall wrapper.
+        if kversion and "5.2" <= kversion:
+            anchors = ["__do_sys_userfaultfd", "__se_sys_userfaultfd", "__x64_sys_userfaultfd",
+                       "__ia32_sys_userfaultfd", "__arm64_sys_userfaultfd", "sys_userfaultfd"]
+            for name in anchors:
+                addr = Symbol.get_ksymaddr(name)
+                if addr is None:
+                    continue
+                res = KernelAddressHeuristicFinderUtil.disassemble_until_next_symbol(addr, 60)
+                if is_x86_64():
+                    g = KernelAddressHeuristicFinderUtil.x64_dword_ptr_rip_base(res)
+                elif is_x86_32():
+                    g = KernelAddressHeuristicFinderUtil.x86_noptr_ds(res)
+                elif is_arm64():
+                    g = KernelAddressHeuristicFinderUtil.aarch64_adrp_ldr(res, allow_add=True)
+                elif is_arm32():
+                    g = KernelAddressHeuristicFinderUtil.arm32_movw_movt_ldr(res)
+                for x in g:
+                    return x
         return None
 
     @staticmethod
@@ -65018,6 +65057,40 @@ class KernelAddressHeuristicFinder:
             x = Kernel.get_ksysctl("kernel.kexec_load_disabled")
             if x:
                 return x
+
+        # plan 3 (available v3.17 or later)
+        # A kernel built without CONFIG_SYSCTL has no sysctl tree at all, so plan 2 can never
+        # answer. kexec_load_permitted() holds the check since v6.3; before that it is open coded
+        # in both syscall entries, and CONFIG_KEXEC=n leaves kexec_load(2) as an -ENOSYS stub
+        # while CONFIG_KEXEC_FILE=y keeps kexec_file_load(2). With CONFIG_CFI the arch wrapper
+        # only shuffles the arguments, so the body stays in `__se_sys_*`.
+        anchors = ["kexec_load_permitted", "kexec_load_check",
+                   "__do_sys_kexec_load", "__se_sys_kexec_load", "__x64_sys_kexec_load",
+                   "__ia32_sys_kexec_load", "__arm64_sys_kexec_load", "sys_kexec_load",
+                   "__do_sys_kexec_file_load", "__se_sys_kexec_file_load",
+                   "__x64_sys_kexec_file_load", "__ia32_sys_kexec_file_load",
+                   "__arm64_sys_kexec_file_load", "sys_kexec_file_load"]
+        for name in anchors:
+            addr = Symbol.get_ksymaddr(name)
+            if addr is None:
+                continue
+            res = KernelAddressHeuristicFinderUtil.disassemble_until_next_symbol(addr, 60)
+            if is_x86_64():
+                g = KernelAddressHeuristicFinderUtil.x64_dword_ptr_rip_base(res)
+            elif is_x86_32():
+                g = KernelAddressHeuristicFinderUtil.x86_noptr_ds(res)
+            elif is_arm64():
+                g = KernelAddressHeuristicFinderUtil.aarch64_adrp_ldr(res, allow_add=True)
+            elif is_arm32():
+                g = KernelAddressHeuristicFinderUtil.arm32_movw_movt_ldr(res)
+            for x in g:
+                # `kexec_load_disabled` is 0 or 1. Some builds materialize the syscall accounting
+                # index at the entry of the syscall, which is a plain load of a global too.
+                try:
+                    if read_int32_from_memory(x) in [0, 1]:
+                        return x
+                except (gdb.MemoryError, MemoryError):
+                    continue
         return None
 
     @staticmethod
@@ -65053,6 +65126,26 @@ class KernelAddressHeuristicFinder:
         if KernelAddressHeuristicFinder.USE_KSYSCTL:
             x = Kernel.get_ksysctl("kernel.yama.ptrace_scope")
             if x:
+                return x
+
+        # plan 3 (available v3.4 or later)
+        # A kernel built without CONFIG_SYSCTL has no sysctl tree at all, so plan 2 can never
+        # answer. Both Yama hooks read `ptrace_scope` before touching any other global.
+        anchors = ["yama_ptrace_access_check", "yama_ptrace_traceme"]
+        for name in anchors:
+            addr = Symbol.get_ksymaddr(name)
+            if addr is None:
+                continue
+            res = KernelAddressHeuristicFinderUtil.disassemble_until_next_symbol(addr, 60)
+            if is_x86_64():
+                g = KernelAddressHeuristicFinderUtil.x64_dword_ptr_rip_base(res)
+            elif is_x86_32():
+                g = KernelAddressHeuristicFinderUtil.x86_noptr_ds(res)
+            elif is_arm64():
+                g = KernelAddressHeuristicFinderUtil.aarch64_adrp_ldr(res, allow_add=True)
+            elif is_arm32():
+                g = KernelAddressHeuristicFinderUtil.arm32_movw_movt_ldr(res)
+            for x in g:
                 return x
         return None
 
