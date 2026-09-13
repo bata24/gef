@@ -59931,14 +59931,16 @@ class KernelAddressHeuristicFinderUtil:
         # `rw_end` is 0 when the RW area of an old (=RWX) kernel could not be detected.
         if kinfo is None or not kinfo.text_base or not kinfo.text_size or not kinfo.rw_end:
             return None
-        # The detected RW area may be truncated because .bss can be mapped as another region.
+        # The detected RW area may be truncated because .bss can be mapped as another region,
+        # or because a page freed from an alignment gap of the image was reused and had its
+        # permission changed, which splits the RW area into pieces at a boot-dependent offset.
         # Merge the regions that are contiguous with .text, but stop at a region larger than
-        # .text, because it is the linear map, not a part of the kernel image.
+        # the image merged so far, because it is the linear map, not a part of the kernel image.
         end = kinfo.text_base
         for vaddr, size, _perm in kinfo.maps or []:
             if vaddr < end:
                 continue
-            if vaddr != end or size > kinfo.text_size:
+            if vaddr != end or size > max(kinfo.text_size, (end - kinfo.text_base) * 2):
                 break
             end = vaddr + size
         return kinfo.text_base, max(end, kinfo.rw_end)
