@@ -64802,6 +64802,36 @@ class KernelAddressHeuristicFinder:
             x = Kernel.get_ksysctl("vm.mmap_min_addr")
             if x:
                 return x
+
+        # plan 3 (available v2.6.26 or later)
+        # A kernel built without CONFIG_SYSCTL has no sysctl tree at all, so plan 2 can never
+        # answer. update_mmap_min_addr() is inlined into mmap_min_addr_handler(), where
+        # dac_mmap_min_addr is the load source and mmap_min_addr the store destination.
+        addr = Symbol.get_ksymaddr("mmap_min_addr_handler")
+        if addr:
+            res = KernelAddressHeuristicFinderUtil.disassemble_until_next_symbol(addr, 100)
+            if is_x86_64():
+                g = KernelAddressHeuristicFinderUtil.x64_qword_ptr_rip_base(res)
+                stored = KernelAddressHeuristicFinderUtil.x64_qword_ptr_rip_base_store(res)
+            elif is_x86_32():
+                g = KernelAddressHeuristicFinderUtil.x86_noptr_ds(res)
+                stored = KernelAddressHeuristicFinderUtil.x86_noptr_ds_store(res)
+            elif is_arm64():
+                g = KernelAddressHeuristicFinderUtil.aarch64_adrp_ldr(res)
+                stored = KernelAddressHeuristicFinderUtil.aarch64_adrp_str(res)
+            elif is_arm32():
+                g = itertools.chain(
+                    KernelAddressHeuristicFinderUtil.arm32_movw_movt(res),
+                    KernelAddressHeuristicFinderUtil.arm32_ldr_pc_relative_ldr(res),
+                )
+                stored = itertools.chain(
+                    KernelAddressHeuristicFinderUtil.arm32_movw_movt_str(res),
+                    KernelAddressHeuristicFinderUtil.arm32_ldr_pc_relative_str(res),
+                )
+            stored = set(stored)
+            for x in g:
+                if x not in stored:
+                    return x
         return None
 
     @staticmethod
