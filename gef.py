@@ -128785,9 +128785,11 @@ class SlubTinyDumpCommand(GenericCommand, BufferingOutput):
 
         # slow path
         kmem_caches = self.parse_kmem_caches_for_initialize()
-        candidate = (0, -1) # (count, candidate_offset)
+        candidate = (-1, -1) # (count, candidate_offset)
         for candidate_offset in range(current_arch.ptrsize * 2, 0x70, current_arch.ptrsize):
-            # backward search for the start of `struct kmem_cache`
+            # backward search for `flags`
+            if not self.is_valid_flags_distance(candidate_offset):
+                continue
             count = 0
             for kmem_cache in kmem_caches:
                 val = read_int_from_memory(kmem_cache - candidate_offset)
@@ -128796,8 +128798,28 @@ class SlubTinyDumpCommand(GenericCommand, BufferingOutput):
             if candidate[0] < count:
                 candidate = (count, candidate_offset)
 
-        self.kmem_cache_offset_list = candidate[1] - self.kmem_cache_offset_flags
+        # `flags` is not the head of the structure since v6.18, so add it back
+        self.kmem_cache_offset_list = candidate[1] + self.kmem_cache_offset_flags
         return
+
+    def is_valid_flags_distance(self, distance):
+        # `distance` is offsetof(kmem_cache, list) - offsetof(kmem_cache, flags), which is what
+        # the backward search measures. `size` is ALIGN(object_size + metadata, align) and
+        # `align` is at least sizeof(void*), so `size` is never 0, never unaligned and never
+        # smaller than `object_size`. A layout that misplaces `flags` lands on `min_partial`
+        # (=5) and fails all three.
+        offset_size = current_arch.ptrsize * 2 - distance
+        for kmem_cache in self.parse_kmem_caches_for_initialize():
+            try:
+                size = read_int32_from_memory(kmem_cache + offset_size)
+                object_size = read_int32_from_memory(kmem_cache + offset_size + 4)
+            except gdb.MemoryError:
+                return False
+            if size == 0 or size % current_arch.ptrsize:
+                return False
+            if object_size == 0 or object_size > size:
+                return False
+        return True
 
     def resolve_kmem_cache_offset_node(self):
         # fast path
@@ -128970,14 +128992,10 @@ class SlubTinyDumpCommand(GenericCommand, BufferingOutput):
             self.meta.append((self.quiet_info, "slab_caches: {:#x}".format(self.slab_caches)))
 
         # offsetof(kmem_cache, flags)
+        # `cpu_slab` and `lock_key` are inside `#ifndef CONFIG_SLUB_TINY`, and v7.0 dropped them
+        # for everyone, so only `cpu_sheaves` (v6.18~) is ever in front of `flags` here.
         if kversion < "6.18":
             self.kmem_cache_offset_flags = 0
-        elif kversion < "7.0":
-            CONFIG_LOCKDEP = Symbol.get_ksymaddr("fs_reclaim_acquire")
-            if CONFIG_LOCKDEP:
-                self.kmem_cache_offset_flags = current_arch.ptrsize * 4
-            else:
-                self.kmem_cache_offset_flags = current_arch.ptrsize * 2
         else:
             self.kmem_cache_offset_flags = current_arch.ptrsize
         self.meta.append((self.quiet_info, "offsetof(kmem_cache, flags): {:#x}".format(self.kmem_cache_offset_flags)))
