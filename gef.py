@@ -70195,6 +70195,25 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
         else:
             # sizeof(struct thread_struct) is very large, need more exproring
             repeat_times = 100
+
+        def is_files_struct(files):
+            """Return True if `files` is a `files_struct`.
+            `files->fdt` is initialized to the embedded `&fdtab`, and `fdtab.max_fds` is
+            NR_OPEN_DEFAULT (= BITS_PER_LONG) until the table is expanded. Checking only the
+            first word of the object is not enough: the padding after `count` is not always
+            zeroed, so it can be mistaken for a pointer."""
+            MAX_FDS_DEFAULT = AddressUtil.get_memory_alignment(in_bits=True)
+            for j in range(1, 0x20):
+                try:
+                    if read_int_from_memory(files + current_arch.ptrsize * j) != MAX_FDS_DEFAULT:
+                        continue
+                    fdt = files + current_arch.ptrsize * (j - 1)
+                    if read_int_from_memory(fdt) == fdt + current_arch.ptrsize:
+                        return True
+                except (gdb.MemoryError, MemoryError):
+                    return False
+            return False
+
         for i in range(repeat_times):
             # check fs
             v1 = read_int_from_memory(task_addrs[0] + base + current_arch.ptrsize * i)
@@ -70206,7 +70225,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
             v2 = read_int_from_memory(task_addrs[0] + base + current_arch.ptrsize * (i + 1))
             if not is_valid_addr(v2):
                 continue
-            if is_valid_addr(read_int_from_memory(v2)):
+            if not is_files_struct(v2):
                 continue
             # found
             offset_files = base + current_arch.ptrsize * (i + 1)
