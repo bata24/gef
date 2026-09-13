@@ -125920,6 +125920,24 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
                 return
         return
 
+    def is_valid_kmem_cache_offset_flags(self, offset_flags):
+        # `size` is ALIGN(object_size + metadata, align) and `align` is at least sizeof(void*),
+        # so `size` is never 0, never unaligned and never smaller than `object_size`.
+        # A layout that misplaces `flags` lands on `min_partial` (=5) and fails all three.
+        offset_size = offset_flags + current_arch.ptrsize * 2
+        for kmem_cache in self.parse_kmem_caches_for_initialize():
+            kmem_cache_top = kmem_cache - self.kmem_cache_offset_list
+            try:
+                size = read_int32_from_memory(kmem_cache_top + offset_size)
+                object_size = read_int32_from_memory(kmem_cache_top + offset_size + 4)
+            except gdb.MemoryError:
+                return False
+            if size == 0 or size % current_arch.ptrsize:
+                return False
+            if object_size == 0 or object_size > size:
+                return False
+        return True
+
     def resolve_kmem_cache_offset_random(self):
         # fast path
         try:
@@ -126769,9 +126787,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
         self.sheaves_enabled = False
 
         kversion = Kernel.kernel_version()
-        if kversion < "6.18":
-            return
-
+        # `kmem_cache_offset_cpu_sheaves` is None unless the detected layout really has it
         if self.kmem_cache_offset_cpu_sheaves is None:
             return
         if self.kmem_cache_offset_node is None:
@@ -127117,10 +127133,18 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
                 self.kmem_cache_offset_flags = current_arch.ptrsize * 2
         else:
             self.kmem_cache_offset_flags = current_arch.ptrsize
+        if not self.is_valid_kmem_cache_offset_flags(self.kmem_cache_offset_flags):
+            # A merge-window build keeps the previous release number, so `6.17.0-11846-g...`
+            # already has `cpu_sheaves` and the version gate above is 8 byte too low.
+            for candidate_offset in [current_arch.ptrsize * i for i in [1, 2, 4]]:
+                if self.is_valid_kmem_cache_offset_flags(candidate_offset):
+                    self.kmem_cache_offset_flags = candidate_offset
+                    break
         self.meta.append((self.quiet_info, "offsetof(kmem_cache, flags): {:#x}".format(self.kmem_cache_offset_flags)))
 
         # offsetof(kmem_cache, cpu_sheaves)
-        if kversion < "6.18":
+        if kversion < "7.0" and self.kmem_cache_offset_flags == current_arch.ptrsize:
+            # only `cpu_slab` is in front of `flags`, so there is no `cpu_sheaves`
             self.kmem_cache_offset_cpu_sheaves = None
         else:
             self.kmem_cache_offset_cpu_sheaves = self.kmem_cache_offset_flags - current_arch.ptrsize
