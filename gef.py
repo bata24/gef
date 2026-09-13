@@ -66305,6 +66305,88 @@ class KernelAddressHeuristicFinder:
         return None
 
     @staticmethod
+    def get_workqueues():
+
+        def looks_like_workqueues(address):
+            try:
+                image_range = KernelAddressHeuristicFinderUtil.get_kernel_image_range()
+                if image_range is None:
+                    kinfo = Kernel.get_kernel_layout()
+                    image_start = kinfo.text_base
+                    image_end = max(kinfo.text_end, kinfo.ro_end) + max(kinfo.text_size * 2, 0x100_0000)
+                    if not image_start <= address < image_end:
+                        return False
+                elif not image_range[0] <= address < image_range[1]:
+                    return False
+                if not is_double_link_list(address, min_len=3):
+                    return False
+                node = read_int_from_memory(address)
+                workqueue = node - current_arch.ptrsize * 2
+                if Kernel.kernel_version() >= "3.10":
+                    return is_double_link_list(workqueue)
+                flags = read_int32_from_memory(workqueue)
+                cpu_wq = read_int_from_memory(workqueue + current_arch.ptrsize)
+                return flags < 0x10_0000 and cpu_wq != 0 and not cpu_wq & (current_arch.ptrsize - 1)
+            except gdb.MemoryError:
+                return False
+
+        # plan 1 (directly)
+        if KernelAddressHeuristicFinder.USE_DIRECTLY:
+            x = Symbol.get_ksymaddr("workqueues")
+            if x:
+                return x
+
+        # plan 2 (available v2.6.36 or later)
+        # `system_wq` is exported while the list head is static. Every workqueue has its
+        # `list` member at +2 pointers, so walking from system_wq reaches the only node in
+        # the kernel image: the `workqueues` head itself.
+        system_wq_ptr = Symbol.get_ksymaddr("system_wq")
+        if system_wq_ptr:
+            try:
+                system_wq = read_int_from_memory(system_wq_ptr)
+                if is_valid_addr(system_wq):
+                    start = system_wq + current_arch.ptrsize * 2
+                    current = read_int_from_memory(start)
+                    seen = {start}
+                    while current not in seen:
+                        if looks_like_workqueues(current):
+                            return current
+                        if not is_valid_addr(current):
+                            break
+                        seen.add(current)
+                        current = read_int_from_memory(current)
+            except gdb.MemoryError:
+                pass
+
+        # plan 3: alloc_workqueue() links the new object into the static list.
+        for anchor in (
+                "alloc_workqueue", "__alloc_workqueue", "__alloc_workqueue_key",
+                "show_workqueue_state", "show_all_workqueues", "show_freezable_workqueues",
+                "freeze_workqueues_begin", "freeze_workqueues_busy", "thaw_workqueues"):
+            for address in Symbol.get_ksymaddr_with_split_suffix(anchor):
+                res = KernelAddressHeuristicFinderUtil.disassemble_until_next_symbol(address, 500)
+                if is_x86_64() or is_x86_32():
+                    candidates = KernelAddressHeuristicFinderUtil.x64_x86_any_const(res)
+                elif is_arm64():
+                    candidates = itertools.chain(
+                        KernelAddressHeuristicFinderUtil.aarch64_adrp_add(res),
+                        KernelAddressHeuristicFinderUtil.aarch64_adrp_add_add(res),
+                    )
+                elif is_arm32():
+                    candidates = itertools.chain(
+                        KernelAddressHeuristicFinderUtil.arm32_movw_movt(res),
+                        KernelAddressHeuristicFinderUtil.arm32_ldr_pc_relative(res),
+                    )
+                for x in candidates:
+                    if looks_like_workqueues(x):
+                        return x
+                    if (is_arm32() or is_arm64()) and KernelAddressHeuristicFinderUtil.is_in_kernel_image(x):
+                        for offset in range(-0x400, 0x404, current_arch.ptrsize):
+                            if looks_like_workqueues(x + offset):
+                                return x + offset
+        return None
+
+    @staticmethod
     def find_timer_base_clk(timer_base, cpu):
         """Check the layout invariants of `struct timer_base`, and return the offset of `clk`."""
         ptrsize = current_arch.ptrsize
@@ -78319,6 +78401,890 @@ class KernelTimerCommand(GenericCommand, BufferingOutput):
             self.dump_timer()
         if self.hrtimer_initialized:
             self.dump_hrtimer()
+        self.print_output(check_terminal_size=True)
+        return
+
+
+@register_command
+class KernelWorkqueueCommand(GenericCommand, BufferingOutput):
+    """Dump workqueue items and inspect embedded work_struct objects."""
+
+    _cmdline_ = "kworkqueue"
+    _category_ = "06-g. Qemu-system/KGDB Cooperation - Linux Advanced"
+
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("-hh", "--help-simple", action="store_true", help="show help without ASCII diagram.")
+    parser.add_argument("--object", type=AddressUtil.parse_address,
+                        help="the address of the object to inspect (e.g. the head of a heap object), "
+                             "scanned for an embedded work_struct/delayed_work.")
+    parser.add_argument("--size", type=AddressUtil.parse_address, default=None,
+                        help="the size of the range scanned by --object (default: 0x1000).")
+    parser.add_argument("--meta", action="store_true", help="display offset information.")
+    parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
+    parser.add_argument("-q", "--quiet", action="store_true", help="enable quiet mode.")
+    _syntax_ = parser.format_help()
+
+    _example_ = [
+        "{0:s}",
+        "{0:s} --object 0xffff888012340000",
+        "{0:s} --object 0xffff888012340000 --size 0x400",
+    ]
+    _example_ = "\n".join(_example_).format(_cmdline_)
+
+    _note_ = [
+        "Simplified workqueue structures (`==>` shows where each column comes from):",
+        "",
+        "                   +-workqueue_struct-+",
+        "+-workqueues-+     | pwqs             |--+",
+        "| list       |<--->| list             |<--->...",
+        "+------------+     | name             |  |      ==> `queue`",
+        "                   | ...              |  |",
+        "                   +------------------+  |",
+        "                     ^                   |",
+        "                     |                   |",
+        "                     |                   v",
+        "                     |       +-pool_workqueue-+",
+        "                     |       | pool           |---+",
+        "                     +-------| wq             |   |",
+        "                             | inactive_works |   |  ==> state `inactive`",
+        "                             +----------------+   |",
+        "                               ^                  |",
+        "       work_struct.data -------+                  |",
+        "       & ~0xff (pwq)                              |",
+        "                    +-work_struct-+               v",
+        "                    | data        |         +-worker_pool-+",
+        "                    | entry       |-------->| worklist    |  ==> state `pending`",
+        "                    | func        |         | busy_hash   |  ==> state `running`",
+        "                    +-------------+         | cpu         |  ==> `cpu`",
+        "                      ^                     +-------------+",
+        "                      |",
+        "                    +-delayed_work-+",
+        "                    | work         |",
+        "                    | timer        |<--- per-cpu timer wheel  ==> state `delayed`",
+        "                    | wq           |",
+        "                    +--------------+",
+        "",
+        "state `running` is a work_struct held in worker.current_work of a busy worker.",
+        "`queue` and `cpu` are resolved from the pool_workqueue encoded in work_struct.data.",
+        "For state `delayed`, `cpu` is the cpu whose timer wheel holds the timer instead.",
+        "",
+        "With --object, the range [object, object+size) is also scanned for an initialized work_struct,",
+        "including one that is not queued anywhere (state `idle`). A delayed_work is identified by",
+        "its delayed_work_timer_fn timer when the timer is discoverable.",
+    ]
+    _note_ = "\n".join(_note_)
+
+    def member_offset(self, type_name, member):
+        try:
+            struct_type = GefUtil.cached_lookup_type(type_name)
+            if struct_type is None:
+                return None
+            field = next(field for field in struct_type.fields() if field.name == member)
+            return field.bitpos // 8
+        except (gdb.error, StopIteration, TypeError):
+            return None
+
+    def is_callback(self, address):
+        if not address or not is_valid_addr(address):
+            return False
+        if self.kinfo.text_base <= address < self.kinfo.text_end:
+            return True
+        if not AddressUtil.is_msb_on(address):
+            return False
+        return address in self.kallsyms_text
+
+    def format_symbol(self, address):
+        symbol = Symbol.get_symbol_string(address)
+        if symbol:
+            return symbol
+        name = self.kallsyms_names.get(address)
+        if name is not None:
+            return " <{:s}>".format(name)
+        return " <NO_SYMBOL>"
+
+    def read_work(self, work):
+        try:
+            data = read_int_from_memory(work + self.offset_work_data)
+            function = read_int_from_memory(work + self.offset_work_func)
+            if not self.is_callback(function):
+                return None
+            entry = work + self.offset_work_entry
+            next_entry = read_int_from_memory(entry)
+            prev_entry = read_int_from_memory(entry + current_arch.ptrsize)
+        except gdb.MemoryError:
+            return None
+        return {
+            "work": work,
+            "data": data,
+            "function": function,
+            "next": next_entry,
+            "prev": prev_entry,
+        }
+
+    def find_name_offset(self, workqueues):
+        offset = self.member_offset("struct workqueue_struct", "name")
+        if offset is not None:
+            self.name_is_pointer = False
+            return offset
+
+        byteorder = "little" if Endian.is_little_endian() else "big"
+        for workqueue in workqueues:
+            try:
+                data = bytes(read_memory(workqueue, 0x800))
+            except gdb.MemoryError:
+                continue
+            offset = data.find(b"events\x00")
+            if offset >= 0:
+                self.name_is_pointer = False
+                self.system_wq = workqueue
+                return offset
+
+            for offset in range(0, len(data) - current_arch.ptrsize + 1, current_arch.ptrsize):
+                name_address = int.from_bytes(data[offset:offset + current_arch.ptrsize], byteorder)
+                if not is_valid_addr(name_address):
+                    continue
+                try:
+                    if read_cstring_from_memory(name_address) == "events":
+                        self.name_is_pointer = True
+                        self.system_wq = workqueue
+                        return offset
+                except gdb.MemoryError:
+                    continue
+        return None
+
+    def read_workqueue_name(self, workqueue):
+        if self.offset_wq_name is None:
+            return "???"
+        try:
+            address = workqueue + self.offset_wq_name
+            if self.name_is_pointer:
+                address = read_int_from_memory(address)
+            name = read_cstring_from_memory(address)
+            if name and len(name) <= 256 and name.isprintable():
+                return name
+        except gdb.MemoryError:
+            pass
+        return "???"
+
+    def find_pwq_from_node(self, node, workqueue):
+        if self.offset_pwqs_node is not None:
+            candidate = AddressUtil.normalize_address(node - self.offset_pwqs_node)
+            try:
+                if read_int_from_memory(candidate + self.offset_pwq_wq) == workqueue:
+                    return candidate
+            except (gdb.MemoryError, OverflowError):
+                return None
+
+        for offset in range(0, 0x300, current_arch.ptrsize):
+            candidate = AddressUtil.normalize_address(node - offset)
+            try:
+                if read_int_from_memory(candidate + current_arch.ptrsize) != workqueue:
+                    continue
+                pool = read_int_from_memory(candidate)
+                if is_valid_addr(pool):
+                    if self.find_worklist(pool) is not None:
+                        self.offset_pwqs_node = offset
+                        return candidate
+            except (gdb.MemoryError, OverflowError):
+                continue
+        return None
+
+    def find_worklist(self, pool):
+        if pool in self.pool_worklist_offsets:
+            return pool + self.pool_worklist_offsets[pool]
+
+        offset = self.member_offset("struct worker_pool", "worklist")
+        if offset is None and self.kversion < "3.9":
+            offset = self.member_offset("struct global_cwq", "worklist")
+        if offset is not None:
+            head = pool + offset
+            if is_double_link_list(head):
+                self.pool_worklist_offsets[pool] = offset
+                return head
+
+        for offset in range(0, 0x180, current_arch.ptrsize):
+            head = pool + offset
+            try:
+                if is_double_link_list(head):
+                    self.pool_worklist_offsets[pool] = offset
+                    return head
+            except gdb.MemoryError:
+                continue
+        return None
+
+    def find_pool_cpu(self, pool, worklist):
+        offset = self.member_offset("struct worker_pool", "cpu")
+        if offset is None and self.kversion < "3.6":
+            offset = self.member_offset("struct global_cwq", "cpu")
+        if offset is not None:
+            try:
+                return u32(read_memory(pool + offset, 4), s=True)
+            except gdb.MemoryError:
+                return None
+
+        end = worklist - pool
+        if self.kversion < "3.9":
+            return self.pool_cpu_hints.get(pool)
+
+        field_count = 3 if self.kversion == "3.9" else 4
+        ptrsize = current_arch.ptrsize
+        for offset in range(0, end, 4):
+            tail = end - offset - field_count * 4
+            if tail not in (0, ptrsize, align(ptrsize + 4, ptrsize), align(ptrsize + 8, ptrsize)):
+                continue
+            try:
+                values = [u32(read_memory(pool + offset + 4 * i, 4), s=True)
+                          for i in range(field_count)]
+            except gdb.MemoryError:
+                continue
+            cpu = values[0]
+            node = values[1] if field_count == 4 else -1
+            pool_id = values[-2]
+            flags = values[-1] & 0xffff_ffff
+            if (-1 <= cpu < self.max_cpu and -1 <= node < 0x1_0000 and
+                    0 <= pool_id < 0x10_0000 and flags < 0x10_0000):
+                return cpu
+        return None
+
+    def collect_old_units(self, workqueues):
+        per_cpu_offset = KernelAddressHeuristicFinder.get_per_cpu_offset()
+        cpu_offsets = Kernel.get_each_cpu_offset(per_cpu_offset) if per_cpu_offset else []
+        if not cpu_offsets:
+            cpu_offsets = [0]
+
+        units = []
+        for workqueue in workqueues:
+            try:
+                flags = read_int32_from_memory(workqueue)
+                base = read_int_from_memory(workqueue + current_arch.ptrsize)
+            except gdb.MemoryError:
+                continue
+            offsets = [0] if flags & 2 else cpu_offsets
+            for cpu, cpu_offset in enumerate(offsets):
+                unit = AddressUtil.normalize_address(base + cpu_offset)
+                try:
+                    if read_int_from_memory(unit + current_arch.ptrsize) != workqueue:
+                        continue
+                    pool = read_int_from_memory(unit)
+                except gdb.MemoryError:
+                    continue
+                if not is_valid_addr(pool):
+                    continue
+                cpu_number = -1 if flags & 2 else cpu
+                units.append({
+                    "address": unit,
+                    "wq": workqueue,
+                    "name": self.read_workqueue_name(workqueue),
+                    "pool": pool,
+                    "cpu": cpu_number,
+                })
+                self.pool_cpu_hints.setdefault(pool, cpu_number)
+        return units
+
+    def collect_new_units(self, workqueues):
+        units = []
+        for workqueue in workqueues:
+            head = workqueue + self.offset_wq_pwqs
+            for node in Kernel.ListHead(head).iter_entries():
+                pwq = self.find_pwq_from_node(node, workqueue)
+                if pwq is None:
+                    continue
+                try:
+                    pool = read_int_from_memory(pwq + self.offset_pwq_pool)
+                except gdb.MemoryError:
+                    continue
+                units.append({
+                    "address": pwq,
+                    "wq": workqueue,
+                    "name": self.read_workqueue_name(workqueue),
+                    "pool": pool,
+                    "cpu": None,
+                })
+        return units
+
+    def owner_for_data(self, data):
+        if not data & 4:
+            return None
+        for mask in (0xff, 0x1ff, 0x3ff):
+            address = data & ~mask
+            owner = self.units_by_address.get(address)
+            if owner is not None:
+                return owner
+        return None
+
+    def append_record(self, records, work, state, owner=None, pool=None, timer=None, expires=None):
+        parsed = self.read_work(work)
+        if parsed is None:
+            return
+        if owner is None:
+            owner = self.owner_for_data(parsed["data"])
+        cpu = owner["cpu"] if owner is not None else None
+        if cpu is None and pool is not None:
+            worklist = self.find_worklist(pool)
+            if worklist is not None:
+                cpu = self.find_pool_cpu(pool, worklist)
+        records[work] = {
+            **parsed,
+            "state": state,
+            "owner": owner,
+            "cpu": cpu,
+            "timer": timer,
+            "expires": expires,
+        }
+        return
+
+    def collect_list_records(self, records):
+        pools = {}
+        for unit in self.units:
+            pools.setdefault(unit["pool"], []).append(unit)
+
+        for pool in pools:
+            worklist = self.find_worklist(pool)
+            if worklist is None:
+                continue
+            for work in Kernel.ListHead(worklist, self.offset_work_entry).iter_entries():
+                try:
+                    data = read_int_from_memory(work + self.offset_work_data)
+                except gdb.MemoryError:
+                    continue
+                owner = self.owner_for_data(data)
+                self.append_record(records, work, "pending", owner, pool)
+
+        # Throttled work is linked from pool_workqueue.delayed_works/inactive_works.
+        exact_offset = self.member_offset("struct pool_workqueue", "inactive_works")
+        if exact_offset is None:
+            exact_offset = self.member_offset("struct pool_workqueue", "delayed_works")
+        for unit in self.units:
+            heads = []
+            if exact_offset is not None:
+                heads.append(unit["address"] + exact_offset)
+            else:
+                for offset in range(current_arch.ptrsize * 2, 0x180, current_arch.ptrsize):
+                    head = unit["address"] + offset
+                    try:
+                        if is_double_link_list(head, min_len=1):
+                            heads.append(head)
+                    except gdb.MemoryError:
+                        continue
+            for head in heads:
+                for work in Kernel.ListHead(head, self.offset_work_entry).iter_entries():
+                    parsed = self.read_work(work)
+                    if parsed is None or self.owner_for_data(parsed["data"]) is not unit:
+                        continue
+                    self.append_record(records, work, "inactive", unit, unit["pool"])
+        return
+
+    def collect_running_records(self, records):
+        seen_workers = set()
+        for pool in {unit["pool"] for unit in self.units}:
+            start = pool - 0x1000 if self.kversion < "3.9" else pool
+            try:
+                words = slice_unpack(read_memory(start, 0x2000), current_arch.ptrsize)
+            except gdb.MemoryError:
+                start = pool
+                try:
+                    words = slice_unpack(read_memory(start, 0x1000), current_arch.ptrsize)
+                except gdb.MemoryError:
+                    continue
+            for first_worker in words:
+                worker = first_worker
+                while worker not in seen_workers and is_valid_addr(worker):
+                    try:
+                        work = read_int_from_memory(worker + current_arch.ptrsize * 2)
+                        if not is_valid_addr(work):
+                            break
+                        work_function = read_int_from_memory(work + self.offset_work_func)
+                        if self.kversion < "3.9":
+                            current_function = work_function
+                            owner_address = read_int_from_memory(worker + current_arch.ptrsize * 3)
+                        else:
+                            current_function = read_int_from_memory(worker + current_arch.ptrsize * 3)
+                            owner_address = read_int_from_memory(worker + current_arch.ptrsize * 4)
+                        if current_function != work_function or not self.is_callback(current_function):
+                            break
+                        next_worker = read_int_from_memory(worker)
+                    except gdb.MemoryError:
+                        break
+                    owner = self.units_by_address.get(owner_address)
+                    self.append_record(records, work, "running", owner, pool)
+                    seen_workers.add(worker)
+                    worker = next_worker
+        return
+
+    def iter_hlist(self, head):
+        """Iterate a Linux hlist and stop safely if it is corrupt."""
+        try:
+            current = read_int_from_memory(head)
+        except gdb.MemoryError:
+            return
+        seen = set()
+        while current and current not in seen and is_valid_addr(current):
+            seen.add(current)
+            yield current
+            try:
+                current = read_int_from_memory(current)
+            except gdb.MemoryError:
+                break
+        return
+
+    def find_old_timer_vectors(self, timer_base):
+        """Return the first old tvec vector head (v3.0-v4.7)."""
+        ptrsize = current_arch.ptrsize
+        for offset in range(0, 0x100, ptrsize):
+            valid = True
+            for index in range(512):
+                head = timer_base + offset + index * ptrsize * 2
+                try:
+                    next_entry = read_int_from_memory(head)
+                    prev_entry = read_int_from_memory(head + ptrsize)
+                    if not is_valid_addr(next_entry) or not is_valid_addr(prev_entry):
+                        valid = False
+                        break
+                    if (read_int_from_memory(next_entry + ptrsize) != head or
+                            read_int_from_memory(prev_entry) != head):
+                        valid = False
+                        break
+                except gdb.MemoryError:
+                    valid = False
+                    break
+            if valid:
+                return timer_base + offset
+        return None
+
+    @switch_to_intel_syntax
+    def old_timer_base_candidates(self):
+        """Return per-cpu tvec_bases base addresses (symbol and heuristic)."""
+        address = Symbol.get_ksymaddr("tvec_bases")
+        candidates = [address] if address else []
+        anchor = Symbol.get_ksymaddr("run_timer_softirq")
+        if anchor:
+            res = KernelAddressHeuristicFinderUtil.disassemble_until_next_symbol(anchor, 100)
+            if is_x86_64() or is_x86_32():
+                candidates.extend(KernelAddressHeuristicFinderUtil.x64_x86_any_const(res, skip_msb_check=True))
+                candidates.extend(int(value, 16) for value in re.findall(r"(?:fs|gs):0x([0-9a-fA-F]+)", res))
+                for line in res.splitlines():
+                    if "gs:" not in line and "fs:" not in line:
+                        continue
+                    match = re.search(r"#\s*(0x[0-9a-fA-F]+)", line)
+                    if match:
+                        candidates.append(int(match.group(1), 16))
+            elif is_arm64():
+                candidates.extend(KernelAddressHeuristicFinderUtil.aarch64_adrp_add(res, skip_msb_check=True))
+            elif is_arm32():
+                candidates.extend(KernelAddressHeuristicFinderUtil.arm32_movw_movt(res, skip_msb_check=True))
+                candidates.extend(KernelAddressHeuristicFinderUtil.arm32_ldr_pc_relative(res))
+        return candidates
+
+    def find_old_timer_bases(self):
+        """Find each CPU's pointer-based tvec_base used before v4.8."""
+        bases = []
+        boot_base = Symbol.get_ksymaddr("boot_tvec_bases")
+        if boot_base and self.find_old_timer_vectors(boot_base) is not None:
+            bases.append((0, boot_base))
+
+        per_cpu_offset = KernelAddressHeuristicFinder.get_per_cpu_offset()
+        cpu_offsets = Kernel.get_each_cpu_offset(per_cpu_offset) if per_cpu_offset else [0]
+        for candidate in self.old_timer_base_candidates():
+            if candidate is None or candidate & (current_arch.ptrsize - 1):
+                continue
+            found = []
+            for cpu, cpu_offset in enumerate(cpu_offsets):
+                slot = AddressUtil.normalize_address(candidate + cpu_offset)
+                try:
+                    timer_base = read_int_from_memory(slot)
+                except gdb.MemoryError:
+                    break
+                timer_base &= ~(current_arch.ptrsize - 1)
+                if self.find_old_timer_vectors(timer_base) is None:
+                    break
+                found.append((cpu, timer_base))
+            if found:
+                return found
+        return bases
+
+    # tvec_base holds tv1 (TVR_SIZE) + tv2..tv5 (TVN_SIZE each) buckets after a
+    # small header, so this window covers the whole per-cpu struct.
+    OLD_HLIST_WINDOW = 0x1400
+
+    def count_hlist_buckets(self, base):
+        """Count populated hlist_head buckets in a v4.2-v4.7 tvec_base."""
+        ptrsize = current_arch.ptrsize
+        count = 0
+        for offset in range(0, self.OLD_HLIST_WINDOW, ptrsize):
+            slot = base + offset
+            try:
+                first = read_int_from_memory(slot)
+                if first == 0 or not is_valid_addr(first):
+                    continue
+                if read_int_from_memory(first + ptrsize) == slot:  # hlist_node.pprev
+                    count += 1
+            except gdb.MemoryError:
+                break
+        return count
+
+    def find_old_hlist_bases(self):
+        """Find each CPU's hlist-based tvec_base used in v4.2-v4.7."""
+        per_cpu_offset = KernelAddressHeuristicFinder.get_per_cpu_offset()
+        cpu_offsets = Kernel.get_each_cpu_offset(per_cpu_offset) if per_cpu_offset else [0]
+        for candidate in self.old_timer_base_candidates():
+            if candidate is None or candidate & (current_arch.ptrsize - 1):
+                continue
+            found = []
+            for cpu, cpu_offset in enumerate(cpu_offsets):
+                base = AddressUtil.normalize_address(candidate + cpu_offset)
+                if self.count_hlist_buckets(base) < 4:
+                    break
+                found.append((cpu, base))
+            if found:
+                return found
+        return []
+
+    def collect_old_hlist_records(self, records):
+        ptrsize = current_arch.ptrsize
+        for cpu, base in self.find_old_hlist_bases():
+            for offset in range(0, self.OLD_HLIST_WINDOW, ptrsize):
+                slot = base + offset
+                try:
+                    first = read_int_from_memory(slot)
+                    if first == 0 or not is_valid_addr(first):
+                        continue
+                    if read_int_from_memory(first + ptrsize) != slot:
+                        continue
+                except gdb.MemoryError:
+                    break
+                for timer in self.iter_hlist(slot):
+                    try:
+                        function = read_int_from_memory(timer + self.offset_timer_func)
+                    except gdb.MemoryError:
+                        continue
+                    if function not in self.delayed_timer_functions:
+                        continue
+                    work = self.find_delayed_work(timer)
+                    if work is None:
+                        continue
+                    expires = read_int_from_memory(timer + self.offset_timer_expires)
+                    owner = self.find_delayed_owner(work, timer)
+                    self.append_record(records, work, "delayed", owner, None, timer, expires)
+                    records[work]["cpu"] = cpu
+        return
+
+    def find_delayed_work(self, timer):
+        if self.offset_delayed_timer is not None:
+            work = timer - self.offset_delayed_timer
+            return work if self.read_work(work) is not None else None
+
+        for offset in range(current_arch.ptrsize * 4, 0x200, current_arch.ptrsize):
+            work = timer - offset
+            parsed = self.read_work(work)
+            if parsed is not None and parsed["data"] & 1:
+                return work
+        return None
+
+    def find_delayed_owner(self, work, timer):
+        parsed = self.read_work(work)
+        if parsed is not None:
+            owner = self.owner_for_data(parsed["data"])
+            if owner is not None:
+                return owner
+
+        if self.offset_delayed_wq is not None:
+            try:
+                wq = read_int_from_memory(work + self.offset_delayed_wq)
+                return self.workqueues_by_address.get(wq)
+            except gdb.MemoryError:
+                return None
+
+        for offset in range(current_arch.ptrsize * 4, 0x180, current_arch.ptrsize):
+            try:
+                wq = read_int_from_memory(timer + offset)
+            except gdb.MemoryError:
+                continue
+            owner = self.workqueues_by_address.get(wq)
+            if owner is not None:
+                return owner
+        return None
+
+    def collect_delayed_records(self, records):
+        if not self.delayed_timer_functions:
+            return
+        if self.kversion < "4.8":
+            # v3.0-v4.1 use a list_head-based tvec wheel; v4.2-v4.7 switched the
+            # buckets to hlist_head. Pick the layout by which base finder succeeds.
+            old_bases = self.find_old_timer_bases()
+            if not old_bases:
+                self.collect_old_hlist_records(records)
+                return
+            for cpu, timer_base in old_bases:
+                vectors = self.find_old_timer_vectors(timer_base)
+                if vectors is None:
+                    continue
+                for index in range(512):
+                    head = vectors + index * current_arch.ptrsize * 2
+                    for timer in Kernel.ListHead(head).iter_entries():
+                        try:
+                            function = read_int_from_memory(timer + self.offset_timer_func)
+                        except gdb.MemoryError:
+                            continue
+                        if function not in self.delayed_timer_functions:
+                            continue
+                        work = self.find_delayed_work(timer)
+                        if work is None:
+                            continue
+                        expires = read_int_from_memory(timer + self.offset_timer_expires)
+                        owner = self.find_delayed_owner(work, timer)
+                        self.append_record(records, work, "delayed", owner, None, timer, expires)
+                        records[work]["cpu"] = cpu
+            return
+
+        timer_command = __gef_command_instances__.get("ktimer")
+        if timer_command is None or not timer_command.initialize(classic=True, high_resolution=False):
+            return
+
+        for cpu, timer_base in enumerate(timer_command.per_cpu_timer_bases):
+            for base_n in range(timer_command.nr_bases):
+                base = timer_base + timer_command.sizeof_timer_base * base_n
+                i = 0
+                while True:
+                    head = base + current_arch.ptrsize * i
+                    try:
+                        first = read_int_from_memory(head)
+                        if first == 0:
+                            i += 1
+                            continue
+                        if not is_valid_addr(first):
+                            if i >= 512:
+                                break
+                            i += 1
+                            continue
+                        if read_int_from_memory(first + current_arch.ptrsize) != head:
+                            if i >= 512:
+                                break
+                            i += 1
+                            continue
+                    except gdb.MemoryError:
+                        break
+
+                    for timer in self.iter_hlist(head):
+                        try:
+                            function = read_int_from_memory(timer + self.offset_timer_func)
+                        except gdb.MemoryError:
+                            continue
+                        if function not in self.delayed_timer_functions:
+                            continue
+                        work = self.find_delayed_work(timer)
+                        if work is None:
+                            continue
+                        expires = read_int_from_memory(timer + self.offset_timer_expires)
+                        owner = self.find_delayed_owner(work, timer)
+                        self.append_record(records, work, "delayed", owner, None, timer, expires)
+                        records[work]["cpu"] = cpu
+                    i += 1
+        return
+
+    def scan_address_range(self, records, address, size):
+        end = AddressUtil.normalize_address(address + size)
+        for work in range(address, end, current_arch.ptrsize):
+            if work in records:
+                continue
+            parsed = self.read_work(work)
+            if parsed is None:
+                continue
+            owner = self.owner_for_data(parsed["data"])
+            linked = (parsed["next"] == work + self.offset_work_entry and
+                      parsed["prev"] == work + self.offset_work_entry)
+            pending = bool(parsed["data"] & 1)
+            if not pending and not linked:
+                continue
+
+            timer = None
+            expires = None
+            state = "pending" if pending else "idle"
+            limit = min(end, work + 0x300)
+            for function_address in range(work + self.offset_work_func + current_arch.ptrsize,
+                                          limit, current_arch.ptrsize):
+                try:
+                    function = read_int_from_memory(function_address)
+                except gdb.MemoryError:
+                    break
+                if function not in self.delayed_timer_functions:
+                    continue
+                candidate_timer = function_address - self.offset_timer_func
+                if candidate_timer <= work:
+                    continue
+                timer = candidate_timer
+                try:
+                    expires = read_int_from_memory(timer + self.offset_timer_expires)
+                except gdb.MemoryError:
+                    timer = None
+                    continue
+                owner = self.find_delayed_owner(work, timer) or owner
+                state = "delayed"
+                break
+            self.append_record(records, work, state, owner, None, timer, expires)
+        return
+
+    @Cache.cache_this_session(cache_None=False)
+    def initialize(self):
+        self.meta = []
+        self.kversion = Kernel.kernel_version()
+        self.kinfo = Kernel.get_kernel_layout()
+        per_cpu_offset = KernelAddressHeuristicFinder.get_per_cpu_offset()
+        cpu_offsets = Kernel.get_each_cpu_offset(per_cpu_offset) if per_cpu_offset else []
+        self.max_cpu = max(len(cpu_offsets), 1) if cpu_offsets else 0x2000
+        self.pool_worklist_offsets = {}
+        self.pool_cpu_hints = {}
+        kallsyms = Symbol.get_kallsyms(parse=False)
+        self.kallsyms_names = {address: name for address, name, symbol_type in kallsyms[0]} if kallsyms else {}
+        self.kallsyms_text = {
+            address: name for address, name, symbol_type in kallsyms[0] if symbol_type.lower() in ("t", "w")
+        } if kallsyms else {}
+
+        self.offset_work_data = self.member_offset("struct work_struct", "data") or 0
+        self.offset_work_entry = self.member_offset("struct work_struct", "entry")
+        if self.offset_work_entry is None:
+            self.offset_work_entry = current_arch.ptrsize
+        self.offset_work_func = self.member_offset("struct work_struct", "func")
+        if self.offset_work_func is None:
+            self.offset_work_func = current_arch.ptrsize * 3
+
+        self.offset_wq_list = self.member_offset("struct workqueue_struct", "list")
+        if self.offset_wq_list is None:
+            self.offset_wq_list = current_arch.ptrsize * 2
+        self.offset_wq_pwqs = self.member_offset("struct workqueue_struct", "pwqs") or 0
+        self.offset_pwq_pool = self.member_offset("struct pool_workqueue", "pool") or 0
+        self.offset_pwq_wq = self.member_offset("struct pool_workqueue", "wq")
+        if self.offset_pwq_wq is None:
+            self.offset_pwq_wq = current_arch.ptrsize
+        self.offset_pwqs_node = self.member_offset("struct pool_workqueue", "pwqs_node")
+        self.offset_delayed_timer = self.member_offset("struct delayed_work", "timer")
+        self.offset_delayed_wq = self.member_offset("struct delayed_work", "wq")
+        self.offset_timer_expires = self.member_offset("struct timer_list", "expires")
+        if self.offset_timer_expires is None:
+            self.offset_timer_expires = current_arch.ptrsize * 2
+        self.offset_timer_func = self.member_offset("struct timer_list", "function")
+        if self.offset_timer_func is None:
+            # v3.0-v4.1 has `struct tvec_base *base` between `expires` and `function`;
+            # v4.2 dropped it when timer_list.entry became an hlist_node.
+            self.offset_timer_func = current_arch.ptrsize * (4 if self.kversion < "4.2" else 3)
+
+        self.workqueues = KernelAddressHeuristicFinder.get_workqueues()
+        if self.workqueues is None:
+            self.meta.append((self.quiet_err, "workqueues: Not found"))
+            return None
+        self.meta.append((self.quiet_info, "workqueues: {:#x}".format(self.workqueues)))
+
+        workqueues = list(Kernel.ListHead(self.workqueues, self.offset_wq_list).iter_entries())
+        self.system_wq = None
+        system_wq_ptr = Symbol.get_ksymaddr("system_wq")
+        if system_wq_ptr is not None:
+            try:
+                self.system_wq = read_int_from_memory(system_wq_ptr)
+            except gdb.MemoryError:
+                pass
+        self.offset_wq_name = self.find_name_offset(workqueues)
+        if self.offset_wq_name is None:
+            self.meta.append((self.quiet_warn, "offsetof(workqueue_struct, name): Not found"))
+        else:
+            self.meta.append((self.quiet_info, "offsetof(workqueue_struct, name): {:#x}".format(
+                self.offset_wq_name,
+            )))
+
+        self.workqueues_by_address = {}
+        for workqueue in workqueues:
+            self.workqueues_by_address[workqueue] = {
+                "wq": workqueue,
+                "name": self.read_workqueue_name(workqueue),
+                "cpu": None,
+            }
+
+        if self.kversion < "3.10":
+            self.units = self.collect_old_units(workqueues)
+        else:
+            self.units = self.collect_new_units(workqueues)
+        self.units_by_address = {unit["address"]: unit for unit in self.units}
+
+        self.delayed_timer_functions = set(Symbol.get_ksymaddr_multiple("delayed_work_timer_fn") or [])
+        self.meta.append((self.quiet_info, "workqueue count: {:d}".format(len(workqueues))))
+        self.meta.append((self.quiet_info, "pool_workqueue/cpu_workqueue count: {:d}".format(len(self.units))))
+        return bool(workqueues)
+
+    def print_records(self, records, object_address=None):
+        width = AddressUtil.get_format_address_width()
+        work_width = max(width, len("work_struct"))
+        queue_width = max([24] + [len(record["owner"]["name"]) for record in records.values() if record["owner"] is not None])
+        if not self.args.quiet:
+            fmt = "{:<{ww}s}  {:<10s}  {:<5s}  {:<{qw}s}  {:<{w}s} {:s}"
+            legend = ["work_struct", "state", "cpu", "queue", "function", "symbol"]
+            self.out.append(GefUtil.make_legend(fmt.format(*legend, w=width, ww=work_width, qw=queue_width)))
+
+        state_order = {"running": 0, "pending": 1, "inactive": 2, "delayed": 3, "idle": 4}
+        for record in sorted(records.values(), key=lambda item: (
+                state_order.get(item["state"], 9), item["cpu"] if item["cpu"] is not None else 0x10000,
+                item["work"])):
+            owner = record["owner"]
+            queue = owner["name"] if owner is not None else "???"
+            cpu = "-" if record["cpu"] is None or record["cpu"] < 0 else str(record["cpu"])
+            symbol = self.format_symbol(record["function"])
+            line = "{:<{ww}s}  {:<10s}  {:<5s}  {:<{qw}s}  {:#0{w}x}{:s}".format(
+                "{:#0{w}x}".format(record["work"], w=width), record["state"], cpu, queue,
+                record["function"], symbol,
+                w=width, ww=work_width, qw=queue_width,
+            ).rstrip()
+            extras = []
+            if object_address is not None:
+                extras.append("object+{:#x}".format(record["work"] - object_address))
+            if record["timer"] is not None:
+                extras.append("timer={:#x}".format(record["timer"]))
+            if record["expires"] is not None:
+                extras.append("expires={:#x}".format(record["expires"]))
+            if extras:
+                line += "  [" + ", ".join(extras) + "]"
+            self.out.append(line)
+        return
+
+    @parse_args
+    @only_if_gdb_running
+    @only_if_specific_gdb_mode(mode=("qemu-system", "vmware"))
+    @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
+    @only_if_in_kernel_or_kpti_disabled
+    def do_invoke(self, args):
+        kversion = Kernel.kernel_version()
+        if kversion is None:
+            err("Could not find Linux kernel")
+            return
+        if kversion < "3.0":
+            err("Unsupported before v3.0")
+            return
+        if args.size is None:
+            args.size = 0x1000
+        elif args.object is None:
+            err("--size needs --object")
+            return
+        if args.size <= 0:
+            err("--size must be positive")
+            return
+
+        self.quiet_info("Wait for memory scan")
+        ret = self.initialize()
+        if args.meta or not ret:
+            for func, line in self.meta:
+                func(line)
+        if not ret or args.meta:
+            return
+
+        records = {}
+        self.collect_list_records(records)
+        self.collect_running_records(records)
+        self.collect_delayed_records(records)
+        if args.object is not None:
+            end = AddressUtil.normalize_address(args.object + args.size)
+            records = {work: record for work, record in records.items() if args.object <= work < end}
+            self.scan_address_range(records, args.object, args.size)
+
+        self.out = []
+        self.print_records(records, args.object)
+        if not records:
+            self.quiet_info_add_out("No pending or running work items found")
         self.print_output(check_terminal_size=True)
         return
 

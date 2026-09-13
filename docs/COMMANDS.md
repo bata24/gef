@@ -9496,6 +9496,78 @@ Simplified hrtimer structure (per-cpu):
 +--------------------+
 ```
 
+## kworkqueue
+
+Dump workqueue items and inspect embedded work_struct objects.
+
+
+### Syntax
+
+```text
+usage: kworkqueue [-h] [-hh] [--object OBJECT] [--size SIZE] [--meta] [-n] [-q]
+
+options:
+  -h, --help          show this help message and exit
+  -hh, --help-simple  show help without ASCII diagram.
+  --object OBJECT     the address of the object to inspect (e.g. the head of a heap object), scanned for an embedded work_struct/delayed_work.
+  --size SIZE         the size of the range scanned by --object (default: 0x1000).
+  --meta              display offset information.
+  -n, --no-pager      do not use the pager.
+  -q, --quiet         enable quiet mode.
+```
+
+### Examples
+
+```gdb
+kworkqueue
+kworkqueue --object 0xffff888012340000
+kworkqueue --object 0xffff888012340000 --size 0x400
+```
+
+### Notes
+
+```text
+Simplified workqueue structures (`==>` shows where each column comes from):
+
+                   +-workqueue_struct-+
++-workqueues-+     | pwqs             |--+
+| list       |<--->| list             |<--->...
++------------+     | name             |  |      ==> `queue`
+                   | ...              |  |
+                   +------------------+  |
+                     ^                   |
+                     |                   |
+                     |                   v
+                     |       +-pool_workqueue-+
+                     |       | pool           |---+
+                     +-------| wq             |   |
+                             | inactive_works |   |  ==> state `inactive`
+                             +----------------+   |
+                               ^                  |
+       work_struct.data -------+                  |
+       & ~0xff (pwq)                              |
+                    +-work_struct-+               v
+                    | data        |         +-worker_pool-+
+                    | entry       |-------->| worklist    |  ==> state `pending`
+                    | func        |         | busy_hash   |  ==> state `running`
+                    +-------------+         | cpu         |  ==> `cpu`
+                      ^                     +-------------+
+                      |
+                    +-delayed_work-+
+                    | work         |
+                    | timer        |<--- per-cpu timer wheel  ==> state `delayed`
+                    | wq           |
+                    +--------------+
+
+state `running` is a work_struct held in worker.current_work of a busy worker.
+`queue` and `cpu` are resolved from the pool_workqueue encoded in work_struct.data.
+For state `delayed`, `cpu` is the cpu whose timer wheel holds the timer instead.
+
+With --object, the range [object, object+size) is also scanned for an initialized work_struct,
+including one that is not queued anywhere (state `idle`). A delayed_work is identified by
+its delayed_work_timer_fn timer when the timer is discoverable.
+```
+
 ## syscall-table-view
 
 Display syscall_table entries.

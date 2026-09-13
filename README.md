@@ -263,6 +263,8 @@ For a comprehensive list and additional details, see [docs/SUPPORTED-MODE.md](do
     - ![](images/kirq.png)
 - `knetdev`: displays net devices.
     - ![](images/knetdev.png)
+- `kworkqueue`: dumps workqueue items and inspect embedded work_struct objects.
+    - ![](images/kworkqueue.png)
 - `ksearch-code-ptr`: searches for the code pointer in kernel data area.
     - ![](images/ksearch-code-ptr.png)
 - `kdiff`: compares kernel information (function pointers, etc.) at two points in time.
