@@ -13484,7 +13484,7 @@ def is_remote_debug():
         connection = gdb.selected_inferior().connection
         if connection is None:
             return False
-        return connection and connection.type == "remote"
+        return connection and connection.type in ("remote", "extended-remote")
     except AttributeError:
         # before gdb 11.x: AttributeError: 'gdb.Inferior' object has no attribute 'connection'
         res = gdb.execute("maintenance print target-stack", to_string=True)
@@ -14877,6 +14877,12 @@ class EventHandler:
         return
 
     @staticmethod
+    def connection_removed_handler(_event):
+        """GDB event handler for removed target connections."""
+        Cache.reset_gef_caches(all=True)
+        return
+
+    @staticmethod
     def memchanged_handler(_event):
         """GDB event handler for mem changes cases."""
         Cache.reset_gef_caches()
@@ -15663,6 +15669,16 @@ class EventHooking:
     @only_if_events_supported("exited")
     def gef_on_exit_unhook(func):
         return gdb.events.exited.disconnect(func)
+
+    @staticmethod
+    @only_if_events_supported("connection_removed")
+    def gef_on_connection_removed_hook(func):
+        return gdb.events.connection_removed.connect(func)
+
+    @staticmethod
+    @only_if_events_supported("connection_removed")
+    def gef_on_connection_removed_unhook(func):
+        return gdb.events.connection_removed.disconnect(func)
 
     @staticmethod
     @only_if_events_supported("new_objfile")
@@ -165141,6 +165157,7 @@ class GefReloadCommand(GenericCommand):
         EventHooking.gef_on_stop_unhook(EventHandler.hook_stop_handler)
         EventHooking.gef_on_new_unhook(EventHandler.new_objfile_handler)
         EventHooking.gef_on_exit_unhook(EventHandler.exit_handler)
+        EventHooking.gef_on_connection_removed_unhook(EventHandler.connection_removed_handler)
         EventHooking.gef_on_memchanged_unhook(EventHandler.memchanged_handler)
         EventHooking.gef_on_regchanged_unhook(EventHandler.regchanged_handler)
         Cache.reset_gef_caches(all=True)
@@ -167097,6 +167114,7 @@ class Gef:
         EventHooking.gef_on_stop_hook(EventHandler.hook_stop_handler)
         EventHooking.gef_on_new_hook(EventHandler.new_objfile_handler)
         EventHooking.gef_on_exit_hook(EventHandler.exit_handler)
+        EventHooking.gef_on_connection_removed_hook(EventHandler.connection_removed_handler)
         EventHooking.gef_on_memchanged_hook(EventHandler.memchanged_handler)
         EventHooking.gef_on_regchanged_hook(EventHandler.regchanged_handler)
 
