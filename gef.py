@@ -68116,12 +68116,18 @@ class Kernel:
             RW_REGION_MIN_SIZE = 0x20000
             if dic["ro_base"] is not None:
                 for vaddr, size, perm in dic["maps"][ro_base_map_index + 1:]:
-                    if perm == "RW-":
-                        if dic["rw_base"] is None:
-                            if size >= RW_REGION_MIN_SIZE:
-                                dic["rw_base"] = vaddr
-                                dic["rw_end"] = vaddr + size
-                                break
+                    if dic["rw_base"] is None:
+                        if perm == "RW-" and size >= RW_REGION_MIN_SIZE:
+                            dic["rw_base"] = vaddr
+                            dic["rw_end"] = vaddr + size
+                    elif dic["rw_end"] == vaddr:
+                        # merge contiguous region.
+                        # This is important because a page that was freed from an alignment gap
+                        # of the image and later reused may get its permission changed, which
+                        # splits .data/.bss into pieces at a boot-dependent offset.
+                        dic["rw_end"] += size
+                    else:
+                        break
 
         return Kernel.Kinfo.build(dic, apply_data_range_hint)
 
