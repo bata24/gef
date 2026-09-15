@@ -132279,23 +132279,39 @@ class KmemCacheAliasCommand(GenericCommand, BufferingOutput):
                 "name": name,
                 "object_size": 0,
                 "chunk_size": 0,
+                "kmem_cache": None,
+                "unresolved": False,
             }
+
+        def add_unresolved_cache(name, object_size, chunk_size, kmem_cache):
+            unresolved_key = "{:s}@{:#x}".format(name, kmem_cache)
+            alias_groups[unresolved_key] = {
+                "alias": "<UNRESOLVED>",
+                "slab_cache_name": name,
+                "name": name,
+                "object_size": object_size,
+                "chunk_size": chunk_size,
+                "kmem_cache": kmem_cache,
+                "unresolved": True,
+            }
+            return
 
         # parse slub-dump
         cmd = {"SLUB": "slub-dump", "SLUB_TINY": "slub-tiny-dump"}[self.allocator]
         res = Color.remove_color(gdb.execute("{:s} --list --no-pager --quiet".format(cmd), to_string=True))
         used_names = []
         for line in res.splitlines():
-            r = re.search(r"(\d+)\s+\(0x\S+\)\s+(\d+)\s+\(0x\S+\)\s+(\S+)\s+0x\S+$", line)
+            r = re.search(r"(\d+)\s+\(0x\S+\)\s+(\d+)\s+\(0x\S+\)\s+(\S+)\s+(0x\S+)$", line)
             if r is None:
                 continue
             object_size = int(r.group(1))
             chunk_size = int(r.group(2))
             name = r.group(3)
-            used_names.append([object_size, chunk_size, name])
+            kmem_cache = int(r.group(4), 16)
+            used_names.append([object_size, chunk_size, name, kmem_cache])
 
         # identify the actual slab_cache name in use
-        for object_size, chunk_size, slab_cache_name in used_names:
+        for object_size, chunk_size, slab_cache_name, kmem_cache in used_names:
             original_slab_cache_name = slab_cache_name
 
             # In older kernels, the slab_cache name may include the process name,
@@ -132322,10 +132338,11 @@ class KmemCacheAliasCommand(GenericCommand, BufferingOutput):
                         if int(group_size.group(1)) == chunk_size:
                             candidates.append(k)
                 if len(candidates) != 1:
-                    self.quiet_err("Could not resolve duplicate cache name: {:s}".format(slab_cache_name))
+                    add_unresolved_cache(original_slab_cache_name, object_size, chunk_size, kmem_cache)
                     continue
                 target_name = candidates[0]
 
+            resolved = False
             for k in alias_groups.keys():
                 # already resolved
                 if alias_groups[k]["slab_cache_name"]:
@@ -132338,12 +132355,16 @@ class KmemCacheAliasCommand(GenericCommand, BufferingOutput):
                         alias_groups[k]["slab_cache_name"] = slab_cache_name
                         alias_groups[k]["object_size"] = object_size
                         alias_groups[k]["chunk_size"] = chunk_size
+                        alias_groups[k]["kmem_cache"] = kmem_cache
+                        resolved = True
                     elif k == slab_cache_name:
                         # k: "kmalloc-256" -> "-"
                         # slab_cache_name: "kmalloc-256" -> "-"
                         alias_groups[k]["slab_cache_name"] = slab_cache_name
                         alias_groups[k]["object_size"] = object_size
                         alias_groups[k]["chunk_size"] = chunk_size
+                        alias_groups[k]["kmem_cache"] = kmem_cache
+                        resolved = True
                 else:
                     if alias_groups[k]["alias"] == target_name:
                         # k: "key_jar" -> ":0000256"
@@ -132351,6 +132372,15 @@ class KmemCacheAliasCommand(GenericCommand, BufferingOutput):
                         alias_groups[k]["slab_cache_name"] = slab_cache_name
                         alias_groups[k]["object_size"] = object_size
                         alias_groups[k]["chunk_size"] = chunk_size
+                        alias_groups[k]["kmem_cache"] = kmem_cache
+                        resolved = True
+
+            # A cache with no unclaimed sysfs node must remain visible as an
+            # unresolved physical cache instead of being folded into another
+            # cache with the same name.
+            if original_slab_cache_name == slab_cache_name and not resolved:
+                if not any(v["kmem_cache"] == kmem_cache for v in alias_groups.values()):
+                    add_unresolved_cache(original_slab_cache_name, object_size, chunk_size, kmem_cache)
         return alias_groups
 
     def make_output_merged(self, alias_groups):
@@ -132363,12 +132393,15 @@ class KmemCacheAliasCommand(GenericCommand, BufferingOutput):
             if not info["slab_cache_name"]:
                 continue
 
-            phys_id = name if info["alias"] == "-" else info["alias"]
+            if info["unresolved"]:
+                phys_id = name
+            else:
+                phys_id = name if info["alias"] == "-" else info["alias"]
             if phys_id not in merged_groups:
                 merged_groups[phys_id] = []
 
             entry = info.copy()
-            entry["logical_name"] = name
+            entry["logical_name"] = info["name"]
             merged_groups[phys_id].append(entry)
 
         # list keys
@@ -132435,10 +132468,11 @@ class KmemCacheAliasCommand(GenericCommand, BufferingOutput):
             found_merge = True
 
             # print header
-            header = "{:s} (Object size: {:s}, Chunk size: {:#x})".format(
+            header = "{:s} (Object size: {:s}, Chunk size: {:#x}, kmem_cache: {:#x})".format(
                 Color.colorify(phys_name, chunk_label_color),
                 Color.colorify_hex(children[0]["object_size"], chunk_size_color),
                 children[0]["chunk_size"],
+                children[0]["kmem_cache"],
             )
             self.out.append(header)
 
@@ -132464,7 +132498,9 @@ class KmemCacheAliasCommand(GenericCommand, BufferingOutput):
                             already_colored = True
                             break
 
-                if name_str == phys_name:
+                if child["unresolved"]:
+                    line = tree_char + Color.colorify(name_str, "yellow") + " (Unresolved Physical Cache)"
+                elif name_str == phys_name:
                     if not already_colored:
                         name_str = Color.colorify(name_str, "green")
                     line = tree_char + name_str + " (Physical Owner)"
@@ -132480,24 +132516,26 @@ class KmemCacheAliasCommand(GenericCommand, BufferingOutput):
         return
 
     def make_output(self, alias_groups):
-        fmt = "{:16s} {:16s} {:30s} {:12s} {:s}"
-        legend = ["Object Size", "Chunk Size", "Name", "Alias", "slab_cache name"]
+        fmt = "{:16s} {:16s} {:30s} {:12s} {:30s} {:s}"
+        legend = ["Object Size", "Chunk Size", "Name", "Alias", "slab_cache name", "kmem_cache"]
         self.out.append(GefUtil.make_legend(fmt.format(*legend)))
 
         # sort by keys
         if self.args.sort_by_size:
             sorted_alias_groups = sorted(alias_groups.items(),
-                key=lambda x: (x[1]["object_size"], x[1]["chunk_size"], x[1]["name"]))
+                key=lambda x: (x[1]["object_size"], x[1]["chunk_size"], x[1]["name"], x[1]["kmem_cache"] or 0))
         else:
-            sorted_alias_groups = sorted(alias_groups.items())
+            sorted_alias_groups = sorted(alias_groups.items(),
+                key=lambda x: (x[1]["name"], x[1]["kmem_cache"] or 0, x[1]["alias"]))
 
         found = False
         # print
         for name, v in sorted_alias_groups:
+            display_name = v["name"]
             # filtering by name
             if self.args.names:
                 for filter_name in self.args.names:
-                    if filter_name in name:
+                    if filter_name in display_name:
                         break
                     if filter_name in v["alias"]:
                         break
@@ -132509,14 +132547,15 @@ class KmemCacheAliasCommand(GenericCommand, BufferingOutput):
             # print flat
             found = True
             if v["object_size"] == 0:
-                self.out.append("{:16s} {:16s} {:30s} {:12s} {:s}".format(
-                    "-", "-", name, v["alias"], "<UNUSED>",
+                self.out.append(fmt.format(
+                    "-", "-", display_name, v["alias"], "<UNUSED>", "-",
                 ))
             else:
                 object_size = "{0:d} ({0:#x})".format(v["object_size"])
                 chunk_size = "{0:d} ({0:#x})".format(v["chunk_size"])
-                self.out.append("{:16s} {:16s} {:30s} {:12s} {:s}".format(
-                    object_size, chunk_size, name, v["alias"], v["slab_cache_name"],
+                self.out.append(fmt.format(
+                    object_size, chunk_size, display_name, v["alias"], v["slab_cache_name"],
+                    "{:#x}".format(v["kmem_cache"]),
                 ))
 
         if self.args.names and not found:
