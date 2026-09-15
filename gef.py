@@ -64179,12 +64179,12 @@ class KernelAddressHeuristicFinder:
     @staticmethod
     @switch_to_intel_syntax
     def get_current_clocksource(clocksource_addresses):
-        """Return the clocksource currently used by timekeeping."""
+        """Return the clocksource `curr_clocksource` points to."""
         clocksource_addresses = set(clocksource_addresses)
         if not clocksource_addresses:
             return None
 
-        # plan 1: curr_clocksource is the selector's authoritative pointer.
+        # plan 1 (directly)
         if KernelAddressHeuristicFinder.USE_DIRECTLY:
             addr = Symbol.get_ksymaddr("curr_clocksource")
             if addr:
@@ -64195,9 +64195,71 @@ class KernelAddressHeuristicFinder:
                 if current in clocksource_addresses:
                     return current
 
-        # plan 2: timekeeping_notify() compares its argument with
-        # timekeeper.tkr_mono.clock. Recover that referenced pointer and only
-        # accept it when it points to an entry in clocksource_list.
+        def pointer_locations(res):
+            if is_x86_64():
+                return KernelAddressHeuristicFinderUtil.x64_qword_ptr_rip_base(res)
+            if is_x86_32():
+                return itertools.chain(
+                    KernelAddressHeuristicFinderUtil.x86_dword_ptr_ds(res),
+                    KernelAddressHeuristicFinderUtil.x86_noptr_ds(res),
+                )
+            if is_arm64():
+                return itertools.chain(
+                    KernelAddressHeuristicFinderUtil.aarch64_adrp_add_ldr(res),
+                    KernelAddressHeuristicFinderUtil.aarch64_adrp_ldr(res),
+                    KernelAddressHeuristicFinderUtil.aarch64_adrp_add(res),
+                )
+            if is_arm32():
+                return itertools.chain(
+                    KernelAddressHeuristicFinderUtil.arm32_movw_movt_ldr(res),
+                    KernelAddressHeuristicFinderUtil.arm32_ldr_pc_relative_ldr(res),
+                    KernelAddressHeuristicFinderUtil.arm32_movw_movt(res),
+                    KernelAddressHeuristicFinderUtil.arm32_ldr_pc_relative(res),
+                )
+            return []
+
+        def first_listed_clocksource(res):
+            seen = set()
+            for location in pointer_locations(res):
+                if location in seen:
+                    continue
+                seen.add(location)
+                try:
+                    current = read_int_from_memory(location)
+                except (gdb.MemoryError, MemoryError):
+                    continue
+                if current in clocksource_addresses:
+                    return current
+            return None
+
+        # plan 2: functions that dereference `curr_clocksource` itself.
+        # `current_clocksource_show()` prints `curr_clocksource->name`, so the pointer is the
+        # first global it loads. It is named `sysfs_show_current_clocksources()` before v5.9 and
+        # both need CONFIG_SYSFS. `__clocksource_watchdog_kthread()` (v5.13 or later, needs
+        # CONFIG_CLOCKSOURCE_WATCHDOG) also loads it first, for the per-cpu skew check.
+        for name in ("current_clocksource_show", "sysfs_show_current_clocksources",
+                     "__clocksource_watchdog_kthread"):
+            addr = Symbol.get_ksymaddr(name)
+            if not addr:
+                continue
+            # These are small, so a fixed window would spill into the next symbol.
+            size = Kernel.get_func_size_kallsyms(name)
+            try:
+                if size:
+                    res = gdb.execute("disassemble {:#x},{:#x}".format(addr, addr + size), to_string=True)
+                else:
+                    res = gdb.execute("x/40i {:#x}".format(addr), to_string=True)
+            except gdb.error:
+                continue
+            current = first_listed_clocksource(res)
+            if current is not None:
+                return current
+
+        # plan 3: timekeeping_notify() compares its argument with timekeeper.tkr_mono.clock.
+        # Recover that referenced pointer and only accept it when it points to an entry in
+        # clocksource_list. timekeeping is switched over after `curr_clocksource` is updated,
+        # so while the selector is still moving (refined-jiffies -> tsc-early -> tsc during
+        # boot) this lags behind plan 1/2. Keep it last for kernels without the anchors above.
         addr = Symbol.get_ksymaddr("timekeeping_notify")
         if not addr:
             return None
@@ -64205,42 +64267,7 @@ class KernelAddressHeuristicFinder:
             res = gdb.execute("x/80i {:#x}".format(addr), to_string=True)
         except gdb.error:
             return None
-
-        if is_x86_64():
-            locations = KernelAddressHeuristicFinderUtil.x64_qword_ptr_rip_base(res)
-        elif is_x86_32():
-            locations = itertools.chain(
-                KernelAddressHeuristicFinderUtil.x86_dword_ptr_ds(res),
-                KernelAddressHeuristicFinderUtil.x86_noptr_ds(res),
-            )
-        elif is_arm64():
-            locations = itertools.chain(
-                KernelAddressHeuristicFinderUtil.aarch64_adrp_add_ldr(res),
-                KernelAddressHeuristicFinderUtil.aarch64_adrp_ldr(res),
-                KernelAddressHeuristicFinderUtil.aarch64_adrp_add(res),
-            )
-        elif is_arm32():
-            locations = itertools.chain(
-                KernelAddressHeuristicFinderUtil.arm32_movw_movt_ldr(res),
-                KernelAddressHeuristicFinderUtil.arm32_ldr_pc_relative_ldr(res),
-                KernelAddressHeuristicFinderUtil.arm32_movw_movt(res),
-                KernelAddressHeuristicFinderUtil.arm32_ldr_pc_relative(res),
-            )
-        else:
-            return None
-
-        seen = set()
-        for location in locations:
-            if location in seen:
-                continue
-            seen.add(location)
-            try:
-                current = read_int_from_memory(location)
-            except (gdb.MemoryError, MemoryError):
-                continue
-            if current in clocksource_addresses:
-                return current
-        return None
+        return first_listed_clocksource(res)
 
     @staticmethod
     @switch_to_intel_syntax
