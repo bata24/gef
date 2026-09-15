@@ -62522,6 +62522,18 @@ class KernelAddressHeuristicFinder:
         # On x86/x64, only one case has been found where detection is stable.
         # However, there appear to be cases where it cannot be detected.
 
+        def looks_like_init_task(task):
+            # Only `init_task` has comm == "swapper/0" (or "swapper" when CONFIG_SMP=n),
+            # so this rejects another statically allocated object in the same section.
+            # For example, `task_struct.scx.tasks_node` (v6.12 or later) also links every task
+            # and its head `scx_tasks` is in the kernel .data section, but it is located
+            # before `tasks`, so it is found first.
+            try:
+                data = read_memory(task, get_pagesize())
+            except gdb.MemoryError:
+                return False
+            return b"swapper/0\0" in data or b"swapper\0" in data
+
         # plan 2 (available v3.4 or later)
         if kversion and "3.4" <= kversion:
             if is_x86_64() or is_x86_32():
@@ -62533,11 +62545,13 @@ class KernelAddressHeuristicFinder:
                     elif is_x86_32():
                         g = KernelAddressHeuristicFinderUtil.x64_x86_cmp_const(res)
                     for x in KernelAddressHeuristicFinderUtil.filter_in_kernel_image(g):
-                        # There are cases where init_pid_ns is falsely detected as init_task.
-                        # The initial value of kref is 2, so exclude this.
+                        # `do_exit` also compares against `&init_mm` and `&init_pid_ns`, so the
+                        # candidates must be told apart by what they are, not by their contents.
+                        # `init_mm` starts with the live refcount `mm_count` (v6.12 or later),
+                        # which is temporarily not 2 right after boot.
                         if not is_valid_addr(x):
                             continue
-                        if read_int_from_memory(x) == 2:
+                        if not looks_like_init_task(x):
                             continue
                         return x
 
@@ -62550,18 +62564,6 @@ class KernelAddressHeuristicFinder:
         #    and collect all task addresses.
         # 2. Select the task with the smallest distance from the kernel .data section.
         # This method can also be applied to x86/x64 as long as `current_task` can be obtained.
-
-        def looks_like_init_task(task):
-            # Only `init_task` has comm == "swapper/0" (or "swapper" when CONFIG_SMP=n),
-            # so this rejects a statically allocated list head of another member.
-            # For example, `task_struct.scx.tasks_node` (v6.12 or later) also links every task
-            # and its head `scx_tasks` is in the kernel .data section, but it is located
-            # before `tasks`, so it is found first.
-            try:
-                data = read_memory(task, get_pagesize())
-            except gdb.MemoryError:
-                return False
-            return b"swapper/0\0" in data or b"swapper\0" in data
 
         def get_offset_tasks(current_task, require_init_task=False):
             # search for init_task->tasks
