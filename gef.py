@@ -72673,31 +72673,31 @@ class KernelModuleCommand(GenericCommand, BufferingOutput):
         "",
         "Simplified module structure:",
         "",
-        "                   +-module------------------+",
-        "+-modules-----+    | ...                     |",
-        "| list_head   |--->| list                    |--->...",
-        "+-------------+    | name[]                  |",
-        "                   | ...                     |",
-        "                   | mem[] (v6.4~)           |",
-        "                   |     base                |",
-        "                   |     size                |",
-        "                   |     ...                 |",
-        "                   | init_layout (v4.5~v6.4) |",
-        "                   |     base                |",
-        "                   |     size                |",
-        "                   |     text_size           |",
-        "                   |     ro_size             |",
-        "                   |     ro_after_init_size  |",
-        "                   |     ...                 |",
-        "                   | module_core    (~v4.4)  |",
-        "                   | init_size      (~v4.4)  |",
-        "                   | core_size      (~v4.4)  |",
-        "                   | init_text_size (~v4.4)  |  +-->+-mod_kallsyms---+",
-        "                   | core_text_size (~v4.4)  |  |   | symtab         |",
-        "                   | ...                     |  |   | num_symtab     |",
-        "                   | kallsyms                |--+   | strtab         |",
-        "                   | ...                     |      | typetab (v5.2~)|",
-        "                   +-------------------------+      +----------------+",
+        "                   +-module-------------------------+",
+        "+-modules-----+    | ...                            |",
+        "| list_head   |--->| list                           |--->...",
+        "+-------------+    | name[]                         |",
+        "                   | ...                            |",
+        "                   | mem[] (v6.4~)                  |",
+        "                   |     base                       |",
+        "                   |     size                       |",
+        "                   |     ...                        |",
+        "                   | core_layout (v4.5~v6.4)        |",
+        "                   |     base                       |",
+        "                   |     size                       |",
+        "                   |     text_size                  |",
+        "                   |     ro_size                    |",
+        "                   |     ro_after_init_size (v4.8~) |",
+        "                   |     ...                        |",
+        "                   | module_core    (~v4.4)         |",
+        "                   | init_size      (~v4.4)         |",
+        "                   | core_size      (~v4.4)         |",
+        "                   | init_text_size (~v4.4)         |  +-->+-mod_kallsyms---+",
+        "                   | core_text_size (~v4.4)         |  |   | symtab         |",
+        "                   | ...                            |  |   | num_symtab     |",
+        "                   | kallsyms                       |--+   | strtab         |",
+        "                   | ...                            |      | typetab (v5.2~)|",
+        "                   +--------------------------------+      +----------------+",
         "",
         "Notes for -a option:",
         "- You can check the added symbols with the `symbols` command.",
@@ -72856,7 +72856,7 @@ class KernelModuleCommand(GenericCommand, BufferingOutput):
                     return offset_mem, offset_mem + offset_size
         return None
 
-    def get_offset_init_layout(self, module_addrs): # v4.5 ~ v6.4
+    def get_offset_core_layout(self, module_addrs): # v4.5 ~ v6.4
         """
         struct module { // kernel v4.5~
             enum module_state state;
@@ -72892,8 +72892,8 @@ class KernelModuleCommand(GenericCommand, BufferingOutput):
             unsigned int num_exentries;
             struct exception_table_entry *extable;
             int (*init)(void);
-            struct module_layout core_layout __module_layout_align;
-            struct module_layout init_layout;                                     <-- here
+            struct module_layout core_layout __module_layout_align; <-- here
+            struct module_layout init_layout;
         #ifdef CONFIG_ARCH_WANTS_MODULES_DATA_IN_VMALLOC
             struct module_layout data_layout;
         #endif
@@ -72923,7 +72923,7 @@ class KernelModuleCommand(GenericCommand, BufferingOutput):
             /* Size of RO section of the module (text+rodata) */
             unsigned int ro_size;
             /* Size of RO after init section */
-            unsigned int ro_after_init_size;
+            unsigned int ro_after_init_size; // v4.8~
         #ifdef CONFIG_MODULES_TREE_LOOKUP
             struct mod_tree_node mtn;
         #endif
@@ -72946,52 +72946,56 @@ class KernelModuleCommand(GenericCommand, BufferingOutput):
             0xbf22b144:     0x00000000      0x00000000      0x00000000      0x00000000
             0xbf22b154:     0x00000000      0xbf17e000      0x00000000      0x00000000
             0xbf22b164:     0x00000000      0x00000000      0x00000000      0x00000000
-            0xbf22b174:     0x00000000      0x00000000      0x00000000      0xbf225000 <- init_layout.base
+            0xbf22b174:     0x00000000      0x00000000      0x00000000      0xbf225000 <- core_layout.base
             0xbf22b184:     0x00008000      0x00005000      0x00006000      0x00006000
         """
         # fast path
         try:
-            return GefUtil.parse_and_eval_unsigned("&((struct module*)0).init_layout")
+            offset_core_layout = GefUtil.parse_and_eval_unsigned("&((struct module*)0).core_layout")
+            offset_size = GefUtil.parse_and_eval_unsigned("&((struct module_layout*)0).size")
+            return offset_core_layout, offset_core_layout + offset_size
         except gdb.error:
             pass
 
         # slow_path
         for i in range(300):
-            offset_init_layout = i * current_arch.ptrsize
+            offset_core_layout = i * current_arch.ptrsize
             valid = True
             for module in module_addrs:
                 # memory access check
-                init_layout_ptr = module + offset_init_layout
-                if not is_valid_addr(init_layout_ptr):
+                core_layout_ptr = module + offset_core_layout
+                if not is_valid_addr(core_layout_ptr):
                     valid = False
                     break
                 # base align check
-                cand_base = read_int_from_memory(init_layout_ptr)
+                cand_base = read_int_from_memory(core_layout_ptr)
                 if cand_base == 0 or cand_base & 0xfff:
                     valid = False
                     break
                 # size check
-                cand_size = read_int32_from_memory(init_layout_ptr + current_arch.ptrsize)
+                cand_size = read_int32_from_memory(core_layout_ptr + current_arch.ptrsize)
                 if cand_size == 0 or cand_size > 0x20_0000:
                     valid = False
                     break
                 # text_size check
-                cand_text_size = read_int32_from_memory(init_layout_ptr + current_arch.ptrsize + 4 * 1)
-                if cand_text_size == 0 or cand_text_size > 0x20_0000:
+                cand_text_size = read_int32_from_memory(core_layout_ptr + current_arch.ptrsize + 4 * 1)
+                if cand_text_size == 0 or cand_text_size > cand_size:
                     valid = False
                     break
-                # ro_size check
-                cand_ro_size = read_int32_from_memory(init_layout_ptr + current_arch.ptrsize + 4 * 2)
-                if cand_ro_size == 0 or cand_ro_size > 0x20_0000:
+                # ro_size check (text+rodata)
+                cand_ro_size = read_int32_from_memory(core_layout_ptr + current_arch.ptrsize + 4 * 2)
+                if cand_ro_size < cand_text_size or cand_ro_size > cand_size:
                     valid = False
                     break
-                # ro_after_init_size check
-                cand_ro_after_init_size = read_int32_from_memory(init_layout_ptr + current_arch.ptrsize + 4 * 3)
-                if cand_ro_after_init_size == 0 or cand_ro_after_init_size > 0x20_0000:
-                    valid = False
-                    break
+                # ro_after_init_size check; it does not exist under v4.8, then the read hits
+                # the tail padding (or init_layout.base of an already initialized module)
+                cand_ro_after_init_size = read_int32_from_memory(core_layout_ptr + current_arch.ptrsize + 4 * 3)
+                if cand_ro_after_init_size != 0:
+                    if cand_ro_after_init_size < cand_ro_size or cand_ro_after_init_size > cand_size:
+                        valid = False
+                        break
             if valid:
-                return offset_init_layout
+                return offset_core_layout, offset_core_layout + current_arch.ptrsize
         return None
 
     def get_offset_module_core(self, module_addrs): # ~v4.4
@@ -73036,7 +73040,7 @@ class KernelModuleCommand(GenericCommand, BufferingOutput):
             int (*init)(void);
             void *module_init ____cacheline_aligned;
             /* Here is the actual code + data, vfree'd on unload. */
-            void *module_core;                                                    <-- here
+            void *module_core;                                          <-- here
             /* Here are the sizes of the init and core sections */
             unsigned int init_size, core_size;
             /* The size of the executable code in each section. */
@@ -73054,7 +73058,7 @@ class KernelModuleCommand(GenericCommand, BufferingOutput):
             struct bug_entry *bug_table;
         #endif
         #ifdef CONFIG_KALLSYMS
-            struct mod_kallsyms *kallsyms;                                        <-- here
+            struct mod_kallsyms *kallsyms;                              <-- here
             struct mod_kallsyms core_kallsyms;
             struct module_sect_attrs *sect_attrs;
             struct module_notes_attrs *notes_attrs;
@@ -73064,7 +73068,9 @@ class KernelModuleCommand(GenericCommand, BufferingOutput):
         """
         # fast path
         try:
-            return GefUtil.parse_and_eval_unsigned("&((struct module*)0).module_core")
+            offset_module_core = GefUtil.parse_and_eval_unsigned("&((struct module*)0).module_core")
+            offset_core_size = GefUtil.parse_and_eval_unsigned("&((struct module*)0).core_size")
+            return offset_module_core, offset_core_size
         except gdb.error:
             pass
 
@@ -73100,11 +73106,11 @@ class KernelModuleCommand(GenericCommand, BufferingOutput):
                     break
                 # core_text_size check
                 cand_core_text_size = read_int32_from_memory(module_core_ptr + current_arch.ptrsize + 4 * 3)
-                if cand_core_text_size == 0 or cand_core_text_size > 0x10_0000:
+                if cand_core_text_size == 0 or cand_core_text_size > cand_core_size:
                     valid = False
                     break
             if valid:
-                return offset_module_core
+                return offset_module_core, offset_module_core + current_arch.ptrsize + 4
         return None
 
     def get_offset_kallsyms(self, module_addrs):
@@ -73188,27 +73194,30 @@ class KernelModuleCommand(GenericCommand, BufferingOutput):
         self.offset_name = current_arch.ptrsize * 3 # state + list_head
         self.meta.append((self.quiet_info, "offsetof(module, name): {:#x}".format(self.offset_name)))
 
-        # modules->{mem,mem_size,module_core}
+        # module->{mem,core_layout,module_core}
+        # (member name, size member name, getter)
+        mem = ("mem", "mem.size", self.get_offset_mem) # v6.4~
+        core_layout = ("core_layout", "core_layout.size", self.get_offset_core_layout) # v4.5~v6.4
+        module_core = ("module_core", "core_size", self.get_offset_module_core) # ~v4.4
+        # the kernel version only decides which layout is tried first, because distributions
+        # backport the layout change (e.g. Ubuntu 4.4 already has core_layout)
         if "6.4" <= kversion:
-            ret = self.get_offset_mem(module_addrs)
-            if ret is None:
-                self.meta.append((self.quiet_err, "Could not find module->mem"))
-                return None
-            self.offset_mem, self.offset_mem_size = ret
-            self.meta.append((self.quiet_info, "offsetof(module, mem): {:#x}".format(self.offset_mem)))
-            self.meta.append((self.quiet_info, "offsetof(module, mem.size): {:#x}".format(self.offset_mem_size)))
+            plans = [mem, core_layout, module_core]
         elif "4.5" <= kversion:
-            self.offset_init_layout = self.get_offset_init_layout(module_addrs)
-            if self.offset_init_layout is None:
-                self.meta.append((self.quiet_err, "Could not find module->init_layout"))
-                return None
-            self.meta.append((self.quiet_info, "offsetof(module, init_layout): {:#x}".format(self.offset_init_layout)))
-        else: # kversion < v4.5
-            self.offset_module_core = self.get_offset_module_core(module_addrs)
-            if self.offset_module_core is None:
-                self.meta.append((self.quiet_err, "Could not find module->module_core"))
-                return None
-            self.meta.append((self.quiet_info, "offsetof(module, module_core): {:#x}".format(self.offset_module_core)))
+            plans = [core_layout, mem, module_core]
+        else:
+            plans = [module_core, core_layout, mem]
+        for base_name, size_name, getter in plans:
+            ret = getter(module_addrs)
+            if ret is None:
+                continue
+            self.offset_base, self.offset_size = ret
+            self.meta.append((self.quiet_info, "offsetof(module, {:s}): {:#x}".format(base_name, self.offset_base)))
+            self.meta.append((self.quiet_info, "offsetof(module, {:s}): {:#x}".format(size_name, self.offset_size)))
+            break
+        else:
+            self.meta.append((self.quiet_err, "Could not find module->{:s}".format(plans[0][0])))
+            return None
         return True
 
     @Cache.cache_this_session(cache_None=False)
@@ -73340,22 +73349,14 @@ class KernelModuleCommand(GenericCommand, BufferingOutput):
                 legend = ["module", "module->name", "base", "size"]
                 self.out.append(GefUtil.make_legend(fmt.format(*legend)))
 
-        kversion = Kernel.kernel_version()
         for module in ProgressBar(self.module_addrs, disable=self.args.quiet or self.args.apply_symbol):
             name_string = read_cstring_from_memory(module + self.offset_name)
             if self.args.filter:
                 if not any(re_pattern.search(name_string) for re_pattern in self.args.filter):
                     continue
 
-            if "6.4" <= kversion:
-                base = read_int_from_memory(module + self.offset_mem)
-                size = read_int32_from_memory(module + self.offset_mem_size)
-            elif "4.5" <= kversion:
-                base = read_int_from_memory(module + self.offset_init_layout)
-                size = read_int32_from_memory(module + self.offset_init_layout + current_arch.ptrsize)
-            else: # kversion < "4.5"
-                base = read_int_from_memory(module + self.offset_module_core)
-                size = read_int32_from_memory(module + self.offset_module_core + current_arch.ptrsize + 4)
+            base = read_int_from_memory(module + self.offset_base)
+            size = read_int32_from_memory(module + self.offset_size)
 
             if not self.args.apply_symbol:
                 self.out.append("{:#018x} {:<24s} {:#018x} {:#018x}".format(module, name_string, base, size))
