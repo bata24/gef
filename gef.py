@@ -60268,28 +60268,40 @@ class KernelConstsX86(KernelConstsBase):
     @property
     def FIXADDR_BOOT_SIZE(self):
         if "3.0" <= self.kversion < "3.19":
-            return self.__end_of_fixed_addresses << self.PAGE_SHIFT
+            end = self.__end_of_fixed_addresses
+            if end is None:
+                return None
+            return end << self.PAGE_SHIFT
         return None
 
     @property
     def FIXADDR_TOT_SIZE(self):
         if "4.14" <= self.kversion:
-            return self.__end_of_fixed_addresses << self.PAGE_SHIFT
+            end = self.__end_of_fixed_addresses
+            if end is None:
+                return None
+            return end << self.PAGE_SHIFT
         return None
 
     @property
     def FIXADDR_START(self):
+        if self.FIXADDR_SIZE is None:
+            return None
         return self.FIXADDR_TOP - self.FIXADDR_SIZE
 
     @property
     def FIXADDR_BOOT_START(self):
         if "3.0" <= self.kversion < "3.19":
+            if self.FIXADDR_BOOT_SIZE is None:
+                return None
             return self.FIXADDR_TOP - self.FIXADDR_BOOT_SIZE
         return None
 
     @property
     def FIXADDR_TOT_START(self):
         if "4.14" <= self.kversion:
+            if self.FIXADDR_TOT_SIZE is None:
+                return None
             return self.FIXADDR_TOP - self.FIXADDR_TOT_SIZE
         return None
 
@@ -60338,42 +60350,60 @@ class KernelConstsX86(KernelConstsBase):
     @property
     def CPU_ENTRY_AREA_PAGES(self):
         if "4.14" <= self.kversion:
+            if self.CPU_ENTRY_AREA_SIZE is None:
+                return None
             return self.CPU_ENTRY_AREA_SIZE // self.PAGE_SIZE
         return None
 
     @property
     def CPU_ENTRY_AREA_BASE(self):
         if "4.14" <= self.kversion:
+            if self.FIXADDR_TOT_START is None or self.CPU_ENTRY_AREA_PAGES is None:
+                return None
             return (self.FIXADDR_TOT_START - self.PAGE_SIZE * (self.CPU_ENTRY_AREA_PAGES + 1)) & self.PMD_MASK
         return None
 
     @property
     def CPU_ENTRY_AREA_END(self):
         if "4.14" <= self.kversion:
+            if self.CPU_ENTRY_AREA_BASE is None:
+                return None
             return self.CPU_ENTRY_AREA_BASE + self.CPU_ENTRY_AREA_SIZE
         return None
 
     @property
     def LDT_BASE_ADDR(self):
         if "4.19" <= self.kversion:
+            if self.CPU_ENTRY_AREA_BASE is None:
+                return None
             return (self.CPU_ENTRY_AREA_BASE - self.PAGE_SIZE) & self.PMD_MASK
         return None
 
     @property
     def LDT_END_ADDR(self):
         if "4.19" <= self.kversion:
+            if self.LDT_BASE_ADDR is None:
+                return None
             return self.LDT_BASE_ADDR + self.PMD_SIZE
         return None
 
     @property
     def PKMAP_BASE(self):
         if "3.0" <= self.kversion < "3.19":
+            if self.FIXADDR_BOOT_START is None:
+                return None
             return (self.FIXADDR_BOOT_START - self.PAGE_SIZE * (self.LAST_PKMAP + 1)) & self.PMD_MASK
         elif "3.19" <= self.kversion < "4.14":
+            if self.FIXADDR_START is None:
+                return None
             return (self.FIXADDR_START - self.PAGE_SIZE * (self.LAST_PKMAP + 1)) & self.PMD_MASK
         elif "4.14" <= self.kversion < "4.19":
+            if self.CPU_ENTRY_AREA_BASE is None:
+                return None
             return (self.CPU_ENTRY_AREA_BASE - self.PAGE_SIZE) & self.PMD_MASK
         elif "4.19" <= self.kversion:
+            if self.LDT_BASE_ADDR is None:
+                return None
             return (self.LDT_BASE_ADDR - self.PAGE_SIZE) & self.PMD_MASK
         return None
 
@@ -60381,20 +60411,24 @@ class KernelConstsX86(KernelConstsBase):
     def VMALLOC_END(self):
         if "3.0" <= self.kversion < "4.14":
             if self.CONFIG_HIGHMEM:
-                return self.PKMAP_BASE - 2 * self.PAGE_SIZE
+                base = self.PKMAP_BASE
             else:
-                return self.FIXADDR_START - 2 * self.PAGE_SIZE
+                base = self.FIXADDR_START
         elif "4.14" <= self.kversion < "4.19":
             if self.CONFIG_HIGHMEM:
-                return self.PKMAP_BASE - 2 * self.PAGE_SIZE
+                base = self.PKMAP_BASE
             else:
-                return self.CPU_ENTRY_AREA_BASE - 2 * self.PAGE_SIZE
+                base = self.CPU_ENTRY_AREA_BASE
         elif "4.19" <= self.kversion:
             if self.CONFIG_HIGHMEM:
-                return self.PKMAP_BASE - 2 * self.PAGE_SIZE
+                base = self.PKMAP_BASE
             else:
-                return self.LDT_BASE_ADDR - 2 * self.PAGE_SIZE
-        return None
+                base = self.LDT_BASE_ADDR
+        else:
+            return None
+        if base is None:
+            return None
+        return base - 2 * self.PAGE_SIZE
 
     @property
     def MODULES_VADDR(self):
