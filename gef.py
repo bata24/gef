@@ -147041,15 +147041,29 @@ class XSecureMemAddrCommand(GenericCommand):
             info("Target offset: {:#x}".format(offset))
             info("Read address: {:#x}, size:{:#x}".format(sm.page_start + offset, dump_size))
 
-        with open("/proc/{:d}/mem".format(qemu_system_pid), "rb") as fd:
-            try:
+        # `open` itself fails when ptrace is not permitted (e.g. yama ptrace_scope != 0).
+        try:
+            with open("/proc/{:d}/mem".format(qemu_system_pid), "rb") as fd:
                 fd.seek(sm.page_start + offset, 0)
                 data = fd.read(dump_size)
-            except Exception:
-                return None
+        except Exception:
+            if verbose:
+                err("Could not read /proc/{:d}/mem (root is required)".format(qemu_system_pid))
+            return None
         if verbose:
             info("Read size result: {:#x}".format(len(data)))
         return data
+
+    @staticmethod
+    def read_secure_physmem(paddr, size, verbose=False):
+        """Return the secure physical memory at `paddr`, or None if it is unreadable."""
+        # The secure memory is invisible from the non-secure world. A plain `read_physmem`
+        # falls back to a non-secure read that silently answers with unrelated bytes there,
+        # so it has to be taken from the memory of qemu-system itself.
+        sm = QemuMonitor.get_secure_memory_map(verbose)
+        if sm and sm.sm_base <= paddr < sm.sm_base + sm.sm_size:
+            return XSecureMemAddrCommand.read_secure_memory(sm, paddr - sm.sm_base, size, verbose)
+        return read_physmem(paddr, size)
 
     @staticmethod
     def get_sm_offset(sm, args):
@@ -147150,7 +147164,7 @@ class XSecureMemAddrCommand(GenericCommand):
         # read
         data = XSecureMemAddrCommand.read_secure_memory(sm, target_offset, dump_size, args.verbose)
         if data is None:
-            err("Memory read error")
+            err("Memory read error (root is required to read the secure memory via /proc/<qemu-system>/mem)")
             return
 
         # print
@@ -150265,17 +150279,22 @@ class VBARCommand(GenericCommand, BufferingOutput):
             self.out.append(titlify(regname))
 
             # address check
+            if vbar is None:
+                self.err_add_out("Invalid VBAR address: None")
+                continue
+
             if "$VBAR_S" in regname and not is_in_secure():
+                # The secure page table lives in the secure memory, which is invisible from
+                # the non-secure world. Walking it needs the memory of qemu-system itself,
+                # so it fails without the privilege to read /proc/<qemu-system>/mem.
                 vbar_phys = XSecureMemAddrCommand.v2p_secure(vbar)
                 if vbar_phys is None:
-                    self.err_add_out("Invalid VBAR address: {:#x}".format(vbar))
+                    self.err_add_out("Could not translate {:#x} (root is required to read the "
+                                     "secure memory via /proc/<qemu-system>/mem)".format(vbar))
                     continue
             else:
                 if not is_valid_addr(vbar):
-                    if vbar is None:
-                        self.err_add_out("Invalid VBAR address: None")
-                    else:
-                        self.err_add_out("Invalid VBAR address: {:#x}".format(vbar))
+                    self.err_add_out("Invalid VBAR address: {:#x}".format(vbar))
                     continue
 
             # read each entry
@@ -150283,8 +150302,10 @@ class VBARCommand(GenericCommand, BufferingOutput):
                 s = Color.colorify(s.ljust(max_width), "bold")
                 if "$VBAR_S" in regname and not is_in_secure():
                     try:
-                        code = read_physmem(vbar_phys + ofs, 4)
+                        code = XSecureMemAddrCommand.read_secure_physmem(vbar_phys + ofs, 4)
                     except gdb.MemoryError:
+                        code = None
+                    if not code:
                         self.out.append("[{:+#05x}] {:s}: {:s}".format(ofs, s, "Memory access error"))
                         continue
                     try:
