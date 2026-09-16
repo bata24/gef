@@ -517,6 +517,8 @@ class Cache:
         elif new_objfile:
             for fcache in Cache.__objfile_caches__:
                 fcache.clear()
+        if all or new_objfile:
+            Ksym.reset()
 
         # gdb cache
         try:
@@ -6345,21 +6347,18 @@ class Symbol:
         """Return ([[addr, name, type], ...], {name: [addr, ...]}), or None if unavailable.
         With `parse=False`, return None instead of parsing when it is not parsed yet.
         Some callers must not trigger a parse, e.g. to avoid a recursion."""
-        command = __gef_command_instances__.get("ksymaddr-remote")
-        if command is None:
-            return None
-        if not parse:
-            return Cache.peek_cache_for(command.get_kallsyms)
-        if not hasattr(command, "args"):
-            # Never run, so `get_kallsyms()` has no `self.args` to read yet. Run it once.
+        if Ksym.kallsyms is None:
+            if not parse:
+                return None
+            # Run the command once so that its gdb mode and arch guards are applied.
             # The keyword matches nothing, so it does not print the whole symbol table.
             try:
                 gdb.execute("ksymaddr-remote --quiet --no-pager --exact ''", to_string=True)
             except gdb.error:
                 return None
-        # Once parsed, this is a cache hit. Re-executing the command would walk all the
-        # symbols again for each call.
-        return command.get_kallsyms()
+            if Ksym.kallsyms is None:
+                return None
+        return Ksym.kallsyms, Ksym.kallsyms_map
 
     @staticmethod
     def get_ksymaddr_multiple(sym):
@@ -32050,8 +32049,7 @@ class KernelChecksecCommand(GenericCommand):
             return
 
         # __start_BTF is not present in runtime kallsyms when CONFIG_KALLSYMS_ALL=n.
-        command = __gef_command_instances__.get("ksymaddr-remote")
-        kernel_img = getattr(command, "kernel_img", b"")
+        kernel_img = Ksym.kernel_img
         endian = Endian.endian_str()
         header_fmt = endian + "HBBIIIII"
         header_size = struct.calcsize(header_fmt)
@@ -32064,7 +32062,7 @@ class KernelChecksecCommand(GenericCommand):
             if (version == 1 and header_len >= header_size and type_len and str_len
                     and type_off + type_len <= str_off and payload_end <= len(kernel_img) - pos
                     and kernel_img[str_start:str_start + 1] == b"\0"):
-                btf_addr = getattr(command, "ro_base", 0) + pos
+                btf_addr = Ksym.ro_base + pos
                 additional = "BTF header: Found at {:#x} (__start_BTF hidden)".format(btf_addr)
                 gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Enabled", "bold red"), additional))
                 return
@@ -137169,15 +137167,14 @@ class KtypesCommand(GenericCommand, BufferingOutput):
         return True
 
     def get_base_name(self):
-        if not hasattr(__gef_command_instances__["ksymaddr-remote"], "kernel_version"):
+        if Ksym.kernel_version is None:
             gdb.execute("ksymaddr-remote --no-pager GEF_DUMMY_STRING", to_string=True)
-            if not hasattr(__gef_command_instances__["ksymaddr-remote"], "kernel_version"):
+            if Ksym.kernel_version is None:
                 err("Could not find kernel version")
                 return None
 
-        ks = __gef_command_instances__["ksymaddr-remote"]
-        h = hashlib.sha256(String.str2bytes(ks.version_string)).hexdigest()[-16:]
-        major, minor, patch = ks.kernel_version
+        h = hashlib.sha256(String.str2bytes(Ksym.version_string)).hexdigest()[-16:]
+        major, minor, patch = Ksym.kernel_version
         base_name = os.path.join(GEF_TEMP_DIR, "ktypes-{:d}.{:d}.{:d}-{:s}".format(major, minor, patch, h))
         return base_name
 
@@ -137315,10 +137312,1440 @@ class KtypesLoadCommand(KtypesCommand):
         return
 
 
+class Ksym:
+    """Resolve kernel symbols from the kallsyms table in memory or from a vmlinux file."""
+    # Thanks to https://github.com/marin-m/vmlinux-to-elf
+
+    kallsyms = None
+    kallsyms_map = None
+    kernel_img = b""
+    kernel_version = None
+    version_string = None
+    version_string_offset = 0
+    ro_base = 0
+    ro_size = 0
+
+    @staticmethod
+    def reset():
+        """Forget the parsed result. `Cache.reset_gef_caches()` calls this."""
+        Ksym.kallsyms = None
+        Ksym.kallsyms_map = None
+        return
+
+    @staticmethod
+    def verbose_info(verbose, msg):
+        if verbose:
+            info(msg)
+        return
+
+    @staticmethod
+    def verbose_err(verbose, msg):
+        if verbose:
+            err(msg)
+        return
+
+    @staticmethod
+    def quiet_info(quiet, msg):
+        if not quiet:
+            info(msg)
+        return
+
+    @staticmethod
+    def quiet_err(quiet, msg):
+        if not quiet:
+            err(msg)
+        return
+
+    class Config:
+        """The offsets of one kernel, cached in an ini file under GEF_TEMP_DIR."""
+
+        updates = {}
+
+        @staticmethod
+        @Cache.cache_this_session
+        def name():
+            h = hashlib.sha256(String.str2bytes(Ksym.version_string)).hexdigest()[-16:]
+            major, minor, patch = Ksym.kernel_version
+            cfg_file_name = os.path.join(GEF_TEMP_DIR, "ksymaddr-remote-{:d}.{:d}.{:d}-{:s}.cfg".format(major, minor, patch, h))
+            return cfg_file_name
+
+        @staticmethod
+        def remove():
+            try:
+                os.remove(Ksym.Config.name())
+            except FileNotFoundError:
+                pass
+            return
+
+        @staticmethod
+        def save(param_name):
+            Ksym.Config.updates[param_name] = str(getattr(Ksym, param_name))
+            return
+
+        @staticmethod
+        def flush():
+            if not Ksym.Config.updates:
+                return
+
+            cfg_file_name = Ksym.Config.name()
+            config = configparser.ConfigParser()
+            if os.path.exists(cfg_file_name):
+                config.read(cfg_file_name)
+            if "parameters" not in config:
+                config["parameters"] = {}
+
+            config["parameters"].update(Ksym.Config.updates)
+            cfg_fd, cfg_tmp_name = tempfile.mkstemp(dir=GEF_TEMP_DIR, prefix="ksymaddr-remote-")
+            with os.fdopen(cfg_fd, "w") as cfg_file:
+                config.write(cfg_file)
+            os.replace(cfg_tmp_name, cfg_file_name)
+            return
+
+        @staticmethod
+        def load(param_names, rescan):
+            if rescan:
+                return False
+
+            cfg_file_name = Ksym.Config.name()
+            if not os.path.exists(cfg_file_name):
+                return False
+
+            config = configparser.ConfigParser()
+            config.read(cfg_file_name)
+            if "parameters" not in config:
+                return False
+            values = {}
+            for param_name in param_names:
+                if param_name not in config["parameters"]:
+                    return False
+                values[param_name] = int(config["parameters"][param_name])
+
+            # `Memory.parse()` grows a truncated image step by step, so an offset that does not
+            # fit it yet says nothing about this kernel and must not be restored.
+            if any(not 0 <= v < len(Ksym.kernel_img) for n, v in values.items() if n.startswith("offset_")):
+                return False
+
+            for param_name, param_value in values.items():
+                setattr(Ksym, param_name, param_value)
+            return True
+
+    class Vmlinux:
+        """Parse the symbols out of a vmlinux file instead of scanning the memory."""
+
+        @staticmethod
+        def loaded_path(ignore_loaded_vmlinux, quiet):
+            if ignore_loaded_vmlinux:
+                return None
+
+            # Check `nm` first for later use (in Vmlinux.parse)
+            try:
+                GefUtil.which(Config.get_gef_setting("gef.nm_command"))
+            except FileNotFoundError as e:
+                Ksym.quiet_err(quiet, "{}".format(e))
+                return None
+
+            # check vmlinux
+            for inf in gdb.inferiors():
+                if not hasattr(inf, "progspace"):
+                    continue
+                if not hasattr(inf.progspace, "filename"):
+                    continue
+
+                filename = str(inf.progspace.filename)
+                if not os.path.exists(filename):
+                    continue
+
+                # Currently, the filename in vmlinux is hard-coded
+                if "vmlinux" not in os.path.basename(filename).lower():
+                    continue
+
+                # it has symbol?
+                try:
+                    elf = Elf(filename)
+                    if elf.get_shdr(".symtab"):
+                        return filename
+                except Exception:
+                    continue
+            return None
+
+        @staticmethod
+        def parse(filename, quiet):
+            # read symbols
+            try:
+                nm = GefUtil.which(Config.get_gef_setting("gef.nm_command"))
+            except FileNotFoundError as e:
+                Ksym.quiet_err(quiet, "{}".format(e))
+                return None
+            result = GefUtil.gef_execute_external([nm, filename], as_list=True)
+
+            # distinctive addresses to use for rebasing
+            if is_x86():
+                target = [
+                    "asm_exc_divide_error", # 5.8~
+                    "divide_error", # 3.0 ~ 5.7
+                ]
+            elif is_arm64() or is_arm32():
+                target = [
+                    "vectors", # 3.7~
+                ]
+            elif is_riscv64() or is_riscv32():
+                target = [
+                    "handle_exception", # 4.19~
+                ]
+            else:
+                raise NotImplementedError("Unsupported architecture")
+
+            # parse symbol
+            tmp_kallsyms = []
+            target_found = {}
+            for line in result:
+                try:
+                    addr, typ, name = line.split()
+                    addr = int(addr, 16)
+                    typ = typ.strip()
+                    name = name.strip()
+                except ValueError:
+                    continue
+                tmp_kallsyms.append([addr, name, typ])
+
+                if name in target:
+                    target_found["handler"] = addr
+
+            # rebase
+            if target_found:
+                text_base_hint = Kernel.get_kernel_base_hint()
+                if text_base_hint:
+                    diff = text_base_hint - target_found["handler"]
+                    if diff & get_pagesize_mask_low() == 0:
+                        kallsyms = []
+                        for addr, name, typ in tmp_kallsyms:
+                            # don't rebase per-cpu offset
+                            if addr >= 0x4000_0000:
+                                # This value is the lowest boundary between ARM32 kernel and userland.
+                                addr += diff
+                            kallsyms.append([addr, name, typ])
+                        return kallsyms
+
+            # fail, use as is
+            return tmp_kallsyms
+
+    class Memory:
+        """Scan the kernel image in memory, the source used when there is no vmlinux file."""
+
+        @staticmethod
+        def arm64_fast_path(rescan, verbose, quiet):
+            if not is_in_kernel():
+                Ksym.quiet_info(quiet, "Use slow path")
+                return None
+
+            # This path is more faster because it does not use pagewalk.
+            # Instead of finding ro_base from pagewalk results, it finds ro_base by scanning the kernel version.
+            # It is especially beneficial for ARM64, due to extensive pagetables and pagewalk take a long time.
+            # It may work on other architectures but limited to ARM64 as others gain little.
+
+            # First, search for the kernel version string from $pc.
+            # It is located at around top of ro_base, and ro_base is aligned by 0x10000.
+            current = (current_arch.pc & ~0xffff) + 0x10000 # Starting address to brute force ro_base
+            step_size = 0x10000
+            while True:
+                try:
+                    # As kernel version string is near the top of ro_base, it is enough to check the first page.
+                    candidate_rodata = read_memory(current, get_pagesize())
+                except gdb.MemoryError:
+                    # reached to the end of ro_base
+                    Ksym.quiet_info(quiet, "Use slow path")
+                    return None
+
+                # '\n\0' is needed to avoid false positives in the dmesg buffer.
+                r = re.search(rb"Linux version (\d+\.[\d.]*\d)[ -~]+\n\0", candidate_rodata)
+                if r:
+                    # Found kernel version string
+                    version_string_address = current + r.span()[0]
+                    Ksym.version_string = r.group(0)[:-2]
+                    version_number = r.group(1).decode("ascii")
+                    Ksym.kernel_version = Ksym.KsymVersion.triplet(version_number)
+                    break
+                current += step_size
+
+            # We can make the hash from the kernel version string and load from saved config.
+            # At this point, following two parameters are enough.
+            ret = Ksym.Config.load([
+                "version_string_offset",
+                "ro_size",
+            ], rescan)
+            if not ret:
+                Ksym.quiet_info(quiet, "Use slow path")
+                return None
+
+            # Restore ro_base with considering kASLR.
+            Ksym.quiet_info(quiet, "Use fast path")
+            Ksym.ro_base = version_string_address - Ksym.version_string_offset
+            Ksym.verbose_info(verbose, "ro_base: {:#x}-{:#x}".format(Ksym.ro_base, Ksym.ro_base + Ksym.ro_size))
+
+            # doit
+            Ksym.kernel_img = read_memory(Ksym.ro_base, Ksym.ro_size)
+            ret = Ksym.KsymParse.initialize(rescan, verbose)
+            if not ret:
+                Ksym.quiet_info(quiet, "Use slow path")
+                return None
+
+            return Ksym.KsymParse.read_kallsyms()
+
+        @staticmethod
+        def parse(rescan, verbose, quiet):
+            # Fast path when reattaching GDB after executing this command once (ARM64 only).
+            if is_arm64():
+                kallsyms = Ksym.Memory.arm64_fast_path(rescan, verbose, quiet)
+                if kallsyms:
+                    return kallsyms
+
+            # Slow path
+            try:
+                kinfo = Kernel.get_kernel_layout(apply_data_range_hint=False)
+                if kinfo.has_none:
+                    return None
+            except gdb.MemoryError:
+                Ksym.quiet_err(quiet, "Memory read error")
+                return None
+
+            if not kinfo.rwx:
+                # On modern kernels, ro_size can be trusted, so it only tries to parse once.
+                Ksym.ro_base = kinfo.ro_base
+                Ksym.ro_size = kinfo.ro_size
+                Ksym.kernel_img = read_memory(Ksym.ro_base, Ksym.ro_size)
+                Ksym.verbose_info(verbose, "ro_base: {:#x}-{:#x}".format(Ksym.ro_base, Ksym.ro_base + Ksym.ro_size))
+                ret = Ksym.KsymParse.initialize(rescan, verbose)
+                if not ret:
+                    return None
+            else:
+                # Older kernel that has the RWX attribute don't trust ro_size.
+                # Very large values of ro_size can be detected.
+                # It will take a long time to parse if you just use it.
+                # Gradually increasing ro_size while searching can speed up several times.
+                Ksym.ro_base = kinfo.ro_base
+                # This value is a heuristic threshold derived through testing across numerous kernel images.
+                # Unless there is a compelling reason, do not modify it.
+                base_size = 0x10_0000
+                step = 0x10_0000
+                for candidate_size in range(base_size, kinfo.ro_size, step):
+                    Ksym.ro_size = candidate_size
+                    Ksym.kernel_img = read_memory(Ksym.ro_base, Ksym.ro_size)
+                    Ksym.verbose_info(verbose, "ro_base: {:#x}-{:#x}".format(Ksym.ro_base, Ksym.ro_base + Ksym.ro_size))
+                    ret = Ksym.KsymParse.initialize(rescan, verbose)
+                    if ret:
+                        # found
+                        break
+                else:
+                    # not found
+                    return None
+
+            # here, we got all offsets to read kallsyms
+            return Ksym.KsymParse.read_kallsyms()
+
+    class KsymVersion:
+        """The `Linux version ...` banner of the running kernel."""
+
+        @staticmethod
+        def triplet(version_number):
+            major = int(version_number.split(".")[0])
+            minor = int(version_number.split(".")[1])
+            if len(version_number.split(".")) == 2:
+                patch = 0
+            else:
+                patch = int(version_number.split(".")[2])
+            return (major, minor, patch)
+
+        @staticmethod
+        def find(verbose):
+            # don't use Kernel.kernel_version, since it refers ksymaddr-remote
+            r = re.search(rb"Linux version (\d+\.[\d.]*\d)[ -~]+", Ksym.kernel_img)
+            if r is None:
+                Ksym.verbose_err(verbose, "Could not find the kernel version")
+                return False
+            Ksym.version_string = r.group(0)
+            Ksym.version_string_offset = r.span()[0]
+            Ksym.verbose_info(verbose, "linux_banner: {:#x}".format(Ksym.ro_base + Ksym.version_string_offset))
+            version_number = r.group(1).decode("ascii")
+            Ksym.kernel_version = Ksym.KsymVersion.triplet(version_number)
+
+            # The important thing for parsing is whether it is 6.1.42 or later.
+            # However, some distributions may have a patch version of 0.
+            # e.g., debian 6.1.119-1 -> 6.1.0-28-amd64
+            # In this case, special processing is required to find a different version string.
+            if Ksym.kernel_version[:2] == (6, 1):
+                # e.g., Linux version 6.1.0-28-amd64 (debian-kernel@lists.debian.org) (gcc-12 (Debian 12.2.0-14) 12.2.0,
+                # GNU ld (GNU Binutils for Debian) 2.40) #1 SMP PREEMPT_DYNAMIC Debian 6.1.119-1 (2024-11-22)
+                r = re.findall(rb" 6\.1\.(\d+)", Ksym.version_string)
+                for patch_version in r:
+                    patch_version = int(patch_version)
+                    if patch_version >= 42:
+                        Ksym.kernel_version = (Ksym.kernel_version[0], Ksym.kernel_version[1], patch_version)
+                        break
+            return True
+
+    class KsymParse:
+        """Locate the kallsyms tables in `Ksym.kernel_img` and decode the symbols."""
+
+        @staticmethod
+        def set_offset(verbose, name, offset):
+            """Record `offset_<name>`, save it to the config and log it."""
+            setattr(Ksym, "offset_" + name, offset)
+            Ksym.Config.save("offset_" + name)
+            Ksym.verbose_info(verbose, "{:s}: {:#x}".format(name, Ksym.ro_base + offset))
+            return
+
+        @staticmethod
+        def load_offsets(rescan, verbose, *names):
+            """Restore `offset_<name>` from the config. Return False unless all of them are cached."""
+            if not Ksym.Config.load(["offset_" + name for name in names], rescan):
+                return False
+            for name in names:
+                Ksym.verbose_info(verbose, "{:s}: {:#x}".format(name, Ksym.ro_base + getattr(Ksym, "offset_" + name)))
+            return True
+
+        @staticmethod
+        def get_token_table():
+            # Parse symbol name tokens
+            tokens = []
+            position = Ksym.offset_kallsyms_token_table
+            for _ in range(256):
+                token = ""
+                while Ksym.kernel_img[position]:
+                    token += chr(Ksym.kernel_img[position])
+                    position += 1
+                position += 1
+                tokens.append(token)
+            assert len(tokens) == 256
+            return tokens
+
+        @staticmethod
+        def read_kallsyms():
+            tokens = Ksym.KsymParse.get_token_table()
+            symbol_names = []
+            position = Ksym.offset_kallsyms_names
+            for _ in range(Ksym.num_symbols):
+                # read token length
+                length = Ksym.kernel_img[position]
+                position += 1
+
+                # check if big symbol (6.1~)
+                if Ksym.kernel_version >= (6, 1, 0):
+                    if length & 0x80:
+                        low = length & 0x7f
+                        high = Ksym.kernel_img[position]
+                        position += 1
+                        length = (high << 7) | low
+
+                # make symbol_name
+                symbol_name = "".join([tokens[i] for i in Ksym.kernel_img[position:position + length]])
+                position += length
+                symbol_names.append(symbol_name)
+
+            kallsyms = []
+            for addr, name in zip(Ksym.kernel_addresses, symbol_names):
+                try:
+                    kallsyms.append([addr, name[1:], name[0]])
+                except IndexError:
+                    pass
+            return kallsyms
+
+        @staticmethod
+        def find_token_table(rescan, verbose):
+            if Ksym.KsymParse.load_offsets(rescan, verbose, "kallsyms_token_table"):
+                return True
+
+            """
+            [Search strategy]
+            - kallsyms_token_table has unique sequences like "30 00 31 00 32 00 33 00 34 00 35 00 36 00 37 00 38 00 39 00".
+            - We search for it from .rodata area, then search backwards for invalid characters to get the top.
+
+            [Positional relationship]
+            - ...
+            - kallsyms_token_table
+            - ...
+
+            [Sample values for 64bit]
+            gef> hexdump -n byte kallsyms_token_table
+            0xffffffff8b2b51b0:    65 75 00 77 5f 00 61 64 64 00 64 5f 5f 66 75 6e    |  eu.w_.add.d__fun  |
+            0xffffffff8b2b51c0:    63 5f 5f 00 74 70 5f 66 75 6e 63 00 33 32 00 6e    |  c__.tp_func.32.n  |
+            0xffffffff8b2b51d0:    61 00 66 66 00 69 70 00 78 65 6e 00 70 72 00 73    |  a.ff.ip.xen.pr.s  |
+            0xffffffff8b2b51e0:    65 74 00 63 70 75 00 49 44 00 65 64 00 53 43 00    |  et.cpu.ID.ed.SC.  |
+            0xffffffff8b2b51f0:    66 72 65 00 76 65 5f 00 70 6f 00 78 5f 00 5f 73    |  fre.ve_.po.x_._s  |
+            0xffffffff8b2b5200:    68 00 2e 31 00 62 6c 00 6d 65 6d 00 5f 72 65 67    |  h..1.bl.mem._reg  |
+            0xffffffff8b2b5210:    00 74 5f 5f 00 6c 6f 63 6b 00 62 5f 00 72 5f 5f    |  .t__.lock.b_.r__  |
+            0xffffffff8b2b5220:    6b 73 74 72 74 61 62 6e 73 00 66 75 6e 63 5f 5f    |  kstrtabns.func__  |
+            0xffffffff8b2b5230:    00 69 6e 74 5f 00 72 65 73 00 74 72 61 63 65 00    |  .int_.res.trace.  |
+            0xffffffff8b2b5240:    70 61 72 00 2e 30 00 64 65 76 65 6e 74 5f 00 6d    |  par..0.devent_.m  |
+            0xffffffff8b2b5250:    75 00 61 63 70 69 5f 00 6d 70 00 73 74 61 00 64    |  u.acpi_.mp.sta.d  |
+            0xffffffff8b2b5260:    65 62 75 67 00 5f 5f 5f 00 62 75 67 00 6f 75 00    |  ebug.___.bug.ou.  |
+            0xffffffff8b2b5270:    5f 73 74 61 00 77 72 69 74 00 2e 00 67 72 6f 00    |  _sta.writ...gro.  |
+            0xffffffff8b2b5280:    30 00 31 00 32 00 33 00 34 00 35 00 36 00 37 00    |  0.1.2.3.4.5.6.7.  | <- here unique seqs
+            0xffffffff8b2b5290:    38 00 39 00 72 63 00 77 61 00 63 61 6c 00 75 70    |  8.9.rc.wa.cal.up  |
+            0xffffffff8b2b52a0:    5f 00 45 5f 00 67 65 5f 00 6d 61 70 00 41 00 42    |  _.E_.ge_.map.A.B  |
+
+            [Sample values for 32bit]
+            gef> hexdump -n byte kallsyms_token_table
+            0xc6e58efc:    54 52 41 43 45 5f 53 59 53 00 41 43 45 5f 53 59    |  TRACE_SYS.ACE_SY  |
+            0xc6e58f0c:    53 00 5f 53 59 53 00 54 45 4d 00 41 43 45 00 69    |  S._SYS.TEM.ACE.i  |
+            0xc6e58f1c:    67 00 70 6f 69 6e 74 5f 00 62 75 00 75 74 5f 00    |  g.point_.bu.ut_.  | # codespell:ignore
+            0xc6e58f2c:    5f 53 59 00 54 52 00 5f 73 79 00 72 65 61 64 00    |  _SY.TR._sy.read.  |
+            0xc6e58f3c:    66 5f 00 75 6c 00 62 6c 00 61 6c 6c 6f 63 00 74    |  f_.ul.bl.alloc.t  |
+            0xc6e58f4c:    6c 00 63 6c 00 65 79 00 61 74 61 00 70 63 00 5f    |  l.cl.ey.ata.pc._  |
+            0xc6e58f5c:    65 6e 00 76 65 72 00 54 45 00 64 74 72 61 63 65    |  en.ver.TE.dtrace  | # codespell:ignore
+            0xc6e58f6c:    5f 65 76 65 6e 74 5f 00 61 70 00 61 74 65 00 74    |  _event_.ap.ate.t  |
+            0xc6e58f7c:    6e 00 41 43 00 6d 73 00 72 61 77 5f 00 5f 63 6f    |  n.AC.ms.raw_._co  |
+            0xc6e58f8c:    00 73 74 72 00 6d 6f 00 67 69 73 74 65 72 00 69    |  .str.mo.gister.i  |
+            0xc6e58f9c:    70 00 63 6f 6e 00 67 69 73 00 69 6e 69 74 00 66    |  p.con.gis.init.f  |
+            0xc6e58fac:    75 6e 63 00 65 5f 73 00 75 74 00 5f 73 68 00 70    |  unc.e_s.ut._sh.p  |
+            0xc6e58fbc:    6f 00 61 6c 6c 00 2e 00 66 73 5f 00 30 00 31 00    |  o.all...fs_.0.1.  |
+            0xc6e58fcc:    32 00 33 00 34 00 35 00 36 00 37 00 38 00 39 00    |  2.3.4.5.6.7.8.9.  | <- here unique seqs
+            0xc6e58fdc:    6b 5f 00 5f 63 68 00 72 69 74 00 61 63 70 69 00    |  k_._ch.rit.acpi.  |
+            0xc6e58fec:    5f 63 6f 6e 00 65 78 74 34 00 61 6d 00 41 00 42    |  _con.ext4.am.A.B  |
+            """
+
+            # first, search for unique bytes
+            seq_to_find = b"0\x001\x002\x003\x004\x005\x006\x007\x008\x009\x00"
+            seq_to_avoid = [b":\0", b"\0\0", b"\0\1", b"\0\2", b"ASCII\0"]
+            target_pattern = seq_to_find + b"(?!" + b"|".join(seq_to_avoid) + b")"
+
+            unique_bytes_offset = []
+            for r in re.finditer(target_pattern, Ksym.kernel_img):
+                unique_bytes_offset.append(r.span()) # (start_pos, end_pos)
+
+            if len(unique_bytes_offset) == 0:
+                Ksym.verbose_err(verbose, "Could not find kallsyms_token_table (0 candidate)")
+                return False
+
+            if len(unique_bytes_offset) > 1:
+                # strict check
+                for i, offsets in enumerate(unique_bytes_offset.copy()):
+                    Ksym.verbose_info(verbose, "unique_bytes {:d}: {:#x}".format(i, Ksym.ro_base + offsets[0]))
+                    follow = Ksym.kernel_img[offsets[1]:offsets[1] + 1]
+                    if not follow.isalnum() and follow not in [b"_", b"."]:
+                        unique_bytes_offset.remove(offsets)
+                # re-check
+                if len(unique_bytes_offset) == 0:
+                    Ksym.verbose_err(verbose, "Could not find kallsyms_token_table (0 candidate)")
+                    return False
+                if len(unique_bytes_offset) > 1:
+                    Ksym.verbose_err(verbose, "Could not find kallsyms_token_table (multiple candidates)")
+                    return False
+
+            position = unique_bytes_offset[0][0]
+            Ksym.verbose_info(verbose, "unique_bytes: {:#x}".format(Ksym.ro_base + position))
+
+            # second, backward search for the top
+            position -= 1
+            if position < 0:
+                Ksym.verbose_err(verbose, "Could not find kallsyms_token_table (failed to get top: before '0')")
+                return False
+            if Ksym.kernel_img[position] != 0:
+                Ksym.verbose_err(verbose, "Unexpected byte before '0' entry in kallsyms_token_table")
+                return False
+
+            num_tokens_back = ord('0') # 48
+            max_token_len = 50
+
+            # find the beginning of a kallsyms_token_table
+            for _ in range(num_tokens_back):
+                # find the beginning of a token
+                for _ in range(max_token_len):
+                    position -= 1
+                    if position < 0:
+                        Ksym.verbose_err(verbose, "Could not find kallsyms_token_table (out of range while walking tokens)")
+                        return False
+
+                    b = Ksym.kernel_img[position]
+                    if b == 0 or b > ord('z'):
+                        break
+
+                else:
+                    # max_token_len exceeded
+                    Ksym.verbose_err(verbose, "This structure is not a kallsyms_token_table (token too long)")
+                    return False
+
+            position += 1
+            position += -position % 4
+
+            Ksym.KsymParse.set_offset(verbose, "kallsyms_token_table", position)
+            return True
+
+        @staticmethod
+        def find_token_index(rescan, verbose):
+            if Ksym.KsymParse.load_offsets(rescan, verbose, "kallsyms_token_index"):
+                return True
+
+            """
+            [Search strategy]
+            - Find the index where the string appears in kallsyms_token_table.
+            - Find where that index is arranged like a table.
+
+            [Positional relationship]
+            - ...
+            - kallsyms_token_table
+            - kallsyms_token_index
+            - ...
+
+            [Sample values for 64bit]
+            gef> hexdump -n word kallsyms_token_index
+            0xffffffff8b2b5540:    0x0000 0x0003 0x0006 0x000a 0x0014 0x001c 0x001f 0x0022    |  ..............".  |
+            0xffffffff8b2b5550:    0x0025 0x0028 0x002c 0x002f 0x0033 0x0037 0x003a 0x003d    |  %.(.,./.3.7.:.=.  |
+            0xffffffff8b2b5560:    0x0040 0x0044 0x0048 0x004b 0x004e 0x0052 0x0055 0x0058    |  @.D.H.K.N.R.U.X.  |
+            0xffffffff8b2b5570:    0x005c 0x0061 0x0065 0x006a 0x006d 0x007a 0x0081 0x0086    |  ..a.e.j.m.z.....  |
+            0xffffffff8b2b5580:    0x008a 0x0090 0x0094 0x0097 0x009f 0x00a2 0x00a8 0x00ab    |  ................  |
+            0xffffffff8b2b5590:    0x00af 0x00b5 0x00b9 0x00bd 0x00c0 0x00c5 0x00ca 0x00cc    |  ................  |
+            0xffffffff8b2b55a0:    0x00d0 0x00d2 0x00d4 0x00d6 0x00d8 0x00da 0x00dc 0x00de    |  ................  |
+            0xffffffff8b2b55b0:    0x00e0 0x00e2 0x00e4 0x00e7 0x00ea 0x00ee 0x00f2 0x00f5    |  ................  |
+
+            [Sample values for 32bit]
+            gef> hexdump -n word kallsyms_token_index
+            0xc6e59274:    0x0000 0x000a 0x0012 0x0017 0x001b 0x001f 0x0022 0x0029    |  ............".).  |
+            0xc6e59284:    0x002c 0x0030 0x0034 0x0037 0x003b 0x0040 0x0043 0x0046    |  ,.0.4.7.;.@.C.F.  |
+            0xc6e59294:    0x0049 0x004f 0x0052 0x0055 0x0058 0x005c 0x005f 0x0063    |  I.O.R.U.X..._.c.  |
+            0xc6e592a4:    0x0067 0x006a 0x0078 0x007b 0x007f 0x0082 0x0085 0x0088    |  g.j.x.{.........  |
+            0xc6e592b4:    0x008d 0x0091 0x0095 0x0098 0x009f 0x00a2 0x00a6 0x00aa    |  ................  |
+            0xc6e592c4:    0x00af 0x00b4 0x00b8 0x00bb 0x00bf 0x00c2 0x00c6 0x00c8    |  ................  |
+            0xc6e592d4:    0x00cc 0x00ce 0x00d0 0x00d2 0x00d4 0x00d6 0x00d8 0x00da    |  ................  |
+            0xc6e592e4:    0x00dc 0x00de 0x00e0 0x00e3 0x00e7 0x00eb 0x00f0 0x00f5    |  ................  |
+            """
+
+            # create expected kallsyms_token_index byte sequqence
+            position = Ksym.offset_kallsyms_token_table
+            seq_token_table_head = Ksym.kernel_img[position:position + 256]
+
+            token_offsets = [p16(0)]
+            pos = 0
+            while True:
+                pos = seq_token_table_head.find(b"\0", pos + 1)
+                if pos == -1:
+                    break
+                token_offsets.append(p16(pos + 1))
+            seq_to_find = b"".join(token_offsets)
+
+            # search for it from memory
+            position = Ksym.kernel_img.find(seq_to_find, Ksym.offset_kallsyms_token_table)
+            if position == -1:
+                Ksym.verbose_err(verbose, "Could not find kallsyms_token_index (0 candidate)")
+                return False
+
+            Ksym.KsymParse.set_offset(verbose, "kallsyms_token_index", position)
+            return True
+
+        @staticmethod
+        def find_markers(rescan, verbose):
+            # determines the size of table elements depended on kernel version.
+            if Ksym.kernel_version < (4, 20, 0):
+                # kallsyms_markers is unsigned long[]
+                Ksym.kallsyms_markers_table_element_size = current_arch.ptrsize
+            else:
+                # kallsyms_markers is unsigned int[]
+                Ksym.kallsyms_markers_table_element_size = 4
+
+            if Ksym.kernel_version >= (6, 1, 42) and Ksym.kernel_version < (6, 9, 0):
+                if Ksym.KsymParse.load_offsets(rescan, verbose, "kallsyms_markers", "kallsyms_seqs_of_names"):
+                    return True
+            elif Ksym.KsymParse.load_offsets(rescan, verbose, "kallsyms_markers"):
+                return True
+
+            """
+            [Search strategy]
+            - From kallsyms_token_table, search backwards for 0x00000000.
+            - For kernel v6.1.42~v6.8, there is kallsyms_seqs_of_names between kallsyms_markers and kallsyms_token_table,
+              so this should be skipped.
+
+            [Positional relationship]
+            ...
+            - kallsyms_markers
+            - kallsyms_seqs_of_names (v6.1.42~v6.8)
+            - kallsyms_token_table
+            - kallsyms_token_index
+            ...
+            - kallsyms_seqs_of_names (v6.9~)
+            ...
+
+            [Sample values for 64bit ~v6.1.41]
+            gef> hexdump -n dword kallsyms_markers
+            0xffffffff8b2b4b48:    0x00000000 0x00000ab0 0x000016d3 0x00002316    |  .............#..  | <- kallsyms_markers
+            0xffffffff8b2b4b58:    0x00002f38 0x00003cf8 0x00004c4c 0x000059c8    |  8/...<..LL...Y..  |
+            0xffffffff8b2b4b68:    0x0000664b 0x00007316 0x00008119 0x00008f2e    |  Kf...s..........  |
+            0xffffffff8b2b4b78:    0x00009cc6 0x0000a9ff 0x0000b687 0x0000c20f    |  ................  |
+            ...
+            0xffffffff8b2b5180:    0x0013fa80 0x001404c6 0x00140f67 0x00141a29    |  ........g...)...  |
+            0xffffffff8b2b5190:    0x0014240e 0x00142e25 0x00143a5f 0x0014442a    |  .$..%..._:..*D..  |
+            0xffffffff8b2b51a0:    0x00144e55 0x001458d8 0x00146338 0x00000000    |  UN...X..8c......  |
+            0xffffffff8b2b51b0:    0x77007565 0x6461005f 0x5f640064 0x6e75665f    |  eu.w_.add.d__fun  | <- kallsyms_token_table
+
+            [Sample values for 64bit v6.1.42~]
+            gef> hexdump -n dword kallsyms_markers
+            0xffffffff8d5fcde0:    0x00000000 0x00000b55 0x000017bb 0x000024c3    |  ....U........$..  | <- kallsyms_markers
+            0xffffffff8d5fcdf0:    0x000030c1 0x00003dca 0x00004983 0x000058aa    |  .0...=...I...X..  |
+            0xffffffff8d5fce00:    0x00006785 0x0000760e 0x0000828d 0x00009160    |  .g...v......`...  |
+            0xffffffff8d5fce10:    0x00009efa 0x0000ab20 0x0000b73a 0x0000c37d    |  .... ...:...}...  |
+            ...
+            0xffffffff8d5fd790:    0x00212755 0x002131b8 0x00213af8 0x00214558    |  U'!..1!..:!.XE!.  |
+            0xffffffff8d5fd7a0: (*)0x01069d01 0x9d01019d 0x029d0100 0x02039d01    |  ................  | <- kallsyms_seqs_of_names (*)
+            0xffffffff8d5fd7b0:    0xa400291c 0x10a50024 0x0154a500 0xaa0116aa    |  .)..$.....T.....  |
+            0xffffffff8d5fd7c0:    0x87610214 0x01274902 0xb201cbaf 0xbbbc01c9    |  ..a..I'.........  |
+
+            [Sample values for 32bit v6.1.42~]
+            gef> hexdump -n dword kallsyms_markers
+            0xc6e0dc98:    0x00000000 0x00000c61 0x0000188f 0x00002641    |  ....a.......A&..  | <- kallsyms_markers
+            0xc6e0dca8:    0x00003492 0x000041a7 0x00004e6b 0x00005ace    |  .4...A..kN...Z..  |
+            0xc6e0dcb8:    0x0000691b 0x00007703 0x00008411 0x00008fc1    |  .i...w..........  |
+            0xc6e0dcc8:    0x00009c98 0x0000a8ea 0x0000b719 0x0000c4dd    |  ................  |
+            ...
+            0xc6e0e2c8:    0x0014f2fa 0x0014fbeb 0x00150653 0x00634401(*) |  ........S....Dc.  | <- kallsyms_seqs_of_names (*)
+            0xc6e0e2d8:    0xd90030d9 0x8bd30032 0x0189d300 0x6a01e97f    |  .0..2..........j  |
+            0xc6e0e2e8:    0x31d90063 0x0007e100 0xd600b7e1 0xd1d900cb    |  c..1............  |
+            0xc6e0e2f8:    0x0083dd00 0xd90004e9 0x85ef00ab 0x00bfdb00    |  ................  |
+            """
+
+            # kallsyms_markers[0] is 0.
+            seq_to_find = b"\0" * Ksym.kallsyms_markers_table_element_size
+
+            # ignore the 0 immediately above kallsyms_token_table.
+            position = Ksym.offset_kallsyms_token_table - 1
+            if len(Ksym.kernel_img) <= position:
+                return False
+            while position > 0 and Ksym.kernel_img[position] == 0:
+                position -= 1
+
+            # aligned search for it from memory
+            while position > 0:
+                needle = Ksym.kernel_img.rfind(seq_to_find, 0, position)
+                if needle == -1:
+                    Ksym.verbose_err(verbose, "Could not find kallsyms_markers")
+                    return False
+                # check alignment
+                align_diff = needle % Ksym.kallsyms_markers_table_element_size
+                if align_diff == 0:
+                    position = needle
+                    break # ok
+                else:
+                    position = needle + Ksym.kallsyms_markers_table_element_size - align_diff
+                    # not aligned, so retry
+
+            if Ksym.kernel_version >= (6, 1, 42) and Ksym.kernel_version < (6, 9, 0):
+                # kallsyms_seqs_of_names was introduced in kernel 6.1.42
+                # In this case, we may find kallsyms_seqs_of_names instead of kallsyms_markers,
+                # so we should search back through memory again.
+                #
+                # kallsyms_markers        (1) we want to find this
+                # kallsyms_seqs_of_names  (3) this may have been found, try the backward search again
+                # kallsyms_token_table    (2) backward search from here
+                # kallsyms_token_index
+                #
+                while position > 0:
+                    # the first some values of kallsyms_markers should be a small number.
+                    # if not, detected kallsyms_markers is incorrect and we'll go back further.
+                    first_10_elements = Ksym.kernel_img[position + Ksym.kallsyms_markers_table_element_size:]
+                    first_10_elements = first_10_elements[:Ksym.kallsyms_markers_table_element_size * 10]
+                    first_10_elements = slice_unpack(first_10_elements, Ksym.kallsyms_markers_table_element_size)
+                    if all((x & 0xfff_0000) == 0 for x in first_10_elements):
+                        break
+
+                    needle = Ksym.kernel_img.rfind(seq_to_find, 0, position)
+                    if needle == -1:
+                        Ksym.verbose_err(verbose, "Could not find kallsyms_markers")
+                        return False
+                    # check alignment
+                    align_diff = needle % Ksym.kallsyms_markers_table_element_size
+                    if align_diff == 0:
+                        position = needle
+                    else:
+                        position = needle + Ksym.kallsyms_markers_table_element_size - align_diff
+
+            if position <= 0:
+                Ksym.verbose_err(verbose, "Could not find kallsyms_markers")
+                return False
+
+            Ksym.KsymParse.set_offset(verbose, "kallsyms_markers", position)
+
+            if Ksym.kernel_version >= (6, 1, 42) and Ksym.kernel_version < (6, 9, 0):
+                # locate kallsyms_seqs_of_names to get the table size of kallsyms_markers (used after).
+                #
+                # kallsyms_markers        (1) we found this
+                # kallsyms_seqs_of_names  (2) to know the end of kallsyms_markers, we need to find this
+                # kallsyms_token_table
+                # kallsyms_token_index
+                #
+                position = Ksym.offset_kallsyms_markers + Ksym.kallsyms_markers_table_element_size
+                # check MSB of the element of kallsyms_markers
+                while Ksym.kernel_img[position + (Ksym.kallsyms_markers_table_element_size - 1)] == 0:
+                    a = u32(Ksym.kernel_img[position - Ksym.kallsyms_markers_table_element_size:position]) # prev
+                    b = u32(Ksym.kernel_img[position:position + Ksym.kallsyms_markers_table_element_size]) # current
+                    # kallsyms_markers are monotonically increasing.
+                    # and it doesn't increase very dramatically.
+                    if a > b or b - a > 0x10_0000:
+                        break
+                    position += Ksym.kallsyms_markers_table_element_size
+                Ksym.KsymParse.set_offset(verbose, "kallsyms_seqs_of_names", position)
+
+            return True
+
+        @staticmethod
+        def find_names(rescan, verbose):
+            if Ksym.Config.load(["offset_kallsyms_names"], rescan):
+                return True
+
+            """
+            [Search strategy]
+            - From kallsyms_markers, go back as far as we can definitively go back.
+            - This address is not accurate.
+
+            [Positional relationship]
+            ...
+            - kallsyms_names (this is not accurate address in this step)
+            - kallsyms_markers
+            - kallsyms_seqs_of_names (v6.1.42~v6.8)
+            - kallsyms_token_table
+            - kallsyms_token_index
+            ...
+            - kallsyms_seqs_of_names (v6.9~)
+            ...
+
+            [Sample values for 64bit]
+            gef> hexdump -n qword kallsyms_names
+            0xffffffff8b16e610:    0x0cf3ec0e78b6410a 0xf370ff4109fe61cb    |  .A.x.....a..A.p.  | <- kallsyms_names
+            0xffffffff8b16e620:    0x0c410774722cbdeb 0xa8410df67ef4285f    |  ..,rt.A._(.~..A.  |
+            0xffffffff8b16e630:    0x936bed62d8632c71 0x925f0c4107f67ef4    |  q,c.b.k..~..A._.  |
+            0xffffffff8b16e640:    0xfb646741067772f1 0x706563a4410add86    |  .rw.Agd....A.cep  |
+            ...
+            0xffffffff8b2b4b20:    0x616bd977fc6d7364 0x738df5ff440e61f6    |  dsm.w.ka.a.D...s  |
+            0xffffffff8b2b4b30:    0x6765625fbfe87263 0x63738df5ff440cf5    |  cr.._beg..D...sc  |
+            0xffffffff8b2b4b40:    0x000064ee5fbfe872 0x00000ab000000000    |  r.._.d..........  | <- kallsyms_markers
+            0xffffffff8b2b4b50:    0x00002316000016d3 0x00003cf800002f38    |  .....#..8/...<..  |
+
+            [Sample values for 32bit]
+            gef> hexdump -n qword kallsyms_names
+            0xc6cbce58:    0x335fd57472fb5c08 0x54039974f9540432    |  ...rt._32.T.t..T  | <- kallsyms_names
+            0xc6cbce68:    0x63ff72fb5c0799a6 0xd57472fb5c0a30a1    |  .....r.c.0...rt.  |
+            0xc6cbce78:    0x177407b6f932335f 0xa0ca0aa1f3796669    |  _32...t.ify.....  |
+            0xc6cbce88:    0xd7f49b2d63ecc37f 0x2d63ecc37fa0ca0a    |  ...c-.........c-  |
+            ...
+            0xc6e0dc78:    0x3a7262fe620d105f 0x10ff67ef796ccf65    |  _..b.br:e.ly.g..  |
+            0xc6e0dc88:    0x62fe420964164203 0x0000ec6d699b6b72    |  .B.d.B.brk.im...  |
+            0xc6e0dc98:    0x00000c6100000000 0x000026410000188f    |  ....a.......A&..  | <- kallsyms_markers
+            0xc6e0dca8:    0x000041a700003492 0x00005ace00004e6b    |  .4...A..kN...Z..  |
+            """
+
+            # take the last element of kallsyms_marker
+            if (6, 1, 42) <= Ksym.kernel_version < (6, 9, 0):
+                kallsyms_markers_end = Ksym.offset_kallsyms_seqs_of_names
+            else:
+                kallsyms_markers_end = Ksym.offset_kallsyms_token_table
+
+            kallsyms_markers_data = Ksym.kernel_img[Ksym.offset_kallsyms_markers:kallsyms_markers_end]
+            kallsyms_markers_entries = slice_unpack(kallsyms_markers_data, Ksym.kallsyms_markers_table_element_size)
+            kallsyms_markers_last_entry = list(filter(None, kallsyms_markers_entries))[-1] # filter 0, maybe padding
+
+            # go back that number of bytes
+            position = Ksym.offset_kallsyms_markers
+            position -= kallsyms_markers_last_entry
+            position += -position % Ksym.kallsyms_markers_table_element_size
+
+            if position <= 0:
+                Ksym.verbose_err(verbose, "Could not find kallsyms_names")
+                return False
+
+            # This value is provisional. It will be corrected in the next process (=find_kallsyms_num_syms).
+            Ksym.offset_kallsyms_names = position
+            Ksym.verbose_info(verbose, "kallsyms_names: {:#x} (candidate)".format(Ksym.ro_base + Ksym.offset_kallsyms_names))
+            return True
+
+        @staticmethod
+        def find_num_syms(rescan, verbose):
+            ret = Ksym.Config.load([
+                "num_symbols",
+                "offset_kallsyms_names",
+                "offset_kallsyms_num_syms",
+            ], rescan)
+            if ret:
+                Ksym.verbose_info(verbose, "num_symbols: {:#x}".format(Ksym.num_symbols))
+                Ksym.verbose_info(verbose, "kallsyms_names: {:#x}".format(Ksym.ro_base + Ksym.offset_kallsyms_names))
+                Ksym.verbose_info(verbose, "kallsyms_num_syms: {:#x}".format(Ksym.ro_base + Ksym.offset_kallsyms_num_syms))
+                return True
+
+            """
+            [Search strategy]
+            - From candidate address of kallsyms_names, search backwards to the top of what can be correctly
+              interpreted as kallsyms_names.
+
+            [Positional relationship]
+            ...
+            - kallsyms_num_syms
+            - kallsyms_names (to be fixed in this step)
+            - kallsyms_markers
+            - kallsyms_seqs_of_names (v6.1.42~v6.8)
+            - kallsyms_token_table
+            - kallsyms_token_index
+            ...
+            - kallsyms_seqs_of_names (v6.9~)
+            ...
+
+            [Sample values for 64bit]
+            gef> hexdump -n qword kallsyms_num_syms
+            0xffffffff8b16e608:    0x000000000001982b 0x0cf3ec0e78b6410a    |  +........A.x....  |
+            0xffffffff8b16e618:    0xf370ff4109fe61cb 0x0c410774722cbdeb    |  .a..A.p...,rt.A.  |
+            0xffffffff8b16e628:    0xa8410df67ef4285f 0x936bed62d8632c71    |  _(.~..A.q,c.b.k.  |
+            0xffffffff8b16e638:    0x925f0c4107f67ef4 0xfb646741067772f1    |  .~..A._..rw.Agd.  |
+
+            [Sample values for 32bit]
+            gef> hexdump -n dword kallsyms_num_syms
+            0xc6cbce54:    0x00018eb8 0x72fb5c08 0x335fd574 0xf9540432    |  .......rt._32.T.  |
+            0xc6cbce64:    0x54039974 0x5c0799a6 0x63ff72fb 0x5c0a30a1    |  t..T.....r.c.0..  |
+            0xc6cbce74:    0xd57472fb 0xf932335f 0x177407b6 0xf3796669    |  .rt._32...t.ify.  |
+            """
+
+            token_table = Ksym.KsymParse.get_token_table()
+            possible_symbol_types = "-?ABCDGINPRSTUVWabcdginprstuvw" # from `man nm`
+            dp = []
+            step = 4
+
+            # Hoist loop-invariant lookups out of the DP loop below (hot path in `ks -rv`).
+            kernel_img = Ksym.kernel_img
+            markers = Ksym.offset_kallsyms_markers
+            is_v61_or_later = Ksym.kernel_version >= (6, 1, 0)
+
+            position = Ksym.offset_kallsyms_names
+            # kallsyms_names should be aligned.
+            # This optimization is based on experience and is applied for now.
+            position += -position % step
+
+            while True:
+                if position < 0:
+                    Ksym.verbose_err(verbose, "Could not find kallsyms_names")
+                    return False
+
+                # Do some types of checks.
+                # 1: check the token type is likely or not.
+                token_index = Ksym.kernel_img[position + 1]
+                symbol_type = token_table[token_index][0]
+                if symbol_type not in possible_symbol_types:
+                    position -= step
+                    continue
+
+                # 2: check the table (kallsyms_names) entirely.
+                # Each element of kallsyms_names consists of {number of tokens, tokens[number of tokens]}.
+                # tokens[0][0] is symbol type.
+                #
+                # The following is an example of last elements of kallsyms_names.
+                # gef> x/24xb 0xffffffffb46b4b48-0x10
+                # 0xffffffffb46b4b38: 0xf5   0x0c*  0x44   0xff   0xf5   0x8d   0x73   0x63 (*: start of last valid elements)
+                # 0xffffffffb46b4b40: 0x72   0xe8   0xbf   0x5f   0xee   0x64*  0x00** 0x00 (*: end of last valid elements, **: end marker)
+                # 0xffffffffb46b4b48: 0x00*  0x00   0x00   0x00   0xb0   0x0a   0x00   0x00 (*: start of kallsyms_markers)
+                #
+                # 0x0c: number of tokens
+                # gef> pi GCI["ksymaddr-remote"].get_token_table()[0x44]
+                # 'D' (= symbol type)
+                # gef> pi GCI["ksymaddr-remote"].get_token_table()[0xff]
+                # '__'
+                # gef> pi GCI["ksymaddr-remote"].get_token_table()[0xf5]
+                # 'in'
+                # gef> pi GCI["ksymaddr-remote"].get_token_table()[0x8d]
+                # 'it_'
+                # gef> pi GCI["ksymaddr-remote"].get_token_table()[0x73]
+                # 's'
+                # gef> pi GCI["ksymaddr-remote"].get_token_table()[0x63]
+                # 'c'
+                # gef> pi GCI["ksymaddr-remote"].get_token_table()[0x72]
+                # 'r'
+                # gef> pi GCI["ksymaddr-remote"].get_token_table()[0xe8]
+                # 'at'
+                # gef> pi GCI["ksymaddr-remote"].get_token_table()[0xbf]
+                # 'ch'
+                # gef> pi GCI["ksymaddr-remote"].get_token_table()[0x5f]
+                # '_'
+                # gef> pi GCI["ksymaddr-remote"].get_token_table()[0xee]
+                # 'en'
+                # gef> pi GCI["ksymaddr-remote"].get_token_table()[0x64]
+                # 'd'
+                # (=`__init_scratch_end`)
+                #
+                # Finally, 0x00(**) is following, this is the marker that represents the end of kallsyms_names.
+                # This can be interpreted that the size of element is 0.
+                #
+                # However, this 0x00 may not exist.
+                # gef> x/16xb 0xffffffffadefc1d8-0x8
+                # 0xffffffffadefc1d0: 0x12   0x65   0x05*  0xbf   0x65   0xaf   0x74   0xa5** (*/**: start/end of last valid elements)
+                # 0xffffffffadefc1d8: 0x00*  0x00   0x00   0x00   0xb2   0x0b   0x00   0x00   (*: start of kallsyms_markers)
+                # Even in this case, the first byte of kallsyms_markers is always 0, so we use it.
+                #
+                # Check that this structure is correct or not, using bottom-up DP.
+                # dp[i] contains num_syms as interpreted from `kallsyms_makers - i` as the start of kallsyms_names.
+                # dp[i] == -1 means invalid.
+                range_start = position
+                range_end = markers
+                range_end -= len(dp) # shortcut the already checked results.
+                for pos in range(range_end, range_start - 1, -1):
+                    symbol_size = kernel_img[pos]
+                    is_big_symbol = False # default
+
+                    # check if big symbol (6.1~)
+                    if is_v61_or_later:
+                        if symbol_size & 0x80:
+                            low = symbol_size & 0x7f
+                            high = kernel_img[pos + 1]
+                            symbol_size = (high << 7) | low
+                            is_big_symbol = True
+
+                    # 0xffffffffb46b4b38: 0xf5     0x0c     0x44     0xff     0xf5     0x8d     0x73     0x63
+                    # 0xffffffffb46b4b40: 0x72     0xe8     0xbf     0x5f     0xee     0x64     0x00*    0x00*
+                    #                                                                           dp[2]=0  dp[1]=0
+                    # 0xffffffffb46b4b48: 0x00*    0x00     0x00     0x00     0xb0     0x0a     0x00     0x00
+                    #                     dp[0]=0
+                    if symbol_size == 0:
+                        dp.append(0) # maybe it is a last entry
+                        continue
+
+                    # 0xffffffffb46b4b38: 0xf5     0x0c     0x44     0xff     0xf5     0x8d     0x73     0x63
+                    # 0xffffffffb46b4b40: 0x72     0xe8     0xbf     0x5f     0xee     0x64*    0x00     0x00
+                    #                                                                  dp[3]=-1 dp[2]=0  dp[1]=0
+                    # 0xffffffffb46b4b48: 0x00*    0x00     0x00     0x00     0xb0     0x0a     0x00     0x00
+                    #                     dp[0]=0
+                    # At this point len(dp) always equals `markers - pos` (exactly one
+                    # entry is appended per iteration), so compute it without len().
+                    dp_len = markers - pos
+                    if is_big_symbol:
+                        dp_len -= 1
+                    if symbol_size >= dp_len:
+                        dp.append(-1) # exceed the kallsyms_markers
+                        continue
+
+                    # 0xffffffffb46b4b38: 0xf5     0x0c*    0x44     0xff     0xf5     0x8d     0x73     0x63
+                    #                              dp[f]=1  dp[e]=-1 dp[d]=-1 dp[c]=-1 dp[b]=-1 dp[a]=-1 dp[9]=-1
+                    # 0xffffffffb46b4b40: 0x72     0xe8     0xbf     0x5f     0xee     0x64     0x00**   0x00
+                    #                     dp[8]=-1 dp[7]=-1 dp[6]=-1 dp[5]=-1 dp[4]=-1 dp[3]=-1 dp[2]=0  dp[1]=0
+                    # 0xffffffffb46b4b48: 0x00*    0x00     0x00     0x00     0xb0     0x0a     0x00     0x00
+                    #                     dp[0]=0
+                    # when we see 0x0c(*), next element is 0x00(**).
+                    # In this case, here, len(dp) == 15 (dp[15] does not exist, but dp[14] exists).
+                    # dp[-(0xc + 1)] is dp[2]. dp[2] is 0, not -1, so dp[15] is valid. If dp[2] is -1, dp[15] is invalid.
+                    offset_of_next_element = -symbol_size - 1
+                    if is_big_symbol:
+                        offset_of_next_element -= 1
+                    if dp[offset_of_next_element] == -1:
+                        dp.append(-1)
+                        continue
+                    # seems to be okay, append valid dp
+                    dp.append(dp[offset_of_next_element] + 1)
+
+                num_symbols = dp[-1]
+                if num_symbols < 256:
+                    # It is judged as NG because there are too few symbols.
+                    position -= step
+                    continue
+
+                # 3: Find num_symbols from memory.
+                if Ksym.kallsyms_markers_table_element_size == 4:
+                    seq_to_find = p32(num_symbols)
+                elif Ksym.kallsyms_markers_table_element_size == 8:
+                    seq_to_find = p64(num_symbols)
+                # Depending on the environment, there are many zero padding after seq_to_find (=kallsyms_num_syms).
+                # This is probably because each variable is aligned in units of 256 bytes.
+                MAX_ALIGNMENT = 256
+                start = max(0, position - MAX_ALIGNMENT)
+                needle = Ksym.kernel_img.rfind(seq_to_find, start, position)
+                if needle == -1:
+                    position -= step
+                    continue
+
+                # it seems ok.
+                Ksym.offset_kallsyms_names = position
+                Ksym.offset_kallsyms_num_syms = needle
+                break
+
+            Ksym.num_symbols = num_symbols
+            Ksym.Config.save("num_symbols")
+            Ksym.verbose_info(verbose, "num_symbols: {:#x}".format(Ksym.num_symbols))
+            Ksym.KsymParse.set_offset(verbose, "kallsyms_names", Ksym.offset_kallsyms_names)
+            Ksym.KsymParse.set_offset(verbose, "kallsyms_num_syms", Ksym.offset_kallsyms_num_syms)
+            return True
+
+        @staticmethod
+        def find_offsets(verbose):
+            """
+            [Search strategy]
+            - ~v6.3
+              - From kallsyms_num_syms, go back by num_symbols element sizes.
+              - num_symbols offsets are stored, so get them.
+            - v6.4~
+              - From kallsyms_token_index + 0x200, num_symbols offsets are stored, so get them.
+
+            [Positional relationship]
+            - ...
+            - kallsyms_offsets (v4.6~v6.3, CONFIG_KALLSYMS_BASE_RELATIVE=y)
+            - kallsyms_relative_base (v4.6~v6.3, CONFIG_KALLSYMS_BASE_RELATIVE=y)
+            - kallsyms_num_syms
+            - kallsyms_names
+            - kallsyms_markers
+            - kallsyms_seqs_of_names (v6.1.42~v6.8)
+            - kallsyms_token_table
+            - kallsyms_token_index
+            - kallsyms_offsets (v6.4~, CONFIG_KALLSYMS_BASE_RELATIVE=y)
+            - kallsyms_relative_base (v6.4~v6.19, CONFIG_KALLSYMS_BASE_RELATIVE=y)
+            - kallsyms_seqs_of_names (v6.9~)
+            - ...
+
+            [Sample values for 64bit ~v6.3, CONFIG_KALLSYMS_ABSOLUTE_PERCPU=n (use positive offset)]
+            gef> hexdump -n dword kallsyms_offsets
+            0xffffffff8b108550:    0x00000000 0x00000000 0x00001000 0x00002000    |  ............. ..  |
+            0xffffffff8b108560:    0x00006000 0x0000b000 0x0000c000 0x00018000    |  .`..............  |
+            0xffffffff8b108570:    0x00019000 0x00019008 0x00019010 0x00019020    |  ............ ...  |
+            0xffffffff8b108580:    0x00019420 0x00019440 0x00019448 0x00019450    |   ...@...H...P...  |
+
+            [Sample values for 64bit ~v6.3, CONFIG_KALLSYMS_ABSOLUTE_PERCPU=y (use negative offset)]
+            gef> hexdump -n dword kallsyms_offsets
+            0xffffffffa72854b0:    0xffffffff 0xffffffff 0xffffffff 0xffffffbf    |  ................  |
+            0xffffffffa72854c0:    0xffffffba 0xfffffeef 0xfffffdef 0xfffffddf    |  ................  |
+            0xffffffffa72854d0:    0xfffffdcf 0xfffffa1f 0xfffff9cf 0xfffff9bf    |  ................  |
+            0xffffffffa72854e0:    0xfffff99f 0xfffff8ff 0xfffff76f 0xfffff73f    |  ........o...?...  |
+
+            [Sample values for 32bit ~v6.3, CONFIG_KALLSYMS_ABSOLUTE_PERCPU=n (use positive offset)]
+            gef> hexdump -n dword kallsyms_offsets
+            0xc6c59370:    0x00000000 0x00000000 0x00000000 0x00000070    |  ............p...  |
+            0xc6c59380:    0x00000080 0x000001d8 0x000002e0 0x00000320    |  ............ ...  |
+            0xc6c59390:    0x00000360 0x000003a8 0x000003e8 0x000004a8    |  `...............  |
+            0xc6c593a0:    0x000005a8 0x0000066c 0x0000073c 0x000007ac    |  ....l...<.......  |
+
+            [Sample values for 64bit v6.4~, CONFIG_KALLSYMS_ABSOLUTE_PERCPU=n (use positive offset)]
+            gef> hexdump -n word kallsyms_token_index
+            0xffffffff844fa178:    0x0000 0x0003 0x0006 0x000a 0x0010 0x0013 0x0016 0x0019    |  ................  |
+            0xffffffff844fa188:    0x001d 0x0029 0x002d 0x0030 0x0034 0x0037 0x003b 0x003e    |  ..).-.0.4.7.;.>.  |
+            0xffffffff844fa198:    0x0041 0x0056 0x005a 0x005e 0x0061 0x0064 0x0067 0x006a    |  A.V.Z.^.a.d.g.j.  |
+            ...
+            0xffffffff844fa358:    0x0386 0x0389 0x038c 0x038f 0x0392 0x0395 0x0398 0x039b    |  ................  |
+            0xffffffff844fa368:    0x039e 0x03a1 0x03a5 0x03a8 0x03ab 0x03ae 0x03b1 0x03b4    |  ................  |
+            gef> hexdump -n dword kallsyms_offset
+            0xffffffff844fa378:    0x00000000 0x00000000 0x00001000 0x00002000    |  ............. ..  |
+            0xffffffff844fa388:    0x00006000 0x0000b000 0x0000c000 0x00014000    |  .`...........@..  |
+            ...
+            0xffffffff8461e44c:    0xf89effff 0xf89dffff 0xf89d9fff 0xf89d9fff    |  ................  |
+            0xffffffff8461e45c:    0x00000000 0x81000000 0xffffffff 0x02fa0e02    |  ................  |
+            relative_base_address: 0xffffffff81000000
+
+            [Sample values for 64bit v6.4~, CONFIG_KALLSYMS_ABSOLUTE_PERCPU=y (use negative offset)]
+            gef> hexdump -n word kallsyms_token_index
+            0xffffffff86744a38:    0x0000 0x0004 0x000c 0x0010 0x0014 0x0017 0x001b 0x0020    |  .............. .  |
+            0xffffffff86744a48:    0x002d 0x0034 0x0039 0x003d 0x0042 0x0045 0x0048 0x004b    |  -.4.9.=.B.E.H.K.  |
+            0xffffffff86744a58:    0x004f 0x0053 0x005d 0x0060 0x0064 0x0067 0x006b 0x0072    |  O.S.].`.d.g.k.r.  |
+            ...
+            0xffffffff86744c18:    0x0338 0x033b 0x033e 0x0341 0x0349 0x034c 0x034f 0x0357    |  8.;.>.A.I.L.O.W.  |
+            0xffffffff86744c28:    0x035a 0x035d 0x0360 0x0363 0x0369 0x036e 0x0372 0x0375    |  Z.].`.c.i.n.r.u.  |
+            gef> hexdump -n dword kallsyms_offset
+            0xffffffff86744c38:    0xffffffff 0xffffffff 0xffffffff 0xffffffaf    |  ................  |
+            0xffffffff86744c48:    0xffffffaa 0xfffffe9f 0xfffffe8f 0xfffffd8f    |  ................  |
+            ...
+            0xffffffff8677ed5c:    0xff09237f 0xff09218f 0xff09217f 0xff0920a9    |  .#...!...!... ..  |
+            0xffffffff8677ed6c:    0x00000000 0x85c00000 0xffffffff 0x00f0d800    |  ................  |
+            relative_base_address: 0xffffffff85c00000
+            """
+
+            # const values
+            if Endian.is_big_endian():
+                endianness_marker = ">"
+                endian_str = "big"
+            else:
+                endianness_marker = "<"
+                endian_str = "little"
+            offset_byte_size = 4
+            address_byte_size = current_arch.ptrsize
+
+            if Ksym.kernel_version < (7, 0, 0):
+                # get relative_base_address
+                if Ksym.kernel_version < (6, 4, 0):
+                    # ignore the 0 immediately above offset_kallsyms_num_syms.
+                    position = Ksym.offset_kallsyms_num_syms
+                    while True:
+                        previous_word = Ksym.kernel_img[position - address_byte_size:position]
+                        if previous_word != b"\0" * address_byte_size:
+                            break
+                        position -= address_byte_size
+
+                    # Go backward by num_symbols.
+                    position -= address_byte_size
+
+                    # read from kallsyms_relative_base
+                    relative_base_address = int.from_bytes(Ksym.kernel_img[position:position + address_byte_size], endian_str)
+
+                    if relative_base_address and (relative_base_address & get_pagesize_mask_low()) == 0:
+                        """
+                        some environment has invalid address as relative_base_address.
+                        so don't use the logic of is_valid_addr(relative_base_address).
+
+                        gef> hexdump -n qword 0xffffafc5c2adb260-0x10 0x20
+                        0xffffafc5c2adb250:    0xffffafc5c1750000 0x0000000000028193    |  ..u.............  |
+                        0xffffafc5c2adb260:    0x6474107414bc5404 0x6c7463be6270d277    |  .T..t.tdw.pb.ctl  |
+                        gef> x/16xg 0xffffafc5c1750000
+                        0xffffafc5c1750000:     Cannot access memory at address 0xffffafc5c1750000
+                        """
+                        while True:
+                            previous_word = Ksym.kernel_img[position - offset_byte_size:position]
+                            if previous_word != b"\0" * offset_byte_size:
+                                break
+                            position -= offset_byte_size
+                        position -= Ksym.num_symbols * offset_byte_size
+
+                else: # kernel_version >= (6, 4):
+                    position = Ksym.offset_kallsyms_token_index + 0x200
+                    position_relative_base = align(position + Ksym.num_symbols * offset_byte_size, current_arch.ptrsize)
+                    relative_base_address_data = Ksym.kernel_img[position_relative_base:position_relative_base + address_byte_size]
+                    if len(relative_base_address_data) == 0:
+                        Ksym.verbose_err(verbose, "kernel_img is not long enough.")
+                        return False
+                    relative_base_address = int.from_bytes(relative_base_address_data, endian_str)
+                    if not (relative_base_address and (relative_base_address & get_pagesize_mask_low()) == 0):
+                        return True
+
+                # Getting here means that the relative_address and position have been detected correctly.
+                Ksym.verbose_info(verbose, "relative_base_address: {:#x}".format(relative_base_address))
+
+                # Try to parse addresses or offsets.
+                fmt = "{:s}{:d}i".format(endianness_marker, Ksym.num_symbols) # signed int
+                kallsyms_offsets_data = Ksym.kernel_img[position:position + Ksym.num_symbols * offset_byte_size]
+                ksym_offsets = struct.unpack(fmt, kallsyms_offsets_data)
+
+                # Check the ratio of the negative value
+                number_of_negative_items = len([offset for offset in ksym_offsets if offset < 0])
+                if number_of_negative_items / len(ksym_offsets) >= 0.5:
+                    # the case CONFIG_KALLSYMS_ABSOLUTE_PERCPU=y.
+                    kernel_addresses = []
+                    for offset in ksym_offsets:
+                        if offset < 0:
+                            x = relative_base_address - 1 - offset
+                            kernel_addresses.append(x)
+                        else:
+                            kernel_addresses.append(offset)
+                else:
+                    # the case CONFIG_KALLSYMS_ABSOLUTE_PERCPU=n.
+                    kernel_addresses = []
+                    for offset in ksym_offsets:
+                        x = offset + relative_base_address
+                        kernel_addresses.append(x)
+
+                # Check the ratio of the null value.
+                number_of_null_items = kernel_addresses.count(0)
+                if number_of_null_items / len(kernel_addresses) >= 0.2:
+                    return True
+
+            else: # kernel_version >= (7, 0):
+                position = Ksym.offset_kallsyms_token_index + 0x200
+
+                # Try to parse addresses or offsets.
+                fmt = "{:s}{:d}i".format(endianness_marker, Ksym.num_symbols) # signed int
+                kallsyms_offsets_data = Ksym.kernel_img[position:position + Ksym.num_symbols * offset_byte_size]
+                ksym_offsets = struct.unpack(fmt, kallsyms_offsets_data)
+
+                # 7.0+: offset_to_ptr style, no kallsyms_relative_base. CONFIG_KALLSYMS_ABSOLUTE_PERCPU is removed.
+                kernel_addresses = []
+                for i, offset in enumerate(ksym_offsets):
+                    element_va = Ksym.ro_base + position + i * offset_byte_size
+                    kernel_addresses.append(element_va + offset)
+
+                # Non-relocatable 32-bit kernels store absolute addresses in the same table.
+                if address_byte_size == offset_byte_size:
+                    text_base = Kernel.get_kernel_layout(apply_data_range_hint=False).text_base
+                    if text_base not in kernel_addresses:
+                        fmt = "{:s}{:d}I".format(endianness_marker, Ksym.num_symbols)
+                        absolute_addresses = struct.unpack(fmt, kallsyms_offsets_data)
+                        if text_base in absolute_addresses:
+                            kernel_addresses = absolute_addresses
+
+            # It seems ok.
+            Ksym.offset_kallsyms_addresses_or_offsets = position
+            Ksym.kernel_addresses = kernel_addresses
+            Ksym.verbose_info(verbose, "kallsyms_offsets: {:#x}".format(Ksym.ro_base + Ksym.offset_kallsyms_addresses_or_offsets))
+            return True
+
+        @staticmethod
+        def find_addresses(verbose):
+            """
+            [Search strategy]
+            - From kallsyms_num_syms, go back by num_symbols element sizes.
+            - num_symbols addresses are stored, so get them.
+
+            [Positional relationship]
+            - ...
+            - kallsyms_addresses (~v6.3, CONFIG_KALLSYMS_BASE_RELATIVE=n)
+            - kallsyms_num_syms
+            - kallsyms_names
+            - kallsyms_markers
+            - kallsyms_seqs_of_names (v6.1.42~v6.8)
+            - kallsyms_token_table
+            - kallsyms_token_index
+            - kallsyms_addresses (v6.4~?, CONFIG_KALLSYMS_BASE_RELATIVE=n) # Unimplemented, as this pattern has not been observed yet.
+            - kallsyms_seqs_of_names (v6.9~)
+            - ...
+
+            [Sample values for 64bit ~v6.3]
+            gef> hexdump -n qword kallsyms_addresses
+            0xffffffff81ae3cb8:    0x0000000000000000 0x0000000000000000    |  ................  |
+            0xffffffff81ae3cc8:    0x0000000000004000 0x0000000000009000    |  .@..............  |
+            ...
+            0xffffffff81ae4588:    0xffffffff81000000 0xffffffff81000000    |  ................  |
+            0xffffffff81ae4598:    0xffffffff81000110 0xffffffff810001a9    |  ................  |
+
+            [Sample values for 32bit ~v6.3]
+            gef> hexdump -n dword kallsyms_addresses
+            0xc1940888:    0xc1000000 0xc1000000 0xc10000bc 0xc10000cc    |  ................  |
+            0xc1940898:    0xc10000ed 0xc1000165 0xc10001e7 0xc1000239    |  ....e.......9...  |
+            0xc19408a8:    0xc1000283 0xc10002c1 0xc10002d0 0xc1000302    |  ................  |
+            0xc19408b8:    0xc1000328 0xc100032f 0xc1000338 0xc1000338    |  (.../...8...8...  |
+            """
+
+            # const values
+            if Endian.is_big_endian():
+                endianness_marker = ">"
+            else:
+                endianness_marker = "<"
+            address_byte_size = current_arch.ptrsize
+
+            # ignore the 0 immediately above offset_kallsyms_num_syms.
+            position = Ksym.offset_kallsyms_num_syms
+            while True:
+                previous_word = Ksym.kernel_img[position - address_byte_size:position]
+                if previous_word != b"\0" * address_byte_size:
+                    break
+                position -= address_byte_size
+
+            # Go backward by num_symbols.
+            position -= Ksym.num_symbols * address_byte_size
+
+            # Try to parse addresses.
+            if address_byte_size == 8:
+                fmt = "{:s}{:d}Q".format(endianness_marker, Ksym.num_symbols)
+            else:
+                fmt = "{:s}{:d}I".format(endianness_marker, Ksym.num_symbols)
+            kallsyms_addresses_data = Ksym.kernel_img[position:position + Ksym.num_symbols * address_byte_size]
+            Ksym.kernel_addresses = struct.unpack(fmt, kallsyms_addresses_data)
+            Ksym.offset_kallsyms_addresses_or_offsets = position
+            Ksym.verbose_info(verbose, "kallsyms_addresses: {:#x}".format(Ksym.ro_base + Ksym.offset_kallsyms_addresses_or_offsets))
+            return True
+
+        @staticmethod
+        def initialize(rescan, verbose):
+            Ksym.Config.updates = {}
+            ret = Ksym.KsymVersion.find(verbose)
+            if not ret:
+                return False
+
+            if rescan:
+                Ksym.Config.remove()
+            else:
+                # the case of both kernel version string are same, but offset are different.
+                current_version_string_offset = Ksym.version_string_offset # keep current
+                if Ksym.Config.load(["version_string_offset"], rescan): # load temporarily
+                    if Ksym.version_string_offset != current_version_string_offset:
+                        Ksym.Config.remove()
+                        Ksym.version_string_offset = current_version_string_offset # set current again
+                # the case of both kernel version string and offset are same, but the image is different.
+                if Ksym.Config.load(["num_symbols", "offset_kallsyms_num_syms"], rescan): # load temporarily
+                    position = Ksym.offset_kallsyms_num_syms
+                    num_syms = Ksym.kernel_img[position:position + 8] if position >= 0 else b""
+                    if len(num_syms) == 8 and Ksym.num_symbols not in (u32(num_syms[:4]), u64(num_syms)):
+                        Ksym.Config.remove()
+
+            ret = Ksym.KsymParse.find_token_table(rescan, verbose)
+            if not ret:
+                return False
+
+            ret = Ksym.KsymParse.find_token_index(rescan, verbose)
+            if not ret:
+                return False
+
+            ret = Ksym.KsymParse.find_markers(rescan, verbose)
+            if not ret:
+                return False
+
+            ret = Ksym.KsymParse.find_names(rescan, verbose)
+            if not ret:
+                return False
+
+            ret = Ksym.KsymParse.find_num_syms(rescan, verbose)
+            if not ret:
+                return False
+
+            Ksym.offset_kallsyms_addresses_or_offsets = None
+            if Ksym.kernel_version >= (4, 6):
+                # On modern kernels, first check the case CONFIG_KALLSYMS_BASE_RELATIVE=y.
+                ret = Ksym.KsymParse.find_offsets(verbose)
+                if not ret:
+                    return False
+
+            if not Ksym.offset_kallsyms_addresses_or_offsets:
+                if Ksym.kernel_version < (7, 0):
+                    # the case CONFIG_KALLSYMS_BASE_RELATIVE=n.
+                    Ksym.KsymParse.find_addresses(verbose)
+
+            # only a complete scan may be saved; the offsets of a failed one are meaningless
+            # and would be restored instead of searching again
+            Ksym.Config.save("version_string")
+            Ksym.Config.save("version_string_offset")
+            Ksym.Config.save("ro_size")
+            Ksym.Config.flush()
+            return True
+
+    @staticmethod
+    def get_kallsyms(rescan=False, vmlinux_file=None, ignore_loaded_vmlinux=False, verbose=False, quiet=False):
+        """Return ([[addr, name, type], ...], {name: [addr, ...]}), or None if it could not be parsed.
+
+        One parse is shared by every caller. The options select the parse source, so any of
+        them drops that result and parses again. The map is built here because
+        Symbol.get_ksymaddr is called hundreds of times by some commands, and scanning all
+        the symbols for each call is too slow."""
+        if rescan or vmlinux_file or ignore_loaded_vmlinux:
+            Ksym.reset()
+        if Ksym.kallsyms is not None:
+            return Ksym.kallsyms, Ksym.kallsyms_map
+
+        # pick the source; a file that was specified but does not exist is an error, not a fallback
+        if not vmlinux_file:
+            vmlinux_file = Ksym.Vmlinux.loaded_path(ignore_loaded_vmlinux, quiet)
+        elif not os.path.exists(vmlinux_file):
+            Ksym.quiet_err(quiet, "Could not find vmlinux file")
+            return None
+
+        if vmlinux_file:
+            Ksym.quiet_info(quiet, "Parse from file: {!s}".format(vmlinux_file))
+            kallsyms = Ksym.Vmlinux.parse(vmlinux_file, quiet)
+        else:
+            Ksym.quiet_info(quiet, "Wait for memory scan")
+            kallsyms = Ksym.Memory.parse(rescan, verbose, quiet)
+            if not kallsyms and not rescan:
+                Ksym.quiet_info(quiet, "Try to rescan (ignore cached config)")
+                kallsyms = Ksym.Memory.parse(True, verbose, quiet)
+            if not kallsyms:
+                Ksym.quiet_err(quiet, "Failed to parse")
+        if not kallsyms:
+            return None
+
+        # Do not use a dict for kallsyms itself; there are cases where multiple symbols
+        # with the same name exist.
+        # cat /proc/kallsyms |grep set_is_seen
+        # ffffffff812326e0 t set_is_seen
+        # ffffffff81d58900 t set_is_seen
+        # ffffffff81d5cab0 t set_is_seen
+        kallsyms_map = {}
+        for addr, name, _typ in kallsyms:
+            kallsyms_map.setdefault(name, []).append(addr)
+
+        # clang LTO uniquifies a static symbol as `foo.llvm.<hash>` and the plain name is gone,
+        # so let it answer to the original name. A build that kept a plain `foo` wins over it.
+        aliases = {}
+        for addr, name, _typ in kallsyms:
+            base, sep, suffix = name.partition(".llvm.")
+            if sep and suffix.isdigit() and base not in kallsyms_map:
+                aliases.setdefault(base, []).append(addr)
+        kallsyms_map.update(aliases)
+
+        Ksym.kallsyms = kallsyms
+        Ksym.kallsyms_map = kallsyms_map
+        return Ksym.kallsyms, Ksym.kallsyms_map
+
+
 @register_command
 class KsymaddrRemoteCommand(GenericCommand, BufferingOutput):
     """Resolve kernel symbols from kallsyms table."""
-    # Thanks to https://github.com/marin-m/vmlinux-to-elf
 
     _cmdline_ = "ksymaddr-remote"
     _category_ = "06-e. Qemu-system/KGDB Cooperation - Linux Symbol/Type"
@@ -137345,183 +138772,12 @@ class KsymaddrRemoteCommand(GenericCommand, BufferingOutput):
 
     _note_ = [
         "GEF caches offset information for parsing kallsyms to speed up this command.",
-        "Each cache is used based on kernel version strings.",
-        "In other words, in cases where the kernel version is exactly the same and",
-        "the CONFIG is slightly different, the offset will be applied incorrectly.",
-        "In this case, rescan with `ks -rv` or clear the cache with `gef reset-cache --hard`.",
+        "Each cache is used based on kernel version strings, so kernels of the same version",
+        "share one cache even if the CONFIG is different. GEF checks the cached offsets",
+        "against the running kernel and parses again when they do not match.",
+        "To drop a cache by hand, rescan with `ks -rv` or use `gef reset-cache --hard`.",
     ]
     _note_ = "\n".join(_note_)
-
-    def get_loaded_vmlinux_path(self):
-        if self.args.ignore_loaded_vmlinux:
-            return None
-
-        # Check `nm` first for later use (in parse_vmlinux)
-        try:
-            GefUtil.which(Config.get_gef_setting("gef.nm_command"))
-        except FileNotFoundError as e:
-            self.quiet_err("{}".format(e))
-            return None
-
-        # check vmlinux
-        for inf in gdb.inferiors():
-            if not hasattr(inf, "progspace"):
-                continue
-            if not hasattr(inf.progspace, "filename"):
-                continue
-
-            filename = str(inf.progspace.filename)
-            if not os.path.exists(filename):
-                continue
-
-            # Currently, the filename in vmlinux is hard-coded
-            if "vmlinux" not in os.path.basename(filename).lower():
-                continue
-
-            # it has symbol?
-            try:
-                elf = Elf(filename)
-                if elf.get_shdr(".symtab"):
-                    return filename
-            except Exception:
-                continue
-        return None
-
-    def parse_vmlinux(self, filename):
-        # read symbols
-        try:
-            nm = GefUtil.which(Config.get_gef_setting("gef.nm_command"))
-        except FileNotFoundError as e:
-            self.quiet_err("{}".format(e))
-            return None
-        result = GefUtil.gef_execute_external([nm, filename], as_list=True)
-
-        # distinctive addresses to use for rebasing
-        if is_x86():
-            target = [
-                "asm_exc_divide_error", # 5.8~
-                "divide_error", # 3.0 ~ 5.7
-            ]
-        elif is_arm64() or is_arm32():
-            target = [
-                "vectors", # 3.7~
-            ]
-        elif is_riscv64() or is_riscv32():
-            target = [
-                "handle_exception", # 4.19~
-            ]
-        else:
-            raise NotImplementedError("Unsupported architecture")
-
-        # parse symbol
-        tmp_kallsyms = []
-        target_found = {}
-        for line in result:
-            try:
-                addr, typ, name = line.split()
-                addr = int(addr, 16)
-                typ = typ.strip()
-                name = name.strip()
-            except ValueError:
-                continue
-            tmp_kallsyms.append([addr, name, typ])
-
-            if name in target:
-                target_found["handler"] = addr
-
-        # rebase
-        if target_found:
-            text_base_hint = Kernel.get_kernel_base_hint()
-            if text_base_hint:
-                diff = text_base_hint - target_found["handler"]
-                if diff & get_pagesize_mask_low() == 0:
-                    kallsyms = []
-                    for addr, name, typ in tmp_kallsyms:
-                        # don't rebase per-cpu offset
-                        if addr >= 0x4000_0000:
-                            # This value is the lowest boundary between ARM32 kernel and userland.
-                            addr += diff
-                        kallsyms.append([addr, name, typ])
-                    return kallsyms
-
-        # fail, use as is
-        return tmp_kallsyms
-
-    def get_token_table(self):
-        # Parse symbol name tokens
-        tokens = []
-        position = self.offset_kallsyms_token_table
-        for _ in range(256):
-            token = ""
-            while self.kernel_img[position]:
-                token += chr(self.kernel_img[position])
-                position += 1
-            position += 1
-            tokens.append(token)
-        assert len(tokens) == 256
-        return tokens
-
-    def read_kallsyms(self):
-        tokens = self.get_token_table()
-        symbol_names = []
-        position = self.offset_kallsyms_names
-        for _ in range(self.num_symbols):
-            # read token length
-            length = self.kernel_img[position]
-            position += 1
-
-            # check if big symbol (6.1~)
-            if self.kernel_version >= (6, 1, 0):
-                if length & 0x80:
-                    low = length & 0x7f
-                    high = self.kernel_img[position]
-                    position += 1
-                    length = (high << 7) | low
-
-            # make symbol_name
-            symbol_name = "".join([tokens[i] for i in self.kernel_img[position:position + length]])
-            position += length
-            symbol_names.append(symbol_name)
-
-        kallsyms = []
-        for addr, name in zip(self.kernel_addresses, symbol_names):
-            try:
-                kallsyms.append([addr, name[1:], name[0]])
-            except IndexError:
-                pass
-        return kallsyms
-
-    @Cache.cache_this_session(cache_None=False, until_new_objfile=True)
-    def get_kallsyms(self):
-        """Parse kallsyms and return ([[addr, name, type], ...], {name: [addr, ...]}).
-        Return None if it could not be parsed.
-        The map is built here because Symbol.get_ksymaddr is called hundreds of times by
-        some commands, and scanning all the symbols for each call is too slow.
-        `--rescan`, `--vmlinux-file` and `-I` select the parse source instead of changing
-        the result, so they are read from `self.args` and the caller clears this cache."""
-        kallsyms = self.parse_main()
-        if not kallsyms:
-            return None
-
-        # Do not use a dict for kallsyms itself; there are cases where multiple symbols
-        # with the same name exist.
-        # cat /proc/kallsyms |grep set_is_seen
-        # ffffffff812326e0 t set_is_seen
-        # ffffffff81d58900 t set_is_seen
-        # ffffffff81d5cab0 t set_is_seen
-        kallsyms_map = {}
-        for addr, name, _typ in kallsyms:
-            kallsyms_map.setdefault(name, []).append(addr)
-
-        # clang LTO uniquifies a static symbol as `foo.llvm.<hash>` and the plain name is gone,
-        # so let it answer to the original name. A build that kept a plain `foo` wins over it.
-        aliases = {}
-        for addr, name, _typ in kallsyms:
-            base, sep, suffix = name.partition(".llvm.")
-            if sep and suffix.isdigit() and base not in kallsyms_map:
-                aliases.setdefault(base, []).append(addr)
-        kallsyms_map.update(aliases)
-        return kallsyms, kallsyms_map
 
     def print_kallsyms(self, kallsyms, keywords, types, smart):
         if is_32bit():
@@ -137583,101 +138839,8 @@ class KsymaddrRemoteCommand(GenericCommand, BufferingOutput):
                         break
         return
 
-    def get_kernel_version_triplet(self, version_number):
-        major = int(version_number.split(".")[0])
-        minor = int(version_number.split(".")[1])
-        if len(version_number.split(".")) == 2:
-            patch = 0
-        else:
-            patch = int(version_number.split(".")[2])
-        return (major, minor, patch)
-
-    def get_kernel_version(self):
-        # don't use Kernel.kernel_version, since it refers ksymaddr-remote
-        r = re.search(rb"Linux version (\d+\.[\d.]*\d)[ -~]+", self.kernel_img)
-        if r is None:
-            self.verbose_err("Could not find the kernel version")
-            return False
-        self.version_string = r.group(0)
-        self.version_string_offset = r.span()[0]
-        self.verbose_info("linux_banner: {:#x}".format(self.ro_base + self.version_string_offset))
-        version_number = r.group(1).decode("ascii")
-        self.kernel_version = self.get_kernel_version_triplet(version_number)
-
-        # The important thing for parsing is whether it is 6.1.42 or later.
-        # However, some distributions may have a patch version of 0.
-        # e.g., debian 6.1.119-1 -> 6.1.0-28-amd64
-        # In this case, special processing is required to find a different version string.
-        if self.kernel_version[:2] == (6, 1):
-            # e.g., Linux version 6.1.0-28-amd64 (debian-kernel@lists.debian.org) (gcc-12 (Debian 12.2.0-14) 12.2.0,
-            # GNU ld (GNU Binutils for Debian) 2.40) #1 SMP PREEMPT_DYNAMIC Debian 6.1.119-1 (2024-11-22)
-            r = re.findall(rb" 6\.1\.(\d+)", self.version_string)
-            for patch_version in r:
-                patch_version = int(patch_version)
-                if patch_version >= 42:
-                    self.kernel_version = (self.kernel_version[0], self.kernel_version[1], patch_version)
-                    break
-        return True
-
-    @Cache.cache_this_session
-    def get_cfg_name(self):
-        h = hashlib.sha256(String.str2bytes(self.version_string)).hexdigest()[-16:]
-        major, minor, patch = self.kernel_version
-        cfg_file_name = os.path.join(GEF_TEMP_DIR, "ksymaddr-remote-{:d}.{:d}.{:d}-{:s}.cfg".format(major, minor, patch, h))
-        return cfg_file_name
-
-    def remove_config(self):
-        try:
-            os.remove(self.get_cfg_name())
-        except FileNotFoundError:
-            pass
-        return
-
-    def save_config(self, param_name):
-        self.config_updates[param_name] = str(getattr(self, param_name))
-        return
-
-    def flush_config(self):
-        if not self.config_updates:
-            return
-
-        cfg_file_name = self.get_cfg_name()
-        config = configparser.ConfigParser()
-        if os.path.exists(cfg_file_name):
-            config.read(cfg_file_name)
-        if "parameters" not in config:
-            config["parameters"] = {}
-
-        config["parameters"].update(self.config_updates)
-        cfg_fd, cfg_tmp_name = tempfile.mkstemp(dir=GEF_TEMP_DIR, prefix="ksymaddr-remote-")
-        with os.fdopen(cfg_fd, "w") as cfg_file:
-            config.write(cfg_file)
-        os.replace(cfg_tmp_name, cfg_file_name)
-        return
-
-    def get_saved_config(self, param_names):
-        if self.args.rescan:
-            return False
-
-        cfg_file_name = self.get_cfg_name()
-        if not os.path.exists(cfg_file_name):
-            return False
-
-        config = configparser.ConfigParser()
-        config.read(cfg_file_name)
-        if "parameters" not in config:
-            return False
-        for param_name in param_names:
-            if param_name not in config["parameters"]:
-                return False
-
-        for param_name in param_names:
-            param_value = int(config["parameters"][param_name])
-            setattr(self, param_name, param_value)
-        return True
-
     def print_saved_config(self):
-        cfg_file_name = Cache.peek_cache_for(self.get_cfg_name)
+        cfg_file_name = Cache.peek_cache_for(Ksym.Config.name)
         if cfg_file_name is not None:
             info("path: {:s}".format(cfg_file_name))
             if os.path.exists(cfg_file_name):
@@ -137696,1108 +138859,6 @@ class KsymaddrRemoteCommand(GenericCommand, BufferingOutput):
         err("Could not find cached config (Run the `ksymaddr-remote` command at least once)")
         return
 
-    def find_kallsyms_token_table(self):
-        ret = self.get_saved_config(["offset_kallsyms_token_table"])
-        if ret:
-            self.verbose_info("kallsyms_token_table: {:#x}".format(self.ro_base + self.offset_kallsyms_token_table))
-            return True
-
-        """
-        [Search strategy]
-        - kallsyms_token_table has unique sequences like "30 00 31 00 32 00 33 00 34 00 35 00 36 00 37 00 38 00 39 00".
-        - We search for it from .rodata area, then search backwards for invalid characters to get the top.
-
-        [Positional relationship]
-        - ...
-        - kallsyms_token_table
-        - ...
-
-        [Sample values for 64bit]
-        gef> hexdump -n byte kallsyms_token_table
-        0xffffffff8b2b51b0:    65 75 00 77 5f 00 61 64 64 00 64 5f 5f 66 75 6e    |  eu.w_.add.d__fun  |
-        0xffffffff8b2b51c0:    63 5f 5f 00 74 70 5f 66 75 6e 63 00 33 32 00 6e    |  c__.tp_func.32.n  |
-        0xffffffff8b2b51d0:    61 00 66 66 00 69 70 00 78 65 6e 00 70 72 00 73    |  a.ff.ip.xen.pr.s  |
-        0xffffffff8b2b51e0:    65 74 00 63 70 75 00 49 44 00 65 64 00 53 43 00    |  et.cpu.ID.ed.SC.  |
-        0xffffffff8b2b51f0:    66 72 65 00 76 65 5f 00 70 6f 00 78 5f 00 5f 73    |  fre.ve_.po.x_._s  |
-        0xffffffff8b2b5200:    68 00 2e 31 00 62 6c 00 6d 65 6d 00 5f 72 65 67    |  h..1.bl.mem._reg  |
-        0xffffffff8b2b5210:    00 74 5f 5f 00 6c 6f 63 6b 00 62 5f 00 72 5f 5f    |  .t__.lock.b_.r__  |
-        0xffffffff8b2b5220:    6b 73 74 72 74 61 62 6e 73 00 66 75 6e 63 5f 5f    |  kstrtabns.func__  |
-        0xffffffff8b2b5230:    00 69 6e 74 5f 00 72 65 73 00 74 72 61 63 65 00    |  .int_.res.trace.  |
-        0xffffffff8b2b5240:    70 61 72 00 2e 30 00 64 65 76 65 6e 74 5f 00 6d    |  par..0.devent_.m  |
-        0xffffffff8b2b5250:    75 00 61 63 70 69 5f 00 6d 70 00 73 74 61 00 64    |  u.acpi_.mp.sta.d  |
-        0xffffffff8b2b5260:    65 62 75 67 00 5f 5f 5f 00 62 75 67 00 6f 75 00    |  ebug.___.bug.ou.  |
-        0xffffffff8b2b5270:    5f 73 74 61 00 77 72 69 74 00 2e 00 67 72 6f 00    |  _sta.writ...gro.  |
-        0xffffffff8b2b5280:    30 00 31 00 32 00 33 00 34 00 35 00 36 00 37 00    |  0.1.2.3.4.5.6.7.  | <- here unique seqs
-        0xffffffff8b2b5290:    38 00 39 00 72 63 00 77 61 00 63 61 6c 00 75 70    |  8.9.rc.wa.cal.up  |
-        0xffffffff8b2b52a0:    5f 00 45 5f 00 67 65 5f 00 6d 61 70 00 41 00 42    |  _.E_.ge_.map.A.B  |
-
-        [Sample values for 32bit]
-        gef> hexdump -n byte kallsyms_token_table
-        0xc6e58efc:    54 52 41 43 45 5f 53 59 53 00 41 43 45 5f 53 59    |  TRACE_SYS.ACE_SY  |
-        0xc6e58f0c:    53 00 5f 53 59 53 00 54 45 4d 00 41 43 45 00 69    |  S._SYS.TEM.ACE.i  |
-        0xc6e58f1c:    67 00 70 6f 69 6e 74 5f 00 62 75 00 75 74 5f 00    |  g.point_.bu.ut_.  | # codespell:ignore
-        0xc6e58f2c:    5f 53 59 00 54 52 00 5f 73 79 00 72 65 61 64 00    |  _SY.TR._sy.read.  |
-        0xc6e58f3c:    66 5f 00 75 6c 00 62 6c 00 61 6c 6c 6f 63 00 74    |  f_.ul.bl.alloc.t  |
-        0xc6e58f4c:    6c 00 63 6c 00 65 79 00 61 74 61 00 70 63 00 5f    |  l.cl.ey.ata.pc._  |
-        0xc6e58f5c:    65 6e 00 76 65 72 00 54 45 00 64 74 72 61 63 65    |  en.ver.TE.dtrace  | # codespell:ignore
-        0xc6e58f6c:    5f 65 76 65 6e 74 5f 00 61 70 00 61 74 65 00 74    |  _event_.ap.ate.t  |
-        0xc6e58f7c:    6e 00 41 43 00 6d 73 00 72 61 77 5f 00 5f 63 6f    |  n.AC.ms.raw_._co  |
-        0xc6e58f8c:    00 73 74 72 00 6d 6f 00 67 69 73 74 65 72 00 69    |  .str.mo.gister.i  |
-        0xc6e58f9c:    70 00 63 6f 6e 00 67 69 73 00 69 6e 69 74 00 66    |  p.con.gis.init.f  |
-        0xc6e58fac:    75 6e 63 00 65 5f 73 00 75 74 00 5f 73 68 00 70    |  unc.e_s.ut._sh.p  |
-        0xc6e58fbc:    6f 00 61 6c 6c 00 2e 00 66 73 5f 00 30 00 31 00    |  o.all...fs_.0.1.  |
-        0xc6e58fcc:    32 00 33 00 34 00 35 00 36 00 37 00 38 00 39 00    |  2.3.4.5.6.7.8.9.  | <- here unique seqs
-        0xc6e58fdc:    6b 5f 00 5f 63 68 00 72 69 74 00 61 63 70 69 00    |  k_._ch.rit.acpi.  |
-        0xc6e58fec:    5f 63 6f 6e 00 65 78 74 34 00 61 6d 00 41 00 42    |  _con.ext4.am.A.B  |
-        """
-
-        # first, search for unique bytes
-        seq_to_find = b"0\x001\x002\x003\x004\x005\x006\x007\x008\x009\x00"
-        seq_to_avoid = [b":\0", b"\0\0", b"\0\1", b"\0\2", b"ASCII\0"]
-        target_pattern = seq_to_find + b"(?!" + b"|".join(seq_to_avoid) + b")"
-
-        unique_bytes_offset = []
-        for r in re.finditer(target_pattern, self.kernel_img):
-            unique_bytes_offset.append(r.span()) # (start_pos, end_pos)
-
-        if len(unique_bytes_offset) == 0:
-            self.verbose_err("Could not find kallsyms_token_table (0 candidate)")
-            return False
-
-        if len(unique_bytes_offset) > 1:
-            # strict check
-            for i, offsets in enumerate(unique_bytes_offset.copy()):
-                self.verbose_info("unique_bytes {:d}: {:#x}".format(i, self.ro_base + offsets[0]))
-                follow = self.kernel_img[offsets[1]:offsets[1] + 1]
-                if not follow.isalnum() and follow not in [b"_", b"."]:
-                    unique_bytes_offset.remove(offsets)
-            # re-check
-            if len(unique_bytes_offset) == 0:
-                self.verbose_err("Could not find kallsyms_token_table (0 candidate)")
-                return False
-            if len(unique_bytes_offset) > 1:
-                self.verbose_err("Could not find kallsyms_token_table (multiple candidates)")
-                return False
-
-        position = unique_bytes_offset[0][0]
-        self.verbose_info("unique_bytes: {:#x}".format(self.ro_base + position))
-
-        # second, backward search for the top
-        position -= 1
-        if position < 0:
-            self.verbose_err("Could not find kallsyms_token_table (failed to get top: before '0')")
-            return False
-        if self.kernel_img[position] != 0:
-            self.verbose_err("Unexpected byte before '0' entry in kallsyms_token_table")
-            return False
-
-        num_tokens_back = ord('0') # 48
-        max_token_len = 50
-
-        # find the beginning of a kallsyms_token_table
-        for _ in range(num_tokens_back):
-            # find the beginning of a token
-            for _ in range(max_token_len):
-                position -= 1
-                if position < 0:
-                    self.verbose_err("Could not find kallsyms_token_table (out of range while walking tokens)")
-                    return False
-
-                b = self.kernel_img[position]
-                if b == 0 or b > ord('z'):
-                    break
-
-            else:
-                # max_token_len exceeded
-                self.verbose_err("This structure is not a kallsyms_token_table (token too long)")
-                return False
-
-        position += 1
-        position += -position % 4
-
-        self.offset_kallsyms_token_table = position
-        self.save_config("offset_kallsyms_token_table")
-        self.verbose_info("kallsyms_token_table: {:#x}".format(self.ro_base + self.offset_kallsyms_token_table))
-        return True
-
-    def find_kallsyms_token_index(self):
-        ret = self.get_saved_config(["offset_kallsyms_token_index"])
-        if ret:
-            self.verbose_info("kallsyms_token_index: {:#x}".format(self.ro_base + self.offset_kallsyms_token_index))
-            return True
-
-        """
-        [Search strategy]
-        - Find the index where the string appears in kallsyms_token_table.
-        - Find where that index is arranged like a table.
-
-        [Positional relationship]
-        - ...
-        - kallsyms_token_table
-        - kallsyms_token_index
-        - ...
-
-        [Sample values for 64bit]
-        gef> hexdump -n word kallsyms_token_index
-        0xffffffff8b2b5540:    0x0000 0x0003 0x0006 0x000a 0x0014 0x001c 0x001f 0x0022    |  ..............".  |
-        0xffffffff8b2b5550:    0x0025 0x0028 0x002c 0x002f 0x0033 0x0037 0x003a 0x003d    |  %.(.,./.3.7.:.=.  |
-        0xffffffff8b2b5560:    0x0040 0x0044 0x0048 0x004b 0x004e 0x0052 0x0055 0x0058    |  @.D.H.K.N.R.U.X.  |
-        0xffffffff8b2b5570:    0x005c 0x0061 0x0065 0x006a 0x006d 0x007a 0x0081 0x0086    |  ..a.e.j.m.z.....  |
-        0xffffffff8b2b5580:    0x008a 0x0090 0x0094 0x0097 0x009f 0x00a2 0x00a8 0x00ab    |  ................  |
-        0xffffffff8b2b5590:    0x00af 0x00b5 0x00b9 0x00bd 0x00c0 0x00c5 0x00ca 0x00cc    |  ................  |
-        0xffffffff8b2b55a0:    0x00d0 0x00d2 0x00d4 0x00d6 0x00d8 0x00da 0x00dc 0x00de    |  ................  |
-        0xffffffff8b2b55b0:    0x00e0 0x00e2 0x00e4 0x00e7 0x00ea 0x00ee 0x00f2 0x00f5    |  ................  |
-
-        [Sample values for 32bit]
-        gef> hexdump -n word kallsyms_token_index
-        0xc6e59274:    0x0000 0x000a 0x0012 0x0017 0x001b 0x001f 0x0022 0x0029    |  ............".).  |
-        0xc6e59284:    0x002c 0x0030 0x0034 0x0037 0x003b 0x0040 0x0043 0x0046    |  ,.0.4.7.;.@.C.F.  |
-        0xc6e59294:    0x0049 0x004f 0x0052 0x0055 0x0058 0x005c 0x005f 0x0063    |  I.O.R.U.X..._.c.  |
-        0xc6e592a4:    0x0067 0x006a 0x0078 0x007b 0x007f 0x0082 0x0085 0x0088    |  g.j.x.{.........  |
-        0xc6e592b4:    0x008d 0x0091 0x0095 0x0098 0x009f 0x00a2 0x00a6 0x00aa    |  ................  |
-        0xc6e592c4:    0x00af 0x00b4 0x00b8 0x00bb 0x00bf 0x00c2 0x00c6 0x00c8    |  ................  |
-        0xc6e592d4:    0x00cc 0x00ce 0x00d0 0x00d2 0x00d4 0x00d6 0x00d8 0x00da    |  ................  |
-        0xc6e592e4:    0x00dc 0x00de 0x00e0 0x00e3 0x00e7 0x00eb 0x00f0 0x00f5    |  ................  |
-        """
-
-        # create expected kallsyms_token_index byte sequqence
-        position = self.offset_kallsyms_token_table
-        seq_token_table_head = self.kernel_img[position:position + 256]
-
-        token_offsets = [p16(0)]
-        pos = 0
-        while True:
-            pos = seq_token_table_head.find(b"\0", pos + 1)
-            if pos == -1:
-                break
-            token_offsets.append(p16(pos + 1))
-        seq_to_find = b"".join(token_offsets)
-
-        # search for it from memory
-        position = self.kernel_img.find(seq_to_find, self.offset_kallsyms_token_table)
-        if position == -1:
-            self.verbose_err("Could not find kallsyms_token_index (0 candidate)")
-            return False
-
-        self.offset_kallsyms_token_index = position
-        self.save_config("offset_kallsyms_token_index")
-        self.verbose_info("kallsyms_token_index: {:#x}".format(self.ro_base + self.offset_kallsyms_token_index))
-        return True
-
-    def find_kallsyms_markers(self):
-        # determines the size of table elements depended on kernel version.
-        if self.kernel_version < (4, 20, 0):
-            # kallsyms_markers is unsigned long[]
-            self.kallsyms_markers_table_element_size = current_arch.ptrsize
-        else:
-            # kallsyms_markers is unsigned int[]
-            self.kallsyms_markers_table_element_size = 4
-
-        if self.kernel_version >= (6, 1, 42) and self.kernel_version < (6, 9, 0):
-            ret = self.get_saved_config([
-                "offset_kallsyms_token_markers",
-                "offset_kallsyms_seqs_of_names",
-            ])
-            if ret:
-                self.verbose_info("kallsyms_markers: {:#x}".format(self.ro_base + self.offset_kallsyms_markers))
-                self.verbose_info("kallsyms_seqs_of_names: {:#x}".format(self.ro_base + self.offset_kallsyms_seqs_of_names))
-                return True
-        else:
-            ret = self.get_saved_config([
-                "offset_kallsyms_token_markers",
-            ])
-            if ret:
-                self.verbose_info("kallsyms_markers: {:#x}".format(self.ro_base + self.offset_kallsyms_markers))
-                return True
-
-        """
-        [Search strategy]
-        - From kallsyms_token_table, search backwards for 0x00000000.
-        - For kernel v6.1.42~v6.8, there is kallsyms_seqs_of_names between kallsyms_markers and kallsyms_token_table,
-          so this should be skipped.
-
-        [Positional relationship]
-        ...
-        - kallsyms_markers
-        - kallsyms_seqs_of_names (v6.1.42~v6.8)
-        - kallsyms_token_table
-        - kallsyms_token_index
-        ...
-        - kallsyms_seqs_of_names (v6.9~)
-        ...
-
-        [Sample values for 64bit ~v6.1.41]
-        gef> hexdump -n dword kallsyms_markers
-        0xffffffff8b2b4b48:    0x00000000 0x00000ab0 0x000016d3 0x00002316    |  .............#..  | <- kallsyms_markers
-        0xffffffff8b2b4b58:    0x00002f38 0x00003cf8 0x00004c4c 0x000059c8    |  8/...<..LL...Y..  |
-        0xffffffff8b2b4b68:    0x0000664b 0x00007316 0x00008119 0x00008f2e    |  Kf...s..........  |
-        0xffffffff8b2b4b78:    0x00009cc6 0x0000a9ff 0x0000b687 0x0000c20f    |  ................  |
-        ...
-        0xffffffff8b2b5180:    0x0013fa80 0x001404c6 0x00140f67 0x00141a29    |  ........g...)...  |
-        0xffffffff8b2b5190:    0x0014240e 0x00142e25 0x00143a5f 0x0014442a    |  .$..%..._:..*D..  |
-        0xffffffff8b2b51a0:    0x00144e55 0x001458d8 0x00146338 0x00000000    |  UN...X..8c......  |
-        0xffffffff8b2b51b0:    0x77007565 0x6461005f 0x5f640064 0x6e75665f    |  eu.w_.add.d__fun  | <- kallsyms_token_table
-
-        [Sample values for 64bit v6.1.42~]
-        gef> hexdump -n dword kallsyms_markers
-        0xffffffff8d5fcde0:    0x00000000 0x00000b55 0x000017bb 0x000024c3    |  ....U........$..  | <- kallsyms_markers
-        0xffffffff8d5fcdf0:    0x000030c1 0x00003dca 0x00004983 0x000058aa    |  .0...=...I...X..  |
-        0xffffffff8d5fce00:    0x00006785 0x0000760e 0x0000828d 0x00009160    |  .g...v......`...  |
-        0xffffffff8d5fce10:    0x00009efa 0x0000ab20 0x0000b73a 0x0000c37d    |  .... ...:...}...  |
-        ...
-        0xffffffff8d5fd790:    0x00212755 0x002131b8 0x00213af8 0x00214558    |  U'!..1!..:!.XE!.  |
-        0xffffffff8d5fd7a0: (*)0x01069d01 0x9d01019d 0x029d0100 0x02039d01    |  ................  | <- kallsyms_seqs_of_names (*)
-        0xffffffff8d5fd7b0:    0xa400291c 0x10a50024 0x0154a500 0xaa0116aa    |  .)..$.....T.....  |
-        0xffffffff8d5fd7c0:    0x87610214 0x01274902 0xb201cbaf 0xbbbc01c9    |  ..a..I'.........  |
-
-        [Sample values for 32bit v6.1.42~]
-        gef> hexdump -n dword kallsyms_markers
-        0xc6e0dc98:    0x00000000 0x00000c61 0x0000188f 0x00002641    |  ....a.......A&..  | <- kallsyms_markers
-        0xc6e0dca8:    0x00003492 0x000041a7 0x00004e6b 0x00005ace    |  .4...A..kN...Z..  |
-        0xc6e0dcb8:    0x0000691b 0x00007703 0x00008411 0x00008fc1    |  .i...w..........  |
-        0xc6e0dcc8:    0x00009c98 0x0000a8ea 0x0000b719 0x0000c4dd    |  ................  |
-        ...
-        0xc6e0e2c8:    0x0014f2fa 0x0014fbeb 0x00150653 0x00634401(*) |  ........S....Dc.  | <- kallsyms_seqs_of_names (*)
-        0xc6e0e2d8:    0xd90030d9 0x8bd30032 0x0189d300 0x6a01e97f    |  .0..2..........j  |
-        0xc6e0e2e8:    0x31d90063 0x0007e100 0xd600b7e1 0xd1d900cb    |  c..1............  |
-        0xc6e0e2f8:    0x0083dd00 0xd90004e9 0x85ef00ab 0x00bfdb00    |  ................  |
-        """
-
-        # kallsyms_markers[0] is 0.
-        seq_to_find = b"\0" * self.kallsyms_markers_table_element_size
-
-        # ignore the 0 immediately above kallsyms_token_table.
-        position = self.offset_kallsyms_token_table - 1
-        if len(self.kernel_img) <= position:
-            return False
-        while position > 0 and self.kernel_img[position] == 0:
-            position -= 1
-
-        # aligned search for it from memory
-        while position > 0:
-            needle = self.kernel_img.rfind(seq_to_find, 0, position)
-            if needle == -1:
-                self.verbose_err("Could not find kallsyms_markers")
-                return False
-            # check alignment
-            align_diff = needle % self.kallsyms_markers_table_element_size
-            if align_diff == 0:
-                position = needle
-                break # ok
-            else:
-                position = needle + self.kallsyms_markers_table_element_size - align_diff
-                # not aligned, so retry
-
-        if self.kernel_version >= (6, 1, 42) and self.kernel_version < (6, 9, 0):
-            # kallsyms_seqs_of_names was introduced in kernel 6.1.42
-            # In this case, we may find kallsyms_seqs_of_names instead of kallsyms_markers,
-            # so we should search back through memory again.
-            #
-            # kallsyms_markers        (1) we want to find this
-            # kallsyms_seqs_of_names  (3) this may have been found, try the backward search again
-            # kallsyms_token_table    (2) backward search from here
-            # kallsyms_token_index
-            #
-            while position > 0:
-                # the first some values of kallsyms_markers should be a small number.
-                # if not, detected kallsyms_markers is incorrect and we'll go back further.
-                first_10_elements = self.kernel_img[position + self.kallsyms_markers_table_element_size:]
-                first_10_elements = first_10_elements[:self.kallsyms_markers_table_element_size * 10]
-                first_10_elements = slice_unpack(first_10_elements, self.kallsyms_markers_table_element_size)
-                if all((x & 0xfff_0000) == 0 for x in first_10_elements):
-                    break
-
-                needle = self.kernel_img.rfind(seq_to_find, 0, position)
-                if needle == -1:
-                    self.verbose_err("Could not find kallsyms_markers")
-                    return False
-                # check alignment
-                align_diff = needle % self.kallsyms_markers_table_element_size
-                if align_diff == 0:
-                    position = needle
-                else:
-                    position = needle + self.kallsyms_markers_table_element_size - align_diff
-
-        if position <= 0:
-            self.verbose_err("Could not find kallsyms_markers")
-            return False
-
-        self.offset_kallsyms_markers = position
-        self.save_config("offset_kallsyms_markers")
-        self.verbose_info("kallsyms_markers: {:#x}".format(self.ro_base + self.offset_kallsyms_markers))
-
-        if self.kernel_version >= (6, 1, 42) and self.kernel_version < (6, 9, 0):
-            # locate kallsyms_seqs_of_names to get the table size of kallsyms_markers (used after).
-            #
-            # kallsyms_markers        (1) we found this
-            # kallsyms_seqs_of_names  (2) to know the end of kallsyms_markers, we need to find this
-            # kallsyms_token_table
-            # kallsyms_token_index
-            #
-            position = self.offset_kallsyms_markers + self.kallsyms_markers_table_element_size
-            # check MSB of the element of kallsyms_markers
-            while self.kernel_img[position + (self.kallsyms_markers_table_element_size - 1)] == 0:
-                a = u32(self.kernel_img[position - self.kallsyms_markers_table_element_size:position]) # prev
-                b = u32(self.kernel_img[position:position + self.kallsyms_markers_table_element_size]) # current
-                # kallsyms_markers are monotonically increasing.
-                # and it doesn't increase very dramatically.
-                if a > b or b - a > 0x10_0000:
-                    break
-                position += self.kallsyms_markers_table_element_size
-            self.offset_kallsyms_seqs_of_names = position
-            self.save_config("offset_kallsyms_seqs_of_names")
-            self.verbose_info("kallsyms_seqs_of_names: {:#x}".format(self.ro_base + self.offset_kallsyms_seqs_of_names))
-
-        return True
-
-    def find_kallsyms_names(self):
-        ret = self.get_saved_config(["offset_kallsyms_names"])
-        if ret:
-            return True
-
-        """
-        [Search strategy]
-        - From kallsyms_markers, go back as far as we can definitively go back.
-        - This address is not accurate.
-
-        [Positional relationship]
-        ...
-        - kallsyms_names (this is not accurate address in this step)
-        - kallsyms_markers
-        - kallsyms_seqs_of_names (v6.1.42~v6.8)
-        - kallsyms_token_table
-        - kallsyms_token_index
-        ...
-        - kallsyms_seqs_of_names (v6.9~)
-        ...
-
-        [Sample values for 64bit]
-        gef> hexdump -n qword kallsyms_names
-        0xffffffff8b16e610:    0x0cf3ec0e78b6410a 0xf370ff4109fe61cb    |  .A.x.....a..A.p.  | <- kallsyms_names
-        0xffffffff8b16e620:    0x0c410774722cbdeb 0xa8410df67ef4285f    |  ..,rt.A._(.~..A.  |
-        0xffffffff8b16e630:    0x936bed62d8632c71 0x925f0c4107f67ef4    |  q,c.b.k..~..A._.  |
-        0xffffffff8b16e640:    0xfb646741067772f1 0x706563a4410add86    |  .rw.Agd....A.cep  |
-        ...
-        0xffffffff8b2b4b20:    0x616bd977fc6d7364 0x738df5ff440e61f6    |  dsm.w.ka.a.D...s  |
-        0xffffffff8b2b4b30:    0x6765625fbfe87263 0x63738df5ff440cf5    |  cr.._beg..D...sc  |
-        0xffffffff8b2b4b40:    0x000064ee5fbfe872 0x00000ab000000000    |  r.._.d..........  | <- kallsyms_markers
-        0xffffffff8b2b4b50:    0x00002316000016d3 0x00003cf800002f38    |  .....#..8/...<..  |
-
-        [Sample values for 32bit]
-        gef> hexdump -n qword kallsyms_names
-        0xc6cbce58:    0x335fd57472fb5c08 0x54039974f9540432    |  ...rt._32.T.t..T  | <- kallsyms_names
-        0xc6cbce68:    0x63ff72fb5c0799a6 0xd57472fb5c0a30a1    |  .....r.c.0...rt.  |
-        0xc6cbce78:    0x177407b6f932335f 0xa0ca0aa1f3796669    |  _32...t.ify.....  |
-        0xc6cbce88:    0xd7f49b2d63ecc37f 0x2d63ecc37fa0ca0a    |  ...c-.........c-  |
-        ...
-        0xc6e0dc78:    0x3a7262fe620d105f 0x10ff67ef796ccf65    |  _..b.br:e.ly.g..  |
-        0xc6e0dc88:    0x62fe420964164203 0x0000ec6d699b6b72    |  .B.d.B.brk.im...  |
-        0xc6e0dc98:    0x00000c6100000000 0x000026410000188f    |  ....a.......A&..  | <- kallsyms_markers
-        0xc6e0dca8:    0x000041a700003492 0x00005ace00004e6b    |  .4...A..kN...Z..  |
-        """
-
-        # take the last element of kallsyms_marker
-        if (6, 1, 42) <= self.kernel_version < (6, 9, 0):
-            kallsyms_markers_end = self.offset_kallsyms_seqs_of_names
-        else:
-            kallsyms_markers_end = self.offset_kallsyms_token_table
-
-        kallsyms_markers_data = self.kernel_img[self.offset_kallsyms_markers:kallsyms_markers_end]
-        kallsyms_markers_entries = slice_unpack(kallsyms_markers_data, self.kallsyms_markers_table_element_size)
-        kallsyms_markers_last_entry = list(filter(None, kallsyms_markers_entries))[-1] # filter 0, maybe padding
-
-        # go back that number of bytes
-        position = self.offset_kallsyms_markers
-        position -= kallsyms_markers_last_entry
-        position += -position % self.kallsyms_markers_table_element_size
-
-        if position <= 0:
-            self.verbose_err("Could not find kallsyms_names")
-            return False
-
-        # This value is provisional. It will be corrected in the next process (=find_kallsyms_num_syms).
-        self.offset_kallsyms_names = position
-        self.verbose_info("kallsyms_names: {:#x} (candidate)".format(self.ro_base + self.offset_kallsyms_names))
-        return True
-
-    def find_kallsyms_num_syms(self):
-        ret = self.get_saved_config([
-            "num_symbols",
-            "offset_kallsyms_names",
-            "offset_kallsyms_num_syms",
-        ])
-        if ret:
-            self.verbose_info("num_symbols: {:#x}".format(self.num_symbols))
-            self.verbose_info("kallsyms_names: {:#x}".format(self.ro_base + self.offset_kallsyms_names))
-            self.verbose_info("kallsyms_num_syms: {:#x}".format(self.ro_base + self.offset_kallsyms_num_syms))
-            return True
-
-        """
-        [Search strategy]
-        - From candidate address of kallsyms_names, search backwards to the top of what can be correctly
-          interpreted as kallsyms_names.
-
-        [Positional relationship]
-        ...
-        - kallsyms_num_syms
-        - kallsyms_names (to be fixed in this step)
-        - kallsyms_markers
-        - kallsyms_seqs_of_names (v6.1.42~v6.8)
-        - kallsyms_token_table
-        - kallsyms_token_index
-        ...
-        - kallsyms_seqs_of_names (v6.9~)
-        ...
-
-        [Sample values for 64bit]
-        gef> hexdump -n qword kallsyms_num_syms
-        0xffffffff8b16e608:    0x000000000001982b 0x0cf3ec0e78b6410a    |  +........A.x....  |
-        0xffffffff8b16e618:    0xf370ff4109fe61cb 0x0c410774722cbdeb    |  .a..A.p...,rt.A.  |
-        0xffffffff8b16e628:    0xa8410df67ef4285f 0x936bed62d8632c71    |  _(.~..A.q,c.b.k.  |
-        0xffffffff8b16e638:    0x925f0c4107f67ef4 0xfb646741067772f1    |  .~..A._..rw.Agd.  |
-
-        [Sample values for 32bit]
-        gef> hexdump -n dword kallsyms_num_syms
-        0xc6cbce54:    0x00018eb8 0x72fb5c08 0x335fd574 0xf9540432    |  .......rt._32.T.  |
-        0xc6cbce64:    0x54039974 0x5c0799a6 0x63ff72fb 0x5c0a30a1    |  t..T.....r.c.0..  |
-        0xc6cbce74:    0xd57472fb 0xf932335f 0x177407b6 0xf3796669    |  .rt._32...t.ify.  |
-        """
-
-        token_table = self.get_token_table()
-        possible_symbol_types = "-?ABCDGINPRSTUVWabcdginprstuvw" # from `man nm`
-        dp = []
-        step = 4
-
-        # Hoist loop-invariant lookups out of the DP loop below (hot path in `ks -rv`).
-        kernel_img = self.kernel_img
-        markers = self.offset_kallsyms_markers
-        is_v61_or_later = self.kernel_version >= (6, 1, 0)
-
-        position = self.offset_kallsyms_names
-        # kallsyms_names should be aligned.
-        # This optimization is based on experience and is applied for now.
-        position += -position % step
-
-        while True:
-            if position < 0:
-                self.verbose_err("Could not find kallsyms_names")
-                return False
-
-            # Do some types of checks.
-            # 1: check the token type is likely or not.
-            token_index = self.kernel_img[position + 1]
-            symbol_type = token_table[token_index][0]
-            if symbol_type not in possible_symbol_types:
-                position -= step
-                continue
-
-            # 2: check the table (kallsyms_names) entirely.
-            # Each element of kallsyms_names consists of {number of tokens, tokens[number of tokens]}.
-            # tokens[0][0] is symbol type.
-            #
-            # The following is an example of last elements of kallsyms_names.
-            # gef> x/24xb 0xffffffffb46b4b48-0x10
-            # 0xffffffffb46b4b38: 0xf5   0x0c*  0x44   0xff   0xf5   0x8d   0x73   0x63 (*: start of last valid elements)
-            # 0xffffffffb46b4b40: 0x72   0xe8   0xbf   0x5f   0xee   0x64*  0x00** 0x00 (*: end of last valid elements, **: end marker)
-            # 0xffffffffb46b4b48: 0x00*  0x00   0x00   0x00   0xb0   0x0a   0x00   0x00 (*: start of kallsyms_markers)
-            #
-            # 0x0c: number of tokens
-            # gef> pi GCI["ksymaddr-remote"].get_token_table()[0x44]
-            # 'D' (= symbol type)
-            # gef> pi GCI["ksymaddr-remote"].get_token_table()[0xff]
-            # '__'
-            # gef> pi GCI["ksymaddr-remote"].get_token_table()[0xf5]
-            # 'in'
-            # gef> pi GCI["ksymaddr-remote"].get_token_table()[0x8d]
-            # 'it_'
-            # gef> pi GCI["ksymaddr-remote"].get_token_table()[0x73]
-            # 's'
-            # gef> pi GCI["ksymaddr-remote"].get_token_table()[0x63]
-            # 'c'
-            # gef> pi GCI["ksymaddr-remote"].get_token_table()[0x72]
-            # 'r'
-            # gef> pi GCI["ksymaddr-remote"].get_token_table()[0xe8]
-            # 'at'
-            # gef> pi GCI["ksymaddr-remote"].get_token_table()[0xbf]
-            # 'ch'
-            # gef> pi GCI["ksymaddr-remote"].get_token_table()[0x5f]
-            # '_'
-            # gef> pi GCI["ksymaddr-remote"].get_token_table()[0xee]
-            # 'en'
-            # gef> pi GCI["ksymaddr-remote"].get_token_table()[0x64]
-            # 'd'
-            # (=`__init_scratch_end`)
-            #
-            # Finally, 0x00(**) is following, this is the marker that represents the end of kallsyms_names.
-            # This can be interpreted that the size of element is 0.
-            #
-            # However, this 0x00 may not exist.
-            # gef> x/16xb 0xffffffffadefc1d8-0x8
-            # 0xffffffffadefc1d0: 0x12   0x65   0x05*  0xbf   0x65   0xaf   0x74   0xa5** (*/**: start/end of last valid elements)
-            # 0xffffffffadefc1d8: 0x00*  0x00   0x00   0x00   0xb2   0x0b   0x00   0x00   (*: start of kallsyms_markers)
-            # Even in this case, the first byte of kallsyms_markers is always 0, so we use it.
-            #
-            # Check that this structure is correct or not, using bottom-up DP.
-            # dp[i] contains num_syms as interpreted from `kallsyms_makers - i` as the start of kallsyms_names.
-            # dp[i] == -1 means invalid.
-            range_start = position
-            range_end = markers
-            range_end -= len(dp) # shortcut the already checked results.
-            for pos in range(range_end, range_start - 1, -1):
-                symbol_size = kernel_img[pos]
-                is_big_symbol = False # default
-
-                # check if big symbol (6.1~)
-                if is_v61_or_later:
-                    if symbol_size & 0x80:
-                        low = symbol_size & 0x7f
-                        high = kernel_img[pos + 1]
-                        symbol_size = (high << 7) | low
-                        is_big_symbol = True
-
-                # 0xffffffffb46b4b38: 0xf5     0x0c     0x44     0xff     0xf5     0x8d     0x73     0x63
-                # 0xffffffffb46b4b40: 0x72     0xe8     0xbf     0x5f     0xee     0x64     0x00*    0x00*
-                #                                                                           dp[2]=0  dp[1]=0
-                # 0xffffffffb46b4b48: 0x00*    0x00     0x00     0x00     0xb0     0x0a     0x00     0x00
-                #                     dp[0]=0
-                if symbol_size == 0:
-                    dp.append(0) # maybe it is a last entry
-                    continue
-
-                # 0xffffffffb46b4b38: 0xf5     0x0c     0x44     0xff     0xf5     0x8d     0x73     0x63
-                # 0xffffffffb46b4b40: 0x72     0xe8     0xbf     0x5f     0xee     0x64*    0x00     0x00
-                #                                                                  dp[3]=-1 dp[2]=0  dp[1]=0
-                # 0xffffffffb46b4b48: 0x00*    0x00     0x00     0x00     0xb0     0x0a     0x00     0x00
-                #                     dp[0]=0
-                # At this point len(dp) always equals `markers - pos` (exactly one
-                # entry is appended per iteration), so compute it without len().
-                dp_len = markers - pos
-                if is_big_symbol:
-                    dp_len -= 1
-                if symbol_size >= dp_len:
-                    dp.append(-1) # exceed the kallsyms_markers
-                    continue
-
-                # 0xffffffffb46b4b38: 0xf5     0x0c*    0x44     0xff     0xf5     0x8d     0x73     0x63
-                #                              dp[f]=1  dp[e]=-1 dp[d]=-1 dp[c]=-1 dp[b]=-1 dp[a]=-1 dp[9]=-1
-                # 0xffffffffb46b4b40: 0x72     0xe8     0xbf     0x5f     0xee     0x64     0x00**   0x00
-                #                     dp[8]=-1 dp[7]=-1 dp[6]=-1 dp[5]=-1 dp[4]=-1 dp[3]=-1 dp[2]=0  dp[1]=0
-                # 0xffffffffb46b4b48: 0x00*    0x00     0x00     0x00     0xb0     0x0a     0x00     0x00
-                #                     dp[0]=0
-                # when we see 0x0c(*), next element is 0x00(**).
-                # In this case, here, len(dp) == 15 (dp[15] does not exist, but dp[14] exists).
-                # dp[-(0xc + 1)] is dp[2]. dp[2] is 0, not -1, so dp[15] is valid. If dp[2] is -1, dp[15] is invalid.
-                offset_of_next_element = -symbol_size - 1
-                if is_big_symbol:
-                    offset_of_next_element -= 1
-                if dp[offset_of_next_element] == -1:
-                    dp.append(-1)
-                    continue
-                # seems to be okay, append valid dp
-                dp.append(dp[offset_of_next_element] + 1)
-
-            num_symbols = dp[-1]
-            if num_symbols < 256:
-                # It is judged as NG because there are too few symbols.
-                position -= step
-                continue
-
-            # 3: Find num_symbols from memory.
-            if self.kallsyms_markers_table_element_size == 4:
-                seq_to_find = p32(num_symbols)
-            elif self.kallsyms_markers_table_element_size == 8:
-                seq_to_find = p64(num_symbols)
-            # Depending on the environment, there are many zero padding after seq_to_find (=kallsyms_num_syms).
-            # This is probably because each variable is aligned in units of 256 bytes.
-            MAX_ALIGNMENT = 256
-            start = max(0, position - MAX_ALIGNMENT)
-            needle = self.kernel_img.rfind(seq_to_find, start, position)
-            if needle == -1:
-                position -= step
-                continue
-
-            # it seems ok.
-            self.offset_kallsyms_names = position
-            self.offset_kallsyms_num_syms = needle
-            break
-
-        self.save_config("offset_kallsyms_names")
-        self.save_config("offset_kallsyms_num_syms")
-        self.num_symbols = num_symbols
-        self.save_config("num_symbols")
-        self.verbose_info("num_symbols: {:#x}".format(self.num_symbols))
-        self.verbose_info("kallsyms_names: {:#x}".format(self.ro_base + self.offset_kallsyms_names))
-        self.verbose_info("kallsyms_num_syms: {:#x}".format(self.ro_base + self.offset_kallsyms_num_syms))
-        return True
-
-    def find_kallsyms_offsets(self):
-        """
-        [Search strategy]
-        - ~v6.3
-          - From kallsyms_num_syms, go back by num_symbols element sizes.
-          - num_symbols offsets are stored, so get them.
-        - v6.4~
-          - From kallsyms_token_index + 0x200, num_symbols offsets are stored, so get them.
-
-        [Positional relationship]
-        - ...
-        - kallsyms_offsets (v4.6~v6.3, CONFIG_KALLSYMS_BASE_RELATIVE=y)
-        - kallsyms_relative_base (v4.6~v6.3, CONFIG_KALLSYMS_BASE_RELATIVE=y)
-        - kallsyms_num_syms
-        - kallsyms_names
-        - kallsyms_markers
-        - kallsyms_seqs_of_names (v6.1.42~v6.8)
-        - kallsyms_token_table
-        - kallsyms_token_index
-        - kallsyms_offsets (v6.4~, CONFIG_KALLSYMS_BASE_RELATIVE=y)
-        - kallsyms_relative_base (v6.4~v6.19, CONFIG_KALLSYMS_BASE_RELATIVE=y)
-        - kallsyms_seqs_of_names (v6.9~)
-        - ...
-
-        [Sample values for 64bit ~v6.3, CONFIG_KALLSYMS_ABSOLUTE_PERCPU=n (use positive offset)]
-        gef> hexdump -n dword kallsyms_offsets
-        0xffffffff8b108550:    0x00000000 0x00000000 0x00001000 0x00002000    |  ............. ..  |
-        0xffffffff8b108560:    0x00006000 0x0000b000 0x0000c000 0x00018000    |  .`..............  |
-        0xffffffff8b108570:    0x00019000 0x00019008 0x00019010 0x00019020    |  ............ ...  |
-        0xffffffff8b108580:    0x00019420 0x00019440 0x00019448 0x00019450    |   ...@...H...P...  |
-
-        [Sample values for 64bit ~v6.3, CONFIG_KALLSYMS_ABSOLUTE_PERCPU=y (use negative offset)]
-        gef> hexdump -n dword kallsyms_offsets
-        0xffffffffa72854b0:    0xffffffff 0xffffffff 0xffffffff 0xffffffbf    |  ................  |
-        0xffffffffa72854c0:    0xffffffba 0xfffffeef 0xfffffdef 0xfffffddf    |  ................  |
-        0xffffffffa72854d0:    0xfffffdcf 0xfffffa1f 0xfffff9cf 0xfffff9bf    |  ................  |
-        0xffffffffa72854e0:    0xfffff99f 0xfffff8ff 0xfffff76f 0xfffff73f    |  ........o...?...  |
-
-        [Sample values for 32bit ~v6.3, CONFIG_KALLSYMS_ABSOLUTE_PERCPU=n (use positive offset)]
-        gef> hexdump -n dword kallsyms_offsets
-        0xc6c59370:    0x00000000 0x00000000 0x00000000 0x00000070    |  ............p...  |
-        0xc6c59380:    0x00000080 0x000001d8 0x000002e0 0x00000320    |  ............ ...  |
-        0xc6c59390:    0x00000360 0x000003a8 0x000003e8 0x000004a8    |  `...............  |
-        0xc6c593a0:    0x000005a8 0x0000066c 0x0000073c 0x000007ac    |  ....l...<.......  |
-
-        [Sample values for 64bit v6.4~, CONFIG_KALLSYMS_ABSOLUTE_PERCPU=n (use positive offset)]
-        gef> hexdump -n word kallsyms_token_index
-        0xffffffff844fa178:    0x0000 0x0003 0x0006 0x000a 0x0010 0x0013 0x0016 0x0019    |  ................  |
-        0xffffffff844fa188:    0x001d 0x0029 0x002d 0x0030 0x0034 0x0037 0x003b 0x003e    |  ..).-.0.4.7.;.>.  |
-        0xffffffff844fa198:    0x0041 0x0056 0x005a 0x005e 0x0061 0x0064 0x0067 0x006a    |  A.V.Z.^.a.d.g.j.  |
-        ...
-        0xffffffff844fa358:    0x0386 0x0389 0x038c 0x038f 0x0392 0x0395 0x0398 0x039b    |  ................  |
-        0xffffffff844fa368:    0x039e 0x03a1 0x03a5 0x03a8 0x03ab 0x03ae 0x03b1 0x03b4    |  ................  |
-        gef> hexdump -n dword kallsyms_offset
-        0xffffffff844fa378:    0x00000000 0x00000000 0x00001000 0x00002000    |  ............. ..  |
-        0xffffffff844fa388:    0x00006000 0x0000b000 0x0000c000 0x00014000    |  .`...........@..  |
-        ...
-        0xffffffff8461e44c:    0xf89effff 0xf89dffff 0xf89d9fff 0xf89d9fff    |  ................  |
-        0xffffffff8461e45c:    0x00000000 0x81000000 0xffffffff 0x02fa0e02    |  ................  |
-        relative_base_address: 0xffffffff81000000
-
-        [Sample values for 64bit v6.4~, CONFIG_KALLSYMS_ABSOLUTE_PERCPU=y (use negative offset)]
-        gef> hexdump -n word kallsyms_token_index
-        0xffffffff86744a38:    0x0000 0x0004 0x000c 0x0010 0x0014 0x0017 0x001b 0x0020    |  .............. .  |
-        0xffffffff86744a48:    0x002d 0x0034 0x0039 0x003d 0x0042 0x0045 0x0048 0x004b    |  -.4.9.=.B.E.H.K.  |
-        0xffffffff86744a58:    0x004f 0x0053 0x005d 0x0060 0x0064 0x0067 0x006b 0x0072    |  O.S.].`.d.g.k.r.  |
-        ...
-        0xffffffff86744c18:    0x0338 0x033b 0x033e 0x0341 0x0349 0x034c 0x034f 0x0357    |  8.;.>.A.I.L.O.W.  |
-        0xffffffff86744c28:    0x035a 0x035d 0x0360 0x0363 0x0369 0x036e 0x0372 0x0375    |  Z.].`.c.i.n.r.u.  |
-        gef> hexdump -n dword kallsyms_offset
-        0xffffffff86744c38:    0xffffffff 0xffffffff 0xffffffff 0xffffffaf    |  ................  |
-        0xffffffff86744c48:    0xffffffaa 0xfffffe9f 0xfffffe8f 0xfffffd8f    |  ................  |
-        ...
-        0xffffffff8677ed5c:    0xff09237f 0xff09218f 0xff09217f 0xff0920a9    |  .#...!...!... ..  |
-        0xffffffff8677ed6c:    0x00000000 0x85c00000 0xffffffff 0x00f0d800    |  ................  |
-        relative_base_address: 0xffffffff85c00000
-        """
-
-        # const values
-        if Endian.is_big_endian():
-            endianness_marker = ">"
-            endian_str = "big"
-        else:
-            endianness_marker = "<"
-            endian_str = "little"
-        offset_byte_size = 4
-        address_byte_size = current_arch.ptrsize
-
-        if self.kernel_version < (7, 0, 0):
-            # get relative_base_address
-            if self.kernel_version < (6, 4, 0):
-                # ignore the 0 immediately above offset_kallsyms_num_syms.
-                position = self.offset_kallsyms_num_syms
-                while True:
-                    previous_word = self.kernel_img[position - address_byte_size:position]
-                    if previous_word != b"\0" * address_byte_size:
-                        break
-                    position -= address_byte_size
-
-                # Go backward by num_symbols.
-                position -= address_byte_size
-
-                # read from kallsyms_relative_base
-                relative_base_address = int.from_bytes(self.kernel_img[position:position + address_byte_size], endian_str)
-
-                if relative_base_address and (relative_base_address & get_pagesize_mask_low()) == 0:
-                    """
-                    some environment has invalid address as relative_base_address.
-                    so don't use the logic of is_valid_addr(relative_base_address).
-
-                    gef> hexdump -n qword 0xffffafc5c2adb260-0x10 0x20
-                    0xffffafc5c2adb250:    0xffffafc5c1750000 0x0000000000028193    |  ..u.............  |
-                    0xffffafc5c2adb260:    0x6474107414bc5404 0x6c7463be6270d277    |  .T..t.tdw.pb.ctl  |
-                    gef> x/16xg 0xffffafc5c1750000
-                    0xffffafc5c1750000:     Cannot access memory at address 0xffffafc5c1750000
-                    """
-                    while True:
-                        previous_word = self.kernel_img[position - offset_byte_size:position]
-                        if previous_word != b"\0" * offset_byte_size:
-                            break
-                        position -= offset_byte_size
-                    position -= self.num_symbols * offset_byte_size
-
-            else: # kernel_version >= (6, 4):
-                position = self.offset_kallsyms_token_index + 0x200
-                position_relative_base = align(position + self.num_symbols * offset_byte_size, current_arch.ptrsize)
-                relative_base_address_data = self.kernel_img[position_relative_base:position_relative_base + address_byte_size]
-                if len(relative_base_address_data) == 0:
-                    self.verbose_err("kernel_img is not long enough.")
-                    return False
-                relative_base_address = int.from_bytes(relative_base_address_data, endian_str)
-                if not (relative_base_address and (relative_base_address & get_pagesize_mask_low()) == 0):
-                    return True
-
-            # Getting here means that the relative_address and position have been detected correctly.
-            self.verbose_info("relative_base_address: {:#x}".format(relative_base_address))
-
-            # Try to parse addresses or offsets.
-            fmt = "{:s}{:d}i".format(endianness_marker, self.num_symbols) # signed int
-            kallsyms_offsets_data = self.kernel_img[position:position + self.num_symbols * offset_byte_size]
-            ksym_offsets = struct.unpack(fmt, kallsyms_offsets_data)
-
-            # Check the ratio of the negative value
-            number_of_negative_items = len([offset for offset in ksym_offsets if offset < 0])
-            if number_of_negative_items / len(ksym_offsets) >= 0.5:
-                # the case CONFIG_KALLSYMS_ABSOLUTE_PERCPU=y.
-                kernel_addresses = []
-                for offset in ksym_offsets:
-                    if offset < 0:
-                        x = relative_base_address - 1 - offset
-                        kernel_addresses.append(x)
-                    else:
-                        kernel_addresses.append(offset)
-            else:
-                # the case CONFIG_KALLSYMS_ABSOLUTE_PERCPU=n.
-                kernel_addresses = []
-                for offset in ksym_offsets:
-                    x = offset + relative_base_address
-                    kernel_addresses.append(x)
-
-            # Check the ratio of the null value.
-            number_of_null_items = kernel_addresses.count(0)
-            if number_of_null_items / len(kernel_addresses) >= 0.2:
-                return True
-
-        else: # kernel_version >= (7, 0):
-            position = self.offset_kallsyms_token_index + 0x200
-
-            # Try to parse addresses or offsets.
-            fmt = "{:s}{:d}i".format(endianness_marker, self.num_symbols) # signed int
-            kallsyms_offsets_data = self.kernel_img[position:position + self.num_symbols * offset_byte_size]
-            ksym_offsets = struct.unpack(fmt, kallsyms_offsets_data)
-
-            # 7.0+: offset_to_ptr style, no kallsyms_relative_base. CONFIG_KALLSYMS_ABSOLUTE_PERCPU is removed.
-            kernel_addresses = []
-            for i, offset in enumerate(ksym_offsets):
-                element_va = self.ro_base + position + i * offset_byte_size
-                kernel_addresses.append(element_va + offset)
-
-            # Non-relocatable 32-bit kernels store absolute addresses in the same table.
-            if address_byte_size == offset_byte_size:
-                text_base = Kernel.get_kernel_layout(apply_data_range_hint=False).text_base
-                if text_base not in kernel_addresses:
-                    fmt = "{:s}{:d}I".format(endianness_marker, self.num_symbols)
-                    absolute_addresses = struct.unpack(fmt, kallsyms_offsets_data)
-                    if text_base in absolute_addresses:
-                        kernel_addresses = absolute_addresses
-
-        # It seems ok.
-        self.offset_kallsyms_addresses_or_offsets = position
-        self.kernel_addresses = kernel_addresses
-        self.verbose_info("kallsyms_offsets: {:#x}".format(self.ro_base + self.offset_kallsyms_addresses_or_offsets))
-        return True
-
-    def find_kallsyms_addresses(self):
-        """
-        [Search strategy]
-        - From kallsyms_num_syms, go back by num_symbols element sizes.
-        - num_symbols addresses are stored, so get them.
-
-        [Positional relationship]
-        - ...
-        - kallsyms_addresses (~v6.3, CONFIG_KALLSYMS_BASE_RELATIVE=n)
-        - kallsyms_num_syms
-        - kallsyms_names
-        - kallsyms_markers
-        - kallsyms_seqs_of_names (v6.1.42~v6.8)
-        - kallsyms_token_table
-        - kallsyms_token_index
-        - kallsyms_addresses (v6.4~?, CONFIG_KALLSYMS_BASE_RELATIVE=n) # Unimplemented, as this pattern has not been observed yet.
-        - kallsyms_seqs_of_names (v6.9~)
-        - ...
-
-        [Sample values for 64bit ~v6.3]
-        gef> hexdump -n qword kallsyms_addresses
-        0xffffffff81ae3cb8:    0x0000000000000000 0x0000000000000000    |  ................  |
-        0xffffffff81ae3cc8:    0x0000000000004000 0x0000000000009000    |  .@..............  |
-        ...
-        0xffffffff81ae4588:    0xffffffff81000000 0xffffffff81000000    |  ................  |
-        0xffffffff81ae4598:    0xffffffff81000110 0xffffffff810001a9    |  ................  |
-
-        [Sample values for 32bit ~v6.3]
-        gef> hexdump -n dword kallsyms_addresses
-        0xc1940888:    0xc1000000 0xc1000000 0xc10000bc 0xc10000cc    |  ................  |
-        0xc1940898:    0xc10000ed 0xc1000165 0xc10001e7 0xc1000239    |  ....e.......9...  |
-        0xc19408a8:    0xc1000283 0xc10002c1 0xc10002d0 0xc1000302    |  ................  |
-        0xc19408b8:    0xc1000328 0xc100032f 0xc1000338 0xc1000338    |  (.../...8...8...  |
-        """
-
-        # const values
-        if Endian.is_big_endian():
-            endianness_marker = ">"
-        else:
-            endianness_marker = "<"
-        address_byte_size = current_arch.ptrsize
-
-        # ignore the 0 immediately above offset_kallsyms_num_syms.
-        position = self.offset_kallsyms_num_syms
-        while True:
-            previous_word = self.kernel_img[position - address_byte_size:position]
-            if previous_word != b"\0" * address_byte_size:
-                break
-            position -= address_byte_size
-
-        # Go backward by num_symbols.
-        position -= self.num_symbols * address_byte_size
-
-        # Try to parse addresses.
-        if address_byte_size == 8:
-            fmt = "{:s}{:d}Q".format(endianness_marker, self.num_symbols)
-        else:
-            fmt = "{:s}{:d}I".format(endianness_marker, self.num_symbols)
-        kallsyms_addresses_data = self.kernel_img[position:position + self.num_symbols * address_byte_size]
-        self.kernel_addresses = struct.unpack(fmt, kallsyms_addresses_data)
-        self.offset_kallsyms_addresses_or_offsets = position
-        self.verbose_info("kallsyms_addresses: {:#x}".format(self.ro_base + self.offset_kallsyms_addresses_or_offsets))
-        return True
-
-    def initialize_scan(self):
-        ret = self.get_kernel_version()
-        if not ret:
-            return False
-
-        if self.args.rescan:
-            self.remove_config()
-        else:
-            # the case of both kernel version string are same, but offset are different.
-            current_version_string_offset = self.version_string_offset # keep current
-            if self.get_saved_config(["version_string_offset"]): # load temporarily
-                if self.version_string_offset != current_version_string_offset:
-                    self.remove_config()
-                    self.version_string_offset = current_version_string_offset # set current again
-            # the case of both kernel version string and offset are same, but the image is different.
-            if self.get_saved_config(["num_symbols", "offset_kallsyms_num_syms"]): # load temporarily
-                position = self.offset_kallsyms_num_syms
-                num_syms = self.kernel_img[position:position + 8] if position >= 0 else b""
-                if len(num_syms) == 8 and self.num_symbols not in (u32(num_syms[:4]), u64(num_syms)):
-                    self.remove_config()
-
-        ret = self.find_kallsyms_token_table()
-        if not ret:
-            return False
-
-        ret = self.find_kallsyms_token_index()
-        if not ret:
-            return False
-
-        ret = self.find_kallsyms_markers()
-        if not ret:
-            return False
-
-        ret = self.find_kallsyms_names()
-        if not ret:
-            return False
-
-        ret = self.find_kallsyms_num_syms()
-        if not ret:
-            return False
-
-        self.offset_kallsyms_addresses_or_offsets = None
-        if self.kernel_version >= (4, 6):
-            # On modern kernels, first check the case CONFIG_KALLSYMS_BASE_RELATIVE=y.
-            ret = self.find_kallsyms_offsets()
-            if not ret:
-                return False
-
-        if not self.offset_kallsyms_addresses_or_offsets:
-            if self.kernel_version < (7, 0):
-                # the case CONFIG_KALLSYMS_BASE_RELATIVE=n.
-                self.find_kallsyms_addresses()
-
-        self.save_config("version_string")
-        self.save_config("version_string_offset")
-        self.save_config("ro_size")
-        return True
-
-    def initialize(self):
-        self.config_updates = {}
-        try:
-            return self.initialize_scan()
-        finally:
-            self.flush_config()
-        return
-
-    def arm64_fast_path(self):
-        if not is_in_kernel():
-            self.quiet_info("Use slow path")
-            return None
-
-        # This path is more faster because it does not use pagewalk.
-        # Instead of finding ro_base from pagewalk results, it finds ro_base by scanning the kernel version.
-        # It is especially beneficial for ARM64, due to extensive pagetables and pagewalk take a long time.
-        # It may work on other architectures but limited to ARM64 as others gain little.
-
-        # First, search for the kernel version string from $pc.
-        # It is located at around top of ro_base, and ro_base is aligned by 0x10000.
-        current = (current_arch.pc & ~0xffff) + 0x10000 # Starting address to brute force ro_base
-        step_size = 0x10000
-        while True:
-            try:
-                # As kernel version string is near the top of ro_base, it is enough to check the first page.
-                candidate_rodata = read_memory(current, get_pagesize())
-            except gdb.MemoryError:
-                # reached to the end of ro_base
-                self.quiet_info("Use slow path")
-                return None
-
-            # '\n\0' is needed to avoid false positives in the dmesg buffer.
-            r = re.search(rb"Linux version (\d+\.[\d.]*\d)[ -~]+\n\0", candidate_rodata)
-            if r:
-                # Found kernel version string
-                version_string_address = current + r.span()[0]
-                self.version_string = r.group(0)[:-2]
-                version_number = r.group(1).decode("ascii")
-                self.kernel_version = self.get_kernel_version_triplet(version_number)
-                break
-            current += step_size
-
-        # We can make the hash from the kernel version string and load from saved config.
-        # At this point, following two parameters are enough.
-        ret = self.get_saved_config([
-            "version_string_offset",
-            "ro_size",
-        ])
-        if not ret:
-            self.quiet_info("Use slow path")
-            return None
-
-        # Restore ro_base with considering kASLR.
-        self.quiet_info("Use fast path")
-        self.ro_base = version_string_address - self.version_string_offset
-        self.verbose_info("ro_base: {:#x}-{:#x}".format(self.ro_base, self.ro_base + self.ro_size))
-
-        # doit
-        self.kernel_img = read_memory(self.ro_base, self.ro_size)
-        ret = self.initialize()
-        if not ret:
-            self.quiet_info("Use slow path")
-            return None
-
-        return self.read_kallsyms()
-
-    def parse_kallsyms(self):
-        # Fast path when reattaching GDB after executing this command once (ARM64 only).
-        if is_arm64():
-            kallsyms = self.arm64_fast_path()
-            if kallsyms:
-                return kallsyms
-
-        # Slow path
-        try:
-            kinfo = Kernel.get_kernel_layout(apply_data_range_hint=False)
-            if kinfo.has_none:
-                return None
-        except gdb.MemoryError:
-            self.quiet_err("Memory read error")
-            return None
-
-        if not kinfo.rwx:
-            # On modern kernels, ro_size can be trusted, so it only tries to parse once.
-            self.ro_base = kinfo.ro_base
-            self.ro_size = kinfo.ro_size
-            self.kernel_img = read_memory(self.ro_base, self.ro_size)
-            self.verbose_info("ro_base: {:#x}-{:#x}".format(self.ro_base, self.ro_base + self.ro_size))
-            ret = self.initialize()
-            if not ret:
-                return None
-        else:
-            # Older kernel that has the RWX attribute don't trust ro_size.
-            # Very large values of ro_size can be detected.
-            # It will take a long time to parse if you just use it.
-            # Gradually increasing ro_size while searching can speed up several times.
-            self.ro_base = kinfo.ro_base
-            # This value is a heuristic threshold derived through testing across numerous kernel images.
-            # Unless there is a compelling reason, do not modify it.
-            base_size = 0x10_0000
-            step = 0x10_0000
-            for candidate_size in range(base_size, kinfo.ro_size, step):
-                self.ro_size = candidate_size
-                self.kernel_img = read_memory(self.ro_base, self.ro_size)
-                self.verbose_info("ro_base: {:#x}-{:#x}".format(self.ro_base, self.ro_base + self.ro_size))
-                ret = self.initialize()
-                if ret:
-                    # found
-                    break
-            else:
-                # not found
-                return None
-
-        # here, we got all offsets to read kallsyms
-        return self.read_kallsyms()
-
-    def parse_main(self):
-        # specified vmlinux parse
-        if self.args.vmlinux_file:
-            if not os.path.exists(self.args.vmlinux_file):
-                self.quiet_err("Could not find vmlinux file")
-                return None
-            self.quiet_info("Parse from file: {!s}".format(self.args.vmlinux_file))
-            return self.parse_vmlinux(self.args.vmlinux_file)
-
-        # loaded vmlinux parse
-        loaded_vmlinux = self.get_loaded_vmlinux_path()
-        if loaded_vmlinux:
-            self.quiet_info("Parse from file: {!s}".format(loaded_vmlinux))
-            return self.parse_vmlinux(loaded_vmlinux)
-
-        # normal parse
-        self.quiet_info("Wait for memory scan")
-        kallsyms = self.parse_kallsyms()
-        if kallsyms:
-            return kallsyms
-
-        # failed, but if args.rescan was not specified originally
-        if not self.args.rescan:
-            self.quiet_info("Try to rescan (ignore cached config)")
-            original_rescan = self.args.rescan
-            self.args.rescan = True
-            try:
-                kallsyms = self.parse_kallsyms()
-            finally:
-                self.args.rescan = original_rescan
-            if kallsyms:
-                return kallsyms
-
-        self.quiet_err("Failed to parse")
-        return None
-
     @parse_args
     @only_if_gdb_running
     @only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
@@ -138807,14 +138868,14 @@ class KsymaddrRemoteCommand(GenericCommand, BufferingOutput):
             self.print_saved_config()
             return
 
-        # these select the parse source and are read inside the cached `get_kallsyms()`
-        if args.rescan or args.vmlinux_file or args.ignore_loaded_vmlinux:
-            Cache.clear_cache_for(self.get_kallsyms)
-
-        ret = self.get_kallsyms()
+        ret = Ksym.get_kallsyms(
+            rescan=args.rescan, vmlinux_file=args.vmlinux_file,
+            ignore_loaded_vmlinux=args.ignore_loaded_vmlinux,
+            verbose=args.verbose, quiet=args.quiet,
+        )
         if ret is None:
             return
-        kallsyms, kallsyms_map = ret
+        kallsyms, _kallsyms_map = ret
 
         self.print_kallsyms(kallsyms, args.keyword, args.type, args.smart)
         self.print_output(check_terminal_size=True)
