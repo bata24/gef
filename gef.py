@@ -12417,15 +12417,12 @@ def read_memory(addr, length):
 
     if is_arm64() and is_qemu_system():
         if Config.get_gef_setting("gef.read_memory_work_around_for_aarch64_secure_memory"):
-            sm = QemuMonitor.get_secure_memory_map()
-            if sm:
-                target_phys = XSecureMemAddrCommand.v2p_secure(addr) # heavy
-                if target_phys:
-                    if sm.sm_base <= target_phys < sm.sm_base + sm.sm_size:
-                        target_offset = target_phys - sm.sm_base
-                        data = XSecureMemAddrCommand.read_secure_memory(sm, target_offset, length)
-                        if data:
-                            return data
+            if SecureMemory.get_area():
+                target_phys = SecureMemory.v2p(addr) # heavy
+                if target_phys is not None and SecureMemory.contains(target_phys):
+                    data = SecureMemory.read_phys(target_phys, length)
+                    if data:
+                        return data
 
     # Don't include it in a try-catch, as we might expect a memory error on read_memory.
     return MemoryCache.read(addr, length)
@@ -12844,9 +12841,26 @@ class QemuMonitor:
                 return "virt"
         return None
 
+
+class SecureMemory:
+    """A collection of utility functions that are related to the secure world memory.
+
+    The secure memory is invisible from the non-secure world, so gdb itself cannot read it.
+    A plain physical read does not fail either, it silently answers with unrelated bytes.
+    The only way in is the memory of qemu-system itself, which needs the privilege to open
+    /proc/<qemu-system>/mem."""
+
+    # Why a secure access fails in practice. Worth telling the user, so it is shared by
+    # every command that gives up on the secure memory.
+    PRIVILEGE_HINT = "root is required to access the secure memory via /proc/<qemu-system>/mem"
+
     @staticmethod
     @Cache.cache_until_next
-    def get_secure_memory_map(verbose=False):
+    def get_area(verbose=False):
+        """Return the secure memory area of qemu-system, or None if there is none.
+
+        The returned object is the process map of qemu-system that backs the secure memory,
+        with `sm_base` / `sm_size` added for the guest side of it."""
         # find secure-ram base
         ret = gdb.execute("monitor info mtree -f", to_string=True)
         for line in ret.splitlines():
@@ -12889,6 +12903,128 @@ class QemuMonitor:
             m.sm_size = secure_memory_size
             return m
         return None
+
+    @staticmethod
+    def contains(paddr, verbose=False):
+        """Return True if the physical address is in the secure memory."""
+        sm = SecureMemory.get_area(verbose)
+        return sm is not None and sm.sm_base <= paddr < sm.sm_base + sm.sm_size
+
+    @staticmethod
+    def read(offset, size, verbose=False):
+        """Return the secure memory at `offset` from its base, or None if it is unreadable."""
+        sm = SecureMemory.get_area(verbose)
+        if sm is None:
+            return None
+
+        qemu_system_pid = Pid.get_pid()
+        if qemu_system_pid is None:
+            err("Could not find qemu-system pid")
+            return None
+
+        if size > sm.sm_size:
+            size = sm.sm_size
+
+        if verbose:
+            info("Target offset: {:#x}".format(offset))
+            info("Read address: {:#x}, size:{:#x}".format(sm.page_start + offset, size))
+
+        # `open` itself fails when ptrace is not permitted (e.g. yama ptrace_scope != 0).
+        try:
+            with open("/proc/{:d}/mem".format(qemu_system_pid), "rb") as fd:
+                fd.seek(sm.page_start + offset, 0)
+                data = fd.read(size)
+        except Exception:
+            if verbose:
+                err("Could not read /proc/{:d}/mem (root is required)".format(qemu_system_pid))
+            return None
+        if verbose:
+            info("Read size result: {:#x}".format(len(data)))
+        return data
+
+    @staticmethod
+    def read_all(verbose=False):
+        """Return the whole secure memory, or None if it is unreadable."""
+        sm = SecureMemory.get_area(verbose)
+        if sm is None:
+            return None
+        return SecureMemory.read(0x0, sm.sm_size, verbose)
+
+    @staticmethod
+    def read_phys(paddr, size, verbose=False):
+        """Return the physical memory at `paddr`, going through qemu-system if it is secure."""
+        if SecureMemory.contains(paddr, verbose):
+            sm = SecureMemory.get_area(verbose)
+            return SecureMemory.read(paddr - sm.sm_base, size, verbose)
+        return read_physmem(paddr, size)
+
+    @staticmethod
+    def write(offset, data, verbose=False):
+        """Write to the secure memory at `offset` from its base. Return None on failure."""
+        sm = SecureMemory.get_area(verbose)
+        if sm is None:
+            return None
+
+        qemu_system_pid = Pid.get_pid()
+        if qemu_system_pid is None:
+            return None
+
+        if len(data) > sm.sm_size:
+            data = data[:sm.sm_size]
+
+        if verbose:
+            info("Target offset: {:#x}".format(offset))
+            info("Write address: {:#x}, size:{:#x}".format(sm.page_start + offset, len(data)))
+
+        try:
+            with open("/proc/{:d}/mem".format(qemu_system_pid), "r+b") as fd:
+                fd.seek(sm.page_start + offset, 0)
+                ret = fd.write(data)
+        except Exception:
+            if verbose:
+                err("Could not write /proc/{:d}/mem (root is required)".format(qemu_system_pid))
+            return None
+        if verbose:
+            info("Written size result: {:#x}".format(ret))
+
+        # avoid qemu-system caches
+        TemporaryDummyBreakpoint()
+
+        # By default, "context code" uses Disasm.gdb_disassemble.
+        # However, due to gdb's cache, secure memory changes may not appear in disassembly.
+        # Therefore, if capstone is available, change it to disassemble by capstone.
+        if Config.get_gef_setting("context_code.use_capstone") is False:
+            Config.set_gef_setting("context_code.use_capstone", True)
+        return ret
+
+    @staticmethod
+    def v2p(vaddr, verbose=False): # vaddr -> addr1 or None
+        maps = PageMap.get_page_maps(FORCE_PREFIX_S=True, verbose=verbose)
+        if maps is None:
+            return None
+        for vstart, vend, pstart, _pend in maps:
+            if vstart <= vaddr < vend:
+                offset = vaddr - vstart
+                paddr = pstart + offset
+                if verbose:
+                    info("v2p: {:#x} -> {:#x}".format(vaddr, paddr))
+                return paddr
+        return None
+
+    @staticmethod
+    def p2v(paddr, verbose=False): # paddr -> [addr1, addr2, ...] or []
+        maps = PageMap.get_page_maps(FORCE_PREFIX_S=True, verbose=verbose)
+        if maps is None:
+            return []
+        result = []
+        for vstart, _vend, pstart, pend in maps:
+            if pstart <= paddr < pend:
+                offset = paddr - pstart
+                vaddr = vstart + offset
+                if verbose:
+                    info("p2v: {:#x} -> {:#x}".format(paddr, vaddr))
+                result.append(vaddr)
+        return result
 
 
 def is_supported_physmode():
@@ -146999,76 +147135,9 @@ class XSecureMemAddrCommand(GenericCommand):
     _example_ = "\n".join(_example_).format(_cmdline_)
 
     @staticmethod
-    def v2p_secure(vaddr, verbose=False): # vaddr -> addr1 or None
-        maps = PageMap.get_page_maps(FORCE_PREFIX_S=True, verbose=verbose)
-        if maps is None:
-            return None
-        for vstart, vend, pstart, _pend in maps:
-            if vstart <= vaddr < vend:
-                offset = vaddr - vstart
-                paddr = pstart + offset
-                if verbose:
-                    info("v2p: {:#x} -> {:#x}".format(vaddr, paddr))
-                return paddr
-        return None
-
-    @staticmethod
-    def p2v_secure(paddr, verbose=False): # paddr -> [addr1, addr2, ...] or []
-        maps = PageMap.get_page_maps(FORCE_PREFIX_S=True, verbose=verbose)
-        if maps is None:
-            return []
-        result = []
-        for vstart, _vend, pstart, pend in maps:
-            if pstart <= paddr < pend:
-                offset = paddr - pstart
-                vaddr = vstart + offset
-                if verbose:
-                    info("p2v: {:#x} -> {:#x}".format(paddr, vaddr))
-                result.append(vaddr)
-        return result
-
-    @staticmethod
-    def read_secure_memory(sm, offset, dump_size, verbose=False):
-        qemu_system_pid = Pid.get_pid()
-        if qemu_system_pid is None:
-            err("Could not find qemu-system pid")
-            return None
-
-        if dump_size > sm.size:
-            dump_size = sm.size
-
-        if verbose:
-            info("Target offset: {:#x}".format(offset))
-            info("Read address: {:#x}, size:{:#x}".format(sm.page_start + offset, dump_size))
-
-        # `open` itself fails when ptrace is not permitted (e.g. yama ptrace_scope != 0).
-        try:
-            with open("/proc/{:d}/mem".format(qemu_system_pid), "rb") as fd:
-                fd.seek(sm.page_start + offset, 0)
-                data = fd.read(dump_size)
-        except Exception:
-            if verbose:
-                err("Could not read /proc/{:d}/mem (root is required)".format(qemu_system_pid))
-            return None
-        if verbose:
-            info("Read size result: {:#x}".format(len(data)))
-        return data
-
-    @staticmethod
-    def read_secure_physmem(paddr, size, verbose=False):
-        """Return the secure physical memory at `paddr`, or None if it is unreadable."""
-        # The secure memory is invisible from the non-secure world. A plain `read_physmem`
-        # falls back to a non-secure read that silently answers with unrelated bytes there,
-        # so it has to be taken from the memory of qemu-system itself.
-        sm = QemuMonitor.get_secure_memory_map(verbose)
-        if sm and sm.sm_base <= paddr < sm.sm_base + sm.sm_size:
-            return XSecureMemAddrCommand.read_secure_memory(sm, paddr - sm.sm_base, size, verbose)
-        return read_physmem(paddr, size)
-
-    @staticmethod
     def get_sm_offset(sm, args):
         if args.phys:
-            if sm.sm_base <= args.location < sm.sm_base + sm.sm_size:
+            if SecureMemory.contains(args.location):
                 return args.location - sm.sm_base
 
             err("Phys {:#x} is not default secure memory ({:#x}-{:#x})".format(
@@ -147077,7 +147146,7 @@ class XSecureMemAddrCommand(GenericCommand):
             return None
 
         elif args.off:
-            if 0 <= args.location < sm.size:
+            if 0 <= args.location < sm.sm_size:
                 return args.location
 
             err("Offset {:#x} is not default secure memory ({:#x}-{:#x})".format(
@@ -147086,12 +147155,12 @@ class XSecureMemAddrCommand(GenericCommand):
             return None
 
         elif args.virt:
-            target_phys = XSecureMemAddrCommand.v2p_secure(args.location, args.verbose)
+            target_phys = SecureMemory.v2p(args.location, args.verbose)
             if target_phys is None:
                 err("Could not find physical address")
                 return None
 
-            if sm.sm_base <= target_phys < sm.sm_base + sm.sm_size:
+            if SecureMemory.contains(target_phys):
                 return target_phys - sm.sm_base
 
             err("Virt {:#x} is not default secure memory ({:#x}-{:#x})".format(
@@ -147146,7 +147215,7 @@ class XSecureMemAddrCommand(GenericCommand):
         dump_type, dump_unit, dump_count = ret
 
         # get offset
-        sm = QemuMonitor.get_secure_memory_map(args.verbose)
+        sm = SecureMemory.get_area(args.verbose)
         if sm is None:
             err("Could not find secure memory maps")
             return
@@ -147162,9 +147231,9 @@ class XSecureMemAddrCommand(GenericCommand):
         dump_size, target_offset = ret
 
         # read
-        data = XSecureMemAddrCommand.read_secure_memory(sm, target_offset, dump_size, args.verbose)
+        data = SecureMemory.read(target_offset, dump_size, args.verbose)
         if data is None:
-            err("Memory read error (root is required to read the secure memory via /proc/<qemu-system>/mem)")
+            err("Memory read error ({:s})".format(SecureMemory.PRIVILEGE_HINT))
             return
 
         # print
@@ -147237,40 +147306,6 @@ class WSecureMemAddrCommand(GenericCommand):
         # finally, look for possible values for given prefix
         return [s for s in self.modes if s and s.startswith(text.strip())]
 
-    @staticmethod
-    def write_secure_memory(sm, offset, data, verbose=False):
-        qemu_system_pid = Pid.get_pid()
-        if qemu_system_pid is None:
-            return None
-
-        write_size = len(data)
-        if write_size > sm.size:
-            write_size = sm.size
-            data = data[:write_size]
-
-        if verbose:
-            info("Target offset: {:#x}".format(offset))
-            info("Write address: {:#x}, size:{:#x}".format(sm.page_start + offset, write_size))
-
-        with open("/proc/{:d}/mem".format(qemu_system_pid), "r+b") as fd:
-            try:
-                fd.seek(sm.page_start + offset, 0)
-                ret = fd.write(data)
-            except Exception:
-                return None
-        if verbose:
-            info("Written size result: {:#x}".format(ret))
-
-        # avoid qemu-system caches
-        TemporaryDummyBreakpoint()
-
-        # By default, "context code" uses Disasm.gdb_disassemble.
-        # However, due to gdb's cache, secure memory changes may not appear in disassembly.
-        # Therefore, if capstone is available, change it to disassemble by capstone.
-        if Config.get_gef_setting("context_code.use_capstone") is False:
-            Config.set_gef_setting("context_code.use_capstone", True)
-        return ret
-
     def redirect_to_write_physmem(self, data):
         if self.args.off:
             return
@@ -147332,7 +147367,7 @@ class WSecureMemAddrCommand(GenericCommand):
             return
 
         # initialize
-        sm = QemuMonitor.get_secure_memory_map(args.verbose)
+        sm = SecureMemory.get_area(args.verbose)
         if sm is None:
             err("Could not find secure memory maps")
             return
@@ -147342,9 +147377,9 @@ class WSecureMemAddrCommand(GenericCommand):
             return
 
         # write
-        ret = WSecureMemAddrCommand.write_secure_memory(sm, target_offset, data, args.verbose)
+        ret = SecureMemory.write(target_offset, data, args.verbose)
         if ret is None:
-            err("Memory write error")
+            err("Memory write error ({:s})".format(SecureMemory.PRIVILEGE_HINT))
         return
 
 
@@ -147431,7 +147466,7 @@ class BreakSecureMemAddrCommand(GenericCommand):
                 if virt_addrs:
                     return
 
-        virt_addrs = XSecureMemAddrCommand.p2v_secure(args.location, args.verbose)
+        virt_addrs = SecureMemory.p2v(args.location, args.verbose)
         if virt_addrs == []:
             warn("Could not find virtual address")
             return
@@ -147563,9 +147598,9 @@ class OpteeBreakTaAddrCommand(GenericCommand):
             return
         virt_start, phys_start, size = ret
 
-        data = read_physmem(phys_start, size)
+        data = SecureMemory.read_phys(phys_start, size)
         if not data:
-            err("Memory read error")
+            err("Memory read error ({:s})".format(SecureMemory.PRIVILEGE_HINT))
             return None
 
         if is_arm32():
@@ -147689,6 +147724,8 @@ class OpteeSmcServiceDumpCommand(GenericCommand, BufferingOutput):
         """search services from *.secure-ram."""
 
         def is_valid_secure_addr(addr):
+            # This runs for every word of the secure memory, so it compares directly
+            # instead of going through SecureMemory.contains().
             return sm.sm_base <= addr < sm.sm_base + sm.sm_size
 
         def read_cstring_from_secure_memory(addr):
@@ -147814,13 +147851,17 @@ class OpteeSmcServiceDumpCommand(GenericCommand, BufferingOutput):
     @only_if_specific_gdb_mode(mode=("qemu-system",))
     @only_if_specific_arch(arch=("ARM64",))
     def do_invoke(self, args):
-        sm = QemuMonitor.get_secure_memory_map(args.verbose)
+        sm = SecureMemory.get_area(args.verbose)
         if sm is None:
             err("Could not find secure memory maps")
             return None
 
+        data = SecureMemory.read_all(args.verbose)
+        if data is None:
+            err("Memory read error ({:s})".format(SecureMemory.PRIVILEGE_HINT))
+            return None
+
         self.out = []
-        data = XSecureMemAddrCommand.read_secure_memory(sm, 0x0, sm.size, args.verbose)
         services = self.find_service(sm, data)
         self.dump_service(services)
         self.print_output(check_terminal_size=True)
@@ -148250,8 +148291,12 @@ class OpteeTaDumpMemoryCommand(OpteeTaDumpCommand):
             err("Could not find memory maps")
             return
 
+        data = SecureMemory.read_phys(phys_start, size)
+        if not data:
+            err("Memory read error ({:s})".format(SecureMemory.PRIVILEGE_HINT))
+            return
+
         self.out = []
-        data = read_physmem(phys_start, size)
         list_heads = self.find_list_head(data, virt_start)
         if not list_heads:
             if not args.for_old_version:
@@ -148649,7 +148694,11 @@ class OpteeShmListCommand(GenericCommand, BufferingOutput):
             err("Could not find memory maps")
             return
 
-        data = read_physmem(phys_start, size)
+        data = SecureMemory.read_phys(phys_start, size)
+        if not data:
+            err("Memory read error ({:s})".format(SecureMemory.PRIVILEGE_HINT))
+            return
+
         parsed_list_heads = self.find_reg_shm_list(data, virt_start)
         if not parsed_list_heads:
             err("Could not find reg_shm_list")
@@ -150287,10 +150336,10 @@ class VBARCommand(GenericCommand, BufferingOutput):
                 # The secure page table lives in the secure memory, which is invisible from
                 # the non-secure world. Walking it needs the memory of qemu-system itself,
                 # so it fails without the privilege to read /proc/<qemu-system>/mem.
-                vbar_phys = XSecureMemAddrCommand.v2p_secure(vbar)
+                vbar_phys = SecureMemory.v2p(vbar)
                 if vbar_phys is None:
-                    self.err_add_out("Could not translate {:#x} (root is required to read the "
-                                     "secure memory via /proc/<qemu-system>/mem)".format(vbar))
+                    self.err_add_out("Could not translate {:#x} ({:s})".format(
+                        vbar, SecureMemory.PRIVILEGE_HINT))
                     continue
             else:
                 if not is_valid_addr(vbar):
@@ -150302,7 +150351,7 @@ class VBARCommand(GenericCommand, BufferingOutput):
                 s = Color.colorify(s.ljust(max_width), "bold")
                 if "$VBAR_S" in regname and not is_in_secure():
                     try:
-                        code = XSecureMemAddrCommand.read_secure_physmem(vbar_phys + ofs, 4)
+                        code = SecureMemory.read_phys(vbar_phys + ofs, 4)
                     except gdb.MemoryError:
                         code = None
                     if not code:
@@ -150949,11 +150998,13 @@ class PageMap:
     @Cache.cache_until_next
     def get_page_maps_arm64_optee_secure_memory(verbose=False):
         # heuristic search of qemu-system memory
-        sm = QemuMonitor.get_secure_memory_map(verbose)
-        if sm is None:
+        if SecureMemory.get_area(verbose) is None:
             err("Could not find secure memory maps")
             return None
-        data = XSecureMemAddrCommand.read_secure_memory(sm, 0x0, sm.size, verbose)
+        data = SecureMemory.read_all(verbose)
+        if data is None:
+            err("Memory read error ({:s})".format(SecureMemory.PRIVILEGE_HINT))
+            return None
         data_list = slice_unpack(data, 8)
 
         """
