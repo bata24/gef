@@ -137626,6 +137626,13 @@ class KsymaddrRemoteCommand(GenericCommand, BufferingOutput):
         cfg_file_name = os.path.join(GEF_TEMP_DIR, "ksymaddr-remote-{:d}.{:d}.{:d}-{:s}.cfg".format(major, minor, patch, h))
         return cfg_file_name
 
+    def remove_config(self):
+        try:
+            os.remove(self.get_cfg_name())
+        except FileNotFoundError:
+            pass
+        return
+
     def save_config(self, param_name):
         self.config_updates[param_name] = str(getattr(self, param_name))
         return
@@ -138587,17 +138594,20 @@ class KsymaddrRemoteCommand(GenericCommand, BufferingOutput):
             return False
 
         if self.args.rescan:
-            cfg_file_name = self.get_cfg_name()
-            if os.path.exists(cfg_file_name):
-                os.remove(cfg_file_name)
+            self.remove_config()
         else:
             # the case of both kernel version string are same, but offset are different.
             current_version_string_offset = self.version_string_offset # keep current
             if self.get_saved_config(["version_string_offset"]): # load temporarily
                 if self.version_string_offset != current_version_string_offset:
-                    cfg_file_name = self.get_cfg_name()
-                    os.remove(cfg_file_name)
+                    self.remove_config()
                     self.version_string_offset = current_version_string_offset # set current again
+            # the case of both kernel version string and offset are same, but the image is different.
+            if self.get_saved_config(["num_symbols", "offset_kallsyms_num_syms"]): # load temporarily
+                position = self.offset_kallsyms_num_syms
+                num_syms = self.kernel_img[position:position + 8] if position >= 0 else b""
+                if len(num_syms) == 8 and self.num_symbols not in (u32(num_syms[:4]), u64(num_syms)):
+                    self.remove_config()
 
         ret = self.find_kallsyms_token_table()
         if not ret:
@@ -138642,6 +138652,7 @@ class KsymaddrRemoteCommand(GenericCommand, BufferingOutput):
             return self.initialize_scan()
         finally:
             self.flush_config()
+        return
 
     def arm64_fast_path(self):
         if not is_in_kernel():
