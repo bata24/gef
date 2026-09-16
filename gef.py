@@ -62747,6 +62747,54 @@ class KernelAddressHeuristicFinder:
                                 return task
                         except gdb.MemoryError:
                             continue
+
+        # plan 5 (from the self-references in init_task)
+        # `real_parent`, `parent` and `group_leader` of `init_task` all point to `init_task`
+        # itself, so its own address appears at least 3 times inside the object, while the
+        # self-pointing list_heads (children, sibling, thread_group, ...) hit only twice.
+        # Only the pointers stored after the address they hold are counted. That drops both
+        # the structures that are merely pointed at from the objects in front of them and
+        # the `next` of a self-pointing list_head, which sits at the address it holds.
+        # This needs no `current`, so it also works when every CPU is halted outside the
+        # kernel (user mode, or the secure world on OP-TEE targets).
+        kinfo = Kernel.get_kernel_layout()
+        if kinfo.rw_base and kinfo.rw_size:
+            rw_size = min(kinfo.rw_size, 0x100_0000)
+            try:
+                rw_data = read_memory(kinfo.rw_base, rw_size)
+            except gdb.MemoryError:
+                # Some pages may be absent from the page tables of the halted context.
+                rw_data = b""
+                for off in range(0, rw_size, 0x1_0000):
+                    chunk_size = min(0x1_0000, rw_size - off)
+                    try:
+                        rw_data += read_memory(kinfo.rw_base + off, chunk_size)
+                    except gdb.MemoryError:
+                        rw_data += b"\0" * chunk_size
+
+            unpack = u64 if current_arch.ptrsize == 8 else u32
+            for needle in [b"swapper/0\0", b"swapper\0"]:
+                pos = -1
+                while True:
+                    pos = rw_data.find(needle, pos + 1)
+                    if pos == -1:
+                        break
+
+                    # `comm` is in the latter half of task_struct, so the object starts
+                    # somewhere in the window right before it.
+                    start = max(0, pos - 0x2000)
+                    start += -(kinfo.rw_base + start) % current_arch.ptrsize
+                    counter = collections.Counter()
+                    for i in range(start, pos - current_arch.ptrsize + 1, current_arch.ptrsize):
+                        v = unpack(rw_data[i:i + current_arch.ptrsize])
+                        if kinfo.rw_base + start <= v < kinfo.rw_base + i:
+                            counter[v] += 1
+
+                    for task in sorted(counter):
+                        if counter[task] < 3:
+                            continue
+                        if get_offset_tasks(task) is not None:
+                            return task
         return None
 
     @staticmethod
