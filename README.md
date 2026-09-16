@@ -243,6 +243,8 @@ For a comprehensive list and additional details, see [docs/SUPPORTED-MODE.md](do
     - ![](images/kbdev.png)
 - `kfilesystems`: dumps supported file systems.
     - ![](images/kfilesystems.png)
+- `kmount`: dumps the mount tree of each mount namespace.
+    - ![](images/kmount.png)
 - `kclock-source`: dumps the clocksource list.
     - ![](images/kclock-source.png)
 - `kdmesg`: dumps the ring buffer of the dmesg area.
@@ -267,8 +269,23 @@ For a comprehensive list and additional details, see [docs/SUPPORTED-MODE.md](do
     - ![](images/knetdev.png)
 - `kworkqueue`: dumps workqueue items and inspect embedded work_struct objects.
     - ![](images/kworkqueue.png)
+- `kwalk`: dumps the entries held by the well-known kernel data structures.
+    - ![](images/kwalk.png)
+- `kobj`: identifies an arbitrary kernel address.
+    - ![](images/kobj.png)
+- `kpath`: reconstructs the pathname of a dentry, path, file or mount.
+    - ![](images/kpath.png)
+- `ksock`: walks from a file descriptor (or a raw struct sock) through socket, sock and its skb queues.
+- `kskb`: parses a single sk_buff and show its buffer layout, refcount and fragment information.
+    - ![](images/ksock-kskb.png)
+- `kcred`: dumps the credentials of each task.
+    - ![](images/kcred.png)
+- `klsm`: dumps the registered Linux Security Module hooks.
+    - ![](images/klsm.png)
+- `kpercpu`: resolves the per-cpu variables and the per-cpu areas.
 - `ksearch-code-ptr`: searches for the code pointer in kernel data area.
     - ![](images/ksearch-code-ptr.png)
+- `krefs`: searches the kernel pointers that reference the specified address.
 - `kdiff`: compares kernel information (function pointers, etc.) at two points in time.
 - `thunk-tracer`: collects and displays the thunk function addresses that are called automatically (x64/x86 only).
     - If this address comes from RW area, this is useful for getting RIP.
@@ -677,8 +694,6 @@ For a comprehensive list and additional details, see [docs/SUPPORTED-MODE.md](do
     - ![](images/convert.png)
 - `addressify`: converts reverse-order hex values to address.
     - ![](images/addressify.png)
-- `walk-link-list`: walks the link list.
-    - ![](images/walk-link-list.png)
 - `hexdump-flexible`: displays the hexdump with user defined format.
     - ![](images/hexdump-flexible.png)
 - `hash`: calculates various (450+) hashes, or show known-collisions.

@@ -3766,37 +3766,6 @@ options:
   -n, --no-pager  do not use the pager.
 ```
 
-## walk-link-list
-
-Walk the link list.
-
-- Alias: `chain`
-
-### Syntax
-
-```text
-usage: walk-link-list [-h] [-o NEXT_OFFSET] [-A DUMP_BYTES_AFTER] [-B DUMP_BYTES_BEFORE] [--adjust-output ADJUST_OUTPUT] [-n] ADDRESS
-
-positional arguments:
-  ADDRESS               start address to walk.
-
-options:
-  -h, --help            show this help message and exit
-  -o NEXT_OFFSET        offset of the next(or prev) pointer in the target structure.
-  -A DUMP_BYTES_AFTER   dump bytes after link-list location.
-  -B DUMP_BYTES_BEFORE  dump bytes before link-list location.
-  --adjust-output ADJUST_OUTPUT
-                        displays the result of subtracting a specific value to the output.
-  -n, --no-pager        do not use the pager.
-```
-
-### Examples
-
-```gdb
-walk-link-list 0xffff9c60800597e0       # walk list_head.next
-walk-link-list -o 8 0xffff9c60800597e0  # walk list_head.prev
-```
-
 ## xc
 
 Dump address like x/x command, but with coloring at some intervals.
@@ -7828,6 +7797,53 @@ options:
   -h, --help  show this help message and exit
 ```
 
+## kpercpu
+
+Resolve the per-cpu variables and the per-cpu areas.
+
+
+### Syntax
+
+```text
+usage: kpercpu [-h] [-c CPU] [-o OFFSET] [-l] [-x SIZE] [-n] [-q] [SYMBOL|ADDRESS]
+
+positional arguments:
+  SYMBOL|ADDRESS       a per-cpu symbol name to resolve, or an address to reverse-resolve.
+
+options:
+  -h, --help           show this help message and exit
+  -c, --cpu CPU        filter by specific cpu.
+  -o, --offset OFFSET  add this offset to the resolved symbol.
+  -l, --list           list all the static per-cpu symbols.
+  -x, --dump SIZE      hexdump SIZE bytes at each resolved address.
+  -n, --no-pager       do not use the pager.
+  -q, --quiet          show result only.
+```
+
+### Examples
+
+```gdb
+kpercpu                        # show the per-cpu area of each cpu
+kpercpu runqueues              # show per_cpu(runqueues, cpu) of each cpu
+kpercpu -o 0x120 runqueues     # add an offset to the resolved symbol
+kpercpu 0xffff888100600120     # tell which cpu and which variable the address belongs to
+kpercpu -l                     # list all the static per-cpu symbols
+```
+
+### Notes
+
+```text
+per_cpu(var, cpu) is `&var + __per_cpu_offset[cpu]`. x86 links the per-cpu section
+at 0 so `&var` is a small offset there, while the other architectures link it at a
+kernel address; the formula is the same on both.
+
+`__per_cpu_start` and the per-cpu variables are data symbols, so a
+CONFIG_KALLSYMS_ALL=n kernel has none of them. `__per_cpu_start` is recovered from
+the code of `__is_kernel_percpu_address`, which keeps the areas and the reverse
+lookup working, but there the variables cannot be named nor looked up by name.
+CONFIG_SMP=n has no `__per_cpu_offset` at all, and `&var` is the address as is.
+```
+
 ## ks-selftest
 
 Compare kernel-address heuristic finders with kallsyms results.
@@ -8334,10 +8350,10 @@ ksymaddr-remote commit_creds prepare_kernel_cred  # OR search
 
 ```text
 GEF caches offset information for parsing kallsyms to speed up this command.
-Each cache is used based on kernel version strings.
-In other words, in cases where the kernel version is exactly the same and
-the CONFIG is slightly different, the offset will be applied incorrectly.
-In this case, rescan with `ks -rv` or clear the cache with `gef reset-cache --hard`.
+Each cache is used based on kernel version strings, so kernels of the same version
+share one cache even if the CONFIG is different. GEF checks the cached offsets
+against the running kernel and parses again when they do not match.
+To drop a cache by hand, rescan with `ks -rv` or use `gef reset-cache --hard`.
 ```
 
 ## ksymaddr-remote-apply
@@ -8419,6 +8435,80 @@ options:
 ```
 
 # 06-f. Qemu-system/KGDB Cooperation - Linux Task
+## kcred
+
+Dump the credentials of each task.
+
+
+### Syntax
+
+```text
+usage: kcred [-h] [-hh] [-T TASK_FILTER] [-c CRED_FILTER] [-f FILTER] [-s] [-v] [-t] [-u] [--meta] [-n] [-q] [PID]
+
+positional arguments:
+  PID                   the pid of the task to display.
+
+options:
+  -h, --help            show this help message and exit
+  -hh, --help-simple    show help without ASCII diagram.
+  -T, --task-filter TASK_FILTER
+                        task address filter.
+  -c, --cred-filter CRED_FILTER
+                        cred address filter.
+  -f, --filter FILTER   comm string REGEXP filter.
+  -s, --shared          list the tasks that share the same cred, instead of dumping each cred.
+  -v, --verbose         dump each cred in detail even if no task is specified.
+  -t, --print-thread    display by thread (LWP), not by process.
+  -u, --user-process-only
+                        display user-land process (+ thread) only.
+  --meta                display offset information.
+  -n, --no-pager        do not use the pager.
+  -q, --quiet           enable quiet mode.
+```
+
+### Examples
+
+```gdb
+kcred -q
+kcred 1337
+kcred 1337 --shared
+kcred -f 'sh$' -v
+```
+
+### Notes
+
+```text
+This command requires CONFIG_RANDSTRUCT=n.
+
+Simplified credential structure:
+
++-task_struct---+     +-->+-cred-------------------+
+| ...           |     |   | usage                  |
+| real_cred     |-----+   | uid, gid               |
+| cred          |-----+   | suid, sgid             |
+| comm[16]      |         | euid, egid             |
+| ...           |         | fsuid, fsgid           |
++---------------+         | securebits             |
+                          | cap_inheritable        |
+                          | cap_permitted          |
+                          | cap_effective          |
+                          | cap_bset               |
+                          | cap_ambient (v4.3~)    |
+                          | (keyrings; CONFIG_KEYS)|
+                          | security               |--->LSM blob
+                          | user                   |
+                          | user_ns                |--->user_namespace
+                          | ucounts (v5.12.17~)    |
+                          | group_info             |--->+-group_info-+
+                          | ...                    |    | usage      |
+                          +------------------------+    | ngroups    |
+                                                        | gid[]      |
+                                                        +------------+
+
+`real_cred` is the objective credential, `cred` is the subjective one. They differ only
+while the task acts on behalf of another (e.g., inside override_creds()).
+```
+
 ## kfiles
 
 Display open files for each process (shortcut for `ktask -quF`).
@@ -8972,7 +9062,6 @@ Simplified dmesg structure (~5.10):
 
 Dump filesystems.
 
-- Alias: `kmounts`
 
 ### Syntax
 
@@ -9108,6 +9197,68 @@ Simplified irq structure:
                            +-----------------+
 ```
 
+## klsm
+
+Dump the registered Linux Security Module hooks.
+
+
+### Syntax
+
+```text
+usage: klsm [-h] [-hh] [-a] [--meta] [-n] [-q] [HOOK ...]
+
+positional arguments:
+  HOOK                the hook point name, or a part of it. (e.g., file_open)
+
+options:
+  -h, --help          show this help message and exit
+  -hh, --help-simple  show help without ASCII diagram.
+  -a, --all           also show the hook points that have no callback.
+  --meta              display offset information.
+  -n, --no-pager      do not use the pager.
+  -q, --quiet         show result only.
+```
+
+### Examples
+
+```gdb
+klsm                   # list every hook point that has a callback
+klsm file_open         # list the callbacks of the hook points matching `file_open`
+klsm -a                # list every hook point including the empty ones
+```
+
+### Notes
+
+```text
+The layout of the LSM framework changed twice, and all three are supported:
+
+  ~v4.1  : a single `struct security_operations` pointed to by `security_ops`
+  v4.2~  : `security_hook_heads`, an array of the lists of `struct security_hook_list`
+  v6.12~ : one static call slot per (hook point, LSM), `__SCK__lsm_static_call_*`
+
++-security_ops(~v4.1)-+
+| name[]              |
+| ptrace_access_check |--> callback
+| ptrace_traceme      |--> callback
+| ...                 |
++---------------------+
+
++-security_hook_heads(v4.2~)-+     +-security_hook_list--+
+| ptrace_access_check        |---->| list                |--> next hook_list
+| ptrace_traceme             |     | head                |--> the head at the left
+| ...                        |     | hook                |--> callback
++----------------------------+     | lsm (v4.12~)        |--> "selinux"
+                                   +---------------------+
+
++-__SCK__lsm_static_call_<hook>_<N>(v6.12~)-+
+| func                                      |--> callback
++-------------------------------------------+
+
+The hook point names are not stored anywhere, so they are recovered by
+disassembling each `security_*` dispatcher and picking up the head (or the member
+offset) it refers to. A head that no dispatcher pointed at is shown as `hook[NN]`.
+```
+
 ## kmod
 
 Display kernel module list.
@@ -9143,37 +9294,115 @@ This command requires CONFIG_RANDSTRUCT=n.
 
 Simplified module structure:
 
-                   +-module------------------+
-+-modules-----+    | ...                     |
-| list_head   |--->| list                    |--->...
-+-------------+    | name[]                  |
-                   | ...                     |
-                   | mem[] (v6.4~)           |
-                   |     base                |
-                   |     size                |
-                   |     ...                 |
-                   | init_layout (v4.5~v6.4) |
-                   |     base                |
-                   |     size                |
-                   |     text_size           |
-                   |     ro_size             |
-                   |     ro_after_init_size  |
-                   |     ...                 |
-                   | module_core    (~v4.4)  |
-                   | init_size      (~v4.4)  |
-                   | core_size      (~v4.4)  |
-                   | init_text_size (~v4.4)  |  +-->+-mod_kallsyms---+
-                   | core_text_size (~v4.4)  |  |   | symtab         |
-                   | ...                     |  |   | num_symtab     |
-                   | kallsyms                |--+   | strtab         |
-                   | ...                     |      | typetab (v5.2~)|
-                   +-------------------------+      +----------------+
+                   +-module-------------------------+
++-modules-----+    | ...                            |
+| list_head   |--->| list                           |--->...
++-------------+    | name[]                         |
+                   | ...                            |
+                   | mem[] (v6.4~)                  |
+                   |     base                       |
+                   |     size                       |
+                   |     ...                        |
+                   | core_layout (v4.5~v6.4)        |
+                   |     base                       |
+                   |     size                       |
+                   |     text_size                  |
+                   |     ro_size                    |
+                   |     ro_after_init_size (v4.8~) |
+                   |     ...                        |
+                   | module_core    (~v4.4)         |
+                   | init_size      (~v4.4)         |
+                   | core_size      (~v4.4)         |
+                   | init_text_size (~v4.4)         |  +-->+-mod_kallsyms---+
+                   | core_text_size (~v4.4)         |  |   | symtab         |
+                   | ...                            |  |   | num_symtab     |
+                   | kallsyms                       |--+   | strtab         |
+                   | ...                            |      | typetab (v5.2~)|
+                   +--------------------------------+      +----------------+
 
 Notes for -a option:
 - You can check the added symbols with the `symbols` command.
 - Added symbols are in the format `module_name.symbol` to avoid collisions.
   When used from the command line, they must be enclosed in single quotes.
   e.g., `p 'virtio_net.__this_module'`
+```
+
+## kmount
+
+Dump the mount tree of each mount namespace.
+
+
+### Syntax
+
+```text
+usage: kmount [-h] [-hh] [-p PID] [-T TASK] [-a] [-t] [--meta] [-n] [-q]
+
+options:
+  -h, --help          show this help message and exit
+  -hh, --help-simple  show help without ASCII diagram.
+  -p, --pid PID       dump the mount namespace of this pid.
+  -T, --task TASK     dump the mount namespace of this task_struct.
+  -a, --all           dump every mount namespace.
+  -t, --tasks         list the tasks of each mount namespace.
+  --meta              display offset information.
+  -n, --no-pager      do not use the pager.
+  -q, --quiet         enable quiet mode.
+```
+
+### Examples
+
+```gdb
+kmount
+kmount --pid 1337
+kmount --all --tasks
+```
+
+### Notes
+
+```text
+This command requires CONFIG_RANDSTRUCT=n.
+
+The tree is walked over mnt_mounts/mnt_child, so it holds every mount of the namespace,
+including the bind mounts that share one super_block. `kfilesystems` is the other half of
+the picture: it lists the registered filesystem types and every super_block they own,
+including the ones that are not mounted anywhere.
+
+A mount namespace is identified by the root mount its members reach by walking mnt_parent,
+so the namespaces that hold no task are invisible. Without --pid/--task the whole namespace
+is printed with absolute pathnames. With them the tree starts at the mount of task->fs->root
+and the pathnames stop there, which is the same view /proc/pid/mountinfo gives. A mount that
+is below that mount but not reachable from that root, e.g. when the task is also chrooted,
+is marked `outside-root` and printed with its absolute pathname.
+
+Simplified mount tree structure:
+
++-task_struct--+     +-fs_struct-+     +-path----+
+| ...          |     | ...       |     | mnt     |--+
+| fs           |---->| root      |---->| dentry  |  |
+| ...          |     | pwd       |     +---------+  |
++--------------+     +-----------+                  |
+                                                    |
+    +-----------------------------------------------+
+    |
+    v
++-mount----------+<-+     +-mount----------+<-+     +-mount----------+
+| mnt_parent     |--+<----| mnt_parent     |  +<----| mnt_parent     |
+| mnt_mountpoint |     +--| mnt_mountpoint |     +--| mnt_mountpoint |
+| mnt (vfsmount) |     |  | mnt (vfsmount) |     |  | mnt (vfsmount) |
+|   mnt_root     |     |  |   mnt_root     |     |  |   mnt_root     |
+|   mnt_sb       |-+   |  |   mnt_sb       |     |  |   mnt_sb       |
+|   mnt_flags    | |   |  |   mnt_flags    |     |  |   mnt_flags    |
+| mnt_mounts     |-|-+ |  | mnt_mounts     |--+  |  | mnt_mounts     |
+| mnt_child      | | +-|->| mnt_child      |  +--|->| mnt_child      |
+| mnt_devname    | |   |  | mnt_devname    |     |  | mnt_devname    |
++----------------+ |   |  +----------------+     |  +----------------+
+                   |   +-->dentry                +-->dentry
+                   v
+            +-super_block-+     +-file_system_type-+
+            | ...         |     | name             |-->"ext4"
+            | s_type      |---->| ...              |
+            | ...         |     +------------------+
+            +-------------+
 ```
 
 ## knetdev
@@ -9254,6 +9483,80 @@ Supported structure:
   proc_ops, regulator_ops, seq_operations, smp_operations,
   super_operations, tty_ldisc_ops, tty_operations, tty_port_operations,
   ucsi_operations, vm_operations_struct,
+```
+
+## kpath
+
+Reconstruct the pathname of a dentry, path, file or mount.
+
+
+### Syntax
+
+```text
+usage: kpath [-h] [-hh] [-t {auto,dentry,path,file,mount,vfsmount}] [-p PID] [-T TASK] [-a] [--meta] [-n] [-q] ADDRESS
+
+positional arguments:
+  ADDRESS               the address of struct dentry, path, file, mount or vfsmount.
+
+options:
+  -h, --help            show this help message and exit
+  -hh, --help-simple    show help without ASCII diagram.
+  -t, --type {auto,dentry,path,file,mount,vfsmount}
+                        the type of ADDRESS. (default: auto)
+  -p, --pid PID         resolve the path as the task of this pid sees it.
+  -T, --task TASK       resolve the path as this task_struct sees it.
+  -a, --all             print every mount the dentry is reachable through.
+  --meta                display offset information.
+  -n, --no-pager        do not use the pager.
+  -q, --quiet           enable quiet mode.
+```
+
+### Examples
+
+```gdb
+kpath 0xffff888003b0a000
+kpath --pid 1 0xffff888003b0a000
+kpath --all 0xffff888003b0a000
+```
+
+### Notes
+
+```text
+This command requires CONFIG_RANDSTRUCT=n.
+
+Without --pid/--task the pathname is absolute, i.e. it is resolved up to the root of the
+mount namespace. With --pid/--task the walk stops at task->fs->root instead, so the result
+is what that task sees. `outside-root` means the target is not reachable from that root,
+and the printed path is the absolute one.
+
+A bare dentry does not carry a mount, so every mount whose mnt_root is on its d_parent
+chain is a possible answer. `ambiguous` is printed when there is more than one, and --all
+lists them. The target mount namespace is searched first; the other namespaces are searched
+only when that finds nothing, and `no-mount` means no namespace holds the dentry, which is
+normal for pipefs/sockfs/anon_inodefs and for a mount that is already unmounted.
+
+Simplified path structure:
+
++-file-----------+     +-path----+
+| ...            |     | mnt     |--+
+| f_path         |---->| dentry  |--|--+
+| ...            |     +---------+  |  |
++----------------+                  |  |
+                                    |  |
+    +-------------------------------+  |
+    |                                  |
+    v                                  v
++-mount----------+<-+     +----------->+-dentry-----+
+| mnt_hash       |  |     |            | ...        |
+| mnt_parent     |--+     |            | d_parent   |-->dentry
+| mnt_mountpoint |--------+            | ...        |
+| mnt (vfsmount) |                     | d_name     |
+|   mnt_root     |-------------------->|   name     |-->"foo"
+|   mnt_sb       |-->super_block       | d_inode    |-->inode
+| ...            |                     | d_iname    |
+| mnt_mounts     |--+                  +------------+
+| mnt_child      |  |
++----------------+  +-->child mounts
 ```
 
 ## kpcidev
@@ -9368,6 +9671,186 @@ Simplified pipe structure:
                                       +------------------------+     +-------------+
                                                                      | ...         |
                                                                      +-------------+
+```
+
+## krefs
+
+Search the kernel pointers that reference the specified address.
+
+
+### Syntax
+
+```text
+usage: krefs [-h] [-d] [-p] [-c CACHE] [-o OBJECT] [-r RANGE] [-M] [-t TOLERANCE] [-l LIMIT] [--no-owner] [-n] [-q] ADDRESS
+
+positional arguments:
+  ADDRESS               the address which the found pointers refer to.
+
+options:
+  -h, --help            show this help message and exit
+  -d, --data            scan the static data of the kernel image. (default if no area is given)
+  -p, --percpu          scan the per-cpu areas.
+  -c, --cache CACHE     scan the slab pages of this kmem_cache.
+  -o, --object OBJECT   scan the slab object that contains this address. (e.g., a task_struct)
+  -r, --range RANGE     scan this address range. (START-END or START+SIZE)
+  -M, --physmap         scan every writable kernel mapping. (very slow)
+  -t, --tolerance TOLERANCE
+                        also report the pointers into [ADDRESS, ADDRESS+TOLERANCE].
+  -l, --limit LIMIT     stop after this many hits. 0 means unlimited. (default: 256)
+  --no-owner            do not resolve the owner of each hit.
+  -n, --no-pager        do not use the pager.
+  -q, --quiet           show result only.
+```
+
+### Examples
+
+```gdb
+krefs 0xffff888012345600                        # scan the static data of the kernel image
+krefs -p 0xffff888012345600                     # scan the per-cpu areas too
+krefs -c filp 0xffff888012345600                # scan the slab pages of the filp cache
+krefs -o 0xffff888045670000 0xffff888012345600  # scan one slab object (e.g. a task_struct)
+krefs -r 0xffff888012340000+0x1000 0xffff888012345600
+krefs -t 0x100 0xffff888012345600               # also catch the interior pointers
+```
+
+### Notes
+
+```text
+Scanning the whole memory is too slow over a gdb stub, so the search area has to be
+narrowed down. The default area is the static data of the kernel image, which is
+where the global anchors of a leaked object live.
+
+Each hit is annotated with the owner of the location: the kallsyms symbol for the
+kernel image, the cpu and the variable for a per-cpu area, and the slab cache and
+the object boundary (via `slab-contains`) for a slab object.
+
+Use `kobj ADDRESS` to identify the referenced object itself.
+```
+
+## kskb
+
+Parse a single sk_buff and show its buffer layout, refcount and fragment information.
+
+
+### Syntax
+
+```text
+usage: kskb [-h] [-hh] [-d] [-n] [-q] [SKB_ADDR]
+
+positional arguments:
+  SKB_ADDR            a `struct sk_buff` address.
+
+options:
+  -h, --help          show this help message and exit
+  -hh, --help-simple  show help without ASCII diagram.
+  -d, --dump          hexdump the first 64 bytes of the data buffer.
+  -n, --no-pager      do not use the pager.
+  -q, --quiet         show result only.
+```
+
+### Examples
+
+```gdb
+kskb 0xffff888012345000
+kskb -d 0xffff888012345000
+```
+
+### Notes
+
+```text
+Simplified sk_buff structure:
+
++-sk_buff----+
+| next, prev |  list linkage (rbnode/list in a union)
+| ...        |
+| len        |  total length (headlen + data_len)
+| data_len   |  bytes held in fragments (nonlinear)
+| ...        |
+| tail       |  offset of the end of packet data
+| end        |  offset of skb_shared_info
+| head       |  start of the allocated buffer
+| data       |  start of packet data
+| truesize   |
+| users      |  refcount
+| ...        |
++------------+
+
+head        data          tail          head+end
+|           |             |             |
+v           v             v             v
++-----------+-------------+-------------+------------------+
+|  headroom | packet data |  tailroom   | skb_shared_info  |
++-----------+-------------+-------------+------------------+
+|<-- data ->|             |             |
+|<-------- tail --------->|             |
+|<---------------- end ---------------->|
+
+skb_shared_info (at head + end) holds nr_frags, frag_list, ...
+On 64-bit, tail/end are u32 offsets from head; on 32-bit they are absolute pointers.
+```
+
+## ksock
+
+Walk from a file descriptor (or a raw struct sock) through socket, sock and its skb queues.
+
+
+### Syntax
+
+```text
+usage: ksock [-h] [-hh] [-F FD] [-T TASK_FILTER] [-f COMM_FILTER] [-l] [-d] [--meta] [-n] [-q] [SOCK_ADDR]
+
+positional arguments:
+  SOCK_ADDR             a raw `struct sock` address to inspect directly.
+
+options:
+  -h, --help            show this help message and exit
+  -hh, --help-simple    show help without ASCII diagram.
+  -F, --fd FD           filter by this file descriptor number.
+  -T, --task-filter TASK_FILTER
+                        filter by specific task_struct address.
+  -f, --comm-filter COMM_FILTER
+                        comm string REGEXP filter.
+  -l, --list-skb        list each skb address in the queues.
+  -d, --dump            hexdump the first 64 bytes of each listed skb's data buffer (implies --list-skb).
+  --meta                display offset information.
+  -n, --no-pager        do not use the pager.
+  -q, --quiet           show result only.
+```
+
+### Examples
+
+```gdb
+ksock -q
+ksock --fd 5
+ksock -d --fd 5
+ksock 0xffff888012345000
+```
+
+### Notes
+
+```text
+This command requires CONFIG_RANDSTRUCT=n.
+
+Simplified socket structure:
+
++-file------+  +->+-socket----+  +->+-sock--------------------+
+| ...       |  |  | state     |  |  | (sock_common)           |
+| private   |--+  | type      |  |  |   skc_family            |
+| ...       |     | flags     |  |  |   skc_state             |
++-----------+     | file      |  |  |   skc_prot              |--->struct proto (name)
+                  | sk        |--+  | ...                     |
+                  | ops       |     | sk_receive_queue        |--->skb->skb->...
+                  | ...       |     | sk_write_queue          |--->skb->skb->...
+                  +-----------+     | sk_error_queue          |--->skb->skb->...
+                                    | sk_state_change         |
+                                    | sk_data_ready           |
+                                    | sk_write_space          |
+                                    | sk_error_report         |
+                                    | ...                     |
+                                    | sk_destruct             |
+                                    +-------------------------+
+
+Use `kskb ADDR` to inspect a single sk_buff in detail.
 ```
 
 ## ksysctl
@@ -9494,6 +9977,272 @@ Simplified hrtimer structure (per-cpu):
 | clock_bases[8]     |        | ...           |
 |   ...              |        +---------------+
 +--------------------+
+```
+
+## kwalk
+
+The base command to dump the entries held by the well-known kernel data structures.
+
+
+### Syntax
+
+```text
+usage: kwalk [-h] [-hh] {list,rbtree,radix,xarray,maple} ...
+
+options:
+  -h, --help            show this help message and exit
+  -hh, --help-simple    show help without ASCII diagram.
+
+command:
+  {list,rbtree,radix,xarray,maple}
+```
+
+### Notes
+
+```text
+Which sub-command holds the index-to-pointer mapping depends on the kernel version:
+
+  ~v4.19: radix_tree -> `kwalk radix`
+  v4.20~: xarray     -> `kwalk xarray` (radix_tree_root is just renamed to xarray)
+  v6.1~ : maple_tree -> `kwalk maple`  (only where it replaced the rbtree or the xarray)
+
+`kwalk list` and `kwalk rbtree` work on any version, and also outside the kernel.
+
+Simplified structures:
+
++-list_head---+              +-rb_root-------------+
+| next        |--> entry     | rb_node             |--+
+| prev        |--> entry     +---------------------+  |
++-------------+                                       v
+                                   +-rb_node-------------+
+                                   | __rb_parent_color   |
+                                   | rb_right            |--> sub-tree
+                                   | rb_left             |--> sub-tree
+                                   +---------------------+
+
++-radix_tree_root(~v4.19)-+  +-xarray(v4.20~)-+
+| height (~v4.6)          |  | xa_lock        |
+| gfp_mask                |  | xa_flags       |
+| rnode                   |  | xa_head        |
++-------------------------+  +----------------+
+             |                        |
+             +------------+-----------+
+                          v
+           +-radix_tree_node / xa_node-+
+           | shift                     |
+           | offset                    |
+           | count                     |
+           | ...                       |
+           | slots[0]                  |--> entry
+           | slots[1]                  |--> entry or sub-node
+           | ...                       |
+           | slots[15 or 63]           |
+           +---------------------------+
+
++-maple_tree(v6.1~)-+  +-->+-maple_node------+
+| ma_lock           |  |   | ...             |
+| ma_flags          |  |   | mr64|ma64|alloc |
+| ma_root           |--+   |   ...           |
++-------------------+      |   slot[]        |--> entry or sub-node
+                           +-----------------+
+```
+
+## kwalk list
+
+Walk the link list.
+
+- Alias: `walk-link-list`, `chain`, `list-dump`
+
+### Syntax
+
+```text
+usage: kwalk list [-h] [-o NEXT_OFFSET] [-A DUMP_BYTES_AFTER] [-B DUMP_BYTES_BEFORE] [--container-of CONTAINER_OF] [-n] [-q] ADDRESS
+
+positional arguments:
+  ADDRESS               start address to walk.
+
+options:
+  -h, --help            show this help message and exit
+  -o NEXT_OFFSET        offset of the next(or prev) pointer in the target structure.
+  -A DUMP_BYTES_AFTER   dump bytes after link-list location.
+  -B DUMP_BYTES_BEFORE  dump bytes before link-list location.
+  --container-of CONTAINER_OF
+                        also displays each entry minus this offset, like container_of().
+  -n, --no-pager        do not use the pager.
+  -q, --quiet           show result only.
+```
+
+### Examples
+
+```gdb
+kwalk list 0xffff9c60800597e0                      # walk list_head.next
+kwalk list -o 8 0xffff9c60800597e0                 # walk list_head.prev
+kwalk list --container-of 0x10 0xffff9c60800597e0  # also show each entry as container_of()
+```
+
+### Notes
+
+```text
+`-o` is the offset of the pointer to follow, so it is 0 for list_head.next,
+the pointer size for list_head.prev, and offsetof(the struct, next) for a
+singly linked list of the structs.
+```
+
+## kwalk maple
+
+Dump the entries of the maple tree.
+
+- Alias: `maple-dump`
+
+### Syntax
+
+```text
+usage: kwalk maple [-h] [-o ROOT_OFFSET] [-m MAX_OFFSET] [--container-of CONTAINER_OF] [-n] [-q] ADDRESS
+
+positional arguments:
+  ADDRESS               the address of the struct including the maple_tree.
+
+options:
+  -h, --help            show this help message and exit
+  -o, --root-offset ROOT_OFFSET
+                        offsetof(the struct, ma_root). it is searched if not given.
+  -m, --max-offset MAX_OFFSET
+                        the search range of offsetof(the struct, ma_root). (default: ptrsize*0x20)
+  --container-of CONTAINER_OF
+                        also displays each entry minus this offset, like container_of().
+  -n, --no-pager        do not use the pager.
+  -q, --quiet           show result only.
+```
+
+### Examples
+
+```gdb
+kwalk maple 0xffff972801b78a00          # dump the vm_area_structs of mm_struct.mm_mt
+kwalk maple -o 0x48 0xffff972801b78a00  # skip searching offsetof(the struct, ma_root)
+```
+
+### Notes
+
+```text
+The maple_tree is introduced at v6.1 for mm_struct.mm_mt, and v6.5 for sparse_irqs.
+```
+
+## kwalk radix
+
+Dump the entries of the radix tree.
+
+- Alias: `radix-dump`
+
+### Syntax
+
+```text
+usage: kwalk radix [-h] [-o RNODE_OFFSET] [-m MAX_OFFSET] [--container-of CONTAINER_OF] [-n] [-q] ADDRESS
+
+positional arguments:
+  ADDRESS               the address of the struct including the radix_tree_root.
+
+options:
+  -h, --help            show this help message and exit
+  -o, --rnode-offset RNODE_OFFSET
+                        offsetof(the struct, rnode). it is searched if not given.
+  -m, --max-offset MAX_OFFSET
+                        the search range of offsetof(the struct, rnode). (default: ptrsize*10)
+  --container-of CONTAINER_OF
+                        also displays each entry minus this offset, like container_of().
+  -n, --no-pager        do not use the pager.
+  -q, --quiet           show result only.
+```
+
+### Examples
+
+```gdb
+kwalk radix 0xffffffff82640e60        # dump the entries of irq_desc_tree
+kwalk radix -o 8 0xffffffff82640e60   # skip searching offsetof(the struct, rnode)
+```
+
+### Notes
+
+```text
+The radix_tree_root is renamed to xarray at v4.20, so use `kwalk xarray` for v4.20 and later.
+A tree holding only one item keeps it in rnode without the tag, which is indistinguishable
+from any other pointer. Pass `--rnode-offset` explicitly for such a tree.
+```
+
+## kwalk rbtree
+
+Dump the nodes of the red-black tree.
+
+- Alias: `rbtree-dump`
+
+### Syntax
+
+```text
+usage: kwalk rbtree [-h] [-r] [--container-of CONTAINER_OF] [-n] [-q] ADDRESS
+
+positional arguments:
+  ADDRESS               the address of the struct rb_root (or rb_root_cached).
+
+options:
+  -h, --help            show this help message and exit
+  -r, --rb-node         treat ADDRESS as a struct rb_node instead of a struct rb_root.
+  --container-of CONTAINER_OF
+                        also displays each entry minus this offset, like container_of().
+  -n, --no-pager        do not use the pager.
+  -q, --quiet           show result only.
+```
+
+### Examples
+
+```gdb
+kwalk rbtree 0xffff9c6081b3d7a0        # dump the rb_nodes under the rb_root
+kwalk rbtree -r 0xffff9c6081b3d7a8     # dump the rb_nodes under the rb_node
+```
+
+### Notes
+
+```text
+The entries are dumped in pre-order, not sorted by key.
+struct rb_root_cached starts with a struct rb_root, so pass its address as is.
+```
+
+## kwalk xarray
+
+Dump the entries of the xarray.
+
+- Alias: `xarray-dump`
+
+### Syntax
+
+```text
+usage: kwalk xarray [-h] [-o HEAD_OFFSET] [-m MAX_OFFSET] [--container-of CONTAINER_OF] [-n] [-q] ADDRESS
+
+positional arguments:
+  ADDRESS               the address of the struct including the xarray.
+
+options:
+  -h, --help            show this help message and exit
+  -o, --head-offset HEAD_OFFSET
+                        offsetof(the struct, xa_head). it is searched if not given.
+  -m, --max-offset MAX_OFFSET
+                        the search range of offsetof(the struct, xa_head). (default: ptrsize*10)
+  --container-of CONTAINER_OF
+                        also displays each entry minus this offset, like container_of().
+  -n, --no-pager        do not use the pager.
+  -q, --quiet           show result only.
+```
+
+### Examples
+
+```gdb
+kwalk xarray 0xffffffff82640e60        # dump the entries of irq_desc_tree
+kwalk xarray -o 8 0xffffffff82640e60   # skip searching offsetof(the struct, xa_head)
+```
+
+### Notes
+
+```text
+The xarray is introduced at v4.20, so use `kwalk radix` for v4.19 and earlier.
+struct idr starts with a struct radix_tree_root (or xarray), so pass its address as is.
 ```
 
 ## kworkqueue
@@ -9763,6 +10512,43 @@ options:
 ```text
 This command requires CONFIG_SYSFS=y.
 CONFIG_SLUB_TINY=y is unsupported because slab sysfs is unavailable.
+```
+
+## kobj
+
+Identify an arbitrary kernel address: mapping, allocator, slab cache, object base/offset and a type candidate.
+
+
+### Syntax
+
+```text
+usage: kobj [-h] [-v] [-r] [-q] ADDRESS
+
+positional arguments:
+  ADDRESS        target address.
+
+options:
+  -h, --help     show this help message and exit
+  -v, --verbose  also list caches merged into the same physical cache.
+  -r, --rescan   do not use cache in underlying commands.
+  -q, --quiet    suppress progress messages, show result only.
+```
+
+### Examples
+
+```gdb
+kobj 0xffff888012345678
+```
+
+### Notes
+
+```text
+Unified resolver combining kvmmap/virt2page/pageinfo/slab-contains/buddy-contains/vmalloc-dump.
+The type candidate is inferred from the slab cache name, so `Confidence` is reported honestly:
+mergeable caches (kmalloc-*) and unaligned addresses lower it. SLUB may merge dedicated caches,
+so use -v to list the caches sharing the same physical kmem_cache via kmem-cache-alias.
+Page-level classification (buddy/page-type) relies on pageinfo and requires v4.18 or later;
+slab object resolution works on older kernels too.
 ```
 
 ## slab-contains
