@@ -132520,7 +132520,7 @@ class KmemCacheAliasCommand(GenericCommand, BufferingOutput):
 
         found = False
         # print
-        for name, v in sorted_alias_groups:
+        for _name, v in sorted_alias_groups:
             display_name = v["name"]
             # filtering by name
             if self.args.names:
@@ -132537,9 +132537,7 @@ class KmemCacheAliasCommand(GenericCommand, BufferingOutput):
             # print flat
             found = True
             if v["object_size"] == 0:
-                self.out.append(fmt.format(
-                    "-", "-", display_name, v["alias"], "<UNUSED>", "-",
-                ))
+                self.out.append(fmt.format("-", "-", display_name, v["alias"], "<UNUSED>", "-"))
             else:
                 object_size = "{0:d} ({0:#x})".format(v["object_size"])
                 chunk_size = "{0:d} ({0:#x})".format(v["chunk_size"])
