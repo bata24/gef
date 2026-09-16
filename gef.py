@@ -6335,73 +6335,6 @@ class Symbol:
             return " <{}+{:#x}>".format(sym_name, sym_offset)
 
     @staticmethod
-    def get_ksymaddr(sym):
-        """e.g., 'commit_creds' -> 0xffffffff9f6bd2a0"""
-        out = Symbol.get_ksymaddr_multiple(sym)
-        if not out:
-            return None
-        return out[0]
-
-    @staticmethod
-    def get_kallsyms(parse=True):
-        """Return ([[addr, name, type], ...], {name: [addr, ...]}), or None if unavailable.
-        With `parse=False`, return None instead of parsing when it is not parsed yet.
-        Some callers must not trigger a parse, e.g. to avoid a recursion."""
-        if Ksym.kallsyms is None:
-            if not parse:
-                return None
-            # Run the command once so that its gdb mode and arch guards are applied.
-            # The keyword matches nothing, so it does not print the whole symbol table.
-            try:
-                gdb.execute("ksymaddr-remote --quiet --no-pager --exact ''", to_string=True)
-            except gdb.error:
-                return None
-            if Ksym.kallsyms is None:
-                return None
-        return Ksym.kallsyms, Ksym.kallsyms_map
-
-    @staticmethod
-    def get_ksymaddr_multiple(sym):
-        """e.g., 'set_is_seen' -> [0xffffffffba146db0,0xffffffffba6d84e0,0xffffffffba6dd170]"""
-        ret = Symbol.get_kallsyms()
-        if ret is None:
-            return None
-        kallsyms, kallsyms_map = ret
-        return list(kallsyms_map.get(sym, []))
-
-    @staticmethod
-    def get_ksymaddr_startswith(prefix):
-        """e.g., '__bpf_prog_put' -> [0xffffffff9543da90, 0xffffffff9543da30]
-
-        This takes the whole family of names, longer symbols (`__bpf_prog_put_rcu`)
-        included. The exact match comes first, then the others in address order.
-        Use `get_ksymaddr_with_split_suffix()` to stay within one function."""
-        ret = Symbol.get_kallsyms()
-        if ret is None:
-            return []
-        kallsyms, kallsyms_map = ret
-        exact = list(kallsyms_map.get(prefix, []))
-        return exact + [addr for addr, name, _typ in kallsyms if name != prefix and name.startswith(prefix)]
-
-    @staticmethod
-    def get_ksymaddr_with_split_suffix(prefix):
-        """e.g., 'do_syslog' -> [0xffffffff9543da90, 0xffffffff9543da30]
-
-        gcc numbers a split body arbitrarily (`foo.part.11`, `foo.cold.3`, ...),
-        so the exact name of the piece holding the reference is not predictable.
-        The exact match comes first, then the split pieces in address order.
-        Unlike `get_ksymaddr_startswith()`, an unrelated longer symbol
-        (`free_vmap_area` vs `free_vmap_area_noflush`) is not taken for a split
-        piece: gcc always separates the suffix it appends with a dot."""
-        ret = Symbol.get_kallsyms()
-        if ret is None:
-            return []
-        kallsyms, kallsyms_map = ret
-        exact = list(kallsyms_map.get(prefix, []))
-        # `foo._entry`, `foo.__key`, `foo.envp` and friends are the statics of `foo`, not code
-        return exact + [addr for addr, name, typ in kallsyms if name.startswith(prefix + ".") and typ.lower() in ("t", "w")]
-
-    @staticmethod
     def get_symbol_by_monitor(symbol):
         if not is_kdb():
             return None
@@ -13762,7 +13695,7 @@ def is_in_kpti_transition():
         return True
 
     # If kallsyms was already resolved, also check a known regular kernel mapping.
-    ret = Symbol.get_kallsyms(parse=False)
+    ret = Ksym.peek()
     if ret is None:
         return False
     kallsyms, kallsyms_map = ret
@@ -21991,7 +21924,7 @@ class ReadSystemRegisterForKgdbCommand(GenericCommand):
             if is_kdb():
                 address = Symbol.get_symbol_by_monitor(symbol)
             else:
-                address = Symbol.get_ksymaddr(symbol)
+                address = Ksym.get_addr(symbol)
             if address is None:
                 continue
             try:
@@ -31020,7 +30953,7 @@ class KernelChecksecCommand(GenericCommand):
         else:
             gef_print("{:<40s}: {:#x}".format("Kernel base (heuristic)", text_base))
 
-        stext = Symbol.get_ksymaddr("_stext")
+        stext = Ksym.get_addr("_stext")
         if stext is None:
             gef_print("{:<40s}: {:s}".format("Kernel base (_stext from kallsyms)", "Not found"))
         else:
@@ -31119,7 +31052,7 @@ class KernelChecksecCommand(GenericCommand):
     def check_kaslr(self):
         cfg = "CONFIG_RANDOMIZE_BASE (KASLR)"
         kcmdline = Kernel.kernel_cmdline()
-        ksym_ret = gdb.execute("ksymaddr-remote --quiet --no-pager kaslr_", to_string=True)
+        ksym_ret = Ksym.get_addrs("kaslr_", match="in")
 
         if not ksym_ret:
             additional = "`kaslr_*`: Not found"
@@ -31159,8 +31092,8 @@ class KernelChecksecCommand(GenericCommand):
             gef_print("{:<40s}: {:s}".format(cfg, Color.grayify("Unknown")))
             return
 
-        swapgs_restore_regs_and_return_to_usermode = Symbol.get_ksymaddr("swapgs_restore_regs_and_return_to_usermode")
-        commit_creds = Symbol.get_ksymaddr("commit_creds")
+        swapgs_restore_regs_and_return_to_usermode = Ksym.get_addr("swapgs_restore_regs_and_return_to_usermode")
+        commit_creds = Ksym.get_addr("commit_creds")
 
         # something is wrong
         if not swapgs_restore_regs_and_return_to_usermode or not commit_creds:
@@ -31206,7 +31139,7 @@ class KernelChecksecCommand(GenericCommand):
         kcmdline = Kernel.kernel_cmdline()
 
         if is_x86():
-            pti_init = Symbol.get_ksymaddr("pti_init")
+            pti_init = Ksym.get_addr("pti_init")
             if pti_init is None:
                 additional = "pti_init: Not found"
                 gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Unsupported", "bold red"), additional))
@@ -31245,7 +31178,7 @@ class KernelChecksecCommand(GenericCommand):
             gef_print("{:<40s}: {:s} (ARMv7 is unsupported)".format(cfg, Color.colorify("Unsupported", "bold red")))
 
         if is_arm64():
-            pti_init = Symbol.get_ksymaddr("pti_init")
+            pti_init = Ksym.get_addr("pti_init")
             if pti_init is None:
                 additional = "pti_init: Not found"
                 gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Unsupported", "bold red"), additional))
@@ -31430,7 +31363,7 @@ class KernelChecksecCommand(GenericCommand):
         cfg = "CONFIG_SLAB_VIRTUAL"
         # https://patchwork.kernel.org/project/linux-mm/patch/20230915105933.495735-12-matteorizzo@google.com/#25548022
         stw = "slub_tlbflush_worker"
-        if not Symbol.get_ksymaddr(stw):
+        if not Ksym.get_addr(stw):
             additional = "{:s}: {:s}".format(stw, "Not found")
             gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Disabled", "bold red"), additional))
             return
@@ -31458,7 +31391,7 @@ class KernelChecksecCommand(GenericCommand):
         cfg = "SELinux"
         # SELinux does not support being built as a kernel module.
         # Therefore, only symbols in the kernel can be used to determine whether SELinux is supported or not.
-        selinux_init = Symbol.get_ksymaddr("selinux_init")
+        selinux_init = Ksym.get_addr("selinux_init")
         if selinux_init is None:
             additional = "selinux_init: Not found"
             gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Unsupported", "bold red"), additional))
@@ -31466,8 +31399,8 @@ class KernelChecksecCommand(GenericCommand):
 
         kversion = Kernel.kernel_version()
         if kversion < "4.17":
-            selinux_enabled_addr = Symbol.get_ksymaddr("selinux_enabled")
-            selinux_enforcing_addr = Symbol.get_ksymaddr("selinux_enforcing")
+            selinux_enabled_addr = Ksym.get_addr("selinux_enabled")
+            selinux_enforcing_addr = Ksym.get_addr("selinux_enforcing")
             if selinux_enabled_addr is None:
                 additional = "selinux_init: Found, selinux_enabled: Not detected"
                 gef_print("{:<40s}: {:s} ({:s})".format(cfg, "Supported", additional))
@@ -31531,9 +31464,9 @@ class KernelChecksecCommand(GenericCommand):
             gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Disabled", "bold red"), additional))
             return
 
-        selinux_disable = Symbol.get_ksymaddr("selinux_disable")
+        selinux_disable = Ksym.get_addr("selinux_disable")
         CONFIG_SECURITY_SELINUX_DISABLE = selinux_disable is not None
-        enforcing_setup = Symbol.get_ksymaddr("enforcing_setup")
+        enforcing_setup = Ksym.get_addr("enforcing_setup")
         CONFIG_SECURITY_SELINUX_DEVELOP = enforcing_setup is not None
 
         # selinux_state.disabled
@@ -31565,7 +31498,7 @@ class KernelChecksecCommand(GenericCommand):
 
     def check_smack(self):
         cfg = "SMACK"
-        smack_init = Symbol.get_ksymaddr("smack_init")
+        smack_init = Ksym.get_addr("smack_init")
         if smack_init is None:
             additional = "smack_init: Not found"
             gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Unsupported", "bold red"), additional))
@@ -31587,7 +31520,7 @@ class KernelChecksecCommand(GenericCommand):
 
     def check_apparmor(self):
         cfg = "AppArmor"
-        apparmor_init = Symbol.get_ksymaddr("apparmor_init")
+        apparmor_init = Ksym.get_addr("apparmor_init")
         if apparmor_init is None:
             additional = "apparmor_init: Not found"
             gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Unsupported", "bold red"), additional))
@@ -31635,7 +31568,7 @@ class KernelChecksecCommand(GenericCommand):
 
     def check_tomoyo(self):
         cfg = "TOMOYO"
-        tomoyo_init = Symbol.get_ksymaddr("tomoyo_init")
+        tomoyo_init = Ksym.get_addr("tomoyo_init")
         if tomoyo_init is None:
             additional = "tomoyo_init: Not found"
             gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Unsupported", "bold red"), additional))
@@ -31657,7 +31590,7 @@ class KernelChecksecCommand(GenericCommand):
 
     def check_yama(self):
         cfg = "Yama (ptrace_scope)"
-        yama_init = Symbol.get_ksymaddr("yama_init")
+        yama_init = Ksym.get_addr("yama_init")
         if yama_init is None:
             additional = "yama_init: Not found"
             gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Unsupported", "bold red"), additional))
@@ -31681,8 +31614,8 @@ class KernelChecksecCommand(GenericCommand):
         cfg = "Integrity (IMA/EVM)"
         # integrity_iintcache_init only means CONFIG_INTEGRITY=y and it is removed from linux 6.9,
         # so use the initializer of each feature instead.
-        ima_init = Symbol.get_ksymaddr("ima_init")
-        init_evm = Symbol.get_ksymaddr("init_evm")
+        ima_init = Ksym.get_addr("ima_init")
+        init_evm = Ksym.get_addr("init_evm")
         found = "ima_init: {:s}, init_evm: {:s}".format(
             "Found" if ima_init is not None else "Not found",
             "Found" if init_evm is not None else "Not found",
@@ -31711,7 +31644,7 @@ class KernelChecksecCommand(GenericCommand):
 
     def check_loadpin(self):
         cfg = "LoadPin"
-        loadpin_init = Symbol.get_ksymaddr("loadpin_init")
+        loadpin_init = Ksym.get_addr("loadpin_init")
         if loadpin_init is None:
             additional = "loadpin_init: Not found"
             gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Unsupported", "bold red"), additional))
@@ -31740,7 +31673,7 @@ class KernelChecksecCommand(GenericCommand):
 
     def check_safe_setid(self):
         cfg = "SafeSetID"
-        safesetid_security_init = Symbol.get_ksymaddr("safesetid_security_init")
+        safesetid_security_init = Ksym.get_addr("safesetid_security_init")
         if safesetid_security_init is None:
             additional = "safesetid_security_init: Not found"
             gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Unsupported", "bold red"), additional))
@@ -31759,7 +31692,7 @@ class KernelChecksecCommand(GenericCommand):
             gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Unimplemented", "bold red"), additional))
             return
 
-        lockdown_lsm_init = Symbol.get_ksymaddr("lockdown_lsm_init")
+        lockdown_lsm_init = Ksym.get_addr("lockdown_lsm_init")
         if lockdown_lsm_init is None:
             additional = "lockdown_lsm_init: Not found"
             gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Unsupported", "bold red"), additional))
@@ -31793,7 +31726,7 @@ class KernelChecksecCommand(GenericCommand):
 
     def check_bpf(self):
         cfg = "BPF"
-        bpf_lsm_init = Symbol.get_ksymaddr("bpf_lsm_init")
+        bpf_lsm_init = Ksym.get_addr("bpf_lsm_init")
         if bpf_lsm_init is None:
             additional = "bpf_lsm_init: Not found"
             gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Unsupported", "bold red"), additional))
@@ -31805,7 +31738,7 @@ class KernelChecksecCommand(GenericCommand):
 
     def check_landlock(self):
         cfg = "Landlock"
-        landlock_init = Symbol.get_ksymaddr("landlock_init")
+        landlock_init = Ksym.get_addr("landlock_init")
         if landlock_init is None:
             additional = "landlock_init: Not found"
             gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Unsupported", "bold red"), additional))
@@ -32018,7 +31951,7 @@ class KernelChecksecCommand(GenericCommand):
 
     def check_CONFIG_KALLSYMS_ALL(self):
         cfg = "CONFIG_KALLSYMS_ALL"
-        modprobe_path = Symbol.get_ksymaddr("modprobe_path")
+        modprobe_path = Ksym.get_addr("modprobe_path")
         if modprobe_path:
             additional = "modprobe_path: Found"
             gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Enabled", "bold red"), additional))
@@ -32031,7 +31964,7 @@ class KernelChecksecCommand(GenericCommand):
 
     def check_CONFIG_IKCONFIG(self):
         cfg = "CONFIG_IKCONFIG"
-        ikconfig_init = Symbol.get_ksymaddr("ikconfig_init")
+        ikconfig_init = Ksym.get_addr("ikconfig_init")
         if ikconfig_init:
             additional = "ikconfig_init: Found"
             gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Enabled", "bold red"), additional))
@@ -32042,7 +31975,7 @@ class KernelChecksecCommand(GenericCommand):
 
     def check_CONFIG_DEBUG_INFO_BTF(self):
         cfg = "CONFIG_DEBUG_INFO_BTF"
-        start_btf = Symbol.get_ksymaddr("__start_BTF")
+        start_btf = Ksym.get_addr("__start_BTF")
         if start_btf:
             additional = "__start_BTF: Found"
             gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Enabled", "bold red"), additional))
@@ -32074,7 +32007,7 @@ class KernelChecksecCommand(GenericCommand):
             return
 
         additional = "__start_BTF: Not found"
-        if Symbol.get_ksymaddr("modprobe_path") is None and KernelAddressHeuristicFinder.get_modules() is not None:
+        if Ksym.get_addr("modprobe_path") is None and KernelAddressHeuristicFinder.get_modules() is not None:
             gef_print("{:<40s}: {:s} ({:s}, CONFIG_KALLSYMS_ALL=n)".format(cfg, Color.grayify("Unknown"), additional))
         else:
             gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Disabled", "bold green"), additional))
@@ -32121,7 +32054,7 @@ class KernelChecksecCommand(GenericCommand):
             gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Unimplemented", "bold red"), additional))
             return
 
-        call_usermodehelper_setup = Symbol.get_ksymaddr("call_usermodehelper_setup")
+        call_usermodehelper_setup = Ksym.get_addr("call_usermodehelper_setup")
         if call_usermodehelper_setup is None:
             additional = "call_usermodehelper_setup: Not found"
             gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.grayify("Unknown"), additional))
@@ -32182,7 +32115,7 @@ class KernelChecksecCommand(GenericCommand):
             return
 
         cfg = "CONFIG_SHADOW_CALL_STACK (Clang ARM64)"
-        scs_alloc = Symbol.get_ksymaddr("scs_alloc")
+        scs_alloc = Ksym.get_addr("scs_alloc")
         if scs_alloc:
             additional = "scs_alloc: Found"
             gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Enabled", "bold green"), additional))
@@ -32193,7 +32126,7 @@ class KernelChecksecCommand(GenericCommand):
 
     def check_CONFIG_HARDENED_USERCOPY(self):
         cfg = "CONFIG_HARDENED_USERCOPY"
-        __check_heap_object = Symbol.get_ksymaddr("__check_heap_object")
+        __check_heap_object = Ksym.get_addr("__check_heap_object")
         if __check_heap_object:
             additional = "__check_heap_object: Found"
             gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Enabled", "bold green"), additional))
@@ -32204,7 +32137,7 @@ class KernelChecksecCommand(GenericCommand):
 
     def check_CONFIG_FUSE_FS(self):
         cfg = "CONFIG_FUSE_FS"
-        fuse_do_open = Symbol.get_ksymaddr("fuse_do_open")
+        fuse_do_open = Ksym.get_addr("fuse_do_open")
         if fuse_do_open:
             additional = "fuse_do_open: Found"
             gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Enabled", "bold red"), additional))
@@ -32301,11 +32234,11 @@ class KernelChecksecCommand(GenericCommand):
                 supported_syscall.append("x64")
             if KernelAddressHeuristicFinder.get_sys_call_table_x86():
                 supported_syscall.append("x86(compat)")
-            elif Symbol.get_ksymaddr("ia32_sys_call"): # 6.6.26~
+            elif Ksym.get_addr("ia32_sys_call"): # 6.6.26~
                 supported_syscall.append("x86(compat)")
             if KernelAddressHeuristicFinder.get_sys_call_table_x32():
                 supported_syscall.append("x32")
-            elif Symbol.get_ksymaddr("x32_sys_call"): # 6.6.26~
+            elif Ksym.get_addr("x32_sys_call"): # 6.6.26~
                 supported_syscall.append("x32")
         elif is_arm32():
             if KernelAddressHeuristicFinder.get_sys_call_table_arm32():
@@ -32336,7 +32269,7 @@ class KernelChecksecCommand(GenericCommand):
         self.arm32_specific()
         self.arm64_specific()
 
-        if Symbol.get_ksymaddr("_stext") is None:
+        if Ksym.get_addr("_stext") is None:
             err("ksymaddr-remote is failed")
             return
 
@@ -56688,13 +56621,13 @@ class KernelMagicCommand(GenericCommand):
                 return
         else:
             if isinstance(sym, str):
-                addr = Symbol.get_ksymaddr(sym)
+                addr = Ksym.get_addr(sym)
                 if addr is None:
                     gef_print("{:42s} {:>{:d}s}".format(sym, "Not found", width))
                     return
             elif isinstance(sym, list):
                 for s in sym:
-                    addr = Symbol.get_ksymaddr(s)
+                    addr = Ksym.get_addr(s)
                     if addr:
                         sym = s
                         break
@@ -60126,7 +60059,7 @@ class KernelAddressHeuristicFinderUtil:
         A window wide enough for a KCOV build overruns a short function, and the
         constants of the neighbors are indistinguishable from the ones of the anchor."""
         res = gdb.execute("x/{:d}i {:#x}".format(count, addr), to_string=True)
-        ret = Symbol.get_kallsyms()
+        ret = Ksym.get_kallsyms()
         if ret is None:
             return res
         kallsyms, _kallsyms_map = ret
@@ -60145,7 +60078,7 @@ class KernelAddressHeuristicFinderUtil:
     def collect_idr_candidates(prefix):
         """Return the address constants materialized by the functions whose name starts with `prefix`."""
         candidates = []
-        for addr in Symbol.get_ksymaddr_startswith(prefix):
+        for addr in Ksym.get_addrs(prefix, match="prefix"):
             # KCOV builds interleave __sanitizer_cov_trace_* calls, pushing the idr past 40 insns
             res = KernelAddressHeuristicFinderUtil.disassemble_until_next_symbol(addr, 60)
             if is_x86_64() or is_x86_32():
@@ -60236,7 +60169,7 @@ class KernelConstsX86(KernelConstsBase):
 
     @property
     def CONFIG_HIGHMEM(self):
-        addr = Symbol.get_ksymaddr("nr_free_highpages")
+        addr = Ksym.get_addr("nr_free_highpages")
         return bool(addr)
 
     @property
@@ -60255,7 +60188,7 @@ class KernelConstsX86(KernelConstsBase):
 
     @property
     def CONFIG_INTEL_TXT(self):
-        addr = Symbol.get_ksymaddr("tboot_probe")
+        addr = Ksym.get_addr("tboot_probe")
         return bool(addr)
 
     @property
@@ -60571,7 +60504,7 @@ class KernelConstsX86(KernelConstsBase):
     @property
     def CONFIG_PAGE_EXTENSION(self):
         if "3.19" <= self.kversion:
-            addr = Symbol.get_ksymaddr("page_ext_init")
+            addr = Ksym.get_addr("page_ext_init")
             return bool(addr)
         return None
 
@@ -60656,7 +60589,7 @@ class KernelConstsX64(KernelConstsBase):
             return self.kaslr
 
         kcmdline = Kernel.kernel_cmdline()
-        ksym_ret = gdb.execute("ksymaddr-remote --quiet --no-pager kaslr_", to_string=True)
+        ksym_ret = Ksym.get_addrs("kaslr_", match="in")
         if not ksym_ret:
             self.kaslr = False
         elif kcmdline and "nokaslr" in kcmdline.cmdline:
@@ -60738,7 +60671,7 @@ class KernelConstsX64(KernelConstsBase):
 
     @property
     def CONFIG_INTEL_TXT(self):
-        addr = Symbol.get_ksymaddr("tboot_probe")
+        addr = Ksym.get_addr("tboot_probe")
         return bool(addr)
 
     @property
@@ -61325,7 +61258,7 @@ class KernelConstsArm32(KernelConstsBase):
 
     @property
     def CONFIG_HIGHMEM(self):
-        addr = Symbol.get_ksymaddr("nr_free_highpages")
+        addr = Ksym.get_addr("nr_free_highpages")
         return bool(addr)
 
     @property
@@ -61600,7 +61533,7 @@ class KernelConstsArm32(KernelConstsBase):
     @property
     def CONFIG_PAGE_EXTENSION(self):
         if "3.19" <= self.kversion:
-            addr = Symbol.get_ksymaddr("page_ext_init")
+            addr = Ksym.get_addr("page_ext_init")
             return bool(addr)
         return None
 
@@ -61717,8 +61650,7 @@ class KernelConstsArm64(KernelConstsBase):
     def CONFIG_KASAN(self):
         if self.kasan is not None:
             return bool(self.kasan)
-        res = gdb.execute("ksymaddr-remote --quiet kasan_", to_string=True)
-        self.kasan = bool(res)
+        self.kasan = bool(Ksym.get_addrs("kasan_", match="in"))
         return self.kasan
 
     @property
@@ -62333,11 +62265,11 @@ class KernelConstsArm64(KernelConstsBase):
 
         # Prevent recursion:
         #   read_physmem -> kgdb_use_physmap -> get_ksymaddr -> pagewalk -> read_physmem -> ...
-        if Symbol.get_kallsyms(parse=False) is None:
+        if Ksym.peek() is None:
             # None does not cache, because kallsyms may be resolved later
             return None
 
-        memstart_addr = Symbol.get_ksymaddr("memstart_addr")
+        memstart_addr = Ksym.get_addr("memstart_addr")
         if memstart_addr is None:
             # None does not cache, because the symbol may be resolved later
             return None
@@ -62402,15 +62334,15 @@ class KernelAddressHeuristicFinder:
     @staticmethod
     @switch_to_intel_syntax
     def get_saved_command_line():
-        # Do not use Symbol.get_ksymaddr since this function is used to discover KPTI,
-        # because Symbol.get_ksymaddr uses a cache.
+        # Do not use Ksym.get_addr since this function is used to discover KPTI,
+        # because Ksym.get_addr uses a cache.
 
         kversion = Kernel.kernel_version()
 
         # plan 1 (available v2.6.28 or later)
         if kversion and "2.6.28" <= kversion:
             # This is OK since we are not looking for `saved_command_line` directly.
-            addr = Symbol.get_ksymaddr("cmdline_proc_show")
+            addr = Ksym.get_addr("cmdline_proc_show")
             if addr:
                 res = gdb.execute("x/20i {:#x}".format(addr), to_string=True)
                 if is_x86_64():
@@ -62436,7 +62368,7 @@ class KernelAddressHeuristicFinder:
 
         # plan 1 (directly)
         if KernelAddressHeuristicFinder.USE_DIRECTLY:
-            x = Symbol.get_ksymaddr("current_task")
+            x = Ksym.get_addr("current_task")
             if x:
                 return x
 
@@ -62444,7 +62376,7 @@ class KernelAddressHeuristicFinder:
 
         # plan 2 (available v4.1 or later)
         if kversion and "4.1" <= kversion:
-            addr = Symbol.get_ksymaddr("common_cpu_up")
+            addr = Ksym.get_addr("common_cpu_up")
             if addr:
                 res = gdb.execute("x/30i {:#x}".format(addr), to_string=True)
                 if is_x86_64():
@@ -62472,7 +62404,7 @@ class KernelAddressHeuristicFinder:
 
         # plan 3 (available v2.5.33 or later)
         if kversion and "2.5.33" <= kversion:
-            for addr in Symbol.get_ksymaddr_with_split_suffix("setup_arg_pages"):
+            for addr in Ksym.get_addrs("setup_arg_pages", match="split"):
                 res = KernelAddressHeuristicFinderUtil.disassemble_until_next_symbol(addr, 20)
                 if is_x86_64():
                     g = itertools.chain(
@@ -62577,7 +62509,7 @@ class KernelAddressHeuristicFinder:
     def get_init_task():
         # plan 1 (directly)
         if KernelAddressHeuristicFinder.USE_DIRECTLY:
-            x = Symbol.get_ksymaddr("init_task")
+            x = Ksym.get_addr("init_task")
             if x:
                 return x
 
@@ -62603,7 +62535,7 @@ class KernelAddressHeuristicFinder:
         # plan 2 (available v3.4 or later)
         if kversion and "3.4" <= kversion:
             if is_x86_64() or is_x86_32():
-                for addr in Symbol.get_ksymaddr_with_split_suffix("do_exit"):
+                for addr in Ksym.get_addrs("do_exit", match="split"):
                     res = KernelAddressHeuristicFinderUtil.disassemble_until_next_symbol(addr, 600)
                     if is_x86_64():
                         g = KernelAddressHeuristicFinderUtil.x64_x86_cmp_const(res)
@@ -62787,7 +62719,7 @@ class KernelAddressHeuristicFinder:
     def get_init_cred():
         # plan 1 (directly)
         if KernelAddressHeuristicFinder.USE_DIRECTLY:
-            x = Symbol.get_ksymaddr("init_cred")
+            x = Ksym.get_addr("init_cred")
             if x:
                 return x
 
@@ -62806,7 +62738,7 @@ class KernelAddressHeuristicFinder:
     def get_init_net():
         # plan 1 (directly)
         if KernelAddressHeuristicFinder.USE_DIRECTLY:
-            x = Symbol.get_ksymaddr("init_net")
+            x = Ksym.get_addr("init_net")
             if x:
                 return x
 
@@ -62815,7 +62747,7 @@ class KernelAddressHeuristicFinder:
         def looks_like_init_net(x):
             if not KernelAddressHeuristicFinderUtil.is_in_kernel_image(x):
                 return False
-            net_namespace_list = Symbol.get_ksymaddr("net_namespace_list")
+            net_namespace_list = Ksym.get_addr("net_namespace_list")
             if net_namespace_list is None:
                 return True
             first_net = read_int_from_memory(net_namespace_list)
@@ -62825,7 +62757,7 @@ class KernelAddressHeuristicFinder:
 
         # plan 2 (available v2.6.35 or later)
         if kversion and "2.6.35" <= kversion:
-            for addr in Symbol.get_ksymaddr_with_split_suffix("net_initial_ns"):
+            for addr in Ksym.get_addrs("net_initial_ns", match="split"):
                 # `net_initial_ns` is only 3 instructions long, so the window reaches the neighbors
                 # and `aarch64_adrp_add` pairs the adrp of this function with their add.
                 res = KernelAddressHeuristicFinderUtil.disassemble_until_next_symbol(addr, 20)
@@ -62843,7 +62775,7 @@ class KernelAddressHeuristicFinder:
 
         # plan 3 (available v2.6.24 or later)
         if kversion and "2.6.24" <= kversion:
-            addr = Symbol.get_ksymaddr("netdev_boot_base")
+            addr = Ksym.get_addr("netdev_boot_base")
             if addr:
                 res = gdb.execute("x/20i {:#x}".format(addr), to_string=True)
                 if is_x86_64():
@@ -62864,7 +62796,7 @@ class KernelAddressHeuristicFinder:
 
         # plan 4 (available v2.6.35 or later)
         if kversion and "2.6.35" <= kversion:
-            for addr in Symbol.get_ksymaddr_with_split_suffix("alloc_netdev_mqs"):
+            for addr in Ksym.get_addrs("alloc_netdev_mqs", match="split"):
                 res = KernelAddressHeuristicFinderUtil.disassemble_until_next_symbol(addr, 200)
                 if is_x86_64() or is_x86_32():
                     g = KernelAddressHeuristicFinderUtil.x64_x86_any_const(res)
@@ -62882,7 +62814,7 @@ class KernelAddressHeuristicFinder:
     def get_init_user_ns():
         # plan 1 (directly)
         if KernelAddressHeuristicFinder.USE_DIRECTLY:
-            x = Symbol.get_ksymaddr("init_user_ns")
+            x = Ksym.get_addr("init_user_ns")
             if x:
                 return x
 
@@ -62893,7 +62825,7 @@ class KernelAddressHeuristicFinder:
         # which loads &init_user_ns the same way and is always present in kallsyms.
         if kversion and "2.6.39" <= kversion:
             for sym in ("has_capability_noaudit", "has_capability"):
-                addr = Symbol.get_ksymaddr(sym)
+                addr = Ksym.get_addr(sym)
                 if not addr:
                     continue
                 res = gdb.execute("x/20i {:#x}".format(addr), to_string=True)
@@ -62914,7 +62846,7 @@ class KernelAddressHeuristicFinder:
     def get_modules():
         # plan 1 (directly)
         if KernelAddressHeuristicFinder.USE_DIRECTLY:
-            x = Symbol.get_ksymaddr("modules")
+            x = Ksym.get_addr("modules")
             if x:
                 return x
 
@@ -62922,7 +62854,7 @@ class KernelAddressHeuristicFinder:
 
         # plan 2 (available v3.7.5 or later)
         if kversion and "3.7.5" <= kversion:
-            for addr in Symbol.get_ksymaddr_with_split_suffix("find_module_all"):
+            for addr in Ksym.get_addrs("find_module_all", match="split"):
                 # KCOV builds interleave __sanitizer_cov_trace_* calls, pushing &modules past 40 insns
                 res = KernelAddressHeuristicFinderUtil.disassemble_until_next_symbol(addr, 60)
                 if is_x86_64():
@@ -62953,7 +62885,7 @@ class KernelAddressHeuristicFinder:
     def get_chrdevs():
         # plan 1 (directly)
         if KernelAddressHeuristicFinder.USE_DIRECTLY:
-            x = Symbol.get_ksymaddr("chrdevs")
+            x = Ksym.get_addr("chrdevs")
             if x:
                 return x
 
@@ -62961,7 +62893,7 @@ class KernelAddressHeuristicFinder:
 
         # plan 2 (available v2.6.16.12 or later)
         if kversion and "2.6.17" <= kversion:
-            addr = Symbol.get_ksymaddr("chrdev_show")
+            addr = Ksym.get_addr("chrdev_show")
             if addr:
                 res = gdb.execute("x/30i {:#x}".format(addr), to_string=True)
                 if is_x86_64():
@@ -63000,7 +62932,7 @@ class KernelAddressHeuristicFinder:
     def get_cdev_map():
         # plan 1 (directly)
         if KernelAddressHeuristicFinder.USE_DIRECTLY:
-            x = Symbol.get_ksymaddr("cdev_map")
+            x = Ksym.get_addr("cdev_map")
             if x:
                 return x
 
@@ -63008,7 +62940,7 @@ class KernelAddressHeuristicFinder:
 
         # plan 2 (available v2.5.70 or later)
         if kversion and "2.5.70" <= kversion:
-            addr = Symbol.get_ksymaddr("cdev_del")
+            addr = Ksym.get_addr("cdev_del")
             if addr:
                 res = gdb.execute("x/30i {:#x}".format(addr), to_string=True)
                 if is_x86_64():
@@ -63034,7 +62966,7 @@ class KernelAddressHeuristicFinder:
 
         # plan 1 (directly)
         if KernelAddressHeuristicFinder.USE_DIRECTLY:
-            x = Symbol.get_ksymaddr("sys_call_table")
+            x = Ksym.get_addr("sys_call_table")
             if x:
                 return x
 
@@ -63048,7 +62980,7 @@ class KernelAddressHeuristicFinder:
 
         # plan 2 (available v4.6 ~ v6.6.26)
         if kversion and "4.6" <= kversion < "6.6.26":
-            for addr in Symbol.get_ksymaddr_with_split_suffix("do_syscall_64"):
+            for addr in Ksym.get_addrs("do_syscall_64", match="split"):
                 res = KernelAddressHeuristicFinderUtil.disassemble_until_next_symbol(addr, 40)
                 g = KernelAddressHeuristicFinderUtil.x64_qword_ptr_array_base(res)
                 for x in g:
@@ -63056,7 +62988,7 @@ class KernelAddressHeuristicFinder:
 
         # plan 3 (available v4.2 ~ v4.13)
         if kversion and "4.2" <= kversion < "4.14":
-            addr = Symbol.get_ksymaddr("entry_SYSCALL_64_fastpath")
+            addr = Ksym.get_addr("entry_SYSCALL_64_fastpath")
             if addr:
                 res = gdb.execute("x/10i {:#x}".format(addr), to_string=True)
                 g = KernelAddressHeuristicFinderUtil.x64_qword_ptr_array_base(res)
@@ -63065,7 +62997,7 @@ class KernelAddressHeuristicFinder:
 
         # plan 4 (available v2.6.27 ~ v4.1)
         if kversion and "2.6.27" <= kversion < "4.2":
-            addr = Symbol.get_ksymaddr("system_call_fastpath")
+            addr = Ksym.get_addr("system_call_fastpath")
             if addr:
                 res = gdb.execute("x/10i {:#x}".format(addr), to_string=True)
                 g = KernelAddressHeuristicFinderUtil.x64_qword_ptr_array_base(res)
@@ -63073,10 +63005,10 @@ class KernelAddressHeuristicFinder:
                     return x
 
         # plan 5 (search for the memory)
-        sys_read = Symbol.get_ksymaddr("__x64_sys_read")
-        sys_write = Symbol.get_ksymaddr("__x64_sys_write")
-        sys_open = Symbol.get_ksymaddr("__x64_sys_open")
-        sys_close = Symbol.get_ksymaddr("__x64_sys_close")
+        sys_read = Ksym.get_addr("__x64_sys_read")
+        sys_write = Ksym.get_addr("__x64_sys_write")
+        sys_open = Ksym.get_addr("__x64_sys_open")
+        sys_close = Ksym.get_addr("__x64_sys_close")
         if None not in [sys_read, sys_write, sys_open, sys_close]:
             seq_to_find = p64(sys_read) + p64(sys_write) + p64(sys_open) + p64(sys_close)
             kinfo = Kernel.get_kernel_layout()
@@ -63095,7 +63027,7 @@ class KernelAddressHeuristicFinder:
 
         # plan 1 (directly)
         if KernelAddressHeuristicFinder.USE_DIRECTLY:
-            x = Symbol.get_ksymaddr("x32_sys_call_table")
+            x = Ksym.get_addr("x32_sys_call_table")
             if x:
                 return x
 
@@ -63112,7 +63044,7 @@ class KernelAddressHeuristicFinder:
 
         # plan 2 (available v5.4 or later)
         if kversion and "5.4" <= kversion:
-            for addr in Symbol.get_ksymaddr_with_split_suffix("do_syscall_64"):
+            for addr in Ksym.get_addrs("do_syscall_64", match="split"):
                 # The x32 dispatch (2nd array-base access) follows the 64-bit one and
                 # the possibly inlined exit-work path, so disassemble the whole function
                 # to reach it without spilling into the next symbol.
@@ -63131,9 +63063,9 @@ class KernelAddressHeuristicFinder:
         # plan 1 (directly)
         if KernelAddressHeuristicFinder.USE_DIRECTLY:
             if is_x86_64():
-                x = Symbol.get_ksymaddr("ia32_sys_call_table")
+                x = Ksym.get_addr("ia32_sys_call_table")
             elif is_x86_32():
-                x = Symbol.get_ksymaddr("sys_call_table")
+                x = Ksym.get_addr("sys_call_table")
             if x:
                 return x
 
@@ -63158,16 +63090,16 @@ class KernelAddressHeuristicFinder:
                 # ia32_sys_call_table is still used, but no detection logic.
                 addrs = []
             else:
-                addrs = Symbol.get_ksymaddr_with_split_suffix("do_int80_syscall_32")
+                addrs = Ksym.get_addrs("do_int80_syscall_32", match="split")
         elif kversion and "4.6" <= kversion < "6.6.7":
-            addrs = Symbol.get_ksymaddr_with_split_suffix("do_int80_syscall_32")
+            addrs = Ksym.get_addrs("do_int80_syscall_32", match="split")
         elif kversion and "4.4" <= kversion < "4.6":
             if is_x86_64():
-                addrs = Symbol.get_ksymaddr_with_split_suffix("do_syscall_32_irqs_off")
+                addrs = Ksym.get_addrs("do_syscall_32_irqs_off", match="split")
             else:
-                addrs = Symbol.get_ksymaddr_with_split_suffix("do_syscall_32_irqs_on")
+                addrs = Ksym.get_addrs("do_syscall_32_irqs_on", match="split")
         elif kversion and "2.6.24" <= kversion < "4.4":
-            addrs = Symbol.get_ksymaddr_with_split_suffix("syscall_call")
+            addrs = Ksym.get_addrs("syscall_call", match="split")
         else:
             addrs = []
         for addr in addrs:
@@ -63188,7 +63120,7 @@ class KernelAddressHeuristicFinder:
         ]
         address_sequences = []
         for symbol_sequence in symbol_sequences:
-            syscall_addrs = [Symbol.get_ksymaddr(symbol) for symbol in symbol_sequence]
+            syscall_addrs = [Ksym.get_addr(symbol) for symbol in symbol_sequence]
             if None not in syscall_addrs:
                 address_sequences.append(syscall_addrs)
         if not address_sequences:
@@ -63212,15 +63144,15 @@ class KernelAddressHeuristicFinder:
 
         # plan 1 (directly)
         if KernelAddressHeuristicFinder.USE_DIRECTLY:
-            x = Symbol.get_ksymaddr("sys_call_table")
+            x = Ksym.get_addr("sys_call_table")
             if x:
                 return x
 
         # plan 2 (search for the memory)
-        sys_restart_syscall = Symbol.get_ksymaddr("sys_restart_syscall")
-        sys_exit = Symbol.get_ksymaddr("sys_exit")
-        sys_fork = Symbol.get_ksymaddr("sys_fork")
-        sys_read = Symbol.get_ksymaddr("sys_read")
+        sys_restart_syscall = Ksym.get_addr("sys_restart_syscall")
+        sys_exit = Ksym.get_addr("sys_exit")
+        sys_fork = Ksym.get_addr("sys_fork")
+        sys_read = Ksym.get_addr("sys_read")
         if None not in [sys_restart_syscall, sys_exit, sys_fork, sys_read]:
             seq_to_find = p32(sys_restart_syscall) + p32(sys_exit) + p32(sys_fork) + p32(sys_read)
             kinfo = Kernel.get_kernel_layout()
@@ -63239,7 +63171,7 @@ class KernelAddressHeuristicFinder:
 
         # plan 1 (directly)
         if KernelAddressHeuristicFinder.USE_DIRECTLY:
-            x = Symbol.get_ksymaddr("sys_call_table")
+            x = Ksym.get_addr("sys_call_table")
             if x:
                 return x
 
@@ -63247,11 +63179,11 @@ class KernelAddressHeuristicFinder:
 
         # plan 2 (available v3.7 or later)
         if kversion and "5.6" <= kversion:
-            addr = Symbol.get_ksymaddr("do_el0_svc")
+            addr = Ksym.get_addr("do_el0_svc")
         elif kversion and "4.18" <= kversion < "5.6":
-            addr = Symbol.get_ksymaddr("el0_svc_handler")
+            addr = Ksym.get_addr("el0_svc_handler")
         elif kversion and "3.7" <= kversion < "4.18":
-            addr = Symbol.get_ksymaddr("el0_svc")
+            addr = Ksym.get_addr("el0_svc")
         else:
             addr = None
         if addr:
@@ -63261,10 +63193,10 @@ class KernelAddressHeuristicFinder:
                 return x
 
         # plan 3 (search for the memory)
-        sys_io_setup = Symbol.get_ksymaddr("__arm64_sys_io_setup")
-        sys_io_destroy = Symbol.get_ksymaddr("__arm64_sys_io_destroy")
-        sys_io_submit = Symbol.get_ksymaddr("__arm64_sys_io_submit")
-        sys_io_cancel = Symbol.get_ksymaddr("__arm64_sys_io_cancel")
+        sys_io_setup = Ksym.get_addr("__arm64_sys_io_setup")
+        sys_io_destroy = Ksym.get_addr("__arm64_sys_io_destroy")
+        sys_io_submit = Ksym.get_addr("__arm64_sys_io_submit")
+        sys_io_cancel = Ksym.get_addr("__arm64_sys_io_cancel")
         if None not in [sys_io_setup, sys_io_destroy, sys_io_submit, sys_io_cancel]:
             seq_to_find = p64(sys_io_setup) + p64(sys_io_destroy) + p64(sys_io_submit) + p64(sys_io_cancel)
             kinfo = Kernel.get_kernel_layout()
@@ -63282,7 +63214,7 @@ class KernelAddressHeuristicFinder:
 
         # plan 1 (directly)
         if KernelAddressHeuristicFinder.USE_DIRECTLY:
-            x = Symbol.get_ksymaddr("compat_sys_call_table")
+            x = Ksym.get_addr("compat_sys_call_table")
             if x:
                 return x
 
@@ -63290,11 +63222,11 @@ class KernelAddressHeuristicFinder:
 
         # plan 2 (available v3.7 or later)
         if kversion and "5.6" <= kversion:
-            addr = Symbol.get_ksymaddr("do_el0_svc_compat")
+            addr = Ksym.get_addr("do_el0_svc_compat")
         elif kversion and "4.18" <= kversion < "5.6":
-            addr = Symbol.get_ksymaddr("el0_svc_compat_handler")
+            addr = Ksym.get_addr("el0_svc_compat_handler")
         elif kversion and "3.7" <= kversion < "4.18":
-            addr = Symbol.get_ksymaddr("el0_svc_compat")
+            addr = Ksym.get_addr("el0_svc_compat")
         else:
             addr = None
         if addr:
@@ -63304,12 +63236,12 @@ class KernelAddressHeuristicFinder:
                 return x
 
         # plan 3 (search for the memory)
-        sys_restart_syscall = Symbol.get_ksymaddr("__arm64_sys_restart_syscall")
-        sys_exit = Symbol.get_ksymaddr("__arm64_sys_exit")
-        sys_fork = Symbol.get_ksymaddr("__arm64_sys_fork")
-        sys_read = Symbol.get_ksymaddr("__arm64_sys_read")
-        sys_write = Symbol.get_ksymaddr("__arm64_sys_write")
-        sys_open = Symbol.get_ksymaddr("__arm64_compat_sys_open")
+        sys_restart_syscall = Ksym.get_addr("__arm64_sys_restart_syscall")
+        sys_exit = Ksym.get_addr("__arm64_sys_exit")
+        sys_fork = Ksym.get_addr("__arm64_sys_fork")
+        sys_read = Ksym.get_addr("__arm64_sys_read")
+        sys_write = Ksym.get_addr("__arm64_sys_write")
+        sys_open = Ksym.get_addr("__arm64_compat_sys_open")
         if None not in [sys_restart_syscall, sys_exit, sys_fork, sys_read, sys_write, sys_open]:
             seq_to_find = p64(sys_restart_syscall) + p64(sys_exit) + p64(sys_fork) + p64(sys_read) + p64(sys_write) + p64(sys_open)
             kinfo = Kernel.get_kernel_layout()
@@ -63325,7 +63257,7 @@ class KernelAddressHeuristicFinder:
     def get_per_cpu_offset():
         # plan 1 (directly)
         if KernelAddressHeuristicFinder.USE_DIRECTLY:
-            x = Symbol.get_ksymaddr("__per_cpu_offset")
+            x = Ksym.get_addr("__per_cpu_offset")
             if x:
                 return x
 
@@ -63333,7 +63265,7 @@ class KernelAddressHeuristicFinder:
 
         # plan 2 (available v3.2 or later)
         if kversion and "3.2" <= kversion:
-            addr = Symbol.get_ksymaddr("nr_iowait_cpu")
+            addr = Ksym.get_addr("nr_iowait_cpu")
             if addr:
                 res = gdb.execute("x/20i {:#x}".format(addr), to_string=True)
                 if is_x86_64():
@@ -63363,7 +63295,7 @@ class KernelAddressHeuristicFinder:
     def get_slab_caches():
         # plan 1 (directly)
         if KernelAddressHeuristicFinder.USE_DIRECTLY:
-            x = Symbol.get_ksymaddr("slab_caches")
+            x = Ksym.get_addr("slab_caches")
             if x:
                 return x
 
@@ -63371,7 +63303,7 @@ class KernelAddressHeuristicFinder:
 
         # plan 2 (available v4.9 or later)
         if kversion and "4.9" <= kversion:
-            addr = Symbol.get_ksymaddr("slub_cpu_dead")
+            addr = Ksym.get_addr("slub_cpu_dead")
             if addr:
                 res = gdb.execute("x/20i {:#x}".format(addr), to_string=True)
                 if is_x86_64():
@@ -63388,7 +63320,7 @@ class KernelAddressHeuristicFinder:
 
         # plan 3 (available v5.9 or later)
         if kversion and "5.9" <= kversion:
-            for addr in Symbol.get_ksymaddr_with_split_suffix("find_mergeable"):
+            for addr in Ksym.get_addrs("find_mergeable", match="split"):
                 res = KernelAddressHeuristicFinderUtil.disassemble_until_next_symbol(addr, 50)
                 if is_x86_64():
                     g = KernelAddressHeuristicFinderUtil.x64_x86_cmp_const(res)
@@ -63404,7 +63336,7 @@ class KernelAddressHeuristicFinder:
 
         # plan 4 (available v4.10 or before and CONFIG_MEMCG=y)
         if kversion and kversion < "4.11":
-            addr = Symbol.get_ksymaddr("memcg_update_all_caches")
+            addr = Ksym.get_addr("memcg_update_all_caches")
             if addr:
                 res = gdb.execute("x/20i {:#x}".format(addr), to_string=True)
                 if is_x86_64():
@@ -63421,7 +63353,7 @@ class KernelAddressHeuristicFinder:
 
         # plan 5 (available v3.11 ~ v4.10 and CONFIG_SLABINFO=y)
         if kversion and "3.11" <= kversion < "4.11":
-            addr = Symbol.get_ksymaddr("slab_next")
+            addr = Ksym.get_addr("slab_next")
             if addr:
                 res = gdb.execute("x/20i {:#x}".format(addr), to_string=True)
                 if is_x86_64():
@@ -63439,7 +63371,7 @@ class KernelAddressHeuristicFinder:
                         return x
 
         # plan 6 (available if CONFIG_SLAB=y)
-        addr = Symbol.get_ksymaddr("cache_reap")
+        addr = Ksym.get_addr("cache_reap")
         if addr:
             res = gdb.execute("x/30i {:#x}".format(addr), to_string=True)
             if is_x86_64():
@@ -63458,7 +63390,7 @@ class KernelAddressHeuristicFinder:
 
         # plan 7 (available v2.6.24 ~ v3.10 and CONFIG_SLABINFO=y)
         if kversion and "2.6.24" <= kversion < "3.11":
-            addrs = Symbol.get_ksymaddr_multiple("s_next")
+            addrs = Ksym.get_addrs("s_next")
             if addrs:
                 for s_next in addrs:
                     res = gdb.execute("x/20i {:#x}".format(s_next), to_string=True)
@@ -63478,7 +63410,7 @@ class KernelAddressHeuristicFinder:
 
         # plan 8 (available v4.11 ~ v6.11)
         if kversion and "4.11" <= kversion < "6.12":
-            addr = Symbol.get_ksymaddr("slab_caches_to_rcu_destroy_workfn")
+            addr = Ksym.get_addr("slab_caches_to_rcu_destroy_workfn")
             if addr:
                 res = gdb.execute("x/20i {:#x}".format(addr), to_string=True)
                 if is_x86_64():
@@ -63501,12 +63433,12 @@ class KernelAddressHeuristicFinder:
     def get_slab_kset():
         # plan 1 (directly)
         if KernelAddressHeuristicFinder.USE_DIRECTLY:
-            x = Symbol.get_ksymaddr("slab_kset")
+            x = Ksym.get_addr("slab_kset")
             if x:
                 return x
 
         # plan 2
-        for addr in Symbol.get_ksymaddr_with_split_suffix("sysfs_slab_add"):
+        for addr in Ksym.get_addrs("sysfs_slab_add", match="split"):
             res = KernelAddressHeuristicFinderUtil.disassemble_until_next_symbol(addr, 100)
             if is_x86_64():
                 g = KernelAddressHeuristicFinderUtil.x64_qword_ptr_rip_base(res)
@@ -63536,7 +63468,7 @@ class KernelAddressHeuristicFinder:
     def get_modprobe_path():
         # plan 1 (directly)
         if KernelAddressHeuristicFinder.USE_DIRECTLY:
-            x = Symbol.get_ksymaddr("modprobe_path")
+            x = Ksym.get_addr("modprobe_path")
             if x:
                 return x
 
@@ -63552,7 +63484,7 @@ class KernelAddressHeuristicFinder:
         # from unrelated globals, so plan 3 is skipped and ksysctl (plan 2) is relied upon.
         if is_x86():
             for name in ["call_modprobe", "__request_module"]:
-                for addr in Symbol.get_ksymaddr_with_split_suffix(name):
+                for addr in Ksym.get_addrs(name, match="split"):
                     res = KernelAddressHeuristicFinderUtil.disassemble_until_next_symbol(addr, 40)
                     if is_x86_64():
                         g = KernelAddressHeuristicFinderUtil.x64_byte_ptr_rip_base(res)
@@ -63568,7 +63500,7 @@ class KernelAddressHeuristicFinder:
     def get_poweroff_cmd():
         # plan 1 (directly)
         if KernelAddressHeuristicFinder.USE_DIRECTLY:
-            x = Symbol.get_ksymaddr("poweroff_cmd")
+            x = Ksym.get_addr("poweroff_cmd")
             if x:
                 return x
 
@@ -63584,7 +63516,7 @@ class KernelAddressHeuristicFinder:
         # poweroff_cmd points at a command-line string, so it is picked out by the ASCII-string check.
         if is_x86():
             for name in ["poweroff_work_func", "__orderly_poweroff"]:
-                for addr in Symbol.get_ksymaddr_with_split_suffix(name):
+                for addr in Ksym.get_addrs(name, match="split"):
                     res = KernelAddressHeuristicFinderUtil.disassemble_until_next_symbol(addr, 60)
                     g = KernelAddressHeuristicFinderUtil.x64_x86_mov_reg_const(res)
                     for x in g:
@@ -63597,7 +63529,7 @@ class KernelAddressHeuristicFinder:
     def get_core_pattern():
         # plan 1 (directly)
         if KernelAddressHeuristicFinder.USE_DIRECTLY:
-            x = Symbol.get_ksymaddr("core_pattern")
+            x = Ksym.get_addr("core_pattern")
             if x:
                 return x
 
@@ -63614,7 +63546,7 @@ class KernelAddressHeuristicFinder:
         # globals, so plan 3 is skipped and ksysctl (plan 2) is relied upon.
         if is_x86():
             for name, n in [("format_corename", 30), ("do_coredump", 200)]:
-                addr = Symbol.get_ksymaddr(name)
+                addr = Ksym.get_addr(name)
                 if addr is None:
                     continue
                 res = gdb.execute("x/{:d}i {:#x}".format(n, addr), to_string=True)
@@ -63635,7 +63567,7 @@ class KernelAddressHeuristicFinder:
 
         # plan 1 (directly)
         if KernelAddressHeuristicFinder.USE_DIRECTLY:
-            x = Symbol.get_ksymaddr("phys_base")
+            x = Ksym.get_addr("phys_base")
             if x:
                 return read_int_from_memory(x)
 
@@ -63643,7 +63575,7 @@ class KernelAddressHeuristicFinder:
 
         # plan 2 (available v2.6.24 or later)
         if kversion and "2.6.24" <= kversion:
-            addr = Symbol.get_ksymaddr("secondary_startup_64")
+            addr = Ksym.get_addr("secondary_startup_64")
             if addr:
                 res = gdb.execute("x/20i {:#x}".format(addr), to_string=True)
                 g = KernelAddressHeuristicFinderUtil.x64_qword_ptr_rip_base(res)
@@ -63652,7 +63584,7 @@ class KernelAddressHeuristicFinder:
 
         # plan 3 (available v2.6.25 ~ v5.5)
         if kversion and "2.6.25" <= kversion < "5.5":
-            addr = Symbol.get_ksymaddr("arch_crash_save_vmcoreinfo")
+            addr = Ksym.get_addr("arch_crash_save_vmcoreinfo")
             if addr:
                 res = gdb.execute("x/10i {:#x}".format(addr), to_string=True)
                 g = KernelAddressHeuristicFinderUtil.x64_x86_mov_reg_const(res)
@@ -63663,7 +63595,7 @@ class KernelAddressHeuristicFinder:
 
         # plan 4 (available v3.9 or later)
         if kversion and "3.9" <= kversion:
-            for addr in Symbol.get_ksymaddr_with_split_suffix("__virt_addr_valid"):
+            for addr in Ksym.get_addrs("__virt_addr_valid", match="split"):
                 res = KernelAddressHeuristicFinderUtil.disassemble_until_next_symbol(addr, 50)
                 g = KernelAddressHeuristicFinderUtil.x64_qword_ptr_rip_base(res)
                 for x in g:
@@ -63678,7 +63610,7 @@ class KernelAddressHeuristicFinder:
 
         # plan 1 (directly)
         if KernelAddressHeuristicFinder.USE_DIRECTLY:
-            x = Symbol.get_ksymaddr("page_offset_base")
+            x = Ksym.get_addr("page_offset_base")
             if x:
                 return x
 
@@ -63736,7 +63668,7 @@ class KernelAddressHeuristicFinder:
     def _get_VMALLOC_START():
         # plan 1 (directly)
         if KernelAddressHeuristicFinder.USE_DIRECTLY:
-            vmalloc_base = Symbol.get_ksymaddr("vmalloc_base")
+            vmalloc_base = Ksym.get_addr("vmalloc_base")
             if vmalloc_base:
                 return read_int_from_memory(vmalloc_base)
 
@@ -63884,7 +63816,7 @@ class KernelAddressHeuristicFinder:
 
             # plan 2 (directly)
             if KernelAddressHeuristicFinder.USE_DIRECTLY:
-                vmemmap_base = Symbol.get_ksymaddr("vmemmap_base")
+                vmemmap_base = Ksym.get_addr("vmemmap_base")
                 if vmemmap_base:
                     return read_int_from_memory(vmemmap_base)
 
@@ -63952,7 +63884,7 @@ class KernelAddressHeuristicFinder:
         # plan 1 (available v2.6.27 ~)
         if is_x86():
             if kversion and "2.6.27" <= kversion:
-                for addr in Symbol.get_ksymaddr_with_split_suffix("__native_set_fixmap"):
+                for addr in Ksym.get_addrs("__native_set_fixmap", match="split"):
                     res = KernelAddressHeuristicFinderUtil.disassemble_until_next_symbol(addr, 20)
                     g = KernelAddressHeuristicFinderUtil.x64_x86_cmp_const(res, skip_msb_check=True)
                     for x in g:
@@ -63961,7 +63893,7 @@ class KernelAddressHeuristicFinder:
         # plan 2 (available v3.19 ~)
         if is_arm64():
             if kversion and "3.19" <= kversion:
-                addr = Symbol.get_ksymaddr("__set_fixmap")
+                addr = Ksym.get_addr("__set_fixmap")
                 if addr:
                     res = gdb.execute("x/20i {:#x}".format(addr), to_string=True)
                     g = KernelAddressHeuristicFinderUtil.aarch64_cmp_const(res, skip_msb_check=True)
@@ -63979,7 +63911,7 @@ class KernelAddressHeuristicFinder:
 
         kversion = Kernel.kernel_version()
         if kversion and "4.14" <= kversion:
-            addr = Symbol.get_ksymaddr("get_cpu_entry_area")
+            addr = Ksym.get_addr("get_cpu_entry_area")
             if addr:
                 res = gdb.execute("x/10i {:#x}".format(addr), to_string=True)
                 g = KernelAddressHeuristicFinderUtil.x64_x86_imul_const(res, skip_msb_check=True)
@@ -63999,7 +63931,7 @@ class KernelAddressHeuristicFinder:
 
         # plan 1 (directly)
         if KernelAddressHeuristicFinder.USE_DIRECTLY:
-            addr = Symbol.get_ksymaddr("mem_section")
+            addr = Ksym.get_addr("mem_section")
             if addr:
                 return addr
 
@@ -64007,7 +63939,7 @@ class KernelAddressHeuristicFinder:
 
         # plan 2 (available v2.4.0 or later)
         if kversion and "2.4" <= kversion:
-            for addr in Symbol.get_ksymaddr_with_split_suffix("free_pages"):
+            for addr in Ksym.get_addrs("free_pages", match="split"):
                 try:
                     res = KernelAddressHeuristicFinderUtil.disassemble_until_next_symbol(addr, 40)
                 except gdb.MemoryError:
@@ -64045,7 +63977,7 @@ class KernelAddressHeuristicFinder:
 
         # plan 1 (directly)
         if KernelAddressHeuristicFinder.USE_DIRECTLY:
-            addr = Symbol.get_ksymaddr("mem_map")
+            addr = Ksym.get_addr("mem_map")
             if addr:
                 try:
                     v = read_int_from_memory(addr)
@@ -64059,7 +63991,7 @@ class KernelAddressHeuristicFinder:
 
         # plan 2 (available v2.4.0 or later)
         if kversion and "2.4" <= kversion:
-            for addr in Symbol.get_ksymaddr_with_split_suffix("free_pages"):
+            for addr in Ksym.get_addrs("free_pages", match="split"):
                 try:
                     res = KernelAddressHeuristicFinderUtil.disassemble_until_next_symbol(addr, 40)
                 except gdb.MemoryError:
@@ -64100,7 +64032,7 @@ class KernelAddressHeuristicFinder:
 
         # plan 1 (directly)
         if KernelAddressHeuristicFinder.USE_DIRECTLY:
-            x = Symbol.get_ksymaddr("page_address_htable")
+            x = Ksym.get_addr("page_address_htable")
             if x:
                 return x
 
@@ -64108,7 +64040,7 @@ class KernelAddressHeuristicFinder:
 
         # plan 2 (available v2.5.41 or later)
         if kversion and "2.5.41" <= kversion:
-            addr = Symbol.get_ksymaddr("set_page_address")
+            addr = Ksym.get_addr("set_page_address")
             if addr:
                 res = gdb.execute("x/40i {:#x}".format(addr), to_string=True)
                 if is_x86_32():
@@ -64128,7 +64060,7 @@ class KernelAddressHeuristicFinder:
 
         # plan 1 (directly)
         if KernelAddressHeuristicFinder.USE_DIRECTLY:
-            x = Symbol.get_ksymaddr("clocksource_tsc")
+            x = Ksym.get_addr("clocksource_tsc")
             if x:
                 return x
 
@@ -64151,7 +64083,7 @@ class KernelAddressHeuristicFinder:
         # `&clocksource_tsc` is passed after the pr_info() call and after
         # `&clocksource_tsc_early`, so the position of the candidate is not stable.
         # Tell them apart by the `name` member instead.
-        for addr in Symbol.get_ksymaddr_with_split_suffix("mark_tsc_unstable"):
+        for addr in Ksym.get_addrs("mark_tsc_unstable", match="split"):
             res = gdb.execute("x/40i {:#x}".format(addr), to_string=True)
             for x in KernelAddressHeuristicFinderUtil.x64_x86_mov_reg_const(res):
                 if looks_like_clocksource_tsc(x):
@@ -64191,7 +64123,7 @@ class KernelAddressHeuristicFinder:
 
         # plan 1 (directly)
         if KernelAddressHeuristicFinder.USE_DIRECTLY:
-            x = Symbol.get_ksymaddr("clocksource_list")
+            x = Ksym.get_addr("clocksource_list")
             if x:
                 return x
 
@@ -64199,8 +64131,8 @@ class KernelAddressHeuristicFinder:
 
         # plan 2 (available v2.6.21 or later / v2.6.32 or later)
         if kversion and "2.6.21" <= kversion:
-            for addr in (Symbol.get_ksymaddr_with_split_suffix("clocksource_enqueue")
-                         or Symbol.get_ksymaddr_with_split_suffix("clocksource_resume")):
+            for addr in (Ksym.get_addrs("clocksource_enqueue", match="split")
+                         or Ksym.get_addrs("clocksource_resume", match="split")):
                 res = KernelAddressHeuristicFinderUtil.disassemble_until_next_symbol(addr, 20)
                 if is_x86_64():
                     g = KernelAddressHeuristicFinderUtil.x64_qword_ptr_rip_base(res)
@@ -64237,7 +64169,7 @@ class KernelAddressHeuristicFinder:
 
         # plan 1 (directly)
         if KernelAddressHeuristicFinder.USE_DIRECTLY:
-            addr = Symbol.get_ksymaddr("curr_clocksource")
+            addr = Ksym.get_addr("curr_clocksource")
             if addr:
                 try:
                     current = read_int_from_memory(addr)
@@ -64291,7 +64223,7 @@ class KernelAddressHeuristicFinder:
         for name in ("current_clocksource_show", "sysfs_show_current_clocksources",
                      "__clocksource_watchdog_kthread"):
             # These are small, so a fixed window would spill into the next symbol.
-            for addr in Symbol.get_ksymaddr_with_split_suffix(name):
+            for addr in Ksym.get_addrs(name, match="split"):
                 try:
                     res = KernelAddressHeuristicFinderUtil.disassemble_until_next_symbol(addr, 200)
                 except gdb.error:
@@ -64305,7 +64237,7 @@ class KernelAddressHeuristicFinder:
         # clocksource_list. timekeeping is switched over after `curr_clocksource` is updated,
         # so while the selector is still moving (refined-jiffies -> tsc-early -> tsc during
         # boot) this lags behind plan 1/2. Keep it last for kernels without the anchors above.
-        addr = Symbol.get_ksymaddr("timekeeping_notify")
+        addr = Ksym.get_addr("timekeeping_notify")
         if not addr:
             return None
         try:
@@ -64319,7 +64251,7 @@ class KernelAddressHeuristicFinder:
     def get_capability_hooks():
         # plan 1 (directly)
         if KernelAddressHeuristicFinder.USE_DIRECTLY:
-            x = Symbol.get_ksymaddr("capability_hooks")
+            x = Ksym.get_addr("capability_hooks")
             if x:
                 return x
 
@@ -64331,7 +64263,7 @@ class KernelAddressHeuristicFinder:
         # `hook` members instead. The head of the array is always these 3 entries.
         if kversion and "4.2" <= kversion:
             hooks = ["cap_capable", "cap_settime", "cap_ptrace_access_check"]
-            hooks = [Symbol.get_ksymaddr(x) for x in hooks]
+            hooks = [Ksym.get_addr(x) for x in hooks]
             image_range = KernelAddressHeuristicFinderUtil.get_kernel_image_range()
             kinfo = Kernel.get_kernel_layout(apply_data_range_hint=False)
             start = kinfo.ro_base or kinfo.text_base # `capability_hooks` is never in .text
@@ -64385,7 +64317,7 @@ class KernelAddressHeuristicFinder:
     def get_n_tty_ops():
         # plan 1 (directly)
         if KernelAddressHeuristicFinder.USE_DIRECTLY:
-            x = Symbol.get_ksymaddr("n_tty_ops")
+            x = Ksym.get_addr("n_tty_ops")
             if x:
                 return x
 
@@ -64393,7 +64325,7 @@ class KernelAddressHeuristicFinder:
 
         # plan 2 (available v4.6 or later)
         if kversion and "4.6" <= kversion:
-            addr = Symbol.get_ksymaddr("n_tty_inherit_ops")
+            addr = Ksym.get_addr("n_tty_inherit_ops")
             if addr:
                 # KASAN/KCOV builds interleave instrumentation, pushing &n_tty_ops past 20 insns
                 res = KernelAddressHeuristicFinderUtil.disassemble_until_next_symbol(addr, 40)
@@ -64421,7 +64353,7 @@ class KernelAddressHeuristicFinder:
     def get_tty_ldiscs():
         # plan 1 (directly)
         if KernelAddressHeuristicFinder.USE_DIRECTLY:
-            x = Symbol.get_ksymaddr("tty_ldiscs")
+            x = Ksym.get_addr("tty_ldiscs")
             if x:
                 return x
 
@@ -64429,7 +64361,7 @@ class KernelAddressHeuristicFinder:
 
         # plan 2 (available v2.6.37 or later)
         if kversion and "2.6.37" <= kversion:
-            addr = Symbol.get_ksymaddr("tty_register_ldisc")
+            addr = Ksym.get_addr("tty_register_ldisc")
             if addr:
                 instruction_count = 40 if is_x86_64() else 20
                 res = gdb.execute("x/{:d}i {:#x}".format(instruction_count, addr), to_string=True)
@@ -64473,7 +64405,7 @@ class KernelAddressHeuristicFinder:
     def get_sysctl_table_root():
         # plan 1 (directly)
         if KernelAddressHeuristicFinder.USE_DIRECTLY:
-            x = Symbol.get_ksymaddr("sysctl_table_root")
+            x = Ksym.get_addr("sysctl_table_root")
             if x:
                 return x
 
@@ -64481,7 +64413,7 @@ class KernelAddressHeuristicFinder:
 
         # plan 2 (available v3.4 or later)
         if kversion and "3.4" <= kversion:
-            addr = Symbol.get_ksymaddr("register_sysctl") or Symbol.get_ksymaddr("register_sysctl_sz")
+            addr = Ksym.get_addr("register_sysctl") or Ksym.get_addr("register_sysctl_sz")
             if addr:
                 res = gdb.execute("x/20i {:#x}".format(addr), to_string=True)
                 if is_x86_64():
@@ -64504,7 +64436,7 @@ class KernelAddressHeuristicFinder:
     def get_selinux_state():
         # plan 1 (directly)
         if KernelAddressHeuristicFinder.USE_DIRECTLY:
-            x = Symbol.get_ksymaddr("selinux_state")
+            x = Ksym.get_addr("selinux_state")
             if x:
                 return x
 
@@ -64515,7 +64447,7 @@ class KernelAddressHeuristicFinder:
         # selinux_capset() is an LSM hook whose address is taken, so it always stays a symbol.
         if kversion and "4.19" <= kversion < "6.4":
             for name in ["show_sid", "selinux_capset"]:
-                addr = Symbol.get_ksymaddr(name)
+                addr = Ksym.get_addr(name)
                 if addr is None:
                     continue
                 res = gdb.execute("x/20i {:#x}".format(addr), to_string=True)
@@ -64541,7 +64473,7 @@ class KernelAddressHeuristicFinder:
         # v6.4 dropped the `struct selinux_state *` argument, so show_sid() no longer holds the
         # address. avc_denied() reads `selinux_state.enforcing` (= offset 0) via enforcing_enabled().
         if kversion and "6.4" <= kversion:
-            for addr in Symbol.get_ksymaddr_with_split_suffix("avc_denied"):
+            for addr in Ksym.get_addrs("avc_denied", match="split"):
                 res = KernelAddressHeuristicFinderUtil.disassemble_until_next_symbol(addr, 32)
                 if is_x86_64():
                     g = KernelAddressHeuristicFinderUtil.x64_any_ptr_rip_base(res)
@@ -64565,7 +64497,7 @@ class KernelAddressHeuristicFinder:
     def get_apparmor_enabled():
         # plan 1 (directly)
         if KernelAddressHeuristicFinder.USE_DIRECTLY:
-            x = Symbol.get_ksymaddr("apparmor_enabled")
+            x = Ksym.get_addr("apparmor_enabled")
             if x:
                 return x
 
@@ -64573,7 +64505,7 @@ class KernelAddressHeuristicFinder:
 
         # plan 2 (available v4.12 or later)
         if kversion and "4.12" <= kversion:
-            addr = Symbol.get_ksymaddr("param_get_aauint")
+            addr = Ksym.get_addr("param_get_aauint")
             if addr:
                 res = gdb.execute("x/20i {:#x}".format(addr), to_string=True)
                 if is_x86_64():
@@ -64588,7 +64520,7 @@ class KernelAddressHeuristicFinder:
                     return x
 
         # plan 3 (param_get_aauint has no apparmor_enabled check before v4.12)
-        addr = Symbol.get_ksymaddr("param_get_mode")
+        addr = Ksym.get_addr("param_get_mode")
         if addr:
             res = gdb.execute("x/20i {:#x}".format(addr), to_string=True)
             if is_x86_64():
@@ -64608,7 +64540,7 @@ class KernelAddressHeuristicFinder:
     def get_apparmor_initialized():
         # plan 1 (directly)
         if KernelAddressHeuristicFinder.USE_DIRECTLY:
-            x = Symbol.get_ksymaddr("apparmor_initialized")
+            x = Ksym.get_addr("apparmor_initialized")
             if x:
                 return x
 
@@ -64616,7 +64548,7 @@ class KernelAddressHeuristicFinder:
 
         # plan 2 (available v4.12 or later)
         if kversion and "4.12" <= kversion:
-            addr = Symbol.get_ksymaddr("param_get_aauint")
+            addr = Ksym.get_addr("param_get_aauint")
             if addr:
                 res = gdb.execute("x/20i {:#x}".format(addr), to_string=True)
                 if is_x86_64():
@@ -64636,7 +64568,7 @@ class KernelAddressHeuristicFinder:
     def get_kernel_locked_down():
         # plan 1 (directly)
         if KernelAddressHeuristicFinder.USE_DIRECTLY:
-            x = Symbol.get_ksymaddr("kernel_locked_down")
+            x = Ksym.get_addr("kernel_locked_down")
             if x:
                 return x
 
@@ -64644,7 +64576,7 @@ class KernelAddressHeuristicFinder:
 
         # plan 2 (available v5.4 or later)
         if kversion and "5.4" <= kversion:
-            for addr in Symbol.get_ksymaddr_with_split_suffix("lock_kernel_down"):
+            for addr in Ksym.get_addrs("lock_kernel_down", match="split"):
                 res = gdb.execute("x/10i {:#x}".format(addr), to_string=True)
                 if is_x86_64():
                     g = KernelAddressHeuristicFinderUtil.x64_dword_ptr_rip_base(res)
@@ -64659,7 +64591,7 @@ class KernelAddressHeuristicFinder:
 
         # plan 3 (lock_kernel_down is fully inlined in some builds, but the LSM hook always remains)
         if kversion and "5.4" <= kversion:
-            for addr in Symbol.get_ksymaddr_with_split_suffix("lockdown_is_locked_down"):
+            for addr in Ksym.get_addrs("lockdown_is_locked_down", match="split"):
                 # KCOV builds interleave __sanitizer_cov_trace_* calls, pushing the load past 10 insns
                 res = KernelAddressHeuristicFinderUtil.disassemble_until_next_symbol(addr, 20)
                 if is_x86_64():
@@ -64674,7 +64606,7 @@ class KernelAddressHeuristicFinder:
                     return x
 
         # plan 4 (before v5.4, distro backports export __kernel_is_locked_down instead)
-        for addr in Symbol.get_ksymaddr_with_split_suffix("__kernel_is_locked_down"):
+        for addr in Ksym.get_addrs("__kernel_is_locked_down", match="split"):
             res = KernelAddressHeuristicFinderUtil.disassemble_until_next_symbol(addr, 10)
             if is_x86_64():
                 g = KernelAddressHeuristicFinderUtil.x64_any_ptr_rip_base(res)
@@ -64693,7 +64625,7 @@ class KernelAddressHeuristicFinder:
     def get_tomoyo_enabled():
         # plan 1 (directly)
         if KernelAddressHeuristicFinder.USE_DIRECTLY:
-            x = Symbol.get_ksymaddr("tomoyo_enabled")
+            x = Ksym.get_addr("tomoyo_enabled")
             if x:
                 return x
 
@@ -64701,7 +64633,7 @@ class KernelAddressHeuristicFinder:
             """Handle builds that keep `tomoyo_enabled` outside the hook array."""
             if not is_x86_64():
                 return None
-            for addr in Symbol.get_ksymaddr_with_split_suffix("tomoyo_check_profile"):
+            for addr in Ksym.get_addrs("tomoyo_check_profile", match="split"):
                 res = KernelAddressHeuristicFinderUtil.disassemble_until_next_symbol(
                     addr, 20,
                 )
@@ -64742,7 +64674,7 @@ class KernelAddressHeuristicFinder:
         # cannot tell the slot apart from the padding.
         anchor = None
         for name in ["tomoyo_task_free", "tomoyo_task_alloc", "tomoyo_cred_prepare"]:
-            addr = Symbol.get_ksymaddr(name)
+            addr = Ksym.get_addr(name)
             if addr is None:
                 continue
             res = gdb.execute("x/20i {:#x}".format(addr), to_string=True)
@@ -64761,7 +64693,7 @@ class KernelAddressHeuristicFinder:
             anchor = next(iter(g), None)
             if anchor is not None:
                 break
-        ret = Symbol.get_kallsyms()
+        ret = Ksym.get_kallsyms()
         if anchor is None or ret is None:
             return get_from_check_profile()
         kallsyms, _kallsyms_map = ret
@@ -64850,7 +64782,7 @@ class KernelAddressHeuristicFinder:
     def get_mmap_min_addr():
         # plan 1 (directly)
         if KernelAddressHeuristicFinder.USE_DIRECTLY:
-            x = Symbol.get_ksymaddr("mmap_min_addr")
+            x = Ksym.get_addr("mmap_min_addr")
             if x:
                 return x
 
@@ -64859,7 +64791,7 @@ class KernelAddressHeuristicFinder:
         # plan 2 (available v2.6.26 or later)
         # mmap_min_addr_handler() is the only non-init writer of mmap_min_addr, so the
         # store destination tells it apart from the dac_mmap_min_addr it loads first.
-        addr = Symbol.get_ksymaddr("mmap_min_addr_handler")
+        addr = Ksym.get_addr("mmap_min_addr_handler")
         if addr:
             res = KernelAddressHeuristicFinderUtil.disassemble_until_next_symbol(addr, 100)
             if is_x86_64():
@@ -64880,7 +64812,7 @@ class KernelAddressHeuristicFinder:
         # expand_downwards() also loads stack_guard_gap, so a build without the inlined
         # mmap_min_addr check yields that instead. Keep this behind the exact store above.
         if kversion and "4.19.27" <= kversion:
-            addr = Symbol.get_ksymaddr("expand_downwards")
+            addr = Ksym.get_addr("expand_downwards")
             if addr:
                 # KASAN/KCOV builds interleave instrumentation, pushing &mmap_min_addr past 80 insns
                 res = KernelAddressHeuristicFinderUtil.disassemble_until_next_symbol(addr, 200)
@@ -64901,7 +64833,7 @@ class KernelAddressHeuristicFinder:
     def get_dac_mmap_min_addr():
         # plan 1 (directly)
         if KernelAddressHeuristicFinder.USE_DIRECTLY:
-            x = Symbol.get_ksymaddr("dac_mmap_min_addr")
+            x = Ksym.get_addr("dac_mmap_min_addr")
             if x:
                 return x
 
@@ -64915,7 +64847,7 @@ class KernelAddressHeuristicFinder:
         # A kernel built without CONFIG_SYSCTL has no sysctl tree at all, so plan 2 can never
         # answer. update_mmap_min_addr() is inlined into mmap_min_addr_handler(), where
         # dac_mmap_min_addr is the load source and mmap_min_addr the store destination.
-        addr = Symbol.get_ksymaddr("mmap_min_addr_handler")
+        addr = Ksym.get_addr("mmap_min_addr_handler")
         if addr:
             res = KernelAddressHeuristicFinderUtil.disassemble_until_next_symbol(addr, 100)
             if is_x86_64():
@@ -64947,7 +64879,7 @@ class KernelAddressHeuristicFinder:
     def get_sysctl_unprivileged_userfaultfd():
         # plan 1 (directly)
         if KernelAddressHeuristicFinder.USE_DIRECTLY:
-            x = Symbol.get_ksymaddr("sysctl_unprivileged_userfaultfd")
+            x = Ksym.get_addr("sysctl_unprivileged_userfaultfd")
             if x:
                 return x
 
@@ -64967,7 +64899,7 @@ class KernelAddressHeuristicFinder:
             anchors = ["__do_sys_userfaultfd", "__se_sys_userfaultfd", "__x64_sys_userfaultfd",
                        "__ia32_sys_userfaultfd", "__arm64_sys_userfaultfd", "sys_userfaultfd"]
             for name in anchors:
-                for addr in Symbol.get_ksymaddr_with_split_suffix(name):
+                for addr in Ksym.get_addrs(name, match="split"):
                     res = KernelAddressHeuristicFinderUtil.disassemble_until_next_symbol(addr, 60)
                     if is_x86_64():
                         g = KernelAddressHeuristicFinderUtil.x64_dword_ptr_rip_base(res)
@@ -64986,7 +64918,7 @@ class KernelAddressHeuristicFinder:
     def get_sysctl_unprivileged_bpf_disabled():
         # plan 1 (directly)
         if KernelAddressHeuristicFinder.USE_DIRECTLY:
-            x = Symbol.get_ksymaddr("sysctl_unprivileged_bpf_disabled")
+            x = Ksym.get_addr("sysctl_unprivileged_bpf_disabled")
             if x:
                 return x
 
@@ -65000,7 +64932,7 @@ class KernelAddressHeuristicFinder:
 
         # plan 3 (available v4.9.91 ~ v5.18.19)
         if kversion and "4.9.91" <= kversion < "5.19":
-            addr = Symbol.get_ksymaddr("__do_sys_bpf")
+            addr = Ksym.get_addr("__do_sys_bpf")
             if addr:
                 res = gdb.execute("x/20i {:#x}".format(addr), to_string=True)
                 if is_x86_64():
@@ -65020,7 +64952,7 @@ class KernelAddressHeuristicFinder:
     def get_kptr_restrict():
         # plan 1 (directly)
         if KernelAddressHeuristicFinder.USE_DIRECTLY:
-            x = Symbol.get_ksymaddr("kptr_restrict")
+            x = Ksym.get_addr("kptr_restrict")
             if x:
                 return x
 
@@ -65034,7 +64966,7 @@ class KernelAddressHeuristicFinder:
 
         # plan 3 (available v4.15 or later)
         if kversion and "4.15" <= kversion:
-            addr = Symbol.get_ksymaddr("kallsyms_show_value")
+            addr = Ksym.get_addr("kallsyms_show_value")
             if addr:
                 res = gdb.execute("x/20i {:#x}".format(addr), to_string=True)
                 if is_x86_64():
@@ -65054,7 +64986,7 @@ class KernelAddressHeuristicFinder:
     def get_sysctl_perf_event_paranoid():
         # plan 1 (directly)
         if KernelAddressHeuristicFinder.USE_DIRECTLY:
-            x = Symbol.get_ksymaddr("sysctl_perf_event_paranoid")
+            x = Ksym.get_addr("sysctl_perf_event_paranoid")
             if x:
                 return x
 
@@ -65068,7 +65000,7 @@ class KernelAddressHeuristicFinder:
 
         # plan 3 (available v4.15 or later)
         if kversion and "4.15" <= kversion:
-            addr = Symbol.get_ksymaddr("kallsyms_show_value")
+            addr = Ksym.get_addr("kallsyms_show_value")
             if addr:
                 res = gdb.execute("x/20i {:#x}".format(addr), to_string=True)
                 if is_x86_64():
@@ -65088,7 +65020,7 @@ class KernelAddressHeuristicFinder:
     def get_dmesg_restrict():
         # plan 1 (directly)
         if KernelAddressHeuristicFinder.USE_DIRECTLY:
-            x = Symbol.get_ksymaddr("dmesg_restrict")
+            x = Ksym.get_addr("dmesg_restrict")
             if x:
                 return x
 
@@ -65110,7 +65042,7 @@ class KernelAddressHeuristicFinder:
             if is_x86():
                 anchors.append(("do_syslog", 80))
             for name, n in anchors:
-                for addr in Symbol.get_ksymaddr_with_split_suffix(name):
+                for addr in Ksym.get_addrs(name, match="split"):
                     res = KernelAddressHeuristicFinderUtil.disassemble_until_next_symbol(addr, n)
                     if is_x86_64():
                         g = KernelAddressHeuristicFinderUtil.x64_dword_ptr_rip_base(res)
@@ -65129,7 +65061,7 @@ class KernelAddressHeuristicFinder:
     def get_kexec_load_disabled():
         # plan 1 (directly)
         if KernelAddressHeuristicFinder.USE_DIRECTLY:
-            x = Symbol.get_ksymaddr("kexec_load_disabled")
+            x = Ksym.get_addr("kexec_load_disabled")
             if x:
                 return x
 
@@ -65152,7 +65084,7 @@ class KernelAddressHeuristicFinder:
                    "__x64_sys_kexec_file_load", "__ia32_sys_kexec_file_load",
                    "__arm64_sys_kexec_file_load", "sys_kexec_file_load"]
         for name in anchors:
-            for addr in Symbol.get_ksymaddr_with_split_suffix(name):
+            for addr in Ksym.get_addrs(name, match="split"):
                 res = KernelAddressHeuristicFinderUtil.disassemble_until_next_symbol(addr, 60)
                 if is_x86_64():
                     g = KernelAddressHeuristicFinderUtil.x64_dword_ptr_rip_base(res)
@@ -65197,7 +65129,7 @@ class KernelAddressHeuristicFinder:
     def get_ptrace_scope():
         # plan 1 (directly)
         if KernelAddressHeuristicFinder.USE_DIRECTLY:
-            x = Symbol.get_ksymaddr("ptrace_scope")
+            x = Ksym.get_addr("ptrace_scope")
             if x:
                 return x
 
@@ -65212,7 +65144,7 @@ class KernelAddressHeuristicFinder:
         # answer. Both Yama hooks read `ptrace_scope` before touching any other global.
         anchors = ["yama_ptrace_access_check", "yama_ptrace_traceme"]
         for name in anchors:
-            for addr in Symbol.get_ksymaddr_with_split_suffix(name):
+            for addr in Ksym.get_addrs(name, match="split"):
                 res = KernelAddressHeuristicFinderUtil.disassemble_until_next_symbol(addr, 60)
                 if is_x86_64():
                     g = KernelAddressHeuristicFinderUtil.x64_dword_ptr_rip_base(res)
@@ -65234,7 +65166,7 @@ class KernelAddressHeuristicFinder:
 
         # plan 1 (directly)
         if KernelAddressHeuristicFinder.USE_DIRECTLY:
-            x = Symbol.get_ksymaddr("vdso_image_64")
+            x = Ksym.get_addr("vdso_image_64")
             if x:
                 return x
 
@@ -65242,7 +65174,7 @@ class KernelAddressHeuristicFinder:
 
         # plan 2 (available v4.2 or later)
         if kversion and "4.2" <= kversion:
-            addr = Symbol.get_ksymaddr("arch_setup_additional_pages")
+            addr = Ksym.get_addr("arch_setup_additional_pages")
             if addr:
                 res = gdb.execute("x/40i {:#x}".format(addr), to_string=True)
                 g = KernelAddressHeuristicFinderUtil.x64_x86_mov_reg_const(res, "rdi", read_valid=True)
@@ -65275,7 +65207,7 @@ class KernelAddressHeuristicFinder:
 
         # plan 1 (directly)
         if KernelAddressHeuristicFinder.USE_DIRECTLY:
-            x = Symbol.get_ksymaddr("vdso_image_x32")
+            x = Ksym.get_addr("vdso_image_x32")
             if x:
                 return x
 
@@ -65283,7 +65215,7 @@ class KernelAddressHeuristicFinder:
 
         # plan 2 (available v4.2 or later)
         if kversion and "4.2" <= kversion:
-            addr = Symbol.get_ksymaddr("compat_arch_setup_additional_pages")
+            addr = Ksym.get_addr("compat_arch_setup_additional_pages")
             if addr:
                 # Both vdso_image_32 and vdso_image_x32 are loaded here; their branch
                 # order varies, so use a window long enough to reach the later one.
@@ -65303,7 +65235,7 @@ class KernelAddressHeuristicFinder:
 
         # plan 1 (directly)
         if KernelAddressHeuristicFinder.USE_DIRECTLY:
-            x = Symbol.get_ksymaddr("vdso_image_32")
+            x = Ksym.get_addr("vdso_image_32")
             if x:
                 return x
 
@@ -65312,7 +65244,7 @@ class KernelAddressHeuristicFinder:
         # plan 2 (available v4.2 or later)
         if kversion and "4.2" <= kversion:
             if is_x86_64():
-                addr = Symbol.get_ksymaddr("compat_arch_setup_additional_pages")
+                addr = Ksym.get_addr("compat_arch_setup_additional_pages")
                 if addr:
                     # Both vdso images are loaded here in version-dependent order,
                     # so use a window long enough to reach the later one.
@@ -65323,7 +65255,7 @@ class KernelAddressHeuristicFinder:
                         if read_memory(v, 4) == b"\x7fELF" and read_memory(v + 0x12, 1) == b"\x03": # Elf.Machine
                             return x
             elif is_x86_32():
-                addr = Symbol.get_ksymaddr("arch_setup_additional_pages")
+                addr = Ksym.get_addr("arch_setup_additional_pages")
                 if addr:
                     # pattern 1
                     res = gdb.execute("x/20i {:#x}".format(addr), to_string=True)
@@ -65363,7 +65295,7 @@ class KernelAddressHeuristicFinder:
 
         # plan 1 (directly)
         if KernelAddressHeuristicFinder.USE_DIRECTLY:
-            x = Symbol.get_ksymaddr("vdso_info")
+            x = Ksym.get_addr("vdso_info")
             if x:
                 return x
 
@@ -65375,7 +65307,7 @@ class KernelAddressHeuristicFinder:
 
         # plan 2 (available v5.8 or later)
         if kversion and "5.8" <= kversion:
-            for addr in Symbol.get_ksymaddr_with_split_suffix("__vdso_init"):
+            for addr in Ksym.get_addrs("__vdso_init", match="split"):
                 try:
                     res = gdb.execute("x/20i {:#x}".format(addr), to_string=True)
                 except gdb.MemoryError:
@@ -65437,7 +65369,7 @@ class KernelAddressHeuristicFinder:
 
         # plan 1 (directly)
         if KernelAddressHeuristicFinder.USE_DIRECTLY:
-            x = Symbol.get_ksymaddr("vdso_lookup")
+            x = Ksym.get_addr("vdso_lookup")
             if x:
                 return x
 
@@ -65449,7 +65381,7 @@ class KernelAddressHeuristicFinder:
 
         # plan 2 (available v5.3 or later)
         if kversion and "5.3" <= kversion:
-            for addr in Symbol.get_ksymaddr_with_split_suffix("__vdso_init"):
+            for addr in Ksym.get_addrs("__vdso_init", match="split"):
                 res = gdb.execute("x/20i {:#x}".format(addr), to_string=True)
                 g = KernelAddressHeuristicFinderUtil.aarch64_adrp_add(res)
                 for x in g:
@@ -65506,7 +65438,7 @@ class KernelAddressHeuristicFinder:
 
         # plan 1 (directly)
         if KernelAddressHeuristicFinder.USE_DIRECTLY:
-            x = Symbol.get_ksymaddr("vdso_start")
+            x = Ksym.get_addr("vdso_start")
             if x:
                 return x
 
@@ -65546,7 +65478,7 @@ class KernelAddressHeuristicFinder:
 
         # plan 1 (directly)
         if KernelAddressHeuristicFinder.USE_DIRECTLY:
-            x = Symbol.get_ksymaddr("vdso32_start")
+            x = Ksym.get_addr("vdso32_start")
             if x:
                 return x
 
@@ -65601,7 +65533,7 @@ class KernelAddressHeuristicFinder:
 
         # plan 1 (directly)
         if KernelAddressHeuristicFinder.USE_DIRECTLY:
-            x = Symbol.get_ksymaddr("file_systems")
+            x = Ksym.get_addr("file_systems")
             if x:
                 return x
 
@@ -65611,7 +65543,7 @@ class KernelAddressHeuristicFinder:
         if kversion and "2.5.7" <= kversion:
             anchors = (("unregister_filesystem", 20), ("register_filesystem", 60))
             for symbol, instruction_count in anchors:
-                addr = Symbol.get_ksymaddr(symbol)
+                addr = Ksym.get_addr(symbol)
                 if not addr:
                     continue
                 res = gdb.execute("x/{:d}i {:#x}".format(instruction_count, addr), to_string=True)
@@ -65639,7 +65571,7 @@ class KernelAddressHeuristicFinder:
     def get_printk_rb_static():
         # plan 1 (directly)
         if KernelAddressHeuristicFinder.USE_DIRECTLY:
-            x = Symbol.get_ksymaddr("printk_rb_static")
+            x = Ksym.get_addr("printk_rb_static")
             if x:
                 return x
 
@@ -65647,7 +65579,7 @@ class KernelAddressHeuristicFinder:
 
         # plan 2 (available v5.10 or later)
         if kversion and "5.10" <= kversion:
-            addr = Symbol.get_ksymaddr("kmsg_dump_rewind")
+            addr = Ksym.get_addr("kmsg_dump_rewind")
             if addr:
                 res = gdb.execute("x/60i {:#x}".format(addr), to_string=True)
                 if is_x86_64():
@@ -65666,7 +65598,7 @@ class KernelAddressHeuristicFinder:
 
         # plan 3 (available v5.10 or later)
         if kversion and "5.10" <= kversion:
-            addr = Symbol.get_ksymaddr("kmsg_dump_rewind_nolock")
+            addr = Ksym.get_addr("kmsg_dump_rewind_nolock")
             if addr:
                 res = gdb.execute("x/30i {:#x}".format(addr), to_string=True)
                 if is_x86_64():
@@ -65686,7 +65618,7 @@ class KernelAddressHeuristicFinder:
     def get_log_first_idx():
         # plan 1 (directly)
         if KernelAddressHeuristicFinder.USE_DIRECTLY:
-            x = Symbol.get_ksymaddr("log_first_idx")
+            x = Ksym.get_addr("log_first_idx")
             if x:
                 return x
 
@@ -65698,7 +65630,7 @@ class KernelAddressHeuristicFinder:
 
         # plan 2 (available v3.5 or later)
         if kversion and "3.5" <= kversion:
-            for addr in Symbol.get_ksymaddr_with_split_suffix("devkmsg_open"):
+            for addr in Ksym.get_addrs("devkmsg_open", match="split"):
                 res = KernelAddressHeuristicFinderUtil.disassemble_until_next_symbol(addr, 80)
                 if is_x86_64():
                     seqs = set(KernelAddressHeuristicFinderUtil.x64_qword_ptr_rip_base(res))
@@ -65727,7 +65659,7 @@ class KernelAddressHeuristicFinder:
     def get_log_next_idx():
         # plan 1 (directly)
         if KernelAddressHeuristicFinder.USE_DIRECTLY:
-            x = Symbol.get_ksymaddr("log_next_idx")
+            x = Ksym.get_addr("log_next_idx")
             if x:
                 return x
 
@@ -65739,7 +65671,7 @@ class KernelAddressHeuristicFinder:
 
         # plan 2 (available v3.5 or later)
         if kversion and "3.5" <= kversion:
-            addr = Symbol.get_ksymaddr("kmsg_dump_rewind_nolock")
+            addr = Ksym.get_addr("kmsg_dump_rewind_nolock")
             if addr:
                 res = gdb.execute("x/20i {:#x}".format(addr), to_string=True)
                 if is_x86_64():
@@ -65766,7 +65698,7 @@ class KernelAddressHeuristicFinder:
     def get___log_buf():
         # plan 1 (directly)
         if KernelAddressHeuristicFinder.USE_DIRECTLY:
-            x = Symbol.get_ksymaddr("__log_buf")
+            x = Ksym.get_addr("__log_buf")
             if x:
                 return x
 
@@ -65816,7 +65748,7 @@ class KernelAddressHeuristicFinder:
     def get_log_buf_len():
         # plan 1 (directly)
         if KernelAddressHeuristicFinder.USE_DIRECTLY:
-            x = Symbol.get_ksymaddr("log_buf_len")
+            x = Ksym.get_addr("log_buf_len")
             if x:
                 return x
 
@@ -65828,7 +65760,7 @@ class KernelAddressHeuristicFinder:
 
         # plan 2 (available v3.17 or later)
         if kversion and "3.17" <= kversion:
-            addr = Symbol.get_ksymaddr("log_buf_len_get")
+            addr = Ksym.get_addr("log_buf_len_get")
             if addr:
                 res = gdb.execute("x/10i {:#x}".format(addr), to_string=True)
                 if is_x86_64():
@@ -65849,7 +65781,7 @@ class KernelAddressHeuristicFinder:
 
         # plan 3 (available v3.5 or later)
         if kversion and "3.5" <= kversion:
-            for addr in Symbol.get_ksymaddr_with_split_suffix("do_syslog"):
+            for addr in Ksym.get_addrs("do_syslog", match="split"):
                 res = KernelAddressHeuristicFinderUtil.disassemble_until_next_symbol(addr, 300)
                 if is_x86_64():
                     g = KernelAddressHeuristicFinderUtil.x64_dword_ptr_rip_base(res)
@@ -65931,7 +65863,7 @@ class KernelAddressHeuristicFinder:
 
         # plan 1 (directly)
         if KernelAddressHeuristicFinder.USE_DIRECTLY:
-            x = Symbol.get_ksymaddr("node_data")
+            x = Ksym.get_addr("node_data")
             if x:
                 return x
 
@@ -65939,7 +65871,7 @@ class KernelAddressHeuristicFinder:
 
         # plan 2 (available v2.6.17 or later)
         if kversion and "2.6.17" <= kversion:
-            addr = Symbol.get_ksymaddr("first_online_pgdat")
+            addr = Ksym.get_addr("first_online_pgdat")
             if addr:
                 res = gdb.execute("x/20i {:#x}".format(addr), to_string=True)
                 if is_x86_64():
@@ -66017,7 +65949,7 @@ class KernelAddressHeuristicFinder:
 
         # plan 1 (available v2.6.17 or later)
         if kversion and "2.6.17" <= kversion:
-            addr = Symbol.get_ksymaddr("first_online_pgdat")
+            addr = Ksym.get_addr("first_online_pgdat")
             if addr:
                 res = gdb.execute("x/10i {:#x}".format(addr), to_string=True)
                 if is_x86_64():
@@ -66047,7 +65979,7 @@ class KernelAddressHeuristicFinder:
     def get_prog_idr():
         # plan 1 (directly)
         if KernelAddressHeuristicFinder.USE_DIRECTLY:
-            x = Symbol.get_ksymaddr("prog_idr")
+            x = Ksym.get_addr("prog_idr")
             if x:
                 return x
 
@@ -66068,7 +66000,7 @@ class KernelAddressHeuristicFinder:
     def get_map_idr():
         # plan 1 (directly)
         if KernelAddressHeuristicFinder.USE_DIRECTLY:
-            x = Symbol.get_ksymaddr("map_idr")
+            x = Ksym.get_addr("map_idr")
             if x:
                 return x
 
@@ -66089,7 +66021,7 @@ class KernelAddressHeuristicFinder:
     def get_vmap_area_list():
         # plan 1 (directly)
         if KernelAddressHeuristicFinder.USE_DIRECTLY:
-            x = Symbol.get_ksymaddr("vmap_area_list")
+            x = Ksym.get_addr("vmap_area_list")
             if x:
                 return x
 
@@ -66101,7 +66033,7 @@ class KernelAddressHeuristicFinder:
 
         # plan 2 (available v4.7~)
         if kversion and "4.7" <= kversion:
-            addr = Symbol.get_ksymaddr("register_vmap_purge_notifier")
+            addr = Ksym.get_addr("register_vmap_purge_notifier")
             if addr:
                 res = gdb.execute("x/10i {:#x}".format(addr), to_string=True)
                 if is_x86_64():
@@ -66150,7 +66082,7 @@ class KernelAddressHeuristicFinder:
 
         # plan 3 (available v3.10 ~ v6.3: vread, v6.4~: vread_iter)
         if kversion and "3.17" <= kversion:
-            addr = Symbol.get_ksymaddr("vread") or Symbol.get_ksymaddr("vread_iter")
+            addr = Ksym.get_addr("vread") or Ksym.get_addr("vread_iter")
             if addr:
                 res = gdb.execute("x/100i {:#x}".format(addr), to_string=True)
                 if is_x86_64():
@@ -66170,7 +66102,7 @@ class KernelAddressHeuristicFinder:
 
         # plan 4 (available v4.10~)
         if kversion and "4.10" <= kversion:
-            addrs = Symbol.get_ksymaddr_multiple("s_next")
+            addrs = Ksym.get_addrs("s_next")
             if addrs:
                 for s_next in addrs:
                     res = gdb.execute("x/20i {:#x}".format(s_next), to_string=True)
@@ -66188,7 +66120,7 @@ class KernelAddressHeuristicFinder:
 
         # plan 5 (available v2.6.28 ~ v5.1)
         if kversion and "2.6.28" <= kversion < "5.2":
-            addr = Symbol.get_ksymaddr("__insert_vmap_area")
+            addr = Ksym.get_addr("__insert_vmap_area")
             if addr:
                 res = gdb.execute("x/100i {:#x}".format(addr), to_string=True)
                 if is_x86_64():
@@ -66226,7 +66158,7 @@ class KernelAddressHeuristicFinder:
             return None
 
         if KernelAddressHeuristicFinder.USE_DIRECTLY:
-            x = Symbol.get_ksymaddr("vmap_nodes")
+            x = Ksym.get_addr("vmap_nodes")
             if x:
                 return busy_head(read_int_from_memory(x), 0)
 
@@ -66246,7 +66178,7 @@ class KernelAddressHeuristicFinder:
                         if head:
                             yield head
 
-        for addr in Symbol.get_ksymaddr_with_split_suffix("find_vmap_area"):
+        for addr in Ksym.get_addrs("find_vmap_area", match="split"):
             res = KernelAddressHeuristicFinderUtil.disassemble_until_next_symbol(addr, 100)
             direct_heads = ()
             if is_x86_64():
@@ -66292,7 +66224,7 @@ class KernelAddressHeuristicFinder:
     def get_free_vmap_area_list():
         # plan 1 (directly)
         if KernelAddressHeuristicFinder.USE_DIRECTLY:
-            x = Symbol.get_ksymaddr("free_vmap_area_list")
+            x = Ksym.get_addr("free_vmap_area_list")
             if x:
                 return x
 
@@ -66306,7 +66238,7 @@ class KernelAddressHeuristicFinder:
         # is not empty, and v7.1 may place `vmap_notify_list` and `free_vmap_area_list` in
         # different sections, which puts the latter out of reach of a forward scan.
         for name in ("insert_vmap_area_augment", "free_vmap_area"):
-            for addr in Symbol.get_ksymaddr_with_split_suffix(name):
+            for addr in Ksym.get_addrs(name, match="split"):
                 # ARM keeps the constant in a literal pool and reads it ~210 instructions in
                 res = KernelAddressHeuristicFinderUtil.disassemble_until_next_symbol(addr, 500)
                 if is_x86_64() or is_x86_32():
@@ -66326,7 +66258,7 @@ class KernelAddressHeuristicFinder:
                         return x
 
         # plan 3 (available v4.7~; here, always True)
-        addr = Symbol.get_ksymaddr("register_vmap_purge_notifier")
+        addr = Ksym.get_addr("register_vmap_purge_notifier")
         if addr:
             res = gdb.execute("x/10i {:#x}".format(addr), to_string=True)
             if is_x86_64():
@@ -66406,7 +66338,7 @@ class KernelAddressHeuristicFinder:
 
         # plan 1 (directly)
         if KernelAddressHeuristicFinder.USE_DIRECTLY:
-            x = Symbol.get_ksymaddr("workqueues")
+            x = Ksym.get_addr("workqueues")
             if x:
                 return x
 
@@ -66414,7 +66346,7 @@ class KernelAddressHeuristicFinder:
         # `system_wq` is exported while the list head is static. Every workqueue has its
         # `list` member at +2 pointers, so walking from system_wq reaches the only node in
         # the kernel image: the `workqueues` head itself.
-        system_wq_ptr = Symbol.get_ksymaddr("system_wq")
+        system_wq_ptr = Ksym.get_addr("system_wq")
         if system_wq_ptr:
             try:
                 system_wq = read_int_from_memory(system_wq_ptr)
@@ -66437,7 +66369,7 @@ class KernelAddressHeuristicFinder:
                 "alloc_workqueue", "__alloc_workqueue", "__alloc_workqueue_key",
                 "show_workqueue_state", "show_all_workqueues", "show_freezable_workqueues",
                 "freeze_workqueues_begin", "freeze_workqueues_busy", "thaw_workqueues"):
-            for address in Symbol.get_ksymaddr_with_split_suffix(anchor):
+            for address in Ksym.get_addrs(anchor, match="split"):
                 res = KernelAddressHeuristicFinderUtil.disassemble_until_next_symbol(address, 500)
                 if is_x86_64() or is_x86_32():
                     candidates = KernelAddressHeuristicFinderUtil.x64_x86_any_const(res)
@@ -66527,7 +66459,7 @@ class KernelAddressHeuristicFinder:
     def get_timer_bases():
         # plan 1 (directly)
         if KernelAddressHeuristicFinder.USE_DIRECTLY:
-            x = Symbol.get_ksymaddr("timer_bases")
+            x = Ksym.get_addr("timer_bases")
             if x:
                 return x
 
@@ -66535,7 +66467,7 @@ class KernelAddressHeuristicFinder:
 
         # plan 2 (available v4.8 or later)
         if kversion and "4.8" <= kversion:
-            for addr in Symbol.get_ksymaddr_with_split_suffix("run_timer_softirq"):
+            for addr in Ksym.get_addrs("run_timer_softirq", match="split"):
                 res = KernelAddressHeuristicFinderUtil.disassemble_until_next_symbol(addr, 20)
                 if is_arm32():
                     # v6.19: `run_timer_softirq()` only passes the index to `__run_timer_base()`,
@@ -66674,7 +66606,7 @@ class KernelAddressHeuristicFinder:
     def get_hrtimer_bases():
         # plan 1 (directly)
         if KernelAddressHeuristicFinder.USE_DIRECTLY:
-            x = Symbol.get_ksymaddr("hrtimer_bases")
+            x = Ksym.get_addr("hrtimer_bases")
             if x:
                 return x
 
@@ -66682,7 +66614,7 @@ class KernelAddressHeuristicFinder:
 
         # plan 2 (available v3.10 or later; HRTIMER_BASE_TAI makes `clock_base[]` 4 elements)
         if kversion and "3.10" <= kversion:
-            for addr in Symbol.get_ksymaddr_with_split_suffix("hrtimer_run_queues"):
+            for addr in Ksym.get_addrs("hrtimer_run_queues", match="split"):
                 res = KernelAddressHeuristicFinderUtil.disassemble_until_next_symbol(addr, 20)
                 if is_x86_64():
                     g = itertools.chain(
@@ -66779,7 +66711,7 @@ class KernelAddressHeuristicFinder:
     def get_jiffies():
         # plan 1 (directly)
         if KernelAddressHeuristicFinder.USE_DIRECTLY:
-            x = Symbol.get_ksymaddr("jiffies")
+            x = Ksym.get_addr("jiffies")
             if x:
                 return x
 
@@ -66787,7 +66719,7 @@ class KernelAddressHeuristicFinder:
 
         # plan 2 (available v2.6.18 or later)
         if kversion and "2.6.18" <= kversion:
-            addr = Symbol.get_ksymaddr("jiffies_read")
+            addr = Ksym.get_addr("jiffies_read")
             if addr:
                 res = gdb.execute("x/20i {:#x}".format(addr), to_string=True)
                 if is_x86_64():
@@ -66807,7 +66739,7 @@ class KernelAddressHeuristicFinder:
     def get_pci_root_buses():
         # plan 1 (directly)
         if KernelAddressHeuristicFinder.USE_DIRECTLY:
-            x = Symbol.get_ksymaddr("pci_root_buses")
+            x = Ksym.get_addr("pci_root_buses")
             if x:
                 return x
 
@@ -66815,7 +66747,7 @@ class KernelAddressHeuristicFinder:
 
         # plan 2 (available v2.5.71 or later)
         if kversion and "2.5.71" <= kversion:
-            for addr in Symbol.get_ksymaddr_with_split_suffix("pci_find_next_bus"):
+            for addr in Ksym.get_addrs("pci_find_next_bus", match="split"):
                 res = KernelAddressHeuristicFinderUtil.disassemble_until_next_symbol(addr, 30)
                 if is_x86_64():
                     g = itertools.chain(
@@ -66838,7 +66770,7 @@ class KernelAddressHeuristicFinder:
     def get_ioport_resource():
         # plan 1 (directly)
         if KernelAddressHeuristicFinder.USE_DIRECTLY:
-            x = Symbol.get_ksymaddr("ioport_resource")
+            x = Ksym.get_addr("ioport_resource")
             if x:
                 return x
 
@@ -66846,7 +66778,7 @@ class KernelAddressHeuristicFinder:
 
         # plan 2 (available v3.3 or later)
         if kversion and "3.3" <= kversion:
-            addr = Symbol.get_ksymaddr("pci_scan_bus")
+            addr = Ksym.get_addr("pci_scan_bus")
             if addr:
                 res = gdb.execute("x/30i {:#x}".format(addr), to_string=True)
                 if is_x86_64():
@@ -66924,7 +66856,7 @@ class KernelAddressHeuristicFinder:
     def get_iomem_resource():
         # plan 1 (directly)
         if KernelAddressHeuristicFinder.USE_DIRECTLY:
-            x = Symbol.get_ksymaddr("iomem_resource")
+            x = Ksym.get_addr("iomem_resource")
             if x:
                 return x
 
@@ -66963,7 +66895,7 @@ class KernelAddressHeuristicFinder:
 
         # plan 1 (directly)
         if KernelAddressHeuristicFinder.USE_DIRECTLY:
-            x = Symbol.get_ksymaddr("db_list")
+            x = Ksym.get_addr("db_list")
             if x:
                 return x
 
@@ -66977,7 +66909,7 @@ class KernelAddressHeuristicFinder:
         # instead of picking one by version.
         if kversion and "3.17" <= kversion:
             for anchor in ("dma_buf_file_release", "dma_buf_release"):
-                addr = Symbol.get_ksymaddr(anchor)
+                addr = Ksym.get_addr(anchor)
                 if addr is None:
                     continue
                 # KASAN builds push &db_list.lock past the 30th instruction
@@ -67010,24 +66942,24 @@ class KernelAddressHeuristicFinder:
 
         # plan 1 (directly)
         if KernelAddressHeuristicFinder.USE_DIRECTLY:
-            x = Symbol.get_ksymaddr("debugfs_list")
+            x = Ksym.get_addr("debugfs_list")
             if x:
                 return x
 
         kversion = Kernel.kernel_version()
 
         # plan 2 (available v6.10 or later, until `dmabuf_list` replaces `debugfs_list`)
-        if kversion and "6.10" <= kversion and not Symbol.get_ksymaddr("dma_buf_iter_begin"):
+        if kversion and "6.10" <= kversion and not Ksym.get_addr("dma_buf_iter_begin"):
             # Some x64 builds place debugfs_list before debugfs_list_mutex, while others place it
             # after the mutex. dma_buf_debug_show() references the list head itself when iterating.
             if is_x86_64():
-                for addr in Symbol.get_ksymaddr_with_split_suffix("dma_buf_debug_show"):
+                for addr in Ksym.get_addrs("dma_buf_debug_show", match="split"):
                     res = KernelAddressHeuristicFinderUtil.disassemble_until_next_symbol(addr, 100)
                     for x in KernelAddressHeuristicFinderUtil.x64_x86_any_const(res):
                         if is_double_link_list(x):
                             return x
 
-            for addr in Symbol.get_ksymaddr_with_split_suffix("dma_buf_file_release"):
+            for addr in Ksym.get_addrs("dma_buf_file_release", match="split"):
                 res = KernelAddressHeuristicFinderUtil.disassemble_until_next_symbol(addr, 30)
                 if is_x86_64():
                     g = KernelAddressHeuristicFinderUtil.x64_x86_mov_reg_const(res)
@@ -67071,19 +67003,19 @@ class KernelAddressHeuristicFinder:
 
         # plan 1 (directly)
         if KernelAddressHeuristicFinder.USE_DIRECTLY:
-            x = Symbol.get_ksymaddr("dmabuf_list")
+            x = Ksym.get_addr("dmabuf_list")
             if x:
                 return x
 
         # `dmabuf_list` replaced `debugfs_list` together with the exported iterator. Mainline did
         # that in v6.16, but a tree based on v6.15 can carry it already, so the iterator itself
         # tells the two layouts apart where the version does not.
-        has_iterator = bool(Symbol.get_ksymaddr("dma_buf_iter_begin"))
+        has_iterator = bool(Ksym.get_addr("dma_buf_iter_begin"))
 
         # plan 2 (available since the dmabuf iterator was added)
         if has_iterator:
             for anchor in ("dma_buf_iter_begin", "dma_buf_iter_next"):
-                addr = Symbol.get_ksymaddr(anchor)
+                addr = Ksym.get_addr(anchor)
                 if addr is None:
                     continue
                 res = gdb.execute("x/30i {:#x}".format(addr), to_string=True)
@@ -67112,7 +67044,7 @@ class KernelAddressHeuristicFinder:
 
         # plan 3 (available since the dmabuf iterator was added)
         if has_iterator:
-            for addr in Symbol.get_ksymaddr_with_split_suffix("dma_buf_file_release"):
+            for addr in Ksym.get_addrs("dma_buf_file_release", match="split"):
                 res = KernelAddressHeuristicFinderUtil.disassemble_until_next_symbol(addr, 30)
                 if is_x86_64():
                     g = KernelAddressHeuristicFinderUtil.x64_x86_mov_reg_const(res)
@@ -67154,7 +67086,7 @@ class KernelAddressHeuristicFinder:
     def get_irq_desc_tree():
         # plan 1 (directly)
         if KernelAddressHeuristicFinder.USE_DIRECTLY:
-            x = Symbol.get_ksymaddr("irq_desc_tree")
+            x = Ksym.get_addr("irq_desc_tree")
             if x:
                 return x
 
@@ -67165,7 +67097,7 @@ class KernelAddressHeuristicFinder:
 
         # plan 2 (available v2.6.37 ~ v6.4)
         if kversion and "2.6.37" <= kversion < "6.5":
-            addr = Symbol.get_ksymaddr("irq_to_desc")
+            addr = Ksym.get_addr("irq_to_desc")
             if addr:
                 res = gdb.execute("x/20i {:#x}".format(addr), to_string=True)
                 if is_x86_64():
@@ -67189,7 +67121,7 @@ class KernelAddressHeuristicFinder:
     def get_sparse_irqs():
         # plan 1 (directly)
         if KernelAddressHeuristicFinder.USE_DIRECTLY:
-            x = Symbol.get_ksymaddr("sparse_irqs")
+            x = Ksym.get_addr("sparse_irqs")
             if x:
                 return x
 
@@ -67200,7 +67132,7 @@ class KernelAddressHeuristicFinder:
 
         # plan 2 (available v6.5 or later)
         if kversion and "6.5" <= kversion:
-            addr = Symbol.get_ksymaddr("irq_to_desc")
+            addr = Ksym.get_addr("irq_to_desc")
             if addr:
                 res = gdb.execute("x/20i {:#x}".format(addr), to_string=True)
                 if is_x86_64():
@@ -67233,12 +67165,12 @@ class KernelAddressHeuristicFinder:
     def get_slub_tlbflush_queue():
         # plan 1 (directly)
         if KernelAddressHeuristicFinder.USE_DIRECTLY:
-            x = Symbol.get_ksymaddr("slub_tlbflush_queue")
+            x = Ksym.get_addr("slub_tlbflush_queue")
             if x:
                 return x
 
         # plan 2 (from slub_tlbflush_worker)
-        addr = Symbol.get_ksymaddr("slub_tlbflush_worker")
+        addr = Ksym.get_addr("slub_tlbflush_worker")
         if addr:
             res = gdb.execute("x/30i {:#x}".format(addr), to_string=True)
             if is_x86_64():
@@ -67262,7 +67194,7 @@ class KernelAddressHeuristicFinder:
     def get_slub_addr_base():
         # plan 1 (directly)
         if KernelAddressHeuristicFinder.USE_DIRECTLY:
-            x = Symbol.get_ksymaddr("slub_addr_base")
+            x = Ksym.get_addr("slub_addr_base")
             if x:
                 return x
 
@@ -67275,7 +67207,7 @@ class KernelAddressHeuristicFinder:
             # bruteforces all accesses into global variables in `alloc_slab_pv_page`
             # In source, `slub_addr_base` is referenced only by `alloc_slab_meta`, but
             # compiler seems to inline this function (because calls once, maybe)
-            addr = Symbol.get_ksymaddr("alloc_slab_pv_page")
+            addr = Ksym.get_addr("alloc_slab_pv_page")
             if addr:
                 res = gdb.execute("x/200i {:#x}".format(addr), to_string=True)
                 r"""
@@ -67307,7 +67239,7 @@ class KernelAddressHeuristicFinder:
                         return x
         else:
             # plan 3 (available in 6.6-based from vaddr_ranges_debug_start)
-            addr = Symbol.get_ksymaddr("vaddr_ranges_debug_start")
+            addr = Ksym.get_addr("vaddr_ranges_debug_start")
             if addr:
                 res = gdb.execute("x/20i {:#x}".format(addr), to_string=True)
                 if is_x86_64():
@@ -67334,7 +67266,7 @@ class KernelAddressHeuristicFinder:
 
         # plan 1 (directly)
         if KernelAddressHeuristicFinder.USE_DIRECTLY:
-            addr = Symbol.get_ksymaddr("slub_addr_current")
+            addr = Ksym.get_addr("slub_addr_current")
             if addr:
                 return addr
 
@@ -67344,7 +67276,7 @@ class KernelAddressHeuristicFinder:
             ("vaddr_ranges_debug_start", 20, 1),
         )
         for symbol, instruction_count, skip in anchors:
-            addr = Symbol.get_ksymaddr(symbol)
+            addr = Ksym.get_addr(symbol)
             if not addr:
                 continue
             res = gdb.execute("x/{:d}i {:#x}".format(instruction_count, addr), to_string=True)
@@ -67470,7 +67402,7 @@ class Kernel:
                 return self
 
             # Do not trigger a parse here: kallsyms parsing itself needs the unrefined layout.
-            ret = Symbol.get_kallsyms(parse=False)
+            ret = Ksym.peek()
             if ret is None:
                 return self
 
@@ -67984,7 +67916,7 @@ class Kernel:
         Therefore, when the same address is repeated, it is considered to be the end.
         """
         nr_cpu_ids = None
-        ret = Symbol.get_kallsyms(parse=False)
+        ret = Ksym.peek()
         if ret is not None:
             _, kallsyms_map = ret
             addresses = kallsyms_map.get("nr_cpu_ids", [])
@@ -68087,7 +68019,7 @@ class Kernel:
     def get_kernel_base_hint():
 
         # This function is designed for the case where the symbol is not available.
-        # Do not use Symbol.get_ksymaddr.
+        # Do not use Ksym.get_addr.
 
         if is_x86():
             if is_qemu_system():
@@ -68186,12 +68118,12 @@ class Kernel:
 
         if is_kgdb():
             # use symbol
-            dic["text_base"] = Symbol.get_ksymaddr("_stext")
-            dic["text_end"] = Symbol.get_ksymaddr("_etext")
-            dic["rw_base"] = Symbol.get_ksymaddr("_sdata")
-            dic["rw_end"] = Symbol.get_ksymaddr("_edata")
-            dic["ro_base"] = Symbol.get_ksymaddr("__start_rodata")
-            dic["ro_end"] = Symbol.get_ksymaddr("__end_rodata_aligned") or Symbol.get_ksymaddr("__end_rodata")
+            dic["text_base"] = Ksym.get_addr("_stext")
+            dic["text_end"] = Ksym.get_addr("_etext")
+            dic["rw_base"] = Ksym.get_addr("_sdata")
+            dic["rw_end"] = Ksym.get_addr("_edata")
+            dic["ro_base"] = Ksym.get_addr("__start_rodata")
+            dic["ro_end"] = Ksym.get_addr("__end_rodata_aligned") or Ksym.get_addr("__end_rodata")
             return Kernel.Kinfo.build(dic, apply_data_range_hint)
 
         # Could not find the maps, so fast return
@@ -68479,7 +68411,7 @@ class Kernel:
         if is_kdb():
             linux_banner = Symbol.get_symbol_by_monitor("linux_banner")
         if linux_banner is None:
-            linux_banner = Symbol.get_ksymaddr("linux_banner")
+            linux_banner = Ksym.get_addr("linux_banner")
         if linux_banner and is_valid_addr(linux_banner):
             version_string = read_cstring_from_memory(linux_banner, 0x200).rstrip()
             r = re.search(r"Linux version (\d)\.(\d+)\.(\d+)", version_string)
@@ -68547,45 +68479,27 @@ class Kernel:
             return None
 
     @staticmethod
-    def get_func_size_kallsyms(func_name):
-        first_func = Symbol.get_ksymaddr(func_name)
-        if first_func is None:
-            return None
-        ret = Symbol.get_kallsyms()
-        if ret is None:
-            return None
-        kallsyms, kallsyms_map = ret
-        for i, (addr, _, _) in enumerate(kallsyms):
-            if addr == first_func:
-                if i + 1 >= len(kallsyms):
-                    return None
-                next_func = kallsyms[i + 1][0]
-                first_func_size = next_func - first_func
-                return first_func_size
-        return None
-
-    @staticmethod
     @Cache.cache_this_session(cache_None=False)
     def get_slab_type():
         if not is_alive():
             return None
         # Cases where ksymaddr-remote is not working properly
-        if not Symbol.get_ksymaddr("commit_creds"):
+        if not Ksym.get_addr("commit_creds"):
             return "Unknown"
 
-        if gdb.execute("ksymaddr-remote --quiet --no-pager slub_", to_string=True):
+        if Ksym.get_addrs("slub_", match="in"):
             kversion = Kernel.kernel_version()
             if kversion < "6.2":
                 return "SLUB"
             elif kversion < "7.0":
                 # care for both deactivate_slab and deactivate_slab.cold
-                if gdb.execute("ksymaddr-remote --quiet --no-pager deactivate_slab", to_string=True):
+                if Ksym.get_addrs("deactivate_slab", match="in"):
                     return "SLUB"
                 else:
                     return "SLUB_TINY"
             else: # kversion >= "7.0"
                 # If CONFIG_SLUB_TINY=y, calculate_sheaf_capacity is a small function that returns 0.
-                calculate_sheaf_capacity_size = Kernel.get_func_size_kallsyms("calculate_sheaf_capacity")
+                calculate_sheaf_capacity_size = Ksym.get_func_size("calculate_sheaf_capacity")
                 if calculate_sheaf_capacity_size is None:
                     return "SLUB"
                 if calculate_sheaf_capacity_size <= 0x20:
@@ -68594,10 +68508,10 @@ class Kernel:
                     return "SLUB"
 
         # care for both cache_reap and cache_reap.cold
-        if gdb.execute("ksymaddr-remote --quiet --no-pager cache_reap", to_string=True):
+        if Ksym.get_addrs("cache_reap", match="in"):
             return "SLAB"
 
-        if gdb.execute("ksymaddr-remote --quiet --no-pager slob_", to_string=True):
+        if Ksym.get_addrs("slob_", match="in"):
             return "SLOB"
         return "Unknown"
 
@@ -68829,13 +68743,13 @@ class KernelAddressHeuristicSelftestCommand(GenericCommand, BufferingOutput):
         try:
             KernelAddressHeuristicFinder.USE_DIRECTLY = True
             Cache.reset_gef_caches(all=True)
-            if Symbol.get_kallsyms() is None:
+            if Ksym.get_kallsyms() is None:
                 self.quiet_err("Could not read kallsyms")
                 return
 
             for name, finder in self.finders():
                 symbol_name = self.direct_symbol_name(name)
-                symbol_address = Symbol.get_ksymaddr(symbol_name) if symbol_name is not None else None
+                symbol_address = Ksym.get_addr(symbol_name) if symbol_name is not None else None
                 if symbol_address is None:
                     direct_results[name] = (None, None, False, ())
                     continue
@@ -76707,20 +76621,10 @@ class KernelSysctlCommand(GenericCommand, BufferingOutput):
                     return True
             return False
 
-    @Cache.cache_this_session(cache_None=False, until_new_objfile=True)
-    def get_kallsyms_by_address(self):
-        ret = Symbol.get_kallsyms()
-        if ret is None:
-            return None
-        kallsyms, kallsyms_map = ret
-        return {addr: name for addr, name, _typ in kallsyms}
-
     def get_handler_symbol(self, handler):
-        kallsyms_by_address = self.get_kallsyms_by_address()
-        if kallsyms_by_address:
-            name = kallsyms_by_address.get(handler)
-            if name:
-                return " <{:s}>".format(name)
+        name = Ksym.get_name(handler)
+        if name:
+            return " <{:s}>".format(name)
         return Symbol.get_symbol_string(handler, nosymbol_string=" <NO_SYMBOL>")
 
     def dump_data(self, ctl_table_header, ctl_table, param_path, mode):
@@ -76786,9 +76690,9 @@ class KernelSysctlCommand(GenericCommand, BufferingOutput):
         root = self.read_int_from_memory(ctl_table + current_arch.ptrsize)
         if self.is_valid_addr(root + self.offset_lookup):
             lookup = self.read_int_from_memory(root + self.offset_lookup)
-            if lookup == Symbol.get_ksymaddr("net_ctl_header_lookup"): # net.*
+            if lookup == Ksym.get_addr("net_ctl_header_lookup"): # net.*
                 ctset = self.net_ctset
-            elif lookup == Symbol.get_ksymaddr("set_lookup"): # user.*
+            elif lookup == Ksym.get_addr("set_lookup"): # user.*
                 ctset = self.user_ctset
         if ctset:
             symlink_rb_node = self.read_int_from_memory(ctset + current_arch.ptrsize + self.offset_rb_node)
@@ -77041,7 +76945,7 @@ class KernelSysctlCommand(GenericCommand, BufferingOutput):
         init_net = KernelAddressHeuristicFinder.get_init_net()
         if init_net:
             current = init_net
-            is_seen = Symbol.get_ksymaddr("is_seen")
+            is_seen = Ksym.get_addr("is_seen")
             if is_seen:
                 for _ in range(0x1000): # avoid unbounded scan
                     v = self.read_int_from_memory(current)
@@ -77056,8 +76960,8 @@ class KernelSysctlCommand(GenericCommand, BufferingOutput):
         init_user_ns = KernelAddressHeuristicFinder.get_init_user_ns()
         if init_user_ns:
             current = init_user_ns
-            # set_is_seen is found in 3 places (v5.19~), so Symbol.get_ksymaddr should not be used.
-            set_is_seen = Symbol.get_ksymaddr_multiple("set_is_seen")
+            # set_is_seen is found in 3 places (v5.19~), so Ksym.get_addr should not be used.
+            set_is_seen = Ksym.get_addrs("set_is_seen")
             if set_is_seen:
                 for _ in range(0x1000): # avoid unbounded scan
                     v = self.read_int_from_memory(current)
@@ -77084,7 +76988,7 @@ class KernelSysctlCommand(GenericCommand, BufferingOutput):
         ]
         self.str_types = []
         for handler in known_str_types_handlers:
-            handler_addr = Symbol.get_ksymaddr(handler)
+            handler_addr = Ksym.get_addr(handler)
             if handler_addr:
                 self.str_types.append(handler_addr)
 
@@ -77965,7 +77869,7 @@ class KernelTimerCommand(GenericCommand, BufferingOutput):
         # len(timer_bases); NR_BASES is 1 unless CONFIG_NO_HZ_COMMON=y.
         # `tick_nohz_idle_enter` is a global function that exists only with CONFIG_NO_HZ_COMMON=y.
         # (`sysctl_timer_migration` is a data symbol, so it is invisible with CONFIG_KALLSYMS_ALL=n)
-        if not Symbol.get_ksymaddr("tick_nohz_idle_enter"):
+        if not Ksym.get_addr("tick_nohz_idle_enter"):
             self.nr_bases = 1
         elif Kernel.kernel_version() < "6.10":
             self.nr_bases = 2 # BASE_STD, BASE_DEF
@@ -78156,8 +78060,8 @@ class KernelTimerCommand(GenericCommand, BufferingOutput):
 
         # A merge-window build names the previous release (`6.17.0-11846-g...`) but already has
         # the next layout, so look for `get_time` instead of deciding by version alone.
-        ktime_get = Symbol.get_ksymaddr("ktime_get")
-        ktime_get_real = Symbol.get_ksymaddr("ktime_get_real")
+        ktime_get = Ksym.get_addr("ktime_get")
+        ktime_get_real = Ksym.get_addr("ktime_get_real")
         ktime_get_ofs = None
         ktime_get_real_ofs = None
         if kversion < "6.18" and ktime_get and ktime_get_real:
@@ -78923,9 +78827,9 @@ class KernelWorkqueueCommand(GenericCommand, BufferingOutput):
     @switch_to_intel_syntax
     def old_timer_base_candidates(self):
         """Return per-cpu tvec_bases base addresses (symbol and heuristic)."""
-        address = Symbol.get_ksymaddr("tvec_bases")
+        address = Ksym.get_addr("tvec_bases")
         candidates = [address] if address else []
-        for anchor in Symbol.get_ksymaddr_with_split_suffix("run_timer_softirq"):
+        for anchor in Ksym.get_addrs("run_timer_softirq", match="split"):
             res = KernelAddressHeuristicFinderUtil.disassemble_until_next_symbol(anchor, 100)
             if is_x86_64() or is_x86_32():
                 candidates.extend(KernelAddressHeuristicFinderUtil.x64_x86_any_const(res, skip_msb_check=True))
@@ -78946,7 +78850,7 @@ class KernelWorkqueueCommand(GenericCommand, BufferingOutput):
     def find_old_timer_bases(self):
         """Find each CPU's pointer-based tvec_base used before v4.8."""
         bases = []
-        boot_base = Symbol.get_ksymaddr("boot_tvec_bases")
+        boot_base = Ksym.get_addr("boot_tvec_bases")
         if boot_base and self.find_old_timer_vectors(boot_base) is not None:
             bases.append((0, boot_base))
 
@@ -79201,7 +79105,7 @@ class KernelWorkqueueCommand(GenericCommand, BufferingOutput):
         self.max_cpu = max(len(cpu_offsets), 1) if cpu_offsets else 0x2000
         self.pool_worklist_offsets = {}
         self.pool_cpu_hints = {}
-        kallsyms = Symbol.get_kallsyms(parse=False)
+        kallsyms = Ksym.peek()
         self.kallsyms_names = {address: name for address, name, symbol_type in kallsyms[0]} if kallsyms else {}
         self.kallsyms_text = {
             address: name for address, name, symbol_type in kallsyms[0] if symbol_type.lower() in ("t", "w")
@@ -79243,7 +79147,7 @@ class KernelWorkqueueCommand(GenericCommand, BufferingOutput):
 
         workqueues = list(Kernel.ListHead(self.workqueues, self.offset_wq_list).iter_entries())
         self.system_wq = None
-        system_wq_ptr = Symbol.get_ksymaddr("system_wq")
+        system_wq_ptr = Ksym.get_addr("system_wq")
         if system_wq_ptr is not None:
             try:
                 self.system_wq = read_int_from_memory(system_wq_ptr)
@@ -79271,7 +79175,7 @@ class KernelWorkqueueCommand(GenericCommand, BufferingOutput):
             self.units = self.collect_new_units(workqueues)
         self.units_by_address = {unit["address"]: unit for unit in self.units}
 
-        self.delayed_timer_functions = set(Symbol.get_ksymaddr_multiple("delayed_work_timer_fn") or [])
+        self.delayed_timer_functions = set(Ksym.get_addrs("delayed_work_timer_fn") or [])
         self.meta.append((self.quiet_info, "workqueue count: {:d}".format(len(workqueues))))
         self.meta.append((self.quiet_info, "pool_workqueue/cpu_workqueue count: {:d}".format(len(self.units))))
         return bool(workqueues)
@@ -80598,7 +80502,7 @@ class KernelDmesgCommand(GenericCommand, BufferingOutput):
 
         kversion = Kernel.kernel_version()
         if "7.0" <= kversion:
-            pmsg_load_execution_ctx_size = Kernel.get_func_size_kallsyms("pmsg_load_execution_ctx")
+            pmsg_load_execution_ctx_size = Ksym.get_func_size("pmsg_load_execution_ctx")
             if pmsg_load_execution_ctx_size and pmsg_load_execution_ctx_size >= 0x20:
                 # CONFIG_PRINTK_EXECUTION_CTX=y
                 sizeof_info = align_to_ptrsize(8 + 8 + 2 + 1 + 1 + 4 + 4 + 16 + 16 + 48)
@@ -80748,7 +80652,7 @@ class KernelDmesgCommand(GenericCommand, BufferingOutput):
         };
         """
 
-        CONFIG_PRINTK_CALLER = Symbol.get_ksymaddr("print_caller") is not None
+        CONFIG_PRINTK_CALLER = Ksym.get_addr("print_caller") is not None
         length_of_caller_id = 4 if CONFIG_PRINTK_CALLER else 0
         sizeof_printk_log = 16 + length_of_caller_id
 
@@ -81015,7 +80919,7 @@ class SyscallTableViewCommand(GenericCommand, BufferingOutput):
         }.get(tag, ["sys_ni_syscall"])
         ni_syscalls = {}
         for name in ni_syscall_names:
-            address = Symbol.get_ksymaddr(name)
+            address = Ksym.get_addr(name)
             if address is not None:
                 ni_syscalls[address] = name
 
@@ -81122,7 +81026,7 @@ class SyscallTableViewCommand(GenericCommand, BufferingOutput):
             kversion = Kernel.kernel_version()
             if removed_table and kversion and "6.6.26" <= kversion:
                 self.quiet_add_out("{:s} is removed from 6.6.26.".format(removed_table[0]))
-                if Symbol.get_ksymaddr(removed_table[1]):
+                if Ksym.get_addr(removed_table[1]):
                     self.quiet_add_out("each entry is embedded in `{:s}()` as call instruction.".format(removed_table[1]))
                 else:
                     self.quiet_add_out("`{:s}()` is unavailable; the corresponding ABI may be disabled.".format(removed_table[1]))
@@ -127688,7 +127592,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
             self.slab_virtual_enabled = False
         elif kversion < "6.1":
             self.slab_virtual_enabled = False
-        elif not Symbol.get_ksymaddr("slub_tlbflush_worker"):
+        elif not Ksym.get_addr("slub_tlbflush_worker"):
             self.slab_virtual_enabled = False
         else:
             # Heuristic detection that CONFIG_SLAB_VIRTUAL is enabled or not from `struct kmem_cache`.
@@ -128304,7 +128208,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
         if kversion < "6.18":
             self.kmem_cache_offset_flags = current_arch.ptrsize
         elif kversion < "7.0":
-            CONFIG_LOCKDEP = Symbol.get_ksymaddr("fs_reclaim_acquire")
+            CONFIG_LOCKDEP = Ksym.get_addr("fs_reclaim_acquire")
             if CONFIG_LOCKDEP:
                 self.kmem_cache_offset_flags = current_arch.ptrsize * 4
             else:
@@ -131564,21 +131468,21 @@ class SlobDumpCommand(GenericCommand, BufferingOutput):
             self.meta.append((self.quiet_info, "slab_caches: {:#x}".format(self.slab_caches)))
 
         # resolve global freelists
-        self.free_slob_large = Symbol.get_ksymaddr("free_slob_large")
+        self.free_slob_large = Ksym.get_addr("free_slob_large")
         if self.free_slob_large is None:
             self.meta.append((self.quiet_err, "Failed to resolve `free_slob_large`"))
             return None
         else:
             self.meta.append((self.quiet_info, "free_slob_large: {:#x}".format(self.free_slob_large)))
 
-        self.free_slob_medium = Symbol.get_ksymaddr("free_slob_medium")
+        self.free_slob_medium = Ksym.get_addr("free_slob_medium")
         if self.free_slob_medium is None:
             self.meta.append((self.quiet_err, "Failed to resolve `free_slob_medium`"))
             return None
         else:
             self.meta.append((self.quiet_info, "free_slob_medium: {:#x}".format(self.free_slob_medium)))
 
-        self.free_slob_small = Symbol.get_ksymaddr("free_slob_small")
+        self.free_slob_small = Ksym.get_addr("free_slob_small")
         if self.free_slob_small is None:
             self.meta.append((self.quiet_err, "Failed to resolve `free_slob_small`"))
             return None
@@ -133404,7 +133308,7 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
         HUGETLB_PAGE_ORDER = HPAGE_SHIFT - PAGE_SHIFT
 
         CONFIG_HUGETLB_PAGE = bool(
-            Symbol.get_ksymaddr("hugetlb_fault") or Symbol.get_ksymaddr("hugetlbfs_read_iter")
+            Ksym.get_addr("hugetlb_fault") or Ksym.get_addr("hugetlbfs_read_iter")
         )
         # CONFIG_HUGETLB_PAGE_SIZE_VARIABLE is ia64 or ppc only, so ignored
 
@@ -135617,7 +135521,7 @@ class KernelIpcsCommand(GenericCommand, BufferingOutput):
                 read_int_from_memory(init_ipc_ns + current_arch.ptrsize * i) == 0
                 for i in range(32)
             ):
-                if Symbol.get_ksymaddr("sem_init"):
+                if Ksym.get_addr("sem_init"):
                     self.sysvipc_uninitialized = True
                     self.meta.append((self.quiet_info, "SYSVIPC is enabled, but ipc_ids is not initialized"))
                     return None
@@ -136161,7 +136065,7 @@ class KernelDmaBufCommand(GenericCommand, BufferingOutput):
         # The list was `db_list` until v6.10 renamed it to `debugfs_list`, then renamed again to
         # `dmabuf_list` when the iterator was exported. The latter rename is in v6.16 upstream but
         # a tree based on v6.15 can carry it, so ask for the iterator instead of the version.
-        if Symbol.get_ksymaddr("dma_buf_iter_begin"):
+        if Ksym.get_addr("dma_buf_iter_begin"):
             name = "dmabuf_list"
             self.db_list = KernelAddressHeuristicFinder.get_dmabuf_list()
         elif "6.10" <= kversion:
@@ -136427,8 +136331,7 @@ class KernelDmaBufCommand(GenericCommand, BufferingOutput):
             err("Unsupported before v5.11")
             return
 
-        ret = gdb.execute("ksymaddr-remote --quiet --no-pager dma_heap", to_string=True)
-        if not ret:
+        if not Ksym.get_addrs("dma_heap", match="in"):
             err("This kernel does not support DMA-BUF")
             return
 
@@ -137168,7 +137071,7 @@ class KtypesCommand(GenericCommand, BufferingOutput):
 
     def get_base_name(self):
         if Ksym.kernel_version is None:
-            gdb.execute("ksymaddr-remote --no-pager GEF_DUMMY_STRING", to_string=True)
+            Ksym.get_kallsyms()
             if Ksym.kernel_version is None:
                 err("Could not find kernel version")
                 return None
@@ -137179,10 +137082,10 @@ class KtypesCommand(GenericCommand, BufferingOutput):
         return base_name
 
     def get_btf_addr(self):
-        start = Symbol.get_ksymaddr("__start_BTF")
+        start = Ksym.get_addr("__start_BTF")
         if start is None:
             return None
-        end = Symbol.get_ksymaddr("__stop_BTF")
+        end = Ksym.get_addr("__stop_BTF")
         return start, end - start
 
     def build_header_file(self):
@@ -137318,6 +137221,7 @@ class Ksym:
 
     kallsyms = None
     kallsyms_map = None
+    name_by_addr = None
     kernel_img = b""
     kernel_version = None
     version_string = None
@@ -137330,6 +137234,7 @@ class Ksym:
         """Forget the parsed result. `Cache.reset_gef_caches()` calls this."""
         Ksym.kallsyms = None
         Ksym.kallsyms_map = None
+        Ksym.name_by_addr = None
         return
 
     @staticmethod
@@ -138686,12 +138591,86 @@ class Ksym:
             return True
 
     @staticmethod
+    def peek():
+        """Return the parsed kallsyms without parsing it, or None when it is not parsed yet.
+
+        Some callers must not trigger a parse, e.g. to avoid a recursion."""
+        if Ksym.kallsyms is None:
+            return None
+        return Ksym.kallsyms, Ksym.kallsyms_map
+
+    @staticmethod
+    def get_addrs(name="", match="exact"):
+        """Return the addresses of the matching symbols, the exact name first.
+
+        `match` selects how `name` is compared, and an empty `name` takes every symbol:
+          "exact"   the name itself, which is not unique (`set_is_seen` can be there 3 times)
+          "split"   the name, then the pieces gcc split off it (`foo.part.11`, `foo.cold.3`).
+                    The dot keeps an unrelated longer name (`free_vmap_area_noflush`) out, and
+                    the type keeps the statics of `foo` (`foo.__key`, `foo.envp`) out.
+          "prefix"  the name, then every longer name starting with it
+          "in"      every name containing it"""
+        ret = Ksym.get_kallsyms()
+        if ret is None:
+            return []
+        kallsyms, kallsyms_map = ret
+        if not name:
+            return [addr for addr, _name, _typ in kallsyms]
+        exact = list(kallsyms_map.get(name, []))
+        if match == "exact":
+            return exact
+        if match == "split":
+            rest = [addr for addr, n, typ in kallsyms
+                    if n.startswith(name + ".") and typ.lower() in ("t", "w")]
+        elif match == "prefix":
+            rest = [addr for addr, n, _typ in kallsyms if n != name and n.startswith(name)]
+        else: # "in"
+            rest = [addr for addr, n, _typ in kallsyms if n != name and name in n]
+        return exact + rest
+
+    @staticmethod
+    def get_addr(name):
+        """e.g., 'commit_creds' -> 0xffffffff9f6bd2a0"""
+        addrs = Ksym.get_addrs(name)
+        if not addrs:
+            return None
+        return addrs[0]
+
+    @staticmethod
+    def get_name(addr):
+        """e.g., 0xffffffff9f6bd2a0 -> 'commit_creds'. `addr` must be the symbol itself."""
+        if Ksym.name_by_addr is None:
+            ret = Ksym.get_kallsyms()
+            if ret is None:
+                return None
+            kallsyms, _kallsyms_map = ret
+            Ksym.name_by_addr = {a: name for a, name, _typ in kallsyms}
+        return Ksym.name_by_addr.get(addr)
+
+    @staticmethod
+    def get_func_size(func_name):
+        """Return the distance from `func_name` to the next symbol, or None."""
+        first_func = Ksym.get_addr(func_name)
+        if first_func is None:
+            return None
+        ret = Ksym.get_kallsyms()
+        if ret is None:
+            return None
+        kallsyms, _kallsyms_map = ret
+        for i, (addr, _name, _typ) in enumerate(kallsyms):
+            if addr == first_func:
+                if i + 1 >= len(kallsyms):
+                    return None
+                return kallsyms[i + 1][0] - first_func
+        return None
+
+    @staticmethod
     def get_kallsyms(rescan=False, vmlinux_file=None, ignore_loaded_vmlinux=False, verbose=False, quiet=False):
         """Return ([[addr, name, type], ...], {name: [addr, ...]}), or None if it could not be parsed.
 
         One parse is shared by every caller. The options select the parse source, so any of
         them drops that result and parses again. The map is built here because
-        Symbol.get_ksymaddr is called hundreds of times by some commands, and scanning all
+        Ksym.get_addr is called hundreds of times by some commands, and scanning all
         the symbols for each call is too slow."""
         if rescan or vmlinux_file or ignore_loaded_vmlinux:
             Ksym.reset()
@@ -156179,8 +156158,8 @@ class KernelVMMapCommand(GenericCommand, BufferingOutput):
         kinfo = Kernel.get_kernel_layout()
 
         # .text
-        stext = Symbol.get_ksymaddr("_stext")
-        etext = Symbol.get_ksymaddr("_etext")
+        stext = Ksym.get_addr("_stext")
+        etext = Ksym.get_addr("_etext")
         if stext and etext:
             stext = self.page_start_align(stext)
             etext = self.page_end_align(etext)
@@ -156190,8 +156169,8 @@ class KernelVMMapCommand(GenericCommand, BufferingOutput):
                 self.regions[kinfo.text_base].add_description("maybe kernel .text")
 
         # .rodata
-        start_rodata = Symbol.get_ksymaddr("__start_rodata")
-        end_rodata = Symbol.get_ksymaddr("__end_rodata")
+        start_rodata = Ksym.get_addr("__start_rodata")
+        end_rodata = Ksym.get_addr("__end_rodata")
         if start_rodata and end_rodata:
             start_rodata = self.page_start_align(start_rodata)
             end_rodata = self.page_end_align(end_rodata)
@@ -156203,8 +156182,8 @@ class KernelVMMapCommand(GenericCommand, BufferingOutput):
                     self.regions[kinfo.ro_base].add_description("maybe kernel .rodata")
 
         # .data
-        sdata = Symbol.get_ksymaddr("_sdata")
-        edata = Symbol.get_ksymaddr("_edata")
+        sdata = Ksym.get_addr("_sdata")
+        edata = Ksym.get_addr("_edata")
         if sdata and edata:
             sdata = self.page_start_align(sdata)
             edata = self.page_end_align(edata)
@@ -157778,12 +157757,12 @@ class SlabVirtualCommand(GenericCommand):
         # The returned value may be the first entry address of slab-virtual.
 
         # plan 1 (directly)
-        addr = Symbol.get_ksymaddr("vmemmap_base")
+        addr = Ksym.get_addr("vmemmap_base")
         if addr:
             return read_int_from_memory(addr)
 
         # plan 2 (from `slab_virt_to_phys`)
-        addr = Symbol.get_ksymaddr("slab_virt_to_phys")
+        addr = Ksym.get_addr("slab_virt_to_phys")
         if addr:
             res = gdb.execute("x/30i {:#x}".format(addr), to_string=True)
             g = KernelAddressHeuristicFinderUtil.x64_qword_ptr_rip_base(res, read_valid=True)
@@ -159911,7 +159890,7 @@ class UsermodehelperTracerCommand(GenericCommand):
     @only_if_in_kernel
     def do_invoke(self, args):
         info("Resolving the function addresses")
-        addr = Symbol.get_ksymaddr("call_usermodehelper_setup")
+        addr = Ksym.get_addr("call_usermodehelper_setup")
         if addr is None:
             err("Could not find call_usermodehelper_setup")
             return
@@ -160015,7 +159994,7 @@ class ThunkTracerCommand(GenericCommand):
             if reg in ["$esp", "$rsp", "$eip", "$rip"]:
                 continue
             sym = "__x86_indirect_thunk_{}".format(reg.replace("$", ""))
-            addr = Symbol.get_ksymaddr(sym)
+            addr = Ksym.get_addr(sym)
             if addr is None:
                 continue
             gef_print(sym + ": ", end="")
@@ -160724,13 +160703,13 @@ class KmallocTracerCommand(GenericCommand):
 
         breakpoints = []
         for sym, index_of_size_arg in kmalloc_syms:
-            func_addr = Symbol.get_ksymaddr(sym)
+            func_addr = Ksym.get_addr(sym)
             if func_addr:
                 gef_print(sym + ": ", end="")
                 bp = KmallocBreakpoint(func_addr, sym, index_of_size_arg, option_info, extra_info)
                 breakpoints.append(bp)
         for sym, index_of_addr_arg in kfree_syms:
-            func_addr = Symbol.get_ksymaddr(sym)
+            func_addr = Ksym.get_addr(sym)
             if func_addr:
                 gef_print(sym + ": ", end="")
                 bp = KfreeBreakpoint(func_addr, sym, index_of_addr_arg, option_info, extra_info)
@@ -160781,13 +160760,13 @@ class KmallocTracerCommand(GenericCommand):
 
         breakpoints = []
         for sym, index_of_order_arg in alloc_pages_sym:
-            func_addr = Symbol.get_ksymaddr(sym)
+            func_addr = Ksym.get_addr(sym)
             if func_addr:
                 gef_print(sym + ": ", end="")
                 bp = AllocPagesBreakpoint(func_addr, sym, index_of_order_arg, option_info, extra_info)
                 breakpoints.append(bp)
         for sym, index_of_addr_arg, index_of_order_arg in free_pages_sym:
-            func_addr = Symbol.get_ksymaddr(sym)
+            func_addr = Ksym.get_addr(sym)
             if func_addr:
                 gef_print(sym + ": ", end="")
                 bp = FreePagesBreakpoint(func_addr, sym, index_of_addr_arg, index_of_order_arg, option_info, extra_info)
@@ -162463,7 +162442,7 @@ class KernelTraceCommand(GenericCommand):
         info("Wait for memory scan")
 
         # check if text base is available
-        text_base = Symbol.get_ksymaddr("_stext")
+        text_base = Ksym.get_addr("_stext")
         if text_base is None:
             err("Failed to get kernel base (_stext)")
             return
@@ -162472,11 +162451,10 @@ class KernelTraceCommand(GenericCommand):
         self.addr_range_ng_cache = []
 
         # list target functions
-        res = gdb.execute("ksymaddr-remote --quiet --no-pager --type t", to_string=True)
         target_functions = []
-        for line in ProgressBar(res.splitlines(), disable=args.quiet):
-            func_addr, _, func_name = line.split()
-            func_addr = int(func_addr, 16)
+        kallsyms, _kallsyms_map = Ksym.get_kallsyms() or ([], {})
+        text_symbols = [entry for entry in kallsyms if entry[2].lower() == "t"]
+        for func_addr, func_name, _typ in ProgressBar(text_symbols, disable=args.quiet):
 
             # user specified filtering
             if args.filter and not any(filt.search(func_name) for filt in args.filter):
@@ -163233,12 +163211,15 @@ class KsymaddrRemoteApplyCommand(GenericCommand):
 
     def create_symboled_elf(self, sym_elf_path):
         # get .kernel range
-        text_base = Symbol.get_ksymaddr("_stext")
+        text_base = Ksym.get_addr("_stext")
         if text_base is None:
             err("Failed to get kernel base (_stext)")
             return False
-        res = gdb.execute("ksymaddr-remote --quiet --no-pager", to_string=True)
-        text_end = int(res.splitlines()[-1].split()[0], 16)
+        addrs = Ksym.get_addrs()
+        if not addrs:
+            err("Failed to parse kallsyms")
+            return False
+        text_end = addrs[-1]
 
         # make blank ELF
         text_base &= get_pagesize_mask_high()
@@ -163316,7 +163297,7 @@ class KsymaddrRemoteApplyCommand(GenericCommand):
                 return
 
         # add symbol to gdb
-        text_base = Symbol.get_ksymaddr("_stext") & get_pagesize_mask_high()
+        text_base = Ksym.get_addr("_stext") & get_pagesize_mask_high()
         cmd = "add-symbol-file {:s} {:#x}".format(sym_elf_path, text_base)
         self.quiet_warn("Execute `{:s}`".format(cmd))
         gdb.execute(cmd)
