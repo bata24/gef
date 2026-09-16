@@ -12845,6 +12845,7 @@ class QemuMonitor:
         return None
 
     @staticmethod
+    @Cache.cache_until_next
     def get_secure_memory_map(verbose=False):
         # find secure-ram base
         ret = gdb.execute("monitor info mtree -f", to_string=True)
