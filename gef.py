@@ -59508,6 +59508,24 @@ class KernelAddressHeuristicFinderUtil:
         return KernelAddressHeuristicFinderUtil.common_addr_gen(res, regexp, skip, skip_msb_check, read_valid)
 
     @staticmethod
+    def drop_clobbered_regs(line, *regmaps):
+        """Forget the bases whose register the instruction in `line` overwrites."""
+        m = re.search(r":\s*(\S+)\s+(\w+)", line)
+        if not m:
+            return
+        mnemonic, dst = m.group(1), m.group(2)
+        if mnemonic in ("bl", "blr", "blx"):
+            regs = ["x{:d}".format(i) for i in range(19)] + ["r0", "r1", "r2", "r3", "r12", "ip"] # caller-saved
+        elif mnemonic.startswith(("ld", "mov", "mrs")):
+            regs = [re.sub(r"^w", "x", dst)] # the bases are keyed by the `x` name
+        else:
+            return
+        for reg in regs:
+            for regmap in regmaps:
+                regmap.pop(reg, None)
+        return
+
+    @staticmethod
     def aarch64_adrp_ldr(res, skip=0, skip_msb_check=False, read_valid=False, allow_add=False):
         bases = {}
         for line in res.splitlines():
@@ -59531,20 +59549,24 @@ class KernelAddressHeuristicFinderUtil:
                     else:
                         bases.pop(dstreg, None)
                     continue
+            w = None
             m = re.search(r"ldr\s+\w+,\s*\[(\w+),\s*#(\d+)\]", line)
             if m:
                 srcreg = m.group(1)
                 v = int(m.group(2), 0)
                 if srcreg in bases:
                     w = AddressUtil.normalize_address(bases[srcreg] + v)
-                    if not skip_msb_check and not AddressUtil.is_msb_on(w):
-                        continue
-                    if read_valid and not is_valid_addr_addr(w):
-                        continue
-                    if skip > 0:
-                        skip -= 1
-                        continue
-                    yield w
+            KernelAddressHeuristicFinderUtil.drop_clobbered_regs(line, bases)
+            if w is None:
+                continue
+            if not skip_msb_check and not AddressUtil.is_msb_on(w):
+                continue
+            if read_valid and not is_valid_addr_addr(w):
+                continue
+            if skip > 0:
+                skip -= 1
+                continue
+            yield w
 
     @staticmethod
     def aarch64_adrp_ldrb(res, skip=0, skip_msb_check=False, read_valid=False):
@@ -59557,20 +59579,24 @@ class KernelAddressHeuristicFinderUtil:
                 v = int(m.group(2), 16)
                 bases[reg] = v
                 continue
+            w = None
             m = re.search(r"ldrb\s+\w+,\s*\[(\w+)(?:,\s*#(\d+))?\]", line)
             if m:
                 srcreg = m.group(1)
                 v = int(m.group(2), 0) if m.group(2) else 0
                 if srcreg in bases:
                     w = AddressUtil.normalize_address(bases[srcreg] + v)
-                    if not skip_msb_check and not AddressUtil.is_msb_on(w):
-                        continue
-                    if read_valid and not is_valid_addr_addr(w):
-                        continue
-                    if skip > 0:
-                        skip -= 1
-                        continue
-                    yield w
+            KernelAddressHeuristicFinderUtil.drop_clobbered_regs(line, bases)
+            if w is None:
+                continue
+            if not skip_msb_check and not AddressUtil.is_msb_on(w):
+                continue
+            if read_valid and not is_valid_addr_addr(w):
+                continue
+            if skip > 0:
+                skip -= 1
+                continue
+            yield w
 
     @staticmethod
     def aarch64_adrp_ldrsw(res, skip=0, skip_msb_check=False, read_valid=False):
@@ -59584,20 +59610,24 @@ class KernelAddressHeuristicFinderUtil:
                 v = int(m.group(2), 16)
                 bases[reg] = v
                 continue
+            w = None
             m = re.search(r"ldrsw\s+\w+,\s*\[(\w+)(?:,\s*#(\d+))?\]", line)
             if m:
                 srcreg = m.group(1)
                 v = int(m.group(2), 0) if m.group(2) else 0
                 if srcreg in bases:
                     w = AddressUtil.normalize_address(bases[srcreg] + v)
-                    if not skip_msb_check and not AddressUtil.is_msb_on(w):
-                        continue
-                    if read_valid and not is_valid_addr_addr(w):
-                        continue
-                    if skip > 0:
-                        skip -= 1
-                        continue
-                    yield w
+            KernelAddressHeuristicFinderUtil.drop_clobbered_regs(line, bases)
+            if w is None:
+                continue
+            if not skip_msb_check and not AddressUtil.is_msb_on(w):
+                continue
+            if read_valid and not is_valid_addr_addr(w):
+                continue
+            if skip > 0:
+                skip -= 1
+                continue
+            yield w
 
     @staticmethod
     def aarch64_adrp_str(res, skip=0, skip_msb_check=False, read_valid=False):
@@ -59609,20 +59639,24 @@ class KernelAddressHeuristicFinderUtil:
                 v = int(m.group(2), 16)
                 bases[reg] = v
                 continue
+            w = None
             m = re.search(r"str\s+\w+,\s*\[(\w+)(?:,\s*#(\d+))?\]", line)
             if m:
                 dstreg = m.group(1)
                 v = int(m.group(2), 0) if m.group(2) else 0
                 if dstreg in bases:
                     w = AddressUtil.normalize_address(bases[dstreg] + v)
-                    if not skip_msb_check and not AddressUtil.is_msb_on(w):
-                        continue
-                    if read_valid and not is_valid_addr_addr(w):
-                        continue
-                    if skip > 0:
-                        skip -= 1
-                        continue
-                    yield w
+            KernelAddressHeuristicFinderUtil.drop_clobbered_regs(line, bases)
+            if w is None:
+                continue
+            if not skip_msb_check and not AddressUtil.is_msb_on(w):
+                continue
+            if read_valid and not is_valid_addr_addr(w):
+                continue
+            if skip > 0:
+                skip -= 1
+                continue
+            yield w
 
     @staticmethod
     def aarch64_adrp_add(res, skip=0, skip_msb_check=False, read_valid=False):
@@ -59634,26 +59668,28 @@ class KernelAddressHeuristicFinderUtil:
                 v = int(m.group(2), 16)
                 bases[reg] = v
                 continue
+            w = None
             m = re.search(r"add\s+(\w+),\s*(\w+),\s*#(0x\w+)", line)
             if m:
                 dstreg = m.group(1)
                 srcreg = m.group(2)
                 v = int(m.group(3), 16)
-                w = None
                 if srcreg in bases:
                     w = AddressUtil.normalize_address(bases[srcreg] + v)
                 # the add leaves a page offset in dstreg, so a following add must not restart
                 # from the adrp page (`aarch64_adrp_add_add` handles that sequence)
                 bases.pop(dstreg, None)
-                if w is not None:
-                    if not skip_msb_check and not AddressUtil.is_msb_on(w):
-                        continue
-                    if read_valid and not is_valid_addr_addr(w):
-                        continue
-                    if skip > 0:
-                        skip -= 1
-                        continue
-                    yield w
+            KernelAddressHeuristicFinderUtil.drop_clobbered_regs(line, bases)
+            if w is None:
+                continue
+            if not skip_msb_check and not AddressUtil.is_msb_on(w):
+                continue
+            if read_valid and not is_valid_addr_addr(w):
+                continue
+            if skip > 0:
+                skip -= 1
+                continue
+            yield w
 
     @staticmethod
     def aarch64_adrp_add_add(res, skip=0, skip_msb_check=False, read_valid=False):
@@ -59681,7 +59717,8 @@ class KernelAddressHeuristicFinderUtil:
                             skip -= 1
                 if srcreg in bases:
                     add1time[dstreg] = bases[srcreg] + v
-                    continue
+                continue
+            KernelAddressHeuristicFinderUtil.drop_clobbered_regs(line, bases, add1time)
 
     @staticmethod
     def aarch64_adrp_add_ldr(res, skip=0, skip_msb_check=False, read_valid=False):
@@ -59693,6 +59730,7 @@ class KernelAddressHeuristicFinderUtil:
                 reg = m.group(1)
                 v = int(m.group(2), 16)
                 bases[reg] = v
+                add1time.pop(reg, None)
                 continue
             m = re.search(r"add\s+(\w+),\s*(\w+),\s*#(0x\w+)", line)
             if m:
@@ -59701,21 +59739,26 @@ class KernelAddressHeuristicFinderUtil:
                 v = int(m.group(3), 16)
                 if srcreg in bases:
                     add1time[dstreg] = bases[srcreg] + v
+                    bases.pop(dstreg, None)
                     continue
+            w = None
             m = re.search(r"ldr\s+\w+,\s*\[(\w+),\s*#(\d+)\]", line)
             if m:
                 srcreg = m.group(1)
                 v = int(m.group(2), 0)
                 if srcreg in add1time:
                     w = AddressUtil.normalize_address(add1time[srcreg] + v)
-                    if not skip_msb_check and not AddressUtil.is_msb_on(w):
-                        continue
-                    if read_valid and not is_valid_addr_addr(w):
-                        continue
-                    if skip > 0:
-                        skip -= 1
-                        continue
-                    yield w
+            KernelAddressHeuristicFinderUtil.drop_clobbered_regs(line, bases, add1time)
+            if w is None:
+                continue
+            if not skip_msb_check and not AddressUtil.is_msb_on(w):
+                continue
+            if read_valid and not is_valid_addr_addr(w):
+                continue
+            if skip > 0:
+                skip -= 1
+                continue
+            yield w
 
     @staticmethod
     def arm32_movw_movt(res, skip=0, skip_msb_check=False, read_valid=False, allow_cc=False):
@@ -59734,19 +59777,23 @@ class KernelAddressHeuristicFinderUtil:
                 m = re.search(r"movt(?:cc)?\s+(\w+),.+[;@]\s*(0x\w+)", line)
             else:
                 m = re.search(r"movt\s+(\w+),.+[;@]\s*(0x\w+)", line)
+            w = None
             if m:
                 reg = m.group(1)
                 v = int(m.group(2), 16) << 16
                 if reg in bases:
                     w = AddressUtil.normalize_address(bases[reg] + v)
-                    if not skip_msb_check and not AddressUtil.is_msb_on(w):
-                        continue
-                    if read_valid and not is_valid_addr_addr(w):
-                        continue
-                    if skip > 0:
-                        skip -= 1
-                        continue
-                    yield w
+            KernelAddressHeuristicFinderUtil.drop_clobbered_regs(line, bases)
+            if w is None:
+                continue
+            if not skip_msb_check and not AddressUtil.is_msb_on(w):
+                continue
+            if read_valid and not is_valid_addr_addr(w):
+                continue
+            if skip > 0:
+                skip -= 1
+                continue
+            yield w
 
     @staticmethod
     def arm32_movw_movt_ldr(res, skip=0, skip_msb_check=False, read_valid=False, allow_cc=False):
@@ -59761,6 +59808,7 @@ class KernelAddressHeuristicFinderUtil:
                 reg = m.group(1)
                 v = int(m.group(2), 16)
                 bases[reg] = v
+                add1time.pop(reg, None)
                 continue
             if allow_cc:
                 m = re.search(r"movt(?:cc)?\s+(\w+),.+[;@]\s*(0x\w+)", line)
@@ -59779,20 +59827,24 @@ class KernelAddressHeuristicFinderUtil:
                 if srcreg in add1time:
                     add1time[dstreg] = add1time[srcreg]
                     continue
+            w = None
             m = re.search(r"ldr\s+\w+,\s*\[(\w+)(?:,\s*#(\d+))?\]", line)
             if m:
                 reg = m.group(1)
                 v = int(m.group(2), 0) if m.group(2) else 0
                 if reg in add1time:
                     w = AddressUtil.normalize_address(add1time[reg] + v)
-                    if not skip_msb_check and not AddressUtil.is_msb_on(w):
-                        continue
-                    if read_valid and not is_valid_addr_addr(w):
-                        continue
-                    if skip > 0:
-                        skip -= 1
-                        continue
-                    yield w
+            KernelAddressHeuristicFinderUtil.drop_clobbered_regs(line, bases, add1time)
+            if w is None:
+                continue
+            if not skip_msb_check and not AddressUtil.is_msb_on(w):
+                continue
+            if read_valid and not is_valid_addr_addr(w):
+                continue
+            if skip > 0:
+                skip -= 1
+                continue
+            yield w
 
     @staticmethod
     def arm32_movw_movt_str(res, skip=0, skip_msb_check=False, read_valid=False, allow_cc=False):
@@ -59807,6 +59859,7 @@ class KernelAddressHeuristicFinderUtil:
                 reg = m.group(1)
                 v = int(m.group(2), 16)
                 bases[reg] = v
+                add1time.pop(reg, None)
                 continue
             if allow_cc:
                 m = re.search(r"movt(?:cc)?\s+(\w+),.+[;@]\s*(0x\w+)", line)
@@ -59818,20 +59871,24 @@ class KernelAddressHeuristicFinderUtil:
                 if reg in bases:
                     add1time[reg] = bases[reg] + v
                     continue
+            w = None
             m = re.search(r"str\s+\w+,\s*\[(\w+)(?:,\s*#(\d+))?\]", line)
             if m:
                 reg = m.group(1)
                 v = int(m.group(2), 0) if m.group(2) else 0
                 if reg in add1time:
                     w = AddressUtil.normalize_address(add1time[reg] + v)
-                    if not skip_msb_check and not AddressUtil.is_msb_on(w):
-                        continue
-                    if read_valid and not is_valid_addr_addr(w):
-                        continue
-                    if skip > 0:
-                        skip -= 1
-                        continue
-                    yield w
+            KernelAddressHeuristicFinderUtil.drop_clobbered_regs(line, bases, add1time)
+            if w is None:
+                continue
+            if not skip_msb_check and not AddressUtil.is_msb_on(w):
+                continue
+            if read_valid and not is_valid_addr_addr(w):
+                continue
+            if skip > 0:
+                skip -= 1
+                continue
+            yield w
 
     @staticmethod
     def arm32_movw_movt_add(res, skip=0, skip_msb_check=False, read_valid=False):
@@ -59843,6 +59900,7 @@ class KernelAddressHeuristicFinderUtil:
                 reg = m.group(1)
                 v = int(m.group(2), 16)
                 bases[reg] = v
+                add1time.pop(reg, None)
                 continue
             m = re.search(r"movt\s+(\w+),.+[;@]\s*(0x\w+)", line)
             if m:
@@ -59851,20 +59909,24 @@ class KernelAddressHeuristicFinderUtil:
                 if reg in bases:
                     add1time[reg] = bases[reg] + v
                     continue
+            w = None
             m = re.search(r"add\s+\w+,\s*(\w+),\s*#(\d+)", line)
             if m:
                 reg = m.group(1)
                 v = int(m.group(2), 0)
                 if reg in add1time:
                     w = AddressUtil.normalize_address(add1time[reg] + v)
-                    if not skip_msb_check and not AddressUtil.is_msb_on(w):
-                        continue
-                    if read_valid and not is_valid_addr_addr(w):
-                        continue
-                    if skip > 0:
-                        skip -= 1
-                        continue
-                    yield w
+            KernelAddressHeuristicFinderUtil.drop_clobbered_regs(line, bases, add1time)
+            if w is None:
+                continue
+            if not skip_msb_check and not AddressUtil.is_msb_on(w):
+                continue
+            if read_valid and not is_valid_addr_addr(w):
+                continue
+            if skip > 0:
+                skip -= 1
+                continue
+            yield w
 
     @staticmethod
     def arm32_ldr_reg_const(res, reg=r"\w+", skip=0, skip_msb_check=False, read_valid=False):
@@ -59908,27 +59970,27 @@ class KernelAddressHeuristicFinderUtil:
                 v = read_int_from_memory(pos + 4 * 2 + ofs)
                 bases[reg] = v
                 continue
+            w = None
             m = re.search(r"ldr\s+\w+,\s*\[(\w+),\s*#(\d*)\]", line)
             if m:
                 reg = m.group(1)
                 ofs = AddressUtil.normalize_address(int(m.group(2), 0))
                 if reg in bases:
                     w = AddressUtil.normalize_address(bases[reg] + ofs)
-                    if skip <= 0:
-                        yield w
-                    skip -= 1
-                    continue
-            m = re.search(r"ldr\s+\w+,\s*\[(\w+)\]", line)
-            if m:
-                reg = m.group(1)
-                if reg in bases:
-                    w = AddressUtil.normalize_address(bases[reg])
-                    if read_valid and not is_valid_addr_addr(w):
-                        continue
-                    if skip <= 0:
-                        yield w
-                    skip -= 1
-                    continue
+            else:
+                m = re.search(r"ldr\s+\w+,\s*\[(\w+)\]", line)
+                if m:
+                    reg = m.group(1)
+                    if reg in bases:
+                        w = AddressUtil.normalize_address(bases[reg])
+                        if read_valid and not is_valid_addr_addr(w):
+                            w = None
+            KernelAddressHeuristicFinderUtil.drop_clobbered_regs(line, bases)
+            if w is None:
+                continue
+            if skip <= 0:
+                yield w
+            skip -= 1
 
     @staticmethod
     def arm32_ldr_pc_relative_str(res, skip=0, read_valid=False):
@@ -59942,6 +60004,7 @@ class KernelAddressHeuristicFinderUtil:
                 v = read_int_from_memory(pos + 4 * 2 + ofs)
                 bases[reg] = v
                 continue
+            w = None
             m = re.search(r"str\s+\w+,\s*\[(\w+)(?:,\s*#(\d+))?\]", line)
             if m:
                 reg = m.group(1)
@@ -59949,11 +60012,13 @@ class KernelAddressHeuristicFinderUtil:
                 if reg in bases:
                     w = AddressUtil.normalize_address(bases[reg] + ofs)
                     if read_valid and not is_valid_addr_addr(w):
-                        continue
-                    if skip <= 0:
-                        yield w
-                    skip -= 1
-                    continue
+                        w = None
+            KernelAddressHeuristicFinderUtil.drop_clobbered_regs(line, bases)
+            if w is None:
+                continue
+            if skip <= 0:
+                yield w
+            skip -= 1
 
     @staticmethod
     def get_kernel_image_range():
