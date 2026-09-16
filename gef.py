@@ -163215,11 +163215,12 @@ class KsymaddrRemoteApplyCommand(GenericCommand):
         if text_base is None:
             err("Failed to get kernel base (_stext)")
             return False
-        addrs = Ksym.get_addrs()
-        if not addrs:
+        ret = Ksym.get_kallsyms()
+        if ret is None:
             err("Failed to parse kallsyms")
             return False
-        text_end = addrs[-1]
+        kallsyms, _kallsyms_map = ret
+        text_end = kallsyms[-1][0]
 
         # make blank ELF
         text_base &= get_pagesize_mask_high()
@@ -163230,10 +163231,7 @@ class KsymaddrRemoteApplyCommand(GenericCommand):
 
         # parse kernel symbol
         cmd_string_arr = []
-        for line in res.splitlines():
-            addr, typ, func_name = line.split()
-            addr = int(addr, 16)
-
+        for addr, func_name, typ in kallsyms:
             if addr < text_base:
                 # lower address is percpu-relative. It is meaningless to import the address, so it is skipped.
                 continue
