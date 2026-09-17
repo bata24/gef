@@ -11,8 +11,7 @@
 #
 # Supported architectures are the following (some require qemu).
 #   * x86-32 & x86-64
-#   * arm v5,v6,v7
-#   * aarch64 (armv8)
+#   * arm v5,v6,v7 & aarch64 (armv8)
 #   * mips & mipsn32 & mips64
 #   * powerpc & powerpc64
 #   * sparc & sparc32plus & sparc64
@@ -30,20 +29,11 @@
 #   * loongarch64
 #   * arc32 (v2, v3) & arc64
 #   * csky
-# See README.md for details.
-#
-# To start: in gdb, type `source /path/to/gef.py`
 #
 #######################################################################################
 # GEF is distributed under the MIT License.
 #
 # Copyright (c) 2021-2026 bata24 (@bata_24)
-#
-# This is a fork of GEF (https://github.com/hugsy/gef).
-# This software is released under the MIT license.
-# See https://opensource.org/licenses/MIT
-#
-# Copyright (c) 2013-2026 crazy rabbidz
 #
 # Permission is hereby granted, free of charge, to any person obtaining a copy
 # of this software and associated documentation files (the "Software"), to deal

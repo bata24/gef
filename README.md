@@ -41,8 +41,10 @@ __The installer has been refactored. I recommend re-installing.__ (2026-09-13)
 
 - Run the following command:
     ```bash
-    # Run as the user who will use GEF
-    # However, for various reasons, I recommend installing it as the root user
+    # For various reasons, I recommend installing it as the root user
+    wget -q https://raw.githubusercontent.com/bata24/gef/dev/install-uv.sh -O- | sudo sh
+
+    # For non-root user
     wget -q https://raw.githubusercontent.com/bata24/gef/dev/install-uv.sh -O- | sh
 
     # Install GEF in a different directory
