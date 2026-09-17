@@ -391,11 +391,11 @@ class Cache:
     """Manage the gef cache. The 2 types are named after what invalidates them.
     "until_next": a step, or a memory or register change.
     "this_session": the target itself changing (exit, `set_arch`, `gef reset-cache`, `--rescan`).
-    A `this_session` entry declared `until_new_objfile=True` is dropped when a symbol file is loaded too.
+    A `this_session` entry declared `until_new_objfile=True` is dropped when a symbol file is loaded or removed too.
     Note: each command may have its own cache outside this mechanism. Not all caches are centralized here."""
 
     __gef_caches__ = {"until_next": {}, "this_session": {}}
-    __objfile_caches__ = [] # the `this_session` caches that a newly loaded symbol file stales
+    __objfile_caches__ = [] # the `this_session` caches that a changed symbol file set stales
 
     @staticmethod
     def cpu_context():
@@ -411,12 +411,24 @@ class Cache:
             return None
         return getattr(thread, "global_num", None) or thread.num
 
+    @staticmethod
+    def inferior_context():
+        """Return the identifier of the currently selected inferior.
+        Switching inferiors does not clear any cache by itself, so whatever describes the
+        debuggee process (its pid, its memory mapping, its section list) must be separated
+        by this value. Otherwise the answer resolved for one inferior is served to another."""
+
+        try:
+            return gdb.selected_inferior().num
+        except Exception:
+            return None
+
     # A marker that never compares equal to a user argument, so a key built from kwargs
     # cannot collide with a key that is the bare `args` tuple.
     __kwargs_marker__ = object()
 
     @staticmethod
-    def cache_wrap(life_time, f, cache_None=True, per_cpu=False, until_new_objfile=False):
+    def cache_wrap(life_time, f, cache_None=True, per_cpu=False, per_inferior=False, until_new_objfile=False):
         # The name and the per-function dict are resolved once here instead of on every call.
         # The dict is therefore kept alive across resets, so the reset clears it in place.
         fname = f"{f.__module__}:{f.__qualname__}"
@@ -432,6 +444,8 @@ class Cache:
                 key = args
             if per_cpu:
                 key = (Cache.cpu_context(), key)
+            if per_inferior:
+                key = (Cache.inferior_context(), key)
 
             try:
                 return fcache[key]
@@ -460,7 +474,7 @@ class Cache:
         return wrapper
 
     @staticmethod
-    def cache_until_next(f=None, *, cache_None=True, per_cpu=False):
+    def cache_until_next(f=None, *, cache_None=True, per_cpu=False, per_inferior=False):
         """Decorator for the "until_next" cache.
         Usable bare (`@Cache.cache_until_next`) or with options
         (`@Cache.cache_until_next(cache_None=False)`)."""
@@ -468,13 +482,14 @@ class Cache:
         if f is None: # called with options
             return functools.partial(
                 Cache.cache_until_next, cache_None=cache_None, per_cpu=per_cpu,
+                per_inferior=per_inferior,
             )
         if not callable(f):
             raise TypeError("Cache.cache_until_next: the options must be keyword arguments")
-        return Cache.cache_wrap("until_next", f, cache_None=cache_None, per_cpu=per_cpu)
+        return Cache.cache_wrap("until_next", f, cache_None=cache_None, per_cpu=per_cpu, per_inferior=per_inferior)
 
     @staticmethod
-    def cache_this_session(f=None, *, cache_None=True, per_cpu=False, until_new_objfile=False):
+    def cache_this_session(f=None, *, cache_None=True, per_cpu=False, per_inferior=False, until_new_objfile=False):
         """Decorator for the "this_session" cache.
         Usable bare (`@Cache.cache_this_session`) or with options
         (`@Cache.cache_this_session(cache_None=False)`).
@@ -483,12 +498,12 @@ class Cache:
         if f is None: # called with options
             return functools.partial(
                 Cache.cache_this_session, cache_None=cache_None, per_cpu=per_cpu,
-                until_new_objfile=until_new_objfile,
+                per_inferior=per_inferior, until_new_objfile=until_new_objfile,
             )
         if not callable(f):
             raise TypeError("Cache.cache_this_session: the options must be keyword arguments")
         return Cache.cache_wrap("this_session", f, cache_None=cache_None, per_cpu=per_cpu,
-                                until_new_objfile=until_new_objfile)
+                                per_inferior=per_inferior, until_new_objfile=until_new_objfile)
 
     @staticmethod
     def reset_gef_caches(all=False, new_objfile=False):
@@ -11202,10 +11217,15 @@ class MICROBLAZE(Architecture):
         ra = None
         try:
             if self.is_ret(insn):
-                ra = get_register("$r15")
+                # `rtsd rD, IMM` returns to rD+IMM. The standard epilogue is `rtsd r15, 8`,
+                # where the 8 skips the call instruction itself and its delay slot.
+                ops = [x.split()[0] for x in insn.operands]
+                ra = get_register("$" + ops[0])
+                if ra is not None:
+                    ra = (ra + int(ops[1], 0)) & 0xffff_ffff
             elif frame.older():
                 ra = frame.older().pc()
-        except gdb.error:
+        except (gdb.error, IndexError, ValueError):
             pass
         return ra
 
@@ -13757,9 +13777,10 @@ def is_wine():
     return Pid.get_pid_from_tcp_session(filepath="wineserver") is not None
 
 
-@Cache.cache_until_next
+@Cache.cache_until_next(per_cpu=True)
 def is_in_kernel():
-    """GDB mode determination function for kernel mode."""
+    """GDB mode determination function for kernel mode.
+    The answer comes from the current CPU registers, so it must not be reused for another CPU."""
     if not is_alive():
         return False
     if is_arm32_cortex_m():
@@ -13797,7 +13818,7 @@ def is_in_kernel():
     return False
 
 
-@Cache.cache_until_next
+@Cache.cache_until_next(per_cpu=True)
 def is_in_kpti_transition():
     """Return whether arm64 is stopped while switching TTBR1 for KPTI."""
     if not is_arm64() or not is_in_kernel():
@@ -13844,9 +13865,10 @@ def is_support_secure_world():
     return ".secure-ram" in ret
 
 
-@Cache.cache_until_next
+@Cache.cache_until_next(per_cpu=True)
 def is_in_secure():
-    """GDB mode determination function for secure world."""
+    """GDB mode determination function for secure world.
+    The answer comes from the current CPU registers, so it must not be reused for another CPU."""
     if not is_support_secure_world():
         return False
     if is_arm32():
@@ -14017,7 +14039,7 @@ class Pid:
         return None
 
     @staticmethod
-    @Cache.cache_this_session(cache_None=False)
+    @Cache.cache_this_session(cache_None=False, per_inferior=True)
     def get_pid(remote=False):
         """Return the PID of the debuggee process."""
         if not is_alive():
@@ -14618,7 +14640,7 @@ class ProcessMap:
         return ProcessMap.get_explored_regions() or [] # use cache
 
     @staticmethod
-    @Cache.cache_until_next
+    @Cache.cache_until_next(per_inferior=True)
     def get_process_maps(outer=False):
         """Return the mapped memory sections."""
         if Config.get_gef_setting("context.disable_vmmap"):
@@ -14669,7 +14691,7 @@ class ProcessMap:
         return ProcessMap.get_process_maps_heuristic()
 
     @staticmethod
-    @Cache.cache_until_next
+    @Cache.cache_until_next(per_inferior=True)
     def get_process_maps_exclude_special_regions(outer=False, allow_vdso=False, allow_vsyscall=False):
         """Return the mapped memory sections,
         exclude [vvar], [vvar_vclock], [vdso], [vsyscall], [sigpage], etc."""
@@ -14697,7 +14719,7 @@ class ProcessMap:
         return valid_maps
 
     @staticmethod
-    @Cache.cache_until_next
+    @Cache.cache_until_next(per_inferior=True)
     def get_loaded_files():
         files = set()
         for m in ProcessMap.get_process_maps():
@@ -14716,7 +14738,7 @@ class ProcessMap:
     # Fortunately, zone information rarely changes.
     # The cache is retained until explicitly cleared.
     @staticmethod
-    @Cache.cache_this_session(until_new_objfile=True)
+    @Cache.cache_this_session(per_inferior=True, until_new_objfile=True)
     def get_info_files():
         """Retrieve all the files loaded by debuggee."""
         lines = gdb.execute("info files", to_string=True).splitlines()
@@ -14751,7 +14773,7 @@ class ProcessMap:
         return info_files
 
     @staticmethod
-    @Cache.cache_until_next
+    @Cache.cache_until_next(per_inferior=True)
     def process_lookup_address(addr):
         """Look up for an address in memory. Return an Address object if found, None otherwise."""
         if not is_alive():
@@ -14765,7 +14787,7 @@ class ProcessMap:
         return None
 
     @staticmethod
-    @Cache.cache_until_next
+    @Cache.cache_until_next(per_inferior=True)
     def process_lookup_path(names, perm_mask=Permission.ALL):
         """Look up for paths in the process memory mapping.
         Return a Section object of the load base address if found, None otherwise."""
@@ -14781,7 +14803,7 @@ class ProcessMap:
         return None
 
     @staticmethod
-    @Cache.cache_until_next
+    @Cache.cache_until_next(per_inferior=True)
     def file_lookup_address(addr):
         """Look up for a file by its address. Return a Zone object if found, None otherwise."""
         if is_qemu_system() or is_vmware() or is_kgdb():
@@ -14793,13 +14815,13 @@ class ProcessMap:
         return None
 
     @staticmethod
-    @Cache.cache_until_next
+    @Cache.cache_until_next(per_inferior=True)
     def lookup_address(addr):
         """Try to find the address in the process address space. Return an Address object with caching."""
         return Address(addr)
 
     @staticmethod
-    @Cache.cache_until_next
+    @Cache.cache_until_next(per_inferior=True)
     def get_section_base_address(name):
         if name is None:
             return None
@@ -14929,6 +14951,14 @@ class EventHandler:
                     for offset in BreakRelativeVirtualAddressCommand.delayed_breakpoints:
                         gdb.execute("b *{:#x}".format(codebase + offset))
                     BreakRelativeVirtualAddressCommand.delayed_bp_set = True
+        return
+
+    @staticmethod
+    def del_objfile_handler(_event):
+        """GDB event handler for removed object file cases.
+        `remove-symbol-file`, an actual shared library unload and `file` replacing the whole
+        symbol file set stale the same caches as loading a new one does."""
+        Cache.reset_gef_caches(new_objfile=True)
         return
 
     @staticmethod
@@ -15693,7 +15723,7 @@ def only_if_events_supported(event_type):
         def wrapped_f(*args, **kwargs):
             if hasattr(gdb.events, event_type):
                 return f(*args, **kwargs)
-            warn("GDB events cannot be set")
+            warn("GDB events cannot be set: {:s}".format(event_type))
 
         return wrapped_f
 
@@ -15752,6 +15782,26 @@ class EventHooking:
     @only_if_events_supported("new_objfile")
     def gef_on_new_unhook(func):
         return gdb.events.new_objfile.disconnect(func)
+
+    @staticmethod
+    @only_if_events_supported("free_objfile")
+    def gef_on_free_objfile_hook(func):
+        return gdb.events.free_objfile.connect(func)
+
+    @staticmethod
+    @only_if_events_supported("free_objfile")
+    def gef_on_free_objfile_unhook(func):
+        return gdb.events.free_objfile.disconnect(func)
+
+    @staticmethod
+    @only_if_events_supported("clear_objfiles")
+    def gef_on_clear_objfiles_hook(func):
+        return gdb.events.clear_objfiles.connect(func)
+
+    @staticmethod
+    @only_if_events_supported("clear_objfiles")
+    def gef_on_clear_objfiles_unhook(func):
+        return gdb.events.clear_objfiles.disconnect(func)
 
     @staticmethod
     @only_if_events_supported("memory_changed")
@@ -64753,23 +64803,27 @@ class KernelAddressHeuristicFinder:
             if x:
                 return x
 
-        kversion = Kernel.kernel_version()
-
-        # plan 2 (available v4.12 or later)
-        if kversion and "4.12" <= kversion:
-            addr = Ksym.get_addr("param_get_aauint")
-            if addr:
-                res = gdb.execute("x/20i {:#x}".format(addr), to_string=True)
-                if is_x86_64():
-                    g = KernelAddressHeuristicFinderUtil.x64_any_ptr_rip_base(res, skip=1)
-                elif is_x86_32():
-                    g = KernelAddressHeuristicFinderUtil.x86_noptr_ds(res, skip=1)
-                elif is_arm64():
-                    g = KernelAddressHeuristicFinderUtil.aarch64_adrp_ldr(res, skip=1)
-                elif is_arm32():
-                    g = KernelAddressHeuristicFinderUtil.arm32_movw_movt(res, skip=1)
-                for x in g:
-                    return x
+        # plan 2
+        # This is not gated on v4.12. A distro kernel backports the apparmor rework, so a v4.4
+        # can keep `apparmor_initialized` live and reference it from this parameter handler too.
+        # What the older layout actually produces is a candidate in the freed init region,
+        # so reject that instead of the version.
+        addr = Ksym.get_addr("param_get_aauint")
+        if addr:
+            res = gdb.execute("x/20i {:#x}".format(addr), to_string=True)
+            g = ()
+            if is_x86_64():
+                g = KernelAddressHeuristicFinderUtil.x64_any_ptr_rip_base(res, skip=1)
+            elif is_x86_32():
+                g = KernelAddressHeuristicFinderUtil.x86_noptr_ds(res, skip=1)
+            elif is_arm64():
+                g = KernelAddressHeuristicFinderUtil.aarch64_adrp_ldr(res, skip=1)
+            elif is_arm32():
+                g = KernelAddressHeuristicFinderUtil.arm32_movw_movt(res, skip=1)
+            for x in g:
+                if KernelAddressHeuristicFinderUtil.is_in_freed_init_region(x):
+                    continue
+                return x
         return None
 
     @staticmethod
@@ -128929,6 +128983,10 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
             if pattern1(addr, chunk, cache) == 0:
                 chunk = pattern1(addr, chunk, cache)
                 self.swap = False
+            elif pattern2(addr, chunk, cache) == 0:
+                # the MSB check below would take this end-of-freelist for pattern1
+                chunk = pattern2(addr, chunk, cache)
+                self.swap = True
             elif (chunk >> shift_bits) == (cache["random"] >> shift_bits):
                 chunk = pattern1(addr, chunk, cache)
                 self.swap = False
@@ -132867,28 +132925,36 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
     ]
     _note_ = "\n".join(_note_)
 
-    def resolve_zone_offset_name(self):
+    # the largest `offsetof(zone, name) + sizeof(zone)` seen in the corpus is 0xe78
+    ZONE_NAME_SCAN_SIZE = 0x1_0000
+
+    def resolve_zone_offset_name(self, node):
         # fast path
         try:
             self.offset_name = GefUtil.parse_and_eval_unsigned("&((struct zone*)0).name")
             self.sizeof_zone = GefUtil.parse_and_eval_unsigned("sizeof(struct zone)")
-            return
+            return True
         except gdb.error:
             pass
 
         # slow path
-        current = self.nodes[0]
+        current = node
         name_offsets = []
         while len(name_offsets) < 2:
-            val = read_int_from_memory(current)
+            if current - node >= self.ZONE_NAME_SCAN_SIZE:
+                return False
+            try:
+                val = read_int_from_memory(current)
+            except gdb.MemoryError:
+                return False
             name = read_cstring_from_memory(val)
             if name in ["DMA", "DMA32", "Normal", "HighMem", "Movable", "Device"]:
-                offset = current - self.nodes[0]
+                offset = current - node
                 name_offsets.append(offset)
             current += current_arch.ptrsize
         self.offset_name = name_offsets[0]
         self.sizeof_zone = name_offsets[1] - name_offsets[0]
-        return
+        return True
 
     def resolve_zone_offset_per_cpu_pageset(self):
         # fast path
@@ -133232,27 +133298,35 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
             self.cpu_offset = Kernel.get_each_cpu_offset(__per_cpu_offset)
 
         # search for node_data
+        self.nodes = []
         node_data = KernelAddressHeuristicFinder.get_node_data()
         if node_data:
-            self.meta.append((self.quiet_info, "node_data: {:#x}".format(node_data)))
             # parse each node (*pglist_data)
-            self.nodes = []
+            nodes = []
             current = node_data
             while True:
-                node = read_int_from_memory(current)
+                try:
+                    node = read_int_from_memory(current)
+                except gdb.MemoryError:
+                    break
                 if not is_valid_addr(node):
                     break
-                self.nodes.append(node)
+                nodes.append(node)
                 current += current_arch.ptrsize
+            # a candidate without zone names is a false positive, fall back to CONFIG_NUMA=n layout
+            if nodes and self.resolve_zone_offset_name(nodes[0]):
+                self.meta.append((self.quiet_info, "node_data: {:#x}".format(node_data)))
+                self.nodes = nodes
 
-        else:
+        if not self.nodes:
             first_node = KernelAddressHeuristicFinder.get_node_data0()
-            if first_node:
+            if first_node and self.resolve_zone_offset_name(first_node):
                 self.meta.append((self.quiet_info, "first_node: {:#x}".format(first_node)))
                 self.nodes = [first_node]
-            else:
-                self.meta.append((self.quiet_err, "Failed to resolve node_data or first_node"))
-                return None
+
+        if not self.nodes:
+            self.meta.append((self.quiet_err, "Failed to resolve node_data or first_node"))
+            return None
 
         self.meta.append((self.quiet_info, "num of nodes: {:d}".format(len(self.nodes))))
         assert len(self.nodes) > 0
@@ -133345,7 +133419,6 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
         """
 
         # zone->name, sizeof(struct zone)
-        self.resolve_zone_offset_name()
         self.meta.append((self.quiet_info, "offsetof(zone, name): {:#x}".format(self.offset_name)))
         self.meta.append((self.quiet_info, "sizeof(zone): {:#x}".format(self.sizeof_zone)))
 
@@ -165452,6 +165525,8 @@ class GefReloadCommand(GenericCommand):
         EventHooking.gef_on_continue_unhook(EventHandler.continue_handler)
         EventHooking.gef_on_stop_unhook(EventHandler.hook_stop_handler)
         EventHooking.gef_on_new_unhook(EventHandler.new_objfile_handler)
+        EventHooking.gef_on_free_objfile_unhook(EventHandler.del_objfile_handler)
+        EventHooking.gef_on_clear_objfiles_unhook(EventHandler.del_objfile_handler)
         EventHooking.gef_on_exit_unhook(EventHandler.exit_handler)
         EventHooking.gef_on_connection_removed_unhook(EventHandler.connection_removed_handler)
         EventHooking.gef_on_memchanged_unhook(EventHandler.memchanged_handler)
@@ -167409,6 +167484,8 @@ class Gef:
         EventHooking.gef_on_continue_hook(EventHandler.continue_handler)
         EventHooking.gef_on_stop_hook(EventHandler.hook_stop_handler)
         EventHooking.gef_on_new_hook(EventHandler.new_objfile_handler)
+        EventHooking.gef_on_free_objfile_hook(EventHandler.del_objfile_handler)
+        EventHooking.gef_on_clear_objfiles_hook(EventHandler.del_objfile_handler)
         EventHooking.gef_on_exit_hook(EventHandler.exit_handler)
         EventHooking.gef_on_connection_removed_hook(EventHandler.connection_removed_handler)
         EventHooking.gef_on_memchanged_hook(EventHandler.memchanged_handler)
