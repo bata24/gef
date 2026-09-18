@@ -282,6 +282,8 @@ For a comprehensive list and additional details, see [docs/SUPPORTED-MODE.md](do
     - ![](images/kcred.png)
 - `klsm`: dumps the registered Linux Security Module hooks.
     - ![](images/klsm.png)
+- `knft`: dump the nftables (netfilter) object graph.
+    - ![](images/knft.png)
 - `kpercpu`: resolves the per-cpu variables and the per-cpu areas.
 - `ksearch-code-ptr`: searches for the code pointer in kernel data area.
     - ![](images/ksearch-code-ptr.png)

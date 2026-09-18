@@ -9437,6 +9437,63 @@ Simplified net_device structure:
 +---------------+    +-------------------+    +-------------------+
 ```
 
+## knft
+
+Dump the nftables (netfilter) object graph.
+
+
+### Syntax
+
+```text
+usage: knft [-h] [-hh] [-R] [--meta] [-n] [-q] [ADDRESS]
+
+positional arguments:
+  ADDRESS             reverse-lookup: report which nftables object this address belongs to.
+
+options:
+  -h, --help          show this help message and exit
+  -hh, --help-simple  show help without ASCII diagram.
+  -R, --no-rules      do not decode rules and expressions.
+  --meta              display offset information.
+  -n, --no-pager      do not use the pager.
+  -q, --quiet         show result only.
+```
+
+### Examples
+
+```gdb
+knft                    # dump the whole nftables object graph
+knft -R                 # dump the graph without rules and expressions
+knft 0xffff888012345600 # find which nftables object owns this address
+```
+
+### Notes
+
+```text
+Walks table -> chain -> rule -> expr and table -> set / object / flowtable.
+The location of the table list changed over time, and both modern forms are supported:
+
+  v4.16~v5.11 : net.nft.tables (one list for every family)
+  v5.12~      : net_generic(net, nf_tables_net_id) -> nftables_pernet.tables
+
+Only v4.16 and later are walked (the pre-v4.16 nft_af_info layout with inline names is
+not supported yet).
+
++-nftables_pernet-+   +-nft_table-+   +-nft_chain--+
+| tables          |-->| list      |-->| list       |
+| ...             |   | chains    |-->| ...        |
++-----------------+   | sets      |   | blob_gen_0 |-->+-nft_rule_blob-+
+                      | objects   |   | name       |   | size          |
+                      | name      |   +------------+   | data[]        |-->+-nft_expr-+
+                      +-----------+                    +---------------+   | ops      |--> type->name
+                                                                           +----------+
+
+Offsets are not read from any type info; they are recovered from invariants such as
+the table back-pointer that every chain/set/object holds and the expr ops->type->name
+chain, so the walk works with or without symbols. Rules are stored as a contiguous blob
+since v5.9 and as a linked list before that; both are decoded.
+```
+
 ## kops
 
 Display the members of commonly used function table (like struct file_operations) in the kernel.

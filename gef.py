@@ -168703,6 +168703,1841 @@ class KernelLsmCommand(GenericCommand, BufferingOutput):
 
 
 @register_command
+class KernelNftablesCommand(GenericCommand, BufferingOutput):
+    """Dump the nftables (netfilter) object graph."""
+
+    _cmdline_ = "knft"
+    _category_ = "06-g. Qemu-system/KGDB Cooperation - Linux Advanced"
+
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("address", metavar="ADDRESS", nargs="?", type=AddressUtil.parse_address,
+                        help="reverse-lookup: report an exact/containing known nftables object, or the nearest known object.")
+    parser.add_argument("-hh", "--help-simple", action="store_true", help="show help without ASCII diagram.")
+    parser.add_argument("-R", "--no-rules", action="store_true", help="do not decode or render rules and expressions.")
+    parser.add_argument("--meta", action="store_true", help="display discovery information.")
+    parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
+    parser.add_argument("-q", "--quiet", action="store_true", help="show result only.")
+    _syntax_ = parser.format_help()
+
+    _example_ = [
+        "{0:s}                     # dump the whole nftables object graph",
+        "{0:s} -R                  # dump the graph without rules and expressions",
+        "{0:s} 0xffff888012345600  # find which nftables object owns this address",
+    ]
+    _example_ = "\n".join(_example_).format(_cmdline_)
+
+    _note_ = [
+        "Walks table -> chain -> rule -> expr and table -> set / object / flowtable.",
+        "The mainline location of the table list changed over time:",
+        "",
+        "  v3.13~v4.15 : net.nft.af_info -> nft_af_info.tables (one list per family)",
+        "  v4.16~v5.12 : net.nft.tables (one list for every family)",
+        "  v5.13~      : net_generic(net, nf_tables_net_id) -> nftables_pernet.tables",
+        "",
+        "nftables first appeared in mainline v3.13. Older kernels have no nftables object graph.",
+        "",
+        "+-nftables_pernet-+   +-nft_table---+   +-nft_chain--+   +-nft_rule_blob-+",
+        "| tables          |-->| list        |   | blob_gen_0 |-->| size          |",
+        "| ...             |   | chains      |-->| list       |   | data[]        |",
+        "+-----------------+   | sets        |   | name       |   +-------+-------+",
+        "                      | objects     |   +------------+           |  (one nft_rule_dp per rule)",
+        "                      | flowtables  |                            v",
+        "                      | name        |                     +-nft_rule_dp-+",
+        "                      +-------------+                     | is_last     |",
+        "                                                          | dlen,handle |",
+        "                                                          | data[]      |--> +-nft_expr-+",
+        "                                                          +-------------+    | ops      |--> type->name",
+        "                                                                             +----------+",
+        "",
+        "On v4.16 and later, chains / sets / objects / flowtables hang off nft_table as four",
+        "consecutive list_head fields; legacy tables have the lists available in that kernel release.",
+        "Table discovery first validates this list topology and child->table back-references, then",
+        "uses rule/expression decoding only for the actual chains instead of for every table candidate.",
+        "",
+        "Offsets are recovered from runtime invariants rather than requiring type info. nftables names",
+        "may be up to 255 bytes; identifier-like names are preferred only as a heuristic and are not a",
+        "kernel validity rule. The datapath representation changed from linked nft_rule objects before",
+        "v5.17 to a contiguous nft_rule_blob in mainline v5.17 and later; the control-plane rule list",
+        "still exists on newer kernels, and both representations are understood where applicable.",
+    ]
+    _note_ = "\n".join(_note_)
+
+    # NFPROTO_* families
+    FAMILIES = {0: "unspec", 1: "inet", 2: "ipv4", 3: "arp", 5: "netdev", 7: "bridge", 10: "ipv6", 12: "decnet"}
+    TABLE_FAMILIES = frozenset((1, 2, 3, 5, 7, 10))
+    NFT_TABLE_F_OWNER = 0x2
+
+    # known nft_expr_type names; used to confirm that a decoded rule is really an nftables rule
+    #EXPR_TYPES = frozenset((
+    #    "cmp", "payload", "immediate", "bitwise", "byteorder", "counter", "ct", "lookup", "meta",
+    #    "nat", "objref", "dynset", "exthdr", "rt", "fib", "hash", "numgen", "quota", "range",
+    #    "redir", "reject", "masq", "log", "limit", "dup", "fwd", "tproxy", "socket", "osf",
+    #    "tunnel", "xfrm", "connlimit", "last", "synproxy", "flow_offload", "notrack", "queue",
+    #    "secmark", "tee", "target", "match", "inner", "compat",
+    #))
+
+    NET_SCAN = 0x3000    # fallback window when sizeof(struct net) is unavailable
+    MEMBER_SCAN = 0x200  # window used to locate a member inside an object
+    BACKREF_SCAN = 0x60  # the table back-pointer sits near the start of a chain/set/object
+    MAX_LIST_SCAN = 0x1_0000  # scan safety limit, not a kernel nftables limit
+    MAX_RULE_SCAN = 0x1_0000  # scan safety limit, not a kernel nftables limit
+
+    def reset_scan_caches(self):
+        self.list_cache = {}
+        self.list_status = {}
+        self.list_partial = {}
+        self.backref_cache = {}
+        self.name_cache = {}
+        self.expr_name_cache = {}
+        self.chain_blob_cache = {}
+        self.blob_data_offset_cache = {}
+        self.blob_status_cache = {}
+        self.rules_list_cache = {}
+        self.table_layout_cache = {}
+        self.table_child_count_cache = {}
+        self.candidate_head_sources = {}
+        self.legacy_af_layout = None
+        self.net_gen_offset = None
+        self.nf_tables_id = None
+        self.nf_tables_id_resolved = False
+        return
+
+    def member_offset(self, type_name, member):
+        try:
+            struct_type = GefUtil.cached_lookup_type(type_name)
+            if struct_type is None:
+                return None
+            field = next(field for field in struct_type.fields() if field.name == member)
+            return field.bitpos // 8
+        except (gdb.error, StopIteration, TypeError):
+            return None
+
+    def member_type_code(self, type_name, member):
+        try:
+            struct_type = GefUtil.cached_lookup_type(type_name)
+            if struct_type is None:
+                return None
+            field = next(field for field in struct_type.fields() if field.name == member)
+            return field.type.strip_typedefs().code
+        except (gdb.error, StopIteration, TypeError):
+            return None
+
+    def type_size(self, type_name):
+        try:
+            struct_type = GefUtil.cached_lookup_type(type_name)
+            if struct_type is None:
+                return None
+            return int(struct_type.sizeof)
+        except (gdb.error, TypeError):
+            return None
+
+    def kind_type(self, kind):
+        return {
+            "chains": "struct nft_chain",
+            "sets": "struct nft_set",
+            "objects": "struct nft_object",
+            "flowtables": "struct nft_flowtable",
+        }.get(kind)
+
+    def entry_object_range(self, entry, kind):
+        type_name = self.kind_type(kind)
+        if type_name is None:
+            return entry, None
+        list_off = self.member_offset(type_name, "list")
+        size = self.type_size(type_name)
+        if list_off is None or size is None or size <= 0:
+            return entry, None
+        base = entry - list_off
+        return base, base + size
+
+    def object_name_offset(self, kind):
+        type_name = self.kind_type(kind)
+        if type_name is None:
+            return None
+        name_off = self.member_offset(type_name, "name")
+        if name_off is not None:
+            return name_off
+        if kind == "objects":
+            key_off = self.member_offset("struct nft_object", "key")
+            key_name_off = self.member_offset("struct nft_object_hash_key", "name")
+            if key_off is not None and key_name_off is not None:
+                return key_off + key_name_off
+        return None
+
+    def net_scan_size(self):
+        size = self.type_size("struct net")
+        if size is not None and size > 0:
+            return size
+        return self.NET_SCAN
+
+    def rd(self, addr):
+        if not self.pointer_add_valid(addr, current_arch.ptrsize - 1):
+            return None
+        try:
+            return read_int_from_memory(addr)
+        except (gdb.MemoryError, OverflowError):
+            return None
+
+    def rd64(self, addr):
+        # some fields (the nft_rule_dp header) are always u64, even on 32-bit
+        if not self.pointer_add_valid(addr, 7):
+            return None
+        try:
+            return u64(read_memory(addr, 8))
+        except (gdb.MemoryError, OverflowError):
+            return None
+
+    def rd32(self, addr):
+        if not self.pointer_add_valid(addr, 3):
+            return None
+        try:
+            return read_int32_from_memory(addr)
+        except (gdb.MemoryError, OverflowError):
+            return None
+
+    def rd16(self, addr):
+        if not self.pointer_add_valid(addr, 1):
+            return None
+        try:
+            return read_int16_from_memory(addr)
+        except (gdb.MemoryError, OverflowError):
+            return None
+
+    def rd8(self, addr):
+        if not self.pointer_add_valid(addr, 0):
+            return None
+        try:
+            return read_int8_from_memory(addr)
+        except (gdb.MemoryError, OverflowError):
+            return None
+
+    def cstr(self, addr, maxlen=256):
+        if not addr or maxlen <= 0 or not AddressUtil.is_msb_on(addr) \
+                or not self.pointer_add_valid(addr, maxlen - 1):
+            return None
+        try:
+            s = read_cstring_from_memory(addr, maxlen)
+        except (gdb.MemoryError, OverflowError):
+            return None
+        if not s or len(s) > maxlen - 1:
+            return None
+        if not all(0x20 <= ord(c) < 0x7f for c in s):
+            return None
+        return s
+
+    @staticmethod
+    def looks_name(s):
+        # The kernel limit is 255 bytes. Identifier-like spelling is only a scoring hint.
+        if not s or not (1 <= len(s) <= 255):
+            return False
+        return all(0x20 <= ord(c) < 0x7f for c in s)
+
+    @staticmethod
+    def looks_identifier_name(s):
+        if not s:
+            return False
+        return all(c.isalnum() or c in "_.-:" for c in s)
+
+    def walk_list(self, head, maxent=None):
+        # Return entries for a valid non-empty circular list. Empty, broken, and truncated lists
+        # all return []; list_status records why the scan ended when callers need the distinction.
+        if maxent is None:
+            maxent = self.MAX_LIST_SCAN
+        key = (head, maxent)
+        if key in self.list_cache:
+            return self.list_cache[key]
+
+        def finish(entries, status, partial=None):
+            self.list_cache[key] = entries
+            self.list_status[key] = status
+            self.list_partial[key] = entries if partial is None else partial
+            return entries
+
+        ptr = current_arch.ptrsize
+        first = self.rd(head)
+        last = self.rd(head + ptr)
+        if first is None or last is None:
+            return finish([], "broken")
+        if first == head or last == head:
+            return finish([], "empty" if first == head and last == head else "broken")
+        if not first or not last:
+            return finish([], "broken")
+
+        entries = []
+        seen = {head}
+        cur = first
+        while len(entries) < maxent:
+            if cur in seen:
+                return finish(entries, "ok") if cur == head else finish([], "broken")
+
+            nxt = self.rd(cur)
+            prev = self.rd(cur + ptr)
+            if nxt is None or prev is None or not nxt or not prev:
+                return finish([], "broken")
+
+            if self.rd(nxt + ptr) != cur or self.rd(prev) != cur:
+                return finish([], "broken")
+
+            seen.add(cur)
+            entries.append(cur)
+            cur = nxt
+
+        return finish([], "limit", partial=entries)
+
+    def walk_list_status(self, head, maxent=None):
+        if maxent is None:
+            maxent = self.MAX_LIST_SCAN
+        key = (head, maxent)
+        if key not in self.list_status:
+            self.walk_list(head, maxent=maxent)
+        return self.list_status.get(key, "broken")
+
+    def walk_list_partial(self, head, maxent=None):
+        if maxent is None:
+            maxent = self.MAX_LIST_SCAN
+        key = (head, maxent)
+        if key not in self.list_status:
+            self.walk_list(head, maxent=maxent)
+        return self.list_partial.get(key, [])
+
+    def list_head_plausible(self, head):
+        # Validate only the list head endpoints. This is cheap and independent of list length.
+        ptr = current_arch.ptrsize
+        nxt = self.rd(head)
+        prev = self.rd(head + ptr)
+        if nxt is None or prev is None:
+            return False
+        if nxt == head or prev == head:
+            return nxt == head and prev == head
+        if not nxt or not prev:
+            return False
+        return self.rd(nxt + ptr) == head and self.rd(prev) == head
+
+    def find_backref(self, entry, target):
+        # Skip the embedded list_head itself; a one-element list would otherwise look like a backref.
+        key = (entry, target)
+        if key in self.backref_cache:
+            return self.backref_cache[key]
+        for o in range(current_arch.ptrsize * 2, self.BACKREF_SCAN, current_arch.ptrsize):
+            if self.rd(entry + o) == target:
+                self.backref_cache[key] = o
+                return o
+        self.backref_cache[key] = None
+        return None
+
+    def resolve_name(self, base, min_off=0, max_off=None):
+        stop = self.MEMBER_SCAN if max_off is None else min(self.MEMBER_SCAN, max_off)
+        key = (base, min_off, stop)
+        if key in self.name_cache:
+            return self.name_cache[key]
+        for offset in range(min_off, stop, current_arch.ptrsize):
+            pointer = self.rd(base + offset)
+            if not pointer or not AddressUtil.is_msb_on(pointer):
+                continue
+            name = self.cstr(pointer)
+            if self.looks_name(name):
+                self.name_cache[key] = (offset, name)
+                return self.name_cache[key]
+        self.name_cache[key] = None
+        return None
+
+    def name_at(self, base, name_off):
+        if base is None:
+            return None
+        return self.cstr(self.rd(base + name_off) or 0)
+
+    def typed_name_at(self, base, type_name, member="name"):
+        offset = self.member_offset(type_name, member)
+        code = self.member_type_code(type_name, member)
+        if offset is None or code is None:
+            return None
+        if code == gdb.TYPE_CODE_PTR:
+            return self.cstr(self.rd(base + offset) or 0)
+        if code == gdb.TYPE_CODE_ARRAY:
+            return self.cstr(base + offset)
+        return None
+
+    # --- table discovery ---
+
+    def is_heap_ptr(self, q):
+        # Run the no-read checks first; rd() then doubles as the readability test.
+        if not q or not AddressUtil.is_msb_on(q) or q % current_arch.ptrsize:
+            return False
+        return self.rd(q) is not None
+
+    def nf_tables_net_id(self):
+        if self.nf_tables_id_resolved:
+            return self.nf_tables_id
+        self.nf_tables_id_resolved = True
+
+        address = Ksym.get_addr("nf_tables_net_id")
+        if address is None:
+            return None
+        value = self.rd32(address)
+        if value is None or not (0 < value < 0x1_0000):
+            return None
+        self.nf_tables_id = value
+        return value
+
+    def net_generic_candidates(self, net):
+        # Prefer the real struct net.gen offset when debug type information is available.
+        gen_off = self.member_offset("struct net", "gen")
+        if gen_off is not None:
+            gen = self.rd(net + gen_off)
+            return [gen] if self.net_generic_candidate_info(gen) is not None else []
+
+        # Once a stripped-kernel fallback offset has been identified, every network namespace uses
+        # the same struct net layout. Reuse it instead of rescanning the whole object.
+        if self.net_gen_offset is not None:
+            gen = self.rd(net + self.net_gen_offset)
+            if self.net_generic_candidate_info(gen) is not None:
+                return [gen]
+            self.net_gen_offset = None
+
+        candidates = []
+        candidate_offsets = []
+        for off in range(0, self.net_scan_size(), current_arch.ptrsize):
+            gen = self.rd(net + off)
+            if self.net_generic_candidate_info(gen) is None:
+                continue
+            candidates.append(gen)
+            candidate_offsets.append(off)
+
+        # A unique structurally valid candidate is strong enough to reuse on later namespaces.
+        if len(candidate_offsets) == 1:
+            self.net_gen_offset = candidate_offsets[0]
+        return list(dict.fromkeys(candidates))
+
+    def net_generic_candidate_info(self, gen):
+        if not gen or not AddressUtil.is_msb_on(gen) or self.rd(gen) is None:
+            return None
+        ln = self.rd32(gen)
+        if not ln or not (4 <= ln <= 256):
+            return None
+        base = self.net_generic_ptr_base(gen, ln)
+        if base is None:
+            return None
+
+        # When nf_tables_net_id is visible, require at least one of the historical/current index
+        # conventions to contain a plausible pernet pointer. This makes stripped-kernel net->gen
+        # discovery much less permissive than checking only the len field.
+        net_id = self.nf_tables_net_id()
+        if net_id is not None:
+            indices = []
+            if net_id < ln:
+                indices.append(net_id)
+            if 0 < net_id <= ln:
+                indices.append(net_id - 1)
+            indices = list(dict.fromkeys(indices))
+            if not any(self.is_heap_ptr(self.rd(gen + base + current_arch.ptrsize * index))
+                       for index in indices):
+                return None
+        return ln, base
+
+    def net_generic_ptr_base(self, gen, ln):
+        ptr_off = self.member_offset("struct net_generic", "ptr")
+        # Current kernels place the flexible ptr[] member at offset zero in an anonymous union.
+        # GDB exposes only that unnamed union in some DWARF versions, so the direct field lookup
+        # above cannot see ptr even though the struct type itself is available.
+        if ptr_off is None and self.type_size("struct net_generic") is not None:
+            ptr_off = 0
+        if ptr_off is not None:
+            # Most pernet slots are allowed to be NULL.  With debug type information the member
+            # offset is exact, so requiring a dense pointer array would reject valid kernels.
+            if self.rd(gen + ptr_off + current_arch.ptrsize * (ln - 1)) is not None:
+                return ptr_off
+
+        # A stripped kernel usually still exposes nf_tables_net_id through kallsyms.  Use that
+        # slot as the anchor: the nftables pernet object starts with one of several list heads.
+        # Testing the small pernet prefix keeps arbitrary {len, pointer} pairs out of this path.
+        net_id = self.nf_tables_net_id()
+        if net_id is not None:
+            indices = []
+            if net_id < ln:
+                indices.append(net_id)
+            if 0 < net_id <= ln:
+                indices.append(net_id - 1)
+            for base in range(0, 0x30, current_arch.ptrsize):
+                for index in dict.fromkeys(indices):
+                    q = self.rd(gen + base + current_arch.ptrsize * index)
+                    if not self.is_heap_ptr(q):
+                        continue
+                    if any(self.list_head_plausible(q + sub_off)
+                           for sub_off in range(0, 0x48, current_arch.ptrsize * 2)):
+                        return base
+
+        # Fallback for stripped kernels: locate the densest pointer array near the header.
+        best_base, best_valid = None, 0
+        for base in range(0, 0x30, current_arch.ptrsize):
+            sample = [self.rd(gen + base + current_arch.ptrsize * i) for i in range(min(ln, 12))]
+            valid = sum(1 for q in sample if self.is_heap_ptr(q))
+            if valid > best_valid:
+                best_valid, best_base = valid, base
+        if best_base is None or best_valid < max(3, min(ln, 12) // 2):
+            return None
+        return best_base
+
+    def gather_structs(self, net):
+        # v5.13~ keeps the table list in net_generic(net, nf_tables_net_id). If the id symbol is
+        # visible, inspect only that slot (plus the older id-1 convention); otherwise fall back to
+        # probing the pointer array.
+        structs = set()
+        net_id = self.nf_tables_net_id()
+        for gen in self.net_generic_candidates(net):
+            info = self.net_generic_candidate_info(gen)
+            if info is None:
+                continue
+            ln, base = info
+
+            if net_id is not None:
+                indices = []
+                if net_id < ln:
+                    indices.append(net_id)
+                if 0 < net_id <= ln:
+                    indices.append(net_id - 1)
+                for index in dict.fromkeys(indices):
+                    q = self.rd(gen + base + current_arch.ptrsize * index)
+                    if self.is_heap_ptr(q):
+                        structs.add(q)
+                continue
+
+            for i in range(ln):
+                q = self.rd(gen + base + current_arch.ptrsize * i)
+                if self.is_heap_ptr(q):
+                    structs.add(q)
+        return structs
+
+    def detect_table_name(self, entries, min_off=0, max_off=None):
+        # Prefer the real member offset when type information is present.
+        typed_off = self.member_offset("struct nft_table", "name")
+        if typed_off is not None:
+            names = [self.name_at(entry, typed_off) for entry in entries[:8]]
+            return typed_off if all(self.looks_name(name) for name in names) else None
+
+        # Otherwise score printable char* candidates in the expected tail region.
+        probe = entries[:8]
+        stop = self.MEMBER_SCAN if max_off is None else min(self.MEMBER_SCAN, max_off)
+        candidates = []
+        for o in range(min_off, stop, current_arch.ptrsize):
+            names = [self.name_at(e, o) for e in probe]
+            if all(self.looks_name(n) for n in names):
+                candidates.append((o, names))
+        if not candidates:
+            return None
+
+        def score(cand):
+            _o, names = cand
+            distinct = len(set(names))
+            avglen = sum(len(n) for n in names) / len(names)
+            idents = sum(1 for n in names if self.looks_identifier_name(n))
+            return (distinct, idents, avglen)
+        return max(candidates, key=score)[0]
+
+    def candidate_heads(self, net):
+        heads = []
+
+        def add_head(head, source):
+            if head not in self.candidate_head_sources:
+                heads.append(head)
+                self.candidate_head_sources[head] = source
+
+        nft_off = self.member_offset("struct net", "nft")
+        tables_off = self.member_offset("struct netns_nftables", "tables")
+        if nft_off is not None and tables_off is not None:
+            add_head(net + nft_off + tables_off, "type:net.nft.tables")
+        elif self.type_size("struct net") is None:
+            for offset in range(0, self.net_scan_size(), current_arch.ptrsize):
+                add_head(net + offset, "heuristic:struct net scan")
+
+        pernet_tables_off = self.member_offset("struct nftables_pernet", "tables")
+        for struct_addr in self.gather_structs(net):
+            if pernet_tables_off is not None:
+                add_head(struct_addr + pernet_tables_off, "type:nftables_pernet.tables")
+            else:
+                for sub_off in range(0, 0x48, current_arch.ptrsize):
+                    add_head(struct_addr + sub_off, "heuristic:net_generic subscan")
+
+        return heads
+
+    def legacy_child_kinds(self):
+        # Objects were added in v4.10. Flowtables appeared together with the unified table list
+        # in v4.16 and are handled by the modern layout path.
+        kinds = ["chains", "sets"]
+        if self.kversion >= "4.10":
+            kinds.append("objects")
+        return kinds
+
+    def legacy_af_offsets(self):
+        list_off = self.member_offset("struct nft_af_info", "list")
+        family_off = self.member_offset("struct nft_af_info", "family")
+        nhooks_off = self.member_offset("struct nft_af_info", "nhooks")
+        owner_off = self.member_offset("struct nft_af_info", "owner")
+        tables_off = self.member_offset("struct nft_af_info", "tables")
+        if None not in (list_off, family_off, nhooks_off, owner_off, tables_off):
+            return {
+                "list": list_off,
+                "family": family_off,
+                "nhooks": nhooks_off,
+                "owner": owner_off,
+                "tables": tables_off,
+                "source": "type",
+            }
+
+        ptr = current_arch.ptrsize
+        stride = ptr * 2
+        return {
+            "list": 0,
+            "family": stride,
+            "nhooks": stride + 4,
+            "owner": stride + 8,
+            "tables": stride + 8 + ptr,
+            "source": "heuristic",
+        }
+
+    def legacy_af_groups_from_head(self, head, offsets):
+        af_entries = self.walk_list(head, maxent=64)
+        if not af_entries or self.walk_list_status(head, maxent=64) != "ok":
+            return None
+
+        groups = []
+        families = set()
+        for entry in af_entries:
+            base = entry - offsets["list"]
+            family = self.rd32(base + offsets["family"])
+            nhooks = self.rd32(base + offsets["nhooks"])
+            owner = self.rd(base + offsets["owner"])
+            tables_head = base + offsets["tables"]
+            if family not in self.TABLE_FAMILIES or family in families:
+                return None
+            if nhooks is None or not (1 <= nhooks <= 16):
+                return None
+            if owner and (not AddressUtil.is_msb_on(owner) or owner % current_arch.ptrsize):
+                return None
+            if not self.list_head_plausible(tables_head):
+                return None
+            status = self.walk_list_status(tables_head, maxent=self.MAX_LIST_SCAN)
+            if status not in ("empty", "ok"):
+                return None
+            families.add(family)
+            groups.append({
+                "family": family,
+                "af": base,
+                "tables_head": tables_head,
+                "entries": self.walk_list(tables_head, maxent=self.MAX_LIST_SCAN),
+            })
+        return groups
+
+    def legacy_af_groups(self, net):
+        offsets = self.legacy_af_offsets()
+        heads = []
+        nft_off = self.member_offset("struct net", "nft")
+        af_info_off = self.member_offset("struct netns_nftables", "af_info")
+        if nft_off is not None and af_info_off is not None:
+            heads.append((net + nft_off + af_info_off, "type:net.nft.af_info"))
+        else:
+            heads.extend((net + offset, "heuristic:struct net af_info scan")
+                         for offset in range(0, self.net_scan_size(), current_arch.ptrsize))
+
+        best = None
+        for head, source in heads:
+            groups = self.legacy_af_groups_from_head(head, offsets)
+            if groups is None:
+                continue
+            table_count = sum(len(group["entries"]) for group in groups)
+            score = (table_count > 0, len(groups), table_count)
+            if best is None or score > best[0]:
+                best = (score, head, source, groups)
+        if best is None:
+            return None
+        self.legacy_af_layout = offsets
+        return {
+            "head": best[1],
+            "source": best[2],
+            "groups": best[3],
+        }
+
+    def legacy_table_name_info(self, table, child_count):
+        list_off = self.member_offset("struct nft_table", "list")
+        name_off = self.member_offset("struct nft_table", "name")
+        if list_off is not None and name_off is not None:
+            base = table - list_off
+            name = self.typed_name_at(base, "struct nft_table")
+            if self.looks_name(name):
+                return base, name_off, name, "type"
+            return None
+
+        stride = current_arch.ptrsize * 2
+        base = table
+        tail = stride * (1 + child_count) + 8 + 4 + 2
+        if self.kversion < "4.14":
+            name_off = tail
+            name = self.cstr(base + name_off)
+        else:
+            name_off = align(tail, current_arch.ptrsize)
+            name = self.cstr(self.rd(base + name_off) or 0)
+        if not self.looks_name(name):
+            return None
+        return base, name_off, name, "heuristic"
+
+    def legacy_table_layout(self, table, child_count):
+        typed = [self.member_offset("struct nft_table", kind)
+                 for kind in self.legacy_child_kinds()]
+        if all(offset is not None for offset in typed):
+            offsets = typed
+        else:
+            stride = current_arch.ptrsize * 2
+            offsets = [stride * (index + 1) for index in range(child_count)]
+        if not all(self.list_head_plausible(table + offset) for offset in offsets):
+            return None
+        return dict(zip(self.legacy_child_kinds(), offsets))
+
+    def build_legacy_tables(self, net):
+        discovery = self.legacy_af_groups(net)
+        if discovery is None:
+            return None
+
+        child_kinds = self.legacy_child_kinds()
+        tables = []
+        name_offsets = set()
+        name_sources = set()
+        for group in discovery["groups"]:
+            for entry in group["entries"]:
+                name_info = self.legacy_table_name_info(entry, len(child_kinds))
+                if name_info is None:
+                    continue
+                table, name_off, name, name_source = name_info
+                layout = self.legacy_table_layout(table, len(child_kinds))
+                if layout is None:
+                    continue
+
+                kinds = {}
+                for kind in child_kinds:
+                    offset = layout[kind]
+                    head = table + offset
+                    entries = self.walk_list(head, maxent=self.MAX_LIST_SCAN)
+                    status = self.walk_list_status(head, maxent=self.MAX_LIST_SCAN)
+                    if status not in ("empty", "ok"):
+                        kinds = None
+                        break
+                    backref = self.find_backref(entries[0], table) if entries else None
+                    kinds[kind] = (offset, entries, backref)
+                if kinds is None:
+                    continue
+
+                use_off = self.member_offset("struct nft_table", "use")
+                if use_off is None:
+                    use_off = current_arch.ptrsize * 2 * (1 + len(child_kinds)) + 8
+                use = self.rd32(table + use_off)
+                tables.append({
+                    "addr": table,
+                    "name": name,
+                    "family": group["family"],
+                    "use": use,
+                    "family_info": {
+                        "family": group["family"],
+                        "use": use,
+                        "family_off": self.legacy_af_layout["family"],
+                        "use_off": use_off,
+                        "source": self.legacy_af_layout["source"],
+                    },
+                    "layout": layout,
+                    "kinds": kinds,
+                })
+                name_offsets.add(name_off)
+                name_sources.add(name_source)
+
+        if not tables:
+            return None
+        return {
+            "name_off": next(iter(name_offsets)) if len(name_offsets) == 1 else None,
+            "name_source": next(iter(name_sources)) if len(name_sources) == 1 else "mixed",
+            "table_head": discovery["head"],
+            "table_source": discovery["source"],
+            "tail_layout": None,
+            "legacy_af": True,
+            "tables": tables,
+        }
+
+    def typed_table_list_layout(self):
+        ptr = current_arch.ptrsize
+        stride = ptr * 2
+        offsets = [self.member_offset("struct nft_table", member)
+                   for member in ("chains", "sets", "objects", "flowtables")]
+        if any(offset is None for offset in offsets):
+            return None
+        if offsets != [offsets[0] + stride * i for i in range(4)]:
+            return None
+        return offsets[0]
+
+    def table_child_count(self, table, chain_off):
+        key = (table, chain_off)
+        if key in self.table_child_count_cache:
+            return self.table_child_count_cache[key]
+
+        total = 0
+        stride = current_arch.ptrsize * 2
+        for index in range(4):
+            head = table + chain_off + stride * index
+            entries = self.walk_list(head, maxent=self.MAX_LIST_SCAN)
+            status = self.walk_list_status(head, maxent=self.MAX_LIST_SCAN)
+            if status == "empty":
+                continue
+            if status != "ok":
+                self.table_child_count_cache[key] = None
+                return None
+            total += len(entries)
+
+        self.table_child_count_cache[key] = total
+        return total
+
+    def table_tail_layout_candidates(self, name_off):
+        ptr = current_arch.ptrsize
+
+        def align(value, alignment):
+            return (value + alignment - 1) & -alignment
+
+        state_end = 0x16
+        layouts = []
+        for kind, nlpid_rel, name_rel in (
+                ("without-nlpid", None, align(state_end, ptr)),
+                ("with-nlpid", align(state_end, 4), align(align(state_end, 4) + 4, ptr))):
+            base = name_off - name_rel
+            if base < 0:
+                continue
+            state_off = base + 0x14
+            layout = {
+                "kind": kind,
+                "hgenerator": base,
+                "handle": base + 0x8,
+                "use": base + 0x10,
+                "state": state_off,
+                "family": state_off,
+                "flags": state_off,
+                "genmask": state_off,
+                "nlpid": None if nlpid_rel is None else base + nlpid_rel,
+                "name": name_off,
+                "padding": [],
+            }
+            state_padding_end = name_rel if nlpid_rel is None else nlpid_rel
+            if state_end < state_padding_end:
+                layout["padding"].append((base + state_end, base + state_padding_end))
+            if nlpid_rel is not None and nlpid_rel + 4 < name_rel:
+                layout["padding"].append((base + nlpid_rel + 4, base + name_rel))
+            layouts.append(layout)
+        return layouts
+
+    def table_tail_candidate_values(self, table, name_off, layout, child_count=None):
+        if layout["name"] != name_off or not self.looks_name(self.name_at(table, name_off)):
+            return None
+
+        hgenerator = self.rd64(table + layout["hgenerator"])
+        handle = self.rd64(table + layout["handle"])
+        use = self.rd32(table + layout["use"])
+        state = self.rd16(table + layout["state"])
+        if None in (hgenerator, handle, use, state):
+            return None
+
+        family = state & 0x3f
+        flags = (state >> 6) & 0xff
+        genmask = (state >> 14) & 0x3
+        if family not in self.TABLE_FAMILIES or handle == 0:
+            return None
+        if not (0 <= use < 0x1_0000) or hgenerator < use:
+            return None
+
+        for start, stop in layout["padding"]:
+            for offset in range(start, stop):
+                if self.rd8(table + offset) != 0:
+                    return None
+
+        nlpid = None
+        if layout["nlpid"] is not None:
+            nlpid = self.rd32(table + layout["nlpid"])
+            if nlpid is None:
+                return None
+            if bool(flags & self.NFT_TABLE_F_OWNER) != bool(nlpid):
+                return None
+
+        return {
+            "family": family,
+            "flags": flags,
+            "genmask": genmask,
+            "hgenerator": hgenerator,
+            "handle": handle,
+            "use": use,
+            "nlpid": nlpid,
+            "use_matches_children": child_count is not None and use == child_count,
+        }
+
+    def find_table_tail_layout(self, entries, name_off, chain_off=None):
+        if not entries:
+            return None
+
+        child_counts = {}
+        if chain_off is not None:
+            child_counts = {table: self.table_child_count(table, chain_off) for table in entries}
+
+        valid = []
+        for layout in self.table_tail_layout_candidates(name_off):
+            values = []
+            for table in entries:
+                info = self.table_tail_candidate_values(
+                    table, name_off, layout, child_count=child_counts.get(table))
+                if info is None:
+                    break
+                values.append(info)
+            if len(values) != len(entries):
+                continue
+
+            handles = [info["handle"] for info in values]
+            if len(set(handles)) != len(handles):
+                continue
+            if any(left >= right for left, right in zip(handles, handles[1:])):
+                continue
+
+            use_matches = sum(info["use_matches_children"] for info in values)
+            valid.append((use_matches, layout))
+
+        if not valid:
+            return None
+        best_score = max(score for score, layout in valid)
+        best = [layout for score, layout in valid if score == best_score]
+        return best[0] if len(best) == 1 else None
+
+    def table_tail_evidence(self, table, chain_off, name_off, tail_layout=None):
+        ptr = current_arch.ptrsize
+        lists_end = chain_off + ptr * 8
+        if name_off < lists_end or name_off > lists_end + 0x60:
+            return 0
+
+        score = 1
+        name = self.name_at(table, name_off)
+        if self.looks_identifier_name(name):
+            score += 1
+        if tail_layout is None and self.member_offset("struct nft_table", "use") is None \
+                and self.member_offset("struct nft_table", "family") is None:
+            tail_layout = self.find_table_tail_layout([table], name_off, chain_off)
+        family, use = self.table_family_use(table, name_off, tail_layout=tail_layout)
+        if family is not None:
+            score += 2
+        if use is not None:
+            score += 1
+        return score
+
+    def find_table_list_layout(self, table, name_off=None):
+        # v4.16+ nft_table has four consecutive list_head fields: chains/sets/objects/flowtables.
+        key = (table, name_off)
+        if key in self.table_layout_cache:
+            return self.table_layout_cache[key]
+
+        typed_off = self.typed_table_list_layout()
+        if typed_off is not None:
+            heads = [table + typed_off + current_arch.ptrsize * 2 * i for i in range(4)]
+            result = typed_off if all(self.list_head_plausible(head) for head in heads) else None
+            self.table_layout_cache[key] = result
+            return result
+
+        ptr = current_arch.ptrsize
+        stride = ptr * 2
+        limit = self.MEMBER_SCAN - stride * 3
+        best = None
+        for off in range(stride, limit, ptr):
+            heads = [table + off + stride * i for i in range(4)]
+            if not all(self.list_head_plausible(head) for head in heads):
+                continue
+
+            nonempty = 0
+            backrefs = 0
+            named_children = 0
+            for head in heads:
+                first = self.rd(head)
+                if first == head:
+                    continue
+                nonempty += 1
+                if self.find_backref(first, table) is not None:
+                    backrefs += 1
+                if self.resolve_name(first) is not None:
+                    named_children += 1
+
+            tail_score = self.table_tail_evidence(table, off, name_off) if name_off is not None else 0
+
+            # A non-empty chain/object/flowtable normally gives a table back-reference. Keep a
+            # no-backref path for old set-only tables, but require strong independent tail/name
+            # evidence. Fully empty tables also need this tail evidence to avoid matching an
+            # unrelated structure that merely contains four initialized empty list_head fields.
+            if backrefs == 0:
+                if name_off is None:
+                    pass
+                elif tail_score < 4:
+                    continue
+                elif nonempty and named_children == 0:
+                    continue
+
+            score = (backrefs, tail_score, named_children, nonempty, -off)
+            if best is None or score > best[0]:
+                best = (score, off)
+
+        result = best[1] if best is not None else None
+        self.table_layout_cache[key] = result
+        return result
+
+    def find_tables(self, net):
+        # The four consecutive nft_table child lists are a cheaper discriminator than decoding
+        # rules for every candidate. Name/tail evidence is required when child back-references are
+        # unavailable, including a completely empty table.
+        best = None
+        ptr = current_arch.ptrsize
+        stride = ptr * 2
+        for head in self.candidate_heads(net):
+            entries = self.walk_list(head)
+            if not entries:
+                continue
+
+            probe = entries[:16]
+            provisional = [self.find_table_list_layout(table) for table in probe]
+            if any(layout is None for layout in provisional) or len(set(provisional)) != 1:
+                continue
+            chain_off = provisional[0]
+
+            name_off = self.detect_table_name(
+                entries,
+                min_off=chain_off + stride * 4,
+                max_off=chain_off + stride * 4 + 0x68,
+            )
+            if name_off is None:
+                continue
+
+            layouts = [self.find_table_list_layout(table, name_off=name_off) for table in probe]
+            if any(layout is None for layout in layouts) or len(set(layouts)) != 1:
+                continue
+
+            names = [self.name_at(table, name_off) for table in probe]
+            if not all(self.looks_name(name) for name in names):
+                continue
+
+            tail_layout = None
+            use_off = self.member_offset("struct nft_table", "use")
+            family_off = self.member_offset("struct nft_table", "family")
+            if use_off is None and family_off is None:
+                tail_layout = self.find_table_tail_layout(entries, name_off, layouts[0])
+                if tail_layout is None:
+                    continue
+
+            idents = sum(1 for name in names if self.looks_identifier_name(name))
+            distinct = len(set(names))
+            tail_scores = [self.table_tail_evidence(
+                table, layouts[0], name_off, tail_layout=tail_layout) for table in probe]
+            score = (min(tail_scores), len(probe), idents, distinct)
+            if best is None or score > best[0]:
+                best = (score, entries, name_off, head, tail_layout)
+
+        if best is None:
+            return None
+        return best[1], best[2], best[3], best[4]
+
+    # --- rules / expressions ---
+
+    def ops_plausible(self, ptr):
+        if not ptr or not AddressUtil.is_msb_on(ptr) or ptr % current_arch.ptrsize:
+            return False
+        return self.rd(ptr) is not None
+
+    def expr_name(self, ops):
+        if ops in self.expr_name_cache:
+            return self.expr_name_cache[ops]
+        if not self.ops_plausible(ops):
+            self.expr_name_cache[ops] = None
+            return None
+
+        # Prefer the real ops->type->name path when debug type information is available.
+        type_off = self.member_offset("struct nft_expr_ops", "type")
+        name_off = self.member_offset("struct nft_expr_type", "name")
+        if type_off is not None and name_off is not None:
+            expr_type = self.rd(ops + type_off)
+            if expr_type and AddressUtil.is_msb_on(expr_type):
+                name = self.cstr(self.rd(expr_type + name_off) or 0, 24)
+                if name and 2 <= len(name) <= 20 and all(
+                        c.islower() or c.isdigit() or c == "_" for c in name):
+                    self.expr_name_cache[ops] = name
+                    return name
+            self.expr_name_cache[ops] = None
+            return None
+
+        # Stripped-kernel fallback: find a plausible type object and its lowercase name.
+        for offset in range(0, 0x100, current_arch.ptrsize):
+            expr_type = self.rd(ops + offset)
+            if not expr_type or not AddressUtil.is_msb_on(expr_type):
+                continue
+            for name_offset in range(0, 0x40, current_arch.ptrsize):
+                name = self.cstr(self.rd(expr_type + name_offset) or 0, 24)
+                if name and 2 <= len(name) <= 20 and all(
+                        c.islower() or c.isdigit() or c == "_" for c in name):
+                    self.expr_name_cache[ops] = name
+                    return name
+        self.expr_name_cache[ops] = None
+        return None
+
+    def expr_advance(self, base, offset, room):
+        ops = self.rd(base + offset)
+        if not self.ops_plausible(ops):
+            return None
+
+        # Prefer the real nft_expr_ops.size field when type information is available.
+        size_off = self.member_offset("struct nft_expr_ops", "size")
+        if size_off is not None:
+            size = self.rd32(ops + size_off)
+            if size is None or not (current_arch.ptrsize <= size <= 0x400) or size % current_arch.ptrsize:
+                return None
+            if size == room:
+                return size
+            if size < room and self.ops_plausible(self.rd(base + offset + size)):
+                return size
+            return None
+
+        # Stripped-kernel fallback: locate an unsigned int field that advances to the next expr.
+        for size_offset in range(0x08, 0x2c, 4):
+            size = self.rd32(ops + size_offset)
+            if size is None or not (current_arch.ptrsize <= size <= 0x400) or size % current_arch.ptrsize:
+                continue
+            if size == room:
+                return size
+            if size < room and self.ops_plausible(self.rd(base + offset + size)):
+                return size
+        return None
+
+    def decode_expr_records(self, base, start, dlen):
+        # dlen is bounded by the nft_rule header and expr_advance() must make positive progress, so
+        # no independent expression-count guard is needed.
+        records = []
+        offset = start
+        end = start + dlen
+        while offset < end:
+            ops = self.rd(base + offset)
+            if not self.ops_plausible(ops):
+                break
+            size = self.expr_advance(base, offset, end - offset)
+            if not size:
+                break
+            records.append((base + offset, base + offset + size, self.expr_name(ops) or "?"))
+            offset += size
+        return records, (offset == end)
+
+    def decode_exprs(self, base, start, dlen):
+        records, ok = self.decode_expr_records(base, start, dlen)
+        return [record[2] for record in records], ok
+
+    def pointer_add_valid(self, base, delta):
+        if delta < 0:
+            return False
+        max_addr = (1 << (current_arch.ptrsize * 8)) - 1
+        return 0 <= base <= max_addr and delta <= max_addr - base
+
+    def blob_data_offset(self, blob, size=None):
+        if blob in self.blob_data_offset_cache:
+            return self.blob_data_offset_cache[blob]
+        if size is None:
+            size = self.rd(blob)
+        if size is None or not self.pointer_add_valid(blob, size + 8):
+            self.blob_data_offset_cache[blob] = None
+            self.blob_status_cache[blob] = "broken"
+            return None
+
+        # On 32-bit targets __alignof__(u64) is ABI dependent. Prefer the native ABI layout,
+        # then keep the other plausible offset as a fallback for unusual builds.
+        if is_arm32():
+            offsets = [8, current_arch.ptrsize]
+        else:
+            offsets = [current_arch.ptrsize]
+            aligned = align(current_arch.ptrsize, 8)
+            if aligned not in offsets:
+                offsets.append(aligned)
+
+        limit_candidate = None
+        for data_off in offsets:
+            if not self.pointer_add_valid(blob, data_off + size + 8):
+                continue
+            trailer = self.rd64(blob + data_off + size)
+            if trailer is None or not (trailer & 1):
+                continue
+
+            pos = 0
+            count = 0
+            valid = True
+            while pos < size and count < self.MAX_RULE_SCAN:
+                count += 1
+                hdr = self.rd64(blob + data_off + pos)
+                if hdr is None or hdr & 1:
+                    valid = False
+                    break
+                dlen = (hdr >> 1) & 0xfff
+                step = 8 + dlen
+                if pos + step > size:
+                    valid = False
+                    break
+                pos += step
+
+            if not valid:
+                continue
+            if pos == size:
+                self.blob_data_offset_cache[blob] = data_off
+                self.blob_status_cache[blob] = "ok"
+                return data_off
+            if count == self.MAX_RULE_SCAN:
+                limit_candidate = data_off
+
+        if limit_candidate is not None:
+            self.blob_data_offset_cache[blob] = limit_candidate
+            self.blob_status_cache[blob] = "limit"
+            return limit_candidate
+
+        self.blob_data_offset_cache[blob] = None
+        self.blob_status_cache[blob] = "broken"
+        return None
+
+    def find_chain_blob(self, entry):
+        # Prefer exact nft_chain member offsets when available; stripped targets use the bounded scan.
+        if entry in self.chain_blob_cache:
+            return self.chain_blob_cache[entry]
+
+        list_off = self.member_offset("struct nft_chain", "list")
+        blob_offsets = [
+            self.member_offset("struct nft_chain", "blob_gen_0"),
+            self.member_offset("struct nft_chain", "blob_gen_1"),
+        ]
+        if self.kversion < "5.17" and all(offset is None for offset in blob_offsets):
+            self.chain_blob_cache[entry] = None
+            return None
+        if list_off is not None and any(offset is not None for offset in blob_offsets):
+            chain = entry - list_off
+            for blob_off in blob_offsets:
+                if blob_off is None:
+                    continue
+                blob = self.rd(chain + blob_off)
+                if not blob or not AddressUtil.is_msb_on(blob) or blob % current_arch.ptrsize:
+                    continue
+                size = self.rd(blob)
+                if size is None:
+                    continue
+                if self.blob_data_offset(blob, size) is not None:
+                    self.chain_blob_cache[entry] = blob
+                    return blob
+            self.chain_blob_cache[entry] = None
+            return None
+
+        ptr = current_arch.ptrsize
+        preferred = [-ptr * 4, -ptr * 3]
+        offsets = preferred + [offset for offset in range(-0x40, 0x60, ptr) if offset not in preferred]
+        for offset in offsets:
+            blob = self.rd(entry + offset)
+            if not blob or not AddressUtil.is_msb_on(blob) or blob % ptr:
+                continue
+            size = self.rd(blob)
+            if size is None:
+                continue
+            if self.blob_data_offset(blob, size) is not None:
+                self.chain_blob_cache[entry] = blob
+                return blob
+
+        self.chain_blob_cache[entry] = None
+        return None
+
+    def blob_rule_records(self, blob):
+        size = self.rd(blob)
+        if size is None:
+            return [], "broken"
+        data_off = self.blob_data_offset(blob, size)
+        if data_off is None:
+            return [], self.blob_status_cache.get(blob, "broken")
+
+        records = []
+        off = data_off
+        end = data_off + size
+        while off < end and len(records) < self.MAX_RULE_SCAN:
+            hdr = self.rd64(blob + off)
+            if hdr is None or hdr & 1:
+                return records, "broken"
+            dlen = (hdr >> 1) & 0xfff
+            rule_end = off + 8 + dlen
+            if rule_end > end:
+                return records, "broken"
+            handle = (hdr >> 13) & ((1 << 42) - 1)
+            names, ok = self.decode_exprs(blob, off + 8, dlen)
+            if not ok:
+                return records + [(blob + off, blob + rule_end, handle, names, False)], "broken"
+            records.append((blob + off, blob + rule_end, handle, names, True))
+            off = rule_end
+
+        if off == end:
+            return records, "ok"
+        return records, "limit"
+
+    def decode_blob(self, blob):
+        records, status = self.blob_rule_records(blob)
+        return [(handle, names) for rule_start, rule_end, handle, names, ok in records], status
+
+    def old_rule_data_offset(self):
+        # struct nft_rule: list_head + one u64 bitfield word + expression data.
+        return current_arch.ptrsize * 2 + 8
+
+    def old_rule_info(self, rule):
+        hdr = self.rd64(rule + current_arch.ptrsize * 2)
+        if hdr is None:
+            return None
+        handle = hdr & ((1 << 42) - 1)
+        dlen = (hdr >> 44) & 0xfff
+        data_off = self.old_rule_data_offset()
+        return handle, dlen, data_off
+
+    def find_rules_list(self, entry, table_base):
+        # Before the v5.17 rule-blob datapath, nft_chain.rules was used directly for evaluation.
+        # The control-plane list still exists later. Prefer its exact member offset when available.
+        key = (entry, table_base)
+        if key in self.rules_list_cache:
+            return self.rules_list_cache[key]
+
+        ptr = current_arch.ptrsize
+        list_off = self.member_offset("struct nft_chain", "list")
+        rules_member_off = self.member_offset("struct nft_chain", "rules")
+        if list_off is not None and rules_member_off is not None:
+            rules_off = rules_member_off - list_off
+            head = entry + rules_off
+            rules = self.walk_list(head, maxent=self.MAX_RULE_SCAN)
+            status = self.walk_list_status(head, maxent=self.MAX_RULE_SCAN)
+            if status == "empty":
+                self.rules_list_cache[key] = rules_off
+                return rules_off
+            if status in ("ok", "limit"):
+                if status == "limit":
+                    self.rules_list_cache[key] = rules_off
+                    return rules_off
+                info = self.old_rule_info(rules[0])
+                if info is not None:
+                    handle, dlen, data_off = info
+                    names, ok = self.decode_exprs(rules[0], data_off, dlen)
+                    if ok:
+                        self.rules_list_cache[key] = rules_off
+                        return rules_off
+
+        preferred = [-ptr * 2]
+        offsets = preferred + [offset for offset in range(-0x40, self.MEMBER_SCAN, ptr) if offset not in preferred]
+        for offset in offsets:
+            head = entry + offset
+            rules = self.walk_list(head, maxent=self.MAX_RULE_SCAN)
+            status = self.walk_list_status(head, maxent=self.MAX_RULE_SCAN)
+            if offset == preferred[0] and status == "empty":
+                self.rules_list_cache[key] = offset
+                return offset
+            if status != "ok" or not rules:
+                continue
+            info = self.old_rule_info(rules[0])
+            if info is None:
+                continue
+            handle, dlen, data_off = info
+            names, ok = self.decode_exprs(rules[0], data_off, dlen)
+            resolved = names and any(name != "?" for name in names)
+            if ok and (resolved or (offset == preferred[0] and dlen == 0)):
+                self.rules_list_cache[key] = offset
+                return offset
+
+        self.rules_list_cache[key] = None
+        return None
+
+    def decode_rule_list(self, entry, rules_off):
+        # Decode the old linked nft_rule representation using the real u64 header and dlen.
+        head = entry + rules_off
+        rules = self.walk_list(head, maxent=self.MAX_RULE_SCAN)
+        status = self.walk_list_status(head, maxent=self.MAX_RULE_SCAN)
+        if status == "limit":
+            rules = self.walk_list_partial(head, maxent=self.MAX_RULE_SCAN)
+        decoded = []
+        for rule in rules:
+            info = self.old_rule_info(rule)
+            if info is None:
+                return decoded, "broken"
+            handle, dlen, data_off = info
+            names, ok = self.decode_exprs(rule, data_off, dlen)
+            decoded.append((handle, names))
+            if not ok:
+                return decoded, "broken"
+        return decoded, status
+
+    def chain_rules(self, entry, table_base):
+        # Return ([(handle, [expr names]), ...], status).
+        if self.args.no_rules:
+            return None, None
+        blob = self.find_chain_blob(entry)
+        if blob is not None:
+            return self.decode_blob(blob)
+        rules_off = self.find_rules_list(entry, table_base)
+        if rules_off is not None:
+            return self.decode_rule_list(entry, rules_off)
+        return None, None
+
+    # --- graph building ---
+
+    def build_table_sublists(self, table_base, tables_set):
+        # Keep all four child lists in the graph, including empty lists, so layout metadata is not
+        # lost merely because a table currently has no entries of that kind.
+        chain_off = self.find_table_list_layout(table_base)
+        if chain_off is None:
+            return {}
+
+        lists = {}
+        stride = current_arch.ptrsize * 2
+        for index in range(4):
+            offset = chain_off + stride * index
+            entries = self.walk_list(table_base + offset, maxent=self.MAX_LIST_SCAN)
+            backref = self.find_backref(entries[0], table_base) if entries else None
+            lists[offset] = (entries, backref)
+        return lists
+
+    def classify_sublists(self, table_base, lists):
+        chain_off = self.find_table_list_layout(table_base)
+        if chain_off is None:
+            return {}
+        stride = current_arch.ptrsize * 2
+        kinds = {0: "chains", 1: "sets", 2: "objects", 3: "flowtables"}
+        result = {}
+        for off, val in lists.items():
+            delta = off - chain_off
+            if delta >= 0 and delta % stride == 0 and (delta // stride) in kinds:
+                result[kinds[delta // stride]] = (off, val[0], val[1])
+        return result
+
+    def build_tables(self, net):
+        if self.kversion < "4.16":
+            return self.build_legacy_tables(net)
+
+        found = self.find_tables(net)
+        if found is None:
+            return None
+        entries, name_off, table_head, tail_layout = found
+        tables_set = set(entries)
+        tables = []
+        stride = current_arch.ptrsize * 2
+        name_source = "type" if self.member_offset("struct nft_table", "name") == name_off else "heuristic"
+        for tbase in entries:
+            name = self.name_at(tbase, name_off) or "?"
+            chain_off = self.find_table_list_layout(tbase, name_off=name_off)
+            lists = self.build_table_sublists(tbase, tables_set)
+            kinds = self.classify_sublists(tbase, lists)
+            family_info = self.table_family_use_details(tbase, name_off, tail_layout=tail_layout)
+            layout = None
+            if chain_off is not None:
+                layout = {
+                    "chains": chain_off,
+                    "sets": chain_off + stride,
+                    "objects": chain_off + stride * 2,
+                    "flowtables": chain_off + stride * 3,
+                }
+            tables.append({
+                "addr": tbase,
+                "name": name,
+                "family": family_info["family"],
+                "use": family_info["use"],
+                "family_info": family_info,
+                "layout": layout,
+                "kinds": kinds,
+            })
+        return {
+            "name_off": name_off,
+            "name_source": name_source,
+            "table_head": table_head,
+            "table_source": self.candidate_head_sources.get(table_head, "heuristic"),
+            "tail_layout": tail_layout,
+            "tables": tables,
+        }
+
+    def table_family_use(self, tbase, name_off, tail_layout=None):
+        details = self.table_family_use_details(tbase, name_off, tail_layout=tail_layout)
+        return details["family"], details["use"]
+
+    def table_family_use_details(self, tbase, name_off, tail_layout=None):
+        family = None
+        use = None
+        use_off = self.member_offset("struct nft_table", "use")
+        family_off = self.member_offset("struct nft_table", "family")
+        if use_off is not None or family_off is not None:
+            if use_off is not None:
+                value = self.rd32(tbase + use_off)
+                if value is not None and 0 <= value < 0x1_0000:
+                    use = value
+            if family_off is not None:
+                value = self.rd8(tbase + family_off)
+                if value in self.FAMILIES:
+                    family = value
+            return {
+                "family": family,
+                "use": use,
+                "family_off": family_off,
+                "use_off": use_off,
+                "source": "type",
+            }
+
+        if tail_layout is None:
+            tail_layout = self.find_table_tail_layout([tbase], name_off)
+        if tail_layout is not None:
+            values = self.table_tail_candidate_values(tbase, name_off, tail_layout)
+            if values is not None:
+                return {
+                    "family": values["family"],
+                    "use": values["use"],
+                    "family_off": tail_layout["family"],
+                    "use_off": tail_layout["use"],
+                    "source": "heuristic",
+                }
+
+        return {
+            "family": None,
+            "use": None,
+            "family_off": None,
+            "use_off": None,
+            "source": "heuristic",
+        }
+
+    # --- rendering ---
+
+    def fam_str(self, family):
+        if family is None:
+            return ""
+        return self.FAMILIES.get(family, "family{:d}".format(family))
+
+    def addr_str(self, addr):
+        return Color.colorify_hex(addr, "blue")
+
+    def offset_meta(self, name, offset, source):
+        value = "not found" if offset is None else "+{:#x}".format(offset)
+        return "  {:<28s} {:<12s} [{}]".format(name, value, source)
+
+    def table_tail_layout_meta(self, layout):
+        if layout is None:
+            return None
+        fields = []
+        for member in ("hgenerator", "handle", "use", "state", "nlpid", "name"):
+            offset = layout.get(member)
+            if offset is not None:
+                fields.append("{:s}=+{:#x}".format(member, offset))
+        value = "{:s}: {:s}".format(layout["kind"], ", ".join(fields))
+        return "  {:<28s} {:s} [heuristic]".format("nft_table.tail-layout", value)
+
+    def render_meta(self, net, label, graph):
+        lines = ["{:s}: {:#x}".format(label, net)]
+        if graph is None or not graph["tables"]:
+            lines.append("  table list: not found")
+            return lines
+
+        lines.append("  table list: {:#x} [{}]".format(graph["table_head"], graph["table_source"]))
+        lines.append(self.offset_meta("nft_table.name", graph["name_off"], graph["name_source"]))
+
+        table = graph["tables"][0]
+        if table["layout"] is not None:
+            source = "type" if self.typed_table_list_layout() is not None or graph.get("legacy_af") \
+                and self.member_offset("struct nft_table", "chains") is not None else "heuristic"
+            for kind in ("chains", "sets", "objects", "flowtables"):
+                if kind in table["layout"]:
+                    lines.append(self.offset_meta("nft_table." + kind, table["layout"][kind], source))
+
+        family_info = table["family_info"]
+        family_owner = "nft_af_info.family" if graph.get("legacy_af") else "nft_table.family"
+        lines.append(self.offset_meta(family_owner, family_info["family_off"], family_info["source"]))
+        lines.append(self.offset_meta("nft_table.use", family_info["use_off"], family_info["source"]))
+        tail_meta = self.table_tail_layout_meta(graph["tail_layout"])
+        if tail_meta is not None:
+            lines.append(tail_meta)
+
+        chain_list_off = self.member_offset("struct nft_chain", "list")
+        chain_name_off = self.member_offset("struct nft_chain", "name")
+        lines.append(self.offset_meta("nft_chain.list", chain_list_off, "type" if chain_list_off is not None else "heuristic"))
+        lines.append(self.offset_meta("nft_chain.name", chain_name_off, "type" if chain_name_off is not None else "heuristic"))
+        for member in ("blob_gen_0", "blob_gen_1"):
+            offset = self.member_offset("struct nft_chain", member)
+            lines.append(self.offset_meta("nft_chain." + member, offset, "type" if offset is not None else "heuristic"))
+
+        chains = table["kinds"].get("chains", (None, [], None))[1]
+        if chains:
+            chain = chains[0]
+            backref = self.find_backref(chain, table["addr"])
+            lines.append(self.offset_meta("chain table backref", backref, "heuristic"))
+            rules_off = self.find_rules_list(chain, table["addr"])
+            lines.append(self.offset_meta("chain rules list", rules_off, "heuristic"))
+
+        expr_type_off = self.member_offset("struct nft_expr_ops", "type")
+        expr_size_off = self.member_offset("struct nft_expr_ops", "size")
+        lines.append(self.offset_meta("nft_expr_ops.type", expr_type_off, "type" if expr_type_off is not None else "heuristic"))
+        lines.append(self.offset_meta("nft_expr_ops.size", expr_size_off, "type" if expr_size_off is not None else "heuristic"))
+        return lines
+
+    def render(self, net, label, graph):
+        lines = ["net {:s} ({:s})".format(self.addr_str(net), label)]
+        tables = graph["tables"]
+        for ti, t in enumerate(tables):
+            tlast = ti == len(tables) - 1
+            tconn = "`- " if tlast else "|- "
+            text = "  " if tlast else "| "
+            fam = self.fam_str(t["family"])
+            meta = " ".join(x for x in (fam, "use={:d}".format(t["use"]) if t["use"] is not None else "") if x)
+            suffix = " [{:s}]".format(meta) if meta else ""
+            lines.append("{:s}table {:s} {:s}".format(
+                tconn, Color.colorify(t["name"], "bold"), self.addr_str(t["addr"])) + suffix)
+            self.render_table(t, text, lines)
+        return lines
+
+    def render_table(self, t, prefix, lines):
+        kinds = t["kinds"]
+        order = [k for k in ("chains", "sets", "objects", "flowtables") if k in kinds and kinds[k][1]]
+        order += [k for k in kinds if k not in ("chains", "sets", "objects", "flowtables") and kinds[k][1]]
+        for ki, kind in enumerate(order):
+            klast = ki == len(order) - 1
+            entries = kinds[kind][1]
+            for ei, entry in enumerate(entries):
+                elast = klast and ei == len(entries) - 1
+                conn = "`- " if elast else "|- "
+                ext = "   " if elast else "|  "
+                name = self.entry_name(entry, kind)
+                singular = {"chains": "chain", "sets": "set", "objects": "object", "flowtables": "flowtable"}.get(kind, kind)
+                if kind == "chains":
+                    rules, status = self.chain_rules(entry, t["addr"])
+                    if rules is None:
+                        rtxt = ""
+                    elif status == "limit":
+                        rtxt = " rules>={:d} [scan limit]".format(len(rules))
+                    else:
+                        rtxt = " rules={:d}".format(len(rules))
+                        if status == "broken":
+                            rtxt += " [corrupt]"
+                    lines.append(prefix + conn + "chain {:s} {:s}{:s}".format(
+                        Color.colorify(name, "bold green"), self.addr_str(entry), rtxt))
+                    if rules:
+                        for ri, (handle, exprs) in enumerate(rules):
+                            rlast = ri == len(rules) - 1
+                            rconn = "`- " if rlast else "|- "
+                            suffix = " [{:s}]".format(", ".join(exprs)) if exprs else ""
+                            lines.append(prefix + ext + rconn + "rule handle={:d}".format(handle) + suffix)
+                else:
+                    lines.append(prefix + conn + "{:s} {:s} {:s}".format(singular, Color.colorify(name, "bold green"), self.addr_str(entry)))
+        return
+
+    def entry_name(self, entry, kind=None):
+        if kind is not None:
+            type_name = self.kind_type(kind)
+            if type_name is not None:
+                list_off = self.member_offset(type_name, "list")
+                if list_off is not None:
+                    base = entry - list_off
+                    name = self.typed_name_at(base, type_name)
+                    if self.looks_name(name):
+                        return name
+                    # Newer nft_object stores its name in the nested hash key rather than in a
+                    # direct member.  object_name_offset() accounts for both layouts.
+                    if kind == "objects":
+                        name_off = self.object_name_offset(kind)
+                        name = self.cstr(self.rd(base + name_off) or 0) if name_off is not None else None
+                        if self.looks_name(name):
+                            return name
+
+        if kind is not None and self.kversion < "4.16":
+            name = self.legacy_entry_name(entry, kind)
+            if self.looks_name(name):
+                return name
+
+        # Stripped-kernel fallback: the list_head occupies the first two pointer-sized words at the
+        # entry address in the layouts handled here, so do not rescan those pointers as names.
+        info = self.resolve_name(entry, min_off=current_arch.ptrsize * 2, max_off=min(self.MEMBER_SCAN, 0x100))
+        return info[1] if info else "?"
+
+    def legacy_entry_name(self, entry, kind):
+        ptr = current_arch.ptrsize
+        stride = ptr * 2
+        if kind == "sets":
+            # nft_set starts with list and bindings; name follows both list_head fields.
+            name_off = stride * 2
+            return self.cstr(self.rd(entry + name_off) or 0) if self.kversion >= "4.14" \
+                else self.cstr(entry + name_off)
+        if kind == "objects":
+            name_off = stride
+            return self.cstr(self.rd(entry + name_off) or 0) if self.kversion >= "4.14" \
+                else self.cstr(entry + name_off)
+        if kind != "chains":
+            return None
+
+        # The chain list node follows the rules head in every legacy layout.
+        base = entry - stride
+        offset = stride * 2
+        if self.kversion == "3.13":
+            offset += stride + ptr * 2       # rcu_head, net, table
+        elif self.kversion < "4.4":
+            offset += ptr * 2                # net, table
+        else:
+            offset += ptr                    # table
+
+        u64_align = 8 if ptr == 8 or is_arm32() else 4
+        offset = align(offset, u64_align) + 8
+        if self.kversion < "3.16":
+            offset = align(offset + 1, 2) + 4  # flags, use, level
+        else:
+            offset += 4 + 2 + 1              # use, level, flags/genmask
+
+        if self.kversion >= "4.14":
+            offset = align(offset, ptr)
+            return self.cstr(self.rd(base + offset) or 0)
+        return self.cstr(base + offset)
+
+    def flatten(self, net, label, graph):
+        # Nodes are (start, end-or-None, description). Type information provides exact ranges for
+        # the top-level nftables objects; stripped targets retain exact/nearest semantics.
+        nodes = []
+        table_list_off = self.member_offset("struct nft_table", "list")
+        table_size = self.type_size("struct nft_table")
+        for table in graph["tables"]:
+            table_start = table["addr"] - table_list_off if table_list_off is not None else table["addr"]
+            table_end = table_start + table_size if table_size is not None and table_size > 0 else None
+            nodes.append((table_start, table_end, 'table "{:s}" ({:s})'.format(table["name"], label)))
+            for kind, (_, entries, _backref) in table["kinds"].items():
+                singular = {"chains": "chain", "sets": "set", "objects": "object", "flowtables": "flowtable"}.get(kind, kind)
+                for entry in entries:
+                    name = self.entry_name(entry, kind)
+                    object_start, object_end = self.entry_object_range(entry, kind)
+                    nodes.append((object_start, object_end, '{:s} "{:s}" in table "{:s}"'.format(singular, name, table["name"])))
+                    if kind != "chains" or self.args.no_rules:
+                        continue
+
+                    blob = self.find_chain_blob(entry)
+                    if blob is not None:
+                        size = self.rd(blob)
+                        data_off = self.blob_data_offset(blob, size) if size is not None else None
+                        end = blob + data_off + size + 8 if data_off is not None else None
+                        nodes.append((blob, end, 'rule blob of chain "{:s}"'.format(name)))
+                        blob_records, _blob_status = self.blob_rule_records(blob)
+                        for rule_start, rule_end, handle, _exprs, _ok in blob_records:
+                            nodes.append((rule_start, rule_end, 'rule handle={:d} in chain "{:s}"'.format(handle, name)))
+                            header = self.rd64(rule_start)
+                            if header is None:
+                                continue
+                            dlen = (header >> 1) & 0xfff
+                            expr_start = rule_start - blob + 8
+                            records, _ = self.decode_expr_records(blob, expr_start, dlen)
+                            for expr_begin, expr_end, expr_name in records:
+                                nodes.append((expr_begin, expr_end, 'expression "{:s}" in rule handle={:d} of chain "{:s}"'.format(
+                                    expr_name, handle, name,
+                                )))
+                        continue
+
+                    rules_off = self.find_rules_list(entry, table["addr"])
+                    if rules_off is None:
+                        continue
+                    for rule in self.walk_list(entry + rules_off, maxent=self.MAX_RULE_SCAN):
+                        info = self.old_rule_info(rule)
+                        if info is None:
+                            continue
+                        handle, dlen, data_off = info
+                        nodes.append((rule, rule + data_off + dlen, 'rule handle={:d} in chain "{:s}"'.format(handle, name)))
+                        records, _ = self.decode_expr_records(rule, data_off, dlen)
+                        for expr_begin, expr_end, expr_name in records:
+                            nodes.append((expr_begin, expr_end, 'expression "{:s}" in rule handle={:d} of chain "{:s}"'.format(
+                                expr_name, handle, name,
+                            )))
+        return nodes
+
+    def reverse_lookup(self, addr, all_nodes):
+        exact = [node for node in all_nodes if node[0] == addr]
+        if exact:
+            for _start, _end, desc in exact:
+                self.out.append("{:s} is {:s}".format(self.addr_str(addr), desc))
+            return
+
+        containing = [node for node in all_nodes if node[1] is not None and node[0] <= addr < node[1]]
+        if containing:
+            start, end, desc = max(containing, key=lambda node: node[0])
+            self.out.append("{:s} is +{:#x} into {:s} ({:s})".format(self.addr_str(addr), addr - start, desc, self.addr_str(start)))
+            return
+
+        below = [node for node in all_nodes if node[0] <= addr]
+        if not below:
+            self.err_add_out("{:#x} does not match any known nftables object".format(addr))
+            return
+        start, end, desc = max(below, key=lambda node: node[0])
+        self.out.append("{:s}: nearest known nftables object below is {:s} at {:s} (+{:#x})".format(
+            self.addr_str(addr), desc, self.addr_str(start), addr - start,
+        ))
+        return
+
+    # --- namespaces ---
+
+    def iter_nets(self):
+        init_net = KernelAddressHeuristicFinder.get_init_net()
+        if init_net is None:
+            return []
+        nets = [(init_net, "init_net")]
+        nl = Ksym.get_addr("net_namespace_list")
+        if nl:
+            first = self.rd(nl)
+            if first and self.rd(first) is not None and 0 <= first - init_net < self.MEMBER_SCAN:
+                list_off = first - init_net
+                for net in Kernel.ListHead(nl, list_off).iter_entries():
+                    if net != init_net:
+                        nets.append((net, "net {:#x}".format(net)))
+        return nets
+
+    @Cache.cache_this_session(cache_None=False)
+    def initialize(self):
+        self.kversion = Kernel.kernel_version()
+        if self.kversion is None:
+            return None
+        self.nets = self.iter_nets()
+        return True
+
+    @parse_args
+    @only_if_gdb_running
+    @only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
+    @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
+    @only_if_in_kernel_or_kpti_disabled
+    def do_invoke(self, args):
+        self.args = args
+        self.reset_scan_caches()
+        self.quiet_info("Wait for memory scan")
+
+        if not self.initialize():
+            err("Could not find Linux kernel")
+            return
+        if not self.nets:
+            err("Could not find init_net")
+            return
+
+        self.out = []
+        if args.meta:
+            self.quiet_info("kernel version: {!s}".format(self.kversion))
+            for net, label in self.nets:
+                graph = self.build_tables(net)
+                for line in self.render_meta(net, label, graph):
+                    self.quiet_info(line)
+            self.print_output()
+            return
+
+        all_nodes = []
+        rendered = []
+        for net, label in self.nets:
+            graph = self.build_tables(net)
+            if graph is None or not graph["tables"]:
+                continue
+            if args.address is None:
+                rendered += self.render(net, label, graph)
+            else:
+                all_nodes += self.flatten(net, label, graph)
+
+        if args.address is not None:
+            self.reverse_lookup(args.address, all_nodes)
+        elif rendered:
+            self.out += rendered
+        else:
+            self.warn_add_out("No nftables tables found (is CONFIG_NF_TABLES enabled and any table created?)")
+            if self.kversion is not None and self.kversion < "3.13":
+                self.warn_add_out("This kernel predates nftables, which first appeared in mainline v3.13")
+
+        self.print_output(check_terminal_size=True)
+        return
+
+
+@register_command
 class PeekPageFrameCommand(GenericCommand, BufferingOutput):
     """Read page frame data from a single address or an address range."""
 
