@@ -7833,9 +7833,9 @@ kpercpu -l                     # list all the static per-cpu symbols
 ### Notes
 
 ```text
-per_cpu(var, cpu) is `&var + __per_cpu_offset[cpu]`. x86 links the per-cpu section
-at 0 so `&var` is a small offset there, while the other architectures link it at a
-kernel address; the formula is the same on both.
+per_cpu(var, cpu) is based on the static per-cpu symbol representation and the
+per-cpu offset selected for the detected kernel layout. Older x86-64 kernels use
+a zero-based representation; x86-64 v6.15 and later use relative offsets as well.
 
 `__per_cpu_start` and the per-cpu variables are data symbols, so a
 CONFIG_KALLSYMS_ALL=n kernel has none of them. `__per_cpu_start` is recovered from
@@ -9254,9 +9254,13 @@ The layout of the LSM framework changed twice, and all three are supported:
 | func                                      |--> callback
 +-------------------------------------------+
 
-The hook point names are not stored anywhere, so they are recovered by
-disassembling each `security_*` dispatcher and picking up the head (or the member
-offset) it refers to. A head that no dispatcher pointed at is shown as `hook[NN]`.
+Before v6.12, hook point names are recovered from each `security_*` dispatcher and
+the head or member offset it references. A head that no dispatcher pointed at is
+shown as `hook[NN]`. On v6.12 and later, names are read from generated static-call
+symbols such as `__SCK__lsm_static_call_<hook>_<N>`.
+
+The v6.12+ discovery depends on static-call data symbols and may be unavailable
+when CONFIG_KALLSYMS_ALL=n.
 ```
 
 ## kmod
@@ -9362,17 +9366,11 @@ kmount --all --tasks
 ```text
 This command requires CONFIG_RANDSTRUCT=n.
 
-The tree is walked over mnt_mounts/mnt_child, so it holds every mount of the namespace,
-including the bind mounts that share one super_block. `kfilesystems` is the other half of
-the picture: it lists the registered filesystem types and every super_block they own,
-including the ones that are not mounted anywhere.
-
-A mount namespace is identified by the root mount its members reach by walking mnt_parent,
-so the namespaces that hold no task are invisible. Without --pid/--task the whole namespace
-is printed with absolute pathnames. With them the tree starts at the mount of task->fs->root
-and the pathnames stop there, which is the same view /proc/pid/mountinfo gives. A mount that
-is below that mount but not reachable from that root, e.g. when the task is also chrooted,
-is marked `outside-root` and printed with its absolute pathname.
+- Walks `mnt_mounts/mnt_child`, so all mounts in the namespace are shown, including bind mounts sharing a `super_block`.
+  `kfilesystems` instead shows filesystem types and all their `super_block`s, mounted or not.
+- Mount namespaces are inferred from mounts reachable through tasks, so namespaces with no task are invisible.
+- Without `--pid/--task`, the whole namespace is shown with absolute paths.
+  With either option, output is rooted at `task->fs->root`; unreachable mounts are marked `outside-root`.
 
 Simplified mount tree structure:
 
@@ -9448,13 +9446,13 @@ Dump the nftables (netfilter) object graph.
 usage: knft [-h] [-hh] [-R] [--meta] [-n] [-q] [ADDRESS]
 
 positional arguments:
-  ADDRESS             reverse-lookup: report which nftables object this address belongs to.
+  ADDRESS             reverse-lookup: report an exact/containing known nftables object, or the nearest known object.
 
 options:
   -h, --help          show this help message and exit
   -hh, --help-simple  show help without ASCII diagram.
-  -R, --no-rules      do not decode rules and expressions.
-  --meta              display offset information.
+  -R, --no-rules      do not decode or render rules and expressions.
+  --meta              display discovery information.
   -n, --no-pager      do not use the pager.
   -q, --quiet         show result only.
 ```
@@ -9462,36 +9460,46 @@ options:
 ### Examples
 
 ```gdb
-knft                    # dump the whole nftables object graph
-knft -R                 # dump the graph without rules and expressions
-knft 0xffff888012345600 # find which nftables object owns this address
+knft                     # dump the whole nftables object graph
+knft -R                  # dump the graph without rules and expressions
+knft 0xffff888012345600  # find which nftables object owns this address
 ```
 
 ### Notes
 
 ```text
 Walks table -> chain -> rule -> expr and table -> set / object / flowtable.
-The location of the table list changed over time, and both modern forms are supported:
+The mainline location of the table list changed over time:
 
-  v4.16~v5.11 : net.nft.tables (one list for every family)
-  v5.12~      : net_generic(net, nf_tables_net_id) -> nftables_pernet.tables
+  v3.13~v4.15 : net.nft.af_info -> nft_af_info.tables (one list per family)
+  v4.16~v5.12 : net.nft.tables (one list for every family)
+  v5.13~      : net_generic(net, nf_tables_net_id) -> nftables_pernet.tables
 
-Only v4.16 and later are walked (the pre-v4.16 nft_af_info layout with inline names is
-not supported yet).
+nftables first appeared in mainline v3.13. Older kernels have no nftables object graph.
 
-+-nftables_pernet-+   +-nft_table-+   +-nft_chain--+
-| tables          |-->| list      |-->| list       |
-| ...             |   | chains    |-->| ...        |
-+-----------------+   | sets      |   | blob_gen_0 |-->+-nft_rule_blob-+
-                      | objects   |   | name       |   | size          |
-                      | name      |   +------------+   | data[]        |-->+-nft_expr-+
-                      +-----------+                    +---------------+   | ops      |--> type->name
-                                                                           +----------+
++-nftables_pernet-+   +-nft_table---+   +-nft_chain--+   +-nft_rule_blob-+
+| tables          |-->| list        |   | blob_gen_0 |-->| size          |
+| ...             |   | chains      |-->| list       |   | data[]        |
++-----------------+   | sets        |   | name       |   +-------+-------+
+                      | objects     |   +------------+           |  (one nft_rule_dp per rule)
+                      | flowtables  |                            v
+                      | name        |                     +-nft_rule_dp-+
+                      +-------------+                     | is_last     |
+                                                          | dlen,handle |
+                                                          | data[]      |--> +-nft_expr-+
+                                                          +-------------+    | ops      |--> type->name
+                                                                             +----------+
 
-Offsets are not read from any type info; they are recovered from invariants such as
-the table back-pointer that every chain/set/object holds and the expr ops->type->name
-chain, so the walk works with or without symbols. Rules are stored as a contiguous blob
-since v5.9 and as a linked list before that; both are decoded.
+On v4.16 and later, chains / sets / objects / flowtables hang off nft_table as four
+consecutive list_head fields; legacy tables have the lists available in that kernel release.
+Table discovery first validates this list topology and child->table back-references, then
+uses rule/expression decoding only for the actual chains instead of for every table candidate.
+
+Offsets are recovered from runtime invariants rather than requiring type info. nftables names
+may be up to 255 bytes; identifier-like names are preferred only as a heuristic and are not a
+kernel validity rule. The datapath representation changed from linked nft_rule objects before
+v5.17 to a contiguous nft_rule_blob in mainline v5.17 and later; the control-plane rule list
+still exists on newer kernels, and both representations are understood where applicable.
 ```
 
 ## kops
@@ -9581,16 +9589,11 @@ kpath --all 0xffff888003b0a000
 ```text
 This command requires CONFIG_RANDSTRUCT=n.
 
-Without --pid/--task the pathname is absolute, i.e. it is resolved up to the root of the
-mount namespace. With --pid/--task the walk stops at task->fs->root instead, so the result
-is what that task sees. `outside-root` means the target is not reachable from that root,
-and the printed path is the absolute one.
-
-A bare dentry does not carry a mount, so every mount whose mnt_root is on its d_parent
-chain is a possible answer. `ambiguous` is printed when there is more than one, and --all
-lists them. The target mount namespace is searched first; the other namespaces are searched
-only when that finds nothing, and `no-mount` means no namespace holds the dentry, which is
-normal for pipefs/sockfs/anon_inodefs and for a mount that is already unmounted.
+- Without `--pid/--task`, paths are resolved to the mount-namespace root.
+  With either option, resolution stops at `task->fs->root`; `outside-root` means the target lies outside it.
+- A bare dentry has no mount information. If multiple mounts match, `ambiguous` is shown; use `--all` to list them.
+- The target mount namespace is searched first, then other namespaces reachable through scanned tasks.
+  `no-mount` means no matching reachable mount was found, which is normal for pseudo-filesystems or unmounted mounts.
 
 Simplified path structure:
 
@@ -9750,7 +9753,8 @@ options:
   -c, --cache CACHE     scan the slab pages of this kmem_cache.
   -o, --object OBJECT   scan the slab object that contains this address. (e.g., a task_struct)
   -r, --range RANGE     scan this address range. (START-END or START+SIZE)
-  -M, --physmap         scan every writable kernel mapping. (very slow)
+  -M, --kernel-writable, --physmap
+                        scan every writable kernel mapping. (--physmap is a legacy alias; very slow)
   -t, --tolerance TOLERANCE
                         also report the pointers into [ADDRESS, ADDRESS+TOLERANCE].
   -l, --limit LIMIT     stop after this many hits. 0 means unlimited. (default: 256)
@@ -9773,15 +9777,12 @@ krefs -t 0x100 0xffff888012345600               # also catch the interior pointe
 ### Notes
 
 ```text
-Scanning the whole memory is too slow over a gdb stub, so the search area has to be
-narrowed down. The default area is the static data of the kernel image, which is
-where the global anchors of a leaked object live.
-
-Each hit is annotated with the owner of the location: the kallsyms symbol for the
-kernel image, the cpu and the variable for a per-cpu area, and the slab cache and
-the object boundary (via `slab-contains`) for a slab object.
-
-Use `kobj ADDRESS` to identify the referenced object itself.
+- Full-memory scans are too slow over a gdb stub, so the default search is limited to kernel static data,
+  where global object references commonly live.
+- Hits are annotated with their likely context: the preceding kallsyms symbol, per-cpu variable and CPU,
+  or slab cache and object boundary. Kallsyms ownership is only a heuristic.
+- Only pointer-size-aligned raw pointers are found; encoded, tagged, XORed, mangled, or unaligned pointers are missed.
+- Use `kobj ADDRESS` to identify the referenced object.
 ```
 
 ## kskb
@@ -9906,6 +9907,10 @@ Simplified socket structure:
                                     | ...                     |
                                     | sk_destruct             |
                                     +-------------------------+
+
+The skc_state value is protocol-dependent; TCP_* names are shown only when the
+resolved protocol is TCP-like. Queue and callback offsets are recovered heuristically
+because struct sock varies with the kernel version and configuration.
 
 Use `kskb ADDR` to inspect a single sk_buff in detail.
 ```
@@ -10060,7 +10065,7 @@ command:
 Which sub-command holds the index-to-pointer mapping depends on the kernel version:
 
   ~v4.19: radix_tree -> `kwalk radix`
-  v4.20~: xarray     -> `kwalk xarray` (radix_tree_root is just renamed to xarray)
+  v4.20~: xarray     -> `kwalk xarray` (radix-tree API remains as a compatibility interface)
   v6.1~ : maple_tree -> `kwalk maple`  (only where it replaced the rbtree or the xarray)
 
 `kwalk list` and `kwalk rbtree` work on any version, and also outside the kernel.
@@ -10113,7 +10118,7 @@ Walk the link list.
 ### Syntax
 
 ```text
-usage: kwalk list [-h] [-o NEXT_OFFSET] [-A DUMP_BYTES_AFTER] [-B DUMP_BYTES_BEFORE] [--container-of CONTAINER_OF] [-n] [-q] ADDRESS
+usage: kwalk list [-h] [-o NEXT_OFFSET] [-A DUMP_BYTES_AFTER] [-B DUMP_BYTES_BEFORE] [-C CONTAINER_OF] [-n] [-q] ADDRESS
 
 positional arguments:
   ADDRESS               start address to walk.
@@ -10123,7 +10128,7 @@ options:
   -o NEXT_OFFSET        offset of the next(or prev) pointer in the target structure.
   -A DUMP_BYTES_AFTER   dump bytes after link-list location.
   -B DUMP_BYTES_BEFORE  dump bytes before link-list location.
-  --container-of CONTAINER_OF
+  -C, --container-of CONTAINER_OF
                         also displays each entry minus this offset, like container_of().
   -n, --no-pager        do not use the pager.
   -q, --quiet           show result only.
@@ -10143,6 +10148,9 @@ kwalk list --container-of 0x10 0xffff9c60800597e0  # also show each entry as con
 `-o` is the offset of the pointer to follow, so it is 0 for list_head.next,
 the pointer size for list_head.prev, and offsetof(the struct, next) for a
 singly linked list of the structs.
+ADDRESS is the starting node or head; the first displayed entry is the pointer
+read from ADDRESS+OFFSET, not ADDRESS itself. NULL and a returning sentinel head
+are therefore also shown as the final entry.
 ```
 
 ## kwalk maple
@@ -10154,7 +10162,7 @@ Dump the entries of the maple tree.
 ### Syntax
 
 ```text
-usage: kwalk maple [-h] [-o ROOT_OFFSET] [-m MAX_OFFSET] [--container-of CONTAINER_OF] [-n] [-q] ADDRESS
+usage: kwalk maple [-h] [-o ROOT_OFFSET] [-m MAX_OFFSET] [-C CONTAINER_OF] [-n] [-q] ADDRESS
 
 positional arguments:
   ADDRESS               the address of the struct including the maple_tree.
@@ -10165,7 +10173,7 @@ options:
                         offsetof(the struct, ma_root). it is searched if not given.
   -m, --max-offset MAX_OFFSET
                         the search range of offsetof(the struct, ma_root). (default: ptrsize*0x20)
-  --container-of CONTAINER_OF
+  -C, --container-of CONTAINER_OF
                         also displays each entry minus this offset, like container_of().
   -n, --no-pager        do not use the pager.
   -q, --quiet           show result only.
@@ -10193,7 +10201,7 @@ Dump the entries of the radix tree.
 ### Syntax
 
 ```text
-usage: kwalk radix [-h] [-o RNODE_OFFSET] [-m MAX_OFFSET] [--container-of CONTAINER_OF] [-n] [-q] ADDRESS
+usage: kwalk radix [-h] [-o RNODE_OFFSET] [-m MAX_OFFSET] [-C CONTAINER_OF] [-n] [-q] ADDRESS
 
 positional arguments:
   ADDRESS               the address of the struct including the radix_tree_root.
@@ -10204,7 +10212,7 @@ options:
                         offsetof(the struct, rnode). it is searched if not given.
   -m, --max-offset MAX_OFFSET
                         the search range of offsetof(the struct, rnode). (default: ptrsize*10)
-  --container-of CONTAINER_OF
+  -C, --container-of CONTAINER_OF
                         also displays each entry minus this offset, like container_of().
   -n, --no-pager        do not use the pager.
   -q, --quiet           show result only.
@@ -10234,7 +10242,7 @@ Dump the nodes of the red-black tree.
 ### Syntax
 
 ```text
-usage: kwalk rbtree [-h] [-r] [--container-of CONTAINER_OF] [-n] [-q] ADDRESS
+usage: kwalk rbtree [-h] [-r] [-C CONTAINER_OF] [-n] [-q] ADDRESS
 
 positional arguments:
   ADDRESS               the address of the struct rb_root (or rb_root_cached).
@@ -10242,7 +10250,7 @@ positional arguments:
 options:
   -h, --help            show this help message and exit
   -r, --rb-node         treat ADDRESS as a struct rb_node instead of a struct rb_root.
-  --container-of CONTAINER_OF
+  -C, --container-of CONTAINER_OF
                         also displays each entry minus this offset, like container_of().
   -n, --no-pager        do not use the pager.
   -q, --quiet           show result only.
@@ -10271,7 +10279,7 @@ Dump the entries of the xarray.
 ### Syntax
 
 ```text
-usage: kwalk xarray [-h] [-o HEAD_OFFSET] [-m MAX_OFFSET] [--container-of CONTAINER_OF] [-n] [-q] ADDRESS
+usage: kwalk xarray [-h] [-o HEAD_OFFSET] [-m MAX_OFFSET] [-C CONTAINER_OF] [-n] [-q] ADDRESS
 
 positional arguments:
   ADDRESS               the address of the struct including the xarray.
@@ -10282,7 +10290,7 @@ options:
                         offsetof(the struct, xa_head). it is searched if not given.
   -m, --max-offset MAX_OFFSET
                         the search range of offsetof(the struct, xa_head). (default: ptrsize*10)
-  --container-of CONTAINER_OF
+  -C, --container-of CONTAINER_OF
                         also displays each entry minus this offset, like container_of().
   -n, --no-pager        do not use the pager.
   -q, --quiet           show result only.
@@ -10351,7 +10359,7 @@ Simplified workqueue structures (`==>` shows where each column comes from):
                              +----------------+   |
                                ^                  |
        work_struct.data -------+                  |
-       & ~0xff (pwq)                              |
+       & WORK_STRUCT_PWQ_MASK (pwq)               |
                     +-work_struct-+               v
                     | data        |         +-worker_pool-+
                     | entry       |-------->| worklist    |  ==> state `pending`
@@ -10365,13 +10373,11 @@ Simplified workqueue structures (`==>` shows where each column comes from):
                     | wq           |
                     +--------------+
 
-state `running` is a work_struct held in worker.current_work of a busy worker.
-`queue` and `cpu` are resolved from the pool_workqueue encoded in work_struct.data.
-For state `delayed`, `cpu` is the cpu whose timer wheel holds the timer instead.
-
-With --object, the range [object, object+size) is also scanned for an initialized work_struct,
-including one that is not queued anywhere (state `idle`). A delayed_work is identified by
-its delayed_work_timer_fn timer when the timer is discoverable.
+- `running` means the work is held in `worker.current_work`.
+- When `WORK_STRUCT_PWQ` is set, `queue` and `cpu` are decoded from `work_struct.data`; off-queue work uses it differently.
+- For `delayed` work, `cpu` is the CPU whose timer wheel holds the timer.
+- `--object` scans `[object, object+size)` for initialized `work_struct`s, including unqueued `idle` work.
+  `delayed_work` is recognized by its `delayed_work_timer_fn` timer when available.
 ```
 
 ## syscall-table-view
@@ -10604,7 +10610,7 @@ Unified resolver combining kvmmap/virt2page/pageinfo/slab-contains/buddy-contain
 The type candidate is inferred from the slab cache name, so `Confidence` is reported honestly:
 mergeable caches (kmalloc-*) and unaligned addresses lower it. SLUB may merge dedicated caches,
 so use -v to list the caches sharing the same physical kmem_cache via kmem-cache-alias.
-Page-level classification (buddy/page-type) relies on pageinfo and requires v4.18 or later;
+GEF's pageinfo-based page classification currently supports v4.18 and later;
 slab object resolution works on older kernels too.
 ```
 

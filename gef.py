@@ -69041,9 +69041,10 @@ class Kernel:
     class PerCpu:
         """Resolve the per-cpu areas and the static per-cpu variables.
 
-        per_cpu(var, cpu) is `&var + __per_cpu_offset[cpu]`, where `&var` is the address
-        kallsyms holds. x86 links the per-cpu section at 0 and the other architectures link
-        it at a kernel address, so the same formula covers both.
+        per_cpu(var, cpu) is `&var + __per_cpu_offset[cpu]`, where `&var` is the static
+        per-cpu symbol representation held by kallsyms. Older x86-64 kernels use a
+        zero-based representation; x86-64 v6.15 and later use relative per-cpu offsets
+        as well. The effective address is selected from the detected kernel layout.
 
         CONFIG_SMP=n has no `__per_cpu_offset` and expands `per_cpu(var, cpu)` to `var`
         itself. That is the same as a single cpu whose displacement is 0, so every
@@ -69220,13 +69221,27 @@ class Kernel:
                     size = 0
                 if 0 < size <= 0x1000_0000:
                     return size
-            # the first chunk is embedded, so the units of the consecutive cpus are contiguous
-            if len(self.offsets) >= 2:
-                size = AddressUtil.normalize_address(self.offsets[1] - self.offsets[0])
-                if 0 < size <= 0x1000_0000:
+
+            # CPU numbers are not necessarily laid out consecutively: the per-cpu
+            # allocator can split units into NUMA groups and leave whole-unit gaps.
+            # The gcd of all sorted base deltas removes such group gaps, while the
+            # static section size rejects a divisor that is too small to be a unit.
+            offsets = sorted(set(self.offsets))
+            if len(offsets) >= 3:
+                import math
+                deltas = [b - a for a, b in zip(offsets, offsets[1:]) if b > a]
+                size = functools.reduce(math.gcd, deltas) if deltas else 0
+                static_size = 0
+                if self.start is not None and self.end is not None:
+                    static_size = align(self.end - self.start, get_pagesize())
+                if (static_size <= size <= 0x1000_0000
+                        and size % get_pagesize() == 0
+                        and all((off - offsets[0]) % size == 0 for off in offsets)):
                     return size
-            if self.start is not None and self.end is not None:
-                return align(self.end - self.start, get_pagesize())
+
+            # With fewer than three distinct units no stride can distinguish a
+            # genuine unit size from a NUMA group gap.  The static allocation is a
+            # safe lower bound, not a reliable dynamic-unit size, so leave it unknown.
             return None
 
         def get_symbols(self):
@@ -69335,7 +69350,7 @@ class Kernel:
                 struct mnt_idmap *mnt_idmap; // v6.2~
             } mnt;
             union {
-                struct rb_node mnt_node; // v6.12~
+                struct rb_node mnt_node; // v6.13~ (namespace rbtree itself started in v6.8)
                 struct rcu_head mnt_rcu; // v3.13~
                 struct llist_node mnt_llist; // v3.18~
             };
@@ -69401,6 +69416,7 @@ class Kernel:
             if not self.ensure_mount_offsets():
                 self.meta.append(("err", "Could not resolve the struct mount layout"))
                 return None
+            self.meta.append(("info", "struct mount layout: {:s}".format(self.mount_layout_source)))
             self.meta.append(("info", "offsetof(mount, mnt): {:#x}".format(self.offset_mount_mnt)))
             self.meta.append(("info", "offsetof(vfsmount, mnt_root): {:#x}".format(self.offset_vfsmount_mnt_root)))
 
@@ -69428,10 +69444,36 @@ class Kernel:
                 return None
 
             ptrsize = current_arch.ptrsize
+
+            # Prefer the target's debug information.  In particular, the mount namespace
+            # changed to an rbtree in v6.8 and mnt_node moved into the early lifetime union
+            # in v6.13.  Stable kernels have backported parts of those changes, so a single
+            # upstream version boundary is not sufficient for every following member.
+            if kversion >= "3.3":
+                try:
+                    self.offset_mount_mnt = GefUtil.parse_and_eval_unsigned("&((struct mount*)0).mnt")
+                    self.offset_mount_mnt_parent = GefUtil.parse_and_eval_unsigned("&((struct mount*)0).mnt_parent")
+                    self.offset_mount_mnt_mountpoint = GefUtil.parse_and_eval_unsigned("&((struct mount*)0).mnt_mountpoint")
+                    self.offset_vfsmount_mnt_root = GefUtil.parse_and_eval_unsigned("&((struct vfsmount*)0).mnt_root")
+                    self.offset_vfsmount_mnt_sb = GefUtil.parse_and_eval_unsigned("&((struct vfsmount*)0).mnt_sb")
+                    self.offset_vfsmount_mnt_flags = GefUtil.parse_and_eval_unsigned("&((struct vfsmount*)0).mnt_flags")
+                    self.nominal_mnt_mounts = GefUtil.parse_and_eval_unsigned("&((struct mount*)0).mnt_mounts")
+                    self.offset_mount_mnt_mounts = self.nominal_mnt_mounts
+                    self.offset_mount_mnt_child = GefUtil.parse_and_eval_unsigned("&((struct mount*)0).mnt_child")
+                    self.offset_after_mnt_child = self.offset_mount_mnt_child + ptrsize * 2
+                    self.mount_layout_source = "debug information"
+                    return True
+                except gdb.error:
+                    self.offset_mount_mnt = None
+
             if kversion < "3.3":
                 self.offset_mount_mnt = 0
-                self.offset_vfsmount_mnt_root = ptrsize * 4
-                self.offset_vfsmount_mnt_sb = ptrsize * 5
+                try:
+                    self.offset_vfsmount_mnt_root = GefUtil.parse_and_eval_unsigned("&((struct vfsmount*)0).mnt_root")
+                    self.offset_vfsmount_mnt_sb = GefUtil.parse_and_eval_unsigned("&((struct vfsmount*)0).mnt_sb")
+                except gdb.error:
+                    self.offset_vfsmount_mnt_root = ptrsize * 4
+                    self.offset_vfsmount_mnt_sb = ptrsize * 5
                 self.offset_vfsmount_mnt_flags = None # it sits after mnt_child, see get_offset_mnt_flags()
                 self.nominal_mnt_mounts = ptrsize * 8
                 self.offset_after_mnt_child = self.nominal_mnt_mounts + ptrsize * 4
@@ -69443,7 +69485,10 @@ class Kernel:
                 sizeof_vfsmount = ptrsize * (3 if kversion < "5.12" else 4)
                 if kversion < "3.13":
                     sizeof_union = 0
-                elif kversion < "6.12":
+                # In v6.8 mnt_node was added to the later mnt_list union.  It moved
+                # into this early union in v6.13, which is the change that shifts
+                # mnt_mounts/mnt_child.  The live list probe below still has priority.
+                elif kversion < "6.13":
                     sizeof_union = ptrsize * 2
                 else:
                     sizeof_union = ptrsize * 3
@@ -69452,6 +69497,7 @@ class Kernel:
                 self.offset_after_mnt_child = self.nominal_mnt_mounts + ptrsize * 4
             self.offset_mount_mnt_parent = ptrsize * 2
             self.offset_mount_mnt_mountpoint = ptrsize * 3
+            self.mount_layout_source = "version fallback"
             return True
 
         def initialize_file_offsets(self, file):
@@ -69881,10 +69927,16 @@ class Kernel:
         def get_offset_mnt_mounts(self, mount):
             """Resolve mount->{mnt_mounts,mnt_child}. CONFIG_SMP=n shifts them by one or two words."""
             if self.offset_mount_mnt_mounts is not None:
-                return self.offset_mount_mnt_mounts
+                if (is_double_link_list(mount + self.offset_mount_mnt_mounts)
+                        and is_double_link_list(mount + self.offset_mount_mnt_child)):
+                    return self.offset_mount_mnt_mounts
+                # Debug information can describe another vmlinux than the remote
+                # target.  Do not retain an offset that the live object disproves.
+                self.offset_mount_mnt_mounts = None
+                self.offset_mount_mnt_child = None
 
             ptrsize = current_arch.ptrsize
-            for delta in (0, -ptrsize, ptrsize, -ptrsize * 2):
+            for delta in (0, -ptrsize, ptrsize, -ptrsize * 2, ptrsize * 2):
                 offset = self.nominal_mnt_mounts + delta
                 if offset < 0:
                     continue
@@ -69899,6 +69951,8 @@ class Kernel:
                     continue
                 self.offset_mount_mnt_mounts = offset
                 self.offset_mount_mnt_child = offset + ptrsize * 2
+                self.offset_after_mnt_child = self.offset_mount_mnt_child + ptrsize * 2
+                self.mount_layout_source = "live mount probe"
                 self.meta.append(("info", "offsetof(mount, mnt_mounts): {:#x}".format(offset)))
                 return offset
             return None
@@ -70455,7 +70509,7 @@ class Kernel:
                     struct mnt_idmap *mnt_idmap; // v6.2~
                 } mnt;
                 union {
-                    struct rb_node mnt_node; // v6.12~ // ptrsize * 3
+                    struct rb_node mnt_node; // v6.13~ // ptrsize * 3
                     struct rcu_head mnt_rcu; // v3.13~ // ptrsize * 2
                     struct llist_node mnt_llist; // v3.18~ // ptrsize
                 };
@@ -70610,7 +70664,7 @@ class Kernel:
 
         struct cred {
             atomic_t usage;      // ~v6.1.68, v6.2~v6.6.7
-            atomic_long_t usage; // v6.1.69~v6.1.143, v6.6.8~
+            atomic_long_t usage; // v6.1.69~v6.1.187, v6.6.8~
         #ifdef CONFIG_DEBUG_CREDENTIALS // ~v6.6.7
             atomic_t subscribers;
             void *put_addr;
@@ -70642,7 +70696,7 @@ class Kernel:
         #endif
             struct user_struct *user;
             struct user_namespace *user_ns;
-            struct ucounts *ucounts; // v5.12.17~
+            struct ucounts *ucounts; // optional/backported; detect from the live layout
             struct group_info *group_info;
             ...
         };
@@ -70781,8 +70835,8 @@ class Kernel:
         def get_offset_uid(self, init_cred):
             """
             struct cred {
-                atomic_t usage; // ~v6.1.69, v6.2~v6.6.7
-                atomic_long_t usage; // v6.1.69~v6.1.143, v6.6.8~
+                atomic_t usage; // ~v6.1.68, v6.2~v6.6.7
+                atomic_long_t usage; // v6.1.69~v6.1.187, v6.6.8~
             #ifdef CONFIG_DEBUG_CREDENTIALS // ~v6.6.7
                 atomic_t subscribers; // ~v6.6.7
                 void *put_addr; // ~v6.6.7
@@ -70860,7 +70914,7 @@ class Kernel:
             #endif
                 struct user_struct *user;
                 struct user_namespace *user_ns;
-                struct ucounts *ucounts; // v5.12.17~
+                struct ucounts *ucounts; // optional/backported; do not use one version boundary
                 struct group_info *group_info;
                 union {
                     int non_rcu;
@@ -71100,6 +71154,23 @@ class Kernel:
                     return False
                 if ngroups > 0x10000:
                     return False
+                # On 64-bit, struct ucounts begins with an atomic_long_t followed
+                # by user_ns.  Interpreting it as group_info makes ngroups look like
+                # zero, so reject that characteristic pointer at the gid/nblocks
+                # position.  This is what lets the probe handle the 5.10 revert and
+                # the 5.12/5.13 stable backports without a release-number table.
+                if ngroups == 0 and is_64bit():
+                    after_header = read_int_from_memory(group_info + current_arch.ptrsize)
+                    if is_valid_addr(after_header):
+                        return False
+                if ngroups and "4.9" <= Kernel.kernel_version():
+                    # Modern group_info stores a sorted inline gid array.  Sampling
+                    # it also rejects arbitrary objects whose first two ints happen
+                    # to look like usage/ngroups.
+                    gids = [read_int32_from_memory(group_info + 8 + 4 * i)
+                            for i in range(min(ngroups, 8))]
+                    if gids != sorted(gids):
+                        return False
             return True
 
         def get_offset_group_info(self, cred_samples, offset_user_ns):
@@ -71109,15 +71180,23 @@ class Kernel:
             except gdb.error:
                 pass
 
-            # slow path
-            if "5.12.17" <= Kernel.kernel_version():
-                candidates = [2, 1] # ucounts is in between
-            else:
-                candidates = [1, 2]
-            for i in candidates:
+            # Slow path.  ucounts was introduced, backported and reverted on
+            # different stable branches, so probe both live layouts without using
+            # a nominal version boundary.
+            candidates = []
+            init_groups = Ksym.get_addr("init_groups")
+            for i in (1, 2):
                 offset_group_info = offset_user_ns + current_arch.ptrsize * i
                 if self.is_group_info(cred_samples, offset_group_info):
-                    return offset_group_info
+                    score = 0
+                    for cred in cred_samples:
+                        group_info = read_int_from_memory(cred + offset_group_info)
+                        ngroups = read_int32_from_memory(group_info + 4)
+                        score += 2 if ngroups else 0
+                        score += 4 if init_groups is not None and group_info == init_groups else 0
+                    candidates.append((score, -i, offset_group_info))
+            if candidates:
+                return max(candidates)[2]
             return None
 
         def get_ids(self, cred, count=8):
@@ -74630,28 +74709,28 @@ class KernelCredCommand(GenericCommand, BufferingOutput):
         "",
         "Simplified credential structure:",
         "",
-        "+-task_struct---+     +-->+-cred-------------------+",
-        "| ...           |     |   | usage                  |",
-        "| real_cred     |-----+   | uid, gid               |",
-        "| cred          |-----+   | suid, sgid             |",
-        "| comm[16]      |         | euid, egid             |",
-        "| ...           |         | fsuid, fsgid           |",
-        "+---------------+         | securebits             |",
-        "                          | cap_inheritable        |",
-        "                          | cap_permitted          |",
-        "                          | cap_effective          |",
-        "                          | cap_bset               |",
-        "                          | cap_ambient (v4.3~)    |",
-        "                          | (keyrings; CONFIG_KEYS)|",
-        "                          | security               |--->LSM blob",
-        "                          | user                   |",
-        "                          | user_ns                |--->user_namespace",
-        "                          | ucounts (v5.12.17~)    |",
-        "                          | group_info             |--->+-group_info-+",
-        "                          | ...                    |    | usage      |",
-        "                          +------------------------+    | ngroups    |",
-        "                                                        | gid[]      |",
-        "                                                        +------------+",
+        "+-task_struct---+    +--->+-cred--------------------+",
+        "| ...           |    |    | usage                   |",
+        "| real_cred     |----+    | uid, gid                |",
+        "| cred          |----+    | suid, sgid              |",
+        "| comm[16]      |         | euid, egid              |",
+        "| ...           |         | fsuid, fsgid            |",
+        "+---------------+         | securebits              |",
+        "                          | cap_inheritable         |",
+        "                          | cap_permitted           |",
+        "                          | cap_effective           |",
+        "                          | cap_bset                |",
+        "                          | cap_ambient (v4.3~)     |",
+        "                          | (keyrings; CONFIG_KEYS) |",
+        "                          | security                |--->LSM blob",
+        "                          | user                    |",
+        "                          | user_ns                 |--->user_namespace",
+        "                          | ucounts (branch/config) |",
+        "                          | group_info              |--->+-group_info-+",
+        "                          | ...                     |    | usage      |",
+        "                          +-------------------------+    | ngroups    |",
+        "                                                         | gid[]      |",
+        "                                                         +------------+",
         "",
         "`real_cred` is the objective credential, `cred` is the subjective one. They differ only",
         "while the task acts on behalf of another (e.g., inside override_creds()).",
@@ -75850,7 +75929,7 @@ class KernelModuleLoadCommand(GenericCommand):
             if sectname and len(sectname) >= 4:
                 self.meta.append((
                     self.quiet_info,
-                    "possible section name (rejected for not starting with \".\", \"__\" or \"_\"): {:s}".format(sectname),
+                    'possible section name (rejected for not starting with ".", "__" or "_"): {:s}'.format(sectname),
                 ))
             return False
         return True
@@ -79600,16 +79679,11 @@ class KernelPathCommand(GenericCommand, BufferingOutput):
     _note_ = [
         "This command requires CONFIG_RANDSTRUCT=n.",
         "",
-        "Without --pid/--task the pathname is absolute, i.e. it is resolved up to the root of the",
-        "mount namespace. With --pid/--task the walk stops at task->fs->root instead, so the result",
-        "is what that task sees. `outside-root` means the target is not reachable from that root,",
-        "and the printed path is the absolute one.",
-        "",
-        "A bare dentry does not carry a mount, so every mount whose mnt_root is on its d_parent",
-        "chain is a possible answer. `ambiguous` is printed when there is more than one, and --all",
-        "lists them. The target mount namespace is searched first; the other namespaces are searched",
-        "only when that finds nothing, and `no-mount` means no namespace holds the dentry, which is",
-        "normal for pipefs/sockfs/anon_inodefs and for a mount that is already unmounted.",
+        "- Without `--pid/--task`, paths are resolved to the mount-namespace root.",
+        "  With either option, resolution stops at `task->fs->root`; `outside-root` means the target lies outside it.",
+        "- A bare dentry has no mount information. If multiple mounts match, `ambiguous` is shown; use `--all` to list them.",
+        "- The target mount namespace is searched first, then other namespaces reachable through scanned tasks.",
+        "  `no-mount` means no matching reachable mount was found, which is normal for pseudo-filesystems or unmounted mounts.",
         "",
         "Simplified path structure:",
         "",
@@ -79627,7 +79701,7 @@ class KernelPathCommand(GenericCommand, BufferingOutput):
         "| mnt_parent     |--+     |            | d_parent   |-->dentry",
         "| mnt_mountpoint |--------+            | ...        |",
         "| mnt (vfsmount) |                     | d_name     |",
-        "|   mnt_root     |-------------------->|   name     |-->\"foo\"",
+        '|   mnt_root     |-------------------->|   name     |-->"foo"',
         "|   mnt_sb       |-->super_block       | d_inode    |-->inode",
         "| ...            |                     | d_iname    |",
         "| mnt_mounts     |--+                  +------------+",
@@ -79918,17 +79992,11 @@ class KernelMountCommand(GenericCommand, BufferingOutput):
     _note_ = [
         "This command requires CONFIG_RANDSTRUCT=n.",
         "",
-        "The tree is walked over mnt_mounts/mnt_child, so it holds every mount of the namespace,",
-        "including the bind mounts that share one super_block. `kfilesystems` is the other half of",
-        "the picture: it lists the registered filesystem types and every super_block they own,",
-        "including the ones that are not mounted anywhere.",
-        "",
-        "A mount namespace is identified by the root mount its members reach by walking mnt_parent,",
-        "so the namespaces that hold no task are invisible. Without --pid/--task the whole namespace",
-        "is printed with absolute pathnames. With them the tree starts at the mount of task->fs->root",
-        "and the pathnames stop there, which is the same view /proc/pid/mountinfo gives. A mount that",
-        "is below that mount but not reachable from that root, e.g. when the task is also chrooted,",
-        "is marked `outside-root` and printed with its absolute pathname.",
+        "- Walks `mnt_mounts/mnt_child`, so all mounts in the namespace are shown, including bind mounts sharing a `super_block`.",
+        "  `kfilesystems` instead shows filesystem types and all their `super_block`s, mounted or not.",
+        "- Mount namespaces are inferred from mounts reachable through tasks, so namespaces with no task are invisible.",
+        "- Without `--pid/--task`, the whole namespace is shown with absolute paths.",
+        "  With either option, output is rooted at `task->fs->root`; unreachable mounts are marked `outside-root`.",
         "",
         "Simplified mount tree structure:",
         "",
@@ -79955,7 +80023,7 @@ class KernelMountCommand(GenericCommand, BufferingOutput):
         "                   |   +-->dentry                +-->dentry",
         "                   v",
         "            +-super_block-+     +-file_system_type-+",
-        "            | ...         |     | name             |-->\"ext4\"",
+        '            | ...         |     | name             |-->"ext4"',
         "            | s_type      |---->| ...              |",
         "            | ...         |     +------------------+",
         "            +-------------+",
@@ -79986,7 +80054,7 @@ class KernelMountCommand(GenericCommand, BufferingOutput):
         (0x200_0000, "sync_umount"),
         (0x400_0000, "marked"),
         (0x800_0000, "umount", "3.18"),
-        (0x1000_0000, "onrb", "6.12"),
+        (0x1000_0000, "onrb"),
     ]
     MNT_READONLY = 0x40
 
@@ -80033,12 +80101,28 @@ class KernelMountCommand(GenericCommand, BufferingOutput):
         self.offset_mnt_flags = self.kpath.get_offset_mnt_flags(root_mount)
         if self.offset_mnt_flags is None:
             self.meta.append((self.quiet_warn, "Could not find mount->mnt.mnt_flags"))
+            self.mnt_onrb_present = False
         else:
             self.meta.append((self.quiet_info, "offsetof(mount, mnt.mnt_flags): {:#x}".format(self.offset_mnt_flags)))
+            # MNT_ONRB accompanied the namespace rbtree from v6.8, but it was
+            # later removed and that removal was backported to stable trees.
+            # Every namespace root collected above is attached, so its live bit
+            # is a better discriminator than the release string.
+            self.mnt_onrb_present = False
+            for mount in self.namespaces:
+                try:
+                    if read_int32_from_memory(mount + self.offset_mnt_flags) & 0x1000_0000:
+                        self.mnt_onrb_present = True
+                        break
+                except (gdb.MemoryError, OverflowError):
+                    continue
+            self.meta.append((self.quiet_info, "MNT_ONRB: {:s} (live mount flags)".format(
+                "present" if self.mnt_onrb_present else "absent",
+            )))
         return True
 
     def get_mnt_ns(self, task):
-        """Return task->nsproxy->mnt_ns, which is the 4th pointer of struct nsproxy in every version."""
+        """Return task->nsproxy->mnt_ns using the current base + 3 * ptrsize layout assumption."""
         if self.offset_nsproxy is None:
             return None
         try:
@@ -80084,7 +80168,7 @@ class KernelMountCommand(GenericCommand, BufferingOutput):
 
         `root` is the (vfsmount, dentry) pair the pathnames stop at, or None when they are absolute.
         With --pid/--task the tree starts at the mount of task->fs->root instead of the namespace
-        root, which is the same set of mounts /proc/pid/mountinfo reports."""
+        root. Mounts outside that root may also be returned and are marked `outside-root`."""
         args = self.args
         kpath = self.kpath
 
@@ -80156,6 +80240,8 @@ class KernelMountCommand(GenericCommand, BufferingOutput):
         for entry in self.MNT_FLAGS:
             bit, name = entry[0], entry[1]
             if len(entry) > 2 and kversion < entry[2]:
+                continue
+            if name == "onrb" and not self.mnt_onrb_present:
                 continue
             if flags & bit:
                 names.append(name)
@@ -81056,7 +81142,7 @@ class KernelWorkqueueCommand(GenericCommand, BufferingOutput):
         "                             +----------------+   |",
         "                               ^                  |",
         "       work_struct.data -------+                  |",
-        "       & ~0xff (pwq)                              |",
+        "       & WORK_STRUCT_PWQ_MASK (pwq)               |",
         "                    +-work_struct-+               v",
         "                    | data        |         +-worker_pool-+",
         "                    | entry       |-------->| worklist    |  ==> state `pending`",
@@ -81070,13 +81156,11 @@ class KernelWorkqueueCommand(GenericCommand, BufferingOutput):
         "                    | wq           |",
         "                    +--------------+",
         "",
-        "state `running` is a work_struct held in worker.current_work of a busy worker.",
-        "`queue` and `cpu` are resolved from the pool_workqueue encoded in work_struct.data.",
-        "For state `delayed`, `cpu` is the cpu whose timer wheel holds the timer instead.",
-        "",
-        "With --object, the range [object, object+size) is also scanned for an initialized work_struct,",
-        "including one that is not queued anywhere (state `idle`). A delayed_work is identified by",
-        "its delayed_work_timer_fn timer when the timer is discoverable.",
+        "- `running` means the work is held in `worker.current_work`.",
+        "- When `WORK_STRUCT_PWQ` is set, `queue` and `cpu` are decoded from `work_struct.data`; off-queue work uses it differently.",
+        "- For `delayed` work, `cpu` is the CPU whose timer wheel holds the timer.",
+        "- `--object` scans `[object, object+size)` for initialized `work_struct`s, including unqueued `idle` work.",
+        "  `delayed_work` is recognized by its `delayed_work_timer_fn` timer when available.",
     ]
     _note_ = "\n".join(_note_)
 
@@ -81430,7 +81514,7 @@ class KernelWorkqueueCommand(GenericCommand, BufferingOutput):
         return
 
     def find_old_timer_vectors(self, timer_base):
-        """Return the first old tvec vector head (v3.0-v4.7)."""
+        """Return the first list-head-based tvec vector head (v3.0-v4.1)."""
         ptrsize = current_arch.ptrsize
         for offset in range(0, 0x100, ptrsize):
             valid = True
@@ -81477,7 +81561,7 @@ class KernelWorkqueueCommand(GenericCommand, BufferingOutput):
         return candidates
 
     def find_old_timer_bases(self):
-        """Find each CPU's pointer-based tvec_base used before v4.8."""
+        """Find each CPU's list-head-based tvec_base used before v4.2."""
         bases = []
         boot_base = Ksym.get_addr("boot_tvec_bases")
         if boot_base and self.find_old_timer_vectors(boot_base) is not None:
@@ -84170,7 +84254,7 @@ class FsbaseCommand(GenericCommand):
     _syntax_ = parser.format_help()
 
     _note_ = [
-        "This command overwrites original \"fs (=tui focus)\" command.",
+        'This command overwrites original "fs (=tui focus)" command.',
     ]
     _note_ = "\n".join(_note_)
 
@@ -134613,7 +134697,7 @@ class SlabContainsCommand(GenericCommand):
             slab_cache_name_ptr = read_int_from_memory(kmem_cache + self.kmem_cache_offset_name)
             slab_cache_name = read_cstring_from_memory(slab_cache_name_ptr)
             if slab_cache_name is None:
-                self.quiet_err("This address is not managed by slab (slab_cache_name=\"\")")
+                self.quiet_err('This address is not managed by slab (slab_cache_name="")')
                 return
 
             slab_cache_size = read_int32_from_memory(kmem_cache + self.kmem_cache_offset_size)
@@ -134712,7 +134796,7 @@ class KobjCommand(GenericCommand):
         "The type candidate is inferred from the slab cache name, so `Confidence` is reported honestly:",
         "mergeable caches (kmalloc-*) and unaligned addresses lower it. SLUB may merge dedicated caches,",
         "so use -v to list the caches sharing the same physical kmem_cache via kmem-cache-alias.",
-        "Page-level classification (buddy/page-type) relies on pageinfo and requires v4.18 or later;",
+        "GEF's pageinfo-based page classification currently supports v4.18 and later;",
         "slab object resolution works on older kernels too.",
     ]
     _note_ = "\n".join(_note_)
@@ -134732,7 +134816,7 @@ class KobjCommand(GenericCommand):
         "proc_inode_cache": "struct proc_inode",
         "sock_inode_cache": "struct socket_alloc",
         "skbuff_head_cache": "struct sk_buff",
-        "skbuff_fclone_cache": "struct sk_buff (fclone pair)",
+        "skbuff_fclone_cache": "struct sk_buff_fclones (paired/fclone sk_buff instances)",
         "kmalloc_large": "large kmalloc allocation (multi-page)",
         "key_jar": "struct key",
         "mnt_cache": "struct mount",
@@ -134823,10 +134907,34 @@ class KobjCommand(GenericCommand):
         _size, start, end, label, kind = ranges[0]
         return start, end, label, kind
 
-    def type_candidate(self, name, aligned):
+    def type_candidate(self, name, aligned, object_size=None):
         """Infer a C type candidate from the slab cache name. Returns (candidate, confidence)."""
         conf_ok = "high" if aligned else "low"
         conf_maybe = "medium" if aligned else "low"
+
+        if name == "mnt_cache":
+            # `mnt_cache` allocated struct vfsmount through v3.2 and struct mount
+            # afterwards.  Prefer the target's DWARF and use the version only when
+            # neither type can be matched to the allocator's reported object size.
+            matches = []
+            for type_name in ("struct mount", "struct vfsmount"):
+                type_obj = GefUtil.cached_lookup_type(type_name)
+                if type_obj is None:
+                    continue
+                try:
+                    size = int(type_obj.sizeof)
+                except (gdb.error, TypeError):
+                    continue
+                if object_size is None or size <= object_size:
+                    matches.append((type_name, size))
+            if object_size is not None:
+                exact = [entry for entry in matches if entry[1] == object_size]
+                if len(exact) == 1:
+                    return exact[0][0], conf_ok
+            if len(matches) == 1:
+                return matches[0][0], conf_ok
+            kversion = Kernel.kernel_version()
+            return ("struct vfsmount" if kversion and kversion < "3.3" else "struct mount"), conf_ok
 
         if name in self.CACHE_TYPE_HINTS:
             return self.CACHE_TYPE_HINTS[name], conf_ok
@@ -134842,7 +134950,10 @@ class KobjCommand(GenericCommand):
         m = re.search(r"^name: (\S+)\s+object_size: (\S+) \(chunk_size: (0x\S+)\)\s+num_pages: (0x\S+)", out, re.M)
         if not m:
             return None
-        result = {"name": m.group(1), "chunk_size": int(m.group(3), 16), "object_base": None, "offset": 0, "state": None}
+        result = {
+            "name": m.group(1), "object_size": int(m.group(2), 0), "chunk_size": int(m.group(3), 16),
+            "object_base": None, "offset": 0, "state": None,
+        }
         m = re.search(r"^object_base: (0x\S+)", out, re.M)
         if m:
             result["object_base"] = int(m.group(1), 16)
@@ -134874,7 +134985,7 @@ class KobjCommand(GenericCommand):
             self.emit("Object offset", "+{:#x}".format(addr - slab["object_base"]))
         if slab["state"]:
             self.emit("State", self.color_state(slab["state"]))
-        candidate, confidence = self.type_candidate(slab["name"], aligned)
+        candidate, confidence = self.type_candidate(slab["name"], aligned, slab["object_size"])
 
         # If the physical cache has merged aliases, the reported name is only the owner: the
         # object may belong to any merged cache. Verify for high-confidence (dedicated) names,
@@ -134966,8 +135077,36 @@ class KobjCommand(GenericCommand):
 
     def report_vmemmap(self, addr):
         self.emit("Allocator", "n/a (page descriptor array)")
-        self.emit("Candidate", "struct page (describes one physical page frame)")
-        self.emit("Confidence", "high")
+        consts = KernelAddressHeuristicFinder.consts()
+        start = KernelAddressHeuristicFinder.get_VMEMMAP_START()
+        stride = consts.sizeof_struct_page if consts is not None else None
+        if start is None or not stride:
+            self.emit("Candidate", "VMEMMAP address; sizeof(struct page) is unknown")
+            self.emit("Confidence", "low")
+            return
+
+        delta = addr - start
+        page = addr - (delta % stride)
+        offset = addr - page
+        self.emit("Descriptor", "{:#x}".format(page))
+        self.emit("Stride", "{:#x} (sizeof(struct page))".format(stride))
+        if offset:
+            self.emit("Object offset", "+{:#x}".format(offset))
+
+        # Sparse VMEMMAP reserves a broad virtual range but only populates the
+        # portions that describe real memory sections.  Check the whole record,
+        # rather than treating every canonical address in that range as a page.
+        populated = is_valid_addr(page) and is_valid_addr(page + stride - 1)
+        if not populated:
+            self.emit("Candidate", "unpopulated VMEMMAP range (not a readable struct page)")
+            self.emit("Confidence", "low")
+        elif offset:
+            self.emit("Candidate", "interior pointer into struct page")
+            self.emit("Confidence", "low")
+            self.emit("Remarks", Color.redify("address is not at a struct page boundary"))
+        else:
+            self.emit("Candidate", "struct page (describes one physical page frame)")
+            self.emit("Confidence", "high")
         return
 
     def find_vmalloc_chunk(self, addr):
@@ -137843,6 +137982,10 @@ class KernelSocketCommand(GenericCommand, BufferingOutput):
         "                                    | sk_destruct             |",
         "                                    +-------------------------+",
         "",
+        "The skc_state value is protocol-dependent; TCP_* names are shown only when the",
+        "resolved protocol is TCP-like. Queue and callback offsets are recovered heuristically",
+        "because struct sock varies with the kernel version and configuration.",
+        "",
         "Use `kskb ADDR` to inspect a single sk_buff in detail.",
     ]
     _note_ = "\n".join(_note_)
@@ -137852,14 +137995,15 @@ class KernelSocketCommand(GenericCommand, BufferingOutput):
     # socket->type (SOCK_*)
     SOCK_TYPE = {1: "SOCK_STREAM", 2: "SOCK_DGRAM", 3: "SOCK_RAW", 4: "SOCK_RDM",
                  5: "SOCK_SEQPACKET", 6: "SOCK_DCCP", 10: "SOCK_PACKET"}
-    # sk->__sk_common.skc_state (TCP_* state machine, reused by every protocol)
+    # TCP_* labels for sk->__sk_common.skc_state; other protocols use their own state values.
     SK_STATE = {1: "TCP_ESTABLISHED", 2: "TCP_SYN_SENT", 3: "TCP_SYN_RECV", 4: "TCP_FIN_WAIT1",
                 5: "TCP_FIN_WAIT2", 6: "TCP_TIME_WAIT", 7: "TCP_CLOSE", 8: "TCP_CLOSE_WAIT",
                 9: "TCP_LAST_ACK", 10: "TCP_LISTEN", 11: "TCP_CLOSING", 12: "TCP_NEW_SYN_RECV"}
     # address family (partial, only the common ones)
     AF_FAMILY = {0: "AF_UNSPEC", 1: "AF_UNIX", 2: "AF_INET", 10: "AF_INET6", 16: "AF_NETLINK",
-                 17: "AF_PACKET", 4: "AF_IPX", 5: "AF_APPLETALK", 44: "AF_CAN", 40: "AF_VSOCK",
-                 38: "AF_ALG", 41: "AF_KCM", 45: "AF_TIPC", 43: "AF_NFC"}
+                 17: "AF_PACKET", 4: "AF_IPX", 5: "AF_APPLETALK", 29: "AF_CAN", 30: "AF_TIPC",
+                 38: "AF_ALG", 39: "AF_NFC", 40: "AF_VSOCK", 41: "AF_KCM", 43: "AF_SMC",
+                 44: "AF_XDP", 45: "AF_MCTP"}
 
     def sym_name(self, addr):
         """Reverse-resolve an address to a kernel symbol name, or '' if unknown."""
@@ -138044,7 +138188,7 @@ class KernelSocketCommand(GenericCommand, BufferingOutput):
             if fam == 0 or fam not in self.AF_FAMILY:
                 continue
             st = read_int8_from_memory(sk + off + 2)
-            if st > 12:  # skc_state is the TCP state machine, always <= TCP_NEW_SYN_RECV(12)
+            if st > 12:  # layout heuristic; protocol-specific state names are handled later
                 continue
             matches.append((off, fam, st))
         if not matches:
@@ -138231,7 +138375,9 @@ class KernelSocketCommand(GenericCommand, BufferingOutput):
         if fam is not None:
             self.out.append("     |- {:<14s} {:s}".format("family", self.AF_FAMILY.get(fam, str(fam))))
             st = read_int8_from_memory(sk + off_state)
-            self.out.append("     |- {:<14s} {:s}".format("state", self.SK_STATE.get(st, "{:#x}".format(st))))
+            proto_name = (prot_iname or prot_sym or "").lower()
+            state = self.SK_STATE.get(st) if proto_name.startswith(("tcp", "mptcp")) else None
+            self.out.append("     |- {:<14s} {:s}".format("state", state or "{:#x}".format(st)))
 
         # socket->{type,state}
         if socket:
@@ -138491,15 +138637,113 @@ class KernelSkbCommand(GenericCommand, BufferingOutput):
                 return p, nm, current_arch.ptrsize * i
         return None
 
+    @staticmethod
+    def get_shared_info_dwarf_layout():
+        """Return the nr_frags/frag_list layout and array bound from DWARF."""
+        try:
+            struct_type = GefUtil.cached_lookup_type("struct skb_shared_info")
+            if struct_type is None:
+                return None
+            fields = {field.name: field for field in struct_type.fields() if field.name}
+            nr_field = fields["nr_frags"]
+            frag_list_field = fields["frag_list"]
+            frags_field = fields.get("frags")
+            max_frags = None
+            if frags_field is not None:
+                frags_type = frags_field.type.strip_typedefs()
+                if frags_type.code == gdb.TYPE_CODE_ARRAY:
+                    low, high = frags_type.range()
+                    max_frags = int(high - low + 1)
+            return nr_field.bitpos // 8, int(nr_field.type.sizeof), frag_list_field.bitpos // 8, max_frags
+        except (gdb.error, KeyError, TypeError):
+            return None
+
+    @staticmethod
+    def score_shared_info_layout(shinfo, layout, max_frags):
+        """Score a no-DWARF skb_shared_info layout from related live fields."""
+        nr_offset, nr_size, frag_list_offset, gso_offset, gso_segs_offset = layout
+        try:
+            if nr_size == 2:
+                nr_frags = read_int16_from_memory(shinfo + nr_offset)
+            else:
+                nr_frags = read_int8_from_memory(shinfo + nr_offset)
+            if nr_frags > max_frags:
+                return None
+            gso_size = read_int16_from_memory(shinfo + gso_offset)
+            gso_segs = read_int16_from_memory(shinfo + gso_segs_offset)
+            frag_list = read_int_from_memory(shinfo + frag_list_offset)
+        except gdb.MemoryError:
+            return None
+
+        score = 2
+        if frag_list == 0:
+            score += 2
+        elif is_valid_addr(frag_list):
+            score += 2
+            if KernelSkbCommand.find_hde(frag_list) is not None:
+                score += 2
+        else:
+            return None
+        # A segmented skb has a segment size; random bytes often violate this.
+        if gso_segs > 1 and gso_size == 0:
+            score -= 2
+        else:
+            score += 1
+        return score, nr_frags, frag_list
+
+    def resolve_shared_info_layout(self, shinfo):
+        dwarf = self.get_shared_info_dwarf_layout()
+        if dwarf is not None:
+            nr_offset, nr_size, frag_list_offset, max_frags = dwarf
+            max_frags = max_frags or 0xff
+            try:
+                nr_frags = (read_int16_from_memory(shinfo + nr_offset) if nr_size == 2
+                            else read_int8_from_memory(shinfo + nr_offset))
+                frag_list = read_int_from_memory(shinfo + frag_list_offset)
+            except gdb.MemoryError:
+                return None
+            if nr_frags <= max_frags and (frag_list == 0 or is_valid_addr(frag_list)):
+                return nr_frags, frag_list, nr_offset, max_frags, "DWARF"
+
+        # nr_frags layouts used by supported kernels:
+        #   v3.0-v3.2: u16 at +0, frag_list at +0x10
+        #   v3.3-v4.11: u8 at +0, frag_list at +0x8
+        #   v4.12-:     u8 at +2, frag_list at +0x8
+        # CONFIG_MAX_SKB_FRAGS is configurable on newer kernels; 0xff is the
+        # storage-type limit and avoids baking the default value 17 into the probe.
+        layouts = [
+            (2, 1, 8, 4, 6),
+            (0, 1, 8, 2, 4),
+            (0, 2, 16, 2, 4),
+        ]
+        kversion = Kernel.kernel_version()
+        preferred = 0 if kversion and "4.12" <= kversion else (1 if kversion and "3.3" <= kversion else 2)
+        candidates = []
+        for index, layout in enumerate(layouts):
+            result = self.score_shared_info_layout(shinfo, layout, 0xff)
+            if result is None:
+                continue
+            score, nr_frags, frag_list = result
+            if index == preferred:
+                score += 1
+            candidates.append((score, -index, nr_frags, frag_list, layout[0]))
+        if not candidates:
+            return None
+        best = max(candidates)
+        return best[2], best[3], best[4], None, "live layout probe"
+
     def dump_shared_info(self, head, end):
         shinfo = head + end
         self.out.append("  skb_shared_info: {:#018x}".format(shinfo))
-        # nr_frags is byte 0 (older) or byte 1 (v5.4~ flags byte); show both bytes
-        b0 = read_int8_from_memory(shinfo)
-        b1 = read_int8_from_memory(shinfo + 1)
-        nr_frags = b1 if b1 <= 17 else b0
-        self.out.append("    nr_frags: {:d}  (byte0={:#x}, byte1={:#x})".format(nr_frags, b0, b1))
-        frag_list = read_int_from_memory(shinfo + 8)
+        layout = self.resolve_shared_info_layout(shinfo)
+        if layout is None:
+            self.out.append("    nr_frags: ??? (layout could not be resolved)")
+            return
+        nr_frags, frag_list, nr_offset, max_frags, source = layout
+        limit = "" if max_frags is None else ", CONFIG_MAX_SKB_FRAGS={:d}".format(max_frags)
+        self.out.append("    nr_frags: {:d}  (offset +{:#x}, {:s}{:s})".format(
+            nr_frags, nr_offset, source, limit,
+        ))
         if frag_list == 0:
             self.out.append("    frag_list: (none)")
         elif is_valid_addr(frag_list):
@@ -148112,7 +148356,7 @@ class ScallocHeapDumpCommand(GenericCommand, BufferingOutput):
         "Simplified scalloc structure:",
         "",
         "+-Arena(object_space)-+",
-        "| name_               |--->\"object\"",
+        '| name_               |--->"object"',
         "| start_              |------+",
         "| end_                |------|---->Span[N]",
         "| len_                |      |",
@@ -167074,7 +167318,7 @@ class KernelWalkCommand(GenericCommand, BufferingOutput):
         "Which sub-command holds the index-to-pointer mapping depends on the kernel version:",
         "",
         "  ~v4.19: radix_tree -> `kwalk radix`",
-        "  v4.20~: xarray     -> `kwalk xarray` (radix_tree_root is just renamed to xarray)",
+        "  v4.20~: xarray     -> `kwalk xarray` (radix-tree API remains as a compatibility interface)",
         "  v6.1~ : maple_tree -> `kwalk maple`  (only where it replaced the rbtree or the xarray)",
         "",
         "`kwalk list` and `kwalk rbtree` work on any version, and also outside the kernel.",
@@ -167128,7 +167372,7 @@ class KernelWalkCommand(GenericCommand, BufferingOutput):
     @staticmethod
     def add_common_arguments(parser):
         """Add the arguments which are shared by all sub-commands."""
-        parser.add_argument("--container-of", type=AddressUtil.parse_address, default=0,
+        parser.add_argument("-C", "--container-of", type=AddressUtil.parse_address, default=0,
                             help="also displays each entry minus this offset, like container_of().")
         parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
         parser.add_argument("-q", "--quiet", action="store_true", help="show result only.")
@@ -167194,6 +167438,9 @@ class KernelWalkListCommand(KernelWalkCommand):
         "`-o` is the offset of the pointer to follow, so it is 0 for list_head.next,",
         "the pointer size for list_head.prev, and offsetof(the struct, next) for a",
         "singly linked list of the structs.",
+        "ADDRESS is the starting node or head; the first displayed entry is the pointer",
+        "read from ADDRESS+OFFSET, not ADDRESS itself. NULL and a returning sentinel head",
+        "are therefore also shown as the final entry.",
     ]
     _note_ = "\n".join(_note_)
 
@@ -167547,9 +167794,9 @@ class KernelPerCpuCommand(GenericCommand, BufferingOutput):
     _example_ = "\n".join(_example_).format(_cmdline_)
 
     _note_ = [
-        "per_cpu(var, cpu) is `&var + __per_cpu_offset[cpu]`. x86 links the per-cpu section",
-        "at 0 so `&var` is a small offset there, while the other architectures link it at a",
-        "kernel address; the formula is the same on both.",
+        "per_cpu(var, cpu) is based on the static per-cpu symbol representation and the",
+        "per-cpu offset selected for the detected kernel layout. Older x86-64 kernels use",
+        "a zero-based representation; x86-64 v6.15 and later use relative offsets as well.",
         "",
         "`__per_cpu_start` and the per-cpu variables are data symbols, so a",
         "CONFIG_KALLSYMS_ALL=n kernel has none of them. `__per_cpu_start` is recovered from",
@@ -167629,9 +167876,17 @@ class KernelPerCpuCommand(GenericCommand, BufferingOutput):
             self.err_add_out("Could not find the symbol `{:s}`".format(name))
             return
         if pc.start is not None and not pc.is_static(static_addr):
-            self.warn_add_out("`{:s}` ({:#x}) is not in the static per-cpu section".format(name, static_addr))
+            if pc.end is not None:
+                self.err_add_out("`{:s}` ({:#x}) is not in the static per-cpu section {:#x}-{:#x}".format(
+                    name, static_addr, pc.start, pc.end,
+                ))
+                return
+            self.warn_add_out("The end of the static per-cpu section is unknown; `{:s}` could not be verified".format(name))
 
         static_addr += self.args.offset
+        if pc.start is not None and pc.end is not None and not pc.is_static(static_addr):
+            self.err_add_out("The requested offset leaves the static per-cpu section: {:#x}".format(static_addr))
+            return
         if self.args.offset:
             self.quiet_info_add_out("{:s}: {:#x} (+{:#x})".format(name, static_addr, self.args.offset))
         else:
@@ -167718,17 +167973,16 @@ class KernelRefsCommand(GenericCommand, BufferingOutput):
         raise ValueError("invalid range: {:s}".format(text))
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
-    parser.add_argument("address", metavar="ADDRESS", type=AddressUtil.parse_address,
-                        help="the address which the found pointers refer to.")
-    parser.add_argument("-d", "--data", action="store_true",
-                        help="scan the static data of the kernel image. (default if no area is given)")
+    parser.add_argument("address", metavar="ADDRESS", type=AddressUtil.parse_address, help="the address which the found pointers refer to.")
+    parser.add_argument("-d", "--data", action="store_true", help="scan the static data of the kernel image. (default if no area is given)")
     parser.add_argument("-p", "--percpu", action="store_true", help="scan the per-cpu areas.")
     parser.add_argument("-c", "--cache", action="append", default=[], help="scan the slab pages of this kmem_cache.")
     parser.add_argument("-o", "--object", action="append", type=AddressUtil.parse_address, default=[],
                         help="scan the slab object that contains this address. (e.g., a task_struct)")
     parser.add_argument("-r", "--range", action="append", type=parse_range.__func__, default=[],
                         help="scan this address range. (START-END or START+SIZE)")
-    parser.add_argument("-M", "--physmap", action="store_true", help="scan every writable kernel mapping. (very slow)")
+    parser.add_argument("-M", "--kernel-writable", "--physmap", dest="physmap", action="store_true",
+                        help="scan every writable kernel mapping. (--physmap is a legacy alias; very slow)")
     parser.add_argument("-t", "--tolerance", type=AddressUtil.parse_address, default=0,
                         help="also report the pointers into [ADDRESS, ADDRESS+TOLERANCE].")
     parser.add_argument("-l", "--limit", type=lambda x: int(x, 0), default=0x100,
@@ -167749,15 +168003,12 @@ class KernelRefsCommand(GenericCommand, BufferingOutput):
     _example_ = "\n".join(_example_).format(_cmdline_)
 
     _note_ = [
-        "Scanning the whole memory is too slow over a gdb stub, so the search area has to be",
-        "narrowed down. The default area is the static data of the kernel image, which is",
-        "where the global anchors of a leaked object live.",
-        "",
-        "Each hit is annotated with the owner of the location: the kallsyms symbol for the",
-        "kernel image, the cpu and the variable for a per-cpu area, and the slab cache and",
-        "the object boundary (via `slab-contains`) for a slab object.",
-        "",
-        "Use `kobj ADDRESS` to identify the referenced object itself.",
+        "- Full-memory scans are too slow over a gdb stub, so the default search is limited to kernel static data,",
+        "  where global object references commonly live.",
+        "- Hits are annotated with their likely context: the preceding kallsyms symbol, per-cpu variable and CPU,",
+        "  or slab cache and object boundary. Kallsyms ownership is only a heuristic.",
+        "- Only pointer-size-aligned raw pointers are found; encoded, tagged, XORed, mangled, or unaligned pointers are missed.",
+        "- Use `kobj ADDRESS` to identify the referenced object.",
     ]
     _note_ = "\n".join(_note_)
 
@@ -167775,7 +168026,7 @@ class KernelRefsCommand(GenericCommand, BufferingOutput):
         return self.image_symbols
 
     def lookup_image_symbol(self, addr):
-        """Return `name+0x..` of the kallsyms symbol containing `addr`, or ''."""
+        """Return the nearest preceding kallsyms symbol as `name+0x..`, or ''."""
         import bisect
         addrs, names = self.get_image_symbols()
         if not addrs:
@@ -167912,18 +168163,24 @@ class KernelRefsCommand(GenericCommand, BufferingOutput):
             try:
                 data = read_memory(pos, n)
             except gdb.MemoryError:
-                # a hole inside the range, so retry the block a page at a time
-                for sub in range(pos, pos + n, page):
-                    m = min(page, pos + n - sub)
+                # A range may begin in the middle of a page.  Bound each retry at
+                # the next page boundary; otherwise an unreadable following page
+                # makes us discard the readable tail of the current one as well.
+                sub = pos
+                block_end = pos + n
+                while sub < block_end:
+                    next_page = (sub & ~(page - 1)) + page
+                    m = min(next_page - sub, block_end - sub)
                     m -= m % ptrsize
-                    if m <= 0:
-                        continue
-                    try:
-                        data = read_memory(sub, m)
-                    except gdb.MemoryError:
-                        continue
-                    for hit in self.scan_block(sub, data, label):
-                        yield hit
+                    if m > 0:
+                        try:
+                            data = read_memory(sub, m)
+                        except gdb.MemoryError:
+                            pass
+                        else:
+                            for hit in self.scan_block(sub, data, label):
+                                yield hit
+                    sub = next_page
                 bar.update(n)
                 pos += n
                 continue
@@ -168070,16 +168327,20 @@ class KernelLsmCommand(GenericCommand, BufferingOutput):
         "| ptrace_access_check        |---->| list                |--> next hook_list",
         "| ptrace_traceme             |     | head                |--> the head at the left",
         "| ...                        |     | hook                |--> callback",
-        "+----------------------------+     | lsm (v4.12~)        |--> \"selinux\"",
+        '+----------------------------+     | lsm (v4.12~)        |--> "selinux"',
         "                                   +---------------------+",
         "",
         "+-__SCK__lsm_static_call_<hook>_<N>(v6.12~)-+",
         "| func                                      |--> callback",
         "+-------------------------------------------+",
         "",
-        "The hook point names are not stored anywhere, so they are recovered by",
-        "disassembling each `security_*` dispatcher and picking up the head (or the member",
-        "offset) it refers to. A head that no dispatcher pointed at is shown as `hook[NN]`.",
+        "Before v6.12, hook point names are recovered from each `security_*` dispatcher and",
+        "the head or member offset it references. A head that no dispatcher pointed at is",
+        "shown as `hook[NN]`. On v6.12 and later, names are read from generated static-call",
+        "symbols such as `__SCK__lsm_static_call_<hook>_<N>`.",
+        "",
+        "The v6.12+ discovery depends on static-call data symbols and may be unavailable",
+        "when CONFIG_KALLSYMS_ALL=n.",
     ]
     _note_ = "\n".join(_note_)
 
@@ -168094,7 +168355,7 @@ class KernelLsmCommand(GenericCommand, BufferingOutput):
         ("ima", "ima_"),
         ("integrity", "integrity_"),
         ("ipe", "ipe_"),
-        ("landlock", "landlock_"), ("landlock", "hook_"),
+        ("landlock", "landlock_"),
         ("loadpin", "loadpin_"),
         ("lockdown", "lockdown_"),
         ("safesetid", "safesetid_"),
@@ -168126,6 +168387,35 @@ class KernelLsmCommand(GenericCommand, BufferingOutput):
         if not data or not all(0x20 <= c < 0x7f for c in bytearray(data)):
             return ""
         return String.bytes2str(data)
+
+    def read_lsm_name(self, addr):
+        """Decode either an old `char *lsm` or a new `struct lsm_id *lsmid`."""
+        if not addr or not is_valid_addr(addr):
+            return ""
+
+        # struct lsm_id { const char *name; u64 id; }.  Resolve `name` from
+        # DWARF when present, while retaining offset zero as the ABI fallback.
+        offsets = [0]
+        try:
+            dwarf_offset = GefUtil.parse_and_eval_unsigned("&((struct lsm_id*)0).name")
+            if dwarf_offset not in offsets:
+                offsets.insert(0, dwarf_offset)
+        except gdb.error:
+            pass
+        for offset in offsets:
+            try:
+                name_ptr = read_int_from_memory(addr + offset)
+            except gdb.MemoryError:
+                continue
+            name = self.read_cstring(name_ptr, 32)
+            if re.fullmatch(r"[a-z][a-z0-9_]{1,31}", name):
+                return name
+
+        # v4.12-era security_hook_list stored the string pointer directly.
+        name = self.read_cstring(addr, 32)
+        if re.fullmatch(r"[a-z][a-z0-9_]{1,31}", name):
+            return name
+        return ""
 
     def is_kernel_text(self, addr):
         if not addr:
@@ -168406,9 +168696,8 @@ class KernelLsmCommand(GenericCommand, BufferingOutput):
                 return base, end
         if not anchors:
             return None, None
-        # Without the symbol the range comes from the heads that were confirmed to hold a
-        # hook list, which misses the empty ones at both ends. Widen it with the candidates
-        # the dispatchers referred to, as long as they stay adjacent to the confirmed run.
+        # Without the symbol the range comes from the heads that were confirmed to hold a hook list, which misses the empty ones
+        # at both ends. Widen it with the candidates the dispatchers referred to, as long as they stay adjacent to the confirmed run.
         heads = sorted({h for h, _n in anchors})
         lo, hi = heads[0], heads[-1]
         candidates = sorted({x for values in refs.values() for x in values if x % ptrsize == 0})
@@ -168444,9 +168733,8 @@ class KernelLsmCommand(GenericCommand, BufferingOutput):
         if self.args.meta:
             self.quiet_info_add_out("offsetof(security_hook_list, head): {:#x}".format(off_head * ptrsize))
 
-        # v4.11 turned each head from a `struct list_head` into a `struct hlist_head`,
-        # which halves the stride. The distance between the recovered heads shows it
-        # directly, so trust that when there are enough of them.
+        # v4.11 turned each head from a `struct list_head` into a `struct hlist_head`, which halves the stride.
+        # The distance between the recovered heads shows it directly, so trust that when there are enough of them.
         kversion = Kernel.kernel_version()
         stride = ptrsize * 2 if kversion and kversion < "4.11" else ptrsize
         heads = sorted(name_by_head)
@@ -168466,8 +168754,7 @@ class KernelLsmCommand(GenericCommand, BufferingOutput):
             chains.append((i, head, nodes))
 
         # the `lsm` member was added at v4.12, which widens `struct security_hook_list`.
-        # Each LSM registers its hooks from one static array, so the distance between the
-        # neighboring nodes is the size of the struct.
+        # Each LSM registers its hooks from one static array, so the distance between the neighboring nodes is the size of the struct.
         sorted_nodes = sorted(nodes_seen)
         gaps = [b - a for a, b in zip(sorted_nodes, sorted_nodes[1:]) if b > a]
         node_size = min(gaps) if gaps else None
@@ -168482,9 +168769,10 @@ class KernelLsmCommand(GenericCommand, BufferingOutput):
             for node in nodes:
                 try:
                     func = read_int_from_memory(node + (off_head + 1) * ptrsize)
-                    lsm = ""
-                    if has_lsm:
-                        lsm = self.read_cstring(read_int_from_memory(node + (off_head + 2) * ptrsize), 16)
+                    # Probe the owner slot even when neighboring-node distances could not prove that the member exists
+                    # (for example, a list with only one callback).
+                    # Old layouts simply fail the strict string/lsm_id validation in read_lsm_name().
+                    lsm = self.read_lsm_name(read_int_from_memory(node + (off_head + 2) * ptrsize))
                 except gdb.MemoryError:
                     continue
                 if not re.fullmatch(r"[a-z][a-z0-9_]{1,15}", lsm):
@@ -168647,7 +168935,7 @@ class KernelLsmCommand(GenericCommand, BufferingOutput):
 
     def dump_lsm_list(self, lsms):
         if lsms:
-            self.quiet_info_add_out("Active LSMs: {:s}".format(", ".join(sorted(lsms))))
+            self.quiet_info_add_out("LSMs detected or inferred from hooks: {:s}".format(", ".join(sorted(lsms))))
         return
 
     def match_filter(self, name):
