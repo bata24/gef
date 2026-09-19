@@ -6307,6 +6307,21 @@ def hexdump(source, length=0x10, separator=".", color=True, show_symbol=True, ba
 class Symbol:
     """A collection of utility functions that are related to symbols."""
 
+    @staticmethod
+    @Cache.cache_this_session(until_new_objfile=True)
+    def get_address(expression):
+        """Resolve a static, address-valued GDB symbol expression once per session.
+
+        GDB does not remember a failed symbol lookup. Kernel commands commonly probe
+        optional symbols, so preserve both an address and the absent result until the
+        target or its objfiles change. Callers which need a thread-local value must
+        continue to evaluate it directly.
+        """
+        try:
+            return GefUtil.parse_and_eval_unsigned(expression)
+        except (gdb.error, OverflowError, ValueError):
+            return None
+
     # `info symbol` called from gdb_get_location is heavy processing.
     # Moreover, AddressUtil.recursive_dereference causes each address to be resolved every time.
     # Cache.cache_until_next is ineffective due to frequent resets (each time the `stepi` runs).
@@ -6349,6 +6364,11 @@ class Symbol:
                 addr = Color.remove_color(addr)
                 addr = int(addr, 16)
             ret = Symbol.gdb_get_location(addr)
+            if ret is None and is_in_kernel():
+                # Do not call get_kallsyms() here: on KGDB its initial scan can be
+                # prohibitively slow. A previously parsed result is enough to name
+                # callbacks in commands such as ktimer and syscall-table-view.
+                ret = Ksym.get_location_from_peek(addr)
             if ret is None:
                 return nosymbol_string
         except (ValueError, gdb.error):
@@ -20865,7 +20885,7 @@ class PtrDemangleCommand(GenericCommand):
         return candidates[0] if len(candidates) == 1 else None
 
     @staticmethod
-    @Cache.cache_this_session
+    @Cache.cache_this_session(until_new_objfile=True)
     def get_cookie_symbols():
         """Return the pointer guard symbols that gdb is able to resolve.
         gdb keeps no cache for a symbol it failed to find, so it rescans every symtab on
@@ -23668,13 +23688,11 @@ class UnicornEmulator:
                     continue
 
                 # get original function (e.g., __memmove_avx_unaligned_erms -> __memmove)
-                try:
-                    base_func_addr = int(gdb.parse_and_eval("&{:s}".format(base_func_name)))
-                except (gdb.error, ValueError):
-                    try:
-                        base_func_name = "__" + base_func_name # e.g., __memmove_chk
-                        base_func_addr = int(gdb.parse_and_eval("&{:s}".format(base_func_name)))
-                    except (gdb.error, ValueError):
+                base_func_addr = Symbol.get_address("&{:s}".format(base_func_name))
+                if base_func_addr is None:
+                    base_func_name = "__" + base_func_name # e.g., __memmove_chk
+                    base_func_addr = Symbol.get_address("&{:s}".format(base_func_name))
+                    if base_func_addr is None:
                         continue
 
                 if not self.map_page(got):
@@ -24919,13 +24937,11 @@ class UnicornEmulateScriptCommand(GenericCommand):
                     continue
 
                 # get original function (e.g., __memmove_avx_unaligned_erms -> __memmove)
-                try:
-                    base_func_addr = int(gdb.parse_and_eval("&{:s}".format(base_func_name)))
-                except (gdb.error, ValueError):
-                    try:
-                        base_func_name = "__" + base_func_name # e.g., __memmove_chk
-                        base_func_addr = int(gdb.parse_and_eval("&{:s}".format(base_func_name)))
-                    except (gdb.error, ValueError):
+                base_func_addr = Symbol.get_address("&{:s}".format(base_func_name))
+                if base_func_addr is None:
+                    base_func_name = "__" + base_func_name # e.g., __memmove_chk
+                    base_func_addr = Symbol.get_address("&{:s}".format(base_func_name))
+                    if base_func_addr is None:
                         continue
 
                 content += "    emu.mem_write({:#x}, ({:#x}).to_bytes({:d}, byteorder='little')) # {:s} -> {:s}\n".format(
@@ -27283,10 +27299,7 @@ class GlibcHeapTryFreeCommand(GenericCommand):
         caller_address = None
 
         # PLT pattern (e.g., &'malloc@plt')
-        try:
-            caller_address = int(gdb.parse_and_eval("&'{:s}@plt'".format(name)))
-        except gdb.error:
-            pass
+        caller_address = Symbol.get_address("&'{:s}@plt'".format(name))
         if caller_address is not None:
             # If you use PLT, only userland binary's PLT is valid (libc PLT is invalid)
             x = ProcessMap.lookup_address(caller_address)
@@ -27294,10 +27307,7 @@ class GlibcHeapTryFreeCommand(GenericCommand):
                 return caller_address
 
         # real address (not PLT)
-        try:
-            caller_address = int(gdb.parse_and_eval("&{:s}".format(name)))
-        except gdb.error:
-            pass
+        caller_address = Symbol.get_address("&{:s}".format(name))
         return caller_address
 
     def make_patch_info(self, caller_address, arg1, arg2):
@@ -56592,9 +56602,8 @@ class MagicCommand(GenericCommand):
             return
 
         width = AddressUtil.get_format_address_width()
-        try:
-            addr = int(gdb.parse_and_eval(f"&{sym}"))
-        except gdb.error:
+        addr = Symbol.get_address(f"&{sym}")
+        if addr is None:
             gef_print("{:45s} {:>{:d}s}".format(sym, "Not found", width))
             return
 
@@ -56622,9 +56631,8 @@ class MagicCommand(GenericCommand):
         if not self.args.print_file_jumps:
             return
 
-        try:
-            vtable = int(gdb.parse_and_eval(f"&{sym}"))
-        except Exception:
+        vtable = Symbol.get_address(f"&{sym}")
+        if vtable is None:
             return
 
         gdb.execute("dereference {:#x} 22 --no-pager".format(vtable))
@@ -65012,9 +65020,7 @@ class KernelAddressHeuristicFinder:
             if not is_x86_64():
                 return None
             for addr in Ksym.get_addrs("tomoyo_check_profile", match="split"):
-                res = KernelAddressHeuristicFinderUtil.disassemble_until_next_symbol(
-                    addr, 20,
-                )
+                res = KernelAddressHeuristicFinderUtil.disassemble_until_next_symbol(addr, 20)
 
                 # Some v5.3 builds put a 32-byte slot for tomoyo_enabled between the
                 # io-buffer list and tomoyo_ss instead of next to tomoyo_hooks[].
@@ -83744,11 +83750,10 @@ class SyscallTableViewCommand(GenericCommand, BufferingOutput):
                 self.quiet_add_out("{} {}".format(Color.colorify("[!]", "bold red"), "Could not find the symbol"))
             return
 
-        # It maintains the cache both when running with and without symbols.
-        try:
-            AddressUtil.parse_address("_stext")
+        # Keep the parsed entries distinct when GDB symbols are available.
+        if Symbol.get_address("&_stext") is not None:
             tag = "symboled_" + orig_tag
-        except gdb.error:
+        else:
             tag = orig_tag
 
         # parse. `tag` keeps the results with and without symbols separate.
@@ -141277,6 +141282,7 @@ class Ksym:
     kallsyms = None
     kallsyms_map = None
     name_by_addr = None
+    address_index = None
     kernel_img = b""
     kernel_version = None
     version_string = None
@@ -141290,6 +141296,7 @@ class Ksym:
         Ksym.kallsyms = None
         Ksym.kallsyms_map = None
         Ksym.name_by_addr = None
+        Ksym.address_index = None
         return
 
     @staticmethod
@@ -142655,6 +142662,35 @@ class Ksym:
         return Ksym.kallsyms, Ksym.kallsyms_map
 
     @staticmethod
+    def get_location_from_peek(addr):
+        """Return ``(name, offset)`` from already parsed kallsyms, or None.
+
+        This intentionally consults ``peek()`` rather than ``get_kallsyms()`` so a
+        normal symbol formatter never starts the expensive remote kallsyms scan.
+        """
+        ret = Ksym.peek()
+        if ret is None:
+            return None
+
+        kallsyms, _kallsyms_map = ret
+        if Ksym.address_index is None:
+            # kallsyms is normally address ordered, but sorting also covers absolute
+            # per-CPU entries on configurations where the encoded table is not.
+            Ksym.address_index = sorted((symbol[0], i) for i, symbol in enumerate(kallsyms))
+
+        import bisect
+        i = bisect.bisect_right(Ksym.address_index, (addr, len(kallsyms))) - 1
+        if i < 0:
+            return None
+
+        symbol_addr, symbol_index = Ksym.address_index[i]
+        # The last core-kernel symbol has no following range. Reject a later address
+        # so module and direct-map pointers are not mislabeled as that final symbol.
+        if i + 1 == len(Ksym.address_index) and addr != symbol_addr:
+            return None
+        return kallsyms[symbol_index][1], addr - symbol_addr
+
+    @staticmethod
     def get_addrs(name="", match="exact"):
         """Return the addresses of the matching symbols, the exact name first.
 
@@ -142773,6 +142809,10 @@ class Ksym:
 
         Ksym.kallsyms = kallsyms
         Ksym.kallsyms_map = kallsyms_map
+        # Symbol.get_symbol_string may have cached GDB misses before this parse.
+        # Drop those only now that a no-scan fallback is available.
+        Cache.clear_cache_for(Symbol.gdb_get_location)
+        Cache.clear_cache_for(Symbol.get_symbol_string)
         return Ksym.kallsyms, Ksym.kallsyms_map
 
 
