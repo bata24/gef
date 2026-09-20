@@ -12473,7 +12473,7 @@ def read_memory(addr, length):
     if is_arm64() and is_qemu_system():
         if Config.get_gef_setting("gef.read_memory_work_around_for_aarch64_secure_memory"):
             if SecureMemory.get_area():
-                target_phys = SecureMemory.v2p(addr) # heavy
+                target_phys = AddrMap.v2p(addr, force_secure=True) # heavy
                 if target_phys is not None and SecureMemory.contains(target_phys):
                     data = SecureMemory.read_phys(target_phys, length)
                     if data:
@@ -13051,36 +13051,6 @@ class SecureMemory:
         if Config.get_gef_setting("context_code.use_capstone") is False:
             Config.set_gef_setting("context_code.use_capstone", True)
         return ret
-
-    @staticmethod
-    def v2p(vaddr, verbose=False): # vaddr -> addr1 or None
-        maps = PageMap.get_page_maps(FORCE_PREFIX_S=True, verbose=verbose)
-        if maps is None:
-            return None
-        for vstart, vend, pstart, _pend in maps:
-            if vstart <= vaddr < vend:
-                offset = vaddr - vstart
-                paddr = pstart + offset
-                if verbose:
-                    info("v2p: {:#x} -> {:#x}".format(vaddr, paddr))
-                return paddr
-        return None
-
-    @staticmethod
-    def p2v(paddr, verbose=False): # paddr -> [addr1, addr2, ...] or []
-        maps = PageMap.get_page_maps(FORCE_PREFIX_S=True, verbose=verbose)
-        if maps is None:
-            return []
-        result = []
-        for vstart, _vend, pstart, pend in maps:
-            if pstart <= paddr < pend:
-                offset = paddr - pstart
-                vaddr = vstart + offset
-                if verbose:
-                    info("p2v: {:#x} -> {:#x}".format(paddr, vaddr))
-                result.append(vaddr)
-        return result
-
 
 def is_supported_physmode():
     """GDB mode determination function for physmem support."""
@@ -19240,11 +19210,11 @@ class SmartMemoryDumpCommand(GenericCommand):
         total_size = 0
 
         for entry in maps:
-            if isinstance(entry, list):
-                start = entry[0]
-                end = entry[0] + entry[1]
-                size = entry[1]
-                perm = entry[2].lower()
+            if isinstance(entry, AddrMap.MapEntry):
+                start = entry.vstart
+                end = entry.vend
+                size = entry.vsize
+                perm = str(entry.perm)
                 path = ""
             else:
                 start = entry.page_start
@@ -19288,7 +19258,7 @@ class SmartMemoryDumpCommand(GenericCommand):
     @require_arch_set
     def do_invoke(self, args):
         if is_qemu_system():
-            maps = Kernel.get_maps()
+            maps = AddrMap.get_maps(scope="kernel")
         else:
             maps = ProcessMap.get_process_maps_exclude_special_regions(allow_vdso=True)
         if maps is None:
@@ -20502,43 +20472,14 @@ class SearchPatternCommand(GenericCommand):
                 self.print_loc(found_loc)
         return
 
-    def get_process_maps_qemu_system(self):
-        res = PageMap.get_page_maps_by_pagewalk("pagewalk --quiet --no-pager --disable-color")
-        res = sorted(set(res.splitlines()))
-        res = list(filter(lambda line: line.endswith("]"), res))
-        res = list(filter(lambda line: "[+]" not in line, res))
-        res = list(filter(lambda line: "*" not in line, res))
-        for line in res:
-            if is_x86() and "ACCESSED" not in line:
-                continue
-
-            # extract
-            lines = line.split()
-            addr_start, addr_end = [int(x, 16) for x in lines[0].split("-")]
-
-            # non valid addr
-            if not is_valid_addr(addr_start):
-                continue
-
-            # parse
-            if is_x86():
-                perm = Permission.from_process_maps(lines[5][1:].lower())
-            elif is_arm32():
-                perm = line.split("/")[-1][:3]
-                perm = Permission.from_process_maps(perm.lower())
-            elif is_arm64():
-                perm = line.split("/")[-1][:3]
-                perm = Permission.from_process_maps(perm.lower())
-            else:
-                # unknown format for this architecture; do not filter by permission
-                perm = Permission.from_process_maps("rwx")
-            yield Section(page_start=addr_start, page_end=addr_end, permission=perm)
-        return None
-
     def search_pattern_by_section(self, pattern, section_name=None):
         """Search for a pattern within selected (or whole) memory."""
         if is_qemu_system():
-            maps_generator = self.get_process_maps_qemu_system()
+            entries = AddrMap.get_maps() or []
+            maps_generator = (
+                entry.to_section() for entry in entries
+                if is_valid_addr(entry.vstart) and (not is_x86() or entry.accessed)
+            )
         else:
             maps_generator = ProcessMap.get_process_maps_exclude_special_regions(allow_vdso=True)
 
@@ -31368,13 +31309,13 @@ class KernelChecksecCommand(GenericCommand):
                 additional = "pti=on is in cmdline"
                 gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Enabled", "bold green"), additional))
             elif is_in_kernel():
-                lines = PageMap.get_page_maps_by_pagewalk("pagewalk --quiet --no-pager --simple --disable-color").splitlines()
-                if not lines:
+                maps = AddrMap.get_maps(command="pagewalk --quiet --no-pager --simple --disable-color")
+                if not maps:
                     additional = "pagewalk gave no memory map"
                     gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.grayify("Unknown"), additional))
                     return
-                for line in lines:
-                    if "USER" in line and "R-X" in line:
+                for entry in maps:
+                    if "USER" in entry.flags and entry.is_executable():
                         # If the qemu startup option does not include `-cpu kvm64`,
                         # isolation will not occur even if KPTI is enabled.
                         additional = "USER memory has R-X permission in kernel context"
@@ -31451,10 +31392,10 @@ class KernelChecksecCommand(GenericCommand):
         kernel_area = (min(kernel_bounds), max(kernel_bounds)) if kernel_bounds else None
         categories = {"kernel": [], "module": [], "other": []}
 
-        for start, size, permission in kinfo.maps:
-            if "W" not in permission or "X" not in permission:
+        for entry in kinfo.maps:
+            if not entry.is_writable() or not entry.is_executable():
                 continue
-            end = start + size
+            start, end = entry.vstart, entry.vend
             label = ""
             for module_start, module_end, module_name in module_ranges:
                 if start < module_end and module_start < end:
@@ -32251,12 +32192,12 @@ class KernelChecksecCommand(GenericCommand):
     def check_CONFIG_STATIC_USERMODEHELPER(self):
 
         def get_permission(addr):
-            maps = Kernel.get_maps()
+            maps = AddrMap.get_maps(scope="kernel")
             if not maps:
                 return None
-            for vaddr, size, perm in maps:
-                if vaddr <= addr < vaddr + size:
-                    return perm
+            for entry in maps:
+                if entry.contains_virtual(addr):
+                    return str(entry.perm)
             return None
 
         cfg = "CONFIG_STATIC_USERMODEHELPER"
@@ -40331,22 +40272,18 @@ class XInfoCommand(GenericCommand):
         return
 
     def xinfo_kernel_pagewalk(self, address):
-        ret = gdb.execute("pagewalk --vrange {:#x} --no-pager --quiet".format(address), to_string=True)
-        ret = [x for x in ret.splitlines() if not Color.remove_color(x).startswith(("---", "[+]"))]
-
-        if not ret:
+        command = "pagewalk --vrange {:#x} --no-pager --quiet".format(address)
+        maps = AddrMap.get_maps(command=command)
+        entry = next((entry for entry in maps if entry.contains_virtual(address)), None)
+        if entry is None:
             err("Not found")
             return
 
-        gef_print("\n".join(ret))
-
-        if ret[-1].startswith("0x"):
-            virt, phys, *_ = ret[-1].split()
-            vstart = int(virt.split("-")[0], 16)
-            pstart = int(phys.split("-")[0], 16)
-            offset = address - vstart
-            gef_print("Offset (from virt mapped):  {:#x} + {:#x}".format(vstart, offset))
-            gef_print("Offset (from phys mapped):  {:#x} + {:#x}".format(pstart, offset))
+        gef_print(str(entry))
+        offset = address - entry.vstart
+        gef_print("Offset (from virt mapped):  {:#x} + {:#x}".format(entry.vstart, offset))
+        if entry.pstart is not None:
+            gef_print("Offset (from phys mapped):  {:#x} + {:#x}".format(entry.pstart, offset))
         return
 
     def xinfo_kernel_kvmmap(self, address):
@@ -56811,9 +56748,9 @@ class KernelMagicCommand(GenericCommand):
         def get_permission(addr, maps):
             if maps is None:
                 return "???"
-            for vaddr, size, perm in maps:
-                if vaddr <= addr and addr < vaddr + size:
-                    return perm
+            for entry in maps:
+                if entry.contains_virtual(addr):
+                    return str(entry.perm)
             return "???"
 
         if not self.should_be_print(sym):
@@ -60177,12 +60114,12 @@ class KernelAddressHeuristicFinderUtil:
         # Merge the regions that are contiguous with .text, but stop at a region larger than
         # the image merged so far, because it is the linear map, not a part of the kernel image.
         end = kinfo.text_base
-        for vaddr, size, _perm in kinfo.maps or []:
-            if vaddr < end:
+        for entry in kinfo.maps or []:
+            if entry.vstart < end:
                 continue
-            if vaddr != end or size > max(kinfo.text_size, (end - kinfo.text_base) * 2):
+            if entry.vstart != end or entry.vsize > max(kinfo.text_size, (end - kinfo.text_base) * 2):
                 break
-            end = vaddr + size
+            end = entry.vend
         return kinfo.text_base, max(end, kinfo.rw_end)
 
     @staticmethod
@@ -60420,7 +60357,7 @@ class KernelConstsX86(KernelConstsBase):
     def CONFIG_PAGE_OFFSET(self):
         if hasattr(self, "cached_PAGE_OFFSET"):
             return self.cached_PAGE_OFFSET
-        kern_min = Kernel.get_maps()[0][0]
+        kern_min = AddrMap.get_maps(scope="kernel")[0].vstart
         if 0xc000_0000 <= kern_min:
             page_offset = 0xc000_0000 # VMSPLIT_3G
         elif 0xb000_0000 <= kern_min:
@@ -60432,7 +60369,7 @@ class KernelConstsX86(KernelConstsBase):
         elif 0x4000_0000 <= kern_min:
             page_offset = 0x4000_0000 # VMSPLIT_1G
         else:
-            # None does not cache, because `Kernel.get_maps()` is per-stop and
+            # None does not cache, because `AddrMap.get_maps(scope="kernel")` is per-stop and
             # may be incomplete when this is called
             return None
         self.cached_PAGE_OFFSET = page_offset
@@ -61509,7 +61446,7 @@ class KernelConstsArm32(KernelConstsBase):
         elif 0x4000_0000 - 0x0100_0000 <= kern_min:
             page_offset = 0x4000_0000 # VMSPLIT_1G
         else:
-            # None does not cache, because `Kernel.get_maps()` is per-stop and
+            # None does not cache, because `AddrMap.get_maps(scope="kernel")` is per-stop and
             # may be incomplete when this is called
             return None
         self.cached_PAGE_OFFSET = page_offset
@@ -61554,39 +61491,21 @@ class KernelConstsArm32(KernelConstsBase):
         if page_offset is None:
             return None
 
-        res = PageMap.get_page_maps_by_pagewalk("pagewalk --quiet --no-pager --disable-color")
-        res = sorted(set(res.splitlines()))
-        res = list(filter(lambda line: line.endswith("]"), res))
-        res = list(filter(lambda line: "[+]" not in line, res))
-        res = list(filter(lambda line: "*" not in line, res))
-
-        maps = []
-        for line in res:
-            line = line.split()
-            vaddr_start = int(line[0].split("-")[0], 16)
-            if vaddr_start < page_offset:
-                continue
-            dic = {
-                "vaddr_start": vaddr_start,
-                "vaddr_end": int(line[0].split("-")[1], 16),
-                "paddr_start": int(line[1].split("-")[0], 16),
-                "paddr_end": int(line[1].split("-")[1], 16),
-            }
-            Maps = collections.namedtuple("Maps", dic.keys())
-            maps.append(Maps(*dic.values()))
+        maps = AddrMap.get_maps(command="pagewalk --quiet --no-pager --disable-color")
+        maps = [entry for entry in maps if entry.vstart >= page_offset and entry.pstart is not None]
 
         if maps == []: # `pagewalk` failed, or stopped in user mode
             return None
 
         physmap = maps[0]
-        for m in maps[1:]:
-            if physmap.vaddr_end != m.vaddr_start:
+        for entry in maps[1:]:
+            if physmap.vend != entry.vstart:
                 break
-            if physmap.paddr_end != m.paddr_start:
+            if physmap.pend != entry.pstart:
                 break
-            physmap = m
+            physmap = entry
 
-        self.cached_high_memory = physmap.vaddr_end
+        self.cached_high_memory = physmap.vend
         return self.cached_high_memory
 
     @property
@@ -61687,10 +61606,10 @@ class KernelConstsArm32(KernelConstsBase):
         kinfo = Kernel.get_kernel_layout()
         if kinfo is None:
             return None
-        phys_kbase = Kernel.v2p(kinfo.text_base)
+        phys_kbase = AddrMap.v2p(kinfo.text_base)
         if phys_kbase is None:
             return None
-        cands = Kernel.p2v(phys_kbase)
+        cands = AddrMap.p2v(phys_kbase)
         linear_cands = [x for x in cands if self.PAGE_OFFSET <= x < self.PAGE_OFFSET_END]
         if len(linear_cands) != 1:
             return None
@@ -62550,10 +62469,10 @@ class KernelConstsArm64(KernelConstsBase):
         kinfo = Kernel.get_kernel_layout()
         if kinfo is None:
             return None
-        phys_kbase = Kernel.v2p(kinfo.text_base)
+        phys_kbase = AddrMap.v2p(kinfo.text_base)
         if phys_kbase is None:
             return None
-        cands = Kernel.p2v(phys_kbase)
+        cands = AddrMap.p2v(phys_kbase)
         linear_cands = [x for x in cands if self.PAGE_OFFSET <= x < self.PAGE_OFFSET_END]
         if len(linear_cands) != 1:
             return None
@@ -63996,7 +63915,7 @@ class KernelAddressHeuristicFinder:
 
         # plan 2 (from pagewalk)
         kinfo = Kernel.get_kernel_layout()
-        page_offset_base_raw = kinfo.maps[0][0]
+        page_offset_base_raw = kinfo.maps[0].vstart
         ro_data = read_memory(kinfo.ro_base, kinfo.ro_size)
         ro_data = slice_unpack(ro_data, current_arch.ptrsize)
         try:
@@ -64029,7 +63948,7 @@ class KernelAddressHeuristicFinder:
             # plan 3 (from pagewalk)
             kinfo = Kernel.get_kernel_layout()
             if kinfo.maps and len(kinfo.maps) > 0:
-                page_offset_base_raw = kinfo.maps[0][0]
+                page_offset_base_raw = kinfo.maps[0].vstart
                 return page_offset_base_raw
         return None
 
@@ -64152,10 +64071,10 @@ class KernelAddressHeuristicFinder:
                     # incontinuity check
                     kinfo = Kernel.get_kernel_layout()
                     prev = None
-                    for vstart, _, _ in kinfo.maps:
-                        if vstart == s:
+                    for entry in kinfo.maps:
+                        if entry.vstart == s:
                             break
-                        prev = vstart
+                        prev = entry.vstart
 
                     if prev is not None:
                         if is_64bit():
@@ -67194,10 +67113,10 @@ class KernelAddressHeuristicFinder:
                 # area immediately following .rodata, where ioport_resource is defined.
                 if kinfo.ro_end and kinfo.maps:
                     rw_end = kinfo.ro_end
-                    for vaddr, size, _perm in kinfo.maps:
-                        if vaddr <= rw_end < vaddr + size or vaddr == rw_end:
-                            rw_end = max(rw_end, vaddr + size)
-                        elif vaddr > rw_end:
+                    for entry in kinfo.maps:
+                        if entry.vstart <= rw_end < entry.vend or entry.vstart == rw_end:
+                            rw_end = max(rw_end, entry.vend)
+                        elif entry.vstart > rw_end:
                             break
                     rw_size = min(rw_end - kinfo.ro_end, 0x1000000)
                     if rw_size:
@@ -67762,7 +67681,7 @@ class Kernel:
 
                 phys_start = int(data[0], 16)
                 phys_end = max(int(x[1], 16) for x in resources)
-                phys_ro_base = Kernel.v2p(self.ro_base)
+                phys_ro_base = AddrMap.v2p(self.ro_base)
                 if phys_ro_base is None:
                     return self
 
@@ -67790,71 +67709,6 @@ class Kernel:
                 if ro_end is not None:
                     return self.replace(ro_end=ro_end)
             return self
-
-    @staticmethod
-    @Cache.cache_until_next
-    def get_maps():
-        maps = []
-        res = PageMap.get_page_maps_by_pagewalk("pagewalk --quiet --no-pager --simple --disable-color")
-        res = sorted(set(res.splitlines()))
-        res = list(filter(lambda line: line.endswith("]"), res))
-        res = list(filter(lambda line: "[+]" not in line, res))
-        res = list(filter(lambda line: "*" not in line, res))
-
-        if is_x86():
-            for line in res:
-                line = line.split()
-                if line[6] != "KERN]":
-                    continue
-                vaddr = int(line[0].split("-")[0], 16)
-                size = int(line[2], 16)
-                perm = line[5][1:] # [xxx
-                maps.append([vaddr, size, perm])
-
-        elif is_arm32():
-            for line in res:
-                line = line.split()
-                vaddr = int(line[0].split("-")[0], 16)
-                if line[5] != "[PL0/---" and vaddr != 0xffff_0000:
-                    continue
-                size = int(line[2], 16)
-                perm = line[6][4:7] # PL1/xxx
-                maps.append([vaddr, size, perm])
-
-        elif is_arm64():
-            for line in res:
-                line = line.split()
-                if line[5] != "[EL0/---":
-                    continue
-                vaddr = int(line[0].split("-")[0], 16)
-                size = int(line[2], 16)
-                perm = line[6][4:7] # EL1/xxx
-                maps.append([vaddr, size, perm])
-
-        elif is_riscv64() or is_riscv32():
-            for line in res:
-                line = line.split()
-                if line[6] != "KERN]":
-                    continue
-                vaddr = int(line[0].split("-")[0], 16)
-                size = int(line[2], 16)
-                perm = line[5][1:] # [xxx
-                maps.append([vaddr, size, perm])
-
-        if len(maps) <= 1:
-            if is_x86():
-                warn("Make sure you are in ring0 (=kernel mode); See pagewalk")
-            elif is_arm32():
-                warn("Make sure you are in supervisor mode (=kernel mode); See pagewalk")
-                warn("Make sure qemu 3.x or higher")
-            elif is_arm64():
-                warn("Make sure you are in EL1 (=kernel mode); See pagewalk")
-                warn("Make sure qemu 3.x or higher")
-            elif is_riscv64() or is_riscv32():
-                warn("Make sure you are in S-mode (=kernel mode); See pagewalk")
-            return None
-        else:
-            return maps
 
     # No caching intentionally
     @staticmethod
@@ -67969,7 +67823,7 @@ class Kernel:
             return Kernel.Kinfo.build(dic, apply_data_range_hint)
 
         # Could not find the maps, so fast return
-        dic["maps"] = Kernel.get_maps()
+        dic["maps"] = AddrMap.get_maps(scope="kernel")
         if dic["maps"] is None:
             return Kernel.Kinfo.build(dic, apply_data_range_hint)
 
@@ -67977,40 +67831,40 @@ class Kernel:
         if is_x86():
             div0_handler = Kernel.get_kernel_base_hint()
             if div0_handler is not None:
-                for i, (vaddr, size, _perm) in enumerate(dic["maps"]):
-                    if vaddr <= div0_handler < vaddr + size:
-                        dic["text_base"] = vaddr
-                        dic["text_end"] = vaddr + size
+                for i, entry in enumerate(dic["maps"]):
+                    if entry.contains_virtual(div0_handler):
+                        dic["text_base"] = entry.vstart
+                        dic["text_end"] = entry.vend
                         text_base_map_index = i
                         break
 
         elif is_arm32():
             vector_handler = Kernel.get_kernel_base_hint()
             if vector_handler is not None:
-                for i, (vaddr, size, _perm) in enumerate(dic["maps"]):
-                    if vaddr <= vector_handler < vaddr + size:
-                        dic["text_base"] = vaddr
-                        dic["text_end"] = vaddr + size
+                for i, entry in enumerate(dic["maps"]):
+                    if entry.contains_virtual(vector_handler):
+                        dic["text_base"] = entry.vstart
+                        dic["text_end"] = entry.vend
                         text_base_map_index = i
                         break
 
         elif is_arm64():
             vbar = Kernel.get_kernel_base_hint()
             if vbar is not None:
-                for i, (vaddr, size, _perm) in enumerate(dic["maps"]):
-                    if vaddr <= vbar < vaddr + size:
-                        dic["text_base"] = vaddr
-                        dic["text_end"] = vaddr + size
+                for i, entry in enumerate(dic["maps"]):
+                    if entry.contains_virtual(vbar):
+                        dic["text_base"] = entry.vstart
+                        dic["text_end"] = entry.vend
                         text_base_map_index = i
                         break
 
         elif is_riscv64() or is_riscv32():
             stvec = Kernel.get_kernel_base_hint()
             if stvec is not None:
-                for i, (vaddr, size, _perm) in enumerate(dic["maps"]):
-                    if vaddr <= stvec < vaddr + size:
-                        dic["text_base"] = vaddr
-                        dic["text_end"] = vaddr + size
+                for i, entry in enumerate(dic["maps"]):
+                    if entry.contains_virtual(stvec):
+                        dic["text_base"] = entry.vstart
+                        dic["text_end"] = entry.vend
                         text_base_map_index = i
                         break
 
@@ -68020,18 +67874,18 @@ class Kernel:
             # It just determines this size heuristically and detects it, but it works well in most cases.
             TEXT_REGION_MIN_SIZE = 0x100000
 
-            for i, (vaddr, size, perm) in enumerate(dic["maps"]):
-                if perm == "R-X" and size >= TEXT_REGION_MIN_SIZE:
-                    dic["text_base"] = vaddr
-                    dic["text_end"] = vaddr + size
+            for i, entry in enumerate(dic["maps"]):
+                if str(entry.perm) == "r-x" and entry.vsize >= TEXT_REGION_MIN_SIZE:
+                    dic["text_base"] = entry.vstart
+                    dic["text_end"] = entry.vend
                     text_base_map_index = i
                     break
             else:
                 # not found, maybe old kernel
-                for i, (vaddr, size, perm) in enumerate(dic["maps"]):
-                    if perm == "RWX" and size >= TEXT_REGION_MIN_SIZE:
-                        dic["text_base"] = vaddr
-                        dic["text_end"] = vaddr + size
+                for i, entry in enumerate(dic["maps"]):
+                    if str(entry.perm) == "rwx" and entry.vsize >= TEXT_REGION_MIN_SIZE:
+                        dic["text_base"] = entry.vstart
+                        dic["text_end"] = entry.vend
                         text_base_map_index = i
                         break
                 else:
@@ -68053,20 +67907,20 @@ class Kernel:
         # Therefore, detection based solely on location may produce incorrect results.
         # As a result, detection also checks for the presence of the string "Linux version"
         # near the beginning of the .rodata page.
-        for i, (vaddr, size, perm) in enumerate(dic["maps"][text_base_map_index + 1:]):
-            if perm == "R--":
+        for i, entry in enumerate(dic["maps"][text_base_map_index + 1:]):
+            if str(entry.perm) == "r--":
                 if dic["ro_base"] is None:
-                    if not is_valid_addr(vaddr):
+                    if not is_valid_addr(entry.vstart):
                         continue
-                    data = read_memory(vaddr, get_pagesize())
+                    data = read_memory(entry.vstart, get_pagesize())
                     if b"Linux version" in data:
-                        dic["ro_base"] = vaddr
-                        dic["ro_end"] = vaddr + size
+                        dic["ro_base"] = entry.vstart
+                        dic["ro_end"] = entry.vend
                         ro_base_map_index = text_base_map_index + 1 + i
-                elif dic["ro_end"] == vaddr:
+                elif dic["ro_end"] == entry.vstart:
                     # merge contiguous region.
                     # This is important because .rodata may be split into GLOBAL and non-GLOBAL areas.
-                    dic["ro_end"] += size
+                    dic["ro_end"] = entry.vend
                     ro_base_map_index = text_base_map_index + 1 + i
                 else:
                     break
@@ -68083,17 +67937,17 @@ class Kernel:
         #   [ .rodata   ]
         if dic["ro_base"] is None:
             RO_REGION_MIN_SIZE = 0x100000
-            for i, (vaddr, size, perm) in enumerate(dic["maps"][text_base_map_index + 1:]):
-                if perm == "R--":
+            for i, entry in enumerate(dic["maps"][text_base_map_index + 1:]):
+                if str(entry.perm) == "r--":
                     if dic["ro_base"] is None:
-                        if size >= RO_REGION_MIN_SIZE:
-                            dic["ro_base"] = vaddr
-                            dic["ro_end"] = vaddr + size
+                        if entry.vsize >= RO_REGION_MIN_SIZE:
+                            dic["ro_base"] = entry.vstart
+                            dic["ro_end"] = entry.vend
                             ro_base_map_index = text_base_map_index + 1 + i
-                    elif dic["ro_end"] == vaddr:
+                    elif dic["ro_end"] == entry.vstart:
                         # merge contiguous region.
                         # This is important because .rodata may be split into GLOBAL and non-GLOBAL areas.
-                        dic["ro_end"] += size
+                        dic["ro_end"] = entry.vend
                         ro_base_map_index = text_base_map_index + 1 + i
                     else:
                         break
@@ -68138,17 +67992,17 @@ class Kernel:
             # TODO: A fixed size is currently used, but better algorithms may exist.
             RW_REGION_MIN_SIZE = 0x20000
             if dic["ro_base"] is not None:
-                for vaddr, size, perm in dic["maps"][ro_base_map_index + 1:]:
+                for entry in dic["maps"][ro_base_map_index + 1:]:
                     if dic["rw_base"] is None:
-                        if perm == "RW-" and size >= RW_REGION_MIN_SIZE:
-                            dic["rw_base"] = vaddr
-                            dic["rw_end"] = vaddr + size
-                    elif dic["rw_end"] == vaddr:
+                        if str(entry.perm) == "rw-" and entry.vsize >= RW_REGION_MIN_SIZE:
+                            dic["rw_base"] = entry.vstart
+                            dic["rw_end"] = entry.vend
+                    elif dic["rw_end"] == entry.vstart:
                         # merge contiguous region.
                         # This is important because a page that was freed from an alignment gap
                         # of the image and later reused may get its permission changed, which
                         # splits .data/.bss into pieces at a boot-dependent offset.
-                        dic["rw_end"] += size
+                        dic["rw_end"] = entry.vend
                     else:
                         break
 
@@ -68266,12 +68120,12 @@ class Kernel:
         if kinfo.has_none:
             return None
         area = []
-        for addr in kinfo.maps: # resolve search range
-            if addr[0] < kinfo.text_base:
+        for entry in kinfo.maps: # resolve search range
+            if entry.vstart < kinfo.text_base:
                 continue
-            if kinfo.rw_base and addr[0] >= kinfo.rw_base:
+            if kinfo.rw_base and entry.vstart >= kinfo.rw_base:
                 continue
-            area.append([addr[0], addr[0] + addr[1]])
+            area.append([entry.vstart, entry.vend])
         if area == []:
             return None
         for start, end in area: # find version string
@@ -71416,31 +71270,6 @@ class Kernel:
             return None
 
     @staticmethod
-    @Cache.cache_until_next
-    def p2v(paddr): # return list
-        ret = gdb.execute("p2v {:#x}".format(paddr), to_string=True)
-        return [int(x, 16) for x in re.findall(r"Phys: \S+ -> Virt: (\S+)", ret)]
-
-    @staticmethod
-    @Cache.cache_until_next
-    def v2p(vaddr):
-        # v2p is slow since it needs maps parsing for each time.
-        # more faster using gva2gpa if available.
-        try:
-            ret = gdb.execute("monitor gva2gpa {:#x}".format(vaddr), to_string=True)
-            r = re.search(r"gpa: (0x\S+)", ret)
-            if r:
-                return int(r.group(1), 16)
-        except gdb.error:
-            pass
-
-        ret = gdb.execute("v2p {:#x}".format(vaddr), to_string=True)
-        r = re.search(r"Virt: 0x\S+ -> Phys: (0x\S+)", ret)
-        if r:
-            return int(r.group(1), 16)
-        return None
-
-    @staticmethod
     def page2virt(page):
         ret = gdb.execute("page2virt {:#x}".format(page), to_string=True)
         for line in ret.splitlines():
@@ -72962,10 +72791,10 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
             return None
 
         def is_executable(x):
-            maps = Kernel.get_maps()
-            for start, size, perm in maps:
-                if start <= x and x < start + size:
-                    return perm.endswith("X")
+            maps = AddrMap.get_maps(scope="kernel")
+            for entry in maps:
+                if entry.contains_virtual(x):
+                    return entry.is_executable()
             return False
 
         for task in task_addrs:
@@ -78854,9 +78683,9 @@ class KernelOperationsCommand(GenericCommand, BufferingOutput):
             # show permission
             if not args.quiet:
                 kinfo = Kernel.get_kernel_layout()
-                for vaddr, size, perm in kinfo.maps:
-                    if vaddr <= args.address and args.address < vaddr + size:
-                        perm_str = perm
+                for entry in kinfo.maps:
+                    if entry.contains_virtual(args.address):
+                        perm_str = str(entry.perm)
                         break
                 else:
                     perm_str = "???"
@@ -82592,9 +82421,9 @@ class KernelSearchCodePtrCommand(GenericCommand, BufferingOutput):
         return read_int_from_memory(addr)
 
     def get_permission(self, addr):
-        for vaddr, size, perm in self.kinfo.maps:
-            if vaddr <= addr and addr < vaddr + size:
-                return perm
+        for entry in self.kinfo.maps:
+            if entry.contains_virtual(addr):
+                return str(entry.perm)
         return "???"
 
     def search(self, backtrack_info, addr, max_range, depth):
@@ -136737,7 +136566,7 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
                         if physmap is not None:
                             phys = virt - physmap
                     else:
-                        phys = PageMap.v2p_from_map(virt, BuddyDumpCommand.maps)
+                        phys = AddrMap.v2p(virt, maps=BuddyDumpCommand.maps)
 
                     if phys is not None:
                         self.out.append("    used:{:{:d}s}  size:{:#08x}".format("", align, phys))
@@ -136840,7 +136669,7 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
 
         # do not use cache
         if self.args.sort_verbose and not self.args.skip_phys and not self.args.use_physmap:
-            BuddyDumpCommand.maps = PageMap.get_page_maps(None)
+            BuddyDumpCommand.maps = AddrMap.get_maps()
             if BuddyDumpCommand.maps is None:
                 self.quiet_err("Failed to resolve maps")
                 return
@@ -140299,7 +140128,7 @@ class KernelDmaBufCommand(GenericCommand, BufferingOutput):
 
             virt_str = "???"
             if phys:
-                r = Kernel.p2v(phys)
+                r = AddrMap.p2v(phys)
                 if r:
                     r = [hex(x) for x in r if AddressUtil.is_msb_on(x)]
                     virt_str = ",".join(r)
@@ -151034,7 +150863,7 @@ class XSecureMemAddrCommand(GenericCommand):
             return None
 
         elif args.virt:
-            target_phys = SecureMemory.v2p(args.location, args.verbose)
+            target_phys = AddrMap.v2p(args.location, force_secure=True, verbose=args.verbose)
             if target_phys is None:
                 err("Could not find physical address")
                 return None
@@ -151058,20 +150887,12 @@ class XSecureMemAddrCommand(GenericCommand):
             info("Redirect to xp command")
 
         elif self.args.virt:
-            maps = PageMap.get_page_maps_arm64_optee_secure_memory()
-            for m in maps:
-                if m[2] == 0:
-                    continue
-                if m[0] <= self.args.location < m[1]:
-                    phys_base = m[2]
-                    offset = self.args.location - m[0]
-                    phys_addr = phys_base + offset
-                    info("Redirect to xp command (virt:{:#x} -> phys:{:#x})".format(
-                        self.args.location, phys_addr,
-                    ))
-                    break
-            else:
+            phys_addr = AddrMap.v2p(self.args.location, force_secure=True)
+            if phys_addr is None:
                 return
+            info("Redirect to xp command (virt:{:#x} -> phys:{:#x})".format(
+                self.args.location, phys_addr,
+            ))
 
         gdb.execute("xp/{:d}{:s}{:s} {:#x}".format(
             dump_count,
@@ -151194,20 +151015,12 @@ class WSecureMemAddrCommand(GenericCommand):
             info("Redirect to write_physmem")
 
         elif self.args.virt:
-            maps = PageMap.get_page_maps_arm64_optee_secure_memory()
-            for m in maps:
-                if m[2] == 0:
-                    continue
-                if m[0] <= self.args.location < m[1]:
-                    phys_base = m[2]
-                    offset = self.args.location - m[0]
-                    phys_addr = phys_base + offset
-                    info("Redirect to write_physmem (virt:{:#x} -> phys:{:#x})".format(
-                        self.args.location, phys_addr,
-                    ))
-                    break
-            else:
+            phys_addr = AddrMap.v2p(self.args.location, force_secure=True)
+            if phys_addr is None:
                 return
+            info("Redirect to write_physmem (virt:{:#x} -> phys:{:#x})".format(
+                self.args.location, phys_addr,
+            ))
 
         try:
             write_physmem(phys_addr, data)
@@ -151281,16 +151094,7 @@ class BreakSecureMemAddrCommand(GenericCommand):
     _example_ = "\n".join(_example_).format(_cmdline_)
 
     def aarch64_get_page_maps_el3(self):
-        res = PageMap.get_page_maps_by_pagewalk("pagewalk 3 --quiet --no-pager --no-merge --disable-color")
-        res = sorted(set(res.splitlines()))
-        res = list(filter(lambda line: line.endswith("]"), res))
-        res = list(filter(lambda line: "[+]" not in line, res))
-        maps = []
-        for line in res:
-            vrange, prange, *_ = line.split()
-            vstart, vend = [int(x, 16) for x in vrange.split("-")]
-            pstart, pend = [int(x, 16) for x in prange.split("-")]
-            maps.append((vstart, vend, pstart, pend))
+        maps = AddrMap.get_maps(command="pagewalk 3 --quiet --no-pager --no-merge --disable-color")
         if maps == []:
             warn("Make sure you are in EL1 (=kernel mode)")
             warn("Make sure qemu 3.x or higher")
@@ -151335,7 +151139,7 @@ class BreakSecureMemAddrCommand(GenericCommand):
         if is_arm64():
             maps = self.aarch64_get_page_maps_el3()
             if maps:
-                virt_addrs = PageMap.p2v_from_map(args.location, maps)
+                virt_addrs = AddrMap.p2v(args.location, maps=maps)
                 # change to EL3 and set bp
                 saved_cpsr = self.aarch64_switch_el(target_el=3)
                 for virt_addr in virt_addrs:
@@ -151345,7 +151149,7 @@ class BreakSecureMemAddrCommand(GenericCommand):
                 if virt_addrs:
                     return
 
-        virt_addrs = SecureMemory.p2v(args.location, args.verbose)
+        virt_addrs = AddrMap.p2v(args.location, force_secure=True, verbose=args.verbose)
         if virt_addrs == []:
             warn("Could not find virtual address")
             return
@@ -151368,23 +151172,18 @@ class OpteeThreadEnterUserModeBreakpoint(gdb.Breakpoint):
     def get_ta_loaded_address(verbose=False):
         Cache.reset_gef_caches()
         if is_arm32():
-            res = PageMap.get_page_maps_by_pagewalk("pagewalk -S --quiet --no-pager --disable-color")
+            res = AddrMap.run_pagewalk("pagewalk -S --quiet --no-pager --disable-color")
             if verbose:
                 gef_print(res)
             res = sorted(set(res.splitlines()))
             res = list(filter(lambda line: "PL0/R-X" in line, res))
         elif is_arm64():
-            res = PageMap.get_page_maps_by_pagewalk("pagewalk 1 --quiet --no-pager --disable-color")
+            res = AddrMap.run_pagewalk("pagewalk 1 --quiet --no-pager --disable-color")
             if verbose:
                 gef_print(res)
-            res = sorted(set(res.splitlines()))
-            res = list(filter(lambda line: "EL0/R-X" in line, res))
-        maps = []
-        for line in res:
-            vrange, prange, *_ = line.split()
-            vstart, vend = [int(x, 16) for x in vrange.split("-")]
-            pstart, pend = [int(x, 16) for x in prange.split("-")]
-            maps.append((vstart, vend, pstart, pend))
+        maps = AddrMap.parse_pagewalk_output(res)
+        user_exec = "PL0/R-X" if is_arm32() else "EL0/R-X"
+        maps = [entry for entry in maps if user_exec in entry.flags]
         if len(maps) == 2:
             return maps[1]
         else:
@@ -151396,7 +151195,7 @@ class OpteeThreadEnterUserModeBreakpoint(gdb.Breakpoint):
             info("Could not find TA address, so continue (this is 1st stop?)")
             return False
 
-        ta_vstart, ta_vend, _, _ = ta_address
+        ta_vstart, ta_vend = ta_address.vstart, ta_address.vend
         info("TA address: {:#x}".format(ta_vstart))
 
         ta_vsize = ta_vend - ta_vstart
@@ -151449,33 +151248,17 @@ class OpteeBreakTaAddrCommand(GenericCommand):
         super().__init__(complete=gdb.COMPLETE_FILENAME)
         return
 
-    def get_secure_memory_maps(self):
-        maps = PageMap.get_page_maps_by_pagewalk("pagewalk --optee --quiet --no-pager --disable-color").splitlines()
-        if not maps:
+    def get_secure_memory_map(self):
+        entry = next((entry for entry in AddrMap.get_maps(scope="optee") if "TEE-OS .text" in entry.hint), None)
+        if entry is None:
             err("Could not find memory maps")
-            return None
-
-        for m in maps:
-            s = m.split(None, 3)
-            if len(s) != 4:
-                continue
-            virt_range, phys_range, size, hint = s
-            if "TEE-OS .text" not in hint:
-                continue
-            virt_start = int(virt_range.split("-")[0], 16)
-            phys_start = int(phys_range.split("-")[0], 16)
-            size = int(size, 16)
-            break
-        else:
-            err("Could not find memory maps")
-            return None
-        return virt_start, phys_start, size
+        return entry
 
     def search_thread_enter_user_mode(self):
-        ret = self.get_secure_memory_maps()
-        if ret is None:
+        entry = self.get_secure_memory_map()
+        if entry is None:
             return
-        virt_start, phys_start, size = ret
+        virt_start, phys_start, size = entry.vstart, entry.pstart, entry.psize
 
         data = SecureMemory.read_phys(phys_start, size)
         if not data:
@@ -152150,40 +151933,28 @@ class OpteeTaDumpMemoryCommand(OpteeTaDumpCommand):
     @only_if_specific_gdb_mode(mode=("qemu-system",))
     @only_if_specific_arch(arch=("ARM32", "ARM64"))
     def do_invoke(self, args):
-        maps = PageMap.get_page_maps_by_pagewalk("pagewalk --optee --quiet --no-pager --disable-color").splitlines()
-        if not maps:
+        entry = next((
+            entry for entry in AddrMap.get_maps(scope="optee")
+            if "TEE-OS .data / stack" in entry.hint
+        ), None)
+        if entry is None:
             err("Could not find memory maps")
             return
 
-        for m in maps:
-            s = m.split(None, 3)
-            if len(s) != 4:
-                continue
-            virt_range, phys_range, size, hint = s
-            if "TEE-OS .data / stack" not in hint:
-                continue
-            virt_start = int(virt_range.split("-")[0], 16)
-            phys_start = int(phys_range.split("-")[0], 16)
-            size = int(size, 16)
-            break
-        else:
-            err("Could not find memory maps")
-            return
-
-        data = SecureMemory.read_phys(phys_start, size)
+        data = SecureMemory.read_phys(entry.pstart, entry.psize)
         if not data:
             err("Memory read error ({:s})".format(SecureMemory.PRIVILEGE_HINT))
             return
 
         self.out = []
-        list_heads = self.find_list_head(data, virt_start)
+        list_heads = self.find_list_head(data, entry.vstart)
         if not list_heads:
             if not args.for_old_version:
                 info("Trying with --for-old-version...")
                 gdb.execute("optee-ta-dump memory --for-old-version")
             return
 
-        self.dump_service(data, virt_start, list_heads)
+        self.dump_service(data, entry.vstart, list_heads)
         self.print_output(check_terminal_size=True)
         return
 
@@ -152553,32 +152324,20 @@ class OpteeShmListCommand(GenericCommand, BufferingOutput):
     @only_if_specific_gdb_mode(mode=("qemu-system",))
     @only_if_specific_arch(arch=("ARM32", "ARM64"))
     def do_invoke(self, args):
-        maps = PageMap.get_page_maps_by_pagewalk("pagewalk --optee --quiet --no-pager --disable-color").splitlines()
-        if not maps:
+        entry = next((
+            entry for entry in AddrMap.get_maps(scope="optee")
+            if "TEE-OS .data / stack" in entry.hint
+        ), None)
+        if entry is None:
             err("Could not find memory maps")
             return
 
-        for m in maps:
-            s = m.split(None, 3)
-            if len(s) != 4:
-                continue
-            virt_range, phys_range, size, hint = s
-            if "TEE-OS .data / stack" not in hint:
-                continue
-            virt_start = int(virt_range.split("-")[0], 16)
-            phys_start = int(phys_range.split("-")[0], 16)
-            size = int(size, 16)
-            break
-        else:
-            err("Could not find memory maps")
-            return
-
-        data = SecureMemory.read_phys(phys_start, size)
+        data = SecureMemory.read_phys(entry.pstart, entry.psize)
         if not data:
             err("Memory read error ({:s})".format(SecureMemory.PRIVILEGE_HINT))
             return
 
-        parsed_list_heads = self.find_reg_shm_list(data, virt_start)
+        parsed_list_heads = self.find_reg_shm_list(data, entry.vstart)
         if not parsed_list_heads:
             err("Could not find reg_shm_list")
             return
@@ -152639,41 +152398,29 @@ class OpteeBgetDumpCommand(GenericCommand, BufferingOutput):
 
     def is_readable_virt_memory(self, addr):
         if is_arm32():
-            res = PageMap.get_page_maps_by_pagewalk("pagewalk -S --quiet --no-pager --disable-color")
-            res = sorted(set(res.splitlines()))
-            res = list(filter(lambda line: "PL0/RW-" in line, res))
+            command = "pagewalk -S --quiet --no-pager --disable-color"
+            user_write = "PL0/RW-"
         elif is_arm64():
-            res = PageMap.get_page_maps_by_pagewalk("pagewalk 1 --quiet --no-pager --disable-color")
-            res = sorted(set(res.splitlines()))
-            res = list(filter(lambda line: "EL0/RW-" in line, res))
-        for line in res:
-            vrange, prange, *_ = line.split()
-            vstart, vend = [int(x, 16) for x in vrange.split("-")]
-            pstart, pend = [int(x, 16) for x in prange.split("-")]
-            if vstart <= addr < vend:
+            command = "pagewalk 1 --quiet --no-pager --disable-color"
+            user_write = "EL0/RW-"
+        for entry in AddrMap.get_maps(command=command):
+            if user_write in entry.flags and entry.contains_virtual(addr):
                 return True
         return False
 
     def get_ta_rw_address(self, ta_loaded_rx_end):
         if is_arm32():
-            res = PageMap.get_page_maps_by_pagewalk("pagewalk -S --quiet --no-pager --disable-color")
-            res = sorted(set(res.splitlines()))
+            command = "pagewalk -S --quiet --no-pager --disable-color"
         elif is_arm64():
-            res = PageMap.get_page_maps_by_pagewalk("pagewalk 1 --quiet --no-pager --disable-color")
-            res = sorted(set(res.splitlines()))
-        for line in res:
-            if not re.search("[PE]L1/RW", line):
-                continue
-            vrange, prange, *_ = line.split()
-            vstart, vend = [int(x, 16) for x in vrange.split("-")]
-            pstart, pend = [int(x, 16) for x in prange.split("-")]
-            if vstart == ta_loaded_rx_end:
-                return (vstart, vend, pstart, pend)
+            command = "pagewalk 1 --quiet --no-pager --disable-color"
+        for entry in AddrMap.get_maps(command=command):
+            if re.search("[PE]L1/RW", entry.flags) and entry.vstart == ta_loaded_rx_end:
+                return entry
         return None
 
     def get_malloc_ctx(self, ta_rw_address_map):
-        vstart = ta_rw_address_map[0]
-        vend = ta_rw_address_map[1]
+        vstart = ta_rw_address_map.vstart
+        vend = ta_rw_address_map.vend
         data = read_memory(vstart, vend - vstart)
         data = slice_unpack(data, current_arch.ptrsize)
 
@@ -152939,15 +152686,19 @@ class OpteeBgetDumpCommand(GenericCommand, BufferingOutput):
             err("Could not find TA address")
             return
 
-        ta_address = ta_address_map[0]
-        self.verbose_info("TA loaded address (RX): {:#x} - {:#x}".format(ta_address_map[0], ta_address_map[1]))
+        ta_address = ta_address_map.vstart
+        self.verbose_info("TA loaded address (RX): {:#x} - {:#x}".format(
+            ta_address_map.vstart, ta_address_map.vend,
+        ))
 
         if args.malloc_ctx is None:
-            ta_rw_address_map = self.get_ta_rw_address(ta_address_map[1])
+            ta_rw_address_map = self.get_ta_rw_address(ta_address_map.vend)
             if ta_rw_address_map is None:
                 err("Could not find TA rw address")
                 return
-            self.verbose_info("TA loaded address (RW): {:#x} - {:#x}".format(ta_rw_address_map[0], ta_rw_address_map[1]))
+            self.verbose_info("TA loaded address (RW): {:#x} - {:#x}".format(
+                ta_rw_address_map.vstart, ta_rw_address_map.vend,
+            ))
             malloc_ctx_addr = self.get_malloc_ctx(ta_rw_address_map)
             if malloc_ctx_addr is None:
                 err("Could not find malloc_ctx")
@@ -154215,7 +153966,7 @@ class VBARCommand(GenericCommand, BufferingOutput):
                 # The secure page table lives in the secure memory, which is invisible from
                 # the non-secure world. Walking it needs the memory of qemu-system itself,
                 # so it fails without the privilege to read /proc/<qemu-system>/mem.
-                vbar_phys = SecureMemory.v2p(vbar)
+                vbar_phys = AddrMap.v2p(vbar, force_secure=True)
                 if vbar_phys is None:
                     self.err_add_out("Could not translate {:#x} ({:s})".format(
                         vbar, SecureMemory.PRIVILEGE_HINT))
@@ -154859,12 +154610,160 @@ class QemuRegistersCommand(GenericCommand, BufferingOutput):
         return
 
 
-class PageMap:
+class AddrMap:
     """A collection of utility functions that are related to memory map from page tables."""
+
+    class MapEntry:
+        """A virtual-to-physical mapping parsed from page-table information."""
+
+        __slots__ = (
+            "vstart", "vend", "vsize", "pstart", "pend", "psize",
+            "flags", "perm", "page_size", "count", "hint",
+            "vstart_text", "vend_text", "source_line",
+        )
+
+        def __init__(self, vstart, vend, pstart, pend, flags="", perm=None,
+                     page_size=None, count=None, hint="", vstart_text=None, vend_text=None,
+                     source_line=""):
+            self.vstart = vstart
+            self.vend = vend
+            self.vsize = vend - vstart
+            self.pstart = pstart
+            self.pend = pend
+            self.psize = pend - pstart if pstart is not None and pend is not None else None
+            self.flags = flags
+            self.perm = perm if perm is not None else Permission(value=Permission.ALL)
+            self.page_size = page_size
+            self.count = count
+            self.hint = hint
+            self.vstart_text = vstart_text or "{:#x}".format(vstart)
+            self.vend_text = vend_text or "{:#x}".format(vend)
+            self.source_line = source_line
+            return
+
+        def __repr__(self):
+            pstart = "None" if self.pstart is None else "{:#x}".format(self.pstart)
+            pend = "None" if self.pend is None else "{:#x}".format(self.pend)
+            return ('<{:s}.{:s} object at {:#x}, vstart={:#x}, vend={:#x}, '
+                    'pstart={:s}, pend={:s}, perm="{}", flags="{:s}">').format(
+                self.__module__, self.__class__.__name__, id(self), self.vstart, self.vend,
+                pstart, pend, self.perm, self.flags,
+            )
+
+        def contains_virtual(self, address):
+            return self.vstart <= address < self.vend
+
+        def contains_physical(self, address):
+            return self.pstart is not None and self.pstart <= address < self.pend
+
+        def is_readable(self):
+            return bool(self.perm & Permission.READ)
+
+        def is_writable(self):
+            return bool(self.perm & Permission.WRITE)
+
+        def is_executable(self):
+            return bool(self.perm & Permission.EXECUTE)
+
+        def v2p(self, address):
+            if self.pstart is None or not self.contains_virtual(address):
+                return None
+            return self.pstart + address - self.vstart
+
+        def p2v(self, address):
+            if not self.contains_physical(address):
+                return None
+            return self.vstart + address - self.pstart
+
+        def to_section(self):
+            return Section(page_start=self.vstart, page_end=self.vend, permission=self.perm)
+
+        def __str__(self):
+            if self.source_line:
+                return self.source_line
+            if self.has_wildcard:
+                virtual = "{:s}-{:s}".format(self.vstart_text, self.vend_text)
+            else:
+                virtual = "{:#018x}-{:#018x}".format(self.vstart, self.vend)
+            physical = "-"
+            if self.pstart is not None:
+                physical = "{:#018x}-{:#018x}".format(self.pstart, self.pend)
+            page_size = "-" if self.page_size is None else "{:#x}".format(self.page_size)
+            count = "-" if self.count is None else "{:d}".format(self.count)
+            return "{:37s}  {:37s}  {:<#12x} {:<11s} {:<6s} {:s}".format(
+                virtual, physical, self.vsize, page_size, count, self.flags,
+            ).rstrip()
+
+        @property
+        def accessed(self):
+            return "ACCESSED" in self.flags
+
+        @property
+        def has_wildcard(self):
+            return "*" in self.vstart_text or "*" in self.vend_text
+
+    @staticmethod
+    def permission_from_flags(flags):
+        permissions = re.findall(r"(?:^|[/\[])([R-][W-][X-])", flags, re.IGNORECASE)
+        if not permissions:
+            return Permission(value=Permission.ALL)
+        return Permission.from_process_maps(permissions[-1].lower())
+
+    @staticmethod
+    def parse_pagewalk_output(output):
+        maps = []
+        for source_line in sorted(set(output.splitlines())):
+            line = Color.remove_color(source_line)
+            if not line.startswith("0x") or not line.endswith("]") or "[+]" in line:
+                continue
+            fields = line.split(None, 5)
+            if len(fields) != 6 or (fields[1] != "-" and not fields[1].startswith("0x")):
+                continue
+            try:
+                vstart_text, vend_text = fields[0].split("-")
+                vstart = int(vstart_text.replace("*", "0"), 16)
+                vend = int(vend_text.replace("*", "f"), 16)
+                if fields[1] == "-":
+                    pstart = pend = None
+                else:
+                    pstart, pend = [int(x, 16) for x in fields[1].split("-")]
+                page_size = int(fields[3], 16) if fields[3] != "-" else None
+                count = int(fields[4], 0) if fields[4] != "-" else None
+            except (ValueError, IndexError):
+                continue
+            flags = fields[5]
+            maps.append(AddrMap.MapEntry(
+                vstart, vend, pstart, pend, flags=flags,
+                perm=AddrMap.permission_from_flags(flags), page_size=page_size, count=count,
+                vstart_text=vstart_text, vend_text=vend_text, source_line=source_line,
+            ))
+        return maps
+
+    @staticmethod
+    def parse_optee_pagewalk_output(output):
+        pattern = re.compile(
+            r"^(0x[0-9a-f]+)-(0x[0-9a-f]+)\s+"
+            r"(0x[0-9a-f]+)-(0x[0-9a-f]+)\s+"
+            r"(0x[0-9a-f]+)(?:\s+(\[[^]]+\]))?(?:\s+(.*))?$",
+            re.IGNORECASE,
+        )
+        maps = []
+        for line in output.splitlines():
+            match = pattern.match(line.strip())
+            if not match:
+                continue
+            vstart, vend, pstart, pend = [int(match.group(i), 16) for i in range(1, 5)]
+            flags = match.group(6) or ""
+            maps.append(AddrMap.MapEntry(
+                vstart, vend, pstart, pend, flags=flags,
+                perm=AddrMap.permission_from_flags(flags), hint=match.group(7) or "",
+            ))
+        return maps
 
     @staticmethod
     @Cache.cache_until_next(per_cpu=True)
-    def get_page_maps_by_pagewalk(command):
+    def run_pagewalk(command):
+        """Run a pagewalk command and cache its raw output for the current stop and CPU."""
         if is_kgdb():
             info("Start `pagewalk`")
         res = gdb.execute(command, to_string=True)
@@ -154874,136 +154773,206 @@ class PageMap:
         return res
 
     @staticmethod
-    @Cache.cache_until_next
-    def get_page_maps_arm64_optee_secure_memory(verbose=False):
-        # heuristic search of qemu-system memory
-        if SecureMemory.get_area(verbose) is None:
-            err("Could not find secure memory maps")
-            return None
-        data = SecureMemory.read_all(verbose)
-        if data is None:
-            err("Memory read error ({:s})".format(SecureMemory.PRIVILEGE_HINT))
-            return None
-        data_list = slice_unpack(data, 8)
-
-        """
-        enum teecore_memtypes {
-            MEM_AREA_TEE_RAM = 1,
-            MEM_AREA_TEE_RAM_RX,
-            MEM_AREA_TEE_RAM_RO,
-            MEM_AREA_TEE_RAM_RW,
-            MEM_AREA_INIT_RAM_RO,
-            MEM_AREA_INIT_RAM_RX,
-            MEM_AREA_NEX_RAM_RO,
-            MEM_AREA_NEX_RAM_RW,
-            MEM_AREA_NEX_DYN_VASPACE,
-            MEM_AREA_TEE_DYN_VASPACE,
-            MEM_AREA_TEE_COHERENT,
-            MEM_AREA_TEE_ASAN,
-            MEM_AREA_IDENTITY_MAP_RX,
-            MEM_AREA_NSEC_SHM,
-            MEM_AREA_NEX_NSEC_SHM,
-            MEM_AREA_RAM_NSEC,
-            MEM_AREA_RAM_SEC,
-            MEM_AREA_ROM_SEC,
-            MEM_AREA_IO_NSEC,
-            MEM_AREA_IO_SEC,
-            MEM_AREA_EXT_DT,
-            MEM_AREA_MANIFEST_DT,
-            MEM_AREA_TRANSFER_LIST,
-            MEM_AREA_RES_VASPACE,
-            MEM_AREA_SHM_VASPACE,
-            MEM_AREA_TS_VASPACE,
-            MEM_AREA_PAGER_VASPACE,
-            MEM_AREA_SDP_MEM,
-            MEM_AREA_DDR_OVERALL,
-            MEM_AREA_SEC_RAM_OVERALL,
-            MEM_AREA_MAXTYPE
-        };
-        struct tee_mmap_region {
-            unsigned int type; /* enum teecore_memtypes */
-            unsigned int region_size;
-            paddr_t pa;
-            vaddr_t va;
-            size_t size;
-            uint32_t attr; /* TEE_MATTR_* above */
-        };
-        """
-        maps = []
-        old_i = -1
-        for i in range(len(data_list) - 4):
-            type_ = data_list[i] & 0xffff_ffff
-            region_size = (data_list[i] >> 32) & 0xffff_ffff
-            if type_ == 0 or 30 < type_: # enum teecore_memtypes
-                continue
-            if region_size & 0xfff or region_size < 0x1000 or 0xffff_f000 < region_size:
-                continue
-            pa, va, size, attr = data_list[i + 1:i + 5]
-            if pa & 0xfff or 0xffff_f000 < pa:
-                continue
-            if va & 0xfff or 0xffff_f000 < va:
-                continue
-            if size & 0xfff or size < 0x1000 or 0xffff_f000 < size:
-                continue
-            if len(maps) > 0 and old_i + 5 != i: # Judging continuity
-                continue
-            maps.append([va, va + size, pa, pa + size])
-            old_i = i
-        return maps
-
-    @staticmethod
     @Cache.cache_until_next(per_cpu=True)
-    def get_page_maps(FORCE_PREFIX_S, verbose=False):
-        if is_arm64():
-            if FORCE_PREFIX_S is True:
-                return PageMap.get_page_maps_arm64_optee_secure_memory(verbose) # already parsed
-            else:
-                res = PageMap.get_page_maps_by_pagewalk("pagewalk 1 --quiet --no-pager --no-merge --disable-color")
-        else:
-            if FORCE_PREFIX_S is None:
-                res = PageMap.get_page_maps_by_pagewalk("pagewalk --quiet --no-pager --no-merge --disable-color")
-            elif FORCE_PREFIX_S is True:
-                res = PageMap.get_page_maps_by_pagewalk("pagewalk -S --quiet --no-pager --no-merge --disable-color")
-            elif FORCE_PREFIX_S is False:
-                res = PageMap.get_page_maps_by_pagewalk("pagewalk -s --quiet --no-pager --no-merge --disable-color")
-        res = sorted(set(res.splitlines()))
-        res = list(filter(lambda line: line.endswith("]"), res))
-        res = list(filter(lambda line: "[+]" not in line, res))
-        maps = []
-        for line in res:
-            vrange, prange, *_ = line.split()
-            vstart, vend = [int(x, 16) for x in vrange.split("-")]
-            pstart, pend = [int(x, 16) for x in prange.split("-")]
-            maps.append((vstart, vend, pstart, pend))
-        if maps == []:
-            if is_x86():
-                warn("Make sure you are in ring0 (=kernel mode)")
+    def get_maps(force_secure=None, verbose=False, command=None, scope="all"):
+        """Return address mappings for the requested all, kernel, or OP-TEE scope."""
+
+        def get_optee_maps():
+            output = AddrMap.run_pagewalk("pagewalk --optee --quiet --no-pager --disable-color")
+            return AddrMap.parse_optee_pagewalk_output(output)
+
+        def get_arm64_secure_maps():
+            # heuristic search of qemu-system memory
+            if SecureMemory.get_area(verbose) is None:
+                err("Could not find secure memory maps")
+                return None
+            data = SecureMemory.read_all(verbose)
+            if data is None:
+                err("Memory read error ({:s})".format(SecureMemory.PRIVILEGE_HINT))
+                return None
+            data_list = slice_unpack(data, 8)
+
+            """
+            enum teecore_memtypes {
+                MEM_AREA_TEE_RAM = 1,
+                MEM_AREA_TEE_RAM_RX,
+                MEM_AREA_TEE_RAM_RO,
+                MEM_AREA_TEE_RAM_RW,
+                MEM_AREA_INIT_RAM_RO,
+                MEM_AREA_INIT_RAM_RX,
+                MEM_AREA_NEX_RAM_RO,
+                MEM_AREA_NEX_RAM_RW,
+                MEM_AREA_NEX_DYN_VASPACE,
+                MEM_AREA_TEE_DYN_VASPACE,
+                MEM_AREA_TEE_COHERENT,
+                MEM_AREA_TEE_ASAN,
+                MEM_AREA_IDENTITY_MAP_RX,
+                MEM_AREA_NSEC_SHM,
+                MEM_AREA_NEX_NSEC_SHM,
+                MEM_AREA_RAM_NSEC,
+                MEM_AREA_RAM_SEC,
+                MEM_AREA_ROM_SEC,
+                MEM_AREA_IO_NSEC,
+                MEM_AREA_IO_SEC,
+                MEM_AREA_EXT_DT,
+                MEM_AREA_MANIFEST_DT,
+                MEM_AREA_TRANSFER_LIST,
+                MEM_AREA_RES_VASPACE,
+                MEM_AREA_SHM_VASPACE,
+                MEM_AREA_TS_VASPACE,
+                MEM_AREA_PAGER_VASPACE,
+                MEM_AREA_SDP_MEM,
+                MEM_AREA_DDR_OVERALL,
+                MEM_AREA_SEC_RAM_OVERALL,
+                MEM_AREA_MAXTYPE
+            };
+            struct tee_mmap_region {
+                unsigned int type; /* enum teecore_memtypes */
+                unsigned int region_size;
+                paddr_t pa;
+                vaddr_t va;
+                size_t size;
+                uint32_t attr; /* TEE_MATTR_* above */
+            };
+            """
+            maps = []
+            old_i = -1
+            for i in range(len(data_list) - 4):
+                type_ = data_list[i] & 0xffff_ffff
+                region_size = (data_list[i] >> 32) & 0xffff_ffff
+                if type_ == 0 or 30 < type_: # enum teecore_memtypes
+                    continue
+                if region_size & 0xfff or region_size < 0x1000 or 0xffff_f000 < region_size:
+                    continue
+                pa, va, size, attr = data_list[i + 1:i + 5]
+                if pa & 0xfff or 0xffff_f000 < pa:
+                    continue
+                if va & 0xfff or 0xffff_f000 < va:
+                    continue
+                if size & 0xfff or size < 0x1000 or 0xffff_f000 < size:
+                    continue
+                if len(maps) > 0 and old_i + 5 != i: # Judging continuity
+                    continue
+                flags = "TEE_MATTR={:#x}".format(attr)
+                maps.append(AddrMap.MapEntry(
+                    va, va + size, pa, pa + size, flags=flags,
+                    perm=Permission(value=Permission.ALL), page_size=region_size,
+                ))
+                old_i = i
+            return maps
+
+        def get_all_maps():
+            selected_command = command
+            custom_command = selected_command is not None
+            if selected_command is None:
+                if is_arm64():
+                    if force_secure is True:
+                        return get_arm64_secure_maps()
+                    selected_command = "pagewalk 1 --quiet --no-pager --no-merge --disable-color"
+                elif force_secure is None:
+                    selected_command = "pagewalk --quiet --no-pager --no-merge --disable-color"
+                elif force_secure is True:
+                    selected_command = "pagewalk -S --quiet --no-pager --no-merge --disable-color"
+                elif force_secure is False:
+                    selected_command = "pagewalk -s --quiet --no-pager --no-merge --disable-color"
+            maps = AddrMap.parse_pagewalk_output(AddrMap.run_pagewalk(selected_command))
+            if maps == []:
+                if custom_command:
+                    return maps
+                if is_x86():
+                    warn("Make sure you are in ring0 (=kernel mode)")
+                elif is_arm32():
+                    warn("Make sure you are in supervisor mode (=kernel mode)")
+                    warn("Make sure qemu 3.x or higher")
+                elif is_arm64():
+                    warn("Make sure you are in EL1 (=kernel mode)")
+                    warn("Make sure qemu 3.x or higher")
+                return None
+            return maps
+
+        def get_kernel_maps():
+            output = AddrMap.run_pagewalk("pagewalk --quiet --no-pager --simple --disable-color")
+            maps = AddrMap.parse_pagewalk_output(output)
+            if is_x86() or is_riscv64() or is_riscv32():
+                maps = [entry for entry in maps if "KERN" in entry.flags]
             elif is_arm32():
-                warn("Make sure you are in supervisor mode (=kernel mode)")
+                maps = [entry for entry in maps if "PL0/---" in entry.flags or entry.vstart == 0xffff_0000]
+            elif is_arm64():
+                maps = [entry for entry in maps if "EL0/---" in entry.flags]
+
+            if len(maps) > 1:
+                return maps
+            if is_x86():
+                warn("Make sure you are in ring0 (=kernel mode); See pagewalk")
+            elif is_arm32():
+                warn("Make sure you are in supervisor mode (=kernel mode); See pagewalk")
                 warn("Make sure qemu 3.x or higher")
             elif is_arm64():
-                warn("Make sure you are in EL1 (=kernel mode)")
+                warn("Make sure you are in EL1 (=kernel mode); See pagewalk")
                 warn("Make sure qemu 3.x or higher")
+            elif is_riscv64() or is_riscv32():
+                warn("Make sure you are in S-mode (=kernel mode); See pagewalk")
             return None
-        return maps
+
+        if scope == "all":
+            return get_all_maps()
+        if scope == "kernel":
+            return get_kernel_maps()
+        if scope == "optee":
+            return get_optee_maps()
+        raise ValueError("Unknown address map scope: {!r}".format(scope))
 
     @staticmethod
-    def v2p_from_map(address, maps):
-        for vstart, vend, pstart, _pend in maps:
-            if vstart <= address < vend:
-                offset = address - vstart
-                paddr = pstart + offset
-                return paddr
-        return None
+    def v2p(address, force_secure=None, verbose=False, maps=None):
+        """Translate a virtual address to a physical address."""
+
+        def v2p_from_map():
+            for entry in maps:
+                paddr = entry.v2p(address)
+                if paddr is not None:
+                    return paddr
+            return None
+
+        # QEMU can translate the active address space without a full page-table walk.
+        # Secure-world translations and explicitly supplied maps must use their selected tables.
+        if maps is None and not force_secure:
+            try:
+                ret = gdb.execute("monitor gva2gpa {:#x}".format(address), to_string=True)
+                match = re.search(r"gpa: (0x\S+)", ret)
+                if match:
+                    return int(match.group(1), 16)
+            except (gdb.error, ValueError):
+                pass
+
+        if maps is None:
+            maps = AddrMap.get_maps(force_secure=force_secure, verbose=verbose)
+        if maps is None:
+            return None
+        paddr = v2p_from_map()
+        if verbose and paddr is not None:
+            info("v2p: {:#x} -> {:#x}".format(address, paddr))
+        return paddr
 
     @staticmethod
-    def p2v_from_map(address, maps): # return list
-        vaddrs = []
-        for vstart, _vend, pstart, pend in maps:
-            if pstart <= address < pend:
-                offset = address - pstart
-                vaddr = vstart + offset
-                vaddrs.append(vaddr)
+    def p2v(address, force_secure=None, verbose=False, maps=None):
+        """Return every virtual address mapped to a physical address."""
+
+        def p2v_from_map():
+            vaddrs = []
+            for entry in maps:
+                vaddr = entry.p2v(address)
+                if vaddr is not None:
+                    vaddrs.append(vaddr)
+            return vaddrs
+
+        if maps is None:
+            maps = AddrMap.get_maps(force_secure=force_secure, verbose=verbose)
+        if maps is None:
+            return []
+        vaddrs = p2v_from_map()
+        if verbose:
+            for vaddr in vaddrs:
+                info("p2v: {:#x} -> {:#x}".format(address, vaddr))
         return vaddrs
 
 
@@ -155034,18 +155003,14 @@ class Virt2PhysCommand(GenericCommand):
     @only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
     @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
     def do_invoke(self, args):
-        FORCE_PREFIX_S = None
+        force_secure = None
         if is_arm32() or is_arm64():
             if args.force_normal:
-                FORCE_PREFIX_S = False
+                force_secure = False
             elif args.force_secure:
-                FORCE_PREFIX_S = True
+                force_secure = True
 
-        # do not use cache
-        maps = PageMap.get_page_maps(FORCE_PREFIX_S)
-        if maps is None:
-            return
-        paddr = PageMap.v2p_from_map(args.address, maps)
+        paddr = AddrMap.v2p(args.address, force_secure=force_secure)
         if paddr is not None:
             gef_print("Virt: {:#x} -> Phys: {:#x}".format(args.address, paddr))
         return
@@ -155080,19 +155045,14 @@ class Phys2VirtCommand(GenericCommand):
     @only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
     @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
     def do_invoke(self, args):
-        FORCE_PREFIX_S = None
+        force_secure = None
         if is_arm32() or is_arm64():
             if args.force_normal:
-                FORCE_PREFIX_S = False
+                force_secure = False
             elif args.force_secure:
-                FORCE_PREFIX_S = True
+                force_secure = True
 
-        # do not use cache
-        maps = PageMap.get_page_maps(FORCE_PREFIX_S, args.verbose)
-        if maps is None:
-            return
-
-        vaddrs = PageMap.p2v_from_map(args.address, maps)
+        vaddrs = AddrMap.p2v(args.address, force_secure=force_secure, verbose=args.verbose)
 
         if args.verbose:
             loop_max = len(vaddrs)
@@ -157782,29 +157742,9 @@ class PagewalkArmCommand(PagewalkCommand):
         return
 
     def arm32_optee_exact_pagewalk(self):
-        res = PageMap.get_page_maps_by_pagewalk("pagewalk arm -S --quiet --no-pager --disable-color")
-        if not res:
+        entries = AddrMap.get_maps(command="pagewalk arm -S --quiet --no-pager --disable-color")
+        if not entries:
             return
-
-        # extract lines
-        entries = []
-        for line in res.splitlines():
-            if not line.startswith("0x"):
-                continue
-
-            vrange, prange, total_size, page_size, count, flags = line.split(None, 5)
-            d = {}
-            d["va_start"], d["va_end"] = [int(x, 16) for x in vrange.split("-")]
-            d["pa_start"], d["pa_end"] = [int(x, 16) for x in prange.split("-")]
-            d.update({
-                "total_size": int(total_size, 16),
-                "page_size": int(page_size, 16),
-                "count": int(count, 16),
-                "flags": flags,
-            })
-            Entry = collections.namedtuple("Entry", d.keys())
-            entry = Entry(*d.values())
-            entries.append(entry)
 
         fmt = "{:37s}  {:37s}  {:10s}  {:20s}  {:s}"
         legend = ["Virtual address start-end", "Physical address start-end", "Total size", "Flags", "Hint (Maybe)"]
@@ -157834,24 +157774,24 @@ class PagewalkArmCommand(PagewalkCommand):
                 after_ta = False
 
             # https://github.com/OP-TEE/optee_os/blob/master/core/arch/arm/plat-vexpress/conf.mk
-            if e.pa_start == 0x0e10_0000:
-                if e.va_start == 0x0e10_0000 and e.va_end - e.va_start == 0x1000:
+            if e.pstart == 0x0e10_0000:
+                if e.vstart == 0x0e10_0000 and e.vsize == 0x1000:
                     hint = "TEE-OS bootstrap region"
                 else:
                     hint = "TEE-OS .text"
-                    text_end = e.va_end
-            elif text_end and e.va_start == text_end:
+                    text_end = e.vend
+            elif text_end and e.vstart == text_end:
                 hint = "TEE-OS .data / stack"
-            elif e.pa_start == 0x7fe0_0000:
+            elif e.pstart == 0x7fe0_0000:
                 hint = "NS<->S shared memory"
             # https://github.com/OP-TEE/optee_os/blob/master/core/arch/arm/plat-vexpress/platform_config.h
-            elif e.pa_start == 0x0800_0000:
+            elif e.pstart == 0x0800_0000:
                 hint = "GIC_BASE"
-            elif e.pa_start == 0x0900_0000:
+            elif e.pstart == 0x0900_0000:
                 hint = "UART0_BASE"
-            elif e.pa_start == 0x0904_0000:
+            elif e.pstart == 0x0904_0000:
                 hint = "UART1_BASE"
-            elif e.pa_start == 0x0910_0000:
+            elif e.pstart == 0x0910_0000:
                 hint = "PCSC_BASE"
             # others
             elif "[PL0/RW-" in e.flags and pl0_count == 0:
@@ -157868,14 +157808,14 @@ class PagewalkArmCommand(PagewalkCommand):
                 hint = "ldelf"
                 after_ldelf = False
             elif after_ta:
-                if "NS" in e.flags and e.total_size == 0x1000:
+                if "NS" in e.flags and e.vsize == 0x1000:
                     hint = "TA (param)"
                 else:
                     hint = "TA .data / stack"
             else:
                 hint = ""
             gef_print("{:#018x}-{:#018x}  {:#018x}-{:#018x}  {:<#10x}  {:20s}  {:s}".format(
-                e.va_start, e.va_end, e.pa_start, e.pa_end, e.total_size, e.flags, hint,
+                e.vstart, e.vend, e.pstart, e.pend, e.vsize, e.flags, hint,
             ).rstrip())
         return
 
@@ -159738,7 +159678,7 @@ class PagewalkArm64Command(PagewalkCommand):
 
     def aarch64_optee_pseudo_pagewalk(self):
         Cache.reset_gef_caches()
-        maps = PageMap.get_page_maps_arm64_optee_secure_memory(verbose=not self.args.quiet)
+        maps = AddrMap.get_maps(force_secure=True, verbose=not self.args.quiet)
         if not maps:
             return
         fmt = "{:37s}  {:37s}  {:10s}  {:s}"
@@ -159774,29 +159714,29 @@ class PagewalkArm64Command(PagewalkCommand):
         gef>
         """
         text_end = None
-        for va_start, va_end, pa_start, pa_end in maps:
+        for entry in maps:
             # https://github.com/OP-TEE/optee_os/blob/master/core/arch/arm/plat-vexpress/conf.mk
-            if pa_start == 0x0e10_0000:
-                if va_start == 0x0e10_0000 and va_end - va_start == 0x2000:
+            if entry.pstart == 0x0e10_0000:
+                if entry.vstart == 0x0e10_0000 and entry.vsize == 0x2000:
                     hint = "TEE-OS bootstrap region"
                 else:
                     hint = "TEE-OS .text"
-                    text_end = va_end
-            elif text_end and va_start == text_end:
+                    text_end = entry.vend
+            elif text_end and entry.vstart == text_end:
                 hint = "TEE-OS .data / stack"
-            elif pa_start == 0x4200_0000:
+            elif entry.pstart == 0x4200_0000:
                 hint = "NS<->S shared memory"
             # https://github.com/OP-TEE/optee_os/blob/master/core/arch/arm/plat-vexpress/platform_config.h
-            elif pa_start == 0x0800_0000:
+            elif entry.pstart == 0x0800_0000:
                 hint = "GIC_BASE"
-            elif pa_start == 0x0900_0000:
+            elif entry.pstart == 0x0900_0000:
                 hint = "UART0_BASE"
-            elif pa_start == 0x0904_0000:
+            elif entry.pstart == 0x0904_0000:
                 hint = "UART1_BASE"
             else:
                 hint = ""
             gef_print("{:#018x}-{:#018x}  {:#018x}-{:#018x}  {:<#10x}  {:s}".format(
-                va_start, va_end, pa_start, pa_end, va_end - va_start, hint,
+                entry.vstart, entry.vend, entry.pstart, entry.pend, entry.vsize, hint,
             ).rstrip())
         return
 
@@ -160127,60 +160067,43 @@ class KernelVMMapCommand(GenericCommand, BufferingOutput):
         self.regions = new_regions
         return
 
-    def get_maps(self):
+    def get_regions(self):
         option = ""
         if self.args.include_esp_fixup_stacks:
             option = " --include-esp-fixup-stacks"
-        res = PageMap.get_page_maps_by_pagewalk("pagewalk --quiet --no-pager --disable-color" + option)
-        res = sorted(set(res.splitlines()))
-        res = list(filter(lambda line: line.endswith("]"), res))
-        res = list(filter(lambda line: "[+]" not in line, res))
+        maps = AddrMap.get_maps(command="pagewalk --quiet --no-pager --disable-color" + option)
 
-        def is_userland(line, addr_start):
+        def is_userland(entry):
             if is_x86():
-                return "USER" in line
+                return "USER" in entry.flags
             elif is_arm32():
-                if "[PL0/---" not in line and addr_start != 0xffff_0000:
+                if "PL0/---" not in entry.flags and entry.vstart != 0xffff_0000:
                     return True
             elif is_arm64():
-                return not AddressUtil.is_msb_on(addr_start)
+                return not AddressUtil.is_msb_on(entry.vstart)
             return False
 
         regions = {} # {addr_start: Region(), ...}
-        for line in res:
-            line = line.split()
-
-            # parse address
-            addr_start_str, addr_end_str = line[0].split("-")
-            # Note that for espfix it looks like `0xffffff5b****e000-0xffffff5b****f000`
-            addr_start = int(addr_start_str.replace("*", "0"), 16)
-            addr_end = int(addr_end_str.replace("*", "f"), 16)
-
+        for entry in maps:
             # userland filter
-            if self.args.exclude_user:
-                if is_userland(line, addr_start):
-                    continue
-
-            # parse permission
-            if is_x86():
-                perm = Permission.from_process_maps(line[5][1:4].lower())
-            elif is_arm64() or is_arm32():
-                perm = Permission.from_process_maps(line[6][4:7].lower())
+            if self.args.exclude_user and is_userland(entry):
+                continue
 
             # add region
-            if "*" in addr_start_str:
-                regions[addr_start] = self.Region(
-                    addr_start, addr_end, str(perm), merge=False,
+            if entry.has_wildcard:
+                regions[entry.vstart] = self.Region(
+                    entry.vstart, entry.vend, str(entry.perm), merge=False,
                     description="esp_fixup (=0x1000*N)",
-                    addr_start_str=addr_start_str, addr_end_str=addr_end_str, size_str="0x0000000000001000",
+                    addr_start_str=entry.vstart_text, addr_end_str=entry.vend_text,
+                    size_str="0x0000000000001000",
                 )
-            elif is_userland(line, addr_start):
-                regions[addr_start] = self.Region(
-                    addr_start, addr_end, str(perm), description="userland",
+            elif is_userland(entry):
+                regions[entry.vstart] = self.Region(
+                    entry.vstart, entry.vend, str(entry.perm), description="userland",
                 )
             else:
-                regions[addr_start] = self.Region(
-                    addr_start, addr_end, str(perm),
+                regions[entry.vstart] = self.Region(
+                    entry.vstart, entry.vend, str(entry.perm),
                 )
         return regions
 
@@ -160783,7 +160706,7 @@ class KernelVMMapCommand(GenericCommand, BufferingOutput):
         except gdb.error:
             return
 
-        maps = PageMap.get_page_maps(None)
+        maps = AddrMap.get_maps()
         if maps is None:
             return
 
@@ -160811,7 +160734,7 @@ class KernelVMMapCommand(GenericCommand, BufferingOutput):
 
             device_name = "device ({:s})".format(m.group(3))
 
-            vaddrs = PageMap.p2v_from_map(paddr, maps)
+            vaddrs = AddrMap.p2v(paddr, maps=maps)
             for vaddr in vaddrs:
                 self.insert_region(vaddr, size, device_name)
         return
@@ -160878,7 +160801,7 @@ class KernelVMMapCommand(GenericCommand, BufferingOutput):
             return
 
         # initial regions
-        self.regions = self.get_maps()
+        self.regions = self.get_regions()
 
         # add info
         self.out = []
@@ -161343,7 +161266,7 @@ class PageToVirtCommand(PageCommand, BufferingOutput):
             err("Failed to resolve phys")
             return
         # A page may be associated with multiple virtual addresses.
-        vaddrs = Kernel.p2v(paddr)
+        vaddrs = AddrMap.p2v(paddr)
         if not vaddrs:
             err("Failed to resolve virt")
             return
@@ -161400,7 +161323,7 @@ class PageFromVirtCommand(PageCommand, BufferingOutput):
             warn("The address must be page aligned, round down and then calculate")
             vaddr &= get_pagesize_mask_high()
 
-        paddr = Kernel.v2p(vaddr)
+        paddr = AddrMap.v2p(vaddr)
         if paddr is None:
             err("Failed to resolve phys")
             return
@@ -161859,7 +161782,7 @@ class SlabVirtualCommand(GenericCommand):
         phys_addr = pfn << self.PAGE_SHIFT
 
         # `p2v` returns 2 results (direct mapping area and slab data)
-        r = Kernel.p2v(phys_addr)
+        r = AddrMap.p2v(phys_addr)
         if not r or len(r) < 2:
             return None
         return self.virt_to_slab(max(r))
@@ -163944,10 +163867,9 @@ class ThunkBreakpoint(gdb.Breakpoint):
         return
 
     def search_perm(self, target):
-        for m in self.maps:
-            addr, size, perm = m
-            if addr <= target < addr + size:
-                return perm.lower()
+        for entry in self.maps:
+            if entry.contains_virtual(target):
+                return str(entry.perm)
         return "?"
 
     def stop(self):
@@ -164020,7 +163942,7 @@ class ThunkTracerCommand(GenericCommand):
     @only_if_in_kernel
     def do_invoke(self, args):
         info("Wait for memory scan")
-        maps = Kernel.get_maps() # [vaddr, size, perm]
+        maps = AddrMap.get_maps(scope="kernel")
         info("Resolving thunk function addresses")
         for reg in current_arch.general_registers:
             if reg in ["$esp", "$rsp", "$eip", "$rip"]:
@@ -168137,12 +168059,12 @@ class KernelRefsCommand(GenericCommand, BufferingOutput):
             return []
         image = KernelAddressHeuristicFinderUtil.get_kernel_image_range()
         ranges = []
-        for vaddr, size, perm in kinfo.maps:
-            if "w" not in perm.lower():
+        for entry in kinfo.maps:
+            if not entry.is_writable():
                 continue
-            if image and image[0] <= vaddr < image[1]:
+            if image and image[0] <= entry.vstart < image[1]:
                 continue
-            ranges.append((vaddr, size, "mapped"))
+            ranges.append((entry.vstart, entry.vsize, "mapped"))
         return ranges
 
     def collect_ranges(self):
