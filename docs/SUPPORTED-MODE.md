@@ -135,19 +135,13 @@
     - Host OS
         - Configure two serial ports as named pipes in both the debugger and debuggee virtual machine settings.
         - Vmware example:
-            - Debugger
-                - Use named pipe: `\\.\pipe\pipe0` (Windows host) / `/tmp/sock0` (Linux host)
-                    - Configure as `This end is the client.` and `The other end is a virtual machine.`
-                - Use named pipe: `\\.\pipe\pipe1` (Windows host) / `/tmp/sock1` (Linux host)
-                    - configure as `This end is the client.` and `The other end is a virtual machine.`
-            - Debuggee
-                - Use named pipe: `\\.\pipe\pipe0` (Windows host) / `/tmp/sock0` (Linux Host)
-                    - Configure as `This end is the server.` and `The other end is an application.`
-                - Use named pipe: `\\.\pipe\pipe1` (Windows host) / `/tmp/sock1` (Linux host)
-                    - Configure as `This end is the server.` and `The other end is an application.`
+            | Purpose | Debuggee VM | Debugger VM |
+            |---|---|---|
+            | KGDB `ttyS0` | `\\.\pipe\pipe0` on Windows / `/tmp/sock0` on Linux<br>`This end is the server.`<br>`The other end is a virtual machine.`<br>`Yield CPU on poll`: enabled | `\\.\pipe\pipe0` on Windows / `/tmp/sock0` on Linux<br>`This end is the client.`<br>`The other end is a virtual machine.` |
+            | Console `ttyS1` | `\\.\pipe\pipe1` on Windows / `/tmp/sock1` on Linux<br>`This end is the server.`<br>`The other end is a virtual machine.` | `\\.\pipe\pipe1` on Windows / `/tmp/sock1` on Linux<br>`This end is the client.`<br>`The other end is a virtual machine.` |
     - Debuggee
         - Build the kernel with configurations such as `CONFIG_KGDB=y`. Ubuntu supports this by default.
-        - Edit `/etc/default/grub` and append `kgdbwait kgdboc=ttyS0,115200 console=ttyS1,115200 nokaslr` to the end of `GRUB_CMDLINE_LINUX_DEFAULT`.
+        - Edit `/etc/default/grub` and append `kgdboc=ttyS0,115200 kgdbwait console=ttyS1,115200 nokaslr` to the end of `GRUB_CMDLINE_LINUX_DEFAULT`.
         - Then run `update-grub && reboot`.
         - See [official documentation](https://www.kernel.org/doc/html/latest/dev-tools/kgdb.html) for more information.
     - Debugger
