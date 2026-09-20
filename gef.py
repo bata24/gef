@@ -169016,6 +169016,7 @@ class KernelNftablesCommand(GenericCommand, BufferingOutput):
                         help="reverse-lookup: report an exact/containing known nftables object, or the nearest known object.")
     parser.add_argument("-hh", "--help-simple", action="store_true", help="show help without ASCII diagram.")
     parser.add_argument("-R", "--no-rules", action="store_true", help="do not decode or render rules and expressions.")
+    parser.add_argument("-E", "--no-elements", action="store_true", help="do not decode or render set elements.")
     parser.add_argument("--meta", action="store_true", help="display discovery information.")
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
     parser.add_argument("-q", "--quiet", action="store_true", help="show result only.")
@@ -169024,12 +169025,13 @@ class KernelNftablesCommand(GenericCommand, BufferingOutput):
     _example_ = [
         "{0:s}                     # dump the whole nftables object graph",
         "{0:s} -R                  # dump the graph without rules and expressions",
+        "{0:s} -E                  # dump the graph without set elements",
         "{0:s} 0xffff888012345600  # find which nftables object owns this address",
     ]
     _example_ = "\n".join(_example_).format(_cmdline_)
 
     _note_ = [
-        "Walks table -> chain -> rule -> expr and table -> set / object / flowtable.",
+        "Walks table -> chain -> rule -> expr and table -> set -> element / object / flowtable.",
         "The mainline location of the table list changed over time:",
         "",
         "  v3.13~v4.15 : net.nft.af_info -> nft_af_info.tables (one list per family)",
@@ -169083,6 +169085,7 @@ class KernelNftablesCommand(GenericCommand, BufferingOutput):
     BACKREF_SCAN = 0x60  # the table back-pointer sits near the start of a chain/set/object
     MAX_LIST_SCAN = 0x1_0000  # scan safety limit, not a kernel nftables limit
     MAX_RULE_SCAN = 0x1_0000  # scan safety limit, not a kernel nftables limit
+    MAX_SET_SCAN = 0x1_0000   # scan safety limit, not a kernel nftables limit
 
     def reset_scan_caches(self):
         self.list_cache = {}
@@ -169095,6 +169098,7 @@ class KernelNftablesCommand(GenericCommand, BufferingOutput):
         self.blob_data_offset_cache = {}
         self.blob_status_cache = {}
         self.rules_list_cache = {}
+        self.set_info_cache = {}
         self.table_layout_cache = {}
         self.table_child_count_cache = {}
         self.candidate_head_sources = {}
@@ -169475,7 +169479,11 @@ class KernelNftablesCommand(GenericCommand, BufferingOutput):
             valid = sum(1 for q in sample if self.is_heap_ptr(q))
             if valid > best_valid:
                 best_valid, best_base = valid, base
-        if best_base is None or best_valid < max(3, min(ln, 12) // 2):
+        # A loadable pernet subsystem may leave most slots NULL. Requiring half of the first
+        # twelve slots rejected valid modular nf_tables layouts (notably Debian v5.10 i386).
+        # Three readable aligned objects still distinguishes net_generic from ordinary data;
+        # candidate_heads() subsequently requires the full nft_table/list topology.
+        if best_base is None or best_valid < 3:
             return None
         return best_base
 
@@ -170567,6 +170575,15 @@ class KernelNftablesCommand(GenericCommand, BufferingOutput):
         expr_size_off = self.member_offset("struct nft_expr_ops", "size")
         lines.append(self.offset_meta("nft_expr_ops.type", expr_type_off, "type" if expr_type_off is not None else "heuristic"))
         lines.append(self.offset_meta("nft_expr_ops.size", expr_size_off, "type" if expr_size_off is not None else "heuristic"))
+
+        sets = table["kinds"].get("sets", (None, [], None))[1]
+        if sets:
+            set_info = self.set_info(sets[0])
+            lines.append(self.offset_meta("nft_set.ops", set_info["ops_off"],
+                                          "type" if self.member_offset("struct nft_set", "ops") is not None else "heuristic"))
+            lines.append(self.offset_meta("nft_set.data", set_info["data_off"],
+                                          "type" if set_info["data_off"] is not None else "heuristic"))
+            lines.append("  {:<28s} {:s}".format("set backend", set_info["backend"] or "not found"))
         return lines
 
     def render(self, net, label, graph):
@@ -170615,6 +170632,34 @@ class KernelNftablesCommand(GenericCommand, BufferingOutput):
                             rconn = "`- " if rlast else "|- "
                             suffix = " [{:s}]".format(", ".join(exprs)) if exprs else ""
                             lines.append(prefix + ext + rconn + "rule handle={:d}".format(handle) + suffix)
+                elif kind == "sets":
+                    info = self.set_info(entry)
+                    expected = info["nelems"]
+                    count = len(info["elements"])
+                    if info["status"] == "disabled":
+                        element_text = ""
+                    elif expected is not None and expected != count:
+                        element_text = " elements={:d}/{:d}".format(count, expected)
+                    else:
+                        element_text = " elements={:d}".format(count)
+                    if info["status"] not in ("ok", "empty", "disabled"):
+                        element_text += " [{:s}]".format(info["status"])
+                    backend_text = " type={:s}".format(info["backend"]) if info["backend"] else ""
+                    lines.append(prefix + conn + "set {:s} {:s}{:s}{:s}".format(
+                        Color.colorify(name, "bold green"), self.addr_str(entry), backend_text, element_text))
+                    for element_index, element in enumerate(info["elements"]):
+                        element_last = element_index == len(info["elements"]) - 1
+                        element_conn = "`- " if element_last else "|- "
+                        key = self.set_data_string(element["key"])
+                        if element["key_end"] is not None:
+                            key += "-" + self.set_data_string(element["key_end"])
+                        suffix = ""
+                        if element["data"] is not None:
+                            suffix += " data=" + self.set_data_string(element["data"])
+                        if element["flags"] is not None and element["flags"] & 1:
+                            suffix += " [interval-end]"
+                        lines.append(prefix + ext + element_conn + "element {:s} key={:s}{:s}".format(
+                            self.addr_str(element["addr"]), key, suffix))
                 else:
                     lines.append(prefix + conn + "{:s} {:s} {:s}".format(singular, Color.colorify(name, "bold green"), self.addr_str(entry)))
         return
@@ -170684,6 +170729,483 @@ class KernelNftablesCommand(GenericCommand, BufferingOutput):
             return self.cstr(self.rd(base + offset) or 0)
         return self.cstr(base + offset)
 
+    # --- set elements ---
+
+    def symbol_name(self, address):
+        if not address:
+            return None
+        name = Ksym.get_name(address)
+        if name is not None:
+            return name
+        text = Symbol.get_symbol_string(address, nosymbol_string="").strip()
+        if not text.startswith("<") or not text.endswith(">") or "+" in text:
+            return None
+        return text[1:-1]
+
+    def set_ops_backend(self, ops):
+        if not ops or not AddressUtil.is_msb_on(ops):
+            return None, None
+
+        walk_off = self.member_offset("struct nft_set_ops", "walk")
+        offsets = [walk_off] if walk_off is not None else range(0, 0x180, current_arch.ptrsize)
+        for offset in offsets:
+            function = self.rd(ops + offset)
+            name = self.symbol_name(function)
+            if not name or not name.startswith("nft_") or "_walk" not in name:
+                continue
+            if "pipapo" in name:
+                return "pipapo", name
+            if "bitmap" in name:
+                return "bitmap", name
+            if "rbtree" in name:
+                return "rbtree", name
+            if "rhash" in name:
+                return "rhash", name
+            if "hash" in name:
+                # v3.19-v4.13 used rhashtable under the historical nft_hash name.
+                backend = "rhash" if "3.19" <= self.kversion < "4.14" else "hash"
+                return backend, name
+        return None, None
+
+    def set_ops_plausible(self, ops):
+        if not ops or not AddressUtil.is_msb_on(ops) or ops % current_arch.ptrsize:
+            return False
+        callbacks = 0
+        nearby_callbacks = 0
+        for offset in range(0, 0x60, current_arch.ptrsize):
+            function = self.rd(ops + offset)
+            if function and AddressUtil.is_msb_on(function) and self.rd(function) is not None:
+                callbacks += 1
+                if abs(function - ops) < 0x4000000:
+                    nearby_callbacks += 1
+        return callbacks >= 8 and nearby_callbacks >= 8
+
+    def set_layout(self, entry):
+        list_off = self.member_offset("struct nft_set", "list")
+        base = entry - (list_off or 0)
+        ops_off = self.member_offset("struct nft_set", "ops")
+        data_off = self.member_offset("struct nft_set", "data")
+        klen_off = self.member_offset("struct nft_set", "klen")
+        dlen_off = self.member_offset("struct nft_set", "dlen")
+        nelems_off = self.member_offset("struct nft_set", "nelems")
+
+        ops = self.rd(base + ops_off) if ops_off is not None else None
+        backend, walk_name = self.set_ops_backend(ops)
+        if backend is None:
+            # ops is cacheline-aligned, but the cacheline size and the pre-runtime part of
+            # nft_set both vary. Locate it by the backend walk callback instead of guessing.
+            for offset in range(current_arch.ptrsize * 2, 0x300, current_arch.ptrsize):
+                candidate = self.rd(base + offset)
+                candidate_backend, candidate_name = self.set_ops_backend(candidate)
+                if candidate_backend is None:
+                    continue
+                ops_off, ops = offset, candidate
+                backend, walk_name = candidate_backend, candidate_name
+                break
+        if ops_off is None:
+            # Module-local callback names are absent from the built-in kallsyms table on some
+            # kernels. nft_set_ops is still recognizable as a dense vector of code pointers;
+            # backend selection is then deferred until its private data has been validated.
+            for offset in range(0x20, 0x300, 0x20):
+                candidate = self.rd(base + offset)
+                if self.set_ops_plausible(candidate):
+                    ops_off, ops = offset, candidate
+                    break
+
+        klen = self.rd8(base + klen_off) if klen_off is not None else None
+        dlen = self.rd8(base + dlen_off) if dlen_off is not None else None
+        nelems = self.rd32(base + nelems_off) if nelems_off is not None else None
+        backend_candidates = None
+        if backend is None and ops is not None and self.kversion >= "4.14":
+            update = self.rd(ops + current_arch.ptrsize)
+            delete = self.rd(ops + current_arch.ptrsize * 2)
+            if update and delete:
+                backend_candidates = ["rhash"]
+            elif not update and not delete:
+                backend_candidates = ["hash", "rbtree", "bitmap", "pipapo"]
+        return {
+            "base": base,
+            "ops": ops,
+            "ops_off": ops_off,
+            "data_off": data_off,
+            "klen_off": klen_off,
+            "dlen_off": dlen_off,
+            "klen": klen,
+            "dlen": dlen,
+            "nelems": nelems,
+            "backend": backend,
+            "backend_candidates": backend_candidates,
+            "walk": walk_name,
+        }
+
+    def set_runtime_candidates(self, layout):
+        base = layout["base"]
+        candidates = []
+        if None not in (layout["data_off"], layout["klen"]):
+            candidates.append((base + layout["data_off"], layout["klen"], layout["dlen"] or 0))
+
+        ops_off = layout["ops_off"]
+        if ops_off is None:
+            return candidates
+        # possible_net_t lived between ops and flags in v4.1-v4.8. From v5.11 the
+        # expression array, and from v5.13 the catchall list, precede runtime data.
+        for extra in (0, current_arch.ptrsize):
+            fields = base + ops_off + current_arch.ptrsize + extra
+            klen = self.rd8(fields + 2)
+            dlen = self.rd8(fields + 3)
+            if klen is None or not (1 <= klen <= 0xff) or dlen is None or dlen > 0xff:
+                continue
+            first = align(fields + 4, 8)
+            if "4.1" <= self.kversion < "4.9" and extra == 0:
+                continue
+            if not ("4.1" <= self.kversion < "4.9") and extra:
+                continue
+            stops = []
+            exprs = align(fields + 5, current_arch.ptrsize)
+            if self.kversion >= "5.13":
+                stops.append(align(exprs + current_arch.ptrsize * 4, 8))
+            elif self.kversion >= "5.11":
+                stops.append(align(exprs + current_arch.ptrsize * 2, 8))
+            else:
+                stops.append(first)
+            # Keep nearby variants after the mainline layout for distribution backports.
+            stops.extend(range(first, first + 0x58, 8))
+            for address in stops:
+                item = (address, klen, dlen)
+                if item not in candidates:
+                    candidates.append(item)
+        return candidates
+
+    def walk_hlist(self, heads, buckets, node_off=0, nulls=False):
+        elements = []
+        seen = set()
+        for index in range(buckets):
+            head = heads + index * current_arch.ptrsize
+            current = self.rd(heads + index * current_arch.ptrsize)
+            while current and len(elements) < self.MAX_SET_SCAN:
+                if current & 1:
+                    if nulls and current != head | 1:
+                        return elements, "broken"
+                    break
+                if current in seen or not AddressUtil.is_msb_on(current):
+                    return elements, "broken"
+                seen.add(current)
+                elements.append(current - node_off)
+                current = self.rd(current)
+                if current is None:
+                    return elements, "broken"
+            if len(elements) == self.MAX_SET_SCAN:
+                return elements, "limit"
+        return elements, "ok"
+
+    def walk_hash_set(self, private):
+        node_off = self.member_offset("struct nft_hash_elem", "node")
+        if node_off is None:
+            node_off = self.member_offset("struct nft_hash_elem", "hnode") or 0
+        if self.kversion < "3.19":
+            heads = self.rd(private)
+            buckets = self.rd32(private + current_arch.ptrsize)
+        else:
+            heads = private + 8
+            buckets = self.rd32(private + 4)
+        if not heads or buckets is None or not (1 <= buckets <= self.MAX_SET_SCAN):
+            return [], "broken"
+        return self.walk_hlist(heads, buckets, node_off=node_off)
+
+    def walk_rhash_set(self, private):
+        table = self.rd(private)
+        if not table or not AddressUtil.is_msb_on(table):
+            return [], "broken"
+        size_off = self.member_offset("struct bucket_table", "size") or 0
+        size = self.rd(table + size_off) if self.kversion == "3.19" else self.rd32(table + size_off)
+        if size is None or not (1 <= size <= self.MAX_SET_SCAN) or size & (size - 1):
+            return [], "broken"
+
+        node_off = self.member_offset("struct nft_rhash_elem", "node")
+        if node_off is None:
+            node_off = self.member_offset("struct nft_hash_elem", "node") or 0
+        buckets_off = self.member_offset("struct bucket_table", "buckets")
+        offsets = [buckets_off] if buckets_off is not None else []
+        for offset in (current_arch.ptrsize, 0x20, 0x40, 0x80, 0x100):
+            if offset not in offsets:
+                offsets.append(offset)
+
+        best = ([], "broken")
+        for offset in offsets:
+            elements, status = self.walk_hlist(table + offset, size, node_off=node_off, nulls=True)
+            if status in ("ok", "limit") and len(elements) > len(best[0]):
+                best = (elements, status)
+        return best
+
+    def walk_rbtree_set(self, private):
+        node_off = self.member_offset("struct nft_rbtree_elem", "node") or 0
+        root = self.rd(private)
+        if root is None:
+            return [], "broken"
+        if not root:
+            return [], "ok"
+
+        nodes = []
+        seen = set()
+        stack = [(root, 0)]
+        while stack and len(nodes) < self.MAX_SET_SCAN:
+            node, parent = stack.pop()
+            if node in seen or not AddressUtil.is_msb_on(node) or node % current_arch.ptrsize:
+                return nodes, "broken"
+            parent_color = self.rd(node)
+            right = self.rd(node + current_arch.ptrsize)
+            left = self.rd(node + current_arch.ptrsize * 2)
+            if None in (parent_color, right, left) or parent_color & ~3 != parent:
+                return nodes, "broken"
+            seen.add(node)
+            nodes.append(node - node_off)
+            if right:
+                stack.append((right, node))
+            if left:
+                stack.append((left, node))
+        return (nodes, "limit") if stack else (nodes, "ok")
+
+    def walk_bitmap_set(self, private):
+        head_off = self.member_offset("struct nft_bitmap_elem", "head") or 0
+        entries = self.walk_list(private, maxent=self.MAX_SET_SCAN)
+        status = self.walk_list_status(private, maxent=self.MAX_SET_SCAN)
+        if status == "limit":
+            entries = self.walk_list_partial(private, maxent=self.MAX_SET_SCAN)
+        return [entry - head_off for entry in entries], status
+
+    def walk_pipapo_set_typed(self, private):
+        match_off = self.member_offset("struct nft_pipapo", "match")
+        count_off = self.member_offset("struct nft_pipapo_match", "field_count")
+        fields_off = self.member_offset("struct nft_pipapo_match", "f")
+        rules_off = self.member_offset("struct nft_pipapo_field", "rules")
+        table_off = self.member_offset("struct nft_pipapo_field", "mt")
+        field_size = self.type_size("struct nft_pipapo_field")
+        bucket_size = self.type_size("union nft_pipapo_map_bucket") or current_arch.ptrsize
+        if None in (match_off, count_off, fields_off, rules_off, table_off, field_size):
+            return None
+        match = self.rd(private + match_off)
+        if not match:
+            return [], "ok"
+        count = self.rd8(match + count_off) if self.kversion >= "7.0" else self.rd32(match + count_off)
+        if count is None or not (1 <= count <= 16):
+            return [], "broken"
+        field = match + fields_off + (count - 1) * field_size
+        rules = self.rd32(field + rules_off) if self.kversion >= "7.0" else self.rd(field + rules_off)
+        mapping = self.rd(field + table_off)
+        return self.walk_pipapo_mapping(mapping, rules, bucket_size)
+
+    def walk_pipapo_mapping(self, mapping, rules, stride):
+        if not mapping or rules is None or not (0 <= rules <= self.MAX_SET_SCAN * 0x100):
+            return [], "broken"
+        elements = []
+        seen = set()
+        for index in range(rules):
+            element = self.rd(mapping + index * stride)
+            if not element or not AddressUtil.is_msb_on(element):
+                return elements, "broken"
+            if element in seen:
+                continue
+            seen.add(element)
+            elements.append(element)
+            if len(elements) == self.MAX_SET_SCAN:
+                return elements, "limit"
+        return elements, "ok"
+
+    def walk_pipapo_set(self, private):
+        typed = self.walk_pipapo_set_typed(private)
+        if typed is not None:
+            return typed
+
+        match = self.rd(private)
+        if not match or not AddressUtil.is_msb_on(match):
+            return [], "broken"
+        count_values = [(self.rd32(match), 4), (self.rd8(match), 1)]
+        best = ([], "broken")
+        # Locate the last field by its rules count and mapping-table pointer. This covers the
+        # aligned x86 layout and the compact 32-bit/ARM layouts without baking in CONFIG choices.
+        for count, count_size in count_values:
+            if count is None or not (1 <= count <= 16):
+                continue
+            for fields_off in range(align(count_size, current_arch.ptrsize), 0x60, current_arch.ptrsize):
+                for field_size in range(current_arch.ptrsize * 4, current_arch.ptrsize * 8 + 1, current_arch.ptrsize):
+                    field = match + fields_off + (count - 1) * field_size
+                    for rules_off in range(0, min(field_size, 0x18), 4):
+                        rules = self.rd32(field + rules_off)
+                        if rules is None or not (1 <= rules <= self.MAX_SET_SCAN * 0x100):
+                            continue
+                        for table_off in range(align(rules_off + 4, current_arch.ptrsize), field_size, current_arch.ptrsize):
+                            mapping = self.rd(field + table_off)
+                            elements, status = self.walk_pipapo_mapping(mapping, rules, current_arch.ptrsize)
+                            if status in ("ok", "limit") and len(elements) > len(best[0]):
+                                best = elements, status
+        return best
+
+    def walk_set_backend(self, backend, private):
+        if backend == "hash":
+            return self.walk_hash_set(private)
+        if backend == "rhash":
+            return self.walk_rhash_set(private)
+        if backend == "rbtree":
+            return self.walk_rbtree_set(private)
+        if backend == "bitmap":
+            return self.walk_bitmap_set(private)
+        if backend == "pipapo":
+            return self.walk_pipapo_set(private)
+        return [], "unsupported"
+
+    def set_element_type_names(self, backend):
+        return {
+            "hash": ("struct nft_hash_elem",),
+            "rhash": ("struct nft_rhash_elem", "struct nft_hash_elem"),
+            "rbtree": ("struct nft_rbtree_elem",),
+            "bitmap": ("struct nft_bitmap_elem",),
+            "pipapo": ("struct nft_pipapo_elem",),
+        }.get(backend, ())
+
+    def set_element_ext_candidates(self, element, backend):
+        candidates = []
+        for type_name in self.set_element_type_names(backend):
+            offset = self.member_offset(type_name, "ext")
+            if offset is not None and element + offset not in candidates:
+                candidates.append(element + offset)
+
+        ptr = current_arch.ptrsize
+        starts = {
+            "hash": ptr * 2,
+            "rhash": ptr,
+            "rbtree": ptr * 3,
+            "bitmap": ptr * 2,
+            "pipapo": 0,
+        }
+        start = starts.get(backend, 0)
+        for offset in range(start, start + 0x40, max(min(ptr, 8), 4)):
+            address = element + offset
+            if address not in candidates:
+                candidates.append(address)
+        return candidates
+
+    def read_set_element(self, element, backend, klen, dlen):
+        if not (1 <= klen <= 0xff):
+            return None
+
+        # v3.x predates nft_set_ext. Prefer a typed key member, then its stable legacy layout.
+        for type_name in self.set_element_type_names(backend):
+            key_off = self.member_offset(type_name, "key")
+            if key_off is not None:
+                try:
+                    key = bytes(read_memory(element + key_off, klen))
+                except (gdb.MemoryError, OverflowError):
+                    return None
+                return {"addr": element, "end": element + key_off + klen, "key": key,
+                        "key_end": None, "data": None, "flags": None}
+
+        if self.kversion < "4.1":
+            if backend == "rhash":
+                key_off = current_arch.ptrsize
+            elif backend == "hash":
+                key_off = current_arch.ptrsize * 2
+            elif backend == "rbtree":
+                key_off = align(current_arch.ptrsize * 3 + 2, 4)
+            else:
+                return None
+            try:
+                key = bytes(read_memory(element + key_off, klen))
+            except (gdb.MemoryError, OverflowError):
+                return None
+            data = None
+            if dlen:
+                try:
+                    data = bytes(read_memory(element + key_off + 16, dlen))
+                except (gdb.MemoryError, OverflowError):
+                    pass
+            return {"addr": element, "end": element + key_off + 16 + (dlen or 0), "key": key,
+                    "key_end": None, "data": data, "flags": None}
+
+        ext_num = 9 if self.kversion >= "5.6" else 8 if self.kversion >= "4.10" else 7
+        data_index = 2 if self.kversion >= "5.6" else 1
+        flags_index = data_index + 1
+        for ext in self.set_element_ext_candidates(element, backend):
+            key_off = self.rd8(ext + 1)
+            if key_off is None or not (1 + ext_num <= key_off <= 0xff):
+                continue
+            try:
+                key = bytes(read_memory(ext + key_off, klen))
+            except (gdb.MemoryError, OverflowError):
+                continue
+
+            key_end = None
+            if self.kversion >= "5.6":
+                end_off = self.rd8(ext + 2)
+                if end_off:
+                    try:
+                        key_end = bytes(read_memory(ext + end_off, klen))
+                    except (gdb.MemoryError, OverflowError):
+                        key_end = None
+            data = None
+            data_off = self.rd8(ext + 1 + data_index)
+            if dlen and data_off:
+                try:
+                    data = bytes(read_memory(ext + data_off, dlen))
+                except (gdb.MemoryError, OverflowError):
+                    data = None
+            flags = None
+            flags_off = self.rd8(ext + 1 + flags_index)
+            if flags_off:
+                flags = self.rd8(ext + flags_off)
+            end = ext + max([key_off + klen, (data_off or 0) + (dlen or 0), (flags_off or 0) + 1])
+            return {"addr": element, "end": end, "key": key, "key_end": key_end,
+                    "data": data, "flags": flags}
+        return None
+
+    def set_info(self, entry):
+        if entry in self.set_info_cache:
+            return self.set_info_cache[entry]
+        layout = self.set_layout(entry)
+        info = dict(layout)
+        info.update({"elements": [], "status": "unsupported", "private": None})
+        if self.args.no_elements:
+            info["status"] = "disabled"
+            self.set_info_cache[entry] = info
+            return info
+        if layout["backend"] is None and layout["ops_off"] is None:
+            self.set_info_cache[entry] = info
+            return info
+        if layout["nelems"] == 0:
+            info["status"] = "ok"
+            self.set_info_cache[entry] = info
+            return info
+
+        best_score = None
+        backends = [layout["backend"]] if layout["backend"] is not None else \
+            layout["backend_candidates"] or ["rhash", "hash", "rbtree", "bitmap", "pipapo"]
+        done = False
+        for runtime_index, (private, klen, dlen) in enumerate(self.set_runtime_candidates(layout)):
+            for backend in backends:
+                elements, status = self.walk_set_backend(backend, private)
+                decoded = []
+                for element in elements:
+                    record = self.read_set_element(element, backend, klen, dlen)
+                    if record is not None:
+                        decoded.append(record)
+                expected = layout["nelems"]
+                exact = expected is not None and len(decoded) == expected
+                score = (exact, bool(decoded), status == "ok", -runtime_index, len(decoded))
+                if best_score is None or score > best_score:
+                    best_score = score
+                    info.update({"elements": decoded, "status": status, "private": private,
+                                 "klen": klen, "dlen": dlen, "backend": backend})
+                if exact and status == "ok":
+                    done = True
+                    break
+            if done:
+                break
+        self.set_info_cache[entry] = info
+        return info
+
+    @staticmethod
+    def set_data_string(data):
+        return "0x" + data.hex()
+
     def flatten(self, net, label, graph):
         # Nodes are (start, end-or-None, description). Type information provides exact ranges for
         # the top-level nftables objects; stripped targets retain exact/nearest semantics.
@@ -170700,6 +171222,12 @@ class KernelNftablesCommand(GenericCommand, BufferingOutput):
                     name = self.entry_name(entry, kind)
                     object_start, object_end = self.entry_object_range(entry, kind)
                     nodes.append((object_start, object_end, '{:s} "{:s}" in table "{:s}"'.format(singular, name, table["name"])))
+                    if kind == "sets" and not self.args.no_elements:
+                        info = self.set_info(entry)
+                        for element in info["elements"]:
+                            key = self.set_data_string(element["key"])
+                            nodes.append((element["addr"], element["end"],
+                                          'set element key={:s} in set "{:s}"'.format(key, name)))
                     if kind != "chains" or self.args.no_rules:
                         continue
 

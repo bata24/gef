@@ -9443,7 +9443,7 @@ Dump the nftables (netfilter) object graph.
 ### Syntax
 
 ```text
-usage: knft [-h] [-hh] [-R] [--meta] [-n] [-q] [ADDRESS]
+usage: knft [-h] [-hh] [-R] [-E] [--meta] [-n] [-q] [ADDRESS]
 
 positional arguments:
   ADDRESS             reverse-lookup: report an exact/containing known nftables object, or the nearest known object.
@@ -9452,6 +9452,7 @@ options:
   -h, --help          show this help message and exit
   -hh, --help-simple  show help without ASCII diagram.
   -R, --no-rules      do not decode or render rules and expressions.
+  -E, --no-elements   do not decode or render set elements.
   --meta              display discovery information.
   -n, --no-pager      do not use the pager.
   -q, --quiet         show result only.
@@ -9462,13 +9463,14 @@ options:
 ```gdb
 knft                     # dump the whole nftables object graph
 knft -R                  # dump the graph without rules and expressions
+knft -E                  # dump the graph without set elements
 knft 0xffff888012345600  # find which nftables object owns this address
 ```
 
 ### Notes
 
 ```text
-Walks table -> chain -> rule -> expr and table -> set / object / flowtable.
+Walks table -> chain -> rule -> expr and table -> set -> element / object / flowtable.
 The mainline location of the table list changed over time:
 
   v3.13~v4.15 : net.nft.af_info -> nft_af_info.tables (one list per family)
