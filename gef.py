@@ -328,8 +328,8 @@ class DisplayHook:
             f += "\n" + I1(idt) + "})"
             return f
 
-        elif name == "Kinfo":
-            f = "Kinfo(\n"
+        elif name == "Layout":
+            f = "Layout(\n"
             f += I1(idt + 1) + "text_base=" + DisplayHook.pp(o.text_base, 0) + ", "
             f += "text_size=" + DisplayHook.pp(o.text_size, 0) + ", "
             f += "text_end=" + DisplayHook.pp(o.text_end, 0) + ",\n"
@@ -340,15 +340,18 @@ class DisplayHook:
             f += "rw_size=" + DisplayHook.pp(o.rw_size, 0) + ", "
             f += "rw_end=" + DisplayHook.pp(o.rw_end, 0) + ",\n"
             f += I1(idt + 1) + "rwx=" + DisplayHook.pp(o.rwx, 0) + ", "
-            f += "has_none=" + DisplayHook.pp(o.has_none, 0) + ", "
-            if o.maps is None:
-                f += "maps=" + DisplayHook.pp(o.maps, 0) + ",\n"
-            else:
+            f += "is_complete=" + DisplayHook.pp(o.is_complete, 0) + ", "
+            if o.maps:
                 f += "maps=[\n"
                 f += "\n".join(R2(o.maps, idt + 1))
                 f += "\n" + I1(idt + 1) + "]\n"
+            else:
+                f += "maps=[]\n"
             f += I1(idt) + ")"
             return f
+
+        elif type(o).__qualname__ == "AddrMap.Entry":
+            return repr(o)
 
         elif name == "Entry":
             f = "Entry(\n"
@@ -13006,6 +13009,52 @@ class SecureMemory:
         return SecureMemory.read(0x0, sm.sm_size, verbose)
 
     @staticmethod
+    def get_optee_maps_heuristic(verbose=False):
+        """Return OP-TEE mappings recovered from the ARM64 secure memory."""
+        if SecureMemory.get_area(verbose) is None:
+            return []
+        data = SecureMemory.read_all(verbose)
+        if data is None:
+            return []
+        data_list = slice_unpack(data, 8)
+
+        """
+        struct tee_mmap_region {
+            unsigned int type; /* enum teecore_memtypes */
+            unsigned int region_size;
+            paddr_t pa;
+            vaddr_t va;
+            size_t size;
+            uint32_t attr; /* TEE_MATTR_* */
+        };
+        """
+        maps = []
+        old_i = -1
+        for i in range(len(data_list) - 4):
+            type_ = data_list[i] & 0xffff_ffff
+            region_size = (data_list[i] >> 32) & 0xffff_ffff
+            if type_ == 0 or 30 < type_: # enum teecore_memtypes
+                continue
+            if region_size & 0xfff or region_size < 0x1000 or 0xffff_f000 < region_size:
+                continue
+            pa, va, size, attr = data_list[i + 1:i + 5]
+            if pa & 0xfff or 0xffff_f000 < pa:
+                continue
+            if va & 0xfff or 0xffff_f000 < va:
+                continue
+            if size & 0xfff or size < 0x1000 or 0xffff_f000 < size:
+                continue
+            if maps and old_i + 5 != i: # Judging continuity
+                continue
+            flags = "TEE_MATTR={:#x}".format(attr)
+            maps.append(AddrMap.Entry(
+                va, va + size, pa, pa + size, flags=flags,
+                permission=Permission(value=Permission.ALL), page_size=region_size,
+            ))
+            old_i = i
+        return maps
+
+    @staticmethod
     def read_phys(paddr, size, verbose=False):
         """Return the physical memory at `paddr`, going through qemu-system if it is secure."""
         if SecureMemory.contains(paddr, verbose):
@@ -17864,7 +17913,7 @@ class VdsoCommand(GenericCommand, BufferingOutput):
     def do_invoke(self, args):
         # get map entry
         maps = ProcessMap.get_process_maps()
-        if maps is None:
+        if not maps:
             err("Failed to get maps")
             return
 
@@ -17939,7 +17988,7 @@ class VvarCommand(GenericCommand, BufferingOutput):
     def do_invoke(self, args):
         # get map entry
         maps = ProcessMap.get_process_maps()
-        if maps is None:
+        if not maps:
             err("Failed to get maps")
             return
 
@@ -19210,11 +19259,11 @@ class SmartMemoryDumpCommand(GenericCommand):
         total_size = 0
 
         for entry in maps:
-            if isinstance(entry, AddrMap.MapEntry):
+            if isinstance(entry, AddrMap.Entry):
                 start = entry.vstart
                 end = entry.vend
                 size = entry.vsize
-                perm = str(entry.perm)
+                perm = str(entry.permission)
                 path = ""
             else:
                 start = entry.page_start
@@ -19261,7 +19310,7 @@ class SmartMemoryDumpCommand(GenericCommand):
             maps = AddrMap.get_maps(scope="kernel")
         else:
             maps = ProcessMap.get_process_maps_exclude_special_regions(allow_vdso=True)
-        if maps is None:
+        if not maps:
             err("Failed to get maps")
             return
 
@@ -20475,7 +20524,7 @@ class SearchPatternCommand(GenericCommand):
     def search_pattern_by_section(self, pattern, section_name=None):
         """Search for a pattern within selected (or whole) memory."""
         if is_qemu_system():
-            entries = AddrMap.get_maps() or []
+            entries = AddrMap.get_maps()
             maps_generator = (
                 entry.to_section() for entry in entries
                 if is_valid_addr(entry.vstart) and (not is_x86() or entry.accessed)
@@ -31368,8 +31417,8 @@ class KernelChecksecCommand(GenericCommand):
         return ranges
 
     def check_rwx_page(self):
-        kinfo = Kernel.get_kernel_layout()
-        if not kinfo.maps:
+        klayout = Kernel.get_layout()
+        if not klayout.maps:
             for name in ["Kernel image W^X", "Module W^X", "Other vmalloc/JIT W^X"]:
                 gef_print("{:<40s}: {:s}".format(name, Color.grayify("Unknown")))
             return
@@ -31385,14 +31434,13 @@ class KernelChecksecCommand(GenericCommand):
 
         kernel_bounds = [
             value for value in [
-                kinfo.text_base, kinfo.text_end, kinfo.ro_base, kinfo.ro_end,
-                kinfo.rw_base, kinfo.rw_end,
+                klayout.text_base, klayout.text_end, klayout.ro_base, klayout.ro_end, klayout.rw_base, klayout.rw_end,
             ] if value not in (None, 0)
         ]
         kernel_area = (min(kernel_bounds), max(kernel_bounds)) if kernel_bounds else None
         categories = {"kernel": [], "module": [], "other": []}
 
-        for entry in kinfo.maps:
+        for entry in klayout.maps:
             if not entry.is_writable() or not entry.is_executable():
                 continue
             start, end = entry.vstart, entry.vend
@@ -32193,12 +32241,8 @@ class KernelChecksecCommand(GenericCommand):
 
         def get_permission(addr):
             maps = AddrMap.get_maps(scope="kernel")
-            if not maps:
-                return None
-            for entry in maps:
-                if entry.contains_virtual(addr):
-                    return str(entry.perm)
-            return None
+            entry = AddrMap.find_virtual(addr, maps=maps)
+            return str(entry.permission) if entry is not None else None
 
         cfg = "CONFIG_STATIC_USERMODEHELPER"
         kversion = Kernel.kernel_version()
@@ -40274,7 +40318,7 @@ class XInfoCommand(GenericCommand):
     def xinfo_kernel_pagewalk(self, address):
         command = "pagewalk --vrange {:#x} --no-pager --quiet".format(address)
         maps = AddrMap.get_maps(command=command)
-        entry = next((entry for entry in maps if entry.contains_virtual(address)), None)
+        entry = AddrMap.find_virtual(address, maps=maps)
         if entry is None:
             err("Not found")
             return
@@ -56746,12 +56790,8 @@ class KernelMagicCommand(GenericCommand):
     def resolve_and_print_kernel(self, sym, base, maps, external_func=None, to_string=False):
 
         def get_permission(addr, maps):
-            if maps is None:
-                return "???"
-            for entry in maps:
-                if entry.contains_virtual(addr):
-                    return str(entry.perm)
-            return "???"
+            entry = AddrMap.find_virtual(addr, maps=maps)
+            return str(entry.permission) if entry is not None else "???"
 
         if not self.should_be_print(sym):
             return
@@ -56826,10 +56866,10 @@ class KernelMagicCommand(GenericCommand):
             err("Failed to resolve kernel version")
             return
 
-        kinfo = Kernel.get_kernel_layout()
-        maps = kinfo.maps
-        text_base = kinfo.text_base
-        text_size = kinfo.text_size
+        klayout = Kernel.get_layout()
+        maps = klayout.maps
+        text_base = klayout.text_base
+        text_size = klayout.text_size
         if text_base is None or text_size is None:
             return
         gef_print("{:42s} {:#x} ({:#x} bytes)".format("kernel_base", text_base, text_size))
@@ -60102,25 +60142,25 @@ class KernelAddressHeuristicFinderUtil:
     def get_kernel_image_range():
         """Return [start, end) of the kernel image (.text/.rodata/.data/.bss), or None if unknown."""
         try:
-            kinfo = Kernel.get_kernel_layout()
+            klayout = Kernel.get_layout()
         except Exception:
             return None
         # `rw_end` is 0 when the RW area of an old (=RWX) kernel could not be detected.
-        if kinfo is None or not kinfo.text_base or not kinfo.text_size or not kinfo.rw_end:
+        if not klayout.text_base or not klayout.text_size or not klayout.rw_end:
             return None
         # The detected RW area may be truncated because .bss can be mapped as another region,
         # or because a page freed from an alignment gap of the image was reused and had its
         # permission changed, which splits the RW area into pieces at a boot-dependent offset.
         # Merge the regions that are contiguous with .text, but stop at a region larger than
         # the image merged so far, because it is the linear map, not a part of the kernel image.
-        end = kinfo.text_base
-        for entry in kinfo.maps or []:
+        end = klayout.text_base
+        for entry in klayout.maps:
             if entry.vstart < end:
                 continue
-            if entry.vstart != end or entry.vsize > max(kinfo.text_size, (end - kinfo.text_base) * 2):
+            if entry.vstart != end or entry.vsize > max(klayout.text_size, (end - klayout.text_base) * 2):
                 break
             end = entry.vend
-        return kinfo.text_base, max(end, kinfo.rw_end)
+        return klayout.text_base, max(end, klayout.rw_end)
 
     @staticmethod
     def is_in_kernel_image(x):
@@ -60300,6 +60340,30 @@ class KernelConstsBase:
         mask = a - 1
         return (x + mask) & ~mask
 
+    def resolve_phys_offset_from_maps(self):
+        """Resolve PHYS_OFFSET from the kernel image and linear mappings."""
+        page_offset = self.PAGE_OFFSET
+        page_offset_end = self.PAGE_OFFSET_END
+        if page_offset is None or page_offset_end is None:
+            return None
+
+        klayout = Kernel.get_layout()
+        if klayout.text_base is None:
+            return None
+
+        maps = AddrMap.get_maps()
+        if not maps:
+            return None
+        phys_kbase = AddrMap.v2p(klayout.text_base, maps=maps)
+        if phys_kbase is None:
+            return None
+
+        candidates = AddrMap.p2v(phys_kbase, maps=maps)
+        linear_candidates = [address for address in candidates if page_offset <= address < page_offset_end]
+        if len(linear_candidates) != 1:
+            return None
+        return AddressUtil.normalize_address(phys_kbase - (linear_candidates[0] - page_offset))
+
     def test(self): # noqa
         if is_32bit():
             target = ["PAGE_OFFSET", "PAGE_OFFSET_END", "VMALLOC_START", "VMALLOC_END"]
@@ -60357,7 +60421,10 @@ class KernelConstsX86(KernelConstsBase):
     def CONFIG_PAGE_OFFSET(self):
         if hasattr(self, "cached_PAGE_OFFSET"):
             return self.cached_PAGE_OFFSET
-        kern_min = AddrMap.get_maps(scope="kernel")[0].vstart
+        maps = AddrMap.get_maps(scope="kernel")
+        if not maps:
+            return None
+        kern_min = maps[0].vstart
         if 0xc000_0000 <= kern_min:
             page_offset = 0xc000_0000 # VMSPLIT_3G
         elif 0xb000_0000 <= kern_min:
@@ -60369,8 +60436,7 @@ class KernelConstsX86(KernelConstsBase):
         elif 0x4000_0000 <= kern_min:
             page_offset = 0x4000_0000 # VMSPLIT_1G
         else:
-            # None does not cache, because `AddrMap.get_maps(scope="kernel")` is per-stop and
-            # may be incomplete when this is called
+            # Do not cache an unresolved PAGE_OFFSET; the current maps may be incomplete.
             return None
         self.cached_PAGE_OFFSET = page_offset
         return page_offset
@@ -61431,10 +61497,10 @@ class KernelConstsArm32(KernelConstsBase):
         # TTBR0 may contain privileged firmware mappings below PAGE_OFFSET,
         # especially when LPAE is enabled. Use the resolved kernel image
         # instead of assuming that the first pagewalk mapping is lowmem.
-        kinfo = Kernel.get_kernel_layout(apply_data_range_hint=False)
-        if kinfo.text_base is None:
+        klayout = Kernel.get_layout(apply_data_range_hint=False)
+        if klayout.text_base is None:
             return None
-        kern_min = kinfo.text_base
+        kern_min = klayout.text_base
         if 0xc000_0000 - 0x0100_0000 <= kern_min:
             # 0xbf000000-0xc0000000 is kernel module area.
             # Even if it is VMSPLIT_3G, this is used.
@@ -61446,8 +61512,7 @@ class KernelConstsArm32(KernelConstsBase):
         elif 0x4000_0000 - 0x0100_0000 <= kern_min:
             page_offset = 0x4000_0000 # VMSPLIT_1G
         else:
-            # None does not cache, because `AddrMap.get_maps(scope="kernel")` is per-stop and
-            # may be incomplete when this is called
+            # Do not cache an unresolved PAGE_OFFSET; the current maps may be incomplete.
             return None
         self.cached_PAGE_OFFSET = page_offset
         return page_offset
@@ -61601,20 +61666,10 @@ class KernelConstsArm32(KernelConstsBase):
             return self.cached_PHYS_OFFSET
 
         # When p2v and v2p are available, memstart_addr can be resolved without relying on symbols.
-        if self.PAGE_OFFSET is None:
+        phys_offset = self.resolve_phys_offset_from_maps()
+        if phys_offset is None:
             return None
-        kinfo = Kernel.get_kernel_layout()
-        if kinfo is None:
-            return None
-        phys_kbase = AddrMap.v2p(kinfo.text_base)
-        if phys_kbase is None:
-            return None
-        cands = AddrMap.p2v(phys_kbase)
-        linear_cands = [x for x in cands if self.PAGE_OFFSET <= x < self.PAGE_OFFSET_END]
-        if len(linear_cands) != 1:
-            return None
-        linear_kbase = linear_cands[0]
-        self.cached_PHYS_OFFSET = AddressUtil.normalize_address(phys_kbase - (linear_kbase - self.PAGE_OFFSET))
+        self.cached_PHYS_OFFSET = phys_offset
         return self.cached_PHYS_OFFSET
 
     @functools.cached_property
@@ -62464,20 +62519,10 @@ class KernelConstsArm64(KernelConstsBase):
             return self.cached_memstart_addr
 
         # When p2v and v2p are available, memstart_addr can be resolved without relying on symbols.
-        if self.PAGE_OFFSET is None:
+        phys_offset = self.resolve_phys_offset_from_maps()
+        if phys_offset is None:
             return None
-        kinfo = Kernel.get_kernel_layout()
-        if kinfo is None:
-            return None
-        phys_kbase = AddrMap.v2p(kinfo.text_base)
-        if phys_kbase is None:
-            return None
-        cands = AddrMap.p2v(phys_kbase)
-        linear_cands = [x for x in cands if self.PAGE_OFFSET <= x < self.PAGE_OFFSET_END]
-        if len(linear_cands) != 1:
-            return None
-        linear_kbase = linear_cands[0]
-        self.cached_memstart_addr = AddressUtil.normalize_address(phys_kbase - (linear_kbase - self.PAGE_OFFSET))
+        self.cached_memstart_addr = phys_offset
         return self.cached_memstart_addr
 
     @property
@@ -62747,18 +62792,18 @@ class KernelAddressHeuristicFinder:
             #   CPU1: cpu1_current_task <-> task1 <-> task2 <-> ... <-> cpu1_current_task
             #   CPU2: cpu2_current_task  -> task1 <-> task2 <-> ... <-> cpu1_current_task
             # Therefore, we should read one element at a time and verify the linkage.
-            kinfo = Kernel.get_kernel_layout() if require_init_task else None
+            klayout = Kernel.get_layout() if require_init_task else None
             for i in range(0x200):
                 offset_tasks = current_arch.ptrsize * i
                 current_task_tasks = current_task + offset_tasks
                 if not is_valid_addr(current_task_tasks):
                     return None
-                if require_init_task and kinfo.rw_base and kinfo.rw_size:
+                if require_init_task and klayout.rw_base and klayout.rw_size:
                     task_list = KernelTaskCommand.get_task_list(current_task, offset_tasks)
-                    rw_end = kinfo.rw_base + kinfo.rw_size
+                    rw_end = klayout.rw_base + klayout.rw_size
                     has_init_task = len(task_list) > 5 and any(
-                        (kinfo.rw_base <= task < rw_end
-                         or (is_64bit() and task >= kinfo.rw_base))
+                        (klayout.rw_base <= task < rw_end
+                         or (is_64bit() and task >= klayout.rw_base))
                         and looks_like_init_task(task)
                         for task in task_list
                     )
@@ -62773,7 +62818,7 @@ class KernelAddressHeuristicFinder:
         def get_init_task_from_current(current):
             if current is None:
                 return None
-            kinfo = Kernel.get_kernel_layout()
+            klayout = Kernel.get_layout()
             # `init_task` may sit below `rw_base` (e.g. `.data..init_task` placed before `.data`),
             # so accept `current` on the boot CPU whenever it is in the image and its comm matches.
             if KernelAddressHeuristicFinderUtil.is_in_kernel_image(current) and looks_like_init_task(current):
@@ -62788,7 +62833,7 @@ class KernelAddressHeuristicFinder:
                     # Only `init_task` is statically allocated. The others are on the slab.
                     if not KernelAddressHeuristicFinderUtil.is_in_kernel_image(task):
                         continue
-                    distance = abs((kinfo.rw_base or kinfo.text_base) - task)
+                    distance = abs((klayout.rw_base or klayout.text_base) - task)
                     if min_distance_task[1] > distance:
                         min_distance_task = (task, distance)
                 if min_distance_task[0] is not None:
@@ -62844,10 +62889,10 @@ class KernelAddressHeuristicFinder:
         # contains a backlink to task_struct.  This also works when every CPU is in
         # user mode and no current kernel stack is visible through $sp.
         if is_arm32() and kversion and kversion < "5.15":
-            kinfo = Kernel.get_kernel_layout()
-            if kinfo.rw_base and kinfo.rw_size:
+            klayout = Kernel.get_layout()
+            if klayout.rw_base and klayout.rw_size:
                 try:
-                    rw_data = read_memory(kinfo.rw_base, min(kinfo.rw_size, 0x100_0000))
+                    rw_data = read_memory(klayout.rw_base, min(klayout.rw_size, 0x100_0000))
                 except gdb.MemoryError:
                     rw_data = b""
 
@@ -62858,7 +62903,7 @@ class KernelAddressHeuristicFinder:
                     if pos == -1:
                         break
 
-                    comm = kinfo.rw_base + pos
+                    comm = klayout.rw_base + pos
                     start = max(0, pos - 0x2000)
                     task_data = rw_data[start:pos]
                     for i in range(0, len(task_data) - current_arch.ptrsize + 1, current_arch.ptrsize):
@@ -62869,7 +62914,7 @@ class KernelAddressHeuristicFinder:
                             task = read_int_from_memory(stack + current_arch.ptrsize * 3)
                         except gdb.MemoryError:
                             continue
-                        if not kinfo.rw_base + start <= task < comm:
+                        if not klayout.rw_base + start <= task < comm:
                             continue
 
                         offset_tasks = get_offset_tasks(task)
@@ -62901,19 +62946,19 @@ class KernelAddressHeuristicFinder:
         # the `next` of a self-pointing list_head, which sits at the address it holds.
         # This needs no `current`, so it also works when every CPU is halted outside the
         # kernel (user mode, or the secure world on OP-TEE targets).
-        kinfo = Kernel.get_kernel_layout()
+        klayout = Kernel.get_layout()
         # `init_task` is statically allocated just after .rodata, so the search area is the
         # detected RW range plus, as a fallback, the writable tail of the image starting at
         # the end of .rodata. The latter is needed when the RW range is missing (an old
         # single RWX image) or when it sits above `init_task` (the .rodata->.data gap).
         scan_regions = []
-        if kinfo.rw_base and kinfo.rw_size:
-            scan_regions.append((kinfo.rw_base, min(kinfo.rw_size, 0x100_0000)))
+        if klayout.rw_base and klayout.rw_size:
+            scan_regions.append((klayout.rw_base, min(klayout.rw_size, 0x100_0000)))
         ro_end = None
-        if kinfo.ro_base and kinfo.ro_size:
-            ro_end = kinfo.ro_base + kinfo.ro_size
-        elif kinfo.text_base and kinfo.text_size:
-            ro_end = kinfo.text_base + kinfo.text_size
+        if klayout.ro_base and klayout.ro_size:
+            ro_end = klayout.ro_base + klayout.ro_size
+        elif klayout.text_base and klayout.text_size:
+            ro_end = klayout.text_base + klayout.text_size
         if ro_end is not None and not any(base <= ro_end < base + size for base, size in scan_regions):
             scan_regions.append((ro_end, 0x100_0000))
 
@@ -63252,12 +63297,12 @@ class KernelAddressHeuristicFinder:
         sys_close = Ksym.get_addr("__x64_sys_close")
         if None not in [sys_read, sys_write, sys_open, sys_close]:
             seq_to_find = p64(sys_read) + p64(sys_write) + p64(sys_open) + p64(sys_close)
-            kinfo = Kernel.get_kernel_layout()
-            if kinfo and kinfo.ro_base:
-                ro_data = read_memory(kinfo.ro_base, kinfo.ro_size)
+            klayout = Kernel.get_layout()
+            if klayout.ro_base:
+                ro_data = read_memory(klayout.ro_base, klayout.ro_size)
                 sys_call_table_offset = ro_data.find(seq_to_find)
                 if sys_call_table_offset >= 0:
-                    return kinfo.ro_base + sys_call_table_offset
+                    return klayout.ro_base + sys_call_table_offset
         return None
 
     @staticmethod
@@ -63367,15 +63412,15 @@ class KernelAddressHeuristicFinder:
         if not address_sequences:
             return None
 
-        kinfo = Kernel.get_kernel_layout()
-        if kinfo and kinfo.ro_base:
-            ro_data = read_memory(kinfo.ro_base, kinfo.ro_size)
+        klayout = Kernel.get_layout()
+        if klayout.ro_base:
+            ro_data = read_memory(klayout.ro_base, klayout.ro_size)
             pack = p64 if is_x86_64() else p32
             for syscall_addrs in address_sequences:
                 seq_to_find = b"".join(pack(addr) for addr in syscall_addrs)
                 sys_call_table_offset = ro_data.find(seq_to_find)
                 if sys_call_table_offset >= 0:
-                    return kinfo.ro_base + sys_call_table_offset
+                    return klayout.ro_base + sys_call_table_offset
         return None
 
     @staticmethod
@@ -63396,13 +63441,13 @@ class KernelAddressHeuristicFinder:
         sys_read = Ksym.get_addr("sys_read")
         if None not in [sys_restart_syscall, sys_exit, sys_fork, sys_read]:
             seq_to_find = p32(sys_restart_syscall) + p32(sys_exit) + p32(sys_fork) + p32(sys_read)
-            kinfo = Kernel.get_kernel_layout()
+            klayout = Kernel.get_layout()
             # `sys_call_table` is embedded in the .text area even if `CONFIG_KALLSYMS_ALL=n`
-            if kinfo and kinfo.text_base:
-                text_data = read_memory(kinfo.text_base, kinfo.text_size)
+            if klayout.text_base:
+                text_data = read_memory(klayout.text_base, klayout.text_size)
                 sys_call_table_offset = text_data.find(seq_to_find)
                 if sys_call_table_offset >= 0:
-                    return kinfo.text_base + sys_call_table_offset
+                    return klayout.text_base + sys_call_table_offset
         return None
 
     @staticmethod
@@ -63440,12 +63485,12 @@ class KernelAddressHeuristicFinder:
         sys_io_cancel = Ksym.get_addr("__arm64_sys_io_cancel")
         if None not in [sys_io_setup, sys_io_destroy, sys_io_submit, sys_io_cancel]:
             seq_to_find = p64(sys_io_setup) + p64(sys_io_destroy) + p64(sys_io_submit) + p64(sys_io_cancel)
-            kinfo = Kernel.get_kernel_layout()
-            if kinfo and kinfo.ro_base:
-                ro_data = read_memory(kinfo.ro_base, kinfo.ro_size)
+            klayout = Kernel.get_layout()
+            if klayout.ro_base:
+                ro_data = read_memory(klayout.ro_base, klayout.ro_size)
                 sys_call_table_offset = ro_data.find(seq_to_find)
                 if sys_call_table_offset >= 0:
-                    return kinfo.ro_base + sys_call_table_offset
+                    return klayout.ro_base + sys_call_table_offset
         return None
 
     @staticmethod
@@ -63485,12 +63530,12 @@ class KernelAddressHeuristicFinder:
         sys_open = Ksym.get_addr("__arm64_compat_sys_open")
         if None not in [sys_restart_syscall, sys_exit, sys_fork, sys_read, sys_write, sys_open]:
             seq_to_find = p64(sys_restart_syscall) + p64(sys_exit) + p64(sys_fork) + p64(sys_read) + p64(sys_write) + p64(sys_open)
-            kinfo = Kernel.get_kernel_layout()
-            if kinfo and kinfo.ro_base:
-                ro_data = read_memory(kinfo.ro_base, kinfo.ro_size)
+            klayout = Kernel.get_layout()
+            if klayout.ro_base:
+                ro_data = read_memory(klayout.ro_base, klayout.ro_size)
                 sys_call_table_offset = ro_data.find(seq_to_find)
                 if sys_call_table_offset >= 0:
-                    return kinfo.ro_base + sys_call_table_offset
+                    return klayout.ro_base + sys_call_table_offset
         return None
 
     @staticmethod
@@ -63914,13 +63959,15 @@ class KernelAddressHeuristicFinder:
                 return x
 
         # plan 2 (from pagewalk)
-        kinfo = Kernel.get_kernel_layout()
-        page_offset_base_raw = kinfo.maps[0].vstart
-        ro_data = read_memory(kinfo.ro_base, kinfo.ro_size)
+        klayout = Kernel.get_layout()
+        if not klayout.maps or not klayout.ro_base or not klayout.ro_size:
+            return None
+        page_offset_base_raw = klayout.maps[0].vstart
+        ro_data = read_memory(klayout.ro_base, klayout.ro_size)
         ro_data = slice_unpack(ro_data, current_arch.ptrsize)
         try:
             index = ro_data.index(page_offset_base_raw)
-            return kinfo.ro_base + index * current_arch.ptrsize
+            return klayout.ro_base + index * current_arch.ptrsize
         except ValueError:
             pass
         return None
@@ -63946,9 +63993,9 @@ class KernelAddressHeuristicFinder:
                 return read_int_from_memory(page_offset_base)
 
             # plan 3 (from pagewalk)
-            kinfo = Kernel.get_kernel_layout()
-            if kinfo.maps and len(kinfo.maps) > 0:
-                page_offset_base_raw = kinfo.maps[0].vstart
+            klayout = Kernel.get_layout()
+            if klayout.maps:
+                page_offset_base_raw = klayout.maps[0].vstart
                 return page_offset_base_raw
         return None
 
@@ -64069,9 +64116,9 @@ class KernelAddressHeuristicFinder:
                     s = int(s, 16)
 
                     # incontinuity check
-                    kinfo = Kernel.get_kernel_layout()
+                    klayout = Kernel.get_layout()
                     prev = None
-                    for entry in kinfo.maps:
+                    for entry in klayout.maps:
                         if entry.vstart == s:
                             break
                         prev = entry.vstart
@@ -64564,15 +64611,15 @@ class KernelAddressHeuristicFinder:
             hooks = ["cap_capable", "cap_settime", "cap_ptrace_access_check"]
             hooks = [Ksym.get_addr(x) for x in hooks]
             image_range = KernelAddressHeuristicFinderUtil.get_kernel_image_range()
-            kinfo = Kernel.get_kernel_layout(apply_data_range_hint=False)
-            start = kinfo.ro_base or kinfo.text_base # `capability_hooks` is never in .text
+            klayout = Kernel.get_layout(apply_data_range_hint=False)
+            start = klayout.ro_base or klayout.text_base # `capability_hooks` is never in .text
             if all(hooks) and start:
                 if image_range and start < image_range[1]:
                     end = image_range[1]
                 else:
                     # An old (=RWX) kernel has no detectable .data range. Scan a bounded area
                     # following .rodata, where `capability_hooks` is defined.
-                    end = (kinfo.ro_end or start) + 0x1000000
+                    end = (klayout.ro_end or start) + 0x1000000
                 ptrsize = current_arch.ptrsize
                 pack = p32 if ptrsize == 4 else p64
                 hooks = [pack(x) for x in hooks]
@@ -65044,9 +65091,9 @@ class KernelAddressHeuristicFinder:
         # satisfy. Only the `hook` member of an entry points into .text, so drop the neighbors
         # of a text pointer to skip the plain function tables, then the arrays are the runs
         # left at the same stride.
-        kinfo = Kernel.get_kernel_layout()
+        klayout = Kernel.get_layout()
         pointers = {base + i for i in range(0, len(data) - ptrsize, ptrsize)
-                       if kinfo.text_base <= unpack(data[i:i + ptrsize]) < kinfo.text_end}
+                       if klayout.text_base <= unpack(data[i:i + ptrsize]) < klayout.text_end}
         pointers = {x for x in pointers if x - ptrsize not in pointers and x + ptrsize not in pointers}
         align = 0x20
         for head in pointers:
@@ -65630,9 +65677,9 @@ class KernelAddressHeuristicFinder:
                 .vdso_code_end = vdso_end,
             },
         """
-        kinfo = Kernel.get_kernel_layout()
-        if kinfo.ro_base and kinfo.ro_size:
-            ro_data = read_memory(kinfo.ro_base, kinfo.ro_size)
+        klayout = Kernel.get_layout()
+        if klayout.ro_base and klayout.ro_size:
+            ro_data = read_memory(klayout.ro_base, klayout.ro_size)
             pos = -1
             while True:
                 # search for aligned ELF header from .rodata
@@ -65644,9 +65691,9 @@ class KernelAddressHeuristicFinder:
 
                 # calc address of ELF header
                 if is_32bit():
-                    vdso_addr_byteseq = p32(kinfo.ro_base + pos)
+                    vdso_addr_byteseq = p32(klayout.ro_base + pos)
                 else:
-                    vdso_addr_byteseq = p64(kinfo.ro_base + pos)
+                    vdso_addr_byteseq = p64(klayout.ro_base + pos)
 
                 # search for it from .rodata again
                 pos2 = -1
@@ -65656,7 +65703,7 @@ class KernelAddressHeuristicFinder:
                         break
                     if pos2 % current_arch.ptrsize != 0:
                         continue
-                    maybe_vdso_info = kinfo.ro_base + pos2
+                    maybe_vdso_info = klayout.ro_base + pos2
                     maybe_vdso_info -= current_arch.ptrsize
                     name = read_int_from_memory(maybe_vdso_info)
                     if not is_valid_addr(name):
@@ -65699,9 +65746,9 @@ class KernelAddressHeuristicFinder:
                 .vdso_code_end = vdso_end,
             },
         """
-        kinfo = Kernel.get_kernel_layout()
-        if kinfo.ro_base and kinfo.ro_size:
-            ro_data = read_memory(kinfo.ro_base, kinfo.ro_size)
+        klayout = Kernel.get_layout()
+        if klayout.ro_base and klayout.ro_size:
+            ro_data = read_memory(klayout.ro_base, klayout.ro_size)
             pos = -1
             while True:
                 # search for aligned ELF header from .rodata
@@ -65713,9 +65760,9 @@ class KernelAddressHeuristicFinder:
 
                 # calc address of ELF header
                 if is_32bit():
-                    vdso_addr_byteseq = p32(kinfo.ro_base + pos)
+                    vdso_addr_byteseq = p32(klayout.ro_base + pos)
                 else:
-                    vdso_addr_byteseq = p64(kinfo.ro_base + pos)
+                    vdso_addr_byteseq = p64(klayout.ro_base + pos)
 
                 # search for it from .rodata again
                 pos2 = -1
@@ -65725,7 +65772,7 @@ class KernelAddressHeuristicFinder:
                         break
                     if pos2 % current_arch.ptrsize != 0:
                         continue
-                    maybe_vdso_lookup = kinfo.ro_base + pos2
+                    maybe_vdso_lookup = klayout.ro_base + pos2
                     maybe_vdso_lookup -= current_arch.ptrsize
                     name = read_int_from_memory(maybe_vdso_lookup)
                     if not is_valid_addr(name):
@@ -65761,9 +65808,9 @@ class KernelAddressHeuristicFinder:
                         return x
 
         # plan 3 (from .rodata)
-        kinfo = Kernel.get_kernel_layout()
-        if kinfo.ro_base and kinfo.ro_size:
-            ro_data = read_memory(kinfo.ro_base, kinfo.ro_size)
+        klayout = Kernel.get_layout()
+        if klayout.ro_base and klayout.ro_size:
+            ro_data = read_memory(klayout.ro_base, klayout.ro_size)
             pos = -1
             while True:
                 # search for aligned ELF header from .rodata
@@ -65771,7 +65818,7 @@ class KernelAddressHeuristicFinder:
                 if pos == -1:
                     break
                 if pos % get_pagesize() == 0:
-                    return kinfo.ro_base + pos
+                    return klayout.ro_base + pos
         return None
 
     @staticmethod
@@ -66620,9 +66667,9 @@ class KernelAddressHeuristicFinder:
             try:
                 image_range = KernelAddressHeuristicFinderUtil.get_kernel_image_range()
                 if image_range is None:
-                    kinfo = Kernel.get_kernel_layout()
-                    image_start = kinfo.text_base
-                    image_end = max(kinfo.text_end, kinfo.ro_end) + max(kinfo.text_size * 2, 0x100_0000)
+                    klayout = Kernel.get_layout()
+                    image_start = klayout.text_base
+                    image_end = max(klayout.text_end, klayout.ro_end) + max(klayout.text_size * 2, 0x100_0000)
                     if not image_start <= address < image_end:
                         return False
                 elif not image_range[0] <= address < image_range[1]:
@@ -67099,28 +67146,28 @@ class KernelAddressHeuristicFinder:
                             return x
 
         # plan 3 (from .rodata)
-        kinfo = Kernel.get_kernel_layout(apply_data_range_hint=False)
-        if kinfo.ro_base and kinfo.ro_size and is_valid_addr(kinfo.ro_base):
-            ro_data = read_memory(kinfo.ro_base, kinfo.ro_size)
-            rw_base = kinfo.ro_base
-            if kinfo.rw_base and kinfo.rw_size:
-                rw_base = kinfo.rw_base
-                rw_data = read_memory(kinfo.rw_base, min(kinfo.rw_size, 0x1000000))
+        klayout = Kernel.get_layout(apply_data_range_hint=False)
+        if klayout.ro_base and klayout.ro_size and is_valid_addr(klayout.ro_base):
+            ro_data = read_memory(klayout.ro_base, klayout.ro_size)
+            rw_base = klayout.ro_base
+            if klayout.rw_base and klayout.rw_size:
+                rw_base = klayout.rw_base
+                rw_data = read_memory(klayout.rw_base, min(klayout.rw_size, 0x1000000))
             else:
                 rw_data = ro_data
-                # On kernels where the linear mapping is RWX, get_kernel_layout() cannot
+                # On kernels where the linear mapping is RWX, get_layout() cannot
                 # distinguish .data from the rest of the mapping.  Search the contiguous
                 # area immediately following .rodata, where ioport_resource is defined.
-                if kinfo.ro_end and kinfo.maps:
-                    rw_end = kinfo.ro_end
-                    for entry in kinfo.maps:
+                if klayout.ro_end and klayout.maps:
+                    rw_end = klayout.ro_end
+                    for entry in klayout.maps:
                         if entry.vstart <= rw_end < entry.vend or entry.vstart == rw_end:
                             rw_end = max(rw_end, entry.vend)
                         elif entry.vstart > rw_end:
                             break
-                    rw_size = min(rw_end - kinfo.ro_end, 0x1000000)
+                    rw_size = min(rw_end - klayout.ro_end, 0x1000000)
                     if rw_size:
-                        rw_base = kinfo.ro_end
+                        rw_base = klayout.ro_end
                         rw_data = read_memory(rw_base, rw_size)
             pos = -1
             while True:
@@ -67131,9 +67178,9 @@ class KernelAddressHeuristicFinder:
 
                 # calc address of ELF header
                 if is_32bit():
-                    addr_byteseq = p32(kinfo.ro_base + pos)
+                    addr_byteseq = p32(klayout.ro_base + pos)
                 else:
-                    addr_byteseq = p64(kinfo.ro_base + pos)
+                    addr_byteseq = p64(klayout.ro_base + pos)
 
                 # search for it from .data
                 pos2 = -1
@@ -67601,7 +67648,7 @@ KFU = KernelAddressHeuristicFinderUtil # for convenience using from python-inter
 class Kernel:
     """A collection of utility functions that are related to kernel specific features."""
 
-    class Kinfo:
+    class Layout:
         """Resolved kernel memory layout."""
 
         fields = (
@@ -67617,7 +67664,7 @@ class Kernel:
                      ro_base=None, ro_end=None,
                      rw_base=None, rw_end=None,
                      rwx=False):
-            self.maps = maps
+            self.maps = maps if maps is not None else []
             self.text_base = text_base
             self.text_end = text_end
             self.ro_base = ro_base
@@ -67649,9 +67696,11 @@ class Kernel:
             return self.rw_end - self.rw_base
 
         @property
-        def has_none(self):
-            """Return whether any part of the kernel memory layout is unresolved."""
-            return any(getattr(self, field) is None for field in self.fields)
+        def is_complete(self):
+            """Return whether every part of the kernel memory layout is resolved."""
+            return bool(self.maps) and all(
+                getattr(self, field) is not None for field in self.fields if field != "maps"
+            )
 
         def replace(self, **changes):
             """Return a copy with the specified fields replaced."""
@@ -67661,11 +67710,11 @@ class Kernel:
 
         @classmethod
         def build(cls, values, apply_data_range_hint=True):
-            """Build a Kinfo and optionally refine its data range from the iomem resource tree."""
-            kinfo = cls(**values)
+            """Build a Layout and optionally refine its data range from the iomem resource tree."""
+            klayout = cls(**values)
             if apply_data_range_hint:
-                return kinfo.with_data_range_hint()
-            return kinfo
+                return klayout.with_data_range_hint()
+            return klayout
 
         def with_data_range_hint(self):
             """Return a copy whose data range is refined from the iomem resource tree."""
@@ -67781,9 +67830,9 @@ class Kernel:
 
         return None
 
-    # No caching intentionally
+    # Keep this wrapper uncached so the kallsyms refinement can change later.
     @staticmethod
-    def get_kernel_layout(apply_data_range_hint=True):
+    def get_layout(apply_data_range_hint=True):
         """Resolve the kernel memory layout.
 
         `apply_data_range_hint` controls whether the iomem resource hint is used
@@ -67792,13 +67841,13 @@ class Kernel:
         """
         # This wrapper is intentionally not cached: kallsyms may become available
         # after the base layout has already been cached.
-        return Kernel.get_kernel_layout_cached(apply_data_range_hint).with_kallsyms_ro_end()
+        return Kernel.resolve_kernel_layout(apply_data_range_hint).with_kallsyms_ro_end()
 
     @staticmethod
     @Cache.cache_this_session
-    def get_kernel_layout_cached(apply_data_range_hint=True):
+    def resolve_kernel_layout(apply_data_range_hint=True):
         dic = {
-            "maps": None, "text_base": None, "text_end": None, "ro_base": None, "ro_end": None,
+            "maps": [], "text_base": None, "text_end": None, "ro_base": None, "ro_end": None,
             "rw_base": None, "rw_end": None, "rwx": False,
         }
 
@@ -67810,7 +67859,7 @@ class Kernel:
             dic["rw_end"] = Symbol.get_symbol_by_monitor("_edata")
             dic["ro_base"] = Symbol.get_symbol_by_monitor("__start_rodata")
             dic["ro_end"] = Symbol.get_symbol_by_monitor("__end_rodata_aligned") or Symbol.get_symbol_by_monitor("__end_rodata")
-            return Kernel.Kinfo.build(dic, apply_data_range_hint)
+            return Kernel.Layout.build(dic, apply_data_range_hint)
 
         if is_kgdb():
             # use symbol
@@ -67820,12 +67869,12 @@ class Kernel:
             dic["rw_end"] = Ksym.get_addr("_edata")
             dic["ro_base"] = Ksym.get_addr("__start_rodata")
             dic["ro_end"] = Ksym.get_addr("__end_rodata_aligned") or Ksym.get_addr("__end_rodata")
-            return Kernel.Kinfo.build(dic, apply_data_range_hint)
+            return Kernel.Layout.build(dic, apply_data_range_hint)
 
         # Could not find the maps, so fast return
         dic["maps"] = AddrMap.get_maps(scope="kernel")
-        if dic["maps"] is None:
-            return Kernel.Kinfo.build(dic, apply_data_range_hint)
+        if not dic["maps"]:
+            return Kernel.Layout.build(dic, apply_data_range_hint)
 
         # 1a. search for the kernel base exact way
         if is_x86():
@@ -67875,7 +67924,7 @@ class Kernel:
             TEXT_REGION_MIN_SIZE = 0x100000
 
             for i, entry in enumerate(dic["maps"]):
-                if str(entry.perm) == "r-x" and entry.vsize >= TEXT_REGION_MIN_SIZE:
+                if str(entry.permission) == "r-x" and entry.vsize >= TEXT_REGION_MIN_SIZE:
                     dic["text_base"] = entry.vstart
                     dic["text_end"] = entry.vend
                     text_base_map_index = i
@@ -67883,14 +67932,14 @@ class Kernel:
             else:
                 # not found, maybe old kernel
                 for i, entry in enumerate(dic["maps"]):
-                    if str(entry.perm) == "rwx" and entry.vsize >= TEXT_REGION_MIN_SIZE:
+                    if str(entry.permission) == "rwx" and entry.vsize >= TEXT_REGION_MIN_SIZE:
                         dic["text_base"] = entry.vstart
                         dic["text_end"] = entry.vend
                         text_base_map_index = i
                         break
                 else:
                     # Not found, so fast return
-                    return Kernel.Kinfo.build(dic, apply_data_range_hint)
+                    return Kernel.Layout.build(dic, apply_data_range_hint)
 
         # 2a. search for the kernel RO base
         # If the `-enable-kvm` option for qemu-system is not enabled,
@@ -67908,7 +67957,7 @@ class Kernel:
         # As a result, detection also checks for the presence of the string "Linux version"
         # near the beginning of the .rodata page.
         for i, entry in enumerate(dic["maps"][text_base_map_index + 1:]):
-            if str(entry.perm) == "r--":
+            if str(entry.permission) == "r--":
                 if dic["ro_base"] is None:
                     if not is_valid_addr(entry.vstart):
                         continue
@@ -67938,7 +67987,7 @@ class Kernel:
         if dic["ro_base"] is None:
             RO_REGION_MIN_SIZE = 0x100000
             for i, entry in enumerate(dic["maps"][text_base_map_index + 1:]):
-                if str(entry.perm) == "r--":
+                if str(entry.permission) == "r--":
                     if dic["ro_base"] is None:
                         if entry.vsize >= RO_REGION_MIN_SIZE:
                             dic["ro_base"] = entry.vstart
@@ -67984,7 +68033,7 @@ class Kernel:
                         break
             else:
                 # Not found, so fast return
-                return Kernel.Kinfo.build(dic, apply_data_range_hint)
+                return Kernel.Layout.build(dic, apply_data_range_hint)
 
         else:
             # 3. Search for the kernel RW base.
@@ -67994,7 +68043,7 @@ class Kernel:
             if dic["ro_base"] is not None:
                 for entry in dic["maps"][ro_base_map_index + 1:]:
                     if dic["rw_base"] is None:
-                        if str(entry.perm) == "rw-" and entry.vsize >= RW_REGION_MIN_SIZE:
+                        if str(entry.permission) == "rw-" and entry.vsize >= RW_REGION_MIN_SIZE:
                             dic["rw_base"] = entry.vstart
                             dic["rw_end"] = entry.vend
                     elif dic["rw_end"] == entry.vstart:
@@ -68006,7 +68055,7 @@ class Kernel:
                     else:
                         break
 
-        return Kernel.Kinfo.build(dic, apply_data_range_hint)
+        return Kernel.Layout.build(dic, apply_data_range_hint)
 
     @staticmethod
     @Cache.cache_this_session(cache_None=False)
@@ -68042,12 +68091,12 @@ class Kernel:
                         return stext - diff
 
         if is_kgdb():
-            # Kernel.get_kernel_layout is too slow, so return if not found with fast path
+            # Kernel.get_layout is too slow, so return if not found with fast path
             return None
 
         # slow path
-        kinfo = Kernel.get_kernel_layout()
-        return kinfo.text_base
+        klayout = Kernel.get_layout()
+        return klayout.text_base
 
     class KernelVersion:
         def __init__(self, address, version_string, major, minor, patch):
@@ -68116,14 +68165,14 @@ class Kernel:
                 return Kernel.KernelVersion(linux_banner, version_string, major, minor, patch)
 
         # slow path
-        kinfo = Kernel.get_kernel_layout(apply_data_range_hint=False)
-        if kinfo.has_none:
+        klayout = Kernel.get_layout(apply_data_range_hint=False)
+        if not klayout.is_complete:
             return None
         area = []
-        for entry in kinfo.maps: # resolve search range
-            if entry.vstart < kinfo.text_base:
+        for entry in klayout.maps: # resolve search range
+            if entry.vstart < klayout.text_base:
                 continue
-            if kinfo.rw_base and entry.vstart >= kinfo.rw_base:
+            if klayout.rw_base and entry.vstart >= klayout.rw_base:
                 continue
             area.append([entry.vstart, entry.vend])
         if area == []:
@@ -71509,22 +71558,22 @@ class KernelbaseCommand(GenericCommand):
 
         # resolve text_base, ro_base
         self.quiet_info("Wait for memory scan")
-        kinfo = Kernel.get_kernel_layout()
+        klayout = Kernel.get_layout()
 
         self.out = []
-        if kinfo.text_base:
-            self.out.append("kernel text:   {:#x}-{:#x} ({:#x} bytes)".format(kinfo.text_base, kinfo.text_end, kinfo.text_size))
-            gdb.set_convenience_variable("kbase", kinfo.text_base)
+        if klayout.text_base:
+            self.out.append("kernel text:   {:#x}-{:#x} ({:#x} bytes)".format(klayout.text_base, klayout.text_end, klayout.text_size))
+            gdb.set_convenience_variable("kbase", klayout.text_base)
         else:
             err("Failed to resolve kernel text")
-        if kinfo.ro_base:
-            self.out.append("kernel rodata: {:#x}-{:#x} ({:#x} bytes)".format(kinfo.ro_base, kinfo.ro_end, kinfo.ro_size))
-            gdb.set_convenience_variable("kro_base", kinfo.ro_base)
+        if klayout.ro_base:
+            self.out.append("kernel rodata: {:#x}-{:#x} ({:#x} bytes)".format(klayout.ro_base, klayout.ro_end, klayout.ro_size))
+            gdb.set_convenience_variable("kro_base", klayout.ro_base)
         else:
             err("Failed to resolve kernel rodata")
-        if kinfo.rw_base:
-            self.out.append("kernel data:   {:#x}-{:#x} ({:#x} bytes)".format(kinfo.rw_base, kinfo.rw_end, kinfo.rw_size))
-            gdb.set_convenience_variable("kdata_base", kinfo.rw_base)
+        if klayout.rw_base:
+            self.out.append("kernel data:   {:#x}-{:#x} ({:#x} bytes)".format(klayout.rw_base, klayout.rw_end, klayout.rw_size))
+            gdb.set_convenience_variable("kdata_base", klayout.rw_base)
         else:
             err("Failed to resolve kernel data")
         if self.out:
@@ -72792,10 +72841,8 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
 
         def is_executable(x):
             maps = AddrMap.get_maps(scope="kernel")
-            for entry in maps:
-                if entry.contains_virtual(x):
-                    return entry.is_executable()
-            return False
+            entry = AddrMap.find_virtual(x, maps=maps)
+            return entry is not None and entry.is_executable()
 
         for task in task_addrs:
             if not self.has_seccomp(task):
@@ -73580,11 +73627,11 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
 
         if self.init_task is not None:
             try:
-                kinfo = Kernel.get_kernel_layout()
+                klayout = Kernel.get_layout()
             except (gdb.error, gdb.MemoryError):
-                kinfo = None
-            image_starts = [] if kinfo is None else [x for x in (kinfo.text_base, kinfo.ro_base, kinfo.rw_base) if x]
-            image_ends = [] if kinfo is None else [x for x in (kinfo.text_end, kinfo.ro_end, kinfo.rw_end) if x]
+                klayout = None
+            image_starts = [] if klayout is None else [x for x in (klayout.text_base, klayout.ro_base, klayout.rw_base) if x]
+            image_ends = [] if klayout is None else [x for x in (klayout.text_end, klayout.ro_end, klayout.rw_end) if x]
             if image_starts and image_ends:
                 image_start = min(image_starts)
                 image_end = max(image_ends)
@@ -78682,13 +78729,9 @@ class KernelOperationsCommand(GenericCommand, BufferingOutput):
         if args.address:
             # show permission
             if not args.quiet:
-                kinfo = Kernel.get_kernel_layout()
-                for entry in kinfo.maps:
-                    if entry.contains_virtual(args.address):
-                        perm_str = str(entry.perm)
-                        break
-                else:
-                    perm_str = "???"
+                klayout = Kernel.get_layout()
+                entry = AddrMap.find_virtual(args.address, maps=klayout.maps)
+                perm_str = str(entry.permission) if entry is not None else "???"
                 self.out.append("Address: {:#x} Permission: {:s}".format(args.address, perm_str))
 
             # get name width
@@ -80241,8 +80284,8 @@ class KernelClockSourceCommand(GenericCommand, BufferingOutput):
             struct module *owner;
         };
         """
-        kinfo = Kernel.get_kernel_layout()
-        if kinfo.text_base is None or kinfo.text_end is None:
+        klayout = Kernel.get_layout()
+        if klayout.text_base is None or klayout.text_end is None:
             return None
 
         nodes = Kernel.ListHead(clocksource).parse()
@@ -80267,7 +80310,7 @@ class KernelClockSourceCommand(GenericCommand, BufferingOutput):
             for node in nodes:
                 candidate = node - candidate_offset
                 read = read_int_from_memory(candidate)
-                if not (kinfo.text_base <= read < kinfo.text_end):
+                if not (klayout.text_base <= read < klayout.text_end):
                     break
 
                 for mask_offset in mask_offsets:
@@ -81012,7 +81055,7 @@ class KernelWorkqueueCommand(GenericCommand, BufferingOutput):
     def is_callback(self, address):
         if not address or not is_valid_addr(address):
             return False
-        if self.kinfo.text_base <= address < self.kinfo.text_end:
+        if self.klayout.text_base <= address < self.klayout.text_end:
             return True
         if not AddressUtil.is_msb_on(address):
             return False
@@ -81645,7 +81688,7 @@ class KernelWorkqueueCommand(GenericCommand, BufferingOutput):
     def initialize(self):
         self.meta = []
         self.kversion = Kernel.kernel_version()
-        self.kinfo = Kernel.get_kernel_layout()
+        self.klayout = Kernel.get_layout()
         cpu_offsets = Kernel.get_percpu().offsets
         self.max_cpu = max(len(cpu_offsets), 1) if cpu_offsets else 0x2000
         self.pool_worklist_offsets = {}
@@ -82333,26 +82376,26 @@ class KernelConfigCommand(GenericCommand, BufferingOutput):
 
     @Cache.cache_this_session(cache_None=False)
     def get_config(self):
-        kinfo = Kernel.get_kernel_layout()
-        if kinfo.ro_base is None:
+        klayout = Kernel.get_layout()
+        if klayout.ro_base is None:
             err("Not recognized .rodata")
             return None
 
         if is_kgdb():
             info("The config is often near the top of .rodata; once found, the search stops early.")
             ro_data = b""
-            for pos in ProgressBar(range(0, kinfo.ro_size, 0x1000), disable=self.args.quiet):
-                if not is_valid_addr(kinfo.ro_base + pos):
+            for pos in ProgressBar(range(0, klayout.ro_size, 0x1000), disable=self.args.quiet):
+                if not is_valid_addr(klayout.ro_base + pos):
                     err("Memory read error")
                     return
-                ro_data += read_memory(kinfo.ro_base + pos, 0x1000)
+                ro_data += read_memory(klayout.ro_base + pos, 0x1000)
                 if ro_data.find(b"IKCFG_ST") >= 0 and ro_data.find(b"IKCFG_ED") >= 0:
                     break
         else:
-            if not is_valid_addr(kinfo.ro_base):
+            if not is_valid_addr(klayout.ro_base):
                 err("Memory read error")
                 return
-            ro_data = read_memory(kinfo.ro_base, kinfo.ro_size)
+            ro_data = read_memory(klayout.ro_base, klayout.ro_size)
 
         start_pos = ro_data.find(b"IKCFG_ST")
         if start_pos == -1:
@@ -82360,8 +82403,8 @@ class KernelConfigCommand(GenericCommand, BufferingOutput):
             return None
         end_pos = ro_data.find(b"IKCFG_ED")
 
-        info("IKCFG_ST: {:#x}".format(kinfo.ro_base + start_pos))
-        info("IKCFG_ED: {:#x}".format(kinfo.ro_base + end_pos))
+        info("IKCFG_ST: {:#x}".format(klayout.ro_base + start_pos))
+        info("IKCFG_ED: {:#x}".format(klayout.ro_base + end_pos))
         configz = ro_data[start_pos + len("IKCFG_ST"):end_pos]
 
         import gzip
@@ -82421,14 +82464,12 @@ class KernelSearchCodePtrCommand(GenericCommand, BufferingOutput):
         return read_int_from_memory(addr)
 
     def get_permission(self, addr):
-        for entry in self.kinfo.maps:
-            if entry.contains_virtual(addr):
-                return str(entry.perm)
-        return "???"
+        entry = AddrMap.find_virtual(addr, maps=self.klayout.maps)
+        return str(entry.permission) if entry else "???"
 
     def search(self, backtrack_info, addr, max_range, depth):
         if depth == 0:
-            if not (self.kinfo.text_base <= addr < self.kinfo.text_end):
+            if not (self.klayout.text_base <= addr < self.klayout.text_end):
                 return False
 
             # backtrack
@@ -82489,22 +82530,22 @@ class KernelSearchCodePtrCommand(GenericCommand, BufferingOutput):
 
         self.quiet_info("Wait for memory scan")
 
-        self.kinfo = Kernel.get_kernel_layout()
-        if self.kinfo.has_none or self.kinfo.rwx:
+        self.klayout = Kernel.get_layout()
+        if not self.klayout.is_complete or self.klayout.rwx:
             err("Unsupported environment which has RWX data area")
             return
 
         self.invalid_addrs = {}
         self.out = []
 
-        if not is_valid_addr(self.kinfo.rw_base):
+        if not is_valid_addr(self.klayout.rw_base):
             err("Memory read error")
             return
-        rw_data = read_memory(self.kinfo.rw_base, self.kinfo.rw_size)
+        rw_data = read_memory(self.klayout.rw_base, self.klayout.rw_size)
         rw_data = slice_unpack(rw_data, current_arch.ptrsize)
 
         for i, rw_d in ProgressBar(enumerate(rw_data), total=len(rw_data), disable=self.args.quiet):
-            rw_addr = self.kinfo.rw_base + i * current_arch.ptrsize
+            rw_addr = self.klayout.rw_base + i * current_arch.ptrsize
             backtrack_info = [(rw_addr, 0)]
             self.search(backtrack_info, rw_d, args.max_range, args.depth - 1)
 
@@ -82597,9 +82638,9 @@ class KernelDiffCommand(GenericCommand, BufferingOutput):
     @staticmethod
     def get_kernel_id():
         kversion = Kernel.kernel_version()
-        kinfo = Kernel.get_kernel_layout()
+        klayout = Kernel.get_layout()
         version = None if kversion is None else [kversion.major, kversion.minor, kversion.patch]
-        return [current_arch.__class__.__name__, version, kinfo.text_base, kinfo.rw_base]
+        return [current_arch.__class__.__name__, version, klayout.text_base, klayout.rw_base]
 
     @staticmethod
     def get_snapshot_directory():
@@ -134696,15 +134737,14 @@ class KobjCommand(GenericCommand):
             return
 
         try:
-            kinfo = Kernel.get_kernel_layout()
-            if kinfo:
-                add(kinfo.text_base, kinfo.text_end, "kernel image (.text)", "kernel_image")
-                add(kinfo.ro_base, kinfo.ro_end, "kernel image (.rodata)", "kernel_image")
-                add(kinfo.rw_base, kinfo.rw_end, "kernel image (.data/.bss)", "kernel_image")
+            klayout = Kernel.get_layout()
+            add(klayout.text_base, klayout.text_end, "kernel image (.text)", "kernel_image")
+            add(klayout.ro_base, klayout.ro_end, "kernel image (.rodata)", "kernel_image")
+            add(klayout.rw_base, klayout.rw_end, "kernel image (.data/.bss)", "kernel_image")
         except Exception:
             pass
 
-        # On 32-bit the image lives inside the linear map and get_kernel_layout may miss the
+        # On 32-bit the image lives inside the linear map and get_layout may miss the
         # .data/.bss range, so also derive image bounds from kallsyms when available.
         for start_sym, end_sym, label in (
             ("_stext", "_end", "kernel image"),
@@ -136670,7 +136710,7 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
         # do not use cache
         if self.args.sort_verbose and not self.args.skip_phys and not self.args.use_physmap:
             BuddyDumpCommand.maps = AddrMap.get_maps()
-            if BuddyDumpCommand.maps is None:
+            if not BuddyDumpCommand.maps:
                 self.quiet_err("Failed to resolve maps")
                 return
 
@@ -137728,8 +137768,8 @@ class KernelPipeCommand(GenericCommand, BufferingOutput):
             return
 
         # init
-        kinfo = Kernel.get_kernel_layout()
-        if kinfo.has_none:
+        klayout = Kernel.get_layout()
+        if not klayout.is_complete:
             self.quiet_err("The kernel .text area could not be determined correctly")
             return
 
@@ -141397,17 +141437,17 @@ class Ksym:
 
             # Slow path
             try:
-                kinfo = Kernel.get_kernel_layout(apply_data_range_hint=False)
-                if kinfo.has_none:
+                klayout = Kernel.get_layout(apply_data_range_hint=False)
+                if not klayout.is_complete:
                     return None
             except gdb.MemoryError:
                 Ksym.quiet_err(quiet, "Memory read error")
                 return None
 
-            if not kinfo.rwx:
+            if not klayout.rwx:
                 # On modern kernels, ro_size can be trusted, so it only tries to parse once.
-                Ksym.ro_base = kinfo.ro_base
-                Ksym.ro_size = kinfo.ro_size
+                Ksym.ro_base = klayout.ro_base
+                Ksym.ro_size = klayout.ro_size
                 Ksym.kernel_img = read_memory(Ksym.ro_base, Ksym.ro_size)
                 Ksym.verbose_info(verbose, "ro_base: {:#x}-{:#x}".format(Ksym.ro_base, Ksym.ro_base + Ksym.ro_size))
                 ret = Ksym.KsymParse.initialize(rescan, verbose)
@@ -141418,12 +141458,12 @@ class Ksym:
                 # Very large values of ro_size can be detected.
                 # It will take a long time to parse if you just use it.
                 # Gradually increasing ro_size while searching can speed up several times.
-                Ksym.ro_base = kinfo.ro_base
+                Ksym.ro_base = klayout.ro_base
                 # This value is a heuristic threshold derived through testing across numerous kernel images.
                 # Unless there is a compelling reason, do not modify it.
                 base_size = 0x10_0000
                 step = 0x10_0000
-                for candidate_size in range(base_size, kinfo.ro_size, step):
+                for candidate_size in range(base_size, klayout.ro_size, step):
                     Ksym.ro_size = candidate_size
                     Ksym.kernel_img = read_memory(Ksym.ro_base, Ksym.ro_size)
                     Ksym.verbose_info(verbose, "ro_base: {:#x}-{:#x}".format(Ksym.ro_base, Ksym.ro_base + Ksym.ro_size))
@@ -142340,7 +142380,7 @@ class Ksym:
 
                 # Non-relocatable 32-bit kernels store absolute addresses in the same table.
                 if address_byte_size == offset_byte_size:
-                    text_base = Kernel.get_kernel_layout(apply_data_range_hint=False).text_base
+                    text_base = Kernel.get_layout(apply_data_range_hint=False).text_base
                     if text_base not in kernel_addresses:
                         fmt = "{:s}{:d}I".format(endianness_marker, Ksym.num_symbols)
                         absolute_addresses = struct.unpack(fmt, kallsyms_offsets_data)
@@ -142820,21 +142860,21 @@ class VmlinuxToElfApplyCommand(GenericCommand):
             return symboled_vmlinux_file
 
         # resolve text_base, ro_base
-        kinfo = Kernel.get_kernel_layout()
-        if None in (kinfo.text_base, kinfo.text_size, kinfo.ro_base, kinfo.ro_size):
+        klayout = Kernel.get_layout()
+        if None in (klayout.text_base, klayout.text_size, klayout.ro_base, klayout.ro_size):
             err("Failed to resolve")
             return None
-        gef_print("kernel base:   {:#x}-{:#x} ({:#x} bytes)".format(kinfo.text_base, kinfo.text_end, kinfo.text_size))
-        gef_print("kernel rodata: {:#x}-{:#x} ({:#x} bytes)".format(kinfo.ro_base, kinfo.ro_end, kinfo.ro_size))
+        gef_print("kernel base:   {:#x}-{:#x} ({:#x} bytes)".format(klayout.text_base, klayout.text_end, klayout.text_size))
+        gef_print("kernel rodata: {:#x}-{:#x} ({:#x} bytes)".format(klayout.ro_base, klayout.ro_end, klayout.ro_size))
 
         info("Start memory dump")
         # rodata size detection may be inaccurate on kernels with RWX attribute regions.
         # Since they tend to be very large, we put a size cap on the rodata to make it faster.
-        if kinfo.rwx:
+        if klayout.rwx:
             # The number 0x400000 has no basis.
-            fixed_ro_base_size = min(0x40_0000, kinfo.ro_size)
+            fixed_ro_base_size = min(0x40_0000, klayout.ro_size)
         else:
-            fixed_ro_base_size = kinfo.ro_size
+            fixed_ro_base_size = klayout.ro_size
 
         # delete old file
         if os.path.exists(dumped_mem_file):
@@ -142856,8 +142896,8 @@ class VmlinuxToElfApplyCommand(GenericCommand):
                 os.unlink(remove_file)
 
         # dump text
-        start = kinfo.text_base
-        end = start + kinfo.text_size
+        start = klayout.text_base
+        end = start + klayout.text_size
         gef_print("Dumping .text area:   {:#x} - {:#x}".format(start, end))
         try:
             gdb.execute("dump memory {} {:#x} {:#x}".format(dumped_mem_file, start, end), to_string=True)
@@ -142866,14 +142906,14 @@ class VmlinuxToElfApplyCommand(GenericCommand):
             return None
 
         # dump sparse
-        text_end = kinfo.text_end
-        unmapped_size = kinfo.ro_base - text_end
+        text_end = klayout.text_end
+        unmapped_size = klayout.ro_base - text_end
         if unmapped_size:
-            gef_print("Non-mapping area:     {:#x} - {:#x} (ZERO fill)".format(text_end, kinfo.ro_base))
+            gef_print("Non-mapping area:     {:#x} - {:#x} (ZERO fill)".format(text_end, klayout.ro_base))
             open(dumped_mem_file, "a").write("\0" * unmapped_size)
 
         # dump rodata
-        start = kinfo.ro_base
+        start = klayout.ro_base
         end = start + fixed_ro_base_size
         gef_print("Dumping .rodata area: {:#x} - {:#x}".format(start, end))
         try:
@@ -142885,7 +142925,7 @@ class VmlinuxToElfApplyCommand(GenericCommand):
         gef_print("Dumped to {:s}".format(dumped_mem_file))
 
         # apply vmlinux-to-elf
-        cmd = "{!r} {!r} {!r} --base-address={:#x}".format(vmlinux2elf, dumped_mem_file, symboled_vmlinux_file, kinfo.text_base)
+        cmd = "{!r} {!r} {!r} --base-address={:#x}".format(vmlinux2elf, dumped_mem_file, symboled_vmlinux_file, klayout.text_base)
         warn("Execute `{:s}`".format(cmd))
         GefUtil.os_system(cmd)
 
@@ -151093,7 +151133,7 @@ class BreakSecureMemAddrCommand(GenericCommand):
     ]
     _example_ = "\n".join(_example_).format(_cmdline_)
 
-    def aarch64_get_page_maps_el3(self):
+    def aarch64_get_maps_el3(self):
         maps = AddrMap.get_maps(command="pagewalk 3 --quiet --no-pager --no-merge --disable-color")
         if maps == []:
             warn("Make sure you are in EL1 (=kernel mode)")
@@ -151137,7 +151177,7 @@ class BreakSecureMemAddrCommand(GenericCommand):
             info("Phys address: {:#x}".format(args.location))
 
         if is_arm64():
-            maps = self.aarch64_get_page_maps_el3()
+            maps = self.aarch64_get_maps_el3()
             if maps:
                 virt_addrs = AddrMap.p2v(args.location, maps=maps)
                 # change to EL3 and set bp
@@ -151172,22 +151212,19 @@ class OpteeThreadEnterUserModeBreakpoint(gdb.Breakpoint):
     def get_ta_loaded_address(verbose=False):
         Cache.reset_gef_caches()
         if is_arm32():
-            res = AddrMap.run_pagewalk("pagewalk -S --quiet --no-pager --disable-color")
-            if verbose:
-                gef_print(res)
-            res = sorted(set(res.splitlines()))
-            res = list(filter(lambda line: "PL0/R-X" in line, res))
+            command = "pagewalk -S --quiet --no-pager --disable-color"
         elif is_arm64():
-            res = AddrMap.run_pagewalk("pagewalk 1 --quiet --no-pager --disable-color")
-            if verbose:
-                gef_print(res)
-        maps = AddrMap.parse_pagewalk_output(res)
-        user_exec = "PL0/R-X" if is_arm32() else "EL0/R-X"
-        maps = [entry for entry in maps if user_exec in entry.flags]
-        if len(maps) == 2:
-            return maps[1]
+            command = "pagewalk 1 --quiet --no-pager --disable-color"
         else:
             return None
+
+        if verbose:
+            gef_print(AddrMap.run_pagewalk(command))
+        maps = AddrMap.get_maps(command=command)
+        maps = [entry for entry in maps if entry.is_userland() and entry.is_executable()]
+        maps = sorted({(entry.vstart, entry.vend): entry for entry in maps}.values(),
+                      key=lambda entry: entry.vstart)
+        return maps[1] if len(maps) == 2 else None
 
     def stop(self):
         ta_address = self.get_ta_loaded_address(self.verbose)
@@ -154613,16 +154650,16 @@ class QemuRegistersCommand(GenericCommand, BufferingOutput):
 class AddrMap:
     """A collection of utility functions that are related to memory map from page tables."""
 
-    class MapEntry:
+    class Entry:
         """A virtual-to-physical mapping parsed from page-table information."""
 
         __slots__ = (
             "vstart", "vend", "vsize", "pstart", "pend", "psize",
-            "flags", "perm", "page_size", "count", "hint",
+            "flags", "permission", "page_size", "count", "hint",
             "vstart_text", "vend_text", "source_line",
         )
 
-        def __init__(self, vstart, vend, pstart, pend, flags="", perm=None,
+        def __init__(self, vstart, vend, pstart, pend, flags="", permission=None,
                      page_size=None, count=None, hint="", vstart_text=None, vend_text=None,
                      source_line=""):
             self.vstart = vstart
@@ -154632,7 +154669,7 @@ class AddrMap:
             self.pend = pend
             self.psize = pend - pstart if pstart is not None and pend is not None else None
             self.flags = flags
-            self.perm = perm if perm is not None else Permission(value=Permission.ALL)
+            self.permission = permission if permission is not None else Permission(value=Permission.ALL)
             self.page_size = page_size
             self.count = count
             self.hint = hint
@@ -154645,9 +154682,9 @@ class AddrMap:
             pstart = "None" if self.pstart is None else "{:#x}".format(self.pstart)
             pend = "None" if self.pend is None else "{:#x}".format(self.pend)
             return ('<{:s}.{:s} object at {:#x}, vstart={:#x}, vend={:#x}, '
-                    'pstart={:s}, pend={:s}, perm="{}", flags="{:s}">').format(
+                    'pstart={:s}, pend={:s}, permission="{}", flags="{:s}">').format(
                 self.__module__, self.__class__.__name__, id(self), self.vstart, self.vend,
-                pstart, pend, self.perm, self.flags,
+                pstart, pend, self.permission, self.flags,
             )
 
         def contains_virtual(self, address):
@@ -154657,13 +154694,31 @@ class AddrMap:
             return self.pstart is not None and self.pstart <= address < self.pend
 
         def is_readable(self):
-            return bool(self.perm & Permission.READ)
+            return bool(self.permission & Permission.READ)
 
         def is_writable(self):
-            return bool(self.perm & Permission.WRITE)
+            return bool(self.permission & Permission.WRITE)
 
         def is_executable(self):
-            return bool(self.perm & Permission.EXECUTE)
+            return bool(self.permission & Permission.EXECUTE)
+
+        def is_userland(self):
+            if is_x86() or is_riscv32() or is_riscv64():
+                return "USER" in self.flags
+            if is_arm32():
+                return "PL0/---" not in self.flags and self.vstart != 0xffff_0000
+            if is_arm64():
+                return not AddressUtil.is_msb_on(self.vstart)
+            return False
+
+        def is_kernel(self):
+            if is_x86() or is_riscv32() or is_riscv64():
+                return "KERN" in self.flags
+            if is_arm32():
+                return "PL0/---" in self.flags or self.vstart == 0xffff_0000
+            if is_arm64():
+                return "EL0/---" in self.flags
+            return False
 
         def v2p(self, address):
             if self.pstart is None or not self.contains_virtual(address):
@@ -154676,7 +154731,7 @@ class AddrMap:
             return self.vstart + address - self.pstart
 
         def to_section(self):
-            return Section(page_start=self.vstart, page_end=self.vend, permission=self.perm)
+            return Section(page_start=self.vstart, page_end=self.vend, permission=self.permission)
 
         def __str__(self):
             if self.source_line:
@@ -154732,9 +154787,9 @@ class AddrMap:
             except (ValueError, IndexError):
                 continue
             flags = fields[5]
-            maps.append(AddrMap.MapEntry(
+            maps.append(AddrMap.Entry(
                 vstart, vend, pstart, pend, flags=flags,
-                perm=AddrMap.permission_from_flags(flags), page_size=page_size, count=count,
+                permission=AddrMap.permission_from_flags(flags), page_size=page_size, count=count,
                 vstart_text=vstart_text, vend_text=vend_text, source_line=source_line,
             ))
         return maps
@@ -154754,9 +154809,9 @@ class AddrMap:
                 continue
             vstart, vend, pstart, pend = [int(match.group(i), 16) for i in range(1, 5)]
             flags = match.group(6) or ""
-            maps.append(AddrMap.MapEntry(
+            maps.append(AddrMap.Entry(
                 vstart, vend, pstart, pend, flags=flags,
-                perm=AddrMap.permission_from_flags(flags), hint=match.group(7) or "",
+                permission=AddrMap.permission_from_flags(flags), hint=match.group(7) or "",
             ))
         return maps
 
@@ -154767,7 +154822,7 @@ class AddrMap:
         if is_kgdb():
             info("Start `pagewalk`")
         res = gdb.execute(command, to_string=True)
-        if 'Exception raised' in res:
+        if "Exception raised" in res:
             gef_print(res)
             return "" # the output is polluted by the traceback, so it must not be parsed
         return res
@@ -154781,93 +154836,10 @@ class AddrMap:
             output = AddrMap.run_pagewalk("pagewalk --optee --quiet --no-pager --disable-color")
             return AddrMap.parse_optee_pagewalk_output(output)
 
-        def get_arm64_secure_maps():
-            # heuristic search of qemu-system memory
-            if SecureMemory.get_area(verbose) is None:
-                err("Could not find secure memory maps")
-                return None
-            data = SecureMemory.read_all(verbose)
-            if data is None:
-                err("Memory read error ({:s})".format(SecureMemory.PRIVILEGE_HINT))
-                return None
-            data_list = slice_unpack(data, 8)
-
-            """
-            enum teecore_memtypes {
-                MEM_AREA_TEE_RAM = 1,
-                MEM_AREA_TEE_RAM_RX,
-                MEM_AREA_TEE_RAM_RO,
-                MEM_AREA_TEE_RAM_RW,
-                MEM_AREA_INIT_RAM_RO,
-                MEM_AREA_INIT_RAM_RX,
-                MEM_AREA_NEX_RAM_RO,
-                MEM_AREA_NEX_RAM_RW,
-                MEM_AREA_NEX_DYN_VASPACE,
-                MEM_AREA_TEE_DYN_VASPACE,
-                MEM_AREA_TEE_COHERENT,
-                MEM_AREA_TEE_ASAN,
-                MEM_AREA_IDENTITY_MAP_RX,
-                MEM_AREA_NSEC_SHM,
-                MEM_AREA_NEX_NSEC_SHM,
-                MEM_AREA_RAM_NSEC,
-                MEM_AREA_RAM_SEC,
-                MEM_AREA_ROM_SEC,
-                MEM_AREA_IO_NSEC,
-                MEM_AREA_IO_SEC,
-                MEM_AREA_EXT_DT,
-                MEM_AREA_MANIFEST_DT,
-                MEM_AREA_TRANSFER_LIST,
-                MEM_AREA_RES_VASPACE,
-                MEM_AREA_SHM_VASPACE,
-                MEM_AREA_TS_VASPACE,
-                MEM_AREA_PAGER_VASPACE,
-                MEM_AREA_SDP_MEM,
-                MEM_AREA_DDR_OVERALL,
-                MEM_AREA_SEC_RAM_OVERALL,
-                MEM_AREA_MAXTYPE
-            };
-            struct tee_mmap_region {
-                unsigned int type; /* enum teecore_memtypes */
-                unsigned int region_size;
-                paddr_t pa;
-                vaddr_t va;
-                size_t size;
-                uint32_t attr; /* TEE_MATTR_* above */
-            };
-            """
-            maps = []
-            old_i = -1
-            for i in range(len(data_list) - 4):
-                type_ = data_list[i] & 0xffff_ffff
-                region_size = (data_list[i] >> 32) & 0xffff_ffff
-                if type_ == 0 or 30 < type_: # enum teecore_memtypes
-                    continue
-                if region_size & 0xfff or region_size < 0x1000 or 0xffff_f000 < region_size:
-                    continue
-                pa, va, size, attr = data_list[i + 1:i + 5]
-                if pa & 0xfff or 0xffff_f000 < pa:
-                    continue
-                if va & 0xfff or 0xffff_f000 < va:
-                    continue
-                if size & 0xfff or size < 0x1000 or 0xffff_f000 < size:
-                    continue
-                if len(maps) > 0 and old_i + 5 != i: # Judging continuity
-                    continue
-                flags = "TEE_MATTR={:#x}".format(attr)
-                maps.append(AddrMap.MapEntry(
-                    va, va + size, pa, pa + size, flags=flags,
-                    perm=Permission(value=Permission.ALL), page_size=region_size,
-                ))
-                old_i = i
-            return maps
-
         def get_all_maps():
             selected_command = command
-            custom_command = selected_command is not None
             if selected_command is None:
                 if is_arm64():
-                    if force_secure is True:
-                        return get_arm64_secure_maps()
                     selected_command = "pagewalk 1 --quiet --no-pager --no-merge --disable-color"
                 elif force_secure is None:
                     selected_command = "pagewalk --quiet --no-pager --no-merge --disable-color"
@@ -154875,63 +154847,65 @@ class AddrMap:
                     selected_command = "pagewalk -S --quiet --no-pager --no-merge --disable-color"
                 elif force_secure is False:
                     selected_command = "pagewalk -s --quiet --no-pager --no-merge --disable-color"
-            maps = AddrMap.parse_pagewalk_output(AddrMap.run_pagewalk(selected_command))
-            if maps == []:
-                if custom_command:
-                    return maps
-                if is_x86():
-                    warn("Make sure you are in ring0 (=kernel mode)")
-                elif is_arm32():
-                    warn("Make sure you are in supervisor mode (=kernel mode)")
-                    warn("Make sure qemu 3.x or higher")
-                elif is_arm64():
-                    warn("Make sure you are in EL1 (=kernel mode)")
-                    warn("Make sure qemu 3.x or higher")
-                return None
-            return maps
+            return AddrMap.parse_pagewalk_output(AddrMap.run_pagewalk(selected_command))
 
         def get_kernel_maps():
             output = AddrMap.run_pagewalk("pagewalk --quiet --no-pager --simple --disable-color")
             maps = AddrMap.parse_pagewalk_output(output)
-            if is_x86() or is_riscv64() or is_riscv32():
-                maps = [entry for entry in maps if "KERN" in entry.flags]
-            elif is_arm32():
-                maps = [entry for entry in maps if "PL0/---" in entry.flags or entry.vstart == 0xffff_0000]
-            elif is_arm64():
-                maps = [entry for entry in maps if "EL0/---" in entry.flags]
+            maps = [entry for entry in maps if entry.is_kernel()]
+            return maps
 
-            if len(maps) > 1:
-                return maps
+        def warn_not_found():
+            if is_arm64() and force_secure is True:
+                warn("Could not find secure memory maps ({:s})".format(SecureMemory.PRIVILEGE_HINT))
+                return
+            if scope == "optee":
+                warn("Could not find OP-TEE maps")
+                return
             if is_x86():
-                warn("Make sure you are in ring0 (=kernel mode); See pagewalk")
+                warn("Make sure you are in ring0 (=kernel mode)")
             elif is_arm32():
-                warn("Make sure you are in supervisor mode (=kernel mode); See pagewalk")
+                warn("Make sure you are in supervisor mode (=kernel mode)")
                 warn("Make sure qemu 3.x or higher")
             elif is_arm64():
-                warn("Make sure you are in EL1 (=kernel mode); See pagewalk")
+                warn("Make sure you are in EL1 (=kernel mode)")
                 warn("Make sure qemu 3.x or higher")
             elif is_riscv64() or is_riscv32():
-                warn("Make sure you are in S-mode (=kernel mode); See pagewalk")
-            return None
+                warn("Make sure you are in S-mode (=kernel mode)")
 
         if scope == "all":
-            return get_all_maps()
-        if scope == "kernel":
-            return get_kernel_maps()
-        if scope == "optee":
-            return get_optee_maps()
-        raise ValueError("Unknown address map scope: {!r}".format(scope))
+            if is_arm64() and force_secure is True:
+                maps = SecureMemory.get_optee_maps_heuristic(verbose)
+            else:
+                maps = get_all_maps()
+        elif scope == "kernel":
+            maps = get_kernel_maps()
+        elif scope == "optee":
+            maps = get_optee_maps()
+        else:
+            raise ValueError("Unknown address map scope: {!r}".format(scope))
+
+        if not maps and command is None:
+            warn_not_found()
+        return maps
+
+    @staticmethod
+    def find_virtual(address, maps=None, **kwargs):
+        """Return the mapping that contains a virtual address, or None."""
+        if maps is None:
+            maps = AddrMap.get_maps(**kwargs)
+        return next((entry for entry in maps if entry.contains_virtual(address)), None)
+
+    @staticmethod # noqa
+    def find_physical(address, maps=None, **kwargs):
+        """Return the first mapping that contains a physical address, or None."""
+        if maps is None:
+            maps = AddrMap.get_maps(**kwargs)
+        return next((entry for entry in maps if entry.contains_physical(address)), None)
 
     @staticmethod
     def v2p(address, force_secure=None, verbose=False, maps=None):
         """Translate a virtual address to a physical address."""
-
-        def v2p_from_map():
-            for entry in maps:
-                paddr = entry.v2p(address)
-                if paddr is not None:
-                    return paddr
-            return None
 
         # QEMU can translate the active address space without a full page-table walk.
         # Secure-world translations and explicitly supplied maps must use their selected tables.
@@ -154946,9 +154920,10 @@ class AddrMap:
 
         if maps is None:
             maps = AddrMap.get_maps(force_secure=force_secure, verbose=verbose)
-        if maps is None:
+        if not maps:
             return None
-        paddr = v2p_from_map()
+        entry = AddrMap.find_virtual(address, maps=maps)
+        paddr = entry.v2p(address) if entry is not None else None
         if verbose and paddr is not None:
             info("v2p: {:#x} -> {:#x}".format(address, paddr))
         return paddr
@@ -154967,7 +154942,7 @@ class AddrMap:
 
         if maps is None:
             maps = AddrMap.get_maps(force_secure=force_secure, verbose=verbose)
-        if maps is None:
+        if not maps:
             return []
         vaddrs = p2v_from_map()
         if verbose:
@@ -160073,44 +160048,34 @@ class KernelVMMapCommand(GenericCommand, BufferingOutput):
             option = " --include-esp-fixup-stacks"
         maps = AddrMap.get_maps(command="pagewalk --quiet --no-pager --disable-color" + option)
 
-        def is_userland(entry):
-            if is_x86():
-                return "USER" in entry.flags
-            elif is_arm32():
-                if "PL0/---" not in entry.flags and entry.vstart != 0xffff_0000:
-                    return True
-            elif is_arm64():
-                return not AddressUtil.is_msb_on(entry.vstart)
-            return False
-
         regions = {} # {addr_start: Region(), ...}
         for entry in maps:
             # userland filter
-            if self.args.exclude_user and is_userland(entry):
+            if self.args.exclude_user and entry.is_userland():
                 continue
 
             # add region
             if entry.has_wildcard:
                 regions[entry.vstart] = self.Region(
-                    entry.vstart, entry.vend, str(entry.perm), merge=False,
+                    entry.vstart, entry.vend, str(entry.permission), merge=False,
                     description="esp_fixup (=0x1000*N)",
                     addr_start_str=entry.vstart_text, addr_end_str=entry.vend_text,
                     size_str="0x0000000000001000",
                 )
-            elif is_userland(entry):
+            elif entry.is_userland():
                 regions[entry.vstart] = self.Region(
-                    entry.vstart, entry.vend, str(entry.perm), description="userland",
+                    entry.vstart, entry.vend, str(entry.permission), description="userland",
                 )
             else:
                 regions[entry.vstart] = self.Region(
-                    entry.vstart, entry.vend, str(entry.perm),
+                    entry.vstart, entry.vend, str(entry.permission),
                 )
         return regions
 
     def resolve_kbase(self):
         self.quiet_info("Resolving kbase")
 
-        kinfo = Kernel.get_kernel_layout()
+        klayout = Kernel.get_layout()
 
         # .text
         stext = Ksym.get_addr("_stext")
@@ -160120,8 +160085,8 @@ class KernelVMMapCommand(GenericCommand, BufferingOutput):
             etext = self.page_end_align(etext)
             self.insert_region(stext, etext - stext, "kernel .text")
         else:
-            if kinfo.text_base in self.regions:
-                self.regions[kinfo.text_base].add_description("maybe kernel .text")
+            if klayout.text_base in self.regions:
+                self.regions[klayout.text_base].add_description("maybe kernel .text")
 
         # .rodata
         start_rodata = Ksym.get_addr("__start_rodata")
@@ -160133,8 +160098,8 @@ class KernelVMMapCommand(GenericCommand, BufferingOutput):
         else:
             # In a 32-bit environment, the range of rodata may not be measured correctly, so it is not used.
             if is_64bit():
-                if kinfo.ro_base in self.regions:
-                    self.regions[kinfo.ro_base].add_description("maybe kernel .rodata")
+                if klayout.ro_base in self.regions:
+                    self.regions[klayout.ro_base].add_description("maybe kernel .rodata")
 
         # .data
         sdata = Ksym.get_addr("_sdata")
@@ -160146,8 +160111,8 @@ class KernelVMMapCommand(GenericCommand, BufferingOutput):
         else:
             # In a 32-bit environment, the range of rodata may not be measured correctly, so it is not used.
             if is_64bit():
-                if kinfo.rw_base in self.regions:
-                    self.regions[kinfo.rw_base].add_description("maybe kernel .data")
+                if klayout.rw_base in self.regions:
+                    self.regions[klayout.rw_base].add_description("maybe kernel .data")
         return
 
     def resolve_direct_map(self):
@@ -160707,7 +160672,7 @@ class KernelVMMapCommand(GenericCommand, BufferingOutput):
             return
 
         maps = AddrMap.get_maps()
-        if maps is None:
+        if not maps:
             return
 
         for line in res.splitlines():
@@ -163867,10 +163832,8 @@ class ThunkBreakpoint(gdb.Breakpoint):
         return
 
     def search_perm(self, target):
-        for entry in self.maps:
-            if entry.contains_virtual(target):
-                return str(entry.perm)
-        return "?"
+        entry = AddrMap.find_virtual(target, maps=self.maps)
+        return str(entry.permission) if entry else "?"
 
     def stop(self):
         try:
@@ -168053,13 +168016,13 @@ class KernelRefsCommand(GenericCommand, BufferingOutput):
 
     def collect_physmap_ranges(self):
         """Return every writable kernel mapping outside the kernel image."""
-        kinfo = Kernel.get_kernel_layout()
-        if kinfo is None or not kinfo.maps:
+        klayout = Kernel.get_layout()
+        if not klayout.maps:
             self.err_add_out("Could not resolve the kernel memory map")
             return []
         image = KernelAddressHeuristicFinderUtil.get_kernel_image_range()
         ranges = []
-        for entry in kinfo.maps:
+        for entry in klayout.maps:
             if not entry.is_writable():
                 continue
             if image and image[0] <= entry.vstart < image[1]:
@@ -168073,14 +168036,16 @@ class KernelRefsCommand(GenericCommand, BufferingOutput):
         ranges = []
 
         if args.data or not (args.percpu or args.cache or args.object or args.range or args.physmap):
-            kinfo = Kernel.get_kernel_layout()
-            if kinfo is None:
+            klayout = Kernel.get_layout()
+            found = False
+            if klayout.ro_base and klayout.ro_size:
+                ranges.append((klayout.ro_base, klayout.ro_size, "kernel .rodata"))
+                found = True
+            if klayout.rw_base and klayout.rw_size:
+                ranges.append((klayout.rw_base, klayout.rw_size, "kernel .data/.bss"))
+                found = True
+            if not found:
                 self.err_add_out("Could not resolve the kernel memory map")
-            else:
-                if kinfo.ro_base and kinfo.ro_size:
-                    ranges.append((kinfo.ro_base, kinfo.ro_size, "kernel .rodata"))
-                if kinfo.rw_base and kinfo.rw_size:
-                    ranges.append((kinfo.rw_base, kinfo.rw_size, "kernel .data/.bss"))
 
         if args.percpu:
             units = Kernel.get_percpu().unit_ranges()
@@ -168382,10 +168347,10 @@ class KernelLsmCommand(GenericCommand, BufferingOutput):
     def is_kernel_text(self, addr):
         if not addr:
             return False
-        kinfo = self.kinfo
-        if kinfo is None or not kinfo.text_base or not kinfo.text_end:
+        layout = self.klayout
+        if layout is None or not layout.text_base or not layout.text_end:
             return False
-        if kinfo.text_base <= addr < kinfo.text_end:
+        if layout.text_base <= addr < layout.text_end:
             return True
         # a module may register hooks too
         consts = KernelAddressHeuristicFinder.consts()
@@ -168935,7 +168900,7 @@ class KernelLsmCommand(GenericCommand, BufferingOutput):
             err("Could not find Linux kernel")
             return
 
-        self.kinfo = Kernel.get_kernel_layout()
+        self.klayout = Kernel.get_layout()
 
         if Ksym.get_addrs(self.SCK_PREFIX, match="prefix"):
             self.dump_static_calls()
