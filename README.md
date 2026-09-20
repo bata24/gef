@@ -205,8 +205,8 @@ For a comprehensive list and additional details, see [docs/SUPPORTED-MODE.md](do
     - ![](images/kmagic.png)
 - `kconfig`: dumps the kernel config if available.
     - ![](images/kconfig.png)
-- `syscall-table-view`: displays the system call table.
-    - ![](images/syscall-table-view.png)
+- `ksyscalls`: displays the system call table.
+    - ![](images/ksyscalls.png)
     - It also dumps the ia32/x32 syscall table under x64.
     - It also dumps the compat syscall table under ARM64.
 - `ksysctl`: dumps the sysctl parameters.

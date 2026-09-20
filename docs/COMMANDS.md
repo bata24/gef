@@ -9915,6 +9915,31 @@ because struct sock varies with the kernel version and configuration.
 Use `kskb ADDR` to inspect a single sk_buff in detail.
 ```
 
+## ksyscalls
+
+Display syscall_table entries.
+
+- Alias: `kst`, `syscall-table-view`
+
+### Syntax
+
+```text
+usage: ksyscalls [-h] [-f FILTER] [-n] [-q]
+
+options:
+  -h, --help           show this help message and exit
+  -f, --filter FILTER  REGEXP syscall name filter.
+  -n, --no-pager       do not use the pager.
+  -q, --quiet          enable quiet mode.
+```
+
+### Examples
+
+```gdb
+ksyscalls
+ksyscalls --filter write
+```
+
 ## ksysctl
 
 Dump the sysctl parameters.
@@ -10378,31 +10403,6 @@ Simplified workqueue structures (`==>` shows where each column comes from):
 - For `delayed` work, `cpu` is the CPU whose timer wheel holds the timer.
 - `--object` scans `[object, object+size)` for initialized `work_struct`s, including unqueued `idle` work.
   `delayed_work` is recognized by its `delayed_work_timer_fn` timer when available.
-```
-
-## syscall-table-view
-
-Display syscall_table entries.
-
-- Alias: `kst`
-
-### Syntax
-
-```text
-usage: syscall-table-view [-h] [-f FILTER] [-n] [-q]
-
-options:
-  -h, --help           show this help message and exit
-  -f, --filter FILTER  REGEXP filter.
-  -n, --no-pager       do not use the pager.
-  -q, --quiet          enable quiet mode.
-```
-
-### Examples
-
-```gdb
-syscall-table-view
-syscall-table-view --filter write
 ```
 
 # 06-h. Qemu-system/KGDB Cooperation - Linux Allocator
