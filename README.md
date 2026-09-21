@@ -275,6 +275,8 @@ For a comprehensive list and additional details, see [docs/SUPPORTED-MODE.md](do
     - ![](images/kobj.png)
 - `kpath`: reconstructs the pathname of a dentry, path, file or mount.
     - ![](images/kpath.png)
+- `kvfs`: displays the VFS object graph of a file descriptor or VFS object.
+    - ![](images/kvfs.png)
 - `ksock`: walks from a file descriptor (or a raw struct sock) through socket, sock and its skb queues.
 - `kskb`: parses a single sk_buff and show its buffer layout, refcount and fragment information.
     - ![](images/ksock-kskb.png)

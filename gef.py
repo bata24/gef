@@ -69480,6 +69480,15 @@ class Kernel:
                 self.meta.append(("err", "Could not find inode->i_ino"))
                 return None
             self.meta.append(("info", "offsetof(inode, i_ino): {:#x}".format(self.offset_i_ino)))
+
+            self.offset_i_mode = self.get_offset_i_mode()
+            self.meta.append(("info", "offsetof(inode, i_mode): {:#x}".format(self.offset_i_mode)))
+
+            self.offset_i_sb = self.get_offset_i_sb(inode)
+            if self.offset_i_sb is None:
+                self.meta.append(("warn", "Could not find inode->i_sb"))
+            else:
+                self.meta.append(("info", "offsetof(inode, i_sb): {:#x}".format(self.offset_i_sb)))
             return True
 
         def export_meta(self, command):
@@ -69758,6 +69767,34 @@ class Kernel:
 
             # slow path
             return offset_d_iname - current_arch.ptrsize
+
+        @Cache.cache_this_session(cache_None=False)
+        def get_offset_i_mode(self):
+            # i_mode is the first member of struct inode throughout the supported kernels.
+            try:
+                return GefUtil.parse_and_eval_unsigned("&((struct inode*)0).i_mode")
+            except gdb.error:
+                return 0
+
+        @Cache.cache_this_session(cache_None=False)
+        def get_offset_i_sb(self, inode):
+            """Resolve inode->i_sb from debug information or the adjacent i_mapping member."""
+            try:
+                return GefUtil.parse_and_eval_unsigned("&((struct inode*)0).i_sb")
+            except gdb.error:
+                pass
+
+            if not is_valid_addr(inode) or inode & (current_arch.ptrsize - 1):
+                return None
+
+            # i_mapping immediately follows i_sb and points to inode->i_data. This relation is
+            # stable from Linux 3.x through 7.2 and is independent of the filesystem type.
+            first_pointer = 2 + 2 + 4 + 4 + 4
+            for offset in range(first_pointer, 0x100, current_arch.ptrsize):
+                mapping = read_int_from_memory(inode + offset)
+                if inode + offset < mapping <= inode + 0x1000:
+                    return offset - current_arch.ptrsize
+            return None
 
         @Cache.cache_this_session(cache_None=False)
         def get_offset_i_ino(self, inode):
@@ -79866,6 +79903,312 @@ class KernelPathCommand(GenericCommand, BufferingOutput):
                 return
         else:
             self.dump(targets, root)
+        self.print_output(check_terminal_size=True)
+        return
+
+
+@register_command
+class KernelVfsCommand(GenericCommand, BufferingOutput):
+    """Display the VFS object graph of a file descriptor or VFS object."""
+
+    _cmdline_ = "kvfs"
+    _category_ = "06-g. Qemu-system/KGDB Cooperation - Linux Advanced"
+
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("-hh", "--help-simple", action="store_true", help="show help without ASCII diagram.")
+    parser.add_argument("address", nargs="?", metavar="ADDRESS", type=AddressUtil.parse_address,
+                        help="the address of struct file, dentry or inode.")
+    parser.add_argument("-t", "--type", choices=["auto", "file", "dentry", "inode"], default="auto",
+                        help="the type of ADDRESS. (default: %(default)s)")
+    parser.add_argument("-p", "--pid", type=int, help="select a file descriptor from this pid.")
+    parser.add_argument("-f", "--fd", type=int, help="select this file descriptor (requires --pid).")
+    parser.add_argument("--meta", action="store_true", help="display offset information.")
+    parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
+    parser.add_argument("-q", "--quiet", action="store_true", help="enable quiet mode.")
+    _syntax_ = parser.format_help()
+
+    _example_ = [
+        "{0:s} --pid 1337 --fd 3",
+        "{0:s} 0xffff888003b0a000",
+        "{0:s} --type inode 0xffff888003b0a000",
+    ]
+    _example_ = "\n".join(_example_).format(_cmdline_)
+
+    _note_ = [
+        "This command requires CONFIG_RANDSTRUCT=n.",
+        "",
+        "ADDRESS is detected as struct file, dentry or inode unless --type is specified.",
+        "The filesystem type and mount device are best-effort when debug information is unavailable.",
+        "",
+        "Simplified VFS object graph:",
+        "",
+        "+-file-----+",
+        "| ...      |",
+        "| f_path   |",
+        "|   mnt    |    +-dentry--+",
+        "|   dentry |--->| d_name  |    +-inode-+",
+        "| ...      |    | d_inode |--->| i_ino |    +-super_block-+",
+        "+----------+    +---------+    | i_sb  |--->| s_type      |",
+        "                               +-------+    | s_dev       |",
+        "                                            +-------------+",
+    ]
+    _note_ = "\n".join(_note_)
+
+    FILE_TYPES = {
+        0o010000: "p",
+        0o020000: "c",
+        0o040000: "d",
+        0o060000: "b",
+        0o100000: "-",
+        0o120000: "l",
+        0o140000: "s",
+    }
+
+    def initialize(self):
+        self.meta = []
+
+        kversion = Kernel.kernel_version()
+        if kversion is None:
+            self.meta.append((self.quiet_err, "Could not find Linux kernel"))
+            return None
+
+        self.task_command = KernelTaskCommand.borrow(self, print_fd=True)
+        if self.task_command is None:
+            return None
+
+        self.kpath = Kernel.Path.get_instance()
+        if not self.kpath.initialized:
+            self.meta.append((self.quiet_err, "Could not resolve the VFS object layout"))
+            return None
+        if self.kpath.offset_i_sb is None:
+            self.meta.append((self.quiet_err, "Could not find inode->i_sb"))
+            return None
+
+        # Kernel.FileSystem adds the filesystem name and mount source. It relies on struct
+        # mount, introduced in v3.3, so older kernels use the stable super_block fields below.
+        self.kfs = None
+        if "3.3" <= kversion:
+            kfs = Kernel.FileSystem.get_instance()
+            if kfs.initialize():
+                self.kfs = kfs
+            self.meta.extend(kfs.export_meta(self, demote_err=True))
+
+        self.offset_s_dev = current_arch.ptrsize * 2
+        # loff_t is 8-byte aligned on the supported 64-bit ABIs and 4-byte aligned on
+        # i386/ARM32, placing s_type at 0x28 and 0x1c respectively.
+        self.offset_s_type = 0x28 if is_64bit() else 0x1c
+        if self.kfs is not None:
+            self.offset_s_dev = self.kfs.offset_s_dev
+            if self.kfs.offset_s_type is not None:
+                self.offset_s_type = self.kfs.offset_s_type
+        try:
+            self.offset_s_dev = GefUtil.parse_and_eval_unsigned("&((struct super_block*)0).s_dev")
+        except gdb.error:
+            pass
+        try:
+            self.offset_s_type = GefUtil.parse_and_eval_unsigned("&((struct super_block*)0).s_type")
+        except gdb.error:
+            pass
+        self.meta.append((self.quiet_info, "offsetof(super_block, s_dev): {:#x}".format(self.offset_s_dev)))
+        self.meta.append((self.quiet_info, "offsetof(super_block, s_type): {:#x}".format(self.offset_s_type)))
+        return True
+
+    def get_task_by_pid(self, pid):
+        task_command = self.task_command
+        for task in KernelTaskCommand.get_task_list(task_command.init_task, task_command.offset_tasks):
+            if read_int32_from_memory(task + task_command.offset_pid) == pid:
+                return task
+        return None
+
+    def get_file_by_fd(self, pid, fd):
+        if fd < 0:
+            self.quiet_err("FD must not be negative")
+            return None
+        task = self.get_task_by_pid(pid)
+        if task is None:
+            self.quiet_err("Could not find the task of pid {:d}".format(pid))
+            return None
+        try:
+            files = read_int_from_memory(task + self.task_command.offset_files)
+            fdt = read_int_from_memory(files + self.task_command.offset_fdt)
+            max_fds = read_int32_from_memory(fdt)
+            if fd >= max_fds:
+                self.quiet_err("FD {:d} is outside the fdtable (max_fds={:d})".format(fd, max_fds))
+                return None
+            array = read_int_from_memory(fdt + current_arch.ptrsize)
+            file = read_int_from_memory(array + current_arch.ptrsize * fd)
+        except (gdb.MemoryError, OverflowError):
+            self.quiet_err("Could not read fd {:d} of pid {:d}".format(fd, pid))
+            return None
+        if not is_valid_addr(file):
+            self.quiet_err("FD {:d} of pid {:d} is not open".format(fd, pid))
+            return None
+        return file
+
+    def is_inode(self, inode):
+        if not is_valid_addr(inode) or inode & (current_arch.ptrsize - 1):
+            return False
+        try:
+            mode = read_int16_from_memory(inode + self.kpath.offset_i_mode)
+            super_block = read_int_from_memory(inode + self.kpath.offset_i_sb)
+            read_int_from_memory(inode + self.kpath.offset_i_ino)
+        except (gdb.MemoryError, OverflowError):
+            return False
+        return mode & 0o170000 in self.FILE_TYPES and is_valid_addr(super_block)
+
+    def is_file(self, file):
+        kpath = self.kpath
+        try:
+            if kpath.offset_file_mnt is None and not kpath.initialize_file_offsets(file):
+                return False
+            vfsmnt = read_int_from_memory(file + kpath.offset_file_mnt)
+            dentry = read_int_from_memory(file + kpath.offset_file_dentry)
+        except (gdb.MemoryError, OverflowError, RuntimeError):
+            return False
+        return kpath.is_vfsmount(vfsmnt) and kpath.is_dentry(dentry)
+
+    def detect_type(self, address):
+        if self.is_file(address):
+            return "file"
+        if self.kpath.is_dentry(address):
+            return "dentry"
+        if self.is_inode(address):
+            return "inode"
+        return None
+
+    @staticmethod
+    def mode_string(mode):
+        chars = []
+        for shift in (6, 3, 0):
+            bits = (mode >> shift) & 7
+            chars.extend(("r" if bits & 4 else "-", "w" if bits & 2 else "-", "x" if bits & 1 else "-"))
+        if mode & 0o4000:
+            chars[2] = "s" if chars[2] == "x" else "S"
+        if mode & 0o2000:
+            chars[5] = "s" if chars[5] == "x" else "S"
+        if mode & 0o1000:
+            chars[8] = "t" if chars[8] == "x" else "T"
+        return KernelVfsCommand.FILE_TYPES.get(mode & 0o170000, "?") + "".join(chars)
+
+    def get_fstype_name(self, super_block):
+        if self.kfs is not None:
+            name = self.kfs.get_fstype_name(super_block)
+            if name:
+                return name
+        try:
+            fst = read_int_from_memory(super_block + self.offset_s_type)
+            name_addr = read_int_from_memory(fst)
+            return read_cstring_from_memory(name_addr) or "???"
+        except (gdb.MemoryError, OverflowError):
+            return "???"
+
+    def dump_inode(self, inode, prefix, mount=None):
+        kpath = self.kpath
+        mode = read_int16_from_memory(inode + kpath.offset_i_mode)
+        ino = read_int_from_memory(inode + kpath.offset_i_ino)
+        super_block = read_int_from_memory(inode + kpath.offset_i_sb)
+        dev = read_int32_from_memory(super_block + self.offset_s_dev)
+        major = dev >> 20
+        minor = dev & ((1 << 20) - 1)
+        fstype = self.get_fstype_name(super_block)
+        devname = self.kfs.get_dev_name(mount) if self.kfs is not None and mount is not None else None
+
+        self.out.append(prefix + "struct inode {:#018x}".format(inode))
+        self.out.append(prefix + "|- i_ino {:d} ({:#x})".format(ino, ino))
+        self.out.append(prefix + "|- i_mode 0{:06o} ({:s})".format(mode, self.mode_string(mode)))
+        self.out.append(prefix + "`- struct super_block {:#018x}".format(super_block))
+        self.out.append(prefix + "   |- filesystem {:s}".format(fstype))
+        self.out.append(prefix + "   |- s_dev {:d}:{:d} ({:#x})".format(major, minor, dev))
+        self.out.append(prefix + "   `- mount source {:s}".format(devname or "???"))
+        return
+
+    def dump_dentry(self, dentry, prefix="", mount=None, path=None):
+        kpath = self.kpath
+        inode = read_int_from_memory(dentry + kpath.offset_d_inode)
+        name = kpath.get_dentry_name(dentry, "???")
+        if path is None:
+            path = kpath.decorate_pseudo_path(kpath.dentry_path(dentry), dentry) or "???"
+        self.out.append(prefix + "struct dentry {:#018x}".format(dentry))
+        self.out.append(prefix + "|- d_name {!r}".format(name))
+        self.out.append(prefix + "|- path {!r}".format(path))
+        if not self.is_inode(inode):
+            self.out.append(prefix + "`- d_inode {:#018x} (unreadable or negative dentry)".format(inode))
+            return
+        self.out.append(prefix + "`- d_inode")
+        self.dump_inode(inode, prefix + "   ", mount)
+        return
+
+    def dump_file(self, file):
+        kpath = self.kpath
+        vfsmnt = read_int_from_memory(file + kpath.offset_file_mnt)
+        dentry = read_int_from_memory(file + kpath.offset_file_dentry)
+        mount = vfsmnt - kpath.offset_mount_mnt
+        path = kpath.get_file_path(file) or "???"
+        self.out.append("struct file {:#018x}".format(file))
+        self.out.append("`- struct path f_path {:#018x}".format(file + kpath.offset_file_mnt))
+        self.out.append("   |- struct vfsmount {:#018x}".format(vfsmnt))
+        self.out.append("   `- dentry")
+        self.dump_dentry(dentry, "      ", mount, path)
+        return
+
+    @parse_args
+    @only_if_gdb_running
+    @only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
+    @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
+    @only_if_in_kernel_or_kpti_disabled
+    def do_invoke(self, args):
+        self.quiet_info("Wait for memory scan")
+
+        ret = self.initialize()
+        if args.meta or not ret:
+            for func, line in self.meta:
+                func(line)
+        if not ret or args.meta:
+            return
+
+        fd_mode = args.pid is not None or args.fd is not None
+        if fd_mode:
+            if args.pid is None or args.fd is None:
+                err("--pid and --fd must be used together")
+                return
+            if args.address is not None:
+                err("ADDRESS cannot be used with --pid/--fd")
+                return
+            address = self.get_file_by_fd(args.pid, args.fd)
+            if address is None:
+                return
+            kind = "file"
+            self.quiet_info("pid {:d}, fd {:d}: struct file {:#x}".format(args.pid, args.fd, address))
+        else:
+            if args.address is None:
+                err("Specify ADDRESS or both --pid and --fd")
+                return
+            address = args.address
+            if not is_valid_addr(address):
+                err("Unreadable address: {:#x}".format(address))
+                return
+            kind = args.type
+            if kind == "auto":
+                kind = self.detect_type(address)
+                if kind is None:
+                    err("Could not tell what {:#x} points to; specify it with --type".format(address))
+                    return
+            self.quiet_info("Interpreted ADDRESS as struct {:s}".format(kind))
+
+        self.out = []
+        try:
+            if kind == "file" and self.is_file(address):
+                self.dump_file(address)
+            elif kind == "dentry" and self.kpath.is_dentry(address):
+                self.dump_dentry(address)
+            elif kind == "inode" and self.is_inode(address):
+                self.dump_inode(address, "")
+            else:
+                err("Could not interpret {:#x} as struct {:s}".format(address, kind))
+                return
+        except (gdb.MemoryError, OverflowError):
+            err("Memory read error while walking the VFS graph")
+            return
         self.print_output(check_terminal_size=True)
         return
 

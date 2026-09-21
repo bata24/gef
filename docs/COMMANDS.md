@@ -10068,6 +10068,60 @@ Simplified hrtimer structure (per-cpu):
 +--------------------+
 ```
 
+## kvfs
+
+Display the VFS object graph of a file descriptor or VFS object.
+
+
+### Syntax
+
+```text
+usage: kvfs [-h] [-hh] [-t {auto,file,dentry,inode}] [-p PID] [-f FD] [--meta] [-n] [-q] [ADDRESS]
+
+positional arguments:
+  ADDRESS               the address of struct file, dentry or inode.
+
+options:
+  -h, --help            show this help message and exit
+  -hh, --help-simple    show help without ASCII diagram.
+  -t, --type {auto,file,dentry,inode}
+                        the type of ADDRESS. (default: auto)
+  -p, --pid PID         select a file descriptor from this pid.
+  -f, --fd FD           select this file descriptor (requires --pid).
+  --meta                display offset information.
+  -n, --no-pager        do not use the pager.
+  -q, --quiet           enable quiet mode.
+```
+
+### Examples
+
+```gdb
+kvfs --pid 1337 --fd 3
+kvfs 0xffff888003b0a000
+kvfs --type inode 0xffff888003b0a000
+```
+
+### Notes
+
+```text
+This command requires CONFIG_RANDSTRUCT=n.
+
+ADDRESS is detected as struct file, dentry or inode unless --type is specified.
+The filesystem type and mount device are best-effort when debug information is unavailable.
+
+Simplified VFS object graph:
+
++-file-----+
+| ...      |
+| f_path   |
+|   mnt    |    +-dentry--+
+|   dentry |--->| d_name  |    +-inode-+
+| ...      |    | d_inode |--->| i_ino |    +-super_block-+
++----------+    +---------+    | i_sb  |--->| s_type      |
+                               +-------+    | s_dev       |
+                                            +-------------+
+```
+
 ## kwalk
 
 The base command to dump the entries held by the well-known kernel data structures.
