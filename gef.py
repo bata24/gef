@@ -68621,8 +68621,18 @@ class Kernel:
             """Return the list of all leaf entries in the radix_tree."""
             return list(self.iter_entries())
 
+        def parse_indexed(self):
+            """Return the list of (index, entry) pairs in the radix_tree."""
+            return list(self.iter_indexed_entries())
+
         def iter_entries(self):
             """Iterate all leaf entries in the radix_tree lazily."""
+            for _, entry in self.iter_indexed_entries():
+                yield entry
+            return
+
+        def iter_indexed_entries(self):
+            """Iterate all (index, leaf entry) pairs in the radix_tree lazily."""
             # Re-read the root every time, because the tree may be updated after the last walk.
             if not self.read_root():
                 return
@@ -68634,9 +68644,9 @@ class Kernel:
             if self.rnode & 3 != cls.RADIX_TREE_INDIRECT_PTR:
                 # The tree holds only one item, which is stored in rnode directly.
                 if self.rnode & 3 == 0 and is_valid_addr(self.rnode):
-                    yield self.rnode
+                    yield 0, self.rnode
                 return
-            yield from self.parse_node(self.rnode - cls.RADIX_TREE_INDIRECT_PTR, self.height)
+            yield from self.parse_node_indexed(self.rnode - cls.RADIX_TREE_INDIRECT_PTR, self.height, 0)
             return
 
         def parse_node(self, node, height):
@@ -68644,6 +68654,12 @@ class Kernel:
 
             `height` is the number of the remaining levels, or None if the internal nodes are tagged.
             """
+            for _, entry in self.parse_node_indexed(node, height, 0):
+                yield entry
+            return
+
+        def parse_node_indexed(self, node, height, index):
+            """Iterate (index, leaf entry) pairs under `node` recursively."""
             if node in self.seen: # the tree is broken
                 return
             self.seen.add(node)
@@ -68659,20 +68675,26 @@ class Kernel:
             except gdb.MemoryError:
                 return
 
-            for entry in slice_unpack(data, current_arch.ptrsize):
+            if height is None:
+                shift = read_int8_from_memory(node)
+            else:
+                shift = (height - 1) * (self.num_slots.bit_length() - 1)
+
+            for slot, entry in enumerate(slice_unpack(data, current_arch.ptrsize)):
                 if entry == 0:
                     continue
                 if entry & 3 == cls.RADIX_TREE_EXCEPTIONAL_ENTRY: # a value, not a pointer
                     continue
+                child_index = index + (slot << shift)
                 if height is None:
                     if entry & 3 == cls.RADIX_TREE_INDIRECT_PTR:
-                        yield from self.parse_node(entry - cls.RADIX_TREE_INDIRECT_PTR, None)
+                        yield from self.parse_node_indexed(entry - cls.RADIX_TREE_INDIRECT_PTR, None, child_index)
                     elif is_valid_addr(entry):
-                        yield entry
+                        yield child_index, entry
                 elif height > 1:
-                    yield from self.parse_node(entry, height - 1)
+                    yield from self.parse_node_indexed(entry, height - 1, child_index)
                 elif is_valid_addr(entry):
-                    yield entry
+                    yield child_index, entry
             return
 
     class MapleTree:
@@ -140385,10 +140407,10 @@ class KernelIrqCommand(GenericCommand, BufferingOutput):
     _note_ = [
         "Simplified irq structure:",
         "",
-        "+-irq_desc_tree(~6.5)-+   +--->+-xa_node---------+   +--->+-irq_desc----+",
-        "| xa_lock             |   |    | shift           |   |    | ...         |",
-        "| xa_flags            |   |    | ...             |   |    | irq_data    |",
-        "| xa_head             |---+    | count           |   |    |   ...       |",
+        "+-irq_desc_tree(~6.5)-+   +--->+-radix/xa node---+   +--->+-irq_desc----+",
+        "| lock                |   |    | shift           |   |    | ...         |",
+        "| flags               |   |    | ...             |   |    | irq_data    |",
+        "| rnode/xa_head       |---+    | count           |   |    |   ...       |",
         "+---------------------+        | ...             |   |    |   irq       |",
         "                               | slots[0]        |---+    |   ...       |",
         "                               | slots[1]        |   ^    | ...         |",
@@ -140418,13 +140440,22 @@ class KernelIrqCommand(GenericCommand, BufferingOutput):
                 self.meta.append((self.quiet_err, "Could not find irq_desc_tree"))
                 return None
 
-            self.irq_xarray = Kernel.XArray(self.irq_desc_tree)
-            if self.irq_xarray.find_head_offset(current_arch.ptrsize * 10) is None:
-                self.meta.append((self.quiet_err, "Could not find xa_head. (maybe uninitialized?)"))
-                return None
-            self.meta.append((self.quiet_info, "offsetof(xarray, xa_head): {:#x}".format(self.irq_xarray.head_offset)))
+            if kversion < "4.20":
+                self.irq_radix = Kernel.RadixTree(self.irq_desc_tree)
+                if self.irq_radix.find_rnode_offset(current_arch.ptrsize * 10) is None:
+                    self.meta.append((self.quiet_err, "Could not find radix_tree_root->rnode. (maybe uninitialized?)"))
+                    return None
+                self.meta.append((self.quiet_info, "offsetof(radix_tree_root, rnode): {:#x}".format(self.irq_radix.rnode_offset)))
+                indexed_descs = self.irq_radix.parse_indexed()
+                descs = [desc for _, desc in indexed_descs]
+            else:
+                self.irq_xarray = Kernel.XArray(self.irq_desc_tree)
+                if self.irq_xarray.find_head_offset(current_arch.ptrsize * 10) is None:
+                    self.meta.append((self.quiet_err, "Could not find xa_head. (maybe uninitialized?)"))
+                    return None
+                self.meta.append((self.quiet_info, "offsetof(xarray, xa_head): {:#x}".format(self.irq_xarray.head_offset)))
 
-            descs = self.irq_xarray.parse()
+                descs = self.irq_xarray.parse()
 
         else:
             # "6.5" <= kversion
@@ -140493,18 +140524,31 @@ class KernelIrqCommand(GenericCommand, BufferingOutput):
             desc = descs[-1]
         self.meta.append((self.quiet_info, "desc: {:#x}".format(desc)))
 
-        for i in range(100):
-            x = read_int_from_memory(desc + current_arch.ptrsize * i)
-            if x == desc:
-                if is_32bit():
-                    self.offset_irq = current_arch.ptrsize * i - 8
-                else:
-                    self.offset_irq = current_arch.ptrsize * i - 12 # for padding
-                self.meta.append((self.quiet_info, "offsetof(irq_desc, irq_data.irq): {:#x}".format(self.offset_irq)))
-                break
+        if kversion < "4.3":
+            # Before irq_data->common became a reliable back pointer, use the radix-tree index.
+            samples = [indexed_descs[i] for i in sorted({(0, len(indexed_descs) // 2, len(indexed_descs) - 1)})]
+            candidates = set(range(0, current_arch.ptrsize * 10, 4))
+            for irq, irq_desc in samples:
+                values = slice_unpack(read_memory(irq_desc, current_arch.ptrsize * 10), 4)
+                candidates &= {i * 4 for i, value in enumerate(values) if value == irq}
+            if len(candidates) != 1:
+                self.meta.append((self.quiet_err, "Could not find irq_desc->irq_data.irq from radix-tree indices"))
+                return None
+            self.offset_irq = candidates.pop()
+            self.meta.append((self.quiet_info, "offsetof(irq_desc, irq_data.irq): {:#x}".format(self.offset_irq)))
         else:
-            self.meta.append((self.quiet_err, "Could not find irq_desc->irq_data.irq"))
-            return None
+            for i in range(100):
+                x = read_int_from_memory(desc + current_arch.ptrsize * i)
+                if x == desc:
+                    if is_32bit():
+                        self.offset_irq = current_arch.ptrsize * i - 8
+                    else:
+                        self.offset_irq = current_arch.ptrsize * i - 12 # for padding
+                    self.meta.append((self.quiet_info, "offsetof(irq_desc, irq_data.irq): {:#x}".format(self.offset_irq)))
+                    break
+            else:
+                self.meta.append((self.quiet_err, "Could not find irq_desc->irq_data.irq"))
+                return None
 
         ofs_irq = align_to_ptrsize(self.offset_irq + 4 * 2)
         for i in range(100):
@@ -140561,7 +140605,9 @@ class KernelIrqCommand(GenericCommand, BufferingOutput):
     def dump_irq(self):
         kversion = Kernel.kernel_version()
 
-        if kversion < "6.5":
+        if kversion < "4.20":
+            descs = self.irq_radix.parse()
+        elif kversion < "6.5":
             descs = self.irq_xarray.parse()
         else:
             descs = self.irq_maple.parse()
@@ -140613,11 +140659,6 @@ class KernelIrqCommand(GenericCommand, BufferingOutput):
         if kversion is None:
             err("Could not find Linux kernel")
             return
-        if kversion < "4.20":
-            # xarray is introduced from 4.20
-            self.quiet_err("Unsupported before v4.20")
-            return
-
         ret = self.initialize()
         if args.meta or not ret:
             for func, line in self.meta:

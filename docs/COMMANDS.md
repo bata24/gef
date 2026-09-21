@@ -8482,28 +8482,28 @@ This command requires CONFIG_RANDSTRUCT=n.
 
 Simplified credential structure:
 
-+-task_struct---+     +-->+-cred-------------------+
-| ...           |     |   | usage                  |
-| real_cred     |-----+   | uid, gid               |
-| cred          |-----+   | suid, sgid             |
-| comm[16]      |         | euid, egid             |
-| ...           |         | fsuid, fsgid           |
-+---------------+         | securebits             |
-                          | cap_inheritable        |
-                          | cap_permitted          |
-                          | cap_effective          |
-                          | cap_bset               |
-                          | cap_ambient (v4.3~)    |
-                          | (keyrings; CONFIG_KEYS)|
-                          | security               |--->LSM blob
-                          | user                   |
-                          | user_ns                |--->user_namespace
-                          | ucounts (v5.12.17~)    |
-                          | group_info             |--->+-group_info-+
-                          | ...                    |    | usage      |
-                          +------------------------+    | ngroups    |
-                                                        | gid[]      |
-                                                        +------------+
++-task_struct---+    +--->+-cred--------------------+
+| ...           |    |    | usage                   |
+| real_cred     |----+    | uid, gid                |
+| cred          |----+    | suid, sgid              |
+| comm[16]      |         | euid, egid              |
+| ...           |         | fsuid, fsgid            |
++---------------+         | securebits              |
+                          | cap_inheritable         |
+                          | cap_permitted           |
+                          | cap_effective           |
+                          | cap_bset                |
+                          | cap_ambient (v4.3~)     |
+                          | (keyrings; CONFIG_KEYS) |
+                          | security                |--->LSM blob
+                          | user                    |
+                          | user_ns                 |--->user_namespace
+                          | ucounts (branch/config) |
+                          | group_info              |--->+-group_info-+
+                          | ...                     |    | usage      |
+                          +-------------------------+    | ngroups    |
+                                                         | gid[]      |
+                                                         +------------+
 
 `real_cred` is the objective credential, `cred` is the subjective one. They differ only
 while the task acts on behalf of another (e.g., inside override_creds()).
@@ -9177,10 +9177,10 @@ options:
 ```text
 Simplified irq structure:
 
-+-irq_desc_tree(~6.5)-+   +--->+-xa_node---------+   +--->+-irq_desc----+
-| xa_lock             |   |    | shift           |   |    | ...         |
-| xa_flags            |   |    | ...             |   |    | irq_data    |
-| xa_head             |---+    | count           |   |    |   ...       |
++-irq_desc_tree(~6.5)-+   +--->+-radix/xa node---+   +--->+-irq_desc----+
+| lock                |   |    | shift           |   |    | ...         |
+| flags               |   |    | ...             |   |    | irq_data    |
+| rnode/xa_head       |---+    | count           |   |    |   ...       |
 +---------------------+        | ...             |   |    |   irq       |
                                | slots[0]        |---+    |   ...       |
                                | slots[1]        |   ^    | ...         |
