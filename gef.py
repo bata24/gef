@@ -1696,9 +1696,8 @@ class AddressUtil:
                 unpack = u32 if current_arch.ptrsize == 4 else u64
                 addr = unpack(mem)
             else:
-                try:
-                    addr = read_int_from_memory(addr)
-                except gdb.MemoryError:
+                addr = read_int_from_memory(addr, safe=True)
+                if addr is None:
                     break
             recursion -= 1
 
@@ -3961,9 +3960,8 @@ class GlibcHeap:
         offsetof_sbrk_base = GlibcHeap.MallocPar(0).addrof_sbrk_base
         current = main_arena - GlibcHeap.MallocPar(0).sizeof
         for _ in range(0, 500):
-            try:
-                x = read_int_from_memory(current)
-            except gdb.MemoryError:
+            x = read_int_from_memory(current, safe=True)
+            if x is None:
                 return None
             if x == heap_base:
                 mp_ = current - offsetof_sbrk_base
@@ -12486,78 +12484,110 @@ def read_memory(addr, length):
     return MemoryCache.read(addr, length)
 
 
-def read_int_from_memory(addr):
-    """Return an integer read from memory."""
-    # It works even if current_arch is None
-    sz = AddressUtil.get_memory_alignment()
-    mem = read_memory(addr, sz)
-    unpack = {2:u16, 4:u32, 8:u64}[sz]
-    return unpack(mem)
-
-
-def read_int8_from_memory(addr):
-    """Return a uint_8 read from memory."""
-    mem = read_memory(addr, 1)
-    return u8(mem)
-
-
-def read_int16_from_memory(addr):
-    """Return a uint_16 read from memory."""
-    mem = read_memory(addr, 2)
-    return u16(mem)
-
-
-def read_int32_from_memory(addr):
-    """Return a uint_32 read from memory."""
-    mem = read_memory(addr, 4)
-    return u32(mem)
-
-
-def read_int64_from_memory(addr):
-    """Return a uint_64 read from memory."""
-    mem = read_memory(addr, 8)
-    return u64(mem)
-
-
-def read_cstring_from_memory(addr, max_length=None):
-    """Return a C-string read from memory."""
-    if max_length is None:
-        max_length = Config.get_gef_setting("context.nb_max_string_length")
-
-    if is_kgdb():
-        # read_memory when kgdb is very slow, this is dirty hack
-        block_size = 64
-    else:
-        block_size = get_pagesize()
-
-    # first, read to page boundary
-    length = block_size - (addr % block_size)
+def read_int_from_memory(addr, safe=False):
+    """Return an integer read from memory, or None on error when safe is True."""
     try:
-        res = read_memory(addr, length)
-    except gdb.MemoryError:
-        return None
+        # It works even if current_arch is None
+        sz = AddressUtil.get_memory_alignment()
+        mem = read_memory(addr, sz)
+        unpack = {2:u16, 4:u32, 8:u64}[sz]
+        return unpack(mem)
+    except Exception:
+        if safe:
+            return None
+        raise
 
-    # if too short, more read
-    while len(res) < max_length:
-        if b"\x00" in res:
-            break
+
+def read_int8_from_memory(addr, safe=False):
+    """Return a uint_8 read from memory, or None on error when safe is True."""
+    try:
+        mem = read_memory(addr, 1)
+        return u8(mem)
+    except Exception:
+        if safe:
+            return None
+        raise
+
+
+def read_int16_from_memory(addr, safe=False):
+    """Return a uint_16 read from memory, or None on error when safe is True."""
+    try:
+        mem = read_memory(addr, 2)
+        return u16(mem)
+    except Exception:
+        if safe:
+            return None
+        raise
+
+
+def read_int32_from_memory(addr, safe=False):
+    """Return a uint_32 read from memory, or None on error when safe is True."""
+    try:
+        mem = read_memory(addr, 4)
+        return u32(mem)
+    except Exception:
+        if safe:
+            return None
+        raise
+
+
+def read_int64_from_memory(addr, safe=False):
+    """Return a uint_64 read from memory, or None on error when safe is True."""
+    try:
+        mem = read_memory(addr, 8)
+        return u64(mem)
+    except Exception:
+        if safe:
+            return None
+        raise
+
+
+def read_cstring_from_memory(addr, max_length=None, safe=False):
+    """Return a C-string read from memory, or None on error when safe is True."""
+    try:
+        if max_length is None:
+            max_length = Config.get_gef_setting("context.nb_max_string_length")
+
+        if is_kgdb():
+            # read_memory when kgdb is very slow, this is dirty hack
+            block_size = 64
+        else:
+            block_size = get_pagesize()
+
+        # first, read to page boundary
+        length = block_size - (addr % block_size)
         try:
-            read_length = min(max_length - len(res), block_size)
-            res += read_memory(addr + len(res), read_length)
+            res = read_memory(addr, length)
         except gdb.MemoryError:
-            break
+            return None
 
-    # check if ascii
-    res = res.split(b"\x00")[0]
-    ustr = String.bytes2str(res)
+        # if too short, more read
+        while len(res) < max_length:
+            if b"\x00" in res:
+                break
+            try:
+                read_length = min(max_length - len(res), block_size)
+                res += read_memory(addr + len(res), read_length)
+            except gdb.MemoryError:
+                if safe:
+                    return None
+                break
 
-    if ustr and any(x not in String.STRING_PRINTABLE for x in ustr):
-        return None
+        # check if ascii
+        res = res.split(b"\x00")[0]
+        ustr = String.bytes2str(res)
 
-    if len(ustr) > max_length:
-        ustr = "{}[...]".format(ustr[:max_length])
+        if ustr and any(x not in String.STRING_PRINTABLE for x in ustr):
+            return None
 
-    return ustr
+        if len(ustr) > max_length:
+            ustr = "{}[...]".format(ustr[:max_length])
+
+        return ustr
+    except Exception:
+        if safe:
+            return None
+        raise
 
 
 def read_physmem(paddr, size, already_physmode=False):
@@ -13220,11 +13250,8 @@ def u128(x):
 
 def is_ascii_string(addr):
     """Helper function to determine if the buffer pointed by `addr` is an ASCII string (in GDB)"""
-    try:
-        x = read_cstring_from_memory(addr)
-        return x is not None and len(x) > 0
-    except gdb.MemoryError:
-        return False
+    x = read_cstring_from_memory(addr, safe=True)
+    return x is not None and len(x) > 0
 
 
 def is_alive():
@@ -14501,9 +14528,8 @@ class ProcessMap:
                 return None
 
             # get link_map
-            try:
-                link_map = read_int_from_memory(dt_debug + current_arch.ptrsize)
-            except gdb.MemoryError:
+            link_map = read_int_from_memory(dt_debug + current_arch.ptrsize, safe=True)
+            if link_map is None:
                 return None
             return link_map
 
@@ -16902,9 +16928,8 @@ class StepiForKGDBCommand(GenericCommand):
     @only_if_specific_arch(arch=("ARM64",))
     def do_invoke(self, args):
         old_cpsr = get_register("$cpsr")
-        try:
-            instr = read_int32_from_memory(current_arch.pc)
-        except gdb.error:
+        instr = read_int32_from_memory(current_arch.pc, safe=True)
+        if instr is None:
             err("Memory read error")
             return
 
@@ -20848,9 +20873,8 @@ class PtrDemangleCommand(GenericCommand):
         bits = ptrsize * 8
         candidates = []
         for addr in range(start, end, ptrsize):
-            try:
-                cookie = read_int_from_memory(addr)
-            except gdb.MemoryError:
+            cookie = read_int_from_memory(addr, safe=True)
+            if cookie is None:
                 continue
             if cookie == 0 or cookie == canary or is_valid_addr(cookie):
                 continue
@@ -31061,10 +31085,8 @@ class KernelChecksecCommand(GenericCommand):
         modules_supported = modules_symbol is not None or modules_disabled_addr is not None
         modules_disabled = None
         if modules_disabled_addr is not None:
-            try:
-                modules_disabled = bool(read_int32_from_memory(modules_disabled_addr))
-            except gdb.MemoryError:
-                pass
+            value = read_int32_from_memory(modules_disabled_addr, safe=True)
+            modules_disabled = bool(value) if value is not None else None
 
         if modules_supported is False:
             state = Color.colorify("Unsupported", "bold green")
@@ -31115,9 +31137,8 @@ class KernelChecksecCommand(GenericCommand):
             else:
                 gef_print("{:<40s}: {:s}".format("io_uring access", Color.grayify("Unknown")))
             return
-        try:
-            disabled = read_int32_from_memory(disabled_addr)
-        except gdb.MemoryError:
+        disabled = read_int32_from_memory(disabled_addr, safe=True)
+        if disabled is None:
             gef_print("{:<40s}: {:s}".format("io_uring access", Color.grayify("Unknown")))
             return
 
@@ -31129,10 +31150,7 @@ class KernelChecksecCommand(GenericCommand):
             group_addr = Kernel.get_ksysctl("kernel.io_uring_group")
             group = None
             if group_addr is not None:
-                try:
-                    group = read_int32_from_memory(group_addr)
-                except gdb.MemoryError:
-                    pass
+                group = read_int32_from_memory(group_addr, safe=True)
             additional = "kernel.io_uring_disabled=1"
             if group is not None:
                 additional += ", kernel.io_uring_group={:d}".format(group)
@@ -31543,9 +31561,8 @@ class KernelChecksecCommand(GenericCommand):
         enabled = 0
         checked = 0
         for cache in selected:
-            try:
-                random_seq = read_int_from_memory(cache + offset)
-            except gdb.MemoryError:
+            random_seq = read_int_from_memory(cache + offset, safe=True)
+            if random_seq is None:
                 continue
             checked += 1
             if random_seq and is_valid_addr(random_seq):
@@ -31908,9 +31925,8 @@ class KernelChecksecCommand(GenericCommand):
             gef_print("{:<40s}: {:s} ({:s})".format(cfg, "Supported", additional))
             return
 
-        try:
-            val = read_int32_from_memory(kernel_locked_down)
-        except gdb.MemoryError:
+        val = read_int32_from_memory(kernel_locked_down, safe=True)
+        if val is None:
             additional = "lockdown_lsm_init: Found, kernel_locked_down: Memory read error"
             gef_print("{:<40s}: {:s} ({:s})".format(cfg, "Supported", additional))
             return
@@ -36107,16 +36123,10 @@ class ContextCodeCommand(GenericCommand):
         if " # 0x" in ops and not is_loongarch64():
             addr = ContextCodeCommand.RE_SUB_BRANCH_ADDR1.sub(r"\1", ops)
             ptr = GefUtil.parse_and_eval_unsigned(addr)
-            try:
-                if to_str:
-                    return "{:#x}".format(read_int_from_memory(ptr))
-                else:
-                    return read_int_from_memory(ptr)
-            except gdb.MemoryError:
-                if to_str:
-                    return "*{:#x}".format(ptr)
-                else:
-                    return None
+            value = read_int_from_memory(ptr, safe=True)
+            if value is None:
+                return "*{:#x}".format(ptr) if to_str else None
+            return "{:#x}".format(value) if to_str else value
 
         # is there an evaluated immediate value?
         #   loongarch64: bnez $t1, -8 (0x7ffff8) # 0x120000868
@@ -36143,16 +36153,10 @@ class ContextCodeCommand(GenericCommand):
                     ptr = GefUtil.parse_and_eval_unsigned(addr)
                 except gdb.error:
                     return None
-                try:
-                    if to_str:
-                        return "{:#x}".format(read_int_from_memory(ptr))
-                    else:
-                        return read_int_from_memory(ptr)
-                except gdb.MemoryError:
-                    if to_str:
-                        return "*{:#x}".format(ptr)
-                    else:
-                        return None
+                value = read_int_from_memory(ptr, safe=True)
+                if value is None:
+                    return "*{:#x}".format(ptr) if to_str else None
+                return "{:#x}".format(value) if to_str else value
 
         # is there a segment relative?
         #   x64 (default): call ... PTR fs:0x10
@@ -36162,16 +36166,10 @@ class ContextCodeCommand(GenericCommand):
                 ofs = ContextCodeCommand.RE_SUB_BRANCH_ADDR4.sub(r"\2", ops)
                 ofs = GefUtil.parse_and_eval_unsigned(ofs)
                 fs = current_arch.get_fs()
-                try:
-                    if to_str:
-                        return "{:#x}".format(read_int_from_memory(fs + ofs))
-                    else:
-                        return read_int_from_memory(fs + ofs)
-                except gdb.MemoryError:
-                    if to_str:
-                        return "*{:#x}".format(fs + ofs)
-                    else:
-                        return None
+                value = read_int_from_memory(fs + ofs, safe=True)
+                if value is None:
+                    return "*{:#x}".format(fs + ofs) if to_str else None
+                return "{:#x}".format(value) if to_str else value
 
         # is there a segment relative?
         #   x86 (default): call ... PTR gs:0x10
@@ -36181,16 +36179,10 @@ class ContextCodeCommand(GenericCommand):
                 ofs = ContextCodeCommand.RE_SUB_BRANCH_ADDR5.sub(r"\2", ops)
                 ofs = GefUtil.parse_and_eval_unsigned(ofs)
                 gs = current_arch.get_gs()
-                try:
-                    if to_str:
-                        return "{:#x}".format(read_int_from_memory(gs + ofs))
-                    else:
-                        return read_int_from_memory(gs + ofs)
-                except gdb.MemoryError:
-                    if to_str:
-                        return "*{:#x}".format(gs + ofs)
-                    else:
-                        return None
+                value = read_int_from_memory(gs + ofs, safe=True)
+                if value is None:
+                    return "*{:#x}".format(gs + ofs) if to_str else None
+                return "{:#x}".format(value) if to_str else value
 
         # is there a relative immediate?
         #   microblaze:  brlid  r15, -136
@@ -43129,9 +43121,8 @@ class GotCommand(GenericCommand, BufferingOutput):
                 plt_offset = 0
 
             # read the address of the function
-            try:
-                got_value = read_int_from_memory(got_address)
-            except gdb.error:
+            got_value = read_int_from_memory(got_address, safe=True)
+            if got_value is None:
                 self.quiet_err("Memory read error")
                 return
 
@@ -62913,9 +62904,8 @@ class KernelAddressHeuristicFinder:
                         stack = u32(task_data[i:i + current_arch.ptrsize])
                         if stack < page_offset or stack & 0x1fff:
                             continue
-                        try:
-                            task = read_int_from_memory(stack + current_arch.ptrsize * 3)
-                        except gdb.MemoryError:
+                        task = read_int_from_memory(stack + current_arch.ptrsize * 3, safe=True)
+                        if task is None:
                             continue
                         if not klayout.rw_base + start <= task < comm:
                             continue
@@ -64315,9 +64305,8 @@ class KernelAddressHeuristicFinder:
                     # 0xc22b43c0 <mem_section>:   0x00000000
                     g = KernelAddressHeuristicFinderUtil.arm32_movw_movt(res, allow_cc=True)
                 for x in g:
-                    try:
-                        v = read_int_from_memory(x)
-                    except gdb.MemoryError:
+                    v = read_int_from_memory(x, safe=True)
+                    if v is None:
                         continue
                     if v and not is_valid_addr(v):
                         continue
@@ -64334,9 +64323,8 @@ class KernelAddressHeuristicFinder:
         if KernelAddressHeuristicFinder.USE_DIRECTLY:
             addr = Ksym.get_addr("mem_map")
             if addr:
-                try:
-                    v = read_int_from_memory(addr)
-                except gdb.MemoryError:
+                v = read_int_from_memory(addr, safe=True)
+                if v is None:
                     return None
                 if v != 0:
                     return v
@@ -64371,9 +64359,8 @@ class KernelAddressHeuristicFinder:
                         KernelAddressHeuristicFinderUtil.arm32_ldr_pc_relative_ldr(res),
                     )
                 for x in g:
-                    try:
-                        v = read_int_from_memory(x)
-                    except gdb.MemoryError:
+                    v = read_int_from_memory(x, safe=True)
+                    if v is None:
                         continue
                     if v != 0 and is_valid_addr(v):
                         return v
@@ -64426,11 +64413,8 @@ class KernelAddressHeuristicFinder:
                 name_addr = read_int_from_memory(addr + offset)
                 if not is_valid_addr(name_addr):
                     continue
-                try:
-                    if read_cstring_from_memory(name_addr) == "tsc":
-                        return True
-                except gdb.MemoryError:
-                    pass
+                if read_cstring_from_memory(name_addr, safe=True) == "tsc":
+                    return True
             return False
 
         # plan 2
@@ -64457,9 +64441,8 @@ class KernelAddressHeuristicFinder:
             name_addr = read_int_from_memory(current - current_arch.ptrsize)
             if not is_valid_addr(name_addr):
                 return False
-            try:
-                name = read_cstring_from_memory(name_addr)
-            except gdb.MemoryError:
+            name = read_cstring_from_memory(name_addr, safe=True)
+            if name is None:
                 return False
             if not name or len(name) > 64 or not name.isprintable():
                 return False
@@ -64526,10 +64509,7 @@ class KernelAddressHeuristicFinder:
         if KernelAddressHeuristicFinder.USE_DIRECTLY:
             addr = Ksym.get_addr("curr_clocksource")
             if addr:
-                try:
-                    current = read_int_from_memory(addr)
-                except (gdb.MemoryError, MemoryError):
-                    current = None
+                current = read_int_from_memory(addr, safe=True)
                 if current in clocksource_addresses:
                     return current
 
@@ -64562,9 +64542,8 @@ class KernelAddressHeuristicFinder:
                 if location in seen:
                     continue
                 seen.add(location)
-                try:
-                    current = read_int_from_memory(location)
-                except (gdb.MemoryError, MemoryError):
+                current = read_int_from_memory(location, safe=True)
+                if current is None:
                     continue
                 if current in clocksource_addresses:
                     return current
@@ -64840,11 +64819,9 @@ class KernelAddressHeuristicFinder:
                     g = KernelAddressHeuristicFinderUtil.arm32_movw_movt(res)
                 for x in g:
                     # `enforcing` and the following `initialized` are bool, so reject other globals.
-                    try:
-                        if read_int8_from_memory(x) in [0, 1] and read_int8_from_memory(x + 1) in [0, 1]:
-                            return x
-                    except (gdb.MemoryError, MemoryError):
-                        continue
+                    if (read_int8_from_memory(x, safe=True) in [0, 1]
+                            and read_int8_from_memory(x + 1, safe=True) in [0, 1]):
+                        return x
         return None
 
     @staticmethod
@@ -65456,11 +65433,8 @@ class KernelAddressHeuristicFinder:
                 for x in g:
                     # `kexec_load_disabled` is 0 or 1. Some builds materialize the syscall accounting
                     # index at the entry of the syscall, which is a plain load of a global too.
-                    try:
-                        if read_int32_from_memory(x) in [0, 1]:
-                            return x
-                    except (gdb.MemoryError, MemoryError):
-                        continue
+                    if read_int32_from_memory(x, safe=True) in [0, 1]:
+                        return x
         return None
 
     @staticmethod
@@ -66281,9 +66255,8 @@ class KernelAddressHeuristicFinder:
                     """
                     # A small displacement (e.g. `[rbx+rdx*8-0x28]`) normalizes to
                     # 0xffffffffffffffXX, which passes the MSB check but is not readable.
-                    try:
-                        v = read_int_from_memory(x)
-                    except gdb.MemoryError:
+                    v = read_int_from_memory(x, safe=True)
+                    if v is None:
                         continue
                     if not v or not is_valid_addr(v):
                         continue
@@ -66324,9 +66297,8 @@ class KernelAddressHeuristicFinder:
                     )
                 for x in g:
                     # the candidate itself may be unreadable (e.g. a sign-extended small constant)
-                    try:
-                        v = read_int_from_memory(x)
-                    except gdb.MemoryError:
+                    v = read_int_from_memory(x, safe=True)
+                    if v is None:
                         continue
                     if v and is_valid_addr(v):
                         continue
@@ -66803,10 +66775,8 @@ class KernelAddressHeuristicFinder:
                     if first == 0:
                         continue
                     head = timer_base + offset_vectors + i * ptrsize
-                    try:
-                        valid = is_valid_addr(first) and read_int_from_memory(first + ptrsize) == head
-                    except gdb.MemoryError:
-                        valid = False
+                    valid = (is_valid_addr(first)
+                             and read_int_from_memory(first + ptrsize, safe=True) == head)
                     if not valid:
                         break
                 else:
@@ -66937,9 +66907,8 @@ class KernelAddressHeuristicFinder:
         # `clock_base[0].cpu_base`, and the repeat of a same pointer is not necessarily the stride.
         candidates = []
         for i in range(0x400 // ptrsize):
-            try:
-                v = read_int_from_memory(hrtimer_cpu_base + ptrsize * i)
-            except gdb.MemoryError:
+            v = read_int_from_memory(hrtimer_cpu_base + ptrsize * i, safe=True)
+            if v is None:
                 return None
             if abs(v - hrtimer_cpu_base) < 0x40:
                 candidates.append((ptrsize * i, v))
@@ -68275,13 +68244,13 @@ class Kernel:
             seen = {self.address}
             current = self.address
             while True:
-                try:
-                    current = read_int_from_memory(current + link)
-                except gdb.MemoryError:
+                next_current = read_int_from_memory(current + link, safe=True)
+                if next_current is None:
                     self.broken = True
                     self.broken_at = current - self.offset
                     self.broken_reason = "unreadable"
                     return
+                current = next_current
                 if current == self.address: # went around the list
                     return
                 if current in seen: # the list is broken
@@ -68547,12 +68516,11 @@ class Kernel:
             """Detect the layout of radix_tree_node, using node->count as the checksum."""
             ptrsize = current_arch.ptrsize
             for offset_count, size_count in self.count_candidates():
-                try:
-                    if size_count == 1:
-                        count = read_int8_from_memory(node + offset_count)
-                    else:
-                        count = read_int32_from_memory(node + offset_count)
-                except gdb.MemoryError:
+                if size_count == 1:
+                    count = read_int8_from_memory(node + offset_count, safe=True)
+                else:
+                    count = read_int32_from_memory(node + offset_count, safe=True)
+                if count is None:
                     continue
                 if not 0 < count <= 64:
                     continue
@@ -68597,9 +68565,8 @@ class Kernel:
             default = type(self).default_rnode_offset()
             candidates = [default] + [x for x in range(0, max_offset, current_arch.ptrsize) if x != default]
             for offset in candidates:
-                try:
-                    entry = read_int_from_memory(self.address + offset)
-                except gdb.MemoryError:
+                entry = read_int_from_memory(self.address + offset, safe=True)
+                if entry is None:
                     continue
                 if self.is_rnode(entry):
                     self.rnode_offset = offset
@@ -69013,9 +68980,8 @@ class Kernel:
                 return None
             _, kallsyms_map = ret
             for address in kallsyms_map.get("nr_cpu_ids", []):
-                try:
-                    candidate = read_int32_from_memory(address)
-                except gdb.MemoryError:
+                candidate = read_int32_from_memory(address, safe=True)
+                if candidate is None:
                     continue
                 if 0 < candidate <= 0x1_0000:
                     return candidate
@@ -69083,9 +69049,8 @@ class Kernel:
             cpu_offset = []
             i = 0
             while nr_cpu_ids is None or i < nr_cpu_ids:
-                try:
-                    off = read_int_from_memory(self.per_cpu_offset + i * current_arch.ptrsize)
-                except gdb.MemoryError:
+                off = read_int_from_memory(self.per_cpu_offset + i * current_arch.ptrsize, safe=True)
+                if off is None:
                     break
                 """
                 off itself may refer to inaccessible memory.
@@ -69123,10 +69088,7 @@ class Kernel:
             if start is None and self.offsets:
                 addr = Ksym.get_addr("pcpu_base_addr")
                 if addr is not None:
-                    try:
-                        base = read_int_from_memory(addr)
-                    except gdb.MemoryError:
-                        base = 0
+                    base = read_int_from_memory(addr, safe=True) or 0
                     if base:
                         start = AddressUtil.normalize_address(base - self.offsets[0])
             # CONFIG_KALLSYMS_ALL=n keeps none of the symbols above, so read the pair out of
@@ -69155,10 +69117,7 @@ class Kernel:
             """Return the size of one per-cpu unit, or None if it is unknown."""
             addr = Ksym.get_addr("pcpu_unit_size")
             if addr is not None:
-                try:
-                    size = read_int32_from_memory(addr)
-                except gdb.MemoryError:
-                    size = 0
+                size = read_int32_from_memory(addr, safe=True) or 0
                 if 0 < size <= 0x1000_0000:
                     return size
 
@@ -69984,13 +69943,13 @@ class Kernel:
                 return None
             for i in range(2, 0x40):
                 offset = current_arch.ptrsize * i
-                try:
-                    # `umask` and `in_exec` sit just before `root`. The padding next to them can hold
-                    # garbage copied from the parent, so only the int itself is checked.
-                    if read_int32_from_memory(fs + offset - current_arch.ptrsize) > 0xffff:
-                        continue
-                except (gdb.MemoryError, OverflowError):
+                # `umask` and `in_exec` sit just before `root`. The padding next to them can hold
+                # garbage copied from the parent, so only the int itself is checked.
+                uid = read_int32_from_memory(fs + offset - current_arch.ptrsize, safe=True)
+                if uid is None:
                     break
+                if uid > 0xffff:
+                    continue
                 if self.is_path(fs + offset) and self.is_path(fs + offset + current_arch.ptrsize * 2):
                     return offset
             return None
@@ -70037,9 +69996,8 @@ class Kernel:
                 return False
             if not self.is_vfsmount(mount + self.offset_mount_mnt):
                 return False
-            try:
-                mnt_mountpoint = read_int_from_memory(mount + self.offset_mount_mnt_mountpoint)
-            except gdb.MemoryError:
+            mnt_mountpoint = read_int_from_memory(mount + self.offset_mount_mnt_mountpoint, safe=True)
+            if mnt_mountpoint is None:
                 return False
             return self.is_dentry(mnt_mountpoint)
 
@@ -70084,9 +70042,8 @@ class Kernel:
             seen = set()
             while mount not in seen:
                 seen.add(mount)
-                try:
-                    mnt_parent = read_int_from_memory(mount + self.offset_mount_mnt_parent)
-                except (gdb.MemoryError, OverflowError):
+                mnt_parent = read_int_from_memory(mount + self.offset_mount_mnt_parent, safe=True)
+                if mnt_parent is None:
                     break
                 if mnt_parent == mount or not is_valid_addr(mnt_parent):
                     break
@@ -70139,9 +70096,8 @@ class Kernel:
                     break
 
                 if dentry == mnt_root or parent == dentry:
-                    try:
-                        mnt_parent = read_int_from_memory(mount + self.offset_mount_mnt_parent)
-                    except gdb.MemoryError:
+                    mnt_parent = read_int_from_memory(mount + self.offset_mount_mnt_parent, safe=True)
+                    if mnt_parent is None:
                         status = "unreadable"
                         break
                     if mount != mnt_parent and is_valid_addr(mnt_parent):
@@ -70173,9 +70129,8 @@ class Kernel:
             while is_valid_addr(dentry) and dentry not in seen:
                 seen.add(dentry)
                 names.append(self.get_dentry_name(dentry, unknown))
-                try:
-                    parent = read_int_from_memory(dentry + self.offset_d_parent)
-                except (gdb.MemoryError, OverflowError):
+                parent = read_int_from_memory(dentry + self.offset_d_parent, safe=True)
+                if parent is None:
                     break
                 if parent == dentry:
                     break
@@ -70576,10 +70531,9 @@ class Kernel:
 
             # dentry offsets, seeded from the root dentry of the mount found above
             mount = head - self.offset_mount_mnt_instance
-            try:
-                mnt_root = read_int_from_memory(mount + self.offset_mount_mnt + self.offset_vfsmount_mnt_root)
-            except (gdb.MemoryError, OverflowError):
-                mnt_root = None
+            mnt_root = read_int_from_memory(
+                mount + self.offset_mount_mnt + self.offset_vfsmount_mnt_root, safe=True,
+            )
             self.kpath_ready = bool(self.kpath.initialize(dentry=mnt_root))
             self.meta.extend(self.kpath.meta)
             if not self.kpath_ready:
@@ -70624,9 +70578,8 @@ class Kernel:
             devname_addr = mount + self.offset_mount_mnt_devname
             if not is_valid_addr(devname_addr):
                 return None
-            try:
-                devname_p = read_int_from_memory(devname_addr)
-            except (gdb.MemoryError, OverflowError):
+            devname_p = read_int_from_memory(devname_addr, safe=True)
+            if devname_p is None:
                 return None
             if not is_valid_addr(devname_p):
                 return None
@@ -71232,9 +71185,8 @@ class Kernel:
             return "|".join(names)
 
         def get_groups_str(self, group_info, max_display=0x10):
-            try:
-                ngroups = read_int32_from_memory(group_info + 4)
-            except gdb.MemoryError:
+            ngroups = read_int32_from_memory(group_info + 4, safe=True)
+            if ngroups is None:
                 return None
             if ngroups > 0x10000:
                 return None
@@ -74061,9 +74013,8 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
         # struct cred
         cred_samples = []
         for task in task_addrs[:0x8]:
-            try:
-                cred = read_int_from_memory(task + self.offset_cred)
-            except gdb.MemoryError:
+            cred = read_int_from_memory(task + self.offset_cred, safe=True)
+            if cred is None:
                 continue
             if is_valid_addr(cred) and cred not in cred_samples:
                 cred_samples.append(cred)
@@ -74971,9 +74922,8 @@ class KernelKeyringCommand(GenericCommand, BufferingOutput):
     def type_name(self, type_addr):
         if not type_addr or not is_valid_addr_addr(type_addr):
             return None
-        try:
-            name_addr = read_int_from_memory(type_addr)
-        except (gdb.MemoryError, OverflowError):
+        name_addr = read_int_from_memory(type_addr, safe=True)
+        if name_addr is None:
             return None
         if not is_valid_addr(name_addr):
             return None
@@ -74992,9 +74942,8 @@ class KernelKeyringCommand(GenericCommand, BufferingOutput):
         keyring_type = Ksym.get_addr("key_type_keyring")
         candidates = []
         for offset in range(0, 0x120, current_arch.ptrsize):
-            try:
-                type_addr = read_int_from_memory(key + offset)
-            except (gdb.MemoryError, OverflowError):
+            type_addr = read_int_from_memory(key + offset, safe=True)
+            if type_addr is None:
                 break
             if keyring_type is not None and type_addr == keyring_type:
                 return offset
@@ -75023,9 +74972,8 @@ class KernelKeyringCommand(GenericCommand, BufferingOutput):
         # pointer after type on normal and CONFIG_DEBUG_KEYS layouts.
         start = self.offset_type + current_arch.ptrsize
         for offset in range(start, 0x120, current_arch.ptrsize):
-            try:
-                address = read_int_from_memory(key + offset)
-            except (gdb.MemoryError, OverflowError):
+            address = read_int_from_memory(key + offset, safe=True)
+            if address is None:
                 break
             if not is_valid_addr(address):
                 continue
@@ -76605,14 +76553,11 @@ class KernelModuleLoadCommand(GenericCommand):
                 else:
                     offset_map[offset][word] += 1
                 # Remove pointers to strings if possible
-                try:
-                    maybe_string = read_cstring_from_memory(word)
-                    if maybe_string is None:
-                        continue
-                    if len(maybe_string) > 4:
-                        del offset_map[offset][word]
-                except gdb.MemoryError:
-                    pass
+                maybe_string = read_cstring_from_memory(word, safe=True)
+                if maybe_string is None:
+                    continue
+                if len(maybe_string) > 4:
+                    del offset_map[offset][word]
 
         # Find the best candidate to avoid name pointers that are not deleted (don't know why that happens)
         max_len = 0
@@ -79521,33 +79466,6 @@ class KernelSysctlCommand(GenericCommand, BufferingOutput):
     ]
     _note_ = "\n".join(_note_)
 
-    # Because this may be called repeatedly with different filter conditions,
-    # GEF caches the results for a short time.
-
-    @Cache.cache_until_next
-    def read_int_from_memory(self, addr):
-        return read_int_from_memory(addr)
-
-    @Cache.cache_until_next
-    def read_int8_from_memory(self, addr):
-        return read_int8_from_memory(addr)
-
-    @Cache.cache_until_next
-    def read_int32_from_memory(self, addr):
-        return read_int32_from_memory(addr)
-
-    @Cache.cache_until_next
-    def read_int64_from_memory(self, addr):
-        return read_int64_from_memory(addr)
-
-    @Cache.cache_until_next
-    def read_cstring_from_memory(self, addr):
-        return read_cstring_from_memory(addr)
-
-    @Cache.cache_until_next
-    def is_valid_addr(self, addr):
-        return is_valid_addr(addr)
-
     def should_be_print(self, procname):
         if self.args.filter == []:
             return True
@@ -79575,43 +79493,43 @@ class KernelSysctlCommand(GenericCommand, BufferingOutput):
         if not self.should_be_print(param_path):
             return
 
-        maxlen = self.read_int32_from_memory(ctl_table + self.offset_maxlen)
-        data_addr = self.read_int_from_memory(ctl_table + current_arch.ptrsize)
-        handler = self.read_int_from_memory(ctl_table + self.offset_handler)
+        maxlen = read_int32_from_memory(ctl_table + self.offset_maxlen)
+        data_addr = read_int_from_memory(ctl_table + current_arch.ptrsize)
+        handler = read_int_from_memory(ctl_table + self.offset_handler)
 
         handler_info = ""
         header_info = ""
         if self.args.verbose:
             handler_info = " {:#018x}{:s}".format(handler, self.get_handler_symbol(handler))
-            ctset = self.read_int_from_memory(ctl_table_header + self.offset_set)
+            ctset = read_int_from_memory(ctl_table_header + self.offset_set)
             namespace = self.ctset_namespaces.get(ctset, "-")
             header_info = "{:#018x} {:#018x} {:<23s} ".format(ctl_table_header, ctset, namespace)
 
         if not data_addr:
             data_addr_str = "-"
             data_val = "-"
-        elif self.is_valid_addr(data_addr):
+        elif is_valid_addr(data_addr):
             data_addr_str = "{:#018x}".format(data_addr)
             # data length
             if handler in self.str_types:
-                data_val = "{!r}".format(self.read_cstring_from_memory(data_addr)) # allow None
+                data_val = "{!r}".format(read_cstring_from_memory(data_addr)) # allow None
             elif maxlen == 4:
-                data_val = "{:#018x}".format(self.read_int32_from_memory(data_addr))
+                data_val = "{:#018x}".format(read_int32_from_memory(data_addr))
             elif maxlen == 8:
-                data_val = "{:#018x}".format(self.read_int64_from_memory(data_addr))
+                data_val = "{:#018x}".format(read_int64_from_memory(data_addr))
             elif maxlen == 1:
-                data_val = "{:#018x}".format(self.read_int8_from_memory(data_addr))
+                data_val = "{:#018x}".format(read_int8_from_memory(data_addr))
             elif maxlen == 0:
                 if not self.args.verbose:
                     return
                 data_val = "-"
             else:
                 # type from heuristic
-                data_val = self.read_cstring_from_memory(data_addr)
+                data_val = read_cstring_from_memory(data_addr)
                 if data_val and data_val.isprintable() and len(data_val) >= 2:
                     data_val = "{!r}".format(data_val)
                 else:
-                    data_val = "{:#018x}".format(self.read_int_from_memory(data_addr))
+                    data_val = "{:#018x}".format(read_int_from_memory(data_addr))
         else:
             if not self.args.verbose:
                 return
@@ -79631,26 +79549,26 @@ class KernelSysctlCommand(GenericCommand, BufferingOutput):
             return
 
         ctset = None
-        root = self.read_int_from_memory(ctl_table + current_arch.ptrsize)
-        if self.is_valid_addr(root + self.offset_lookup):
-            lookup = self.read_int_from_memory(root + self.offset_lookup)
+        root = read_int_from_memory(ctl_table + current_arch.ptrsize)
+        if is_valid_addr(root + self.offset_lookup):
+            lookup = read_int_from_memory(root + self.offset_lookup)
             if lookup == Ksym.get_addr("net_ctl_header_lookup"): # net.*
                 ctset = self.net_ctset
             elif lookup == Ksym.get_addr("set_lookup"): # user.*
                 ctset = self.user_ctset
         if ctset:
-            symlink_rb_node = self.read_int_from_memory(ctset + current_arch.ptrsize + self.offset_rb_node)
+            symlink_rb_node = read_int_from_memory(ctset + current_arch.ptrsize + self.offset_rb_node)
             if ctset not in self.seen_ctset:
                 self.seen_ctset.add(ctset)
                 self.sysctl_dump(symlink_rb_node, pbar)
         return
 
     def get_param_path(self, ctl_dir, ctl_table, parent_path):
-        procname = self.read_int_from_memory(ctl_table)
+        procname = read_int_from_memory(ctl_table)
         if procname == 0:
             return None
 
-        procname_str = self.read_cstring_from_memory(procname)
+        procname_str = read_cstring_from_memory(procname)
         if not procname_str: # None or ""
             return None
 
@@ -79668,21 +79586,21 @@ class KernelSysctlCommand(GenericCommand, BufferingOutput):
             pbar.update(1)
 
         # ctl_node.header (=ctl_dir)
-        ctl_dir = self.read_int_from_memory(rb_node + current_arch.ptrsize * 3)
+        ctl_dir = read_int_from_memory(rb_node + current_arch.ptrsize * 3)
         if ctl_dir not in self.seen_ctl_dir:
             self.seen_ctl_dir.add(ctl_dir)
 
             # parent
-            parent = self.read_int_from_memory(ctl_dir + self.offset_parent)
+            parent = read_int_from_memory(ctl_dir + self.offset_parent)
             parent_path = self.parent_paths.get(parent, "")
 
             # ctl_table(s)
-            ctl_table = self.read_int_from_memory(ctl_dir)
+            ctl_table = read_int_from_memory(ctl_dir)
             # Since v6.10 the array has no sentinel element, so it must be bounded by `ctl_table_size`.
             # Without this, the walk runs into the next array and dumps its entries twice.
             ctl_table_end = None
             if self.offset_ctl_table_size is not None:
-                num_entries = self.read_int32_from_memory(ctl_dir + self.offset_ctl_table_size)
+                num_entries = read_int32_from_memory(ctl_dir + self.offset_ctl_table_size)
                 if num_entries <= 0x1000: # sanity check
                     ctl_table_end = ctl_table + self.sizeof_ctl_table * num_entries
             while ctl_table not in self.seen_ctl_table:
@@ -79696,7 +79614,7 @@ class KernelSysctlCommand(GenericCommand, BufferingOutput):
                     break
 
                 # mode
-                mode = self.read_int32_from_memory(ctl_table + self.offset_mode)
+                mode = read_int32_from_memory(ctl_table + self.offset_mode)
 
                 # dump
                 if (mode & 0o0120000) == 0o0120000: # symlink
@@ -79717,15 +79635,15 @@ class KernelSysctlCommand(GenericCommand, BufferingOutput):
                 ctl_table += self.sizeof_ctl_table
 
             # ctl_dir.rb_root->rb_node
-            ctl_dir_rb_node = self.read_int_from_memory(ctl_dir + self.offset_rb_node) & ~1 # remove RB_BLACK
+            ctl_dir_rb_node = read_int_from_memory(ctl_dir + self.offset_rb_node) & ~1 # remove RB_BLACK
             self.sysctl_dump(ctl_dir_rb_node, pbar)
 
         # ctl_node.node.rb_right
-        right = self.read_int_from_memory(rb_node + current_arch.ptrsize * 1) & ~1 # remove RB_BLACK
+        right = read_int_from_memory(rb_node + current_arch.ptrsize * 1) & ~1 # remove RB_BLACK
         self.sysctl_dump(right, pbar)
 
         # ctl_node.node.rb_left
-        left = self.read_int_from_memory(rb_node + current_arch.ptrsize * 2) & ~1 # remove RB_BLACK
+        left = read_int_from_memory(rb_node + current_arch.ptrsize * 2) & ~1 # remove RB_BLACK
         self.sysctl_dump(left, pbar)
         return
 
@@ -79892,7 +79810,7 @@ class KernelSysctlCommand(GenericCommand, BufferingOutput):
             is_seen = Ksym.get_addr("is_seen")
             if is_seen:
                 for _ in range(0x1000): # avoid unbounded scan
-                    v = self.read_int_from_memory(current)
+                    v = read_int_from_memory(current)
                     if v == is_seen:
                         self.net_ctset = current
                         self.ctset_namespaces[current] = "net:{:#018x}".format(init_net)
@@ -79908,7 +79826,7 @@ class KernelSysctlCommand(GenericCommand, BufferingOutput):
             set_is_seen = Ksym.get_addrs("set_is_seen")
             if set_is_seen:
                 for _ in range(0x1000): # avoid unbounded scan
-                    v = self.read_int_from_memory(current)
+                    v = read_int_from_memory(current)
                     if v in set_is_seen:
                         self.user_ctset = current
                         self.ctset_namespaces[current] = "user:{:#018x}".format(init_user_ns)
@@ -79937,7 +79855,7 @@ class KernelSysctlCommand(GenericCommand, BufferingOutput):
                 self.str_types.append(handler_addr)
 
         self.root_ctl_dir = self.sysctl_table_root + current_arch.ptrsize
-        self.root_rb_node = self.read_int_from_memory(self.root_ctl_dir + self.offset_rb_node)
+        self.root_rb_node = read_int_from_memory(self.root_ctl_dir + self.offset_rb_node)
         self.meta.append((self.quiet_info, "root_ctl_dir: {:#x}".format(self.root_ctl_dir)))
         self.meta.append((self.quiet_info, "root_rb_node: {:#x}".format(self.root_rb_node)))
         return True
@@ -80383,9 +80301,8 @@ class KernelPathCommand(GenericCommand, BufferingOutput):
                     continue
                 visited.add(mount)
                 vfsmnt = mount + kpath.offset_mount_mnt
-                try:
-                    mnt_root = read_int_from_memory(vfsmnt + kpath.offset_vfsmount_mnt_root)
-                except gdb.MemoryError:
+                mnt_root = read_int_from_memory(vfsmnt + kpath.offset_vfsmount_mnt_root, safe=True)
+                if mnt_root is None:
                     continue
                 if mnt_root in index:
                     # the discovery order breaks ties, so the nearest mount of the nearest namespace wins
@@ -80407,9 +80324,8 @@ class KernelPathCommand(GenericCommand, BufferingOutput):
         while is_valid_addr(current) and current not in seen:
             seen.add(current)
             chain.append(current)
-            try:
-                parent = read_int_from_memory(current + kpath.offset_d_parent)
-            except (gdb.MemoryError, OverflowError):
+            parent = read_int_from_memory(current + kpath.offset_d_parent, safe=True)
+            if parent is None:
                 break
             if parent == current:
                 break
@@ -80983,12 +80899,12 @@ class KernelMountCommand(GenericCommand, BufferingOutput):
             # is a better discriminator than the release string.
             self.mnt_onrb_present = False
             for mount in self.namespaces:
-                try:
-                    if read_int32_from_memory(mount + self.offset_mnt_flags) & 0x1000_0000:
-                        self.mnt_onrb_present = True
-                        break
-                except (gdb.MemoryError, OverflowError):
+                flags = read_int32_from_memory(mount + self.offset_mnt_flags, safe=True)
+                if flags is None:
                     continue
+                if flags & 0x1000_0000:
+                    self.mnt_onrb_present = True
+                    break
             self.meta.append((self.quiet_info, "MNT_ONRB: {:s} (live mount flags)".format(
                 "present" if self.mnt_onrb_present else "absent",
             )))
@@ -81104,9 +81020,8 @@ class KernelMountCommand(GenericCommand, BufferingOutput):
     def get_mnt_flags_str(self, mount):
         if self.offset_mnt_flags is None:
             return "???"
-        try:
-            flags = read_int32_from_memory(mount + self.offset_mnt_flags)
-        except (gdb.MemoryError, OverflowError):
+        flags = read_int32_from_memory(mount + self.offset_mnt_flags, safe=True)
+        if flags is None:
             return "???"
         kversion = Kernel.kernel_version()
         names = ["ro" if flags & self.MNT_READONLY else "rw"]
@@ -81502,9 +81417,8 @@ class KernelTimerCommand(GenericCommand, BufferingOutput):
             found = []
             for i in (0, 512):
                 while True:
-                    try:
-                        v = read_int_from_memory(timer_base + current_arch.ptrsize * i)
-                    except gdb.MemoryError:
+                    v = read_int_from_memory(timer_base + current_arch.ptrsize * i, safe=True)
+                    if v is None:
                         self.classic_timer_meta.append((self.quiet_err, "Memory read error"))
                         return None
                     if v != 0 and not is_valid_addr(v):
@@ -81659,9 +81573,8 @@ class KernelTimerCommand(GenericCommand, BufferingOutput):
         if kversion < "6.18" and ktime_get and ktime_get_real:
             limit = self.offset_clock_base + self.sizeof_hrtimer_clock_base * 2 if anchor else 0x400
             for ofs in range(0, limit, current_arch.ptrsize):
-                try:
-                    v = read_int_from_memory(hrtimer_cpu_base + ofs)
-                except gdb.MemoryError:
+                v = read_int_from_memory(hrtimer_cpu_base + ofs, safe=True)
+                if v is None:
                     break
                 if v == ktime_get:
                     ktime_get_ofs = ofs
@@ -81899,9 +81812,8 @@ class KernelTimerCommand(GenericCommand, BufferingOutput):
                 i = 0
                 while True:
                     addr = tb + current_arch.ptrsize * i
-                    try:
-                        v = read_int_from_memory(addr)
-                    except gdb.MemoryError:
+                    v = read_int_from_memory(addr, safe=True)
+                    if v is None:
                         self.err_add_out("Memory read error")
                         return
 
@@ -82106,13 +82018,10 @@ class KernelWorkqueueCommand(GenericCommand, BufferingOutput):
                 name_address = int.from_bytes(data[offset:offset + current_arch.ptrsize], byteorder)
                 if not is_valid_addr(name_address):
                     continue
-                try:
-                    if read_cstring_from_memory(name_address) == "events":
-                        self.name_is_pointer = True
-                        self.system_wq = workqueue
-                        return offset
-                except gdb.MemoryError:
-                    continue
+                if read_cstring_from_memory(name_address, safe=True) == "events":
+                    self.name_is_pointer = True
+                    self.system_wq = workqueue
+                    return offset
         return None
 
     def read_workqueue_name(self, workqueue):
@@ -82132,11 +82041,11 @@ class KernelWorkqueueCommand(GenericCommand, BufferingOutput):
     def find_pwq_from_node(self, node, workqueue):
         if self.offset_pwqs_node is not None:
             candidate = AddressUtil.normalize_address(node - self.offset_pwqs_node)
-            try:
-                if read_int_from_memory(candidate + self.offset_pwq_wq) == workqueue:
-                    return candidate
-            except (gdb.MemoryError, OverflowError):
+            owner = read_int_from_memory(candidate + self.offset_pwq_wq, safe=True)
+            if owner is None:
                 return None
+            if owner == workqueue:
+                return candidate
 
         for offset in range(0, 0x300, current_arch.ptrsize):
             candidate = AddressUtil.normalize_address(node - offset)
@@ -82248,9 +82157,8 @@ class KernelWorkqueueCommand(GenericCommand, BufferingOutput):
                 pwq = self.find_pwq_from_node(node, workqueue)
                 if pwq is None:
                     continue
-                try:
-                    pool = read_int_from_memory(pwq + self.offset_pwq_pool)
-                except gdb.MemoryError:
+                pool = read_int_from_memory(pwq + self.offset_pwq_pool, safe=True)
+                if pool is None:
                     continue
                 units.append({
                     "address": pwq,
@@ -82302,9 +82210,8 @@ class KernelWorkqueueCommand(GenericCommand, BufferingOutput):
             if worklist is None:
                 continue
             for work in Kernel.ListHead(worklist, self.offset_work_entry).iter_entries():
-                try:
-                    data = read_int_from_memory(work + self.offset_work_data)
-                except gdb.MemoryError:
+                data = read_int_from_memory(work + self.offset_work_data, safe=True)
+                if data is None:
                     continue
                 owner = self.owner_for_data(data)
                 self.append_record(records, work, "pending", owner, pool)
@@ -82372,17 +82279,15 @@ class KernelWorkqueueCommand(GenericCommand, BufferingOutput):
 
     def iter_hlist(self, head):
         """Iterate a Linux hlist and stop safely if it is corrupt."""
-        try:
-            current = read_int_from_memory(head)
-        except gdb.MemoryError:
+        current = read_int_from_memory(head, safe=True)
+        if current is None:
             return
         seen = set()
         while current and current not in seen and is_valid_addr(current):
             seen.add(current)
             yield current
-            try:
-                current = read_int_from_memory(current)
-            except gdb.MemoryError:
+            current = read_int_from_memory(current, safe=True)
+            if current is None:
                 break
         return
 
@@ -82447,9 +82352,8 @@ class KernelWorkqueueCommand(GenericCommand, BufferingOutput):
             found = []
             for cpu in range(percpu.get_nr_cpus()):
                 slot = percpu.addr_of(candidate, cpu)
-                try:
-                    timer_base = read_int_from_memory(slot)
-                except gdb.MemoryError:
+                timer_base = read_int_from_memory(slot, safe=True)
+                if timer_base is None:
                     break
                 timer_base &= ~(current_arch.ptrsize - 1)
                 if self.find_old_timer_vectors(timer_base) is None:
@@ -82509,9 +82413,8 @@ class KernelWorkqueueCommand(GenericCommand, BufferingOutput):
                 except gdb.MemoryError:
                     break
                 for timer in self.iter_hlist(slot):
-                    try:
-                        function = read_int_from_memory(timer + self.offset_timer_func)
-                    except gdb.MemoryError:
+                    function = read_int_from_memory(timer + self.offset_timer_func, safe=True)
+                    if function is None:
                         continue
                     if function not in self.delayed_timer_functions:
                         continue
@@ -82551,9 +82454,8 @@ class KernelWorkqueueCommand(GenericCommand, BufferingOutput):
                 return None
 
         for offset in range(current_arch.ptrsize * 4, 0x180, current_arch.ptrsize):
-            try:
-                wq = read_int_from_memory(timer + offset)
-            except gdb.MemoryError:
+            wq = read_int_from_memory(timer + offset, safe=True)
+            if wq is None:
                 continue
             owner = self.workqueues_by_address.get(wq)
             if owner is not None:
@@ -82577,9 +82479,8 @@ class KernelWorkqueueCommand(GenericCommand, BufferingOutput):
                 for index in range(512):
                     head = vectors + index * current_arch.ptrsize * 2
                     for timer in Kernel.ListHead(head).iter_entries():
-                        try:
-                            function = read_int_from_memory(timer + self.offset_timer_func)
-                        except gdb.MemoryError:
+                        function = read_int_from_memory(timer + self.offset_timer_func, safe=True)
+                        if function is None:
                             continue
                         if function not in self.delayed_timer_functions:
                             continue
@@ -82621,9 +82522,8 @@ class KernelWorkqueueCommand(GenericCommand, BufferingOutput):
                         break
 
                     for timer in self.iter_hlist(head):
-                        try:
-                            function = read_int_from_memory(timer + self.offset_timer_func)
-                        except gdb.MemoryError:
+                        function = read_int_from_memory(timer + self.offset_timer_func, safe=True)
+                        if function is None:
                             continue
                         if function not in self.delayed_timer_functions:
                             continue
@@ -82658,9 +82558,8 @@ class KernelWorkqueueCommand(GenericCommand, BufferingOutput):
             limit = min(end, work + 0x300)
             for function_address in range(work + self.offset_work_func + current_arch.ptrsize,
                                           limit, current_arch.ptrsize):
-                try:
-                    function = read_int_from_memory(function_address)
-                except gdb.MemoryError:
+                function = read_int_from_memory(function_address, safe=True)
+                if function is None:
                     break
                 if function not in self.delayed_timer_functions:
                     continue
@@ -82668,9 +82567,8 @@ class KernelWorkqueueCommand(GenericCommand, BufferingOutput):
                 if candidate_timer <= work:
                     continue
                 timer = candidate_timer
-                try:
-                    expires = read_int_from_memory(timer + self.offset_timer_expires)
-                except gdb.MemoryError:
+                expires = read_int_from_memory(timer + self.offset_timer_expires, safe=True)
+                if expires is None:
                     timer = None
                     continue
                 owner = self.find_delayed_owner(work, timer) or owner
@@ -82732,10 +82630,7 @@ class KernelWorkqueueCommand(GenericCommand, BufferingOutput):
         self.system_wq = None
         system_wq_ptr = Ksym.get_addr("system_wq")
         if system_wq_ptr is not None:
-            try:
-                self.system_wq = read_int_from_memory(system_wq_ptr)
-            except gdb.MemoryError:
-                pass
+            self.system_wq = read_int_from_memory(system_wq_ptr, safe=True)
         self.offset_wq_name = self.find_name_offset(workqueues)
         if self.offset_wq_name is None:
             self.meta.append((self.quiet_warn, "offsetof(workqueue_struct, name): Not found"))
@@ -83454,10 +83349,6 @@ class KernelSearchCodePtrCommand(GenericCommand, BufferingOutput):
     parser.add_argument("-q", "--quiet", action="store_true", help="enable quiet mode.")
     _syntax_ = parser.format_help()
 
-    @Cache.cache_until_next
-    def read_int_from_memory(self, addr):
-        return read_int_from_memory(addr)
-
     def get_permission(self, addr):
         entry = AddrMap.find_virtual(addr, maps=self.klayout.maps)
         return str(entry.permission) if entry else "???"
@@ -83497,7 +83388,7 @@ class KernelSearchCodePtrCommand(GenericCommand, BufferingOutput):
             if not is_valid_addr(cur):
                 continue
             # check result of previous recursive
-            v = self.read_int_from_memory(cur)
+            v = read_int_from_memory(cur)
             if v in self.invalid_addrs[depth]:
                 continue
             # add to backtrack
@@ -84619,9 +84510,8 @@ class KernelSyscallsCommand(GenericCommand, BufferingOutput):
         index_iter = itertools.count() if indices is None else indices
         for i in index_iter:
             addr = sys_call_table_addr + i * current_arch.ptrsize
-            try:
-                syscall_function_addr = read_int_from_memory(addr)
-            except gdb.MemoryError:
+            syscall_function_addr = read_int_from_memory(addr, safe=True)
+            if syscall_function_addr is None:
                 if indices is None:
                     break
                 continue
@@ -130965,12 +130855,9 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
                     return True
                 if not is_valid_addr(next_) or not is_valid_addr(prev):
                     continue
-                try:
-                    if read_int_from_memory(next_ + current_arch.ptrsize) == head:
-                        if read_int_from_memory(prev) == head:
-                            return True
-                except gdb.MemoryError:
-                    pass
+                if (read_int_from_memory(next_ + current_arch.ptrsize, safe=True) == head
+                        and read_int_from_memory(prev, safe=True) == head):
+                    return True
             return False
 
         def detect_random_seq_before_node():
@@ -131139,9 +131026,8 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
                     offset_node_ptr = node_offset + current_arch.ptrsize # skip barn
                 for kmem_cache in kmem_caches[:16]:
                     kmem_cache_top = kmem_cache - self.kmem_cache_offset_list
-                    try:
-                        node_ptr = read_int_from_memory(kmem_cache_top + offset_node_ptr)
-                    except gdb.MemoryError:
+                    node_ptr = read_int_from_memory(kmem_cache_top + offset_node_ptr, safe=True)
+                    if node_ptr is None:
                         found = False
                         break
                     if not is_kmem_cache_node(node_ptr):
@@ -136785,9 +136671,8 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
         while len(name_offsets) < 2:
             if current - node >= self.ZONE_NAME_SCAN_SIZE:
                 return False
-            try:
-                val = read_int_from_memory(current)
-            except gdb.MemoryError:
+            val = read_int_from_memory(current, safe=True)
+            if val is None:
                 return False
             name = read_cstring_from_memory(val)
             if name in ["DMA", "DMA32", "Normal", "HighMem", "Movable", "Device"]:
@@ -137143,9 +137028,8 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
             nodes = []
             current = node_data
             while True:
-                try:
-                    node = read_int_from_memory(current)
-                except gdb.MemoryError:
+                node = read_int_from_memory(current, safe=True)
+                if node is None:
                     break
                 if not is_valid_addr(node):
                     break
@@ -137909,18 +137793,16 @@ class BuddyContainsCommand(BuddyDumpCommand):
         return page, virt, phys, offset
 
     def get_buddy_order(self, page):
-        try:
-            order = read_int_from_memory(page + current_arch.ptrsize * 5)
-        except gdb.MemoryError:
+        order = read_int_from_memory(page + current_arch.ptrsize * 5, safe=True)
+        if order is None:
             return None
         if order >= self.MAX_ORDER:
             return None
         return order
 
     def is_page_buddy(self, page):
-        try:
-            slot6_raw = read_int32_from_memory(page + current_arch.ptrsize * 6)
-        except gdb.MemoryError:
+        slot6_raw = read_int32_from_memory(page + current_arch.ptrsize * 6, safe=True)
+        if slot6_raw is None:
             return False
         slot6_kind = PageInfoCommand.get_slot6_kind(slot6_raw)
         return PageInfoCommand.is_buddy_free(slot6_raw, slot6_kind)
@@ -138996,9 +138878,8 @@ class KernelSocketCommand(GenericCommand, BufferingOutput):
                 return None
             seen.add(cur)
             count += 1
-            try:
-                cur = read_int_from_memory(cur)
-            except gdb.MemoryError:
+            cur = read_int_from_memory(cur, safe=True)
+            if cur is None:
                 return None
         if count != qlen:
             return None
@@ -139082,10 +138963,7 @@ class KernelSocketCommand(GenericCommand, BufferingOutput):
         """`struct proto` carries an inline `char name[32]`; return it for the CONFIG_KALLSYMS_ALL=n
         case where the proto symbol is not in kallsyms."""
         for off in range(0, 0x200, 4):
-            try:
-                s = read_cstring_from_memory(prot + off, 0x20)
-            except gdb.MemoryError:
-                break
+            s = read_cstring_from_memory(prot + off, 0x20, safe=True)
             if s and 2 <= len(s) <= 16 and re.fullmatch(r"[A-Za-z][A-Za-z0-9+/_.-]*", s):
                 return s
         return None
@@ -139179,10 +139057,11 @@ class KernelSocketCommand(GenericCommand, BufferingOutput):
         if length == 0:
             return False
         # a queued backlog skb is a real skb, never a self-pointing list head.
-        try:
-            if read_int_from_memory(head) == head or read_int_from_memory(tail) == tail:
-                return False
-        except gdb.MemoryError:
+        next_head = read_int_from_memory(head, safe=True)
+        next_tail = read_int_from_memory(tail, safe=True)
+        if next_head is None or next_tail is None:
+            return False
+        if next_head == head or next_tail == tail:
             return False
         return True
 
@@ -144790,9 +144669,8 @@ class GoHeapDumpCommand(GenericCommand, BufferingOutput):
         current = read_int_from_memory(mheap + self.offset_allspans)
         mspans = []
         while True:
-            try:
-                mspan_addr = read_int_from_memory(current)
-            except gdb.MemoryError:
+            mspan_addr = read_int_from_memory(current, safe=True)
+            if mspan_addr is None:
                 self.out.append("Memory read error")
                 return []
             if not mspan_addr:
@@ -144807,9 +144685,8 @@ class GoHeapDumpCommand(GenericCommand, BufferingOutput):
 
     def parse_mspan(self, mspan):
         # read member
-        try:
-            start_addr = read_int_from_memory(mspan + self.offset_startAddr)
-        except gdb.MemoryError:
+        start_addr = read_int_from_memory(mspan + self.offset_startAddr, safe=True)
+        if start_addr is None:
             self.out.append("Memory read error")
             return None
         if not self.args.verbose and start_addr == 0:
@@ -146787,9 +146664,8 @@ class CageCommand(GenericCommand, BufferingOutput):
 
         tls = current_arch.get_tls()
         for i in range(256 * 4): # heuristic; d8: 256, chromium: 1024
-            try:
-                x = read_int_from_memory(tls - current_arch.ptrsize * i)
-            except gdb.MemoryError:
+            x = read_int_from_memory(tls - current_arch.ptrsize * i, safe=True)
+            if x is None:
                 continue
             if x == 0:
                 continue
@@ -146797,9 +146673,8 @@ class CageCommand(GenericCommand, BufferingOutput):
                 continue
             if not is_valid_addr(x):
                 continue
-            try:
-                y = read_int_from_memory(x)
-            except gdb.MemoryError:
+            y = read_int_from_memory(x, safe=True)
+            if y is None:
                 continue
             if y == 0:
                 continue
@@ -146925,9 +146800,8 @@ class CageCommand(GenericCommand, BufferingOutput):
 
         for i in range(256):
             addr = isolate + current_arch.ptrsize * i
-            try:
-                value = read_int_from_memory(addr)
-            except gdb.MemoryError:
+            value = read_int_from_memory(addr, safe=True)
+            if value is None:
                 return []
             if value & 0xfff:
                 continue
@@ -148067,9 +147941,8 @@ class V8DumpSpaceCommand(GenericCommand, BufferingOutput):
                     return
 
             # get compressed pointer
-            try:
-                map_raw = read_int32_from_memory(addr)
-            except gdb.MemoryError:
+            map_raw = read_int32_from_memory(addr, safe=True)
+            if map_raw is None:
                 self.warn_add_out("Cannot read memory at {:#x}".format(addr))
                 return
 
@@ -149824,9 +149697,8 @@ class SsmallocHeapDumpCommand(GenericCommand, BufferingOutput):
         tls = current_arch.get_tls()
         for i in range(-0x40, 0x41):
             addr = tls + (current_arch.ptrsize * i)
-            try:
-                val = read_int_from_memory(addr)
-            except gdb.MemoryError:
+            val = read_int_from_memory(addr, safe=True)
+            if val is None:
                 continue
             if self.is_lheap_candidate(val):
                 return val
@@ -149952,11 +149824,11 @@ class SsmallocHeapDumpCommand(GenericCommand, BufferingOutput):
                     return seen, Color.colorify("(corrupted: not aligned)", corrupted_msg_color)
             seen.append(cur)
             seen_addresses.add(cur)
-            try:
-                cur = read_int_from_memory(cur + next_offset)
-            except gdb.MemoryError:
+            next_cur = read_int_from_memory(cur + next_offset, safe=True)
+            if next_cur is None:
                 seen.append(0)
                 return seen, Color.colorify("(corrupted: invalid next)", corrupted_msg_color)
+            cur = next_cur
         return seen, None
 
     def parse_double_link_list(self, head):
@@ -150867,15 +150739,14 @@ class uClibcNgHeap:
 
         # if freed functions
         def get_fwd_ptr(self, sll):
-            try:
-                # Not a single-linked-list (sll) or no Safe-Linking support yet
-                if not sll:
-                    return read_int_from_memory(self.address)
-                # Unmask ("reveal") the Safe-Linking pointer
-                else:
-                    return read_int_from_memory(self.address) ^ (self.address >> 12)
-            except gdb.MemoryError:
+            value = read_int_from_memory(self.address, safe=True)
+            if value is None:
                 return None
+            # Not a single-linked-list (sll) or no Safe-Linking support yet
+            if not sll:
+                return value
+            # Unmask ("reveal") the Safe-Linking pointer
+            return value ^ (self.address >> 12)
 
         @property
         def fwd(self):
@@ -164973,9 +164844,8 @@ class ThunkBreakpoint(gdb.Breakpoint):
             for i in pattern:
                 slide = current_arch.ptrsize * i
                 reg_value_slided = reg_value + slide
-                try:
-                    mem_value = read_int_from_memory(reg_value_slided)
-                except (gdb.MemoryError, OverflowError):
+                mem_value = read_int_from_memory(reg_value_slided, safe=True)
+                if mem_value is None:
                     continue
                 if mem_value != target_address:
                     continue
@@ -168480,9 +168350,8 @@ class KernelWalkListCommand(KernelWalkCommand):
         seen = {current}
         idx = 1
         while True:
-            try:
-                flink = read_int_from_memory(AddressUtil.normalize_address(current + offset))
-            except gdb.MemoryError:
+            flink = read_int_from_memory(AddressUtil.normalize_address(current + offset), safe=True)
+            if flink is None:
                 self.err_add_out("memory corrupted")
                 return
             if self.args.dump_bytes_before:
@@ -169431,9 +169300,8 @@ class KernelLsmCommand(GenericCommand, BufferingOutput):
         except gdb.error:
             pass
         for offset in offsets:
-            try:
-                name_ptr = read_int_from_memory(addr + offset)
-            except gdb.MemoryError:
+            name_ptr = read_int_from_memory(addr + offset, safe=True)
+            if name_ptr is None:
                 continue
             name = self.read_cstring(name_ptr, 32)
             if re.fullmatch(r"[a-z][a-z0-9_]{1,31}", name):
@@ -169593,9 +169461,8 @@ class KernelLsmCommand(GenericCommand, BufferingOutput):
         for hook, entries in hooks.items():
             callbacks = []
             for slot, key in entries:
-                try:
-                    func = read_int_from_memory(key)
-                except gdb.MemoryError:
+                func = read_int_from_memory(key, safe=True)
+                if func is None:
                     continue
                 if not func:
                     continue
@@ -169642,18 +169509,16 @@ class KernelLsmCommand(GenericCommand, BufferingOutput):
         """Return the `struct security_hook_list` linked from the head."""
         nodes = []
         seen = set()
-        try:
-            current = read_int_from_memory(head)
-        except gdb.MemoryError:
+        current = read_int_from_memory(head, safe=True)
+        if current is None:
             return nodes
         while current and current != head and current not in seen and len(nodes) < 64:
             if not is_valid_addr(current):
                 break
             seen.add(current)
             nodes.append(current)
-            try:
-                current = read_int_from_memory(current)
-            except gdb.MemoryError:
+            current = read_int_from_memory(current, safe=True)
+            if current is None:
                 break
         if is_list_head and current != head:
             # a list_head that did not go around is not a valid chain
@@ -169694,9 +169559,8 @@ class KernelLsmCommand(GenericCommand, BufferingOutput):
             for head in candidates:
                 if head % ptrsize:
                     continue
-                try:
-                    node = read_int_from_memory(head)
-                except gdb.MemoryError:
+                node = read_int_from_memory(head, safe=True)
+                if node is None:
                     continue
                 if not node or node == head or not is_valid_addr(node):
                     continue
@@ -169866,9 +169730,8 @@ class KernelLsmCommand(GenericCommand, BufferingOutput):
                     break
         if addr is None:
             return None, None, {}
-        try:
-            ops = read_int_from_memory(addr)
-        except gdb.MemoryError:
+        ops = read_int_from_memory(addr, safe=True)
+        if ops is None:
             return addr, None, {}
         offsets = {hook: disp for hook, (base, disp) in members.items() if base == addr}
         return addr, ops, offsets
@@ -169876,9 +169739,8 @@ class KernelLsmCommand(GenericCommand, BufferingOutput):
     def validate_security_ops(self, addr):
         """Return True if `addr` holds a pointer to a plausible `struct security_operations`."""
         ptrsize = current_arch.ptrsize
-        try:
-            ops = read_int_from_memory(addr)
-        except gdb.MemoryError:
+        ops = read_int_from_memory(addr, safe=True)
+        if ops is None:
             return False
         if not ops or not is_valid_addr(ops):
             return False
@@ -169886,11 +169748,11 @@ class KernelLsmCommand(GenericCommand, BufferingOutput):
             return False
         text = 0
         for i in range(2, 16):
-            try:
-                if self.is_kernel_text(read_int_from_memory(ops + i * ptrsize)):
-                    text += 1
-            except gdb.MemoryError:
+            func = read_int_from_memory(ops + i * ptrsize, safe=True)
+            if func is None:
                 return False
+            if self.is_kernel_text(func):
+                text += 1
         return text >= 4
 
     def dump_security_ops(self):
@@ -169929,9 +169791,8 @@ class KernelLsmCommand(GenericCommand, BufferingOutput):
         while limit is None or i < limit:
             if limit is None and ((rows and miss >= 16) or i >= 0x200):
                 break
-            try:
-                func = read_int_from_memory(ops + i * ptrsize)
-            except gdb.MemoryError:
+            func = read_int_from_memory(ops + i * ptrsize, safe=True)
+            if func is None:
                 break
             if self.is_kernel_text(func):
                 miss = 0
@@ -170125,18 +169986,6 @@ class KernelIoUringCommand(GenericCommand, BufferingOutput):
         self.offset_cache[key] = offset
         return offset
 
-    def read_pointer(self, address):
-        try:
-            return read_int_from_memory(address)
-        except (gdb.MemoryError, OverflowError):
-            return None
-
-    def read_u32(self, address):
-        try:
-            return read_int32_from_memory(address)
-        except (gdb.MemoryError, OverflowError):
-            return None
-
     @staticmethod
     def is_ring_path(path):
         return path == "anon_inode:[io_uring]" or path == "[io_uring]" or path.endswith(":[io_uring]")
@@ -170264,7 +170113,7 @@ class KernelIoUringCommand(GenericCommand, BufferingOutput):
         if not is_valid_addr(array) or max_fds <= 0:
             return
         for fd in range(min(max_fds, self.MAX_FDS)):
-            file = self.read_pointer(array + current_arch.ptrsize * fd)
+            file = read_int_from_memory(array + current_arch.ptrsize * fd, safe=True)
             if file:
                 yield fd, file
         return
@@ -170357,7 +170206,7 @@ class KernelIoUringCommand(GenericCommand, BufferingOutput):
             return None
         result = []
         for index in range(min(nr, self.MAX_RESOURCES)):
-            node = self.read_pointer(nodes + index * current_arch.ptrsize)
+            node = read_int_from_memory(nodes + index * current_arch.ptrsize, safe=True)
             result.append(node or 0)
         return nr, nodes, result
 
@@ -170391,7 +170240,7 @@ class KernelIoUringCommand(GenericCommand, BufferingOutput):
                         if element_type:
                             file = self.eval_unsigned(element_type, base + index * current_arch.ptrsize, element_member)
                         else:
-                            file = self.read_pointer(base + index * current_arch.ptrsize)
+                            file = read_int_from_memory(base + index * current_arch.ptrsize, safe=True)
                         files.append((index, (file or 0) & ~3, None))
                     break
 
@@ -170441,7 +170290,7 @@ class KernelIoUringCommand(GenericCommand, BufferingOutput):
                 element_size = self.type_size("struct io_mapped_ubuf")
                 for index in range(min(total, self.MAX_RESOURCES)):
                     if pointer_array:
-                        buffer = self.read_pointer(base + index * current_arch.ptrsize)
+                        buffer = read_int_from_memory(base + index * current_arch.ptrsize, safe=True)
                     elif element_size is not None:
                         buffer = base + index * element_size
                     else:
@@ -170502,7 +170351,7 @@ class KernelIoUringCommand(GenericCommand, BufferingOutput):
             if self.request_context(request) != ctx:
                 break
             requests.append((request, state))
-            node = self.read_pointer(node)
+            node = read_int_from_memory(node, safe=True)
         return requests
 
     def walk_request_container_list(self, ctx, ctx_member, container_type, list_member, request_member, state):
@@ -170997,10 +170846,7 @@ class KernelNftablesCommand(GenericCommand, BufferingOutput):
     def rd(self, addr):
         if not self.pointer_add_valid(addr, current_arch.ptrsize - 1):
             return None
-        try:
-            return read_int_from_memory(addr)
-        except (gdb.MemoryError, OverflowError):
-            return None
+        return read_int_from_memory(addr, safe=True)
 
     def rd64(self, addr):
         # some fields (the nft_rule_dp header) are always u64, even on 32-bit
@@ -171014,35 +170860,23 @@ class KernelNftablesCommand(GenericCommand, BufferingOutput):
     def rd32(self, addr):
         if not self.pointer_add_valid(addr, 3):
             return None
-        try:
-            return read_int32_from_memory(addr)
-        except (gdb.MemoryError, OverflowError):
-            return None
+        return read_int32_from_memory(addr, safe=True)
 
     def rd16(self, addr):
         if not self.pointer_add_valid(addr, 1):
             return None
-        try:
-            return read_int16_from_memory(addr)
-        except (gdb.MemoryError, OverflowError):
-            return None
+        return read_int16_from_memory(addr, safe=True)
 
     def rd8(self, addr):
         if not self.pointer_add_valid(addr, 0):
             return None
-        try:
-            return read_int8_from_memory(addr)
-        except (gdb.MemoryError, OverflowError):
-            return None
+        return read_int8_from_memory(addr, safe=True)
 
     def cstr(self, addr, maxlen=256):
         if not addr or maxlen <= 0 or not AddressUtil.is_msb_on(addr) \
                 or not self.pointer_add_valid(addr, maxlen - 1):
             return None
-        try:
-            s = read_cstring_from_memory(addr, maxlen)
-        except (gdb.MemoryError, OverflowError):
-            return None
+        s = read_cstring_from_memory(addr, maxlen, safe=True)
         if not s or len(s) > maxlen - 1:
             return None
         if not all(0x20 <= ord(c) < 0x7f for c in s):
