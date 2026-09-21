@@ -141378,7 +141378,7 @@ class KernelIrqCommand(GenericCommand, BufferingOutput):
 
         if kversion < "4.3":
             # Before irq_data->common became a reliable back pointer, use the radix-tree index.
-            samples = [indexed_descs[i] for i in sorted({(0, len(indexed_descs) // 2, len(indexed_descs) - 1)})]
+            samples = [indexed_descs[i] for i in sorted({0, len(indexed_descs) // 2, len(indexed_descs) - 1})]
             candidates = set(range(0, current_arch.ptrsize * 10, 4))
             for irq, irq_desc in samples:
                 values = slice_unpack(read_memory(irq_desc, current_arch.ptrsize * 10), 4)
