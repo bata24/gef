@@ -337,6 +337,10 @@ For a comprehensive list and additional details, see [docs/SUPPORTED-MODE.md](do
     - Supported on x64.
     - ![](images/uefi-ovmf-info.png)
 - `qemu-device-info`: dumps device information for qemu-escape.
+- `smm-status`: displays the current SMM status and an SMRAM preview.
+    - ![](images/smm-status.png)
+- `smm-dump`: dumps the detected SMRAM range to a file.
+    - ![](images/smm-dump.png)
 
 ### Qemu-user Cooperation
 - `si`/`ni`: are wrappers for native `si`/`ni` if OpenRISC 1000 or CRIS.

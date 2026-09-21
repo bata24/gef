@@ -42,6 +42,7 @@
 - [06-i. Qemu-system/KGDB Cooperation - Linux Dynamic Inspection](#06-i-qemu-systemkgdb-cooperation---linux-dynamic-inspection)
 - [06-j. Qemu-system/KGDB Cooperation - TrustZone](#06-j-qemu-systemkgdb-cooperation---trustzone)
 - [06-k. Qemu-system/KGDB Cooperation - Other](#06-k-qemu-systemkgdb-cooperation---other)
+- [06-l. Qemu-system/KGDB Cooperation - SMM](#06-l-qemu-systemkgdb-cooperation---smm)
 - [07-a. Misc - Conversion](#07-a-misc---conversion)
 - [07-b. Misc - Search](#07-b-misc---search)
 - [07-c. Misc - Generation](#07-c-misc---generation)
@@ -11848,6 +11849,69 @@ usage: uefi-ovmf-info [-h]
 
 options:
   -h, --help  show this help message and exit
+```
+
+# 06-l. Qemu-system/KGDB Cooperation - SMM
+## smm-dump
+
+Dump the detected SMRAM range to a file.
+
+
+### Syntax
+
+```text
+usage: smm-dump [-h] [-f] [-c]
+
+options:
+  -h, --help    show this help message and exit
+  -f, --force   try to dump even when the current CPU is not in SMM.
+  -c, --commit  actually perform the dump.
+```
+
+### Examples
+
+```gdb
+smm-dump
+smm-dump --commit
+smm-dump --commit --force
+```
+
+### Notes
+
+```text
+An in-SMM dump uses the current CPU's SMM address space.
+A forced dump outside SMM is best-effort because chipset access controls may return masked bytes.
+```
+
+## smm-status
+
+Display the current SMM status and an SMRAM preview.
+
+
+### Syntax
+
+```text
+usage: smm-status [-h] [-q] [-n]
+
+options:
+  -h, --help      show this help message and exit
+  -q, --quiet     print only in_smm, not_in_smm, or unknown.
+  -n, --no-pager  do not use the pager.
+```
+
+### Examples
+
+```gdb
+smm-status
+smm-status --quiet
+```
+
+### Notes
+
+```text
+The QEMU monitor SMM flag is preferred.
+On older QEMU builds, $pc is compared with the SMRAM range from `monitor info mtree -f`.
+The preview uses the current in-SMM PC, or the detected SMRAM base outside SMM.
 ```
 
 # 07-a. Misc - Conversion

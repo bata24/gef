@@ -562,7 +562,7 @@ class Cache:
 
 
 class MemoryCache:
-    """A read-through block cache for `read_memory`.
+    """A read-through block cache for memory readers.
 
     The cost of reading memory via a remote gdb stub is dominated by the number of
     round trips, not by the size (with qemu-system, 8 bytes costs 95us while 4096 bytes
@@ -578,6 +578,7 @@ class MemoryCache:
 
     __blocks__ = {}
     __unreadable__ = set()
+    default_namespace = "virtual"
 
     @staticmethod
     @Cache.cache_until_next
@@ -594,9 +595,25 @@ class MemoryCache:
         return MemoryCache.BLOCK_SIZE, is_qemu_system()
 
     @staticmethod
-    def reset():
-        MemoryCache.__blocks__.clear()
-        MemoryCache.__unreadable__.clear()
+    def reset(namespace=None):
+        """Clear all cached address spaces, or only the requested namespace."""
+        if namespace is None:
+            MemoryCache.__blocks__.clear()
+            MemoryCache.__unreadable__.clear()
+            return
+
+        for key in [key for key in MemoryCache.__blocks__ if key[0] == namespace]:
+            del MemoryCache.__blocks__[key]
+        for key in [key for key in MemoryCache.__unreadable__ if key[0] == namespace]:
+            MemoryCache.__unreadable__.remove(key)
+        return
+
+    @staticmethod
+    def set_default_namespace(namespace):
+        """Select the namespace used by ordinary virtual or physical reads."""
+        if namespace not in ("virtual", "physical"):
+            raise ValueError("Unsupported default memory namespace: {!r}".format(namespace))
+        MemoryCache.default_namespace = namespace
         return
 
     @staticmethod
@@ -625,11 +642,21 @@ class MemoryCache:
             return out
 
     @staticmethod
-    def read(addr, length):
-        """Return a `length` long byte array at `addr`, using the block cache if available."""
+    def read(addr, length, reader=None, namespace=None):
+        """Return bytes at `addr`, using the block cache when available.
+
+        `reader` and `namespace` allow users such as page-table walkers to cache
+        address spaces other than the inferior's normal virtual memory without
+        mixing their contents.  Reads larger than the selected block size bypass
+        the cache and remain a single read.
+        """
+        if reader is None:
+            reader = MemoryCache.read_raw
+        if namespace is None:
+            namespace = MemoryCache.default_namespace
         block_size, per_cpu = MemoryCache.get_policy()
         if block_size == 0 or length > block_size:
-            return MemoryCache.read_raw(addr, length)
+            return reader(addr, length)
 
         ctx = Cache.cpu_context() if per_cpu else gdb.selected_inferior().num
         blocks = MemoryCache.__blocks__
@@ -637,20 +664,20 @@ class MemoryCache:
         out = b""
         pos = base
         while pos < addr + length:
-            key = (ctx, pos)
+            key = (namespace, ctx, pos)
             data = blocks.get(key)
             if data is None:
                 if key in MemoryCache.__unreadable__:
                     # The block is not entirely readable. Read only the requested range,
                     # so that a memory error is raised only if it is really unreadable.
-                    return MemoryCache.read_raw(addr, length)
+                    return reader(addr, length)
                 try:
-                    data = MemoryCache.read_raw(pos, block_size)
+                    data = reader(pos, block_size)
                 except gdb.MemoryError:
                     if len(MemoryCache.__unreadable__) >= MemoryCache.MAX_BLOCKS:
                         MemoryCache.__unreadable__.clear()
                     MemoryCache.__unreadable__.add(key)
-                    return MemoryCache.read_raw(addr, length)
+                    return reader(addr, length)
                 if len(blocks) >= MemoryCache.MAX_BLOCKS:
                     blocks.clear()
                 blocks[key] = data
@@ -12595,18 +12622,12 @@ def read_physmem(paddr, size, already_physmode=False):
 
     def transparent_read(paddr, size):
         try:
-            switched = False
-            if QemuMonitor.get_current_mmu_mode() == "virt":
-                # switch virt/phys mode
-                switched = enable_phys() is True
-                if not switched:
+            with QemuMonitor.use_mmu_mode("phys") as available:
+                if not available:
                     return None
-            return read_memory(paddr, size)
+                return read_memory(paddr, size)
         except Exception:
             pass
-        finally:
-            if switched:
-                disable_phys()
         return None
 
     def qemu_system_proc_mem(paddr, size):
@@ -12734,18 +12755,12 @@ def write_physmem(paddr, data, already_physmode=False):
 
     def transparent_write(paddr, data):
         try:
-            switched = False
-            if QemuMonitor.get_current_mmu_mode() == "virt":
-                # switch virt/phys mode
-                switched = enable_phys() is True
-                if not switched:
+            with QemuMonitor.use_mmu_mode("phys") as available:
+                if not available:
                     return None
-            return write_memory(paddr, data)
+                return write_memory(paddr, data)
         except Exception:
             pass
-        finally:
-            if switched:
-                disable_phys()
         return None
 
     # ----
@@ -12914,8 +12929,10 @@ class QemuMonitor:
             try:
                 response = gdb.execute("maintenance packet qqemu.PhyMemMode", to_string=True, from_tty=False)
                 if 'received: "0"' in response:
+                    MemoryCache.set_default_namespace("virtual")
                     return "virt"
                 elif 'received: "1"' in response:
+                    MemoryCache.set_default_namespace("physical")
                     return "phys"
                 else:
                     return False
@@ -12923,11 +12940,226 @@ class QemuMonitor:
                 return False
         elif is_vmware():
             try:
-                read_memory(0, 1)
+                MemoryCache.read_raw(0, 1)
+                MemoryCache.set_default_namespace("physical")
                 return "phys"
             except gdb.MemoryError:
+                MemoryCache.set_default_namespace("virtual")
                 return "virt"
         return None
+
+    @staticmethod
+    @contextlib.contextmanager
+    def use_mmu_mode(target_mode):
+        """Temporarily select QEMU/VMware virtual or physical memory mode."""
+        if target_mode not in ("virt", "phys"):
+            raise ValueError("Unsupported MMU mode: {!r}".format(target_mode))
+
+        original_mode = QemuMonitor.get_current_mmu_mode()
+        if original_mode not in ("virt", "phys"):
+            yield False
+            return
+        if original_mode == target_mode:
+            yield True
+            return
+
+        switch_mode = enable_phys if target_mode == "phys" else disable_phys
+        restore_mode = enable_phys if original_mode == "phys" else disable_phys
+        switched = switch_mode() is True
+        try:
+            yield switched
+        finally:
+            if switched and restore_mode() is not True:
+                QemuMonitor.get_current_mmu_mode()
+        return
+
+class SystemManagementMemory:
+
+    @staticmethod
+    @Cache.cache_this_session(per_inferior=True)
+    def get_smram_map():
+        """Return the most useful SMRAM range as ``(base, size, label)``.
+
+        QEMU names the protected range differently depending on the chipset and
+        firmware (TSEG, HSEG, ABSEG, or SMRAM).  The flat memory tree is a more
+        reliable source than assuming the architectural reset SMBASE.  Do not
+        guess the range when QEMU does not expose a labelled region: firmware
+        may have relocated SMBASE away from its architectural reset value.
+        """
+        if not is_qemu_system() or not is_x86():
+            return None
+
+        try:
+            output = gdb.execute("monitor info mtree -f", to_string=True)
+        except gdb.error:
+            return None
+
+        candidates = []
+        pattern = re.compile(
+            r"^\s*([0-9a-f]+)-([0-9a-f]+)\s+\([^)]*\):\s*(\S+)",
+            re.IGNORECASE,
+        )
+        rank = {"tseg": 4, "smram": 4, "hseg": 3, "abseg": 3}
+        for line in output.splitlines():
+            match = pattern.match(line)
+            if not match:
+                continue
+            base = int(match.group(1), 16)
+            end = int(match.group(2), 16) + 1 # QEMU prints an inclusive end
+            label = match.group(3)
+            words = re.split(r"[^a-z0-9]+", label.lower())
+            kind = next((name for name in rank if name in words), None)
+            if kind is None or end <= base:
+                continue
+            candidates.append((rank[kind], end - base, base, label))
+
+        if candidates:
+            _, size, base, label = max(candidates)
+            return base, size, label
+        return None
+
+    @staticmethod
+    @Cache.cache_until_next(per_cpu=True)
+    def get_smm_monitor_state():
+        """Return ``(state, token)`` from QEMU's current-CPU register dump.
+
+        ``state`` is None when this QEMU version does not expose an SMM marker.
+        """
+        if not is_qemu_system() or not is_x86():
+            return None, None
+        try:
+            output = gdb.execute("monitor info registers", to_string=True)
+        except gdb.error:
+            return None, None
+
+        match = re.search(r"\bSMM\s*=\s*(0x[0-9a-f]+|[0-9]+)\b", output, re.IGNORECASE)
+        if match:
+            token = match.group(1)
+            value = int(token, 16 if token.lower().startswith("0x") else 10)
+            return value != 0, "SMM={:d}".format(value)
+
+        lowered = output.lower()
+        for marker in ("in smm", "smmode"):
+            if marker in lowered:
+                return True, marker
+        return None, None
+
+    @staticmethod
+    @Cache.cache_until_next(per_cpu=True)
+    def get_smm_status():
+        """Return details about the current CPU's SMM state.
+
+        QEMU's explicit ``SMM=`` marker is authoritative.  Older builds without
+        that marker fall back to checking whether the current PC lies in SMRAM.
+        """
+        smram = SystemManagementMemory.get_smram_map()
+        monitor_state, monitor_token = SystemManagementMemory.get_smm_monitor_state()
+        pc = get_register("$pc")
+        pc_in_smram = False
+        if smram is not None and pc is not None:
+            base, size, _ = smram
+            pc_in_smram = base <= pc < base + size
+
+        if monitor_state is not None:
+            state = monitor_state
+            source = "qemu-monitor"
+        elif smram is not None and pc is not None:
+            state = pc_in_smram
+            source = "pc-range"
+        else:
+            state = None
+            source = None
+
+        return {
+            "state": state,
+            "source": source,
+            "monitor_state": monitor_state,
+            "monitor_token": monitor_token,
+            "pc": pc,
+            "pc_in_smram": pc_in_smram,
+            "smram": smram,
+        }
+
+    @staticmethod
+    def read_smram_backing(base, size):
+        """Read SMRAM from QEMU's pc.ram backing, bypassing the TSEG blackhole."""
+        smram = SystemManagementMemory.get_smram_map()
+        if smram is None:
+            return None
+        smram_base, smram_size, _ = smram
+        if not smram_base <= base or base + size > smram_base + smram_size:
+            return None
+
+        qemu_pid = Pid.get_pid()
+        if qemu_pid is None:
+            return None
+
+        # TSEG overlays pc.ram with tseg-blackhole. Resolve pc.ram at address zero,
+        # then apply the guest-physical offset ourselves.
+        try:
+            output = gdb.execute("monitor gpa2hva 0", to_string=True)
+            match = re.search(r"is\s+(0x[0-9a-f]+)", output, re.IGNORECASE)
+            if not match:
+                return None
+            host_address = int(match.group(1), 16) + base
+            with open("/proc/{:d}/mem".format(qemu_pid), "rb") as file:
+                file.seek(host_address)
+                data = file.read(size)
+        except (gdb.error, OSError, ValueError):
+            return None
+        return data if len(data) == size else None
+
+    @staticmethod
+    def read_smram_current_address_space(base, size):
+        """Return readable ``(offset, data)`` chunks from the current SMM address space."""
+        chunks = []
+        with QemuMonitor.use_mmu_mode("virt") as available:
+            if not available:
+                return chunks
+
+            offset = 0
+            while offset < size:
+                current = base + offset
+                chunk_size = min(0x1000 - (current & 0xfff), size - offset)
+                try:
+                    output = gdb.execute("monitor gva2gpa {:#x}".format(current), to_string=True)
+                    match = re.search(r"gpa:\s*(0x[0-9a-f]+)", output, re.IGNORECASE)
+                    if match and int(match.group(1), 16) == current:
+                        chunk = read_memory(current, chunk_size)
+                        if len(chunk) == chunk_size:
+                            chunks.append((offset, chunk))
+                except (gdb.error, gdb.MemoryError):
+                    pass
+                offset += chunk_size
+        return chunks
+
+    @staticmethod
+    def read_smram(base, size, in_smm=False, return_stats=False):
+        """Read SMRAM through the current CPU's SMM address space when possible."""
+        stats = {"smm_chunks": 0, "fallback_chunks": 0}
+        result = SystemManagementMemory.read_smram_backing(base, size)
+
+        if result is None:
+            try:
+                result = read_physmem(base, size)
+            except Exception:
+                result = None
+
+        if not in_smm:
+            return (result, stats) if return_stats else result
+
+        if result is None or len(result) != size:
+            result = b"\xff" * size
+        data = bytearray(result)
+        chunks = SystemManagementMemory.read_smram_current_address_space(base, size)
+        for offset, chunk in chunks:
+            data[offset:offset + len(chunk)] = chunk
+
+        stats["smm_chunks"] = len(chunks)
+        total_chunks = ((base & 0xfff) + size + 0xfff) // 0x1000 if size else 0
+        stats["fallback_chunks"] = total_chunks - stats["smm_chunks"]
+        result = bytes(data)
+        return (result, stats) if return_stats else result
 
 
 class SecureMemory:
@@ -13131,6 +13363,7 @@ class SecureMemory:
             Config.set_gef_setting("context_code.use_capstone", True)
         return ret
 
+
 def is_supported_physmode():
     """GDB mode determination function for physmem support."""
     return QemuMonitor.get_current_mmu_mode() in ["virt", "phys"]
@@ -13141,12 +13374,14 @@ def enable_phys():
         gdb.execute("maintenance packet Qqemu.PhyMemMode:1", to_string=True, from_tty=False)
         response = gdb.execute("maintenance packet qqemu.PhyMemMode", to_string=True, from_tty=False)
         gdb.execute("maintenance flush dcache", to_string=True)
-        MemoryCache.reset()
-        return 'received: "1"' in response
+        success = 'received: "1"' in response
+        if success:
+            MemoryCache.set_default_namespace("physical")
+        return success
     elif is_vmware():
         gdb.execute("monitor phys", to_string=True)
         gdb.execute("maintenance flush dcache", to_string=True)
-        MemoryCache.reset()
+        MemoryCache.set_default_namespace("physical")
         return True
 
 
@@ -13155,12 +13390,14 @@ def disable_phys():
         gdb.execute("maintenance packet Qqemu.PhyMemMode:0", to_string=True, from_tty=False)
         response = gdb.execute("maintenance packet qqemu.PhyMemMode", to_string=True, from_tty=False)
         gdb.execute("maintenance flush dcache", to_string=True)
-        MemoryCache.reset()
-        return 'received: "0"' in response
+        success = 'received: "0"' in response
+        if success:
+            MemoryCache.set_default_namespace("virtual")
+        return success
     elif is_vmware():
         gdb.execute("monitor virt", to_string=True)
         gdb.execute("maintenance flush dcache", to_string=True)
-        MemoryCache.reset()
+        MemoryCache.set_default_namespace("virtual")
         return True
 
 
@@ -14000,6 +14237,12 @@ def is_smp_enabled():
         return len(res.splitlines()) >= 2
     except gdb.error:
         return False
+
+
+@Cache.cache_until_next(per_cpu=True)
+def is_in_smm():
+    """Return whether the current QEMU x86 CPU is in System Management Mode."""
+    return SystemManagementMemory.get_smm_status()["state"] is True
 
 
 class Pid:
@@ -38212,20 +38455,10 @@ class PatchCommand(GenericCommand):
             return b
 
         def patch(self, silent=False):
-            orig_mode = QemuMonitor.get_current_mmu_mode()
-            if orig_mode == "virt" and self.phys:
-                enable_phys()
-                self.before_data = read_memory(self.addr, self.length)
-                write_memory(self.addr, self.data)
-                self.after_data = read_memory(self.addr, self.length)
-                disable_phys()
-            elif orig_mode == "phys" and not self.phys:
-                disable_phys()
-                self.before_data = read_memory(self.addr, self.length)
-                write_memory(self.addr, self.data)
-                self.after_data = read_memory(self.addr, self.length)
-                enable_phys()
-            else:
+            target_mode = "phys" if self.phys else "virt"
+            with QemuMonitor.use_mmu_mode(target_mode) as available:
+                if not available:
+                    raise gdb.error("Could not select {:s} memory mode".format(target_mode))
                 self.before_data = read_memory(self.addr, self.length)
                 write_memory(self.addr, self.data)
                 self.after_data = read_memory(self.addr, self.length)
@@ -38251,16 +38484,10 @@ class PatchCommand(GenericCommand):
             return
 
         def revert(self, silent=False):
-            orig_mode = QemuMonitor.get_current_mmu_mode()
-            if orig_mode == "virt" and self.phys:
-                enable_phys()
-                write_memory(self.addr, self.before_data)
-                disable_phys()
-            elif orig_mode == "phys" and not self.phys:
-                disable_phys()
-                write_memory(self.addr, self.before_data)
-                enable_phys()
-            else:
+            target_mode = "phys" if self.phys else "virt"
+            with QemuMonitor.use_mmu_mode(target_mode) as available:
+                if not available:
+                    raise gdb.error("Could not select {:s} memory mode".format(target_mode))
                 write_memory(self.addr, self.before_data)
 
             # print
@@ -155619,6 +155846,186 @@ class QemuRegistersCommand(GenericCommand, BufferingOutput):
         return
 
 
+@register_command
+class SmmStatusCommand(GenericCommand, BufferingOutput):
+    """Display the current SMM status and an SMRAM preview."""
+
+    _cmdline_ = "smm-status"
+    _category_ = "06-l. Qemu-system/KGDB Cooperation - SMM"
+
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("-q", "--quiet", action="store_true", help="print only in_smm, not_in_smm, or unknown.")
+    parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
+    _syntax_ = parser.format_help()
+
+    _example_ = [
+        "{0:s}",
+        "{0:s} --quiet",
+    ]
+    _example_ = "\n".join(_example_).format(_cmdline_)
+
+    _note_ = [
+        "The QEMU monitor SMM flag is preferred.",
+        "On older QEMU builds, $pc is compared with the SMRAM range from `monitor info mtree -f`.",
+        "The preview uses the current in-SMM PC, or the detected SMRAM base outside SMM.",
+    ]
+    _note_ = "\n".join(_note_)
+
+    @staticmethod
+    def format_status(status):
+        state = status["state"]
+        if state is True:
+            verdict = Color.colorify("CURRENTLY IN SMM", "bold red")
+        elif state is False:
+            verdict = Color.colorify("NOT in SMM", "bold green")
+        else:
+            verdict = Color.colorify("SMM STATE UNKNOWN", "bold yellow")
+
+        pc = status["pc"]
+        pc_text = "unavailable" if pc is None else "{:#x}".format(pc)
+        smram = status["smram"]
+        if smram is None:
+            region_text = "unavailable"
+        else:
+            base, size, label = smram
+            region_text = "[{:#x}-{:#x}) {} ({:s})".format(base, base + size, label, GefUtil.get_size_str(size))
+
+        lines = ["{:s}: $pc={:s}, SMRAM={:s}".format(verdict, pc_text, region_text)]
+        if status["monitor_state"] is not None:
+            reason = "QEMU monitor reports {:s}".format(status["monitor_token"])
+            if status["pc_in_smram"] != status["monitor_state"]:
+                reason += "; PC-range heuristic disagrees (monitor result takes precedence)"
+        elif status["source"] == "pc-range":
+            reason = "$pc is {:s}the detected SMRAM range; QEMU exposes no SMM marker".format(
+                "inside " if status["pc_in_smram"] else "outside ",
+            )
+        else:
+            reason = "neither a QEMU SMM marker nor a usable PC/SMRAM pair is available"
+        lines.append("  rationale: {:s}".format(reason))
+        return lines
+
+    def add_smram_preview(self, status):
+        smram = status["smram"]
+        if smram is None:
+            self.warn_add_out("SMRAM range is unavailable; preview skipped")
+            return
+
+        base, size = smram[:2]
+        preview = base
+        title = "SMRAM preview"
+        if status["state"] is True and status["pc_in_smram"]:
+            preview = status["pc"] & ~0xf
+            title = "SMRAM preview at the current PC"
+        preview_size = min(0x100, base + size - preview)
+        self.out.append(titlify(title))
+        data = SystemManagementMemory.read_smram(preview, preview_size, in_smm=status["state"] is True)
+        if data:
+            self.out.append(hexdump(data, base=preview, show_symbol=False))
+        else:
+            self.warn_add_out("Could not read SMRAM at {:#x}".format(preview))
+        return
+
+    @parse_args
+    @only_if_gdb_running
+    @only_if_specific_gdb_mode(mode=("qemu-system",))
+    @only_if_specific_arch(arch=("x86_32", "x86_64"))
+    def do_invoke(self, args):
+        status = SystemManagementMemory.get_smm_status()
+        if args.quiet:
+            token = {True: "in_smm", False: "not_in_smm", None: "unknown"}[status["state"]]
+            gef_print(token)
+            return
+
+        self.out = self.format_status(status)
+        self.add_smram_preview(status)
+        self.print_output(check_terminal_size=True)
+        return
+
+
+@register_command
+class SmmDumpCommand(GenericCommand):
+    """Dump the detected SMRAM range to a file."""
+
+    _cmdline_ = "smm-dump"
+    _category_ = "06-l. Qemu-system/KGDB Cooperation - SMM"
+
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("-f", "--force", action="store_true", help="try to dump even when the current CPU is not in SMM.")
+    parser.add_argument("-c", "--commit", action="store_true", help="actually perform the dump.")
+    _syntax_ = parser.format_help()
+
+    _example_ = [
+        "{0:s}",
+        "{0:s} --commit",
+        "{0:s} --commit --force",
+    ]
+    _example_ = "\n".join(_example_).format(_cmdline_)
+
+    _note_ = [
+        "An in-SMM dump uses the current CPU's SMM address space.",
+        "A forced dump outside SMM is best-effort because chipset access controls may return masked bytes.",
+    ]
+    _note_ = "\n".join(_note_)
+
+    def dump_smram(self, smram, in_smm):
+        base, size, label = smram
+        directory = os.path.join(GEF_TEMP_DIR, "mem-dump-" + GefUtil.now_str())
+        filename = "{:016x}-{:016x}_{:s}.raw".format(base, base + size - 1, re.sub(r"[^a-zA-Z0-9_.-]+", "_", label))
+        filepath = os.path.join(directory, filename)
+        if not self.args.commit:
+            info("It will be saved to {:s} ({:s})".format(filepath, GefUtil.get_size_str(size)))
+            warn('This dry run mode skips dumping; add "--commit" to proceed')
+            return
+
+        data, stats = SystemManagementMemory.read_smram(base, size, in_smm=in_smm, return_stats=True)
+        if data is None or len(data) != size:
+            actual = 0 if data is None else len(data)
+            err("Could not read all of SMRAM ({:#x}/{:#x} bytes)".format(actual, size))
+            return
+
+        if stats["fallback_chunks"]:
+            warn("{:d} SMRAM page(s) were not mapped in the current SMM page tables;".format(stats["fallback_chunks"]))
+            warn("their bytes came from QEMU's pc.ram backing or the physical-memory fallback")
+
+        if data and (data.count(0) == len(data) or data.count(0xff) == len(data)):
+            byte = 0 if data[0] == 0 else 0xff
+            warn("SMRAM read returned only {:#04x}; chipset masking may have hidden the real contents".format(byte))
+
+        try:
+            os.makedirs(directory, exist_ok=True)
+            with open(filepath, "wb") as file:
+                file.write(data)
+        except OSError as exception:
+            err("Could not write {:s}: {}".format(filepath, exception))
+            return
+
+        info("Saved to {:s} ({:s})".format(filepath, GefUtil.get_size_str(len(data))))
+        return
+
+    @parse_args
+    @only_if_gdb_running
+    @only_if_specific_gdb_mode(mode=("qemu-system",))
+    @only_if_specific_arch(arch=("x86_32", "x86_64"))
+    def do_invoke(self, args):
+        status = SystemManagementMemory.get_smm_status()
+        smram = status["smram"]
+        if smram is None:
+            err("Could not resolve the SMRAM range")
+            return
+
+        if status["state"] is True:
+            info("The current CPU is in SMM")
+        elif not args.force:
+            warn("The current CPU is not known to be in SMM; skipping the dump")
+            warn("Use --force for a best-effort read through the system address space")
+            return
+        else:
+            warn("The current CPU is not known to be in SMM; forcing a best-effort read")
+
+        self.dump_smram(smram, status["state"] is True)
+        return
+
+
 class AddrMap:
     """A collection of utility functions that are related to memory map from page tables."""
 
@@ -156038,12 +156445,30 @@ class PagewalkCommand(GenericCommand, BufferingOutput):
         return
 
     def read_physmem_cache(self, paddr, size):
-        key = "{:#x}_{:d}".format(paddr, size)
-        if key in self.cache:
-            return self.cache[key]
-        out = read_physmem(paddr, size)
-        self.cache[key] = out
-        return out
+        in_smm = is_x86() and is_in_smm()
+        smram = QemuMonitor.get_smram_map() if in_smm else None
+
+        def pagewalk_reader(addr, length):
+            out = None
+            if smram is not None:
+                base, smram_size, _ = smram
+                if base <= addr and addr + length <= base + smram_size:
+                    try:
+                        result = gdb.execute("monitor gva2gpa {:#x}".format(addr), to_string=True)
+                        match = re.search(r"gpa:\s*(0x[0-9a-f]+)", result, re.IGNORECASE)
+                        if match and int(match.group(1), 16) == addr:
+                            out = MemoryCache.read_raw(addr, length)
+                    except (gdb.error, gdb.MemoryError):
+                        pass
+
+            if out is None:
+                out = read_physmem(addr, length)
+            if out is None:
+                raise gdb.MemoryError("Cannot access physical memory at address {:#x}".format(addr))
+            return out
+
+        namespace = "pagewalk-smm" if in_smm else "physical"
+        return MemoryCache.read(paddr, size, reader=pagewalk_reader, namespace=namespace)
 
     # merge pages that points same phys page
     def merge1(self, mappings):
@@ -156968,9 +157393,7 @@ class PagewalkRiscvCommand(PagewalkCommand):
             self.vrange = self.args.vrange
 
         self.out = []
-        self.cache = {}
         self.pagewalk()
-        self.cache = {} # The cache is huge, so it will be released as soon as possible.
         self.print_output()
         return
 
@@ -157656,9 +158079,7 @@ class PagewalkX64Command(PagewalkCommand):
                 return
 
         self.out = []
-        self.cache = {}
         self.pagewalk()
-        self.cache = {} # The cache is huge, so it will be released as soon as possible.
         self.print_output()
         return
 
@@ -158790,9 +159211,7 @@ class PagewalkArmCommand(PagewalkCommand):
             self.FORCE_PREFIX_S = False
 
         self.out = []
-        self.cache = {}
         self.pagewalk()
-        self.cache = {} # The cache is huge, so it will be released as soon as possible.
         self.print_output()
         return
 
@@ -160724,9 +161143,7 @@ class PagewalkArm64Command(PagewalkCommand):
                 return
 
         self.out = []
-        self.cache = {}
         self.pagewalk()
-        self.cache = {} # The cache is huge, so it will be released as soon as possible.
         self.print_output()
         return
 
