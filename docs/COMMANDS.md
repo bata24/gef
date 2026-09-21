@@ -8708,7 +8708,9 @@ options:
 ### Examples
 
 ```gdb
-ktask -q
+ktask -T 0xffff888012345000  # task address filter
+ktask -f bash                # comm string filter
+ktask --all                  # it means -mritFsSN
 ```
 
 ### Notes
