@@ -2565,6 +2565,13 @@ options:
 tls -vvv  # repeat `-v` to display more lines
 ```
 
+### Notes
+
+```text
+Under qemu-user, multi-threaded mips/mipsn32/mips64/m68k targets may produce unreliable TLS/heap results
+because ExecAsm/ExecSyscall can fail after thread switches.
+```
+
 # 02-c. Process Information - Memory/Section
 ## vmmap
 
@@ -5743,6 +5750,9 @@ Supports up to glibc 2.43.
 - 2.42: tcache_perthread_struct.counts changes to num_slots.
 - 2.43: fastbins are removed.
 - 2.43: TCACHE_FILL_COUNT 7->16.
+
+Under qemu-user, multi-threaded mips/mipsn32/mips64/m68k targets may produce unreliable TLS/heap results
+because ExecAsm/ExecSyscall can fail after thread switches.
 ```
 
 ## heap arena
@@ -9194,6 +9204,70 @@ Simplified file_systems structure:
        | ...         |   | ...         |         +-->| mnt_instance |
        +-------------+   +-------------+             | ...          |
                                                      +--------------+
+```
+
+## kio-uring
+
+Display the kernel-side io_uring object graph.
+
+
+### Syntax
+
+```text
+usage: kio-uring [-h] [-t {auto,ctx,request,file}] [-p PID] [-f FD] [--no-requests] [--meta] [-n] [-v] [-q] [ADDRESS]
+
+positional arguments:
+  ADDRESS               the address of struct io_ring_ctx, io_kiocb or file.
+
+options:
+  -h, --help            show this help message and exit
+  -t, --type {auto,ctx,request,file}
+                        the type of ADDRESS. (default: auto)
+  -p, --pid PID         select rings owned by this pid.
+  -f, --fd FD           select this ring fd (requires --pid).
+  --no-requests         do not walk pending request lists.
+  --meta                display layout and discovery information.
+  -n, --no-pager        do not use the pager.
+  -v, --verbose         show request flags and user_data.
+  -q, --quiet           show result only.
+```
+
+### Examples
+
+```gdb
+kio-uring
+kio-uring --pid 1337 --fd 4
+kio-uring --type ctx 0xffff888012340000
+kio-uring --type request 0xffff888056780000 -v
+```
+
+### Notes
+
+```text
+`iouring-dump` dumps userland io_uring mappings; this command follows kernel objects.
+io_uring first appeared in Linux v5.1. Older kernels are detected without scanning.
+DWARF is used when available. Without it, ring discovery uses open fd paths and validated ring metadata.
+Live request lists are transient and may be incomplete while another CPU is running.
+
+Kernel object graph:
+
+task_struct
+  +-- files -> fdtable[fd] -> file (anon_inode:[io_uring])
+  |                             +-- private_data -> io_ring_ctx
+  +-- io_uring -> io_uring_task
+                    +-- last ---------------------> io_ring_ctx
+                    +-- registered_rings[] -------> file
+                    +-- io_wq --------------------> io-wq workers
+
+io_ring_ctx
+  +-- rings ----------------------> io_rings (SQ / CQ)
+  +-- file table -----------------> file / io_rsrc_node
+  +-- buffer table ---------------> io_mapped_ubuf / io_rsrc_node
+  +-- iopoll/timeout/defer lists -> io_kiocb
+  |                                   +-- opcode / state / refs
+  |                                   +-- file / buffer node
+  |                                   +-- callback / linked request
+  +-- submitter / sq thread ------> task_struct
 ```
 
 ## kipcs

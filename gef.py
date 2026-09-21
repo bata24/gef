@@ -170019,6 +170019,810 @@ class KernelLsmCommand(GenericCommand, BufferingOutput):
 
 
 @register_command
+class KernelIoUringCommand(GenericCommand, BufferingOutput):
+    """Display the kernel-side io_uring object graph."""
+
+    _cmdline_ = "kio-uring"
+    _category_ = "06-g. Qemu-system/KGDB Cooperation - Linux Advanced"
+
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("address", nargs="?", metavar="ADDRESS", type=AddressUtil.parse_address,
+                        help="the address of struct io_ring_ctx, io_kiocb or file.")
+    parser.add_argument("-t", "--type", choices=["auto", "ctx", "request", "file"], default="auto",
+                        help="the type of ADDRESS. (default: %(default)s)")
+    parser.add_argument("-p", "--pid", type=int, help="select rings owned by this pid.")
+    parser.add_argument("-f", "--fd", type=int, help="select this ring fd (requires --pid).")
+    parser.add_argument("--no-requests", action="store_true", help="do not walk pending request lists.")
+    parser.add_argument("--meta", action="store_true", help="display layout and discovery information.")
+    parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
+    parser.add_argument("-v", "--verbose", action="store_true", help="show request flags and user_data.")
+    parser.add_argument("-q", "--quiet", action="store_true", help="show result only.")
+    _syntax_ = parser.format_help()
+
+    _example_ = [
+        "{0:s}",
+        "{0:s} --pid 1337 --fd 4",
+        "{0:s} --type ctx 0xffff888012340000",
+        "{0:s} --type request 0xffff888056780000 -v",
+    ]
+    _example_ = "\n".join(_example_).format(_cmdline_)
+
+    _note_ = [
+        "`iouring-dump` dumps userland io_uring mappings; this command follows kernel objects.",
+        "io_uring first appeared in Linux v5.1. Older kernels are detected without scanning.",
+        "DWARF is used when available. Without it, ring discovery uses open fd paths and validated ring metadata.",
+        "Live request lists are transient and may be incomplete while another CPU is running.",
+        "",
+        "Kernel object graph:",
+        "",
+        "task_struct",
+        "  +-- files -> fdtable[fd] -> file (anon_inode:[io_uring])",
+        "  |                             +-- private_data -> io_ring_ctx",
+        "  +-- io_uring -> io_uring_task",
+        "                    +-- last ---------------------> io_ring_ctx",
+        "                    +-- registered_rings[] -------> file",
+        "                    +-- io_wq --------------------> io-wq workers",
+        "",
+        "io_ring_ctx",
+        "  +-- rings ----------------------> io_rings (SQ / CQ)",
+        "  +-- file table -----------------> file / io_rsrc_node",
+        "  +-- buffer table ---------------> io_mapped_ubuf / io_rsrc_node",
+        "  +-- iopoll/timeout/defer lists -> io_kiocb",
+        "  |                                   +-- opcode / state / refs",
+        "  |                                   +-- file / buffer node",
+        "  |                                   +-- callback / linked request",
+        "  +-- submitter / sq thread ------> task_struct",
+    ]
+    _note_ = "\n".join(_note_)
+
+    MAX_FDS = 0x10000
+    MAX_RESOURCES = 0x10000
+    MAX_REQUESTS = 0x10000
+
+    OPCODES = [
+        "NOP", "READV", "WRITEV", "FSYNC", "READ_FIXED", "WRITE_FIXED", "POLL_ADD",
+        "POLL_REMOVE", "SYNC_FILE_RANGE", "SENDMSG", "RECVMSG", "TIMEOUT", "TIMEOUT_REMOVE",
+        "ACCEPT", "ASYNC_CANCEL", "LINK_TIMEOUT", "CONNECT", "FALLOCATE", "OPENAT", "CLOSE",
+        "FILES_UPDATE", "STATX", "READ", "WRITE", "FADVISE", "MADVISE", "SEND", "RECV",
+        "OPENAT2", "EPOLL_CTL", "SPLICE", "PROVIDE_BUFFERS", "REMOVE_BUFFERS", "TEE",
+        "SHUTDOWN", "RENAMEAT", "UNLINKAT", "MKDIRAT", "SYMLINKAT", "LINKAT", "MSG_RING",
+        "FSETXATTR", "SETXATTR", "FGETXATTR", "GETXATTR", "SOCKET", "URING_CMD", "SEND_ZC",
+        "SENDMSG_ZC", "READ_MULTISHOT", "WAITID", "FUTEX_WAIT", "FUTEX_WAKE", "FUTEX_WAITV",
+        "FIXED_FD_INSTALL", "FTRUNCATE", "BIND", "LISTEN", "RECV_ZC", "EPOLL_WAIT",
+        "READV_FIXED", "WRITEV_FIXED", "PIPE", "NOP128", "URING_CMD128",
+    ]
+
+    def eval_value(self, type_name, address, member):
+        try:
+            return gdb.parse_and_eval("(({:s} *){:#x})->{:s}".format(type_name, address, member))
+        except (gdb.error, RuntimeError):
+            return None
+
+    def eval_unsigned(self, type_name, address, member):
+        value = self.eval_value(type_name, address, member)
+        if value is None:
+            return None
+        try:
+            return to_unsigned_long(value)
+        except (gdb.error, RuntimeError, TypeError):
+            return None
+
+    def eval_first(self, type_name, address, members):
+        for member in members:
+            value = self.eval_unsigned(type_name, address, member)
+            if value is not None:
+                return value, member
+        return None, None
+
+    def member_offset(self, type_name, member):
+        key = (type_name, member)
+        if key in self.offset_cache:
+            return self.offset_cache[key]
+        try:
+            offset = GefUtil.parse_and_eval_unsigned("&(({:s} *)0)->{:s}".format(type_name, member))
+        except gdb.error:
+            offset = None
+        self.offset_cache[key] = offset
+        return offset
+
+    def read_pointer(self, address):
+        try:
+            return read_int_from_memory(address)
+        except (gdb.MemoryError, OverflowError):
+            return None
+
+    def read_u32(self, address):
+        try:
+            return read_int32_from_memory(address)
+        except (gdb.MemoryError, OverflowError):
+            return None
+
+    @staticmethod
+    def is_ring_path(path):
+        return path == "anon_inode:[io_uring]" or path == "[io_uring]" or path.endswith(":[io_uring]")
+
+    @staticmethod
+    def is_power_of_two(value):
+        return value != 0 and value & (value - 1) == 0
+
+    def ring_memory_layout(self, rings):
+        """Recognize and decode the metadata shared by every combined io_rings layout."""
+        if not is_valid_addr(rings) or rings & (current_arch.ptrsize - 1):
+            return None
+        try:
+            words = slice_unpack(read_memory(rings, 0x300), 4)
+        except (gdb.MemoryError, OverflowError, struct.error):
+            return None
+        single = False
+        for index in range(len(words) - 3):
+            sq_mask, cq_mask, sq_entries, cq_entries = words[index:index + 4]
+            if self.is_power_of_two(cq_mask) and sq_mask + 1 == cq_mask and cq_mask <= 0x100000:
+                single = True
+            if not self.is_power_of_two(sq_entries) or not self.is_power_of_two(cq_entries):
+                continue
+            if sq_entries > 0x100000 or cq_entries > 0x200000:
+                continue
+            if sq_mask + 1 == sq_entries and cq_mask + 1 == cq_entries:
+                if index < 4:
+                    continue
+                result = {
+                    "address": rings, "heuristic": True,
+                    "sq_head": words[index - 4], "sq_tail": words[index - 3],
+                    "cq_head": words[index - 2], "cq_tail": words[index - 1],
+                    "sq_mask": sq_mask, "cq_mask": cq_mask,
+                    "sq_entries": sq_entries, "cq_entries": cq_entries,
+                    "dropped": words[index + 4] if index + 4 < len(words) else None,
+                    "sq_flags": words[index + 5] if index + 5 < len(words) else None,
+                    "cq_flags": None, "overflow": None,
+                }
+                if self.kversion >= "5.8":
+                    result["cq_flags"] = words[index + 6] if index + 6 < len(words) else None
+                    result["overflow"] = words[index + 7] if index + 7 < len(words) else None
+                else:
+                    result["overflow"] = words[index + 6] if index + 6 < len(words) else None
+                return result
+        # Linux v5.1 kept SQ and CQ in separate mappings, so only one mask/entries pair is present.
+        return {"address": rings, "heuristic": True} if single else None
+
+    def ring_memory_score(self, rings):
+        layout = self.ring_memory_layout(rings)
+        if layout is None:
+            return 0
+        return 3 if "sq_head" in layout else 1
+
+    def find_rings_heuristic(self, ctx):
+        if not is_valid_addr(ctx) or ctx & (current_arch.ptrsize - 1):
+            return None
+        try:
+            pointers = slice_unpack(read_memory(ctx, 0x400), current_arch.ptrsize)
+        except (gdb.MemoryError, OverflowError, struct.error):
+            return None
+        for pointer in pointers:
+            if self.ring_memory_score(pointer):
+                return pointer
+        return None
+
+    def context_score(self, ctx):
+        if not is_valid_addr(ctx) or ctx & (current_arch.ptrsize - 1):
+            return 0
+        rings = self.eval_unsigned("struct io_ring_ctx", ctx, "rings")
+        if rings is not None and is_valid_addr(rings):
+            return 10 if self.ring_stats(ctx) is not None else 0
+        sq_ring = self.eval_unsigned("struct io_ring_ctx", ctx, "sq_ring")
+        cq_ring = self.eval_unsigned("struct io_ring_ctx", ctx, "cq_ring")
+        if is_valid_addr(sq_ring) and is_valid_addr(cq_ring):
+            return 10 if self.ring_stats(ctx) is not None else 0
+        return self.ring_memory_score(self.find_rings_heuristic(ctx) or 0)
+
+    def context_from_file(self, file):
+        ctx = self.eval_unsigned("struct file", file, "private_data")
+        if ctx is not None and self.context_score(ctx):
+            return ctx, "debug information"
+
+        # struct file is randomized in old kernels and was reordered in v6.5/v7.0.
+        # Restrict the fallback to a known io_uring fd, then validate the target as a ring context.
+        try:
+            pointers = slice_unpack(read_memory(file, 0x200), current_arch.ptrsize)
+        except (gdb.MemoryError, OverflowError, struct.error):
+            return None, None
+        candidates = []
+        for index, pointer in enumerate(pointers):
+            score = self.context_score(pointer)
+            if score:
+                candidates.append((score, index, pointer))
+        if not candidates:
+            return None, None
+        score, index, ctx = max(candidates)
+        return ctx, "validated file member +{:#x}".format(index * current_arch.ptrsize)
+
+    def task_info(self, task):
+        command = self.task_command
+        try:
+            pid = read_int32_from_memory(task + command.offset_pid)
+            comm = read_cstring_from_memory(task + command.offset_comm) or "???"
+        except (gdb.MemoryError, OverflowError):
+            return None, "???"
+        return pid, comm
+
+    def task_label(self, task):
+        if not is_valid_addr(task):
+            return "{:#x}".format(task or 0)
+        pid, comm = self.task_info(task)
+        if pid is None:
+            return "{:#x}".format(task)
+        return "{:#x} {:s}[{:d}]".format(task, comm, pid)
+
+    def iter_task_files(self, task):
+        command = self.task_command
+        try:
+            files = read_int_from_memory(task + command.offset_files)
+            fdt = read_int_from_memory(files + command.offset_fdt)
+            max_fds = read_int32_from_memory(fdt)
+            array = read_int_from_memory(fdt + current_arch.ptrsize)
+        except (gdb.MemoryError, OverflowError):
+            return
+        if not is_valid_addr(array) or max_fds <= 0:
+            return
+        for fd in range(min(max_fds, self.MAX_FDS)):
+            file = self.read_pointer(array + current_arch.ptrsize * fd)
+            if file:
+                yield fd, file
+        return
+
+    def find_ring_files(self):
+        command = self.task_command
+        tasks = KernelTaskCommand.get_task_list(command.init_task, command.offset_tasks)
+        rings = []
+        for task in tasks:
+            pid, comm = self.task_info(task)
+            if pid is None or self.args.pid is not None and pid != self.args.pid:
+                continue
+            for fd, file in self.iter_task_files(task):
+                if self.args.fd is not None and fd != self.args.fd:
+                    continue
+                try:
+                    path = self.kpath.get_file_path(file)
+                except (gdb.MemoryError, OverflowError, RuntimeError):
+                    continue
+                if not self.is_ring_path(path):
+                    continue
+                ctx, source = self.context_from_file(file)
+                rings.append({
+                    "task": task, "pid": pid, "comm": comm, "fd": fd, "file": file,
+                    "path": path, "ctx": ctx, "ctx_source": source,
+                })
+        return rings
+
+    def path_for_file(self, file):
+        if not is_valid_addr(file):
+            return ""
+        try:
+            return self.kpath.get_file_path(file)
+        except (gdb.MemoryError, OverflowError, RuntimeError):
+            return ""
+
+    def ring_stats(self, ctx):
+        rings = self.eval_unsigned("struct io_ring_ctx", ctx, "rings")
+        if rings is not None and is_valid_addr(rings):
+            names = ["sq.head", "sq.tail", "cq.head", "cq.tail", "sq_ring_mask", "cq_ring_mask",
+                     "sq_ring_entries", "cq_ring_entries", "sq_dropped", "sq_flags.counter",
+                     "sq_flags", "cq_flags", "cq_overflow"]
+            values = {}
+            for name in names:
+                value = self.eval_unsigned("struct io_rings", rings, name)
+                if value is not None:
+                    values[name] = value
+            sq_flags = values.get("sq_flags.counter", values.get("sq_flags"))
+            return {
+                "address": rings,
+                "sq_head": values.get("sq.head"), "sq_tail": values.get("sq.tail"),
+                "cq_head": values.get("cq.head"), "cq_tail": values.get("cq.tail"),
+                "sq_mask": values.get("sq_ring_mask"), "cq_mask": values.get("cq_ring_mask"),
+                "sq_entries": values.get("sq_ring_entries"), "cq_entries": values.get("cq_ring_entries"),
+                "dropped": values.get("sq_dropped"), "sq_flags": sq_flags,
+                "cq_flags": values.get("cq_flags"), "overflow": values.get("cq_overflow"),
+            }
+
+        sq = self.eval_unsigned("struct io_ring_ctx", ctx, "sq_ring")
+        cq = self.eval_unsigned("struct io_ring_ctx", ctx, "cq_ring")
+        if is_valid_addr(sq) and is_valid_addr(cq):
+            return {
+                "address": sq,
+                "sq_head": self.eval_unsigned("struct io_sq_ring", sq, "r.head"),
+                "sq_tail": self.eval_unsigned("struct io_sq_ring", sq, "r.tail"),
+                "cq_head": self.eval_unsigned("struct io_cq_ring", cq, "r.head"),
+                "cq_tail": self.eval_unsigned("struct io_cq_ring", cq, "r.tail"),
+                "sq_mask": self.eval_unsigned("struct io_sq_ring", sq, "ring_mask"),
+                "cq_mask": self.eval_unsigned("struct io_cq_ring", cq, "ring_mask"),
+                "sq_entries": self.eval_unsigned("struct io_sq_ring", sq, "ring_entries"),
+                "cq_entries": self.eval_unsigned("struct io_cq_ring", cq, "ring_entries"),
+                "dropped": self.eval_unsigned("struct io_sq_ring", sq, "dropped"),
+                "sq_flags": self.eval_unsigned("struct io_sq_ring", sq, "flags"),
+                "cq_flags": None, "overflow": self.eval_unsigned("struct io_cq_ring", cq, "overflow"),
+                "cq_address": cq,
+            }
+
+        rings = self.find_rings_heuristic(ctx)
+        if rings:
+            return self.ring_memory_layout(rings)
+        return None
+
+    def format_optional(self, value):
+        return "?" if value is None else "{:#x}".format(value)
+
+    def resource_nodes(self, ctx, table):
+        nr = self.eval_unsigned("struct io_ring_ctx", ctx, table + ".nr")
+        nodes = self.eval_unsigned("struct io_ring_ctx", ctx, table + ".nodes")
+        if nr is None or nodes is None:
+            return None
+        result = []
+        for index in range(min(nr, self.MAX_RESOURCES)):
+            node = self.read_pointer(nodes + index * current_arch.ptrsize)
+            result.append(node or 0)
+        return nr, nodes, result
+
+    def dump_registered_files(self, ctx):
+        files = []
+        total = None
+        source = None
+
+        resources = self.resource_nodes(ctx, "file_table.data")
+        if resources is not None:
+            total, root, nodes = resources
+            source = "file_table.data.nodes={:#x}".format(root)
+            for index, node in enumerate(nodes):
+                file = self.eval_unsigned("struct io_rsrc_node", node, "file_ptr") if node else 0
+                files.append((index, (file or 0) & ~3, node))
+        else:
+            total, count_member = self.eval_first("struct io_ring_ctx", ctx, ["nr_user_files", "file_table.data.nr"])
+            if total is not None:
+                candidates = [
+                    ("file_table.files", "struct io_fixed_file", "file_ptr"),
+                    ("file_data.table.files", None, None),
+                    ("file_data->table->files", None, None),
+                    ("user_files", None, None),
+                ]
+                for member, element_type, element_member in candidates:
+                    base = self.eval_unsigned("struct io_ring_ctx", ctx, member)
+                    if base is None:
+                        continue
+                    source = member + "={:#x}".format(base)
+                    for index in range(min(total, self.MAX_RESOURCES)):
+                        if element_type:
+                            file = self.eval_unsigned(element_type, base + index * current_arch.ptrsize, element_member)
+                        else:
+                            file = self.read_pointer(base + index * current_arch.ptrsize)
+                        files.append((index, (file or 0) & ~3, None))
+                    break
+
+        if total is None:
+            self.out.append("  registered files : unavailable (layout information is required)")
+            return
+        self.out.append("  registered files : {:d} ({:s})".format(total, source or "no table"))
+        for index, file, node in files:
+            if not file:
+                continue
+            suffix = " node={:#x}".format(node) if node else ""
+            path = self.path_for_file(file)
+            self.out.append("    [{:<4d}] file={:#x}{:s} {:s}".format(index, file, suffix, path).rstrip())
+        if total > self.MAX_RESOURCES:
+            self.warn_add_out("Registered file table truncated at {:d} entries".format(self.MAX_RESOURCES))
+        return
+
+    def buffer_description(self, buffer):
+        if not is_valid_addr(buffer):
+            return "buffer={:#x}".format(buffer or 0)
+        ubuf = self.eval_unsigned("struct io_mapped_ubuf", buffer, "ubuf")
+        length, member = self.eval_first("struct io_mapped_ubuf", buffer, ["len", "ubuf_end"])
+        if member == "ubuf_end" and ubuf is not None and length is not None:
+            length -= ubuf
+        nr_bvecs = self.eval_unsigned("struct io_mapped_ubuf", buffer, "nr_bvecs")
+        return "buffer={:#x} addr={:s} len={:s} nr_bvecs={:s}".format(
+            buffer, self.format_optional(ubuf), self.format_optional(length), self.format_optional(nr_bvecs),
+        )
+
+    def dump_registered_buffers(self, ctx):
+        buffers = []
+        total = None
+        source = None
+        resources = self.resource_nodes(ctx, "buf_table")
+        if resources is not None:
+            total, root, nodes = resources
+            source = "buf_table.nodes={:#x}".format(root)
+            for index, node in enumerate(nodes):
+                buffer = self.eval_unsigned("struct io_rsrc_node", node, "buf") if node else 0
+                buffers.append((index, buffer or 0, node))
+        else:
+            total = self.eval_unsigned("struct io_ring_ctx", ctx, "nr_user_bufs")
+            base = self.eval_unsigned("struct io_ring_ctx", ctx, "user_bufs")
+            if total is not None and base is not None:
+                source = "user_bufs={:#x}".format(base)
+                pointer_array = self.kversion >= "5.13"
+                element_size = self.type_size("struct io_mapped_ubuf")
+                for index in range(min(total, self.MAX_RESOURCES)):
+                    if pointer_array:
+                        buffer = self.read_pointer(base + index * current_arch.ptrsize)
+                    elif element_size is not None:
+                        buffer = base + index * element_size
+                    else:
+                        buffer = 0
+                    buffers.append((index, buffer or 0, None))
+
+        if total is None:
+            self.out.append("  registered bufs  : unavailable (layout information is required)")
+            return
+        self.out.append("  registered bufs  : {:d} ({:s})".format(total, source or "no table"))
+        for index, buffer, node in buffers:
+            if not buffer:
+                continue
+            suffix = " node={:#x}".format(node) if node else ""
+            self.out.append("    [{:<4d}] {:s}{:s}".format(index, self.buffer_description(buffer), suffix))
+        if total > self.MAX_RESOURCES:
+            self.warn_add_out("Registered buffer table truncated at {:d} entries".format(self.MAX_RESOURCES))
+        return
+
+    def type_size(self, type_name):
+        try:
+            return gdb.lookup_type(type_name).strip_typedefs().sizeof
+        except (gdb.error, RuntimeError):
+            return None
+
+    def request_context(self, request):
+        return self.eval_unsigned("struct io_kiocb", request, "ctx")
+
+    def walk_request_list(self, ctx, ctx_member, req_member, state):
+        head_offset = self.member_offset("struct io_ring_ctx", ctx_member)
+        req_offset = self.member_offset("struct io_kiocb", req_member)
+        if head_offset is None or req_offset is None:
+            return []
+        head = ctx + head_offset
+        requests = []
+        try:
+            for request in Kernel.ListHead(head, req_offset).iter_entries():
+                if len(requests) >= self.MAX_REQUESTS:
+                    break
+                if self.request_context(request) != ctx:
+                    break
+                requests.append((request, state))
+        except (gdb.MemoryError, OverflowError):
+            pass
+        return requests
+
+    def walk_request_slist(self, ctx, ctx_member, req_member, state):
+        first = self.eval_unsigned("struct io_ring_ctx", ctx, ctx_member + ".first")
+        req_offset = self.member_offset("struct io_kiocb", req_member)
+        if first is None or req_offset is None:
+            return []
+        requests = []
+        seen = set()
+        node = first
+        while node and node not in seen and len(requests) < self.MAX_REQUESTS:
+            seen.add(node)
+            request = node - req_offset
+            if self.request_context(request) != ctx:
+                break
+            requests.append((request, state))
+            node = self.read_pointer(node)
+        return requests
+
+    def walk_request_container_list(self, ctx, ctx_member, container_type, list_member, request_member, state):
+        head_offset = self.member_offset("struct io_ring_ctx", ctx_member)
+        list_offset = self.member_offset(container_type, list_member)
+        if head_offset is None or list_offset is None:
+            return []
+        requests = []
+        try:
+            for container in Kernel.ListHead(ctx + head_offset, list_offset).iter_entries():
+                if len(requests) >= self.MAX_REQUESTS:
+                    break
+                request = container if request_member is None else self.eval_unsigned(
+                    container_type, container, request_member,
+                )
+                if not request or self.request_context(request) != ctx:
+                    break
+                requests.append((request, state))
+        except (gdb.MemoryError, OverflowError):
+            pass
+        return requests
+
+    def collect_requests(self, ctx):
+        found = []
+        if self.kversion < "5.5":
+            for field, state in [("defer_list", "deferred"), ("timeout_list", "timeout"),
+                                 ("poll_list", "poll"), ("cancel_list", "cancel")]:
+                found += self.walk_request_list(ctx, field, "list", state)
+        elif self.kversion < "5.16":
+            found += self.walk_request_list(ctx, "iopoll_list", "inflight_entry", "iopoll")
+            found += self.walk_request_list(ctx, "inflight_list", "inflight_entry", "inflight")
+            if self.kversion < "5.9":
+                found += self.walk_request_list(ctx, "defer_list", "list", "deferred")
+                found += self.walk_request_list(ctx, "timeout_list", "list", "timeout")
+        elif self.kversion < "7.0":
+            found += self.walk_request_slist(ctx, "iopoll_list", "comp_list", "iopoll")
+        else:
+            found += self.walk_request_list(ctx, "iopoll_list", "iopoll_node", "iopoll")
+
+        if self.kversion >= "5.9":
+            found += self.walk_request_container_list(ctx, "defer_list", "struct io_defer_entry", "list", "req", "deferred")
+            for field, state in [("timeout_list", "timeout"), ("ltimeout_list", "linked-timeout")]:
+                found += self.walk_request_container_list(ctx, field, "struct io_timeout", "list", None, state)
+
+        requests = []
+        seen = set()
+        for request, state in found:
+            if request in seen:
+                continue
+            seen.add(request)
+            requests.append((request, state))
+            link = self.eval_unsigned("struct io_kiocb", request, "link")
+            while link and link not in seen and len(requests) < self.MAX_REQUESTS:
+                if self.request_context(link) != ctx:
+                    break
+                seen.add(link)
+                requests.append((link, "linked"))
+                link = self.eval_unsigned("struct io_kiocb", link, "link")
+        return requests
+
+    def opcode_name(self, opcode):
+        if opcode is None:
+            return "?"
+        if opcode < len(self.OPCODES):
+            return self.OPCODES[opcode]
+        return "OP_{:d}".format(opcode)
+
+    def request_info(self, request, state):
+        opcode, opcode_member = self.eval_first("struct io_kiocb", request, ["opcode", "submit.sqe->opcode"])
+        file = self.eval_unsigned("struct io_kiocb", request, "file")
+        buffer, buffer_member = self.eval_first("struct io_kiocb", request, ["imu", "kbuf", "buf_node"])
+        refs, refs_member = self.eval_first("struct io_kiocb", request, ["refs.counter", "refs.refs.counter", "refs"])
+        flags = self.eval_unsigned("struct io_kiocb", request, "flags")
+        user_data, user_member = self.eval_first("struct io_kiocb", request, ["cqe.user_data", "user_data", "submit.sqe.user_data"])
+        callback, callback_member = self.eval_first(
+            "struct io_kiocb", request, ["io_task_work.func", "task_work.func", "work.func"],
+        )
+        callback_text = "?" if callback is None else "{:#x}{:s}".format(
+            callback, Symbol.get_symbol_string(callback, nosymbol_string=""),
+        )
+        return {
+            "address": request, "state": state, "opcode": opcode, "file": file,
+            "buffer": buffer, "buffer_member": buffer_member, "refs": refs,
+            "refs_member": refs_member, "flags": flags, "user_data": user_data,
+            "user_member": user_member, "opcode_member": opcode_member,
+            "callback": callback_text, "callback_member": callback_member,
+        }
+
+    def dump_requests(self, requests):
+        self.out.append("  requests         : {:d}".format(len(requests)))
+        if not requests:
+            return
+        fmt = "    {:18s} {:10s} {:20s} {:18s} {:18s} {:7s} {:s}"
+        self.out.append(GefUtil.make_legend(fmt.format("io_kiocb", "state", "opcode", "file", "buffer", "refs", "callback")))
+        for request, state in requests:
+            info = self.request_info(request, state)
+            opcode = "{:d}:{:s}".format(info["opcode"], self.opcode_name(info["opcode"])) if info["opcode"] is not None else "?"
+            self.out.append(fmt.format(
+                "{:#x}".format(request), state, opcode,
+                self.format_optional(info["file"]), self.format_optional(info["buffer"]),
+                "?" if info["refs"] is None else str(info["refs"]), info["callback"],
+            ))
+            if self.args.verbose:
+                path = self.path_for_file(info["file"])
+                self.out.append("      flags={:s} user_data={:s} file_path={:s}".format(
+                    self.format_optional(info["flags"]), self.format_optional(info["user_data"]), path or "?",
+                ))
+        return
+
+    def dump_workers(self, ctx, owners):
+        workers = []
+        for member in ["submitter_task", "sqo_task", "sqo_thread", "sq_data.thread"]:
+            task = self.eval_unsigned("struct io_ring_ctx", ctx, member)
+            if task:
+                workers.append((member, task))
+        io_wq = self.eval_unsigned("struct io_ring_ctx", ctx, "io_wq")
+        if io_wq:
+            self.out.append("  io_wq            : {:#x} (ctx)".format(io_wq))
+
+        seen_tasks = set()
+        for owner in owners:
+            task = owner.get("task")
+            if not task or task in seen_tasks:
+                continue
+            seen_tasks.add(task)
+            tctx = self.eval_unsigned("struct task_struct", task, "io_uring")
+            if not tctx:
+                continue
+            task_wq = self.eval_unsigned("struct io_uring_task", tctx, "io_wq")
+            last = self.eval_unsigned("struct io_uring_task", tctx, "last")
+            self.out.append("  task io_uring    : {:#x} owner={:s} last={:s} io_wq={:s}".format(
+                tctx, self.task_label(task), self.format_optional(last), self.format_optional(task_wq),
+            ))
+            for index in range(16):
+                ring_file = self.eval_unsigned("struct io_uring_task", tctx, "registered_rings[{:d}]".format(index))
+                if ring_file:
+                    self.out.append("    registered_rings[{:<2d}]={:#x}".format(index, ring_file))
+
+        for member, task in workers:
+            self.out.append("  {:16s}: {:s}".format(member, self.task_label(task)))
+        return
+
+    def dump_context(self, ctx, owners):
+        self.out.append(titlify("struct io_ring_ctx {:#x}".format(ctx)))
+        for owner in owners:
+            if owner.get("file"):
+                self.out.append("  owner            : {:s}[{:d}] task={:#x} fd={:d} file={:#x} {:s}".format(
+                    owner.get("comm", "???"), owner.get("pid", -1), owner.get("task", 0), owner.get("fd", -1),
+                    owner["file"], owner.get("path", ""),
+                ).rstrip())
+                if owner.get("ctx_source"):
+                    self.out.append("  private_data     : {:s}".format(owner["ctx_source"]))
+
+        flags = self.eval_unsigned("struct io_ring_ctx", ctx, "flags")
+        int_flags = self.eval_unsigned("struct io_ring_ctx", ctx, "int_flags")
+        self.out.append("  flags            : {:s}{:s}".format(
+            self.format_optional(flags),
+            " int_flags={:s}".format(self.format_optional(int_flags)) if int_flags is not None else "",
+        ))
+
+        stats = self.ring_stats(ctx)
+        if stats is None:
+            self.out.append("  rings            : unavailable")
+        elif "sq_head" not in stats:
+            self.out.append("  rings            : {:#x} (validated; field layout unavailable)".format(stats["address"]))
+        else:
+            cq_address = " cq={:#x}".format(stats["cq_address"]) if stats.get("cq_address") else ""
+            source = " (validated memory layout)" if stats.get("heuristic") else ""
+            self.out.append("  rings            : {:#x}{:s}{:s}".format(stats["address"], cq_address, source))
+            self.out.append("    SQ head={:s} tail={:s} mask={:s} entries={:s} dropped={:s} flags={:s}".format(
+                self.format_optional(stats.get("sq_head")), self.format_optional(stats.get("sq_tail")),
+                self.format_optional(stats.get("sq_mask")), self.format_optional(stats.get("sq_entries")),
+                self.format_optional(stats.get("dropped")), self.format_optional(stats.get("sq_flags")),
+            ))
+            self.out.append("    CQ head={:s} tail={:s} mask={:s} entries={:s} overflow={:s} flags={:s}".format(
+                self.format_optional(stats.get("cq_head")), self.format_optional(stats.get("cq_tail")),
+                self.format_optional(stats.get("cq_mask")), self.format_optional(stats.get("cq_entries")),
+                self.format_optional(stats.get("overflow")), self.format_optional(stats.get("cq_flags")),
+            ))
+
+        self.dump_workers(ctx, owners)
+        self.dump_registered_files(ctx)
+        self.dump_registered_buffers(ctx)
+        if not self.args.no_requests:
+            if self.type_size("struct io_ring_ctx") is None or self.type_size("struct io_kiocb") is None:
+                self.out.append("  requests         : unavailable (layout information is required)")
+            else:
+                self.dump_requests(self.collect_requests(ctx))
+        return
+
+    def detect_address_type(self, address):
+        if self.context_score(address):
+            return "ctx"
+        if self.request_context(address) and self.context_score(self.request_context(address)):
+            return "request"
+        try:
+            path = self.kpath.get_file_path(address)
+        except (gdb.MemoryError, OverflowError, RuntimeError):
+            path = ""
+        if self.is_ring_path(path):
+            return "file"
+        return None
+
+    def print_meta(self):
+        self.quiet_info("kernel version: {!s}".format(self.kversion))
+        for type_name in ["struct file", "struct io_ring_ctx", "struct io_kiocb", "struct io_uring_task",
+                          "struct io_mapped_ubuf", "struct io_rsrc_node"]:
+            size = self.type_size(type_name)
+            self.quiet_info("sizeof({:s}): {:s}".format(
+                type_name.replace("struct ", ""),
+                "unavailable" if size is None else "{:#x}".format(size),
+            ))
+        for type_name, member in [
+            ("struct file", "private_data"), ("struct io_ring_ctx", "rings"),
+            ("struct io_ring_ctx", "file_table"), ("struct io_ring_ctx", "buf_table"),
+            ("struct io_ring_ctx", "nr_user_files"), ("struct io_ring_ctx", "nr_user_bufs"),
+            ("struct io_kiocb", "opcode"), ("struct io_kiocb", "ctx"),
+            ("struct task_struct", "io_uring"),
+        ]:
+            offset = self.member_offset(type_name, member)
+            self.quiet_info("offsetof({:s}, {:s}): {:s}".format(
+                type_name.replace("struct ", ""), member,
+                "unavailable" if offset is None else "{:#x}".format(offset),
+            ))
+        return
+
+    def initialize(self):
+        self.offset_cache = {}
+        self.meta = []
+        self.kversion = Kernel.kernel_version()
+        if self.kversion is None:
+            self.meta.append((self.quiet_err, "Could not find Linux kernel"))
+            return None
+        if self.kversion < "5.1":
+            return True
+        self.task_command = KernelTaskCommand.borrow(self, print_fd=True)
+        if self.task_command is None:
+            return None
+        self.kpath = Kernel.Path.get_instance()
+        if not self.kpath.initialized:
+            self.meta.append((self.quiet_err, "Could not resolve the VFS object layout"))
+            return None
+        return True
+
+    @parse_args
+    @only_if_gdb_running
+    @only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
+    @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
+    @only_if_in_kernel_or_kpti_disabled
+    def do_invoke(self, args):
+        self.args = args
+        if args.fd is not None and args.pid is None:
+            err("--fd requires --pid")
+            return
+        if args.fd is not None and args.fd < 0:
+            err("FD must not be negative")
+            return
+        self.quiet_info("Wait for memory scan")
+        if not self.initialize():
+            for func, line in self.meta:
+                func(line)
+            self.quiet_err("Failed to initialize")
+            return
+        if self.kversion < "5.1":
+            self.quiet_warn("This kernel predates io_uring, which first appeared in mainline v5.1")
+            return
+        if args.meta:
+            for func, line in self.meta:
+                func(line)
+            self.print_meta()
+            return
+
+        self.out = []
+        if args.address is not None:
+            address_type = args.type if args.type != "auto" else self.detect_address_type(args.address)
+            if address_type == "request":
+                ctx = self.request_context(args.address)
+                if not self.context_score(ctx):
+                    self.err_add_out("Could not validate request->ctx for {:#x}".format(args.address))
+                else:
+                    self.dump_context(ctx, [])
+                    self.dump_requests([(args.address, "selected")])
+            elif address_type == "file":
+                path = self.path_for_file(args.address)
+                ctx, source = self.context_from_file(args.address)
+                if not self.is_ring_path(path) or ctx is None:
+                    self.err_add_out("Could not interpret {:#x} as an io_uring file".format(args.address))
+                else:
+                    self.dump_context(ctx, [{"file": args.address, "path": path, "ctx_source": source}])
+            elif address_type == "ctx":
+                if not self.context_score(args.address):
+                    self.err_add_out("Could not validate io_ring_ctx at {:#x}".format(args.address))
+                else:
+                    self.dump_context(args.address, [])
+            else:
+                self.err_add_out("Could not identify {:#x} as io_ring_ctx, io_kiocb or io_uring file".format(args.address))
+            self.print_output(check_terminal_size=True)
+            return
+
+        ring_files = self.find_ring_files()
+        contexts = collections.OrderedDict()
+        unresolved = []
+        for owner in ring_files:
+            if owner["ctx"] is None:
+                unresolved.append(owner)
+            else:
+                contexts.setdefault(owner["ctx"], []).append(owner)
+        for ctx, owners in contexts.items():
+            self.dump_context(ctx, owners)
+        for owner in unresolved:
+            self.warn_add_out("Found {:s}[{:d}] fd={:d} file={:#x}, but file->private_data could not be resolved".format(
+                owner["comm"], owner["pid"], owner["fd"], owner["file"],
+            ))
+        if not ring_files:
+            self.warn_add_out("No open io_uring file descriptors found")
+        self.print_output(check_terminal_size=True)
+        return
+
+
+@register_command
 class KernelNftablesCommand(GenericCommand, BufferingOutput):
     """Dump the nftables (netfilter) object graph."""
 
@@ -172695,7 +173499,7 @@ class StackFrameCommand(GenericCommand):
         ptrsize = current_arch.ptrsize
         try:
             frame = gdb.selected_frame()
-        except gdb.error:
+        except (gdb.error, RuntimeError):
             # gdb.selected_frame() may error for unknown reasons (often during kernel startup).
             err("Failed to get frame information")
             return

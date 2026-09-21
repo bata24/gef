@@ -288,6 +288,8 @@ For a comprehensive list and additional details, see [docs/SUPPORTED-MODE.md](do
     - ![](images/knft.png)
 - `kkeyring`: displays the keyrings referenced by tasks, or inspect an arbitrary struct key.
     - ![](images/kkeyring.png)
+- `kio-uring`: displays the kernel-side io_uring object graph.
+    - ![](images/kio-uring.png)
 - `kpercpu`: resolves the per-cpu variables and the per-cpu areas.
     - ![](images/kpercpu.png)
 - `ksearch-code-ptr`: searches for the code pointer in kernel data area.
