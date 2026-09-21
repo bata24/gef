@@ -170223,7 +170223,7 @@ class KernelIoUringCommand(GenericCommand, BufferingOutput):
                 file = self.eval_unsigned("struct io_rsrc_node", node, "file_ptr") if node else 0
                 files.append((index, (file or 0) & ~3, node))
         else:
-            total, count_member = self.eval_first("struct io_ring_ctx", ctx, ["nr_user_files", "file_table.data.nr"])
+            total, _count_member = self.eval_first("struct io_ring_ctx", ctx, ["nr_user_files", "file_table.data.nr"])
             if total is not None:
                 candidates = [
                     ("file_table.files", "struct io_fixed_file", "file_ptr"),
