@@ -74873,6 +74873,627 @@ class KernelCredCommand(GenericCommand, BufferingOutput):
 
 
 @register_command
+class KernelKeyringCommand(GenericCommand, BufferingOutput):
+    """Display the keyrings referenced by tasks, or inspect an arbitrary struct key."""
+
+    _cmdline_ = "kkeyring"
+    _category_ = "06-f. Qemu-system/KGDB Cooperation - Linux Task"
+
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("-hh", "--help-simple", action="store_true", help="show help without ASCII diagram.")
+    parser.add_argument("key", metavar="KEY_ADDR", nargs="?", type=AddressUtil.parse_address,
+                        help="inspect this `struct key` directly instead of walking task credentials.")
+    parser.add_argument("-p", "--pid", type=lambda x: int(x, 0), help="filter by task pid.")
+    parser.add_argument("-T", "--task-filter", action="append", type=AddressUtil.parse_address, default=[],
+                        help="filter by specific task_struct address.")
+    parser.add_argument("-f", "--filter", action="append", type=re.compile, default=[], help="comm string REGEXP filter.")
+    parser.add_argument("-d", "--max-depth", type=lambda x: int(x, 0), default=6, help="maximum nested keyring depth (default: 6).")
+    parser.add_argument("--max-keys", type=lambda x: int(x, 0), default=0x1000, help="maximum number of keys to walk (default: 0x1000).")
+    parser.add_argument("--meta", action="store_true", help="display offset information.")
+    parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
+    parser.add_argument("-v", "--verbose", action="store_true", help="display ownership and internal key details.")
+    parser.add_argument("-q", "--quiet", action="store_true", help="show result only.")
+    _syntax_ = parser.format_help()
+
+    _example_ = [
+        "{0:s} -p 1337",
+        "{0:s} -p 1337 -v",
+        "{0:s} -f 'bash$'",
+        "{0:s} 0xffff888012345000",
+    ]
+    _example_ = "\n".join(_example_).format(_cmdline_)
+
+    _note_ = [
+        "Simplified keyring structures:",
+        "",
+        "[v3.8~]",
+        "+-task_struct-+    +-cred-------------+",
+        "| cred        |--->| session_keyring  |----+",
+        "+-------------+    | process_keyring  |----+",
+        "                   | thread_keyring   |----+--->struct key",
+        "                   | request_key_auth |----+",
+        "                   +------------------+",
+        "[~v3.7]",
+        "+-task_struct-+    +-cred-------------+",
+        "| cred        |--->| thread_keyring   |---------------------------->struct key",
+        "+-------------+    | request_key_auth |---------------------------->struct key",
+        "                   | tgcred           |--->+-thread_group_cred-+",
+        "                   +------------------+    | session_keyring   |--->struct key",
+        "                                           | process_keyring   |--->struct key",
+        "                                           +-------------------+",
+        "+-key----------------------------+",
+        "| usage                          |",
+        "| serial                         |",
+        "| uid, gid, perm                 |",
+        "| expiry                         |",
+        "| flags                          |",
+        "| state (v4.14~)                 |",
+        "| type                           |",
+        "| description                    |",
+        "| payload.subscriptions (~v3.12) |---->struct keyring_list",
+        "| keys.root (v3.13~)             |---->assoc_array_ptr",
+        "+--------------------------------+",
+        "",
+        "[~v3.12]",
+        "+-keyring_list-+",
+        "| nkeys        |",
+        "| keys[]       |---->struct key ...",
+        "+--------------+",
+        "",
+        "[v3.13~]",
+        "keys.root ---> assoc_array_ptr (tagged)",
+        "                +-- leaf -----> struct key",
+        "                +-- node -----> +-assoc_array_node-----+",
+        "                |               | slots[16]            |---> assoc_array_ptr ...",
+        "                |               +----------------------+",
+        "                +-- shortcut -> +-assoc_array_shortcut-+",
+        "                                | next_node            |---> assoc_array_ptr",
+        "                                +----------------------+",
+        "",
+        "A keyring leaf may itself be another keyring, so the command walks child keys recursively.",
+    ]
+    _note_ = "\n".join(_note_)
+
+    KeyInfo = collections.namedtuple(
+        "KeyInfo", "address usage serial type_addr type_name description expiry uid gid perm datalen state flags payload",
+    )
+    KeyRecord = collections.namedtuple("KeyRecord", "root depth parent address info status")
+
+    def member_offset(self, member):
+        try:
+            return GefUtil.parse_and_eval_unsigned("&((struct key *)0)->{:s}".format(member))
+        except gdb.error:
+            return None
+
+    def type_name(self, type_addr):
+        if not type_addr or not is_valid_addr_addr(type_addr):
+            return None
+        try:
+            name_addr = read_int_from_memory(type_addr)
+        except (gdb.MemoryError, OverflowError):
+            return None
+        if not is_valid_addr(name_addr):
+            return None
+        name = read_cstring_from_memory(name_addr, max_length=0x40)
+        if name and re.fullmatch(r"[A-Za-z0-9_.-]{1,63}", name):
+            return name
+        return None
+
+    def find_type_offset(self, key):
+        offset = self.member_offset("type")
+        if offset is not None:
+            return offset
+        if key is None:
+            return None
+
+        keyring_type = Ksym.get_addr("key_type_keyring")
+        candidates = []
+        for offset in range(0, 0x120, current_arch.ptrsize):
+            try:
+                type_addr = read_int_from_memory(key + offset)
+            except (gdb.MemoryError, OverflowError):
+                break
+            if keyring_type is not None and type_addr == keyring_type:
+                return offset
+            name = self.type_name(type_addr)
+            if name:
+                symbol = Ksym.get_name(type_addr) or ""
+                score = 2 if symbol.startswith("key_type_") else 0
+                candidates.append((score, -offset, offset))
+        return max(candidates)[2] if candidates else None
+
+    def find_description_offset(self, key):
+        offset = self.member_offset("description")
+        if offset is not None:
+            return offset
+
+        kversion = self.kversion
+        if "3.13" <= kversion < "5.3":
+            return self.offset_type + current_arch.ptrsize
+        if "5.3" <= kversion:
+            return self.offset_type + 2 * current_arch.ptrsize
+        if key is None:
+            return None
+
+        # Before v3.13 type lived near the front of struct key, while description
+        # followed the accounting fields.  It is the first direct printable-string
+        # pointer after type on normal and CONFIG_DEBUG_KEYS layouts.
+        start = self.offset_type + current_arch.ptrsize
+        for offset in range(start, 0x120, current_arch.ptrsize):
+            try:
+                address = read_int_from_memory(key + offset)
+            except (gdb.MemoryError, OverflowError):
+                break
+            if not is_valid_addr(address):
+                continue
+            value = read_cstring_from_memory(address, max_length=0x100)
+            if value and all(c.isprintable() for c in value):
+                return offset
+        return None
+
+    def find_datalen_offset(self):
+        offset = self.member_offset("datalen")
+        if offset is not None:
+            return offset
+
+        flags = self.offset_flags
+        try:
+            magic4 = read_int32_from_memory(self.sample_key + flags - 4)
+            magic8 = read_int32_from_memory(self.sample_key + flags - 8)
+        except (gdb.MemoryError, OverflowError, TypeError):
+            magic4 = magic8 = 0
+        if "4.14" <= self.kversion:
+            # `state` makes the tail uid/gid/perm/quotalen/datalen/state 18
+            # bytes long.  unsigned long alignment adds six bytes of padding
+            # on 64-bit targets, but only two on 32-bit targets.  KEY_DEBUGGING
+            # consumes that padding on 64-bit and grows the 32-bit layout.
+            return flags - (10 if current_arch.ptrsize == 8 or magic4 == 0x18273645 else 6)
+        if magic4 == 0x18273645:
+            return flags - 6
+        if magic8 == 0x18273645:
+            return flags - 10
+        return flags - 2
+
+    def initialize_key_layout(self, sample_key=None):
+        self.sample_key = sample_key
+        self.key_type_keyring = Ksym.get_addr("key_type_keyring") # noqa
+        self.offset_type = self.find_type_offset(sample_key)
+        if self.offset_type is None:
+            self.meta.append((self.quiet_err, "Could not find key->type"))
+            return None
+
+        self.offset_description = self.find_description_offset(sample_key)
+        if self.offset_description is None:
+            self.meta.append((self.quiet_err, "Could not find key->description"))
+            return None
+
+        self.offset_flags = self.member_offset("flags")
+        if self.offset_flags is None:
+            if self.kversion < "3.13":
+                self.offset_flags = self.offset_description - current_arch.ptrsize
+            elif self.kversion < "5.3":
+                self.offset_flags = self.offset_type - current_arch.ptrsize
+            else:
+                self.offset_flags = self.offset_type - 3 * current_arch.ptrsize
+
+        self.offset_datalen = self.find_datalen_offset()
+        self.offset_perm = self.member_offset("perm")
+        if self.offset_perm is None:
+            self.offset_perm = self.offset_datalen - 6
+        self.offset_uid = self.member_offset("uid")
+        if self.offset_uid is None:
+            self.offset_uid = self.offset_datalen - 14
+        self.offset_gid = self.member_offset("gid")
+        if self.offset_gid is None:
+            self.offset_gid = self.offset_datalen - 10
+
+        self.offset_expiry = self.member_offset("expiry")
+        if self.offset_expiry is None:
+            time_size = 8 if "4.15" <= self.kversion else current_arch.ptrsize
+            time_fields = 2 if "3.5" <= self.kversion else 1
+            self.offset_expiry = self.offset_uid - time_size * time_fields
+        self.sizeof_expiry = 8 if "4.15" <= self.kversion else current_arch.ptrsize
+
+        self.offset_state = self.member_offset("state")
+        if self.offset_state is None and "4.14" <= self.kversion:
+            self.offset_state = self.offset_datalen + 2
+
+        self.offset_payload = self.member_offset("payload")
+        if self.offset_payload is None:
+            if self.kversion < "3.13":
+                self.offset_payload = self.offset_description + 3 * current_arch.ptrsize
+            elif self.kversion < "5.3":
+                # keyring_index_key has an extra desc_len word after description.
+                self.offset_payload = self.offset_description + 2 * current_arch.ptrsize
+            else:
+                self.offset_payload = self.offset_description + current_arch.ptrsize
+
+        self.offset_keys_root = self.member_offset("keys.root")
+        if self.offset_keys_root is None and "3.13" <= self.kversion:
+            if self.kversion < "4.8":
+                self.offset_keys_root = self.offset_description + 2 * current_arch.ptrsize
+            elif self.kversion < "5.3":
+                self.offset_keys_root = self.offset_description + 4 * current_arch.ptrsize
+            else:
+                self.offset_keys_root = self.offset_description + 3 * current_arch.ptrsize
+
+        for name in ("type", "description", "expiry", "uid", "gid", "perm", "datalen", "flags", "payload"):
+            self.meta.append((self.quiet_info, "offsetof(key, {:s}): {:#x}".format(name, getattr(self, "offset_" + name))))
+        if self.offset_keys_root is not None:
+            self.meta.append((self.quiet_info, "offsetof(key, keys.root): {:#x}".format(self.offset_keys_root)))
+        return True
+
+    def initialize_tasks(self):
+        task_command = KernelTaskCommand.borrow(self, print_thread=True)
+        if task_command is None:
+            return None
+        self.task_command = task_command
+        kcred = task_command.kcred
+        if kcred.offset_cap is None:
+            self.meta.append((self.quiet_err, "Could not resolve the credential keyring layout"))
+            return None
+
+        ptrsize = current_arch.ptrsize
+        key_count = 3 if self.kversion < "3.8" else 4
+        base = align_to_ptrsize(kcred.offset_cap + 8 * len(kcred.cap_members) + 1)
+        end = base + key_count * ptrsize
+        expected_user_ns = {end + ptrsize, end + 2 * ptrsize}
+        # Data symbols may be omitted when CONFIG_KALLSYMS_ALL=n, so use the
+        # globally visible key allocator as a second signal and retain the cred
+        # tail check where ktask could resolve user_ns.  The function-symbol
+        # path is especially important on v3.x targets with sparse namespace
+        # state, while the layout path handles heavily stripped CTF kernels.
+        has_keys = any(Ksym.get_addr(name) is not None for name in ("key_type_keyring", "key_alloc"))
+        has_keys |= kcred.offset_user_ns in expected_user_ns
+        if not has_keys:
+            self.meta.append((self.quiet_info, "CONFIG_KEYS seems to be n"))
+            self.cred_key_offsets = None
+            return True
+
+        self.meta.append((self.quiet_info, "CONFIG_KEYS seems to be y"))
+        if self.kversion < "3.8":
+            offsets = {
+                "thread": self.cred_member_offset("thread_keyring", base),
+                "request": self.cred_member_offset("request_key_auth", base + ptrsize),
+                "tgcred": self.cred_member_offset("tgcred", base + 2 * ptrsize),
+            }
+            self.cred_key_offsets = offsets
+            self.tgcred_session_offset = self.tgcred_member_offset("session_keyring", align(12, ptrsize))
+            self.tgcred_process_offset = self.tgcred_member_offset("process_keyring", self.tgcred_session_offset + ptrsize)
+            self.meta.append((self.quiet_info, "offsetof(cred, thread_keyring): {:#x}".format(offsets["thread"])))
+            self.meta.append((self.quiet_info, "offsetof(cred, tgcred): {:#x}".format(offsets["tgcred"])))
+            self.meta.append((self.quiet_info, "offsetof(thread_group_cred, session_keyring): {:#x}".format(self.tgcred_session_offset)))
+            self.meta.append((self.quiet_info, "offsetof(thread_group_cred, process_keyring): {:#x}".format(self.tgcred_process_offset)))
+        else:
+            self.cred_key_offsets = {
+                "session": self.cred_member_offset("session_keyring", base),
+                "process": self.cred_member_offset("process_keyring", base + ptrsize),
+                "thread": self.cred_member_offset("thread_keyring", base + 2 * ptrsize),
+                "request": self.cred_member_offset("request_key_auth", base + 3 * ptrsize),
+            }
+            for name in ("session", "process", "thread"):
+                self.meta.append((self.quiet_info, "offsetof(cred, {:s}_keyring): {:#x}".format(name, self.cred_key_offsets[name])))
+        return True
+
+    @staticmethod
+    def cred_member_offset(member, fallback):
+        try:
+            return GefUtil.parse_and_eval_unsigned("&((struct cred *)0)->{:s}".format(member))
+        except gdb.error:
+            return fallback
+
+    @staticmethod
+    def tgcred_member_offset(member, fallback):
+        try:
+            return GefUtil.parse_and_eval_unsigned("&((struct thread_group_cred *)0)->{:s}".format(member))
+        except gdb.error:
+            return fallback
+
+    def task_roots(self, cred):
+        if self.cred_key_offsets is None:
+            return [("thread", 0), ("process", 0), ("session", 0)]
+        try:
+            if self.kversion < "3.8":
+                thread = read_int_from_memory(cred + self.cred_key_offsets["thread"])
+                tgcred = read_int_from_memory(cred + self.cred_key_offsets["tgcred"])
+                if tgcred and is_valid_addr(tgcred):
+                    session = read_int_from_memory(tgcred + self.tgcred_session_offset)
+                    process = read_int_from_memory(tgcred + self.tgcred_process_offset)
+                else:
+                    session = process = 0
+            else:
+                thread = read_int_from_memory(cred + self.cred_key_offsets["thread"])
+                process = read_int_from_memory(cred + self.cred_key_offsets["process"])
+                session = read_int_from_memory(cred + self.cred_key_offsets["session"])
+        except (gdb.MemoryError, OverflowError):
+            return None
+        return [("thread", thread), ("process", process), ("session", session)]
+
+    def collect_tasks(self):
+        command = self.task_command
+        task_addrs = KernelTaskCommand.get_task_list(command.init_task, command.offset_tasks)
+        if getattr(command, "offset_thread_group", None) is not None:
+            if self.kversion < "6.7" or (getattr(command, "offset_signal", None) is not None and
+                                         getattr(command, "offset_thread_head", None) is not None):
+                task_addrs = command.add_lwp_task(task_addrs)
+
+        entries = []
+        for task in task_addrs:
+            try:
+                pid = read_int32_from_memory(task + command.offset_pid)
+                comm = read_cstring_from_memory(task + command.offset_comm) or "???"
+                cred = read_int_from_memory(task + command.offset_cred)
+            except (gdb.MemoryError, OverflowError):
+                continue
+            if self.args.pid is not None and pid != self.args.pid:
+                continue
+            if self.args.task_filter and task not in self.args.task_filter:
+                continue
+            if self.args.filter and not any(pattern.search(comm) for pattern in self.args.filter):
+                continue
+            roots = self.task_roots(cred)
+            if roots is not None:
+                entries.append((task, pid, comm, cred, roots))
+        return entries
+
+    @staticmethod
+    def signed(value, bits):
+        sign = 1 << (bits - 1)
+        return value - (1 << bits) if value & sign else value
+
+    def read_key(self, address):
+        try:
+            usage = read_int32_from_memory(address)
+            serial = self.signed(read_int32_from_memory(address + 4), 32)
+            type_addr = read_int_from_memory(address + self.offset_type)
+            type_name = self.type_name(type_addr)
+            description_addr = read_int_from_memory(address + self.offset_description)
+            description = read_cstring_from_memory(description_addr, max_length=0x100) if description_addr else None
+            if self.sizeof_expiry == 8:
+                expiry = self.signed(read_int64_from_memory(address + self.offset_expiry), 64)
+            else:
+                expiry = self.signed(read_int32_from_memory(address + self.offset_expiry), 32)
+            uid = read_int32_from_memory(address + self.offset_uid)
+            gid = read_int32_from_memory(address + self.offset_gid)
+            perm = read_int32_from_memory(address + self.offset_perm)
+            datalen = read_int16_from_memory(address + self.offset_datalen)
+            state = None
+            if self.offset_state is not None:
+                state = self.signed(read_int16_from_memory(address + self.offset_state), 16)
+            flags = read_int_from_memory(address + self.offset_flags)
+            payload = read_int_from_memory(address + self.offset_payload)
+        except (gdb.MemoryError, OverflowError):
+            return None
+        if type_name is None:
+            return None
+        return self.KeyInfo(address, usage, serial, type_addr, type_name, description or "[anon]",
+                            expiry, uid, gid, perm, datalen, state, flags, payload)
+
+    @staticmethod
+    def permission_string(perm):
+        names = "vrwsla"
+        groups = []
+        for label, shift in (("pos", 24), ("usr", 16), ("grp", 8), ("oth", 0)):
+            bits = (perm >> shift) & 0x3f
+            groups.append("{:s}={:s}".format(label, "".join(name if bits & (1 << i) else "-" for i, name in enumerate(names))))
+        return "{:#010x} {:s}".format(perm, "/".join(groups))
+
+    def walk_assoc_array(self, root):
+        leaves = []
+        stack = [root]
+        seen = set()
+        ptrsize = current_arch.ptrsize
+        while stack and len(leaves) < self.args.max_keys:
+            pointer = stack.pop()
+            if not pointer:
+                continue
+            if not pointer & 1:
+                if pointer not in leaves:
+                    leaves.append(pointer)
+                continue
+            base = pointer & ~3
+            if base in seen:
+                continue
+            seen.add(base)
+            try:
+                if pointer & 2:
+                    offset_next = 2 * ptrsize if ptrsize == 8 else 3 * ptrsize
+                    stack.append(read_int_from_memory(base + offset_next))
+                else:
+                    offset_slots = 2 * ptrsize
+                    for slot in range(15, -1, -1):
+                        stack.append(read_int_from_memory(base + offset_slots + slot * ptrsize))
+            except (gdb.MemoryError, OverflowError):
+                self.walk_error = "unreadable assoc_array node at {:#x}".format(base)
+        return leaves
+
+    def keyring_children(self, info):
+        if info.type_name != "keyring":
+            return []
+        try:
+            if self.kversion < "3.13":
+                keylist = info.payload
+                if not keylist:
+                    return []
+                nkeys = read_int16_from_memory(keylist + 2 * current_arch.ptrsize + 2)
+                if nkeys > self.args.max_keys:
+                    self.walk_error = "keyring_list has implausible nkeys={:d}".format(nkeys)
+                    nkeys = self.args.max_keys
+                keys_offset = align(2 * current_arch.ptrsize + 6, current_arch.ptrsize)
+                return [read_int_from_memory(keylist + keys_offset + i * current_arch.ptrsize) for i in range(nkeys)]
+            root = read_int_from_memory(info.address + self.offset_keys_root)
+            return self.walk_assoc_array(root)
+        except (gdb.MemoryError, OverflowError):
+            self.walk_error = "unreadable keyring payload at {:#x}".format(info.address + self.offset_payload)
+            return []
+
+    def collect_key(self, records, root, address, depth, parent, ancestors, seen):
+        if self.collect_count >= self.args.max_keys:
+            self.key_limit_reached = True
+            return
+        self.collect_count += 1
+
+        info = self.read_key(address)
+        if info is None:
+            records.append(self.KeyRecord(root, depth, parent, address, None, "unreadable"))
+            return
+        if address in ancestors:
+            records.append(self.KeyRecord(root, depth, parent, address, info, "cycle"))
+            return
+        if address in seen:
+            records.append(self.KeyRecord(root, depth, parent, address, info, "seen"))
+            return
+
+        seen.add(address)
+        records.append(self.KeyRecord(root, depth, parent, address, info, None))
+        children = self.keyring_children(info)
+        if depth >= self.args.max_depth:
+            if children:
+                self.depth_limit_reached = True
+            return
+
+        next_ancestors = ancestors | {address}
+        for child in children:
+            self.collect_key(records, root, child, depth + 1, address, next_ancestors, seen)
+        if self.walk_error:
+            self.walk_errors.append("{:s}: {:s}".format(root, self.walk_error))
+            self.walk_error = None
+        return
+
+    def collect_roots(self, roots):
+        records = []
+        seen = set()
+        for name, address in roots:
+            if address:
+                self.collect_key(records, name, address, 0, 0, set(), seen)
+        return records
+
+    @staticmethod
+    def record_description(record):
+        if record.info is None:
+            description = "[unreadable struct key]"
+        else:
+            description = repr(record.info.description)
+        if record.status:
+            description += " [{:s}]".format(record.status)
+        return description
+
+    @staticmethod
+    def serial_string(serial):
+        return "{:d} ({:#x})".format(serial, serial & 0xffff_ffff)
+
+    def append_records(self, records):
+        address_width = 2 + 2 * current_arch.ptrsize
+        root_width = max([len("root")] + [len(record.root) for record in records])
+        serial_width = max(
+            [len("serial (dec/hex)")] + [len(self.serial_string(record.info.serial)) for record in records if record.info],
+        )
+        type_width = max([len("type")] + [len(record.info.type_name) for record in records if record.info])
+        fmt = "{{:{:d}s}} {{:5s}} {{:{:d}s}} {{:{:d}s}} {{:{:d}s}} {{:6s}} {{:s}}".format(
+            root_width, address_width, serial_width, type_width,
+        )
+        if not self.args.quiet:
+            self.out.append(GefUtil.make_legend(fmt.format(
+                "root", "depth", "key", "serial (dec/hex)", "type", "size", "description",
+            )))
+
+        for record in records:
+            info = record.info
+            self.out.append(fmt.format(
+                record.root,
+                str(record.depth),
+                "{:#x}".format(record.address),
+                self.serial_string(info.serial) if info else "-",
+                info.type_name if info else "-",
+                str(info.datalen) if info else "-",
+                self.record_description(record),
+            ))
+            if self.args.verbose and info:
+                parent = "none" if not record.parent else "{:#x}".format(record.parent)
+                expiry = "never" if info.expiry == 0 else str(info.expiry)
+                self.out.append("  link:  parent={:s} type={:#x}".format(parent, info.type_addr))
+                self.out.append("  owner: uid={:d} gid={:d} refcount={:d}".format(info.uid, info.gid, info.usage))
+                self.out.append("  perm:  {:s}".format(self.permission_string(info.perm)))
+                state = "n/a" if info.state is None else str(info.state)
+                self.out.append("  state: expiry={:s} state={:s} flags={:#x}".format(expiry, state, info.flags))
+                if info.type_name != "keyring":
+                    self.out.append("  data:  payload={:#x}".format(info.payload))
+        return
+
+    def append_walk_warnings(self):
+        if self.key_limit_reached:
+            self.out.append("[!] key limit reached ({:d})".format(self.args.max_keys))
+        if self.depth_limit_reached:
+            self.out.append("[!] depth limit reached ({:d})".format(self.args.max_depth))
+        self.out.extend("[!] " + message for message in self.walk_errors)
+        return
+
+    @parse_args
+    @only_if_gdb_running
+    @only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
+    @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
+    @only_if_in_kernel_or_kpti_disabled
+    def do_invoke(self, args):
+        self.quiet_info("Wait for memory scan")
+        if args.max_depth < 0 or args.max_keys <= 0:
+            err("--max-depth must be non-negative and --max-keys must be positive")
+            return
+
+        self.args = args
+        self.meta = []
+        self.kversion = Kernel.kernel_version()
+        if self.kversion is None:
+            self.quiet_err("Could not find Linux kernel")
+            return
+
+        entries = []
+        sample_key = args.key
+        if args.key is None:
+            if not self.initialize_tasks():
+                for func, line in self.meta:
+                    func(line)
+                return
+            entries = self.collect_tasks()
+            sample_key = next((address for entry in entries for _name, address in entry[4] if address), None)
+
+        key_layout = self.initialize_key_layout(sample_key) if sample_key is not None else None
+        if args.meta:
+            for func, line in self.meta:
+                func(line)
+            return
+        if sample_key is not None and not key_layout:
+            for func, line in self.meta:
+                func(line)
+            return
+
+        self.out = []
+        self.collect_count = 0
+        self.key_limit_reached = False
+        self.depth_limit_reached = False
+        self.walk_errors = []
+        self.walk_error = None
+        if args.key is not None:
+            records = []
+            self.collect_key(records, "direct", args.key, 0, 0, set(), set())
+            self.append_records(records)
+        else:
+            selected = [entry for entry in entries if any(address for _name, address in entry[4])]
+            if not selected:
+                self.quiet_info("No task has an attached keyring")
+                return
+            for task, pid, comm, cred, roots in selected:
+                title = 'task {:#x} pid={:d} comm="{:s}"'.format(task, pid, comm)
+                if args.verbose:
+                    title += " cred={:#x}".format(cred)
+                self.out.append(titlify(title))
+                self.append_records(self.collect_roots(roots))
+                self.out.append("")
+        self.append_walk_warnings()
+        self.print_output(check_terminal_size=True)
+        return
+
+
+@register_command
 class KernelLoadCommand(GenericCommand):
     """Load the vmlinux without a load address."""
 

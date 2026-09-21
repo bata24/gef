@@ -8524,6 +8524,96 @@ options:
   -n, --no-pager  do not use the pager.
 ```
 
+## kkeyring
+
+Display the keyrings referenced by tasks, or inspect an arbitrary struct key.
+
+
+### Syntax
+
+```text
+usage: kkeyring [-h] [-hh] [-p PID] [-T TASK_FILTER] [-f FILTER] [-d MAX_DEPTH] [--max-keys MAX_KEYS] [--meta] [-n] [-v] [-q] [KEY_ADDR]
+
+positional arguments:
+  KEY_ADDR              inspect this `struct key` directly instead of walking task credentials.
+
+options:
+  -h, --help            show this help message and exit
+  -hh, --help-simple    show help without ASCII diagram.
+  -p, --pid PID         filter by task pid.
+  -T, --task-filter TASK_FILTER
+                        filter by specific task_struct address.
+  -f, --filter FILTER   comm string REGEXP filter.
+  -d, --max-depth MAX_DEPTH
+                        maximum nested keyring depth (default: 6).
+  --max-keys MAX_KEYS   maximum number of keys to walk (default: 0x1000).
+  --meta                display offset information.
+  -n, --no-pager        do not use the pager.
+  -v, --verbose         display ownership and internal key details.
+  -q, --quiet           show result only.
+```
+
+### Examples
+
+```gdb
+kkeyring -p 1337
+kkeyring -p 1337 -v
+kkeyring -f 'bash$'
+kkeyring 0xffff888012345000
+```
+
+### Notes
+
+```text
+Simplified keyring structures:
+
+[v3.8~]
++-task_struct-+    +-cred-------------+
+| cred        |--->| session_keyring  |----+
++-------------+    | process_keyring  |----+
+                   | thread_keyring   |----+--->struct key
+                   | request_key_auth |----+
+                   +------------------+
+[~v3.7]
++-task_struct-+    +-cred-------------+
+| cred        |--->| thread_keyring   |---------------------------->struct key
++-------------+    | request_key_auth |---------------------------->struct key
+                   | tgcred           |--->+-thread_group_cred-+
+                   +------------------+    | session_keyring   |--->struct key
+                                           | process_keyring   |--->struct key
+                                           +-------------------+
++-key----------------------------+
+| usage                          |
+| serial                         |
+| uid, gid, perm                 |
+| expiry                         |
+| flags                          |
+| state (v4.14~)                 |
+| type                           |
+| description                    |
+| payload.subscriptions (~v3.12) |---->struct keyring_list
+| keys.root (v3.13~)             |---->assoc_array_ptr
++--------------------------------+
+
+[~v3.12]
++-keyring_list-+
+| nkeys        |
+| keys[]       |---->struct key ...
++--------------+
+
+[v3.13~]
+keys.root ---> assoc_array_ptr (tagged)
+                +-- leaf -----> struct key
+                +-- node -----> +-assoc_array_node-----+
+                |               | slots[16]            |---> assoc_array_ptr ...
+                |               +----------------------+
+                +-- shortcut -> +-assoc_array_shortcut-+
+                                | next_node            |---> assoc_array_ptr
+                                +----------------------+
+
+A keyring leaf may itself be another keyring, so the command walks child keys recursively.
+```
+
 ## knamespaces
 
 Display namespaces for each process (shortcut for `ktask -quN`).
