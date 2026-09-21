@@ -25779,6 +25779,9 @@ class GlibcHeapCommand(GenericCommand):
         "- 2.42: tcache_perthread_struct.counts changes to num_slots.",
         "- 2.43: fastbins are removed.",
         "- 2.43: TCACHE_FILL_COUNT 7->16.",
+        "",
+        "Under qemu-user, multi-threaded mips/mipsn32/mips64/m68k targets may produce unreliable TLS/heap results",
+        "because ExecAsm/ExecSyscall can fail after thread switches.",
     ]
     _note_ = "\n".join(_note_)
 
@@ -85067,6 +85070,12 @@ class TlsCommand(GenericCommand, BufferingOutput):
         "{0:s} -vvv  # repeat `-v` to display more lines",
     ]
     _example_ = "\n".join(_example_).format(_cmdline_)
+
+    _note_ = [
+        "Under qemu-user, multi-threaded mips/mipsn32/mips64/m68k targets may produce unreliable TLS/heap results",
+        "because ExecAsm/ExecSyscall can fail after thread switches.",
+    ]
+    _note_ = "\n".join(_note_)
 
     @staticmethod
     def get_direction():
