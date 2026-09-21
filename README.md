@@ -287,10 +287,13 @@ For a comprehensive list and additional details, see [docs/SUPPORTED-MODE.md](do
 - `knft`: dump the nftables (netfilter) object graph.
     - ![](images/knft.png)
 - `kpercpu`: resolves the per-cpu variables and the per-cpu areas.
+    - ![](images/kpercpu.png)
 - `ksearch-code-ptr`: searches for the code pointer in kernel data area.
     - ![](images/ksearch-code-ptr.png)
 - `krefs`: searches the kernel pointers that reference the specified address.
+    - ![](images/krefs.png)
 - `kdiff`: compares kernel information (function pointers, etc.) at two points in time.
+    - ![](images/kdiff.png)
 - `thunk-tracer`: collects and displays the thunk function addresses that are called automatically (x64/x86 only).
     - If this address comes from RW area, this is useful for getting RIP.
     - ![](images/thunk-tracer.png)
