@@ -7380,7 +7380,7 @@ options:
 
 The base command to dump page tables.
 
-- Alias: `pw`, `ptdump`, `pt`
+- Alias: `ptdump`, `pt`
 
 ### Syntax
 
@@ -7396,7 +7396,7 @@ command:
 
 ## pagewalk arm
 
-Dump pagetable for ARM Cortex-A. PL2 pagewalk is unsupported.
+Dump page tables for ARM32 Cortex-A. PL2 pagewalk is unsupported.
 
 - Alias: `pagewalk arm32`
 
@@ -7427,8 +7427,9 @@ options:
 
 ## pagewalk arm64
 
-Dump pagetable for ARM64 Cortex-A (ARM v8.7 base).
+Dump page tables for ARM64 Cortex-A (ARM v8.7 base).
 
+- Alias: `pagewalk aarch64`
 
 ### Syntax
 
@@ -7460,7 +7461,7 @@ options:
 
 ## pagewalk riscv
 
-Dump pagetable for riscv64/32.
+Dump page tables for RISC-V 32/64.
 
 - Alias: `pagewalk riscv32`, `pagewalk riscv64`
 
@@ -7488,7 +7489,7 @@ options:
 
 ## pagewalk x64
 
-Dump pagetable for x64/x86.
+Dump page tables for x86/64.
 
 - Alias: `pagewalk x86`
 

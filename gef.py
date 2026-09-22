@@ -156348,201 +156348,323 @@ class Phys2VirtCommand(GenericCommand):
         return
 
 
-@register_command
-class PagewalkCommand(GenericCommand, BufferingOutput):
-    """The base command to dump page tables."""
+class PageTable(BufferingOutput):
+    """Architecture-specific walker state, separate from the GDB command."""
 
-    _cmdline_ = "pagewalk"
-    _category_ = "06-a. Qemu-system/KGDB Cooperation - Memory Map"
-    _aliases_ = ["pw", "ptdump", "pt"]
+    class Entry:
+        """One page-table mapping."""
 
-    parser = argparse.ArgumentParser(prog=_cmdline_)
-    subparsers = parser.add_subparsers(title="command")
-    subparsers.add_parser("x64")
-    subparsers.add_parser("x86")
-    subparsers.add_parser("arm")
-    subparsers.add_parser("arm64")
-    subparsers.add_parser("riscv")
-    _syntax_ = parser.format_help()
+        def __init__(self, vaddr, paddr, page_size, page_count, flags, vaddr_pattern=None):
+            """Initialize one virtual-to-physical mapping."""
+            self.vaddr = vaddr
+            self.paddr = paddr
+            self.page_size = page_size
+            self.page_count = page_count
+            self.flags = flags
+            self.vaddr_pattern = vaddr_pattern
+            return
 
-    def __init__(self, *args, **kwargs):
-        prefix = kwargs.get("prefix", True)
-        super().__init__(prefix=prefix)
+        def __lt__(self, other):
+            """Order entries by virtual address and then by mapping details."""
+            if not isinstance(other, type(self)):
+                return NotImplemented
+            this = self.vaddr, self.paddr, self.page_size, self.page_count, self.flags
+            that = other.vaddr, other.paddr, other.page_size, other.page_count, other.flags
+            return this < that
+
+        @property
+        def total_size(self):
+            """Return the total byte length represented by this entry."""
+            return self.page_size * self.page_count
+
+        @property
+        def has_wildcard(self):
+            """Return whether the displayed virtual address contains a wildcard."""
+            return self.vaddr_pattern is not None and "*" in self.vaddr_pattern
+
+        @property
+        def physical_mapping_key(self):
+            """Return fields that must match when compressing virtual aliases."""
+            return self.paddr, self.page_size, self.page_count, self.flags
+
+        @classmethod
+        def merge_aliases(cls, entries):
+            """[VA 0xffffffff11107000, ..., VA 0xffffffff111f7000] -> [VA 0xffffffff111*7000]."""
+
+            def merge_patterns(patterns, position=0):
+                if position == 16:
+                    return [""]
+
+                groups = {}
+                for pattern in patterns:
+                    groups.setdefault(pattern[position], []).append(pattern)
+
+                suffixes = {digit: merge_patterns(group, position + 1) for digit, group in groups.items()}
+                digits = "0123456789abcdef"
+                if set(groups) == set(digits):
+                    first = suffixes[digits[0]]
+                    if all(suffixes[digit] == first for digit in digits[1:]):
+                        return ["*" + suffix for suffix in first]
+
+                return [digit + suffix for digit in sorted(suffixes) for suffix in suffixes[digit]]
+
+            first = entries[0]
+            patterns = ["{:016x}".format(entry.vaddr) for entry in entries]
+            merged = []
+            for pattern in merge_patterns(patterns):
+                merged.append(cls(
+                    int(pattern.replace("*", "0"), 16),
+                    first.paddr,
+                    first.page_size,
+                    first.page_count,
+                    first.flags,
+                    vaddr_pattern=pattern,
+                ))
+            return merged
+
+        def can_merge(self, other, simple=False):
+            """VA 0x1000 -> PA 0x3000, VA 0x2000 -> PA 0x4000 -> True."""
+            if not isinstance(other, type(self)):
+                return False
+            if self.has_wildcard or other.has_wildcard:
+                return False
+            if self.vaddr + self.total_size != other.vaddr:
+                return False
+            if self.flags != other.flags:
+                return False
+            if simple:
+                return True
+            return self.paddr + self.total_size == other.paddr and self.page_size == other.page_size
+
+        def merged_with(self, other, simple=False):
+            """Entry(VA=0x1000, count=1) + Entry(VA=0x2000, count=1) -> Entry(VA=0x1000, count=2)."""
+            if not self.can_merge(other, simple=simple):
+                return None
+            if simple:
+                return type(self)(self.vaddr, self.paddr, self.total_size + other.total_size, 1, self.flags)
+            return type(self)(self.vaddr, self.paddr, self.page_size, self.page_count + other.page_count, self.flags)
+
+        def __add__(self, other):
+            """Entry(VA=0x1000) + Entry(VA=0x2000) -> Entry(VA=0x1000, count=2)."""
+            if not isinstance(other, type(self)):
+                return NotImplemented
+            merged = self.merged_with(other)
+            if merged is None:
+                raise ValueError("Page-table entries are not mergeable")
+            return merged
+
+        def format(self, simple=False):
+            """Entry(VA=0x1000, PA=0x2000, size=0x1000) -> "0x...1000-0x...2000  0x...2000-0x...3000 ..."."""
+            va = self.vaddr
+            vend = va + self.total_size
+            if self.has_wildcard:
+                va_text = self.vaddr_pattern
+                vend_text = "{:016x}".format(vend)
+                for match in re.finditer(r"\*", va_text):
+                    start, end = match.span()
+                    vend_text = vend_text[:start] + "*" + vend_text[end:]
+                if simple:
+                    return "0x{:16s}-0x{:16s}  {:37s}  {:<#12x} {:<11s} {:<6s} [{:s}]".format(
+                        va_text, vend_text, "-", self.page_size, "-", "-", self.flags,
+                    )
+                return "0x{:16s}-0x{:16s}  {:#018x}-{:#018x}  {:<#12x} {:<#11x} {:<6d} [{:s}]".format(
+                    va_text, vend_text, self.paddr, self.paddr + self.total_size,
+                    self.total_size, self.page_size, self.page_count, self.flags,
+                )
+
+            if simple:
+                return "{:#018x}-{:#018x}  {:37s}  {:<#12x} {:<11s} {:<6s} [{:s}]".format(
+                    va, vend, "-", self.page_size, "-", "-", self.flags,
+                )
+            return "{:#018x}-{:#018x}  {:#018x}-{:#018x}  {:<#12x} {:<#11x} {:<6d} [{:s}]".format(
+                va, vend, self.paddr, self.paddr + self.total_size,
+                self.total_size, self.page_size, self.page_count, self.flags,
+            )
+
+        def __str__(self):
+            """Return the full page-table mapping representation."""
+            return self.format()
+
+        def colorize(self, text):
+            """Apply the address theme selected by this entry's permissions."""
+            color = None
+            if is_x86() or is_riscv32() or is_riscv64():
+                if self.flags.startswith("R-- "):
+                    color = Config.get_gef_setting("theme.address_readonly")
+                elif re.search(r"^..X ", self.flags):
+                    color = Config.get_gef_setting("theme.address_code")
+                elif self.flags.startswith("RW- "):
+                    color = Config.get_gef_setting("theme.address_writable")
+                if self.flags.startswith("RWX "):
+                    color = Config.get_gef_setting("theme.address_rwx")
+            elif is_arm32():
+                if re.search(r"PL[01]/R--", self.flags):
+                    color = Config.get_gef_setting("theme.address_readonly")
+                elif re.search(r"PL1/..X", self.flags):
+                    color = Config.get_gef_setting("theme.address_code")
+                elif "PL1/RW-" in self.flags:
+                    color = Config.get_gef_setting("theme.address_writable")
+                if "PL1/RWX" in self.flags:
+                    color = Config.get_gef_setting("theme.address_rwx")
+            elif is_arm64():
+                if re.search(r"EL[1-3]/R--", self.flags):
+                    color = Config.get_gef_setting("theme.address_readonly")
+                elif re.search(r"EL[1-3]/..X", self.flags):
+                    color = Config.get_gef_setting("theme.address_code")
+                elif re.search(r"EL[1-3]/RW-", self.flags):
+                    color = Config.get_gef_setting("theme.address_writable")
+                if re.search(r"EL[1-3]/RWX", self.flags):
+                    color = Config.get_gef_setting("theme.address_rwx")
+            return Color.colorify(text, color) if color is not None else text
+
+    # Each architecture declares the mapping-list attributes preserved for `pagewalk --use-cache`. A new PageTable object is
+    # made for every command, so the values themselves live in this class-level, per-subclass cache.
+    mapping_cache = {}
+    mapping_cache_fields = ()
+
+    def __init__(self):
+        self.args = None
+        self.out = []
+        # __enter__ and __exit__ must operate on the same context manager object.
+        self.physical_mode_context = None
+        self.physical = False
+        cached = PageTable.mapping_cache.get(type(self), {})
+        for field in self.mapping_cache_fields:
+            setattr(self, field, cached.get(field))
         return
 
-    def read_physmem_cache(self, paddr, size):
+    def save_mapping_cache(self):
+        PageTable.mapping_cache[type(self)] = {field: getattr(self, field) for field in self.mapping_cache_fields}
+        return
+
+    def prepare_pagewalk(self, args):
+        self.args = args
+        if args.trace:
+            self.vrange = args.vrange + args.trace
+            args.print_each_level = True
+            args.use_cache = False
+        else:
+            self.vrange = args.vrange
+        return
+
+    def __enter__(self):
+        if is_qemu_system() or is_vmware():
+            self.physical_mode_context = QemuMonitor.use_mmu_mode("phys")
+            self.physical = self.physical_mode_context.__enter__() is True
+        return self
+
+    def __exit__(self, exc_type, exc, traceback):
+        if self.physical_mode_context is not None:
+            self.physical_mode_context.__exit__(exc_type, exc, traceback)
+        self.physical_mode_context = None
+        self.physical = False
+        return False
+
+    def read_memory(self, paddr, size):
+        """Read physical memory while the page-table walk keeps physical mode active."""
+        if size == 0:
+            return b""
+
+        # Secure RAM is not visible through the normal CPU physical address
+        # space. Keep the qemu process-memory path for it.
+        secure = SecureMemory.get_area() if is_qemu_system() and (is_arm32() or is_arm64()) else None
+        if secure is not None and secure.sm_base <= paddr and paddr + size <= secure.sm_base + secure.sm_size:
+            out = SecureMemory.read(paddr - secure.sm_base, size)
+            if out is not None and len(out) == size:
+                return out
+
+        # In SMM, QEMU can expose SMRAM through the current CPU address space.
         in_smm = is_x86() and is_in_smm()
-        smram = QemuMonitor.get_smram_map() if in_smm else None
-
-        def pagewalk_reader(addr, length):
-            out = None
-            if smram is not None:
-                base, smram_size, _ = smram
-                if base <= addr and addr + length <= base + smram_size:
-                    try:
-                        result = gdb.execute("monitor gva2gpa {:#x}".format(addr), to_string=True)
-                        match = re.search(r"gpa:\s*(0x[0-9a-f]+)", result, re.IGNORECASE)
-                        if match and int(match.group(1), 16) == addr:
-                            out = MemoryCache.read_raw(addr, length)
-                    except (gdb.error, gdb.MemoryError):
-                        pass
-
-            if out is None:
-                out = read_physmem(addr, length)
-            if out is None:
-                raise gdb.MemoryError("Cannot access physical memory at address {:#x}".format(addr))
-            return out
+        smram = SystemManagementMemory.get_smram_map() if in_smm else None
+        if smram is not None and smram[0] <= paddr and paddr + size <= smram[0] + smram[1]:
+            out = SystemManagementMemory.read_smram(paddr, size, in_smm=True)
+            if out is not None and len(out) == size:
+                return out
 
         namespace = "pagewalk-smm" if in_smm else "physical"
-        return MemoryCache.read(paddr, size, reader=pagewalk_reader, namespace=namespace)
+        return MemoryCache.read(paddr, size, reader=self.read_memory_uncached, namespace=namespace)
 
-    # merge pages that points same phys page
-    def merge1(self, mappings):
-        # for example, there are 16 pages,
-        #    virt: 0xffffffff11107000 -> phys: 0xabcd000
-        #    virt: 0xffffffff11117000 -> phys: 0xabcd000
-        #    virt: 0xffffffff11127000 -> phys: 0xabcd000
-        #    ...
-        #    virt: 0xffffffff111d7000 -> phys: 0xabcd000
-        #    virt: 0xffffffff111e7000 -> phys: 0xabcd000
-        #    virt: 0xffffffff111f7000 -> phys: 0xabcd000
-        # they will be merged by "*". type is changed from int to string.
-        #    virt: "0xffffffff111*7000" -> phys: 0xabcd000
+    def read_memory_uncached(self, paddr, size):
+        """Fetch physical bytes for ``MemoryCache.read``; callers normally use ``read_memory``."""
+        if self.physical:
+            try:
+                return MemoryCache.read_raw(paddr, size)
+            except gdb.MemoryError:
+                pass
 
-        # group entries that refer to the same phys page
-        tmp = {}
-        for entry in mappings: # [virt_addr, phys_addr, page_size, page_count, flags]
-            va, other = entry[0], tuple(entry[1:])
-            if other not in tmp:
-                tmp[other] = []
-            tmp[other].append(va)
+        # Retain the /proc/qemu-PID/mem and monitor-xp fallbacks for addresses
+        # that the gdbstub cannot expose directly.
+        out = read_physmem(paddr, size, already_physmode=self.physical)
+        if out is None or len(out) != size:
+            raise gdb.MemoryError("Cannot access physical memory at address {:#x}".format(paddr))
+        return out
 
-        # internal merge function
-        def recursive_merge(d):
-            if d == {}:
-                return [""]
-            out = []
-            if len(d) == 16:
-                tmp = list(d.values())
-                if tmp.count(tmp[0]) == 16:
-                    for vv in recursive_merge(tmp[0]):
-                        out.append("*" + vv)
-                    return out
-            for k, v in d.items():
-                for vv in recursive_merge(v):
-                    out.append(k + vv)
-            return out
+    def merge_virtual_aliases(self, mappings):
+        """[VA 0xffffffff11107000, ..., VA 0xffffffff111f7000] -> [VA 0xffffffff111*7000]."""
+        groups = {}
+        for entry in mappings:
+            # Only virtual addresses may differ within one alias group.
+            groups.setdefault(entry.physical_mapping_key, []).append(entry)
 
-        # merge if possible
         merged_mappings = []
-        for other, va_array in tmp.items():
-            # usually go through this path
-            if len(va_array) < 16:
-                for va in va_array:
-                    merged_mappings.append(["{:016x}".format(va)] + list(other))
-                continue
-
-            # fast path for x64
-            if len(va_array) == 0x10000:
-                va_sorted = sorted([x >> 16 for x in va_array])
-                if va_sorted[0] + 0xffff == va_sorted[-1]:
-                    new_va_str = "{:016x}".format(va_array[0])
-                    new_va_str = new_va_str[:8] + "****" + new_va_str[12:]
-                    merged_mappings.append([new_va_str] + list(other))
-                    continue
-
-            # slow path
-            queue = ["{:016x}".format(x) for x in va_array]
-            # extract
-            dic = {}
-            for q in queue:
-                for i in range(16):
-                    dst = dic
-                    src = dic
-                    for j in range(i + 1):
-                        src = src.get(q[j], {})
-                        if j > 0:
-                            dst = dst.get(q[j - 1], {})
-                    dst[q[i]] = src
-
-            # merge
-            for d in recursive_merge(dic):
-                merged_mappings.append([d] + list(other))
-
-        # done
+        for entries in groups.values():
+            merged_mappings.extend(PageTable.Entry.merge_aliases(entries))
         return sorted(merged_mappings)
 
-    # merge consecutive pages
-    def merge2(self, mappings):
+    def merge_consecutive_mappings(self, mappings):
+        """[VA 0x1000 -> PA 0x3000, VA 0x2000 -> PA 0x4000] -> [VA 0x1000, page_count=2]."""
         merged_mappings = []
-        prev = None
-        for now in mappings: # [virt_addr_string, phys_addr, page_size, page_count, flags]
-            # specific case
-            if isinstance(now[0], str) and "*" in now[0]:
-                if prev:
-                    merged_mappings += [prev]
-                merged_mappings += [now]
-                prev = None
+        previous = None
+        for current in mappings:
+            if previous is None:
+                previous = current
                 continue
 
-            # first loop case
-            if prev is None:
-                prev = now
+            merged = previous.merged_with(current, simple=self.args.simple)
+            if merged is not None:
+                # Normal mode preserves page size and increments page count.
+                # Simple mode treats page size as the total virtual span and
+                # intentionally ignores discontinuities in physical memory.
+                previous = merged
                 continue
 
-            now_va = int(now[0], 16) if isinstance(now[0], str) else now[0]
-            prev_va = int(prev[0], 16) if isinstance(prev[0], str) else prev[0]
-            now_pa = int(now[1], 16) if isinstance(now[1], str) else now[1]
-            prev_pa = int(prev[1], 16) if isinstance(prev[1], str) else prev[1]
-            now_size = now[2]
-            prev_size = prev[2]
-            #now_cnt = now[3] # unused
-            prev_cnt = prev[3]
-            now_flags = now[4]
-            prev_flags = prev[4]
+            merged_mappings.append(previous)
+            previous = current
 
-            # check consecutiveness
-            if self.args.simple:
-                if prev_va + prev_size == now_va: # va consecutiveness
-                    if prev_flags == now_flags: # flags equivalence
-                        # ok, they are consecutive (at least virt_addr)
-                        prev[2] += now[2]
-                        # For simple mode, page_size is ignored.
-                        # so we use entry[2] as total_size instead of page_size.
-                        continue
-            else:
-                if prev_va + prev_size * prev_cnt == now_va: # va consecutiveness
-                    if prev_pa + prev_size * prev_cnt == now_pa: # pa consecutiveness
-                        if prev_size == now_size: # page_size equivalence
-                            if prev_flags == now_flags: # flags equivalence
-                                # ok, they are consecutive
-                                prev[3] += 1 # prev_page_cnt update
-                                continue
-
-            merged_mappings += [prev]
-            prev = now
-
-        if prev:
-            merged_mappings += [prev]
+        if previous is not None:
+            merged_mappings.append(previous)
 
         return merged_mappings
+
+    def merge_mappings(self):
+        """self.mappings = [page 0, page 1] -> self.mappings = [2-page range]."""
+        self.mappings = sorted(self.mappings)
+
+        if not self.args.no_merge:
+            if is_x86_64():
+                self.mappings = self.merge_virtual_aliases(self.mappings)
+                self.quiet_info_add_out("PT Entry (merged similar pages that refer the same physpage): {:d}".format(
+                    len(self.mappings),
+                ))
+            self.mappings = self.merge_consecutive_mappings(self.mappings)
+            self.quiet_info_add_out("PT Entry (merged consecutive pages): {:d}".format(
+                len(self.mappings),
+            ))
+        return
 
     def vrange_filter(self, mappings):
         filtered_mappings = []
         for mapping in mappings:
-            va, _, size, cnt = mapping[:4]
-            if isinstance(va, str) and "*" in va:
-                start = int(va.replace("*", "0"), 16)
-                end = int(va.replace("*", "f"), 16)
+            if mapping.has_wildcard:
+                start = mapping.vaddr
+                end = int(mapping.vaddr_pattern.replace("*", "f"), 16)
                 for addr in self.vrange:
-                    if start <= addr < end + size * cnt:
+                    if start <= addr < end + mapping.total_size:
                         filtered_mappings.append(mapping)
                         break
             else:
-                if isinstance(va, str):
-                    va = int(va, 16)
                 for addr in self.vrange:
-                    if va <= addr < va + size * cnt:
+                    if mapping.vaddr <= addr < mapping.vaddr + mapping.total_size:
                         filtered_mappings.append(mapping)
                         break
         return sorted(filtered_mappings)
@@ -156550,96 +156672,11 @@ class PagewalkCommand(GenericCommand, BufferingOutput):
     def prange_filter(self, mappings):
         filtered_mappings = []
         for mapping in mappings:
-            _, pa, size, cnt = mapping[:4]
-            if isinstance(pa, str):
-                pa = int(pa, 16)
             for addr in self.args.prange:
-                if pa <= addr < pa + size * cnt:
+                if mapping.paddr <= addr < mapping.paddr + mapping.total_size:
                     filtered_mappings.append(mapping)
                     break
         return sorted(filtered_mappings)
-
-    def format_entry(self, entry):
-        va, pa, size, cnt, flags = entry
-        if isinstance(va, str) and "*" in va:
-            vend = "{:016x}".format(int(va.replace("*", "0"), 16) + size * cnt)
-            for pos in [x.span() for x in re.finditer(r"\*", va)]:
-                vend = vend[:pos[0]] + "*" + vend[pos[1]:]
-            pend = pa + size * cnt
-            if self.args.simple:
-                text = "0x{:16s}-0x{:16s}  {:37s}  {:<#12x} {:<11s} {:<6s} [{:s}]".format(
-                    va, vend, "-", size, "-", "-", flags,
-                )
-            else:
-                text = "0x{:16s}-0x{:16s}  {:#018x}-{:#018x}  {:<#12x} {:<#11x} {:<6d} [{:s}]".format(
-                    va, vend, pa, pend, size * cnt, size, cnt, flags,
-                )
-        else:
-            if isinstance(va, str):
-                va = int(va, 16)
-            vend = va + size * cnt
-            pend = pa + size * cnt
-            if self.args.simple:
-                text = "{:#018x}-{:#018x}  {:37s}  {:<#12x} {:<11s} {:<6s} [{:s}]".format(
-                    va, vend, "-", size, "-", "-", flags,
-                )
-            else:
-                text = "{:#018x}-{:#018x}  {:#018x}-{:#018x}  {:<#12x} {:<#11x} {:<6d} [{:s}]".format(
-                    va, vend, pa, pend, size * cnt, size, cnt, flags,
-                )
-        return text
-
-    def merging(self):
-        self.mappings = sorted(self.mappings)
-
-        # merging
-        if self.args.no_merge:
-            pass
-        else:
-            if is_x86_64():
-                self.mappings = self.merge1(self.mappings)
-                self.quiet_info_add_out("PT Entry (merged similar pages that refer the same physpage): {:d}".format(
-                    len(self.mappings),
-                ))
-            self.mappings = self.merge2(self.mappings)
-            self.quiet_info_add_out("PT Entry (merged consecutive pages): {:d}".format(
-                len(self.mappings),
-            ))
-        return
-
-    def add_color(self, lines):
-        for i in range(len(lines)):
-            line = lines[i].split(None, 5)
-            if len(line) < 6:
-                continue
-            if is_x86() or is_riscv32() or is_riscv64():
-                if re.search(r"^\[R-- ", line[5]):
-                    lines[i] = Color.colorify(lines[i], Config.get_gef_setting("theme.address_readonly"))
-                elif re.search(r"^\[..X ", line[5]):
-                    lines[i] = Color.colorify(lines[i], Config.get_gef_setting("theme.address_code"))
-                elif re.search(r"^\[RW- ", line[5]):
-                    lines[i] = Color.colorify(lines[i], Config.get_gef_setting("theme.address_writable"))
-                if re.search(r"^\[RWX ", line[5]):
-                    lines[i] = Color.colorify(lines[i], Config.get_gef_setting("theme.address_rwx"))
-            elif is_arm32():
-                if re.search(r"PL/R--", line[5]):
-                    lines[i] = Color.colorify(lines[i], Config.get_gef_setting("theme.address_readonly"))
-                elif re.search(r"PL1/..X", line[5]):
-                    lines[i] = Color.colorify(lines[i], Config.get_gef_setting("theme.address_code"))
-                elif re.search(r"PL1/RW-", line[5]):
-                    lines[i] = Color.colorify(lines[i], Config.get_gef_setting("theme.address_writable"))
-                if re.search(r"PL1/RWX", line[5]):
-                    lines[i] = Color.colorify(lines[i], Config.get_gef_setting("theme.address_rwx"))
-            elif is_arm64():
-                if re.search(r"EL[1-3]/R--", line[5]):
-                    lines[i] = Color.colorify(lines[i], Config.get_gef_setting("theme.address_readonly"))
-                elif re.search(r"EL[1-3]/..X", line[5]):
-                    lines[i] = Color.colorify(lines[i], Config.get_gef_setting("theme.address_code"))
-                elif re.search(r"EL[1-3]/RW-", line[5]):
-                    lines[i] = Color.colorify(lines[i], Config.get_gef_setting("theme.address_writable"))
-                if re.search(r"EL[1-3]/RWX", line[5]):
-                    lines[i] = Color.colorify(lines[i], Config.get_gef_setting("theme.address_rwx"))
-        return lines
 
     def make_out(self, mappings):
         if mappings is None or len(mappings) == 0:
@@ -156662,29 +156699,25 @@ class PagewalkCommand(GenericCommand, BufferingOutput):
                 len(filtered_mappings),
             ))
 
-        # create output
-        lines = []
-        for entry_info in filtered_mappings:
-            line = self.format_entry(entry_info)
-            lines.append(line)
+        formatted = [(entry, entry.format(simple=True) if self.args.simple else str(entry)) for entry in filtered_mappings]
 
         # filter by keyword
         if self.args.filter != []:
-            filtered_lines = []
-            for line in lines:
+            filtered = []
+            for entry, line in formatted:
                 for re_pattern in self.args.filter:
                     if re_pattern.search(line):
-                        filtered_lines.append(line)
+                        filtered.append((entry, line))
                         break
-            lines = filtered_lines
-            self.quiet_info_add_out("PT Entry (filtered by keyword): {:d}".format(len(lines)))
+            formatted = filtered
+            self.quiet_info_add_out("PT Entry (filtered by keyword): {:d}".format(len(formatted)))
 
         # sort by phys
         if self.args.sort_by_phys:
-            lines = sorted(lines, key=lambda x: x.split()[1])
+            formatted.sort(key=lambda item: item[0].paddr)
 
         # check how many result
-        if lines == []:
+        if formatted == []:
             self.warn_add_out("Nothing to display")
             return
 
@@ -156694,11 +156727,9 @@ class PagewalkCommand(GenericCommand, BufferingOutput):
         legend = ["Virtual address start-end", "Physical address start-end", "Total size", "Page size", "Count", "Flags"]
         self.out.append(GefUtil.make_legend(fmt.format(*legend)))
 
-        # coloring
+        lines = [line for _, line in formatted]
         if not self.args.disable_color:
-            lines = self.add_color(lines)
-
-        # add out
+            lines = [entry.colorize(line) for entry, line in formatted]
         self.out.extend(lines)
         return
 
@@ -156718,58 +156749,11 @@ class PagewalkCommand(GenericCommand, BufferingOutput):
                 return False
         return True
 
-    # Need not @parse_args because argparse can't stop interpreting options for pagewalk sub-command.
-    @only_if_gdb_running
-    @only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
-    @only_if_specific_arch(arch=("x86_32", "x86_64", "x86_16", "ARM32", "ARM64", "RISCV32", "RISCV64"))
-    def do_invoke(self, argv):
-        if is_x86_32() or is_x86_16():
-            gdb.execute("pagewalk x86 {}".format(" ".join(argv)))
-        elif is_x86_64():
-            gdb.execute("pagewalk x64 {}".format(" ".join(argv)))
-        elif is_arm32():
-            gdb.execute("pagewalk arm {}".format(" ".join(argv)))
-        elif is_arm64():
-            gdb.execute("pagewalk arm64 {}".format(" ".join(argv)))
-        elif is_riscv64() or is_riscv32():
-            gdb.execute("pagewalk riscv {}".format(" ".join(argv)))
-        return
 
-
-@register_command
-class PagewalkRiscvCommand(PagewalkCommand):
+class PageTableRiscv(PageTable):
     """Dump pagetable for riscv64/32."""
 
-    _cmdline_ = "pagewalk riscv"
-    _category_ = "06-a. Qemu-system/KGDB Cooperation - Memory Map"
-    _aliases_ = ["pagewalk riscv32", "pagewalk riscv64"]
-
-    parser = argparse.ArgumentParser(prog=_cmdline_)
-    parser.add_argument("-L", "--print-each-level", action="store_true", help="show all level pagetables.")
-    parser.add_argument("-N", "--no-merge", action="store_true",
-                        help="do not merge similar/consecutive address.")
-    parser.add_argument("-P", "--sort-by-phys", action="store_true",
-                        help="sort by physical address.")
-    parser.add_argument("-Q", "--simple", action="store_true",
-                        help="merge with ignoring physical address consecutivness.")
-    parser.add_argument("-f", "--filter", metavar="REGEX", action="append", type=re.compile, default=[],
-                        help="filter by REGEX pattern.")
-    parser.add_argument("-v", "--vrange", metavar="VADDR", action="append", type=AddressUtil.parse_address, default=[],
-                        help="filter by map included specified virtual address.")
-    parser.add_argument("-p", "--prange", metavar="PADDR", action="append", type=AddressUtil.parse_address, default=[],
-                        help="filter by map included specified physical address.")
-    parser.add_argument("-t", "--trace", metavar="VADDR", action="append", type=AddressUtil.parse_address, default=[],
-                        help="show all level pagetables only associated specified address.")
-    parser.add_argument("-D", "--disable-color", action="store_true", help="disable RWX colored output")
-    parser.add_argument("-c", "--use-cache", action="store_true", help="use previous result.")
-    parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
-    parser.add_argument("-q", "--quiet", action="store_true", help="show result only.")
-    _syntax_ = parser.format_help()
-
-    def __init__(self):
-        super().__init__(prefix=False)
-        self.mappings = None
-        return
+    mapping_cache_fields = ("mappings",)
 
     def format_flags(self, flag_info):
         flag_info_key = tuple(flag_info)
@@ -156821,7 +156805,7 @@ class PagewalkRiscvCommand(PagewalkCommand):
             self.bits["OFFSET"],
         ])
         for va_base, table_base, parent_flags in self.TABLES:
-            entries = self.read_physmem_cache(table_base, 2 ** self.bits["L5_BITS"] * self.bits["ENTRY_SIZE"])
+            entries = self.read_memory(table_base, 2 ** self.bits["L5_BITS"] * self.bits["ENTRY_SIZE"])
             entries = slice_unpack(entries, self.bits["ENTRY_SIZE"])
             COUNT += len(entries)
             for i, entry in enumerate(entries):
@@ -156865,7 +156849,7 @@ class PagewalkRiscvCommand(PagewalkCommand):
                     phys_addr = ppn * get_pagesize()
                     page_size = 256 * 1024 * 1024 * 1024 * 1024
                     page_count = 1
-                    PTE.append([virt_addr, phys_addr, page_size, page_count, self.format_flags(flags)])
+                    PTE.append(PageTable.Entry(virt_addr, phys_addr, page_size, page_count, self.format_flags(flags)))
                     entry_type = "256TB-PAGE"
 
                 # dump
@@ -156901,7 +156885,7 @@ class PagewalkRiscvCommand(PagewalkCommand):
             self.bits["OFFSET"],
         ])
         for va_base, table_base, parent_flags in self.TABLES:
-            entries = self.read_physmem_cache(table_base, 2 ** self.bits["L4_BITS"] * self.bits["ENTRY_SIZE"])
+            entries = self.read_memory(table_base, 2 ** self.bits["L4_BITS"] * self.bits["ENTRY_SIZE"])
             entries = slice_unpack(entries, self.bits["ENTRY_SIZE"])
             COUNT += len(entries)
             for i, entry in enumerate(entries):
@@ -156949,7 +156933,7 @@ class PagewalkRiscvCommand(PagewalkCommand):
                     phys_addr = ppn * get_pagesize()
                     page_size = 512 * 1024 * 1024 * 1024
                     page_count = 1
-                    PTE.append([virt_addr, phys_addr, page_size, page_count, self.format_flags(flags)])
+                    PTE.append(PageTable.Entry(virt_addr, phys_addr, page_size, page_count, self.format_flags(flags)))
                     entry_type = "512GB-PAGE"
 
                 # dump
@@ -156984,7 +156968,7 @@ class PagewalkRiscvCommand(PagewalkCommand):
             self.bits["OFFSET"],
         ])
         for va_base, table_base, parent_flags in self.TABLES:
-            entries = self.read_physmem_cache(table_base, 2 ** self.bits["L3_BITS"] * self.bits["ENTRY_SIZE"])
+            entries = self.read_memory(table_base, 2 ** self.bits["L3_BITS"] * self.bits["ENTRY_SIZE"])
             entries = slice_unpack(entries, self.bits["ENTRY_SIZE"])
             COUNT += len(entries)
             for i, entry in enumerate(entries):
@@ -157032,7 +157016,7 @@ class PagewalkRiscvCommand(PagewalkCommand):
                     phys_addr = ppn * get_pagesize()
                     page_size = 1 * 1024 * 1024 * 1024
                     page_count = 1
-                    PTE.append([virt_addr, phys_addr, page_size, page_count, self.format_flags(flags)])
+                    PTE.append(PageTable.Entry(virt_addr, phys_addr, page_size, page_count, self.format_flags(flags)))
                     entry_type = "1GB-PAGE"
 
                 # dump
@@ -157066,7 +157050,7 @@ class PagewalkRiscvCommand(PagewalkCommand):
             self.bits["OFFSET"],
         ])
         for va_base, table_base, parent_flags in self.TABLES:
-            entries = self.read_physmem_cache(table_base, 2 ** self.bits["L2_BITS"] * self.bits["ENTRY_SIZE"])
+            entries = self.read_memory(table_base, 2 ** self.bits["L2_BITS"] * self.bits["ENTRY_SIZE"])
             entries = slice_unpack(entries, self.bits["ENTRY_SIZE"])
             COUNT += len(entries)
             for i, entry in enumerate(entries):
@@ -157112,7 +157096,7 @@ class PagewalkRiscvCommand(PagewalkCommand):
                     phys_addr = ppn * get_pagesize()
                     page_size = 2 * 1024 * 1024
                     page_count = 1
-                    PTE.append([virt_addr, phys_addr, page_size, page_count, self.format_flags(flags)])
+                    PTE.append(PageTable.Entry(virt_addr, phys_addr, page_size, page_count, self.format_flags(flags)))
                     entry_type = "2MB-PAGE"
 
                 # dump
@@ -157142,7 +157126,7 @@ class PagewalkRiscvCommand(PagewalkCommand):
         COUNT = 0
         bit_shift = self.bits["OFFSET"]
         for va_base, table_base, parent_flags in self.TABLES:
-            entries = self.read_physmem_cache(table_base, 2 ** self.bits["L1_BITS"] * self.bits["ENTRY_SIZE"])
+            entries = self.read_memory(table_base, 2 ** self.bits["L1_BITS"] * self.bits["ENTRY_SIZE"])
             entries = slice_unpack(entries, self.bits["ENTRY_SIZE"])
             COUNT += len(entries)
             for i, entry in enumerate(entries):
@@ -157182,7 +157166,7 @@ class PagewalkRiscvCommand(PagewalkCommand):
                 phys_addr = ppn * get_pagesize()
                 page_size = 4 * 1024
                 page_count = 1
-                PTE.append([virt_addr, phys_addr, page_size, page_count, self.format_flags(flags)])
+                PTE.append(PageTable.Entry(virt_addr, phys_addr, page_size, page_count, self.format_flags(flags)))
                 entry_type = "4KB-PAGE"
 
                 # dump
@@ -157210,7 +157194,8 @@ class PagewalkRiscvCommand(PagewalkCommand):
         self.mappings = self.PTE
         return
 
-    def pagewalk(self):
+    def pagewalk(self, args):
+        self.prepare_pagewalk(args)
         satp = get_register("satp")
         if satp is None:
             self.err_add_out("Failed to read $satp")
@@ -157258,7 +157243,7 @@ class PagewalkRiscvCommand(PagewalkCommand):
                     self.pagewalk_L3()
                     self.pagewalk_L2()
                     self.pagewalk_L1()
-                    self.merging()
+                    self.merge_mappings()
             elif mode == 9: # Sv48
                 self.quiet_info_add_out("RV64 Sv48 page table")
                 self.bits = {
@@ -157271,7 +157256,7 @@ class PagewalkRiscvCommand(PagewalkCommand):
                     self.pagewalk_L3()
                     self.pagewalk_L2()
                     self.pagewalk_L1()
-                    self.merging()
+                    self.merge_mappings()
             elif mode == 8: # Sv39
                 self.quiet_info_add_out("RV64 Sv39 page table")
                 self.bits = {
@@ -157283,7 +157268,7 @@ class PagewalkRiscvCommand(PagewalkCommand):
                     self.pagewalk_L3()
                     self.pagewalk_L2()
                     self.pagewalk_L1()
-                    self.merging()
+                    self.merge_mappings()
             else:
                 self.err_add_out("RV64 unknown mode")
         else:
@@ -157299,74 +157284,18 @@ class PagewalkRiscvCommand(PagewalkCommand):
                     self.mappings = None
                     self.pagewalk_L2()
                     self.pagewalk_L1()
-                    self.merging()
+                    self.merge_mappings()
 
         self.flags_strings_cache = {}
+        self.save_mapping_cache()
         self.make_out(self.mappings)
         return
 
-    @parse_args
-    @only_if_gdb_running
-    @only_if_specific_gdb_mode(mode=("qemu-system", "vmware"))
-    @only_if_specific_arch(arch=("RISCV32", "RISCV64"))
-    def do_invoke(self, args):
-        if self.args.trace:
-            # You should not modify the self.args.vrange directly.
-            self.vrange = self.args.vrange + self.args.trace # merge vrange and trace
-            self.args.print_each_level = True # overwrite
-            self.args.use_cache = False # overwrite
-        else:
-            self.vrange = self.args.vrange
 
-        self.out = []
-        self.pagewalk()
-        self.print_output()
-        return
-
-
-@register_command
-class PagewalkX64Command(PagewalkCommand):
+class PageTableX64(PageTable):
     """Dump pagetable for x64/x86."""
 
-    _cmdline_ = "pagewalk x64"
-    _category_ = "06-a. Qemu-system/KGDB Cooperation - Memory Map"
-    _aliases_ = ["pagewalk x86"]
-
-    parser = argparse.ArgumentParser(prog=_cmdline_)
-    parser.add_argument("-L", "--print-each-level", action="store_true", help="show all level pagetables.")
-    parser.add_argument("-N", "--no-merge", action="store_true",
-                        help="do not merge similar/consecutive address.")
-    parser.add_argument("-P", "--sort-by-phys", action="store_true",
-                        help="sort by physical address.")
-    parser.add_argument("-Q", "--simple", action="store_true",
-                        help="merge with ignoring physical address consecutivness.")
-    parser.add_argument("-f", "--filter", metavar="REGEX", action="append", type=re.compile, default=[],
-                        help="filter by REGEX pattern.")
-    parser.add_argument("-v", "--vrange", metavar="VADDR", action="append", type=AddressUtil.parse_address, default=[],
-                        help="filter by map included specified virtual address.")
-    parser.add_argument("-p", "--prange", metavar="PADDR", action="append", type=AddressUtil.parse_address, default=[],
-                        help="filter by map included specified physical address.")
-    parser.add_argument("-t", "--trace", metavar="VADDR", action="append", type=AddressUtil.parse_address, default=[],
-                        help="show all level pagetables only associated specified address.")
-    parser.add_argument("-i", "--include-esp-fixup-stacks", action="store_true",
-                        help="include `%%esp fixup stacks` area (sometimes heavy memory use; x64 only).")
-    parser.add_argument("-U", "--user-pt", action="store_true",
-                        help="print userland pagetables (for KPTI, x64 only, in kernel context).")
-    parser.add_argument("--cr3", dest="user_specified_cr3", type=AddressUtil.parse_address,
-                        help="use specified value as cr3.")
-    parser.add_argument("--cr4", dest="user_specified_cr4", type=AddressUtil.parse_address,
-                        help="use specified value as cr4.")
-    parser.add_argument("--ept", action="store_true", help="parse cr3 as EPT (Extended Page Table).")
-    parser.add_argument("-D", "--disable-color", action="store_true", help="disable RWX colored output")
-    parser.add_argument("-c", "--use-cache", action="store_true", help="use previous result.")
-    parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
-    parser.add_argument("-q", "--quiet", action="store_true", help="show result only.")
-    _syntax_ = parser.format_help()
-
-    def __init__(self):
-        super().__init__(prefix=False)
-        self.mappings = None
-        return
+    mapping_cache_fields = ("mappings",)
 
     def format_flags(self, flag_info):
         flag_info_key = tuple(flag_info)
@@ -157421,7 +157350,7 @@ class PagewalkX64Command(PagewalkCommand):
             self.bits["OFFSET"],
         ])
         for va_base, table_base, parent_flags in ProgressBar(self.TABLES, desc="PML5E", disable=self.args.quiet):
-            entries = self.read_physmem_cache(table_base, 2 ** self.bits["PML5T_BITS"] * self.bits["ENTRY_SIZE"])
+            entries = self.read_memory(table_base, 2 ** self.bits["PML5T_BITS"] * self.bits["ENTRY_SIZE"])
             entries = slice_unpack(entries, self.bits["ENTRY_SIZE"])
             COUNT += len(entries)
             for i, entry in enumerate(entries):
@@ -157494,7 +157423,7 @@ class PagewalkX64Command(PagewalkCommand):
             self.bits["OFFSET"],
         ])
         for va_base, table_base, parent_flags in ProgressBar(self.TABLES, desc="PML4E", disable=self.args.quiet):
-            entries = self.read_physmem_cache(table_base, 2 ** self.bits["PML4T_BITS"] * self.bits["ENTRY_SIZE"])
+            entries = self.read_memory(table_base, 2 ** self.bits["PML4T_BITS"] * self.bits["ENTRY_SIZE"])
             entries = slice_unpack(entries, self.bits["ENTRY_SIZE"])
             COUNT += len(entries)
             for i, entry in enumerate(entries):
@@ -157575,7 +157504,7 @@ class PagewalkX64Command(PagewalkCommand):
             self.bits["OFFSET"],
         ])
         for va_base, table_base, parent_flags in ProgressBar(self.TABLES, desc="PDPE", disable=self.args.quiet):
-            entries = self.read_physmem_cache(table_base, 2 ** self.bits["PDPT_BITS"] * self.bits["ENTRY_SIZE"])
+            entries = self.read_memory(table_base, 2 ** self.bits["PDPT_BITS"] * self.bits["ENTRY_SIZE"])
             entries = slice_unpack(entries, self.bits["ENTRY_SIZE"])
             COUNT += len(entries)
             for i, entry in enumerate(entries):
@@ -157629,7 +157558,7 @@ class PagewalkX64Command(PagewalkCommand):
                     phys_addr = next_level_table
                     page_size = 1 * 1024 * 1024 * 1024
                     page_count = 1
-                    PTE.append([virt_addr, phys_addr, page_size, page_count, self.format_flags(flags)])
+                    PTE.append(PageTable.Entry(virt_addr, phys_addr, page_size, page_count, self.format_flags(flags)))
                     entry_type = "1GB-PAGE"
                 else:
                     PDPTE.append([new_va, next_level_table, flags])
@@ -157672,7 +157601,7 @@ class PagewalkX64Command(PagewalkCommand):
             self.bits["OFFSET"],
         ])
         for va_base, table_base, parent_flags in ProgressBar(self.TABLES, desc="PDE", disable=self.args.quiet):
-            entries = self.read_physmem_cache(table_base, 2 ** self.bits["PDT_BITS"] * self.bits["ENTRY_SIZE"])
+            entries = self.read_memory(table_base, 2 ** self.bits["PDT_BITS"] * self.bits["ENTRY_SIZE"])
             entries = slice_unpack(entries, self.bits["ENTRY_SIZE"])
             COUNT += len(entries)
 
@@ -157737,7 +157666,7 @@ class PagewalkX64Command(PagewalkCommand):
                         page_size = 4 * 1024 * 1024
                         entry_type = "4MB-PAGE"
                     page_count = 1
-                    PTE.append([virt_addr, phys_addr, page_size, page_count, self.format_flags(flags)])
+                    PTE.append(PageTable.Entry(virt_addr, phys_addr, page_size, page_count, self.format_flags(flags)))
                 else:
                     PDE.append([new_va, next_level_table, flags])
                     entry_type = "TABLE"
@@ -157773,7 +157702,7 @@ class PagewalkX64Command(PagewalkCommand):
         flag_cache = {}
 
         for va_base, table_base, parent_flags in ProgressBar(self.TABLES, desc="PTE", disable=self.args.quiet):
-            entries = self.read_physmem_cache(table_base, 2 ** self.bits["PT_BITS"] * self.bits["ENTRY_SIZE"])
+            entries = self.read_memory(table_base, 2 ** self.bits["PT_BITS"] * self.bits["ENTRY_SIZE"])
             entries = slice_unpack(entries, self.bits["ENTRY_SIZE"])
             COUNT += len(entries)
 
@@ -157832,7 +157761,7 @@ class PagewalkX64Command(PagewalkCommand):
                 # make entry
                 page_size = 4 * 1024
                 page_count = 1
-                PTE.append([virt_addr, phys_addr, page_size, page_count, self.format_flags(flags)])
+                PTE.append(PageTable.Entry(virt_addr, phys_addr, page_size, page_count, self.format_flags(flags)))
                 entry_type = "4KB-PAGE"
 
                 # dump
@@ -157860,7 +157789,8 @@ class PagewalkX64Command(PagewalkCommand):
         self.mappings = self.PTE
         return
 
-    def pagewalk(self):
+    def pagewalk(self, args):
+        self.prepare_pagewalk(args)
         # `info tlb` on qemu-monitor returns pagetable without intermediate pagetable information.
         # for printing it, we will pagewalk manually.
         if self.args.user_specified_cr3 is not None:
@@ -157868,7 +157798,8 @@ class PagewalkX64Command(PagewalkCommand):
         else:
             cr3 = get_register("cr3", use_monitor=True, use_mbed_exec=True)
         if cr3 is None:
-            self.quiet_err("Failed to resolve cr3")
+            if not self.args.quiet:
+                self.err_add_out("Failed to resolve cr3")
             return
 
         if self.args.user_specified_cr4 is not None:
@@ -157876,7 +157807,8 @@ class PagewalkX64Command(PagewalkCommand):
         else:
             cr4 = get_register("cr4", use_monitor=True, use_mbed_exec=True)
         if cr4 is None:
-            self.quiet_err("Failed to resolve cr4")
+            if not self.args.quiet:
+                self.err_add_out("Failed to resolve cr4")
             return
 
         if is_x86_64() and self.args.user_pt:
@@ -157923,7 +157855,7 @@ class PagewalkX64Command(PagewalkCommand):
                     self.pagewalk_PDPT()
                     self.pagewalk_PDT()
                     self.pagewalk_PT()
-                    self.merging()
+                    self.merge_mappings()
             else:
                 # 64bit 4-level(4KB): 9,9,9,9,12
                 # 64bit 4-level(2MB): 9,9,9,0,21
@@ -157940,7 +157872,7 @@ class PagewalkX64Command(PagewalkCommand):
                     self.pagewalk_PDPT()
                     self.pagewalk_PDT()
                     self.pagewalk_PT()
-                    self.merging()
+                    self.merge_mappings()
         elif is_x86_32() or is_x86_16():
             if (cr4 >> 5) & 1: # PAE check
                 # 32bit PAE(4KB): 2,9,9,12 (PTE Size: 64bit)
@@ -157956,7 +157888,7 @@ class PagewalkX64Command(PagewalkCommand):
                     self.pagewalk_PDPT()
                     self.pagewalk_PDT()
                     self.pagewalk_PT()
-                    self.merging()
+                    self.merge_mappings()
             else:
                 # 32bit(4KB): 10,10,12
                 # 32bit(4MB): 10,0,22
@@ -157970,82 +157902,21 @@ class PagewalkX64Command(PagewalkCommand):
                     self.mappings = None
                     self.pagewalk_PDT()
                     self.pagewalk_PT()
-                    self.merging()
+                    self.merge_mappings()
         else:
             self.err_add_out("Unsupported CPU")
             return
 
         self.flags_strings_cache = None
+        self.save_mapping_cache()
         self.make_out(self.mappings)
         return
 
-    @parse_args
-    @only_if_gdb_running
-    @only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
-    @only_if_specific_arch(arch=("x86_32", "x86_64", "x86_16"))
-    def do_invoke(self, args):
-        if self.args.include_esp_fixup_stacks and not is_x86_64():
-            err("Unsupported --include-esp-fixup-stacks option in this arch")
-            return
 
-        if self.args.trace:
-            # You should not modify the self.args.vrange directly.
-            self.vrange = self.args.vrange + self.args.trace # merge vrange and trace
-            self.args.print_each_level = True # overwrite
-            self.args.use_cache = False # overwrite
-        else:
-            self.vrange = self.args.vrange
-
-        if not is_x86_64() or not is_in_kernel():
-            self.args.user_pt = False # support x64 only
-
-        if args.ept:
-            if not self.args.user_specified_cr3:
-                err("Unsupported --ept option without --cr3 option")
-                return
-
-        self.out = []
-        self.pagewalk()
-        self.print_output()
-        return
-
-
-@register_command
-class PagewalkArmCommand(PagewalkCommand):
+class PageTableArm32(PageTable):
     """Dump pagetable for ARM Cortex-A. PL2 pagewalk is unsupported."""
 
-    _cmdline_ = "pagewalk arm"
-    _category_ = "06-a. Qemu-system/KGDB Cooperation - Memory Map"
-    _aliases_ = ["pagewalk arm32"]
-
-    parser = argparse.ArgumentParser(prog=_cmdline_)
-    group = parser.add_mutually_exclusive_group()
-    group.add_argument("-S", dest="force_secure", action="store_true", help="use TTBRn_ELm_S to parse start.")
-    group.add_argument("-s", dest="force_normal", action="store_true", help="use TTBRn_ELm to parse start.")
-    parser.add_argument("-L", "--print-each-level", action="store_true", help="show all level pagetables.")
-    parser.add_argument("-N", "--no-merge", action="store_true", help="do not merge similar/consecutive address.")
-    parser.add_argument("-P", "--sort-by-phys", action="store_true", help="sort by physical address.")
-    parser.add_argument("-Q", "--simple", action="store_true", help="merge with ignoring physical address consecutivness.")
-    parser.add_argument("-f", "--filter", metavar="REGEX", action="append", type=re.compile, default=[],
-                        help="filter by REGEX pattern.")
-    parser.add_argument("-v", "--vrange", metavar="VADDR", action="append", type=AddressUtil.parse_address, default=[],
-                        help="filter by map included specified virtual address.")
-    parser.add_argument("-p", "--prange", metavar="PADDR", action="append", type=AddressUtil.parse_address, default=[],
-                        help="filter by map included specified physical address.")
-    parser.add_argument("-t", "--trace", metavar="VADDR", action="append", type=AddressUtil.parse_address, default=[],
-                        help="show all level pagetables only associated specified address.")
-    parser.add_argument("--optee", action="store_true", help="show the secure world memory maps if used OP-TEE.")
-    parser.add_argument("-D", "--disable-color", action="store_true", help="disable RWX colored output")
-    parser.add_argument("-c", "--use-cache", action="store_true", help="use previous result.")
-    parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
-    parser.add_argument("-q", "--quiet", action="store_true", help="show result only.")
-    _syntax_ = parser.format_help()
-
-    def __init__(self):
-        super().__init__(prefix=False)
-        self.ttbr0_mappings = None
-        self.ttbr1_mappings = None
-        return
+    mapping_cache_fields = ("ttbr0_mappings", "ttbr1_mappings")
 
     def format_flags_short(self, flag_info):
         return self.__format_flags_short(flag_info, self.PXN)
@@ -158309,7 +158180,7 @@ class PagewalkArmCommand(PagewalkCommand):
         SECTION = []
         SUPER_SECTION = []
         COUNT = 0
-        entries = self.read_physmem_cache(table_base, 4 * (2 ** (12 - self.N)))
+        entries = self.read_memory(table_base, 4 * (2 ** (12 - self.N)))
         entries = slice_unpack(entries, 4)
         COUNT += len(entries)
         for i, entry in enumerate(entries):
@@ -158394,14 +158265,14 @@ class PagewalkArmCommand(PagewalkCommand):
                 phys_addr = next_level_table
                 page_size = 1 * 1024 * 1024
                 page_count = 1
-                SECTION.append([virt_addr, phys_addr, page_size, page_count, self.format_flags_short(flags)])
+                SECTION.append(PageTable.Entry(virt_addr, phys_addr, page_size, page_count, self.format_flags_short(flags)))
                 entry_type = "SECTION"
             elif is_super_section(entry):
                 virt_addr = new_va
                 phys_addr = next_level_table
                 page_size = 16 * 1024 * 1024
                 page_count = 1
-                SUPER_SECTION.append([virt_addr, phys_addr, page_size, page_count, self.format_flags_short(flags)])
+                SUPER_SECTION.append(PageTable.Entry(virt_addr, phys_addr, page_size, page_count, self.format_flags_short(flags)))
                 entry_type = "SUPER_SECTION"
 
             # dump
@@ -158433,7 +158304,7 @@ class PagewalkArmCommand(PagewalkCommand):
         COUNT = 0
 
         for va_base, table_base, parent_flags in ProgressBar(LEVEL1, desc="LEVEL 2", disable=self.args.quiet):
-            entries = self.read_physmem_cache(table_base, 4 * (2 ** 8))
+            entries = self.read_memory(table_base, 4 * (2 ** 8))
             entries = slice_unpack(entries, 4)
             COUNT += len(entries)
             for i, entry in enumerate(entries):
@@ -158492,12 +158363,12 @@ class PagewalkArmCommand(PagewalkCommand):
                 if is_large_page(entry):
                     page_size = 64 * 1024
                     page_count = 1
-                    LARGE.append([virt_addr, phys_addr, page_size, page_count, self.format_flags_short(flags)])
+                    LARGE.append(PageTable.Entry(virt_addr, phys_addr, page_size, page_count, self.format_flags_short(flags)))
                     entry_type = "LARGE"
                 elif is_small_page(entry):
                     page_size = 4 * 1024
                     page_count = 1
-                    SMALL.append([virt_addr, phys_addr, page_size, page_count, self.format_flags_short(flags)])
+                    SMALL.append(PageTable.Entry(virt_addr, phys_addr, page_size, page_count, self.format_flags_short(flags)))
                     entry_type = "SMALL"
 
                 # dump
@@ -158545,7 +158416,7 @@ class PagewalkArmCommand(PagewalkCommand):
             GB = []
             COUNT = 0
             l1_count = 1 << max(0, 2 - self.N)
-            entries = self.read_physmem_cache(table_base, 8 * l1_count)
+            entries = self.read_memory(table_base, 8 * l1_count)
             entries = slice_unpack(entries, 8)
             COUNT += len(entries)
             for i, entry in enumerate(entries):
@@ -158599,7 +158470,7 @@ class PagewalkArmCommand(PagewalkCommand):
                     phys_addr = next_level_table
                     page_size = 1 * 1024 * 1024 * 1024
                     page_count = 1
-                    GB.append([virt_addr, phys_addr, page_size, page_count, self.format_flags_long(flags)])
+                    GB.append(PageTable.Entry(virt_addr, phys_addr, page_size, page_count, self.format_flags_long(flags)))
                     entry_type = "1GB-PAGE"
 
                 # dump
@@ -158633,7 +158504,7 @@ class PagewalkArmCommand(PagewalkCommand):
         MB = []
         COUNT = 0
         for va_base, table_base, parent_flags in ProgressBar(LEVEL1, desc="LEVEL 2", disable=self.args.quiet):
-            entries = self.read_physmem_cache(table_base, 8 * (2 ** 9))
+            entries = self.read_memory(table_base, 8 * (2 ** 9))
             entries = slice_unpack(entries, 8)
             COUNT += len(entries)
             for i, entry in enumerate(entries):
@@ -158687,7 +158558,7 @@ class PagewalkArmCommand(PagewalkCommand):
                     phys_addr = next_level_table
                     page_size = 2 * 1024 * 1024
                     page_count = 1
-                    MB.append([virt_addr, phys_addr, page_size, page_count, self.format_flags_long(flags)])
+                    MB.append(PageTable.Entry(virt_addr, phys_addr, page_size, page_count, self.format_flags_long(flags)))
                     entry_type = "2MB-PAGE"
 
                 # dump
@@ -158717,7 +158588,7 @@ class PagewalkArmCommand(PagewalkCommand):
         COUNT = 0
 
         for va_base, table_base, parent_flags in ProgressBar(LEVEL2, desc="LEVEL 3", disable=self.args.quiet):
-            entries = self.read_physmem_cache(table_base, 8 * (2 ** 9))
+            entries = self.read_memory(table_base, 8 * (2 ** 9))
             entries = slice_unpack(entries, 8)
             COUNT += len(entries)
             for i, entry in enumerate(entries):
@@ -158753,7 +158624,7 @@ class PagewalkArmCommand(PagewalkCommand):
                 # make entry
                 page_size = 4 * 1024
                 page_count = 1
-                KB.append([virt_addr, phys_addr, page_size, page_count, self.format_flags_long(flags)])
+                KB.append(PageTable.Entry(virt_addr, phys_addr, page_size, page_count, self.format_flags_long(flags)))
                 entry_type = "4KB-PAGE"
 
                 # dump
@@ -158809,7 +158680,7 @@ class PagewalkArmCommand(PagewalkCommand):
             self.flags_strings_cache = {}
             self.do_pagewalk_short(pl0_base)
             self.flags_strings_cache = None
-            self.merging()
+            self.merge_mappings()
             self.ttbr0_mappings = self.mappings.copy()
         self.make_out(self.ttbr0_mappings)
 
@@ -158850,7 +158721,7 @@ class PagewalkArmCommand(PagewalkCommand):
                 self.flags_strings_cache = {}
                 self.do_pagewalk_short(pl1_base, pl1_vabase)
                 self.flags_strings_cache = None
-                self.merging()
+                self.merge_mappings()
                 self.ttbr1_mappings = self.mappings.copy()
             self.make_out(self.ttbr1_mappings)
         else:
@@ -158894,7 +158765,7 @@ class PagewalkArmCommand(PagewalkCommand):
             self.flags_strings_cache = {}
             self.do_pagewalk_long(pl0_base)
             self.flags_strings_cache = None
-            self.merging()
+            self.merge_mappings()
             self.ttbr0_mappings = self.mappings.copy()
         self.make_out(self.ttbr0_mappings)
 
@@ -158932,18 +158803,19 @@ class PagewalkArmCommand(PagewalkCommand):
                 self.flags_strings_cache = None
                 self.mappings = [
                     mapping for mapping in self.mappings
-                    if mapping[0] + mapping[2] * mapping[3] > pl1_range_start
+                    if mapping.vaddr + mapping.page_size * mapping.page_count > pl1_range_start
                 ]
-                self.merging()
+                self.merge_mappings()
                 self.ttbr1_mappings = self.mappings.copy()
             self.make_out(self.ttbr1_mappings)
         else:
             self.quiet_info_add_out("$TTBR1_EL1{} is unused".format(self.suffix))
         return
 
-    def pagewalk(self):
+    def pagewalk(self, args):
+        self.prepare_pagewalk(args)
         # check use the register with`_S` suffix or not, and Seucre mode or not
-        if self.FORCE_PREFIX_S is None:
+        if self.args.force_prefix_s is None:
             # auto detect
             SCR_S = get_register("$SCR_S")
             SCR = get_register("$SCR")
@@ -158973,7 +158845,7 @@ class PagewalkArmCommand(PagewalkCommand):
                     self.SECURE = (SCR_S & 0x1) == 0 # NS bit
                     self.suffix = "_S"
 
-        elif self.FORCE_PREFIX_S is True:
+        elif self.args.force_prefix_s is True:
             # use "_S"
             SCR_S = get_register("$SCR_S")
             if SCR_S is not None:
@@ -158982,7 +158854,7 @@ class PagewalkArmCommand(PagewalkCommand):
                 self.SECURE = False
             self.suffix = "_S"
 
-        elif self.FORCE_PREFIX_S is False:
+        elif self.args.force_prefix_s is False:
             # do not use "_S"
             SCR = get_register("$SCR")
             if SCR is not None:
@@ -159033,9 +158905,11 @@ class PagewalkArmCommand(PagewalkCommand):
         else:
             self.quiet_info_add_out("LPAE is disabled (using short description)")
             self.pagewalk_short()
+        self.save_mapping_cache()
         return
 
-    def arm32_optee_exact_pagewalk(self):
+    def arm32_optee_exact_pagewalk(self, args):
+        self.prepare_pagewalk(args)
         entries = AddrMap.get_maps(command="pagewalk arm -S --quiet --no-pager --disable-color")
         if not entries:
             return
@@ -159113,81 +158987,20 @@ class PagewalkArmCommand(PagewalkCommand):
             ).rstrip())
         return
 
-    @parse_args
-    @only_if_gdb_running
-    @only_if_specific_gdb_mode(mode=("qemu-system",))
-    @only_if_specific_arch(arch=("ARM32",))
-    def do_invoke(self, args):
-        if args.optee and is_qemu_system():
-            self.arm32_optee_exact_pagewalk()
-            return
 
-        if self.args.trace:
-            # You should not modify the self.args.vrange directly.
-            self.vrange = self.args.vrange + self.args.trace # merge vrange and trace
-            self.args.print_each_level = True # overwrite
-            self.args.use_cache = False # overwrite
-        else:
-            self.vrange = self.args.vrange
-
-        self.FORCE_PREFIX_S = None
-        if args.force_secure:
-            self.FORCE_PREFIX_S = True
-        elif args.force_normal:
-            self.FORCE_PREFIX_S = False
-
-        self.out = []
-        self.pagewalk()
-        self.print_output()
-        return
-
-
-@register_command
-class PagewalkArm64Command(PagewalkCommand):
+class PageTableArm64(PageTable):
     """Dump pagetable for ARM64 Cortex-A (ARM v8.7 base)."""
 
-    _cmdline_ = "pagewalk arm64"
-    _category_ = "06-a. Qemu-system/KGDB Cooperation - Memory Map"
-    _aliases_ = [] # re-overwrite
-
-    parser = argparse.ArgumentParser(prog=_cmdline_)
-    parser.add_argument("target_el", metavar="TARGET_EL", nargs="?", type=int,
-                        help="target Exception Level. (default: current EL)")
-    parser.add_argument("-L", "--print-each-level", action="store_true", help="show all level pagetables.")
-    parser.add_argument("-N", "--no-merge", action="store_true", help="do not merge similar/consecutive address.")
-    parser.add_argument("-P", "--sort-by-phys", action="store_true", help="sort by physical address.")
-    parser.add_argument("-Q", "--simple", action="store_true", help="merge with ignoring physical address consecutivness.")
-    parser.add_argument("-f", "--filter", metavar="REGEX", action="append", type=re.compile, default=[],
-                        help="filter by REGEX pattern.")
-    parser.add_argument("-v", "--vrange", metavar="VADDR", action="append", type=AddressUtil.parse_address, default=[],
-                        help="filter by map included specified virtual address.")
-    parser.add_argument("-p", "--prange", metavar="PADDR", action="append", type=AddressUtil.parse_address, default=[],
-                        help="filter by map included specified physical address.")
-    parser.add_argument("-t", "--trace", metavar="VADDR", action="append", type=AddressUtil.parse_address, default=[],
-                        help="show all level pagetables only associated specified address.")
-    parser.add_argument("--optee", action="store_true", help="show the secure world memory maps if used OP-TEE.")
-    parser.add_argument("-0", "--only-TTBR0_EL1", action="store_true", help="Display only TTBR0_EL1 (if target==EL1)")
-    parser.add_argument("-1", "--only-TTBR1_EL1", action="store_true", help="display only TTBR1_EL1 (if target==EL1)")
-    parser.add_argument("-D", "--disable-color", action="store_true", help="disable RWX colored output")
-    parser.add_argument("-c", "--use-cache", action="store_true", help="use previous result.")
-    parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
-    parser.add_argument("-q", "--quiet", action="store_true", help="show result only.")
-    _syntax_ = parser.format_help()
+    mapping_cache_fields = (
+        "ttbr0el1_mappings", "ttbr1el1_mappings",
+        "ttbr0el2_mappings", "ttbr1el2_mappings",
+        "vttbrel2_mappings", "ttbr0el3_mappings",
+    )
 
     # If you want to dump the secure world memory map, you need to break in the secure world.
     # This is because unlike ARMv7, TTBR0_EL1_S and TTBR1_EL1_S do not exist.
     # It is difficult to know the correct value of the secure world's system registers while in the normal world,
     # as the secure monitor saves all system registers to memory when the world changes.
-
-    def __init__(self):
-        super().__init__(prefix=False)
-        self.ttbr0el1_mappings = None
-        self.ttbr1el1_mappings = None
-        self.ttbr0el2_mappings = None
-        self.ttbr1el2_mappings = None
-        self.vttbrel2_mappings = None
-        self.ttbr0el3_mappings = None
-        return
 
     def read_mem_wrapper(self, addr, size=8):
         """
@@ -159198,34 +159011,34 @@ class PagewalkArm64Command(PagewalkCommand):
         This function is for reading from physical memory with that in mind.
         """
 
-        if self.EL3_M and self.TargetEL == 3:
+        if self.EL3_M and self.args.target_el == 3:
             return read_memory(addr, size)
 
         # translate via EL2 mappings
-        if self.EL2_VM and self.TargetEL == 1 and self.el2_mappings:
+        if self.EL2_VM and self.args.target_el == 1 and self.el2_mappings:
 
             def search_pa(addr):
                 for entry_info in self.el2_mappings:
-                    va, entry, sz, cnt, flags = entry_info
-                    if isinstance(va, str):
-                        va = int(va, 16)
+                    va = entry_info.vaddr
+                    entry = entry_info.paddr
+                    sz = entry_info.page_size
                     pa = entry & 0x0000_ffff_ffff_f000
                     if va <= addr < va + sz:
                         offset = addr - va
                         return pa + offset, sz - offset
                 else: # not found
                     raise gdb.MemoryError("Could not translate {:#x} via the EL2 mappings".format(addr))
+                return
 
             out = b""
             while size > 0:
                 paddr, available_sz = search_pa(addr)
-                out += self.read_physmem_cache(paddr, min([size, available_sz]))
+                out += self.read_memory(paddr, min([size, available_sz]))
                 size -= min(size, available_sz)
             return out
 
         # direct physmem read
-        else:
-            return self.read_physmem_cache(addr, size)
+        return self.read_memory(addr, size)
 
     def format_flags_stage2(self, flag_info):
         flag_info_key = tuple(flag_info)
@@ -159284,7 +159097,7 @@ class PagewalkArm64Command(PagewalkCommand):
         return flag_string
 
     def format_flags(self, flag_info):
-        return self.__format_flags(flag_info, self.TargetEL, self.EL1_WXN, self.EL2_WXN, self.EL2_M20, self.EL3_WXN)
+        return self.__format_flags(flag_info, self.args.target_el, self.EL1_WXN, self.EL2_WXN, self.EL2_M20, self.EL3_WXN)
 
     def __format_flags(self, flag_info, TargetEL, EL1_WXN, EL2_WXN, EL2_M20, EL3_WXN):
         flag_info_key = (tuple(flag_info), TargetEL, EL1_WXN, EL2_WXN, EL2_M20, EL3_WXN)
@@ -159844,7 +159657,7 @@ class PagewalkArm64Command(PagewalkCommand):
                             flag_string = self.format_flags(flags)
                         if is_4k_granule:
                             page_size = 512 * 1024 * 1024 * 1024
-                            GB512.append([virt_addr, phys_addr, page_size, page_count, flag_string])
+                            GB512.append(PageTable.Entry(virt_addr, phys_addr, page_size, page_count, flag_string))
                             entry_type = "512GB-PAGE"
                         else:
                             raise ValueError("a 512GB page is available only with the 4KB granule")
@@ -160014,15 +159827,15 @@ class PagewalkArm64Command(PagewalkCommand):
                             flag_string = self.format_flags(flags)
                         if is_4k_granule:
                             page_size = 1 * 1024 * 1024 * 1024
-                            GB1.append([virt_addr, phys_addr, page_size, page_count, flag_string])
+                            GB1.append(PageTable.Entry(virt_addr, phys_addr, page_size, page_count, flag_string))
                             entry_type = "1GB-PAGE"
                         elif is_16k_granule:
                             page_size = 64 * 1024 * 1024 * 1024
-                            GB64.append([virt_addr, phys_addr, page_size, page_count, flag_string])
+                            GB64.append(PageTable.Entry(virt_addr, phys_addr, page_size, page_count, flag_string))
                             entry_type = "64GB-PAGE"
                         elif is_64k_granule:
                             page_size = 4 * 1024 * 1024 * 1024 * 1024
-                            TB4.append([virt_addr, phys_addr, page_size, page_count, flag_string])
+                            TB4.append(PageTable.Entry(virt_addr, phys_addr, page_size, page_count, flag_string))
                             entry_type = "4TB-PAGE"
 
                     # dump
@@ -160192,15 +160005,15 @@ class PagewalkArm64Command(PagewalkCommand):
                             flag_string = self.format_flags(flags)
                         if is_4k_granule:
                             page_size = 2 * 1024 * 1024
-                            MB2.append([virt_addr, phys_addr, page_size, page_count, flag_string])
+                            MB2.append(PageTable.Entry(virt_addr, phys_addr, page_size, page_count, flag_string))
                             entry_type = "2MB-PAGE"
                         elif is_16k_granule:
                             page_size = 32 * 1024 * 1024
-                            MB32.append([virt_addr, phys_addr, page_size, page_count, flag_string])
+                            MB32.append(PageTable.Entry(virt_addr, phys_addr, page_size, page_count, flag_string))
                             entry_type = "32MB-PAGE"
                         elif is_64k_granule:
                             page_size = 512 * 1024 * 1024
-                            MB512.append([virt_addr, phys_addr, page_size, page_count, flag_string])
+                            MB512.append(PageTable.Entry(virt_addr, phys_addr, page_size, page_count, flag_string))
                             entry_type = "512MB-PAGE"
 
                     # dump
@@ -160359,15 +160172,15 @@ class PagewalkArm64Command(PagewalkCommand):
                         flag_string = self.format_flags(flags)
                     if is_4k_granule:
                         page_size = 4 * 1024
-                        KB4.append([virt_addr, phys_addr, page_size, page_count, flag_string])
+                        KB4.append(PageTable.Entry(virt_addr, phys_addr, page_size, page_count, flag_string))
                         entry_type = "4KB-PAGE"
                     elif is_16k_granule:
                         page_size = 16 * 1024
-                        KB16.append([virt_addr, phys_addr, page_size, page_count, flag_string])
+                        KB16.append(PageTable.Entry(virt_addr, phys_addr, page_size, page_count, flag_string))
                         entry_type = "16KB-PAGE"
                     elif is_64k_granule:
                         page_size = 64 * 1024
-                        KB64.append([virt_addr, phys_addr, page_size, page_count, flag_string])
+                        KB64.append(PageTable.Entry(virt_addr, phys_addr, page_size, page_count, flag_string))
                         entry_type = "64KB-PAGE"
 
                     # dump
@@ -160408,20 +160221,20 @@ class PagewalkArm64Command(PagewalkCommand):
         CurrentEL = int((CPSR >> 2) & 0b11)
         # change EL
         try:
-            if self.TargetEL < 1 or self.TargetEL > 3:
+            if self.args.target_el < 1 or self.args.target_el > 3:
                 self.err_add_out("Invalid argument (ELx>=1 && ELx<=3)")
                 return
-            if self.TargetEL != CurrentEL:
+            if self.args.target_el != CurrentEL:
                 self.SAVED_CPSR = CPSR
                 CPSR = CPSR & ~(0b11 << 2) # clear EL
-                CPSR |= self.TargetEL << 2 # set desired EL
+                CPSR |= self.args.target_el << 2 # set desired EL
                 gdb.parse_and_eval("$cpsr = {:#x}".format(CPSR))
-                self.quiet_info_add_out("Moving to EL{:d}".format(self.TargetEL))
+                self.quiet_info_add_out("Moving to EL{:d}".format(self.args.target_el))
         except ValueError:
             self.err_add_out("Invalid argument (ELx integer required)")
             return
         except gdb.error:
-            self.err_add_out("Maybe unsupported to change to EL{:d}".format(self.TargetEL))
+            self.err_add_out("Maybe unsupported to change to EL{:d}".format(self.args.target_el))
             return
         # reload CPSR
         CPSR = get_register("$cpsr") & 0xffff_ffff
@@ -160532,7 +160345,7 @@ class PagewalkArm64Command(PagewalkCommand):
             self.flags_strings_cache = {}
             self.do_pagewalk(translation_base_addr, granule_bits, region_start, region_bits, start_level, is_2VAranges=True)
             self.flags_strings_cache = None
-            self.merging()
+            self.merge_mappings()
             self.ttbr0el1_mappings = self.mappings.copy()
         self.make_out(self.ttbr0el1_mappings)
         return
@@ -160577,7 +160390,7 @@ class PagewalkArm64Command(PagewalkCommand):
             self.flags_strings_cache = {}
             self.do_pagewalk(translation_base_addr, granule_bits, region_start, region_bits, start_level, is_2VAranges=True)
             self.flags_strings_cache = None
-            self.merging()
+            self.merge_mappings()
             self.ttbr1el1_mappings = self.mappings.copy()
         self.make_out(self.ttbr1el1_mappings)
         return
@@ -160688,7 +160501,7 @@ class PagewalkArm64Command(PagewalkCommand):
             self.do_pagewalk(translation_base_addr, granule_bits, region_start, region_bits, stage2_start_level, is_stage2=True)
             self.flags_strings_cache = None
             if not self.silent:
-                self.merging()
+                self.merge_mappings()
                 self.vttbrel2_mappings = self.mappings.copy()
         else:
             # the caller reads self.mappings to build el2_mappings, so restore it from the cache
@@ -160745,7 +160558,7 @@ class PagewalkArm64Command(PagewalkCommand):
             self.flags_strings_cache = {}
             self.do_pagewalk(translation_base_addr, granule_bits, region_start, region_bits, start_level, is_2VAranges=self.EL2_M20)
             self.flags_strings_cache = None
-            self.merging()
+            self.merge_mappings()
             self.ttbr0el2_mappings = self.mappings.copy()
         self.make_out(self.ttbr0el2_mappings)
         return
@@ -160790,7 +160603,7 @@ class PagewalkArm64Command(PagewalkCommand):
             self.flags_strings_cache = {}
             self.do_pagewalk(translation_base_addr, granule_bits, region_start, region_bits, start_level, is_2VAranges=self.EL2_M20)
             self.flags_strings_cache = None
-            self.merging()
+            self.merge_mappings()
             self.ttbr1el2_mappings = self.mappings.copy()
         self.make_out(self.ttbr1el2_mappings)
         return
@@ -160835,7 +160648,7 @@ class PagewalkArm64Command(PagewalkCommand):
             self.flags_strings_cache = {}
             self.do_pagewalk(translation_base_addr, granule_bits, region_start, region_bits, start_level)
             self.flags_strings_cache = None
-            self.merging()
+            self.merge_mappings()
             self.ttbr0el3_mappings = self.mappings.copy()
         self.make_out(self.ttbr0el3_mappings)
         return
@@ -160916,7 +160729,20 @@ class PagewalkArm64Command(PagewalkCommand):
             self.FEAT_LVA = False
         return True
 
-    def pagewalk(self):
+    def pagewalk(self, args):
+        self.prepare_pagewalk(args)
+        if self.args.target_el is None:
+            cpsr = get_register("$cpsr")
+            self.args.target_el = (cpsr >> 2) & 0b11
+            if self.args.target_el == 0:
+                # EL0 cannot inspect its translation tables directly. Use EL1,
+                # which owns TTBR0_EL1 and TTBR1_EL1.
+                self.args.target_el = 1
+
+        if is_kgdb() and self.args.target_el != 1:
+            self.err_add_out("Unsupported target EL")
+            return
+
         # parse system registers
         if not self.pagewalk_init():
             return
@@ -160928,10 +160754,10 @@ class PagewalkArm64Command(PagewalkCommand):
         # TODO: implementation for VSTTBR_EL2, VSTCR_EL2 pattern
 
         # do pagewalk
-        if self.TargetEL < 1 or 3 < self.TargetEL:
-            self.warn_add_out("No paging in EL{:d}".format(self.TargetEL))
+        if self.args.target_el < 1 or 3 < self.args.target_el:
+            self.warn_add_out("No paging in EL{:d}".format(self.args.target_el))
             return
-        if self.TargetEL == 1 and self.EL1_M:
+        if self.args.target_el == 1 and self.EL1_M:
             if self.EL2_VM:
                 # el2_mapping is needed because read_mem() uses PA, but not IPA
                 self.silent = True
@@ -160947,28 +160773,30 @@ class PagewalkArm64Command(PagewalkCommand):
             else:
                 self.pagewalk_TTBR0_EL1()
                 self.pagewalk_TTBR1_EL1()
-        if self.TargetEL == 1 and not self.EL1_M:
+        if self.args.target_el == 1 and not self.EL1_M:
             self.quiet_info_add_out("EL1/0 translation is unused")
-        if self.TargetEL == 2 and self.EL2_VM:
+        if self.args.target_el == 2 and self.EL2_VM:
             self.pagewalk_VTTBR_EL2()
-        if self.TargetEL == 2 and not self.EL2_VM:
+        if self.args.target_el == 2 and not self.EL2_VM:
             self.quiet_info_add_out("EL2(as stage2) translation is unused")
-        if self.TargetEL == 2 and self.EL2_M:
+        if self.args.target_el == 2 and self.EL2_M:
             self.pagewalk_TTBR0_EL2()
             if self.EL2_M20:
                 self.pagewalk_TTBR1_EL2()
-        if self.TargetEL == 2 and self.EL2_VM:
+        if self.args.target_el == 2 and self.EL2_VM:
             self.quiet_info_add_out("EL2(as stage1) translation is unused")
-        if self.TargetEL == 3 and self.EL3_M:
+        if self.args.target_el == 3 and self.EL3_M:
             if not self.switch_el():
                 return
             self.pagewalk_TTBR0_EL3()
             self.revert_el()
-        if self.TargetEL == 3 and not self.EL3_M:
+        if self.args.target_el == 3 and not self.EL3_M:
             self.quiet_info_add_out("EL3 translation is unused")
+        self.save_mapping_cache()
         return
 
-    def aarch64_optee_pseudo_pagewalk(self):
+    def aarch64_optee_pseudo_pagewalk(self, args):
+        self.prepare_pagewalk(args)
         Cache.reset_gef_caches()
         maps = AddrMap.get_maps(force_secure=True, verbose=not self.args.quiet)
         if not maps:
@@ -161032,44 +160860,250 @@ class PagewalkArm64Command(PagewalkCommand):
             ).rstrip())
         return
 
+
+@register_command
+class PagewalkCommand(GenericCommand, BufferingOutput):
+    """The base command to dump page tables."""
+
+    _cmdline_ = "pagewalk"
+    _category_ = "06-a. Qemu-system/KGDB Cooperation - Memory Map"
+    _aliases_ = ["ptdump", "pt"]
+
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    subparsers = parser.add_subparsers(title="command")
+    subparsers.add_parser("x64")
+    subparsers.add_parser("x86")
+    subparsers.add_parser("arm")
+    subparsers.add_parser("arm64")
+    subparsers.add_parser("riscv")
+    _syntax_ = parser.format_help()
+
+    def __init__(self):
+        super().__init__(prefix=type(self) is PagewalkCommand)
+        return
+
+    # Need not @parse_args because argparse can't stop interpreting options for pagewalk sub-command.
+    @only_if_gdb_running
+    @only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
+    @only_if_specific_arch(arch=("x86_32", "x86_64", "x86_16", "ARM32", "ARM64", "RISCV32", "RISCV64"))
+    def do_invoke(self, argv):
+        if is_x86_32() or is_x86_16():
+            gdb.execute("pagewalk x86 {}".format(" ".join(argv)))
+        elif is_x86_64():
+            gdb.execute("pagewalk x64 {}".format(" ".join(argv)))
+        elif is_arm32():
+            gdb.execute("pagewalk arm {}".format(" ".join(argv)))
+        elif is_arm64():
+            gdb.execute("pagewalk arm64 {}".format(" ".join(argv)))
+        elif is_riscv64() or is_riscv32():
+            gdb.execute("pagewalk riscv {}".format(" ".join(argv)))
+        return
+
+
+@register_command
+class PagewalkRiscvCommand(PagewalkCommand):
+    """Dump page tables for RISC-V 32/64."""
+
+    _cmdline_ = "pagewalk riscv"
+    _category_ = "06-a. Qemu-system/KGDB Cooperation - Memory Map"
+    _aliases_ = ["pagewalk riscv32", "pagewalk riscv64"]
+
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("-L", "--print-each-level", action="store_true", help="show all level pagetables.")
+    parser.add_argument("-N", "--no-merge", action="store_true",
+                        help="do not merge similar/consecutive address.")
+    parser.add_argument("-P", "--sort-by-phys", action="store_true",
+                        help="sort by physical address.")
+    parser.add_argument("-Q", "--simple", action="store_true",
+                        help="merge with ignoring physical address consecutivness.")
+    parser.add_argument("-f", "--filter", metavar="REGEX", action="append", type=re.compile, default=[],
+                        help="filter by REGEX pattern.")
+    parser.add_argument("-v", "--vrange", metavar="VADDR", action="append", type=AddressUtil.parse_address, default=[],
+                        help="filter by map included specified virtual address.")
+    parser.add_argument("-p", "--prange", metavar="PADDR", action="append", type=AddressUtil.parse_address, default=[],
+                        help="filter by map included specified physical address.")
+    parser.add_argument("-t", "--trace", metavar="VADDR", action="append", type=AddressUtil.parse_address, default=[],
+                        help="show all level pagetables only associated specified address.")
+    parser.add_argument("-D", "--disable-color", action="store_true", help="disable RWX colored output")
+    parser.add_argument("-c", "--use-cache", action="store_true", help="use previous result.")
+    parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
+    parser.add_argument("-q", "--quiet", action="store_true", help="show result only.")
+    _syntax_ = parser.format_help()
+
+    @parse_args
+    @only_if_gdb_running
+    @only_if_specific_gdb_mode(mode=("qemu-system", "vmware"))
+    @only_if_specific_arch(arch=("RISCV32", "RISCV64"))
+    def do_invoke(self, args):
+        self.page_table = PageTableRiscv()
+
+        with self.page_table:  # context manager for temporary physical-memory mode
+            self.page_table.pagewalk(args)
+        self.out = self.page_table.out
+        self.print_output()
+        return
+
+
+@register_command
+class PagewalkX64Command(PagewalkCommand):
+    """Dump page tables for x86/64."""
+
+    _cmdline_ = "pagewalk x64"
+    _category_ = "06-a. Qemu-system/KGDB Cooperation - Memory Map"
+    _aliases_ = ["pagewalk x86"]
+
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("-L", "--print-each-level", action="store_true", help="show all level pagetables.")
+    parser.add_argument("-N", "--no-merge", action="store_true",
+                        help="do not merge similar/consecutive address.")
+    parser.add_argument("-P", "--sort-by-phys", action="store_true",
+                        help="sort by physical address.")
+    parser.add_argument("-Q", "--simple", action="store_true",
+                        help="merge with ignoring physical address consecutivness.")
+    parser.add_argument("-f", "--filter", metavar="REGEX", action="append", type=re.compile, default=[],
+                        help="filter by REGEX pattern.")
+    parser.add_argument("-v", "--vrange", metavar="VADDR", action="append", type=AddressUtil.parse_address, default=[],
+                        help="filter by map included specified virtual address.")
+    parser.add_argument("-p", "--prange", metavar="PADDR", action="append", type=AddressUtil.parse_address, default=[],
+                        help="filter by map included specified physical address.")
+    parser.add_argument("-t", "--trace", metavar="VADDR", action="append", type=AddressUtil.parse_address, default=[],
+                        help="show all level pagetables only associated specified address.")
+    parser.add_argument("-i", "--include-esp-fixup-stacks", action="store_true",
+                        help="include `%%esp fixup stacks` area (sometimes heavy memory use; x64 only).")
+    parser.add_argument("-U", "--user-pt", action="store_true",
+                        help="print userland pagetables (for KPTI, x64 only, in kernel context).")
+    parser.add_argument("--cr3", dest="user_specified_cr3", type=AddressUtil.parse_address,
+                        help="use specified value as cr3.")
+    parser.add_argument("--cr4", dest="user_specified_cr4", type=AddressUtil.parse_address,
+                        help="use specified value as cr4.")
+    parser.add_argument("--ept", action="store_true", help="parse cr3 as EPT (Extended Page Table).")
+    parser.add_argument("-D", "--disable-color", action="store_true", help="disable RWX colored output")
+    parser.add_argument("-c", "--use-cache", action="store_true", help="use previous result.")
+    parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
+    parser.add_argument("-q", "--quiet", action="store_true", help="show result only.")
+    _syntax_ = parser.format_help()
+
+    @parse_args
+    @only_if_gdb_running
+    @only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
+    @only_if_specific_arch(arch=("x86_32", "x86_64", "x86_16"))
+    def do_invoke(self, args):
+        self.page_table = PageTableX64()
+        if args.include_esp_fixup_stacks and not is_x86_64():
+            err("Unsupported --include-esp-fixup-stacks option in this arch")
+            return
+
+        if not is_x86_64() or not is_in_kernel():
+            args.user_pt = False
+        if args.ept and not args.user_specified_cr3:
+            err("Unsupported --ept option without --cr3 option")
+            return
+
+        with self.page_table:  # context manager for temporary physical-memory mode
+            self.page_table.pagewalk(args)
+        self.out = self.page_table.out
+        self.print_output()
+        return
+
+
+@register_command
+class PagewalkArmCommand(PagewalkCommand):
+    """Dump page tables for ARM32 Cortex-A. PL2 pagewalk is unsupported."""
+
+    _cmdline_ = "pagewalk arm"
+    _category_ = "06-a. Qemu-system/KGDB Cooperation - Memory Map"
+    _aliases_ = ["pagewalk arm32"]
+
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument("-S", dest="force_prefix_s", action="store_const", const=True,
+                       help="use TTBRn_ELm_S to parse start.")
+    group.add_argument("-s", dest="force_prefix_s", action="store_const", const=False,
+                       help="use TTBRn_ELm to parse start.")
+    parser.add_argument("-L", "--print-each-level", action="store_true", help="show all level pagetables.")
+    parser.add_argument("-N", "--no-merge", action="store_true", help="do not merge similar/consecutive address.")
+    parser.add_argument("-P", "--sort-by-phys", action="store_true", help="sort by physical address.")
+    parser.add_argument("-Q", "--simple", action="store_true", help="merge with ignoring physical address consecutivness.")
+    parser.add_argument("-f", "--filter", metavar="REGEX", action="append", type=re.compile, default=[],
+                        help="filter by REGEX pattern.")
+    parser.add_argument("-v", "--vrange", metavar="VADDR", action="append", type=AddressUtil.parse_address, default=[],
+                        help="filter by map included specified virtual address.")
+    parser.add_argument("-p", "--prange", metavar="PADDR", action="append", type=AddressUtil.parse_address, default=[],
+                        help="filter by map included specified physical address.")
+    parser.add_argument("-t", "--trace", metavar="VADDR", action="append", type=AddressUtil.parse_address, default=[],
+                        help="show all level pagetables only associated specified address.")
+    parser.add_argument("--optee", action="store_true", help="show the secure world memory maps if used OP-TEE.")
+    parser.add_argument("-D", "--disable-color", action="store_true", help="disable RWX colored output")
+    parser.add_argument("-c", "--use-cache", action="store_true", help="use previous result.")
+    parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
+    parser.add_argument("-q", "--quiet", action="store_true", help="show result only.")
+    _syntax_ = parser.format_help()
+
+    @parse_args
+    @only_if_gdb_running
+    @only_if_specific_gdb_mode(mode=("qemu-system",))
+    @only_if_specific_arch(arch=("ARM32",))
+    def do_invoke(self, args):
+        self.page_table = PageTableArm32()
+        if args.optee and is_qemu_system():
+            self.page_table.arm32_optee_exact_pagewalk(args)
+            return
+
+        with self.page_table:  # context manager for temporary physical-memory mode
+            self.page_table.pagewalk(args)
+        self.out = self.page_table.out
+        self.print_output()
+        return
+
+
+@register_command
+class PagewalkArm64Command(PagewalkCommand):
+    """Dump page tables for ARM64 Cortex-A (ARM v8.7 base)."""
+
+    _cmdline_ = "pagewalk arm64"
+    _category_ = "06-a. Qemu-system/KGDB Cooperation - Memory Map"
+    _aliases_ = ["pagewalk aarch64"]
+
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("target_el", metavar="TARGET_EL", nargs="?", type=int, choices=range(4),
+                        help="target Exception Level. (default: current EL)")
+    parser.add_argument("-L", "--print-each-level", action="store_true", help="show all level pagetables.")
+    parser.add_argument("-N", "--no-merge", action="store_true", help="do not merge similar/consecutive address.")
+    parser.add_argument("-P", "--sort-by-phys", action="store_true", help="sort by physical address.")
+    parser.add_argument("-Q", "--simple", action="store_true", help="merge with ignoring physical address consecutivness.")
+    parser.add_argument("-f", "--filter", metavar="REGEX", action="append", type=re.compile, default=[],
+                        help="filter by REGEX pattern.")
+    parser.add_argument("-v", "--vrange", metavar="VADDR", action="append", type=AddressUtil.parse_address, default=[],
+                        help="filter by map included specified virtual address.")
+    parser.add_argument("-p", "--prange", metavar="PADDR", action="append", type=AddressUtil.parse_address, default=[],
+                        help="filter by map included specified physical address.")
+    parser.add_argument("-t", "--trace", metavar="VADDR", action="append", type=AddressUtil.parse_address, default=[],
+                        help="show all level pagetables only associated specified address.")
+    parser.add_argument("--optee", action="store_true", help="show the secure world memory maps if used OP-TEE.")
+    parser.add_argument("-0", "--only-TTBR0_EL1", action="store_true", help="Display only TTBR0_EL1 (if target==EL1)")
+    parser.add_argument("-1", "--only-TTBR1_EL1", action="store_true", help="display only TTBR1_EL1 (if target==EL1)")
+    parser.add_argument("-D", "--disable-color", action="store_true", help="disable RWX colored output")
+    parser.add_argument("-c", "--use-cache", action="store_true", help="use previous result.")
+    parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
+    parser.add_argument("-q", "--quiet", action="store_true", help="show result only.")
+    _syntax_ = parser.format_help()
+
     @parse_args
     @only_if_gdb_running
     @only_if_specific_gdb_mode(mode=("qemu-system", "kgdb"))
     @only_if_specific_arch(arch=("ARM64",))
     def do_invoke(self, args):
+        self.page_table = PageTableArm64()
         if args.optee and is_qemu_system():
-            self.aarch64_optee_pseudo_pagewalk()
+            self.page_table.aarch64_optee_pseudo_pagewalk(args)
             return
-
         if args.only_TTBR0_EL1 and args.only_TTBR1_EL1:
             err("Unsupported combination (-0 and -1)")
             return
 
-        if self.args.trace:
-            # You should not modify the self.args.vrange directly.
-            self.vrange = self.args.vrange + self.args.trace # merge vrange and trace
-            self.args.print_each_level = True # overwrite
-            self.args.use_cache = False # overwrite
-        else:
-            self.vrange = self.args.vrange
-
-        if args.target_el is None:
-            CPSR = get_register("$cpsr")
-            self.TargetEL = (CPSR >> 2) & 0b11
-            if self.TargetEL == 0:
-                # Since $pc is in EL0 (unprivileged), temporarily elevate to EL1
-                # to inspect TTBR0_EL1 and TTBR1_EL1 page tables.
-                self.TargetEL = 1
-        else:
-            self.TargetEL = args.target_el
-
-        if is_kgdb():
-            if self.TargetEL != 1:
-                err("Unsupported target EL")
-                return
-
-        self.out = []
-        self.pagewalk()
+        with self.page_table:  # context manager for temporary physical-memory mode
+            self.page_table.pagewalk(args)
+        self.out = self.page_table.out
         self.print_output()
         return
 
