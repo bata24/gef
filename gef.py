@@ -72136,6 +72136,331 @@ class Kernel:
                 ret = gdb.execute("x/40i {:#x}".format(filter_info.bpf_func), to_string=True).rstrip()
                 return [ret, "..."]
 
+    class Sysctl:
+        """Resolve the sysctl layout and walk its directory and table trees.
+
+        struct ctl_table_root {
+            struct ctl_table_set {
+                int (*is_seen)(struct ctl_table_set *);
+                struct ctl_dir dir;
+            } default_set;
+            struct ctl_table_set *(*lookup)(struct ctl_table_root *root);
+            ...
+        };
+
+        struct ctl_dir {
+            struct ctl_table_header {
+                struct ctl_table *ctl_table;
+                int ctl_table_size;               // v6.6~
+                ...
+                struct ctl_table_set *set;
+                struct ctl_dir *parent;
+                ...
+            } header;
+            struct rb_root root;
+        };
+
+        struct ctl_node {
+            struct rb_node node;
+            struct ctl_table_header *header;
+        };
+
+        struct ctl_table {
+            const char *procname;
+            void *data;
+            int maxlen;
+            umode_t mode;
+            struct ctl_table *child;              // ~v6.4
+            enum sysctl_table_type type;          // v6.5~v6.10
+            proc_handler *proc_handler;
+            ...
+        };
+        """
+
+        Entry = collections.namedtuple("SysctlEntry", "header table path mode")
+        Data = collections.namedtuple("SysctlData", "maxlen address handler ctset namespace")
+
+        @staticmethod
+        @Cache.cache_this_session
+        def get_instance():
+            """Return the instance shared by every command in the current session."""
+            return Kernel.Sysctl()
+
+        def __init__(self):
+            self.meta = []
+            self.initialized = False
+            self.sysctl_table_root = None
+            self.root_ctl_dir = None
+            self.root_rb_node = None
+            self.offset_rb_node = None
+            self.offset_parent = None
+            self.offset_maxlen = None
+            self.offset_mode = None
+            self.offset_handler = None
+            self.offset_ctl_table_size = None
+            self.offset_lookup = None
+            self.offset_set = None
+            self.sizeof_ctl_table = None
+            self.net_ctset = None
+            self.user_ctset = None
+            self.ctset_namespaces = {}
+            self.str_types = []
+            return
+
+        def export_meta(self, command):
+            """Convert recorded metadata to the printer methods used by a command."""
+            level_map = {"info": command.quiet_info, "warn": command.quiet_warn, "err": command.quiet_err}
+            return [(level_map[level], line) for level, line in self.meta]
+
+        def initialize(self, force=False):
+            """Resolve all layouts and roots required for a sysctl tree walk."""
+            if self.initialized and not force:
+                return True
+
+            self.meta = []
+            self.initialized = False
+            self.sysctl_table_root = KernelAddressHeuristicFinder.get_sysctl_table_root()
+            if self.sysctl_table_root is None:
+                self.meta.append(("err", "Could not find sysctl_table_root"))
+                return None
+            self.meta.append(("info", "sysctl_table_root: {:#x}".format(self.sysctl_table_root)))
+
+            self.resolve_layout(Kernel.kernel_version())
+            self.resolve_namespace_sets()
+            self.resolve_string_handlers()
+
+            self.root_ctl_dir = self.sysctl_table_root + current_arch.ptrsize
+            self.root_rb_node = read_int_from_memory(self.root_ctl_dir + self.offset_rb_node)
+            self.meta.append(("info", "root_ctl_dir: {:#x}".format(self.root_ctl_dir)))
+            self.meta.append(("info", "root_rb_node: {:#x}".format(self.root_rb_node)))
+            self.initialized = True
+            return True
+
+        def resolve_layout(self, kversion):
+            """Resolve version- and architecture-dependent structure offsets."""
+            if is_64bit():
+                if kversion < "4.9.120":
+                    self.offset_rb_node = 0x48
+                elif kversion < "4.10":
+                    self.offset_rb_node = 0x50
+                elif kversion < "4.11":
+                    self.offset_rb_node = 0x48
+                elif kversion < "4.12.2":
+                    self.offset_rb_node = 0x58
+                elif kversion < "6.10":
+                    self.offset_rb_node = 0x50
+                else:
+                    self.offset_rb_node = 0x58
+                self.offset_parent = 0x38
+                self.offset_maxlen = 0x10
+                self.offset_mode = 0x14
+                if kversion < "6.10":
+                    self.offset_handler = 0x20
+                    self.sizeof_ctl_table = 0x40
+                else:
+                    self.offset_handler = 0x18
+                    self.sizeof_ctl_table = 0x38
+            else:
+                if kversion < "4.9.120":
+                    self.offset_rb_node = 0x28
+                    self.offset_parent = 0x20
+                elif kversion < "4.10":
+                    self.offset_rb_node = 0x2c
+                    self.offset_parent = 0x20
+                elif kversion < "4.11":
+                    self.offset_rb_node = 0x28
+                    self.offset_parent = 0x20
+                elif kversion < "4.12.2":
+                    self.offset_rb_node = 0x30
+                    self.offset_parent = 0x20
+                elif kversion < "6.6":
+                    self.offset_rb_node = 0x2c
+                    self.offset_parent = 0x20
+                elif kversion < "6.10":
+                    self.offset_rb_node = 0x30
+                    self.offset_parent = 0x24
+                else:
+                    self.offset_rb_node = 0x34
+                    self.offset_parent = 0x24
+                self.offset_maxlen = 0x8
+                self.offset_mode = 0xc
+                if kversion < "6.10":
+                    self.offset_handler = 0x14
+                    self.sizeof_ctl_table = 0x24
+                else:
+                    self.offset_handler = 0x10
+                    self.sizeof_ctl_table = 0x20
+
+            # Since v6.10 ctl_table has no sentinel, so ctl_table_size (added in
+            # v6.6) is needed to bound the array.
+            self.offset_ctl_table_size = None if kversion < "6.6" else current_arch.ptrsize
+            self.offset_lookup = current_arch.ptrsize + self.offset_rb_node + current_arch.ptrsize
+            self.offset_set = self.offset_parent - current_arch.ptrsize
+            return
+
+        @staticmethod
+        def find_set(start, handlers):
+            """Find a ctl_table_set by its is_seen callback."""
+            current = start
+            remaining = 0x1000
+            while remaining: # avoid unbounded scan
+                if read_int_from_memory(current) in handlers:
+                    return current
+                current += current_arch.ptrsize
+                remaining -= 1
+            return None
+
+        def resolve_namespace_sets(self):
+            """Resolve the roots used by the net.* and user.* symlinks."""
+            self.ctset_namespaces = {self.sysctl_table_root: "global"}
+
+            self.net_ctset = None
+            init_net = KernelAddressHeuristicFinder.get_init_net()
+            is_seen = Ksym.get_addr("is_seen")
+            if init_net and is_seen:
+                self.net_ctset = self.find_set(init_net, {is_seen})
+                if self.net_ctset is not None:
+                    self.ctset_namespaces[self.net_ctset] = "net:{:#018x}".format(init_net)
+
+            self.user_ctset = None
+            init_user_ns = KernelAddressHeuristicFinder.get_init_user_ns()
+            set_is_seen = Ksym.get_addrs("set_is_seen")
+            if init_user_ns and set_is_seen:
+                self.user_ctset = self.find_set(init_user_ns, set_is_seen)
+                if self.user_ctset is not None:
+                    self.ctset_namespaces[self.user_ctset] = "user:{:#018x}".format(init_user_ns)
+            return
+
+        def resolve_string_handlers(self):
+            """Resolve proc handlers whose data is known to be a string."""
+            known_handlers = [
+                "addrconf_sysctl_stable_secret",
+                "cdrom_sysctl_info",
+                "devkmsg_sysctl_set_loglvl",
+                "numa_zonelist_order_handler",
+                "proc_allowed_congestion_control",
+                "proc_do_uts_string",
+                "proc_dostring",
+                "proc_dostring_coredump",
+                "proc_tcp_available_congestion_control",
+                "proc_tcp_available_ulp",
+                "seccomp_actions_logged_handler",
+                "set_default_qdisc",
+            ]
+            self.str_types = []
+            for handler in known_handlers:
+                handler_addr = Ksym.get_addr(handler)
+                if handler_addr:
+                    self.str_types.append(handler_addr)
+            return
+
+        def get_param_path(self, ctl_dir, ctl_table):
+            """Build and remember the dotted path for a ctl_table entry."""
+            procname = read_int_from_memory(ctl_table)
+            if procname == 0:
+                return None
+            procname_str = read_cstring_from_memory(procname)
+            if not procname_str:
+                return None
+            parent = read_int_from_memory(ctl_dir + self.offset_parent)
+            parent_path = self.parent_paths.get(parent, "")
+            param_path = (parent_path + "." + procname_str).lstrip(".")
+            self.parent_paths[ctl_dir] = param_path
+            return param_path
+
+        def get_table_end(self, ctl_dir, ctl_table):
+            """Return the array boundary for kernels that store ctl_table_size."""
+            if self.offset_ctl_table_size is None:
+                return None
+            num_entries = read_int32_from_memory(ctl_dir + self.offset_ctl_table_size)
+            if num_entries > 0x1000:
+                return None
+            return ctl_table + self.sizeof_ctl_table * num_entries
+
+        def get_symlink_root(self, ctl_table, skip_symlink):
+            """Return the RB root selected by a net.* or user.* symlink."""
+            if skip_symlink:
+                return None
+            ctset = None
+            root = read_int_from_memory(ctl_table + current_arch.ptrsize)
+            if is_valid_addr(root + self.offset_lookup):
+                lookup = read_int_from_memory(root + self.offset_lookup)
+                if lookup == Ksym.get_addr("net_ctl_header_lookup"):
+                    ctset = self.net_ctset
+                elif lookup == Ksym.get_addr("set_lookup"):
+                    ctset = self.user_ctset
+            if ctset is None or ctset in self.seen_ctset:
+                return None
+            self.seen_ctset.add(ctset)
+            return read_int_from_memory(ctset + current_arch.ptrsize + self.offset_rb_node)
+
+        def walk_table(self, ctl_dir, skip_symlink, progress):
+            """Yield data entries in one ctl_table array and follow its symlinks."""
+            ctl_table = read_int_from_memory(ctl_dir)
+            ctl_table_end = self.get_table_end(ctl_dir, ctl_table)
+            while ctl_table not in self.seen_ctl_table:
+                if ctl_table_end is not None and ctl_table >= ctl_table_end:
+                    break
+                self.seen_ctl_table.add(ctl_table)
+                param_path = self.get_param_path(ctl_dir, ctl_table)
+                if param_path is None:
+                    break
+
+                mode = read_int32_from_memory(ctl_table + self.offset_mode)
+                if (mode & 0o0120000) == 0o0120000:
+                    symlink_root = self.get_symlink_root(ctl_table, skip_symlink)
+                    if symlink_root is not None:
+                        yield from self.walk_node(symlink_root, skip_symlink, progress)
+                elif (mode & 0o0040000) == 0o0040000:
+                    pass
+                elif mode > 0o777:
+                    break
+                else:
+                    yield self.Entry(ctl_dir, ctl_table, param_path, mode)
+                ctl_table += self.sizeof_ctl_table
+            return
+
+        def walk_node(self, rb_node, skip_symlink, progress):
+            """Walk one ctl_node, its child directory, then its right and left nodes."""
+            if not rb_node:
+                return
+            if progress is not None:
+                progress.update(1)
+
+            ctl_dir = read_int_from_memory(rb_node + current_arch.ptrsize * 3)
+            if ctl_dir not in self.seen_ctl_dir:
+                self.seen_ctl_dir.add(ctl_dir)
+                yield from self.walk_table(ctl_dir, skip_symlink, progress)
+                child = read_int_from_memory(ctl_dir + self.offset_rb_node) & ~1
+                yield from self.walk_node(child, skip_symlink, progress)
+
+            right = read_int_from_memory(rb_node + current_arch.ptrsize) & ~1
+            yield from self.walk_node(right, skip_symlink, progress)
+            left = read_int_from_memory(rb_node + current_arch.ptrsize * 2) & ~1
+            yield from self.walk_node(left, skip_symlink, progress)
+            return
+
+        def walk(self, skip_symlink=False, progress=None):
+            """Yield every data-bearing sysctl entry from all selected roots."""
+            self.seen_ctl_dir = set()
+            self.seen_ctl_table = set()
+            self.seen_ctset = set()
+            self.parent_paths = {self.root_ctl_dir: ""}
+            yield from self.walk_node(self.root_rb_node, skip_symlink, progress)
+            return
+
+        def parse_entry(self, entry, include_namespace=False):
+            """Read the value-related fields of one ctl_table entry."""
+            maxlen = read_int32_from_memory(entry.table + self.offset_maxlen)
+            address = read_int_from_memory(entry.table + current_arch.ptrsize)
+            handler = read_int_from_memory(entry.table + self.offset_handler)
+            ctset = None
+            namespace = "-"
+            if include_namespace:
+                ctset = read_int_from_memory(entry.header + self.offset_set)
+                namespace = self.ctset_namespaces.get(ctset, "-")
+            return self.Data(maxlen, address, handler, ctset, namespace)
+
     @staticmethod
     @Cache.cache_this_session(cache_None=False)
     def get_slab_type():
@@ -79576,7 +79901,9 @@ class KernelSysctlCommand(GenericCommand, BufferingOutput):
     _syntax_ = parser.format_help()
 
     _example_ = [
-        "{0:s} -q",
+        "{0:s} --filter modprobe             # filter by parameter name",
+        "{0:s} --fitler kernel.modprobe -e   # exact match",
+        "{0:s} -s                            # skip symlink (improves performance with many .net.* and user.* entries)",
     ]
     _example_ = "\n".join(_example_).format(_cmdline_)
 
@@ -79638,376 +79965,91 @@ class KernelSysctlCommand(GenericCommand, BufferingOutput):
             return " <{:s}>".format(name)
         return Symbol.get_symbol_string(handler, nosymbol_string=" <NO_SYMBOL>")
 
-    def dump_data(self, ctl_table_header, ctl_table, param_path, mode):
-        if not self.should_be_print(param_path):
+    def get_data_value(self, data):
+        if not data.address:
+            return "-", "-"
+        if not is_valid_addr(data.address):
+            if not self.args.verbose:
+                return None
+            return "{:#018x}".format(data.address), "-"
+
+        address = "{:#018x}".format(data.address)
+        if data.handler in self.ksysctl.str_types:
+            value = "{!r}".format(read_cstring_from_memory(data.address))
+        elif data.maxlen == 4:
+            value = "{:#018x}".format(read_int32_from_memory(data.address))
+        elif data.maxlen == 8:
+            value = "{:#018x}".format(read_int64_from_memory(data.address))
+        elif data.maxlen == 1:
+            value = "{:#018x}".format(read_int8_from_memory(data.address))
+        elif data.maxlen == 0:
+            if not self.args.verbose:
+                return None
+            value = "-"
+        else:
+            value = read_cstring_from_memory(data.address)
+            if value and value.isprintable() and len(value) >= 2:
+                value = "{!r}".format(value)
+            else:
+                value = "{:#018x}".format(read_int_from_memory(data.address))
+        return address, value
+
+    def dump_data(self, entry):
+        if not self.should_be_print(entry.path):
             return
 
-        maxlen = read_int32_from_memory(ctl_table + self.offset_maxlen)
-        data_addr = read_int_from_memory(ctl_table + current_arch.ptrsize)
-        handler = read_int_from_memory(ctl_table + self.offset_handler)
+        data = self.ksysctl.parse_entry(entry, include_namespace=self.args.verbose)
+        value = self.get_data_value(data)
+        if value is None:
+            return
+        data_addr_str, data_val = value
 
         handler_info = ""
         header_info = ""
         if self.args.verbose:
-            handler_info = " {:#018x}{:s}".format(handler, self.get_handler_symbol(handler))
-            ctset = read_int_from_memory(ctl_table_header + self.offset_set)
-            namespace = self.ctset_namespaces.get(ctset, "-")
-            header_info = "{:#018x} {:#018x} {:<23s} ".format(ctl_table_header, ctset, namespace)
-
-        if not data_addr:
-            data_addr_str = "-"
-            data_val = "-"
-        elif is_valid_addr(data_addr):
-            data_addr_str = "{:#018x}".format(data_addr)
-            # data length
-            if handler in self.str_types:
-                data_val = "{!r}".format(read_cstring_from_memory(data_addr)) # allow None
-            elif maxlen == 4:
-                data_val = "{:#018x}".format(read_int32_from_memory(data_addr))
-            elif maxlen == 8:
-                data_val = "{:#018x}".format(read_int64_from_memory(data_addr))
-            elif maxlen == 1:
-                data_val = "{:#018x}".format(read_int8_from_memory(data_addr))
-            elif maxlen == 0:
-                if not self.args.verbose:
-                    return
-                data_val = "-"
-            else:
-                # type from heuristic
-                data_val = read_cstring_from_memory(data_addr)
-                if data_val and data_val.isprintable() and len(data_val) >= 2:
-                    data_val = "{!r}".format(data_val)
-                else:
-                    data_val = "{:#018x}".format(read_int_from_memory(data_addr))
-        else:
-            if not self.args.verbose:
-                return
-            data_addr_str = "{:#018x}".format(data_addr)
-            data_val = "-"
-
-        if self.args.verbose:
+            handler_info = " {:#018x}{:s}".format(data.handler, self.get_handler_symbol(data.handler))
+            header_info = "{:#018x} {:#018x} {:<23s} ".format(entry.header, data.ctset, data.namespace)
             data_val = "{:<18s}".format(data_val)
+
         self.out.append("{:<56s} {:<18s} {:#07x} {:#010o} {:s}{:s}{:s}".format(
-            param_path, data_addr_str, maxlen, mode, header_info, data_val, handler_info,
+            entry.path, data_addr_str, data.maxlen, entry.mode, header_info, data_val, handler_info,
         ))
-
         return
 
-    def redirect_root_for_symlink(self, ctl_table, pbar):
-        if self.args.skip_symlink:
+    def append_legend(self):
+        if self.args.quiet:
             return
-
-        ctset = None
-        root = read_int_from_memory(ctl_table + current_arch.ptrsize)
-        if is_valid_addr(root + self.offset_lookup):
-            lookup = read_int_from_memory(root + self.offset_lookup)
-            if lookup == Ksym.get_addr("net_ctl_header_lookup"): # net.*
-                ctset = self.net_ctset
-            elif lookup == Ksym.get_addr("set_lookup"): # user.*
-                ctset = self.user_ctset
-        if ctset:
-            symlink_rb_node = read_int_from_memory(ctset + current_arch.ptrsize + self.offset_rb_node)
-            if ctset not in self.seen_ctset:
-                self.seen_ctset.add(ctset)
-                self.sysctl_dump(symlink_rb_node, pbar)
+        fmt = "{:<56s} {:<18s} {:<7s} {:<10s} {:<s}"
+        legend = ["ParamName", "ParamAddress", "MaxLen", "Mode", "ParamValue"]
+        if self.args.verbose:
+            fmt = "{:<56s} {:<18s} {:<7s} {:<10s} {:<18s} {:<18s} {:<23s} {:<18s} {:<s}"
+            legend = [
+                "ParamName", "ParamAddress", "MaxLen", "Mode", "CtlTableHeader", "CtlTableSet",
+                "Namespace", "ParamValue", "ProcHandler",
+            ]
+        self.out.append(GefUtil.make_legend(fmt.format(*legend)))
         return
 
-    def get_param_path(self, ctl_dir, ctl_table, parent_path):
-        procname = read_int_from_memory(ctl_table)
-        if procname == 0:
-            return None
-
-        procname_str = read_cstring_from_memory(procname)
-        if not procname_str: # None or ""
-            return None
-
-        param_path = (parent_path + "." + procname_str).lstrip(".")
-        self.parent_paths[ctl_dir] = param_path
-        return param_path
-
-    def sysctl_dump(self, rb_node, pbar):
-        if not rb_node:
-            return
-        if self.args.exact and self.exact_found:
-            return
-
-        if pbar is not None:
-            pbar.update(1)
-
-        # ctl_node.header (=ctl_dir)
-        ctl_dir = read_int_from_memory(rb_node + current_arch.ptrsize * 3)
-        if ctl_dir not in self.seen_ctl_dir:
-            self.seen_ctl_dir.add(ctl_dir)
-
-            # parent
-            parent = read_int_from_memory(ctl_dir + self.offset_parent)
-            parent_path = self.parent_paths.get(parent, "")
-
-            # ctl_table(s)
-            ctl_table = read_int_from_memory(ctl_dir)
-            # Since v6.10 the array has no sentinel element, so it must be bounded by `ctl_table_size`.
-            # Without this, the walk runs into the next array and dumps its entries twice.
-            ctl_table_end = None
-            if self.offset_ctl_table_size is not None:
-                num_entries = read_int32_from_memory(ctl_dir + self.offset_ctl_table_size)
-                if num_entries <= 0x1000: # sanity check
-                    ctl_table_end = ctl_table + self.sizeof_ctl_table * num_entries
-            while ctl_table not in self.seen_ctl_table:
-                if ctl_table_end is not None and ctl_table >= ctl_table_end:
+    def dump_sysctls(self):
+        progress = None if self.args.quiet else ProgressBar(total=None)
+        try:
+            for entry in self.ksysctl.walk(skip_symlink=self.args.skip_symlink, progress=progress):
+                self.dump_data(entry)
+                if self.args.exact and self.exact_found:
                     break
-                self.seen_ctl_table.add(ctl_table)
-
-                # param_path
-                param_path = self.get_param_path(ctl_dir, ctl_table, parent_path)
-                if param_path is None:
-                    break
-
-                # mode
-                mode = read_int32_from_memory(ctl_table + self.offset_mode)
-
-                # dump
-                if (mode & 0o0120000) == 0o0120000: # symlink
-                    # `net.*` and `user.*` have a symlink attribute and they are redirected to another location.
-                    # These must be traced from another root.
-                    self.redirect_root_for_symlink(ctl_table, pbar)
-                elif (mode & 0o0040000) == 0o0040000: # directory
-                    pass
-                elif mode > 0o777:
-                    break
-                else:
-                    # If it's not a directory, it should hold data, so dump it.
-                    self.dump_data(ctl_dir, ctl_table, param_path, mode)
-                    if self.args.exact and self.exact_found:
-                        return
-
-                # next array element
-                ctl_table += self.sizeof_ctl_table
-
-            # ctl_dir.rb_root->rb_node
-            ctl_dir_rb_node = read_int_from_memory(ctl_dir + self.offset_rb_node) & ~1 # remove RB_BLACK
-            self.sysctl_dump(ctl_dir_rb_node, pbar)
-
-        # ctl_node.node.rb_right
-        right = read_int_from_memory(rb_node + current_arch.ptrsize * 1) & ~1 # remove RB_BLACK
-        self.sysctl_dump(right, pbar)
-
-        # ctl_node.node.rb_left
-        left = read_int_from_memory(rb_node + current_arch.ptrsize * 2) & ~1 # remove RB_BLACK
-        self.sysctl_dump(left, pbar)
-        return
-
-    @Cache.cache_this_session(cache_None=False)
-    def initialize(self):
-        self.meta = []
-
-        self.sysctl_table_root = KernelAddressHeuristicFinder.get_sysctl_table_root()
-        if self.sysctl_table_root is None:
-            self.meta.append((self.quiet_err, "Could not find sysctl_table_root"))
+        except gdb.MemoryError:
+            self.quiet_err("Memory read error")
             return None
-        self.meta.append((self.quiet_info, "sysctl_table_root: {:#x}".format(self.sysctl_table_root)))
-
-        """
-        struct ctl_table_root {
-            struct ctl_table_set {
-                int (*is_seen)(struct ctl_table_set *);
-                struct ctl_dir dir;
-            } default_set;
-            struct ctl_table_set *(*lookup)(struct ctl_table_root *root);
-            void (*set_ownership)(struct ctl_table_header *head, struct ctl_table *table, kuid_t *uid, kgid_t *gid);
-            int (*permissions)(struct ctl_table_header *head, struct ctl_table *table);
-        };
-
-        struct ctl_dir {
-            struct ctl_table_header {
-                union {
-                    struct {
-                        struct ctl_table *ctl_table;
-                        int ctl_table_size;               // v6.6~
-                        int used;
-                        int count;
-                        int nreg;
-                    };
-                    struct rcu_head {
-                        struct callback_head *next;
-                        void (*func)(struct callback_head *head);
-                    } rcu;
-                };
-                struct completion *unregistering;
-                struct ctl_table *ctl_table_arg;
-                struct ctl_table_root *root;
-                struct ctl_table_set *set;
-                struct ctl_dir *parent;
-                struct ctl_node *node;
-                struct hlist_head inodes;                 // v4.12.2~
-                struct list_head inodes;                  // v4.11~v4.12.1
-                struct hlist_head inodes;                 // v4.9.120~v4.9.337
-                enum {
-                    SYSCTL_TABLE_TYPE_DEFAULT,
-                    SYSCTL_TABLE_TYPE_PERMANENTLY_EMPTY,
-                } type;                                   // v6.10~
-            } header;
-            struct rb_root {
-                struct rb_node *rb_node;
-            } root;
-        };
-
-        struct ctl_node {
-            struct rb_node {
-                unsigned long  __rb_parent_color;
-                struct rb_node *rb_right;
-                struct rb_node *rb_left;
-            } node;
-            struct ctl_table_header *header;
-        };
-
-        struct ctl_table {
-            const char *procname;
-            void *data;
-            int maxlen;
-            umode_t mode;
-            struct ctl_table *child;                      // ~v6.4
-            enum {
-                SYSCTL_TABLE_TYPE_DEFAULT,
-                SYSCTL_TABLE_TYPE_PERMANENTLY_EMPTY
-            } type;                                       // v6.5~v6.10
-            proc_handler *proc_handler;
-            struct ctl_table_poll *poll;
-            void *extra1;
-            void *extra2;
-        };
-        """
-
-        kversion = Kernel.kernel_version()
-
-        if is_64bit():
-            # struct ctl_dir
-            if kversion < "4.9.120":
-                self.offset_rb_node = 0x48
-            elif "4.9.120" <= kversion < "4.10":
-                self.offset_rb_node = 0x50
-            elif "4.10" <= kversion < "4.11":
-                self.offset_rb_node = 0x48
-            elif "4.11" <= kversion < "4.12.2":
-                self.offset_rb_node = 0x58
-            elif "4.12.2" <= kversion < "6.10":
-                self.offset_rb_node = 0x50
-            elif "6.10" <= kversion:
-                self.offset_rb_node = 0x58
-            self.offset_parent = 0x38
-            # struct ctl_table
-            self.offset_maxlen = 0x10
-            self.offset_mode = 0x14
-            if kversion < "6.10":
-                self.offset_handler = 0x20
-                self.sizeof_ctl_table = 0x40
-            else:
-                self.offset_handler = 0x18
-                self.sizeof_ctl_table = 0x38
-        else:
-            # struct ctl_dir
-            if kversion < "4.9.120":
-                self.offset_rb_node = 0x28
-                self.offset_parent = 0x20
-            elif "4.9.120" <= kversion < "4.10":
-                self.offset_rb_node = 0x2c
-                self.offset_parent = 0x20
-            elif "4.10" <= kversion < "4.11":
-                self.offset_rb_node = 0x28
-                self.offset_parent = 0x20
-            elif "4.11" <= kversion < "4.12.2":
-                self.offset_rb_node = 0x30
-                self.offset_parent = 0x20
-            elif "4.12.2" <= kversion < "6.6":
-                self.offset_rb_node = 0x2c
-                self.offset_parent = 0x20
-            elif "6.6" <= kversion < "6.10":
-                self.offset_rb_node = 0x30
-                self.offset_parent = 0x24
-            elif "6.10" <= kversion:
-                self.offset_rb_node = 0x34
-                self.offset_parent = 0x24
-            # struct ctl_table
-            self.offset_maxlen = 0x8
-            self.offset_mode = 0xc
-            if kversion < "6.10":
-                self.offset_handler = 0x14
-                self.sizeof_ctl_table = 0x24
-            else:
-                self.offset_handler = 0x10
-                self.sizeof_ctl_table = 0x20
-
-        # struct ctl_table_header
-        # `ctl_table_size` is placed just after `ctl_table`. It is needed because the sentinel
-        # element at the end of the ctl_table array is removed since v6.10.
-        if kversion < "6.6":
-            self.offset_ctl_table_size = None
-        else:
-            self.offset_ctl_table_size = current_arch.ptrsize
-
-        # struct ctl_table_root
-        self.offset_lookup = current_arch.ptrsize + self.offset_rb_node + current_arch.ptrsize
-
-        # struct ctl_table_header; `set` is immediately before `parent`.
-        self.offset_set = self.offset_parent - current_arch.ptrsize
-        self.ctset_namespaces = {self.sysctl_table_root: "global"}
-
-        # the root for `net.*`; init_nsproxy.net_ns.sysctls
-        self.net_ctset = None
-        init_net = KernelAddressHeuristicFinder.get_init_net()
-        if init_net:
-            current = init_net
-            is_seen = Ksym.get_addr("is_seen")
-            if is_seen:
-                for _ in range(0x1000): # avoid unbounded scan
-                    v = read_int_from_memory(current)
-                    if v == is_seen:
-                        self.net_ctset = current
-                        self.ctset_namespaces[current] = "net:{:#018x}".format(init_net)
-                        break
-                    current += current_arch.ptrsize
-
-        # the root for `user.*`; init_user_ns.set
-        self.user_ctset = None
-        init_user_ns = KernelAddressHeuristicFinder.get_init_user_ns()
-        if init_user_ns:
-            current = init_user_ns
-            # set_is_seen is found in 3 places (v5.19~), so Ksym.get_addr should not be used.
-            set_is_seen = Ksym.get_addrs("set_is_seen")
-            if set_is_seen:
-                for _ in range(0x1000): # avoid unbounded scan
-                    v = read_int_from_memory(current)
-                    if v in set_is_seen:
-                        self.user_ctset = current
-                        self.ctset_namespaces[current] = "user:{:#018x}".format(init_user_ns)
-                        break
-                    current += current_arch.ptrsize
-
-        # handle functions
-        known_str_types_handlers = [
-            "addrconf_sysctl_stable_secret",
-            "cdrom_sysctl_info",
-            "devkmsg_sysctl_set_loglvl",
-            "numa_zonelist_order_handler",
-            "proc_allowed_congestion_control",
-            "proc_do_uts_string",
-            "proc_dostring",
-            "proc_dostring_coredump",
-            "proc_tcp_available_congestion_control",
-            "proc_tcp_available_ulp",
-            "seccomp_actions_logged_handler",
-            "set_default_qdisc",
-        ]
-        self.str_types = []
-        for handler in known_str_types_handlers:
-            handler_addr = Ksym.get_addr(handler)
-            if handler_addr:
-                self.str_types.append(handler_addr)
-
-        self.root_ctl_dir = self.sysctl_table_root + current_arch.ptrsize
-        self.root_rb_node = read_int_from_memory(self.root_ctl_dir + self.offset_rb_node)
-        self.meta.append((self.quiet_info, "root_ctl_dir: {:#x}".format(self.root_ctl_dir)))
-        self.meta.append((self.quiet_info, "root_rb_node: {:#x}".format(self.root_rb_node)))
+        finally:
+            if progress is not None:
+                progress.close()
         return True
+
+    def initialize(self, force=False):
+        self.ksysctl = Kernel.Sysctl.get_instance()
+        ret = self.ksysctl.initialize(force=force)
+        self.meta = self.ksysctl.export_meta(self)
+        return ret
 
     @parse_args
     @only_if_gdb_running
@@ -80016,60 +80058,22 @@ class KernelSysctlCommand(GenericCommand, BufferingOutput):
     @only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
         self.exact_found = False
-
         if args.exact and not args.filter:
             self.quiet_err("Filter string is needed")
             return
 
-        if args.rescan:
-            Cache.clear_cache_for(self.initialize)
-
         self.quiet_info("Wait for memory scan")
-
-        ret = self.initialize()
+        ret = self.initialize(force=args.rescan)
         if args.meta or not ret:
             for func, line in self.meta:
                 func(line)
-        if not ret:
+        if not ret or args.meta:
             return
 
-        if args.meta:
-            return
-
-        # legend
         self.out = []
-        if not args.quiet:
-            fmt = "{:<56s} {:<18s} {:<7s} {:<10s} {:<s}"
-            legend = ["ParamName", "ParamAddress", "MaxLen", "Mode", "ParamValue"]
-            if args.verbose:
-                fmt = "{:<56s} {:<18s} {:<7s} {:<10s} {:<18s} {:<18s} {:<23s} {:<18s} {:<s}"
-                legend = [
-                    "ParamName", "ParamAddress", "MaxLen", "Mode", "CtlTableHeader", "CtlTableSet",
-                    "Namespace", "ParamValue", "ProcHandler",
-                ]
-            self.out.append(GefUtil.make_legend(fmt.format(*legend)))
-
-        # progress setup
-        pbar = None
-        if not args.quiet:
-            pbar = ProgressBar(total=None)
-
-        # parse rb_tree
-        self.seen_ctl_dir = set()
-        self.seen_ctl_table = set()
-        self.seen_ctset = set()
-        self.parent_paths = {self.root_ctl_dir: ""}
-        try:
-            # This try-except is a countermeasure to a parse error when CONFIG_RANDSTRUCT=y.
-            self.sysctl_dump(self.root_rb_node, pbar)
-        except gdb.MemoryError:
-            self.quiet_err("Memory read error")
+        self.append_legend()
+        if not self.dump_sysctls():
             return
-        finally:
-            if pbar is not None:
-                pbar.close()
-
-        # print
         self.print_output(check_terminal_size=True)
         return
 

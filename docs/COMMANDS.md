@@ -10135,7 +10135,9 @@ options:
 ### Examples
 
 ```gdb
-ksysctl -q
+ksysctl --filter modprobe             # filter by parameter name
+ksysctl --fitler kernel.modprobe -e   # exact match
+ksysctl -s                            # skip symlink (improves performance with many .net.* and user.* entries)
 ```
 
 ### Notes
