@@ -63780,6 +63780,7 @@ class KernelAddressHeuristicFinder:
             addr = Ksym.get_addr("nr_iowait_cpu")
             if addr:
                 res = gdb.execute("x/20i {:#x}".format(addr), to_string=True)
+                g = ()
                 if is_x86_64():
                     g = itertools.chain(
                         KernelAddressHeuristicFinderUtil.x64_qword_ptr_array_base(res),
