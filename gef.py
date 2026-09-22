@@ -575,6 +575,7 @@ class MemoryCache:
     BLOCK_SIZE = 0x1000
     BLOCK_SIZE_SLOW = 0x40 # over a serial line, a large block costs more than it saves
     MAX_BLOCKS = 0x1000 # 16MB at most, for a huge scan like `ks -rv`
+    ARM32_LPAE_PHYS_MASK = 0x0000_00ff_ffff_f000
 
     __blocks__ = {}
     __unreadable__ = set()
@@ -685,6 +686,130 @@ class MemoryCache:
             pos += block_size
         offset = addr - base
         return out[offset:offset + length]
+
+    @staticmethod
+    @Cache.cache_until_next
+    def get_arm32_lpae_root():
+        """Return the physical address of ARM32 Linux's LPAE master page table.
+
+        QEMU's gdbstub normally translates a virtual read with the page tables of the selected CPU. On ARM32 Linux, a secondary
+        CPU can be stopped while its active table is missing kernel PMDs that are present in the master ``swapper_pg_dir``. A
+        normal GDB read then fails even though the kernel address is valid. This root lets ``read_memory`` retry through that
+        authoritative table.
+
+        The fallback is limited to QEMU ARM32 with TTBCR.EAE set because the companion walker implements only ARM32's LPAE
+        long-descriptor format. x86/x64 does not have this ARM32 table-synchronization failure and uses the active CR3 through
+        the gdbstub. ARM64 keeps its kernel mappings in TTBR1_EL1, independently of the process-specific TTBR0_EL1, so it does
+        not need an equivalent ``swapper_pg_dir`` retry either.
+        """
+        if not is_arm32() or not is_qemu_system():
+            return None
+        ttbcr = get_register("$TTBCR")
+        if ttbcr is None:
+            ttbcr = get_register("$TTBCR", use_mbed_exec=True)
+        if ttbcr is None or not ttbcr & (1 << 31):
+            return None
+
+        # Prefer GDB's symbol table because this fallback may itself be needed
+        # while kallsyms is being initialized.  Consult only an already parsed
+        # kallsyms table afterwards to avoid recursive scanning.
+        try:
+            swapper = GefUtil.parse_and_eval_unsigned("&swapper_pg_dir")
+        except gdb.error:
+            swapper = None
+        if swapper is None:
+            ret = Ksym.peek()
+            if ret is not None:
+                addresses = ret[1].get("swapper_pg_dir", [])
+                swapper = addresses[0] if addresses else None
+        if swapper is None:
+            return None
+
+        try:
+            result = gdb.execute("monitor gva2gpa {:#x}".format(swapper), to_string=True)
+        except gdb.error:
+            return None
+        match = re.search(r"gpa:\s*(0x[0-9a-f]+)", result, re.IGNORECASE)
+        if not match:
+            return None
+        return int(match.group(1), 16) & ~0x1f
+
+    @staticmethod
+    def translate_arm32_lpae(vaddr, root, reader):
+        """Translate one ARM32 LPAE virtual address using physical reads.
+
+        ``root`` is the physical ``swapper_pg_dir`` address and ``reader`` reads physical bytes. The walk handles an L1 1GB
+        block, an L2 2MB block, or an L3 4KB page and returns the final physical address. Invalid descriptors return None.
+
+        This is deliberately not a general pagewalk implementation: it exists only so a failed ARM32 GDB virtual read can use
+        the Linux master table. The normal x86/x64 and ARM64 reads remain handled by their gdbstubs.
+        """
+        level1 = u64(reader(root + ((vaddr >> 30) & 0x3) * 8, 8))
+        kind = level1 & 0x3
+        if kind == 0x1:
+            return (level1 & 0x0000_00ff_c000_0000) | (vaddr & 0x3fff_ffff)
+        if kind != 0x3:
+            return None
+
+        level2_base = level1 & MemoryCache.ARM32_LPAE_PHYS_MASK
+        level2 = u64(reader(level2_base + ((vaddr >> 21) & 0x1ff) * 8, 8))
+        kind = level2 & 0x3
+        if kind == 0x1:
+            return (level2 & 0x0000_00ff_ffe0_0000) | (vaddr & 0x1f_ffff)
+        if kind != 0x3:
+            return None
+
+        level3_base = level2 & MemoryCache.ARM32_LPAE_PHYS_MASK
+        level3 = u64(reader(level3_base + ((vaddr >> 12) & 0x1ff) * 8, 8))
+        if level3 & 0x3 != 0x3:
+            return None
+        return (level3 & MemoryCache.ARM32_LPAE_PHYS_MASK) | (vaddr & 0xfff)
+
+    @staticmethod
+    def read_arm32_lpae(vaddr, length):
+        """Read ARM32 virtual memory through the LPAE ``swapper_pg_dir``.
+
+        This is the cache reader used only after the ordinary virtual read has failed. It temporarily enables physical mode,
+        translates each virtual page with ``translate_arm32_lpae``, and reads the resulting physical ranges. Reads are split at
+        4KB boundaries because consecutive virtual pages need not be consecutive in physical memory.
+
+        x86/x64 and ARM64 do not call this function: their normal gdbstub reads do not need the ARM32-specific master-table
+        recovery described by ``get_arm32_lpae_root``.
+        """
+        root = MemoryCache.get_arm32_lpae_root()
+        if root is None:
+            raise gdb.MemoryError("Could not find the ARM32 LPAE master page table")
+
+        with QemuMonitor.use_mmu_mode("phys") as available:
+            if not available:
+                raise gdb.MemoryError("Could not enable physical memory mode")
+
+            def read_physical(paddr, size):
+                try:
+                    return MemoryCache.read_raw(paddr, size)
+                except gdb.MemoryError:
+                    pass
+
+                # Some QEMU gdbstubs leave parts of guest RAM inaccessible even
+                # in physical mode.  Keep the normal physical-memory fallbacks,
+                # notably /proc/QEMU-PID/mem, for those pages.
+                out = read_physmem(paddr, size)
+                if out is None or len(out) != size:
+                    raise gdb.MemoryError(
+                        "Cannot access physical memory at address {:#x}".format(paddr)
+                    )
+                return out
+
+            out = bytearray()
+            while len(out) < length:
+                current = vaddr + len(out)
+                paddr = MemoryCache.translate_arm32_lpae(current, root, read_physical)
+                if paddr is None:
+                    raise gdb.MemoryError("swapper_pg_dir does not map address {:#x}".format(current))
+                size = min(0x1000 - (current & 0xfff), length - len(out))
+                out += read_physical(paddr, size)
+            return bytes(out)
+        return
 
 
 class Config:
@@ -12507,8 +12632,16 @@ def read_memory(addr, length):
                     if data:
                         return data
 
-    # Don't include it in a try-catch, as we might expect a memory error on read_memory.
-    return MemoryCache.read(addr, length)
+    try:
+        return MemoryCache.read(addr, length)
+    except gdb.MemoryError:
+        # An ARM32 CPU may be stopped with a TTBR0 whose kernel half is incomplete.
+        # In particular, secondary CPUs do not necessarily have the module PMDs
+        # copied into their active table.  The kernel's master page table remains
+        # authoritative, so retry through it before reporting an unreadable address.
+        if MemoryCache.get_arm32_lpae_root() is None:
+            raise
+        return MemoryCache.read(addr, length, reader=MemoryCache.read_arm32_lpae, namespace="arm32-lpae-swapper")
 
 
 def read_int_from_memory(addr, safe=False):
@@ -12625,7 +12758,7 @@ def read_physmem(paddr, size, already_physmode=False):
             with QemuMonitor.use_mmu_mode("phys") as available:
                 if not available:
                     return None
-                return read_memory(paddr, size)
+                return MemoryCache.read_raw(paddr, size)
         except Exception:
             pass
         return None
@@ -12720,7 +12853,7 @@ def read_physmem(paddr, size, already_physmode=False):
 
     if already_physmode:
         try:
-            return read_memory(paddr, size)
+            return MemoryCache.read_raw(paddr, size)
         except gdb.MemoryError:
             pass
 
