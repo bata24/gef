@@ -7209,10 +7209,6 @@ class Checksec:
         res = gdb.execute("call-syscall prctl 0x38 0 0 0 0", to_string=True) # PR_GET_TAGGED_ADDR_CTRL
         output_line = res.splitlines()[-1]
         ret = int(output_line.split()[2], 0)
-
-        pQ = lambda a: struct.pack("<Q", a & 0xffff_ffff_ffff_ffff)
-        uq = lambda a: struct.unpack("<q", a)[0]
-        u2i = lambda a: uq(pQ(a))
         return u2i(ret)
 
     @staticmethod
@@ -7225,10 +7221,6 @@ class Checksec:
         res = gdb.execute("call-syscall prctl 0x3d 0 0 0 0", to_string=True) # PR_PAC_GET_ENABLED_KEYS
         output_line = res.splitlines()[-1]
         ret = int(output_line.split()[2], 0)
-
-        pQ = lambda a: struct.pack("<Q", a & 0xffff_ffff_ffff_ffff)
-        uq = lambda a: struct.unpack("<q", a)[0]
-        u2i = lambda a: uq(pQ(a))
         return u2i(ret)
 
     @staticmethod
@@ -7664,19 +7656,6 @@ class RISCV(Architecture):
         return insn.mnemonic in branch_mnemos
 
     def is_branch_taken(self, insn):
-
-        def long_to_twos_complement(v):
-            """Convert a python long value to its two's complement."""
-            if is_32bit():
-                if v & 0x8000_0000:
-                    return v - 0x1_0000_0000
-            elif is_64bit():
-                if v & 0x8000_0000_0000_0000:
-                    return v - 0x1_0000_0000_0000_0000
-            else:
-                raise OSError("RISC-V: ELF file is not ELF32 or ELF64. This is not currently supported")
-            return v
-
         mnemo = insn.mnemonic
         if mnemo.startswith("c."):
             mnemo = mnemo[2:]
@@ -7697,8 +7676,8 @@ class RISCV(Architecture):
         # If the conditional operation is not unsigned, convert the python long into
         # its two's complement
         if not condition.endswith("u"):
-            rs2 = long_to_twos_complement(rs2)
-            rs1 = long_to_twos_complement(rs1)
+            rs2 = u2i(rs2, self.bit_length)
+            rs1 = u2i(rs1, self.bit_length)
         else:
             condition = condition[:-1]
 
@@ -9592,13 +9571,6 @@ class MIPS(Architecture):
         mnemo, ops = insn.mnemonic, insn.operands
         taken, reason = False, ""
 
-        def u2i(x):
-            if self.bit_length_reg == 64:
-                trans = lambda a: struct.unpack("<q", struct.pack("<Q", a & 0xffff_ffff_ffff_ffff))[0]
-            else:
-                trans = lambda a: struct.unpack("<i", struct.pack("<I", a & 0xffff_ffff))[0]
-            return trans(x)
-
         if mnemo in ["beq", "beql", "beqc"]:
             taken, reason = get_register(ops[0]) == get_register(ops[1]), "{0[0]} == {0[1]}".format(ops)
         elif mnemo in ["beqic"]:
@@ -9612,29 +9584,29 @@ class MIPS(Architecture):
         elif mnemo in ["bnez", "bnezc"]:
             taken, reason = get_register(ops[0]) != 0, "{0[0]} != 0".format(ops)
         elif mnemo in ["bgtz", "bgtzl"]:
-            taken, reason = u2i(get_register(ops[0])) > 0, "{0[0]} > 0".format(ops)
+            taken, reason = u2i(get_register(ops[0]), self.bit_length_reg) > 0, "{0[0]} > 0".format(ops)
         elif mnemo in ["bgez", "bgezl"]:
-            taken, reason = u2i(get_register(ops[0])) >= 0, "{0[0]} >= 0".format(ops)
+            taken, reason = u2i(get_register(ops[0]), self.bit_length_reg) >= 0, "{0[0]} >= 0".format(ops)
         elif mnemo in ["bltz", "bltzl"]:
-            taken, reason = u2i(get_register(ops[0])) < 0, "{0[0]} < 0".format(ops)
+            taken, reason = u2i(get_register(ops[0]), self.bit_length_reg) < 0, "{0[0]} < 0".format(ops)
         elif mnemo in ["blez", "blezl"]:
-            taken, reason = u2i(get_register(ops[0])) <= 0, "{0[0]} <= 0".format(ops)
+            taken, reason = u2i(get_register(ops[0]), self.bit_length_reg) <= 0, "{0[0]} <= 0".format(ops)
         elif mnemo in ["bbeqzc"]:
             taken, reason = (get_register(ops[0]) >> int(ops[1], 0) & 1) == 0, "(({0[0]} >> {0[1]}) & 1) == 0".format(ops)
         elif mnemo in ["bbnezc"]:
             taken, reason = (get_register(ops[0]) >> int(ops[1], 0) & 1) != 0, "(({0[0]} >> {0[1]}) & 1) != 0".format(ops)
         elif mnemo in ["bgec"]:
-            taken, reason = u2i(get_register(ops[0])) >= u2i(get_register(ops[1])), "{0[0]} >= {0[1]}".format(ops)
+            taken, reason = u2i(get_register(ops[0]), self.bit_length_reg) >= u2i(get_register(ops[1]), self.bit_length_reg), "{0[0]} >= {0[1]}".format(ops)
         elif mnemo in ["bgeic"]:
-            taken, reason = u2i(get_register(ops[0])) >= u2i(int(ops[1], 0)), "{0[0]} >= {0[1]}".format(ops)
+            taken, reason = u2i(get_register(ops[0]), self.bit_length_reg) >= u2i(int(ops[1], 0), self.bit_length_reg), "{0[0]} >= {0[1]}".format(ops)
         elif mnemo in ["bgeuc"]:
             taken, reason = get_register(ops[0]) >= get_register(ops[1]), "{0[0]} >= {0[1]}".format(ops)
         elif mnemo in ["bgeiuc"]:
             taken, reason = get_register(ops[0]) >= int(ops[1], 0), "{0[0]} >= {0[1]}".format(ops)
         elif mnemo in ["bltc"]:
-            taken, reason = u2i(get_register(ops[0])) < u2i(get_register(ops[1])), "{0[0]} < {0[1]}".format(ops)
+            taken, reason = u2i(get_register(ops[0]), self.bit_length_reg) < u2i(get_register(ops[1]), self.bit_length_reg), "{0[0]} < {0[1]}".format(ops)
         elif mnemo in ["bltic"]:
-            taken, reason = u2i(get_register(ops[0])) < u2i(int(ops[1], 0)), "{0[0]} < {0[1]}".format(ops)
+            taken, reason = u2i(get_register(ops[0]), self.bit_length_reg) < u2i(int(ops[1], 0), self.bit_length_reg), "{0[0]} < {0[1]}".format(ops)
         elif mnemo in ["bltuc"]:
             taken, reason = get_register(ops[0]) < get_register(ops[1]), "{0[0]} < {0[1]}".format(ops)
         elif mnemo in ["bltiuc"]:
@@ -10015,18 +9987,13 @@ class S390X(Architecture):
                 cmp_reg = reg3_num
             return "%r{:d}".format(cmp_reg)
 
-        def u2i(x, mnemo):
-            if mnemo in ("bxhg", "brxhg", "bxleg", "brxlg"):
-                trans = lambda a: struct.unpack("<q", struct.pack("<Q", a & 0xffff_ffff_ffff_ffff))[0]
-            else:
-                trans = lambda a: struct.unpack("<i", struct.pack("<I", a & 0xffff_ffff))[0]
-            return trans(x)
+        bits = 64 if insn.mnemonic in ("bxhg", "brxhg", "bxleg", "brxlg") else 32
 
         if insn.mnemonic in ["bxh", "bxhg", "brxh", "brxhg"]:
             reg1, reg3 = insn.operands[0], insn.operands[1]
             regC = get_cmp_regname(reg3)
             if regC is not None:
-                taken = u2i(get_register(reg1) + get_register(reg3), insn.mnemonic) > u2i(get_register(regC), insn.mnemonic)
+                taken = u2i(get_register(reg1) + get_register(reg3), bits) > u2i(get_register(regC), bits)
                 reason = "({:s}+{:s})>{:s}".format(reg1, reg3, regC)
                 return taken, reason
 
@@ -10034,7 +10001,7 @@ class S390X(Architecture):
             reg1, reg3 = insn.operands[0], insn.operands[1]
             regC = get_cmp_regname(reg3)
             if regC is not None:
-                taken = u2i(get_register(reg1) + get_register(reg3), insn.mnemonic) <= u2i(get_register(regC), insn.mnemonic)
+                taken = u2i(get_register(reg1) + get_register(reg3), bits) <= u2i(get_register(regC), bits)
                 reason = "({:s}+{:s})<={:s}".format(reg1, reg3, regC)
                 return taken, reason
 
@@ -10042,10 +10009,8 @@ class S390X(Architecture):
             if len(insn.opcodes) < 5:
                 return False, ""
 
-            if signed and bit == 32:
-                trans = lambda a: struct.unpack("<i", struct.pack("<I", a & 0xffff_ffff))[0]
-            elif signed and bit == 64:
-                trans = lambda a: struct.unpack("<q", struct.pack("<Q", a & 0xffff_ffff_ffff_ffff))[0]
+            if signed and bit in (32, 64):
+                trans = lambda a: u2i(a, bit)
             elif not signed and bit == 32:
                 trans = lambda a: a & 0xffff_ffff
             elif not signed and bit == 64:
@@ -10622,9 +10587,6 @@ class ALPHA(Architecture):
         if regval is None:
             return taken, reason
 
-        pQ = lambda a: struct.pack("<Q", a & 0xffff_ffff_ffff_ffff)
-        uq = lambda a: struct.unpack("<q", a)[0]
-        u2i = lambda a: uq(pQ(a))
         regval = u2i(regval)
 
         if mnemo == "beq":
@@ -10770,21 +10732,13 @@ class HPPA(Architecture):
         return False
 
     def is_branch_taken(self, insn):
+        bits = 64 if is_64bit() else 32
 
         def get_masked(x):
-            bits = 64 if is_64bit() else 32
             return x & ((1 << bits) - 1)
 
         def get_sign(x):
-            bits = 64 if is_64bit() else 32
             return (x >> (bits - 1)) & 1
-
-        def to_signed(x):
-            bits = 64 if is_64bit() else 32
-            x &= ((1 << bits) - 1)
-            sign = 1 << (bits - 1)
-            # if sign bit set, subtract 2^bits
-            return x - (1 << bits) if (x & sign) else x
 
         def check_cond_mov(c, name, val):
             v = get_masked(val)
@@ -10810,8 +10764,8 @@ class HPPA(Architecture):
         def check_cond_cmp(c, neg, name1, val1, name2, val2):
             v1 = get_masked(val1)
             v2 = get_masked(val2)
-            s1 = to_signed(v1)
-            s2 = to_signed(v2)
+            s1 = u2i(v1, bits)
+            s2 = u2i(v2, bits)
             res = get_masked(v1 - v2)
 
             if c == 0: # never
@@ -10873,13 +10827,13 @@ class HPPA(Architecture):
                 else:
                     taken, reason = res != 0, "{:s}!=-{:s}".format(name1, name2)
             elif c == 2: # < (signed)
-                sres = to_signed(res)
+                sres = u2i(res, bits)
                 if not neg:
                     taken, reason = sres < 0, "{:s}<-{:s} (signed)".format(name1, name2)
                 else:
                     taken, reason = sres >= 0, "{:s}>=-{:s} (signed)".format(name1, name2)
             elif c == 3: # <= (signed)
-                sres = to_signed(res)
+                sres = u2i(res, bits)
                 if not neg:
                     taken, reason = sres <= 0, "{:s}<=-{:s} (signed)".format(name1, name2)
                 else:
@@ -11239,11 +11193,8 @@ class NIOS2(Architecture):
         v0 = get_register(ops[0])
         v1 = get_register(ops[1])
 
-        pI = lambda a: struct.pack("<I", a & 0xffff_ffff)
-        ui = lambda a: struct.unpack("<i", a)[0]
-        u2i = lambda a: ui(pI(a))
-        v0s = u2i(v0)
-        v1s = u2i(v1)
+        v0s = u2i(v0, 32)
+        v1s = u2i(v1, 32)
 
         taken, reason = False, ""
         if mnemo == "beq":
@@ -11377,11 +11328,7 @@ class MICROBLAZE(Architecture):
         mnemo, ops = insn.mnemonic, [x.split()[0] for x in insn.operands]
         taken, reason = False, ""
 
-        pI = lambda a: struct.pack("<I", a & 0xffff_ffff)
-        ui = lambda a: struct.unpack("<i", a)[0]
-        u2i = lambda a: ui(pI(a))
-
-        v0 = u2i(get_register(ops[0])) # signed
+        v0 = u2i(get_register(ops[0]), 32) # signed
 
         if mnemo in ["beq", "beqd", "beqi", "beqid"]:
             taken, reason = v0 == 0, "{:s}==0".format(ops[0])
@@ -11519,10 +11466,6 @@ class XTENSA(Architecture):
         mnemo, ops = insn.mnemonic, insn.operands
         taken, reason = False, ""
 
-        pI = lambda a: struct.pack("<I", a & 0xffff_ffff)
-        ui = lambda a: struct.unpack("<i", a)[0]
-        u2i = lambda a: ui(pI(a))
-
         if mnemo == "beq":
             v0 = get_register(ops[0])
             v1 = get_register(ops[1])
@@ -11546,11 +11489,11 @@ class XTENSA(Architecture):
             v0 = get_register(ops[0])
             taken, reason = v0 != 0, "{:s}!=0".format(ops[0])
         elif mnemo == "bge":
-            v0 = u2i(get_register(ops[0]))
-            v1 = u2i(get_register(ops[1]))
+            v0 = u2i(get_register(ops[0]), 32)
+            v1 = u2i(get_register(ops[1]), 32)
             taken, reason = v0 >= v1, "{:s}>={:s} (signed)".format(ops[0], ops[1])
         elif mnemo == "bgei":
-            v0 = u2i(get_register(ops[0]))
+            v0 = u2i(get_register(ops[0]), 32)
             v1 = int(ops[1])
             taken, reason = v0 >= v1, "{:s}>={:s} (signed)".format(ops[0], ops[1])
         elif mnemo == "bgeu":
@@ -11565,11 +11508,11 @@ class XTENSA(Architecture):
             v0 = get_register(ops[0])
             taken, reason = (v0 >> 31) == 0, "({:s}>>31)==0".format(ops[0])
         elif mnemo == "blt":
-            v0 = u2i(get_register(ops[0]))
-            v1 = u2i(get_register(ops[1]))
+            v0 = u2i(get_register(ops[0]), 32)
+            v1 = u2i(get_register(ops[1]), 32)
             taken, reason = v0 < v1, "{:s}<{:s} (signed)".format(ops[0], ops[1])
         elif mnemo == "blti":
-            v0 = u2i(get_register(ops[0]))
+            v0 = u2i(get_register(ops[0]), 32)
             v1 = int(ops[1])
             taken, reason = v0 < v1, "{:s}<{:s} (signed)".format(ops[0], ops[1])
         elif mnemo == "bltu":
@@ -11875,10 +11818,6 @@ class LOONGARCH64(Architecture):
             for alias_reg in v.split("/"):
                 alias_inverse[alias_reg] = k
 
-        pQ = lambda a: struct.pack("<Q", a & 0xffff_ffff_ffff_ffff)
-        uq = lambda a: struct.unpack("<q", a)[0]
-        u2i = lambda a: uq(pQ(a))
-
         v0 = get_register(alias_inverse.get(ops[0], ops[0]))
         if v0 is None:
             return False, ""
@@ -12109,18 +12048,14 @@ class ARC(Architecture):
         carry = bool(val & (1 << flags["carry"]))
 
         if len(ops) >= 2:
-            if self.bit_length == 64:
-                u2i = lambda a: struct.unpack("<q", struct.pack("<Q", a & 0xffff_ffff_ffff_ffff))[0]
-            else:
-                u2i = lambda a: struct.unpack("<i", struct.pack("<I", a & 0xffff_ffff))[0]
             v0u = get_register(ops[0])
             if v0u is None:
                 v0u = int(ops[0], 0)
             v1u = get_register(ops[1])
             if v1u is None:
                 v1u = int(ops[1], 0)
-            v0s = u2i(v0u)
-            v1s = u2i(v1u)
+            v0s = u2i(v0u, self.bit_length)
+            v1s = u2i(v1u, self.bit_length)
 
         taken, reason = False, ""
         if mnemo.startswith(("beq", "breq", "jeq")):
@@ -12342,10 +12277,6 @@ class CSKY(Architecture):
 
         carry = bool(val & (1 << flags["carry"]))
 
-        pI = lambda a: struct.pack("<I", a & 0xffff_ffff)
-        ui = lambda a: struct.unpack("<i", a)[0]
-        u2i = lambda a: ui(pI(a))
-
         if mnemo == "bt":
             taken, reason = carry, "C"
         elif mnemo == "bf":
@@ -12357,16 +12288,16 @@ class CSKY(Architecture):
             v0 = get_register(ops[0])
             taken, reason = v0 != 0, "{:s}!=0".format(ops[0])
         elif mnemo == "bhz":
-            v0s = u2i(get_register(ops[0]))
+            v0s = u2i(get_register(ops[0]), 32)
             taken, reason = v0s > 0, "{:s}>0".format(ops[0])
         elif mnemo == "blsz":
-            v0s = u2i(get_register(ops[0]))
+            v0s = u2i(get_register(ops[0]), 32)
             taken, reason = v0s <= 0, "{:s}<=0".format(ops[0])
         elif mnemo == "blz":
-            v0s = u2i(get_register(ops[0]))
+            v0s = u2i(get_register(ops[0]), 32)
             taken, reason = v0s < 0, "{:s}<0".format(ops[0])
         elif mnemo == "bhsz":
-            v0s = u2i(get_register(ops[0]))
+            v0s = u2i(get_register(ops[0]), 32)
             taken, reason = v0s >= 0, "{:s}>=0".format(ops[0])
         return taken, reason
 
@@ -12644,58 +12575,58 @@ def read_memory(addr, length):
         return MemoryCache.read(addr, length, reader=MemoryCache.read_arm32_lpae, namespace="arm32-lpae-swapper")
 
 
-def read_int_from_memory(addr, safe=False):
-    """Return an integer read from memory, or None on error when safe is True."""
+def read_int_from_memory(addr, safe=False, signed=False):
+    """Return an integer read from memory, signed when requested, or None on a safe read error."""
     try:
         # It works even if current_arch is None
         sz = AddressUtil.get_memory_alignment()
         mem = read_memory(addr, sz)
         unpack = {2:u16, 4:u32, 8:u64}[sz]
-        return unpack(mem)
+        return unpack(mem, signed)
     except Exception:
         if safe:
             return None
         raise
 
 
-def read_int8_from_memory(addr, safe=False):
-    """Return a uint_8 read from memory, or None on error when safe is True."""
+def read_int8_from_memory(addr, safe=False, signed=False):
+    """Return an 8-bit integer read from memory, signed when requested, or None on a safe read error."""
     try:
         mem = read_memory(addr, 1)
-        return u8(mem)
+        return u8(mem, signed)
     except Exception:
         if safe:
             return None
         raise
 
 
-def read_int16_from_memory(addr, safe=False):
-    """Return a uint_16 read from memory, or None on error when safe is True."""
+def read_int16_from_memory(addr, safe=False, signed=False):
+    """Return a 16-bit integer read from memory, signed when requested, or None on a safe read error."""
     try:
         mem = read_memory(addr, 2)
-        return u16(mem)
+        return u16(mem, signed)
     except Exception:
         if safe:
             return None
         raise
 
 
-def read_int32_from_memory(addr, safe=False):
-    """Return a uint_32 read from memory, or None on error when safe is True."""
+def read_int32_from_memory(addr, safe=False, signed=False):
+    """Return a 32-bit integer read from memory, signed when requested, or None on a safe read error."""
     try:
         mem = read_memory(addr, 4)
-        return u32(mem)
+        return u32(mem, signed)
     except Exception:
         if safe:
             return None
         raise
 
 
-def read_int64_from_memory(addr, safe=False):
-    """Return a uint_64 read from memory, or None on error when safe is True."""
+def read_int64_from_memory(addr, safe=False, signed=False):
+    """Return a 64-bit integer read from memory, signed when requested, or None on a safe read error."""
     try:
         mem = read_memory(addr, 8)
-        return u64(mem)
+        return u64(mem, signed)
     except Exception:
         if safe:
             return None
@@ -13616,6 +13547,16 @@ def u128(x):
         upper = struct.unpack("<Q", x[8:])[0]
         lower = struct.unpack("<Q", x[:8])[0]
     return (upper << 64) | lower
+
+
+@Cache.cache_this_session
+def u2i(x, bits=64):
+    """Convert an unsigned integer to a signed integer of the specified bit width."""
+    if bits not in (8, 16, 32, 64):
+        raise ValueError("u2i: unsupported bit length: {!r}".format(bits))
+    pack = {8:p8, 16:p16, 32:p32, 64:p64}[bits]
+    unpack = {8:u8, 16:u16, 32:u32, 64:u64}[bits]
+    return unpack(pack(x & ((1 << bits) - 1)), s=True)
 
 
 def is_ascii_string(addr):
@@ -32774,7 +32715,7 @@ class KernelChecksecCommand(GenericCommand):
             return
 
         v1 = read_int32_from_memory(kptr_restrict)
-        v2 = u32(read_memory(sysctl_perf_event_paranoid, 4), s=True)
+        v2 = read_int32_from_memory(sysctl_perf_event_paranoid, signed=True)
         additional = "kernel.kptr_restrict: {:d}, kernel.perf_event_paranoid: {:d}".format(v1, v2)
         if v1 == 0 and v2 <= 1:
             gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Disabled", "bold red"), additional))
@@ -33327,22 +33268,16 @@ class DwarfExceptionHandlerInfoCommand(GenericCommand, BufferingOutput):
         return pos + 1, acc
 
     def read_1sbyte(self, data, pos):
-        pB = lambda a: struct.pack("<B", a & 0xff)
-        ub = lambda a: struct.unpack("<b", a)[0]
-        u2i = lambda a: ub(pB(a))
         acc = data[pos]
-        return pos + 1, u2i(acc)
+        return pos + 1, u2i(acc, 8)
 
     def read_2ubyte(self, data, pos):
         acc = (data[pos + 1] << 8) | data[pos]
         return pos + 2, acc
 
     def read_2sbyte(self, data, pos):
-        pH = lambda a: struct.pack("<H", a & 0xffff)
-        uh = lambda a: struct.unpack("<h", a)[0]
-        u2i = lambda a: uh(pH(a))
         acc = (data[pos + 1] << 8) | data[pos]
-        return pos + 2, u2i(acc)
+        return pos + 2, u2i(acc, 16)
 
     def read_4ubyte(self, data, pos):
         acc = (data[pos + 3] << 24) | (data[pos + 2] << 16)
@@ -33350,12 +33285,9 @@ class DwarfExceptionHandlerInfoCommand(GenericCommand, BufferingOutput):
         return pos + 4, acc
 
     def read_4sbyte(self, data, pos):
-        pI = lambda a: struct.pack("<I", a & 0xffff_ffff)
-        ui = lambda a: struct.unpack("<i", a)[0]
-        u2i = lambda a: ui(pI(a))
         acc = (data[pos + 3] << 24) | (data[pos + 2] << 16)
         acc |= (data[pos + 1] << 8) | data[pos]
-        return pos + 4, u2i(acc)
+        return pos + 4, u2i(acc, 32)
 
     def read_8ubyte(self, data, pos):
         acc = (data[pos + 7] << 56) | (data[pos + 6] << 48)
@@ -33365,9 +33297,6 @@ class DwarfExceptionHandlerInfoCommand(GenericCommand, BufferingOutput):
         return pos + 8, acc
 
     def read_8sbyte(self, data, pos):
-        pQ = lambda a: struct.pack("<Q", a & 0xffff_ffff_ffff_ffff)
-        uq = lambda a: struct.unpack("<q", a)[0]
-        u2i = lambda a: uq(pQ(a))
         acc = (data[pos + 7] << 56) | (data[pos + 6] << 48)
         acc |= (data[pos + 5] << 40) | (data[pos + 4] << 32)
         acc |= (data[pos + 3] << 24) | (data[pos + 2] << 16)
@@ -36260,10 +36189,7 @@ class ContextRegistersCommand(GenericCommand):
         if not current_arch.is_syscall(insn_prev):
             return
 
-        if current_arch.ptrsize == 4:
-            val = struct.unpack("<i", struct.pack("<I", regvalue))[0]
-        elif current_arch.ptrsize == 8:
-            val = struct.unpack("<q", struct.pack("<Q", regvalue))[0]
+        val = u2i(regvalue, current_arch.ptrsize * 8)
         val = -val
 
         einfo = ErrnoCommand.get_errno_dict().get(val)
@@ -59075,11 +59001,11 @@ class ErrnoCommand(GenericCommand, BufferingOutput):
 
         if val > 0xffff:
             if current_arch and current_arch.ptrsize == 4:
-                val = struct.unpack("<i", struct.pack("<I", val))[0]
+                val = u2i(val, 32)
             elif current_arch and current_arch.ptrsize == 8:
-                val = struct.unpack("<q", struct.pack("<Q", val))[0]
+                val = u2i(val)
             elif current_arch is None:
-                val = struct.unpack("<q", struct.pack("<Q", val))[0]
+                val = u2i(val)
             else:
                 err("Not supported this pointer size")
                 return
@@ -59259,14 +59185,7 @@ class UnsignedCommand(GenericCommand):
 
             mask = (1 << shift) - 1
             unsigned = value & mask
-            if i == 0:
-                signed = struct.unpack("<b", struct.pack("<B", unsigned))[0]
-            elif i == 1:
-                signed = struct.unpack("<h", struct.pack("<H", unsigned))[0]
-            elif i == 2:
-                signed = struct.unpack("<i", struct.pack("<I", unsigned))[0]
-            elif i == 3:
-                signed = struct.unpack("<q", struct.pack("<Q", unsigned))[0]
+            signed = u2i(unsigned, shift)
             gef_print("{:d} byte unsigned: {:#x} ({:#x})".format(2 ** i, unsigned, signed))
         return
 
@@ -59474,15 +59393,11 @@ class ConvertCommand(GenericCommand, BufferingOutput):
         return
 
     def signed(self, value):
-        pQ = lambda a: struct.pack("<Q", a & 0xffff_ffff_ffff_ffff)
-        uq = lambda a: struct.unpack("<q", a)[0]
-        p = lambda a: struct.pack("<I", a & 0xffff_ffff)
-        ui = lambda a: struct.unpack("<i", a)[0]
         try:
             value = int(value, 0)
             self.out.append(titlify("signed"))
-            self.out.append("u2i-64:         {:#018x}".format(uq(pQ(value))))
-            self.out.append("u2i-32:         {:#010x}".format(ui(p(value))))
+            self.out.append("u2i-64:         {:#018x}".format(u2i(value)))
+            self.out.append("u2i-32:         {:#010x}".format(u2i(value, 32)))
         except ValueError:
             pass
         return
@@ -74733,7 +74648,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
                 handler = "SIG_DFL"
             elif handler == 1:
                 handler = "SIG_IGN"
-            elif handler == -1:
+            elif handler == AddressUtil.get_vmem_end_mask():
                 handler = "SIG_ERR"
             else:
                 handler = "{:#018x}".format(handler)
@@ -75661,30 +75576,25 @@ class KernelKeyringCommand(GenericCommand, BufferingOutput):
                 entries.append((task, pid, comm, cred, roots))
         return entries
 
-    @staticmethod
-    def signed(value, bits):
-        sign = 1 << (bits - 1)
-        return value - (1 << bits) if value & sign else value
-
     def read_key(self, address):
         try:
             usage = read_int32_from_memory(address)
-            serial = self.signed(read_int32_from_memory(address + 4), 32)
+            serial = read_int32_from_memory(address + 4, signed=True)
             type_addr = read_int_from_memory(address + self.offset_type)
             type_name = self.type_name(type_addr)
             description_addr = read_int_from_memory(address + self.offset_description)
             description = read_cstring_from_memory(description_addr, max_length=0x100) if description_addr else None
             if self.sizeof_expiry == 8:
-                expiry = self.signed(read_int64_from_memory(address + self.offset_expiry), 64)
+                expiry = read_int64_from_memory(address + self.offset_expiry, signed=True)
             else:
-                expiry = self.signed(read_int32_from_memory(address + self.offset_expiry), 32)
+                expiry = read_int32_from_memory(address + self.offset_expiry, signed=True)
             uid = read_int32_from_memory(address + self.offset_uid)
             gid = read_int32_from_memory(address + self.offset_gid)
             perm = read_int32_from_memory(address + self.offset_perm)
             datalen = read_int16_from_memory(address + self.offset_datalen)
             state = None
             if self.offset_state is not None:
-                state = self.signed(read_int16_from_memory(address + self.offset_state), 16)
+                state = read_int16_from_memory(address + self.offset_state, signed=True)
             flags = read_int_from_memory(address + self.offset_flags)
             payload = read_int_from_memory(address + self.offset_payload)
         except (gdb.MemoryError, OverflowError):
@@ -82243,7 +82153,7 @@ class KernelWorkqueueCommand(GenericCommand, BufferingOutput):
             offset = self.member_offset("struct global_cwq", "cpu")
         if offset is not None:
             try:
-                return u32(read_memory(pool + offset, 4), s=True)
+                return read_int32_from_memory(pool + offset, signed=True)
             except gdb.MemoryError:
                 return None
 
@@ -82258,7 +82168,7 @@ class KernelWorkqueueCommand(GenericCommand, BufferingOutput):
             if tail not in (0, ptrsize, align(ptrsize + 4, ptrsize), align(ptrsize + 8, ptrsize)):
                 continue
             try:
-                values = [u32(read_memory(pool + offset + 4 * i, 4), s=True)
+                values = [read_int32_from_memory(pool + offset + 4 * i, signed=True)
                           for i in range(field_count)]
             except gdb.MemoryError:
                 continue
@@ -93487,17 +93397,11 @@ class Hash:
             return h & 0xffff_ffff
 
         def cityhash32_len0to4(self, data, seed):
-
-            def signed_byte(b):
-                if b >= 128:
-                    return b - 256
-                return b
-
             b = seed & 0xffff_ffff
             c = 9
             n = len(data)
             for i in range(n):
-                v = signed_byte(data[i]) & 0xffff_ffff
+                v = u2i(data[i], 8) & 0xffff_ffff
                 b = (b * self.c1 + v) & 0xffff_ffff
                 c ^= b
             return self.cityhash32_fmix(
@@ -100550,10 +100454,7 @@ class Hash:
             return x
 
         def signed_char(self, x):
-            x &= 0xff
-            if x & 0x80:
-                return x - 0x100
-            return x
+            return u2i(x, 8)
 
         def update(self, data):
             if not isinstance(data, (bytes, bytearray, memoryview)):
@@ -135259,12 +135160,12 @@ class SlobDumpCommand(GenericCommand, BufferingOutput):
         current = head
         while True:
             base = current & get_pagesize_mask_high()
-            units = struct.unpack("<h", read_memory(current, 2))[0]
+            units = read_int16_from_memory(current, signed=True)
             if units < 0:
                 next = -units
                 units = 1
             else:
-                next = struct.unpack("<h", read_memory(current + 2, 2))[0]
+                next = read_int16_from_memory(current + 2, signed=True)
             freelist.append([current, units])
             current = base + next * 2
             if (current & 0xfff) == 0:
@@ -147491,10 +147392,6 @@ class V8ListMapsCommand(GenericCommand, BufferingOutput):
         ret = ExecSyscall(syscall_table.name_table["open"].nr, [current_arch.sp, flags, 0o666]).exec_code()
         file_fd = ret["reg"][current_arch.return_register]
         PatchCommand.PatchInfo.revert_to_tag(p.tag, silent=True)
-
-        def u2i(x):
-            x = struct.pack("<Q", x & 0xffff_ffff_ffff_ffff)
-            return struct.unpack("<q", x)[0]
 
         if u2i(file_fd) < 0:
             # fail, revert dup
@@ -162325,9 +162222,6 @@ class PageCommand(GenericCommand):
                 err("Could not find memstart_addr")
                 return None
 
-            pQ = lambda a: struct.pack("<Q", a & 0xffff_ffff_ffff_ffff)
-            uq = lambda a: struct.unpack("<q", a)[0]
-            u2i = lambda a: uq(pQ(a))
             PageCommand.memstart_addr = u2i(memstart_addr)
 
         elif is_arm32():
@@ -163437,13 +163331,6 @@ class PageInfoCommand(GenericCommand):
             flags_str = flags_dic.get(type_value, "none")
         return flags_str
 
-    @staticmethod
-    def u32_to_s32(val):
-        val &= 0xffffffff
-        if val & 0x80000000:
-            return val - 0x100000000
-        return val
-
     def get_head_page(self, page_addr):
         compound_info = read_int_from_memory(page_addr + current_arch.ptrsize * 1)
         if (compound_info & 1) == 0:
@@ -163462,14 +163349,14 @@ class PageInfoCommand(GenericCommand):
 
     @staticmethod
     def get_slot6_kind(slot6_raw):
-        slot6_s32 = PageInfoCommand.u32_to_s32(slot6_raw)
+        slot6_s32 = u2i(slot6_raw, 32)
         kversion = Kernel.kernel_version()
 
         if kversion >= "6.12":
-            pgty_mapcount_underflow_shifted = PageInfoCommand.u32_to_s32(0xff << 24)
+            pgty_mapcount_underflow_shifted = u2i(0xff << 24, 32)
             has_type = slot6_s32 < pgty_mapcount_underflow_shifted
         elif  kversion >= "6.11":
-            page_mapcount_reserve = PageInfoCommand.u32_to_s32(0xffff0000)
+            page_mapcount_reserve = u2i(0xffff0000, 32)
             has_type = slot6_s32 < page_mapcount_reserve
         else:
             page_mapcount_reserve = -128
@@ -163483,7 +163370,7 @@ class PageInfoCommand(GenericCommand):
         if slot6_kind != "mapcount":
             return None, None, None
 
-        mapcount_raw_s32 = self.u32_to_s32(slot6_raw)
+        mapcount_raw_s32 = u2i(slot6_raw, 32)
         userspace_mapcount = mapcount_raw_s32 + 1
 
         # Defensive clamp. In normal cases, _mapcount raw starts at -1,
@@ -166197,10 +166084,6 @@ class KmallocAllocatedByCommand(GenericCommand):
         return
 
     def test_syscall(self, breakpoints):
-
-        def u2i(x):
-            x = struct.pack("<Q", x & 0xffff_ffff_ffff_ffff)
-            return struct.unpack("<q", x)[0]
 
         def gen_testcase():
             # It is implemented with a generator because
