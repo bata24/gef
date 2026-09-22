@@ -151925,10 +151925,13 @@ class XSecureMemAddrCommand(GenericCommand):
             return None
 
         elif args.virt:
-            target_phys = AddrMap.v2p(args.location, force_secure=True, verbose=args.verbose)
+            maps = AddrMap.get_maps(force_secure=True, verbose=args.verbose)
+            target_phys = AddrMap.v2p(args.location, maps=maps)
             if target_phys is None:
                 err("Could not find physical address")
                 return None
+            if args.verbose:
+                info("v2p: {:#x} -> {:#x}".format(args.location, target_phys))
 
             if SecureMemory.contains(target_phys):
                 return target_phys - sm.sm_base
@@ -152211,7 +152214,11 @@ class BreakSecureMemAddrCommand(GenericCommand):
                 if virt_addrs:
                     return
 
-        virt_addrs = AddrMap.p2v(args.location, force_secure=True, verbose=args.verbose)
+        maps = AddrMap.get_maps(force_secure=True, verbose=args.verbose)
+        virt_addrs = AddrMap.p2v(args.location, maps=maps)
+        if args.verbose:
+            for virt_addr in virt_addrs:
+                info("p2v: {:#x} -> {:#x}".format(args.location, virt_addr))
         if virt_addrs == []:
             warn("Could not find virtual address")
             return
@@ -156106,7 +156113,7 @@ class AddrMap:
         return next((entry for entry in maps if entry.contains_physical(address)), None)
 
     @staticmethod
-    def v2p(address, force_secure=None, verbose=False, maps=None):
+    def v2p(address, force_secure=None, maps=None):
         """Translate a virtual address to a physical address."""
 
         # QEMU can translate the active address space without a full page-table walk.
@@ -156121,36 +156128,37 @@ class AddrMap:
                 pass
 
         if maps is None:
-            maps = AddrMap.get_maps(force_secure=force_secure, verbose=verbose)
+            maps = AddrMap.get_maps(force_secure=force_secure)
         if not maps:
             return None
         entry = AddrMap.find_virtual(address, maps=maps)
-        paddr = entry.v2p(address) if entry is not None else None
-        if verbose and paddr is not None:
-            info("v2p: {:#x} -> {:#x}".format(address, paddr))
-        return paddr
+        return entry.v2p(address) if entry is not None else None
 
     @staticmethod
-    def p2v(address, force_secure=None, verbose=False, maps=None):
+    def p2v(address, force_secure=None, maps=None):
         """Return every virtual address mapped to a physical address."""
 
+        return [result[0] for result in AddrMap.p2v_mappings(
+            address, force_secure=force_secure, maps=maps,
+        )]
+
+    @staticmethod
+    def p2v_mappings(address, force_secure=None, maps=None):
+        """Return every virtual address and mapping associated with a physical address."""
+
         def p2v_from_map():
-            vaddrs = []
+            results = []
             for entry in maps:
                 vaddr = entry.p2v(address)
                 if vaddr is not None:
-                    vaddrs.append(vaddr)
-            return vaddrs
+                    results.append((vaddr, entry))
+            return results
 
         if maps is None:
-            maps = AddrMap.get_maps(force_secure=force_secure, verbose=verbose)
+            maps = AddrMap.get_maps(force_secure=force_secure)
         if not maps:
             return []
-        vaddrs = p2v_from_map()
-        if verbose:
-            for vaddr in vaddrs:
-                info("p2v: {:#x} -> {:#x}".format(address, vaddr))
-        return vaddrs
+        return p2v_from_map()
 
 
 @register_command
@@ -156229,19 +156237,25 @@ class Phys2VirtCommand(GenericCommand):
             elif args.force_secure:
                 force_secure = True
 
-        vaddrs = AddrMap.p2v(args.address, force_secure=force_secure, verbose=args.verbose)
+        maps = AddrMap.get_maps(force_secure=force_secure, verbose=args.verbose)
+        mappings = AddrMap.p2v_mappings(args.address, maps=maps)
 
         if args.verbose:
-            loop_max = len(vaddrs)
+            for result in mappings:
+                info("p2v: {:#x} -> {:#x}".format(args.address, result[0]))
+
+        if args.verbose:
+            loop_max = len(mappings)
         else:
-            loop_max = min(len(vaddrs), 10)
+            loop_max = min(len(mappings), 10)
 
         if loop_max == 0:
             gef_print("Not mapped as virt")
         else:
             for i in range(loop_max):
-                gef_print("Phys: {:#x} -> Virt: {:#x}".format(args.address, vaddrs[i]))
-            gef_print("Total {:d} results are found".format(len(vaddrs)))
+                vaddr, entry = mappings[i]
+                gef_print("Phys: {:#x} -> Virt: {:#x} [{!s}]".format(args.address, vaddr, entry.permission))
+            gef_print("Total {:d} results are found".format(len(mappings)))
         return
 
 
