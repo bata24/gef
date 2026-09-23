@@ -13020,6 +13020,10 @@ class QemuMonitor:
             raise ValueError("Unsupported MMU mode: {!r}".format(target_mode))
 
         original_mode = QemuMonitor.get_current_mmu_mode()
+        if original_mode is None:
+            # not QEMU-system/VMware: memory is always virtual
+            yield target_mode == "virt"
+            return
         if original_mode not in ("virt", "phys"):
             yield False
             return
