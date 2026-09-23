@@ -309,6 +309,8 @@ For a comprehensive list and additional details, see [docs/SUPPORTED-MODE.md](do
     - ![](images/kuaf-watch.png)
 - `kmalloc-allocated-by`: calls a predefined set of system calls and prints structures allocated by `kmalloc` or freed by `kfree`.
     - ![](images/kmalloc-allocated-by.png)
+- `kpage-watch`: tracks the alloc/free/slab lifecycle of a physical page (PFN) for cross-cache analysis.
+    - ![](images/kpage-watch.png)
 - `ktrace`: traces kernel functions and arguments.
     - ![](images/ktrace.png)
 - `xsm`: dumps secure memory when gdb is in normal world.

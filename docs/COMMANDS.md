@@ -11566,6 +11566,49 @@ Tracing `kmem_cache_alloc` type is not supported.
 This command requires CONFIG_RANDSTRUCT=n.
 ```
 
+## `kpage-watch`
+
+Track the alloc/free/slab lifecycle of a physical page (PFN) for cross-cache analysis.
+
+
+### Syntax
+
+```text
+usage: kpage-watch [-h] [-p PAGE] [--pfn PFN] [-s] [-t] [ADDRESS ...]
+
+positional arguments:
+  ADDRESS              the virtual address(es) whose backing page is watched.
+
+options:
+  -h, --help           show this help message and exit
+  -p, --page PAGE      watch by `struct page` address instead of a virtual address (can be repeated).
+  --pfn PFN            watch by page frame number (PFN) (can be repeated).
+  -s, --stop-on-reuse  stop at the first reuse (a re-allocation after a free).
+  -t, --backtrace      display a backtrace for each event.
+```
+
+### Examples
+
+```gdb
+kpage-watch 0xffff888012345600                           # watch the page backing this virtual address
+kpage-watch 0xffff888012345600 0xffff888012346000        # watch several pages at once
+kpage-watch -p 0xffffea000048d140 -p 0xffffea000048d180  # watch by struct page address
+kpage-watch --pfn 0x12345 --pfn 0x12346                  # watch by PFN
+kpage-watch 0xffff888012345600 -s                        # stop at the first reuse
+```
+
+### Notes
+
+```text
+Disable `-enable-kvm` option for qemu-system (#PF may occur).
+Append `tsc=unstable` option for kernel cmdline.
+ADDRESS, --page and --pfn can be mixed; each resolves to one watched PFN.
+This records events touching the watched PFNs, so the page-allocator/SLUB/page-table boundary is visible.
+Only events reached while continuing are recorded; the history before the command started is not.
+On SLAB the slab-assign hook may be missing (its helpers are inlined); page alloc/free and slab-release are still shown.
+This command requires CONFIG_RANDSTRUCT=n.
+```
+
 ## `ktrace`
 
 Trace kernel functions and arguments.
