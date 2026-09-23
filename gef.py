@@ -178225,7 +178225,7 @@ class GefDumpCommandsCommand(GenericCommand):
         summary = self.get_summary(instance)
 
         lines = []
-        lines.append("## {:s}".format(command_name))
+        lines.append("## {:s}".format(self.make_inline_code(command_name)))
         lines.append("")
 
         if summary:

@@ -53,7 +53,7 @@
 - [99. GEF Maintenance Command](#99-gef-maintenance-command)
 
 # 01-a. Debugging Support - Context
-## context
+## `context`
 
 Display various information every time GDB hits a breakpoint.
 
@@ -82,7 +82,7 @@ If "on" or "off" is specified, that operation takes precedence.
 There are various configuration options that modify the behavior of context. You can list them with gef config context.
 ```
 
-## context-args
+## `context-args`
 
 Context internal command to display arguments.
 
@@ -98,7 +98,7 @@ options:
                         ignore redirect settings.
 ```
 
-## context-code
+## `context-code`
 
 Context internal command to display code.
 
@@ -114,7 +114,7 @@ options:
                         ignore redirect settings.
 ```
 
-## context-extra
+## `context-extra`
 
 Context internal command to display extra information or execute command.
 
@@ -130,7 +130,7 @@ options:
                         ignore redirect settings.
 ```
 
-## context-legend
+## `context-legend`
 
 Context internal command to display the legend.
 
@@ -146,7 +146,7 @@ options:
                         ignore redirect settings.
 ```
 
-## context-mem-access
+## `context-mem-access`
 
 Context internal command to display accessing memory.
 
@@ -163,7 +163,7 @@ options:
                         ignore redirect settings.
 ```
 
-## context-mem-watch
+## `context-mem-watch`
 
 Context internal command to display watching memory.
 
@@ -180,7 +180,7 @@ options:
                         ignore redirect settings.
 ```
 
-## context-regs
+## `context-regs`
 
 Context internal command to display registers.
 
@@ -196,7 +196,7 @@ options:
                         ignore redirect settings.
 ```
 
-## context-source
+## `context-source`
 
 Context internal command to display source.
 
@@ -215,7 +215,7 @@ options:
                         ignore redirect settings.
 ```
 
-## context-stack
+## `context-stack`
 
 Context internal command to display stack.
 
@@ -231,7 +231,7 @@ options:
                         ignore redirect settings.
 ```
 
-## context-threads
+## `context-threads`
 
 Context internal command to display threads.
 
@@ -250,7 +250,7 @@ options:
                         ignore redirect settings.
 ```
 
-## context-trace
+## `context-trace`
 
 Context internal command to display backtrace.
 
@@ -269,7 +269,7 @@ options:
                         ignore redirect settings.
 ```
 
-## dereference
+## `dereference`
 
 Dereference recursively from an address and display information.
 
@@ -337,7 +337,7 @@ e.g., `gef config dereference.blacklist "[ [0xffffffffc9000000, 0xffffffffc90010
 then `gef save`.
 ```
 
-## registers
+## `registers`
 
 Display many or all register values from current architecture.
 
@@ -363,7 +363,7 @@ registers
 registers $eax $eip $esp
 ```
 
-## syscall-args
+## `syscall-args`
 
 Get the syscall name and arguments based on the register values in the current state.
 
@@ -381,7 +381,7 @@ options:
 ```
 
 # 01-b. Debugging Support - Breakpoint
-## break-if-not-taken
+## `break-if-not-taken`
 
 Set a breakpoint which breaks if branch is not taken.
 
@@ -399,7 +399,7 @@ options:
   --hw        use hardware breakpoint.
 ```
 
-## break-if-taken
+## `break-if-taken`
 
 Set a breakpoint which breaks if branch is taken.
 
@@ -417,7 +417,7 @@ options:
   --hw        use hardware breakpoint.
 ```
 
-## break-rva
+## `break-rva`
 
 Set a breakpoint at relative offset from codebase.
 
@@ -435,7 +435,7 @@ options:
   -h, --help  show this help message and exit
 ```
 
-## command-break
+## `command-break`
 
 Set a breakpoint which executes user-defined command silently and continue, if hit.
 
@@ -459,7 +459,7 @@ options:
 command-break 0x55555555aab9 "hexdump -n $sp+0x120"
 ```
 
-## entry-break
+## `entry-break`
 
 Try to find best entry point and set a temporary breakpoint on it.
 
@@ -471,7 +471,7 @@ Try to find best entry point and set a temporary breakpoint on it.
 usage: entry-break
 ```
 
-## load-break
+## `load-break`
 
 Break if something is loaded (wrapper of `set stop-on-solib-events 1`).
 
@@ -485,7 +485,7 @@ options:
   -h, --help  show this help message and exit
 ```
 
-## main-break
+## `main-break`
 
 Set a breakpoint at the beginning of main with or without symbols, then continue.
 
@@ -496,7 +496,7 @@ Set a breakpoint at the beginning of main with or without symbols, then continue
 usage: main-break
 ```
 
-## multi-break
+## `multi-break`
 
 Set multiple breakpoints easily.
 
@@ -517,7 +517,7 @@ This command is intended to improve the readability of history
 by allowing you to set multiple breakpoints on a single line.
 ```
 
-## regdump-break
+## `regdump-break`
 
 Set a breakpoint which dumps registers silently and continue, if hit.
 
@@ -544,7 +544,7 @@ regdump-break 0x55555555aab9 -t "state changed" -r rax
 ```
 
 # 01-c. Debugging Support - Basic Command Extension
-## continue-for-qemu-user
+## `continue-for-qemu-user`
 
 `c` wrapper to resolve the Ctrl+C problem for qemu-user or Intel Pin.
 
@@ -570,7 +570,7 @@ Nested `c` command causes a problem, so in that case gef executes the original c
 Internally, SIGINT is monitored in a forked child process (default) or another thread.
 ```
 
-## down
+## `down`
 
 `down` wrapper.
 
@@ -587,7 +587,7 @@ options:
   -h, --help  show this help message and exit
 ```
 
-## multi-line
+## `multi-line`
 
 Execute multiple GDB commands in sequence.
 
@@ -617,7 +617,7 @@ multi-line x/4xg $rax; --t TAG; x/4xg $rbx   # `--t TAG`:  bold white line (`-`)
 multi-line x/4xg $rax; ---t TAG; x/4xg $rbx  # `---t TAG`: bold white line (`=`) separator with TAG
 ```
 
-## nexti-for-qemu-user
+## `nexti-for-qemu-user`
 
 `ni` wrapper for some specific architectures (OpenRISC 1000 and CRIS).
 
@@ -645,7 +645,7 @@ Target architecture:
   CRIS: si/ni commands don't work well. so GEF uses breakpoints to simulate.
 ```
 
-## stepi-for-kgdb
+## `stepi-for-kgdb`
 
 `si` wrapper for AArch64 KGDB that avoids stepping into pending IRQ handlers.
 
@@ -667,7 +667,7 @@ Temporarily masks IRQ before `stepi`, then restores the original state
 unless the stepped instruction intentionally modified DAIF.I.
 ```
 
-## stepi-for-qemu-user
+## `stepi-for-qemu-user`
 
 `si` wrapper for some specific architectures (OpenRISC 1000 and CRIS).
 
@@ -695,7 +695,7 @@ Target architecture:
   CRIS: si/ni commands don't work well. so GEF uses breakpoints to simulate.
 ```
 
-## time
+## `time`
 
 Measure the time of the GDB command.
 
@@ -713,7 +713,7 @@ options:
   -h, --help  show this help message and exit
 ```
 
-## up
+## `up`
 
 `up` wrapper.
 
@@ -731,7 +731,7 @@ options:
 ```
 
 # 01-d. Debugging Support - Execution
-## call-trace
+## `call-trace`
 
 Trace call, ret, and syscall using exec-until.
 
@@ -748,7 +748,7 @@ options:
   -N, --no-file-output  disable writing trace output to a file.
 ```
 
-## exec-until
+## `exec-until`
 
 The base command to execute until specific condition.
 
@@ -783,7 +783,7 @@ exec-until secure-world                         # execute until secure world (AR
 exec-until region-change                        # execute until different region (e.g., binary itself -> libc)
 ```
 
-## exec-until all-branch
+## `exec-until all-branch`
 
 Execute until call/jump/ret instruction.
 
@@ -805,7 +805,7 @@ options:
   -T, --only-not-taken  break only if jump will be not taken.
 ```
 
-## exec-until call
+## `exec-until call`
 
 Execute until call instruction.
 
@@ -825,7 +825,7 @@ options:
                         the address to exclude from breakpoints.
 ```
 
-## exec-until cond
+## `exec-until cond`
 
 Execute until specified condition is filled.
 
@@ -856,7 +856,7 @@ exec-until cond "*(int*)$rbx==0x12"             # memory access is supported
 exec-until cond "$ALL_REG==0x34"                # compare with all regs. e.g., `($rax==0x34||$rbx==0x34||...)`
 ```
 
-## exec-until indirect-branch
+## `exec-until indirect-branch`
 
 Execute until indirect call/jmp instruction (x64/x86 only).
 
@@ -878,7 +878,7 @@ options:
   -T, --only-not-taken  break only if jump will be not taken.
 ```
 
-## exec-until jmp
+## `exec-until jmp`
 
 Execute until jmp instruction.
 
@@ -900,7 +900,7 @@ options:
   -T, --only-not-taken  break only if jump will be not taken.
 ```
 
-## exec-until keyword
+## `exec-until keyword`
 
 Execute until specified keyword instruction.
 
@@ -931,7 +931,7 @@ exec-until keyword "(push|pop) +(r[a-d]x|r[ds]i|r[sb]p)"  # another example
 exec-until keyword "mov +rax, QWORD PTR \\["              # another example (need double escape)
 ```
 
-## exec-until libc-code
+## `exec-until libc-code`
 
 Execute until instruction in libc code.
 
@@ -951,7 +951,7 @@ options:
                         the address to exclude from breakpoints.
 ```
 
-## exec-until memaccess
+## `exec-until memaccess`
 
 Execute until memory access instruction.
 
@@ -971,7 +971,7 @@ options:
                         the address to exclude from breakpoints.
 ```
 
-## exec-until region-change
+## `exec-until region-change`
 
 Execute until different region.
 
@@ -990,7 +990,7 @@ options:
                         the address to exclude from breakpoints.
 ```
 
-## exec-until ret
+## `exec-until ret`
 
 Execute until ret instruction.
 
@@ -1010,7 +1010,7 @@ options:
                         the address to exclude from breakpoints.
 ```
 
-## exec-until secure-world
+## `exec-until secure-world`
 
 Execute until instruction in the secure-world (ARM/ARM64 only).
 
@@ -1029,7 +1029,7 @@ options:
                         the address to exclude from breakpoints.
 ```
 
-## exec-until syscall
+## `exec-until syscall`
 
 Execute until syscall instruction.
 
@@ -1051,7 +1051,7 @@ options:
                         the address to exclude from breakpoints.
 ```
 
-## exec-until user-code
+## `exec-until user-code`
 
 Execute until instruction in user-code.
 
@@ -1071,7 +1071,7 @@ options:
                         the address to exclude from breakpoints.
 ```
 
-## strings-continue
+## `strings-continue`
 
 Single-step and print ASCII strings referenced by general-purpose registers.
 
@@ -1098,7 +1098,7 @@ Stops on a user breakpoint, a signal, inferior exit, or Ctrl+C.
 Duplicate strings are suppressed for each invocation.
 ```
 
-## xskip
+## `xskip`
 
 Skip instructions easily.
 
@@ -1115,7 +1115,7 @@ options:
   -h, --help  show this help message and exit
 ```
 
-## xuntil
+## `xuntil`
 
 Execute until specified address easily.
 
@@ -1135,7 +1135,7 @@ options:
 ```
 
 # 01-e. Debugging Support - Assemble
-## asm
+## `asm`
 
 Assemble inline code using Keystone.
 
@@ -1182,7 +1182,7 @@ asm -a SPARC -m 64 -e "add %g1, %g2, %g3"
 asm -a S390X -m 64 -e "a %r0, 4095(%r15,%r1)"
 ```
 
-## asm-list
+## `asm-list`
 
 List general instructions by capstone (x64/x86 only).
 
@@ -1226,7 +1226,7 @@ asm-list -a X86 -m 16
 - 62 (EVEX prefix) is ignored
 ```
 
-## capstone-disassemble
+## `capstone-disassemble`
 
 Use capstone disassembly framework to disassemble code.
 
@@ -1265,7 +1265,7 @@ Available architectures and modes:
  - X86      16 / 32 / 64
 ```
 
-## dasm
+## `dasm`
 
 Disassemble inline code using Capstone.
 
@@ -1318,7 +1318,7 @@ dasm -a HPPA -m 32 -e "0fc01299" # capstone v6.x~
 dasm -a HPPA -m 64 -e "0fc01299" # capstone v6.x~
 ```
 
-## ii
+## `ii`
 
 Shortcut `x/50i $pc` with opcode bytes.
 
@@ -1337,7 +1337,7 @@ options:
 ```
 
 # 01-f. Debugging Support - Context Extension
-## comment
+## `comment`
 
 The base command to add, remove, list or clear the comment.
 
@@ -1360,7 +1360,7 @@ command:
 Comments are temporary only. Note that it will be deleted when GDB exits.
 ```
 
-## comment add
+## `comment add`
 
 Add a comment to specific address.
 
@@ -1384,7 +1384,7 @@ options:
 Comments are temporary only. Note that it will be deleted when GDB exits.
 ```
 
-## comment clear
+## `comment clear`
 
 Clear all comments.
 
@@ -1404,7 +1404,7 @@ options:
 Comments are temporary only. Note that it will be deleted when GDB exits.
 ```
 
-## comment list
+## `comment list`
 
 List the comments.
 
@@ -1424,7 +1424,7 @@ options:
 Comments are temporary only. Note that it will be deleted when GDB exits.
 ```
 
-## comment remove
+## `comment remove`
 
 Remove the specified comment.
 
@@ -1448,7 +1448,7 @@ options:
 Comments are temporary only. Note that it will be deleted when GDB exits.
 ```
 
-## extra
+## `extra`
 
 The base command to add, remove, list or clear user specified command to `context extra`.
 
@@ -1465,7 +1465,7 @@ command:
   {add,remove,list,clear}
 ```
 
-## extra add
+## `extra add`
 
 Add user specified command to execute when each step.
 
@@ -1482,7 +1482,7 @@ options:
   -h, --help  show this help message and exit
 ```
 
-## extra clear
+## `extra clear`
 
 Clear all user specified commands to execute when each step.
 
@@ -1496,7 +1496,7 @@ options:
   -h, --help  show this help message and exit
 ```
 
-## extra list
+## `extra list`
 
 List user specified command to execute when each step.
 
@@ -1510,7 +1510,7 @@ options:
   -h, --help  show this help message and exit
 ```
 
-## extra remove
+## `extra remove`
 
 Remove user specified command to execute when each step.
 
@@ -1527,7 +1527,7 @@ options:
   -h, --help  show this help message and exit
 ```
 
-## highlight
+## `highlight`
 
 The base command to highlight user-defined text matches, which modifies GEF output universally.
 
@@ -1544,7 +1544,7 @@ command:
   {add,remove,list,clear}
 ```
 
-## highlight add
+## `highlight add`
 
 Add a match to the highlight table.
 
@@ -1574,7 +1574,7 @@ highlight add "call   rcx" bold yellow
 use config `gef config highlight.regex true` if need regex.
 ```
 
-## highlight clear
+## `highlight clear`
 
 Clear the highlight table.
 
@@ -1588,7 +1588,7 @@ options:
   -h, --help  show this help message and exit
 ```
 
-## highlight list
+## `highlight list`
 
 Display the current highlight table with matches to colors.
 
@@ -1602,7 +1602,7 @@ options:
   -h, --help  show this help message and exit
 ```
 
-## highlight remove
+## `highlight remove`
 
 Remove a match in the highlight table.
 
@@ -1625,7 +1625,7 @@ options:
 highlight remove "call   rcx"
 ```
 
-## memory
+## `memory`
 
 The base command to watch the memory.
 
@@ -1642,7 +1642,7 @@ command:
   {watch,unwatch,reset,list}
 ```
 
-## memory list
+## `memory list`
 
 List all watchpoints to display in context layout.
 
@@ -1656,7 +1656,7 @@ options:
   -h, --help  show this help message and exit
 ```
 
-## memory reset
+## `memory reset`
 
 Remove all watchpoints.
 
@@ -1670,7 +1670,7 @@ options:
   -h, --help  show this help message and exit
 ```
 
-## memory unwatch
+## `memory unwatch`
 
 Remove address ranges from the memory view.
 
@@ -1694,7 +1694,7 @@ memory unwatch 0x603000
 memory unwatch $sp
 ```
 
-## memory watch
+## `memory watch`
 
 Add address ranges to the memory view.
 
@@ -1721,7 +1721,7 @@ memory watch 0x603000 0x100 byte
 memory watch $sp
 ```
 
-## smart-cpp-function-name
+## `smart-cpp-function-name`
 
 Toggle the setting of `context.smart_cpp_function_name`.
 
@@ -1737,7 +1737,7 @@ options:
 ```
 
 # 01-g. Debugging Support - Syscall
-## call-syscall
+## `call-syscall`
 
 A wrapper for calling syscall easily.
 
@@ -1761,7 +1761,7 @@ options:
 call-syscall write 1 "*(void**)($rsp+0x18)" 15
 ```
 
-## hijack-fd
+## `hijack-fd`
 
 Redirect the file descriptor during execution.
 
@@ -1791,7 +1791,7 @@ hijack-fd 2 /tmp/gef/stderr.txt
 hijack-fd 2 localhost:8000  # determined as the socket by the presence of `:`.
 ```
 
-## killthreads
+## `killthreads`
 
 Invoke pthread_exit(0) for a specific THREAD_ID.
 
@@ -1818,7 +1818,7 @@ options:
 killthreads 2 3   # kill threads that `Thread Id` is 2 or 3
 ```
 
-## mmap
+## `mmap`
 
 Allocate a new memory.
 
@@ -1844,7 +1844,7 @@ mmap 0x10000 0x1000 r-x
 mmap 0 0x1000 _wx        # '_' means '-'
 ```
 
-## mprotect
+## `mprotect`
 
 Change a page permission (default: RWX).
 
@@ -1878,7 +1878,7 @@ By default, the permissions will be changed for the entire map including the spe
 If a size is specified, the permissions will only be changed for the range of the specified address up to the size.
 ```
 
-## munmap
+## `munmap`
 
 Unmap a mapped memory.
 
@@ -1910,7 +1910,7 @@ By default, the entire map containing the specified address is freed.
 If a size is specified, the area from the specified address to that size will be unmapped.
 ```
 
-## syscall-search
+## `syscall-search`
 
 Search for the syscall number for a specified architecture.
 
@@ -1970,7 +1970,7 @@ syscall-search -a ARC -m 64       "^writev?"  # arc64
 syscall-search -a CSKY            "^writev?"  # csky
 ```
 
-## xtap
+## `xtap`
 
 Tap read/write syscalls on specific file descriptors and hexdump the transferred data.
 
@@ -2011,7 +2011,7 @@ Hooked syscalls:
 ```
 
 # 01-h. Debugging Support - Emulation
-## angr
+## `angr`
 
 Use angr to find simple constraints.
 
@@ -2054,7 +2054,7 @@ But it assumes that there is a `ret` after `call __stack_chk_fail@plt`.
 Note that it will fail if there is a `ret` before `call __stack_chk_fail@plt`.
 ```
 
-## future-calls
+## `future-calls`
 
 Display future function calls from the current function.
 
@@ -2097,7 +2097,7 @@ This command is a best-effort concrete preview based on Unicorn emulation.
 Only x86, x86-64, ARM32, and ARM64 are supported.
 ```
 
-## unicorn-emulate
+## `unicorn-emulate`
 
 Use Unicorn-Engine to emulate the behavior of the binary (in-process, no script generation).
 
@@ -2148,7 +2148,7 @@ unicorn does not emulate ARM kernel-provided-user-helpers like $pc=0xffff0fe0, 0
 see: https://www.kernel.org/doc/Documentation/arm/kernel_user_helpers.txt
 ```
 
-## unicorn-emulate-script
+## `unicorn-emulate-script`
 
 Use Unicorn-Engine to emulate the behavior of the binary (generates and runs a standalone script).
 
@@ -2197,7 +2197,7 @@ see: https://www.kernel.org/doc/Documentation/arm/kernel_user_helpers.txt
 ```
 
 # 01-i. Debugging Support - Other
-## add-symbol-temporary
+## `add-symbol-temporary`
 
 Add symbol from command temporarily.
 
@@ -2223,7 +2223,7 @@ options:
 add-symbol-temporary your_func_name $rip $rip+0x20
 ```
 
-## follow
+## `follow`
 
 View / modify the follow-fork-mode setting of GDB.
 
@@ -2240,7 +2240,7 @@ options:
   -h, --help      show this help message and exit
 ```
 
-## format-string-helper
+## `format-string-helper`
 
 The helper to search for exploitable format strings.
 
@@ -2258,7 +2258,7 @@ options:
   -v, --verbose         display target functions of breakpoint.
 ```
 
-## onegadget
+## `onegadget`
 
 Invoke `one_gadget`.
 
@@ -2274,7 +2274,7 @@ options:
                         filter valid gadgets for the current register and memory values (x64 only).
 ```
 
-## ropper
+## `ropper`
 
 Invoke ropper to search rop gadgets.
 
@@ -2300,7 +2300,7 @@ ropper --jmp "rax,rcx"     # filter by jmp registers
 ropper --search "pop r?x"  # filter by pop registers
 ```
 
-## rp
+## `rp`
 
 Invoke rp++ (v2) command to search rop gadgets (x64/x86 only).
 
@@ -2332,7 +2332,7 @@ rp --bin -a                                      # show more gadgets
 rp --kernel                                      # only under qemu-system
 ```
 
-## seccomp
+## `seccomp`
 
 Invoke `ceccomp` or `seccomp-tools`.
 
@@ -2358,7 +2358,7 @@ With `-c` or `-s`: Forces GEF to use the specified one.
 ```
 
 # 02-a. Process Information - General
-## elf-info
+## `elf-info`
 
 Display a limited subset of ELF header information.
 
@@ -2389,7 +2389,7 @@ elf-info -a 0x555555554000  # parse memory
 elf-info -e -f /bin/ls      # show `readelf -a FILE | less`
 ```
 
-## fds
+## `fds`
 
 Display opened file descriptors.
 
@@ -2403,7 +2403,7 @@ options:
   -h, --help  show this help message and exit
 ```
 
-## proc-dump
+## `proc-dump`
 
 Dump each file under `/proc/PID`.
 
@@ -2418,7 +2418,7 @@ options:
   -n, --no-pager  do not use the pager.
 ```
 
-## proc-info
+## `proc-info`
 
 Extend the info given by GDB `info proc`.
 
@@ -2433,7 +2433,7 @@ options:
   -h, --help  show this help message and exit
 ```
 
-## ps
+## `ps`
 
 Display a smart list of processes.
 
@@ -2461,7 +2461,7 @@ ps ./a.out
 ```
 
 # 02-b. Process Information - Base Address
-## codebase
+## `codebase`
 
 Display various base addresses.
 
@@ -2479,7 +2479,7 @@ options:
   -q, --quiet     quiet execution.
 ```
 
-## fsbase
+## `fsbase`
 
 Display fsbase address.
 
@@ -2500,7 +2500,7 @@ options:
 This command overwrites original "fs (=tui focus)" command.
 ```
 
-## gsbase
+## `gsbase`
 
 Display gsbase address.
 
@@ -2515,7 +2515,7 @@ options:
   -h, --help  show this help message and exit
 ```
 
-## heapbase
+## `heapbase`
 
 Display heap base address.
 
@@ -2532,7 +2532,7 @@ options:
   -q, --quiet     quiet execution.
 ```
 
-## ld
+## `ld`
 
 Display ld base address.
 
@@ -2549,7 +2549,7 @@ options:
   -q, --quiet     quiet execution.
 ```
 
-## libc
+## `libc`
 
 Display libc base address.
 
@@ -2566,7 +2566,7 @@ options:
   -q, --quiet     quiet execution.
 ```
 
-## tls
+## `tls`
 
 Display TLS base address. Requires glibc.
 
@@ -2601,7 +2601,7 @@ because ExecAsm/ExecSyscall can fail after thread switches.
 ```
 
 # 02-c. Process Information - Memory/Section
-## vmmap
+## `vmmap`
 
 Display a comprehensive layout of the virtual memory mapping.
 
@@ -2630,7 +2630,7 @@ vmmap 0x555555577ab0   # show only lines included specified address
 vmmap --outer          # show qemu-user memory map; only valid in qemu-user mode
 ```
 
-## xfiles
+## `xfiles`
 
 Display all libraries (and sections) loaded by binary.
 
@@ -2656,7 +2656,7 @@ xfiles got plt
 xfiles IO_vtables
 ```
 
-## xinfo
+## `xinfo`
 
 Retrieve and display runtime information for the location(s) given as parameter.
 
@@ -2680,7 +2680,7 @@ xinfo $pc
 ```
 
 # 02-d. Process Information - Trivial Information
-## argv
+## `argv`
 
 Display the program's argv array.
 
@@ -2697,7 +2697,7 @@ options:
   -n, --no-pager        do not use the pager.
 ```
 
-## auxv
+## `auxv`
 
 Display ELF auxiliary vectors.
 
@@ -2713,7 +2713,7 @@ options:
                         use heuristic detection.
 ```
 
-## dumpargs
+## `dumpargs`
 
 Dump arguments of current function.
 
@@ -2731,7 +2731,7 @@ options:
                         assume here is out of the function.
 ```
 
-## envp
+## `envp`
 
 Display initial envp from __environ@ld, or modified envp from last_environ@libc.
 
@@ -2748,7 +2748,7 @@ options:
   -n, --no-pager        do not use the pager.
 ```
 
-## errno
+## `errno`
 
 Convert errno (or argument) to its string representation.
 
@@ -2767,7 +2767,7 @@ options:
   -n, --no-pager  do not use the pager.
 ```
 
-## filename
+## `filename`
 
 Display current debugged filename.
 
@@ -2781,7 +2781,7 @@ options:
   -h, --help  show this help message and exit
 ```
 
-## pid
+## `pid`
 
 Display the local PID or remote PID.
 
@@ -2795,7 +2795,7 @@ options:
   -h, --help  show this help message and exit
 ```
 
-## stack-frame
+## `stack-frame`
 
 Display the entire stack of the current frame.
 
@@ -2809,7 +2809,7 @@ options:
   -h, --help  show this help message and exit
 ```
 
-## tid
+## `tid`
 
 Display the Thread ID.
 
@@ -2823,7 +2823,7 @@ options:
   -h, --help  show this help message and exit
 ```
 
-## vdso
+## `vdso`
 
 Disassemble the text area of vdso smartly.
 
@@ -2838,7 +2838,7 @@ options:
   -n, --no-pager  do not use the pager.
 ```
 
-## vvar
+## `vvar`
 
 Dump the vvar area (x64/x86 only).
 
@@ -2854,7 +2854,7 @@ options:
 ```
 
 # 02-e. Process Information - Complex Structure Information
-## dtor-dump
+## `dtor-dump`
 
 Display registered destructor functions.
 
@@ -2880,7 +2880,7 @@ dtor-dump --tdl 0x50                # specify offset of tls_dtor_list
 dtor-dump --tdl 0xffffffffffffffa8  # specify negative offset
 ```
 
-## dwarf-exception-handler
+## `dwarf-exception-handler`
 
 Dump the DWARF exception handler information with the byte code itself.
 
@@ -2971,7 +2971,7 @@ initialized the first time they are called.              |
                                                               +----> personality_routine(=__gxx_personality_v0@libstdc++.so)
 ```
 
-## dynamic
+## `dynamic`
 
 Display current status of the _DYNAMIC area.
 
@@ -3000,7 +3000,7 @@ dynamic -d 0x555555575a98                       # dump specified address as dyna
 dynamic -d 0x555555575a98 --size 0x1c0          # dump specified address with specified size
 ```
 
-## fpchain
+## `fpchain`
 
 Dump chains from __IO_list_all.
 
@@ -3017,7 +3017,7 @@ options:
   -h, --help  show this help message and exit
 ```
 
-## got
+## `got`
 
 Display current status of the got/plt inside the process.
 
@@ -3052,7 +3052,7 @@ got -f /usr/lib/x86_64-linux-gnu/libc.so.6  # specified target binary
 got -f /bin/ls -e 0x4000000000              # use specified address, it is useful under qemu
 ```
 
-## got-all
+## `got-all`
 
 Show got entries for all libraries.
 
@@ -3074,7 +3074,7 @@ options:
   --cppfilt       use c++filt to demangle.
 ```
 
-## iouring-dump
+## `iouring-dump`
 
 Dump the iouring area (x64 only).
 
@@ -3089,7 +3089,7 @@ options:
   -n, --no-pager  do not use the pager.
 ```
 
-## link-map
+## `link-map`
 
 Dump useful members of link_map with iterating.
 
@@ -3115,7 +3115,7 @@ link-map -e 0x555555554000  # dump specified address as ELF
 link-map -l 0x7ffff7ffe2e0  # dump specified address as link_map
 ```
 
-## stdio-dump
+## `stdio-dump`
 
 Dump members of stdin/stdout/stderr.
 
@@ -3134,7 +3134,7 @@ options:
   -n, --no-pager  do not use the pager.
 ```
 
-## unwind-info
+## `unwind-info`
 
 Show the effective DWARF unwind rules at the current or specified PC.
 
@@ -3162,7 +3162,7 @@ unwind-info 0x55555555529a
 ```
 
 # 02-f. Process Information - Security
-## aslr
+## `aslr`
 
 View / modify the ASLR setting of GDB.
 
@@ -3179,7 +3179,7 @@ options:
   -h, --help  show this help message and exit
 ```
 
-## canary
+## `canary`
 
 Display the canary value of the current process.
 
@@ -3193,7 +3193,7 @@ options:
   -h, --help  show this help message and exit
 ```
 
-## capability
+## `capability`
 
 Display the capabilities of the debugging process.
 
@@ -3209,7 +3209,7 @@ options:
   -v, --verbose   also display detailed bit information other than cap_eff.
 ```
 
-## checksec
+## `checksec`
 
 Check the security properties of the current executable or passed as argument.
 
@@ -3233,7 +3233,7 @@ checksec -f /bin/ls
 checksec -r
 ```
 
-## exploitable
+## `exploitable`
 
 Heuristically classify the exploitability of the current crash.
 
@@ -3263,7 +3263,7 @@ It is a heuristic triage hint (signal, $_siginfo fault address, $pc mapping, and
 faulting instruction class), not a proof. Userland x86/x86-64 only.
 ```
 
-## mte-tags
+## `mte-tags`
 
 Display the MTE tag for the specified address (ARM64 only).
 
@@ -3281,7 +3281,7 @@ options:
   -h, --help  show this help message and exit
 ```
 
-## ptr-demangle
+## `ptr-demangle`
 
 Demangle a mangled value by PTR_MANGLE.
 
@@ -3301,7 +3301,7 @@ options:
                         do not use symbols to detect PTR_MANGLE
 ```
 
-## ptr-mangle
+## `ptr-mangle`
 
 Mangle a pointer value by PTR_MANGLE.
 
@@ -3321,7 +3321,7 @@ options:
                         do not use symbols to detect PTR_MANGLE
 ```
 
-## search-mangled-ptr
+## `search-mangled-ptr`
 
 Search for mangled values in RW memory.
 
@@ -3339,7 +3339,7 @@ options:
   -v, --verbose         shows the section currently being searched.
 ```
 
-## sighands
+## `sighands`
 
 Display the signal dispositions of the current process.
 
@@ -3356,7 +3356,7 @@ options:
 ```
 
 # 02-g. Process Information - Symbol
-## magic
+## `magic`
 
 Display useful userland addresses and offsets.
 
@@ -3376,7 +3376,7 @@ options:
                         print _IO_xxx_jumps functions.
 ```
 
-## symbols
+## `symbols`
 
 List all symbols (shortcut for `maintenance print msymbols`) with coloring.
 
@@ -3395,7 +3395,7 @@ options:
 ```
 
 # 02-h. Process Information - Type
-## dt
+## `dt`
 
 Make it easier to use `ptype /ox TYPE` and `p ((TYPE*) ADDRESS)[0]`.
 
@@ -3439,7 +3439,7 @@ This command is designed for several purposes.
    This command creates the display results on the python side, so we can display it without any problems.
 ```
 
-## types
+## `types`
 
 List all types (shortcut for `info types`) with compaction.
 
@@ -3465,7 +3465,7 @@ options:
 ```
 
 # 03-a. Memory - Search
-## find-syscall
+## `find-syscall`
 
 Find the syscall gadget.
 
@@ -3498,7 +3498,7 @@ find-syscall 0x400000-0x404000      # search syscall from specific range
 find-syscall 0x400000 0x4000        # another valid format
 ```
 
-## scan-section
+## `scan-section`
 
 Find memory addresses mapped across different regions.
 
@@ -3528,7 +3528,7 @@ scan-section 0x555555772000-0x555555774000 libc  # support address range
 scan-section any any
 ```
 
-## search-cfi-gadgets
+## `search-cfi-gadgets`
 
 Search for CFI-valid, controllable gadgets in the executable area.
 
@@ -3544,7 +3544,7 @@ options:
   -n, --no-pager  do not use the pager.
 ```
 
-## search-pattern
+## `search-pattern`
 
 Search for a pattern in memory.
 
@@ -3611,7 +3611,7 @@ However, when the --hex-regex option is enabled, this chunked search is disabled
 because it is difficult to implement regular expression searches that span multiple chunks.
 ```
 
-## strings
+## `strings`
 
 Search ASCII strings recursively from a location or all userland regions.
 
@@ -3649,7 +3649,7 @@ strings -d 1 0x00007ffffffde000 0x00007ffffffff000        # if an address is fou
 strings -f "GLIBC" 0x00007ffffffde000 0x00007ffffffff000  # filter by keywords (-f, -e). need double-escape
 ```
 
-## xref-telescope
+## `xref-telescope`
 
 Recursively search for cross-references to a pattern in memory.
 
@@ -3687,7 +3687,7 @@ However, when the --hex-regex option is enabled, this chunked search is disabled
 because it is difficult to implement regular expression searches that span multiple chunks.
 ```
 
-## xref-to-string
+## `xref-to-string`
 
 Find xref to specified string (shortcut for `xref-telescope STRING 2`).
 
@@ -3706,7 +3706,7 @@ options:
 ```
 
 # 03-b. Memory - View
-## hexdump
+## `hexdump`
 
 Display the hexdump from the memory location specified.
 
@@ -3732,7 +3732,7 @@ options:
   -n, --no-pager        do not use the pager.
 ```
 
-## hexdump-flexible
+## `hexdump-flexible`
 
 Display the hexdump with user-defined format.
 
@@ -3761,7 +3761,7 @@ hexdump-flexible "2Q2I2H2B" $rsp 4  # "Show qword*2, dword*2, short*2, byte*2" f
 hexdump-flexible "4Q-2Q" $rsp 4     # "Show qword*4 and skip qword*2" from $rsp and repeat 4 times
 ```
 
-## json
+## `json`
 
 The base command to pretty print for JSON.
 
@@ -3778,7 +3778,7 @@ command:
   {memory,value}
 ```
 
-## json memory
+## `json memory`
 
 Pretty print JSON from memory values.
 
@@ -3802,7 +3802,7 @@ options:
 json memory $rdi
 ```
 
-## json value
+## `json value`
 
 Pretty print JSON from specified value.
 
@@ -3826,7 +3826,7 @@ options:
 json value '["foo", {"bar": ["baz", null, 1.0, 2]}]'
 ```
 
-## sigreturn
+## `sigreturn`
 
 Display stack values for sigreturn syscall.
 
@@ -3844,7 +3844,7 @@ options:
   -n, --no-pager  do not use the pager.
 ```
 
-## xc
+## `xc`
 
 Dump address like x/x command, but with coloring at some intervals.
 
@@ -3868,7 +3868,7 @@ options:
   -q, --quiet           quiet mode.
 ```
 
-## xs
+## `xs`
 
 Dump string like x/s command, but with hex-string style.
 
@@ -3891,7 +3891,7 @@ options:
   -q, --quiet           quiet mode.
 ```
 
-## xxd
+## `xxd`
 
 Display the hexdump from the memory location specified (shortcut for `hexdump byte`).
 
@@ -3915,7 +3915,7 @@ options:
 ```
 
 # 03-c. Memory - Compare
-## bincompare
+## `bincompare`
 
 Compare an binary file with the memory position looking for badchars.
 
@@ -3938,7 +3938,7 @@ options:
   -n, --no-pager        do not use the pager.
 ```
 
-## memcmp
+## `memcmp`
 
 Compare the memory contents of two locations.
 
@@ -3963,7 +3963,7 @@ options:
 ```
 
 # 03-d. Memory - Patch
-## memcpy
+## `memcpy`
 
 Copy the contents of one memory to another.
 
@@ -4006,7 +4006,7 @@ meminsert dst src 16 8
   After : [ CCCCCCCC | AAAAAAAA | BBBBBBBB ]
 ```
 
-## meminsert
+## `meminsert`
 
 Insert the contents of one memory to another.
 
@@ -4050,7 +4050,7 @@ meminsert dst src 16 8
   After : [ CCCCCCCC | AAAAAAAA | BBBBBBBB ]
 ```
 
-## memset
+## `memset`
 
 Set the value to the memory range.
 
@@ -4082,7 +4082,7 @@ memset $rsp 0xff 0x20
 If you want to specify a large value for `VALUE`, use the `patch string` command.
 ```
 
-## memswap
+## `memswap`
 
 Swap the contents of one memory to another.
 
@@ -4125,7 +4125,7 @@ meminsert dst src 16 8
   After : [ CCCCCCCC | AAAAAAAA | BBBBBBBB ]
 ```
 
-## patch
+## `patch`
 
 The base command to write specified values to the specified address.
 
@@ -4142,7 +4142,7 @@ command:
   {byte,word,dword,qword,string,hex,pattern,nop,inf,trap,ret,syscall,range-replace,history,revert}
 ```
 
-## patch byte
+## `patch byte`
 
 Write specified BYTE to the specified address.
 
@@ -4170,7 +4170,7 @@ patch byte    $rip 0x41 0x41 0x41 0x41 0x41
 patch byte -e $rip 0x41 0x41 0x41 0x41 0x41  # -e is ignored
 ```
 
-## patch dword
+## `patch dword`
 
 Write specified DWORD to the specified address.
 
@@ -4198,7 +4198,7 @@ patch dword    $rip 0x41424344  # write `DCBA` to [rip]
 patch dword -e $rip 0x41424344  # write `ABCD` to [rip]
 ```
 
-## patch hex
+## `patch hex`
 
 Write specified hex string to the specified address.
 
@@ -4224,7 +4224,7 @@ options:
 patch hex $sp "4141414142424242"
 ```
 
-## patch history
+## `patch history`
 
 Display the patch history stack.
 
@@ -4241,7 +4241,7 @@ options:
   -v, --verbose   verbose output.
 ```
 
-## patch inf
+## `patch inf`
 
 Patch the instruction(s) at the given address with an infinite loop.
 
@@ -4265,7 +4265,7 @@ options:
 patch inf $pc
 ```
 
-## patch nop
+## `patch nop`
 
 Patch the instruction(s) at the given address with NOP.
 
@@ -4292,7 +4292,7 @@ options:
 patch nop $pc -i 2
 ```
 
-## patch pattern
+## `patch pattern`
 
 Write a pattern string to the specified memory address.
 
@@ -4320,7 +4320,7 @@ options:
 patch pattern $sp 128
 ```
 
-## patch qword
+## `patch qword`
 
 Write specified QWORD to the specified address.
 
@@ -4348,7 +4348,7 @@ patch qword    $rip 0x4142434445464748  # write `HGFEDCBA` to [rip]
 patch qword -e $rip 0x4142434445464748  # write `ABCDEFGH` to [rip]
 ```
 
-## patch range-replace
+## `patch range-replace`
 
 Replace all occurrences of a specific byte sequence in the specified range with another byte sequence.
 
@@ -4375,7 +4375,7 @@ options:
 patch range-replace 0x400000 0x401000 "ebfe" "9090"
 ```
 
-## patch ret
+## `patch ret`
 
 Patch the instruction(s) at the given address with return.
 
@@ -4399,7 +4399,7 @@ options:
 patch ret $pc
 ```
 
-## patch revert
+## `patch revert`
 
 Revert patches recorded in the patch history stack.
 
@@ -4424,7 +4424,7 @@ patch revert 0  # do nothing (keep the current state).
 patch revert 2  # roll back to history state [2].
 ```
 
-## patch string
+## `patch string`
 
 Write specified string to the specified memory address.
 
@@ -4452,7 +4452,7 @@ patch string $sp "AAAABBBB"
 patch string $sp "\\x41\\x41\\x41\\x41\\x42\\x42\\x42\\x42"
 ```
 
-## patch syscall
+## `patch syscall`
 
 Patch the instruction(s) at the given address with syscall instruction.
 
@@ -4476,7 +4476,7 @@ options:
 patch syscall $pc
 ```
 
-## patch trap
+## `patch trap`
 
 Patch the instruction(s) at the given address with breakpoint or trap (if available).
 
@@ -4500,7 +4500,7 @@ options:
 patch trap $pc
 ```
 
-## patch word
+## `patch word`
 
 Write specified WORD to the specified address.
 
@@ -4528,7 +4528,7 @@ patch word    $rip 0x4142  # write `BA` to [rip]
 patch word -e $rip 0x4142  # write `AB` to [rip]
 ```
 
-## stub
+## `stub`
 
 Stub out the specified function to skip it. (e.g., fork)
 
@@ -4554,7 +4554,7 @@ stub -r 0 fork
 ```
 
 # 03-e. Memory - Calculation
-## base-n-decode
+## `base-n-decode`
 
 The base command to decode baseN.
 
@@ -4571,7 +4571,7 @@ command:
   {memory,value}
 ```
 
-## base-n-decode memory
+## `base-n-decode memory`
 
 Decode baseN from memory values.
 
@@ -4596,7 +4596,7 @@ options:
 base-n-decode memory $rsp 0x20
 ```
 
-## base-n-decode value
+## `base-n-decode value`
 
 Decode baseN from specified values.
 
@@ -4622,7 +4622,7 @@ base-n-decode value "\\x51\\x55\\x46\\x42"
 base-n-decode value --hex "51 55 46 42"
 ```
 
-## base-n-encode
+## `base-n-encode`
 
 The base command to encode baseN.
 
@@ -4639,7 +4639,7 @@ command:
   {memory,value}
 ```
 
-## base-n-encode memory
+## `base-n-encode memory`
 
 Encode baseN from memory values.
 
@@ -4664,7 +4664,7 @@ options:
 base-n-encode memory $rsp 0x20
 ```
 
-## base-n-encode value
+## `base-n-encode value`
 
 Encode baseN from specified values.
 
@@ -4690,7 +4690,7 @@ base-n-encode value "\\x41\\x42\\x43\\x44"
 base-n-encode value --hex "41 42 43 44"
 ```
 
-## crc
+## `crc`
 
 The base command to calculate crc.
 
@@ -4713,7 +4713,7 @@ command:
 [32b/04B] means 32 bits (4 bytes).
 ```
 
-## crc file
+## `crc file`
 
 Calculate crc from file.
 
@@ -4740,7 +4740,7 @@ options:
 [32b/04B] means 32 bits (4 bytes).
 ```
 
-## crc memory
+## `crc memory`
 
 Calculate crc from memory values.
 
@@ -4772,7 +4772,7 @@ crc memory $rsp 0x20
 [32b/04B] means 32 bits (4 bytes).
 ```
 
-## crc value
+## `crc value`
 
 Calculate hash from specified values.
 
@@ -4805,7 +4805,7 @@ crc value --hex "41 42 43 44"
 [32b/04B] means 32 bits (4 bytes).
 ```
 
-## hash
+## `hash`
 
 The base command to calculate hash.
 
@@ -4833,7 +4833,7 @@ The key for HalfSipHash is "\0" * 8.
 To calculate FSB hash, you need the `gmpy2` package (uv pip install gmpy2).
 ```
 
-## hash file
+## `hash file`
 
 Calculate hash from file.
 
@@ -4869,7 +4869,7 @@ The key for HalfSipHash is "\0" * 8.
 To calculate FSB hash, you need the `gmpy2` package (uv pip install gmpy2).
 ```
 
-## hash known-collision
+## `hash known-collision`
 
 Show hash collision example.
 
@@ -4895,7 +4895,7 @@ The key for HalfSipHash is "\0" * 8.
 To calculate FSB hash, you need the `gmpy2` package (uv pip install gmpy2).
 ```
 
-## hash list
+## `hash list`
 
 List hash supported by GEF.
 
@@ -4914,7 +4914,7 @@ options:
   -n, --no-pager        do not use the pager.
 ```
 
-## hash memory
+## `hash memory`
 
 Calculate hash from memory values.
 
@@ -4955,7 +4955,7 @@ The key for HalfSipHash is "\0" * 8.
 To calculate FSB hash, you need the `gmpy2` package (uv pip install gmpy2).
 ```
 
-## hash test
+## `hash test`
 
 Calculate and check hash from constant inputs.
 
@@ -4978,7 +4978,7 @@ options:
   -n, --no-pager        do not use the pager.
 ```
 
-## hash value
+## `hash value`
 
 Calculate hash from specified values.
 
@@ -5020,7 +5020,7 @@ The key for HalfSipHash is "\0" * 8.
 To calculate FSB hash, you need the `gmpy2` package (uv pip install gmpy2).
 ```
 
-## is-mem-zero
+## `is-mem-zero`
 
 Check if all the memory in the specified range is 0x00, 0xff.
 
@@ -5039,7 +5039,7 @@ options:
   --phys      treat ADDRESS as a physical address.
 ```
 
-## morse-decode
+## `morse-decode`
 
 The base command to decode morse code.
 
@@ -5056,7 +5056,7 @@ command:
   {memory,value}
 ```
 
-## morse-decode memory
+## `morse-decode memory`
 
 Decode morse code from memory values.
 
@@ -5080,7 +5080,7 @@ options:
 morse-decode memory $rsp 0x20
 ```
 
-## morse-decode value
+## `morse-decode value`
 
 Decode morse code from specified values.
 
@@ -5103,7 +5103,7 @@ options:
 morse-decode value -- ".- -... -.-. -.."
 ```
 
-## morse-encode
+## `morse-encode`
 
 The base command to encode morse code.
 
@@ -5120,7 +5120,7 @@ command:
   {memory,value}
 ```
 
-## morse-encode memory
+## `morse-encode memory`
 
 Encode morse code from memory values.
 
@@ -5144,7 +5144,7 @@ options:
 morse-encode memory $rsp 0x20
 ```
 
-## morse-encode value
+## `morse-encode value`
 
 Encode morse code from specified values.
 
@@ -5167,7 +5167,7 @@ options:
 morse-encode value AAAA
 ```
 
-## seq-length
+## `seq-length`
 
 Detect consecutive length of the same sequence.
 
@@ -5186,7 +5186,7 @@ options:
   --phys      treat ADDRESS as a physical address.
 ```
 
-## strlen
+## `strlen`
 
 Detect the length of the string.
 
@@ -5204,7 +5204,7 @@ options:
   --phys      treat ADDRESS as a physical address.
 ```
 
-## xor-memory
+## `xor-memory`
 
 The base command to xor a block of memory.
 
@@ -5221,7 +5221,7 @@ command:
   {display,patch}
 ```
 
-## xor-memory display
+## `xor-memory display`
 
 Display a block of memory by xor-ing each byte with specified key.
 
@@ -5247,7 +5247,7 @@ options:
 xor-memory display $sp 16 41414141
 ```
 
-## xor-memory patch
+## `xor-memory patch`
 
 Patch a block of memory by xor-ing each byte with specified key.
 
@@ -5273,7 +5273,7 @@ xor-memory patch $sp 16 41414141
 ```
 
 # 03-f. Memory - Dump/Load
-## load-file
+## `load-file`
 
 Load the file into memory.
 
@@ -5314,7 +5314,7 @@ options:
 If there is not enough space, the load will fail halfway.
 ```
 
-## load-file-mmap
+## `load-file-mmap`
 
 Load the file into memory that allocated by `mmap`.
 
@@ -5354,7 +5354,7 @@ options:
 +-mmap_end----+
 ```
 
-## smart-memory-dump
+## `smart-memory-dump`
 
 Dump the memory of the entire process smartly.
 
@@ -5377,7 +5377,7 @@ options:
 ```
 
 # 03-g. Memory - Investigation
-## binwalk-memory
+## `binwalk-memory`
 
 Scan memory by binwalk.
 
@@ -5397,7 +5397,7 @@ options:
   -c, --commit          actually perform binwalk.
 ```
 
-## filetype-memory
+## `filetype-memory`
 
 Scan memory by file and magika.
 
@@ -5415,7 +5415,7 @@ options:
   -h, --help   show this help message and exit
 ```
 
-## freq-analysis
+## `freq-analysis`
 
 Visualize the frequency of occurrence of each byte.
 
@@ -5448,7 +5448,7 @@ freq-analysis $rax 0x1000 -a            # use ascii compatible result
 freq-analysis $rax 0x1000 -e 00 -e 01   # exclude some characters
 ```
 
-## peek-pageflags
+## `peek-pageflags`
 
 Read the page flags of a page frame (needs root).
 
@@ -5473,7 +5473,7 @@ options:
 peek-pageflags 0x6b2ae3
 ```
 
-## peek-pageframe
+## `peek-pageframe`
 
 Read page frame data from a single address or an address range.
 
@@ -5505,7 +5505,7 @@ peek-pageframe 0x555555555060                       # read pagemap of single add
 peek-pageframe -f 0x7ffffffdd000 -t 0x7ffffffff000  # read pagemap of an address range
 ```
 
-## sixel-memory
+## `sixel-memory`
 
 Show image (png, jpg, bmp, etc.) to terminal by imagemagick.
 
@@ -5524,7 +5524,7 @@ options:
   -b, --decode-barcode  decode barcode if found.
 ```
 
-## stack-recover
+## `stack-recover`
 
 Heuristically recover the call chain from the stack when `bt` is unusable.
 
@@ -5569,7 +5569,7 @@ confidence=low:    only the preceding call instruction supports it.
 On SPARC, frames still held in the register windows are not found.
 ```
 
-## vdump
+## `vdump`
 
 Visualize memory data like an image.
 
@@ -5612,7 +5612,7 @@ vdump -A -Ab 0x100 -Ae 0x200 -As 0x10 $rsp 0x1000 # bruteforce the width (w=0x10
 ```
 
 # 04-a. Register - View
-## avx
+## `avx`
 
 Display AVX registers.
 
@@ -5627,7 +5627,7 @@ options:
   -h, --help  show this help message and exit
 ```
 
-## avx512
+## `avx512`
 
 Display AVX512 registers.
 
@@ -5642,7 +5642,7 @@ options:
   -h, --help  show this help message and exit
 ```
 
-## cpuid
+## `cpuid`
 
 Get cpuid result.
 
@@ -5669,7 +5669,7 @@ cpuid
 Disable `-enable-kvm` option for qemu-system.
 ```
 
-## fpu
+## `fpu`
 
 Display fpu registers (x86/x64:x87-fpu, ARM/ARM64:vfp-d16).
 
@@ -5684,7 +5684,7 @@ options:
   -v, --verbose  also display bit information of fpu control registers.
 ```
 
-## mmx
+## `mmx`
 
 Display MMX registers.
 
@@ -5698,7 +5698,7 @@ options:
   -h, --help  show this help message and exit
 ```
 
-## pac-keys
+## `pac-keys`
 
 Pretty-print PAC keys from qemu registers (ARM64 only).
 
@@ -5712,7 +5712,7 @@ options:
   -h, --help  show this help message and exit
 ```
 
-## sse
+## `sse`
 
 Display SSE registers.
 
@@ -5728,7 +5728,7 @@ options:
   -v, --verbose  also display bit information of mxcsr registers.
 ```
 
-## sysreg
+## `sysreg`
 
 Pretty-print system registers (not general purpose) from `info register`.
 
@@ -5747,7 +5747,7 @@ options:
 ```
 
 # 04-b. Register - Modify
-## edit-flags
+## `edit-flags`
 
 Edit flags in a human friendly way.
 
@@ -5776,7 +5776,7 @@ edit-flags sign~       # toggle SIGN flag
 edit-flags -v          # verbose output
 ```
 
-## mmxset
+## `mmxset`
 
 Simply set the value to mm register.
 
@@ -5805,7 +5805,7 @@ mmxset $mm0=0x1122334455667788
 Disable `-enable-kvm` option for qemu-system.
 ```
 
-## xmmset
+## `xmmset`
 
 Simply set the value to xmm or ymm register.
 
@@ -5829,7 +5829,7 @@ xmmset $ymm0=0x11223344556677889900aabbccddeeff9876543210
 ```
 
 # 05-a. Heap - Glibc
-## heap
+## `heap`
 
 The base command to get information about the Glibc heap structure.
 
@@ -5871,7 +5871,7 @@ Under qemu-user, multi-threaded mips/mipsn32/mips64/m68k targets may produce unr
 because ExecAsm/ExecSyscall can fail after thread switches.
 ```
 
-## heap arena
+## `heap arena`
 
 Display information on a heap arena.
 
@@ -5889,7 +5889,7 @@ options:
   -n, --no-pager        do not use the pager.
 ```
 
-## heap arenas
+## `heap arenas`
 
 List heap arenas.
 
@@ -5904,7 +5904,7 @@ options:
   -h, --help  show this help message and exit
 ```
 
-## heap bins
+## `heap bins`
 
 Display information about the bins of an arena.
 
@@ -5932,7 +5932,7 @@ heap bins -a 0x7ffff0000020 -v
 heap bins -a 1 -v
 ```
 
-## heap bins fast
+## `heap bins fast`
 
 Display information about the fastbinsY of an arena.
 
@@ -5954,7 +5954,7 @@ options:
   -n, --no-pager        do not use the pager.
 ```
 
-## heap bins large
+## `heap bins large`
 
 Display information about the Large Bins of an arena.
 
@@ -5976,7 +5976,7 @@ options:
   -n, --no-pager        do not use the pager.
 ```
 
-## heap bins small
+## `heap bins small`
 
 Display information about the Small Bins of an arena.
 
@@ -5998,7 +5998,7 @@ options:
   -n, --no-pager        do not use the pager.
 ```
 
-## heap bins tcache
+## `heap bins tcache`
 
 Display information about the Tcache of an arena.
 
@@ -6020,7 +6020,7 @@ options:
   -n, --no-pager        do not use the pager.
 ```
 
-## heap bins unsorted
+## `heap bins unsorted`
 
 Display information about the Unsorted Bins of an arena.
 
@@ -6040,7 +6040,7 @@ options:
   -n, --no-pager        do not use the pager.
 ```
 
-## heap bins-simple
+## `heap bins-simple`
 
 Simply display information on the bins of an arena.
 
@@ -6076,7 +6076,7 @@ The meaning of the tcache expression:
     0x80: size; [6]: tcache index; (1): tcache_perthread_struct.count[i]
 ```
 
-## heap calc-protected-fd
+## `heap calc-protected-fd`
 
 Calculate a valid value as protected `fd` pointer of single linked-list (glibc 2.32~).
 
@@ -6102,7 +6102,7 @@ heap calc-protected-fd 0 0x5555555594e0
 heap calc-protected-fd 0 0x5555555594e0 -b
 ```
 
-## heap chunk
+## `heap chunk`
 
 Display information on a heap chunk.
 
@@ -6123,7 +6123,7 @@ options:
   -b, --as-base         use LOCATION as chunk base address (chunk_base_address = chunk_address - ptrsize * 2).
 ```
 
-## heap chunks
+## `heap chunks`
 
 Display information on all heap chunks.
 
@@ -6173,7 +6173,7 @@ about the annotation:
     -  /8: parsed free-list length including corrupted chunks.
 ```
 
-## heap dump-image
+## `heap dump-image`
 
 Visualize chunks on a heap as composition image.
 
@@ -6208,7 +6208,7 @@ is odd-numbered or even-numbered.
 The `convert` command limits height to 32000px; output may shrink based on heap size.
 ```
 
-## heap extract-heap-addr
+## `heap extract-heap-addr`
 
 Extract heap address from protected `fd` pointer of single linked-list (glibc 2.32~).
 
@@ -6232,7 +6232,7 @@ options:
 heap extract-heap-addr 0x000055500000C7F9
 ```
 
-## heap find-fake-fast
+## `heap find-fake-fast`
 
 Find candidate fake fast chunks from RW memory.
 
@@ -6260,7 +6260,7 @@ options:
 It is not possible to find candidates that straddle the two regions.
 ```
 
-## heap parse
+## `heap parse`
 
 Display information on all heap chunks as Pwngdb style.
 
@@ -6303,7 +6303,7 @@ about the annotation:
     -  /8: parsed free-list length including corrupted chunks.
 ```
 
-## heap snapshot
+## `heap snapshot`
 
 Take a snapshot of heap.
 
@@ -6320,7 +6320,7 @@ options:
   --all                 dump all arenas.
 ```
 
-## heap snapshot-compare
+## `heap snapshot-compare`
 
 Compare current heap with a previously saved heap-snapshot.
 
@@ -6358,7 +6358,7 @@ Please specify the file obtained by the `heap snapshot` command.
 Usually, it is saved in /tmp/gef/heap-snashot-arenaN-...
 ```
 
-## heap tcache-index-helper
+## `heap tcache-index-helper`
 
 Helper for calculating tcache index etc.
 
@@ -6379,7 +6379,7 @@ options:
                         the address of &tcache.entries[i].
 ```
 
-## heap top
+## `heap top`
 
 Display heap top chunk.
 
@@ -6396,7 +6396,7 @@ options:
                         the address or number to interpret as an arena. (default: main_arena)
 ```
 
-## heap tracer
+## `heap tracer`
 
 Trace malloc/free to check heap integrity for UAF / Double-Free.
 
@@ -6422,7 +6422,7 @@ Note that splits and consolidates (which are performed inside `malloc` and `free
 So this is not a strict trace.
 ```
 
-## heap try-calloc
+## `heap try-calloc`
 
 Emulate with unicorn to check errors when allocating a zero-initialized chunk.
 
@@ -6467,7 +6467,7 @@ They are emulated to the best extent possible, but the emulation may be incomple
 The failure message may not be detected because it is searched for heuristically.
 ```
 
-## heap try-free
+## `heap try-free`
 
 Emulate with unicorn to check errors when freeing a chunk.
 
@@ -6511,7 +6511,7 @@ They are emulated to the best extent possible, but the emulation may be incomple
 The failure message may not be detected because it is searched for heuristically.
 ```
 
-## heap try-malloc
+## `heap try-malloc`
 
 Emulate with unicorn to check errors when allocating a chunk.
 
@@ -6555,7 +6555,7 @@ They are emulated to the best extent possible, but the emulation may be incomple
 The failure message may not be detected because it is searched for heuristically.
 ```
 
-## heap try-realloc
+## `heap try-realloc`
 
 Emulate with unicorn to check errors when re-allocating a chunk.
 
@@ -6600,7 +6600,7 @@ They are emulated to the best extent possible, but the emulation may be incomple
 The failure message may not be detected because it is searched for heuristically.
 ```
 
-## heap visual-heap
+## `heap visual-heap`
 
 Visualize chunks on a heap.
 
@@ -6626,7 +6626,7 @@ options:
 ```
 
 # 05-b. Heap - Chromium/V8
-## cage
+## `cage`
 
 Display v8 (Chromium and d8) ubercage area.
 
@@ -6649,7 +6649,7 @@ options:
   -n, --no-pager        do not use the pager.
 ```
 
-## partition-alloc-dump
+## `partition-alloc-dump`
 
 PartitionAlloc free-list viewer for chromium stable.
 
@@ -6758,7 +6758,7 @@ Simplified partition alloc structure:
                                    * super_page_for_meta - metadata_offset_ == super_page_for_chunk
 ```
 
-## v8
+## `v8`
 
 Print v8 tagged object, or load more commands from internet.
 
@@ -6778,7 +6778,7 @@ options:
   -L, --list-command    show newly added commands from v8 gdbinit.
 ```
 
-## v8-dump-space
+## `v8-dump-space`
 
 Dump v8 (Chromium and d8) heap objects in each space.
 
@@ -6808,7 +6808,7 @@ Since many parts are detected heuristically and testing is insufficient,
 it is highly likely that it will not work depending on the version of v8.
 ```
 
-## v8-list-maps
+## `v8-list-maps`
 
 List v8 (Chromium and d8) built-in maps.
 
@@ -6858,7 +6858,7 @@ Also, since it uses V8 commands internally, `_v8_internal_Print_Object` must be 
 ```
 
 # 05-c. Heap - Other
-## go-heap-dump
+## `go-heap-dump`
 
 go language v1.24.4 mheap dumper (x64 only).
 
@@ -6925,7 +6925,7 @@ Simplified Go heap structure:
 * `arenas`, `central`, and walking from `mspan.next` are currently unsupported.
 ```
 
-## hoard-heap-dump
+## `hoard-heap-dump`
 
 Hoard v3.2 (2025/12/31) heap free-list viewer (x64 only).
 
@@ -6985,7 +6985,7 @@ Simplified Hoard structure:
 * `reapableObjects` is displayed as the number of unused objects left.
 ```
 
-## mimalloc-heap-dump
+## `mimalloc-heap-dump`
 
 mimalloc heap free-list viewer (x64 only).
 
@@ -7054,7 +7054,7 @@ Simplified mimalloc structure:
 * If symbols are not available, GEF scans the TLS area for automatic detection.
 ```
 
-## musl-heap-dump
+## `musl-heap-dump`
 
 musl v1.2.6 (src/malloc/mallocng) heap reusable chunks viewer (x64/x86 only).
 
@@ -7115,7 +7115,7 @@ Simplified musl mallocng structure:
                               +-------------------+      +-------------------+
 ```
 
-## scalloc-heap-dump
+## `scalloc-heap-dump`
 
 scalloc heap free-list viewer (x64 only).
 
@@ -7178,7 +7178,7 @@ Simplified scalloc structure:
 * `remote_free_list_.top_` is a tagged pointer and is decoded before dumping.
 ```
 
-## snmalloc-heap-dump
+## `snmalloc-heap-dump`
 
 snmalloc (as of June 2025) heap free-list viewer (x64 only).
 
@@ -7230,7 +7230,7 @@ This command dumps the following four categories:
     - Currently status: WIP.
 ```
 
-## ssmalloc-heap-dump
+## `ssmalloc-heap-dump`
 
 SSMalloc heap free-list viewer (x64 only).
 
@@ -7291,7 +7291,7 @@ Simplified SSMalloc structure:
 * Allocation from a `dchunk_t` pops `free_head` first; if it is empty, allocation advances `free_mem`.
 ```
 
-## tcmalloc-dump
+## `tcmalloc-dump`
 
 tcmalloc (google-perftools/gperftools) free-list viewer (x64 only).
 
@@ -7350,7 +7350,7 @@ Thread cache list
                                                          free obj -> free obj -> NULL     ...
 ```
 
-## tlsf-heap-dump
+## `tlsf-heap-dump`
 
 TLSF (Two-Level Segregated Fit) v2.4.6 free-list viewer (x64 only).
 
@@ -7399,7 +7399,7 @@ Simplified TLSF structure:
 * Allocated chunks are not linked from `matrix[][]`, so this command dumps free chunks only.
 ```
 
-## uclibc-ng-heap-dump
+## `uclibc-ng-heap-dump`
 
 uclibc-ng (libc/stdlib/malloc-standard) heap reusable chunks viewer (x64/x86 only).
 
@@ -7429,7 +7429,7 @@ Since the final version of uclibc (not uclibc-ng) uses the same structure,
 this command should also be usable with uclibc.
 ```
 
-## uclibc-ng-visual-heap
+## `uclibc-ng-visual-heap`
 
 Visualize chunks on a heap for uClibc-ng.
 
@@ -7467,7 +7467,7 @@ this command should also be usable with uclibc.
 ```
 
 # 06-a. Qemu-system/KGDB Cooperation - Memory Map
-## kvmmap
+## `kvmmap`
 
 Print kernel memory map.
 
@@ -7491,7 +7491,7 @@ options:
   -q, --quiet           quiet execution.
 ```
 
-## pagewalk
+## `pagewalk`
 
 The base command to dump page tables.
 
@@ -7509,7 +7509,7 @@ command:
   {x64,x86,arm,arm64,riscv}
 ```
 
-## pagewalk arm
+## `pagewalk arm`
 
 Dump page tables for ARM32 Cortex-A. PL2 pagewalk is unsupported.
 
@@ -7540,7 +7540,7 @@ options:
   -q, --quiet           show result only.
 ```
 
-## pagewalk arm64
+## `pagewalk arm64`
 
 Dump page tables for ARM64 Cortex-A (ARM v8.7 base).
 
@@ -7574,7 +7574,7 @@ options:
   -q, --quiet           show result only.
 ```
 
-## pagewalk riscv
+## `pagewalk riscv`
 
 Dump page tables for RISC-V 32/64.
 
@@ -7602,7 +7602,7 @@ options:
   -q, --quiet           show result only.
 ```
 
-## pagewalk x64
+## `pagewalk x64`
 
 Dump page tables for x86/64.
 
@@ -7639,7 +7639,7 @@ options:
 ```
 
 # 06-b. Qemu-system/KGDB Cooperation - Register
-## cet
+## `cet`
 
 Display Intel CET settings.
 
@@ -7653,7 +7653,7 @@ options:
   -h, --help  show this help message and exit
 ```
 
-## gdtinfo
+## `gdtinfo`
 
 Print GDT/LDT entries. If user-land, show sample entries.
 
@@ -7681,7 +7681,7 @@ so this is just to show you an example of what information is stored there.
 However, the segment registers show the correct (real) values.
 ```
 
-## idtinfo
+## `idtinfo`
 
 Print IDT entries. If user-land, show sample entries.
 
@@ -7706,7 +7706,7 @@ When you're debugging a normal userland app you can't read the IDTR,
 so this is just to show you an example of what information is stored there.
 ```
 
-## msr
+## `msr`
 
 Read or write MSR value.
 
@@ -7740,7 +7740,7 @@ msr 0xc0000080 0xd01  # write msr
 Disable `-enable-kvm` option for qemu-system.
 ```
 
-## qreg
+## `qreg`
 
 Get registers via qemu-monitor and show the detail of x64/x86 system registers.
 
@@ -7756,7 +7756,7 @@ options:
   -n, --no-pager  do not use the pager.
 ```
 
-## read-system-register-for-kgdb
+## `read-system-register-for-kgdb`
 
 Read system register for kgdb / kdb.
 
@@ -7781,7 +7781,7 @@ read-system-register-for-kgdb cr0
 read-system-register-for-kgdb TTBR0_EL1
 ```
 
-## read-system-register-for-qemu-arm
+## `read-system-register-for-qemu-arm`
 
 Read system register for old qemu-system-arm.
 
@@ -7810,7 +7810,7 @@ read-system-register-for-qemu-arm TTBR0
 Attempting to read a non-existing register raises an undefined exception.
 ```
 
-## switch-el
+## `switch-el`
 
 Switch EL (Exception Level) on ARM64 architecture.
 
@@ -7827,7 +7827,7 @@ options:
   -h, --help  show this help message and exit
 ```
 
-## vbar
+## `vbar`
 
 Pretty-print ARM/ARM64 vector table.
 
@@ -7846,7 +7846,7 @@ options:
 ```
 
 # 06-c. Qemu-system/KGDB Cooperation - Linux Basic
-## kbase
+## `kbase`
 
 Display kernel base address.
 
@@ -7862,7 +7862,7 @@ options:
   -q, --quiet   enable quiet mode.
 ```
 
-## kchecksec
+## `kchecksec`
 
 Check the security properties of the current kernel.
 
@@ -7876,7 +7876,7 @@ options:
   -h, --help  show this help message and exit
 ```
 
-## kcmdline
+## `kcmdline`
 
 Display kernel command-line string.
 
@@ -7892,7 +7892,7 @@ options:
   -q, --quiet   enable quiet mode.
 ```
 
-## kcurrent
+## `kcurrent`
 
 Display current task.
 
@@ -7907,7 +7907,7 @@ options:
   -q, --quiet  enable quiet mode.
 ```
 
-## kmagic
+## `kmagic`
 
 Display useful kernel addresses and offsets.
 
@@ -7924,7 +7924,7 @@ options:
   -h, --help  show this help message and exit
 ```
 
-## kpercpu
+## `kpercpu`
 
 Resolve the per-cpu variables and the per-cpu areas.
 
@@ -7971,7 +7971,7 @@ lookup working, but there the variables cannot be named nor looked up by name.
 CONFIG_SMP=n has no `__per_cpu_offset` at all, and `&var` is the address as is.
 ```
 
-## ks-selftest
+## `ks-selftest`
 
 Compare kernel-address heuristic finders with kallsyms results.
 
@@ -7995,7 +7995,7 @@ False means explicitly unsupported; None means not found; '-' means unavailable 
 $ks_selftest_failures is nonzero if the test cannot run, otherwise it is the number of failed results.
 ```
 
-## kversion
+## `kversion`
 
 Display or override the kernel version.
 
@@ -8015,7 +8015,7 @@ options:
 ```
 
 # 06-d. Qemu-system/KGDB Cooperation - Virt/Phys/Page
-## highmem-dump
+## `highmem-dump`
 
 Dump HighMem mappings.
 
@@ -8033,7 +8033,7 @@ options:
   -q, --quiet         show result only.
 ```
 
-## p2v
+## `p2v`
 
 Translate from physical address to virtual address.
 
@@ -8059,7 +8059,7 @@ options:
 p2v 0x55041e0
 ```
 
-## page
+## `page`
 
 The base command to convert between virtual addresses, physical addresses, and page addresses.
 
@@ -8159,7 +8159,7 @@ mem_map--------------->+-struct page[]--------------+
 * CONFIG_SPARSEMEM_EXTREME is currently unsupported by this command.
 ```
 
-## page from_phys
+## `page from_phys`
 
 Resolve the struct page for a physical address.
 
@@ -8178,7 +8178,7 @@ options:
   -r, --rescan  do not use cache.
 ```
 
-## page from_virt
+## `page from_virt`
 
 Resolve the struct page for a virtual address.
 
@@ -8197,7 +8197,7 @@ options:
   -r, --rescan  do not use cache.
 ```
 
-## page to_phys
+## `page to_phys`
 
 Resolve the physical address for a struct page.
 
@@ -8216,7 +8216,7 @@ options:
   -r, --rescan  do not use cache.
 ```
 
-## page to_virt
+## `page to_virt`
 
 Resolve virtual addresses mapped to the page.
 
@@ -8241,7 +8241,7 @@ options:
 One page may correspond to multiple virtual addresses.
 ```
 
-## pageinfo
+## `pageinfo`
 
 Dump struct page flags and page_type.
 
@@ -8259,7 +8259,7 @@ options:
   -p, --page PAGE  page address to dump.
 ```
 
-## slab-virtual
+## `slab-virtual`
 
 Convert between slab-virtual addresses and page addresses.
 
@@ -8336,7 +8336,7 @@ CONFIG_SLAB_VIRTUAL=y (mitigated kernel):
                      +------------+ SLAB_END_ADDR (=0xffffff0000000000)
 ```
 
-## v2p
+## `v2p`
 
 Translate from virtual address to physical address.
 
@@ -8361,7 +8361,7 @@ options:
 v2p 0xffffffff855041e0
 ```
 
-## xp
+## `xp`
 
 Dump physical memory taking into account ROM mapping.
 
@@ -8386,7 +8386,7 @@ xp /16xg 0x11223344
 ```
 
 # 06-e. Qemu-system/KGDB Cooperation - Linux Symbol/Type
-## kload
+## `kload`
 
 Load the vmlinux without a load address.
 
@@ -8403,7 +8403,7 @@ options:
   -h, --help    show this help message and exit
 ```
 
-## kmod-load
+## `kmod-load`
 
 Load the kernel module without a load address.
 
@@ -8437,7 +8437,7 @@ This command requires CONFIG_RANDSTRUCT=n.
 It is useful if you have a kernel module with debuginfo at hand.
 ```
 
-## ksymaddr-remote
+## `ksymaddr-remote`
 
 Resolve kernel symbols from kallsyms table.
 
@@ -8483,7 +8483,7 @@ against the running kernel and parses again when they do not match.
 To drop a cache by hand, rescan with `ks -rv` or use `gef reset-cache --hard`.
 ```
 
-## ksymaddr-remote-apply
+## `ksymaddr-remote-apply`
 
 Apply symbol from kallsyms in memory.
 
@@ -8500,7 +8500,7 @@ options:
   -q, --quiet   enable quiet mode.
 ```
 
-## ktypes
+## `ktypes`
 
 Display kernel type information from /sys/kernel/btf/vmlinux.
 
@@ -8523,7 +8523,7 @@ This command requires CONFIG_DEBUG_INFO_BTF=y.
 CONFIG_KALLSYMS_ALL=y is not required.
 ```
 
-## ktypes-load
+## `ktypes-load`
 
 Load kernel type information from /sys/kernel/btf/vmlinux.
 
@@ -8546,7 +8546,7 @@ This command requires CONFIG_DEBUG_INFO_BTF=y.
 CONFIG_KALLSYMS_ALL=y is not required.
 ```
 
-## vmlinux-to-elf-apply
+## `vmlinux-to-elf-apply`
 
 Apply symbol from kallsyms in memory using vmlinux-to-elf.
 
@@ -8562,7 +8562,7 @@ options:
 ```
 
 # 06-f. Qemu-system/KGDB Cooperation - Linux Task
-## kcred
+## `kcred`
 
 Dump the credentials of each task.
 
@@ -8636,7 +8636,7 @@ Simplified credential structure:
 while the task acts on behalf of another (e.g., inside override_creds()).
 ```
 
-## kfiles
+## `kfiles`
 
 Display open files for each process (shortcut for `ktask -quF`).
 
@@ -8651,7 +8651,7 @@ options:
   -n, --no-pager  do not use the pager.
 ```
 
-## kkeyring
+## `kkeyring`
 
 Display the keyrings referenced by tasks, or inspect an arbitrary struct key.
 
@@ -8741,7 +8741,7 @@ keys.root ---> assoc_array_ptr (tagged)
 A keyring leaf may itself be another keyring, so the command walks child keys recursively.
 ```
 
-## knamespaces
+## `knamespaces`
 
 Display namespaces for each process (shortcut for `ktask -quN`).
 
@@ -8756,7 +8756,7 @@ options:
   -n, --no-pager  do not use the pager.
 ```
 
-## kregs
+## `kregs`
 
 Display saved registers for each process (shortcut for `ktask -qur`).
 
@@ -8771,7 +8771,7 @@ options:
   -n, --no-pager  do not use the pager.
 ```
 
-## ksighands
+## `ksighands`
 
 Display signal handlers for each process (shortcut for `ktask -qus`).
 
@@ -8786,7 +8786,7 @@ options:
   -n, --no-pager  do not use the pager.
 ```
 
-## ktask
+## `ktask`
 
 Display process list.
 
@@ -8889,7 +8889,7 @@ Other tasks (such as `swapper/1` if thread 1 is running some task) will not be d
 ```
 
 # 06-g. Qemu-system/KGDB Cooperation - Linux Advanced
-## kbdev
+## `kbdev`
 
 Display block device list.
 
@@ -8920,7 +8920,7 @@ This is because block devices are not managed in a single location,
 so the bdev_cache dump is supplemented with block devices referenced by mounted filesystems.
 ```
 
-## kbpf
+## `kbpf`
 
 Dump the BPF information.
 
@@ -8987,7 +8987,7 @@ Simplified bpf structure:
                                                          +----------------------+
 ```
 
-## kcdev
+## `kcdev`
 
 Display character device list.
 
@@ -9032,7 +9032,7 @@ The character devices are managed at chrdevs[] and cdev_map.
 This command use each of them for getting structure information.
 ```
 
-## kclock-source
+## `kclock-source`
 
 Dump the clocksource list.
 
@@ -9062,7 +9062,7 @@ Simplified clocksource structure:
                         +-------------+
 ```
 
-## kconfig
+## `kconfig`
 
 Dump the kernel config if available.
 
@@ -9080,7 +9080,7 @@ options:
   -q, --quiet          enable quiet mode.
 ```
 
-## kdevio
+## `kdevio`
 
 Dump I/O-port and I/O-memory information.
 
@@ -9127,7 +9127,7 @@ Simplified iomem structure:
 +-----------------+                 +-----------------+
 ```
 
-## kdmabuf
+## `kdmabuf`
 
 Dump DMA-BUF information.
 
@@ -9179,7 +9179,7 @@ Simplified DMA-BUF structure:
                                       +--------------+
 ```
 
-## kdmesg
+## `kdmesg`
 
 Dump the ring buffer of the dmesg area.
 
@@ -9277,7 +9277,7 @@ Simplified dmesg structure (~5.10):
                       +----------------+         v
 ```
 
-## kfilesystems
+## `kfilesystems`
 
 Dump filesystems.
 
@@ -9325,7 +9325,7 @@ Simplified file_systems structure:
                                                      +--------------+
 ```
 
-## kio-uring
+## `kio-uring`
 
 Display the kernel-side io_uring object graph.
 
@@ -9389,7 +9389,7 @@ io_ring_ctx
   +-- submitter / sq thread ------> task_struct
 ```
 
-## kipcs
+## `kipcs`
 
 Dump IPCs information (System V semaphore, message queue and shared memory).
 
@@ -9436,7 +9436,7 @@ Simplified ipc structure:
                                        +---------------+
 ```
 
-## kirq
+## `kirq`
 
 Dump IRQ (interrupt request) information.
 
@@ -9480,7 +9480,7 @@ Simplified irq structure:
                            +-----------------+
 ```
 
-## klsm
+## `klsm`
 
 Dump the registered Linux Security Module hooks.
 
@@ -9546,7 +9546,7 @@ The v6.12+ discovery depends on static-call data symbols and may be unavailable
 when CONFIG_KALLSYMS_ALL=n.
 ```
 
-## kmod
+## `kmod`
 
 Display kernel module list.
 
@@ -9614,7 +9614,7 @@ Notes for -a option:
   e.g., `p 'virtio_net.__this_module'`
 ```
 
-## kmount
+## `kmount`
 
 Dump the mount tree of each mount namespace.
 
@@ -9686,7 +9686,7 @@ Simplified mount tree structure:
             +-------------+
 ```
 
-## knetdev
+## `knetdev`
 
 Dump net device information.
 
@@ -9718,7 +9718,7 @@ Simplified net_device structure:
 +---------------+    +-------------------+    +-------------------+
 ```
 
-## knft
+## `knft`
 
 Dump the nftables (netfilter) object graph.
 
@@ -9805,7 +9805,7 @@ chain hook, set, object and flowtable attributes and the expression private data
 only when type information (e.g., vmlinux and nf_tables.ko debug info) is loaded.
 ```
 
-## kops
+## `kops`
 
 Display the members of commonly used function table (like struct file_operations) in the kernel.
 
@@ -9853,7 +9853,7 @@ Supported structure:
   ucsi_operations, vm_operations_struct,
 ```
 
-## kpath
+## `kpath`
 
 Reconstruct the pathname of a dentry, path, file or mount.
 
@@ -9922,7 +9922,7 @@ Simplified path structure:
 +----------------+  +-->child mounts
 ```
 
-## kpcidev
+## `kpcidev`
 
 Dump the PCI devices.
 
@@ -9977,7 +9977,7 @@ Simplified pcidev structure:
                                            +------------------+
 ```
 
-## kpipe
+## `kpipe`
 
 Dump pipe information.
 
@@ -10036,7 +10036,7 @@ Simplified pipe structure:
                                                                      +-------------+
 ```
 
-## krefs
+## `krefs`
 
 Search the kernel pointers that reference the specified address.
 
@@ -10088,7 +10088,7 @@ krefs -t 0x100 0xffff888012345600               # also catch the interior pointe
 - Use `kobj ADDRESS` to identify the referenced object.
 ```
 
-## kskb
+## `kskb`
 
 Parse a single sk_buff and show its buffer layout, refcount and fragment information.
 
@@ -10150,7 +10150,7 @@ skb_shared_info (at head + end) holds nr_frags, frag_list, ...
 On 64-bit, tail/end are u32 offsets from head; on 32-bit they are absolute pointers.
 ```
 
-## ksock
+## `ksock`
 
 Walk from a file descriptor (or a raw struct sock) through socket, sock and its skb queues.
 
@@ -10218,7 +10218,7 @@ because struct sock varies with the kernel version and configuration.
 Use `kskb ADDR` to inspect a single sk_buff in detail.
 ```
 
-## ksyscalls
+## `ksyscalls`
 
 Display syscall_table entries.
 
@@ -10243,7 +10243,7 @@ ksyscalls
 ksyscalls --filter write
 ```
 
-## ksysctl
+## `ksysctl`
 
 Dump the sysctl parameters.
 
@@ -10310,7 +10310,7 @@ Simplified sysctl_table structure:
                                          +------------------+
 ```
 
-## ktimer
+## `ktimer`
 
 Dump the timer.
 
@@ -10371,7 +10371,7 @@ Simplified hrtimer structure (per-cpu):
 +--------------------+
 ```
 
-## kvfs
+## `kvfs`
 
 Display the VFS object graph of a file descriptor or VFS object.
 
@@ -10425,7 +10425,7 @@ Simplified VFS object graph:
                                             +-------------+
 ```
 
-## kwalk
+## `kwalk`
 
 The base command to dump the entries held by the well-known kernel data structures.
 
@@ -10493,7 +10493,7 @@ Simplified structures:
                            +-----------------+
 ```
 
-## kwalk list
+## `kwalk list`
 
 Walk the link list.
 
@@ -10537,7 +10537,7 @@ read from ADDRESS+OFFSET, not ADDRESS itself. NULL and a returning sentinel head
 are therefore also shown as the final entry.
 ```
 
-## kwalk maple
+## `kwalk maple`
 
 Dump the entries of the maple tree.
 
@@ -10576,7 +10576,7 @@ kwalk maple -o 0x48 0xffff972801b78a00  # skip searching offsetof(the struct, ma
 The maple_tree is introduced at v6.1 for mm_struct.mm_mt, and v6.5 for sparse_irqs.
 ```
 
-## kwalk radix
+## `kwalk radix`
 
 Dump the entries of the radix tree.
 
@@ -10617,7 +10617,7 @@ A tree holding only one item keeps it in rnode without the tag, which is indisti
 from any other pointer. Pass `--rnode-offset` explicitly for such a tree.
 ```
 
-## kwalk rbtree
+## `kwalk rbtree`
 
 Dump the nodes of the red-black tree.
 
@@ -10654,7 +10654,7 @@ The entries are dumped in pre-order, not sorted by key.
 struct rb_root_cached starts with a struct rb_root, so pass its address as is.
 ```
 
-## kwalk xarray
+## `kwalk xarray`
 
 Dump the entries of the xarray.
 
@@ -10694,7 +10694,7 @@ The xarray is introduced at v4.20, so use `kwalk radix` for v4.19 and earlier.
 struct idr starts with a struct radix_tree_root (or xarray), so pass its address as is.
 ```
 
-## kworkqueue
+## `kworkqueue`
 
 Dump workqueue items and inspect embedded work_struct objects.
 
@@ -10765,7 +10765,7 @@ Simplified workqueue structures (`==>` shows where each column comes from):
 ```
 
 # 06-h. Qemu-system/KGDB Cooperation - Linux Allocator
-## buddy-contains
+## `buddy-contains`
 
 Resolves which buddy block an address belongs to.
 
@@ -10813,7 +10813,7 @@ Two modes:
   -L     : read struct page flags only but cannot report pcp free pages.
 ```
 
-## buddy-dump
+## `buddy-dump`
 
 Dump the zone of the page allocator (buddy allocator) free-list.
 
@@ -10907,7 +10907,7 @@ Simplified buddy allocator structure:
 You can combine this result with information of in-use space. Try using `kvmmap` command.
 ```
 
-## kmem-cache-alias
+## `kmem-cache-alias`
 
 Resolve the slab cache (kmem_cache) alias.
 
@@ -10936,7 +10936,7 @@ This command requires CONFIG_SYSFS=y.
 CONFIG_SLUB_TINY=y is unsupported because slab sysfs is unavailable.
 ```
 
-## kobj
+## `kobj`
 
 Identify an arbitrary kernel address: mapping, allocator, slab cache, object base/offset and a type candidate.
 
@@ -10973,7 +10973,7 @@ GEF's pageinfo-based page classification currently supports v4.18 and later;
 slab object resolution works on older kernels too.
 ```
 
-## slab-contains
+## `slab-contains`
 
 Resolve the slab cache (kmem_cache) that an object belongs to (for slab/slub/slub-tiny).
 
@@ -11019,7 +11019,7 @@ Simplified page/slab structure:
 * Compound pages and huge pages are not supported.
 ```
 
-## slab-dump
+## `slab-dump`
 
 Dump SLAB free-list reachable from slab_caches.
 
@@ -11107,7 +11107,7 @@ Simplified SLAB structure:
 * SLAB was removed in kernel 6.8.
 ```
 
-## slob-dump
+## `slob-dump`
 
 Dump SLOB free-list reachable from slab_caches.
 
@@ -11176,7 +11176,7 @@ Simplified SLOB structure:
 * SLOB was removed in kernel 6.4.
 ```
 
-## slub-dump
+## `slub-dump`
 
 Dump SLUB free-list reachable from slab_caches.
 
@@ -11333,7 +11333,7 @@ Simplified SLUB structure:
 * To see the CONFIG_SLAB_VIRTUAL ASCII diagram, execute `slub-dump --help-for-slab-virtual`.
 ```
 
-## slub-tiny-dump
+## `slub-tiny-dump`
 
 Dump SLUB-TINY free-list reachable from slab_caches.
 
@@ -11411,7 +11411,7 @@ Simplified SLUB-TINY structure:
 * SLUB-TINY was introduced in kernel 6.2.
 ```
 
-## vmalloc-dump
+## `vmalloc-dump`
 
 Dump vmalloc used list and freed list.
 
@@ -11466,7 +11466,7 @@ Simplified vmalloc structure:
 ```
 
 # 06-i. Qemu-system/KGDB Cooperation - Linux Dynamic Inspection
-## kmalloc-allocated-by
+## `kmalloc-allocated-by`
 
 Call predefined system-calls and print kmalloc-N chunks allocated and freed (x64 only).
 
@@ -11501,7 +11501,7 @@ Append `tsc=unstable` option for kernel cmdline.
 This command requires CONFIG_RANDSTRUCT=n.
 ```
 
-## kmalloc-tracer
+## `kmalloc-tracer`
 
 Collect and display information when kmalloc/kfree.
 
@@ -11540,7 +11540,7 @@ Tracing `kmem_cache_alloc` type is not supported.
 This command requires CONFIG_RANDSTRUCT=n.
 ```
 
-## ktrace
+## `ktrace`
 
 Trace kernel functions and arguments.
 
@@ -11570,7 +11570,7 @@ If you set breakpoints in some commonly called functions, it became too slow to 
 Use filtering options to reduce the number of functions targeted by breakpoints as much as possible.
 ```
 
-## kuaf-watch
+## `kuaf-watch`
 
 Track the alloc/free/reuse lifecycle of a slab object (or an entire cache) for UAF analysis.
 
@@ -11609,7 +11609,7 @@ In --cache mode the slab cache of every alloc/free is resolved, which is slower 
 This command requires CONFIG_RANDSTRUCT=n.
 ```
 
-## thunk-tracer
+## `thunk-tracer`
 
 Collect and display the thunk addresses that are called automatically (x64/x86 only).
 
@@ -11623,7 +11623,7 @@ options:
   -h, --help  show this help message and exit
 ```
 
-## usermodehelper-tracer
+## `usermodehelper-tracer`
 
 Collect and display information that is executed by call_usermodehelper_setup.
 
@@ -11638,7 +11638,7 @@ options:
 ```
 
 # 06-j. Qemu-system/KGDB Cooperation - TrustZone
-## bsm
+## `bsm`
 
 Set a breakpoint in virtual memory by specifying the physical memory of the secure world.
 
@@ -11662,7 +11662,7 @@ options:
 bsm 0xe1008d8
 ```
 
-## optee-bget-dump
+## `optee-bget-dump`
 
 Dump bget allocator of OPTEE-Trusted-App.
 
@@ -11716,7 +11716,7 @@ Simplified heap structure:
 +------------------------------+
 ```
 
-## optee-break-ta
+## `optee-break-ta`
 
 Set a breakpoint to OPTEE-TA.
 
@@ -11759,7 +11759,7 @@ Because of this, it is immune to compiler optimizations. By searching memory for
 of this assembly routine, we can reliably locate its offset and set your breakpoint there.
 ```
 
-## optee-shm-list
+## `optee-shm-list`
 
 List dynamic shared-memory buffers currently registered in OP-TEE (for OP-TEE v4.3.0~).
 
@@ -11774,7 +11774,7 @@ options:
   -n, --no-pager  do not use the pager.
 ```
 
-## optee-smc-service-dump
+## `optee-smc-service-dump`
 
 Dump the OPTEE SMC (EL3) service (specifically, the arm-trusted-firmware implementation).
 
@@ -11790,7 +11790,7 @@ options:
   -v, --verbose   verbose output.
 ```
 
-## optee-ta-dump
+## `optee-ta-dump`
 
 The base command to dump OPTEE Trusted Application.
 
@@ -11807,7 +11807,7 @@ command:
   {memory,dir}
 ```
 
-## optee-ta-dump dir
+## `optee-ta-dump dir`
 
 Dump the OPTEE-Trusted-App list from host directory.
 
@@ -11826,7 +11826,7 @@ options:
   -v, --verbose   verbose output.
 ```
 
-## optee-ta-dump memory
+## `optee-ta-dump memory`
 
 Dump the OPTEE-Trusted-App list from OPTEE kernel memory.
 
@@ -11858,7 +11858,7 @@ Walk the global TEE context list (`tee_ctxes`) and print `struct tee_ta_ctx` cur
   not a cumulative load count.
 ```
 
-## wsm
+## `wsm`
 
 Write secure memory via qemu-system memory map.
 
@@ -11891,7 +11891,7 @@ wsm hex "4141 4141" --off 0x11e3d0        # hex string is supported (invalid cha
 wsm byte 0x41 --virt 0x783ae3d0           # secure memory ASLR is supported
 ```
 
-## xsm
+## `xsm`
 
 Dump secure memory via qemu-system memory map.
 
@@ -11922,7 +11922,7 @@ xsm /16xw --virt 0x783ae3d0  # secure memory ASLR is supported
 ```
 
 # 06-k. Qemu-system/KGDB Cooperation - Other
-## kdiff
+## `kdiff`
 
 Compare kernel information at two points in time.
 
@@ -11966,7 +11966,7 @@ Without -t, task/module/sysctl/irq/syscall and, on x86, IDT/GDT are compared.
 Use -c to include address-specific tables such as `kops file_operations ADDRESS`.
 ```
 
-## ksearch-code-ptr
+## `ksearch-code-ptr`
 
 Search the code pointer in kernel data area.
 
@@ -11985,7 +11985,7 @@ options:
   -q, --quiet           enable quiet mode.
 ```
 
-## qemu-device-info
+## `qemu-device-info`
 
 Dump device information for qemu-escape.
 
@@ -12014,7 +12014,7 @@ qemu-device-info -d cydf      # Specify a characteristic part of the device name
 qemu-system must be running on the local host.
 ```
 
-## uefi-ovmf-info
+## `uefi-ovmf-info`
 
 Print UEFI OVMF info.
 
@@ -12029,7 +12029,7 @@ options:
 ```
 
 # 06-l. Qemu-system/KGDB Cooperation - SMM
-## smm-dump
+## `smm-dump`
 
 Dump the detected SMRAM range to a file.
 
@@ -12060,7 +12060,7 @@ An in-SMM dump uses the current CPU's SMM address space.
 A forced dump outside SMM is best-effort because chipset access controls may return masked bytes.
 ```
 
-## smm-status
+## `smm-status`
 
 Display the current SMM status and an SMRAM preview.
 
@@ -12092,7 +12092,7 @@ The preview uses the current in-SMM PC, or the detected SMRAM base outside SMM.
 ```
 
 # 07-a. Misc - Conversion
-## addressify
+## `addressify`
 
 Convert reverse-order hex values to address.
 
@@ -12116,7 +12116,7 @@ addressify "00 30 e0 f7 ff 7f"
 addressify 00 30 e0 f7 ff 7f
 ```
 
-## convert
+## `convert`
 
 The base command to convert values to various.
 
@@ -12133,7 +12133,7 @@ command:
   {memory,value}
 ```
 
-## convert memory
+## `convert memory`
 
 Convert memory values to various.
 
@@ -12159,7 +12159,7 @@ options:
 convert memory $rsp 0x20
 ```
 
-## convert value
+## `convert value`
 
 Convert values to various.
 
@@ -12187,7 +12187,7 @@ convert value "\\x41\\x42\\x43\\x44" -v
 convert value --hex "41 42 43 44" -v
 ```
 
-## u2d
+## `u2d`
 
 Convert type (unsigned long <-> double/float).
 
@@ -12218,7 +12218,7 @@ u2d 1.2345e-1
 Only ~64bit supported (Unsupported 80bit, 128bit)
 ```
 
-## unsigned
+## `unsigned`
 
 Convert the negative number to unsigned.
 
@@ -12242,7 +12242,7 @@ unsigned -- -0xa0
 ```
 
 # 07-b. Misc - Search
-## constgrep
+## `constgrep`
 
 Grep for lines with #define in files under /usr/include.
 
@@ -12266,7 +12266,7 @@ constgrep '__NR_*'
 ```
 
 # 07-c. Misc - Generation
-## bytearray
+## `bytearray`
 
 Generate a bytearray to be compared with possible badchars (ported from mona.py).
 
@@ -12288,7 +12288,7 @@ options:
 bytearray -b 414243 -b 51-53 -b 61..63
 ```
 
-## pattern
+## `pattern`
 
 The base command to create or search for a De Bruijn cyclic pattern (used pwntools).
 
@@ -12305,7 +12305,7 @@ command:
   {create,search}
 ```
 
-## pattern create
+## `pattern create`
 
 Generate a de Bruijn cyclic pattern.
 
@@ -12325,7 +12325,7 @@ options:
                         the charset of pattern. (default: abc..z)
 ```
 
-## pattern search
+## `pattern search`
 
 Search for the cyclic de Bruijn pattern generated by the `pattern create`.
 
@@ -12354,7 +12354,7 @@ pattern search 0x61616164
 pattern search aaab
 ```
 
-## print-format
+## `print-format`
 
 Print bytes format in high level languages.
 
@@ -12391,7 +12391,7 @@ print-format -f py -b 8 -l 256 $rsp
 ```
 
 # 07-d. Misc - Show Example
-## ret2dl-hint
+## `ret2dl-hint`
 
 Hint for return-to-dl-resolve.
 
@@ -12405,7 +12405,7 @@ options:
   -h, --help  show this help message and exit
 ```
 
-## srop-hint
+## `srop-hint`
 
 Hint for sigreturn oriented programming.
 
@@ -12424,7 +12424,7 @@ options:
 ```
 
 # 07-e. Misc - Calculation
-## crc32rev
+## `crc32rev`
 
 Perform CRC32 reverse calculation limited to ASCII character range.
 
@@ -12483,7 +12483,7 @@ crc32rev 0x41414141 --preset mpeg2
 wanted_crc == crc(prefix + bridge + suffix).
 ```
 
-## distance
+## `distance`
 
 Calculate the offset from its base address.
 
@@ -12502,7 +12502,7 @@ options:
 ```
 
 # 07-f. Misc - Diff
-## diffo
+## `diffo`
 
 The base command to diff of the command outputs.
 
@@ -12519,7 +12519,7 @@ command:
   {colordiff,git-diff,list,clear}
 ```
 
-## diffo clear
+## `diffo clear`
 
 Clear all saved outputs.
 
@@ -12537,7 +12537,7 @@ options:
   --all       delete everything.
 ```
 
-## diffo colordiff
+## `diffo colordiff`
 
 Diff the two outputs by colordiff.
 
@@ -12568,7 +12568,7 @@ diffo colordiff 0 1  # diff between 0 and 1
 You can check the available indexes with `diffo list`.
 ```
 
-## diffo git-diff
+## `diffo git-diff`
 
 Diff the two outputs by git.
 
@@ -12599,7 +12599,7 @@ diffo git-diff 0 1  # diff between 0 and 1
 You can check the available indexes with `diffo list`.
 ```
 
-## diffo list
+## `diffo list`
 
 List saved outputs.
 
@@ -12613,7 +12613,7 @@ options:
   -h, --help  show this help message and exit
 ```
 
-## saveo
+## `saveo`
 
 Save the command outputs.
 
@@ -12638,7 +12638,7 @@ Saving the output of external commands is unsupported (e.g., pipe, !ls).
 ```
 
 # 07-g. Misc - Qemu-system
-## qemu-system-memory-region-dump
+## `qemu-system-memory-region-dump`
 
 Dump memory regions for qemu-system.
 
@@ -12657,7 +12657,7 @@ options:
 ```
 
 # 99. GEF Maintenance Command
-## aliases
+## `aliases`
 
 The base command to add, remove or list aliases.
 
@@ -12674,7 +12674,7 @@ command:
   {add,rm,ls}
 ```
 
-## aliases add
+## `aliases add`
 
 Add the command alias.
 
@@ -12699,7 +12699,7 @@ options:
 aliases add scope telescope
 ```
 
-## aliases ls
+## `aliases ls`
 
 List the command alias.
 
@@ -12714,7 +12714,7 @@ options:
   -n, --no-pager  do not use the pager.
 ```
 
-## aliases rm
+## `aliases rm`
 
 Remove the command alias.
 
@@ -12731,7 +12731,7 @@ options:
   -h, --help  show this help message and exit
 ```
 
-## gef
+## `gef`
 
 The base command of GEF maintenance.
 
@@ -12748,7 +12748,7 @@ command:
   {missing,config,save,restore,reload,reset-breakpoint,reset-cache,arch-list,raise-exception,pyobj-list,avail-comm-list,set-arch,status,version,check-update,tmux-setup,dump-commands}
 ```
 
-## gef arch-list
+## `gef arch-list`
 
 Display defined architecture information.
 
@@ -12763,7 +12763,7 @@ options:
   -n, --no-pager  do not use the pager.
 ```
 
-## gef avail-comm-list
+## `gef avail-comm-list`
 
 Display a list of commands available for the current architecture and gdb execution mode.
 
@@ -12782,7 +12782,7 @@ options:
   -n, --no-pager        do not use the pager.
 ```
 
-## gef check-update
+## `gef check-update`
 
 Check for gef updates.
 
@@ -12796,7 +12796,7 @@ options:
   -h, --help  show this help message and exit
 ```
 
-## gef config
+## `gef config`
 
 Display or change GEF configuration.
 
@@ -12816,7 +12816,7 @@ options:
                         show only changed settings.
 ```
 
-## gef dump-commands
+## `gef dump-commands`
 
 Dump GEF command documentation as Markdown.
 
@@ -12833,7 +12833,7 @@ options:
   -h, --help  show this help message and exit
 ```
 
-## gef help
+## `gef help`
 
 Display GEF command list.
 
@@ -12848,7 +12848,7 @@ options:
   -n, --no-pager  do not use the pager.
 ```
 
-## gef missing
+## `gef missing`
 
 Display the GEF commands that could not be loaded with the reason.
 
@@ -12870,7 +12870,7 @@ To speed up startup, some commands lazy load required modules and dependencies.
 These command cannot be detected.
 ```
 
-## gef pyobj-list
+## `gef pyobj-list`
 
 Display defined global python object.
 
@@ -12885,7 +12885,7 @@ options:
   -n, --no-pager  do not use the pager.
 ```
 
-## gef raise-exception
+## `gef raise-exception`
 
 Raise an exception for development.
 
@@ -12899,7 +12899,7 @@ options:
   -h, --help  show this help message and exit
 ```
 
-## gef reload
+## `gef reload`
 
 Reload the GEF.
 
@@ -12913,7 +12913,7 @@ options:
   -h, --help  show this help message and exit
 ```
 
-## gef reset-breakpoint
+## `gef reset-breakpoint`
 
 Show and reset all breakpoints (include internal breakpoints).
 
@@ -12929,7 +12929,7 @@ options:
   -c, --commit  actually perform delete.
 ```
 
-## gef reset-cache
+## `gef reset-cache`
 
 Reset all caches.
 
@@ -12945,7 +12945,7 @@ options:
   --hard      also delete under /tmp/gef.
 ```
 
-## gef restore
+## `gef restore`
 
 Load settings from '~/.gef.rc'.
 
@@ -12960,7 +12960,7 @@ options:
   -q, --quiet  quiet execution.
 ```
 
-## gef save
+## `gef save`
 
 Save the current settings to '~/.gef.rc'.
 
@@ -12975,7 +12975,7 @@ options:
   -q, --quiet  quiet execution.
 ```
 
-## gef set-arch
+## `gef set-arch`
 
 Set a specific architecture to gef.
 
@@ -12993,7 +12993,7 @@ options:
   -l, --list  show supported architecture words.
 ```
 
-## gef status
+## `gef status`
 
 Display current gef status.
 
@@ -13008,7 +13008,7 @@ options:
   -h, --help  show this help message and exit
 ```
 
-## gef tmux-setup
+## `gef tmux-setup`
 
 Setup a comfortable tmux environment.
 
@@ -13038,7 +13038,7 @@ options:
 - It can be found in https://github.com/bata24/gef/blob/dev/dev/zellij/zellij-wrapper.py.
 ```
 
-## gef version
+## `gef version`
 
 Display GEF version info.
 
@@ -13054,7 +13054,7 @@ options:
   --compact   show compact style.
 ```
 
-## history
+## `history`
 
 Show gdb command history easily.
 
@@ -13069,7 +13069,7 @@ options:
   -n, --no-pager  do not use the pager.
 ```
 
-## theme
+## `theme`
 
 Customize GEF appearance.
 
