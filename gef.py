@@ -171104,16 +171104,31 @@ class KernelNftablesCommand(GenericCommand, BufferingOutput):
     parser.add_argument("-hh", "--help-simple", action="store_true", help="show help without ASCII diagram.")
     parser.add_argument("-R", "--no-rules", action="store_true", help="do not decode or render rules and expressions.")
     parser.add_argument("-E", "--no-elements", action="store_true", help="do not decode or render set elements.")
+    parser.add_argument("-F", "--family", help="only show tables of this family (inet, ip, ip6, arp, bridge, netdev).")
+    parser.add_argument("-T", "--table", metavar="NAME", help="only show tables with this name.")
+    parser.add_argument("-k", "--kind", action="append", choices=["chain", "set", "object", "flowtable"],
+                        help="only show this kind of table child. It can be specified multiple times.")
+    parser.add_argument("-N", "--name", help="only show chains, sets, objects and flowtables with this name.")
+    parser.add_argument("-H", "--handle", type=AddressUtil.parse_address,
+                        help="only show the rule with this handle (implies `-k chain`).")
+    parser.add_argument("--net", type=AddressUtil.parse_address,
+                        help="only show the network namespace with this struct net address or ns inode number.")
+    parser.add_argument("-v", "--verbose", action="store_true",
+                        help="show object attributes, hooks and expression contents (mostly needs type information).")
     parser.add_argument("--meta", action="store_true", help="display discovery information.")
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
     parser.add_argument("-q", "--quiet", action="store_true", help="show result only.")
     _syntax_ = parser.format_help()
 
     _example_ = [
-        "{0:s}                     # dump the whole nftables object graph",
-        "{0:s} -R                  # dump the graph without rules and expressions",
-        "{0:s} -E                  # dump the graph without set elements",
-        "{0:s} 0xffff888012345600  # find which nftables object owns this address",
+        "{0:s}                          # dump the whole nftables object graph",
+        "{0:s} -R                       # dump the graph without rules and expressions",
+        "{0:s} -E                       # dump the graph without set elements",
+        "{0:s} -F inet -T filter -k set # show only the sets of the inet table `filter`",
+        "{0:s} -T filter -N input -v    # show chain `input` with attributes, hook and expressions",
+        "{0:s} -T filter -H 12 -v       # show rule handle 12 and its decoded expressions",
+        "{0:s} --net 4026531840         # show only the network namespace net:[4026531840]",
+        "{0:s} 0xffff888012345600       # find which nftables object owns this address",
     ]
     _example_ = "\n".join(_example_).format(_cmdline_)
 
@@ -171150,13 +171165,51 @@ class KernelNftablesCommand(GenericCommand, BufferingOutput):
         "kernel validity rule. The datapath representation changed from linked nft_rule objects before",
         "v5.17 to a contiguous nft_rule_blob in mainline v5.17 and later; the control-plane rule list",
         "still exists on newer kernels, and both representations are understood where applicable.",
+        "",
+        "Filters are applied after the table list is discovered; only the selected chains and sets are",
+        "decoded. With -v, the table handle/flags/genmask/owner come from the validated nft_table layout",
+        "and the rule genmask/userdata from the rule header even on stripped kernels. The chain, base",
+        "chain hook, set, object and flowtable attributes and the expression private data are printed",
+        "only when type information (e.g., vmlinux and nf_tables.ko debug info) is loaded.",
     ]
     _note_ = "\n".join(_note_)
 
     # NFPROTO_* families
     FAMILIES = {0: "unspec", 1: "inet", 2: "ipv4", 3: "arp", 5: "netdev", 7: "bridge", 10: "ipv6", 12: "decnet"}
     TABLE_FAMILIES = frozenset((1, 2, 3, 5, 7, 10))
+    FAMILY_NAMES = {"inet": 1, "ip": 2, "ipv4": 2, "arp": 3, "netdev": 5, "bridge": 7, "ip6": 10, "ipv6": 10}
     NFT_TABLE_F_OWNER = 0x2
+    NFT_CHAIN_BASE = 0x1
+
+    TABLE_FLAGS = {0x1: "dormant", 0x2: "owner", 0x4: "persist"}
+    CHAIN_FLAGS = {0x1: "base", 0x2: "hw-offload", 0x4: "binding"}
+    SET_FLAGS = {
+        0x1: "anonymous", 0x2: "constant", 0x4: "interval", 0x8: "map", 0x10: "timeout",
+        0x20: "eval", 0x40: "object", 0x80: "concat", 0x100: "expr",
+    }
+    FLOWTABLE_FLAGS = {0x1: "hw-offload", 0x2: "counter"}
+    SET_POLICIES = {0: "performance", 1: "memory"}
+    CHAIN_POLICIES = {0: "drop", 1: "accept"}
+    OBJECT_TYPES = {
+        1: "counter", 2: "quota", 3: "ct helper", 4: "limit", 5: "connlimit", 6: "tunnel",
+        7: "ct timeout", 8: "secmark", 9: "ct expectation", 10: "synproxy",
+    }
+    HOOK_NAMES = {
+        None: ("prerouting", "input", "forward", "output", "postrouting", "ingress"),
+        3: ("input", "output", "forward"),
+        5: ("ingress", "egress"),
+    }
+    # the private data type of an expression is not always named after the expression type
+    EXPR_PRIVATE_TYPES = {
+        "counter": ("nft_counter_percpu_priv",),
+        "limit": ("nft_limit_priv", "nft_limit_priv_pkts"),
+        "last": ("nft_last_priv",),
+    }
+    SET_UDATA = {
+        0: "keybyteorder", 1: "databyteorder", 2: "merge_elements", 3: "key_typeof", 4: "data_typeof",
+        5: "expr", 6: "data_interval", 7: "comment",
+    }
+    XT_INFO_DUMP_MAX = 0x40
 
     # known nft_expr_type names; used to confirm that a decoded rule is really an nftables rule
     #EXPR_TYPES = frozenset((
@@ -171193,6 +171246,7 @@ class KernelNftablesCommand(GenericCommand, BufferingOutput):
         self.net_gen_offset = None
         self.nf_tables_id = None
         self.nf_tables_id_resolved = False
+        self.netns_ops_off = None
         return
 
     def member_offset(self, type_name, member):
@@ -171403,14 +171457,15 @@ class KernelNftablesCommand(GenericCommand, BufferingOutput):
         self.backref_cache[key] = None
         return None
 
-    def resolve_name(self, base, min_off=0, max_off=None):
+    def resolve_name(self, base, min_off=0, max_off=None, exclude=None):
         stop = self.MEMBER_SCAN if max_off is None else min(self.MEMBER_SCAN, max_off)
-        key = (base, min_off, stop)
+        key = (base, min_off, stop, exclude)
         if key in self.name_cache:
             return self.name_cache[key]
         for offset in range(min_off, stop, current_arch.ptrsize):
             pointer = self.rd(base + offset)
-            if not pointer or not AddressUtil.is_msb_on(pointer):
+            # names are kmalloc()ed; odd values are rhashtable nulls markers (e.g. nft_chain.rhlhead)
+            if not pointer or not AddressUtil.is_msb_on(pointer) or pointer & 1 or pointer == exclude:
                 continue
             name = self.cstr(pointer)
             if self.looks_name(name):
@@ -172276,6 +172331,46 @@ class KernelNftablesCommand(GenericCommand, BufferingOutput):
         self.blob_status_cache[blob] = "broken"
         return None
 
+    def valid_blob(self, blob):
+        if not blob or not AddressUtil.is_msb_on(blob) or blob % current_arch.ptrsize:
+            return False
+        size = self.rd(blob)
+        if size is None:
+            return False
+        return self.blob_data_offset(blob, size) is not None
+
+    def current_blob(self, entry, blobs):
+        # blob_gen_0/1 are indexed by the generation cursor. After a commit, the other slot keeps
+        # the previous (possibly empty or already freed) blob until the chain is touched again.
+        blobs = list(dict.fromkeys(blobs))
+        if len(blobs) == 1:
+            return blobs[0]
+
+        list_off = self.member_offset("struct nft_chain", "list")
+        if list_off is not None:
+            chain = self.typed_struct(entry - list_off, "struct nft_chain")
+            net = self.typed_struct(self.field_int(chain, "table", "net"), "struct net")
+            gencursor = self.field_int(net, "nft", "gencursor")
+            if gencursor in (0, 1):
+                return blobs[gencursor]
+
+        # Stripped kernels: the committed control-plane rule list matches the current blob.
+        rules_off = self.find_rules_list(entry, None)
+        if rules_off is None:
+            return blobs[0]
+        handles = []
+        for rule in self.walk_list(entry + rules_off, maxent=self.MAX_RULE_SCAN):
+            info = self.old_rule_info(rule)
+            if info is not None:
+                handles.append(info[0])
+        best = None
+        for blob in blobs:
+            blob_handles = [record[2] for record in self.blob_rule_records(blob)[0]]
+            score = (blob_handles == handles, len(set(blob_handles) & set(handles)))
+            if best is None or score > best[0]:
+                best = (score, blob)
+        return best[1]
+
     def find_chain_blob(self, entry):
         # Prefer exact nft_chain member offsets when available; stripped targets use the bounded scan.
         if entry in self.chain_blob_cache:
@@ -172291,32 +172386,25 @@ class KernelNftablesCommand(GenericCommand, BufferingOutput):
             return None
         if list_off is not None and any(offset is not None for offset in blob_offsets):
             chain = entry - list_off
-            for blob_off in blob_offsets:
-                if blob_off is None:
-                    continue
-                blob = self.rd(chain + blob_off)
-                if not blob or not AddressUtil.is_msb_on(blob) or blob % current_arch.ptrsize:
-                    continue
-                size = self.rd(blob)
-                if size is None:
-                    continue
-                if self.blob_data_offset(blob, size) is not None:
-                    self.chain_blob_cache[entry] = blob
-                    return blob
-            self.chain_blob_cache[entry] = None
-            return None
+            blobs = [self.rd(chain + blob_off) for blob_off in blob_offsets if blob_off is not None]
+            if len(blobs) == 2 and all(self.valid_blob(blob) for blob in blobs):
+                blob = self.current_blob(entry, blobs)
+            else:
+                blob = next((blob for blob in blobs if self.valid_blob(blob)), None)
+            self.chain_blob_cache[entry] = blob
+            return blob
 
         ptr = current_arch.ptrsize
+        # blob_gen_0 and blob_gen_1 precede the rules and list heads
         preferred = [-ptr * 4, -ptr * 3]
-        offsets = preferred + [offset for offset in range(-0x40, 0x60, ptr) if offset not in preferred]
-        for offset in offsets:
+        blobs = [self.rd(entry + offset) for offset in preferred]
+        if all(self.valid_blob(blob) for blob in blobs):
+            blob = self.current_blob(entry, blobs)
+            self.chain_blob_cache[entry] = blob
+            return blob
+        for offset in preferred + [offset for offset in range(-0x40, 0x60, ptr) if offset not in preferred]:
             blob = self.rd(entry + offset)
-            if not blob or not AddressUtil.is_msb_on(blob) or blob % ptr:
-                continue
-            size = self.rd(blob)
-            if size is None:
-                continue
-            if self.blob_data_offset(blob, size) is not None:
+            if self.valid_blob(blob):
                 self.chain_blob_cache[entry] = blob
                 return blob
 
@@ -172545,7 +172633,8 @@ class KernelNftablesCommand(GenericCommand, BufferingOutput):
                 if value is not None and 0 <= value < 0x1_0000:
                     use = value
             if family_off is not None:
-                value = self.rd8(tbase + family_off)
+                # family is a bitfield sharing its byte with flags on v4.16 and later
+                value = self.field_int(self.typed_struct(tbase, "struct nft_table"), "family")
                 if value in self.FAMILIES:
                     family = value
             return {
@@ -172576,6 +172665,575 @@ class KernelNftablesCommand(GenericCommand, BufferingOutput):
             "use_off": None,
             "source": "heuristic",
         }
+
+    # --- details ---
+
+    def typed_struct(self, address, type_name):
+        struct_type = GefUtil.cached_lookup_type(type_name)
+        if struct_type is None or not address:
+            return None
+        try:
+            return gdb.Value(address).cast(struct_type.pointer()).dereference()
+        except (gdb.error, OverflowError):
+            return None
+
+    def field(self, value, *path):
+        # Pointers on the path are followed; gdb also finds members of anonymous structs/unions.
+        if value is None:
+            return None
+        try:
+            for name in path:
+                if value.type.strip_typedefs().code == gdb.TYPE_CODE_PTR:
+                    if int(value) == 0:
+                        return None
+                    value = value.dereference()
+                value = value[name]
+            return value
+        except (gdb.error, OverflowError):
+            return None
+
+    def field_int(self, value, *path):
+        value = self.field(value, *path)
+        try:
+            # atomic_t, refcount_t, possible_net_t, ... wrap a single member
+            while value is not None and value.type.strip_typedefs().code in (gdb.TYPE_CODE_STRUCT, gdb.TYPE_CODE_UNION):
+                fields = value.type.strip_typedefs().fields()
+                if len(fields) != 1:
+                    return None
+                value = value[fields[0]]
+            return None if value is None else int(value)
+        except (gdb.error, OverflowError, ValueError):
+            return None
+
+    def field_string(self, value, *path):
+        value = self.field(value, *path)
+        if value is None:
+            return None
+        try:
+            field_type = value.type.strip_typedefs()
+            if field_type.code == gdb.TYPE_CODE_PTR:
+                return self.cstr(int(value))
+            if field_type.code == gdb.TYPE_CODE_ARRAY:
+                return self.cstr(int(value.address), field_type.sizeof)
+        except (gdb.error, OverflowError):
+            pass
+        return None
+
+    def read_bytes(self, address, size):
+        if not address or not size or size < 0 or not self.pointer_add_valid(address, size - 1):
+            return None
+        try:
+            return bytes(read_memory(address, size))
+        except (gdb.MemoryError, OverflowError):
+            return None
+
+    def typed_udata(self, value):
+        pointer = self.field_int(value, "udata")
+        length = self.field_int(value, "udlen")
+        if not pointer or not length:
+            return None
+        return self.read_bytes(pointer, length)
+
+    @staticmethod
+    def udata_string(data, names=None):
+        # libnftnl stores userdata as {u8 type, u8 len, value[len]} records; type 0 is a comment
+        # except for sets.
+        if names is None:
+            names = {0: "comment"}
+        items = []
+        pos = 0
+        while pos + 2 <= len(data):
+            kind, length = data[pos], data[pos + 1]
+            value = data[pos + 2:pos + 2 + length]
+            if len(value) != length:
+                break
+            name = names.get(kind)
+            text = value[:-1] if value.endswith(b"\0") else value
+            if name == "comment" and text and all(0x20 <= c < 0x7f for c in text):
+                items.append('comment="{:s}"'.format(text.decode()))
+            elif name is not None and length == 4:
+                items.append("{:s}={:d}".format(name, u32(value)))
+            else:
+                items.append("{:s}=0x{:s}".format(name or "udata[{:d}]".format(kind), value.hex()))
+            pos += 2 + length
+        if pos != len(data) or not items:
+            return "udata=0x" + data.hex()
+        return " ".join(items)
+
+    @staticmethod
+    def flags_str(value, names):
+        if value is None:
+            return None
+        parts = [name for bit, name in sorted(names.items()) if value & bit]
+        rest = value & ~sum(names)
+        if rest:
+            parts.append("{:#x}".format(rest))
+        return "{:#x}".format(value) + ("({:s})".format(",".join(parts)) if parts else "")
+
+    @staticmethod
+    def attrs_str(attrs):
+        return " ".join("{:s}={}".format(key, value) for key, value in attrs if value is not None)
+
+    def hook_name(self, family, hooknum):
+        if hooknum is None:
+            return None
+        names = self.HOOK_NAMES.get(family, self.HOOK_NAMES[None])
+        if 0 <= hooknum < len(names):
+            return "{:s}({:d})".format(names[hooknum], hooknum)
+        return str(hooknum)
+
+    def net_inum(self, net):
+        value = self.typed_struct(net, "struct net")
+        if value is not None:
+            inum = self.field_int(value, "ns", "inum")
+            if inum is None:
+                inum = self.field_int(value, "proc_inum")
+            return inum
+
+        offset = self.netns_ops_offset(net)
+        if offset is None:
+            return None
+        return self.rd32(net + offset + current_arch.ptrsize)
+
+    def netns_ops_offset(self, net):
+        # struct ns_common (v3.19~): ..., const struct proc_ns_operations *ops; unsigned int inum;
+        # ops points to netns_operations, whose name is "net" and type is CLONE_NEWNET.
+        ptr = current_arch.ptrsize
+        if self.netns_ops_off is not None:
+            offsets = [self.netns_ops_off]
+        else:
+            offsets = range(0, self.MEMBER_SCAN * 2, ptr)
+        for offset in offsets:
+            ops = self.rd(net + offset)
+            if not ops or not AddressUtil.is_msb_on(ops) or ops % ptr:
+                continue
+            if self.cstr(self.rd(ops) or 0, 8) != "net":
+                continue
+            if 0x4000_0000 not in (self.rd32(ops + ptr), self.rd32(ops + ptr * 2)):
+                continue
+            inum = self.rd32(net + offset + ptr)
+            if inum is None or inum < 0xf000_0000:
+                continue
+            self.netns_ops_off = offset
+            return offset
+        return None
+
+    def nets_from_ring(self, init_net):
+        # Without net_namespace_list (CONFIG_KALLSYMS_ALL=n), walk the ring through init_net.list.
+        # Every node but the static list head must be a struct net with the same ns_common.ops.
+        ns_off = self.netns_ops_offset(init_net)
+        if ns_off is None:
+            return []
+        ops = self.rd(init_net + ns_off)
+        list_off = self.member_offset("struct net", "list")
+        offsets = [list_off] if list_off is not None else range(0, self.MEMBER_SCAN, current_arch.ptrsize)
+        for offset in offsets:
+            if offset == ns_off:
+                continue
+            head = init_net + offset
+            entries = self.walk_list(head, maxent=0x1000)
+            if self.walk_list_status(head, maxent=0x1000) != "ok":
+                continue
+            nets = [entry - offset for entry in entries if self.rd(entry - offset + ns_off) == ops]
+            if nets and len(nets) == len(entries) - 1:
+                return nets
+        return []
+
+    def table_detail(self, table, graph):
+        value = self.typed_struct(table["addr"], "struct nft_table")
+        if self.field(value, "handle") is not None:
+            text = self.attrs_str([
+                ("handle", self.field_int(value, "handle")),
+                ("flags", self.flags_str(self.field_int(value, "flags"), self.TABLE_FLAGS)),
+                ("genmask", self.field_int(value, "genmask")),
+                ("nlpid", self.field_int(value, "nlpid")),
+            ])
+            udata = self.typed_udata(value)
+            if udata:
+                text += " " + self.udata_string(udata)
+            return text
+
+        if graph.get("tail_layout") is None or graph.get("name_off") is None:
+            return None
+        values = self.table_tail_candidate_values(table["addr"], graph["name_off"], graph["tail_layout"])
+        if values is None:
+            return None
+        return self.attrs_str([
+            ("handle", values["handle"]),
+            ("flags", self.flags_str(values["flags"], self.TABLE_FLAGS)),
+            ("genmask", values["genmask"]),
+            ("nlpid", values["nlpid"]),
+        ])
+
+    def hook_devices(self, value):
+        # v5.8~ keeps a list of struct nft_hook; older base chains have one dev_name[] and older
+        # flowtables an nf_hook_ops array.
+        hook_list = self.field(value, "hook_list")
+        if hook_list is not None:
+            head = int(hook_list.address)
+            entries = self.walk_list(head, maxent=0x100)
+            if self.walk_list_status(head, maxent=0x100) not in ("ok", "empty"):
+                return ["[broken hook list]"]
+            list_off = self.member_offset("struct nft_hook", "list") or 0
+            devices = []
+            for entry in entries:
+                hook = self.typed_struct(entry - list_off, "struct nft_hook")
+                name = self.field_string(hook, "ifname") or self.field_string(hook, "ops", "dev", "name")
+                devices.append(name or "?")
+            return devices
+
+        name = self.field_string(value, "dev_name")
+        if name:
+            return [name]
+
+        ops = self.field_int(value, "ops")
+        ops_len = self.field_int(value, "ops_len")
+        ops_size = self.type_size("struct nf_hook_ops")
+        if not ops or not ops_len or not ops_size or not (0 < ops_len <= 0x100):
+            return []
+        devices = []
+        for index in range(ops_len):
+            hook_ops = self.typed_struct(ops + ops_size * index, "struct nf_hook_ops")
+            devices.append(self.field_string(hook_ops, "dev", "name") or "?")
+        return devices
+
+    def chain_detail(self, entry, family):
+        list_off = self.member_offset("struct nft_chain", "list")
+        if list_off is None:
+            return []
+        chain = entry - list_off
+        value = self.typed_struct(chain, "struct nft_chain")
+        if self.field(value, "handle") is None:
+            return []
+        flags = self.field_int(value, "flags")
+        text = self.attrs_str([
+            ("handle", self.field_int(value, "handle")),
+            ("use", self.field_int(value, "use")),
+            ("level", self.field_int(value, "level")),
+            ("flags", self.flags_str(flags, self.CHAIN_FLAGS)),
+            ("bound", self.field_int(value, "bound")),
+            ("genmask", self.field_int(value, "genmask")),
+        ])
+        udata = self.typed_udata(value)
+        if udata:
+            text += " " + self.udata_string(udata)
+        lines = [text]
+
+        chain_off = self.member_offset("struct nft_base_chain", "chain")
+        if flags is None or not flags & self.NFT_CHAIN_BASE or chain_off is None:
+            return lines
+        base = self.typed_struct(chain - chain_off, "struct nft_base_chain")
+        if base is None:
+            return lines
+        policy = self.field_int(base, "policy")
+        hook = self.attrs_str([
+            ("type", self.field_string(base, "type", "name")),
+            ("hook", self.hook_name(family, self.field_int(base, "ops", "hooknum"))),
+            ("priority", self.field_int(base, "ops", "priority")),
+            ("policy", self.CHAIN_POLICIES.get(policy, policy)),
+            ("base-chain", self.addr_str(chain - chain_off)),
+        ])
+        devices = self.hook_devices(base)
+        if devices:
+            hook += " devices={:s}".format(",".join(devices))
+        lines.append("hook: " + hook)
+        return lines
+
+    def base_chain_range(self, entry):
+        list_off = self.member_offset("struct nft_chain", "list")
+        chain_off = self.member_offset("struct nft_base_chain", "chain")
+        size = self.type_size("struct nft_base_chain")
+        if None in (list_off, chain_off, size):
+            return None
+        flags = self.field_int(self.typed_struct(entry - list_off, "struct nft_chain"), "flags")
+        if flags is None or not flags & self.NFT_CHAIN_BASE:
+            return None
+        base = entry - list_off - chain_off
+        return base, base + size
+
+    def set_detail(self, entry):
+        list_off = self.member_offset("struct nft_set", "list")
+        if list_off is None:
+            return [], None
+        value = self.typed_struct(entry - list_off, "struct nft_set")
+        if self.field(value, "klen") is None:
+            return [], None
+        policy = self.field_int(value, "policy")
+        dtype = self.field_int(value, "dtype")
+        attrs = [
+            ("handle", self.field_int(value, "handle")),
+            ("flags", self.flags_str(self.field_int(value, "flags"), self.SET_FLAGS)),
+            ("ktype", self.field_int(value, "ktype")),
+            ("klen", self.field_int(value, "klen")),
+            ("dtype", None if dtype is None else "{:#x}".format(dtype)),
+            ("dlen", self.field_int(value, "dlen")),
+            ("objtype", self.field_int(value, "objtype")),
+            ("policy", self.SET_POLICIES.get(policy, policy)),
+            ("size", self.field_int(value, "size")),
+            ("timeout", self.field_int(value, "timeout")),
+            ("gc_int", self.field_int(value, "gc_int")),
+            ("use", self.field_int(value, "use")),
+            ("nelems", self.field_int(value, "nelems")),
+            ("genmask", self.field_int(value, "genmask")),
+        ]
+        field_count = self.field_int(value, "field_count")
+        if field_count is not None and field_count > 1:
+            field_len = self.field(value, "field_len")
+            try:
+                lengths = [int(field_len[index]) for index in range(field_count)]
+            except (gdb.error, TypeError):
+                lengths = []
+            attrs.append(("concat", ",".join(str(length) for length in lengths) or None))
+        text = self.attrs_str(attrs)
+        udata = self.typed_udata(value)
+        if udata:
+            text += " " + self.udata_string(udata, self.SET_UDATA)
+        return [text], value
+
+    def object_detail(self, entry):
+        list_off = self.member_offset("struct nft_object", "list")
+        if list_off is None:
+            return []
+        value = self.typed_struct(entry - list_off, "struct nft_object")
+        if self.field(value, "handle") is None and self.field(value, "use") is None:
+            return []
+        object_type = self.field_int(value, "ops", "type", "type")
+        text = self.attrs_str([
+            ("handle", self.field_int(value, "handle")),
+            ("type", self.OBJECT_TYPES.get(object_type, object_type)),
+            ("use", self.field_int(value, "use")),
+            ("genmask", self.field_int(value, "genmask")),
+        ])
+        udata = self.typed_udata(value)
+        if udata:
+            text += " " + self.udata_string(udata)
+        return [text]
+
+    def flowtable_detail(self, entry):
+        list_off = self.member_offset("struct nft_flowtable", "list")
+        if list_off is None:
+            return []
+        value = self.typed_struct(entry - list_off, "struct nft_flowtable")
+        if self.field(value, "hooknum") is None:
+            return []
+        flags = self.field_int(value, "data", "flags")
+        if flags is None:
+            flags = self.field_int(value, "flags")
+        priority = self.field_int(value, "data", "priority")
+        if priority is None:
+            priority = self.field_int(value, "priority")
+        text = self.attrs_str([
+            ("handle", self.field_int(value, "handle")),
+            ("use", self.field_int(value, "use")),
+            ("flags", self.flags_str(flags, self.FLOWTABLE_FLAGS)),
+            ("genmask", self.field_int(value, "genmask")),
+            ("hook", self.hook_name(5, self.field_int(value, "hooknum"))),
+            ("priority", priority),
+        ])
+        devices = self.hook_devices(value)
+        if devices:
+            text += " devices={:s}".format(",".join(devices))
+        return [text]
+
+    def rule_detail(self, rule):
+        # control-plane struct nft_rule: list_head, u64 {handle:42, genmask:2, dlen:12, udata:1}, data[]
+        value = self.typed_struct(rule, "struct nft_rule")
+        data_off = self.member_offset("struct nft_rule", "data")
+        ulen = None
+        if self.field(value, "dlen") is not None and data_off is not None:
+            genmask = self.field_int(value, "genmask")
+            dlen = self.field_int(value, "dlen")
+            has_udata = self.field_int(value, "udata")
+            ulen = self.field_int(value, "ulen")
+        elif self.kversion >= "4.16":
+            header = self.rd64(rule + current_arch.ptrsize * 2)
+            if header is None:
+                return None
+            genmask = (header >> 42) & 0x3
+            dlen = (header >> 44) & 0xfff
+            has_udata = (header >> 56) & 0x1
+            data_off = self.old_rule_data_offset()
+        else:
+            return None
+
+        attrs = [("genmask", genmask)]
+        udata = None
+        if dlen is not None:
+            start = rule + data_off + dlen
+            if ulen:
+                udata = self.read_bytes(start, ulen)
+            elif has_udata:
+                # struct nft_userdata {u8 len; data[len + 1]}
+                length = self.rd8(start)
+                udata = self.read_bytes(start + 1, length + 1) if length is not None else None
+        text = self.attrs_str(attrs)
+        if udata:
+            text += " " + self.udata_string(udata)
+        return text
+
+    def chain_rule_details(self, entry, table_base):
+        # handle -> {"rule": control-plane nft_rule, "exprs": [(start, end, name), ...]}
+        # The datapath copy of the expressions is preferred when a rule blob exists.
+        details = {}
+        rules_off = self.find_rules_list(entry, table_base)
+        if rules_off is not None:
+            for rule in self.walk_list(entry + rules_off, maxent=self.MAX_RULE_SCAN):
+                info = self.old_rule_info(rule)
+                if info is None:
+                    break
+                handle, dlen, data_off = info
+                records, _ = self.decode_expr_records(rule, data_off, dlen)
+                details[handle] = {"rule": rule, "exprs": records}
+        blob = self.find_chain_blob(entry)
+        if blob is not None:
+            for rule_start, _rule_end, handle, _names, _ok in self.blob_rule_records(blob)[0]:
+                header = self.rd64(rule_start)
+                if header is None:
+                    continue
+                records, _ = self.decode_expr_records(blob, rule_start - blob + 8, (header >> 1) & 0xfff)
+                details.setdefault(handle, {"rule": None})["exprs"] = records
+        return details
+
+    def expr_ops_size(self, ops):
+        size_off = self.member_offset("struct nft_expr_ops", "size")
+        if size_off is None:
+            return None
+        size = self.rd32(ops + size_off)
+        if size is None or not (current_arch.ptrsize <= size <= 0x400):
+            return None
+        return size
+
+    def expr_private_type(self, ops, name, size, data_off):
+        expr_type = GefUtil.cached_lookup_type("struct nft_expr")
+        if expr_type is None:
+            return None
+        alignment = getattr(expr_type, "alignof", None) or 8
+
+        candidates = []
+        ops_name = self.symbol_name(ops)
+        if ops_name and ops_name.startswith("nft_") and ops_name.endswith("_ops"):
+            stem = ops_name[:-4]
+            candidates += [stem + "_expr", stem, stem + "_priv"]
+        candidates += self.EXPR_PRIVATE_TYPES.get(name, ())
+        candidates += ["nft_{:s}_expr".format(name), "nft_{:s}".format(name), "nft_{:s}_priv".format(name)]
+
+        # Guessing only by name picks wrong types (struct nft_counter is not the counter private
+        # data), so the type must also reproduce ops->size = NFT_EXPR_SIZE(sizeof(priv)).
+        for candidate in dict.fromkeys(candidates):
+            type_name = "struct " + candidate
+            struct_type = GefUtil.cached_lookup_type(type_name)
+            if struct_type is None or struct_type.code != gdb.TYPE_CODE_STRUCT:
+                continue
+            if data_off + align(struct_type.sizeof, alignment) == size:
+                return type_name
+        return None
+
+    def xt_expr_string(self, ops, name, private, room):
+        data_off = self.member_offset("struct nft_expr_ops", "data")
+        if data_off is None:
+            return None
+        type_name, size_member = ("struct xt_match", "matchsize") if name == "match" else ("struct xt_target", "targetsize")
+        value = self.typed_struct(self.rd(ops + data_off), type_name)
+        xt_name = self.field_string(value, "name")
+        size = self.field_int(value, size_member)
+        if xt_name is None or size is None:
+            return None
+        info_addr = private
+        if align(size, 8) > room:
+            # large matches keep only a pointer to the info (struct nft_xt_match_priv)
+            info_addr = self.rd(private)
+        info = self.read_bytes(info_addr, min(size, self.XT_INFO_DUMP_MAX)) if size else b""
+        info_text = "?" if info is None else "0x" + info.hex() + ("..." if size > self.XT_INFO_DUMP_MAX else "")
+        return "{:s} {:s} rev={} size={:#x} info={:s}".format(
+            type_name.split()[1], xt_name, self.field_int(value, "revision"), size, info_text)
+
+    def nested_expr_addresses(self, value):
+        def is_expr_pointer(pointer_type):
+            return pointer_type.code == gdb.TYPE_CODE_PTR and pointer_type.target().strip_typedefs().tag == "nft_expr"
+
+        addresses = []
+        try:
+            fields = value.type.strip_typedefs().fields()
+        except (gdb.error, TypeError):
+            return addresses
+        for field in fields:
+            if not field.name:
+                continue
+            field_type = field.type.strip_typedefs()
+            try:
+                if is_expr_pointer(field_type):
+                    items = [value[field.name]]
+                elif field_type.code == gdb.TYPE_CODE_ARRAY and is_expr_pointer(field_type.target().strip_typedefs()):
+                    low, high = field_type.range()
+                    items = [value[field.name][index] for index in range(low, high + 1)]
+                else:
+                    continue
+                addresses += [int(item) for item in items if int(item)]
+            except (gdb.error, OverflowError):
+                continue
+        return addresses
+
+    def expr_detail(self, start, end, name, depth=0):
+        lines = ["expr {:s} {:s} size={:#x}".format(name, self.addr_str(start), end - start)]
+        data_off = self.member_offset("struct nft_expr", "data")
+        ops = self.rd(start)
+        if data_off is None or not ops:
+            return lines
+        if name in ("match", "target"):
+            text = self.xt_expr_string(ops, name, start + data_off, end - start - data_off)
+            if text:
+                lines[0] += " " + text
+            return lines
+
+        type_name = self.expr_private_type(ops, name, end - start, data_off)
+        value = self.typed_struct(start + data_off, type_name) if type_name else None
+        if value is None:
+            return lines
+        try:
+            lines[0] += " {:s} {:s}".format(type_name.split()[1], value.format_string(pretty_structs=False, pretty_arrays=False, array_indexes=False))
+        except gdb.error:
+            return lines
+        if depth < 2:
+            for nested in self.nested_expr_addresses(value):
+                nested_ops = self.rd(nested)
+                size = self.expr_ops_size(nested_ops) if nested_ops else None
+                if size is None:
+                    lines.append("  expr ? {:s}".format(self.addr_str(nested)))
+                    continue
+                for line in self.expr_detail(nested, nested + size, self.expr_name(nested_ops) or "?", depth + 1):
+                    lines.append("  " + line)
+        return lines
+
+    def set_expr_detail(self, value):
+        lines = []
+        for address in self.nested_expr_addresses(value):
+            ops = self.rd(address)
+            size = self.expr_ops_size(ops) if ops else None
+            if size is None:
+                lines.append("expr ? {:s}".format(self.addr_str(address)))
+                continue
+            lines += self.expr_detail(address, address + size, self.expr_name(ops) or "?")
+        return lines
+
+    # --- filters ---
+
+    def table_selected(self, table):
+        if self.family_filter is not None and table["family"] != self.family_filter:
+            return False
+        return self.args.table is None or table["name"] == self.args.table
+
+    def kind_selected(self, kind):
+        if self.args.handle is not None:
+            return kind == "chains"
+        if not self.args.kind:
+            return True
+        return kind in ("{:s}s".format(k) for k in self.args.kind)
+
+    def table_filter_active(self):
+        return self.family_filter is not None or self.args.table is not None
+
+    def child_filter_active(self):
+        return bool(self.args.kind) or self.args.name is not None or self.args.handle is not None
 
     # --- rendering ---
 
@@ -172659,10 +173317,26 @@ class KernelNftablesCommand(GenericCommand, BufferingOutput):
         return lines
 
     def render(self, net, label, graph):
-        lines = ["net {:s} ({:s})".format(self.addr_str(net), label)]
-        tables = graph["tables"]
-        for ti, t in enumerate(tables):
-            tlast = ti == len(tables) - 1
+        header = "net {:s} ({:s})".format(self.addr_str(net), label)
+        if self.args.verbose:
+            inum = self.net_inum(net)
+            if inum is not None:
+                header += " inum={:d}".format(inum)
+
+        selected = []
+        for t in graph["tables"]:
+            if not self.table_selected(t):
+                continue
+            children = self.table_children(t)
+            if self.child_filter_active() and not children:
+                continue
+            selected.append((t, children))
+        if not selected:
+            return []
+
+        lines = [header]
+        for ti, (t, children) in enumerate(selected):
+            tlast = ti == len(selected) - 1
             tconn = "`- " if tlast else "|- "
             text = "  " if tlast else "| "
             fam = self.fam_str(t["family"])
@@ -172670,73 +173344,123 @@ class KernelNftablesCommand(GenericCommand, BufferingOutput):
             suffix = " [{:s}]".format(meta) if meta else ""
             lines.append("{:s}table {:s} {:s}".format(
                 tconn, Color.colorify(t["name"], "bold"), self.addr_str(t["addr"])) + suffix)
-            self.render_table(t, text, lines)
+            if self.args.verbose:
+                detail = self.table_detail(t, graph)
+                if detail:
+                    lines.append(text + ("|  " if children else "   ") + detail)
+            self.render_table(t, text, lines, children)
         return lines
 
-    def render_table(self, t, prefix, lines):
+    def table_children(self, t):
+        # Apply the child filters before any set element is decoded; rules are decoded only for
+        # chains whose name matched.
         kinds = t["kinds"]
         order = [k for k in ("chains", "sets", "objects", "flowtables") if k in kinds and kinds[k][1]]
         order += [k for k in kinds if k not in ("chains", "sets", "objects", "flowtables") and kinds[k][1]]
-        for ki, kind in enumerate(order):
-            klast = ki == len(order) - 1
-            entries = kinds[kind][1]
-            for ei, entry in enumerate(entries):
-                elast = klast and ei == len(entries) - 1
-                conn = "`- " if elast else "|- "
-                ext = "   " if elast else "|  "
-                name = self.entry_name(entry, kind)
-                singular = {"chains": "chain", "sets": "set", "objects": "object", "flowtables": "flowtable"}.get(kind, kind)
+        children = []
+        for kind in order:
+            if not self.kind_selected(kind):
+                continue
+            for entry in kinds[kind][1]:
+                name = self.entry_name(entry, kind, table=t["addr"])
+                if self.args.name is not None and name != self.args.name:
+                    continue
+                rules, status = None, None
                 if kind == "chains":
                     rules, status = self.chain_rules(entry, t["addr"])
-                    if rules is None:
-                        rtxt = ""
-                    elif status == "limit":
-                        rtxt = " rules>={:d} [scan limit]".format(len(rules))
-                    else:
-                        rtxt = " rules={:d}".format(len(rules))
-                        if status == "broken":
-                            rtxt += " [corrupt]"
-                    lines.append(prefix + conn + "chain {:s} {:s}{:s}".format(
-                        Color.colorify(name, "bold green"), self.addr_str(entry), rtxt))
-                    if rules:
-                        for ri, (handle, exprs) in enumerate(rules):
-                            rlast = ri == len(rules) - 1
-                            rconn = "`- " if rlast else "|- "
-                            suffix = " [{:s}]".format(", ".join(exprs)) if exprs else ""
-                            lines.append(prefix + ext + rconn + "rule handle={:d}".format(handle) + suffix)
-                elif kind == "sets":
-                    info = self.set_info(entry)
-                    expected = info["nelems"]
-                    count = len(info["elements"])
-                    if info["status"] == "disabled":
-                        element_text = ""
-                    elif expected is not None and expected != count:
-                        element_text = " elements={:d}/{:d}".format(count, expected)
-                    else:
-                        element_text = " elements={:d}".format(count)
-                    if info["status"] not in ("ok", "empty", "disabled"):
-                        element_text += " [{:s}]".format(info["status"])
-                    backend_text = " type={:s}".format(info["backend"]) if info["backend"] else ""
-                    lines.append(prefix + conn + "set {:s} {:s}{:s}{:s}".format(
-                        Color.colorify(name, "bold green"), self.addr_str(entry), backend_text, element_text))
-                    for element_index, element in enumerate(info["elements"]):
-                        element_last = element_index == len(info["elements"]) - 1
-                        element_conn = "`- " if element_last else "|- "
-                        key = self.set_data_string(element["key"])
-                        if element["key_end"] is not None:
-                            key += "-" + self.set_data_string(element["key_end"])
-                        suffix = ""
-                        if element["data"] is not None:
-                            suffix += " data=" + self.set_data_string(element["data"])
-                        if element["flags"] is not None and element["flags"] & 1:
-                            suffix += " [interval-end]"
-                        lines.append(prefix + ext + element_conn + "element {:s} key={:s}{:s}".format(
-                            self.addr_str(element["addr"]), key, suffix))
+                    if self.args.handle is not None and not any(rule[0] == self.args.handle for rule in rules or []):
+                        continue
+                children.append((kind, entry, name, rules, status))
+        return children
+
+    def render_table(self, t, prefix, lines, children):
+        for index, (kind, entry, name, rules, status) in enumerate(children):
+            elast = index == len(children) - 1
+            conn = "`- " if elast else "|- "
+            ext = "   " if elast else "|  "
+            singular = {"chains": "chain", "sets": "set", "objects": "object", "flowtables": "flowtable"}.get(kind, kind)
+            if kind == "chains":
+                if rules is None:
+                    rtxt = ""
+                elif status == "limit":
+                    rtxt = " rules>={:d} [scan limit]".format(len(rules))
                 else:
-                    lines.append(prefix + conn + "{:s} {:s} {:s}".format(singular, Color.colorify(name, "bold green"), self.addr_str(entry)))
+                    rtxt = " rules={:d}".format(len(rules))
+                    if status == "broken":
+                        rtxt += " [corrupt]"
+                lines.append(prefix + conn + "chain {:s} {:s}{:s}".format(
+                    Color.colorify(name, "bold green"), self.addr_str(entry), rtxt))
+                if self.args.handle is not None:
+                    rules = [rule for rule in rules if rule[0] == self.args.handle]
+                rule_details = None
+                if self.args.verbose:
+                    for line in self.chain_detail(entry, t["family"]):
+                        lines.append(prefix + ext + ("|  " if rules else "   ") + line)
+                    if rules:
+                        rule_details = self.chain_rule_details(entry, t["addr"])
+                if rules:
+                    for ri, (handle, exprs) in enumerate(rules):
+                        rlast = ri == len(rules) - 1
+                        rconn = "`- " if rlast else "|- "
+                        suffix = " [{:s}]".format(", ".join(exprs)) if exprs else ""
+                        lines.append(prefix + ext + rconn + "rule handle={:d}".format(handle) + suffix)
+                        if rule_details is None:
+                            continue
+                        rext = "   " if rlast else "|  "
+                        detail = rule_details.get(handle, {})
+                        detail_lines = []
+                        if detail.get("rule") is not None:
+                            text = self.rule_detail(detail["rule"])
+                            if text:
+                                detail_lines.append(text)
+                        for expr_start, expr_end, expr_name in detail.get("exprs", []):
+                            detail_lines += self.expr_detail(expr_start, expr_end, expr_name)
+                        for line in detail_lines:
+                            lines.append(prefix + ext + rext + "   " + line)
+            elif kind == "sets":
+                info = self.set_info(entry)
+                expected = info["nelems"]
+                count = len(info["elements"])
+                if info["status"] == "disabled":
+                    element_text = ""
+                elif expected is not None and expected != count:
+                    element_text = " elements={:d}/{:d}".format(count, expected)
+                else:
+                    element_text = " elements={:d}".format(count)
+                if info["status"] not in ("ok", "empty", "disabled"):
+                    element_text += " [{:s}]".format(info["status"])
+                backend_text = " type={:s}".format(info["backend"]) if info["backend"] else ""
+                lines.append(prefix + conn + "set {:s} {:s}{:s}{:s}".format(
+                    Color.colorify(name, "bold green"), self.addr_str(entry), backend_text, element_text))
+                if self.args.verbose:
+                    detail_lines, value = self.set_detail(entry)
+                    if value is not None:
+                        detail_lines += self.set_expr_detail(value)
+                    for line in detail_lines:
+                        lines.append(prefix + ext + ("|  " if info["elements"] else "   ") + line)
+                for element_index, element in enumerate(info["elements"]):
+                    element_last = element_index == len(info["elements"]) - 1
+                    element_conn = "`- " if element_last else "|- "
+                    key = self.set_data_string(element["key"])
+                    if element["key_end"] is not None:
+                        key += "-" + self.set_data_string(element["key_end"])
+                    suffix = ""
+                    if element["data"] is not None:
+                        suffix += " data=" + self.set_data_string(element["data"])
+                    if element["flags"] is not None and element["flags"] & 1:
+                        suffix += " [interval-end]"
+                    lines.append(prefix + ext + element_conn + "element {:s} key={:s}{:s}".format(
+                        self.addr_str(element["addr"]), key, suffix))
+            else:
+                lines.append(prefix + conn + "{:s} {:s} {:s}".format(singular, Color.colorify(name, "bold green"), self.addr_str(entry)))
+                if self.args.verbose:
+                    detail_lines = self.object_detail(entry) if kind == "objects" else \
+                        self.flowtable_detail(entry) if kind == "flowtables" else []
+                    for line in detail_lines:
+                        lines.append(prefix + ext + "   " + line)
         return
 
-    def entry_name(self, entry, kind=None):
+    def entry_name(self, entry, kind=None, table=None):
         if kind is not None:
             type_name = self.kind_type(kind)
             if type_name is not None:
@@ -172761,7 +173485,8 @@ class KernelNftablesCommand(GenericCommand, BufferingOutput):
 
         # Stripped-kernel fallback: the list_head occupies the first two pointer-sized words at the
         # entry address in the layouts handled here, so do not rescan those pointers as names.
-        info = self.resolve_name(entry, min_off=current_arch.ptrsize * 2, max_off=min(self.MEMBER_SCAN, 0x100))
+        # The table back-reference is not a name either, although its first bytes may be printable.
+        info = self.resolve_name(entry, min_off=current_arch.ptrsize * 2, max_off=min(self.MEMBER_SCAN, 0x100), exclude=table)
         return info[1] if info else "?"
 
     def legacy_entry_name(self, entry, kind):
@@ -172812,6 +173537,10 @@ class KernelNftablesCommand(GenericCommand, BufferingOutput):
         text = Symbol.get_symbol_string(address, nosymbol_string="").strip()
         if not text.startswith("<") or not text.endswith(">") or "+" in text:
             return None
+        # `kmod -a` names module symbols "<module>.<symbol>"
+        module, _, symbol = text[1:-1].partition(".")
+        if symbol.startswith("nft_") and module.replace("_", "").isalnum():
+            return symbol
         return text[1:-1]
 
     def set_ops_backend(self, ops):
@@ -172887,6 +173616,11 @@ class KernelNftablesCommand(GenericCommand, BufferingOutput):
         klen = self.rd8(base + klen_off) if klen_off is not None else None
         dlen = self.rd8(base + dlen_off) if dlen_off is not None else None
         nelems = self.rd32(base + nelems_off) if nelems_off is not None else None
+        if nelems == 0:
+            # Some kernels count elements only for sets with a maximum size.
+            size_off = self.member_offset("struct nft_set", "size")
+            if size_off is None or not self.rd32(base + size_off):
+                nelems = None
         backend_candidates = None
         if backend is None and ops is not None and self.kversion >= "4.14":
             update = self.rd(ops + current_arch.ptrsize)
@@ -173005,7 +173739,8 @@ class KernelNftablesCommand(GenericCommand, BufferingOutput):
         best = ([], "broken")
         for offset in offsets:
             elements, status = self.walk_hlist(table + offset, size, node_off=node_off, nulls=True)
-            if status in ("ok", "limit") and len(elements) > len(best[0]):
+            # an empty table is a valid result, too
+            if status in ("ok", "limit") and (len(elements) > len(best[0]) or best[1] == "broken"):
                 best = (elements, status)
         return best
 
@@ -173285,15 +174020,25 @@ class KernelNftablesCommand(GenericCommand, BufferingOutput):
         table_list_off = self.member_offset("struct nft_table", "list")
         table_size = self.type_size("struct nft_table")
         for table in graph["tables"]:
+            if not self.table_selected(table):
+                continue
             table_start = table["addr"] - table_list_off if table_list_off is not None else table["addr"]
             table_end = table_start + table_size if table_size is not None and table_size > 0 else None
             nodes.append((table_start, table_end, 'table "{:s}" ({:s})'.format(table["name"], label)))
             for kind, (_, entries, _backref) in table["kinds"].items():
+                if not self.kind_selected(kind):
+                    continue
                 singular = {"chains": "chain", "sets": "set", "objects": "object", "flowtables": "flowtable"}.get(kind, kind)
                 for entry in entries:
-                    name = self.entry_name(entry, kind)
+                    name = self.entry_name(entry, kind, table=table["addr"])
+                    if self.args.name is not None and name != self.args.name:
+                        continue
                     object_start, object_end = self.entry_object_range(entry, kind)
                     nodes.append((object_start, object_end, '{:s} "{:s}" in table "{:s}"'.format(singular, name, table["name"])))
+                    if kind == "chains":
+                        base_range = self.base_chain_range(entry)
+                        if base_range is not None:
+                            nodes.append((base_range[0], base_range[1], 'base chain "{:s}" in table "{:s}"'.format(name, table["name"])))
                     if kind == "sets" and not self.args.no_elements:
                         info = self.set_info(entry)
                         for element in info["elements"]:
@@ -173378,6 +174123,8 @@ class KernelNftablesCommand(GenericCommand, BufferingOutput):
                 for net in Kernel.ListHead(nl, list_off).iter_entries():
                     if net != init_net:
                         nets.append((net, "net {:#x}".format(net)))
+        else:
+            nets += [(net, "net {:#x}".format(net)) for net in self.nets_from_ring(init_net) if net != init_net]
         return nets
 
     @Cache.cache_this_session(cache_None=False)
@@ -173385,7 +174132,6 @@ class KernelNftablesCommand(GenericCommand, BufferingOutput):
         self.kversion = Kernel.kernel_version()
         if self.kversion is None:
             return None
-        self.nets = self.iter_nets()
         return True
 
     @parse_args
@@ -173395,20 +174141,38 @@ class KernelNftablesCommand(GenericCommand, BufferingOutput):
     @only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
         self.args = args
+        self.family_filter = None
+        if args.family is not None:
+            self.family_filter = self.FAMILY_NAMES.get(args.family.lower())
+            if self.family_filter is None:
+                err("Unknown family: {:s} (choose from {:s})".format(args.family, ", ".join(self.FAMILY_NAMES)))
+                return
+        if args.handle is not None:
+            args.no_rules = False
         self.reset_scan_caches()
         self.quiet_info("Wait for memory scan")
 
         if not self.initialize():
             err("Could not find Linux kernel")
             return
+        self.nets = self.iter_nets()
         if not self.nets:
             err("Could not find init_net")
             return
 
+        nets = self.nets
+        if args.net is not None:
+            nets = [(net, label) for net, label in self.nets if net == args.net or self.net_inum(net) == args.net]
+            if not nets:
+                err("Could not find the network namespace {:#x} ({:d})".format(args.net, args.net))
+                return
+        if args.verbose and GefUtil.cached_lookup_type("struct nft_chain") is None:
+            self.quiet_info("No nftables type information; chain/set/object/flowtable attributes and expression contents are omitted")
+
         self.out = []
         if args.meta:
             self.quiet_info("kernel version: {!s}".format(self.kversion))
-            for net, label in self.nets:
+            for net, label in nets:
                 graph = self.build_tables(net)
                 for line in self.render_meta(net, label, graph):
                     self.quiet_info(line)
@@ -173417,7 +174181,7 @@ class KernelNftablesCommand(GenericCommand, BufferingOutput):
 
         all_nodes = []
         rendered = []
-        for net, label in self.nets:
+        for net, label in nets:
             graph = self.build_tables(net)
             if graph is None or not graph["tables"]:
                 continue
@@ -173430,6 +174194,8 @@ class KernelNftablesCommand(GenericCommand, BufferingOutput):
             self.reverse_lookup(args.address, all_nodes)
         elif rendered:
             self.out += rendered
+        elif self.table_filter_active() or self.child_filter_active():
+            self.warn_add_out("No nftables object matched the filter")
         else:
             self.warn_add_out("No nftables tables found (is CONFIG_NF_TABLES enabled and any table created?)")
             if self.kversion is not None and self.kversion < "3.13":
