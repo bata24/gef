@@ -17839,6 +17839,203 @@ class CanaryCommand(GenericCommand):
         return
 
 
+class LinuxSignal:
+    """Linux signal names and sigaction flags shared by userland and kernel commands."""
+
+    NAMES = {
+        1: "SIGHUP",
+        2: "SIGINT",
+        3: "SIGQUIT",
+        4: "SIGILL",
+        5: "SIGTRAP",
+        6: "SIGABRT",
+        7: "SIGBUS",
+        8: "SIGFPE",
+        9: "SIGKILL",
+        10: "SIGUSR1",
+        11: "SIGSEGV",
+        12: "SIGUSR2",
+        13: "SIGPIPE",
+        14: "SIGALRM",
+        15: "SIGTERM",
+        16: "SIGSTKFLT",
+        17: "SIGCHLD",
+        18: "SIGCONT",
+        19: "SIGSTOP",
+        20: "SIGTSTP",
+        21: "SIGTTIN",
+        22: "SIGTTOU",
+        23: "SIGURG",
+        24: "SIGXCPU",
+        25: "SIGXFSZ",
+        26: "SIGVTALRM",
+        27: "SIGPROF",
+        28: "SIGWINCH",
+        29: "SIGIO",
+        30: "SIGPWR",
+        31: "SIGSYS",
+        32: "SIGCANCEL",
+        33: "SIGSETXID",
+        34: "SIGRTMIN",
+        64: "SIGRTMAX",
+    }
+    for number in range(35, 50):
+        NAMES[number] = "SIGRTMIN+{:d}".format(number - 34)
+    for number in range(63, 49, -1):
+        NAMES[number] = "SIGRTMAX-{:d}".format(64 - number)
+
+    FLAGS = (
+        (0x0000_0001, "SA_NOCLDSTOP"),
+        (0x0000_0002, "SA_NOCLDWAIT"),
+        (0x0000_0004, "SA_SIGINFO"),
+        (0x0000_0400, "SA_UNSUPPORTED"),
+        (0x0000_0800, "SA_EXPOSE_TAGBITS"),
+        (0x0400_0000, "SA_RESTORER"),
+        (0x0800_0000, "SA_ONSTACK"),
+        (0x1000_0000, "SA_RESTART"),
+        (0x2000_0000, "SA_INTERRUPT"),
+        (0x4000_0000, "SA_NODEFER"),
+        (0x8000_0000, "SA_RESETHAND"),
+    )
+
+    @classmethod
+    def format_flags(cls, flags):
+        names = [name for value, name in cls.FLAGS if flags & value]
+        known = sum(value for value, name in cls.FLAGS)
+        unknown = flags & ~known
+        if unknown:
+            names.append("{:#x}".format(unknown))
+        return "|".join(names) if names else "-"
+
+    @classmethod
+    def format_mask(cls, mask):
+        names = [cls.NAMES.get(number, "SIG{:d}".format(number))
+                 for number in range(1, 65) if mask & (1 << (number - 1))]
+        return ",".join(names) if names else "-"
+
+
+@register_command
+class SignalHandlersCommand(GenericCommand, BufferingOutput):
+    """Display the signal dispositions of the current process."""
+
+    _cmdline_ = "sighands"
+    _category_ = "02-f. Process Information - Security"
+    _aliases_ = ["sigactions"]
+
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
+    _syntax_ = parser.format_help()
+
+    @staticmethod
+    def get_rt_sigaction_number():
+        syscall_table = Syscall.get_syscall_table()
+        if syscall_table is None:
+            return None
+        for entry in syscall_table.nr_table.values():
+            if is_x86_64() and entry.nr >= 0x4000_0000:
+                continue
+            if entry.name == "rt_sigaction":
+                return entry.nr
+        return None
+
+    @staticmethod
+    def get_layout():
+        if is_64bit():
+            return {"size": 32, "handler": 0, "flags": 8, "restorer": 16, "mask": 24}
+        return {"size": 20, "handler": 0, "flags": 4, "restorer": 8, "mask": 12}
+
+    @staticmethod
+    def unpack_word(data, offset):
+        size = current_arch.ptrsize
+        unpack = u64 if size == 8 else u32
+        return unpack(data[offset:offset + size])
+
+    def query(self, syscall_number, signal_number, address, layout):
+        write_memory(address, b"\x00" * layout["size"])
+        state = ExecSyscall(syscall_number, [signal_number, 0, address, 8]).exec_code()
+        result = state["reg"][current_arch.return_register]
+        result = u2i(result, current_arch.ptrsize * 8)
+        if result != 0:
+            return result, None
+
+        data = read_memory(address, layout["size"])
+        action = {name: self.unpack_word(data, offset) for name, offset in layout.items() if name != "size"}
+        if current_arch.ptrsize == 4:
+            action["mask"] = u64(data[layout["mask"]:layout["mask"] + 8])
+        return 0, action
+
+    @staticmethod
+    def format_handler(handler):
+        if handler == 0:
+            return "SIG_DFL"
+        if handler == 1:
+            return "SIG_IGN"
+        symbol = Symbol.get_symbol_string(handler, nosymbol_string="").strip()
+        value = AddressUtil.format_address(handler, long_fmt=True)
+        return "{:s} {:s}".format(value, symbol).rstrip()
+
+    @parse_args
+    @only_if_gdb_running
+    @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "rr", "wine"))
+    @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
+    @require_arch_set
+    def do_invoke(self, args):
+        syscall_number = self.get_rt_sigaction_number()
+        if syscall_number is None:
+            err("Could not find the rt_sigaction system call")
+            return
+
+        layout = self.get_layout()
+        address = current_arch.sp
+        try:
+            backup = read_memory(address, layout["size"])
+        except gdb.MemoryError:
+            err("Could not reserve scratch space on the inferior stack")
+            return
+
+        actions = []
+        suppress_cli_notifications = None
+        try:
+            suppress_cli_notifications = gdb.parameter("suppress-cli-notifications")
+            gdb.execute("set suppress-cli-notifications on", to_string=True)
+        except gdb.error:
+            pass
+        try:
+            for signal_number in range(1, 65):
+                result, action = self.query(syscall_number, signal_number, address, layout)
+                if result == -22 and signal_number in (9, 19): # SIGKILL and SIGSTOP cannot be queried.
+                    action = {"handler": 0, "flags": 0, "restorer": 0, "mask": 0}
+                elif result != 0:
+                    err("rt_sigaction({:d}) failed with errno {:d}".format(signal_number, -result))
+                    return
+                actions.append((signal_number, action))
+        finally:
+            try:
+                write_memory(address, backup)
+            finally:
+                if suppress_cli_notifications is not None:
+                    setting = "on" if suppress_cli_notifications else "off"
+                    gdb.execute("set suppress-cli-notifications {:s}".format(setting), to_string=True)
+
+        rows = []
+        for signal_number, action in actions:
+            rows.append((
+                str(signal_number), LinuxSignal.NAMES.get(signal_number, "SIG{:d}".format(signal_number)),
+                self.format_handler(action["handler"]), LinuxSignal.format_flags(action["flags"]),
+                LinuxSignal.format_mask(action["mask"]),
+            ))
+
+        handler_width = max(30, max(len(Color.remove_color(row[2])) for row in rows))
+        fmt = "{:<3s} {:<14s} {:s}{:s} {:<42s} {:s}"
+        header = fmt.format("Num", "Signal", "Handler", " " * (handler_width - len("Handler")), "Flags", "Mask")
+        self.out = [titlify("Signal dispositions"), GefUtil.make_legend(header)]
+        for number, name, handler, flags, mask in rows:
+            padding = " " * (handler_width - len(Color.remove_color(handler)))
+            self.out.append(fmt.format(number, name, handler, padding, flags, mask).rstrip())
+        self.print_output(check_terminal_size=True)
+        return
+
+
 @register_command
 class AuxvCommand(GenericCommand):
     """Display ELF auxiliary vectors."""
@@ -71477,49 +71674,7 @@ class Kernel:
     class Sighand:
         """Resolve the layout of ``struct sighand_struct`` and its action array."""
 
-        SIGNAL_NAMES = {
-            1: "SIGHUP",
-            2: "SIGINT",
-            3: "SIGQUIT",
-            4: "SIGILL",
-            5: "SIGTRAP",
-            6: "SIGABRT",
-            7: "SIGBUS",
-            8: "SIGFPE",
-            9: "SIGKILL",
-            10: "SIGUSR1",
-            11: "SIGSEGV",
-            12: "SIGUSR2",
-            13: "SIGPIPE",
-            14: "SIGALRM",
-            15: "SIGTERM",
-            16: "SIGSTKFLT",
-            17: "SIGCHLD",
-            18: "SIGCONT",
-            19: "SIGSTOP",
-            20: "SIGTSTP",
-            21: "SIGTTIN",
-            22: "SIGTTOU",
-            23: "SIGURG",
-            24: "SIGXCPU",
-            25: "SIGXFSZ",
-            26: "SIGVTALRM",
-            27: "SIGPROF",
-            28: "SIGWINCH",
-            29: "SIGIO",
-            30: "SIGPWR",
-            31: "SIGSYS",
-            32: "SIGCANCEL", # from glibc source code
-            33: "SIGSETXID", # from glibc source code
-            34: "SIGRTMIN",
-            # 35 ... 49: SIGRTMIN+i
-            # 50 ... 63: SIGRTMAX-i
-            64: "SIGRTMAX",
-        }
-        for i in range(35, 50):
-            SIGNAL_NAMES[i] = "SIGRTMIN+{:d}".format(i - 34)
-        for i in range(63, 49, -1):
-            SIGNAL_NAMES[i] = "SIGRTMAX-{:d}".format(64 - i)
+        SIGNAL_NAMES = LinuxSignal.NAMES
 
         @staticmethod
         @Cache.cache_this_session(cache_None=False)

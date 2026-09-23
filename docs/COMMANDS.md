@@ -3339,6 +3339,22 @@ options:
   -v, --verbose         shows the section currently being searched.
 ```
 
+## sighands
+
+Display the signal dispositions of the current process.
+
+- Alias: `sigactions`
+
+### Syntax
+
+```text
+usage: sighands [-h] [-n]
+
+options:
+  -h, --help      show this help message and exit
+  -n, --no-pager  do not use the pager.
+```
+
 # 02-g. Process Information - Symbol
 ## magic
 

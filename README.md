@@ -887,6 +887,8 @@ For a comprehensive list and additional details, see [docs/SUPPORTED-MODE.md](do
     - ![](images/stack-recover.png)
 - `unwind-info`: shows the effective DWARF unwind rules at the current or specified PC.
     - ![](images/unwind-info.png)
+- `sighands`: displays the signal dispositions of the current process.
+    - ![](images/sighands.png)
 
 ### Other
 - The category is introduced in `gef help`.
