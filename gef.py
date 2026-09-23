@@ -144566,6 +144566,9 @@ class Ksym:
                 # Try to parse addresses or offsets.
                 fmt = "{:s}{:d}i".format(endianness_marker, Ksym.num_symbols) # signed int
                 kallsyms_offsets_data = Ksym.kernel_img[position:position + Ksym.num_symbols * offset_byte_size]
+                if len(kallsyms_offsets_data) < Ksym.num_symbols * offset_byte_size:
+                    Ksym.verbose_err(verbose, "kernel_img is not long enough.")
+                    return False
                 ksym_offsets = struct.unpack(fmt, kallsyms_offsets_data)
 
                 # 7.0+: offset_to_ptr style, no kallsyms_relative_base. CONFIG_KALLSYMS_ABSOLUTE_PERCPU is removed.
@@ -144830,6 +144833,9 @@ class Ksym:
         the symbols for each call is too slow."""
         if rescan or vmlinux_file or ignore_loaded_vmlinux:
             Ksym.reset()
+        if rescan:
+            # the layout resolved before mark_rodata_ro() is stale (RWX) once the boot completes
+            Cache.clear_cache_for(Kernel.resolve_kernel_layout)
         if Ksym.kallsyms is not None:
             return Ksym.kallsyms, Ksym.kallsyms_map
 
