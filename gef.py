@@ -33040,91 +33040,17 @@ class ExploitableCommand(GenericCommand):
         return
 
 
-@register_command
-class DwarfExceptionHandlerInfoCommand(GenericCommand, BufferingOutput):
-    """Dump the DWARF exception handler information with the byte code itself."""
+class DwarfExceptionHandler:
+    """Parse the DWARF exception handler sections (.eh_frame_hdr, .eh_frame and .gcc_except_table)."""
 
-    _cmdline_ = "dwarf-exception-handler"
-    _category_ = "02-e. Process Information - Complex Structure Information"
-
-    parser = argparse.ArgumentParser(prog=_cmdline_)
-    parser.add_argument("-hh", "--help-simple", action="store_true", help="show help without ASCII diagram.")
-    parser.add_argument("-f", "--file", help="the file path to parse.")
-    parser.add_argument("-r", "--remote", action="store_true",
-                        help="parse remote binary if download feature is available.")
-    parser.add_argument("-x", "--hexdump", action="store_true", help="with hexdump.")
-    parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
-    _syntax_ = parser.format_help()
-
-    _example_ = [
-        "{0:s}                  # parse loaded binary",
-        "{0:s} -r               # parse remote binary",
-        "{0:s} -f /usr/bin/apt  # parse specified binary",
-        "{0:s} -x               # with hexdump",
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
-
-    _note_ = [
-        "Simplified DWARF exception structure:",
-        "",
-        "[OLD IMPLEMENTATION]",
-        " libgcc_s.so bss area               ELF Program Header (for .eh_frame_hdr)",
-        "+-----------------------+      +-->+----------------+",
-        "| ...                   |      |   | p_type         |",
-        "| frame_hdr_cache_head  |---+  |   | p_flags        |",
-        "+-frame_hdr_cache_entry-+<--+  |   | p_offset       |",
-        "| pc_low                |      |   | p_vaddr        |----+",
-        "| pc_high               |      |   | p_paddr        |    |",
-        "| load_base             |      |   | p_filesz       |    |",
-        "| p_eh_frame_hdr        |------+   | p_memsz        |    |",
-        "| p_dynamic             |          | p_align        |    |         [NEW IMPLEMENTATION]",
-        "| link                  |---+      +----------------+    |          _dlfo_main@ld.so rodata area",
-        "+-frame_hdr_cache_entry-+<--+                            |          _dlfo_nodelete_mappings@ld.so rodata area",
-        "| pc_low                |                                |         +-------------+",
-        "| pc_high               |                                |         | map_start   |",
-        "| load_base             |                                |         | map_end     |",
-        "| p_eh_frame_hdr        |                                |         | map         |",
-        "| p_dynamic             |                                |<--------| eh_frame    |",
-        "| link                  |                                |         | (eh_dbase)  |",
-        "+-----------------------+                                |         | (eh_count)  |",
-        "The frame_hdr_cache_head and frame_hdr_cache_entry are   |         +-------------+",
-        "initialized the first time they are called.              |",
-        "                                                         |",
-        "                           +-----------------------------+",
-        "                           |",
-        ".eh_frame_hdr              |      .eh_frame                                           .gcc_except_table",
-        "+----------------------+<--+  +-->+-CIE-------------------+<--+                   +-->+-LSDA-----------------+",
-        "| version              |      |   | length                |   |                   |   | lpstart_enc          |",
-        "| eh_frame_ptr_enc     |      |   | cie_id (=0)           |   |                   |   | ttype_enc            |",
-        "| fde_count_enc        |      |   | version               |   |                   |   | ttype_off            |",
-        "| table_enc            |      |   | augmentation_string   |   |                   |   | call_site_encoding   |",
-        "| eh_frame_ptr         |------+   | code_alignment_factor |   |                   |   | call_site_table_len  |",
-        "| fde_count            |          | data_alignment_factor |   |                   |   |+-CallSite-----------+|",
-        "| Table[0] initial_loc |          | retaddr_register      |   |                   |   || call_site_start    || try_start",
-        "| Table[0] fde         |---+      | augmentation_len      |   |                   |   || call_site_length   || try_end",
-        "| Table[1] initial_loc |   |      | augmentation_data[0]  |   |                   |   || landing_pad        || catch_start",
-        "| Table[1] fde         |   |      | ...                   |-(augmentation=='P')-+ |   || action             ||---+",
-        "| ...                  |   |      | ...                   |   |                 | |   |+-CallSite-----------+|   |",
-        "| Table[N] initial_loc |   |      | augmentation_data[N]  |   |                 | |   || ...                ||   |",
-        "| Table[N] fde         |   |      | program               |   |                 | |   |+-ActionTable--------+|<--+",
-        "+----------------------+   +----->+-FDE-------------------+   |                 | |   || ar_filter          ||---+",
-        "                                  | length                |   |                 | |   || ar_disp            ||   |",
-        "                                  | cie_pointer (!=0)     |---+                 | |   |+-ActionTable--------+|   |",
-        "                                  | pc_begin              | try_catch_base      | |   || ...                ||   |",
-        "                                  | pc_range              |                     | |   |+-TTypeTable---------+|   |",
-        "                                  | augmentation_len      |                     | |   || ...(stored upward) ||   |",
-        "                                  | augmentation_data[0]  |                     | |   |+-TTypeTable---------+|<--+",
-        "                                  | ...                   |-(augmentation=='L')-|-+   || ttype              ||---> type_info",
-        "                                  | augmentation_data[N]  |                     |     |+--------------------+|",
-        "                                  | program               |                     |     +-LSDA-----------------+",
-        "                                  +-CIE-------------------+   +-----------------+     | ...                  |",
-        "                                  | ...                   |   |                       +----------------------+",
-        "                                  +-FDE-------------------+   |",
-        "                                  | ...                   |   |",
-        "                                  +-----------------------+   |",
-        "                                                              +----> personality_routine(=__gxx_personality_v0@libstdc++.so)",
-    ]
-    _note_ = "\n".join(_note_)
+    def __init__(self, elf):
+        self.elf = elf
+        self.endian = "little" if elf.e_endianness == Elf.LITTLE_ENDIAN else "big"
+        self.ptr_size = 4 if elf.e_class == Elf.ELF_32_BITS else 8
+        phdr = elf.get_phdr(Elf.Phdr.PT_LOAD)
+        self.load_base = phdr.p_vaddr if phdr else 0
+        self.lsda_info = {} # {LSDA offset from load_base: function start offset from load_base}
+        return
 
     class ErrorEntry:
         def __init__(self, *args):
@@ -33135,7 +33061,7 @@ class DwarfExceptionHandlerInfoCommand(GenericCommand, BufferingOutput):
             return
 
         def __str__(self):
-            msg = "[!] {:s}\n{:s}".format(self.msg1, self.msg2)
+            msg = "[!] {!s}\n{!s}".format(self.msg1, self.msg2)
             return msg
 
     class SeparatorEntry:
@@ -33216,12 +33142,12 @@ class DwarfExceptionHandlerInfoCommand(GenericCommand, BufferingOutput):
             self.sec = sec
             return
 
-    def format_entry(self, sec, entries):
+    def format_entry(self, sec, entries, with_hexdump=False):
         out = []
         out.append(titlify(sec.name))
 
         # hexdump
-        if self.args.hexdump:
+        if with_hexdump:
             out.append(hexdump(sec.data, show_symbol=False, base=sec.offset))
 
         # print details
@@ -33256,52 +33182,37 @@ class DwarfExceptionHandlerInfoCommand(GenericCommand, BufferingOutput):
         if (acc & sleb_sign_mask) == 0:
             return pos, acc
         else:
-            sleb_value_mask = sleb_sign_mask - 1
-            sleb_value = acc & sleb_value_mask
-            bit_len = len("{:b}".format(sleb_value))
-            real_sign_mask = 1 << bit_len
-            real_value_mask = real_sign_mask - 1
-            return pos, -1 * (((~sleb_value) & real_value_mask) + 1)
+            return pos, acc - (sleb_sign_mask << 1)
+
+    def read_nbyte(self, data, pos, size, signed=False):
+        if pos + size > len(data):
+            raise IndexError("read out of range: {:#x}".format(pos + size))
+        acc = int.from_bytes(data[pos:pos + size], self.endian, signed=signed)
+        return pos + size, acc
 
     def read_1ubyte(self, data, pos):
-        acc = data[pos]
-        return pos + 1, acc
+        return self.read_nbyte(data, pos, 1)
 
     def read_1sbyte(self, data, pos):
-        acc = data[pos]
-        return pos + 1, u2i(acc, 8)
+        return self.read_nbyte(data, pos, 1, signed=True)
 
     def read_2ubyte(self, data, pos):
-        acc = (data[pos + 1] << 8) | data[pos]
-        return pos + 2, acc
+        return self.read_nbyte(data, pos, 2)
 
     def read_2sbyte(self, data, pos):
-        acc = (data[pos + 1] << 8) | data[pos]
-        return pos + 2, u2i(acc, 16)
+        return self.read_nbyte(data, pos, 2, signed=True)
 
     def read_4ubyte(self, data, pos):
-        acc = (data[pos + 3] << 24) | (data[pos + 2] << 16)
-        acc |= (data[pos + 1] << 8) | data[pos]
-        return pos + 4, acc
+        return self.read_nbyte(data, pos, 4)
 
     def read_4sbyte(self, data, pos):
-        acc = (data[pos + 3] << 24) | (data[pos + 2] << 16)
-        acc |= (data[pos + 1] << 8) | data[pos]
-        return pos + 4, u2i(acc, 32)
+        return self.read_nbyte(data, pos, 4, signed=True)
 
     def read_8ubyte(self, data, pos):
-        acc = (data[pos + 7] << 56) | (data[pos + 6] << 48)
-        acc |= (data[pos + 5] << 40) | (data[pos + 4] << 32)
-        acc |= (data[pos + 3] << 24) | (data[pos + 2] << 16)
-        acc |= (data[pos + 1] << 8) | data[pos]
-        return pos + 8, acc
+        return self.read_nbyte(data, pos, 8)
 
     def read_8sbyte(self, data, pos):
-        acc = (data[pos + 7] << 56) | (data[pos + 6] << 48)
-        acc |= (data[pos + 5] << 40) | (data[pos + 4] << 32)
-        acc |= (data[pos + 3] << 24) | (data[pos + 2] << 16)
-        acc |= (data[pos + 1] << 8) | data[pos]
-        return pos + 8, u2i(acc)
+        return self.read_nbyte(data, pos, 8, signed=True)
 
     # FDE data encoding
     DW_EH_PE_ptr      = 0x00
@@ -33326,10 +33237,7 @@ class DwarfExceptionHandlerInfoCommand(GenericCommand, BufferingOutput):
 
     def read_encoded(self, encoding, data, pos):
         if (encoding & 0xf) == self.DW_EH_PE_ptr:
-            if self.elf.e_class == Elf.ELF_32_BITS:
-                pos, res = self.read_4ubyte(data, pos)
-            else:
-                pos, res = self.read_8ubyte(data, pos)
+            pos, res = self.read_nbyte(data, pos, self.ptr_size)
         elif (encoding & 0xf) == self.DW_EH_PE_uleb128:
             pos, res = self.get_uleb128(data, pos)
         elif (encoding & 0xf) == self.DW_EH_PE_sleb128:
@@ -33404,10 +33312,35 @@ class DwarfExceptionHandlerInfoCommand(GenericCommand, BufferingOutput):
         ))
         return 0
 
+    def format_vma(self, offset):
+        if self.elf.is_pie():
+            return "$codebase+{:#x}".format(self.load_base + offset)
+        return "{:#x}".format(self.load_base + offset)
+
+    def section_offset(self, section_name):
+        shdr = self.elf.get_shdr(section_name)
+        return shdr.sh_addr - self.load_base
+
+    def encoded_offset(self, encoding, value, pos_off, data_off=None, func_off=None):
+        # returns the offset from load_base, or None if it cannot be resolved statically
+        application = encoding & 0x70
+        if application == self.DW_EH_PE_absptr:
+            if value == 0:
+                return None
+            offset = value - self.load_base
+        elif application == self.DW_EH_PE_pcrel:
+            offset = pos_off + value
+        elif application == self.DW_EH_PE_datarel and data_off is not None:
+            offset = data_off + value
+        elif application == self.DW_EH_PE_funcrel and func_off is not None:
+            offset = func_off + value
+        else:
+            return None
+        return offset & ((1 << (self.ptr_size * 8)) - 1)
+
     def parse_eh_frame_hdr(self, eh_frame_hdr):
         data = eh_frame_hdr.data
-        shdr = self.elf.get_shdr(".eh_frame_hdr")
-        load_base = self.elf.get_phdr(Elf.Phdr.PT_LOAD).p_vaddr
+        sec_off = self.section_offset(".eh_frame_hdr")
 
         entries = []
         pos = 0
@@ -33441,21 +33374,20 @@ class DwarfExceptionHandlerInfoCommand(GenericCommand, BufferingOutput):
             ))
             pos = new_pos
 
-            eh_frame_ptr = 0
+            eh_frame_off = None
             if eh_frame_ptr_enc != self.DW_EH_PE_omit:
                 new_pos, eh_frame_ptr = self.read_encoded(eh_frame_ptr_enc, data, pos)
-                if (eh_frame_ptr_enc & 0x70) == self.DW_EH_PE_pcrel:
-                    elf_offset = shdr.sh_offset + 4 + eh_frame_ptr
-                    if self.elf.is_pie():
-                        extra_s = "vma: $codebase+{:#x}".format(load_base + elf_offset)
-                    else:
-                        extra_s = "vma: {:#x}".format(load_base + elf_offset)
-                    entries.append(self.DataEntry(
-                        pos, data[pos:new_pos], "eh_frame_ptr", elf_offset, extra_s,
-                    ))
-                else:
+                eh_frame_off = self.encoded_offset(eh_frame_ptr_enc, eh_frame_ptr, sec_off + pos, data_off=sec_off)
+                if eh_frame_off is None:
                     entries.append(self.DataEntry(
                         pos, data[pos:new_pos], "eh_frame_ptr", eh_frame_ptr,
+                    ))
+                else:
+                    if (eh_frame_ptr_enc & 0x70) == self.DW_EH_PE_pcrel:
+                        eh_frame_ptr = eh_frame_off
+                    extra_s = "vma: {:s}".format(self.format_vma(eh_frame_off))
+                    entries.append(self.DataEntry(
+                        pos, data[pos:new_pos], "eh_frame_ptr", eh_frame_ptr, extra_s,
                     ))
                 pos = new_pos
 
@@ -33466,30 +33398,32 @@ class DwarfExceptionHandlerInfoCommand(GenericCommand, BufferingOutput):
                 pos = new_pos
 
             table_cnt = 0
-            if table_enc == (self.DW_EH_PE_datarel | self.DW_EH_PE_sdata4):
+            if table_enc != self.DW_EH_PE_omit:
                 while table_cnt < fde_count and data[pos:]:
                     entries.append(self.SeparatorEntry(pos, "Table[{:4d}]".format(table_cnt)))
 
-                    new_pos, initial_loc = self.read_4sbyte(data, pos)
-                    initial_offset = shdr.sh_offset + initial_loc
-                    if self.elf.is_pie():
-                        extra_s = "vma: $codebase+{:#x}".format(load_base + initial_offset)
+                    new_pos, initial_loc = self.read_encoded(table_enc, data, pos)
+                    initial_offset = self.encoded_offset(table_enc, initial_loc, sec_off + pos, data_off=sec_off)
+                    if initial_offset is None:
+                        entries.append(self.DataEntry(pos, data[pos:new_pos], "initial_loc", initial_loc))
                     else:
-                        extra_s = "vma: {:#x}".format(load_base + initial_offset)
-                    entries.append(self.DataEntry(
-                        pos, data[pos:new_pos], "initial_loc", initial_offset, extra_s,
-                    ))
+                        extra_s = "vma: {:s}".format(self.format_vma(initial_offset))
+                        entries.append(self.DataEntry(
+                            pos, data[pos:new_pos], "initial_loc", initial_offset, extra_s,
+                        ))
                     pos = new_pos
 
-                    new_pos, fde_offset = self.read_4sbyte(data, pos)
-                    fde_offset_adjusted = fde_offset - (eh_frame_ptr + 4)
-                    if self.elf.is_pie():
-                        extra_s = "vma: $codebase+{:#x}".format(load_base + shdr.sh_offset + fde_offset)
+                    new_pos, fde_ptr = self.read_encoded(table_enc, data, pos)
+                    fde_offset = self.encoded_offset(table_enc, fde_ptr, sec_off + pos, data_off=sec_off)
+                    if fde_offset is None:
+                        entries.append(self.DataEntry(pos, data[pos:new_pos], "fde", fde_ptr))
                     else:
-                        extra_s = "vma: {:#x}".format(load_base + shdr.sh_offset + fde_offset)
-                    entries.append(self.DataEntry(
-                        pos, data[pos:new_pos], "fde", fde_offset_adjusted, extra_s,
-                    ))
+                        if eh_frame_off is not None:
+                            fde_ptr = fde_offset - eh_frame_off
+                        extra_s = "vma: {:s}".format(self.format_vma(fde_offset))
+                        entries.append(self.DataEntry(
+                            pos, data[pos:new_pos], "fde", fde_ptr, extra_s,
+                        ))
                     pos = new_pos
 
                     table_cnt += 1
@@ -33500,8 +33434,7 @@ class DwarfExceptionHandlerInfoCommand(GenericCommand, BufferingOutput):
 
     def parse_eh_frame(self, eh_frame):
         data = eh_frame.data
-        shdr = self.elf.get_shdr(".eh_frame")
-        load_base = self.elf.get_phdr(Elf.Phdr.PT_LOAD).p_vaddr
+        sec_off = self.section_offset(".eh_frame")
 
         cies = []
         entries = []
@@ -33532,7 +33465,7 @@ class DwarfExceptionHandlerInfoCommand(GenericCommand, BufferingOutput):
                     tmp_entries = []
                     continue
 
-                ptr_size = 4 if self.elf.e_class == Elf.ELF_32_BITS else 8
+                ptr_size = self.ptr_size
                 start = pos # use later
                 cie_end = pos + unit_length
 
@@ -33606,10 +33539,7 @@ class DwarfExceptionHandlerInfoCommand(GenericCommand, BufferingOutput):
 
                     # parse augmentation data
                     if augmentation == "eh":
-                        if self.elf.e_class == Elf.ELF_32_BITS:
-                            new_pos, adjust = self.read_4ubyte(data, pos)
-                        else:
-                            new_pos, adjust = self.read_8ubyte(data, pos)
+                        new_pos, adjust = self.read_nbyte(data, pos, self.ptr_size)
                         entries.append(self.DataEntry(pos, data[pos:new_pos], "eh_data", adjust))
                         pos = new_pos
 
@@ -33632,13 +33562,14 @@ class DwarfExceptionHandlerInfoCommand(GenericCommand, BufferingOutput):
                         ))
                         pos = new_pos
 
-                    if augmentation[0] == "z":
+                    if augmentation.startswith("z"):
                         new_pos, augmentation_len = self.get_uleb128(data, pos)
                         entries.append(self.DataEntry(
                             pos, data[pos:new_pos], "augmentation_len", augmentation_len,
                         ))
                         pos = new_pos
 
+                        aug_end = pos + augmentation_len
                         for cp in augmentation[1:]:
                             if cp == "R":
                                 new_pos, fde_encoding = self.read_1ubyte(data, pos)
@@ -33665,100 +33596,77 @@ class DwarfExceptionHandlerInfoCommand(GenericCommand, BufferingOutput):
                                 ))
                                 pos = new_pos
                                 new_pos, p_addr = self.read_encoded(p_encoding, data, pos)
-                                if (p_encoding & 0x70) == self.DW_EH_PE_pcrel:
-                                    p_addr += shdr.sh_offset + pos
-                                    if self.elf.is_pie():
-                                        extra_s = "Personality pointer address: $codebase+{:#x}".format(
-                                            load_base + p_addr,
-                                        )
-                                    else:
-                                        extra_s = "Personality pointer address: {:#x}".format(
-                                            load_base + p_addr,
-                                        )
-                                else:
+                                p_off = self.encoded_offset(p_encoding, p_addr, sec_off + pos)
+                                if p_off is None:
                                     extra_s = "Personality pointer address"
+                                else:
+                                    if (p_encoding & 0x70) == self.DW_EH_PE_pcrel:
+                                        p_addr = p_off
+                                    extra_s = "Personality pointer address: {:s}".format(self.format_vma(p_off))
                                 entries.append(self.DataEntry(
                                     pos, data[pos:new_pos], "augmentation_data(P)", p_addr, extra_s,
                                 ))
                                 pos = new_pos
+                            elif cp in ["S", "B", "G"]: # no data
+                                pass
                             else: # unknown
-                                new_pos, x = self.read_1ubyte(data, pos)
-                                entries.append(self.DataEntry(
-                                    pos, data[pos:new_pos], "augmentation_data({:s})".format(cp), x,
-                                ))
-                                pos = new_pos
+                                break
+                        if pos < aug_end:
+                            entries.append(self.DataEntry(pos, data[pos:aug_end], "?"))
+                        pos = aug_end
 
-                    if ptr_size == 4 or ptr_size == 8:
-                        cie = {}
-                        cie["cie_offset"] = offset
-                        cie["augmentation"] = augmentation
-                        cie["fde_encoding"] = fde_encoding
-                        cie["lsda_encoding"] = lsda_encoding
-                        cie["address_size"] = ptr_size
-                        cie["code_alignment_factor"] = code_alignment_factor
-                        cie["data_alignment_factor"] = data_alignment_factor
-                        Cie = collections.namedtuple("Cie", cie.keys())
-                        cie = Cie(*cie.values())
-                        cies.append(cie)
+                    cie = {}
+                    cie["cie_offset"] = offset
+                    cie["version"] = version
+                    cie["augmentation"] = augmentation
+                    cie["fde_encoding"] = fde_encoding
+                    cie["lsda_encoding"] = lsda_encoding
+                    cie["address_size"] = ptr_size
+                    cie["code_alignment_factor"] = code_alignment_factor
+                    cie["data_alignment_factor"] = data_alignment_factor
+                    Cie = collections.namedtuple("Cie", cie.keys())
+                    cie = Cie(*cie.values())
+                    cies.append(cie)
 
                 else: # FDE parsing
                     cie = [x for x in cies if start - cie_id == x.cie_offset][0]
+                    version = cie.version
 
                     entries.append(self.SeparatorEntry(offset, "FDE"))
                     entries += tmp_entries # unit_length, cie_pointer
                     tmp_entries = []
 
-                    ptr_size = self.encoded_ptr_size(cie.fde_encoding, cie.address_size)
-                    base = pos
+                    ptr_mask = (1 << (self.ptr_size * 8)) - 1
 
                     # parse pc_begin
-                    if ptr_size == 4:
-                        new_pos, initial_location = self.read_4ubyte(data, pos)
-                    elif ptr_size == 8:
-                        new_pos, initial_location = self.read_8ubyte(data, pos)
-                    if (cie.fde_encoding & 0x70) == self.DW_EH_PE_pcrel:
-                        vma_base = shdr.sh_offset + base + initial_location
-                        if ptr_size == 4:
-                            vma_base &= 0xffff_ffff
-                        elif ptr_size == 8:
-                            vma_base &= 0xffff_ffff_ffff_ffff
-                        if self.elf.is_pie():
-                            extra_s = "pc_begin vma: $codebase+{:#x}".format(load_base + vma_base)
-                        else:
-                            extra_s = "pc_begin vma: {:#x}".format(load_base + vma_base)
-                        entries.append(self.DataEntry(
-                            pos, data[pos:new_pos], "pc_begin", vma_base, extra_s,
-                        ))
-                    else:
+                    new_pos, initial_location = self.read_encoded(cie.fde_encoding, data, pos)
+                    func_off = self.encoded_offset(cie.fde_encoding, initial_location, sec_off + pos)
+                    if func_off is None:
+                        func_off = (initial_location - self.load_base) & ptr_mask
                         entries.append(self.DataEntry(
                             pos, data[pos:new_pos], "pc_begin", initial_location,
                         ))
+                    else:
+                        if (cie.fde_encoding & 0x70) == self.DW_EH_PE_pcrel:
+                            initial_location = func_off
+                        extra_s = "pc_begin vma: {:s}".format(self.format_vma(func_off))
+                        entries.append(self.DataEntry(
+                            pos, data[pos:new_pos], "pc_begin", initial_location, extra_s,
+                        ))
+                    vma_base = self.load_base + func_off
                     pos = new_pos
 
                     # parse pc_range
-                    if ptr_size == 4:
-                        new_pos, pc_range = self.read_4ubyte(data, pos)
-                    elif ptr_size == 8:
-                        new_pos, pc_range = self.read_8ubyte(data, pos)
-                    if (cie.fde_encoding & 0x70) == self.DW_EH_PE_pcrel:
-                        end_off = vma_base + pc_range
-                    else:
-                        end_off = initial_location + pc_range
-                    if ptr_size == 4:
-                        end_off &= 0xffff_ffff
-                    elif ptr_size == 8:
-                        end_off &= 0xffff_ffff_ffff_ffff
-                    if self.elf.is_pie():
-                        extra_s = "pc_end vma: $codebase+{:#x}".format(load_base + end_off)
-                    else:
-                        extra_s = "pc_end vma: {:#x}".format(load_base + end_off)
+                    new_pos, pc_range = self.read_encoded(cie.fde_encoding & 0x0f, data, pos)
+                    end_off = (func_off + pc_range) & ptr_mask
+                    extra_s = "pc_end vma: {:s}".format(self.format_vma(end_off))
                     entries.append(self.DataEntry(
                         pos, data[pos:new_pos], "pc_range", pc_range, extra_s,
                     ))
                     pos = new_pos
 
                     # parse augmentation
-                    if cie.augmentation[0] == "z":
+                    if cie.augmentation.startswith("z"):
                         new_pos, augmentation_len = self.get_uleb128(data, pos)
                         entries.append(self.DataEntry(
                             pos, data[pos:new_pos], "augmentation_len", augmentation_len,
@@ -33770,32 +33678,30 @@ class DwarfExceptionHandlerInfoCommand(GenericCommand, BufferingOutput):
                             for cp in cie.augmentation[1:]:
                                 if cp == "L":
                                     new_pos, lsda_pointer = self.read_encoded(cie.lsda_encoding, data, pos)
-                                    if (cie.lsda_encoding & 0x70) == self.DW_EH_PE_pcrel:
-                                        lsda_pointer += shdr.sh_offset + pos
-                                        if self.elf.is_pie():
-                                            extra_s = "LSDA pointer vma: $codebase+{:#x}".format(
-                                                load_base + lsda_pointer,
-                                            )
-                                        else:
-                                            extra_s = "LSDA pointer vma: {:#x}".format(
-                                                load_base + lsda_pointer,
-                                            )
-                                        entries.append(self.DataEntry(
-                                            pos, data[pos:new_pos],
-                                            "augmentation_data(L)", lsda_pointer, extra_s,
-                                        ))
-                                    else:
+                                    lsda_off = self.encoded_offset(
+                                        cie.lsda_encoding, lsda_pointer, sec_off + pos, func_off=func_off,
+                                    )
+                                    if lsda_off is None:
                                         entries.append(self.DataEntry(
                                             pos, data[pos:new_pos],
                                             "augmentation_data(L)", lsda_pointer, "LSDA pointer",
                                         ))
+                                    else:
+                                        if (cie.lsda_encoding & 0x70) == self.DW_EH_PE_pcrel:
+                                            lsda_pointer = lsda_off
+                                        extra_s = "LSDA pointer vma: {:s}".format(self.format_vma(lsda_off))
+                                        entries.append(self.DataEntry(
+                                            pos, data[pos:new_pos],
+                                            "augmentation_data(L)", lsda_pointer, extra_s,
+                                        ))
+                                        self.lsda_info[lsda_off] = func_off
                                     pos = new_pos
                             if pos < aug_end:
                                 entries.append(self.DataEntry(pos, data[pos:aug_end], "?"))
                             pos = aug_end
 
                 # common
-                entries += self.parse_cfa_program(data, pos, cie_end, vma_base, version, cie)
+                entries += self.parse_cfa_program(data, pos, cie_end, vma_base, version, cie, sec_off)
                 pos = cie_end
         except (IndexError, ValueError):
             _exc_type, exc_value, _exc_traceback = sys.exc_info()
@@ -33851,7 +33757,7 @@ class DwarfExceptionHandlerInfoCommand(GenericCommand, BufferingOutput):
             ]
         elif self.elf.e_machine == Elf.EM_386:
             REG_LIST = [
-                "eax", "ecx", "edx", "rbx", "esp", "ebp", "esi", "edi",
+                "eax", "ecx", "edx", "ebx", "esp", "ebp", "esi", "edi",
                 "eip", "eflags", "trapno", "st0", "st1", "st2", "st3", "st4",
                 "st5", "st6", "st7", "???", "???", "xmm0", "xmm1", "xmm2",
                 "xmm3", "xmm4", "xmm5", "xmm6", "xmm7", "mm0", "mm1", "mm2",
@@ -33879,7 +33785,7 @@ class DwarfExceptionHandlerInfoCommand(GenericCommand, BufferingOutput):
                 "r13_abt", "r14_abt", "r13_und", "r14_und", "r13_svc", "r14_svc",
             ] + ["???"] * 26 + [
                 "wc0", "wc1", "wc2", "wc3", "wc4", "wc5", "wc6", "wc7",
-            ]
+            ] + ["???"] * 56 + ["d{:d}".format(i) for i in range(32)]
         elif self.elf.e_machine == Elf.EM_AARCH64:
             REG_LIST = [
                 "x0", "x1", "x2", "x3", "x4", "x5", "x6", "x7",
@@ -33893,6 +33799,61 @@ class DwarfExceptionHandlerInfoCommand(GenericCommand, BufferingOutput):
                 "v16", "v17", "v18", "v19", "v20", "v21", "v22", "v23",
                 "v24", "v25", "v26", "v27", "v28", "v29", "v30", "v31",
             ]
+        elif self.elf.e_machine == Elf.EM_RISCV:
+            REG_LIST = [
+                "zero", "ra", "sp", "gp", "tp", "t0", "t1", "t2",
+                "fp", "s1", "a0", "a1", "a2", "a3", "a4", "a5",
+                "a6", "a7", "s2", "s3", "s4", "s5", "s6", "s7",
+                "s8", "s9", "s10", "s11", "t3", "t4", "t5", "t6",
+                "ft0", "ft1", "ft2", "ft3", "ft4", "ft5", "ft6", "ft7",
+                "fs0", "fs1", "fa0", "fa1", "fa2", "fa3", "fa4", "fa5",
+                "fa6", "fa7", "fs2", "fs3", "fs4", "fs5", "fs6", "fs7",
+                "fs8", "fs9", "fs10", "fs11", "ft8", "ft9", "ft10", "ft11",
+            ] + ["???"] * 32 + ["v{:d}".format(i) for i in range(32)]
+        elif self.elf.e_machine == Elf.EM_MIPS:
+            if self.elf.e_class == Elf.ELF_64_BITS or self.elf.e_flags & 0x20: # EF_MIPS_ABI2 (n32)
+                REG_LIST = [
+                    "zero", "at", "v0", "v1", "a0", "a1", "a2", "a3",
+                    "a4", "a5", "a6", "a7", "t0", "t1", "t2", "t3",
+                ]
+            else:
+                REG_LIST = [
+                    "zero", "at", "v0", "v1", "a0", "a1", "a2", "a3",
+                    "t0", "t1", "t2", "t3", "t4", "t5", "t6", "t7",
+                ]
+            REG_LIST += [
+                "s0", "s1", "s2", "s3", "s4", "s5", "s6", "s7",
+                "t8", "t9", "k0", "k1", "gp", "sp", "fp", "ra",
+            ] + ["f{:d}".format(i) for i in range(32)] + ["hi", "lo"]
+        elif self.elf.e_machine in [Elf.EM_PPC, Elf.EM_PPC64]:
+            # GCC uses its own numbering in .eh_frame
+            REG_LIST = ["r{:d}".format(i) for i in range(32)] + ["f{:d}".format(i) for i in range(32)] + [
+                "???", "lr", "ctr", "vscr", "cr0", "cr1", "cr2", "cr3", "cr4", "cr5", "cr6", "cr7", "xer",
+            ] + ["v{:d}".format(i) for i in range(32)] + ["vrsave"]
+        elif self.elf.e_machine == Elf.EM_S390:
+            REG_LIST = ["r{:d}".format(i) for i in range(16)] + [
+                "f0", "f2", "f4", "f6", "f1", "f3", "f5", "f7",
+                "f8", "f10", "f12", "f14", "f9", "f11", "f13", "f15",
+            ] + ["cr{:d}".format(i) for i in range(16)] + ["a{:d}".format(i) for i in range(16)] + [
+                "pswm", "pswa", "???", "???",
+                "v16", "v18", "v20", "v22", "v17", "v19", "v21", "v23",
+                "v24", "v26", "v28", "v30", "v25", "v27", "v29", "v31",
+            ]
+        elif self.elf.e_machine == Elf.EM_LOONGARCH:
+            REG_LIST = [
+                "zero", "ra", "tp", "sp", "a0", "a1", "a2", "a3",
+                "a4", "a5", "a6", "a7", "t0", "t1", "t2", "t3",
+                "t4", "t5", "t6", "t7", "t8", "r21", "fp", "s0",
+                "s1", "s2", "s3", "s4", "s5", "s6", "s7", "s8",
+                "fa0", "fa1", "fa2", "fa3", "fa4", "fa5", "fa6", "fa7",
+            ] + ["ft{:d}".format(i) for i in range(16)] + ["fs{:d}".format(i) for i in range(8)]
+        elif self.elf.e_machine in [Elf.EM_SPARC, Elf.EM_SPARC32PLUS, Elf.EM_SPARCV9]:
+            REG_LIST = [
+                "g0", "g1", "g2", "g3", "g4", "g5", "g6", "g7",
+                "o0", "o1", "o2", "o3", "o4", "o5", "sp", "o7",
+                "l0", "l1", "l2", "l3", "l4", "l5", "l6", "l7",
+                "i0", "i1", "i2", "i3", "i4", "i5", "fp", "i7",
+            ] + ["f{:d}".format(i) for i in range(32)]
         else:
             # other arch is unimplemented
             return "r{:d}".format(reg)
@@ -33901,7 +33862,7 @@ class DwarfExceptionHandlerInfoCommand(GenericCommand, BufferingOutput):
             return REG_LIST[reg]
         return "???"
 
-    def parse_cfa_program(self, data, pos, pos_end, vma_base, version, cie):
+    def parse_cfa_program(self, data, pos, pos_end, vma_base, version, cie, sec_off):
         encoding = cie.fde_encoding
         ptr_size = cie.address_size
         code_align = cie.code_alignment_factor
@@ -33920,7 +33881,9 @@ class DwarfExceptionHandlerInfoCommand(GenericCommand, BufferingOutput):
                         entries.append(self.DataEntry(pos, data[pos:new_pos], indent + "nop"))
                     elif opcode == self.DW_CFA_set_loc:
                         new_pos, op1 = self.read_encoded(encoding, data, new_pos)
-                        pc = vma_base + op1
+                        func_off = vma_base - self.load_base
+                        loc_off = self.encoded_offset(encoding, op1, sec_off + pos + 1, func_off=func_off)
+                        pc = op1 if loc_off is None else self.load_base + loc_off
                         entries.append(self.DataEntry(
                             pos, data[pos:new_pos],
                             indent + "set_loc {:#x} to {:#x}".format(op1, pc),
@@ -34031,7 +33994,7 @@ class DwarfExceptionHandlerInfoCommand(GenericCommand, BufferingOutput):
                         new_pos += op2
                     elif opcode == self.DW_CFA_offset_extended_sf:
                         new_pos, op1 = self.get_uleb128(data, new_pos)
-                        new_pos, op2 = self.get_uleb128(data, new_pos)
+                        new_pos, op2 = self.get_sleb128(data, new_pos)
                         regname = self.get_register_name(op1)
                         off = op2 * data_align
                         entries.append(self.DataEntry(
@@ -34040,7 +34003,7 @@ class DwarfExceptionHandlerInfoCommand(GenericCommand, BufferingOutput):
                         ))
                     elif opcode == self.DW_CFA_def_cfa_sf:
                         new_pos, op1 = self.get_uleb128(data, new_pos)
-                        new_pos, op2 = self.get_uleb128(data, new_pos)
+                        new_pos, op2 = self.get_sleb128(data, new_pos)
                         regname = self.get_register_name(op1)
                         off = op2 * data_align
                         entries.append(self.DataEntry(
@@ -34048,7 +34011,7 @@ class DwarfExceptionHandlerInfoCommand(GenericCommand, BufferingOutput):
                             indent + "def_cfa_sf r{:d} ({:s}) at offset {:#x}".format(op1, regname, off),
                         ))
                     elif opcode == self.DW_CFA_def_cfa_offset_sf:
-                        new_pos, op1 = self.get_uleb128(data, new_pos)
+                        new_pos, op1 = self.get_sleb128(data, new_pos)
                         entries.append(self.DataEntry(
                             pos, data[pos:new_pos],
                             indent + "def_cfa_offset_sf {:#x}".format(op1 * data_align),
@@ -34063,7 +34026,7 @@ class DwarfExceptionHandlerInfoCommand(GenericCommand, BufferingOutput):
                         ))
                     elif opcode == self.DW_CFA_val_offset_sf:
                         new_pos, op1 = self.get_uleb128(data, new_pos)
-                        new_pos, op2 = self.get_uleb128(data, new_pos)
+                        new_pos, op2 = self.get_sleb128(data, new_pos)
                         off = op2 * data_align
                         entries.append(self.DataEntry(
                             pos, data[pos:new_pos],
@@ -34129,7 +34092,7 @@ class DwarfExceptionHandlerInfoCommand(GenericCommand, BufferingOutput):
                     regname = self.get_register_name(op1)
                     entries.append(self.DataEntry(
                         pos, data[pos:new_pos],
-                        indent + "restore r{:d}".format(op1),
+                        indent + "restore r{:d} ({:s})".format(op1, regname),
                     ))
                 pos = new_pos
         except (IndexError, ValueError):
@@ -34513,7 +34476,7 @@ class DwarfExceptionHandlerInfoCommand(GenericCommand, BufferingOutput):
     def parse_ops(self, vers, addrsize, length, data, pos, indent_n=0):
         indent = " " * ((indent_n + 2) * 4)
         entries = []
-        ref_size = addrsize if vers < 3 else 0
+        ref_size = addrsize if vers < 3 else 4
 
         if length == 0:
             entries.append(self.DataEntry(pos, None, indent + "(empty)"))
@@ -34802,7 +34765,7 @@ class DwarfExceptionHandlerInfoCommand(GenericCommand, BufferingOutput):
                         pos, data[pos:new_pos],
                         indent + "[{:#04x}] {:s}".format(offset, op_name),
                     ))
-                    entries += self.parse_ops(vers, addrsize, d, data, new_pos, indent=indent + 1)
+                    entries += self.parse_ops(vers, addrsize, d, data, new_pos, indent_n=indent_n + 1)
                     new_pos += d
                 elif op in [self.DW_OP_const_type, self.DW_OP_GNU_const_type]:
                     new_pos, d1 = self.get_uleb128(data, new_pos)
@@ -34895,35 +34858,9 @@ class DwarfExceptionHandlerInfoCommand(GenericCommand, BufferingOutput):
             entries.append(self.ErrorEntry("Parse Error", exc_value))
         return entries
 
-    def parse_gcc_except_table(self, gcc_except_table, eh_frame_entries):
-
-        def get_lsda_info(eh_frame_entries):
-            dic = {}
-            is_fde = False
-            for entry in eh_frame_entries:
-                if entry.tag != "data":
-                    continue
-                if entry.name == "cie_pointer":
-                    is_fde = True
-                    continue
-                if entry.name == "cie_id":
-                    is_fde = False
-                    continue
-                if is_fde:
-                    if entry.name == "pc_begin":
-                        pc_begin = entry.value
-                        continue
-                    if entry.name != "augmentation_data(L)":
-                        continue
-                    dic[entry.value - load_base] = pc_begin + load_base
-            return dic
-
-        section_base = gcc_except_table.offset
+    def parse_gcc_except_table(self, gcc_except_table):
         data = gcc_except_table.data
-        shdr = self.elf.get_shdr(".gcc_except_table")
-        load_base = self.elf.get_phdr(Elf.Phdr.PT_LOAD).p_vaddr
-        ptr_size = 4 if self.elf.e_class == Elf.ELF_32_BITS else 8
-        lsda_pos_info = get_lsda_info(eh_frame_entries)
+        sec_off = self.section_offset(".gcc_except_table")
 
         entries = []
         pos = 0
@@ -34933,7 +34870,7 @@ class DwarfExceptionHandlerInfoCommand(GenericCommand, BufferingOutput):
             lsda_pos_padding = 0
             while data[pos:]:
                 # search LSDA start address
-                if (section_base + pos) not in lsda_pos_info:
+                if (sec_off + pos) not in self.lsda_info:
                     lsda_pos_padding += 1
                     pos += 1
                     continue
@@ -34947,7 +34884,7 @@ class DwarfExceptionHandlerInfoCommand(GenericCommand, BufferingOutput):
                     lsda_pos_padding = 0
 
                 entries.append(self.SeparatorEntry(pos, "LSDA Table[{:4d}]".format(lsda_table_cnt)))
-                lpstart = lsda_pos_info[section_base + pos]
+                lpstart = self.lsda_info[sec_off + pos]
 
                 # parse lpstart_encoding
                 new_pos, lpstart_encoding = self.read_1ubyte(data, pos)
@@ -34966,6 +34903,7 @@ class DwarfExceptionHandlerInfoCommand(GenericCommand, BufferingOutput):
                         pos, data[pos:new_pos],
                         "landing_pad_start", lpstart,
                     ))
+                    lpstart -= self.load_base
                     pos = new_pos
 
                 # parse ttype_encoding
@@ -35016,20 +34954,15 @@ class DwarfExceptionHandlerInfoCommand(GenericCommand, BufferingOutput):
                     entries.append(self.SeparatorEntry(pos, "Call site table[{:4d}]".format(table_cnt)))
 
                     new_pos, call_site_start = self.read_encoded(call_site_encoding, data, pos)
-                    if self.elf.is_pie():
-                        extra_s = "try-start vma: $codebase+{:#x}".format(lpstart + call_site_start)
-                    else:
-                        extra_s = "try-start vma: {:#x}".format(lpstart + call_site_start)
+                    extra_s = "try-start vma: {:s}".format(self.format_vma(lpstart + call_site_start))
                     entries.append(self.DataEntry(
                         pos, data[pos:new_pos], "call_site_start", call_site_start, extra_s,
                     ))
                     pos = new_pos
 
                     new_pos, call_site_length = self.read_encoded(call_site_encoding, data, pos)
-                    if self.elf.is_pie():
-                        extra_s = "try-end vma: $codebase+{:#x}".format(lpstart + call_site_start + call_site_length)
-                    else:
-                        extra_s = "try-end vma: {:#x}".format(lpstart + call_site_start + call_site_length)
+                    call_site_end = call_site_start + call_site_length
+                    extra_s = "try-end vma: {:s}".format(self.format_vma(lpstart + call_site_end))
                     entries.append(self.DataEntry(
                         pos, data[pos:new_pos], "call_site_length", call_site_length, extra_s,
                     ))
@@ -35038,10 +34971,8 @@ class DwarfExceptionHandlerInfoCommand(GenericCommand, BufferingOutput):
                     new_pos, call_site_lpad = self.read_encoded(call_site_encoding, data, pos)
                     if call_site_lpad == 0:
                         extra_s = ""
-                    elif self.elf.is_pie():
-                        extra_s = "catch vma: $codebase+{:#x}".format(lpstart + call_site_lpad)
                     else:
-                        extra_s = "catch vma: {:#x}".format(lpstart + call_site_lpad)
+                        extra_s = "catch vma: {:s}".format(self.format_vma(lpstart + call_site_lpad))
                     entries.append(self.DataEntry(
                         pos, data[pos:new_pos], "landing_pad", call_site_lpad, extra_s,
                     ))
@@ -35072,7 +35003,7 @@ class DwarfExceptionHandlerInfoCommand(GenericCommand, BufferingOutput):
                         if ar_filter == 0:
                             extra_s = "cleanup"
                         else:
-                            enc_size = self.encoded_ptr_size(ttype_encoding, ptr_size)
+                            enc_size = self.encoded_ptr_size(ttype_encoding, self.ptr_size)
                             extra_s = "catch typeinfo: {:#x}".format(ttype_base - ar_filter * enc_size)
                         entries.append(self.DataEntry(
                             pos, data[pos:new_pos], "action_record_filter", ar_filter, extra_s,
@@ -35096,7 +35027,7 @@ class DwarfExceptionHandlerInfoCommand(GenericCommand, BufferingOutput):
 
                 # parse ttype_table
                 if max_ar_filter > 0 and ttype_base is not None:
-                    enc_size = self.encoded_ptr_size(ttype_encoding, ptr_size)
+                    enc_size = self.encoded_ptr_size(ttype_encoding, self.ptr_size)
                     new_pos = ttype_base - max_ar_filter * enc_size
                     if pos != new_pos:
                         entries.append(self.SeparatorEntry(pos, "Padding"))
@@ -35106,18 +35037,14 @@ class DwarfExceptionHandlerInfoCommand(GenericCommand, BufferingOutput):
                     while pos < ttype_base:
                         entries.append(self.SeparatorEntry(pos, "TType table[{:4d}]".format(current_ar_filter)))
                         new_pos, ttype = self.read_encoded(ttype_encoding, data, pos)
-                        if (ttype_encoding & 0x70) == self.DW_EH_PE_pcrel:
-                            ttype_pointer = shdr.sh_offset + pos + ttype
-                            if ttype:
-                                if self.elf.is_pie():
-                                    extra_s = "TType pointer vma: $codebase+{:#x}".format(load_base + ttype_pointer)
-                                else:
-                                    extra_s = "TType pointer vma: {:#x}".format(load_base + ttype_pointer)
-                            else:
-                                extra_s = ""
-                            entries.append(self.DataEntry(pos, data[pos:new_pos], "ttype", ttype, extra_s))
+                        ttype_pointer = self.encoded_offset(ttype_encoding, ttype, sec_off + pos)
+                        if ttype == 0:
+                            extra_s = ""
+                        elif ttype_pointer is None:
+                            extra_s = "TType pointer"
                         else:
-                            entries.append(self.DataEntry(pos, data[pos:new_pos], "ttype", ttype, "TType pointer"))
+                            extra_s = "TType pointer vma: {:s}".format(self.format_vma(ttype_pointer))
+                        entries.append(self.DataEntry(pos, data[pos:new_pos], "ttype", ttype, extra_s))
                         pos = new_pos
                         current_ar_filter -= 1
                 if ttype_base is not None:
@@ -35129,6 +35056,12 @@ class DwarfExceptionHandlerInfoCommand(GenericCommand, BufferingOutput):
                 else:
                     pos = ttype_base
                 lsda_table_cnt += 1
+
+            if lsda_pos_padding:
+                entries.append(self.SeparatorEntry(pos - lsda_pos_padding, "Padding"))
+                entries.append(self.DataEntry(
+                    pos - lsda_pos_padding, data[pos - lsda_pos_padding:pos], "padding",
+                ))
         except (KeyError, IndexError, ValueError):
             _exc_type, exc_value, _exc_traceback = sys.exc_info()
             entries.append(self.ErrorEntry("Parse Error", exc_value))
@@ -35149,6 +35082,111 @@ class DwarfExceptionHandlerInfoCommand(GenericCommand, BufferingOutput):
         dic = {"name": section_name, "offset": shdr.sh_offset, "data": data}
         Section = collections.namedtuple("Section", dic.keys())
         return Section(*dic.values())
+
+    def dump(self, with_hexdump=False):
+        eh_frame = self.read_section(".eh_frame")
+        if eh_frame is None:
+            return None
+        eh_frame_hdr = self.read_section(".eh_frame_hdr")
+        gcc_except_table = self.read_section(".gcc_except_table")
+
+        out = []
+        if eh_frame_hdr:
+            entries = self.parse_eh_frame_hdr(eh_frame_hdr)
+            out += self.format_entry(eh_frame_hdr, entries, with_hexdump)
+        entries = self.parse_eh_frame(eh_frame)
+        out += self.format_entry(eh_frame, entries, with_hexdump)
+        if gcc_except_table:
+            entries = self.parse_gcc_except_table(gcc_except_table)
+            out += self.format_entry(gcc_except_table, entries, with_hexdump)
+        return out
+
+
+@register_command
+class DwarfExceptionHandlerInfoCommand(GenericCommand, BufferingOutput):
+    """Dump the DWARF exception handler information with the byte code itself."""
+
+    _cmdline_ = "dwarf-exception-handler"
+    _category_ = "02-e. Process Information - Complex Structure Information"
+
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("-hh", "--help-simple", action="store_true", help="show help without ASCII diagram.")
+    parser.add_argument("-f", "--file", help="the file path to parse.")
+    parser.add_argument("-r", "--remote", action="store_true",
+                        help="parse remote binary if download feature is available.")
+    parser.add_argument("-x", "--hexdump", action="store_true", help="with hexdump.")
+    parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
+    _syntax_ = parser.format_help()
+
+    _example_ = [
+        "{0:s}                  # parse loaded binary",
+        "{0:s} -r               # parse remote binary",
+        "{0:s} -f /usr/bin/apt  # parse specified binary",
+        "{0:s} -x               # with hexdump",
+    ]
+    _example_ = "\n".join(_example_).format(_cmdline_)
+
+    _note_ = [
+        "Simplified DWARF exception structure:",
+        "",
+        "[OLD IMPLEMENTATION]",
+        " libgcc_s.so bss area               ELF Program Header (for .eh_frame_hdr)",
+        "+-----------------------+      +-->+----------------+",
+        "| ...                   |      |   | p_type         |",
+        "| frame_hdr_cache_head  |---+  |   | p_flags        |",
+        "+-frame_hdr_cache_entry-+<--+  |   | p_offset       |",
+        "| pc_low                |      |   | p_vaddr        |----+",
+        "| pc_high               |      |   | p_paddr        |    |",
+        "| load_base             |      |   | p_filesz       |    |",
+        "| p_eh_frame_hdr        |------+   | p_memsz        |    |",
+        "| p_dynamic             |          | p_align        |    |         [NEW IMPLEMENTATION]",
+        "| link                  |---+      +----------------+    |          _dlfo_main@ld.so rodata area",
+        "+-frame_hdr_cache_entry-+<--+                            |          _dlfo_nodelete_mappings@ld.so rodata area",
+        "| pc_low                |                                |         +-------------+",
+        "| pc_high               |                                |         | map_start   |",
+        "| load_base             |                                |         | map_end     |",
+        "| p_eh_frame_hdr        |                                |         | map         |",
+        "| p_dynamic             |                                |<--------| eh_frame    |",
+        "| link                  |                                |         | (eh_dbase)  |",
+        "+-----------------------+                                |         | (eh_count)  |",
+        "The frame_hdr_cache_head and frame_hdr_cache_entry are   |         +-------------+",
+        "initialized the first time they are called.              |",
+        "                                                         |",
+        "                           +-----------------------------+",
+        "                           |",
+        ".eh_frame_hdr              |      .eh_frame                                           .gcc_except_table",
+        "+----------------------+<--+  +-->+-CIE-------------------+<--+                   +-->+-LSDA-----------------+",
+        "| version              |      |   | length                |   |                   |   | lpstart_enc          |",
+        "| eh_frame_ptr_enc     |      |   | cie_id (=0)           |   |                   |   | ttype_enc            |",
+        "| fde_count_enc        |      |   | version               |   |                   |   | ttype_off            |",
+        "| table_enc            |      |   | augmentation_string   |   |                   |   | call_site_encoding   |",
+        "| eh_frame_ptr         |------+   | code_alignment_factor |   |                   |   | call_site_table_len  |",
+        "| fde_count            |          | data_alignment_factor |   |                   |   |+-CallSite-----------+|",
+        "| Table[0] initial_loc |          | retaddr_register      |   |                   |   || call_site_start    || try_start",
+        "| Table[0] fde         |---+      | augmentation_len      |   |                   |   || call_site_length   || try_end",
+        "| Table[1] initial_loc |   |      | augmentation_data[0]  |   |                   |   || landing_pad        || catch_start",
+        "| Table[1] fde         |   |      | ...                   |-(augmentation=='P')-+ |   || action             ||---+",
+        "| ...                  |   |      | ...                   |   |                 | |   |+-CallSite-----------+|   |",
+        "| Table[N] initial_loc |   |      | augmentation_data[N]  |   |                 | |   || ...                ||   |",
+        "| Table[N] fde         |   |      | program               |   |                 | |   |+-ActionTable--------+|<--+",
+        "+----------------------+   +----->+-FDE-------------------+   |                 | |   || ar_filter          ||---+",
+        "                                  | length                |   |                 | |   || ar_disp            ||   |",
+        "                                  | cie_pointer (!=0)     |---+                 | |   |+-ActionTable--------+|   |",
+        "                                  | pc_begin              | try_catch_base      | |   || ...                ||   |",
+        "                                  | pc_range              |                     | |   |+-TTypeTable---------+|   |",
+        "                                  | augmentation_len      |                     | |   || ...(stored upward) ||   |",
+        "                                  | augmentation_data[0]  |                     | |   |+-TTypeTable---------+|<--+",
+        "                                  | ...                   |-(augmentation=='L')-|-+   || ttype              ||---> type_info",
+        "                                  | augmentation_data[N]  |                     |     |+--------------------+|",
+        "                                  | program               |                     |     +-LSDA-----------------+",
+        "                                  +-CIE-------------------+   +-----------------+     | ...                  |",
+        "                                  | ...                   |   |                       +----------------------+",
+        "                                  +-FDE-------------------+   |",
+        "                                  | ...                   |   |",
+        "                                  +-----------------------+   |",
+        "                                                              +----> personality_routine(=__gxx_personality_v0@libstdc++.so)",
+    ]
+    _note_ = "\n".join(_note_)
 
     @parse_args
     @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
@@ -35198,47 +35236,18 @@ class DwarfExceptionHandlerInfoCommand(GenericCommand, BufferingOutput):
             err("File name could not be determined")
             return
 
-        def unlink_tmp_filepath(tmp_filepath):
+        try:
+            elf = Elf.get_elf(local_filepath)
+            if elf is None or not elf.is_valid():
+                err("Failed to parse ELF")
+                return
+            self.out = DwarfExceptionHandler(elf).dump(with_hexdump=args.hexdump)
+        finally:
             if tmp_filepath and os.path.exists(tmp_filepath):
                 os.unlink(tmp_filepath)
-            return
 
-        self.elf = Elf.get_elf(local_filepath)
-        if self.elf is None or not self.elf.is_valid():
-            err("Failed to parse ELF")
-            unlink_tmp_filepath(tmp_filepath)
-            return
-
-        # read section
-        eh_frame_hdr = self.read_section(".eh_frame_hdr")
-        if eh_frame_hdr is None:
-            unlink_tmp_filepath(tmp_filepath)
-            return
-
-        eh_frame = self.read_section(".eh_frame")
-        if eh_frame is None:
-            unlink_tmp_filepath(tmp_filepath)
-            return
-
-        gcc_except_table = self.read_section(".gcc_except_table")
-        if gcc_except_table is None:
-            unlink_tmp_filepath(tmp_filepath)
-            return
-
-        # parse section
-        self.out = []
-        entries1 = self.parse_eh_frame_hdr(eh_frame_hdr)
-        self.out += self.format_entry(eh_frame_hdr, entries1)
-
-        entries2 = self.parse_eh_frame(eh_frame)
-        self.out += self.format_entry(eh_frame, entries2)
-
-        entries3 = self.parse_gcc_except_table(gcc_except_table, entries2)
-        self.out += self.format_entry(gcc_except_table, entries3)
-
-        # print
-        self.print_output()
-        unlink_tmp_filepath(tmp_filepath)
+        if self.out:
+            self.print_output()
         return
 
 
