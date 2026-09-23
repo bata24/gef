@@ -3837,11 +3837,37 @@ Display stack values for sigreturn syscall.
 usage: sigreturn [-h] [-n] [LOCATION]
 
 positional arguments:
-  LOCATION        the address interpreted as the beginning of a sigframe. (default: current_arch.sp)
+  LOCATION        the address interpreted as the beginning of a sigframe, or the ucontext_t on architectures other than x86/arm. (default: current_arch.sp)
 
 options:
   -h, --help      show this help message and exit
   -n, --no-pager  do not use the pager.
+```
+
+## `ucontext`
+
+Display the register state saved in a ucontext_t or mcontext_t.
+
+
+### Syntax
+
+```text
+usage: ucontext [-h] [-m] [-n] LOCATION
+
+positional arguments:
+  LOCATION        the address of ucontext_t (or mcontext_t if -m is specified).
+
+options:
+  -h, --help      show this help message and exit
+  -m, --mcontext  interpret LOCATION as mcontext_t (e.g. &uc->uc_mcontext, struct sigcontext).
+  -n, --no-pager  do not use the pager.
+```
+
+### Examples
+
+```gdb
+ucontext $rdx                 # the 3rd argument of a SA_SIGINFO handler, setcontext, etc.
+ucontext -m 0x7fffffffd9e8    # struct sigcontext
 ```
 
 ## `xc`

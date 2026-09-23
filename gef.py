@@ -41917,6 +41917,396 @@ class SigreturnCommand(GenericCommand):
 
 
 @register_command
+class UcontextCommand(GenericCommand):
+    """Display the register state saved in a ucontext_t or mcontext_t."""
+
+    _cmdline_ = "ucontext"
+    _category_ = "03-b. Memory - View"
+
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("location", metavar="LOCATION", type=AddressUtil.parse_address,
+                        help="the address of ucontext_t (or mcontext_t if -m is specified).")
+    parser.add_argument("-m", "--mcontext", action="store_true",
+                        help="interpret LOCATION as mcontext_t (e.g. &uc->uc_mcontext, struct sigcontext).")
+    parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
+    _syntax_ = parser.format_help()
+
+    _example_ = [
+        "{0:s} $rdx                 # the 3rd argument of a SA_SIGINFO handler, setcontext, etc.",
+        "{0:s} -m 0x7fffffffd9e8    # struct sigcontext",
+    ]
+    _example_ = "\n".join(_example_).format(_cmdline_)
+
+    SS_FLAGS = (
+        (0x0000_0001, "SS_ONSTACK"),
+        (0x0000_0002, "SS_DISABLE"),
+        (0x8000_0000, "SS_AUTODISARM"),
+    )
+
+    ARCH_DETECT = (
+        ("x64", is_x86_64), ("x86", is_x86_32), ("aarch64", is_arm64), ("arm", is_arm32),
+        ("riscv64", is_riscv64), ("riscv32", is_riscv32), ("mips64", is_mips64), ("mipsn32", is_mipsn32),
+        ("mips", is_mips32), ("ppc64", is_ppc64), ("ppc32", is_ppc32), ("s390x", is_s390x),
+        ("loongarch64", is_loongarch64), ("sparc64", is_sparc64), ("sh4", is_sh4), ("m68k", is_m68k),
+        ("alpha", is_alpha), ("hppa", is_hppa32),
+    )
+
+    @staticmethod
+    def get_layout(arch=None):
+        """Return the offsets of fields in ucontext_t and mcontext_t of the given architecture
+        (default: the current one). Fields of the registers are (name, offset from mcontext_t, size, kind).
+        kind is None (dereferenced), "raw" or "flags"."""
+        if arch is None:
+            for key, checker in UcontextCommand.ARCH_DETECT:
+                if checker():
+                    arch = key
+                    break
+
+        def seq(names, start, size, kind=None):
+            return [(name, start + i * size, size, kind) for i, name in enumerate(names)]
+
+        def std_header(ptrsize, stack_order=("ss_sp", "ss_flags", "ss_size")):
+            header = [("uc_flags", 0, ptrsize), ("uc_link", ptrsize, ptrsize)]
+            for i, name in enumerate(stack_order):
+                size = 4 if name == "ss_flags" else ptrsize
+                header.append(("uc_stack." + name, ptrsize * (2 + i), size))
+            return header
+
+        layout = {"mcontext_ptr": None, "generic_signo": True}
+
+        if arch == "x64":
+            layout["name"] = "x86-64"
+            layout["header"] = std_header(8)
+            layout["sigmask"] = 296
+            layout["mcontext"] = 40
+            names = ["r8", "r9", "r10", "r11", "r12", "r13", "r14", "r15"]
+            names += ["rdi", "rsi", "rbp", "rbx", "rdx", "rax", "rcx", "rsp", "rip"]
+            layout["regs"] = seq(names, 0, 8)
+            layout["regs"] += seq(["eflags"], 136, 8, "flags")
+            layout["regs"] += seq(["csgsfs", "err", "trapno", "oldmask", "cr2"], 144, 8, "raw")
+            layout["regs"] += seq(["fpregs"], 184, 8)
+
+        elif arch == "x86":
+            layout["name"] = "i386"
+            layout["header"] = std_header(4)
+            layout["sigmask"] = 108
+            layout["mcontext"] = 20
+            layout["regs"] = seq(["gs", "fs", "es", "ds"], 0, 4, "raw")
+            layout["regs"] += seq(["edi", "esi", "ebp", "esp", "ebx", "edx", "ecx", "eax"], 16, 4)
+            layout["regs"] += seq(["trapno", "err"], 48, 4, "raw")
+            layout["regs"] += seq(["eip"], 56, 4)
+            layout["regs"] += seq(["cs"], 60, 4, "raw")
+            layout["regs"] += seq(["eflags"], 64, 4, "flags")
+            layout["regs"] += seq(["uesp"], 68, 4)
+            layout["regs"] += seq(["ss"], 72, 4, "raw")
+            layout["regs"] += seq(["fpregs"], 76, 4)
+            layout["regs"] += seq(["oldmask", "cr2"], 80, 4, "raw")
+
+        elif arch == "aarch64":
+            layout["name"] = "AArch64"
+            layout["header"] = std_header(8)
+            layout["sigmask"] = 40
+            layout["mcontext"] = 176
+            layout["regs"] = seq(["fault_address"] + ["x{:d}".format(i) for i in range(31)] + ["sp", "pc"], 0, 8)
+            layout["regs"] += seq(["pstate"], 272, 8, "flags")
+
+        elif arch == "arm":
+            layout["name"] = "ARM"
+            layout["header"] = std_header(4)
+            layout["sigmask"] = 104
+            layout["mcontext"] = 20
+            layout["regs"] = seq(["trap_no", "error_code", "oldmask"], 0, 4, "raw")
+            names = ["r{:d}".format(i) for i in range(11)] + ["fp", "ip", "sp", "lr", "pc"]
+            layout["regs"] += seq(names, 12, 4)
+            layout["regs"] += seq(["cpsr"], 76, 4, "flags")
+            layout["regs"] += seq(["fault_address"], 80, 4)
+
+        elif arch in ("riscv64", "riscv32"):
+            layout["name"] = "RISC-V"
+            ptrsize = 8 if arch == "riscv64" else 4
+            layout["header"] = std_header(ptrsize)
+            layout["sigmask"] = ptrsize * 5
+            layout["mcontext"] = 176 if ptrsize == 8 else 160
+            names = ["pc", "ra", "sp", "gp", "tp", "t0", "t1", "t2", "s0", "s1"]
+            names += ["a{:d}".format(i) for i in range(8)] + ["s{:d}".format(i) for i in range(2, 12)]
+            names += ["t3", "t4", "t5", "t6"]
+            layout["regs"] = seq(names, 0, ptrsize)
+
+        elif arch in ("mips", "mipsn32", "mips64"):
+            layout["generic_signo"] = False
+            ptrsize = 8 if arch == "mips64" else 4
+            layout["header"] = std_header(ptrsize, stack_order=("ss_sp", "ss_size", "ss_flags"))
+            layout["mcontext"] = ptrsize * 5 if ptrsize == 8 else 24
+            names = ["zero", "at", "v0", "v1", "a0", "a1", "a2", "a3"]
+            if arch == "mips":
+                layout["name"] = "MIPS o32"
+                layout["sigmask"] = 616
+                names += ["t{:d}".format(i) for i in range(8)]
+            else:
+                layout["name"] = "MIPS n64" if arch == "mips64" else "MIPS n32"
+                layout["sigmask"] = 640 if arch == "mips64" else 624
+                names += ["a4", "a5", "a6", "a7", "t0", "t1", "t2", "t3"]
+            names += ["s{:d}".format(i) for i in range(8)] + ["t8", "t9", "k0", "k1", "gp", "sp", "fp", "ra"]
+            if arch == "mips":
+                layout["regs"] = seq(["regmask", "status"], 0, 4, "raw")
+                layout["regs"] += seq(["pc"], 8, 8)
+                layout["regs"] += seq(names, 16, 8)
+                layout["regs"] += seq(["fp_owned", "fpc_csr", "fpc_eir", "used_math", "dsp"], 528, 4, "raw")
+                layout["regs"] += seq(["mdhi", "mdlo"], 552, 8, "raw")
+                layout["regs"] += seq(["hi1", "lo1", "hi2", "lo2", "hi3", "lo3"], 568, 4, "raw")
+            else:
+                layout["regs"] = seq(names, 0, 8)
+                layout["regs"] += seq(["mdhi", "hi1", "hi2", "hi3", "mdlo", "lo1", "lo2", "lo3"], 512, 8, "raw")
+                layout["regs"] += seq(["pc"], 576, 8)
+                layout["regs"] += seq(["fpc_csr", "used_math", "dsp"], 584, 4, "raw")
+
+        elif arch == "ppc64":
+            layout["name"] = "PowerPC64"
+            layout["header"] = std_header(8)
+            layout["sigmask"] = 40
+            layout["mcontext"] = 168
+            layout["regs"] = seq(["signal"], 32, 4, "raw")
+            layout["regs"] += seq(["handler"], 40, 8)
+            layout["regs"] += seq(["oldmask"], 48, 8, "raw")
+            layout["regs"] += seq(["regs"], 56, 8)
+            layout["regs"] += seq(["r{:d}".format(i) for i in range(32)] + ["nip"], 64, 8)
+            layout["regs"] += seq(["msr"], 328, 8, "raw")
+            layout["regs"] += seq(["orig_r3", "ctr", "lr"], 336, 8)
+            layout["regs"] += seq(["xer"], 360, 8, "raw")
+            layout["regs"] += seq(["ccr"], 368, 8, "flags")
+            layout["regs"] += seq(["softe", "trap"], 376, 8, "raw")
+            layout["regs"] += seq(["dar"], 392, 8)
+            layout["regs"] += seq(["dsisr", "result"], 400, 8, "raw")
+            layout["regs"] += seq(["v_regs"], 712, 8)
+
+        elif arch == "ppc32":
+            layout["name"] = "PowerPC"
+            layout["header"] = std_header(4)
+            layout["sigmask"] = 52
+            layout["mcontext"] = 180
+            layout["mcontext_ptr"] = 48
+            layout["regs"] = seq(["r{:d}".format(i) for i in range(32)] + ["nip"], 0, 4)
+            layout["regs"] += seq(["msr"], 132, 4, "raw")
+            layout["regs"] += seq(["orig_r3", "ctr", "lr"], 136, 4)
+            layout["regs"] += seq(["xer"], 148, 4, "raw")
+            layout["regs"] += seq(["ccr"], 152, 4, "flags")
+            layout["regs"] += seq(["mq", "trap"], 156, 4, "raw")
+            layout["regs"] += seq(["dar"], 164, 4)
+            layout["regs"] += seq(["dsisr", "result"], 168, 4, "raw")
+
+        elif arch == "s390x":
+            layout["name"] = "s390x"
+            layout["header"] = std_header(8)
+            layout["sigmask"] = 384
+            layout["mcontext"] = 40
+            layout["regs"] = seq(["psw.mask"], 0, 8, "raw")
+            layout["regs"] += seq(["psw.addr"] + ["r{:d}".format(i) for i in range(16)], 8, 8)
+            layout["regs"] += seq(["a{:d}".format(i) for i in range(16)] + ["fpc"], 144, 4, "raw")
+
+        elif arch == "loongarch64":
+            layout["name"] = "LoongArch64"
+            layout["header"] = std_header(8)
+            layout["sigmask"] = 40
+            layout["mcontext"] = 176
+            names = ["pc", "zero", "ra", "tp", "sp"] + ["a{:d}".format(i) for i in range(8)]
+            names += ["t{:d}".format(i) for i in range(9)] + ["u0", "fp"] + ["s{:d}".format(i) for i in range(9)]
+            layout["regs"] = seq(names, 0, 8)
+            layout["regs"] += seq(["flags"], 264, 4, "raw")
+
+        elif arch == "sparc64":
+            layout["name"] = "SPARC64"
+            layout["generic_signo"] = False
+            layout["header"] = [("uc_link", 0, 8), ("uc_flags", 8, 8), ("__uc_sigmask", 16, 8)]
+            layout["header"] += [("uc_stack.ss_sp", 512, 8), ("uc_stack.ss_flags", 520, 4)]
+            layout["header"] += [("uc_stack.ss_size", 528, 8)]
+            layout["sigmask"] = 536
+            layout["mcontext"] = 32
+            layout["regs"] = seq(["tstate"], 0, 8, "flags")
+            layout["regs"] += seq(["pc", "npc"], 8, 8)
+            layout["regs"] += seq(["y"], 24, 8, "raw")
+            names = ["g{:d}".format(i) for i in range(1, 8)] + ["o{:d}".format(i) for i in range(8)] + ["fp", "i7"]
+            layout["regs"] += seq(names, 32, 8)
+
+        elif arch == "sh4":
+            layout["name"] = "SH4"
+            layout["header"] = std_header(4)
+            layout["sigmask"] = 252
+            layout["mcontext"] = 20
+            layout["regs"] = seq(["oldmask"], 0, 4, "raw")
+            layout["regs"] += seq(["r{:d}".format(i) for i in range(16)] + ["pc", "pr"], 4, 4)
+            layout["regs"] += seq(["sr"], 76, 4, "flags")
+            layout["regs"] += seq(["gbr"], 80, 4)
+            layout["regs"] += seq(["mach", "macl"], 84, 4, "raw")
+            layout["regs"] += seq(["fpscr", "fpul", "ownedfp"], 220, 4, "raw")
+
+        elif arch == "m68k":
+            layout["name"] = "m68k"
+            layout["header"] = std_header(4)
+            layout["sigmask"] = 524
+            layout["mcontext"] = 20
+            layout["regs"] = seq(["version"], 0, 4, "raw")
+            names = ["d{:d}".format(i) for i in range(8)] + ["a{:d}".format(i) for i in range(7)] + ["sp", "pc"]
+            layout["regs"] += seq(names, 4, 4)
+            layout["regs"] += seq(["ps"], 72, 4, "flags")
+            layout["regs"] += seq(["fpcr", "fpsr"], 76, 4, "raw")
+            layout["regs"] += seq(["fpiaddr"], 84, 4)
+
+        elif arch == "alpha":
+            layout["name"] = "Alpha"
+            layout["generic_signo"] = False
+            layout["header"] = [("uc_flags", 0, 8), ("uc_link", 8, 8), ("__uc_osf_sigmask", 16, 8)]
+            layout["header"] += [("uc_stack.ss_sp", 24, 8), ("uc_stack.ss_flags", 32, 4), ("uc_stack.ss_size", 40, 8)]
+            layout["sigmask"] = 696
+            layout["mcontext"] = 48
+            layout["regs"] = seq(["onstack", "mask"], 0, 8, "raw")
+            layout["regs"] += seq(["pc"], 16, 8)
+            layout["regs"] += seq(["ps"], 24, 8, "raw")
+            names = ["v0"] + ["t{:d}".format(i) for i in range(8)] + ["s{:d}".format(i) for i in range(6)] + ["fp"]
+            names += ["a{:d}".format(i) for i in range(6)]
+            names += ["t8", "t9", "t10", "t11", "ra", "t12", "at", "gp", "sp", "zero"]
+            layout["regs"] += seq(names, 32, 8)
+            layout["regs"] += seq(["ownedfp"], 288, 8, "raw")
+            layout["regs"] += seq(["fpcr"], 552, 8, "raw")
+            layout["regs"] += seq(["traparg_a0", "traparg_a1", "traparg_a2"], 600, 8)
+
+        elif arch == "hppa":
+            layout["name"] = "PA-RISC"
+            layout["generic_signo"] = False
+            layout["header"] = std_header(4)
+            layout["sigmask"] = 440
+            layout["mcontext"] = 24
+            layout["regs"] = seq(["flags"], 0, 4, "raw")
+            layout["regs"] += seq(["r{:d}".format(i) for i in range(32)], 4, 4)
+            layout["regs"] += seq(["iasq0", "iasq1"], 392, 4, "raw")
+            layout["regs"] += seq(["iaoq0", "iaoq1"], 400, 4)
+            layout["regs"] += seq(["sar"], 408, 4, "raw")
+
+        else:
+            return None
+        return layout
+
+    @staticmethod
+    def unpack(data, offset, size):
+        chunk = data[offset:offset + size]
+        return {2: u16, 4: u32, 8: u64}[size](chunk)
+
+    @staticmethod
+    def format_value(value, size, kind):
+        if kind == "flags":
+            if is_x86():
+                return Architecture.flags_to_human(value, current_arch.flags_table)
+            return current_arch.flag_register_to_human(value)
+        if kind == "raw":
+            return "{:#0{:d}x}".format(value, size * 2 + 2)
+        if size > current_arch.ptrsize:
+            # 64-bit registers on MIPS o32/n32
+            s = AddressUtil.format_address(value, memalign_size=size, long_fmt=True)
+            if value >> 32 in (0, 0xffff_ffff):
+                derefs = AddressUtil.recursive_dereference_to_string(value & 0xffff_ffff, skip_idx=1)
+                if derefs:
+                    s += "  ->  {:s}".format(derefs)
+            return s
+        return AddressUtil.recursive_dereference_to_string(value)
+
+    @classmethod
+    def format_sigmask(cls, data, offset, generic_signo):
+        ptrsize = current_arch.ptrsize
+        mask = 0
+        for i in range(8 // ptrsize):
+            mask |= cls.unpack(data, offset + i * ptrsize, ptrsize) << (i * ptrsize * 8)
+        if generic_signo:
+            names = LinuxSignal.format_mask(mask)
+        else:
+            names = ",".join("SIG{:d}".format(i) for i in range(1, 65) if mask & (1 << (i - 1))) or "-"
+        return "{:#018x} [{:s}]".format(mask, names)
+
+    @classmethod
+    def format_ss_flags(cls, flags):
+        names = [name for value, name in cls.SS_FLAGS if flags & value]
+        return "{:#x} [{:s}]".format(flags, "|".join(names) or "-")
+
+    @staticmethod
+    def frame_fields(layout):
+        """Flatten a layout into ordered (offset_from_uc, size, label, kind) tuples covering the
+        whole ucontext, where kind is one of "int", "ptr", "ss_flags", "sigmask", None, "raw", "flags"."""
+        fields = []
+        for name, off, size in layout["header"]:
+            if name.endswith("ss_flags"):
+                kind = "ss_flags"
+            elif name in ("uc_link", "uc_stack.ss_sp"):
+                kind = "ptr"
+            else:
+                kind = "int"
+            fields.append((off, size, "uc." + name, kind))
+        fields.append((layout["sigmask"], 8, "uc.uc_sigmask", "sigmask"))
+        mcontext = layout["mcontext"]
+        for name, off, size, kind in layout["regs"]:
+            fields.append((mcontext + off, size, "uc.uc_mcontext." + name, kind))
+        fields.sort(key=lambda x: x[0])
+        return fields
+
+    @parse_args
+    @only_if_gdb_running
+    @exclude_specific_gdb_mode(mode=("wine",))
+    @only_if_specific_arch(arch=(
+        "x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64", "MIPS32", "MIPSN32", "MIPS64", "PPC32", "PPC64",
+        "S390X", "LOONGARCH64", "SPARC64", "SH4", "M68K", "ALPHA", "HPPA32",
+    ))
+    def do_invoke(self, args):
+        layout = self.get_layout()
+        base = args.location
+        out = []
+
+        try:
+            if args.mcontext:
+                mcontext = base
+                out.append(titlify("mcontext_t @ {:#x} ({:s})".format(base, layout["name"])))
+            else:
+                ptrsize = current_arch.ptrsize
+                header = layout["header"] + [("uc_sigmask", layout["sigmask"], 8)]
+                if layout["mcontext_ptr"] is not None:
+                    header.append(("uc_regs", layout["mcontext_ptr"], ptrsize))
+                data = read_memory(base, max(offset + size for _, offset, size in header))
+
+                out.append(titlify("ucontext_t @ {:#x} ({:s})".format(base, layout["name"])))
+                width = max(len(name) for name, _, _ in header)
+                for name, offset, size in sorted(header, key=lambda x: x[1]):
+                    if name == "uc_sigmask":
+                        value_s = self.format_sigmask(data, offset, layout["generic_signo"])
+                    elif name.endswith("ss_flags"):
+                        value_s = self.format_ss_flags(self.unpack(data, offset, size))
+                    elif name in ("uc_link", "uc_stack.ss_sp", "uc_regs"):
+                        value_s = AddressUtil.recursive_dereference_to_string(self.unpack(data, offset, size))
+                    else:
+                        value_s = "{:#x}".format(self.unpack(data, offset, size))
+                    out.append("{:+#07x} {:{:d}s}: {:s}".format(offset, name, width, value_s))
+
+                if layout["mcontext_ptr"] is not None:
+                    mcontext = self.unpack(data, layout["mcontext_ptr"], ptrsize)
+                    if not is_valid_addr(mcontext):
+                        mcontext = (base + layout["mcontext"] + 15) & ~15
+                        warn("uc_regs is invalid, assume that uc_mcontext is at {:#x}".format(mcontext))
+                else:
+                    mcontext = base + layout["mcontext"]
+                out.append(titlify("uc_mcontext @ {:#x}".format(mcontext)))
+
+            regs = layout["regs"]
+            data = read_memory(mcontext, max(offset + size for _, offset, size, _ in regs))
+        except gdb.MemoryError:
+            err("Failed to read memory")
+            return
+
+        width = max(len(name) for name, _, _, _ in regs)
+        for name, offset, size, kind in regs:
+            value = self.unpack(data, offset, size)
+            value_s = self.format_value(value, size, kind)
+            out.append("{:+#07x} {:{:d}s}: {:s}".format(mcontext + offset - base, name, width, value_s))
+
+        gef_print("\n".join(out), less=not args.no_pager)
+        return
+
+
+@register_command
 class SropHintCommand(GenericCommand):
     """Hint for sigreturn oriented programming."""
 

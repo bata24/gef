@@ -891,6 +891,7 @@ For a comprehensive list and additional details, see [docs/SUPPORTED-MODE.md](do
     - ![](images/unwind-info.png)
 - `sighands`: displays the signal dispositions of the current process.
     - ![](images/sighands.png)
+- `ucontext`: displays the register state saved in a `ucontext_t` or `mcontext_t`.
 
 ### Other
 - The category is introduced in `gef help`.
