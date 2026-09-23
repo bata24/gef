@@ -8090,6 +8090,8 @@ class ARM(Architecture):
             return Architecture.flags_to_human(val, self.flags_table)
 
         key = val & 0b11111
+        if key not in self.__mode_dic:
+            return Architecture.flags_to_human(val, self.flags_table) + " [Mode=Unknown({:#07b})]".format(key)
         CurrentMode, CurrentPL = self.__mode_dic[key]
 
         if not is_support_secure_world():
@@ -41676,19 +41678,28 @@ class SigreturnCommand(GenericCommand):
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("location", metavar="LOCATION", nargs="?", type=AddressUtil.parse_address,
-                        help="the address interpreted as the beginning of a sigframe. (default: current_arch.sp)")
+                        help="the address interpreted as the beginning of a sigframe, or the ucontext_t on "
+                             "architectures other than x86/arm. (default: current_arch.sp)")
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
     _syntax_ = parser.format_help()
 
     @parse_args
     @only_if_gdb_running
     @exclude_specific_gdb_mode(mode=("wine",))
-    @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
+    @only_if_specific_arch(arch=(
+        "x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64", "MIPS32", "MIPSN32", "MIPS64", "PPC64",
+        "S390X", "LOONGARCH64", "SPARC64", "SH4", "M68K", "ALPHA", "HPPA32",
+    ))
     def do_invoke(self, args):
         if args.location is None:
             base = current_arch.sp
         else:
             base = args.location
+
+        if not (is_x86_64() or is_x86_32() or is_arm32() or is_arm64()):
+            # for architectures other than x86/arm, interpret base as the ucontext_t
+            self.print_ucontext_frame(base, args)
+            return
 
         if is_x86_64():
             sigreturn_defines = [
@@ -41696,7 +41707,8 @@ class SigreturnCommand(GenericCommand):
                 "rt_sigframe.uc.uc_flags",
                 "rt_sigframe.uc.uc_link",
                 "rt_sigframe.uc.uc_stack.ss_sp",
-                "rt_sigframe.uc.uc_stack.ss_flags|ss_size",
+                "rt_sigframe.uc.uc_stack.ss_flags",
+                "rt_sigframe.uc.uc_stack.ss_size",
                 "rt_sigframe.uc.uc_mcontext.r8",
                 "rt_sigframe.uc.uc_mcontext.r9",
                 "rt_sigframe.uc.uc_mcontext.r10",
@@ -41721,7 +41733,14 @@ class SigreturnCommand(GenericCommand):
                 "rt_sigframe.uc.uc_mcontext.oldmask",
                 "rt_sigframe.uc.uc_mcontext.cr2",
                 "rt_sigframe.uc.uc_mcontext.fpstate",
-                "rt_sigframe.uc.uc_mcontext.reserved[8]",
+                "rt_sigframe.uc.uc_mcontext.reserved[0]",
+                "rt_sigframe.uc.uc_mcontext.reserved[1]",
+                "rt_sigframe.uc.uc_mcontext.reserved[2]",
+                "rt_sigframe.uc.uc_mcontext.reserved[3]",
+                "rt_sigframe.uc.uc_mcontext.reserved[4]",
+                "rt_sigframe.uc.uc_mcontext.reserved[5]",
+                "rt_sigframe.uc.uc_mcontext.reserved[6]",
+                "rt_sigframe.uc.uc_mcontext.reserved[7]",
                 "rt_sigframe.uc.uc_sigmask",
                 "rt_sigframe.info",
             ]
@@ -41803,7 +41822,6 @@ class SigreturnCommand(GenericCommand):
                 "rt_sigframe.uc.uc_stack.ss_sp",
                 "rt_sigframe.uc.uc_stack.ss_flags",
                 "rt_sigframe.uc.uc_stack.ss_size",
-                "rt_sigframe.uc.uc_stack.__unused",
                 "rt_sigframe.uc.uc_sigmask",
                 "rt_sigframe.uc.__unused[120]+0x00",
                 "rt_sigframe.uc.__unused[120]+0x08",
@@ -41820,6 +41838,7 @@ class SigreturnCommand(GenericCommand):
                 "rt_sigframe.uc.__unused[120]+0x60",
                 "rt_sigframe.uc.__unused[120]+0x68",
                 "rt_sigframe.uc.__unused[120]+0x70",
+                "rt_sigframe.uc.(padding)",
                 "rt_sigframe.uc.uc_mcontext.fault_address",
                 "rt_sigframe.uc.uc_mcontext.regs[31].x0",
                 "rt_sigframe.uc.uc_mcontext.regs[31].x1",
@@ -41867,6 +41886,35 @@ class SigreturnCommand(GenericCommand):
         gef_print("\n".join(out), less=not args.no_pager)
         return
 
+    def print_ucontext_frame(self, base, args):
+        layout = UcontextCommand.get_layout()
+        fields = UcontextCommand.frame_fields(layout)
+        try:
+            data = read_memory(base, max(offset + size for offset, size, _, _ in fields))
+        except gdb.MemoryError:
+            err("Failed to read memory")
+            return
+
+        labels = ["rt_sigframe." + label for _, _, label, _ in fields]
+        width = max(len(x) for x in labels)
+        out = [titlify("rt_sigframe.uc @ {:#x} ({:s})".format(base, layout["name"]))]
+        for (offset, size, _, kind), label in zip(fields, labels):
+            value = UcontextCommand.unpack(data, offset, size)
+            if kind == "sigmask":
+                value_s = UcontextCommand.format_sigmask(data, offset, layout["generic_signo"])
+            elif kind == "ss_flags":
+                value_s = UcontextCommand.format_ss_flags(value)
+            elif kind == "ptr":
+                value_s = AddressUtil.recursive_dereference_to_string(value)
+            elif kind == "int":
+                value_s = "{:#x}".format(value)
+            else:
+                value_s = UcontextCommand.format_value(value, size, kind)
+            out.append("{:#x}|{:+#07x} {:{:d}s}: {:s}".format(base + offset, offset, label, width, value_s))
+
+        gef_print("\n".join(out), less=not args.no_pager)
+        return
+
 
 @register_command
 class SropHintCommand(GenericCommand):
@@ -41876,10 +41924,23 @@ class SropHintCommand(GenericCommand):
     _category_ = "07-d. Misc - Show Example"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
-    architectures = [None, "x86", "x64", "arm", "aarch64"]
-    parser.add_argument("arch", nargs="?", default=None, choices=architectures, metavar="{x86,x64,arm,aarch64}",
+    architectures = [None, "x86", "x64", "arm", "aarch64", "riscv32", "riscv64", "mips", "mipsn32", "mips64",
+                     "ppc64", "s390x", "loongarch64", "sparc64", "sh4", "m68k", "alpha", "hppa"]
+    parser.add_argument("arch", nargs="?", default=None, choices=architectures,
+                        metavar="{" + ",".join(a for a in architectures if a) + "}",
                         help="the target architecture.")
     _syntax_ = parser.format_help()
+
+    # rt_sigreturn trigger per architecture: (syscall number, register holding it, trap instruction)
+    TRIGGERS = {
+        "riscv32": (139, "a7", "ecall"), "riscv64": (139, "a7", "ecall"),
+        "mips": (4193, "v0", "syscall"), "mipsn32": (6211, "v0", "syscall"), "mips64": (5211, "v0", "syscall"),
+        "ppc64": (172, "r0", "sc"), "s390x": (173, "r1", "svc 0"),
+        "loongarch64": (139, "a7", "syscall 0"), "sparc64": (101, "g1", "t 0x6d"),
+        "sh4": (173, "r3", "trapa #0x10"), "m68k": (173, "d0", "trap #0"),
+        "alpha": (351, "v0", "callsys"), "hppa": (173, "r20", "ble 0x100(%sr2, %r0)"),
+    }
+    BIG_ENDIAN = ("mips", "mipsn32", "mips64", "ppc64", "s390x", "sparc64", "m68k", "hppa")
 
     def __init__(self):
         super().__init__(complete="use_user_complete")
@@ -41897,6 +41958,27 @@ class SropHintCommand(GenericCommand):
         # finally, look for possible values for given prefix
         return [s for s in self.architectures if s and s.startswith(text.strip())]
 
+    def build_hint(self, mode):
+        nr, reg, insn = self.TRIGGERS[mode]
+        endian = ">" if mode in self.BIG_ENDIAN else "<"
+        layout = UcontextCommand.get_layout(mode)
+        fields = UcontextCommand.frame_fields(layout)
+        pack = {1: "B", 2: "H", 4: "I", 8: "Q"}
+
+        s = "# set {:s} = {:d} (rt_sigreturn), point sp at this frame (= &ucontext), then `{:s}`\n".format(
+            reg, nr, insn)
+        s += "# byte order is '{:s}'; flip it for the opposite endianness\n".format(endian)
+        pos = 0
+        op = "exp  ="
+        for offset, size, label, _ in fields:
+            if offset > pos:
+                s += '{:s} struct.pack("{:s}B", 0x0)*{:d}    # padding\n'.format(op, endian, offset - pos)
+                op = "exp +="
+            s += '{:s} struct.pack("{:s}{:s}", 0x0)    # rt_sigframe.{:s}\n'.format(op, endian, pack[size], label)
+            op = "exp +="
+            pos = offset + size
+        return s
+
     @parse_args
     @exclude_specific_gdb_mode(mode=("wine",))
     def do_invoke(self, args):
@@ -41910,19 +41992,25 @@ class SropHintCommand(GenericCommand):
             elif is_arm64():
                 mode = "aarch64"
             else:
-                mode = "x64" # default
+                mode = next((key for key, checker in UcontextCommand.ARCH_DETECT if checker()), None)
+                if mode not in self.TRIGGERS:
+                    mode = "x64" # default
         else:
             mode = args.arch
 
+        if mode in self.TRIGGERS:
+            gef_print(self.build_hint(mode).rstrip())
+            return
+
         s = ""
         if mode == "x64":
-            s += 'exp  = struct.pack("<Q", syscall)    # rax = 15 (rt_sigreturn)\n'
-            s += 'exp += struct.pack("<Q", 0xcafebabe) # rt_sigframe.pretcode\n'
+            s += 'exp  = struct.pack("<Q", syscall)    # rax = 15 (rt_sigreturn) # rt_sigframe.pretcode\n'
             s += 'exp += struct.pack("<Q", 0x0)        # rt_sigframe.uc.uc_flags\n'
             s += 'exp += struct.pack("<Q", 0x0)        # rt_sigframe.uc.uc_link\n'
             s += 'exp += struct.pack("<Q", 0x0)        # rt_sigframe.uc.uc_stack.ss_sp\n'
             s += 'exp += struct.pack("<I", 0x0)        # rt_sigframe.uc.uc_stack.ss_flags\n'
-            s += 'exp += struct.pack("<I", 0x0)        # rt_sigframe.uc.uc_stack.ss_size\n'
+            s += 'exp += struct.pack("<I", 0x0)        # padding\n'
+            s += 'exp += struct.pack("<Q", 0x0)        # rt_sigframe.uc.uc_stack.ss_size\n'
             s += 'exp += struct.pack("<Q", 0x08)       # rt_sigframe.uc.uc_mcontext.r8\n'
             s += 'exp += struct.pack("<Q", 0x09)       # rt_sigframe.uc.uc_mcontext.r9\n'
             s += 'exp += struct.pack("<Q", 0x0a)       # rt_sigframe.uc.uc_mcontext.r10\n'
@@ -41950,7 +42038,7 @@ class SropHintCommand(GenericCommand):
             s += 'exp += struct.pack("<Q", 0x0)        # rt_sigframe.uc.uc_mcontext.oldmask\n'
             s += 'exp += struct.pack("<Q", 0x0)        # rt_sigframe.uc.uc_mcontext.cr2\n'
             s += 'exp += struct.pack("<Q", 0x0)        # rt_sigframe.uc.uc_mcontext.fpstate # fpu/xmm are not restored if NULL\n'
-            s += 'exp += struct.pack("<Q", 0x0)        # rt_sigframe.uc.uc_mcontext.reserved[8]\n'
+            s += 'exp += struct.pack("<Q", 0x0)*8      # rt_sigframe.uc.uc_mcontext.reserved[8]\n'
             s += 'exp += struct.pack("<Q", 0x0)        # rt_sigframe.uc.uc_sigmask\n'
             s += 'exp += struct.pack("<Q", 0x0)        # rt_sigframe.info\n'
         elif mode == "x86":
@@ -42019,9 +42107,9 @@ class SropHintCommand(GenericCommand):
             s += 'exp += struct.pack("<Q", 0x0)        # rt_sigframe.uc.uc_stack.ss_sp\n'
             s += 'exp += struct.pack("<Q", 0x0)        # rt_sigframe.uc.uc_stack.ss_flags\n'
             s += 'exp += struct.pack("<Q", 0x0)        # rt_sigframe.uc.uc_stack.ss_size\n'
-            s += 'exp += struct.pack("<Q", 0x0)        # rt_sigframe.uc.uc_stack.__unused\n'
             s += 'exp += struct.pack("<Q", 0x0)        # rt_sigframe.uc.uc_sigmask\n'
             s += 'exp += struct.pack("<B", 0x0)*120    # rt_sigframe.uc.__unused[120]\n'
+            s += 'exp += struct.pack("<Q", 0x0)        # rt_sigframe.uc.(padding)\n'
             s += 'exp += struct.pack("<Q", 0x0)        # rt_sigframe.uc.uc_mcontext.fault_address\n'
             s += 'exp += struct.pack("<Q", 0x00)       # rt_sigframe.uc.uc_mcontext.regs[31].x0\n'
             s += 'exp += struct.pack("<Q", 0x01)       # rt_sigframe.uc.uc_mcontext.regs[31].x1\n'

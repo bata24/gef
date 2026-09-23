@@ -12413,10 +12413,10 @@ Hint for sigreturn oriented programming.
 ### Syntax
 
 ```text
-usage: srop-hint [-h] [{x86,x64,arm,aarch64}]
+usage: srop-hint [-h] [{x86,x64,arm,aarch64,riscv32,riscv64,mips,mipsn32,mips64,ppc64,s390x,loongarch64,sparc64,sh4,m68k,alpha,hppa}]
 
 positional arguments:
-  {x86,x64,arm,aarch64}
+  {x86,x64,arm,aarch64,riscv32,riscv64,mips,mipsn32,mips64,ppc64,s390x,loongarch64,sparc64,sh4,m68k,alpha,hppa}
                         the target architecture.
 
 options:
