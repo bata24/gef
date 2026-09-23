@@ -34104,6 +34104,368 @@ class DwarfExceptionHandler:
             entries.append(self.ErrorEntry("Parse Error", exc_value))
         return entries
 
+    def read_frame_records(self):
+        """Return structured CIE/FDE records from .eh_frame.
+
+        The regular parser above deliberately produces display entries.  Unwind row
+        evaluation needs the same fields plus the original CFA bytecode boundaries,
+        so keep that representation separate from the dump output.
+        """
+        section = self.read_section(".eh_frame", quiet=True)
+        if section is None:
+            return None, {}, []
+
+        data = section.data
+        sec_off = self.section_offset(".eh_frame")
+        cies = {}
+        fdes = []
+        pos = 0
+
+        while pos < len(data):
+            record_offset = pos
+            pos, unit_length = self.read_4ubyte(data, pos)
+            id_size = 4
+            if unit_length == 0xffff_ffff:
+                pos, unit_length = self.read_8ubyte(data, pos)
+                id_size = 8
+            if unit_length == 0:
+                break
+
+            id_pos = pos
+            record_end = pos + unit_length
+            if record_end > len(data):
+                raise ValueError("truncated .eh_frame record at {:#x}".format(record_offset))
+            pos, cie_id = self.read_nbyte(data, pos, id_size)
+
+            if cie_id == 0:
+                pos, version = self.read_1ubyte(data, pos)
+                augmentation_start = pos
+                while pos < record_end and data[pos]:
+                    pos += 1
+                if pos >= record_end:
+                    raise ValueError("unterminated CIE augmentation at {:#x}".format(record_offset))
+                augmentation = data[augmentation_start:pos].decode("ascii", errors="replace")
+                pos += 1
+
+                address_size = self.ptr_size
+                if version >= 4:
+                    pos, address_size = self.read_1ubyte(data, pos)
+                    pos, segment_size = self.read_1ubyte(data, pos)
+                    if segment_size:
+                        raise ValueError("segmented CIE addresses are unsupported")
+
+                pos, code_align = self.get_uleb128(data, pos)
+                pos, data_align = self.get_sleb128(data, pos)
+                if augmentation == "eh":
+                    pos = self.read_nbyte(data, pos, self.ptr_size)[0]
+                if version == 1:
+                    pos, return_register = self.read_1ubyte(data, pos)
+                else:
+                    pos, return_register = self.get_uleb128(data, pos)
+
+                fde_encoding = self.DW_EH_PE_absptr
+                if augmentation.startswith("z"):
+                    pos, augmentation_len = self.get_uleb128(data, pos)
+                    augmentation_end = pos + augmentation_len
+                    if augmentation_end > record_end:
+                        raise ValueError("truncated CIE augmentation data at {:#x}".format(record_offset))
+                    for cp in augmentation[1:]:
+                        if pos >= augmentation_end:
+                            break
+                        if cp == "R":
+                            pos, fde_encoding = self.read_1ubyte(data, pos)
+                        elif cp == "L":
+                            pos, lsda_encoding = self.read_1ubyte(data, pos)
+                        elif cp == "P":
+                            pos, personality_encoding = self.read_1ubyte(data, pos)
+                            pos = self.read_encoded(personality_encoding, data, pos)[0]
+                        elif cp in ("S", "B", "G"):
+                            continue
+                        else:
+                            break
+                    pos = augmentation_end
+
+                cies[record_offset] = {
+                    "offset": record_offset,
+                    "address": self.load_base + sec_off + record_offset,
+                    "version": version,
+                    "augmentation": augmentation,
+                    "address_size": address_size,
+                    "code_align": code_align,
+                    "data_align": data_align,
+                    "return_register": return_register,
+                    "fde_encoding": fde_encoding,
+                    "program_start": pos,
+                    "program_end": record_end,
+                }
+            else:
+                cie_offset = id_pos - cie_id
+                if cie_offset not in cies:
+                    raise ValueError("FDE at {:#x} references unknown CIE {:#x}".format(
+                        record_offset, cie_offset,
+                    ))
+                cie = cies[cie_offset]
+                encoding = cie["fde_encoding"]
+                encoded_pos = pos
+                pos, initial_location = self.read_encoded(encoding, data, pos)
+                func_off = self.encoded_offset(encoding, initial_location, sec_off + encoded_pos)
+                if func_off is None:
+                    pc_begin = initial_location
+                else:
+                    pc_begin = self.load_base + func_off
+                pos, pc_range = self.read_encoded(encoding & 0x0f, data, pos)
+
+                if cie["augmentation"].startswith("z"):
+                    pos, augmentation_len = self.get_uleb128(data, pos)
+                    pos += augmentation_len
+                    if pos > record_end:
+                        raise ValueError("truncated FDE augmentation data at {:#x}".format(record_offset))
+
+                fdes.append({
+                    "offset": record_offset,
+                    "address": self.load_base + sec_off + record_offset,
+                    "cie": cie,
+                    "pc_begin": pc_begin,
+                    "pc_end": pc_begin + pc_range,
+                    "program_start": pos,
+                    "program_end": record_end,
+                    "section_offset": sec_off,
+                })
+            pos = record_end
+
+        return section, cies, fdes
+
+    def run_cfa_program(self, data, start, end, cie, initial_pc, target_pc, state, initial_rules):
+        """Apply one CFA program to `state`, stopping at the row for target_pc."""
+        pos = start
+        pc = initial_pc
+        stack = []
+        registers = state["registers"]
+        encoding = cie["fde_encoding"]
+        code_align = cie["code_align"]
+        data_align = cie["data_align"]
+
+        while pos < end:
+            opcode_pos = pos
+            pos, opcode = self.read_1ubyte(data, pos)
+            primary = opcode & 0xc0
+
+            if primary == self.DW_CFA_advance_loc:
+                next_pc = pc + (opcode & 0x3f) * code_align
+                if target_pc is not None and target_pc < next_pc:
+                    break
+                pc = next_pc
+                continue
+            if primary == self.DW_CFA_offset:
+                reg = opcode & 0x3f
+                pos, operand = self.get_uleb128(data, pos)
+                registers[reg] = ("offset", operand * data_align)
+                continue
+            if primary == self.DW_CFA_restore:
+                reg = opcode & 0x3f
+                registers[reg] = initial_rules.get(reg, ("undefined",))
+                continue
+
+            if opcode == self.DW_CFA_nop:
+                continue
+            if opcode == self.DW_CFA_set_loc:
+                operand_pos = pos
+                pos, operand = self.read_encoded(encoding, data, pos)
+                func_off = initial_pc - self.load_base
+                loc_off = self.encoded_offset(
+                    encoding, operand, self.section_offset(".eh_frame") + operand_pos,
+                    func_off=func_off,
+                )
+                next_pc = operand if loc_off is None else self.load_base + loc_off
+                if target_pc is not None and target_pc < next_pc:
+                    break
+                pc = next_pc
+            elif opcode in (self.DW_CFA_advance_loc1, self.DW_CFA_advance_loc2,
+                             self.DW_CFA_advance_loc4, self.DW_CFA_MIPS_advance_loc8):
+                readers = {
+                    self.DW_CFA_advance_loc1: self.read_1ubyte,
+                    self.DW_CFA_advance_loc2: self.read_2ubyte,
+                    self.DW_CFA_advance_loc4: self.read_4ubyte,
+                    self.DW_CFA_MIPS_advance_loc8: self.read_8ubyte,
+                }
+                pos, operand = readers[opcode](data, pos)
+                next_pc = pc + operand * code_align
+                if target_pc is not None and target_pc < next_pc:
+                    break
+                pc = next_pc
+            elif opcode in (self.DW_CFA_offset_extended, self.DW_CFA_val_offset):
+                pos, reg = self.get_uleb128(data, pos)
+                pos, operand = self.get_uleb128(data, pos)
+                kind = "offset" if opcode == self.DW_CFA_offset_extended else "val_offset"
+                registers[reg] = (kind, operand * data_align)
+            elif opcode in (self.DW_CFA_offset_extended_sf, self.DW_CFA_val_offset_sf):
+                pos, reg = self.get_uleb128(data, pos)
+                pos, operand = self.get_sleb128(data, pos)
+                kind = "offset" if opcode == self.DW_CFA_offset_extended_sf else "val_offset"
+                registers[reg] = (kind, operand * data_align)
+            elif opcode in (self.DW_CFA_restore_extended, self.DW_CFA_undefined,
+                             self.DW_CFA_same_value):
+                pos, reg = self.get_uleb128(data, pos)
+                if opcode == self.DW_CFA_restore_extended:
+                    registers[reg] = initial_rules.get(reg, ("undefined",))
+                elif opcode == self.DW_CFA_undefined:
+                    registers[reg] = ("undefined",)
+                else:
+                    registers[reg] = ("same_value",)
+            elif opcode == self.DW_CFA_register:
+                pos, reg = self.get_uleb128(data, pos)
+                pos, source_reg = self.get_uleb128(data, pos)
+                registers[reg] = ("register", source_reg)
+            elif opcode == self.DW_CFA_remember_state:
+                stack.append((state["cfa"], dict(registers), state["ra_state"]))
+            elif opcode == self.DW_CFA_restore_state:
+                if not stack:
+                    raise ValueError("DW_CFA_restore_state without a saved state")
+                state["cfa"], saved_registers, state["ra_state"] = stack.pop()
+                registers.clear()
+                registers.update(saved_registers)
+            elif opcode in (self.DW_CFA_def_cfa, self.DW_CFA_def_cfa_sf):
+                pos, reg = self.get_uleb128(data, pos)
+                if opcode == self.DW_CFA_def_cfa:
+                    pos, offset = self.get_uleb128(data, pos)
+                else:
+                    pos, offset = self.get_sleb128(data, pos)
+                    offset *= data_align
+                state["cfa"] = ("register", reg, offset)
+            elif opcode == self.DW_CFA_def_cfa_register:
+                pos, reg = self.get_uleb128(data, pos)
+                if state["cfa"] is None or state["cfa"][0] != "register":
+                    raise ValueError("DW_CFA_def_cfa_register without a register CFA")
+                state["cfa"] = ("register", reg, state["cfa"][2])
+            elif opcode in (self.DW_CFA_def_cfa_offset, self.DW_CFA_def_cfa_offset_sf):
+                if opcode == self.DW_CFA_def_cfa_offset:
+                    pos, offset = self.get_uleb128(data, pos)
+                else:
+                    pos, offset = self.get_sleb128(data, pos)
+                    offset *= data_align
+                if state["cfa"] is None or state["cfa"][0] != "register":
+                    raise ValueError("DW_CFA_def_cfa_offset without a register CFA")
+                state["cfa"] = ("register", state["cfa"][1], offset)
+            elif opcode == self.DW_CFA_def_cfa_expression:
+                pos, length = self.get_uleb128(data, pos)
+                state["cfa"] = ("expression", data[pos:pos + length], cie["version"], cie["address_size"])
+                pos += length
+            elif opcode in (self.DW_CFA_expression, self.DW_CFA_val_expression):
+                pos, reg = self.get_uleb128(data, pos)
+                pos, length = self.get_uleb128(data, pos)
+                kind = "expression" if opcode == self.DW_CFA_expression else "val_expression"
+                registers[reg] = (kind, data[pos:pos + length], cie["version"], cie["address_size"])
+                pos += length
+            elif opcode == self.DW_CFA_GNU_args_size:
+                pos = self.get_uleb128(data, pos)[0]
+            elif opcode == self.DW_CFA_GNU_negative_offset_extended:
+                pos, reg = self.get_uleb128(data, pos)
+                pos, operand = self.get_uleb128(data, pos)
+                registers[reg] = ("offset", -operand * data_align)
+            elif opcode == self.DW_CFA_GNU_window_save:
+                if self.elf.e_machine == Elf.EM_AARCH64:
+                    state["ra_state"] = not state["ra_state"]
+                else:
+                    for reg in range(16, 32):
+                        registers[reg] = ("register", reg - 16)
+            else:
+                raise ValueError("unsupported CFA opcode {:#x} at .eh_frame+{:#x}".format(
+                    opcode, opcode_pos,
+                ))
+
+            if pos > end:
+                raise ValueError("CFA instruction extends past its record")
+        return state
+
+    def unwind_info(self, runtime_pc, load_bias=0):
+        """Evaluate and return the unwind row covering runtime_pc."""
+        section, cies, fdes = self.read_frame_records()
+        if section is None:
+            return None
+
+        linked_pc = runtime_pc - load_bias
+        matches = [fde for fde in fdes if fde["pc_begin"] <= linked_pc < fde["pc_end"]]
+        if not matches:
+            return None
+        fde = min(matches, key=lambda item: item["pc_end"] - item["pc_begin"])
+        cie = fde["cie"]
+
+        state = {"cfa": None, "registers": {}, "ra_state": False}
+        self.run_cfa_program(
+            section.data, cie["program_start"], cie["program_end"], cie,
+            fde["pc_begin"], None, state, {},
+        )
+        initial_rules = dict(state["registers"])
+        self.run_cfa_program(
+            section.data, fde["program_start"], fde["program_end"], cie,
+            fde["pc_begin"], linked_pc, state, initial_rules,
+        )
+        return {
+            "cie": cie,
+            "fde": fde,
+            "load_bias": load_bias,
+            "pc": runtime_pc,
+            "state": state,
+        }
+
+    def format_expression(self, expression, version, address_size):
+        entries = self.parse_ops(version, address_size, len(expression), expression, 0)
+        parts = []
+        for entry in entries:
+            if entry.tag == "error":
+                parts.append(str(entry).replace("\n", ": "))
+                continue
+            name = entry.name.strip()
+            name = re.sub(r"^\[0x[0-9a-f]+\]\s+", "", name)
+            if entry.extra:
+                name += " ({:s})".format(entry.extra)
+            parts.append(name)
+        return "; ".join(parts)
+
+    def format_cfa_rule(self, rule):
+        if rule is None:
+            return "undefined"
+        if rule[0] == "register":
+            regname = self.get_register_name(rule[1])
+            if rule[2] == 0:
+                return regname
+            sign = "+" if rule[2] > 0 else "-"
+            return "{:s} {:s} {:#x}".format(regname, sign, abs(rule[2]))
+        expression = self.format_expression(rule[1], rule[2], rule[3])
+        return "expression({:s})".format(expression)
+
+    def format_register_rule(self, rule):
+        kind = rule[0]
+        if kind == "offset":
+            return "[CFA{:+#x}]".format(rule[1])
+        if kind == "val_offset":
+            return "CFA{:+#x}".format(rule[1])
+        if kind == "register":
+            return self.get_register_name(rule[1])
+        if kind in ("expression", "val_expression"):
+            expression = self.format_expression(rule[1], rule[2], rule[3])
+            prefix = "memory at " if kind == "expression" else ""
+            return "{:s}expression({:s})".format(prefix, expression)
+        return kind
+
+    def format_frame_records(self, cie_offset, fde_offset):
+        """Format only the selected CIE/FDE using the regular dump decoder."""
+        section = self.read_section(".eh_frame", quiet=True)
+        if section is None:
+            return []
+
+        selected = []
+        wanted = {cie_offset: "CIE", fde_offset: "FDE"}
+        keep = False
+        for entry in self.parse_eh_frame(section):
+            if entry.tag == "separator" and entry.name in ("CIE", "FDE", "Zero terminator"):
+                keep = entry.pos in wanted and wanted[entry.pos] == entry.name
+            if keep:
+                selected.append(entry)
+        if not selected:
+            return []
+        return self.format_entry(section, selected)
+
     DW_OP_addr                 = 0x03  # Constant address
     DW_OP_deref                = 0x06  #
     DW_OP_const1u              = 0x08  # Unsigned 1-byte constant
@@ -35071,17 +35433,20 @@ class DwarfExceptionHandler:
             entries.append(self.ErrorEntry("Parse Error", exc_value))
         return entries
 
-    def read_section(self, section_name):
+    def read_section(self, section_name, quiet=False):
         shdr = self.elf.get_shdr(section_name)
         if shdr is None:
-            err("Could not find {} section".format(section_name))
+            if not quiet:
+                err("Could not find {} section".format(section_name))
             return None
 
-        f = open(self.elf.filename, "rb")
-        f.seek(shdr.sh_offset)
-        data = f.read(shdr.sh_size)
-        f.close()
-        info("Found {} section".format(section_name))
+        data = self.elf.read_shdr(section_name)
+        if data is None:
+            if not quiet:
+                err("Could not read {} section".format(section_name))
+            return None
+        if not quiet:
+            info("Found {} section".format(section_name))
 
         dic = {"name": section_name, "offset": shdr.sh_offset, "data": data}
         Section = collections.namedtuple("Section", dic.keys())
@@ -35252,6 +35617,148 @@ class DwarfExceptionHandlerInfoCommand(GenericCommand, BufferingOutput):
 
         if self.out:
             self.print_output()
+        return
+
+
+@register_command
+class UnwindInfoCommand(GenericCommand):
+    """Show the effective DWARF unwind rules at the current or specified PC."""
+
+    _cmdline_ = "unwind-info"
+    _category_ = "02-e. Process Information - Complex Structure Information"
+
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("location", metavar="PC", nargs="?", type=AddressUtil.parse_address,
+                        help="the program counter to inspect. (default: current_arch.pc)")
+    parser.add_argument("-v", "--verbose", action="store_true",
+                        help="decode the selected CIE and FDE.")
+    _syntax_ = parser.format_help()
+
+    _example_ = [
+        "{0:s}",
+        "{0:s} $pc",
+        "{0:s} -v $pc",
+        "{0:s} 0x55555555529a",
+    ]
+    _example_ = "\n".join(_example_).format(_cmdline_)
+
+    def find_handler(self, pc):
+        section = ProcessMap.process_lookup_address(pc)
+        if section is None:
+            return None, None
+
+        mapped_path = section.path.replace(" (deleted)", "")
+        if mapped_path.startswith("target:"):
+            mapped_path = mapped_path[len("target:"):]
+        candidates = [mapped_path]
+
+        try:
+            solib_path = gdb.solib_name(pc)
+        except (AttributeError, gdb.error):
+            solib_path = None
+        if solib_path:
+            candidates.append(solib_path)
+
+        mapped_name = os.path.basename(mapped_path)
+        for objfile in gdb.objfiles():
+            objfile_path = objfile.filename
+            if objfile_path and os.path.basename(objfile_path) == mapped_name:
+                candidates.append(objfile_path)
+
+        main_path = Path.get_filepath()
+        if main_path and os.path.basename(main_path) == mapped_name:
+            candidates.append(main_path)
+        if not is_remote_debug() and mapped_path.startswith("/"):
+            proc_path = Path.append_proc_root(mapped_path)
+            if proc_path:
+                candidates.append(proc_path)
+
+        elf = None
+        seen = set()
+        for filepath in candidates:
+            if not filepath or filepath in seen or not os.access(filepath, os.R_OK):
+                continue
+            seen.add(filepath)
+            candidate = Elf.get_elf(filepath)
+            if candidate and candidate.is_valid() and candidate.get_shdr(".eh_frame"):
+                elf = candidate
+                break
+
+        maps = [item for item in ProcessMap.get_process_maps() if item.path == section.path]
+        if not maps:
+            maps = [section]
+        mapped_base = min(item.page_start - item.offset for item in maps)
+
+        if elf is None:
+            candidate = Elf.get_elf(mapped_base)
+            if candidate and candidate.is_valid() and candidate.get_shdr(".eh_frame"):
+                elf = candidate
+        if elf is None:
+            return None, None
+
+        load_segments = [
+            phdr for phdr in elf.phdrs
+            if phdr.p_type == Elf.Phdr.PT_LOAD
+        ]
+        if not load_segments:
+            return None, None
+        linked_base = min(phdr.p_vaddr - phdr.p_offset for phdr in load_segments)
+        return DwarfExceptionHandler(elf), mapped_base - linked_base
+
+    @parse_args
+    @only_if_gdb_running
+    @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware"))
+    @require_arch_set
+    def do_invoke(self, args):
+        pc = current_arch.pc if args.location is None else args.location
+        handler, load_bias = self.find_handler(pc)
+        if handler is None:
+            err("Could not read .eh_frame for the mapping containing {:#x}".format(pc))
+            return
+
+        try:
+            unwind = handler.unwind_info(pc, load_bias)
+        except (IndexError, KeyError, ValueError) as exception:
+            err("Failed to evaluate unwind information: {!s}".format(exception))
+            return
+        if unwind is None:
+            err("No FDE covers {:#x}".format(pc))
+            return
+
+        cie = unwind["cie"]
+        fde = unwind["fde"]
+        state = unwind["state"]
+        registers = state["registers"]
+        return_register = cie["return_register"]
+        fde_start = fde["pc_begin"] + load_bias
+        fde_end = fde["pc_end"] + load_bias
+
+        symbol = Symbol.get_symbol_string(pc)
+        lines = [
+            ("CIE", "{:#x}".format(cie["address"] + load_bias)),
+            ("FDE", "{:#x} [{:#x}-{:#x})".format(fde["address"] + load_bias, fde_start, fde_end)),
+            ("PC", "{!s}{:s}".format(ProcessMap.lookup_address(pc), symbol)),
+            ("CFA", handler.format_cfa_rule(state["cfa"])),
+            ("RA", handler.format_register_rule(registers.get(return_register, ("undefined",)))),
+        ]
+        for reg in sorted(registers):
+            if reg == return_register:
+                continue
+            regname = handler.get_register_name(reg)
+            if regname == "???":
+                regname = "r{:d}".format(reg)
+            lines.append((regname, handler.format_register_rule(registers[reg])))
+        if state["ra_state"]:
+            lines.append(("RA state", "negated/signed"))
+
+        width = max(len(label) for label, value in lines)
+        for label, value in lines:
+            gef_print("{0:<{1:d}s} : {2:s}".format(label, width, value))
+        if args.verbose:
+            details = handler.format_frame_records(cie["offset"], fde["offset"])
+            if details:
+                gef_print("")
+                gef_print("\n".join(details))
         return
 
 

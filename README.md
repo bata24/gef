@@ -885,6 +885,8 @@ For a comprehensive list and additional details, see [docs/SUPPORTED-MODE.md](do
     - ![](images/future-calls.png)
 - `stack-recover`: heuristically recovers the call chain from the stack when `bt` is unusable.
     - ![](images/stack-recover.png)
+- `unwind-info`: shows the effective DWARF unwind rules at the current or specified PC.
+    - ![](images/unwind-info.png)
 
 ### Other
 - The category is introduced in `gef help`.

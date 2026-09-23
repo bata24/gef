@@ -3134,6 +3134,33 @@ options:
   -n, --no-pager  do not use the pager.
 ```
 
+## unwind-info
+
+Show the effective DWARF unwind rules at the current or specified PC.
+
+
+### Syntax
+
+```text
+usage: unwind-info [-h] [-v] [PC]
+
+positional arguments:
+  PC             the program counter to inspect. (default: current_arch.pc)
+
+options:
+  -h, --help     show this help message and exit
+  -v, --verbose  decode the selected CIE and FDE.
+```
+
+### Examples
+
+```gdb
+unwind-info
+unwind-info $pc
+unwind-info -v $pc
+unwind-info 0x55555555529a
+```
+
 # 02-f. Process Information - Security
 ## aslr
 
