@@ -738,6 +738,7 @@ For a comprehensive list and additional details, see [docs/SUPPORTED-MODE.md](do
     - ![](images/seq-length.png)
 - `strings`: searches for ASCII string from specific location.
     - ![](images/strings.png)
+- `strings-continue`: single-step and print ASCII strings referenced by general-purpose registers.
 - `xs`: dumps string like `x/s` command, but with hex-string style.
     - ![](images/xs.png)
 - `xc`: dumps address like `x/x` command, but with coloring at some intervals.

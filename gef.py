@@ -163988,6 +163988,143 @@ class QemuMemoryRegionDumpCommand(GenericCommand, BufferingOutput):
 
 
 @register_command
+class StringsContinueCommand(GenericCommand):
+    """Single-step and print ASCII strings referenced by general-purpose registers."""
+
+    _cmdline_ = "strings-continue"
+    _category_ = "01-d. Debugging Support - Execution"
+
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("-m", "--max-length", type=AddressUtil.parse_address, default=0x100,
+                        help="maximum C-string length to inspect. (default: %(default)s)")
+    parser.add_argument("-n", "--min-length", type=AddressUtil.parse_address, default=4,
+                        help="minimum C-string length to display. (default: %(default)s)")
+    _syntax_ = parser.format_help()
+
+    _note_ = [
+        "Context output is hidden while stepping.",
+        "Only registers whose values change are inspected after the initial stop.",
+        "Stops on a user breakpoint, a signal, inferior exit, or Ctrl+C.",
+        "Duplicate strings are suppressed for each invocation.",
+    ]
+    _note_ = "\n".join(_note_)
+
+    def dump_new_strings(self, seen, previous_registers, min_length, max_length):
+        string_color = Config.get_gef_setting("theme.dereference_string")
+        changed = []
+        for regname in DereferenceCommand.get_target_registers():
+            if regname in ("$pc", "$eip", "$rip", "$pswa"):
+                continue
+            try:
+                addr = get_register(regname)
+            except (gdb.error, ValueError):
+                continue
+            if previous_registers.get(regname) == addr:
+                continue
+            previous_registers[regname] = addr
+            if not addr:
+                continue
+            changed.append((regname, addr))
+
+        if not changed:
+            return
+
+        MemoryCache.reset()
+        strings = {}
+        for regname, addr in changed:
+            if addr not in strings:
+                strings[addr] = read_cstring_from_memory(addr, max_length=max_length, safe=True)
+            string = strings[addr]
+
+            if not string or len(string) < min_length:
+                continue
+            duplicate = False
+            for seen_addr, seen_string in seen:
+                offset = addr - seen_addr
+                if 0 <= offset < len(seen_string) and string == seen_string[offset:]:
+                    duplicate = True
+                    break
+            if duplicate:
+                continue
+
+            seen.append((addr, string))
+            gef_print("{:s} = {:#x} -> {:s}".format(Color.greenify(regname), addr, Color.colorify(repr(string), string_color)))
+        return
+
+    @parse_args
+    @only_if_gdb_running
+    @require_arch_set
+    def do_invoke(self, args):
+        if args.min_length <= 0:
+            err("--min-length must be greater than zero")
+            return
+        if args.max_length <= 0:
+            err("--max-length must be greater than zero")
+            return
+        if args.min_length > args.max_length:
+            err("--min-length must not exceed --max-length")
+            return
+
+        seen = []
+        previous_registers = {}
+        stop_event = None
+
+        def remember_stop(event):
+            nonlocal stop_event
+            stop_event = event
+            return
+
+        suppress_cli_notifications = None
+        try:
+            suppress_cli_notifications = gdb.parameter("suppress-cli-notifications")
+            gdb.execute("set suppress-cli-notifications on", to_string=True)
+        except gdb.error:
+            pass
+        EventHooking.gef_on_stop_unhook(EventHandler.hook_stop_handler)
+        EventHooking.gef_on_stop_hook(remember_stop)
+        info("Single-stepping for register strings. Stop with a breakpoint or Ctrl+C.")
+
+        stopped = False
+        inferior_exited = False
+        execution_error = None
+        try:
+            self.dump_new_strings(seen, previous_registers, args.min_length, args.max_length)
+            while is_alive():
+                stop_event = None
+                gdb.execute("stepi", to_string=True)
+                if not is_alive():
+                    inferior_exited = True
+                    break
+
+                self.dump_new_strings(seen, previous_registers, args.min_length, args.max_length)
+                if isinstance(stop_event, (gdb.BreakpointEvent, gdb.SignalEvent)):
+                    stopped = True
+                    break
+        except KeyboardInterrupt:
+            stopped = True
+        except gdb.error as e:
+            if is_alive():
+                execution_error = e
+            else:
+                inferior_exited = True
+        finally:
+            EventHooking.gef_on_stop_unhook(remember_stop)
+            EventHooking.gef_on_stop_hook(EventHandler.hook_stop_handler)
+            if suppress_cli_notifications is not None:
+                setting = "on" if suppress_cli_notifications else "off"
+                gdb.execute("set suppress-cli-notifications {:s}".format(setting), to_string=True)
+            Cache.reset_gef_caches()
+
+        if inferior_exited:
+            info("Inferior exited")
+        elif execution_error is not None:
+            err(execution_error)
+        elif stopped and is_alive():
+            gdb.execute("context")
+        return
+
+
+@register_command
 class XUntilCommand(GenericCommand):
     """Execute until specified address easily."""
 

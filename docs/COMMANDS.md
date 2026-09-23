@@ -1071,6 +1071,33 @@ options:
                         the address to exclude from breakpoints.
 ```
 
+## strings-continue
+
+Single-step and print ASCII strings referenced by general-purpose registers.
+
+
+### Syntax
+
+```text
+usage: strings-continue [-h] [-m MAX_LENGTH] [-n MIN_LENGTH]
+
+options:
+  -h, --help            show this help message and exit
+  -m, --max-length MAX_LENGTH
+                        maximum C-string length to inspect. (default: 256)
+  -n, --min-length MIN_LENGTH
+                        minimum C-string length to display. (default: 4)
+```
+
+### Notes
+
+```text
+Context output is hidden while stepping.
+Only registers whose values change are inspected after the initial stop.
+Stops on a user breakpoint, a signal, inferior exit, or Ctrl+C.
+Duplicate strings are suppressed for each invocation.
+```
+
 ## xskip
 
 Skip instructions easily.
