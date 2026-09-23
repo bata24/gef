@@ -883,6 +883,8 @@ For a comprehensive list and additional details, see [docs/SUPPORTED-MODE.md](do
 - `xtap`: taps read/write syscalls on specific file descriptors and hexdump the transferred data.
 - `future-calls`: displays future function calls from the current function.
     - ![](images/future-calls.png)
+- `stack-recover`: heuristically recovers the call chain from the stack when `bt` is unusable.
+    - ![](images/stack-recover.png)
 
 ### Other
 - The category is introduced in `gef help`.

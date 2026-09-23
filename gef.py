@@ -174568,6 +174568,575 @@ class StackFrameCommand(GenericCommand):
 
 
 @register_command
+class StackRecoverCommand(GenericCommand, BufferingOutput):
+    """Heuristically recover the call chain from the stack when `bt` is unusable."""
+
+    _cmdline_ = "stack-recover"
+    _category_ = "03-g. Memory - Investigation"
+
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("address", metavar="ADDRESS", nargs="?", type=AddressUtil.parse_address,
+                        help="the stack address to start scanning from. (default: current_arch.sp)")
+    parser.add_argument("-l", "--length", type=AddressUtil.parse_address,
+                        help="the number of bytes to scan. (default: up to the end of the stack)")
+    parser.add_argument("-v", "--verbose", action="store_true",
+                        help="also show the code pointers that are not adopted.")
+    parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
+    _syntax_ = parser.format_help()
+
+    _example_ = "\n".join([
+        "{0:s}                         # scan from $sp to the end of the stack",
+        "{0:s} 0x7fffffffe000 -l 0x800 # scan 0x800 bytes from the specified address",
+        "{0:s} -v                      # also show rejected candidates",
+    ]).format(_cmdline_)
+
+    _note_ = "\n".join([
+        "The link register and each code pointer on the stack are candidates only if the instruction",
+        "before it is a call. Among them, the most consistent chain is selected by scoring:",
+        "  - the direct call target matches the function of the callee frame (strong).",
+        "  - the call target is unknown (indirect call, PLT, thunk) (weak).",
+        "  - the direct call target differs, i.e., some frames may be missing (penalty).",
+        "  - a saved frame pointer links to the frame (bonus; x86, ARM, RISC-V, LoongArch).",
+        "  - the frame is inside the callee frame according to its frame pointer (penalty).",
+        "  - the same function appears again across an unconfirmed link (penalty; stale sub-chain).",
+        "confidence=high:   the call target matches the callee, or a frame pointer links to it.",
+        "confidence=medium: the call target is unknown, or the caller is confirmed by the next frame.",
+        "confidence=low:    only the preceding call instruction supports it.",
+        "On SPARC, frames still held in the register windows are not found.",
+    ])
+
+    SCORE_EXACT = 3
+    SCORE_NEAR = 2
+    SCORE_UNKNOWN = 1
+    SCORE_MISMATCH = -2
+    SCORE_FP_LINK = 2
+    SCORE_FP_SKIP = -2
+    SCORE_DUPLICATED = -4
+
+    NEAR_RANGE = 0x4000
+    WINDOW = 64
+
+    X86_CALL_LENGTHS = [5, 6, 2, 3, 7, 4, 8, 9]
+
+    def get_scan_slots(self, start):
+        ptrsize = current_arch.ptrsize
+        start &= ~(ptrsize - 1)
+
+        if self.args.length is not None:
+            size = self.args.length
+        else:
+            section = ProcessMap.process_lookup_address(start)
+            if section:
+                if current_arch.stack_grow_down:
+                    size = section.page_end - start
+                else:
+                    size = start - section.page_start
+            else:
+                # kernel stack is aligned to THREAD_SIZE
+                thread_size = 0x4000 if ptrsize == 8 else 0x2000
+                if current_arch.stack_grow_down:
+                    size = align(start + 1, thread_size) - start
+                else:
+                    size = start - (start & ~(thread_size - 1))
+        size &= ~(ptrsize - 1)
+
+        pagesize = get_pagesize()
+        slots = []
+        if current_arch.stack_grow_down:
+            addr, end = start, start + size
+            while addr < end:
+                chunk_end = min(end, (addr & ~(pagesize - 1)) + pagesize)
+                try:
+                    data = read_memory(addr, chunk_end - addr)
+                except gdb.MemoryError:
+                    break
+                for i, v in enumerate(slice_unpack(data, ptrsize)):
+                    slots.append((addr + i * ptrsize, v))
+                addr = chunk_end
+        else:
+            addr, end = start, start - size
+            while addr > end:
+                chunk_start = max(end, (addr - 1) & ~(pagesize - 1))
+                try:
+                    data = read_memory(chunk_start, addr - chunk_start)
+                except gdb.MemoryError:
+                    break
+                for i, v in reversed(list(enumerate(slice_unpack(data, ptrsize)))):
+                    slots.append((chunk_start + i * ptrsize, v))
+                addr = chunk_start
+        return slots
+
+    def get_section(self, addr):
+        for section in self.exec_sections:
+            if section.page_start <= addr < section.page_end:
+                return section
+        return None
+
+    def is_code(self, addr):
+        if addr in self.code_cache:
+            return self.code_cache[addr]
+        if self.exec_sections:
+            ret = self.get_section(addr) is not None
+        elif self.stack_lo <= addr < self.stack_hi:
+            ret = False
+        else:
+            ret = AddressUtil.is_msb_on(addr) == self.pc_msb and is_valid_addr(addr)
+        self.code_cache[addr] = ret
+        return ret
+
+    def strip_pac(self, addr):
+        if not is_arm64() or self.is_code(addr):
+            return addr
+        if (addr >> 55) & 1:
+            stripped = addr | 0xffff_0000_0000_0000
+        else:
+            stripped = addr & 0x0000_ffff_ffff_ffff
+        if self.is_code(stripped):
+            return stripped
+        return addr
+
+    def get_callsites(self, ret_addr):
+        """Return [(call_address, expected_end_address), ...]."""
+        if is_sparc32() or is_sparc32plus() or is_sparc64():
+            # %o7 (and the spilled %i7) holds the address of the call itself
+            return [(ret_addr, None)]
+        if is_arm32() or is_arm32_cortex_m():
+            if ret_addr & 1:
+                return [(ret_addr - 4, ret_addr), (ret_addr - 2, ret_addr)]
+            return [(ret_addr - 4, ret_addr)]
+        if is_x86():
+            return [(ret_addr - n, ret_addr) for n in self.X86_CALL_LENGTHS]
+        if is_riscv32() or is_riscv64():
+            return [(ret_addr - 4, ret_addr), (ret_addr - 2, ret_addr)]
+        length = current_arch.instruction_length
+        if length:
+            if current_arch.has_delay_slot:
+                return [(ret_addr - length * 2, ret_addr - length)]
+            return [(ret_addr - length, ret_addr)]
+        return [(ret_addr - n, ret_addr) for n in range(2, 11)]
+
+    def get_call_insn(self, ret_addr):
+        if ret_addr in self.call_cache:
+            return self.call_cache[ret_addr]
+        call_insn = None
+        for addr, expected_end in self.get_callsites(ret_addr):
+            try:
+                insn = next(Disasm.gdb_disassemble(addr, nb_insn=1), None)
+            except (gdb.error, ValueError, TypeError):
+                continue
+            if insn is None or not current_arch.is_call(insn):
+                continue
+            if expected_end is not None and (insn.address + insn.size) & ~1 != expected_end & ~1:
+                continue
+            call_insn = insn
+            break
+        self.call_cache[ret_addr] = call_insn
+        return call_insn
+
+    def get_direct_target(self, insn):
+        if not insn.operands:
+            return None
+        last = re.sub(r"<.*?>", "", insn.operands[-1]).strip()
+        if is_loongarch64():
+            # e.g., bl -64 # 0x120000890 <helper>
+            last = last.split("#")[-1].strip()
+        r = re.fullmatch(r"#?(0x[0-9a-fA-F]+)", last)
+        if not r:
+            return None
+        return int(r.group(1), 16)
+
+    def get_function(self, addr):
+        if addr in self.func_cache:
+            return self.func_cache[addr]
+        lookup_addr = addr & ~1 if is_arm32() or is_arm32_cortex_m() else addr
+        try:
+            ret = Symbol.gdb_get_location(lookup_addr)
+        except gdb.error:
+            ret = None
+        if ret is None and self.in_kernel:
+            ret = Ksym.get_location_from_peek(lookup_addr)
+        if ret is not None:
+            ret = (ret[0], lookup_addr - ret[1])
+        self.func_cache[addr] = ret
+        return ret
+
+    def is_stub(self, target):
+        if target in self.stub_cache:
+            return self.stub_cache[target]
+        ret = False
+        func = self.get_function(target)
+        if func and ("@plt" in func[0] or func[0].startswith(("__x86_indirect", "__llvm_retpoline"))):
+            ret = True
+        else:
+            try:
+                insns = list(Disasm.gdb_disassemble(target, nb_insn=2))
+            except (gdb.error, ValueError, TypeError):
+                insns = []
+            for insn in insns:
+                if insn.mnemonic in ["endbr64", "endbr32", "bti", "nop"]:
+                    continue
+                ret = insn.mnemonic in ["bnd", "notrack"] or current_arch.is_jump(insn)
+                break
+        self.stub_cache[target] = ret
+        return ret
+
+    def match_callee(self, target, callee_pc):
+        """Return how the call `target` matches the function which `callee_pc` belongs to."""
+        key = (target, callee_pc)
+        if key in self.match_cache:
+            return self.match_cache[key]
+
+        if target is None or callee_pc is None or not self.is_code(callee_pc):
+            ret = "unknown"
+        else:
+            target_func = self.get_function(target)
+            callee_func = self.get_function(callee_pc)
+            if target_func and callee_func and target_func[1] == callee_func[1]:
+                ret = "exact"
+            elif target_func and callee_func and target_func[0].split("@")[0] == callee_func[0]:
+                ret = "exact"
+            elif self.is_stub(target):
+                ret = "unknown"
+            elif target_func and callee_func:
+                ret = "mismatch"
+            elif self.exec_sections and self.get_section(target) != self.get_section(callee_pc):
+                ret = "mismatch"
+            elif 0 <= callee_pc - target < self.NEAR_RANGE:
+                ret = "near"
+            else:
+                ret = "mismatch"
+        self.match_cache[key] = ret
+        return ret
+
+    def get_fp_register(self):
+        """Return the frame pointer register, its names in the disassembly,
+        and the distance from it to the frame record.
+        The frame record is the saved frame pointer next to the return address."""
+        ptrsize = current_arch.ptrsize
+        if is_x86_64():
+            return "$rbp", ["rbp"], 0
+        if is_x86_32():
+            return "$ebp", ["ebp"], 0
+        if is_arm64():
+            return "$x29", ["x29", "fp"], 0
+        if is_arm32_cortex_m():
+            return "$r7", ["r7"], 0
+        if is_arm32():
+            if current_arch.is_thumb():
+                return "$r7", ["r7"], 0
+            return "$r11", ["r11", "fp"], ptrsize
+        if is_riscv32() or is_riscv64():
+            return "$fp", ["s0", "fp", "x8"], ptrsize * 2
+        if is_loongarch64():
+            return "$r22", ["$fp", "$r22", "fp", "r22"], ptrsize * 2
+        return None, [], None
+
+    def is_fp_established(self, pc):
+        """Check whether the function of `pc` has already set up its frame pointer.
+        Otherwise, the frame pointer register may still hold the value of an older frame."""
+        func = self.get_function(pc)
+        if not func or pc - func[1] > 0x10000:
+            return False
+        try:
+            current_insn = next(Disasm.gdb_disassemble(pc, nb_insn=1), None)
+            insns = list(Disasm.gdb_disassemble(func[1], nb_insn=8))
+        except (gdb.error, ValueError, TypeError):
+            return False
+        if current_insn is None or current_arch.is_ret(current_insn):
+            return False
+        sp_names = ["rsp", "esp", "sp", "$sp", "r1"] if is_loongarch64() else ["rsp", "esp", "sp"]
+        for insn in insns:
+            if insn.address >= pc:
+                break
+            if len(insn.operands) < 2 or insn.operands[0] not in self.fp_names:
+                continue
+            if any(op in sp_names for op in insn.operands[1:]):
+                return True
+        return False
+
+    def get_link_registers(self):
+        if is_arm64():
+            return ["$x30"]
+        if is_arm32() or is_arm32_cortex_m():
+            return ["$lr"]
+        if is_riscv32() or is_riscv64() or is_mips32() or is_mips64() or is_mipsn32():
+            return ["$ra"]
+        if is_ppc32() or is_ppc64():
+            return ["$lr"]
+        if is_loongarch64():
+            return ["$r1"]
+        if is_sparc32() or is_sparc32plus() or is_sparc64():
+            return ["$o7", "$i7"]
+        return []
+
+    def resolve_fp_links(self, frames):
+        # A frame is "fp_linked" if a newer frame's saved frame pointer points to its frame record.
+        # If the function of the newer frame has set up its own frame pointer, it is "fp_verified",
+        # so its frame pointer can also reject the frames in between.
+        # Otherwise, the frame pointer may be the one of an older frame, and may skip some frames.
+        for frame in frames:
+            frame["fp_linked"] = False
+            frame["fp_verified"] = False
+        if self.fp_register is None or not current_arch.stack_grow_down:
+            return
+        ptrsize = current_arch.ptrsize
+        records = {}
+        for k, frame in enumerate(frames):
+            if frame["slot"] is not None:
+                records[frame["slot"] - ptrsize + self.fp_offset] = k
+        for i, frame in enumerate(frames):
+            k = records.get(frame["fp_link"])
+            if k is not None and k > i:
+                frames[k]["fp_linked"] = True
+                frame["fp_verified"] = frame["slot"] is None or self.is_fp_established(frame["func_pc"])
+        return
+
+    def is_fp_skipped(self, callee, caller):
+        """Check whether `caller` is inside the frame of `callee` according to its frame pointer."""
+        if not callee["fp_verified"] or caller["slot"] is None:
+            return False
+        expected_slot = callee["fp_link"] - self.fp_offset + current_arch.ptrsize
+        return caller["slot"] < expected_slot
+
+    def is_same_function(self, a, b):
+        func_a = self.get_function(a)
+        func_b = self.get_function(b)
+        return bool(func_a and func_b and func_a[1] == func_b[1])
+
+    def edge(self, callee, caller):
+        match = self.match_callee(caller["target"], callee["func_pc"])
+        if match != "exact" and self.is_same_function(callee["func_pc"], caller["func_pc"]):
+            # a stale return address left by a call that the callee function made earlier
+            match = "mismatch"
+        score = {
+            "exact": self.SCORE_EXACT,
+            "near": self.SCORE_NEAR,
+            "unknown": self.SCORE_UNKNOWN,
+            "mismatch": self.SCORE_MISMATCH,
+        }[match]
+        if caller["fp_linked"]:
+            score += self.SCORE_FP_LINK
+        if match != "exact" and self.is_fp_skipped(callee, caller):
+            score += self.SCORE_FP_SKIP
+        return score, match
+
+    def collect_candidates(self, slots, fp_value):
+        ptrsize = current_arch.ptrsize
+        slot_values = dict(slots)
+        candidates = []
+        rejected = []
+
+        def add_candidate(slot, reg, value):
+            pc = self.strip_pac(value)
+            if not self.is_code(pc):
+                return
+            call_insn = self.get_call_insn(pc)
+            if call_insn is None:
+                rejected.append((slot, reg, pc, "no call instruction before it"))
+                return
+            if slot is None:
+                # a leaf function does not update the frame pointer
+                fp_link = fp_value
+            else:
+                fp_link = slot_values.get(slot - ptrsize)
+            candidates.append({
+                "slot": slot,
+                "reg": reg,
+                "pc": pc,
+                # the return address of a noreturn call may be the start of the next function
+                "func_pc": call_insn.address,
+                "pac": pc != value,
+                "call": call_insn,
+                "target": self.get_direct_target(call_insn),
+                "fp_link": fp_link,
+            })
+            return
+
+        for reg in self.get_link_registers():
+            if reg not in current_arch.all_registers:
+                continue
+            value = get_register(reg)
+            if value:
+                add_candidate(None, reg, value)
+
+        for slot, value in slots:
+            if value:
+                add_candidate(slot, None, value)
+        return candidates, rejected
+
+    def is_duplicated(self, frames, best, i, j, match):
+        """Check whether the function of frames[j] is already in the chain ending with frames[i],
+        with an unconfirmed link between them. Such a chain is likely a stale sub-chain left by earlier calls."""
+        func = self.get_function(frames[j]["func_pc"])
+        if not func:
+            return False
+        gap = match != "exact"
+        k = i
+        for _ in range(8):
+            if k is None:
+                break
+            if gap and self.get_function(frames[k]["func_pc"]) == func:
+                return True
+            gap = gap or best[k][2] not in [None, "exact"]
+            k = best[k][1]
+        return False
+
+    def select_chain(self, frames):
+        # frames[0] is the current pc; the others are ordered from the newest.
+        # best[j] = the highest score of the chain that ends with frames[j].
+        best = [(0, None, None)]
+        for j in range(1, len(frames)):
+            best_j = None
+            for i in [0] + list(range(max(1, j - self.WINDOW), j)):
+                score, match = self.edge(frames[i], frames[j])
+                if self.is_duplicated(frames, best, i, j, match):
+                    score += self.SCORE_DUPLICATED
+                total = best[i][0] + score
+                if best_j is None or total > best_j[0]:
+                    best_j = (total, i, match)
+            best.append(best_j)
+
+        last = 0
+        for j in range(1, len(frames)):
+            if best[j][0] >= best[last][0]:
+                last = j
+
+        chain = []
+        j = last
+        while j is not None:
+            frames[j]["edge"] = best[j][2]
+            chain.append(j)
+            j = best[j][1]
+        chain.reverse()
+
+        for k, j in enumerate(chain[1:], start=1):
+            match = frames[j]["edge"]
+            confirmed_by_next = k + 1 < len(chain) and frames[chain[k + 1]]["edge"] == "exact"
+            if match == "exact" or frames[j]["fp_linked"]:
+                conf = "high"
+            elif match in ["near", "unknown"] or confirmed_by_next:
+                conf = "medium"
+            else:
+                conf = "low"
+            frames[j]["conf"] = conf
+        return chain
+
+    def format_location(self, frame, sp):
+        if frame["reg"]:
+            return frame["reg"]
+        diff = frame["slot"] - sp
+        return "{:#x} ($sp{:+#x})".format(frame["slot"], diff)
+
+    def format_pc(self, pc, func_pc=None):
+        func = self.get_function(func_pc) if func_pc is not None else None
+        if func and func_pc != pc:
+            sym = " <{:s}+{:#x}>".format(Instruction.smartify_text(func[0]), pc - func[1])
+        else:
+            sym = Symbol.get_symbol_string(pc, nosymbol_string=" <NO_SYMBOL>")
+        return "{!s}{:s}".format(ProcessMap.lookup_address(pc), sym)
+
+    def format_call(self, insn, target=None):
+        operands = ", ".join(insn.operands)
+        if target is not None and "<" not in operands:
+            operands += Symbol.get_symbol_string(target)
+        return "{:s}{:s}".format(insn.mnemonic, " " + operands if operands else "")
+
+    @parse_args
+    @only_if_gdb_running
+    @require_arch_set
+    def do_invoke(self, args):
+        pc = current_arch.pc
+        sp = current_arch.sp
+        if args.address is not None:
+            start = args.address
+        elif is_sparc64():
+            start = sp + 0x7ff # stack bias
+        else:
+            start = sp
+
+        self.in_kernel = is_in_kernel()
+        if self.in_kernel and not is_kgdb():
+            Ksym.get_kallsyms()
+        self.pc_msb = AddressUtil.is_msb_on(pc)
+        self.exec_sections = [s for s in ProcessMap.get_process_maps() if s.is_executable()]
+        self.fp_register, self.fp_names, self.fp_offset = self.get_fp_register()
+        self.code_cache = {}
+        self.call_cache = {}
+        self.func_cache = {}
+        self.match_cache = {}
+        self.stub_cache = {}
+
+        slots = self.get_scan_slots(start)
+        if not slots:
+            err("Failed to read the stack at {:#x}".format(start))
+            return
+
+        self.stack_lo = min(slots[0][0], slots[-1][0])
+        self.stack_hi = max(slots[0][0], slots[-1][0]) + current_arch.ptrsize
+        fp_value = None
+        if self.fp_register and self.is_fp_established(pc):
+            fp_value = get_register(self.fp_register)
+        candidates, rejected = self.collect_candidates(slots, fp_value)
+        frames = [{"slot": None, "reg": "$pc", "pc": pc, "func_pc": pc, "fp_link": fp_value}] + candidates
+        self.resolve_fp_links(frames)
+        chain = self.select_chain(frames)
+
+        self.out = []
+        self.info_add_out("Scanned {:#x}-{:#x} ({:d} slots), {:d} candidates after call instructions".format(
+            self.stack_lo, self.stack_hi, len(slots), len(candidates),
+        ))
+
+        conf_color = {"high": "bold green", "medium": "bold yellow", "low": "bold red"}
+        rows = []
+        for idx, j in enumerate(chain):
+            frame = frames[j]
+            pc_str = self.format_pc(frame["pc"], frame["func_pc"])
+            loc_str = self.format_location(frame, sp)
+            if j == 0:
+                rows.append([idx, pc_str, loc_str, "", ""])
+                continue
+            notes = ["after `{:s}`".format(self.format_call(frame["call"], frame["target"]))]
+            if frame["fp_linked"]:
+                notes.append("fp-linked")
+            if frame["edge"] == "mismatch":
+                notes.append("call target differs" if frame["fp_linked"] else "frames may be missing")
+            if frame["pac"]:
+                notes.append("PAC stripped")
+            conf_str = Color.colorify("confidence={:s}".format(frame["conf"]), conf_color[frame["conf"]])
+            rows.append([idx, pc_str, loc_str, conf_str, ", ".join(notes)])
+
+        pc_width = max(len(Color.remove_color(r[1])) for r in rows)
+        loc_width = max(len(r[2]) for r in rows)
+        conf_width = len("confidence=medium")
+        for idx, pc_str, loc_str, conf_str, note in rows:
+            pc_pad = " " * (pc_width - len(Color.remove_color(pc_str)))
+            conf_pad = " " * (conf_width - len(Color.remove_color(conf_str)))
+            line = "#{:<3d} {:s}{:s}  {:<{:d}s}  {:s}{:s}  {:s}".format(
+                idx, pc_str, pc_pad, loc_str, loc_width, conf_str, conf_pad, note,
+            )
+            self.out.append(line.rstrip())
+
+        if args.verbose:
+            adopted = set(chain)
+            unused = [f for i, f in enumerate(frames) if i and i not in adopted]
+            if unused or rejected:
+                self.out.append(titlify("Not adopted"))
+            for frame in unused:
+                self.out.append("     {:s}  {:s}  after `{:s}`, not in the best chain".format(
+                    self.format_pc(frame["pc"], frame["func_pc"]), self.format_location(frame, sp),
+                    self.format_call(frame["call"], frame["target"]),
+                ))
+            for slot, reg, value, reason in rejected:
+                frame = {"slot": slot, "reg": reg}
+                self.out.append("     {:s}  {:s}  {:s}".format(
+                    self.format_pc(value), self.format_location(frame, sp), reason,
+                ))
+
+        self.print_output(check_terminal_size=True)
+        return
+
+
+@register_command
 class XRefTelescopeCommand(SearchPatternCommand, BufferingOutput):
     """Recursively search for cross-references to a pattern in memory."""
 

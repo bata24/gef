@@ -5481,6 +5481,51 @@ options:
   -b, --decode-barcode  decode barcode if found.
 ```
 
+## stack-recover
+
+Heuristically recover the call chain from the stack when `bt` is unusable.
+
+
+### Syntax
+
+```text
+usage: stack-recover [-h] [-l LENGTH] [-v] [-n] [ADDRESS]
+
+positional arguments:
+  ADDRESS              the stack address to start scanning from. (default: current_arch.sp)
+
+options:
+  -h, --help           show this help message and exit
+  -l, --length LENGTH  the number of bytes to scan. (default: up to the end of the stack)
+  -v, --verbose        also show the code pointers that are not adopted.
+  -n, --no-pager       do not use the pager.
+```
+
+### Examples
+
+```gdb
+stack-recover                         # scan from $sp to the end of the stack
+stack-recover 0x7fffffffe000 -l 0x800 # scan 0x800 bytes from the specified address
+stack-recover -v                      # also show rejected candidates
+```
+
+### Notes
+
+```text
+The link register and each code pointer on the stack are candidates only if the instruction
+before it is a call. Among them, the most consistent chain is selected by scoring:
+  - the direct call target matches the function of the callee frame (strong).
+  - the call target is unknown (indirect call, PLT, thunk) (weak).
+  - the direct call target differs, i.e., some frames may be missing (penalty).
+  - a saved frame pointer links to the frame (bonus; x86, ARM, RISC-V, LoongArch).
+  - the frame is inside the callee frame according to its frame pointer (penalty).
+  - the same function appears again across an unconfirmed link (penalty; stale sub-chain).
+confidence=high:   the call target matches the callee, or a frame pointer links to it.
+confidence=medium: the call target is unknown, or the caller is confirmed by the next frame.
+confidence=low:    only the preceding call instruction supports it.
+On SPARC, frames still held in the register windows are not found.
+```
+
 ## vdump
 
 Visualize memory data like an image.
