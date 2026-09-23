@@ -9638,28 +9638,40 @@ Dump the nftables (netfilter) object graph.
 ### Syntax
 
 ```text
-usage: knft [-h] [-hh] [-R] [-E] [--meta] [-n] [-q] [ADDRESS]
+usage: knft [-h] [-hh] [-R] [-E] [-F FAMILY] [-T NAME] [-k {chain,set,object,flowtable}] [-N NAME] [-H HANDLE] [--net NET] [-v] [--meta] [-n] [-q] [ADDRESS]
 
 positional arguments:
-  ADDRESS             reverse-lookup: report an exact/containing known nftables object, or the nearest known object.
+  ADDRESS               reverse-lookup: report an exact/containing known nftables object, or the nearest known object.
 
 options:
-  -h, --help          show this help message and exit
-  -hh, --help-simple  show help without ASCII diagram.
-  -R, --no-rules      do not decode or render rules and expressions.
-  -E, --no-elements   do not decode or render set elements.
-  --meta              display discovery information.
-  -n, --no-pager      do not use the pager.
-  -q, --quiet         show result only.
+  -h, --help            show this help message and exit
+  -hh, --help-simple    show help without ASCII diagram.
+  -R, --no-rules        do not decode or render rules and expressions.
+  -E, --no-elements     do not decode or render set elements.
+  -F, --family FAMILY   only show tables of this family (inet, ip, ip6, arp, bridge, netdev).
+  -T, --table NAME      only show tables with this name.
+  -k, --kind {chain,set,object,flowtable}
+                        only show this kind of table child. It can be specified multiple times.
+  -N, --name NAME       only show chains, sets, objects and flowtables with this name.
+  -H, --handle HANDLE   only show the rule with this handle (implies `-k chain`).
+  --net NET             only show the network namespace with this struct net address or ns inode number.
+  -v, --verbose         show object attributes, hooks and expression contents (mostly needs type information).
+  --meta                display discovery information.
+  -n, --no-pager        do not use the pager.
+  -q, --quiet           show result only.
 ```
 
 ### Examples
 
 ```gdb
-knft                     # dump the whole nftables object graph
-knft -R                  # dump the graph without rules and expressions
-knft -E                  # dump the graph without set elements
-knft 0xffff888012345600  # find which nftables object owns this address
+knft                          # dump the whole nftables object graph
+knft -R                       # dump the graph without rules and expressions
+knft -E                       # dump the graph without set elements
+knft -F inet -T filter -k set # show only the sets of the inet table `filter`
+knft -T filter -N input -v    # show chain `input` with attributes, hook and expressions
+knft -T filter -H 12 -v       # show rule handle 12 and its decoded expressions
+knft --net 4026531840         # show only the network namespace net:[4026531840]
+knft 0xffff888012345600       # find which nftables object owns this address
 ```
 
 ### Notes
@@ -9697,6 +9709,12 @@ may be up to 255 bytes; identifier-like names are preferred only as a heuristic 
 kernel validity rule. The datapath representation changed from linked nft_rule objects before
 v5.17 to a contiguous nft_rule_blob in mainline v5.17 and later; the control-plane rule list
 still exists on newer kernels, and both representations are understood where applicable.
+
+Filters are applied after the table list is discovered; only the selected chains and sets are
+decoded. With -v, the table handle/flags/genmask/owner come from the validated nft_table layout
+and the rule genmask/userdata from the rule header even on stripped kernels. The chain, base
+chain hook, set, object and flowtable attributes and the expression private data are printed
+only when type information (e.g., vmlinux and nf_tables.ko debug info) is loaded.
 ```
 
 ## kops
