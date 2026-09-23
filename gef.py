@@ -70875,6 +70875,333 @@ class Kernel:
             devname = read_cstring_from_memory(devname_p)
             return devname
 
+    class Files:
+        """Resolve the layout of ``struct files_struct``."""
+
+        @staticmethod
+        def is_files_struct(files):
+            """Return True if `files` is a `files_struct`.
+            `files->fdt` is initialized to the embedded `&fdtab`, and `fdtab.max_fds` is
+            NR_OPEN_DEFAULT (= BITS_PER_LONG) until the table is expanded. Checking only the
+            first word of the object is not enough: the padding after `count` is not always
+            zeroed, so it can be mistaken for a pointer."""
+            max_fds_default = AddressUtil.get_memory_alignment(in_bits=True)
+            for i in range(1, 0x20):
+                try:
+                    if read_int_from_memory(files + current_arch.ptrsize * i) != max_fds_default:
+                        continue
+                    fdt = files + current_arch.ptrsize * (i - 1)
+                    if read_int_from_memory(fdt) == fdt + current_arch.ptrsize:
+                        return True
+                except (gdb.MemoryError, MemoryError):
+                    return False
+            return False
+
+        @staticmethod
+        @Cache.cache_this_session(cache_None=False)
+        def get_offset_fdt(files):
+            """
+            struct files_struct {
+                atomic_t count; // int
+                bool resize_in_progress;   // v4.2~
+                wait_queue_head_t {        // v4.2~
+                    spinlock_t lock;       // v4.2~
+                    struct list_head head; // v4.2~
+                } resize_wait;             // v4.2~
+                struct fdtable __rcu *fdt; <-- here
+                struct fdtable {
+                    unsigned int max_fds;
+                    struct file __rcu **fd;
+                    unsigned long *close_on_exec;
+                    unsigned long *open_fds;
+                    unsigned long *full_fds_bits;
+                    struct rcu_head rcu;
+                } fdtab;
+                ...
+            };
+            """
+            # fast path
+            try:
+                return GefUtil.parse_and_eval_unsigned("&((struct files_struct*)0).fdt")
+            except gdb.error:
+                pass
+
+            # slow path
+            MAX_FDS_DEFAULT = AddressUtil.get_memory_alignment(in_bits=True)
+            for i in range(1, 0x100):
+                v = read_int_from_memory(files + current_arch.ptrsize * i)
+                if v != MAX_FDS_DEFAULT:
+                    continue
+                offset_fdt = current_arch.ptrsize * (i - 1)
+                return offset_fdt
+            return None
+
+    class Signal:
+        """Resolve the layout of ``struct signal_struct``."""
+
+        @staticmethod
+        @Cache.cache_this_session(cache_None=False)
+        def get_offset_thread_head(signal):
+            """
+            struct signal_struct {
+                refcount_t sigcnt;
+                atomic_t live;
+                int nr_threads;
+                int quick_threads;
+                struct list_head thread_head;
+                ...
+            };
+            """
+            # fast path
+            try:
+                return GefUtil.parse_and_eval_unsigned("&((struct signal_struct*)0).thread_head")
+            except gdb.error:
+                pass
+
+            # slow path
+            for i in range(10):
+                x = read_int_from_memory(signal + current_arch.ptrsize * i)
+                y = read_int_from_memory(signal + current_arch.ptrsize * (i + 1))
+                if is_valid_addr(x) and is_valid_addr(y):
+                    offset_thread_head = current_arch.ptrsize * i
+                    return offset_thread_head
+            return None
+
+    class Sighand:
+        """Resolve the layout of ``struct sighand_struct`` and its action array."""
+
+        SIGNAL_NAMES = {
+            1: "SIGHUP",
+            2: "SIGINT",
+            3: "SIGQUIT",
+            4: "SIGILL",
+            5: "SIGTRAP",
+            6: "SIGABRT",
+            7: "SIGBUS",
+            8: "SIGFPE",
+            9: "SIGKILL",
+            10: "SIGUSR1",
+            11: "SIGSEGV",
+            12: "SIGUSR2",
+            13: "SIGPIPE",
+            14: "SIGALRM",
+            15: "SIGTERM",
+            16: "SIGSTKFLT",
+            17: "SIGCHLD",
+            18: "SIGCONT",
+            19: "SIGSTOP",
+            20: "SIGTSTP",
+            21: "SIGTTIN",
+            22: "SIGTTOU",
+            23: "SIGURG",
+            24: "SIGXCPU",
+            25: "SIGXFSZ",
+            26: "SIGVTALRM",
+            27: "SIGPROF",
+            28: "SIGWINCH",
+            29: "SIGIO",
+            30: "SIGPWR",
+            31: "SIGSYS",
+            32: "SIGCANCEL", # from glibc source code
+            33: "SIGSETXID", # from glibc source code
+            34: "SIGRTMIN",
+            # 35 ... 49: SIGRTMIN+i
+            # 50 ... 63: SIGRTMAX-i
+            64: "SIGRTMAX",
+        }
+        for i in range(35, 50):
+            SIGNAL_NAMES[i] = "SIGRTMIN+{:d}".format(i - 34)
+        for i in range(63, 49, -1):
+            SIGNAL_NAMES[i] = "SIGRTMAX-{:d}".format(64 - i)
+
+        @staticmethod
+        @Cache.cache_this_session(cache_None=False)
+        def get_offset_action(sighand):
+            """
+            [v5.3~]
+            struct sighand_struct {
+                spinlock_t siglock;
+                refcount_t count;
+                struct wait_queue_head {
+                    spinlock_t lock;
+                    struct list_head head;
+                } signalfd_wqh;
+                struct k_sigaction {
+                    struct sigaction {
+                        __sighandler_t sa_handler;
+                        unsigned long sa_flags;
+                    #ifdef __ARCH_HAS_SA_RESTORER
+                        __sigrestore_t sa_restorer;
+                    #endif
+                        sigset_t sa_mask;
+                    } sa;
+                #ifdef __ARCH_HAS_KA_RESTORER
+                    __sigrestore_t ka_restorer;
+                #endif
+                } action[_NSIG]; // 64
+            };
+
+            [~v5.2]
+            struct sighand_struct {
+                refcount_t count;
+                struct k_sigaction {
+                    struct sigaction sa;
+                #ifdef __ARCH_HAS_KA_RESTORER
+                    __sigrestore_t ka_restorer;
+                #endif
+                } action[_NSIG]; // 64
+                spinlock_t siglock;
+                wait_queue_head_t signalfd_wqh;
+            };
+            """
+            # fast path
+            try:
+                return GefUtil.parse_and_eval_unsigned("&((struct sighand_struct*)0).action")
+            except gdb.error:
+                pass
+
+            # slow path
+            kversion = Kernel.kernel_version()
+            if kversion is None:
+                return None
+            if "5.3" <= kversion:
+                # search for signalfd_wqh.list_head
+                found = False
+                for i in range(1, 30):
+                    offset_list_head = current_arch.ptrsize * i
+                    head = sighand + offset_list_head
+                    if not is_valid_addr(head):
+                        continue
+
+                    current = read_int_from_memory(head)
+                    seen = set()
+                    while True:
+                        if current == head:
+                            found = True
+                            break
+                        if not is_valid_addr(current):
+                            break
+                        if current in seen:
+                            break
+                        seen.add(current)
+                        current = read_int_from_memory(current)
+                    if found:
+                        break
+
+                if not found:
+                    return None
+
+                offset_action = offset_list_head + current_arch.ptrsize * 2
+
+            else: # < 5.3
+                offset_action = current_arch.ptrsize
+            return offset_action
+
+        @staticmethod
+        @Cache.cache_this_session(cache_None=False)
+        def get_sizeof_action(sighands, offset_action):
+            """
+            case 1 (x64)
+            0xffff8f63011e4400|+0x0000|+000: 0x0000000100000000
+            0xffff8f63011e4408|+0x0008|+001: 0x0000000000000000
+            0xffff8f63011e4410|+0x0010|+002: 0xffff8f63593e11e0  ->  [loop detected]
+            0xffff8f63011e4418|+0x0018|+003: 0xffff8f63593e11e0  ->  0xffff8f63011e4410  ->  [loop detected]
+            0xffff8f63011e4420|+0x0020|+004: 0x0000000000000000 <- action[0]
+            0xffff8f63011e4428|+0x0028|+005: 0x0000000014000000
+            0xffff8f63011e4430|+0x0030|+006: 0x00007f3ec71d0d60
+            0xffff8f63011e4438|+0x0038|+007: 0x0000000000000000
+            0xffff8f63011e4440|+0x0040|+008: 0x0000000000000000 <- action[1]
+            0xffff8f63011e4448|+0x0048|+009: 0x0000000014000000
+            0xffff8f63011e4450|+0x0050|+010: 0x00007f3ec71d0d60
+            0xffff8f63011e4458|+0x0058|+011: 0x0000000000000000
+            0xffff8f63011e4460|+0x0060|+012: 0x0000562e3b34bdf0 <- action[2]
+            0xffff8f63011e4468|+0x0068|+013: 0x0000000044000000
+            0xffff8f63011e4470|+0x0070|+014: 0x00007f3ec71d0d60
+            0xffff8f63011e4478|+0x0078|+015: 0x0000000000000000
+            0xffff8f63011e4480|+0x0080|+016: 0x0000562e3b34bdf0 <- action[3]
+            0xffff8f63011e4488|+0x0088|+017: 0x0000000044000000
+            0xffff8f63011e4490|+0x0090|+018: 0x00007f3ec71d0d60
+            0xffff8f63011e4498|+0x0098|+019: 0x0000000000000000
+            ...
+
+            case 2 (arm64)
+            0xffff000003080000|+0x0000|+000: 0x0000000100000000
+            0xffff000003080008|+0x0008|+001: 0x0000000000000000
+            0xffff000003080010|+0x0010|+002: 0xffff000003080010  ->  [loop detected]
+            0xffff000003080018|+0x0018|+003: 0xffff000003080010  ->  [loop detected]
+            0xffff000003080020|+0x0020|+004: 0x0000000000000000 <- action[0]
+            0xffff000003080028|+0x0028|+005: 0x0000000000000000
+            0xffff000003080030|+0x0030|+006: 0x0000000000000000
+            0xffff000003080038|+0x0038|+007: 0x0000000000000000
+            0xffff000003080040|+0x0040|+008: 0x000000000051dc20 <- action[1]
+            0xffff000003080048|+0x0048|+009: 0x0000000000000000
+            0xffff000003080050|+0x0050|+010: 0x0000000000000002
+            0xffff000003080058|+0x0058|+011: 0xfffffffe7ffbfeff
+            0xffff000003080060|+0x0060|+012: 0x0000000000000001 <- action[2]
+            0xffff000003080068|+0x0068|+013: 0x0000000000000000
+            0xffff000003080070|+0x0070|+014: 0x0000000000000002
+            0xffff000003080078|+0x0078|+015: 0xfffffffe7ffbfeff
+            0xffff000003080080|+0x0080|+016: 0x0000000000000000 <- action[3]
+            0xffff000003080088|+0x0088|+017: 0x0000000000000000
+            0xffff000003080090|+0x0090|+018: 0x0000000000000000
+            0xffff000003080098|+0x0098|+019: 0x0000000000000000
+            ...
+            """
+            # fast path
+            try:
+                return GefUtil.parse_and_eval_unsigned("sizeof(struct k_sigaction)")
+            except gdb.error:
+                pass
+
+            # slow path
+            if is_32bit():
+                possible_sizes = [0x10, 0x14, 0x18]
+            else:
+                possible_sizes = [0x18, 0x20, 0x28]
+
+            # calc sizeof(action[0])
+            sizeof_action = 0xffff_ffff_ffff_ffff
+            for sighand in sighands:
+                current = sighand + offset_action
+                found_offset_case1 = []
+                found_offset_case2 = []
+
+                for i in range(64 * 4):
+                    offset = current_arch.ptrsize * i
+
+                    # check case 1 (sa_flags)
+                    v = read_int_from_memory(current + offset)
+                    # SA_RESTORER, SA_RESTART, SA_NODEFER, SA_RESTART|SA_RESTORER, SA_NODEFER|SA_RESTORER
+                    if v in [0x0400_0000, 0x1000_0000, 0x4000_0000, 0x1400_0000, 0x4400_0000]:
+                        found_offset_case1.append(offset)
+
+                    # check case 2 (sa_mask)
+                    v = read_int64_from_memory(current + offset)
+                    if bin(v)[2:].count("1") > 56: # heuristic threshold
+                        found_offset_case2.append(offset)
+
+                if len(found_offset_case1) >= 2:
+                    sizeof_action_tmp = min(y - x for x, y in zip(found_offset_case1[:-1], found_offset_case1[1:]))
+                    # it is minimum size, so fast return
+                    if sizeof_action_tmp in possible_sizes:
+                        return sizeof_action_tmp
+                    # not minimum size, so check next task
+                    sizeof_action = min(sizeof_action, sizeof_action_tmp)
+
+                if len(found_offset_case2) >= 2:
+                    sizeof_action_tmp = min(y - x for x, y in zip(found_offset_case2[:-1], found_offset_case2[1:]))
+                    # it is minimum size, so fast return
+                    if sizeof_action_tmp in possible_sizes:
+                        return sizeof_action_tmp
+                    # not minimum size, so check next task
+                    sizeof_action = min(sizeof_action, sizeof_action_tmp)
+
+            if sizeof_action != 0xffff_ffff_ffff_ffff:
+                for ps in possible_sizes:
+                    if sizeof_action % ps == 0:
+                        return sizeof_action
+            return None
+
     class Cred:
         """A collection of utility functions that resolve the layout of `struct cred` and parse it.
 
@@ -73722,36 +74049,6 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
         return offset_nsproxy + current_arch.ptrsize
 
     @Cache.cache_this_session(cache_None=False)
-    def get_offset_thread_head(self, offset_signal):
-        """
-        struct signal_struct {
-            refcount_t sigcnt;
-            atomic_t live;
-            int nr_threads;
-            int quick_threads;
-            struct list_head thread_head;
-            ...
-        };
-        """
-        task_addr = self.task_addrs_temp[0]
-
-        # fast path
-        try:
-            return GefUtil.parse_and_eval_unsigned("&((struct signal_struct*)0).thread_head")
-        except gdb.error:
-            pass
-
-        # slow path
-        signal = read_int_from_memory(task_addr + offset_signal)
-        for i in range(10):
-            x = read_int_from_memory(signal + current_arch.ptrsize * i)
-            y = read_int_from_memory(signal + current_arch.ptrsize * (i + 1))
-            if is_valid_addr(x) and is_valid_addr(y):
-                offset_thread_head = current_arch.ptrsize * i
-                return offset_thread_head
-        return None
-
-    @Cache.cache_this_session(cache_None=False)
     def get_offset_files(self, offset_comm):
         """
         struct task_struct {
@@ -73796,24 +74093,6 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
             # sizeof(struct thread_struct) is very large, need more exproring
             repeat_times = 100
 
-        def is_files_struct(files):
-            """Return True if `files` is a `files_struct`.
-            `files->fdt` is initialized to the embedded `&fdtab`, and `fdtab.max_fds` is
-            NR_OPEN_DEFAULT (= BITS_PER_LONG) until the table is expanded. Checking only the
-            first word of the object is not enough: the padding after `count` is not always
-            zeroed, so it can be mistaken for a pointer."""
-            MAX_FDS_DEFAULT = AddressUtil.get_memory_alignment(in_bits=True)
-            for j in range(1, 0x20):
-                try:
-                    if read_int_from_memory(files + current_arch.ptrsize * j) != MAX_FDS_DEFAULT:
-                        continue
-                    fdt = files + current_arch.ptrsize * (j - 1)
-                    if read_int_from_memory(fdt) == fdt + current_arch.ptrsize:
-                        return True
-                except (gdb.MemoryError, MemoryError):
-                    return False
-            return False
-
         for i in range(repeat_times):
             # check fs
             v1 = read_int_from_memory(task_addrs[0] + base + current_arch.ptrsize * i)
@@ -73825,52 +74104,11 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
             v2 = read_int_from_memory(task_addrs[0] + base + current_arch.ptrsize * (i + 1))
             if not is_valid_addr(v2):
                 continue
-            if not is_files_struct(v2):
+            if not Kernel.Files.is_files_struct(v2):
                 continue
             # found
             offset_files = base + current_arch.ptrsize * (i + 1)
             return offset_files
-        return None
-
-    @Cache.cache_this_session(cache_None=False)
-    def get_offset_fdt(self, offset_files):
-        """
-        struct files_struct {
-            atomic_t count; // int
-            bool resize_in_progress;   // v4.2~
-            wait_queue_head_t {        // v4.2~
-                spinlock_t lock;       // v4.2~
-                struct list_head head; // v4.2~
-            } resize_wait;             // v4.2~
-            struct fdtable __rcu *fdt; <-- here
-            struct fdtable {
-                unsigned int max_fds;
-                struct file __rcu **fd;
-                unsigned long *close_on_exec;
-                unsigned long *open_fds;
-                unsigned long *full_fds_bits;
-                struct rcu_head rcu;
-            } fdtab;
-            ...
-        };
-        """
-        task_addrs = self.task_addrs_temp
-
-        # fast path
-        try:
-            return GefUtil.parse_and_eval_unsigned("&((struct files_struct*)0).fdt")
-        except gdb.error:
-            pass
-
-        # slow path
-        MAX_FDS_DEFAULT = AddressUtil.get_memory_alignment(in_bits=True)
-        files = read_int_from_memory(task_addrs[0] + offset_files)
-        for i in range(1, 0x100):
-            v = read_int_from_memory(files + current_arch.ptrsize * i)
-            if v != MAX_FDS_DEFAULT:
-                continue
-            offset_fdt = current_arch.ptrsize * (i - 1)
-            return offset_fdt
         return None
 
     def add_lwp_task(self, task_addrs):
@@ -73971,200 +74209,6 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
             offset_sighand += current_arch.ptrsize * 2
         return offset_sighand
 
-    @Cache.cache_this_session(cache_None=False)
-    def get_offset_action(self, sighand):
-        """
-        [v5.3~]
-        struct sighand_struct {
-            spinlock_t siglock;
-            refcount_t count;
-            struct wait_queue_head {
-                spinlock_t lock;
-                struct list_head head;
-            } signalfd_wqh;
-            struct k_sigaction {
-                struct sigaction {
-                    __sighandler_t sa_handler;
-                    unsigned long sa_flags;
-                #ifdef __ARCH_HAS_SA_RESTORER
-                    __sigrestore_t sa_restorer;
-                #endif
-                    sigset_t sa_mask;
-                } sa;
-            #ifdef __ARCH_HAS_KA_RESTORER
-                __sigrestore_t ka_restorer;
-            #endif
-            } action[_NSIG]; // 64
-        };
-
-        [~v5.2]
-        struct sighand_struct {
-            refcount_t count;
-            struct k_sigaction {
-                struct sigaction sa;
-            #ifdef __ARCH_HAS_KA_RESTORER
-                __sigrestore_t ka_restorer;
-            #endif
-            } action[_NSIG]; // 64
-            spinlock_t siglock;
-            wait_queue_head_t signalfd_wqh;
-        };
-        """
-        # fast path
-        try:
-            return GefUtil.parse_and_eval_unsigned("&((struct sighand_struct*)0).action")
-        except gdb.error:
-            pass
-
-        # slow path
-        kversion = Kernel.kernel_version()
-        if kversion is None:
-            return None
-        if "5.3" <= kversion:
-            # search for signalfd_wqh.list_head
-            found = False
-            for i in range(1, 30):
-                offset_list_head = current_arch.ptrsize * i
-                head = sighand + offset_list_head
-                if not is_valid_addr(head):
-                    continue
-
-                current = read_int_from_memory(head)
-                seen = set()
-                while True:
-                    if current == head:
-                        found = True
-                        break
-                    if not is_valid_addr(current):
-                        break
-                    if current in seen:
-                        break
-                    seen.add(current)
-                    current = read_int_from_memory(current)
-                if found:
-                    break
-
-            if not found:
-                return None
-
-            offset_action = offset_list_head + current_arch.ptrsize * 2
-
-        else: # < 5.3
-            offset_action = current_arch.ptrsize
-        return offset_action
-
-    @Cache.cache_this_session(cache_None=False)
-    def get_sizeof_action(self, offset_sighand, offset_action, offset_mm):
-        """
-        case 1 (x64)
-        0xffff8f63011e4400|+0x0000|+000: 0x0000000100000000
-        0xffff8f63011e4408|+0x0008|+001: 0x0000000000000000
-        0xffff8f63011e4410|+0x0010|+002: 0xffff8f63593e11e0  ->  [loop detected]
-        0xffff8f63011e4418|+0x0018|+003: 0xffff8f63593e11e0  ->  0xffff8f63011e4410  ->  [loop detected]
-        0xffff8f63011e4420|+0x0020|+004: 0x0000000000000000 <- action[0]
-        0xffff8f63011e4428|+0x0028|+005: 0x0000000014000000
-        0xffff8f63011e4430|+0x0030|+006: 0x00007f3ec71d0d60
-        0xffff8f63011e4438|+0x0038|+007: 0x0000000000000000
-        0xffff8f63011e4440|+0x0040|+008: 0x0000000000000000 <- action[1]
-        0xffff8f63011e4448|+0x0048|+009: 0x0000000014000000
-        0xffff8f63011e4450|+0x0050|+010: 0x00007f3ec71d0d60
-        0xffff8f63011e4458|+0x0058|+011: 0x0000000000000000
-        0xffff8f63011e4460|+0x0060|+012: 0x0000562e3b34bdf0 <- action[2]
-        0xffff8f63011e4468|+0x0068|+013: 0x0000000044000000
-        0xffff8f63011e4470|+0x0070|+014: 0x00007f3ec71d0d60
-        0xffff8f63011e4478|+0x0078|+015: 0x0000000000000000
-        0xffff8f63011e4480|+0x0080|+016: 0x0000562e3b34bdf0 <- action[3]
-        0xffff8f63011e4488|+0x0088|+017: 0x0000000044000000
-        0xffff8f63011e4490|+0x0090|+018: 0x00007f3ec71d0d60
-        0xffff8f63011e4498|+0x0098|+019: 0x0000000000000000
-        ...
-
-        case 2 (arm64)
-        0xffff000003080000|+0x0000|+000: 0x0000000100000000
-        0xffff000003080008|+0x0008|+001: 0x0000000000000000
-        0xffff000003080010|+0x0010|+002: 0xffff000003080010  ->  [loop detected]
-        0xffff000003080018|+0x0018|+003: 0xffff000003080010  ->  [loop detected]
-        0xffff000003080020|+0x0020|+004: 0x0000000000000000 <- action[0]
-        0xffff000003080028|+0x0028|+005: 0x0000000000000000
-        0xffff000003080030|+0x0030|+006: 0x0000000000000000
-        0xffff000003080038|+0x0038|+007: 0x0000000000000000
-        0xffff000003080040|+0x0040|+008: 0x000000000051dc20 <- action[1]
-        0xffff000003080048|+0x0048|+009: 0x0000000000000000
-        0xffff000003080050|+0x0050|+010: 0x0000000000000002
-        0xffff000003080058|+0x0058|+011: 0xfffffffe7ffbfeff
-        0xffff000003080060|+0x0060|+012: 0x0000000000000001 <- action[2]
-        0xffff000003080068|+0x0068|+013: 0x0000000000000000
-        0xffff000003080070|+0x0070|+014: 0x0000000000000002
-        0xffff000003080078|+0x0078|+015: 0xfffffffe7ffbfeff
-        0xffff000003080080|+0x0080|+016: 0x0000000000000000 <- action[3]
-        0xffff000003080088|+0x0088|+017: 0x0000000000000000
-        0xffff000003080090|+0x0090|+018: 0x0000000000000000
-        0xffff000003080098|+0x0098|+019: 0x0000000000000000
-        ...
-        """
-        task_addrs = self.task_addrs_temp
-
-        # fast path
-        try:
-            return GefUtil.parse_and_eval_unsigned("sizeof(struct k_sigaction)")
-        except gdb.error:
-            pass
-
-        # slow path
-        if is_32bit():
-            possible_sizes = [0x10, 0x14, 0x18]
-        else:
-            possible_sizes = [0x18, 0x20, 0x28]
-
-        # calc sizeof(action[0])
-        sizeof_action = 0xffff_ffff_ffff_ffff
-        for task in task_addrs:
-            mm = read_int_from_memory(task + offset_mm)
-            if mm == 0:
-                # for speed up; ignore if kernel thread
-                continue
-
-            sighand = read_int_from_memory(task + offset_sighand)
-            current = sighand + offset_action
-            found_offset_case1 = []
-            found_offset_case2 = []
-
-            for i in range(64 * 4):
-                offset = current_arch.ptrsize * i
-
-                # check case 1 (sa_flags)
-                v = read_int_from_memory(current + offset)
-                # SA_RESTORER, SA_RESTART, SA_NODEFER, SA_RESTART|SA_RESTORER, SA_NODEFER|SA_RESTORER
-                if v in [0x0400_0000, 0x1000_0000, 0x4000_0000, 0x1400_0000, 0x4400_0000]:
-                    found_offset_case1.append(offset)
-
-                # check case 2 (sa_mask)
-                v = read_int64_from_memory(current + offset)
-                if bin(v)[2:].count("1") > 56: # heuristic threshold
-                    found_offset_case2.append(offset)
-
-            if len(found_offset_case1) >= 2:
-                sizeof_action_tmp = min(y - x for x, y in zip(found_offset_case1[:-1], found_offset_case1[1:]))
-                # it is minimum size, so fast return
-                if sizeof_action_tmp in possible_sizes:
-                    return sizeof_action_tmp
-                # not minimum size, so check next task
-                sizeof_action = min(sizeof_action, sizeof_action_tmp)
-
-            if len(found_offset_case2) >= 2:
-                sizeof_action_tmp = min(y - x for x, y in zip(found_offset_case2[:-1], found_offset_case2[1:]))
-                # it is minimum size, so fast return
-                if sizeof_action_tmp in possible_sizes:
-                    return sizeof_action_tmp
-                # not minimum size, so check next task
-                sizeof_action = min(sizeof_action, sizeof_action_tmp)
-
-        if sizeof_action != 0xffff_ffff_ffff_ffff:
-            for ps in possible_sizes:
-                if sizeof_action % ps == 0:
-                    return sizeof_action
-        return None
-
     def show_init_task_recovery_hint(self, init_task):
         if init_task is not None:
             return
@@ -74240,7 +74284,8 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
         return True
 
     def initialize_fdt_offset(self):
-        self.offset_fdt = self.get_offset_fdt(self.offset_files)
+        files = read_int_from_memory(self.task_addrs_temp[0] + self.offset_files)
+        self.offset_fdt = Kernel.Files.get_offset_fdt(files)
         if self.offset_fdt is None:
             self.meta.append((self.quiet_err, "Could not find files_struct->fdt"))
             return None
@@ -74276,7 +74321,8 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
             self.offset_signal = self.get_offset_signal(self.offset_nsproxy)
             self.meta.append((self.quiet_info, "offsetof(task_struct, signal): {:#x}".format(self.offset_signal)))
 
-            self.offset_thread_head = self.get_offset_thread_head(self.offset_signal)
+            signal = read_int_from_memory(self.task_addrs_temp[0] + self.offset_signal)
+            self.offset_thread_head = Kernel.Signal.get_offset_thread_head(signal)
             if self.offset_thread_head is None:
                 self.meta.append((self.quiet_err, "Could not find signal->thread_head"))
                 return None
@@ -74291,63 +74337,25 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
         self.meta.append((self.quiet_info, "offsetof(task_struct, sighand): {:#x}".format(self.offset_sighand)))
 
         sighand = read_int_from_memory(task_addrs[1] + self.offset_sighand)
-        self.offset_action = self.get_offset_action(sighand)
+        self.offset_action = Kernel.Sighand.get_offset_action(sighand)
         if self.offset_action is None:
             self.meta.append((self.quiet_err, "Could not find sighand_struct->action"))
             return None
         self.meta.append((self.quiet_info, "offsetof(sighand_struct, action): {:#x}".format(self.offset_action)))
 
-        self.sizeof_action = self.get_sizeof_action(
-            self.offset_sighand, self.offset_action, self.offset_mm,
-        )
+        sighands = []
+        for task in task_addrs:
+            if read_int_from_memory(task + self.offset_mm) == 0:
+                continue
+            sample = read_int_from_memory(task + self.offset_sighand)
+            if is_valid_addr(sample):
+                sighands.append(sample)
+        self.sizeof_action = Kernel.Sighand.get_sizeof_action(tuple(sighands), self.offset_action)
         if self.sizeof_action is None:
             self.meta.append((self.quiet_err, "Could not find sizeof(action[0])"))
             return None
         self.meta.append((self.quiet_info, "sizeof(action[0]): {:#x}".format(self.sizeof_action)))
-
-        self.signame_list = {
-            1: "SIGHUP",
-            2: "SIGINT",
-            3: "SIGQUIT",
-            4: "SIGILL",
-            5: "SIGTRAP",
-            6: "SIGABRT",
-            7: "SIGBUS",
-            8: "SIGFPE",
-            9: "SIGKILL",
-            10: "SIGUSR1",
-            11: "SIGSEGV",
-            12: "SIGUSR2",
-            13: "SIGPIPE",
-            14: "SIGALRM",
-            15: "SIGTERM",
-            16: "SIGSTKFLT",
-            17: "SIGCHLD",
-            18: "SIGCONT",
-            19: "SIGSTOP",
-            20: "SIGTSTP",
-            21: "SIGTTIN",
-            22: "SIGTTOU",
-            23: "SIGURG",
-            24: "SIGXCPU",
-            25: "SIGXFSZ",
-            26: "SIGVTALRM",
-            27: "SIGPROF",
-            28: "SIGWINCH",
-            29: "SIGIO",
-            30: "SIGPWR",
-            31: "SIGSYS",
-            32: "SIGCANCEL", # from glibc source code
-            33: "SIGSETXID", # from glibc source code
-            34: "SIGRTMIN",
-            # 35 ... 49: SIGRTMIN+i
-            # 50 ... 63: SIGRTMAX-i
-            64: "SIGRTMAX",
-        }
-        for i in range(35, 50):
-            self.signame_list[i] = "SIGRTMIN+{:d}".format(i - 34)
-        for i in range(63, 49, -1):
-            self.signame_list[i] = "SIGRTMAX-{:d}".format(64 - i)
+        self.signame_list = Kernel.Sighand.SIGNAL_NAMES
         return True
 
     def initialize_seccomp_offsets(self):
