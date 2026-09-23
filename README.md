@@ -305,6 +305,8 @@ For a comprehensive list and additional details, see [docs/SUPPORTED-MODE.md](do
     - ![](images/usermodehelper-tracer.png)
 - `kmalloc-tracer`: collects and displays information when `kmalloc`/`kfree`.
     - ![](images/kmalloc-tracer.png)
+- `kuaf-watch`: tracks the alloc/free/reuse lifecycle of a slab object (or an entire cache) for UAF analysis.
+    - ![](images/kuaf-watch.png)
 - `kmalloc-allocated-by`: calls a predefined set of system calls and prints structures allocated by `kmalloc` or freed by `kfree`.
     - ![](images/kmalloc-allocated-by.png)
 - `ktrace`: traces kernel functions and arguments.

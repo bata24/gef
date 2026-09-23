@@ -166033,6 +166033,9 @@ class KmallocBreakpoint(gdb.Breakpoint):
             _, size = current_arch.get_ith_parameter(self.index_of_size_arg)
         else:
             # e.g., kmem_cache_alloc_node has no `size` argument
+            if self.extra is None:
+                # Without SLUB metadata, neither the cache name nor the size can be resolved.
+                return False
             _, kmem_cache = current_arch.get_ith_parameter(0)
             slab_cache_name_ptr = read_int_from_memory(kmem_cache + self.extra.kmem_cache_offset_name)
             slab_cache_name = read_cstring_from_memory(slab_cache_name_ptr)
@@ -166441,7 +166444,7 @@ class KmallocTracerCommand(GenericCommand):
         return
 
     @staticmethod
-    def set_bp_to_kmalloc_kfree(option_info, extra_info):
+    def get_kmalloc_kfree_syms():
         # `kmalloc` is always inlined and not exported, so its symbol cannot be identified.
         # Therefore, you must set a breakpoint in a function that is exported instead of kmalloc.
         # This can be done by checking EXPORT_SYMBOL, and a tool to automate this is dev/update-kmalloc-tracer.
@@ -166686,6 +166689,11 @@ class KmallocTracerCommand(GenericCommand):
                 ["kfree", 0],
                 ["kfree_nolock", 0],
             ]
+        return kmalloc_syms, kfree_syms
+
+    @staticmethod
+    def set_bp_to_kmalloc_kfree(option_info, extra_info):
+        kmalloc_syms, kfree_syms = KmallocTracerCommand.get_kmalloc_kfree_syms()
 
         breakpoints = []
         for sym, index_of_size_arg in kmalloc_syms:
@@ -168258,6 +168266,273 @@ class KmallocAllocatedByCommand(GenericCommand):
         self.test_syscall(breakpoints)
         info("Syscall test is complete, cleaning up...")
         self.cleanup(hwbp, breakpoints)
+        return
+
+
+class KuafWatchAllocBreakpoint(gdb.Breakpoint):
+    """Create a breakpoint at an allocator entry for kuaf-watch."""
+
+    def __init__(self, loc, sym, watcher):
+        super().__init__("*{:#x}".format(loc), gdb.BP_BREAKPOINT, internal=False)
+        self.sym = sym
+        self.watcher = watcher
+        self.enabled = False
+        return
+
+    def stop(self):
+        Cache.reset_gef_caches()
+        # Only capture the caller here; resolving the task/cache is deferred to the return
+        # handler so non-matching allocations stay cheap.
+        try:
+            ret_addr = gdb.newest_frame().older().pc()
+        except gdb.error:
+            return False
+        KuafWatchAllocRetBreakpoint(ret_addr, self.sym, ret_addr, self.watcher)
+        return False
+
+
+class KuafWatchAllocRetBreakpoint(gdb.Breakpoint):
+    """Create a breakpoint at an allocator return for kuaf-watch."""
+
+    def __init__(self, loc, sym, caller_pc, watcher):
+        super().__init__("*{:#x}".format(loc), gdb.BP_BREAKPOINT, internal=True)
+        self.sym = sym
+        self.caller_pc = caller_pc
+        self.watcher = watcher
+        KmallocTracerCommand.clear_disabled_breakpoints("KuafWatchAllocRetBreakpoint")
+        return
+
+    def stop(self):
+        Cache.reset_gef_caches()
+        allocated = AddressUtil.parse_address(current_arch.return_register)
+        self.enabled = False
+        return self.watcher.handle_alloc(allocated, self.sym, self.caller_pc)
+
+
+class KuafWatchFreeBreakpoint(gdb.Breakpoint):
+    """Create a breakpoint at kfree for kuaf-watch."""
+
+    def __init__(self, loc, sym, index_of_addr_arg, watcher):
+        super().__init__("*{:#x}".format(loc), gdb.BP_BREAKPOINT, internal=False)
+        self.sym = sym
+        self.index_of_addr_arg = index_of_addr_arg
+        self.watcher = watcher
+        self.enabled = False
+        return
+
+    def stop(self):
+        Cache.reset_gef_caches()
+        _, to_free = current_arch.get_ith_parameter(self.index_of_addr_arg)
+        if to_free == 0:
+            return False
+        try:
+            caller_pc = gdb.newest_frame().older().pc()
+        except gdb.error:
+            caller_pc = None
+        return self.watcher.handle_free(to_free, self.sym, caller_pc)
+
+
+@register_command
+class KuafWatchCommand(GenericCommand):
+    """Track the alloc/free/reuse lifecycle of a slab object (or an entire cache) for UAF analysis."""
+
+    _cmdline_ = "kuaf-watch"
+    _category_ = "06-i. Qemu-system/KGDB Cooperation - Linux Dynamic Inspection"
+
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("address", metavar="ADDRESS", nargs="*", type=AddressUtil.parse_address,
+                        help="the slab object address(es) (or interior pointer) to watch.")
+    parser.add_argument("-c", "--cache", help="follow an entire slab cache by name instead of specific objects.")
+    parser.add_argument("-s", "--stop-on-reuse", action="store_true", help="stop at the first reuse (re-allocation) event.")
+    parser.add_argument("-t", "--backtrace", action="store_true", help="display a backtrace for each event.")
+    _syntax_ = parser.format_help()
+
+    _example_ = [
+        "{0:s} 0xffff888012345600                     # watch one object's alloc/free/reuse",
+        "{0:s} 0xffff888012345600 0xffff888012345700  # watch several objects at once",
+        "{0:s} --cache kmalloc-256                    # watch every object of a cache",
+        "{0:s} 0xffff888012345600 -s                  # break at the first reuse",
+    ]
+    _example_ = "\n".join(_example_).format(_cmdline_)
+
+    _note_ = [
+        "Disable `-enable-kvm` option for qemu-system (#PF may occur).",
+        "Append `tsc=unstable` option for kernel cmdline.",
+        "This is a higher-level view built on the same allocator breakpoints as kmalloc-tracer.",
+        "In --cache mode the slab cache of every alloc/free is resolved, which is slower than single-object mode.",
+        "This command requires CONFIG_RANDSTRUCT=n.",
+    ]
+    _note_ = "\n".join(_note_)
+
+    def resolve_offsets(self):
+        self.offset_pid = None
+        ret = gdb.execute("ktask --no-pager --meta", to_string=True)
+        r = re.search(r"offsetof\(task_struct, pid\): (0x\S+)", ret)
+        if r:
+            self.offset_pid = int(r.group(1), 16)
+        return
+
+    def get_task_info(self):
+        cpu = gdb.selected_thread().num - 1
+        task_addr, comm = KmallocTracerCommand.get_task()
+        pid = None
+        if task_addr and self.offset_pid is not None:
+            pid = read_int32_from_memory(task_addr + self.offset_pid)
+        return task_addr, comm, pid, cpu
+
+    def symbolize(self, caller_pc):
+        if caller_pc is None:
+            return "?"
+        sym = Symbol.get_symbol_string(caller_pc).strip()
+        if sym:
+            return sym.strip("<>")
+        return "{:#x}".format(caller_pc)
+
+    def lookup_cache(self, addr):
+        ret = KmallocTracerCommand.virt2name_and_size(addr)
+        if ret:
+            return ret[0]
+        return None
+
+    def resolve_object(self, addr):
+        """Resolve (object_base, cache_name, object_size, state) for a slab address, or None."""
+        out = Color.remove_color(gdb.execute("slab-contains {:#x}".format(addr), to_string=True))
+        m = re.search(r"^name: (\S+)\s+object_size: (\S+)", out, re.M)
+        if not m:
+            return None
+        name, object_size = m.group(1), int(m.group(2), 0)
+        m = re.search(r"^object_base: (0x\S+)", out, re.M)
+        base = int(m.group(1), 16) if m else addr
+        m = re.search(r"^status: (freed|in-use)", out, re.M)
+        state = None
+        if m:
+            state = "freed" if m.group(1) == "freed" else "allocated"
+        return base, name, object_size, state
+
+    def emit_event(self, tag, addr, cache, caller_pc, api):
+        _task_addr, _comm, pid, cpu = self.get_task_info()
+        caller = self.symbolize(caller_pc)
+        if tag == "FREE":
+            theme = "theme.heap_chunk_address_freed"
+        else:
+            theme = "theme.heap_chunk_address_used"
+        addr_s = Color.colorify_hex(addr, Config.get_gef_setting(theme))
+        cache_s = Color.colorify(cache or "?", Config.get_gef_setting("theme.heap_chunk_label"))
+        gef_print("[{:5s}] {:s}  cache={:s}".format(tag, addr_s, cache_s))
+        pid_s = "?" if pid is None else "{:d}".format(pid)
+        gef_print("        caller={:s}  pid={:s} cpu={:d}  api={:s}".format(caller, pid_s, cpu, api))
+        if self.backtrace:
+            KmallocTracerCommand.print_backtrace(True)
+        return
+
+    def handle_alloc(self, allocated, sym, caller_pc):
+        if self.cache_name is None:
+            if allocated not in self.watched:
+                return False
+            cache = self.lookup_cache(allocated) or self.watched[allocated]
+        else:
+            cache = self.lookup_cache(allocated)
+            if cache != self.cache_name:
+                return False
+        reuse = allocated in self.freed_slots
+        self.freed_slots.discard(allocated)
+        self.emit_event("ALLOC", allocated, cache, caller_pc, sym)
+        return self.stop_on_reuse and reuse
+
+    def handle_free(self, to_free, sym, caller_pc):
+        if self.cache_name is None:
+            if to_free not in self.watched:
+                return False
+            cache = self.watched[to_free]
+        else:
+            cache = self.lookup_cache(to_free)
+            if cache != self.cache_name:
+                return False
+        self.freed_slots.add(to_free)
+        self.emit_event("FREE", to_free, cache, caller_pc, sym)
+        return False
+
+    @parse_args
+    @only_if_gdb_running
+    @only_if_specific_gdb_mode(mode=("qemu-system",))
+    @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
+    @only_if_in_kernel
+    @only_if_kvm_disabled
+    def do_invoke(self, args):
+        if args.cache is None and not args.address:
+            err("Specify an ADDRESS or --cache CACHE")
+            return
+
+        kversion = Kernel.kernel_version()
+        if kversion < "3.0":
+            err("Unsupported before v3.0")
+            return
+
+        allocator = Kernel.get_slab_type()
+        if allocator not in ["SLUB", "SLUB_TINY", "SLAB"]:
+            err("Unsupported: SLOB, Unknown allocator")
+            return
+
+        info("Wait for memory scan")
+        self.resolve_offsets()
+        self.stop_on_reuse = args.stop_on_reuse
+        self.backtrace = args.backtrace
+        self.watched = {}
+        self.freed_slots = set()
+
+        if args.cache is not None:
+            self.cache_name = args.cache
+            info("Watching cache: {:s}".format(Color.colorify(self.cache_name, Config.get_gef_setting("theme.heap_chunk_label"))))
+        else:
+            self.cache_name = None
+            for address in args.address:
+                resolved = self.resolve_object(address)
+                if resolved is None:
+                    err("{:#x} is not a slab object".format(address))
+                    continue
+                base, cache, object_size, state = resolved
+                if base in self.watched:
+                    # several interior pointers can designate the same object
+                    continue
+                self.watched[base] = cache
+                if state == "freed":
+                    self.freed_slots.add(base)
+                gef_print("[{:5s}] {:s}  cache={:s}  object_size={:#x}  state={:s}".format(
+                    "WATCH",
+                    Color.colorify_hex(base, Config.get_gef_setting("theme.heap_chunk_address_used")),
+                    Color.colorify(cache, Config.get_gef_setting("theme.heap_chunk_label")),
+                    object_size, state or "unknown",
+                ))
+            if not self.watched:
+                err("No slab object to watch")
+                return
+
+        # set breakpoints (reuse kmalloc-tracer's allocator symbol tables)
+        kmalloc_syms, kfree_syms = KmallocTracerCommand.get_kmalloc_kfree_syms()
+        # Dedicated caches (task_struct, cred, filp, ...) - the usual UAF targets - are
+        # released with kmem_cache_free, not kfree, so track it as well (ptr is arg 1).
+        kfree_syms = kfree_syms + [["kmem_cache_free", 1]]
+        breakpoints = []
+        for sym, _index_of_size_arg in kmalloc_syms:
+            func_addr = Ksym.get_addr(sym)
+            if func_addr:
+                gef_print(sym + ": ", end="")
+                breakpoints.append(KuafWatchAllocBreakpoint(func_addr, sym, self))
+        for sym, index_of_addr_arg in kfree_syms:
+            func_addr = Ksym.get_addr(sym)
+            if func_addr:
+                gef_print(sym + ": ", end="")
+                breakpoints.append(KuafWatchFreeBreakpoint(func_addr, sym, index_of_addr_arg, self))
+        for bp in breakpoints:
+            bp.enabled = True
+
+        info("Setup is complete. continuing...")
+        gdb.execute("continue")
+
+        info("kuaf-watch is complete, cleaning up...")
+        for bp in breakpoints:
+            bp.delete()
+        KmallocTracerCommand.clear_disabled_breakpoints("KuafWatchAllocRetBreakpoint", force=True)
         return
 
 

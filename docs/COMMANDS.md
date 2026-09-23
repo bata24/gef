@@ -11570,6 +11570,45 @@ If you set breakpoints in some commonly called functions, it became too slow to 
 Use filtering options to reduce the number of functions targeted by breakpoints as much as possible.
 ```
 
+## kuaf-watch
+
+Track the alloc/free/reuse lifecycle of a slab object (or an entire cache) for UAF analysis.
+
+
+### Syntax
+
+```text
+usage: kuaf-watch [-h] [-c CACHE] [-s] [-t] [ADDRESS ...]
+
+positional arguments:
+  ADDRESS              the slab object address(es) (or interior pointer) to watch.
+
+options:
+  -h, --help           show this help message and exit
+  -c, --cache CACHE    follow an entire slab cache by name instead of specific objects.
+  -s, --stop-on-reuse  stop at the first reuse (re-allocation) event.
+  -t, --backtrace      display a backtrace for each event.
+```
+
+### Examples
+
+```gdb
+kuaf-watch 0xffff888012345600                     # watch one object's alloc/free/reuse
+kuaf-watch 0xffff888012345600 0xffff888012345700  # watch several objects at once
+kuaf-watch --cache kmalloc-256                    # watch every object of a cache
+kuaf-watch 0xffff888012345600 -s                  # break at the first reuse
+```
+
+### Notes
+
+```text
+Disable `-enable-kvm` option for qemu-system (#PF may occur).
+Append `tsc=unstable` option for kernel cmdline.
+This is a higher-level view built on the same allocator breakpoints as kmalloc-tracer.
+In --cache mode the slab cache of every alloc/free is resolved, which is slower than single-object mode.
+This command requires CONFIG_RANDSTRUCT=n.
+```
+
 ## thunk-tracer
 
 Collect and display the thunk addresses that are called automatically (x64/x86 only).
