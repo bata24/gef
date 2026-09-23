@@ -15843,6 +15843,7 @@ GDB_MODE_CHECKERS = {
     "wine": is_wine,
 }
 
+
 ARCH_CHECKERS = {
     "x86_32": is_x86_32,
     "x86_64": is_x86_64,
@@ -177868,6 +177869,7 @@ class GefPyObjListCommand(GenericCommand, BufferingOutput):
             "__annotations__",
             "__warningregistry__",
             "GdbRemoveReadlineFinder",
+            "MetaPathFinder",
         ]
 
         skip_type_list = [
