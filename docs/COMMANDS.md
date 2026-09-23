@@ -3761,6 +3761,32 @@ hexdump-flexible "2Q2I2H2B" $rsp 4  # "Show qword*2, dword*2, short*2, byte*2" f
 hexdump-flexible "4Q-2Q" $rsp 4     # "Show qword*4 and skip qword*2" from $rsp and repeat 4 times
 ```
 
+## `jmpbuf`
+
+Display the registers saved in a jmp_buf or sigjmp_buf of glibc, with PTR_MANGLE decoded.
+
+
+### Syntax
+
+```text
+usage: jmpbuf [-h] [-f] LOCATION
+
+positional arguments:
+  LOCATION              the address of jmp_buf or sigjmp_buf.
+
+options:
+  -h, --help            show this help message and exit
+  -f, --force-heuristic
+                        do not use symbols to detect PTR_MANGLE
+```
+
+### Examples
+
+```gdb
+jmpbuf &env                 # jmp_buf env; / sigjmp_buf env;
+jmpbuf $rdi                 # the 1st argument of setjmp, longjmp, siglongjmp, etc.
+```
+
 ## `json`
 
 The base command to pretty print for JSON.

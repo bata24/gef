@@ -14164,6 +14164,8 @@ def is_qiling():
         return None
     if not is_remote_debug():
         return False
+    if is_qemu():
+        return False
     pid = Pid.get_pid(remote=True)
     if pid is None or pid < 42000:
         return False
@@ -42303,6 +42305,293 @@ class UcontextCommand(GenericCommand):
             out.append("{:+#07x} {:{:d}s}: {:s}".format(mcontext + offset - base, name, width, value_s))
 
         gef_print("\n".join(out), less=not args.no_pager)
+        return
+
+
+@register_command
+class JmpbufCommand(GenericCommand):
+    """Display the registers saved in a jmp_buf or sigjmp_buf of glibc, with PTR_MANGLE decoded."""
+
+    _cmdline_ = "jmpbuf"
+    _category_ = "03-b. Memory - View"
+
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("location", metavar="LOCATION", type=AddressUtil.parse_address,
+                        help="the address of jmp_buf or sigjmp_buf.")
+    parser.add_argument("-f", "--force-heuristic", action="store_true", help="do not use symbols to detect PTR_MANGLE")
+    _syntax_ = parser.format_help()
+
+    _example_ = [
+        "{0:s} &env                 # jmp_buf env; / sigjmp_buf env;",
+        "{0:s} $rdi                 # the 1st argument of setjmp, longjmp, siglongjmp, etc.",
+    ]
+    _example_ = "\n".join(_example_).format(_cmdline_)
+
+    ARCH_DETECT = UcontextCommand.ARCH_DETECT + (
+        ("or1k", is_or1k), ("microblaze", is_microblaze), ("arc64", is_arc64), ("arc32", is_arc32), ("csky", is_csky),
+    )
+
+    @staticmethod
+    def get_layout(arch=None):
+        """Return the offsets of fields in struct __jmp_buf_tag of glibc for the given architecture
+        (default: the current one). Fields of the registers are (name, offset, size, kind).
+        kind is None (dereferenced), "mangled" (dereferenced after PTR_DEMANGLE), "raw", "flags"
+        or "shadow" (shown only when it is a valid address)."""
+        if arch is None:
+            for key, checker in JmpbufCommand.ARCH_DETECT:
+                if checker():
+                    arch = key
+                    break
+
+        def seq(names, start, size, kind=None):
+            return [(name, start + i * size, size, kind) for i, name in enumerate(names)]
+
+        layout = {"generic_signo": True}
+
+        if arch == "x64":
+            layout["name"] = "x86-64"
+            layout["regs"] = seq(["rbx"], 0, 8)
+            layout["regs"] += seq(["rbp"], 8, 8, "mangled")
+            layout["regs"] += seq(["r12", "r13", "r14", "r15"], 16, 8)
+            layout["regs"] += seq(["rsp", "rip"], 48, 8, "mangled")
+            layout["regs"] += seq(["ssp"], 88, 8, "shadow")
+            layout["mask_was_saved"] = 64
+            layout["saved_mask"] = 72
+
+        elif arch == "x86":
+            layout["name"] = "i386"
+            layout["regs"] = seq(["ebx", "esi", "edi", "ebp"], 0, 4)
+            layout["regs"] += seq(["esp", "eip"], 16, 4, "mangled")
+            layout["regs"] += seq(["ssp"], 40, 4, "shadow")
+            layout["mask_was_saved"] = 24
+            layout["saved_mask"] = 28
+
+        elif arch == "aarch64":
+            layout["name"] = "AArch64"
+            layout["regs"] = seq(["x{:d}".format(i) for i in range(19, 30)], 0, 8)
+            layout["regs"] += seq(["lr"], 88, 8, "mangled")
+            layout["regs"] += seq(["sp"], 104, 8, "mangled")
+            layout["regs"] += seq(["d{:d}".format(i) for i in range(8, 16)], 112, 8, "raw")
+            layout["regs"] += seq(["gcspr"], 208, 8, "shadow")
+            layout["mask_was_saved"] = 176
+            layout["saved_mask"] = 184
+
+        elif arch == "arm":
+            layout["name"] = "ARM"
+            layout["regs"] = seq(["sp", "lr"], 0, 4, "mangled")
+            layout["regs"] += seq(["r{:d}".format(i) for i in range(4, 11)] + ["fp"], 8, 4)
+            layout["regs"] += seq(["d{:d}".format(i) for i in range(8, 16)], 40, 8, "raw")
+            layout["mask_was_saved"] = 256
+            layout["saved_mask"] = 260
+
+        elif arch in ("riscv64", "riscv32"):
+            layout["name"] = "RISC-V"
+            ptrsize = 8 if arch == "riscv64" else 4
+            layout["regs"] = seq(["pc"] + ["s{:d}".format(i) for i in range(12)] + ["sp"], 0, ptrsize)
+            layout["regs"] += seq(["fs{:d}".format(i) for i in range(12)], ptrsize * 14, 8, "raw")
+            layout["mask_was_saved"] = ptrsize * 14 + 96
+            layout["saved_mask"] = ptrsize * 14 + 96 + ptrsize
+
+        elif arch in ("mips", "mipsn32", "mips64"):
+            layout["generic_signo"] = False
+            size = 4 if arch == "mips" else 8
+            names = ["s{:d}".format(i) for i in range(8)]
+            layout["regs"] = seq(["pc", "sp"], 0, size)
+            layout["regs"] += seq(names + ["fp", "gp"], size * 2, size)
+            if arch == "mips64":
+                layout["name"] = "MIPS n64"
+                layout["regs"] += seq(["f{:d}".format(i) for i in range(24, 32)], 104, 8, "raw")
+                layout["mask_was_saved"] = 168
+                layout["saved_mask"] = 176
+            else:
+                layout["name"] = "MIPS o32" if arch == "mips" else "MIPS n32"
+                offset = 56 if arch == "mips" else 104
+                layout["regs"] += seq(["f{:d}".format(i) for i in range(20, 32, 2)], offset, 8, "raw")
+                layout["mask_was_saved"] = offset + 48
+                layout["saved_mask"] = offset + 52
+
+        elif arch == "ppc64":
+            layout["name"] = "PowerPC64"
+            layout["regs"] = seq(["r1"], 0, 8, "mangled")
+            layout["regs"] += seq(["r2"], 8, 8)
+            layout["regs"] += seq(["lr"], 16, 8, "mangled")
+            layout["regs"] += seq(["r{:d}".format(i) for i in range(14, 32)], 24, 8)
+            layout["regs"] += seq(["vrsave"], 168, 4, "raw")
+            layout["regs"] += seq(["cr"], 172, 4, "flags")
+            layout["regs"] += seq(["f{:d}".format(i) for i in range(14, 32)], 176, 8, "raw")
+            layout["mask_was_saved"] = 512
+            layout["saved_mask"] = 520
+
+        elif arch == "ppc32":
+            layout["name"] = "PowerPC"
+            layout["regs"] = seq(["r1"], 0, 4, "mangled")
+            layout["regs"] += seq(["lr"], 8, 4, "mangled")
+            layout["regs"] += seq(["r{:d}".format(i) for i in range(14, 32)], 12, 4)
+            layout["regs"] += seq(["cr"], 84, 4, "flags")
+            layout["regs"] += seq(["f{:d}".format(i) for i in range(14, 32)], 88, 8, "raw")
+            layout["regs"] += seq(["vrsave"], 248, 4, "raw")
+            layout["mask_was_saved"] = 448
+            layout["saved_mask"] = 452
+
+        elif arch == "s390x":
+            layout["name"] = "s390x"
+            layout["regs"] = seq(["r{:d}".format(i) for i in range(6, 14)], 0, 8)
+            layout["regs"] += seq(["r14", "r15"], 64, 8, "mangled")
+            layout["regs"] += seq(["f{:d}".format(i) for i in range(8, 16)], 80, 8, "raw")
+            layout["mask_was_saved"] = 144
+            layout["saved_mask"] = 152
+
+        elif arch == "loongarch64":
+            layout["name"] = "LoongArch64"
+            layout["regs"] = seq(["ra", "sp"], 0, 8, "mangled")
+            layout["regs"] += seq(["u0", "fp"] + ["s{:d}".format(i) for i in range(9)], 16, 8)
+            layout["regs"] += seq(["fs{:d}".format(i) for i in range(8)], 104, 8, "raw")
+            layout["mask_was_saved"] = 168
+            layout["saved_mask"] = 176
+
+        elif arch == "sparc64":
+            layout["name"] = "SPARC64"
+            layout["generic_signo"] = False
+            uc_layout = UcontextCommand.get_layout(arch)
+            layout["regs"] = seq(["uc_link"], 0, 8)
+            layout["regs"] += seq(["uc_flags"], 8, 8, "raw")
+            layout["regs"] += [(name, uc_layout["mcontext"] + off, size, kind) for name, off, size, kind in uc_layout["regs"]]
+            layout["mask_was_saved"] = 512
+            layout["saved_mask"] = 16
+
+        elif arch == "sh4":
+            layout["name"] = "SH4"
+            layout["regs"] = seq(["r{:d}".format(i) for i in range(8, 14)], 0, 4)
+            layout["regs"] += seq(["r14", "r15", "pr"], 24, 4, "mangled")
+            layout["regs"] += seq(["gbr"], 36, 4)
+            layout["regs"] += seq(["fpscr"] + ["fr{:d}".format(i) for i in range(12, 16)], 40, 4, "raw")
+            layout["mask_was_saved"] = 60
+            layout["saved_mask"] = 64
+
+        elif arch == "m68k":
+            layout["name"] = "m68k"
+            layout["regs"] = seq(["d{:d}".format(i) for i in range(1, 8)] + ["pc"], 0, 4)
+            layout["regs"] += seq(["a{:d}".format(i) for i in range(1, 6)] + ["fp", "sp"], 32, 4)
+            layout["regs"] += seq(["fp{:d}".format(i) for i in range(8)], 60, 12, "raw")
+            layout["mask_was_saved"] = 156
+            layout["saved_mask"] = 160
+
+        elif arch == "alpha":
+            layout["name"] = "Alpha"
+            layout["generic_signo"] = False
+            layout["regs"] = seq(["s{:d}".format(i) for i in range(6)], 0, 8)
+            layout["regs"] += seq(["pc", "fp", "sp"], 48, 8, "mangled")
+            layout["regs"] += seq(["f{:d}".format(i) for i in range(2, 10)], 72, 8, "raw")
+            layout["mask_was_saved"] = 136
+            layout["saved_mask"] = 144
+
+        elif arch == "hppa":
+            layout["name"] = "PA-RISC"
+            layout["generic_signo"] = False
+            layout["regs"] = seq(["r3"], 0, 4)
+            layout["regs"] += seq(["r{:d}".format(i) for i in range(4, 20)] + ["r27", "sp", "rp"], 8, 4)
+            layout["regs"] += seq(["fr{:d}".format(i) for i in range(12, 22)], 88, 8, "raw")
+            layout["mask_was_saved"] = 168
+            layout["saved_mask"] = 172
+
+        elif arch == "or1k":
+            layout["name"] = "OpenRISC"
+            names = ["sp", "fp", "lr", "r10"] + ["r{:d}".format(i) for i in range(14, 31, 2)]
+            layout["regs"] = seq(names, 0, 4)
+            layout["mask_was_saved"] = 52
+            layout["saved_mask"] = 56
+
+        elif arch == "microblaze":
+            layout["name"] = "MicroBlaze"
+            layout["regs"] = seq(["sp", "r2"] + ["r{:d}".format(i) for i in range(13, 32)], 0, 4)
+            layout["mask_was_saved"] = 84
+            layout["saved_mask"] = 88
+
+        elif arch in ("arc32", "arc64"):
+            layout["name"] = "ARC"
+            if arch == "arc64":
+                layout["regs"] = seq(["blink", "sp", "fp", "r30"] + ["r{:d}".format(i) for i in range(13, 27)], 0, 8)
+                layout["mask_was_saved"] = 256
+                layout["saved_mask"] = 264
+            else:
+                layout["regs"] = seq(["blink", "sp", "fp", "gp"] + ["r{:d}".format(i) for i in range(13, 25)], 0, 4)
+                layout["mask_was_saved"] = 128
+                layout["saved_mask"] = 132
+
+        elif arch == "csky":
+            layout["name"] = "C-SKY"
+            layout["regs"] = seq(["sp", "lr"], 0, 4, "mangled")
+            names = ["r{:d}".format(i) for i in list(range(4, 12)) + [16, 17] + list(range(26, 32))]
+            layout["regs"] += seq(names, 8, 4)
+            layout["mask_was_saved"] = 136
+            layout["saved_mask"] = 140
+
+        else:
+            return None
+        return layout
+
+    @parse_args
+    @only_if_gdb_running
+    @exclude_specific_gdb_mode(mode=("wine",))
+    @only_if_specific_arch(arch=(
+        "x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64", "MIPS32", "MIPSN32", "MIPS64", "PPC32", "PPC64",
+        "S390X", "LOONGARCH64", "SPARC64", "SH4", "M68K", "ALPHA", "HPPA32", "OR1K", "MICROBLAZE", "ARC32", "ARC64",
+        "CSKY",
+    ))
+    def do_invoke(self, args):
+        layout = self.get_layout()
+        base = args.location
+        regs = layout["regs"]
+
+        try:
+            size = max([layout["mask_was_saved"] + 4, layout["saved_mask"] + 8] + [offset + size for _, offset, size, _ in regs])
+            data = read_memory(base, size)
+        except gdb.MemoryError:
+            err("Failed to read memory")
+            return
+
+        cookie = None
+        if any(kind == "mangled" for _, _, _, kind in regs):
+            cookie = PtrDemangleCommand.get_cookie(force_heuristic=args.force_heuristic)
+            if cookie is None:
+                warn("Failed to get the cookie of PTR_MANGLE, so mangled values are shown as is")
+            else:
+                info("Cookie is {:s}".format(Color.colorify_hex(cookie, "bold")))
+
+        entries = []
+        for name, offset, size, kind in regs:
+            if size not in (2, 4, 8):
+                entries.append((offset, name, "0x" + data[offset:offset + size].hex()))
+                continue
+            value = UcontextCommand.unpack(data, offset, size)
+            if kind == "mangled":
+                if value == 0:
+                    value_s = UcontextCommand.format_value(value, size, "raw")
+                elif cookie is None:
+                    value_s = "{:#0{:d}x} [mangled]".format(value, size * 2 + 2)
+                else:
+                    value = current_arch.decode_cookie(value, cookie)
+                    value_s = "{:s} [demangled]".format(UcontextCommand.format_value(value, size, None))
+            elif kind == "shadow":
+                if not is_valid_addr(value):
+                    continue
+                value_s = UcontextCommand.format_value(value, size, None)
+            else:
+                value_s = UcontextCommand.format_value(value, size, kind)
+            entries.append((offset, name, value_s))
+
+        mask_was_saved = UcontextCommand.unpack(data, layout["mask_was_saved"], 4)
+        entries.append((layout["mask_was_saved"], "__mask_was_saved", "{:#x}".format(mask_was_saved)))
+        if mask_was_saved:
+            value_s = UcontextCommand.format_sigmask(data, layout["saved_mask"], layout["generic_signo"])
+            entries.append((layout["saved_mask"], "__saved_mask", value_s))
+
+        out = [titlify("jmp_buf @ {:#x} ({:s})".format(base, layout["name"]))]
+        width = max(len(name) for _, name, _ in entries)
+        for offset, name, value_s in sorted(entries, key=lambda x: x[0]):
+            out.append("{:+#07x} {:{:d}s}: {:s}".format(offset, name, width, value_s))
+
+        gef_print("\n".join(out))
         return
 
 
