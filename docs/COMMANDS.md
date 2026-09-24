@@ -8006,7 +8006,7 @@ Resolve the per-cpu variables and the per-cpu areas.
 ### Syntax
 
 ```text
-usage: kpercpu [-h] [-c CPU] [-o OFFSET] [-l] [-x SIZE] [-n] [-q] [SYMBOL|ADDRESS]
+usage: kpercpu [-h] [-c CPU] [--online] [-o OFFSET] [-l] [-x SIZE] [-n] [-q] [SYMBOL|ADDRESS]
 
 positional arguments:
   SYMBOL|ADDRESS       a per-cpu symbol name to resolve, or an address to reverse-resolve.
@@ -8014,6 +8014,7 @@ positional arguments:
 options:
   -h, --help           show this help message and exit
   -c, --cpu CPU        filter by specific cpu.
+  --online             filter by online cpus.
   -o, --offset OFFSET  add this offset to the resolved symbol.
   -l, --list           list all the static per-cpu symbols.
   -x, --dump SIZE      hexdump SIZE bytes at each resolved address.
@@ -8026,6 +8027,7 @@ options:
 ```gdb
 kpercpu                        # show the per-cpu area of each cpu
 kpercpu runqueues              # show per_cpu(runqueues, cpu) of each cpu
+kpercpu --online runqueues     # show per_cpu(runqueues, cpu) of each online cpu
 kpercpu -o 0x120 runqueues     # add an offset to the resolved symbol
 kpercpu 0xffff888100600120     # tell which cpu and which variable the address belongs to
 kpercpu -l                     # list all the static per-cpu symbols
@@ -8043,6 +8045,11 @@ CONFIG_KALLSYMS_ALL=n kernel has none of them. `__per_cpu_start` is recovered fr
 the code of `__is_kernel_percpu_address`, which keeps the areas and the reverse
 lookup working, but there the variables cannot be named nor looked up by name.
 CONFIG_SMP=n has no `__per_cpu_offset` at all, and `&var` is the address as is.
+Whether it is CONFIG_SMP=n or just unresolved is told by the "SMP" of the banner.
+
+The number of cpus is `nr_cpu_ids`, the upper bound of the cpu ids, not the number
+of online cpus. Each cpu is tagged with the possible/present/online cpu masks,
+which are recovered from `init_cpu_*()`/`set_cpu_online()` without the symbols.
 ```
 
 ## `ks-selftest`

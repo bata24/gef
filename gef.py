@@ -61726,6 +61726,13 @@ class KernelAddressHeuristicFinderUtil:
         return KernelAddressHeuristicFinderUtil.common_addr_gen(res, regexp, skip, skip_msb_check, read_valid)
 
     @staticmethod
+    def x64_qword_ref(res, skip=0, skip_msb_check=False, read_valid=False):
+        # A word-sized global, either accessed rip-relative or passed by address (e.g., to memcpy).
+        # An int (`DWORD PTR`) is skipped. (e.g., `mov QWORD PTR [rip+0x...],rax  # 0x...`, `mov rdi,0x...`)
+        regexp = r"(?:(?:QWORD|XMMWORD|YMMWORD) PTR \[rip\+0x\w+\].*#\s*|\bmov\s+\w+\s*,\s*)(0x\w{8,})\b"
+        return KernelAddressHeuristicFinderUtil.common_addr_gen(res, regexp, skip, skip_msb_check, read_valid)
+
+    @staticmethod
     def x64_any_ptr_rip_base(res, skip=0, skip_msb_check=False, read_valid=False):
         # Use this when the C type of the global changes between versions. (e.g., `bool` -> `int`)
         regexp = r"(?:BYTE|WORD|DWORD|QWORD) PTR \[rip\+0x\w+\].*#\s*(0x\w+)"
@@ -62071,6 +62078,63 @@ class KernelAddressHeuristicFinderUtil:
             yield w
 
     @staticmethod
+    def aarch64_adrp_use(res, skip=0, skip_msb_check=False, read_valid=False):
+        """Yield the `adrp` based addresses where a 64-bit datum is accessed through them.
+
+        This follows a section anchor, whose `adrp` + `add` is not the variable itself:
+            adrp x1, 0xffffffc008988000; add x1, x1, #0x658; stp x2, x3, [x1, #32]  <-- anchor+0x678
+            adrp x19, ...; add x19, x19, #0x210; add x0, x19, #0x8; bl memcpy         <-- the argument
+        A 32-bit access (`ldr w20, [x1, #704]`, an int such as `nr_cpu_ids`) is skipped."""
+        bases = {}
+        for line in res.splitlines():
+            m = re.search(r":\s*(\S+)\s*(.*)", line)
+            if not m:
+                continue
+            mnemonic, operands = m.group(1), m.group(2)
+            m = re.match(r"(x\d+),\s*(0x\w+)", operands)
+            if mnemonic == "adrp" and m:
+                bases[m.group(1)] = int(m.group(2), 16)
+                continue
+            found = []
+            m = re.match(r"(x\d+),\s*(x\d+|sp),\s*(?:#(0x\w+|\d+)(,\s*lsl\s*#12)?|[xw]\d+)", operands)
+            if mnemonic == "add" and m:
+                # an index register (`add x0, x4, x0, lsl #3`) keeps the base of the array
+                if m.group(2) in bases:
+                    v = int(m.group(3), 0) << (12 if m.group(4) else 0) if m.group(3) else 0
+                    bases[m.group(1)] = bases[m.group(2)] + v
+                else:
+                    bases.pop(m.group(1), None)
+                continue
+            m = re.fullmatch(r"(x\d+),\s*(x\d+)", operands)
+            if mnemonic == "mov" and m:
+                if m.group(2) in bases:
+                    bases[m.group(1)] = bases[m.group(2)]
+                else:
+                    bases.pop(m.group(1), None)
+                continue
+            m = re.match(r"x\d+,.*\[(x\d+)(?:,\s*#(-?0x\w+|-?\d+))?(?:,\s*[xw]\d+[^\]]*)?\]", operands)
+            if m and m.group(1) in bases and mnemonic != "prfm":
+                found.append(bases[m.group(1)] + (int(m.group(2), 0) if m.group(2) else 0))
+            if mnemonic in ("bl", "blr"):
+                found += [bases[reg] for reg in ("x0", "x1") if reg in bases]
+                for i in range(19): # caller-saved
+                    bases.pop("x{:d}".format(i), None)
+            elif not re.fullmatch(r"st(?!l?xr)\w*|b|br|b\.\w+|bti|cbn?z|tbn?z|cmp|cmn|tst|ccmp|ccmn|prfm|ret|nop|dmb|dsb|isb|\w*asp|udf|\.inst", mnemonic):
+                m = re.match(r"([xw])(\d+)", operands)
+                if m:
+                    bases.pop("x" + m.group(2), None)
+            for w in found:
+                w = AddressUtil.normalize_address(w)
+                if not skip_msb_check and not AddressUtil.is_msb_on(w):
+                    continue
+                if read_valid and not is_valid_addr_addr(w):
+                    continue
+                if skip > 0:
+                    skip -= 1
+                    continue
+                yield w
+
+    @staticmethod
     def arm32_movw_movt(res, skip=0, skip_msb_check=False, read_valid=False, allow_cc=False):
         bases = {}
         for line in res.splitlines():
@@ -62329,6 +62393,131 @@ class KernelAddressHeuristicFinderUtil:
             if skip <= 0:
                 yield w
             skip -= 1
+
+    @staticmethod
+    def arm32_const_use(res, skip=0, skip_msb_check=False, read_valid=False):
+        """Yield the constant based addresses where memory is accessed through them.
+
+        The constant is `movw` + `movt` or a literal pool (`ldr r3, [pc, #4]`), and it is
+        usually a section anchor rather than the variable itself:
+            movw r3, #19496; movt r3, #32944; str r2, [r3, #4]  <-- 0x80b04c28+4
+            movw r4, ...; movt r4, ...; mov r1, r4; bl _test_and_set_bit  <-- the argument"""
+        bases = {}
+        movw = {}
+        for line in res.splitlines():
+            m = re.search(r"^\s*(?:=>\s*)?(0x[0-9a-f]+)(?:\s+<[^>]*>)?:\s*(\S+)\s*(.*)", line)
+            if not m:
+                continue
+            pos, mnemonic, operands = int(m.group(1), 16), m.group(2), m.group(3)
+            m = re.match(r"(\w+),.+[;@]\s*(0x\w+)", operands)
+            if mnemonic == "movw" and m:
+                movw[m.group(1)] = int(m.group(2), 16)
+                bases.pop(m.group(1), None)
+                continue
+            if mnemonic == "movt" and m:
+                if m.group(1) in movw:
+                    bases[m.group(1)] = movw.pop(m.group(1)) + (int(m.group(2), 16) << 16)
+                continue
+            m = re.match(r"(\w+),\s*\[pc(?:,\s*#(-?\d+))?\]", operands)
+            if mnemonic == "ldr" and m:
+                v = read_int_from_memory(pos + 4 * 2 + int(m.group(2) or 0), safe=True)
+                if v is None:
+                    bases.pop(m.group(1), None)
+                else:
+                    bases[m.group(1)] = v
+                continue
+            m = re.fullmatch(r"(\w+),\s*(\w+),\s*#(\d+)", operands)
+            if mnemonic == "add" and m:
+                if m.group(2) in bases:
+                    bases[m.group(1)] = bases[m.group(2)] + int(m.group(3))
+                else:
+                    bases.pop(m.group(1), None)
+                continue
+            m = re.fullmatch(r"(\w+),\s*(\w+)", operands)
+            if mnemonic == "mov" and m:
+                if m.group(2) in bases:
+                    bases[m.group(1)] = bases[m.group(2)]
+                else:
+                    bases.pop(m.group(1), None)
+                continue
+            found = []
+            m = re.search(r"\[(\w+)(?:,\s*#(-?\d+))?\]", operands)
+            if m and m.group(1) in bases and re.match(r"(?:ldr|str)", mnemonic):
+                found.append(bases[m.group(1)] + int(m.group(2) or 0))
+            if mnemonic in ("b", "bl", "blx"): # including a tail call
+                found += [bases[reg] for reg in ("r0", "r1") if reg in bases]
+                if mnemonic != "b":
+                    for reg in ("r0", "r1", "r2", "r3", "r12", "ip", "lr"): # caller-saved
+                        bases.pop(reg, None)
+            elif not re.fullmatch(r"str(?!ex)\w*|stm\w*|push|cmp\w*|cmn\w*|tst\w*|teq\w*|pld|pli|nop|dmb|dsb|isb|udf"
+                                  r"|bx?(?:eq|ne|cs|cc|hs|lo|mi|pl|vs|vc|hi|ls|ge|lt|gt|le|al)?(?:\.[wn])?", mnemonic):
+                m = re.match(r"(\w+)", operands)
+                if m:
+                    bases.pop(m.group(1), None)
+            for w in found:
+                w = AddressUtil.normalize_address(w)
+                if not skip_msb_check and not AddressUtil.is_msb_on(w):
+                    continue
+                if read_valid and not is_valid_addr_addr(w):
+                    continue
+                if skip > 0:
+                    skip -= 1
+                    continue
+                yield w
+
+    @staticmethod
+    def riscv_auipc_gen(res, use_addi, use_mem, skip, skip_msb_check, read_valid, word_only=False):
+        """Yield the addresses built from `auipc rd, hi20` and the following `lo12(rd)`.
+
+        GDB does not annotate the pc-relative result for RISC-V, so it is computed here.
+        `use_addi` takes `addi rX, rd, lo12` (the address itself), and `use_mem` takes the
+        displacement of a load/store such as `ld rX, lo12(rd)` or `sd rX, lo12(rd)`.
+        `word_only` limits the latter to the accesses as wide as a pointer."""
+        bases = {}
+        for line in res.splitlines():
+            m = re.match(r"\s*(?:=>\s*)?(0x[0-9a-f]+)(?:\s+<[^>]*>)?:\s*(\S+)\s*(.*)", line)
+            if not m:
+                continue
+            pc, mnemonic = int(m.group(1), 16), m.group(2)
+            ops = [x.strip() for x in m.group(3).split(",")]
+            if mnemonic == "auipc" and len(ops) == 2:
+                hi20 = int(ops[1], 0) & 0xfffff
+                if hi20 & 0x80000:
+                    hi20 -= 0x100000
+                bases[ops[0]] = pc + (hi20 << 12)
+                continue
+            w = None
+            if mnemonic == "addi" and len(ops) == 3 and ops[1] in bases:
+                if use_addi:
+                    w = AddressUtil.normalize_address(bases[ops[1]] + int(ops[2], 0))
+            elif use_mem and (not word_only or mnemonic in (("ld", "sd") if is_64bit() else ("lw", "sw"))):
+                mm = re.fullmatch(r"(-?\d+)\((\w+)\)", ops[-1])
+                if mm and mm.group(2) in bases:
+                    w = AddressUtil.normalize_address(bases[mm.group(2)] + int(mm.group(1)))
+            # a store, a branch and a fence write no register; anything else overwrites the first operand
+            if mnemonic in ("jal", "jalr", "call", "tail"):
+                bases.clear()
+            elif not re.fullmatch(r"(?:c\.)?(?:f?s[bhwdq]|b\w+|j|jr|ret|fence\S*|nop|wfi)", mnemonic):
+                bases.pop(ops[0], None)
+            if w is None:
+                continue
+            if not skip_msb_check and not AddressUtil.is_msb_on(w):
+                continue
+            if read_valid and not is_valid_addr_addr(w):
+                continue
+            if skip > 0:
+                skip -= 1
+                continue
+            yield w
+
+    @staticmethod
+    def riscv_auipc_addi(res, skip=0, skip_msb_check=False, read_valid=False):
+        return KernelAddressHeuristicFinderUtil.riscv_auipc_gen(res, True, False, skip, skip_msb_check, read_valid)
+
+    @staticmethod
+    def riscv_auipc_use(res, skip=0, skip_msb_check=False, read_valid=False):
+        # `addi` or a pointer-sized load/store, in order. An int (`lw` on RV64) is skipped.
+        return KernelAddressHeuristicFinderUtil.riscv_auipc_gen(res, True, True, skip, skip_msb_check, read_valid, word_only=True)
 
     @staticmethod
     def get_kernel_image_range():
@@ -65767,6 +65956,8 @@ class KernelAddressHeuristicFinder:
                     g = KernelAddressHeuristicFinderUtil.aarch64_adrp_add(res)
                 elif is_arm32():
                     g = KernelAddressHeuristicFinderUtil.arm32_movw_movt(res)
+                elif is_riscv64() or is_riscv32():
+                    g = KernelAddressHeuristicFinderUtil.riscv_auipc_addi(res)
                 for x in g:
                     if not is_valid_addr(x):
                         continue
@@ -65810,6 +66001,8 @@ class KernelAddressHeuristicFinder:
                     g = KernelAddressHeuristicFinderUtil.aarch64_adrp_add(res)
                 elif is_arm32():
                     g = KernelAddressHeuristicFinderUtil.arm32_movw_movt(res)
+                elif is_riscv64() or is_riscv32():
+                    g = KernelAddressHeuristicFinderUtil.riscv_auipc_addi(res)
                 else:
                     g = []
                 consts = sorted({AddressUtil.normalize_address(x) for x in g})
@@ -65832,6 +66025,107 @@ class KernelAddressHeuristicFinder:
                         continue
                     return start, end
         return None, None
+
+    @staticmethod
+    def get_cpu_possible_mask():
+        # plan 1 (directly)
+        if KernelAddressHeuristicFinder.USE_DIRECTLY:
+            x = KernelAddressHeuristicFinder.get_cpu_mask_directly("possible")
+            if x:
+                return x
+
+        # plan 2 (available v3.2 or later)
+        return KernelAddressHeuristicFinder.find_cpu_mask("possible", ["init_cpu_possible"])
+
+    @staticmethod
+    def get_cpu_present_mask():
+        # plan 1 (directly)
+        if KernelAddressHeuristicFinder.USE_DIRECTLY:
+            x = KernelAddressHeuristicFinder.get_cpu_mask_directly("present")
+            if x:
+                return x
+
+        # plan 2 (available v3.2 or later)
+        return KernelAddressHeuristicFinder.find_cpu_mask("present", ["init_cpu_present"])
+
+    @staticmethod
+    def get_cpu_online_mask():
+        # plan 1 (directly)
+        if KernelAddressHeuristicFinder.USE_DIRECTLY:
+            x = KernelAddressHeuristicFinder.get_cpu_mask_directly("online")
+            if x:
+                return x
+
+        # plan 2 (available v3.2 or later)
+        # `init_cpu_online()` is gone since v6.16, while `set_cpu_online()` is out of line
+        # before v4.5 and since v5.6
+        return KernelAddressHeuristicFinder.find_cpu_mask("online", ["init_cpu_online", "set_cpu_online"])
+
+    @staticmethod
+    def get_cpu_mask_directly(kind):
+        """Return the address of the cpu mask bitmap of `kind` from the symbols, or None."""
+        # v4.5~: `struct cpumask __cpu_possible_mask`
+        # ~v4.4: `static DECLARE_BITMAP(cpu_possible_bits, CONFIG_NR_CPUS)`
+        for name in ["__cpu_{:s}_mask", "cpu_{:s}_bits"]:
+            x = Ksym.get_addr(name.format(kind))
+            if x:
+                return x
+        # ~v4.4: `const struct cpumask *const cpu_possible_mask = to_cpumask(cpu_possible_bits)`,
+        # where the static bitmap may be missing from kallsyms
+        x = Ksym.get_addr("cpu_{:s}_mask".format(kind))
+        if x:
+            x = read_int_from_memory(x, safe=True)
+            if x and is_valid_addr(x):
+                return x
+        return None
+
+    @staticmethod
+    @switch_to_intel_syntax
+    def find_cpu_mask(kind, anchors):
+        """Return the address of the cpu mask bitmap of `kind` found in the code of `anchors`, or None.
+
+        `init_cpu_possible()`, `init_cpu_present()` and `init_cpu_online()` are
+        `cpumask_copy(&__cpu_<kind>_mask, src)` (`cpu_<kind>_bits` before v4.5), and
+        `set_cpu_online()` sets or clears a bit of it, so the bitmap is the first word-sized datum
+        they access. A kernel with a large NR_CPUS reads `nr_cpu_ids` for the length first, which
+        is an int, so the helpers below skip the int-sized accesses. A candidate is verified as
+        a bitmap too: the boot cpu is always cpu0, `nr_cpu_ids` is the last possible cpu + 1,
+        and the other masks are subsets of the possible one."""
+        percpu = Kernel.get_percpu()
+        possible = None
+        if kind != "possible":
+            possible = percpu.read_cpu_mask(KernelAddressHeuristicFinder.get_cpu_possible_mask())
+
+        for name in anchors:
+            for anchor in Ksym.get_addrs(name):
+                res = KernelAddressHeuristicFinderUtil.disassemble_until_next_symbol(anchor, 40)
+                if is_x86_64():
+                    g = KernelAddressHeuristicFinderUtil.x64_qword_ref(res)
+                elif is_x86_32():
+                    g = KernelAddressHeuristicFinderUtil.x86_ds_absolute(res)
+                elif is_arm64():
+                    g = KernelAddressHeuristicFinderUtil.aarch64_adrp_use(res)
+                elif is_arm32():
+                    g = KernelAddressHeuristicFinderUtil.arm32_const_use(res)
+                elif is_riscv64() or is_riscv32():
+                    g = KernelAddressHeuristicFinderUtil.riscv_auipc_use(res)
+                else:
+                    g = []
+                for x in KernelAddressHeuristicFinderUtil.filter_in_kernel_image(g):
+                    if x % current_arch.ptrsize:
+                        continue
+                    cpus = percpu.read_cpu_mask(x)
+                    if not cpus:
+                        continue
+                    # cpu0 can be offline, but never absent
+                    if kind != "online" and 0 not in cpus:
+                        continue
+                    if kind == "possible" and percpu.is_smp() and max(cpus) != percpu.get_nr_cpus() - 1:
+                        continue
+                    if possible is not None and not cpus <= possible:
+                        continue
+                    return x
+        return None
 
     @staticmethod
     @switch_to_intel_syntax
@@ -71194,10 +71488,13 @@ class Kernel:
         CONFIG_SMP=n has no `__per_cpu_offset` and expands `per_cpu(var, cpu)` to `var`
         itself. That is the same as a single cpu whose displacement is 0, so every
         accessor here covers it; only `offsets` and `is_smp()` show the difference.
+        An SMP kernel whose `__per_cpu_offset[]` could not be resolved is not taken for
+        that: `state` is "unknown" there and the accessors return no cpu at all.
 
         How to use:
             pc = Kernel.get_percpu()
-            pc.get_nr_cpus()                 # -> the number of cpus, at least 1
+            pc.state                         # -> "smp", "up" (CONFIG_SMP=n) or "unknown"
+            pc.get_nr_cpus()                 # -> the number of cpus, 1 when not SMP, 0 when unknown
             pc.get_offset(1)                 # -> __per_cpu_offset[1], or 0 when not SMP
             pc.get_offsets()                 # -> the displacement of every cpu, [0] when not SMP
             pc.get_base(1) / pc.get_bases()  # -> __per_cpu_start + __per_cpu_offset[cpu]
@@ -71206,6 +71503,7 @@ class Kernel:
             pc.resolve(addr)                 # -> (cpu, static_addr, (name, offset)) or None
             pc.offsets                       # -> the raw `__per_cpu_offset[]`, [] when not SMP
             pc.is_smp()                      # -> False when there is no per-cpu area at all
+            pc.get_cpu_masks()               # -> {"possible": set(cpus), ...}, None when unknown
         """
 
         def get_nr_cpu_ids(self):
@@ -71233,11 +71531,14 @@ class Kernel:
             return bool(self.offsets)
 
         def get_nr_cpus(self):
-            """Return the number of cpus that have a per-cpu area, which is at least 1.
+            """Return the number of cpus that have a per-cpu area.
 
-            CONFIG_SMP=n runs on a single cpu, so an empty `offsets` means one cpu,
-            not zero."""
-            return max(len(self.offsets), 1)
+            CONFIG_SMP=n runs on a single cpu, so it is 1 there, not 0. It is 0 only when
+            `__per_cpu_offset[]` of an SMP kernel is unknown, because treating that as one cpu
+            at +0x0 would silently return the static address as the variable of cpu0."""
+            if self.state == "up":
+                return 1
+            return len(self.offsets)
 
         def get_offset(self, cpu):
             """Return `__per_cpu_offset[cpu]`, or None for an invalid cpu.
@@ -71250,7 +71551,9 @@ class Kernel:
 
         def get_offsets(self):
             """Return the displacement of every cpu, as [0] when the kernel is not SMP."""
-            return self.offsets or [0]
+            if self.state == "up":
+                return [0]
+            return self.offsets
 
         def get_bases(self): # noqa
             """Return the base address of every cpu's unit, or [] if `__per_cpu_start` is unknown."""
@@ -71309,14 +71612,43 @@ class Kernel:
         def __init__(self):
             self.per_cpu_offset = KernelAddressHeuristicFinder.get_per_cpu_offset()
             self.offsets = self.get_each_cpu_offset()
+            self.state = self.resolve_state()
             self.start, self.end = self.resolve_static_range()
             self.unit_size = self.resolve_unit_size()
             self.symbols = None
             self.symbol_addrs = None
+            self.symbol_set = None
+            self.cpu_masks = None
             return
+
+        def resolve_state(self):
+            """Return "smp", "up" (CONFIG_SMP=n) or "unknown".
+
+            A missing `__per_cpu_offset` alone cannot tell CONFIG_SMP=n from a heuristic that
+            does not work, e.g. on a CONFIG_KALLSYMS_ALL=n kernel of an unsupported architecture.
+            The banner can: UTS_VERSION gets " SMP" after the build number exactly when CONFIG_SMP=y.
+                Linux version 6.6.32 (...) #1 SMP Tue Sep 17 10:52:27 JST 2024
+                Linux version 4.4.114-suctf (...) #1 Fri Feb 2 15:14:36 +0330 2018"""
+            if self.offsets:
+                return "smp"
+            kversion = Kernel.kernel_version()
+            if kversion is None or not kversion.version_string:
+                return "unknown"
+            _, sep, uts_version = kversion.version_string.rpartition(" #")
+            if sep and not re.search(r"\bSMP\b", uts_version):
+                return "up"
+            return "unknown"
+
+        def is_up(self):
+            """Return True if this kernel is CONFIG_SMP=n."""
+            return self.state == "up"
 
         def resolve_static_range(self):
             """Return [__per_cpu_start, __per_cpu_end), or (None, None) if it is unknown."""
+            # CONFIG_SMP=n puts the per-cpu variables in .data, and the fallbacks below would
+            # make up a section at 0 for x86-64
+            if self.state == "up":
+                return None, None
             start = Ksym.get_addr("__per_cpu_start")
             end = Ksym.get_addr("__per_cpu_end")
             # x86 links the section at 0, and a symbol at address 0 is not always kept in kallsyms
@@ -71392,9 +71724,27 @@ class Kernel:
             if ret is None:
                 return self.symbols
             kallsyms, _kallsyms_map = ret
-            syms = [(a, n) for a, n, _typ in kallsyms if self.start <= a < self.end]
-            self.symbols = sorted(set(syms))
+            syms = [(a, n, typ) for a, n, typ in kallsyms if self.start <= a < self.end]
+            # The assembler constants of a vmlinux (`vector`, ...) fall into the section linked at 0.
+            # Only when every symbol there is absolute are they the variables themselves
+            # (`--absolute-percpu` of kallsyms, and a vmlinux rebuilt from it by vmlinux-to-elf).
+            if any(typ not in ("a", "A") for _a, _n, typ in syms):
+                syms = [(a, n, typ) for a, n, typ in syms if typ not in ("a", "A")]
+            self.symbols = sorted({(a, n) for a, n, _typ in syms})
             return self.symbols
+
+        def get_symbol_addr(self, name):
+            """Return the static address of the per-cpu variable `name`, or None if it is not one.
+
+            A name that is not in `get_symbols()` is still looked up when the list is not
+            available (e.g. the end of the section is unknown), so it cannot be verified then."""
+            addrs = Ksym.get_addrs(name)
+            symbols = self.get_symbols()
+            if not symbols:
+                return addrs[0] if addrs else None
+            if self.symbol_set is None:
+                self.symbol_set = set(symbols)
+            return next((a for a in addrs if (a, name) in self.symbol_set), None)
 
         def is_static(self, static_addr):
             """Return True if `static_addr` is inside the static per-cpu section."""
@@ -71442,6 +71792,35 @@ class Kernel:
             if self.start is None or self.unit_size is None:
                 return []
             return [self.unit_range(cpu) for cpu in range(self.get_nr_cpus())]
+
+        def read_cpu_mask(self, addr):
+            """Read the bitmap of a `struct cpumask` at `addr` and return the set of the cpus, or None.
+
+            As many words as the cpus of the per-cpu area cover are read, since NR_CPUS is unknown."""
+            if not addr:
+                return None
+            bits = current_arch.ptrsize * 8
+            cpus = set()
+            for i in range((max(self.get_nr_cpus(), 1) + bits - 1) // bits):
+                word = read_int_from_memory(addr + i * current_arch.ptrsize, safe=True)
+                if word is None:
+                    return None
+                cpus |= {i * bits + b for b in range(bits) if (word >> b) & 1}
+            return cpus
+
+        def get_cpu_masks(self):
+            """Return {"possible": set(cpus), "present": ..., "online": ...}, where an unknown mask is None.
+
+            `nr_cpu_ids` (the number of the per-cpu units) is only the upper bound of the cpu ids;
+            a cpu below it can be offline, not present, or even not possible."""
+            if self.cpu_masks is None:
+                finders = {
+                    "possible": KernelAddressHeuristicFinder.get_cpu_possible_mask,
+                    "present": KernelAddressHeuristicFinder.get_cpu_present_mask,
+                    "online": KernelAddressHeuristicFinder.get_cpu_online_mask,
+                }
+                self.cpu_masks = {kind: self.read_cpu_mask(finder()) for kind, finder in finders.items()}
+            return self.cpu_masks
 
         def resolve(self, addr):
             """Return (cpu, static_addr, (name, offset) or None) for a per-cpu address, or None."""
@@ -74872,6 +75251,12 @@ class KernelAddressHeuristicSelftestCommand(GenericCommand, BufferingOutput):
             if is_x86_32():
                 return "sys_call_table"
             return None
+
+        m = re.fullmatch(r"get_cpu_(possible|present|online)_mask", finder_name)
+        if m:
+            # the symbol changed in v4.5, and some old kernels keep only the pointer to the bitmap
+            names = [x.format(m.group(1)) for x in ("__cpu_{:s}_mask", "cpu_{:s}_bits", "cpu_{:s}_mask")]
+            return next((x for x in names if Ksym.get_addr(x) is not None), names[0])
 
         exceptions = {
             "get_sys_call_table_x64": "sys_call_table",
@@ -172221,6 +172606,7 @@ class KernelPerCpuCommand(GenericCommand, BufferingOutput):
     parser.add_argument("target", metavar="SYMBOL|ADDRESS", nargs="?",
                         help="a per-cpu symbol name to resolve, or an address to reverse-resolve.")
     parser.add_argument("-c", "--cpu", action="append", type=lambda x: int(x, 0), default=[], help="filter by specific cpu.")
+    parser.add_argument("--online", action="store_true", help="filter by online cpus.")
     parser.add_argument("-o", "--offset", type=AddressUtil.parse_address, default=0, help="add this offset to the resolved symbol.")
     parser.add_argument("-l", "--list", action="store_true", help="list all the static per-cpu symbols.")
     parser.add_argument("-x", "--dump", metavar="SIZE", type=AddressUtil.parse_address, default=0,
@@ -172232,6 +172618,7 @@ class KernelPerCpuCommand(GenericCommand, BufferingOutput):
     _example_ = [
         "{0:s}                        # show the per-cpu area of each cpu",
         "{0:s} runqueues              # show per_cpu(runqueues, cpu) of each cpu",
+        "{0:s} --online runqueues     # show per_cpu(runqueues, cpu) of each online cpu",
         "{0:s} -o 0x120 runqueues     # add an offset to the resolved symbol",
         "{0:s} 0xffff888100600120     # tell which cpu and which variable the address belongs to",
         "{0:s} -l                     # list all the static per-cpu symbols",
@@ -172248,30 +172635,76 @@ class KernelPerCpuCommand(GenericCommand, BufferingOutput):
         "the code of `__is_kernel_percpu_address`, which keeps the areas and the reverse",
         "lookup working, but there the variables cannot be named nor looked up by name.",
         "CONFIG_SMP=n has no `__per_cpu_offset` at all, and `&var` is the address as is.",
+        "Whether it is CONFIG_SMP=n or just unresolved is told by the \"SMP\" of the banner.",
+        "",
+        "The number of cpus is `nr_cpu_ids`, the upper bound of the cpu ids, not the number",
+        "of online cpus. Each cpu is tagged with the possible/present/online cpu masks,",
+        "which are recovered from `init_cpu_*()`/`set_cpu_online()` without the symbols.",
     ]
     _note_ = "\n".join(_note_)
 
+    @staticmethod
+    def format_cpus(cpus):
+        """Return a cpu set as a cpulist string, e.g. {0, 1, 2, 5} -> "0-2,5"."""
+        if not cpus:
+            return "none"
+        ranges = []
+        for cpu in sorted(cpus):
+            if ranges and ranges[-1][1] == cpu - 1:
+                ranges[-1][1] = cpu
+            else:
+                ranges.append([cpu, cpu])
+        return ",".join(str(a) if a == b else "{:d}-{:d}".format(a, b) for a, b in ranges)
+
+    def cpu_state(self, cpu):
+        """Return the tag of `cpu` from the cpu masks, e.g. "[possible, present, online]", or ""."""
+        possible, present, online = (self.cpu_masks[x] for x in ("possible", "present", "online"))
+        tags = []
+        if possible is not None:
+            tags.append("possible" if cpu in possible else "not possible")
+        if present is not None and (possible is None or cpu in possible):
+            tags.append("present" if cpu in present else "not present")
+        if online is not None and (possible is None or cpu in possible):
+            tags.append("online" if cpu in online else "offline")
+        if not tags:
+            return ""
+        return "  [{:s}]".format(", ".join(tags))
+
     def dump_meta(self, pc):
-        if pc.per_cpu_offset is None:
-            self.quiet_info_add_out("__per_cpu_offset: Not found (CONFIG_SMP=n?, treated as one cpu at +0x0)")
-        else:
+        if pc.per_cpu_offset is not None:
             self.quiet_info_add_out("__per_cpu_offset: {:#x}".format(pc.per_cpu_offset))
+        elif pc.is_up():
+            self.quiet_info_add_out("__per_cpu_offset: None (CONFIG_SMP=n, treated as one cpu at +0x0)")
+        else:
+            self.quiet_info_add_out("__per_cpu_offset: Not found")
+        if pc.state == "unknown":
+            self.err_add_out("This kernel is CONFIG_SMP=y, but `__per_cpu_offset[]` could not be resolved")
         if pc.start is None:
-            self.quiet_info_add_out("static per-cpu section: Not found")
+            self.quiet_info_add_out("static per-cpu section: {:s}".format("None" if pc.is_up() else "Not found"))
         elif pc.end is None:
             self.quiet_info_add_out("static per-cpu section: {:#x}- (end unknown)".format(pc.start))
         else:
             self.quiet_info_add_out("static per-cpu section: {:#x}-{:#x}".format(pc.start, pc.end))
         if pc.unit_size is not None:
             self.quiet_info_add_out("per-cpu unit size: {:#x}".format(pc.unit_size))
-        self.quiet_info_add_out("number of cpus: {:d}".format(pc.get_nr_cpus()))
+        if pc.state != "unknown":
+            self.quiet_info_add_out("number of cpus: {:d} (nr_cpu_ids, the upper bound of the cpu ids)".format(pc.get_nr_cpus()))
+        for kind in ("possible", "present", "online"):
+            cpus = self.cpu_masks[kind]
+            self.quiet_info_add_out("{:s} cpus: {:s}".format(kind, "unknown" if cpus is None else self.format_cpus(cpus)))
         return
 
     def target_cpus(self, pc):
-        """Return the cpu numbers to display, honoring --cpu."""
+        """Return the cpu numbers to display, honoring --cpu and --online."""
         cpus = list(range(pc.get_nr_cpus()))
         if self.args.cpu:
             cpus = [c for c in cpus if c in self.args.cpu]
+        if self.args.online:
+            online = self.cpu_masks["online"]
+            if online is None:
+                self.warn_add_out("The online cpu mask is unknown, so every cpu is shown")
+            else:
+                cpus = [c for c in cpus if c in online]
         return cpus
 
     def add_dump_out(self, addr):
@@ -172288,17 +172721,21 @@ class KernelPerCpuCommand(GenericCommand, BufferingOutput):
 
     def dump_area(self, pc):
         """Show the per-cpu area of each cpu."""
-        if not pc.is_smp():
-            self.info_add_out("No `__per_cpu_offset`; this kernel may be CONFIG_SMP=n, so cpu0 is at +0x0")
+        if pc.is_up():
+            self.info_add_out("This kernel is CONFIG_SMP=n, so cpu0 is at +0x0")
+        elif pc.state == "unknown":
+            return
         elif pc.start is None:
             self.warn_add_out("`__per_cpu_start` is unknown, so the base of each unit cannot be told")
         for cpu in self.target_cpus(pc):
             rng = pc.unit_range(cpu)
             if rng is None:
-                self.out.append("CPU{:<4d} offset: {:s}".format(cpu, AddressUtil.format_address(pc.get_offset(cpu))))
+                self.out.append("CPU{:<4d} offset: {:s}{:s}".format(
+                    cpu, AddressUtil.format_address(pc.get_offset(cpu)), self.cpu_state(cpu),
+                ))
                 continue
-            self.out.append("CPU{:<4d} offset: {:s}  unit: {:#x}-{:#x}".format(
-                cpu, AddressUtil.format_address(pc.get_offset(cpu)), rng[0], rng[1],
+            self.out.append("CPU{:<4d} offset: {:s}  unit: {:#x}-{:#x}{:s}".format(
+                cpu, AddressUtil.format_address(pc.get_offset(cpu)), rng[0], rng[1], self.cpu_state(cpu),
             ))
             self.add_dump_out(rng[0])
         return
@@ -172320,6 +172757,14 @@ class KernelPerCpuCommand(GenericCommand, BufferingOutput):
         if static_addr is None:
             self.err_add_out("Could not find the symbol `{:s}`".format(name))
             return
+        if pc.get_symbols():
+            percpu_addr = pc.get_symbol_addr(name)
+            # an assembler constant of a vmlinux can fall into the section linked at 0
+            if percpu_addr is None and pc.is_static(static_addr):
+                self.err_add_out("`{:s}` ({:#x}) is an absolute symbol, not a per-cpu variable".format(name, static_addr))
+                return
+            if percpu_addr is not None:
+                static_addr = percpu_addr
         if pc.start is not None and not pc.is_static(static_addr):
             if pc.end is not None:
                 self.err_add_out("`{:s}` ({:#x}) is not in the static per-cpu section {:#x}-{:#x}".format(
@@ -172345,6 +172790,9 @@ class KernelPerCpuCommand(GenericCommand, BufferingOutput):
 
     def dump_address(self, pc, addr):
         """Reverse-resolve an address to the cpu and the per-cpu variable."""
+        if pc.state == "unknown":
+            self.err_add_out("The per-cpu areas are unknown, so {:#x} cannot be resolved".format(addr))
+            return
         ret = pc.resolve(addr)
         if ret is None:
             self.err_add_out("{:#x} is not in any per-cpu area".format(addr))
@@ -172374,6 +172822,7 @@ class KernelPerCpuCommand(GenericCommand, BufferingOutput):
             return
 
         pc = Kernel.get_percpu()
+        self.cpu_masks = pc.get_cpu_masks()
         self.out = []
         self.dump_meta(pc)
 
