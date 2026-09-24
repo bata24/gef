@@ -12572,9 +12572,9 @@ def read_memory(addr, length):
         # In particular, secondary CPUs do not necessarily have the module PMDs
         # copied into their active table.  The kernel's master page table remains
         # authoritative, so retry through it before reporting an unreadable address.
-        if MemoryCache.get_arm32_lpae_root() is None:
-            raise
-        return MemoryCache.read(addr, length, reader=MemoryCache.read_arm32_lpae, namespace="arm32-lpae-swapper")
+        if MemoryCache.get_arm32_lpae_root() is not None:
+            return MemoryCache.read(addr, length, reader=MemoryCache.read_arm32_lpae, namespace="arm32-lpae-swapper")
+        raise
 
 
 def read_int_from_memory(addr, safe=False, signed=False):
