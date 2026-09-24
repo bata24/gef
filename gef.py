@@ -73272,7 +73272,8 @@ class Kernel:
             else:
                 self.meta.append(("info", "offsetof(cred, group_info): {:#x}".format(self.offset_group_info)))
 
-            self.initialized = True
+            # retry group_info next time; init_cred always has one, so it is only a matter of samples
+            self.initialized = self.offset_group_info is not None
             return True
 
         def export_meta(self, command):
@@ -73607,14 +73608,14 @@ class Kernel:
                     return False
                 if ngroups > 0x10000:
                     return False
-                # On 64-bit, struct ucounts begins with an atomic_long_t followed
-                # by user_ns.  Interpreting it as group_info makes ngroups look like
-                # zero, so reject that characteristic pointer at the gid/nblocks
-                # position.  This is what lets the probe handle the 5.10 revert and
-                # the 5.12/5.13 stable backports without a release-number table.
-                if ngroups == 0 and is_64bit():
-                    after_header = read_int_from_memory(group_info + current_arch.ptrsize)
-                    if is_valid_addr(after_header):
+                # The usual struct ucounts starts with a hlist_node and fails the checks above, but the
+                # ucounts of the 5.10 revert and the 5.12/5.13 stable backports starts with a counter and
+                # the user_ns of the cred. An empty group_info ends at its header, so compare the next word
+                # with that exact pointer rather than judging whatever object follows.
+                if ngroups == 0:
+                    user_ns = read_int_from_memory(cred + self.offset_user_ns, safe=True)
+                    next_word = read_int_from_memory(group_info + current_arch.ptrsize, safe=True)
+                    if user_ns is not None and next_word == user_ns:
                         return False
                 if ngroups and "4.9" <= Kernel.kernel_version():
                     # Modern group_info stores a sorted inline gid array.  Sampling
@@ -73792,17 +73793,15 @@ class Kernel:
                 return None
             self.meta.append(("info", "offsetof(vm_area_struct, vm_file): {:#x}".format(self.offset_vm_file)))
 
-            init_mm = read_int_from_memory(self.task_addrs[1] + self.offset_task_mm)
-            init_vma = self.get_vm_area_struct(init_mm)[0]
-            self.meta.append(("info", "vm_area_struct (init process): {:#x}".format(init_vma)))
-            init_vm_file = read_int_from_memory(init_vma + self.offset_vm_file)
-            self.meta.append(("info", "vm_file (init process): {:#x}".format(init_vm_file)))
-            if not is_valid_addr(init_vm_file) or init_vm_file & (current_arch.ptrsize - 1):
+            vma, vm_file = self.find_file_vma()
+            if vm_file is None:
                 self.meta.append(("err", "Could not find a valid vm_file"))
                 return None
+            self.meta.append(("info", "vm_area_struct (file-backed): {:#x}".format(vma)))
+            self.meta.append(("info", "vm_file: {:#x}".format(vm_file)))
 
             self.kpath = Kernel.Path.get_instance()
-            ret = self.kpath.initialize(file=init_vm_file)
+            ret = self.kpath.initialize(file=vm_file)
             for level, line in self.kpath.meta:
                 self.meta.append((level, line))
             if not ret or self.kpath.offset_file_dentry is None:
@@ -73810,6 +73809,21 @@ class Kernel:
 
             self.initialized = True
             return True
+
+        def find_file_vma(self):
+            """Return the first file-backed VMA and its vm_file, searching from the init process.
+            The lowest VMA is not always file-backed (e.g., a static-pie busybox is mapped above the brk area)."""
+            for task in self.task_addrs[1:]:
+                mm = read_int_from_memory(task + self.offset_task_mm, safe=True)
+                if not mm:
+                    continue
+                vma, get_next_vma_area_struct = self.get_vm_area_struct(mm)
+                while vma:
+                    vm_file = read_int_from_memory(vma + self.offset_vm_file, safe=True)
+                    if vm_file and is_valid_addr(vm_file) and vm_file & (current_arch.ptrsize - 1) == 0:
+                        return vma, vm_file
+                    vma = get_next_vma_area_struct(vma)
+            return None, None
 
         def get_vm_area_struct(self, mm):
             """Return the first VMA and a callable that advances to the next one."""
@@ -73959,6 +73973,8 @@ class Kernel:
             self.task_addrs = ()
             self.offset_stack = None
             self.offset_seccomp = None
+            self.offset_filter = None
+            self.has_filter_count = None
             self.offset_prev = None
             self.offset_prog = None
             self.offset_bpf_func = None
@@ -74057,11 +74073,13 @@ class Kernel:
             self.task_addrs = tuple(task_addrs)
             self.offset_stack = offset_stack
 
-            self.offset_seccomp = self.get_offset_seccomp(offset_signal)
-            if self.offset_seccomp is None:
+            ret = self.get_offset_seccomp(offset_signal)
+            if ret is None:
                 self.meta.append(("err", "Could not find task_struct->seccomp"))
                 return None
+            self.offset_seccomp, self.offset_filter, self.has_filter_count = ret
             self.meta.append(("info", "offsetof(task_struct, seccomp): {:#x}".format(self.offset_seccomp)))
+            self.meta.append(("info", "offsetof(seccomp, filter): {:#x}".format(self.offset_filter)))
 
             self.offset_prev = self.get_offset_prev()
             if self.offset_prev is None:
@@ -74114,37 +74132,63 @@ class Kernel:
 
         @Cache.cache_this_session(cache_None=False)
         def get_offset_seccomp(self, offset_signal):
+            """Return (offsetof(task_struct, seccomp), offsetof(seccomp, filter), has seccomp.filter_count).
+
+            struct seccomp {
+                int mode;
+                atomic_t filter_count; // v5.9~
+                struct seccomp_filter *filter;
+            };
+            """
             # fast path
             try:
-                return GefUtil.parse_and_eval_unsigned("&((struct task_struct*)0).seccomp")
+                offset_seccomp = GefUtil.parse_and_eval_unsigned("&((struct task_struct*)0).seccomp")
+                offset_filter = GefUtil.parse_and_eval_unsigned("&((struct seccomp*)0).filter")
+                try:
+                    GefUtil.parse_and_eval_unsigned("&((struct seccomp*)0).filter_count")
+                    has_filter_count = True
+                except gdb.error:
+                    has_filter_count = False
+                return offset_seccomp, offset_filter, has_filter_count
             except gdb.error:
                 pass
 
             # slow path
-            seccomped_task = next(
-                (task for task in self.task_addrs if self.has_seccomp(task, self.offset_stack)), None,
-            )
-            if seccomped_task is None:
-                return None
-
-            # Find task_struct.pending, then search the following words for seccomp.filter.
-            base = offset_signal + current_arch.ptrsize
-            for i in range(0x100):
-                if is_double_link_list(seccomped_task + base + current_arch.ptrsize * i):
-                    base += current_arch.ptrsize * i * 2
-                    break
-            else:
-                return None
-
-            for i in range(0x100):
-                offset_filter = base + current_arch.ptrsize * i
-                filt = read_int_from_memory(seccomped_task + offset_filter)
-                if not is_valid_addr(filt):
+            kversion = Kernel.kernel_version()
+            # A task in strict mode has no filter, so try every seccomped task.
+            for task in self.task_addrs:
+                if not self.has_seccomp(task, self.offset_stack):
                     continue
-                mode = read_int32_from_memory(seccomped_task + offset_filter - 8)
-                filter_count = read_int32_from_memory(seccomped_task + offset_filter - 4)
-                if mode != 0 and filter_count != 0:
-                    return offset_filter - 8
+
+                # Find task_struct.pending, then search the following words for seccomp.filter.
+                base = offset_signal + current_arch.ptrsize
+                for i in range(0x100):
+                    if is_double_link_list(task + base + current_arch.ptrsize * i):
+                        base += current_arch.ptrsize * i * 2
+                        break
+                else:
+                    continue
+
+                for i in range(0x100):
+                    offset_filter = base + current_arch.ptrsize * i
+                    filt = read_int_from_memory(task + offset_filter)
+                    if not is_valid_addr(filt):
+                        continue
+                    before8 = read_int32_from_memory(task + offset_filter - 8)
+                    before4 = read_int32_from_memory(task + offset_filter - 4)
+                    # a task that has a filter is always in SECCOMP_MODE_FILTER (2)
+                    new_layout = before8 == 2 and before4 != 0
+                    if is_64bit():
+                        old_layout = before8 == 2 and before4 == 0 # padding
+                        old_offset_filter = 8
+                    else:
+                        old_layout = before4 == 2
+                        old_offset_filter = 4
+                    # both are possible on 32-bit, when the word before `mode` happens to be 2
+                    if new_layout and (not old_layout or "5.9" <= kversion):
+                        return offset_filter - 8, 8, True
+                    if old_layout:
+                        return offset_filter - old_offset_filter, old_offset_filter, False
             return None
 
         @Cache.cache_this_session(cache_None=False)
@@ -74162,10 +74206,11 @@ class Kernel:
                 mode = read_int32_from_memory(task + self.offset_seccomp)
                 if mode != 2:
                     continue
-                filter_count = read_int32_from_memory(task + self.offset_seccomp + 4)
-                if filter_count == 0:
+                if self.has_filter_count and read_int32_from_memory(task + self.offset_seccomp + 4) == 0:
                     continue
-                filter_addr = read_int_from_memory(task + self.offset_seccomp + 8)
+                filter_addr = read_int_from_memory(task + self.offset_seccomp + self.offset_filter)
+                if not is_valid_addr(filter_addr):
+                    continue
                 for i in range(0x100):
                     previous = read_int_from_memory(filter_addr + current_arch.ptrsize * i)
                     if (previous & 0x7) or (previous != 0 and not is_valid_addr(previous)):
@@ -74206,7 +74251,9 @@ class Kernel:
             for task in self.task_addrs:
                 if not self.has_seccomp(task, self.offset_stack):
                     continue
-                filter_addr = read_int_from_memory(task + self.offset_seccomp + 8)
+                filter_addr = read_int_from_memory(task + self.offset_seccomp + self.offset_filter)
+                if not is_valid_addr(filter_addr):
+                    continue
                 bpf_prog = read_int_from_memory(filter_addr + self.offset_prog)
                 for i in range(0x100):
                     candidate = read_int_from_memory(bpf_prog + current_arch.ptrsize * i)
@@ -74246,8 +74293,18 @@ class Kernel:
             """Read the task's top-level ``struct seccomp`` fields."""
             address = task + self.offset_seccomp
             mode = read_int32_from_memory(address)
-            filter_count = read_int32_from_memory(address + 4)
-            first_filter = read_int_from_memory(address + 8)
+            first_filter = read_int_from_memory(address + self.offset_filter)
+            if self.has_filter_count:
+                filter_count = read_int32_from_memory(address + 4)
+            else:
+                # ~v5.8 has no filter_count, so count the chain
+                filter_count = 0
+                seen = set()
+                current = first_filter
+                while is_valid_addr(current) and current not in seen and filter_count < 0x1000:
+                    seen.add(current)
+                    filter_count += 1
+                    current = read_int_from_memory(current + self.offset_prev)
             return self.TaskInfo(address, mode, self.MODE_NAMES.get(mode, "UNKNOWN"), filter_count, first_filter)
 
         def iter_filters(self, task_info):
@@ -75335,6 +75392,10 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
         "Other tasks (such as `swapper/1` if thread 1 is running some task) will not be detected.",
     ]
     _note_ = "\n".join(_note_)
+
+    # the borrowers of --print-fd read these even if it is disabled
+    offset_files = None
+    offset_fdt = None
 
     @staticmethod
     def borrow(command, **enabled):
@@ -82213,6 +82274,9 @@ class KernelPathCommand(GenericCommand, BufferingOutput):
             self.meta.append((self.quiet_err, "Could not resolve the struct dentry layout"))
             return None
 
+        if task_command.offset_files is None:
+            self.meta.append((self.quiet_err, "Could not find task_struct->files"))
+            return None
         self.offset_fs = self.kpath.get_offset_task_fs(task_command.offset_files)
         if self.offset_fs is None:
             self.meta.append((self.quiet_err, "Could not find task_struct->fs"))
@@ -82564,6 +82628,9 @@ class KernelVfsCommand(GenericCommand, BufferingOutput):
         if fd < 0:
             self.quiet_err("FD must not be negative")
             return None
+        if self.task_command.offset_files is None or self.task_command.offset_fdt is None:
+            self.quiet_err("Could not find task_struct->files->fdt")
+            return None
         task = self.get_task_by_pid(pid)
         if task is None:
             self.quiet_err("Could not find the task of pid {:d}".format(pid))
@@ -82866,6 +82933,9 @@ class KernelMountCommand(GenericCommand, BufferingOutput):
             self.meta.append((self.quiet_err, "Could not resolve the struct dentry layout"))
             return None
 
+        if task_command.offset_files is None:
+            self.meta.append((self.quiet_err, "Could not find task_struct->files"))
+            return None
         self.offset_fs = self.kpath.get_offset_task_fs(task_command.offset_files)
         if self.offset_fs is None:
             self.meta.append((self.quiet_err, "Could not find task_struct->fs"))
@@ -141874,10 +141944,11 @@ class KernelBpfCommand(GenericCommand, BufferingOutput):
             """
             # bpf_array->union_array
             # Only an array map has the elem_size/index_mask pair, so scan every array map instead of assuming maps[0] is one.
+            # Every map type allocated by array_map_alloc() is a bpf_array, not only BPF_MAP_TYPE_ARRAY.
             # The offset is a layout constant, so the first map that resolves it is enough.
             self.offset_union_array = None
             for m in maps:
-                if read_int32_from_memory(m + self.offset_map_type) != 2: # BPF_MAP_TYPE_ARRAY
+                if read_int32_from_memory(m + self.offset_map_type) not in self.array_map_types:
                     continue
                 value_size = read_int32_from_memory(m + self.offset_value_size)
                 value_size_aligned_8 = align(value_size, 8)
@@ -142105,6 +142176,9 @@ class KernelBpfCommand(GenericCommand, BufferingOutput):
         "RHASH",
     ]
 
+    # ARRAY, PROG_ARRAY, PERF_EVENT_ARRAY, PERCPU_ARRAY, CGROUP_ARRAY, ARRAY_OF_MAPS (allocated by array_map_alloc)
+    array_map_types = (2, 3, 4, 6, 8, 12)
+
     def dump_bpf_maps(self, maps):
         self.out.append(titlify("map_idr"))
         fmt = "{:3s} {:18s} {:21s} {:10s} {:10s} {:10s} {:18s}"
@@ -142118,7 +142192,10 @@ class KernelBpfCommand(GenericCommand, BufferingOutput):
             key_size = read_int32_from_memory(m + self.offset_key_size)
             val_size = read_int32_from_memory(m + self.offset_value_size)
             max_ents = read_int32_from_memory(m + self.offset_max_entries)
-            if self.offset_union_array is None:
+            if map_type not in self.array_map_types:
+                union_array = None
+                array = "-"
+            elif self.offset_union_array is None:
                 union_array = None
                 array = "???"
             else:
@@ -173824,6 +173901,9 @@ class KernelIoUringCommand(GenericCommand, BufferingOutput):
             return True
         self.task_command = KernelTaskCommand.borrow(self, print_fd=True)
         if self.task_command is None:
+            return None
+        if self.task_command.offset_files is None or self.task_command.offset_fdt is None:
+            self.meta.append((self.quiet_err, "Could not find task_struct->files->fdt"))
             return None
         self.kpath = Kernel.Path.get_instance()
         if not self.kpath.initialized:
