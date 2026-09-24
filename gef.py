@@ -70286,6 +70286,25 @@ class Kernel:
             self.version_tuple = (major, minor, patch)
             return
 
+        @staticmethod
+        def from_banner(address, version_string):
+            r = re.search(r"Linux version (\d+)\.(\d+)\.(\d+)", version_string)
+            if not r:
+                return None
+            version_tuple = tuple(int(x) for x in r.groups())
+
+            # Debian and Ubuntu use the ABI number as the patch version of the release, and append
+            # the upstream version after the build number. The layouts follow the latter.
+            #   #1 SMP PREEMPT_DYNAMIC Debian 6.1.159-1 (2025-12-30)
+            #   #117~20.04.1-Ubuntu SMP ... (Ubuntu 5.15.0-107.117~20.04.1-generic 5.15.149)
+            _, sep, tail = version_string[r.end():].rpartition(" #")
+            if sep:
+                for x in re.finditer(r"(?<![\d.~])(\d+)\.(\d+)\.(\d+)", tail):
+                    v = tuple(int(y) for y in x.groups())
+                    if v[:2] == version_tuple[:2] and v > version_tuple:
+                        version_tuple = v
+            return Kernel.KernelVersion(address, version_string, *version_tuple)
+
         def to_version_tuple(self, _v):
             if isinstance(_v, Kernel.KernelVersion):
                 return _v.version_tuple
@@ -70336,11 +70355,11 @@ class Kernel:
         if linux_banner is None:
             linux_banner = Ksym.get_addr("linux_banner")
         if linux_banner and is_valid_addr(linux_banner):
-            version_string = read_cstring_from_memory(linux_banner, 0x200).rstrip()
-            r = re.search(r"Linux version (\d)\.(\d+)\.(\d+)", version_string)
-            if r:
-                major, minor, patch = int(r.group(1)), int(r.group(2)), int(r.group(3))
-                return Kernel.KernelVersion(linux_banner, version_string, major, minor, patch)
+            version_string = read_cstring_from_memory(linux_banner, 0x200)
+            if version_string:
+                kversion = Kernel.KernelVersion.from_banner(linux_banner, version_string.rstrip())
+                if kversion:
+                    return kversion
 
         # slow path
         klayout = Kernel.get_layout(apply_data_range_hint=False)
