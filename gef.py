@@ -169132,6 +169132,44 @@ class KuafWatchFreeBreakpoint(gdb.Breakpoint):
         return self.watcher.handle_free(to_free, self.sym, caller_pc)
 
 
+class KuafWatchBulkFreeBreakpoint(gdb.Breakpoint):
+    """Create a breakpoint at kmem_cache_free_bulk for kuaf-watch."""
+
+    def __init__(self, loc, sym, watcher):
+        super().__init__("*{:#x}".format(loc), gdb.BP_BREAKPOINT, internal=False)
+        self.sym = sym
+        self.watcher = watcher
+        self.enabled = False
+        return
+
+    def stop(self):
+        Cache.reset_gef_caches()
+        size = KmallocTracerCommand.get_ith_parameter(1)
+        objects = KmallocTracerCommand.get_ith_parameter(2)
+        if size == 0 or objects == 0:
+            return False
+
+        caller_pc = KmallocTracerCommand.get_return_address()
+        stop = False
+        ptrsize = current_arch.ptrsize
+        try:
+            # Keep remote reads bounded while still handling every object in the batch.
+            for index in range(0, size, 256):
+                count = min(size - index, 256)
+                data = read_memory(objects + index * ptrsize, count * ptrsize)
+                for to_free in slice_unpack(data, ptrsize):
+                    if to_free == 0:
+                        continue
+                    # In object mode avoid the comparatively expensive slab lookup for
+                    # unrelated entries. Cache mode intentionally resolves every entry.
+                    if self.watcher.cache_name is None and to_free not in self.watcher.watched:
+                        continue
+                    stop |= self.watcher.handle_free(to_free, self.sym, caller_pc)
+        except (gdb.error, OverflowError, ValueError):
+            pass
+        return stop
+
+
 @register_command
 class KuafWatchCommand(GenericCommand):
     """Track the alloc/free/reuse lifecycle of a slab object (or an entire cache) for UAF analysis."""
@@ -169323,6 +169361,11 @@ class KuafWatchCommand(GenericCommand):
             if func_addr:
                 gef_print(sym + ": ", end="")
                 breakpoints.append(KuafWatchFreeBreakpoint(func_addr, sym, index_of_addr_arg, self))
+        bulk_free_sym = "kmem_cache_free_bulk"
+        func_addr = Ksym.get_addr(bulk_free_sym)
+        if func_addr:
+            gef_print(bulk_free_sym + ": ", end="")
+            breakpoints.append(KuafWatchBulkFreeBreakpoint(func_addr, bulk_free_sym, self))
         for bp in breakpoints:
             bp.enabled = True
 
