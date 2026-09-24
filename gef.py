@@ -13638,7 +13638,7 @@ def cpu_context_dependent(f):
         ret = f(*args, **kwargs)
         if KernelAddressHeuristicFinder.DEBUG_CONTEXT:
             thread = gdb.selected_thread()
-            cpu = "cpu{:d}".format(thread.num - 1) if thread else "cpu?" # thread.num is 1-origin
+            cpu = Kernel.get_cpu_label(thread) if thread else "cpu?"
             value = "None" if ret is None else "{:#x}".format(ret)
             # Report to the real stderr, not via gef_print. These heuristics are often called
             # from a nested `gdb.execute(..., to_string=True)`, which swallows gef_print().
@@ -65069,33 +65069,64 @@ class KernelAddressHeuristicFinder:
             if cpsr is not None and (cpsr & 0b11111) != 0b10011:
                 return None
 
-            # check if valid kernel address or not
-            current_thread_info = current_arch.sp & ~0x1fff
-            if current_thread_info < page_offset:
+            """
+            struct thread_info {
+                unsigned long flags;
+                int preempt_count;
+                mm_segment_t addr_limit; // ~v5.14
+                struct task_struct *task; // ~v5.17
+                ...
+            }
+            """
+            kversion = Kernel.kernel_version()
+            if kversion and kversion < "5.15":
+                offset_task = current_arch.ptrsize * 3
+            elif kversion and kversion < "5.18":
+                offset_task = current_arch.ptrsize * 2
+            else:
                 return None
 
-            kversion = Kernel.kernel_version()
-            try:
-                """
-                struct thread_info {
-                    unsigned long flags;
-                    int preempt_count;
-                    mm_segment_t addr_limit; // ~v5.14
-                    struct task_struct *task; // ~v5.17
-                    ...
-                }
-                """
-                if kversion and kversion < "5.15":
-                    v = read_int_from_memory(current_thread_info + current_arch.ptrsize * 3)
-                    if v and is_valid_addr(v):
-                        return v
-                elif kversion and kversion < "5.18":
-                    v = read_int_from_memory(current_thread_info + current_arch.ptrsize * 2)
-                    if v and is_valid_addr(v):
-                        return v
-            except gdb.MemoryError:
-                # In some threads, $sp points to an invalid address.
+            # THREAD_SIZE is 8 KiB, or 16 KiB if CONFIG_KASAN=y (v5.11 or later). A candidate is accepted only if
+            # its task links back to it by `task_struct.stack`. 8 KiB goes first, since the 16 KiB mask on an
+            # 8 KiB stack may hit the thread_info of the neighbor task, which also links back.
+            for thread_size in [0x2000, 0x4000]:
+                current_thread_info = current_arch.sp & ~(thread_size - 1)
+                # check if valid kernel address or not
+                if current_thread_info < page_offset:
+                    return None
+                try:
+                    v = read_int_from_memory(current_thread_info + offset_task)
+                    if not v or v < page_offset or not is_valid_addr(v):
+                        continue
+                    # `stack` follows `state` at the top of task_struct, unless the layout is randomized.
+                    head = slice_unpack(read_memory(v, current_arch.ptrsize * 0x10), current_arch.ptrsize)
+                except gdb.MemoryError:
+                    # In some threads, $sp points to an invalid address.
+                    return None
+                if current_thread_info in head:
+                    return v
+        elif is_riscv32() or is_riscv64():
+            # plan 1 (from tp or sscratch)
+            # The kernel keeps the current task in tp, and in sscratch while the hart is in U-mode.
+            # Around the swap at the exception entry, either of them may hold the user tp or 0.
+            priv = get_register("priv")
+            if priv == 1:
+                candidates = [get_register("$tp"), get_register("$sscratch")]
+            elif priv == 0:
+                candidates = [get_register("$sscratch")]
+            else:
                 return None
+            for r in candidates:
+                if not r:
+                    continue
+                if is_riscv64() and not AddressUtil.is_msb_on(r):
+                    continue
+                # PAGE_OFFSET is fixed to 0xc0000000 on RV32
+                if is_riscv32() and r < 0xc000_0000:
+                    continue
+                # A U-mode hart cannot reach the kernel pages, so it is not validated by reading.
+                if priv == 0 or is_valid_addr(r):
+                    return r
         elif is_arm64():
             # plan 1 (from special register)
             # sp_el0 holds the current task only while the CPU is in EL1.
@@ -65224,7 +65255,7 @@ class KernelAddressHeuristicFinder:
 
         # plan 3 (from current)
         current = None
-        if is_arm64() or is_arm32():
+        if is_arm64() or is_arm32() or is_riscv32() or is_riscv64():
             current = KernelAddressHeuristicFinder.get_current_task_for_current_thread()
         elif is_x86_64() or is_x86_32():
             current_task = KernelAddressHeuristicFinder.get_current_task()
@@ -65240,15 +65271,15 @@ class KernelAddressHeuristicFinder:
         if init_task is not None:
             return init_task
 
-        # On ARM, another CPU may have a readable current task and a complete task list.
-        if is_arm64() or is_arm32():
+        # On ARM and RISC-V, another CPU may have a readable current task and a complete task list.
+        if is_arm64() or is_arm32() or is_riscv32() or is_riscv64():
             orig_thread = gdb.selected_thread()
             try:
                 orig_frame = gdb.selected_frame()
             except gdb.error:
                 orig_frame = None
             try:
-                for thread in sorted(gdb.selected_inferior().threads(), key=lambda th: th.num):
+                for thread in Kernel.get_cpu_threads():
                     if thread == orig_thread:
                         continue
                     try:
@@ -71912,6 +71943,60 @@ class Kernel:
         the halted CPU's page tables, so the cache is separated by the selected thread."""
         return Kernel.PerCpu()
 
+    @staticmethod
+    def get_cpu_index(thread):
+        """Return the target's CPU index of the gdb thread, or None if it cannot be derived.
+
+        The gdb thread number is assigned by GDB per inferior, so it is not a CPU number.
+        QEMU uses `cpu_index + 1` as the remote thread ID, and keeps it unique across the
+        CPU clusters that it exposes as separate inferiors."""
+        if not is_qemu_system():
+            return None
+        try:
+            _pid, lwp, tid = thread.ptid
+        except (gdb.error, ValueError):
+            return None
+        tid = lwp or tid
+        if not tid or tid < 0:
+            return None
+        return tid - 1
+
+    @staticmethod
+    def get_cpu_label(thread):
+        """Return "cpuN" for the gdb thread, or its qualified gdb thread ID if N is unknown."""
+        cpu = Kernel.get_cpu_index(thread)
+        if cpu is None:
+            return "thread {:d}.{:d}".format(thread.inferior.num, thread.num)
+        return "cpu{:d}".format(cpu)
+
+    @staticmethod
+    def get_cpu_threads():
+        """Return the gdb threads of every CPU of the target, sorted by CPU index.
+
+        QEMU exposes each CPU cluster as a separate inferior, so the other inferiors attached
+        through the same connection are also included if their architecture is the same."""
+        selected = gdb.selected_inferior()
+        inferiors = [selected]
+        connection_num = getattr(selected, "connection_num", None)
+        if connection_num is not None and hasattr(selected, "architecture"):
+            arch_name = selected.architecture().name()
+            for inferior in gdb.inferiors():
+                if inferior == selected or inferior.pid == 0 or inferior.connection_num != connection_num:
+                    continue
+                try:
+                    if inferior.architecture().name() != arch_name:
+                        continue
+                except gdb.error:
+                    continue
+                inferiors.append(inferior)
+
+        def sort_key(thread):
+            cpu = Kernel.get_cpu_index(thread)
+            return (cpu is None, cpu or 0, thread.inferior.num, thread.num)
+
+        threads = [thread for inferior in inferiors for thread in inferior.threads()]
+        return sorted(threads, key=sort_key)
+
     class Path:
         """A collection of utility functions that resolve the pathname of `struct dentry`,
         `struct path`, `struct mount` and `struct file`.
@@ -75636,11 +75721,6 @@ class KernelCurrentCommand(GenericCommand):
     parser.add_argument("-q", "--quiet", action="store_true", help="enable quiet mode.")
     _syntax_ = parser.format_help()
 
-    def __init__(self):
-        super().__init__()
-        self.offset_comm = None
-        return
-
     def get_cpu_offset(self):
         # `Kernel.get_percpu()` is cached per stop, so it does not need one more here
         percpu = Kernel.get_percpu()
@@ -75650,32 +75730,71 @@ class KernelCurrentCommand(GenericCommand):
         self.quiet_info("Num of cpu: {:d} (guessed)".format(percpu.get_nr_cpus()))
         return percpu.offsets
 
-    def resolve_offset_comm(self, report_failure=True):
+    @Cache.cache_this_session(cache_None=False, per_inferior=True, until_new_objfile=True)
+    def get_offset_comm(self):
         """Resolve `offsetof(task_struct, comm)` via `ktask`.
         `ktask` resolves `init_task` from the CPU context of the selected thread and
-        the answer differs between CPUs, so this must not be called while another
-        thread is temporarily selected."""
+        the answer differs between CPUs, so a failure is not cached."""
 
-        if self.offset_comm is not None:
-            return self.offset_comm
+        self.meta = []
+        KernelTaskCommand.borrow(self)
+        # the later offsets may fail even if `comm` is found
+        for _func, line in self.meta:
+            r = re.search(r"offsetof\(task_struct, comm\): (0x\S+)", line)
+            if r is not None:
+                return int(r.group(1), 16)
+        return None
 
-        ret = gdb.execute("ktask --no-pager --meta", to_string=True)
-        r = re.search(r"offsetof\(task_struct, comm\): (0x\S+)", ret)
-        if r is not None:
-            self.offset_comm = int(r.group(1), 16)
-        elif report_failure:
-            self.quiet_err("ktask failed")
-            self.offset_comm = False
+    def resolve_offset_comm(self):
+        """Resolve `offsetof(task_struct, comm)` once per CPU context in this invocation.
+        This must not be called while another thread is temporarily selected unless
+        it is intended to retry in that CPU context."""
+
+        if self.offset_comm is None:
+            context = Cache.cpu_context()
+            if context not in self.comm_tried_contexts:
+                self.comm_tried_contexts.add(context)
+                self.offset_comm = self.get_offset_comm()
         return self.offset_comm
 
     def get_comm_str(self, task_addr):
-        if self.resolve_offset_comm() is False:
+        if self.resolve_offset_comm() is None:
             return "???"
 
         comm = read_cstring_from_memory(task_addr + self.offset_comm)
         return comm or "???"
 
-    def dump_current_arm(self):
+    @staticmethod
+    def search_selected_thread(res):
+        """Return the match of the line of the selected thread in the output of `kcurrent`, or None.
+        The groups are the task address and its comm."""
+        thread = gdb.selected_thread()
+        labels = [Kernel.get_cpu_label(thread)]
+        if not labels[0].startswith("cpu"):
+            # the x86 lines are labeled by the index of `__per_cpu_offset`
+            labels.append("cpu{:d}".format(thread.num - 1))
+        for label in labels:
+            r = re.search(r"current \({:s}\): (0x\S+) (.*)".format(re.escape(label)), res)
+            if r:
+                return r
+        return None
+
+    def get_unavailable_reason(self):
+        if is_arm32():
+            cpsr = get_register(current_arch.flag_register)
+            if cpsr is not None and (cpsr & 0b11111) == 0b10000:
+                return "CPU is in USR mode; sp holds a user stack pointer"
+        elif is_arm64():
+            cpsr = get_register(current_arch.flag_register)
+            if cpsr is not None and ((cpsr >> 2) & 0b11) == 0:
+                return "CPU is in EL0; sp_el0 holds a user stack pointer"
+        elif is_riscv32() or is_riscv64():
+            priv = get_register("priv")
+            if priv == 3:
+                return "hart is in M-mode; tp belongs to the SBI firmware"
+        return "failed to resolve current task"
+
+    def dump_current_by_thread(self):
         orig_thread = gdb.selected_thread()
         try:
             orig_frame = gdb.selected_frame()
@@ -75685,34 +75804,31 @@ class KernelCurrentCommand(GenericCommand):
             # Reverting the thread is enough because this command never selects an outer frame.
             orig_frame = None
         # Resolve `offsetof(task_struct, comm)` before switching to another thread.
-        # If this CPU cannot resolve it, `get_comm_str()` retries later in the loop.
-        self.resolve_offset_comm(report_failure=False)
-        threads = gdb.selected_inferior().threads()
-        threads = sorted(threads, key=lambda th: th.num)
-        for thread in threads:
-            thread.switch() # change thread
-            cpu_num = thread.num - 1 # ?
-            task = KernelAddressHeuristicFinder.get_current_task_for_current_thread()
+        # If this CPU cannot resolve it, it is retried on the other CPUs in the kernel.
+        self.resolve_offset_comm()
+        results = []
+        try:
+            for thread in Kernel.get_cpu_threads():
+                thread.switch() # change thread
+                label = Kernel.get_cpu_label(thread)
+                task = KernelAddressHeuristicFinder.get_current_task_for_current_thread()
+                if task is None:
+                    results.append((label, None, self.get_unavailable_reason()))
+                    continue
+                results.append((label, task, None))
+                if is_in_kernel():
+                    self.resolve_offset_comm()
+        finally:
+            orig_thread.switch() # revert thread
+            if orig_frame is not None:
+                orig_frame.select()
+
+        # A CPU halted in userland may not reach the kernel, so `comm` is read from the selected CPU.
+        for label, task, reason in results:
             if task is None:
-                if is_arm32():
-                    cpsr = get_register(current_arch.flag_register)
-                    if cpsr is not None and (cpsr & 0b11111) == 0b10000:
-                        reason = "CPU is in USR mode; sp holds a user stack pointer"
-                    else:
-                        reason = "failed to resolve current task"
-                    gef_print("current (cpu{:d}): unavailable ({:s})".format(cpu_num, reason))
-                elif is_arm64():
-                    cpsr = get_register(current_arch.flag_register)
-                    if cpsr is not None and ((cpsr >> 2) & 0b11) == 0:
-                        reason = "CPU is in EL0; sp_el0 holds a user stack pointer"
-                    else:
-                        reason = "failed to resolve current task"
-                    gef_print("current (cpu{:d}): unavailable ({:s})".format(cpu_num, reason))
-                continue
-            gef_print("current (cpu{:d}): {:#x} {:s}".format(cpu_num, task, self.get_comm_str(task)))
-        orig_thread.switch() # revert thread
-        if orig_frame is not None:
-            orig_frame.select()
+                gef_print("current ({:s}): unavailable ({:s})".format(label, reason))
+            else:
+                gef_print("current ({:s}): {:#x} {:s}".format(label, task, self.get_comm_str(task)))
         return
 
     def dump_current_x86(self):
@@ -75745,15 +75861,19 @@ class KernelCurrentCommand(GenericCommand):
     @parse_args
     @only_if_gdb_running
     @only_if_specific_gdb_mode(mode=("qemu-system", "vmware"))
-    @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
+    @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64"))
     @only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
         self.quiet_info("Wait for memory scan")
 
-        if is_arm32() or is_arm64():
-            self.dump_current_arm()
+        self.offset_comm = None
+        self.comm_tried_contexts = set()
+        if is_arm32() or is_arm64() or is_riscv32() or is_riscv64():
+            self.dump_current_by_thread()
         elif is_x86():
             self.dump_current_x86()
+        if self.comm_tried_contexts and self.offset_comm is None:
+            self.quiet_err("ktask failed")
         return
 
 
@@ -76977,18 +77097,19 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
 
         tmp_current_tasks = {}
         for line in res.splitlines():
-            r = re.search(r"current \(cpu(\d+)\): (0x\S+) .+", line.strip())
+            # the label is "cpuN", or "thread I.T" if the CPU index is unknown
+            r = re.search(r"current \(([^)]+)\): (0x\S+) .+", line.strip())
             if r:
-                cpu = int(r.group(1))
+                label = r.group(1).replace("thread ", "th") # the column must not contain a space
                 task = int(r.group(2), 16)
-                new_list = tmp_current_tasks.get(task, []) + [cpu]
+                new_list = tmp_current_tasks.get(task, []) + [label]
                 tmp_current_tasks[task] = new_list
                 continue
             r = re.search(r"current: (0x\S+) .+", line.strip())
             if r:
-                cpu = 0
+                label = "cpu0"
                 task = int(r.group(1), 16)
-                new_list = tmp_current_tasks.get(task, []) + [cpu]
+                new_list = tmp_current_tasks.get(task, []) + [label]
                 tmp_current_tasks[task] = new_list
                 continue
 
@@ -76996,9 +77117,9 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
         for k, v in tmp_current_tasks.items():
             if len(v) > 1:
                 # It is unclear whether this case can occur.
-                current_tasks[k] = "cpu{:d},..".format(min(v))
+                current_tasks[k] = "{:s},..".format(v[0])
             else:
-                current_tasks[k] = "cpu{:d}".format(v[0])
+                current_tasks[k] = v[0]
         return current_tasks
 
     def append_task_legend(self):
@@ -164381,9 +164502,8 @@ class KernelVMMapCommand(GenericCommand, BufferingOutput):
         # Even if you are in a kernel thread, you may be able to see the userland memory map,
         # but it takes time to identify which process it belongs to.
         try:
-            th_num = gdb.selected_thread().num
             res = gdb.execute("kcurrent --quiet", to_string=True)
-            r = re.search(r"current \(cpu{:d}\): (0x\S+) .*".format(th_num - 1), res)
+            r = KernelCurrentCommand.search_selected_thread(res)
             if not r:
                 return
             curr_task = int(r.group(1), 16)
@@ -168462,9 +168582,8 @@ class KmallocTracerCommand(GenericCommand):
 
     @staticmethod
     def get_task():
-        th_num = gdb.selected_thread().num
         res = gdb.execute("kcurrent --quiet", to_string=True)
-        r = re.search(r"current \(cpu{:d}\): (0x\S+) (.*)".format(th_num - 1), res)
+        r = KernelCurrentCommand.search_selected_thread(res)
         if r:
             task = int(r.group(1), 16)
             name = r.group(2)
