@@ -3076,17 +3076,39 @@ options:
 
 ## `iouring-dump`
 
-Dump the iouring area (x64 only).
+Dump the userland io_uring rings.
 
 
 ### Syntax
 
 ```text
-usage: iouring-dump [-h] [-n]
+usage: iouring-dump [-h] [-r RINGS] [-s SQES] [--no-scan] [-n]
 
 options:
-  -h, --help      show this help message and exit
-  -n, --no-pager  do not use the pager.
+  -h, --help         show this help message and exit
+  -r, --rings RINGS  the address of the rings set up with IORING_SETUP_NO_MMAP (p->cq_off.user_addr).
+  -s, --sqes SQES    the address of the SQEs set up with IORING_SETUP_NO_MMAP (p->sq_off.user_addr).
+  --no-scan          do not search writable memory for the rings set up with IORING_SETUP_NO_MMAP.
+  -n, --no-pager     do not use the pager.
+```
+
+### Examples
+
+```gdb
+iouring-dump                                      # dump mmapped rings and search IORING_SETUP_NO_MMAP rings
+iouring-dump -r 0x7ffff7fb2000 -s 0x7ffff7fb1000  # dump IORING_SETUP_NO_MMAP rings at the specified address
+```
+
+### Notes
+
+```text
+The layout of the rings is recognized from their metadata, not from the kernel version.
+  Linux v5.1-v5.3: IORING_OFF_SQ_RING and IORING_OFF_CQ_RING map struct io_sq_ring and struct io_cq_ring.
+  Linux v5.4-    : both offsets map the same struct io_rings (IORING_FEAT_SINGLE_MMAP).
+Linux v5.1-v6.9 (except some later v6.1.y/v6.6.y) maps the rings with remap_pfn_range(), so gdb cannot read them.
+Then, on x86/ARM/AArch64, they are copied to a temporary mapping in the inferior if the mapping is readable.
+The rings set up with IORING_SETUP_NO_MMAP (Linux v6.5-) are in user memory, not in an io_uring mapping.
+They are searched in writable memory. Their SQEs are guessed from the liburing layout, or specify --sqes.
 ```
 
 ## `link-map`

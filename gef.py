@@ -641,6 +641,11 @@ class MemoryCache:
             except (gdb.error, AttributeError):
                 raise e from None
             return out
+        except gdb.error as e:
+            # a core file raises it for a region that is not dumped
+            if "unavailable" in str(e):
+                raise gdb.MemoryError(str(e)) from None
+            raise
 
     @staticmethod
     def read(addr, length, reader=None, namespace=None):
@@ -14032,6 +14037,20 @@ def is_container_attach():
 
 
 @Cache.cache_this_session(cache_None=False)
+def is_core_file():
+    """GDB mode determination function for core file."""
+    if not is_alive():
+        return None
+    try:
+        connection = gdb.selected_inferior().connection
+        return connection is not None and connection.type == "core"
+    except AttributeError:
+        # before gdb 11.x: AttributeError: 'gdb.Inferior' object has no attribute 'connection'
+        res = gdb.execute("maintenance print target-stack", to_string=True)
+        return "core" in res
+
+
+@Cache.cache_this_session(cache_None=False)
 def is_pin():
     """GDB mode determination function for pin and SDE."""
     if not is_alive():
@@ -14553,16 +14572,19 @@ class Path:
 
     @staticmethod
     def read_remote_file(filepath, as_byte=True):
-        tmp_name = os.path.join(GEF_TEMP_DIR, "read_remote_file.tmp")
+        # a fixed name is removed by another gdb that runs in parallel
+        tmp_fd, tmp_name = GefUtil.mkstemp(prefix="read_remote_file", suffix=".tmp")
+        os.close(tmp_fd)
         try:
             gdb.execute("remote get {!r} {!r}".format(filepath, tmp_name), to_string=True)
+            if as_byte:
+                data = open(tmp_name, "rb").read()
+            else:
+                data = open(tmp_name, "r").read()
         except gdb.error:
-            return ""
-        if as_byte:
-            data = open(tmp_name, "rb").read()
-        else:
-            data = open(tmp_name, "r").read()
-        os.unlink(tmp_name)
+            data = ""
+        finally:
+            os.unlink(tmp_name)
         return data
 
 
@@ -14669,7 +14691,7 @@ class ProcessMap:
             try:
                gdb.selected_inferior().read_memory(addr, 1)
                return True
-            except gdb.MemoryError:
+            except gdb.error: # gdb.MemoryError, or "unavailable" of a core file
                 return False
 
         def get_region_start_end(addr):
@@ -18563,30 +18585,431 @@ class VvarCommand(GenericCommand, BufferingOutput):
 
 @register_command
 class IouringDumpCommand(GenericCommand, BufferingOutput):
-    """Dump the iouring area (x64 only)."""
+    """Dump the userland io_uring rings."""
 
     _cmdline_ = "iouring-dump"
     _category_ = "02-e. Process Information - Complex Structure Information"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("-r", "--rings", type=AddressUtil.parse_address,
+                        help="the address of the rings set up with IORING_SETUP_NO_MMAP (p->cq_off.user_addr).")
+    parser.add_argument("-s", "--sqes", type=AddressUtil.parse_address,
+                        help="the address of the SQEs set up with IORING_SETUP_NO_MMAP (p->sq_off.user_addr).")
+    parser.add_argument("--no-scan", action="store_true",
+                        help="do not search writable memory for the rings set up with IORING_SETUP_NO_MMAP.")
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
     _syntax_ = parser.format_help()
 
-    def read(self, addr, size):
-        block_size = 128
-        dynamic_read = current_arch.read128
+    _example_ = [
+        "{0:s}                                      # dump mmapped rings and search IORING_SETUP_NO_MMAP rings",
+        "{0:s} -r 0x7ffff7fb2000 -s 0x7ffff7fb1000  # dump IORING_SETUP_NO_MMAP rings at the specified address",
+    ]
+    _example_ = "\n".join(_example_).format(_cmdline_)
 
-        out = b""
-        pos = 0
-        while pos < size:
-            out += dynamic_read(addr + pos)
-            pos += block_size
-        return out[:size]
+    _note_ = [
+        "The layout of the rings is recognized from their metadata, not from the kernel version.",
+        "  Linux v5.1-v5.3: IORING_OFF_SQ_RING and IORING_OFF_CQ_RING map struct io_sq_ring and struct io_cq_ring.",
+        "  Linux v5.4-    : both offsets map the same struct io_rings (IORING_FEAT_SINGLE_MMAP).",
+        "Linux v5.1-v6.9 (except some later v6.1.y/v6.6.y) maps the rings with remap_pfn_range(), so gdb cannot read them.",
+        "Then, on x86/ARM/AArch64, they are copied to a temporary mapping in the inferior if the mapping is readable.",
+        "The rings set up with IORING_SETUP_NO_MMAP (Linux v6.5-) are in user memory, not in an io_uring mapping.",
+        "They are searched in writable memory. Their SQEs are guessed from the liburing layout, or specify --sqes.",
+    ]
+    _note_ = "\n".join(_note_)
+
+    IORING_OFF_SQ_RING = 0x0000_0000
+    IORING_OFF_CQ_RING = 0x0800_0000
+    IORING_OFF_SQES = 0x1000_0000
+    IORING_MAP_OFF_PARAM_REGION = 0x2000_0000
+    IORING_MAP_OFF_ZCRX_REGION = 0x3000_0000
+    IORING_OFF_PBUF_RING = 0x8000_0000
+    IORING_OFF_MMAP_MASK = 0xf800_0000
+    IORING_OFF_ID_SHIFT = 16 # IORING_OFF_PBUF_SHIFT, IORING_OFF_ZCRX_SHIFT
+
+    IORING_MAX_ENTRIES = 0x8000
+    IORING_MAX_CQ_ENTRIES = 0x10000
+
+    # the alignment of struct io_uring {head, tail}; 4 means unaligned (!CONFIG_SMP, or recent kernels)
+    CACHELINE_SIZES = (4, 64, 128, 32, 256, 16)
+    SMP_CACHE_BYTES = (64, 128, 32, 256, 16)
+
+    MAX_SCAN_SIZE = 0x400_0000
+    SCAN_CHUNK_SIZE = 0x10_0000
+
+    def read_mappings(self, entries):
+        result = {}
+        pending = []
+        for entry in entries:
+            try:
+                result[entry.page_start] = read_memory(entry.page_start, entry.size)
+            except (gdb.error, OverflowError):
+                if entry.is_readable():
+                    pending.append(entry)
+
+        # ptrace cannot read VM_PFNMAP, so copy them in the inferior.
+        # Never do it for an unreadable mapping; the inferior would receive SIGSEGV.
+        if pending and self.get_copy_codes(pending) and not is_core_file():
+            data = self.read_by_inferior(pending)
+            if data is not None:
+                pos = 0
+                for entry in pending:
+                    result[entry.page_start] = data[pos:pos + entry.size]
+                    pos += entry.size
+        return result
+
+    def get_copy_codes(self, entries):
+        """Return the code which copies the entries to the address in the returned register, one after another."""
+
+        def arm64_mov_imm(rd, value):
+            # movz xd, #imm16; movk xd, #imm16, lsl #16; ...
+            codes = []
+            for hw in range(4):
+                base = 0xd280_0000 if hw == 0 else 0xf280_0000
+                codes.append(struct.pack("<I", base | hw << 21 | (value >> hw * 16 & 0xffff) << 5 | rd))
+            return codes
+
+        def arm32_mov_imm(rd, value, thumb):
+            # movw rd, #imm16; movt rd, #imm16
+            codes = []
+            for arm_base, thumb_base, imm in [(0xe300_0000, 0xf240, value & 0xffff), (0xe340_0000, 0xf2c0, value >> 16)]:
+                if thumb:
+                    codes.append(struct.pack("<HH", thumb_base | (imm >> 11 & 1) << 10 | imm >> 12, (imm >> 8 & 7) << 12 | rd << 8 | imm & 0xff))
+                else:
+                    codes.append(struct.pack("<I", arm_base | (imm >> 12) << 16 | rd << 12 | imm & 0xfff))
+            return codes
+
+        if Endian.is_big_endian():
+            return None
+        codes = []
+        if is_x86_64():
+            codes += [b"\xfc"] # cld
+            for entry in entries:
+                codes += [b"\x48\xbe" + p64(entry.page_start)] # mov rsi, imm64
+                codes += [b"\x48\xb9" + p64(entry.size)] # mov rcx, imm64
+                codes += [b"\xf3\xa4"] # rep movsb
+            return codes, "$rdi"
+        if is_x86_32():
+            codes += [b"\xfc"] # cld
+            for entry in entries:
+                codes += [b"\xbe" + p32(entry.page_start)] # mov esi, imm32
+                codes += [b"\xb9" + p32(entry.size)] # mov ecx, imm32
+                codes += [b"\xf3\xa4"] # rep movsb
+            return codes, "$edi"
+        if is_arm64():
+            for entry in entries:
+                codes += arm64_mov_imm(1, entry.page_start)
+                codes += arm64_mov_imm(2, entry.size)
+                codes += [b"\x23\x84\x40\xf8"] # ldr x3, [x1], #8
+                codes += [b"\x03\x84\x00\xf8"] # str x3, [x0], #8
+                codes += [b"\x42\x20\x00\xf1"] # subs x2, x2, #8
+                codes += [b"\xa1\xff\xff\x54"] # b.ne <ldr>
+            return codes, "$x0"
+        if is_arm32():
+            thumb = current_arch.is_thumb()
+            for entry in entries:
+                codes += arm32_mov_imm(1, entry.page_start, thumb)
+                codes += arm32_mov_imm(2, entry.size, thumb)
+                if thumb:
+                    codes += [b"\x51\xf8\x04\x3b"] # ldr.w r3, [r1], #4
+                    codes += [b"\x40\xf8\x04\x3b"] # str.w r3, [r0], #4
+                    codes += [b"\x04\x3a"] # subs r2, #4
+                    codes += [b"\xf9\xd1"] # bne.n <ldr.w>
+                else:
+                    codes += [b"\x04\x30\x91\xe4"] # ldr r3, [r1], #4
+                    codes += [b"\x04\x30\x80\xe4"] # str r3, [r0], #4
+                    codes += [b"\x04\x20\x52\xe2"] # subs r2, r2, #4
+                    codes += [b"\xfb\xff\xff\x1a"] # bne <ldr>
+            return codes, "$r0"
+        return None
+
+    def read_by_inferior(self, entries):
+        """Copy the mappings to a temporary mapping in the inferior, then read it."""
+        size = sum(entry.size for entry in entries)
+        syscall_table = Syscall.get_syscall_table()
+        mmap_name = "mmap" if is_x86_64() or is_arm64() else "mmap2"
+        mmap_args = [0, size, 0x3, 0x22, (1 << current_arch.ptrsize * 8) - 1, 0] # RW, MAP_PRIVATE|MAP_ANONYMOUS, fd=-1
+        ret = ExecSyscall(syscall_table.name_table[mmap_name].nr, mmap_args).exec_code()
+        tmp = ret["reg"][current_arch.return_register]
+        if -0x1000 < u2i(tmp, current_arch.ptrsize * 8) < 0:
+            return None
+
+        # Each ExecAsm is slow on a slow remote link, so copy all mappings at once.
+        codes, dst = self.get_copy_codes(entries)
+        # A loop and `rep movsb` need a breakpoint, since stepi executes one iteration; do not resume other threads.
+        scheduler_locking = gdb.parameter("scheduler-locking")
+        try:
+            gdb.execute("set scheduler-locking on", to_string=True)
+            ret = ExecAsm(codes, regs={dst: tmp}, step=len(codes), use_bp=True).exec_code()
+        finally:
+            gdb.execute("set scheduler-locking {:s}".format(scheduler_locking), to_string=True)
+
+        data = None
+        if ret["reg"][dst] == tmp + size:
+            try:
+                data = read_memory(tmp, size)
+            except (gdb.error, OverflowError):
+                pass
+        ExecSyscall(syscall_table.name_table["munmap"].nr, [tmp, size]).exec_code()
+        return data
+
+    def is_valid_ring(self, head, tail, mask, entries, max_entries):
+        if entries == 0 or entries & (entries - 1) or entries > max_entries:
+            return False
+        if mask + 1 != entries:
+            return False
+        return (tail - head) & 0xffff_ffff <= entries
+
+    def parse_rings(self, data, offset=0):
+        """Recognize struct io_rings (Linux v5.4-)."""
+        fmt = Endian.endian_str() + "6I"
+        for cacheline in self.CACHELINE_SIZES:
+            pos = offset + cacheline * 4
+            if len(data) < pos + 0x18:
+                continue
+            sq_mask, cq_mask, sq_entries, cq_entries, dropped, flags = struct.unpack_from(fmt, data, pos)
+            if sq_mask + 1 != sq_entries or cq_mask + 1 != cq_entries or cq_entries < sq_entries:
+                continue
+            heads = [offset + cacheline * i for i in range(4)]
+            sq_head, sq_tail, cq_head, cq_tail = [u32(data[x:x + 4]) for x in heads]
+            if not self.is_valid_ring(sq_head, sq_tail, sq_mask, sq_entries, self.IORING_MAX_ENTRIES):
+                continue
+            if not self.is_valid_ring(cq_head, cq_tail, cq_mask, cq_entries, self.IORING_MAX_CQ_ENTRIES):
+                continue
+            return {
+                "name": "struct io_rings", "cacheline": cacheline,
+                "sq_entries": sq_entries, "cq_entries": cq_entries, "sq_tail": sq_tail,
+                "lines": [
+                    "sq: head={:#x}, tail={:#x}, ring_mask={:#x}, ring_entries={:d}, dropped={:#x}, flags={:#x}".format(
+                        sq_head, sq_tail, sq_mask, sq_entries, dropped, flags,
+                    ),
+                    "cq: head={:#x}, tail={:#x}, ring_mask={:#x}, ring_entries={:d}".format(
+                        cq_head, cq_tail, cq_mask, cq_entries,
+                    ),
+                ],
+            }
+        return None
+
+    def parse_split_ring(self, data, is_sq):
+        """Recognize struct io_sq_ring or struct io_cq_ring (Linux v5.1-v5.3)."""
+        for cacheline in self.CACHELINE_SIZES:
+            pos = cacheline * 2
+            if len(data) < pos + 0x10:
+                continue
+            head, tail = u32(data[:4]), u32(data[cacheline:cacheline + 4])
+            mask, entries, count, flags = slice_unpack(data[pos:pos + 0x10], 4)
+            if is_sq:
+                if not self.is_valid_ring(head, tail, mask, entries, self.IORING_MAX_ENTRIES):
+                    continue
+                line = "sq: head={:#x}, tail={:#x}, ring_mask={:#x}, ring_entries={:d}, dropped={:#x}, flags={:#x}"
+                return {"name": "struct io_sq_ring", "lines": [line.format(head, tail, mask, entries, count, flags)]}
+            else:
+                if not self.is_valid_ring(head, tail, mask, entries, self.IORING_MAX_CQ_ENTRIES):
+                    continue
+                line = "cq: head={:#x}, tail={:#x}, ring_mask={:#x}, ring_entries={:d}, overflow={:#x}"
+                return {"name": "struct io_cq_ring", "lines": [line.format(head, tail, mask, entries, count)]}
+        return None
+
+    def sq_array_offset(self, layout, cqe32, cacheline):
+        # rings_size() in the kernel doubles the whole struct io_rings, not only cqes[], for IORING_SETUP_CQE32
+        size = align(layout["cacheline"] * 4 + 0x20, cacheline) + layout["cq_entries"] * 0x10
+        return align(size * 2 if cqe32 else size, cacheline)
+
+    def rings_size(self, layout):
+        # the cache line size is unknown, so assume the largest one
+        size = self.sq_array_offset(layout, True, 0x100) + layout["sq_entries"] * 4
+        return align(size, get_pagesize())
+
+    def find_sq_array(self, data, layout):
+        """IORING_SETUP_CQE32 leaves no trace in the rings, but liburing fills sq_array with 0, 1, 2, ...,
+        so its position tells the size of CQE."""
+        n = layout["sq_entries"]
+        if n < 2:
+            return None, None
+        identity = struct.pack("{:s}{:d}I".format(Endian.endian_str(), n), *range(n))
+        for cqe32 in [False, True]:
+            for cacheline in self.SMP_CACHE_BYTES:
+                pos = self.sq_array_offset(layout, cqe32, cacheline)
+                if data[pos:pos + n * 4] == identity:
+                    return pos, 0x20 if cqe32 else 0x10
+        return None, None
+
+    def guess_sqes(self, maps, rings, layout):
+        """liburing puts the SQEs just before the rings in the same memory, so validate it by the contents."""
+        entry = self.find_map(maps, rings)
+        if entry is None or layout["sq_tail"] == 0:
+            return None, None
+        for sqe_size in [0x40, 0x80]: # IORING_SETUP_SQE128
+            size = align(layout["sq_entries"] * sqe_size, get_pagesize())
+            addr = rings - size
+            if addr < entry.page_start:
+                continue
+            data = self.read_user(maps, addr, size)
+            if not data or not any(data):
+                continue
+            sqes = [data[i:i + sqe_size] for i in range(0, layout["sq_entries"] * sqe_size, sqe_size)]
+            if all(sqe[0] < len(KernelIoUringCommand.OPCODES) and sqe[1] < 0x80 for sqe in sqes): # opcode, IOSQE_*
+                return addr, size
+        return None, None
+
+    def dump(self, title, addr, data, lines=()):
+        if data is None:
+            self.out.append(titlify("{:s}: {:#x}".format(title, addr)))
+            self.out.append(Color.redify("Failed to read memory"))
+            return
+        self.out.append(titlify("{:s}: {:#x}-{:#x}".format(title, addr, addr + len(data))))
+        self.out.extend(lines)
+        hex_data = hexdump(data, base=addr, unit=current_arch.ptrsize)
+        hex_data_merged = HexdumpCommand.merge_lines(hex_data.splitlines(), nb_skip_merge=0x10)
+        self.out.extend(hex_data_merged)
+        return
+
+    def dump_mapping(self, entry, data):
+        base = entry.offset & self.IORING_OFF_MMAP_MASK
+        delta = entry.offset & ~self.IORING_OFF_MMAP_MASK
+        if base in [self.IORING_OFF_PBUF_RING, self.IORING_MAP_OFF_ZCRX_REGION]:
+            ident = delta >> self.IORING_OFF_ID_SHIFT
+            delta &= (1 << self.IORING_OFF_ID_SHIFT) - 1
+
+        lines = []
+        if base in [self.IORING_OFF_SQ_RING, self.IORING_OFF_CQ_RING]:
+            is_sq = base == self.IORING_OFF_SQ_RING
+            layout = None
+            if data is not None and delta == 0:
+                layout = self.parse_rings(data) or self.parse_split_ring(data, is_sq)
+            if layout:
+                name = layout["name"]
+                lines = layout["lines"]
+            else:
+                name = "SQ ring" if is_sq else "CQ ring"
+            name += " (IORING_OFF_SQ_RING" if is_sq else " (IORING_OFF_CQ_RING"
+            if not layout and delta == 0:
+                name += ", unknown layout"
+                lines = ["struct {:s} on Linux v5.1-v5.3, struct io_rings on Linux v5.4-".format(
+                    "io_sq_ring" if is_sq else "io_cq_ring",
+                )]
+        elif base == self.IORING_OFF_SQES:
+            name = "struct io_uring_sqe[] (IORING_OFF_SQES"
+        elif base == self.IORING_OFF_PBUF_RING:
+            name = "struct io_uring_buf_ring (IORING_OFF_PBUF_RING, bgid={:d}".format(ident)
+        elif base == self.IORING_MAP_OFF_PARAM_REGION:
+            name = "parameter region (IORING_MAP_OFF_PARAM_REGION"
+        elif base == self.IORING_MAP_OFF_ZCRX_REGION:
+            name = "zero-copy receive region (IORING_MAP_OFF_ZCRX_REGION, id={:d}".format(ident)
+        else:
+            name = "unknown io_uring mapping (offset {:#x}".format(entry.offset)
+            delta = 0
+        if delta:
+            name += ", continued from +{:#x}".format(delta)
+        name += ")"
+
+        if data is None and not entry.is_readable():
+            self.out.append(titlify("{:s}: {:#x}".format(name, entry.page_start)))
+            self.out.append(Color.redify("Unreadable mapping (permission: {!s})".format(entry.permission)))
+            return
+        self.dump(name, entry.page_start, data, lines)
+        return
+
+    def find_map(self, maps, addr):
+        for entry in maps:
+            if entry.page_start <= addr < entry.page_end:
+                return entry
+        return None
+
+    def read_user(self, maps, addr, size):
+        entry = self.find_map(maps, addr)
+        if entry:
+            size = min(size, entry.page_end - addr)
+        try:
+            return read_memory(addr, size)
+        except (gdb.error, OverflowError):
+            return None
+
+    def scan_rings(self, maps):
+        found = []
+        skipped = 0
+        page_size = get_pagesize()
+        for entry in maps:
+            if not entry.is_readable() or not entry.is_writable():
+                continue
+            if entry.path == "anon_inode:[io_uring]":
+                continue
+            if entry.size > self.MAX_SCAN_SIZE:
+                skipped += 1
+                continue
+            for chunk in range(entry.page_start, entry.page_end, self.SCAN_CHUNK_SIZE):
+                try:
+                    data = read_memory(chunk, min(self.SCAN_CHUNK_SIZE, entry.page_end - chunk))
+                except (gdb.error, OverflowError):
+                    continue
+                for pos in range(0, len(data), page_size):
+                    layout = self.parse_rings(data, pos)
+                    if layout:
+                        found.append((chunk + pos, layout))
+        return found, skipped
+
+    def get_iouring_fds(self):
+        if is_remote_debug():
+            return []
+        pid = Pid.get_pid()
+        if not pid:
+            return []
+        path = "/proc/{:d}/fd".format(pid)
+        fds = []
+        try:
+            for fname in os.listdir(path):
+                if os.readlink(os.path.join(path, fname)) == "anon_inode:[io_uring]":
+                    fds.append(int(fname))
+        except OSError:
+            return []
+        return sorted(fds)
+
+    def dump_no_mmap(self, maps, rings, sqes, how):
+        page_size = get_pagesize()
+        layout = None
+        if rings is not None:
+            data = self.read_user(maps, rings, page_size)
+            if data is not None:
+                layout = self.parse_rings(data)
+            if layout:
+                data = self.read_user(maps, rings, self.rings_size(layout))
+                lines = list(layout["lines"])
+                pos, cqe_size = self.find_sq_array(data or b"", layout)
+                if pos is None:
+                    lines.append("sq_array: not found, so the size of CQE (16 or 32 bytes) is unknown")
+                else:
+                    data = data[:align(pos + layout["sq_entries"] * 4, page_size)]
+                    lines.append("sq_array: +{:#x}, so the size of CQE is {:d} bytes".format(pos, cqe_size))
+                self.dump("struct io_rings (IORING_SETUP_NO_MMAP, {:s})".format(how), rings, data, lines)
+            else:
+                self.dump("unknown (struct io_rings is not recognized)", rings, data)
+
+        if sqes is None and layout:
+            sqes, size = self.guess_sqes(maps, rings, layout)
+            if sqes is None:
+                self.out.append("struct io_uring_sqe[]: not found; try `{:s} --rings {:#x} --sqes ADDRESS`".format(
+                    self._cmdline_, rings,
+                ))
+                return
+            name = "struct io_uring_sqe[] (IORING_SETUP_NO_MMAP, guessed)"
+            lines = ["liburing puts the SQEs just before the rings"]
+        elif sqes is not None and layout:
+            candidates = [align(layout["sq_entries"] * x, page_size) for x in [0x40, 0x80]]
+            size = rings - sqes if rings - sqes in candidates else candidates[0]
+            name = "struct io_uring_sqe[] (IORING_SETUP_NO_MMAP, specified)"
+            lines = []
+        elif sqes is not None:
+            size = page_size
+            name = "struct io_uring_sqe[] (IORING_SETUP_NO_MMAP, specified)"
+            lines = ["the number of entries is unknown without --rings, so dump the first page only"]
+        else:
+            return
+        self.dump(name, sqes, self.read_user(maps, sqes, size), lines)
+        return
 
     @parse_args
     @only_if_gdb_running
     @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "rr", "wine"))
-    @only_if_specific_arch(arch=("x86_64",))
+    @require_arch_set
     def do_invoke(self, args):
         # get map entry
         maps = ProcessMap.get_process_maps()
@@ -18594,30 +19017,42 @@ class IouringDumpCommand(GenericCommand, BufferingOutput):
             err("Failed to get maps")
             return
 
-        # get anon_inode:[io_uring]
-        iouring_entries = []
-        for entry in maps:
-            if entry.path == "anon_inode:[io_uring]":
-                iouring_entries.append(entry)
-
-        # dump
         self.out = []
-        for entry in iouring_entries:
-            if entry.offset in [0, 0x0800_0000]: # IORING_OFF_SQ_RING ,IORING_OFF_CQ_RING
-                self.out.append(titlify("struct io_rings: {:#x}".format(entry.page_start)))
-            elif entry.offset == 0x1000_0000: # IORING_OFF_SQES
-                self.out.append(titlify("struct io_uring_sqe: {:#x}".format(entry.page_start)))
 
-            data = self.read(entry.page_start, entry.size)
-            hex_data = hexdump(data, base=entry.page_start, unit=current_arch.ptrsize)
-            hex_data_merged = HexdumpCommand.merge_lines(hex_data.splitlines(), nb_skip_merge=0x10)
-            self.out.extend(hex_data_merged)
+        # dump the specified IORING_SETUP_NO_MMAP rings
+        if args.rings is not None or args.sqes is not None:
+            self.dump_no_mmap(maps, args.rings, args.sqes, "specified")
+            self.print_output(check_terminal_size=True)
+            return
+
+        # dump anon_inode:[io_uring]
+        entries = [entry for entry in maps if entry.path == "anon_inode:[io_uring]"]
+        data = self.read_mappings(entries)
+        nr_rings = 0
+        for entry in entries:
+            self.dump_mapping(entry, data.get(entry.page_start))
+            if entry.offset == self.IORING_OFF_SQ_RING:
+                nr_rings += 1
+
+        # search IORING_SETUP_NO_MMAP rings
+        skipped = 0
+        if not args.no_scan:
+            found, skipped = self.scan_rings(maps)
+            for addr, _ in found:
+                self.dump_no_mmap(maps, addr, None, "found by scan")
+            nr_rings += len(found)
 
         # print
+        fds = self.get_iouring_fds()
         if not self.out:
             err("Could not find io_uring region")
-            return
-        self.print_output(check_terminal_size=True)
+        else:
+            self.print_output(check_terminal_size=True)
+        if len(fds) > nr_rings:
+            fds = ", ".join(str(fd) for fd in fds)
+            info("io_uring fd ({:s}) is opened, but some rings are not found".format(fds))
+            if skipped:
+                info("{:d} large regions were not searched; try `{:s} --rings ADDRESS`".format(skipped, self._cmdline_))
         return
 
 
@@ -86218,6 +86653,7 @@ class ExecAsm:
             if current_arch.has_delay_slot:
                 codes += [current_arch.nop_insn]
             codes += target_codes
+        self.insn_sizes = [len(code) for code in target_codes or []]
 
         # list to bytes
         if Endian.is_big_endian():
@@ -86270,6 +86706,7 @@ class ExecAsm:
         if self.debug:
             return
 
+        gdb.flush() # do not discard the buffered output of the user
         self.stdout_bak = os.dup(self.stdout)
         f = open("/dev/null", "w")
         os.dup2(f.fileno(), self.stdout)
@@ -86281,6 +86718,7 @@ class ExecAsm:
         if self.debug:
             return
         EventHooking.gef_on_stop_hook(EventHandler.hook_stop_handler)
+        gdb.flush() # discard the buffered stop messages while executing
         os.dup2(self.stdout_bak, self.stdout)
         os.close(self.stdout_bak)
         return
@@ -86335,9 +86773,14 @@ class ExecAsm:
             bp = None
             try:
                 bp_addr = current_arch.pc
-                for _ in range(self.step):
-                    bp_addr += get_insn(bp_addr).size
-                bp = gdb.Breakpoint("*{:#x}".format(bp_addr))
+                insn_sizes = getattr(self, "insn_sizes", [])
+                if len(insn_sizes) >= self.step:
+                    # the disassembler may decode the injected code in a stale mode (e.g., ARM vs Thumb)
+                    bp_addr += sum(insn_sizes[:self.step])
+                else:
+                    for _ in range(self.step):
+                        bp_addr += get_insn(bp_addr).size
+                bp = gdb.Breakpoint("*{:#x}".format(bp_addr), gdb.BP_BREAKPOINT, internal=True)
                 gdb.execute("continue", to_string=True)
             except gdb.error:
                 pass
