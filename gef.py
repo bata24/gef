@@ -32554,8 +32554,11 @@ class KernelChecksecCommand(GenericCommand):
         else:
             # If version is >= 6.6, vmlinux can switch `slab_virtual` status with boot-parameter
             kcmdline = Kernel.kernel_cmdline()
-            r = re.search(r"slab_virtual=(\d+)", kcmdline.cmdline)
-            if r:
+            r = re.search(r"slab_virtual=(\d+)", kcmdline.cmdline) if kcmdline else None
+            if kcmdline is None:
+                additional = "{:s}: Found, cmdline: Not found".format(stw)
+                gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.grayify("Unknown"), additional))
+            elif r:
                 additional = "{:s}: Found, {:s} is in cmdline".format(stw, r.group(0))
                 if r.group(1) == "0":
                     gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Disabled", "bold red"), additional))
@@ -64757,6 +64760,7 @@ class KernelAddressHeuristicFinder:
             addr = Ksym.get_addr("cmdline_proc_show")
             if addr:
                 res = gdb.execute("x/20i {:#x}".format(addr), to_string=True)
+                g = ()
                 if is_x86_64():
                     g = KernelAddressHeuristicFinderUtil.x64_qword_ptr_rip_base(res)
                 elif is_x86_32():
@@ -70358,35 +70362,54 @@ class Kernel:
                 continue
             # linux_banner ends with a newline and NUL. Requiring both avoids
             # shorter build strings and stale copies elsewhere in the image.
-            matches = list(re.finditer(rb"(Linux version (\d)\.(\d+)\.(\d+)[ -~]+\n)\0", data))
+            matches = list(re.finditer(rb"(Linux version \d+\.\d+\.\d+[ -~]+\n)\0", data))
             if not matches:
                 continue
             r = max(matches, key=lambda match: len(match.group(1)))
 
             version_string = r.group(1).decode("ascii").rstrip()
             address = start + r.start(1)
-            major, minor, patch = int(r.group(2)), int(r.group(3)), int(r.group(4))
-
-            return Kernel.KernelVersion(address, version_string, major, minor, patch)
+            return Kernel.KernelVersion.from_banner(address, version_string)
         return None
 
     @staticmethod
     @Cache.cache_this_session(cache_None=False)
     def kernel_cmdline():
-        saved_command_line = None
-        if is_kdb():
-            saved_command_line = Symbol.get_symbol_by_monitor("saved_command_line")
-        if saved_command_line is None:
-            saved_command_line = KernelAddressHeuristicFinder.get_saved_command_line()
-        if saved_command_line is None:
-            return None
-        try:
-            ptr = read_int_from_memory(saved_command_line)
-            cmdline = read_cstring_from_memory(ptr, max_length=0x1000)
+        def get_saved_command_line_candidates():
+            if is_kdb():
+                yield Symbol.get_symbol_by_monitor("saved_command_line")
+            # cmdline_proc_show used by the heuristic does not exist when CONFIG_PROC_FS=n
+            if KernelAddressHeuristicFinder.USE_DIRECTLY:
+                yield Ksym.get_addr("saved_command_line")
+            yield KernelAddressHeuristicFinder.get_saved_command_line()
+
+        block_size = 64 if is_kgdb() else get_pagesize() # read_memory when kgdb is very slow
+        max_length = 0x1000
+        seen = set()
+        for saved_command_line in get_saved_command_line_candidates():
+            if saved_command_line is None or saved_command_line in seen:
+                continue
+            seen.add(saved_command_line)
+
+            ptr = read_int_from_memory(saved_command_line, safe=True)
+            if not ptr:
+                continue
+            data = b""
+            while len(data) < max_length and b"\0" not in data:
+                addr = ptr + len(data)
+                try:
+                    data += read_memory(addr, min(block_size - addr % block_size, max_length - len(data)))
+                except gdb.error:
+                    break
+            if not data:
+                continue
+
+            # keep non-printable bytes visible instead of failing (e.g., non-ASCII boot arguments)
+            data = data.split(b"\0")[0]
+            cmdline = "".join(chr(c) if chr(c) in String.STRING_PRINTABLE else "\\x{:02x}".format(c) for c in data)
             Kcmdline = collections.namedtuple("Kcmdline", ["address", "cmdline"])
             return Kcmdline(ptr, cmdline)
-        except Exception:
-            return None
+        return None
 
     class ListHead:
         """Parse Linux circular doubly-linked lists.
