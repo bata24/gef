@@ -78346,6 +78346,7 @@ class KernelModuleCommand(GenericCommand, BufferingOutput):
 
         # slow_path
         kversion = Kernel.kernel_version()
+        sizeof_symtab_entry = 24 if is_64bit() else 16
         for i in range(300):
             offset_kallsyms = i * current_arch.ptrsize
             valid = True
@@ -78373,6 +78374,10 @@ class KernelModuleCommand(GenericCommand, BufferingOutput):
                 if not is_valid_addr(cand_strtab):
                     valid = False
                     break
+                # strtab is placed just after symtab
+                if cand_strtab != cand_symtab + cand_num_symtab * sizeof_symtab_entry:
+                    valid = False
+                    break
                 if "5.2" <= kversion:
                     cand_typetab = read_int_from_memory(cand_kallsyms + current_arch.ptrsize * 3)
                     if not is_valid_addr(cand_typetab):
@@ -78380,6 +78385,62 @@ class KernelModuleCommand(GenericCommand, BufferingOutput):
                         break
             if valid:
                 return offset_kallsyms
+        return None
+
+    def get_offset_symtab(self, module_addrs): # ~v4.4
+        """
+        struct module { // ~v4.4
+            ...
+        #ifdef CONFIG_KALLSYMS
+            Elf_Sym *symtab, *core_symtab;
+            unsigned int num_symtab, core_num_syms;
+            char *strtab, *core_strtab;
+            ...
+        #endif
+            ...
+        };
+        Once the module is initialized, symtab, num_symtab and strtab are replaced by the core_* ones.
+        """
+        # fast path
+        try:
+            return GefUtil.parse_and_eval_unsigned("&((struct module*)0).symtab")
+        except gdb.error:
+            pass
+
+        # slow path
+        sizeof_symtab_entry = 24 if is_64bit() else 16
+        for i in range(300):
+            offset_symtab = i * current_arch.ptrsize
+            valid = True
+            for module in module_addrs:
+                symtab_ptr = module + offset_symtab
+                num_symtab_ptr = symtab_ptr + current_arch.ptrsize * 2
+                strtab_ptr = num_symtab_ptr + 4 * 2
+                # access check
+                if not is_valid_addr(symtab_ptr) or not is_valid_addr(strtab_ptr + current_arch.ptrsize * 2 - 1):
+                    valid = False
+                    break
+                # symtab == core_symtab
+                cand_symtab = read_int_from_memory(symtab_ptr)
+                if cand_symtab != read_int_from_memory(symtab_ptr + current_arch.ptrsize) or not is_valid_addr(cand_symtab):
+                    valid = False
+                    break
+                # num_symtab == core_num_syms
+                cand_num_symtab = read_int32_from_memory(num_symtab_ptr)
+                if cand_num_symtab != read_int32_from_memory(num_symtab_ptr + 4) or cand_num_symtab == 0 or cand_num_symtab > 0x10_0000:
+                    valid = False
+                    break
+                # strtab == core_strtab
+                cand_strtab = read_int_from_memory(strtab_ptr)
+                if cand_strtab != read_int_from_memory(strtab_ptr + current_arch.ptrsize) or not is_valid_addr(cand_strtab):
+                    valid = False
+                    break
+                # strtab is placed just after symtab
+                if cand_strtab != cand_symtab + cand_num_symtab * sizeof_symtab_entry:
+                    valid = False
+                    break
+            if valid:
+                return offset_symtab
         return None
 
     @Cache.cache_this_session(cache_None=False)
@@ -78442,23 +78503,45 @@ class KernelModuleCommand(GenericCommand, BufferingOutput):
 
         # module->kallsyms is used only by -s/--resolve-symbol and -a/--apply-symbol,
         # so do not give up the whole module list when it is unresolvable
-        self.offset_kallsyms = self.get_offset_kallsyms(self.module_addrs)
-        if self.offset_kallsyms is None:
+        self.offset_kallsyms = None
+        self.offset_symtab = None
+        # the kernel version only decides which layout is tried first, because distributions
+        # backport the change of v4.5 (struct mod_kallsyms)
+        if Kernel.kernel_version() < "4.5":
+            self.offset_symtab = self.get_offset_symtab(self.module_addrs)
+            if self.offset_symtab is None:
+                self.offset_kallsyms = self.get_offset_kallsyms(self.module_addrs)
+        else:
+            self.offset_kallsyms = self.get_offset_kallsyms(self.module_addrs)
+            if self.offset_kallsyms is None:
+                self.offset_symtab = self.get_offset_symtab(self.module_addrs)
+
+        if self.offset_kallsyms is not None:
+            self.meta.append((self.quiet_info, "offsetof(module, kallsyms): {:#x}".format(self.offset_kallsyms)))
+        elif self.offset_symtab is not None:
+            self.meta.append((self.quiet_info, "offsetof(module, symtab): {:#x}".format(self.offset_symtab)))
+        else:
             self.meta.append((self.quiet_err, "Could not find module->kallsyms"))
             return None
-        self.meta.append((self.quiet_info, "offsetof(module, kallsyms): {:#x}".format(self.offset_kallsyms)))
         return True
 
-    def parse_kallsyms(self, kallsyms):
+    def parse_kallsyms(self, module):
         kversion = Kernel.kernel_version()
 
-        symtab = read_int_from_memory(kallsyms + current_arch.ptrsize * 0)
         sizeof_symtab_entry = 24 if is_64bit() else 16
-        num_symtab = read_int32_from_memory(kallsyms + current_arch.ptrsize * 1)
-        strtab = read_int_from_memory(kallsyms + current_arch.ptrsize * 2)
+        typetab = None
+        if self.offset_symtab is not None: # ~v4.4
+            symtab = read_int_from_memory(module + self.offset_symtab)
+            num_symtab = read_int32_from_memory(module + self.offset_symtab + current_arch.ptrsize * 2)
+            strtab = read_int_from_memory(module + self.offset_symtab + current_arch.ptrsize * 2 + 4 * 2)
+        else:
+            kallsyms = read_int_from_memory(module + self.offset_kallsyms)
+            symtab = read_int_from_memory(kallsyms + current_arch.ptrsize * 0)
+            num_symtab = read_int32_from_memory(kallsyms + current_arch.ptrsize * 1)
+            strtab = read_int_from_memory(kallsyms + current_arch.ptrsize * 2)
+            if "5.2" <= kversion:
+                typetab = read_int_from_memory(kallsyms + current_arch.ptrsize * 3)
         strtab_pos = 0
-        if "5.2" <= kversion:
-            typetab = read_int_from_memory(kallsyms + current_arch.ptrsize * 3)
 
         #gef_print("symtab: {:#x}".format(symtab))
         #gef_print("sizeof_symtab_entry: {:#x}".format(sizeof_symtab_entry))
@@ -78473,7 +78556,7 @@ class KernelModuleCommand(GenericCommand, BufferingOutput):
             sym_name = read_cstring_from_memory(strtab + strtab_pos)
             strtab_pos += len(sym_name) + 1
 
-            if "5.2" <= kversion:
+            if typetab is not None:
                 sym_type = chr(read_int8_from_memory(typetab + i))
             elif "5.0" <= kversion:
                 # st_size
@@ -78578,13 +78661,11 @@ class KernelModuleCommand(GenericCommand, BufferingOutput):
                 self.out.append("{:#018x} {:<24s} {:#018x} {:#018x}".format(module, name_string, base, size))
 
             if self.args.resolve_symbol:
-                kallsyms = read_int_from_memory(module + self.offset_kallsyms)
-                entries = self.parse_kallsyms(kallsyms)
+                entries = self.parse_kallsyms(module)
                 self.print_symbol(entries, self.args.symbol_unsort)
 
             elif self.args.apply_symbol:
-                kallsyms = read_int_from_memory(module + self.offset_kallsyms)
-                entries = self.parse_kallsyms(kallsyms)
+                entries = self.parse_kallsyms(module)
                 self.apply_symbol(name_string, base, entries)
         return
 
@@ -85334,56 +85415,213 @@ class KernelConfigCommand(GenericCommand, BufferingOutput):
     parser.add_argument("-q", "--quiet", action="store_true", help="enable quiet mode.")
     _syntax_ = parser.format_help()
 
-    @Cache.cache_this_session(cache_None=False)
-    def get_config(self):
+    MAGIC_START = b"IKCFG_ST"
+    MAGIC_END = b"IKCFG_ED"
+    MAX_CONFIG_GZ_SIZE = 0x100000
+
+    def extract_config(self, addr, end=None):
+        # v5.1~: `kernel_config_data` points just after IKCFG_ST
+        # ~v5.0: `kernel_config_data` is a static array that begins with IKCFG_ST
+        try:
+            if read_memory(addr, len(self.MAGIC_START)) != self.MAGIC_START:
+                addr -= len(self.MAGIC_START)
+                if read_memory(addr, len(self.MAGIC_START)) != self.MAGIC_START:
+                    return None
+        except gdb.MemoryError:
+            return None
+
+        import zlib
+        decompressor = zlib.decompressobj(zlib.MAX_WBITS | 16)
+        pos = addr + len(self.MAGIC_START)
+        limit = end if end else pos + self.MAX_CONFIG_GZ_SIZE
+        configs = []
+        while not decompressor.eof:
+            if pos >= limit:
+                warn("Truncated gzip stream at {:#x}".format(addr))
+                return None
+            size = min(limit, (pos & ~0xfff) + 0x1000) - pos
+            try:
+                configs.append(decompressor.decompress(read_memory(pos, size)))
+            except gdb.MemoryError:
+                warn("Failed to read the gzip stream at {:#x}".format(pos))
+                return None
+            except zlib.error as e:
+                warn("Gzip decompress error at {:#x}: {}".format(addr, e))
+                return None
+            pos += size
+        end_pos = pos - len(decompressor.unused_data)
+        try:
+            found_end = read_memory(end_pos, len(self.MAGIC_END)) == self.MAGIC_END
+        except gdb.MemoryError:
+            found_end = False
+        self.markers = (addr, end_pos, found_end)
+        return String.bytes2str(b"".join(configs))
+
+    def print_markers(self):
+        start_pos, end_pos, found_end = self.markers
+        info("IKCFG_ST: {:#x}".format(start_pos))
+        if found_end:
+            info("IKCFG_ED: {:#x}".format(end_pos))
+        else:
+            warn("IKCFG_ED is not found just after the gzip stream ({:#x})".format(end_pos))
+        return
+
+    def iter_readable(self, start, end, chunk_size):
+        pagesize = get_pagesize()
+        for pos in ProgressBar(range(start, end, chunk_size), disable=self.args.quiet or not is_kgdb()):
+            size = min(chunk_size, end - pos)
+            try:
+                yield pos, read_memory(pos, size)
+                continue
+            except gdb.MemoryError:
+                pass
+            for page in range(pos, pos + size, pagesize):
+                try:
+                    yield page, read_memory(page, min(pagesize, pos + size - page))
+                except gdb.MemoryError:
+                    yield page, None
+        return
+
+    def search_config(self, start, end, chunk_size):
+        # the marker may straddle two chunks, so keep the tail of the previous one
+        keep = len(self.MAGIC_START) - 1
+        buf = b""
+        buf_addr = start
+        unreadable = 0
+        for addr, data in self.iter_readable(start, end, chunk_size):
+            if data is None:
+                buf = b""
+                unreadable += 1
+                continue
+            if not buf:
+                buf_addr = addr
+            buf += data
+            pos = buf.find(self.MAGIC_START)
+            while pos >= 0:
+                configs = self.extract_config(buf_addr + pos)
+                if configs is not None:
+                    return configs
+                pos = buf.find(self.MAGIC_START, pos + 1)
+            buf_addr += len(buf) - keep
+            buf = buf[-keep:]
+        if unreadable:
+            warn("Skipped {:d} unreadable pages in {:#x}-{:#x}".format(unreadable, start, end))
+        return None
+
+    def get_config_from_symbol(self):
+        addr = Ksym.get_addr("kernel_config_data")
+        if not addr:
+            return None
+        end = Ksym.get_addr("kernel_config_data_end") # v5.1~
+        configs = self.extract_config(addr, end)
+        if configs is None:
+            warn("kernel_config_data ({:#x}) does not have a valid config".format(addr))
+        return configs
+
+    def get_config_from_rodata(self):
         klayout = Kernel.get_layout()
         if klayout.ro_base is None:
-            err("Not recognized .rodata")
+            warn("Not recognized .rodata")
             return None
 
         if is_kgdb():
             info("The config is often near the top of .rodata; once found, the search stops early.")
-            ro_data = b""
-            for pos in ProgressBar(range(0, klayout.ro_size, 0x1000), disable=self.args.quiet):
-                if not is_valid_addr(klayout.ro_base + pos):
-                    err("Memory read error")
-                    return
-                ro_data += read_memory(klayout.ro_base + pos, 0x1000)
-                if ro_data.find(b"IKCFG_ST") >= 0 and ro_data.find(b"IKCFG_ED") >= 0:
-                    break
+            chunk_size = 0x1000
         else:
-            if not is_valid_addr(klayout.ro_base):
-                err("Memory read error")
-                return
-            ro_data = read_memory(klayout.ro_base, klayout.ro_size)
+            chunk_size = 0x100000
+        configs = self.search_config(klayout.ro_base, klayout.ro_base + klayout.ro_size, chunk_size)
+        if configs is None:
+            info("Could not find IKCFG_ST in .rodata")
+        return configs
 
-        start_pos = ro_data.find(b"IKCFG_ST")
-        if start_pos == -1:
-            err("Could not find IKCFG_ST, this kernel may be built as CONFIG_IKCONFIG_PROC=n")
-            return None
-        end_pos = ro_data.find(b"IKCFG_ED")
+    def get_module_memory_ranges(self, module, kmod_meta):
+        # v6.4~: `kmod` shows only module->mem[MOD_TEXT], but the config is in module->mem[MOD_RODATA]
+        MOD_RODATA = 2
+        r1 = re.search(r"offsetof\(module, mem\): (0x\S+)", kmod_meta)
+        r2 = re.search(r"offsetof\(module, mem\.size\): (0x\S+)", kmod_meta)
+        if not r1 or not r2:
+            return []
+        offset_mem = int(r1.group(1), 16)
+        offset_size = int(r2.group(1), 16) - offset_mem
 
-        info("IKCFG_ST: {:#x}".format(klayout.ro_base + start_pos))
-        info("IKCFG_ED: {:#x}".format(klayout.ro_base + end_pos))
-        configz = ro_data[start_pos + len("IKCFG_ST"):end_pos]
-
-        import gzip
         try:
-            return String.bytes2str(gzip.decompress(configz))
-        except gzip.BadGzipFile:
-            err("Gzip decompress error")
+            sizeof_module_memory_list = [GefUtil.parse_and_eval_unsigned("sizeof(struct module_memory)")]
+        except gdb.error:
+            sizeof_module_memory_min = align_to_ptrsize(offset_size + 4)
+            sizeof_mod_tree_node = current_arch.ptrsize * 7
+            sizeof_module_memory_list = [sizeof_module_memory_min, sizeof_module_memory_min + sizeof_mod_tree_node]
+
+        ranges = []
+        for sizeof_module_memory in sizeof_module_memory_list:
+            mem_ptr = module + offset_mem + MOD_RODATA * sizeof_module_memory
+            if not is_valid_addr(mem_ptr + offset_size):
+                continue
+            base = read_int_from_memory(mem_ptr)
+            size = read_int32_from_memory(mem_ptr + offset_size)
+            if base and base & 0xfff == 0 and 0 < size <= 0x100_0000 and is_valid_addr(base):
+                ranges.append((base, base + size))
+        return ranges
+
+    def get_config_from_module(self):
+        kmod_meta = Color.remove_color(gdb.execute("kmod --no-pager --meta", to_string=True))
+        if "Could not find any modules" in kmod_meta:
+            info("The configs module is not loaded")
             return None
+        if "CONFIG_MODULES may not be set" in kmod_meta:
+            info("Could not find modules (CONFIG_MODULES may not be set)")
+            return None
+        if "Num of modules:" not in kmod_meta:
+            info("Could not list the modules")
+            return None
+
+        module_re = r"^(0x[0-9a-f]+)\s+configs\s+(0x[0-9a-f]+)\s+(0x[0-9a-f]+)$"
+        ret = Color.remove_color(gdb.execute("kmod --quiet --no-pager --filter ^configs$ --resolve-symbol", to_string=True))
+        r = re.search(module_re, ret, re.M)
+        if not r:
+            # module->kallsyms may be unresolvable, so retry without symbols
+            ret = Color.remove_color(gdb.execute("kmod --quiet --no-pager --filter ^configs$", to_string=True))
+            r = re.search(module_re, ret, re.M)
+            if not r:
+                info("The configs module is not loaded")
+                return None
+        module, base, size = [int(x, 16) for x in r.groups()]
+        info("configs module: {:#x}".format(module))
+
+        symbols = {name: int(addr, 16) for addr, name in re.findall(r"^(0x[0-9a-f]+) \S (kernel_config_data(?:_end)?)$", ret, re.M)}
+        if "kernel_config_data" in symbols:
+            configs = self.extract_config(symbols["kernel_config_data"], symbols.get("kernel_config_data_end"))
+            if configs is not None:
+                return configs
+
+        ranges = [(base, base + size)] + self.get_module_memory_ranges(module, kmod_meta)
+        for start, end in sorted(set(ranges)):
+            configs = self.search_config(start, end, 0x1000 if is_kgdb() else 0x100000)
+            if configs is not None:
+                return configs
+        warn("Could not find IKCFG_ST in the configs module")
+        return None
+
+    @Cache.cache_this_session(cache_None=False, per_inferior=True)
+    def get_config(self):
+        for getter in (self.get_config_from_symbol, self.get_config_from_rodata, self.get_config_from_module):
+            configs = getter()
+            if configs is not None:
+                self.print_markers()
+                return configs
+        err("Could not find IKCFG_ST, this kernel may be built as CONFIG_IKCONFIG=n, "
+            "or CONFIG_IKCONFIG=m without loading the configs module")
+        return None
 
     @parse_args
     @only_if_gdb_running
     @only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
-    @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
+    @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64"))
     @only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
         self.quiet_info("Wait for memory scan")
 
         if args.rescan:
-            Cache.clear_cache_for(self.get_config)
+            Cache.reset_gef_caches(all=True)
 
         configs = self.get_config()
         if configs is None:
