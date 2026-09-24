@@ -70189,30 +70189,90 @@ class Kernel:
             return klayout
 
         def with_data_range_hint(self):
-            """Return a copy whose data range is refined from the iomem resource tree."""
+            """Return a copy whose text base and data range are refined from the iomem resource tree."""
             if not (is_qemu_system() or is_vmware()) or not self.ro_base:
                 return self
 
+            klayout = self
             try:
                 res = gdb.execute("kdevio --quiet --no-pager", to_string=True)
-                resources = re.findall(r"\s(0x[0-9a-f]+)-(0x[0-9a-f]+)\s+Kernel (data|bss)\s", Color.remove_color(res))
+                resources = re.findall(r"\s(0x[0-9a-f]+)-(0x[0-9a-f]+)\s+Kernel (code|data|bss)\s", Color.remove_color(res))
+
+                # The page-table mapping of ARM32 (and x86_32 without NX) may start before `_text`,
+                # e.g. at PAGE_OFFSET with swapper_pg_dir. "Kernel code" starts at `_text` there.
+                # ARM64 is excluded since its "Kernel code" starts at `_stext` on newer kernels.
+                code = next((x for x in resources if x[2] == "code"), None)
+                if code and (is_arm32() or is_x86()):
+                    phys_text_base = AddrMap.v2p(self.text_base)
+                    if phys_text_base is not None:
+                        text_base = AddressUtil.normalize_address(self.text_base + int(code[0], 16) - phys_text_base)
+                        if self.text_base < text_base < self.text_end:
+                            klayout = klayout.replace(text_base=text_base)
+
                 data = next((x for x in resources if x[2] == "data"), None)
                 if data is None:
-                    return self
+                    return klayout
 
                 phys_start = int(data[0], 16)
-                phys_end = max(int(x[1], 16) for x in resources)
+                phys_end = max(int(x[1], 16) for x in resources if x[2] != "code")
                 phys_ro_base = AddrMap.v2p(self.ro_base)
                 if phys_ro_base is None:
-                    return self
+                    return klayout
 
                 rw_base = AddressUtil.normalize_address(self.ro_base + phys_start - phys_ro_base)
                 rw_end = AddressUtil.normalize_address(rw_base + phys_end - phys_start + 1)
-                if self.ro_end <= rw_base < rw_end and is_valid_addr(rw_end - 1):
-                    return self.replace(rw_base=rw_base, rw_end=rw_end)
+                if self.rwx and self.ro_base < rw_base < self.ro_end:
+                    # .data is in the same RWX mapping as .rodata
+                    klayout = klayout.replace(ro_end=rw_base)
+                elif not self.rw_base and rw_base < self.ro_end:
+                    # "Kernel data" of old x86 kernels starts at `_etext`, so it contains .rodata
+                    rw_base = self.ro_end
+                if klayout.ro_end <= rw_base < rw_end and is_valid_addr(rw_end - 1):
+                    return klayout.replace(rw_base=rw_base, rw_end=rw_end)
             except (gdb.error, gdb.MemoryError, StopIteration, ValueError):
                 pass
-            return self
+            return klayout
+
+        def with_kallsyms_image_range(self):
+            """Return a copy whose text base and unresolved data range are refined from already parsed kallsyms."""
+            # Do not trigger a parse here: kallsyms parsing itself needs the unrefined layout.
+            ret = Ksym.peek()
+            if ret is None or not self.text_base or not self.ro_base:
+                return self
+
+            _, kallsyms_map = ret
+
+            def lookup(symbols, start, end):
+                for symbol in symbols:
+                    addr = next((addr for addr in kallsyms_map.get(symbol, []) if start <= addr < end), None)
+                    if addr is not None:
+                        return addr
+                return None
+
+            klayout = self
+            if is_arm32() or is_x86():
+                text_base = lookup(("_text",), self.text_base, self.text_end)
+                # `_text` is not in kallsyms of ARM32 without CONFIG_KALLSYMS_ALL. Then `_stext`
+                # is better than PAGE_OFFSET, but not than `_text` from the iomem.
+                if text_base is None and is_arm32() and any(entry.vstart == self.text_base for entry in self.maps):
+                    text_base = lookup(("_stext",), self.text_base, self.text_end)
+                if text_base is not None:
+                    klayout = klayout.replace(text_base=text_base)
+
+            if not self.rw_base:
+                vmem_end = AddressUtil.get_vmem_end()
+                rw_base = lookup(("_sdata",), self.ro_base + 1, vmem_end)
+                # .data may be in the same RWX mapping as .rodata
+                if rw_base is not None and (self.rwx or self.ro_end <= rw_base):
+                    rw_end = lookup(("_end", "__bss_stop", "_edata"), rw_base + 1, vmem_end)
+                    if rw_end is not None and is_valid_addr(rw_end - 1):
+                        klayout = klayout.replace(ro_end=min(self.ro_end, rw_base), rw_base=rw_base, rw_end=rw_end)
+            else:
+                # The RW mapping of x86_64 may start at the freed huge-page alignment gap after .rodata
+                rw_base = lookup(("_sdata",), self.rw_base + 1, self.rw_end)
+                if rw_base is not None:
+                    klayout = klayout.replace(rw_base=rw_base)
+            return klayout
 
         def with_kallsyms_ro_end(self):
             """Return a copy whose no-NX rodata end is refined from already parsed kallsyms."""
@@ -70308,15 +70368,16 @@ class Kernel:
         """Resolve the kernel memory layout.
 
         `apply_data_range_hint` controls whether the iomem resource hint is used
-        to refine the kernel .data/.bss range. GEF internals disable it while
+        to refine the kernel text base and .data/.bss range. GEF internals disable it while
         resolving symbols and resources to avoid circular dependencies.
         """
         # This wrapper is intentionally not cached: kallsyms may become available
         # after the base layout has already been cached.
-        return Kernel.resolve_kernel_layout(apply_data_range_hint).with_kallsyms_ro_end()
+        klayout = Kernel.resolve_kernel_layout(apply_data_range_hint).with_kallsyms_ro_end()
+        return klayout.with_kallsyms_image_range()
 
     @staticmethod
-    @Cache.cache_this_session
+    @Cache.cache_this_session(per_inferior=True)
     def resolve_kernel_layout(apply_data_range_hint=True):
         dic = {
             "maps": [], "text_base": None, "text_end": None, "ro_base": None, "ro_end": None,
@@ -70325,7 +70386,10 @@ class Kernel:
 
         if is_kdb():
             # no-symbol, but monitor may be used
-            dic["text_base"] = Symbol.get_symbol_by_monitor("_stext")
+            # The head of newer ARM64 (`_text` to `_stext`) is not mapped
+            dic["text_base"] = Symbol.get_symbol_by_monitor("_text")
+            if not dic["text_base"] or not is_valid_addr(dic["text_base"]):
+                dic["text_base"] = Symbol.get_symbol_by_monitor("_stext")
             dic["text_end"] = Symbol.get_symbol_by_monitor("_etext")
             dic["rw_base"] = Symbol.get_symbol_by_monitor("_sdata")
             dic["rw_end"] = Symbol.get_symbol_by_monitor("_edata")
@@ -70335,7 +70399,10 @@ class Kernel:
 
         if is_kgdb():
             # use symbol
-            dic["text_base"] = Ksym.get_addr("_stext")
+            # The head of newer ARM64 (`_text` to `_stext`) is not mapped
+            dic["text_base"] = Ksym.get_addr("_text")
+            if not dic["text_base"] or not is_valid_addr(dic["text_base"]):
+                dic["text_base"] = Ksym.get_addr("_stext")
             dic["text_end"] = Ksym.get_addr("_etext")
             dic["rw_base"] = Ksym.get_addr("_sdata")
             dic["rw_end"] = Ksym.get_addr("_edata")
@@ -70498,8 +70565,8 @@ class Kernel:
                         dic["ro_base"] = addr
                         dic["ro_end"] = end
                         dic["text_end"] = addr
-                        # In this case, rw_base is not detected.
-                        # This is because ksymaddr-remote appears to provide better results.
+                        # In this case, rw_base is not detected from the mapping,
+                        # but it is refined later from the iomem resource tree or kallsyms.
                         dic["rw_base"] = 0
                         dic["rw_end"] = 0
                         break
@@ -70530,7 +70597,7 @@ class Kernel:
         return Kernel.Layout.build(dic, apply_data_range_hint)
 
     @staticmethod
-    @Cache.cache_this_session(cache_None=False)
+    @Cache.cache_this_session(cache_None=False, per_inferior=True)
     def get_kernel_base():
 
         def resolve_syms_safely(syms):
@@ -70636,7 +70703,7 @@ class Kernel:
     assumed_version = None
 
     @staticmethod
-    @Cache.cache_this_session(cache_None=False)
+    @Cache.cache_this_session(cache_None=False, per_inferior=True)
     def kernel_version():
         # use user specified version
         if Kernel.assumed_version is not None:
@@ -70661,11 +70728,12 @@ class Kernel:
             return None
         area = []
         for entry in klayout.maps: # resolve search range
-            if entry.vstart < klayout.text_base:
+            # `text_base` may be in the middle of a coarse mapping
+            if entry.vend <= klayout.text_base:
                 continue
             if klayout.rw_base and entry.vstart >= klayout.rw_base:
                 continue
-            area.append([entry.vstart, entry.vend])
+            area.append([max(entry.vstart, klayout.text_base), entry.vend])
         if area == []:
             return None
         for start, end in area: # find version string
@@ -75439,6 +75507,10 @@ class KernelbaseCommand(GenericCommand):
     def do_invoke(self, args):
         if args.rescan:
             Cache.reset_gef_caches(all=True)
+
+        # a field that fails to resolve must not keep the value of the previous kernel
+        for name in ("kbase", "kro_base", "kdata_base"):
+            gdb.set_convenience_variable(name, None)
 
         # resolve text_base, ro_base
         self.quiet_info("Wait for memory scan")
@@ -144678,6 +144750,7 @@ class KtypesCommand(GenericCommand, BufferingOutput):
         return True
 
     def get_base_name(self):
+        Ksym.switch_inferior()
         if Ksym.kernel_version is None:
             Ksym.get_kallsyms()
             if Ksym.kernel_version is None:
@@ -144838,6 +144911,15 @@ class Ksym:
     ro_base = 0
     ro_size = 0
 
+    # Each inferior may debug another kernel, so the parsed result is kept per inferior.
+    initial_state = {
+        "kallsyms": None, "kallsyms_map": None, "name_by_addr": None, "address_index": None,
+        "kernel_img": b"", "kernel_version": None, "version_string": None, "version_string_offset": 0,
+        "ro_base": 0, "ro_size": 0,
+    }
+    inferior = None
+    saved_states = {} # {inferior_num: {name: value, ...}, ...}
+
     @staticmethod
     def reset():
         """Forget the parsed result. `Cache.reset_gef_caches()` calls this."""
@@ -144845,6 +144927,19 @@ class Ksym:
         Ksym.kallsyms_map = None
         Ksym.name_by_addr = None
         Ksym.address_index = None
+        Ksym.saved_states.clear()
+        return
+
+    @staticmethod
+    def switch_inferior():
+        """Swap in the parsed result of the selected inferior."""
+        inferior = Cache.inferior_context()
+        if inferior == Ksym.inferior:
+            return
+        Ksym.saved_states[Ksym.inferior] = {name: getattr(Ksym, name) for name in Ksym.initial_state}
+        for name, value in Ksym.saved_states.pop(inferior, Ksym.initial_state).items():
+            setattr(Ksym, name, value)
+        Ksym.inferior = inferior
         return
 
     @staticmethod
@@ -144877,7 +144972,7 @@ class Ksym:
         updates = {}
 
         @staticmethod
-        @Cache.cache_this_session
+        @Cache.cache_this_session(per_inferior=True)
         def name():
             h = hashlib.sha256(String.str2bytes(Ksym.version_string)).hexdigest()[-16:]
             major, minor, patch = Ksym.kernel_version
@@ -146208,6 +146303,7 @@ class Ksym:
         """Return the parsed kallsyms without parsing it, or None when it is not parsed yet.
 
         Some callers must not trigger a parse, e.g. to avoid a recursion."""
+        Ksym.switch_inferior()
         if Ksym.kallsyms is None:
             return None
         return Ksym.kallsyms, Ksym.kallsyms_map
@@ -146281,6 +146377,7 @@ class Ksym:
     @staticmethod
     def get_name(addr):
         """e.g., 0xffffffff9f6bd2a0 -> 'commit_creds'. `addr` must be the symbol itself."""
+        Ksym.switch_inferior()
         if Ksym.name_by_addr is None:
             ret = Ksym.get_kallsyms()
             if ret is None:
@@ -146314,6 +146411,7 @@ class Ksym:
         them drops that result and parses again. The map is built here because
         Ksym.get_addr is called hundreds of times by some commands, and scanning all
         the symbols for each call is too slow."""
+        Ksym.switch_inferior()
         if rescan or vmlinux_file or ignore_loaded_vmlinux:
             Ksym.reset()
         if rescan:
@@ -159656,10 +159754,10 @@ class PageTableRiscv(PageTable):
                     # make entry
                     virt_addr = new_va
                     phys_addr = ppn * get_pagesize()
-                    page_size = 2 * 1024 * 1024
+                    page_size = 1 << bit_shift # 2MB (Sv39/48/57) or 4MB (Sv32)
                     page_count = 1
                     PTE.append(PageTable.Entry(virt_addr, phys_addr, page_size, page_count, self.format_flags(flags)))
-                    entry_type = "2MB-PAGE"
+                    entry_type = "{:d}MB-PAGE".format(page_size >> 20)
 
                 # dump
                 if self.args.print_each_level:
@@ -159676,7 +159774,7 @@ class PageTableRiscv(PageTable):
             self.out.append(titlify(""))
 
         self.quiet_info_add_out("Number of entries: {:d}".format(COUNT))
-        self.quiet_info_add_out("L2 Entry (2MB): {:d}".format(len(L2E)))
+        self.quiet_info_add_out("L2 Entry ({:d}MB): {:d}".format(1 << (bit_shift - 20), len(L2E)))
         self.quiet_info_add_out("Invalid entries: {:d}".format(COUNT - len(L2E)))
         self.TABLES = L2E
         self.PTE += PTE
