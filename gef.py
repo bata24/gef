@@ -182548,90 +182548,87 @@ class GefAvailableCommandListCommand(GenericCommand, BufferingOutput):
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
     _syntax_ = parser.format_help()
 
-    def check_require_arch_set(self, decorators):
-        for line in decorators:
-            if "@require_arch_set" in line:
-                return current_arch is None
-        return False
+    @staticmethod
+    def get_decorators(function):
+        """Return [(name, args), ...] of the decorators of function, e.g., ("only_if_specific_arch", ("x86_64",))."""
+        import ast
+        import textwrap
 
-    def check_include_mode(self, decorators):
-        for line in decorators:
-            if "@only_if_specific_gdb_mode" in line:
-                if is_pin():
-                    return '"pin"' in line
-                if is_qemu_system():
-                    return '"qemu-system"' in line
-                if is_qemu_user():
-                    return '"qemu-user"' in line
-                if is_vmware():
-                    return '"vmware"' in line
-                if is_qiling():
-                    return '"qiling"' in line
-                if is_rr():
-                    return '"rr"' in line
-                if is_wine():
-                    return '"wine"' in line
-                if is_kgdb():
-                    return '"kgdb"' in line
-                return False
-        return True
+        def get_name(node):
+            if isinstance(node, ast.Name):
+                return node.id
+            if isinstance(node, ast.Attribute):
+                return get_name(node.value) + "." + node.attr
+            return ""
 
-    def check_exclude_mode(self, decorators):
-        for line in decorators:
-            if "@exclude_specific_gdb_mode" in line:
-                if is_pin():
-                    return '"pin"' in line
-                if is_qemu_system():
-                    return '"qemu-system"' in line
-                if is_qemu_user():
-                    return '"qemu-user"' in line
-                if is_vmware():
-                    return '"vmware"' in line
-                if is_qiling():
-                    return '"qiling"' in line
-                if is_rr():
-                    return '"rr"' in line
-                if is_wine():
-                    return '"wine"' in line
-                if is_kgdb():
-                    return '"kgdb"' in line
-                return False
-        return False
-
-    def get_arch_name(self):
-        s = GefUtil.get_source(only_if_specific_arch).replace("\n", "")
-        r = re.search(r"dic = (\{.*\})", s)
-        dic = eval(r.group(1))
-
-        for arch, func in dic.items():
-            if func():
-                return '"{:s}"'.format(arch)
-        return None
-
-    def check_include_arch(self, decorators, arch_name):
-        for line in decorators:
-            if "@only_if_specific_arch" in line:
-                return str(arch_name) in line
-        return True
-
-    def check_exclude_arch(self, decorators, arch_name):
-        for line in decorators:
-            if "@exclude_specific_arch" in line:
-                return str(arch_name) in line
-        return False
-
-    def check_load_package(self, decorators, dec_name, import_name):
-        for line in decorators:
-            if dec_name in line:
+        tree = ast.parse(textwrap.dedent(GefUtil.get_source(function)))
+        decorators = []
+        for node in tree.body[0].decorator_list:
+            if not isinstance(node, ast.Call):
+                decorators.append((get_name(node), ()))
+                continue
+            args = ()
+            for arg in node.args + [keyword.value for keyword in node.keywords]:
                 try:
-                    readline = sys.modules.get("readline", None)
-                    sys.modules["readline"] = None
-                    __import__(import_name)
-                    sys.modules["readline"] = readline
-                except ImportError:
-                    return False
-                return True
+                    value = ast.literal_eval(arg)
+                except ValueError:
+                    continue
+                args = tuple(value) if isinstance(value, (tuple, list)) else (value,)
+            decorators.append((get_name(node.func), args))
+        return decorators
+
+    @staticmethod
+    def check_checkers(names, checkers):
+        for name in names:
+            checker = checkers.get(name)
+            try:
+                if checker is not None and checker():
+                    return True
+            except Exception:
+                pass
+        return False
+
+    @staticmethod
+    def check_load_package(import_name):
+        had_readline = "readline" in sys.modules
+        readline = sys.modules.get("readline")
+        sys.modules["readline"] = None
+        try:
+            __import__(import_name)
+        except ImportError:
+            return False
+        finally:
+            if had_readline:
+                sys.modules["readline"] = readline
+            else:
+                del sys.modules["readline"]
         return True
+
+    def get_unavailable_reason(self, decorators):
+        packages = {
+            "ModuleLoader.load_capstone": "capstone",
+            "ModuleLoader.load_unicorn": "unicorn",
+            "ModuleLoader.load_keystone": "keystone-engine",
+            "ModuleLoader.load_ropper": "ropper",
+            "ModuleLoader.load_binwalk": "binwalk",
+            "ModuleLoader.load_angr": "angr",
+        }
+        for name, args in decorators:
+            if name == "require_arch_set" and current_arch is None:
+                return "current_arch is None"
+            if name == "only_if_specific_arch" and not self.check_checkers(args, ARCH_CHECKERS):
+                return "Unsupported arch"
+            if name == "exclude_specific_arch" and self.check_checkers(args, ARCH_CHECKERS):
+                return "Unsupported arch"
+            if name == "only_if_specific_gdb_mode" and not self.check_checkers(args, GDB_MODE_CHECKERS):
+                return "Unsupported gdb mode"
+            if name == "exclude_specific_gdb_mode" and self.check_checkers(args, GDB_MODE_CHECKERS):
+                return "Unsupported gdb mode"
+            if name in packages:
+                import_name = "keystone" if packages[name] == "keystone-engine" else packages[name]
+                if not self.check_load_package(import_name):
+                    return "{:s} package is unavailable".format(packages[name])
+        return None
 
     def add_out(self, cmdline, avail, msg=""):
         if self.args.only_available and not avail:
@@ -182649,44 +182646,9 @@ class GefAvailableCommandListCommand(GenericCommand, BufferingOutput):
         return
 
     def listup_avail_comms(self):
-        arch_name = self.get_arch_name()
         for cmdline, instance in __gef_command_instances__.items():
-            s = GefUtil.get_source(instance.do_invoke)
-            decorators = [line for line in s.splitlines() if line.lstrip().startswith("@")]
-            if self.check_require_arch_set(decorators):
-                self.add_out(cmdline, False, "current_arch is None")
-                continue
-            if not self.check_include_arch(decorators, arch_name):
-                self.add_out(cmdline, False, "Unsupported arch")
-                continue
-            if self.check_exclude_arch(decorators, arch_name):
-                self.add_out(cmdline, False, "Unsupported arch")
-                continue
-            if not self.check_include_mode(decorators):
-                self.add_out(cmdline, False, "Unsupported gdb mode")
-                continue
-            if self.check_exclude_mode(decorators):
-                self.add_out(cmdline, False, "Unsupported gdb mode")
-                continue
-            if not self.check_load_package(decorators, "@ModuleLoader.load_capstone", "capstone"):
-                self.add_out(cmdline, False, "capstone package is unavailable")
-                continue
-            if not self.check_load_package(decorators, "@ModuleLoader.load_unicorn", "unicorn"):
-                self.add_out(cmdline, False, "unicorn package is unavailable")
-                continue
-            if not self.check_load_package(decorators, "@ModuleLoader.load_keystone", "keystone"):
-                self.add_out(cmdline, False, "keystone-engine package is unavailable")
-                continue
-            if not self.check_load_package(decorators, "@ModuleLoader.load_ropper", "ropper"):
-                self.add_out(cmdline, False, "ropper package is unavailable")
-                continue
-            if not self.check_load_package(decorators, "@ModuleLoader.load_binwalk", "binwalk"):
-                self.add_out(cmdline, False, "binwalk package is unavailable")
-                continue
-            if not self.check_load_package(decorators, "@ModuleLoader.load_angr", "angr"):
-                self.add_out(cmdline, False, "angr package is unavailable")
-                continue
-            self.add_out(cmdline, True)
+            reason = self.get_unavailable_reason(self.get_decorators(instance.do_invoke))
+            self.add_out(cmdline, reason is None, reason or "")
         return
 
     @parse_args
