@@ -175040,7 +175040,9 @@ class KernelLsmCommand(GenericCommand, BufferingOutput):
 
         lsm = self.read_cstring(ops, 16)
         self.quiet_info_add_out("LSM framework: security_ops (v4.1 or earlier)")
-        self.quiet_info_add_out("security_ops: {:s} -> {:s} <{:s}>".format(self.format_addr(addr), self.format_addr(ops), self.sym_name(ops) or "NO_SYMBOL"))
+        self.quiet_info_add_out("security_ops: {:s} -> {:s} <{:s}>".format(
+            self.format_addr(addr), self.format_addr(ops), self.sym_name(ops) or "NO_SYMBOL",
+        ))
         self.dump_lsm_list({lsm} if lsm else set())
 
         # the largest member the dispatchers touch is the tightest bound on the struct;
@@ -175224,7 +175226,7 @@ class KernelLsmCommand(GenericCommand, BufferingOutput):
                 continue
             insn = re.split(r"\s+(?:#|;|//|@)\s", m.group(1))[0].strip()
             kind, g = None, {}
-            for kind, regex in rules:
+            for _kind, regex in rules:
                 m = re.fullmatch(regex, insn)
                 if m:
                     g = {k: norm(v) for k, v in m.groupdict().items()}
