@@ -13919,7 +13919,7 @@ def get_register(regname, use_mbed_exec=False, use_monitor=False):
         # real and pseudo registers of the target, so keep `parse_and_eval` as a fallback.
         try:
             value = gdb.selected_frame().read_register(regname[1:])
-        except (gdb.error, ValueError):
+        except (gdb.error, ValueError, AttributeError):
             value = gdb.parse_and_eval(regname)
 
         if value.type.code == gdb.TYPE_CODE_INT:
@@ -13937,7 +13937,7 @@ def get_register(regname, use_mbed_exec=False, use_monitor=False):
         try:
             value = gdb.selected_frame().read_register(regname[1:])
             return int(value)
-        except (gdb.error, ValueError):
+        except (gdb.error, ValueError, AttributeError):
             pass
 
     if use_mbed_exec and is_qemu_system() and is_arm32():
@@ -13951,14 +13951,20 @@ def get_register(regname, use_mbed_exec=False, use_monitor=False):
 
     if use_monitor and is_qemu_system() and is_x86():
         regname = regname.lstrip("$").upper()
-        res = gdb.execute("monitor info registers", to_string=True)
+        try:
+            res = gdb.execute("monitor info registers", to_string=True)
+        except gdb.error:
+            res = ""
         r = re.search(r"{:s}=(\S+)".format(regname), res)
         if r:
             return int(r.group(1), 16)
 
     if use_monitor and is_vmware() and is_x86_64():
         regname = regname.lstrip("$")
-        res = gdb.execute("monitor r {:s}".format(regname), to_string=True)
+        try:
+            res = gdb.execute("monitor r {:s}".format(regname), to_string=True)
+        except gdb.error:
+            res = ""
         r = re.search(r"{:s}=(\S+)".format(regname), res)
         if r:
             return int(r.group(1), 16)
@@ -32037,6 +32043,88 @@ class KernelChecksecCommand(GenericCommand):
     parser = argparse.ArgumentParser(prog=_cmdline_)
     _syntax_ = parser.format_help()
 
+    def get_kconfig(self):
+        self.kconfig = None
+        self.kconfig_where = None
+        try:
+            ret = gdb.execute("kconfig --quiet --no-pager", to_string=True)
+        except gdb.error:
+            return
+        ret = Color.remove_color(ret)
+        kconfig = {}
+        for line in ret.splitlines():
+            r = re.match(r"^(CONFIG_\w+)=(.*)$", line)
+            if r:
+                kconfig[r.group(1)] = r.group(2)
+                continue
+            r = re.match(r"^# (CONFIG_\w+) is not set$", line)
+            if r:
+                kconfig[r.group(1)] = "n"
+        if not kconfig:
+            return
+        self.kconfig = kconfig
+        r1 = re.search(r"configs module: (0x[0-9a-f]+)", ret)
+        r2 = re.search(r"IKCFG_ST: (0x[0-9a-f]+)", ret)
+        if r1:
+            self.kconfig_where = "configs module: {:s}".format(r1.group(1))
+        elif r2:
+            self.kconfig_where = "IKCFG_ST: {:s}".format(r2.group(1))
+        return
+
+    def get_config(self, *names):
+        # Returns the first given name that the embedded kernel config has, and its value.
+        # The value is None if the kernel config is unavailable, or "n" if it is not set.
+        if self.kconfig is None:
+            return names[0], None
+        for name in names:
+            if name in self.kconfig:
+                return name, self.kconfig[name]
+        return names[0], "n"
+
+    @staticmethod
+    def config_str(name, value):
+        if value == "n":
+            return "kconfig: {:s} is not set".format(name)
+        return "kconfig: {:s}={:s}".format(name, value)
+
+    def print_kconfig_state(self, cfg, names=None, secure_if_enabled=True):
+        # Prints the build-time state decided by the embedded kernel config, and returns True.
+        # If the kernel config is unavailable, prints nothing and returns False.
+        name, value = self.get_config(*(names or [cfg]))
+        if value is None:
+            return False
+        good, bad = ("bold green", "bold red") if secure_if_enabled else ("bold red", "bold green")
+        if value == "n":
+            state = Color.colorify("Disabled", bad)
+        elif value == "m":
+            state = Color.colorify("Module", good)
+        else:
+            state = Color.colorify("Enabled", good)
+        gef_print("{:<40s}: {:s} ({:s})".format(cfg, state, self.config_str(name, value)))
+        return True
+
+    def get_loaded_modules(self):
+        # Returns [[name, base, size], ...], or None if `kmod` failed.
+        if self.loaded_modules is not False:
+            return self.loaded_modules
+        self.loaded_modules = None
+        try:
+            output = Color.remove_color(gdb.execute("kmod --no-pager", to_string=True))
+        except gdb.error:
+            return None
+        if "Could not find any modules" in output:
+            self.loaded_modules = []
+        elif "Num of modules:" in output:
+            self.loaded_modules = []
+            for line in output.splitlines():
+                match = re.match(r"^0x[0-9a-f]+\s+(\S+)\s+(0x[0-9a-f]+)\s+(0x[0-9a-f]+)$", line.strip())
+                if match:
+                    self.loaded_modules.append([match.group(1), int(match.group(2), 16), int(match.group(3), 16)])
+        return self.loaded_modules
+
+    def is_modules_supported(self):
+        return KernelAddressHeuristicFinder.get_modules() is not None or Kernel.get_ksysctl("kernel.modules_disabled") is not None
+
     def check_loadable_modules(self):
         modules_symbol = KernelAddressHeuristicFinder.get_modules()
         modules_disabled_addr = Kernel.get_ksysctl("kernel.modules_disabled")
@@ -32139,6 +32227,16 @@ class KernelChecksecCommand(GenericCommand):
             gef_print("{:<40s}: {:s}".format("Kernel base (_stext from kallsyms)", "Not found"))
         else:
             gef_print("{:<40s}: {:#x}".format("Kernel base (_stext from kallsyms)", stext))
+
+        self.get_kconfig()
+        if self.kconfig is None:
+            additional = "CONFIG_* settings are inferred"
+            gef_print("{:<40s}: {:s} ({:s})".format("Kernel config", "Not found", additional))
+        else:
+            additional = "CONFIG_* settings are taken from it"
+            if self.kconfig_where:
+                additional = "{:s}, {:s}".format(self.kconfig_where, additional)
+            gef_print("{:<40s}: {:s} ({:s})".format("Kernel config", "Found", additional))
         return
 
     def x86_specific(self):
@@ -32148,45 +32246,38 @@ class KernelChecksecCommand(GenericCommand):
         cr0 = get_register("cr0", use_monitor=True)
         cr4 = get_register("cr4", use_monitor=True)
 
-        # WP
-        if (cr0 >> 16) & 1:
-            gef_print("{:<40s}: {:s}".format("Write Protection (CR0 bit 16)", Color.colorify("Enabled", "bold green")))
-        else:
-            gef_print("{:<40s}: {:s}".format("Write Protection (CR0 bit 16)", Color.colorify("Disabled", "bold red")))
-
-        # PAE
-        if (cr4 >> 5) & 1:
-            gef_print("{:<40s}: {:s} (NX is supported)".format("PAE (CR4 bit 5)", Color.colorify("Enabled", "bold green")))
-        else:
-            gef_print("{:<40s}: {:s} (NX is unsupported)".format("PAE (CR4 bit 5)", Color.colorify("Disabled", "bold red")))
-
-        # SMEP
-        if (cr4 >> 20) & 1:
-            gef_print("{:<40s}: {:s}".format("SMEP (CR4 bit 20)", Color.colorify("Enabled", "bold green")))
-        else:
-            gef_print("{:<40s}: {:s}".format("SMEP (CR4 bit 20)", Color.colorify("Disabled", "bold red")))
-
-        # SMAP
-        if (cr4 >> 21) & 1:
-            gef_print("{:<40s}: {:s}".format("SMAP (CR4 bit 21)", Color.colorify("Enabled", "bold green")))
-        else:
-            gef_print("{:<40s}: {:s}".format("SMAP (CR4 bit 21)", Color.colorify("Disabled", "bold red")))
-
-        # CET
-        if (cr4 >> 23) & 1:
-            gef_print("{:<40s}: {:s}".format("CET (CR4 bit 23)", Color.colorify("Enabled", "bold green")))
-        else:
-            gef_print("{:<40s}: {:s}".format("CET (CR4 bit 23)", Color.colorify("Disabled", "bold red")))
+        bits = [
+            ["Write Protection (CR0 bit 16)", cr0, "CR0", 16, "", ""],
+            ["PAE (CR4 bit 5)", cr4, "CR4", 5, " (NX is supported)", " (NX is unsupported)"],
+            ["SMEP (CR4 bit 20)", cr4, "CR4", 20, "", ""],
+            ["SMAP (CR4 bit 21)", cr4, "CR4", 21, "", ""],
+            ["CET (CR4 bit 23)", cr4, "CR4", 23, "", ""],
+        ]
+        for name, reg, regname, bit, enabled_msg, disabled_msg in bits:
+            if reg is None:
+                additional = "{:s}: Not available".format(regname)
+                gef_print("{:<40s}: {:s} ({:s})".format(name, Color.grayify("Unknown"), additional))
+            elif (reg >> bit) & 1:
+                gef_print("{:<40s}: {:s}{:s}".format(name, Color.colorify("Enabled", "bold green"), enabled_msg))
+            else:
+                gef_print("{:<40s}: {:s}{:s}".format(name, Color.colorify("Disabled", "bold red"), disabled_msg))
 
         # CET MSR
-        if (cr4 >> 23) & 1:
+        if cr4 is not None and (cr4 >> 23) & 1:
+            MSR_IA32_S_CET = None
             if is_kvm_enabled():
                 additional = "for more precisely, use `msr MSR_IA32_S_CET` without `-enable-kvm`"
+            else:
+                additional = "MSR_IA32_S_CET: Not available"
+                try:
+                    ret = gdb.execute("msr --quiet MSR_IA32_S_CET", to_string=True)
+                    MSR_IA32_S_CET = int(ret, 16)
+                except (gdb.error, ValueError):
+                    pass
+            if MSR_IA32_S_CET is None:
                 gef_print("{:<40s}: {:s} ({:s})".format("CET SHSTK (MSR_IA32_S_CET bit 0)", Color.grayify("Unknown"), additional))
                 gef_print("{:<40s}: {:s} ({:s})".format("CET IBT (MSR_IA32_S_CET bit 2)", Color.grayify("Unknown"), additional))
             else:
-                ret = gdb.execute("msr --quiet MSR_IA32_S_CET", to_string=True)
-                MSR_IA32_S_CET = int(ret, 16)
                 if MSR_IA32_S_CET & 1:
                     gef_print("{:<40s}: {:s}".format("CET SHSTK (MSR_IA32_S_CET bit 0)", Color.colorify("Enabled", "bold green")))
                 else:
@@ -32230,22 +32321,91 @@ class KernelChecksecCommand(GenericCommand):
             gef_print("{:<40s}: {:s}".format("PAN (ID_AA64MMFR1_EL1 bit 23-20)", Color.colorify("Disabled", "bold red")))
         return
 
+    def get_x86_link_address(self):
+        _, physical_start = self.get_config("CONFIG_PHYSICAL_START")
+        _, physical_align = self.get_config("CONFIG_PHYSICAL_ALIGN")
+        _, page_offset = self.get_config("CONFIG_PAGE_OFFSET")
+        try:
+            physical_start = int(physical_start, 16)
+            physical_align = int(physical_align, 16)
+        except (TypeError, ValueError):
+            physical_start, physical_align = 0x100_0000, 0x20_0000
+        load_physical_addr = align(physical_start, physical_align)
+        if is_x86_64():
+            return 0xffff_ffff_8000_0000 + load_physical_addr # __START_KERNEL_map
+        try:
+            return int(page_offset, 16) + load_physical_addr
+        except (TypeError, ValueError):
+            return 0xc000_0000 + load_physical_addr
+
     def check_kaslr(self):
         cfg = "CONFIG_RANDOMIZE_BASE (KASLR)"
         kcmdline = Kernel.kernel_cmdline()
-        ksym_ret = Ksym.get_addrs("kaslr_", match="in")
+        kversion = Kernel.kernel_version()
 
-        if not ksym_ret:
-            additional = "`kaslr_*`: Not found"
-            gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Unsupported", "bold red"), additional))
-            return
-
-        if kcmdline and "nokaslr" in kcmdline.cmdline:
-            additional = "nokaslr is in cmdline"
-            gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Disabled", "bold red"), additional))
+        # build-time
+        name, value = self.get_config("CONFIG_RANDOMIZE_BASE")
+        if value is not None:
+            build = value == "y"
+            build_str = self.config_str(name, value)
         else:
-            additional = "`kaslr_*`: Found, nokaslr is not in cmdline"
-            gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Enabled", "bold green"), additional))
+            # Some `*kaslr*` exist regardless of CONFIG_RANDOMIZE_BASE (e.g. kaslr_requires_kpti of ARM64),
+            # so use only the symbols of the code that is built with it.
+            kaslr_only_symbols = [
+                "kaslr_get_random_long", "init_trampoline_kaslr", "kernel_randomize_memory", # x86 4.8~
+                "kaslr_early_init", "__pi_kaslr_early_init", "kaslr_init", # ARM64 4.6~
+            ]
+            found = [sym for sym in kaslr_only_symbols if Ksym.get_addr(sym) is not None]
+            if found:
+                build = True
+                build_str = "inferred: {:s}: Found".format(found[0])
+            else:
+                others = sorted({Ksym.get_name(addr) or "?" for addr in Ksym.get_addrs("kaslr", match="in")})
+                others = [x for x in others if not x.startswith(("__setup", "__initcall", "__pfx_", "__cfi_"))]
+                build_str = "inferred: KASLR specific symbols: Not found"
+                if others:
+                    build_str += " ({:s}: Found, but not specific)".format(", ".join(others[:3]))
+                # x86 3.14~4.7 has no such symbols in vmlinux, so leave it to the runtime check
+                build = None if is_x86() and "3.14" <= kversion < "4.8" else False
+
+        # runtime
+        randomized = None
+        definite = False
+        runtime_str = None
+        if build is not False:
+            if kcmdline and "nokaslr" in kcmdline.cmdline:
+                randomized, definite = False, True
+                runtime_str = "nokaslr is in cmdline"
+            elif is_arm64() and Ksym.get_addr("__kaslr_is_enabled") is not None:
+                v = read_int8_from_memory(Ksym.get_addr("__kaslr_is_enabled"), safe=True)
+                if v is not None:
+                    randomized, definite = bool(v), True
+                    runtime_str = "__kaslr_is_enabled: {:d}".format(v)
+            elif is_x86():
+                text = Ksym.get_addr("_text") or Kernel.get_kernel_base()
+                if text is not None:
+                    link = self.get_x86_link_address()
+                    randomized = text != link
+                    runtime_str = "_text {:s} link address {:#x}".format("!=" if randomized else "==", link)
+                    if self.kconfig is None:
+                        runtime_str += " (assuming CONFIG_PHYSICAL_START=0x1000000)"
+            if runtime_str is None and kcmdline:
+                runtime_str = "nokaslr is not in cmdline"
+
+        additional = build_str
+        if runtime_str:
+            additional += ", runtime: " + runtime_str
+        if build is False:
+            state = Color.colorify("Unsupported", "bold red")
+        elif randomized is False:
+            state = Color.colorify("Disabled" if definite else "Disabled (maybe)", "bold red")
+        elif randomized is True:
+            state = Color.colorify("Enabled" if build else "Enabled (maybe)", "bold green")
+        elif build:
+            state = Color.colorify("Enabled", "bold green")
+        else:
+            state = Color.grayify("Unknown")
+        gef_print("{:<40s}: {:s} ({:s})".format(cfg, state, additional))
         return
 
     def check_fgkaslr(self):
@@ -32254,6 +32414,23 @@ class KernelChecksecCommand(GenericCommand):
 
         # https://github.com/alobakin/linux/pull/3
         cfg = "CONFIG_FG_KASLR (FGKASLR)"
+
+        name, value = self.get_config("CONFIG_FG_KASLR")
+        if value is not None:
+            additional = self.config_str(name, value)
+            if value != "y":
+                gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Unsupported", "bold red"), additional))
+            else:
+                kcmdline = Kernel.kernel_cmdline()
+                for opt in ["nokaslr", "nofgkaslr", "fgkaslr=off"]:
+                    if kcmdline and opt in kcmdline.cmdline:
+                        additional += ", runtime: {:s} is in cmdline".format(opt)
+                        gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Disabled", "bold red"), additional))
+                        break
+                else:
+                    gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Enabled", "bold green"), additional))
+            self.print_kconfig_state("CONFIG_MODULE_FG_KASLR (FGKASLR)", names=["CONFIG_MODULE_FG_KASLR"])
+            return
 
         kversion = Kernel.kernel_version()
         if kversion < "5.5":
@@ -32297,7 +32474,7 @@ class KernelChecksecCommand(GenericCommand):
                 additional = "fgkaslr=off is in cmdline"
                 gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Disabled", "bold red"), additional))
             else:
-                additional = "swapgs_restore_regs_and_return_to_usermode < commit_creds"
+                additional = "inferred: swapgs_restore_regs_and_return_to_usermode < commit_creds"
                 gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Enabled", "bold green"), additional))
             # Could not build detection logic for CONFIG_MODULE_FG_KASLR.
             # But there is no way to disable it except at build time.
@@ -32305,7 +32482,7 @@ class KernelChecksecCommand(GenericCommand):
             cfg = "CONFIG_MODULE_FG_KASLR (FGKASLR)"
             gef_print("{:<40s}: {:s}".format(cfg, Color.colorify("Enabled (maybe)", "bold green")))
         else:
-            additional = "swapgs_restore_regs_and_return_to_usermode > commit_creds"
+            additional = "inferred: swapgs_restore_regs_and_return_to_usermode > commit_creds"
             gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Unsupported", "bold red"), additional))
             cfg = "CONFIG_MODULE_FG_KASLR (FGKASLR)"
             gef_print("{:<40s}: {:s}".format(cfg, Color.colorify("Unsupported", "bold red")))
@@ -32313,86 +32490,114 @@ class KernelChecksecCommand(GenericCommand):
 
     def check_kpti(self):
         kversion = Kernel.kernel_version()
-        if "6.9" <= kversion:
+        if is_arm64():
+            cfg = "CONFIG_UNMAP_KERNEL_AT_EL0 (KPTI)"
+        elif "6.9" <= kversion:
             cfg = "CONFIG_MITIGATION_PAGE_TABLE_ISOLATION (KPTI)"
         else:
             cfg = "CONFIG_PAGE_TABLE_ISOLATION (KPTI)"
         kcmdline = Kernel.kernel_cmdline()
 
+        if is_arm32():
+            gef_print("{:<40s}: {:s} (ARMv7 is unsupported)".format(cfg, Color.colorify("Unsupported", "bold red")))
+            return
+
+        # build-time
+        if is_arm64():
+            name, value = self.get_config("CONFIG_UNMAP_KERNEL_AT_EL0")
+            symbols = ["map_entry_trampoline", "idmap_kpti_install_ng_mappings"]
+        else:
+            name, value = self.get_config("CONFIG_MITIGATION_PAGE_TABLE_ISOLATION", "CONFIG_PAGE_TABLE_ISOLATION")
+            symbols = ["pti_init", "kaiser_init"] # kaiser_init: KAISER backported to 4.4.y and 4.9.y
+        if value is not None:
+            build_str = self.config_str(name, value)
+            if value != "y":
+                gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Unsupported", "bold red"), build_str))
+                return
+        else:
+            found = [sym for sym in symbols if Ksym.get_addr(sym) is not None]
+            if not found:
+                build_str = "inferred: {:s}: Not found".format(symbols[0])
+                gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Unsupported", "bold red"), build_str))
+                return
+            build_str = "inferred: {:s}: Found".format(found[0])
+
+        # runtime
+        state = None
+        runtime_str = None
         if is_x86():
-            pti_init = Ksym.get_addr("pti_init")
-            if pti_init is None:
-                additional = "pti_init: Not found"
-                gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Unsupported", "bold red"), additional))
-            elif kcmdline and "nopti" in kcmdline.cmdline:
-                additional = "nopti is in cmdline"
-                gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Disabled", "bold red"), additional))
+            if kcmdline and "nopti" in kcmdline.cmdline:
+                state, runtime_str = "Disabled", "nopti is in cmdline"
             elif kcmdline and "pti=off" in kcmdline.cmdline:
-                additional = "pti=off is in cmdline"
-                gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Disabled", "bold red"), additional))
+                state, runtime_str = "Disabled", "pti=off is in cmdline"
             elif kcmdline and "mitigations=off" in kcmdline.cmdline:
-                additional = "mitigations=off is in cmdline"
-                gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Disabled", "bold red"), additional))
+                state, runtime_str = "Disabled", "mitigations=off is in cmdline"
             elif kcmdline and "pti=on" in kcmdline.cmdline:
-                additional = "pti=on is in cmdline"
-                gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Enabled", "bold green"), additional))
+                state, runtime_str = "Enabled", "pti=on is in cmdline"
             elif is_in_kernel():
                 maps = AddrMap.get_maps(command="pagewalk --quiet --no-pager --simple --disable-color")
                 if not maps:
-                    additional = "pagewalk gave no memory map"
-                    gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.grayify("Unknown"), additional))
-                    return
-                for entry in maps:
-                    if "USER" in entry.flags and entry.is_executable():
-                        # If the qemu startup option does not include `-cpu kvm64`,
-                        # isolation will not occur even if KPTI is enabled.
-                        additional = "USER memory has R-X permission in kernel context"
-                        gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Disabled", "bold red"), additional))
-                        return
+                    runtime_str = "pagewalk gave no memory map"
                 else:
-                    additional = "USER memory has no R-X permission in kernel context"
-                    gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Enabled (maybe)", "bold green"), additional))
-            else:
-                gef_print("{:<40s}: {:s}".format(cfg, Color.grayify("Unknown")))
+                    for entry in maps:
+                        if "USER" in entry.flags and entry.is_executable():
+                            # If the qemu startup option does not include `-cpu kvm64`,
+                            # isolation will not occur even if KPTI is enabled.
+                            state, runtime_str = "Disabled", "USER memory has R-X permission in kernel context"
+                            break
+                    else:
+                        state, runtime_str = "Enabled (maybe)", "USER memory has no R-X permission in kernel context"
 
-        if is_arm32():
-            gef_print("{:<40s}: {:s} (ARMv7 is unsupported)".format(cfg, Color.colorify("Unsupported", "bold red")))
-
-        if is_arm64():
-            pti_init = Ksym.get_addr("pti_init")
-            if pti_init is None:
-                additional = "pti_init: Not found"
-                gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Unsupported", "bold red"), additional))
+        elif is_arm64():
+            use_ng_mappings = Ksym.get_addr("arm64_use_ng_mappings")
+            if use_ng_mappings is not None:
+                use_ng_mappings = read_int8_from_memory(use_ng_mappings, safe=True)
+            text_flags = None
+            if use_ng_mappings is None:
+                # KPTI maps the kernel with nG, so it is the runtime state itself
+                try:
+                    ret = gdb.execute("pagewalk --quiet --no-pager --disable-color --trace {:#x}".format(Ksym.get_addr("_stext")), to_string=True)
+                except gdb.error:
+                    ret = ""
+                r = re.findall(r"^0x[0-9a-f]+-0x[0-9a-f]+\s+.*\[(EL0/.*)\]$", ret, re.M)
+                if r:
+                    text_flags = r[-1].split()
+            if use_ng_mappings is not None:
+                state = "Enabled" if use_ng_mappings else "Disabled"
+                runtime_str = "arm64_use_ng_mappings: {:d}".format(use_ng_mappings)
+            elif text_flags is not None:
+                if "GLOBAL" in text_flags:
+                    state, runtime_str = "Disabled", "kernel text is mapped as GLOBAL"
+                else:
+                    state, runtime_str = "Enabled", "kernel text is mapped as non-GLOBAL (nG)"
             elif kcmdline and "kpti=0" in kcmdline.cmdline:
-                additional = "kpti=0 is in cmdline"
-                gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Disabled", "bold red"), additional))
+                state, runtime_str = "Disabled", "kpti=0 is in cmdline"
             elif kcmdline and "mitigations=off" in kcmdline.cmdline and "nokaslr" in kcmdline.cmdline:
-                additional = "mitigations=off and nokaslr are in cmdline"
-                gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Disabled", "bold red"), additional))
+                state, runtime_str = "Disabled", "mitigations=off and nokaslr are in cmdline"
             elif kcmdline and "mitigations=off" in kcmdline.cmdline and "nokaslr" not in kcmdline.cmdline:
-                additional = "mitigations=off is in cmdline, nokaslr is not in cmdline"
-                gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Enabled", "bold green"), additional))
+                state, runtime_str = "Enabled", "mitigations=off is in cmdline, nokaslr is not in cmdline"
             elif kcmdline and "kpti=1" in kcmdline.cmdline:
-                additional = "kpti=1 is in cmdline"
-                gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Enabled", "bold green"), additional))
+                state, runtime_str = "Enabled", "kpti=1 is in cmdline"
             else:
-                gef_print("{:<40s}: {:s}".format(cfg, Color.colorify("Enabled (maybe)", "bold green")))
+                state = "Enabled (maybe)"
+
+        additional = build_str
+        if runtime_str:
+            additional += ", runtime: " + runtime_str
+        if state is None:
+            state = Color.grayify("Unknown")
+        elif state.startswith("Enabled"):
+            state = Color.colorify(state, "bold green")
+        else:
+            state = Color.colorify(state, "bold red")
+        gef_print("{:<40s}: {:s} ({:s})".format(cfg, state, additional))
         return
 
     def get_module_ranges(self):
         ranges = []
-        try:
-            output = gdb.execute("kmod --quiet --no-pager", to_string=True)
-        except gdb.error:
-            output = ""
-        for line in Color.remove_color(output).splitlines():
-            match = re.match(r"^0x[0-9a-f]+\s+(\S+)\s+(0x[0-9a-f]+)\s+(0x[0-9a-f]+)$", line.strip())
-            if not match:
-                continue
-            start = int(match.group(2), 16)
-            size = int(match.group(3), 16)
+        for name, start, size in self.get_loaded_modules() or []:
             if size:
-                ranges.append((start, start + size, match.group(1)))
+                ranges.append((start, start + size, name))
         return ranges
 
     def check_rwx_page(self):
@@ -32473,6 +32678,9 @@ class KernelChecksecCommand(GenericCommand):
 
     def check_CONFIG_SLAB_FREELIST_HARDENED(self):
         cfg = "CONFIG_SLAB_FREELIST_HARDENED"
+        if self.print_kconfig_state(cfg):
+            return
+
         slab_cache_names = " ".join("kmalloc-{:d}".format(n) for n in [8, 16, 32, 64, 96, 128, 192, 256, 512])
         slub_dump_ret = gdb.execute("slub-dump --quiet --no-pager {:s}".format(slab_cache_names), to_string=True)
         if slub_dump_ret.count("Corrupted") >= 2: # Destruction of up to one SLUB freelist is allowed.
@@ -32482,14 +32690,18 @@ class KernelChecksecCommand(GenericCommand):
         slub_dump_ret = gdb.execute("slub-dump --meta", to_string=True)
         r = re.search(r"offsetof\(kmem_cache, random\): (0x\S+)", slub_dump_ret)
         if r:
-            additional = "offsetof(kmem_cache, random): {:s}".format(r.group(1))
+            additional = "inferred: offsetof(kmem_cache, random): {:s}".format(r.group(1))
             gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Enabled", "bold green"), additional))
         else:
-            gef_print("{:<40s}: {:s}".format(cfg, Color.colorify("Disabled", "bold red")))
+            additional = "inferred: offsetof(kmem_cache, random): Not found"
+            gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Disabled", "bold red"), additional))
         return
 
     def check_CONFIG_SLAB_FREELIST_RANDOM(self):
         cfg = "CONFIG_SLAB_FREELIST_RANDOM"
+        if self.print_kconfig_state(cfg):
+            return
+
         try:
             gdb.execute("slub-dump --meta --quiet --no-pager", to_string=True)
             command = __gef_command_instances__["slub-dump"]
@@ -32501,7 +32713,7 @@ class KernelChecksecCommand(GenericCommand):
             gef_print("{:<40s}: {:s}".format(cfg, Color.grayify("Unknown")))
             return
         if offset is None:
-            additional = "offsetof(kmem_cache, random_seq): Not found"
+            additional = "inferred: offsetof(kmem_cache, random_seq): Not found"
             gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Disabled", "bold red"), additional))
             return
 
@@ -32526,7 +32738,7 @@ class KernelChecksecCommand(GenericCommand):
             if random_seq and is_valid_addr(random_seq):
                 enabled += 1
 
-        additional = "{:#x} offset, {:d}/{:d} representative caches".format(offset, enabled, checked)
+        additional = "inferred: random_seq at {:#x} offset, {:d}/{:d} representative caches".format(offset, enabled, checked)
         if checked == 0:
             state = Color.grayify("Unknown")
         elif enabled == checked:
@@ -32542,30 +32754,36 @@ class KernelChecksecCommand(GenericCommand):
         cfg = "CONFIG_SLAB_VIRTUAL"
         # https://patchwork.kernel.org/project/linux-mm/patch/20230915105933.495735-12-matteorizzo@google.com/#25548022
         stw = "slub_tlbflush_worker"
-        if not Ksym.get_addr(stw):
-            additional = "{:s}: {:s}".format(stw, "Not found")
-            gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Disabled", "bold red"), additional))
+        name, value = self.get_config(cfg)
+        if value is not None:
+            build = value == "y"
+            build_str = self.config_str(name, value)
+        else:
+            build = Ksym.get_addr(stw) is not None
+            build_str = "inferred: {:s}: {:s}".format(stw, "Found" if build else "Not found")
+        if not build:
+            gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Disabled", "bold red"), build_str))
             return
 
         kversion = Kernel.kernel_version()
         if kversion < "6.6":
-            additional = "{:s}: Found (kernel version < 6.6)".format(stw)
+            additional = "{:s} (kernel version < 6.6)".format(build_str)
             gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Enabled", "bold green"), additional))
         else:
             # If version is >= 6.6, vmlinux can switch `slab_virtual` status with boot-parameter
             kcmdline = Kernel.kernel_cmdline()
             r = re.search(r"slab_virtual=(\d+)", kcmdline.cmdline) if kcmdline else None
             if kcmdline is None:
-                additional = "{:s}: Found, cmdline: Not found".format(stw)
+                additional = "{:s}, runtime: cmdline: Not found".format(build_str)
                 gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.grayify("Unknown"), additional))
             elif r:
-                additional = "{:s}: Found, {:s} is in cmdline".format(stw, r.group(0))
+                additional = "{:s}, runtime: {:s} is in cmdline".format(build_str, r.group(0))
                 if r.group(1) == "0":
                     gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Disabled", "bold red"), additional))
                 else:
                     gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Enabled", "bold green"), additional))
             else:
-                additional = "{:s}: Found, slab_virtual is NOT in cmdline".format(stw)
+                additional = "{:s}, runtime: slab_virtual is NOT in cmdline".format(build_str)
                 gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Disabled", "bold red"), additional))
         return
 
@@ -32931,13 +33149,16 @@ class KernelChecksecCommand(GenericCommand):
 
     def check_lkrg(self):
         cfg = "Linux Kernel Runtime Guard (LKRG)"
-        kmod_ret = gdb.execute("kmod --quiet --no-pager", to_string=True)
-        if "Not found" in kmod_ret:
+        modules = self.get_loaded_modules()
+        if modules is None and not self.is_modules_supported():
+            gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Unsupported", "bold red"), "CONFIG_MODULES=n"))
+            return
+        if modules is None:
             additional = "kmod is failed"
             gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.grayify("Unknown"), additional))
             return
 
-        if ": lkrg " in kmod_ret:
+        if "lkrg" in [name for name, _start, _size in modules]:
             gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Enabled", "bold green"), "Loaded"))
         else:
             gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Disabled", "bold red"), "Not loaded"))
@@ -33070,12 +33291,13 @@ class KernelChecksecCommand(GenericCommand):
                 ret = gdb.execute("ksysctl --quiet --no-pager {:s}".format(filters), to_string=True)
             except gdb.error:
                 ret = ""
-            for line in ret.splitlines():
+            for line in Color.remove_color(ret).splitlines():
                 fields = line.split()
-                if len(fields) < 2 or fields[0] not in supported_cfgs:
+                if len(fields) < 3 or fields[0] not in supported_cfgs:
                     continue
                 try:
-                    addrs[fields[0]] = int(fields[1], 16)
+                    # ~5.13: int with proc_dointvec_minmax, 5.14~: long with proc_doulongvec_minmax
+                    addrs[fields[0]] = (int(fields[1], 16), int(fields[2], 16))
                 except ValueError:
                     pass
 
@@ -33085,14 +33307,20 @@ class KernelChecksecCommand(GenericCommand):
                 gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Unimplemented", "bold red"), additional))
                 continue
 
-            addr = addrs.get(cfg)
-            if addr is None:
+            if cfg not in addrs:
                 additional = "{:s}: Not found".format(cfg)
                 gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.grayify("Unknown"), additional))
                 continue
 
-            val = read_int_from_memory(addr)
-            if val:
+            addr, maxlen = addrs[cfg]
+            if maxlen == 8:
+                val = read_int64_from_memory(addr, safe=True)
+            else:
+                val = read_int32_from_memory(addr, safe=True)
+            if val is None:
+                additional = "{:s}: Memory read error at {:#x}".format(cfg, addr)
+                gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.grayify("Unknown"), additional))
+            elif val:
                 gef_print("{:<40s}: {:s}".format(cfg, Color.colorify("{:d}".format(val), "bold red")))
             else:
                 gef_print("{:<40s}: {:s}".format(cfg, Color.colorify("{:d}".format(val), "bold green")))
@@ -33132,33 +33360,76 @@ class KernelChecksecCommand(GenericCommand):
 
     def check_CONFIG_KALLSYMS_ALL(self):
         cfg = "CONFIG_KALLSYMS_ALL"
+        if self.print_kconfig_state(cfg, secure_if_enabled=False):
+            return
+
         modprobe_path = Ksym.get_addr("modprobe_path")
         if modprobe_path:
-            additional = "modprobe_path: Found"
+            additional = "inferred: modprobe_path: Found"
             gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Enabled", "bold red"), additional))
         elif KernelAddressHeuristicFinder.get_modules() is None:
             gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.grayify("Unknown"), "CONFIG_MODULES=n"))
         else:
-            additional = "modprobe_path: Not found"
+            additional = "inferred: modprobe_path: Not found"
             gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Disabled", "bold green"), additional))
         return
 
     def check_CONFIG_IKCONFIG(self):
         cfg = "CONFIG_IKCONFIG"
-        ikconfig_init = Ksym.get_addr("ikconfig_init")
-        if ikconfig_init:
-            additional = "ikconfig_init: Found"
+        name, value = self.get_config(cfg)
+        if value in ("y", "m"):
+            additional = self.config_str(name, value)
+            if self.kconfig_where:
+                additional += ", " + self.kconfig_where
+            state = "Enabled" if value == "y" else "Module"
+            gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify(state, "bold red"), additional))
+            return
+
+        if Ksym.get_addr("ikconfig_init"):
+            # CONFIG_IKCONFIG_PROC=y needs CONFIG_IKCONFIG, but the config could not be extracted
+            additional = "inferred: ikconfig_init: Found, IKCFG_ST: Not extracted"
             gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Enabled", "bold red"), additional))
+        elif self.is_modules_supported():
+            additional = "IKCFG_ST: Not found in the kernel and the loaded modules (CONFIG_IKCONFIG=n, or =m and not loaded)"
+            gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.grayify("Unknown"), additional))
         else:
-            additional = "ikconfig_init: Not found"
+            additional = "IKCFG_ST: Not found, CONFIG_MODULES=n"
+            gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Disabled", "bold green"), additional))
+        return
+
+    def check_CONFIG_IKCONFIG_PROC(self):
+        cfg = "CONFIG_IKCONFIG_PROC"
+        name, value = self.get_config(cfg)
+        if value is not None:
+            additional = self.config_str(name, value)
+            if value == "y" and self.get_config("CONFIG_IKCONFIG")[1] == "m":
+                additional += ", /proc/config.gz appears while the configs module is loaded"
+            if value == "y":
+                gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Enabled", "bold red"), additional))
+            else:
+                gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Disabled", "bold green"), additional))
+            return
+
+        # ikconfig_init is built only with CONFIG_IKCONFIG_PROC
+        if Ksym.get_addr("ikconfig_init"):
+            additional = "inferred: ikconfig_init: Found"
+            gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Enabled", "bold red"), additional))
+        elif self.is_modules_supported():
+            additional = "inferred: ikconfig_init: Not found, it may be in the configs module"
+            gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.grayify("Unknown"), additional))
+        else:
+            additional = "inferred: ikconfig_init: Not found"
             gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Disabled", "bold green"), additional))
         return
 
     def check_CONFIG_DEBUG_INFO_BTF(self):
         cfg = "CONFIG_DEBUG_INFO_BTF"
+        if self.print_kconfig_state(cfg, secure_if_enabled=False):
+            return
+
         start_btf = Ksym.get_addr("__start_BTF")
         if start_btf:
-            additional = "__start_BTF: Found"
+            additional = "inferred: __start_BTF: Found"
             gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Enabled", "bold red"), additional))
             return
 
@@ -33173,21 +33444,23 @@ class KernelChecksecCommand(GenericCommand):
             _, version, _, header_len, type_off, type_len, str_off, str_len = struct.unpack_from(header_fmt, kernel_img, pos)
             payload_end = header_len + max(type_off + type_len, str_off + str_len)
             str_start = pos + header_len + str_off
+            # The BTF of BPF programs embedded in the kernel (e.g. bpf_preload) does not have task_struct.
             if (version == 1 and header_len >= header_size and type_len and str_len
                     and type_off + type_len <= str_off and payload_end <= len(kernel_img) - pos
-                    and kernel_img[str_start:str_start + 1] == b"\0"):
+                    and kernel_img[str_start:str_start + 1] == b"\0"
+                    and b"\0task_struct\0" in kernel_img[str_start:str_start + str_len]):
                 btf_addr = Ksym.ro_base + pos
-                additional = "BTF header: Found at {:#x} (__start_BTF hidden)".format(btf_addr)
+                additional = "inferred: BTF header: Found at {:#x} (__start_BTF hidden)".format(btf_addr)
                 gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Enabled", "bold red"), additional))
                 return
             pos = kernel_img.find(magic, pos + 1)
 
         if kernel_img:
-            additional = "BTF header: Not found"
+            additional = "inferred: BTF header: Not found"
             gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Disabled", "bold green"), additional))
             return
 
-        additional = "__start_BTF: Not found"
+        additional = "inferred: __start_BTF: Not found"
         if Ksym.get_addr("modprobe_path") is None and KernelAddressHeuristicFinder.get_modules() is not None:
             gef_print("{:<40s}: {:s} ({:s}, CONFIG_KALLSYMS_ALL=n)".format(cfg, Color.grayify("Unknown"), additional))
         else:
@@ -33202,6 +33475,10 @@ class KernelChecksecCommand(GenericCommand):
             gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Unsupported", "bold red"), additional))
             return
 
+        # ~5.18: CONFIG_GCC_PLUGIN_RANDSTRUCT
+        if self.print_kconfig_state(cfg, names=[cfg, "CONFIG_GCC_PLUGIN_RANDSTRUCT"]):
+            return
+
         # If kallsyms can be resolved but ksysctl cannot, the structure layout may be unusual.
         # The structures parsed by ksysctl are stable across kernel versions, except for
         # `struct ctl_dir.inodes`. Also, the first member of `struct ctl_table` is a
@@ -33210,25 +33487,184 @@ class KernelChecksecCommand(GenericCommand):
         # positive evidence by itself because unrelated finder failures can produce the same result.
         ksysctl_ret = Kernel.get_ksysctl("kernel.version")
         if ksysctl_ret is None:
-            additional = "ksysctl failed"
+            additional = "inferred: ksysctl failed"
             gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.grayify("Unknown"), additional))
         else:
-            additional = "ksysctl was successful"
+            additional = "inferred: ksysctl was successful"
             gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Disabled", "bold red"), additional))
         return
 
+    @staticmethod
+    def is_first_arg_used(res):
+        # Returns True if the first argument register is read before it is overwritten,
+        # False if it is overwritten first, or None if it cannot be decided.
+        if is_x86_64():
+            reg_re = r"\b(?:rdi|edi|di|dil)\b"
+        elif is_x86_32():
+            reg_re = r"\b(?:eax|ax|al|ah)\b"
+        elif is_arm64():
+            reg_re = r"\b[xw]0\b"
+        elif is_arm32():
+            reg_re = r"\br0\b"
+        else:
+            return None
+
+        for line in res.splitlines():
+            m = re.search(r"^\s*(?:=>\s*)?0x[0-9a-f]+(?:\s+<[^>]*>)?:\s*(\S+)\s*(.*)", line)
+            if not m:
+                continue
+            mnemonic = m.group(1)
+            operands = re.sub(r"\s+(?://|@|;|# ).*$", "", m.group(2))
+            if re.fullmatch(r"call\w*|jmp\w*|ret\w*|bl|blx|blr|br|b|bx", mnemonic):
+                return None
+            if re.match(r"pop|ldm", mnemonic) and re.search(r"\bpc\b", operands) or operands.split(",")[0].strip() == "pc":
+                return None
+            if not re.search(reg_re, operands):
+                continue
+            ops = re.split(r",\s*(?![^\[]*\]|[^{]*})", operands)
+            dst, srcs = ops[0], ops[1:]
+            if is_x86():
+                if mnemonic in ("xor", "sub") and len(ops) == 2 and dst == srcs[0]:
+                    return False
+                if mnemonic in ("mov", "movzx", "movsx", "movsxd", "movabs", "lea", "pop"):
+                    return not (re.fullmatch(reg_re, dst) and not any(re.search(reg_re, x) for x in srcs))
+                return True
+            # ARM: the destination is also read by stores, comparisons and partial writes
+            if re.fullmatch(r"(?:str|stur|stp|stl|stx|stm|push|cmp|cmn|tst|teq|cbn?z|tbn?z|movk|movt|bfi|bfxil|ccmp)\w*", mnemonic):
+                return True
+            if is_arm32() and re.search(r"(?:eq|ne|cs|cc|hs|lo|mi|pl|vs|vc|hi|ls|ge|lt|gt|le)$", mnemonic):
+                return None
+            dsts = ops[:2] if mnemonic.startswith("ldp") else ops[:1]
+            srcs = ops[len(dsts):]
+            return not (any(re.fullmatch(reg_re, x) for x in dsts) and not any(re.search(reg_re, x) for x in srcs))
+        return None
+
+    @staticmethod
+    def get_usermodehelper_path_source(res):
+        # Follows the stores of call_usermodehelper_setup() to find what is written to `sub_info->path`.
+        # `path` is just before `argv` in `struct subprocess_info`, and `argv` is the second argument.
+        # Returns ["arg", 0] if it is the first argument, ["const", addr] if it is a constant, or None.
+        if is_x86_64():
+            arg_regs = ["rdi", "rsi"]
+            clobbered = ["rax", "rcx", "rdx", "rsi", "rdi", "r8", "r9", "r10", "r11"]
+        elif is_x86_32():
+            arg_regs = ["eax", "edx"]
+            clobbered = ["eax", "ecx", "edx"]
+        elif is_arm64():
+            arg_regs = ["x0", "x1"]
+            clobbered = ["x{:d}".format(i) for i in range(19)]
+        elif is_arm32():
+            arg_regs = ["r0", "r1"]
+            clobbered = ["r0", "r1", "r2", "r3", "r12", "ip", "lr"]
+        else:
+            return None
+
+        regs = {reg: ["arg", i] for i, reg in enumerate(arg_regs)}
+        stores = {} # (base register, offset): value
+        for line in res.splitlines():
+            m = re.search(r"^\s*(?:=>\s*)?(0x[0-9a-f]+)(?:\s+<[^>]*>)?:\s*(\S+)\s*(.*)", line)
+            if not m:
+                continue
+            pos, mnemonic, operands = int(m.group(1), 16), m.group(2), m.group(3)
+            comment = re.search(r"(?:# |@ |; |// #)(0x[0-9a-f]+|-?\d+)\s*$", operands)
+            operands = re.sub(r"\s+(?://|@|;|# ).*$", "", operands).strip()
+            ops = re.split(r",\s*(?![^\[]*\]|[^{]*})", operands)
+
+            if re.fullmatch(r"call\w*|bl|blx|blr", mnemonic):
+                for reg in clobbered:
+                    regs.pop(reg, None)
+                continue
+
+            # stores
+            if is_x86():
+                if mnemonic == "mov" and len(ops) == 2:
+                    r = re.fullmatch(r"(?:QWORD|DWORD) PTR \[(\w+)(?:\+(0x[0-9a-f]+))?\]", ops[0])
+                    if r:
+                        if re.fullmatch(r"0x[0-9a-f]+", ops[1]):
+                            value = ["const", AddressUtil.normalize_address(int(ops[1], 16))]
+                        else:
+                            value = regs.get(ops[1])
+                        stores[(r.group(1), int(r.group(2) or "0", 16))] = value
+                        continue
+            else:
+                if mnemonic in ("stp", "str", "stur") and len(ops) >= 2:
+                    srcs = ops[:2] if mnemonic == "stp" else ops[:1]
+                    addr_op = ops[len(srcs)]
+                    r = re.fullmatch(r"\[(\w+)(?:,\s*#(-?(?:0x[0-9a-f]+|\d+)))?\](!?)", addr_op)
+                    if r:
+                        base, off = r.group(1), int(r.group(2) or "0", 0)
+                        for i, src in enumerate(srcs):
+                            stores[(base, off + current_arch.ptrsize * i)] = regs.get(src)
+                        if r.group(3) or len(ops) > len(srcs) + 1: # write-back
+                            regs.pop(base, None)
+                    continue
+
+            # register writes
+            dst = ops[0]
+            if is_x86_64() and re.fullmatch(r"e(?:ax|bx|cx|dx|si|di|bp|sp)|r\d+d", dst):
+                # a 32-bit write clears the upper bits, so it is no longer a pointer
+                regs.pop("r" + dst[1:] if dst.startswith("e") else dst[:-1], None)
+                continue
+            if mnemonic in ("mov", "movabs") and len(ops) == 2:
+                if ops[1] in regs:
+                    regs[dst] = regs[ops[1]]
+                elif re.fullmatch(r"#?(0x[0-9a-f]+|\d+)", ops[1]):
+                    regs[dst] = ["const", int(ops[1].lstrip("#"), 0)]
+                else:
+                    regs.pop(dst, None)
+            elif mnemonic == "lea" and comment:
+                regs[dst] = ["const", int(comment.group(1), 16)]
+            elif mnemonic in ("adrp", "adr") and len(ops) == 2:
+                regs[dst] = ["const", int(ops[1], 16)]
+            elif mnemonic == "add" and len(ops) == 3 and regs.get(ops[1], [None])[0] == "const" and ops[2].startswith("#"):
+                regs[dst] = ["const", regs[ops[1]][1] + int(ops[2].lstrip("#"), 0)]
+            elif mnemonic == "movw" and comment:
+                regs[dst] = ["const", int(comment.group(1), 0)]
+            elif mnemonic == "movt" and comment and regs.get(dst, [None])[0] == "const":
+                regs[dst] = ["const", (regs[dst][1] & 0xffff) | (int(comment.group(1), 0) << 16)]
+            elif mnemonic == "ldr" and re.fullmatch(r"\[pc(?:,\s*#(-?\d+))?\]", ops[-1]) and len(ops) == 2:
+                v = read_int_from_memory(pos + 8 + int(re.search(r"#(-?\d+)|$", ops[-1]).group(1) or 0), safe=True)
+                if v is None:
+                    regs.pop(dst, None)
+                else:
+                    regs[dst] = ["const", v]
+            elif mnemonic.startswith(("push", "cmp", "test", "tst", "cmn", "teq", "nop", "endbr", "pac", "aut", "b.", "j", "cb", "tb")):
+                pass
+            elif mnemonic.startswith(("ldp", "pop", "ldm")):
+                if re.search(r"\bpc\b", operands): # a return like `popeq {r4, pc}`, the state is kept if not taken
+                    continue
+                for reg in re.findall(r"\b\w+\b", " ".join(ops[:2] if mnemonic.startswith("ldp") else ops)):
+                    regs.pop(reg, None)
+            else:
+                regs.pop(dst, None)
+
+        for (base, off), value in stores.items():
+            if value == ["arg", 1]:
+                path = stores.get((base, off - current_arch.ptrsize))
+                if path == ["arg", 0] or path and path[0] == "const":
+                    return path
+        return None
+
     def check_CONFIG_STATIC_USERMODEHELPER(self):
-
-        def get_permission(addr):
-            maps = AddrMap.get_maps(scope="kernel")
-            entry = AddrMap.find_virtual(addr, maps=maps)
-            return str(entry.permission) if entry is not None else None
-
         cfg = "CONFIG_STATIC_USERMODEHELPER"
         kversion = Kernel.kernel_version()
         if kversion < "4.11":
             additional = "{:s}: implemented from linux 4.11".format(cfg)
             gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Unimplemented", "bold red"), additional))
+            return
+
+        name, value = self.get_config(cfg)
+        if value is not None:
+            additional = self.config_str(name, value)
+            if value == "n":
+                gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Disabled", "bold red"), additional))
+                return
+            path_name, path = self.get_config("CONFIG_STATIC_USERMODEHELPER_PATH")
+            if path != "n":
+                additional += ", {:s}={:s}".format(path_name, path)
+            if path == '""':
+                additional += " (all usermode helpers are blocked)"
+            gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Enabled", "bold green"), additional))
             return
 
         call_usermodehelper_setup = Ksym.get_addr("call_usermodehelper_setup")
@@ -33237,51 +33673,71 @@ class KernelChecksecCommand(GenericCommand):
             gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.grayify("Unknown"), additional))
             return
 
-        res = gdb.execute("x/50i {:#x}".format(call_usermodehelper_setup), to_string=True)
-        use_static = False
-        if is_x86_64():
-            g = KernelAddressHeuristicFinderUtil.x64_x86_any_const(res)
-        elif is_x86_32():
+        # CONFIG_STATIC_USERMODEHELPER=y: `sub_info->path = CONFIG_STATIC_USERMODEHELPER_PATH;`
+        # CONFIG_STATIC_USERMODEHELPER=n: `sub_info->path = path;` (the first argument)
+        res = KernelAddressHeuristicFinderUtil.disassemble_until_next_symbol(call_usermodehelper_setup, 50)
+        source = self.get_usermodehelper_path_source(res)
+        if source == ["arg", 0]:
+            additional = "inferred: call_usermodehelper_setup stores the argument to sub_info->path"
+            gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Disabled", "bold red"), additional))
+            return
+        if source is not None:
+            path = read_cstring_from_memory(source[1], max_length=0x100, safe=True)
+            if path is not None:
+                additional = "inferred: call_usermodehelper_setup stores \"{:s}\" to sub_info->path".format(path)
+                if path == "":
+                    additional += " (all usermode helpers are blocked)"
+                gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Enabled", "bold green"), additional))
+                return
+
+        # fallback: the path constant, or the use of the first argument
+        if is_x86():
             g = KernelAddressHeuristicFinderUtil.x64_x86_any_const(res)
         elif is_arm64():
             g = KernelAddressHeuristicFinderUtil.aarch64_adrp_add(res)
         elif is_arm32():
-            g = KernelAddressHeuristicFinderUtil.arm32_movw_movt(res)
+            g = itertools.chain(
+                KernelAddressHeuristicFinderUtil.arm32_movw_movt(res),
+                KernelAddressHeuristicFinderUtil.arm32_ldr_pc_relative(res),
+            )
+        else:
+            g = []
+        klayout = Kernel.get_layout()
         for x in g:
             if not is_valid_addr(x):
                 continue
-            # default value of CONFIG_STATIC_USERMODEHELPER_PATH is "/sbin/usermode-helper".
-            if read_memory(x, 5) == b"/sbin":
-                use_static = True
-                break
-            # sometimes CONFIG_STATIC_USERMODEHELPER_PATH is set to "".
-            # If CONFIG_STATIC_USERMODEHELPER_PATH is "", one NUL should be stored.
-            # In many cases, another string seems to start being stored at the next address of NUL.
-            # It is rare for two consecutive NULs to occur, and we use this in the detection logic.
-            if read_memory(x, 1) == b"\x00" and read_memory(x + 1, 1) != b"\x00":
-                # check if the address is read-only or not
-                if get_permission(x) == "R--":
-                    use_static = True
-                    break
-        if use_static:
-            additional = "call_usermodehelper_setup uses static path"
-            gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Enabled", "bold green"), additional))
-        else:
-            additional = "call_usermodehelper_setup uses dynamic path"
+            if klayout.ro_base is not None and klayout.ro_end is not None and not klayout.ro_base <= x < klayout.ro_end:
+                continue
+            path = read_cstring_from_memory(x, max_length=0x100, safe=True)
+            # the default value of CONFIG_STATIC_USERMODEHELPER_PATH is "/sbin/usermode-helper".
+            if path and path.startswith("/"):
+                additional = "inferred: call_usermodehelper_setup uses static path \"{:s}\"".format(path)
+                gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Enabled", "bold green"), additional))
+                return
+        if self.is_first_arg_used(res):
+            additional = "inferred: call_usermodehelper_setup uses the argument"
             gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Disabled", "bold red"), additional))
+        else:
+            additional = "inferred: call_usermodehelper_setup uses neither a path constant nor the argument"
+            gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.grayify("Unknown"), additional))
         return
 
     def check_CONFIG_STACKPROTECTOR(self):
         cfg = "CONFIG_STACKPROTECTOR"
+        # ~4.17: CONFIG_CC_STACKPROTECTOR
+        if self.print_kconfig_state(cfg, names=[cfg, "CONFIG_CC_STACKPROTECTOR"]):
+            return
+
         ktask_ret = gdb.execute("ktask --meta", to_string=True)
         r = re.search(r"offsetof\(task_struct, stack_canary\): (0x\S+)", ktask_ret)
         if r:
-            additional = "offsetof(task_struct, stack_canary): {:s}".format(r.group(1))
+            additional = "inferred: offsetof(task_struct, stack_canary): {:s}".format(r.group(1))
             gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Enabled", "bold green"), additional))
             return
 
         if "stack_canary" in ktask_ret:
-            gef_print("{:<40s}: {:s}".format(cfg, Color.colorify("Disabled", "bold red")))
+            additional = "inferred: offsetof(task_struct, stack_canary): Not found"
+            gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Disabled", "bold red"), additional))
         else:
             additional = "ktask was failed"
             gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.grayify("Unknown"), additional))
@@ -33292,40 +33748,63 @@ class KernelChecksecCommand(GenericCommand):
             return
 
         cfg = "CONFIG_SHADOW_CALL_STACK (Clang ARM64)"
+        if self.print_kconfig_state(cfg, names=["CONFIG_SHADOW_CALL_STACK"]):
+            return
+
         scs_alloc = Ksym.get_addr("scs_alloc")
         if scs_alloc:
-            additional = "scs_alloc: Found"
+            additional = "inferred: scs_alloc: Found"
             gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Enabled", "bold green"), additional))
         else:
-            additional = "scs_alloc: Not found"
+            additional = "inferred: scs_alloc: Not found"
             gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Disabled", "bold red"), additional))
         return
 
     def check_CONFIG_HARDENED_USERCOPY(self):
         cfg = "CONFIG_HARDENED_USERCOPY"
+        if self.print_kconfig_state(cfg):
+            return
+
         __check_heap_object = Ksym.get_addr("__check_heap_object")
         if __check_heap_object:
-            additional = "__check_heap_object: Found"
+            additional = "inferred: __check_heap_object: Found"
             gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Enabled", "bold green"), additional))
         else:
-            additional = "__check_heap_object: Not found"
+            additional = "inferred: __check_heap_object: Not found"
             gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Disabled", "bold red"), additional))
         return
 
     def check_CONFIG_FUSE_FS(self):
         cfg = "CONFIG_FUSE_FS"
-        fuse_do_open = Ksym.get_addr("fuse_do_open")
-        if fuse_do_open:
-            additional = "fuse_do_open: Found"
+        name, value = self.get_config(cfg)
+        if value == "y" or value is None and Ksym.get_addr("fuse_do_open"):
+            additional = self.config_str(name, value) if value else "inferred: fuse_do_open: Found"
             gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Enabled", "bold red"), additional))
+            return
+        if value == "n":
+            additional = self.config_str(name, value)
+            gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Disabled", "bold green"), additional))
+            return
+
+        # CONFIG_FUSE_FS=m or unknown
+        modules = self.get_loaded_modules()
+        loaded = None if modules is None else "fuse" in [name for name, _start, _size in modules]
+        additional = self.config_str(cfg, value) if value else "inferred: fuse_do_open: Not found"
+        if loaded is True:
+            additional += ", runtime: fuse module: Loaded"
+            gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Module", "bold red"), additional))
+        elif value == "m":
+            additional += ", runtime: fuse module: {:s}".format("Not loaded" if loaded is False else "Unknown (kmod is failed)")
+            gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Module", "bold red"), additional))
+        elif not self.is_modules_supported():
+            additional += ", CONFIG_MODULES=n"
+            gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Disabled", "bold green"), additional))
+        elif loaded is False:
+            additional += ", fuse module: Not loaded (CONFIG_FUSE_FS=n, or =m and not loaded)"
+            gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.grayify("Unknown"), additional))
         else:
-            ret = gdb.execute("kmod --filter fuse --quiet", to_string=True)
-            if ret:
-                additional = "fuse module: Found"
-                gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Enabled", "bold red"), additional))
-            else:
-                additional = "fuse module: Not found"
-                gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Disabled", "bold green"), additional))
+            additional += ", kmod is failed"
+            gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.grayify("Unknown"), additional))
         return
 
     def check_kadr_kallsyms(self):
@@ -33432,80 +33911,107 @@ class KernelChecksecCommand(GenericCommand):
             gef_print("{:<40s}: {:s}".format(cfg, "???"))
         return
 
+    def run_checks(self, *checks):
+        for check in checks:
+            try:
+                check()
+            except (gdb.error, ValueError, TypeError, AttributeError, KeyError, IndexError, struct.error) as e:
+                # A failure of one check should not hide the others
+                name = check.__name__.replace("check_", "")
+                lineno = traceback.extract_tb(e.__traceback__)[-1].lineno
+                additional = "{:s} at line {:d}: {:s}".format(type(e).__name__, lineno, str(e).strip().split("\n")[0])
+                gef_print("{:<40s}: {:s} ({:s})".format(name, Color.grayify("Unknown"), additional))
+        return
+
     def print_security_properties_qemu_system(self):
+        self.kconfig = None
+        self.kconfig_where = None
+        self.loaded_modules = False
+
         gef_print(titlify("Kernel information"))
         kversion = Kernel.kernel_version()
         if kversion is None:
             err("Could not find Linux kernel")
             return
         gef_print("{:<40s}: {:d}.{:d}.{:d}".format("Kernel version", *kversion.version_tuple))
-        self.check_basic_information()
+        self.run_checks(self.check_basic_information)
 
         gef_print(titlify("Register settings"))
-        self.x86_specific()
-        self.arm32_specific()
-        self.arm64_specific()
+        self.run_checks(self.x86_specific, self.arm32_specific, self.arm64_specific)
 
         if Ksym.get_addr("_stext") is None:
             err("ksymaddr-remote is failed")
             return
 
         gef_print(titlify("Memory settings"))
-        self.check_kaslr()
-        self.check_fgkaslr()
-        self.check_kpti()
-        self.check_rwx_page()
-        self.check_secure_world()
+        self.run_checks(
+            self.check_kaslr,
+            self.check_fgkaslr,
+            self.check_kpti,
+            self.check_rwx_page,
+            self.check_secure_world,
+        )
 
         gef_print(titlify("Allocator"))
         allocator = Kernel.get_slab_type()
         gef_print("{:<40s}: {:s}".format("Allocator", allocator))
         if allocator == "SLUB":
-            self.check_CONFIG_SLAB_FREELIST_HARDENED()
-            self.check_CONFIG_SLAB_FREELIST_RANDOM()
-            self.check_CONFIG_SLAB_VIRTUAL()
+            self.run_checks(
+                self.check_CONFIG_SLAB_FREELIST_HARDENED,
+                self.check_CONFIG_SLAB_FREELIST_RANDOM,
+                self.check_CONFIG_SLAB_VIRTUAL,
+            )
         gef_print(titlify("Kernel module"))
-        self.check_loadable_modules()
+        self.run_checks(self.check_loadable_modules)
 
         gef_print(titlify("Security Module"))
-        self.check_selinux()
-        self.check_smack()
-        self.check_apparmor()
-        self.check_tomoyo()
-        self.check_yama()
-        self.check_integrity()
-        self.check_loadpin()
-        self.check_safe_setid()
-        self.check_lockdown()
-        self.check_bpf()
-        self.check_landlock()
-        self.check_lkrg()
+        self.run_checks(
+            self.check_selinux,
+            self.check_smack,
+            self.check_apparmor,
+            self.check_tomoyo,
+            self.check_yama,
+            self.check_integrity,
+            self.check_loadpin,
+            self.check_safe_setid,
+            self.check_lockdown,
+            self.check_bpf,
+            self.check_landlock,
+            self.check_lkrg,
+        )
 
         gef_print(titlify("Dangerous system call"))
-        self.check_unprivileged_userfaultfd()
-        self.check_unprivileged_bpf_disabled()
-        self.check_kexec_load_disabled()
-        self.check_io_uring_access()
+        self.run_checks(
+            self.check_unprivileged_userfaultfd,
+            self.check_unprivileged_bpf_disabled,
+            self.check_kexec_load_disabled,
+            self.check_io_uring_access,
+        )
 
         gef_print(titlify("namespaces"))
-        self.check_namespaces()
-        self.check_unprivileged_userns_clone()
-        self.check_userns_restrict()
+        self.run_checks(
+            self.check_namespaces,
+            self.check_unprivileged_userns_clone,
+            self.check_userns_restrict,
+        )
 
         gef_print(titlify("Other"))
-        self.check_CONFIG_KALLSYMS_ALL()
-        self.check_CONFIG_IKCONFIG()
-        self.check_CONFIG_DEBUG_INFO_BTF()
-        self.check_CONFIG_RANDSTRUCT()
-        self.check_CONFIG_STATIC_USERMODEHELPER()
-        self.check_CONFIG_STACKPROTECTOR()
-        self.check_CONFIG_SHADOW_CALL_STACK()
-        self.check_CONFIG_HARDENED_USERCOPY()
-        self.check_CONFIG_FUSE_FS()
-        self.check_kadr_kallsyms()
-        self.check_kadr_dmesg()
-        self.check_mmap_min_addr()
-        self.check_supported_syscall()
+        self.run_checks(
+            self.check_CONFIG_KALLSYMS_ALL,
+            self.check_CONFIG_IKCONFIG,
+            self.check_CONFIG_IKCONFIG_PROC,
+            self.check_CONFIG_DEBUG_INFO_BTF,
+            self.check_CONFIG_RANDSTRUCT,
+            self.check_CONFIG_STATIC_USERMODEHELPER,
+            self.check_CONFIG_STACKPROTECTOR,
+            self.check_CONFIG_SHADOW_CALL_STACK,
+            self.check_CONFIG_HARDENED_USERCOPY,
+            self.check_CONFIG_FUSE_FS,
+            self.check_kadr_kallsyms,
+            self.check_kadr_dmesg,
+            self.check_mmap_min_addr,
+            self.check_supported_syscall,
+        )
         return
 
     @parse_args
@@ -133719,7 +134225,10 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
             data = slice_unpack(data, sizeof_uint32)
             if len(set(data)) != N:
                 return False
-            if any(x & 0x80000000 for x in data):
+            if any(x & 0x8000_0000 for x in data):
+                return False
+            # Each element is `index * s->size`, so ASCII (e.g. kobj.name when CONFIG_SYSFS=y) is rejected.
+            if any(x % 4 or x >= 0x100_0000 for x in data):
                 return False
             return True
 
