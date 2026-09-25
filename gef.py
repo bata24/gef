@@ -70152,6 +70152,8 @@ class KernelAddressHeuristicFinder:
                     g = KernelAddressHeuristicFinderUtil.aarch64_adrp_add(res)
                 elif is_arm32():
                     g = KernelAddressHeuristicFinderUtil.arm32_movw_movt(res)
+                elif is_riscv32() or is_riscv64():
+                    g = KernelAddressHeuristicFinderUtil.riscv_auipc_addi(res)
                 for x in g:
                     name_ptr = read_int_from_memory(x + 0x8 * 2) # sizeof(resource_size_t) == 8
                     if name_ptr and is_valid_addr(name_ptr):
@@ -70739,6 +70741,10 @@ class Kernel:
             """Return a copy whose text base and data range are refined from the iomem resource tree."""
             if not (is_qemu_system() or is_vmware()) or not self.ro_base:
                 return self
+            # Without strict RWX, old RISC-V kernels in the linear map have one RWX mapping up to the end of RAM,
+            # which makes kdevio scan all of it. They also have no "Kernel data" resource (e.g., v5.4).
+            if (is_riscv32() or is_riscv64()) and self.rwx:
+                return self
 
             klayout = self
             try:
@@ -71127,10 +71133,14 @@ class Kernel:
             # TODO: A fixed size is currently used, but better algorithms may exist.
             RW_REGION_MIN_SIZE = 0x20000
             if dic["ro_base"] is not None:
+                # x86_64 aligns the end of .rodata to 2 MiB and frees the gap before `_sdata`,
+                # but the gap may remain mapped as RW. So .data starts at the next 2 MiB boundary.
+                rw_search_base = align(dic["ro_end"], 0x200000) if is_x86_64() else dic["ro_end"]
                 for entry in dic["maps"][ro_base_map_index + 1:]:
                     if dic["rw_base"] is None:
-                        if str(entry.permission) == "rw-" and entry.vsize >= RW_REGION_MIN_SIZE:
-                            dic["rw_base"] = entry.vstart
+                        vstart = max(entry.vstart, rw_search_base)
+                        if str(entry.permission) == "rw-" and entry.vend - vstart >= RW_REGION_MIN_SIZE:
+                            dic["rw_base"] = vstart
                             dic["rw_end"] = entry.vend
                     elif dic["rw_end"] == entry.vstart:
                         # merge contiguous region.
@@ -71275,12 +71285,13 @@ class Kernel:
             return None
         area = []
         for entry in klayout.maps: # resolve search range
-            # `text_base` may be in the middle of a coarse mapping
+            # `text_base` and `rw_base` may be in the middle of a coarse mapping
             if entry.vend <= klayout.text_base:
                 continue
             if klayout.rw_base and entry.vstart >= klayout.rw_base:
                 continue
-            area.append([max(entry.vstart, klayout.text_base), entry.vend])
+            end = min(entry.vend, klayout.rw_base) if klayout.rw_base else entry.vend
+            area.append([max(entry.vstart, klayout.text_base), end])
         if area == []:
             return None
         for start, end in area: # find version string
@@ -79205,9 +79216,105 @@ class KernelLoadCommand(GenericCommand):
     parser.add_argument("path", metavar="VMLINUX_PATH", type=str, help="path of the vmlinux.")
     _syntax_ = parser.format_help()
 
+    _note_ = [
+        "The KASLR offset is resolved in the following order and applied to all sections.",
+        "  1. The address of `linux_banner` in memory and in the vmlinux (this also checks that they match)",
+        "  2. The address of `_stext` in kallsyms and in the vmlinux",
+        "  3. The exception vector address and its symbol in the vmlinux",
+        "Sections linked below the image (e.g., x86_64 zero-based .data..percpu, ARM32 .vectors) are not relocated.",
+    ]
+    _note_ = "\n".join(_note_)
+
     def __init__(self):
         super().__init__(complete=gdb.COMPLETE_FILENAME)
         return
+
+    @staticmethod
+    def get_elf_symbols(elf, names):
+        symtab = elf.read_shdr(".symtab")
+        strtab = elf.read_shdr(".strtab")
+        if not symtab or not strtab:
+            return {}
+
+        # A name may be the tail of a longer string, so do not require a preceding NUL
+        name_offsets = {}
+        for name in names:
+            needle = String.str2bytes(name) + b"\0"
+            pos = strtab.find(needle)
+            while pos != -1:
+                name_offsets[pos] = name
+                pos = strtab.find(needle, pos + 1)
+
+        endian = "<" if elf.e_endianness == Elf.LITTLE_ENDIAN else ">"
+        if elf.e_class == Elf.ELF_64_BITS:
+            # Elf64_Sym: st_name, st_info, st_other, st_shndx, st_value, st_size
+            fmt, index_shndx, index_value = "IBBHQQ", 3, 4
+        else:
+            # Elf32_Sym: st_name, st_value, st_size, st_info, st_other, st_shndx
+            fmt, index_shndx, index_value = "IIIBBH", 5, 1
+        ret = {}
+        for sym in struct.iter_unpack(endian + fmt, symtab):
+            name = name_offsets.get(sym[0])
+            if name and sym[index_shndx] and name not in ret: # skip SHN_UNDEF
+                ret[name] = sym[index_value]
+        return ret
+
+    @staticmethod
+    def is_valid_slide(slide):
+        return slide & get_pagesize_mask_low() == 0
+
+    def get_slide_from_banner(self, elf):
+        kversion = Kernel.kernel_version()
+        if kversion is None or not kversion.address:
+            return None
+        shdr = elf.get_shdr(".rodata")
+        if shdr is None:
+            return None
+        rodata = elf.read_shdr(".rodata")
+        needle = String.str2bytes(kversion.version_string)
+        pos = rodata.find(needle)
+        while pos != -1:
+            slide = kversion.address - (shdr.sh_addr + pos)
+            if self.is_valid_slide(slide):
+                return slide
+            pos = rodata.find(needle, pos + 1)
+        warn("The linux_banner of the vmlinux does not match the running kernel")
+        return None
+
+    def get_slide_from_stext(self, elf):
+        stext = Ksym.get_addr("_stext")
+        if stext is None:
+            return None
+        elf_stext = self.get_elf_symbols(elf, ["_stext"]).get("_stext")
+        if elf_stext is None:
+            return None
+        slide = stext - elf_stext
+        if self.is_valid_slide(slide):
+            return slide
+        return None
+
+    def get_slide_from_vector(self, elf):
+        hint = Kernel.get_kernel_base_hint()
+        if hint is None:
+            return None
+        if is_x86():
+            names = ["asm_exc_divide_error", "divide_error"]
+        elif is_arm32():
+            names = ["vector_swi"]
+        elif is_arm64():
+            names = ["vectors"]
+        elif is_riscv32() or is_riscv64():
+            names = ["handle_exception"]
+        else:
+            return None
+        elf_symbols = self.get_elf_symbols(elf, names)
+        for name in names:
+            if name not in elf_symbols:
+                continue
+            slide = hint - elf_symbols[name]
+            if self.is_valid_slide(slide):
+                return slide
+        return None
 
     @parse_args
     @only_if_gdb_running
@@ -79217,13 +79324,34 @@ class KernelLoadCommand(GenericCommand):
             err("Invalid path")
             return
 
-        info("Wait for memory scan")
-        text_base = Kernel.get_kernel_base()
-        if text_base is None:
-            err("The kernel base is unknown")
+        elf = Elf.get_elf(args.path)
+        if elf is None or not elf.is_valid() or not elf.shdrs:
+            err("Invalid ELF")
             return
 
-        gdb.execute("add-symbol-file {!r} {:#x}".format(args.path, text_base))
+        # `add-symbol-file FILE ADDR` relocates only .text, so pass the slide of the whole image instead.
+        # ADDR must be the runtime .text, which is not the mapping start of the kernel (e.g., ARM64 .head.text).
+        image_bases = [shdr.sh_addr for shdr in elf.shdrs if shdr.sh_name in (".head.text", ".text", ".init.text")]
+        if not image_bases:
+            err("Could not find .text")
+            return
+        image_base = min(image_bases)
+
+        info("Wait for memory scan")
+        for get_slide in [self.get_slide_from_banner, self.get_slide_from_stext, self.get_slide_from_vector]:
+            slide = get_slide(elf)
+            if slide is not None:
+                break
+        else:
+            err("Failed to resolve the KASLR offset")
+            return
+
+        cmd = "add-symbol-file {!r} -o {:#x}".format(args.path, slide)
+        for shdr in elf.shdrs:
+            if shdr.sh_flags & Elf.Shdr.SHF_ALLOC and shdr.sh_addr < image_base:
+                cmd += " -s {:s} {:#x}".format(shdr.sh_name, shdr.sh_addr)
+        info("Execute `{:s}`".format(cmd))
+        gdb.execute(cmd)
         return
 
 
@@ -144526,7 +144654,7 @@ class KernelDeviceIOCommand(GenericCommand, BufferingOutput):
     @parse_args
     @only_if_gdb_running
     @only_if_specific_gdb_mode(mode=("qemu-system", "vmware"))
-    @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
+    @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64"))
     @only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
         self.quiet_info("Wait for memory scan")

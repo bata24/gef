@@ -8484,6 +8484,16 @@ options:
   -h, --help    show this help message and exit
 ```
 
+### Notes
+
+```text
+The KASLR offset is resolved in the following order and applied to all sections.
+  1. The address of `linux_banner` in memory and in the vmlinux (this also checks that they match)
+  2. The address of `_stext` in kallsyms and in the vmlinux
+  3. The exception vector address and its symbol in the vmlinux
+Sections linked below the image (e.g., x86_64 zero-based .data..percpu, ARM32 .vectors) are not relocated.
+```
+
 ## `kmod-load`
 
 Load the kernel module without a load address.
