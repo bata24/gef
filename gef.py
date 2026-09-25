@@ -72562,7 +72562,7 @@ class Kernel:
         PathInfo = collections.namedtuple("PathInfo", "path status crossed root_mount")
 
         @staticmethod
-        @Cache.cache_this_session
+        @Cache.cache_this_session(per_inferior=True, until_new_objfile=True)
         def get_instance():
             """Return the instance shared by every command, so that the offsets are resolved at most once."""
             return Kernel.Path()
@@ -73453,7 +73453,11 @@ class Kernel:
             dentry = read_int_from_memory(file + self.offset_file_dentry)
             vfsmnt = read_int_from_memory(file + self.offset_file_mnt)
             filepath = self.prepend_path(dentry, vfsmnt, root).path
-            return self.decorate_pseudo_path(filepath, dentry)
+            filepath = self.decorate_pseudo_path(filepath, dentry)
+            # like d_path(), mark only a real pathname, not the notation of a pseudo filesystem
+            if filepath.startswith("/") and self.is_unlinked(dentry):
+                filepath += " (deleted)"
+            return filepath
 
         def get_mount_path(self, mount, root=None):
             """Return the pathname of the mountpoint of `mount`."""
@@ -73895,7 +73899,7 @@ class Kernel:
             return False
 
         @staticmethod
-        @Cache.cache_this_session(cache_None=False)
+        @Cache.cache_this_session(cache_None=False, per_inferior=True, until_new_objfile=True)
         def get_offset_fdt(files):
             """
             struct files_struct {
@@ -73937,7 +73941,7 @@ class Kernel:
         """Resolve the layout of ``struct signal_struct``."""
 
         @staticmethod
-        @Cache.cache_this_session(cache_None=False)
+        @Cache.cache_this_session(cache_None=False, per_inferior=True, until_new_objfile=True)
         def get_offset_thread_head(signal):
             """
             struct signal_struct {
@@ -73970,7 +73974,7 @@ class Kernel:
         SIGNAL_NAMES = LinuxSignal.NAMES
 
         @staticmethod
-        @Cache.cache_this_session(cache_None=False)
+        @Cache.cache_this_session(cache_None=False, per_inferior=True, until_new_objfile=True)
         def get_offset_action(sighand):
             """
             [v5.3~]
@@ -74053,7 +74057,7 @@ class Kernel:
             return offset_action
 
         @staticmethod
-        @Cache.cache_this_session(cache_None=False)
+        @Cache.cache_this_session(cache_None=False, per_inferior=True, until_new_objfile=True)
         def get_sizeof_action(sighands, offset_action):
             """
             case 1 (x64)
@@ -74109,53 +74113,39 @@ class Kernel:
                 pass
 
             # slow path
-            if is_32bit():
-                possible_sizes = [0x10, 0x14, 0x18]
-            else:
-                possible_sizes = [0x18, 0x20, 0x28]
+            # Every supported arch defines SA_RESTORER and none defines __ARCH_HAS_KA_RESTORER,
+            # so the ABI size is sa_handler, sa_flags, sa_restorer and a 64-bit sa_mask.
+            # The other sizes are only for the kernels that do not match it.
+            ptrsize = current_arch.ptrsize
+            candidates = [ptrsize * 3 + 8, ptrsize * 4 + 8, ptrsize * 2 + 8]
+            best = None
+            for sizeof_action in candidates:
+                score = sum(Kernel.Sighand.is_valid_action_array(sighand + offset_action, sizeof_action) for sighand in sighands)
+                if best is None or score > best[0]:
+                    best = (score, sizeof_action)
+            if best[0] == 0:
+                return None
+            return best[1]
 
-            # calc sizeof(action[0])
-            sizeof_action = 0xffff_ffff_ffff_ffff
-            for sighand in sighands:
-                current = sighand + offset_action
-                found_offset_case1 = []
-                found_offset_case2 = []
-
-                for i in range(64 * 4):
-                    offset = current_arch.ptrsize * i
-
-                    # check case 1 (sa_flags)
-                    v = read_int_from_memory(current + offset)
-                    # SA_RESTORER, SA_RESTART, SA_NODEFER, SA_RESTART|SA_RESTORER, SA_NODEFER|SA_RESTORER
-                    if v in [0x0400_0000, 0x1000_0000, 0x4000_0000, 0x1400_0000, 0x4400_0000]:
-                        found_offset_case1.append(offset)
-
-                    # check case 2 (sa_mask)
-                    v = read_int64_from_memory(current + offset)
-                    if bin(v)[2:].count("1") > 56: # heuristic threshold
-                        found_offset_case2.append(offset)
-
-                if len(found_offset_case1) >= 2:
-                    sizeof_action_tmp = min(y - x for x, y in zip(found_offset_case1[:-1], found_offset_case1[1:]))
-                    # it is minimum size, so fast return
-                    if sizeof_action_tmp in possible_sizes:
-                        return sizeof_action_tmp
-                    # not minimum size, so check next task
-                    sizeof_action = min(sizeof_action, sizeof_action_tmp)
-
-                if len(found_offset_case2) >= 2:
-                    sizeof_action_tmp = min(y - x for x, y in zip(found_offset_case2[:-1], found_offset_case2[1:]))
-                    # it is minimum size, so fast return
-                    if sizeof_action_tmp in possible_sizes:
-                        return sizeof_action_tmp
-                    # not minimum size, so check next task
-                    sizeof_action = min(sizeof_action, sizeof_action_tmp)
-
-            if sizeof_action != 0xffff_ffff_ffff_ffff:
-                for ps in possible_sizes:
-                    if sizeof_action % ps == 0:
-                        return sizeof_action
-            return None
+        @staticmethod
+        def is_valid_action_array(action, sizeof_action):
+            """Return whether all 64 elements read with the stride `sizeof_action` look like a k_sigaction."""
+            # SA_NOCLDSTOP, SA_NOCLDWAIT, SA_SIGINFO, SA_UNSUPPORTED, SA_EXPOSE_TAGBITS, SA_IMMUTABLE,
+            # SA_THIRTYTWO, SA_RESTORER, SA_ONSTACK, SA_INTERRUPT, SA_RESTART, SA_NODEFER, SA_RESETHAND
+            known_flags = 0x0000_0007 | 0x0000_0c00 | 0x0080_0000 | 0x0200_0000 | 0x0400_0000 | 0xf800_0000
+            try:
+                data = slice_unpack(read_memory(action, sizeof_action * 64), current_arch.ptrsize)
+            except gdb.MemoryError:
+                return False
+            stride = sizeof_action // current_arch.ptrsize
+            for i in range(64):
+                handler, flags = data[stride * i], data[stride * i + 1]
+                # SIG_DFL, SIG_IGN, or a user-land address (the 32-bit user-land may use the upper half)
+                if is_64bit() and handler not in (0, 1) and AddressUtil.is_msb_on(handler):
+                    return False
+                if flags & ~known_flags:
+                    return False
+            return True
 
     class Cred:
         """A collection of utility functions that resolve the layout of `struct cred` and parse it.
@@ -74239,7 +74229,7 @@ class Kernel:
         ]
 
         @staticmethod
-        @Cache.cache_this_session
+        @Cache.cache_this_session(per_inferior=True, until_new_objfile=True)
         def get_instance():
             """Return the instance shared by every command, so that the offsets are resolved at most once."""
             return Kernel.Cred()
@@ -74251,6 +74241,7 @@ class Kernel:
             self.offset_uid = None
             self.offset_securebits = None
             self.offset_cap = None
+            self.cap_is_u32_array = False
             self.cap_members = []
             self.cap_full = 0
             self.offset_user_ns = None
@@ -74270,27 +74261,25 @@ class Kernel:
                 self.meta.append(("err", "Could not find Linux kernel"))
                 return None
 
-            self.offset_uid = self.get_offset_uid(init_cred)
-            if self.offset_uid is None:
+            ret = self.get_offset_uid(init_cred)
+            if ret is None:
                 self.meta.append(("err", "Could not find cred->uid"))
                 return None
+            self.offset_uid, self.sizeof_usage = ret
             self.meta.append(("info", "offsetof(cred, uid): {:#x}".format(self.offset_uid)))
-
-            if kversion < "6.1.69" or ("6.2" <= kversion < "6.6.8"):
-                self.sizeof_usage = 4 # atomic_t
-            else:
-                self.sizeof_usage = current_arch.ptrsize # atomic_long_t
+            self.meta.append(("info", "sizeof(cred->usage): {:#x}".format(self.sizeof_usage)))
             if self.offset_uid != self.sizeof_usage:
                 self.meta.append(("info", "CONFIG_DEBUG_CREDENTIALS seems to be y"))
 
             self.offset_securebits = self.offset_uid + 4 * 8
             self.meta.append(("info", "offsetof(cred, securebits): {:#x}".format(self.offset_securebits)))
 
-            self.offset_cap = self.get_offset_cap(init_cred, self.offset_uid)
+            self.offset_cap, self.cap_is_u32_array = self.get_offset_cap(init_cred, self.offset_uid)
             if self.offset_cap is None:
                 self.meta.append(("warn", "Could not find cred->cap_inheritable"))
             else:
                 self.meta.append(("info", "offsetof(cred, cap_inheritable): {:#x}".format(self.offset_cap)))
+                self.meta.append(("info", "kernel_cap_t: {:s}".format("u32 cap[2]" if self.cap_is_u32_array else "u64 val")))
                 self.cap_members = ["cap_inheritable", "cap_permitted", "cap_effective", "cap_bset"]
                 if "4.3" <= kversion:
                     self.cap_members.append("cap_ambient")
@@ -74329,8 +74318,13 @@ class Kernel:
             level_map = {"info": command.quiet_info, "warn": command.quiet_warn, "err": command.quiet_err}
             return [(level_map[level], line) for level, line in self.meta]
 
-        @staticmethod
-        def read_cap(addr):
+        def read_cap(self, addr, is_u32_array=None):
+            """Read kernel_cap_t as a 64-bit mask. The u32 array (~v6.2) holds capability 0-31 in cap[0]
+            whatever the endian is, so reading it as one u64 swaps the halves on a big-endian kernel."""
+            if is_u32_array is None:
+                is_u32_array = self.cap_is_u32_array
+            if is_u32_array:
+                return read_int32_from_memory(addr) | read_int32_from_memory(addr + 4) << 32
             return read_int64_from_memory(addr)
 
         @Cache.cache_this_session(cache_None=False)
@@ -74371,7 +74365,13 @@ class Kernel:
             """
             # fast path
             try:
-                return GefUtil.parse_and_eval_unsigned("&((struct cred*)0).uid")
+                offset_uid = GefUtil.parse_and_eval_unsigned("&((struct cred*)0).uid")
+                # GDB may resolve atomic_long_t to an incomplete type whose size is 0
+                sizeof_usage = GefUtil.parse_and_eval_unsigned("sizeof(((struct cred*)0)->usage)")
+                if sizeof_usage in (4, 8):
+                    return offset_uid, sizeof_usage
+                if offset_uid in (4, current_arch.ptrsize):
+                    return offset_uid, offset_uid
             except gdb.error:
                 pass
 
@@ -74379,23 +74379,27 @@ class Kernel:
             kversion = Kernel.kernel_version()
             if kversion is None:
                 return None
-            if kversion < "6.1.69":
-                offset_uid = 4
-            elif kversion < "6.2":
-                offset_uid = current_arch.ptrsize
-            elif kversion < "6.6.8":
-                offset_uid = 4
+            if kversion < "6.1.69" or ("6.2" <= kversion < "6.6.8"):
+                sizes_usage = [4, current_arch.ptrsize] # atomic_t
             else:
-                offset_uid = current_arch.ptrsize
+                sizes_usage = [current_arch.ptrsize, 4] # atomic_long_t
+            sizes_usage = list(dict.fromkeys(sizes_usage))
 
-            if kversion < "6.6.8":
+            # CONFIG_DEBUG_CREDENTIALS=y (~v6.6.7) is identified by the magic just before uid.
+            # Each member is aligned by itself, so `put_addr` may follow a padding.
+            CRED_MAGIC = 0x43736564
+            for sizeof_usage in sizes_usage:
+                offset_put_addr = align_to_ptrsize(sizeof_usage + 4) # usage, subscribers
+                offset_magic = offset_put_addr + current_arch.ptrsize
+                if read_int32_from_memory(init_cred + offset_magic) == CRED_MAGIC:
+                    return offset_magic + 4, sizeof_usage
+
+            # init_cred has uid = gid = ... = fsgid = 0
+            for sizeof_usage in sizes_usage:
                 uid_gid_size = 4 * 8 # uid_t:4byte. len([uid,gid,suid,sgid,euid,egid,fsuid,fsgid]) == 8
-                ret = read_memory(init_cred + offset_uid, uid_gid_size)
-                if ret == b"\0" * uid_gid_size:
-                    pass
-                else:
-                    offset_uid += 4 + current_arch.ptrsize + 4
-            return offset_uid
+                if read_memory(init_cred + sizeof_usage, uid_gid_size) == b"\0" * uid_gid_size:
+                    return sizeof_usage, sizeof_usage
+            return None
 
         @Cache.cache_this_session(cache_None=False)
         def get_offset_user_ns(self, init_cred, offset_uid):
@@ -74558,12 +74562,31 @@ class Kernel:
                 offset_nr_extents = 60
                 offset_extents = [0]
 
-            def is_init_user_ns(v):
+            """
+            [~v3.4]
+            struct user_namespace {
+                struct kref kref;
+                struct hlist_head uidhash_table[UIDHASH_SZ]; // 8 if CONFIG_BASE_SMALL=y else 128
+                struct user_struct *creator; // init_user_ns.creator == &root_user == init_cred.user
+                struct work_struct destroyer;
+            };
+            """
+            init_user_ns = Ksym.get_addr("init_user_ns")
+
+            def is_init_user_ns(v, offset_user_ns):
+                if init_user_ns is not None:
+                    return v == init_user_ns
+                if kversion < "3.5":
+                    # uid_map does not exist yet. The refcount is not a constant, so check the backlink instead
+                    user = read_int_from_memory(init_cred + offset_user_ns - current_arch.ptrsize)
+                    if not is_valid_addr(user):
+                        return False
+                    for n in (128, 8):
+                        if read_int_from_memory(v + align_to_ptrsize(4) + current_arch.ptrsize * n) == user:
+                            return True
+                    return False
                 if read_int_from_memory(v + offset_nr_extents) != 1:
                     return False
-                if kversion < "3.8":
-                    # uid_map does not exist yet, so nr_extents is really kref.refcount
-                    return True
                 # init_user_ns.uid_map.extent[0] is {.first = 0, .lower_first = 0, .count = ~0U}
                 for offset_extent in offset_extents:
                     if read_int32_from_memory(v + offset_extent) != 0:
@@ -74582,7 +74605,7 @@ class Kernel:
                 if not is_valid_addr(v):
                     continue
                 try:
-                    if is_init_user_ns(v):
+                    if is_init_user_ns(v, offset_user_ns):
                         return offset_user_ns
                 except gdb.MemoryError:
                     continue
@@ -74590,50 +74613,78 @@ class Kernel:
 
         @Cache.cache_this_session(cache_None=False)
         def get_offset_cap(self, init_cred, offset_uid):
+            """Return (offsetof(cred, cap_inheritable), whether kernel_cap_t is `u32 cap[2]`).
+
+            typedef struct kernel_cap_struct { // ~v6.2
+                __u32 cap[_KERNEL_CAPABILITY_U32S]; // 2
+            } kernel_cap_t;
+
+            typedef struct { // v6.3~
+                u64 val;
+            } kernel_cap_t;
+            """
+            # init_cred has cap_inheritable=CAP_EMPTY_SET and cap_permitted=cap_effective=cap_bset=CAP_FULL_SET.
+            # On a little-endian kernel both layouts read the same value, so the version decides the order.
+            if "6.3" <= Kernel.kernel_version():
+                layouts = [False, True]
+            else:
+                layouts = [True, False]
+            base = offset_uid + 4 * 8
+            offsets = [base + 4 * i for i in range(0x8)]
+
             # fast path
             try:
-                return GefUtil.parse_and_eval_unsigned("&((struct cred*)0).cap_inheritable")
+                offsets = [GefUtil.parse_and_eval_unsigned("&((struct cred*)0).cap_inheritable")]
+                for member, is_u32_array in [("val", False), ("cap", True)]:
+                    try:
+                        GefUtil.parse_and_eval_unsigned("&((kernel_cap_t*)0).{:s}".format(member))
+                        return offsets[0], is_u32_array
+                    except gdb.error:
+                        pass
+                # kernel_cap_t may be resolved to an incomplete type, so the layout is checked in the slow path
             except gdb.error:
                 pass
 
             # slow path
-            # init_cred has cap_inheritable=CAP_EMPTY_SET and cap_permitted=cap_effective=cap_bset=CAP_FULL_SET
-            base = offset_uid + 4 * 8
-            for i in range(0x8):
-                offset_cap = base + 4 * i
-                try:
-                    if self.read_cap(init_cred + offset_cap) != 0: # cap_inheritable
+            for is_u32_array in layouts:
+                for offset_cap in offsets:
+                    try:
+                        if self.read_cap(init_cred + offset_cap, is_u32_array) != 0: # cap_inheritable
+                            continue
+                        permitted = self.read_cap(init_cred + offset_cap + 8, is_u32_array)
+                        effective = self.read_cap(init_cred + offset_cap + 8 * 2, is_u32_array)
+                        bset = self.read_cap(init_cred + offset_cap + 8 * 3, is_u32_array)
+                    except gdb.MemoryError:
+                        return None, layouts[0]
+                    # CAP_FULL_SET is all ones (~v4.2) or (1 << (CAP_LAST_CAP + 1)) - 1 (v4.3~)
+                    if permitted != effective or permitted != bset:
                         continue
-                    permitted = self.read_cap(init_cred + offset_cap + 8)
-                    effective = self.read_cap(init_cred + offset_cap + 8 * 2)
-                    bset = self.read_cap(init_cred + offset_cap + 8 * 3)
-                except gdb.MemoryError:
-                    return None
-                # CAP_FULL_SET is all ones (~v4.2) or (1 << (CAP_LAST_CAP + 1)) - 1 (v4.3~)
-                if permitted != effective or permitted != bset:
-                    continue
-                if permitted & (permitted + 1):
-                    continue
-                if permitted.bit_length() < 30:
-                    continue
-                return offset_cap
+                    if permitted & (permitted + 1):
+                        continue
+                    if permitted.bit_length() < 30:
+                        continue
+                    return offset_cap, is_u32_array
 
             # fallback; cap_inheritable follows securebits
+            if len(offsets) == 1:
+                return offsets[0], layouts[0]
             offset_cap = base + 4
-            if "6.3" <= Kernel.kernel_version() and not is_x86_32():
+            if not layouts[0] and not is_x86_32():
                 offset_cap = align(offset_cap, 8)
-            return offset_cap
+            return offset_cap, layouts[0]
 
         def get_tail_offsets(self, offset_user_ns):
             """Return (offset_security, has_keys) by rebuilding the members between cap_ambient and
             user_ns for each CONFIG_KEYS/CONFIG_SECURITY combination. Each combination places
             `user_ns` at a different offset, so the one that matches tells which config is in use."""
             ptrsize = current_arch.ptrsize
+            # ~v3.7 has thread_keyring, request_key_auth and tgcred; v3.8~ has 4 keyrings
+            nr_keys = 3 if Kernel.kernel_version() < "3.8" else 4
             for has_keys in (True, False):
                 for has_security in (True, False):
                     offset = self.offset_cap + 8 * len(self.cap_members)
                     if has_keys:
-                        offset = align_to_ptrsize(offset + 1) + ptrsize * 4 # jit_keyring + 4 keyrings
+                        offset = align_to_ptrsize(offset + 1) + ptrsize * nr_keys # jit_keyring + keyrings
                     offset = align_to_ptrsize(offset)
                     offset_security = offset if has_security else None
                     if has_security:
@@ -74787,7 +74838,7 @@ class Kernel:
         VmArea = collections.namedtuple("VmArea", "start end flags file")
 
         @staticmethod
-        @Cache.cache_this_session
+        @Cache.cache_this_session(per_inferior=True, until_new_objfile=True)
         def get_instance():
             """Return the instance shared by every command in the current session."""
             return Kernel.MM()
@@ -75010,7 +75061,7 @@ class Kernel:
         }
 
         @staticmethod
-        @Cache.cache_this_session
+        @Cache.cache_this_session(per_inferior=True, until_new_objfile=True)
         def get_instance():
             """Return the instance shared by every command in the current session."""
             return Kernel.Seccomp()
@@ -75272,7 +75323,7 @@ class Kernel:
             return None
 
         @staticmethod
-        @Cache.cache_this_session(cache_None=False)
+        @Cache.cache_this_session(cache_None=False, per_inferior=True, until_new_objfile=True)
         def get_offset_prog(offset_prev):
             # fast path
             try:
@@ -75313,7 +75364,7 @@ class Kernel:
             return None
 
         @staticmethod
-        @Cache.cache_this_session(cache_None=False)
+        @Cache.cache_this_session(cache_None=False, per_inferior=True, until_new_objfile=True)
         def get_offset_orig_prog(offset_bpf_func):
             # fast path
             try:
@@ -76556,7 +76607,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
         task_list += [x for x in reversed(backward) if x not in seen]
         return [x for x in task_list if is_valid_addr(x)]
 
-    @Cache.cache_this_session(cache_None=False)
+    @Cache.cache_this_session(cache_None=False, per_inferior=True, until_new_objfile=True)
     def get_offset_tasks(self, init_task):
         # fast path
         try:
@@ -76573,7 +76624,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
                 return offset_tasks
         return None
 
-    @Cache.cache_this_session(cache_None=False)
+    @Cache.cache_this_session(cache_None=False, per_inferior=True, until_new_objfile=True)
     def get_offset_mm(self, offset_tasks):
         """
         struct task_struct {
@@ -76621,7 +76672,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
             offset_mm = offset_tasks + 10 * current_arch.ptrsize
         return offset_mm
 
-    @Cache.cache_this_session(cache_None=False)
+    @Cache.cache_this_session(cache_None=False, per_inferior=True, until_new_objfile=True)
     def get_offset_comm(self):
         task_addrs = self.task_addrs_temp
 
@@ -76658,7 +76709,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
                 return offset_comm
         return None
 
-    @Cache.cache_this_session(cache_None=False)
+    @Cache.cache_this_session(cache_None=False, per_inferior=True, until_new_objfile=True)
     def get_offset_cred(self, offset_comm):
         """
         struct task_struct {
@@ -76691,7 +76742,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
                     return offset_cred
         return None
 
-    @Cache.cache_this_session(cache_None=False)
+    @Cache.cache_this_session(cache_None=False, per_inferior=True, until_new_objfile=True)
     def get_offset_stack(self):
         """
         struct task_struct {
@@ -76745,135 +76796,156 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
             return offset_stack
         return None
 
-    @Cache.cache_this_session(cache_None=False)
+    @Cache.cache_this_session(cache_None=False, per_inferior=True, until_new_objfile=True)
     def get_offset_ptregs(self, offset_stack):
+        """Return (kstack_size, offsetof(kstack, saved ptregs)).
+
+        The size of the kernel stack and the gap between the saved ptregs and the stack top depend on the
+        arch, the config and the kernel version, so each candidate pair is checked against the ptregs of the
+        user-land tasks, which always hold a user-mode context. The pair that most tasks agree on is used.
+
+        THREAD_SIZE (alignment of the kstack):
+            x86_32: 8KiB
+            x86_64: 8KiB (~v3.14), 16KiB (v3.15~), 32KiB (CONFIG_KASAN=y)
+            ARM32: 8KiB, 16KiB (CONFIG_KASAN=y)
+            ARM64: max(16KiB (32KiB if CONFIG_KASAN=y), PAGE_SIZE)
+
+        The distance between the stack top and the saved ptregs:
+            x86_32: sizeof(pt_regs) + 8 (or 16 if CONFIG_VM86=y)
+            x86_64: sizeof(pt_regs) (+ 16 if CONFIG_X86_FRED=y)
+            ARM32: sizeof(pt_regs) + 8
+            ARM64: sizeof(pt_regs) (+ 16 for ~v4.13)
+                ~v4.8:       regs[31], sp, pc, pstate, orig_x0, syscallno
+                v4.9~v4.13:  ..., orig_x0, syscallno, orig_addr_limit, unused
+                v4.14~v5.9:  ..., orig_x0, syscallno, orig_addr_limit, unused/pmr_save, stackframe[2]
+                v5.10~v6.17: ..., orig_x0, syscallno, orig_addr_limit/sdei_ttbr1, pmr_save, stackframe[2],
+                             lockdep_hardirqs, exit_rcu
+                v6.18~:      ..., orig_x0, syscallno/pmr, sdei_ttbr1, frame_record_meta stackframe
+        """
         task_addrs = self.task_addrs_temp
+        ptrsize = current_arch.ptrsize
 
-        # calc kstack address pattern
-        kstacks_raw = []
+        kstacks = []
+        user_kstacks = []
         for task in task_addrs:
-            kstack = read_int_from_memory(task + offset_stack)
-            if kstack == 0:
+            kstack = read_int_from_memory(task + offset_stack, safe=True)
+            if not kstack or not is_valid_addr(kstack):
                 continue
-            kstacks_raw.append(kstack)
+            kstacks.append(kstack)
+            if task != task_addrs[0] and read_int_from_memory(task + self.offset_mm, safe=True):
+                user_kstacks.append(kstack)
+        user_kstacks = user_kstacks[:0x10]
+        if not user_kstacks:
+            return None
 
-        # calc kstack size
-        kstacks = sorted({x & 0xffff for x in kstacks_raw}) # uniq and sort
-        diffs = []
-        for i in range(len(kstacks) - 1):
-            diff = kstacks[i + 1] - kstacks[i]
-            diffs.append(diff)
-        if len(diffs) == 0:
-            kstack_size = get_pagesize() * 2
-        else:
-            kstack_size = min(diffs)
+        # candidates of the kstack size
+        kstack_sizes = []
+        try:
+            kstack_sizes.append(GefUtil.parse_and_eval_unsigned("sizeof(union thread_union)"))
+        except gdb.error:
+            pass
+        kstack_sizes += [0x2000, 0x4000, 0x8000, 0x10000]
+        kstack_sizes = [x for x in dict.fromkeys(kstack_sizes) if x and all(k % x == 0 for k in kstacks)]
 
-        # check
-        while kstack_size >= 0x2000:
-            for kstack in kstacks_raw:
-                if not is_valid_addr(kstack + kstack_size - current_arch.ptrsize):
-                    kstack_size //= 2
-                    break # for, then retry while
-            else:
-                break # while
-
+        # candidates of the distance between the kstack top and the saved ptregs
         if is_x86_64():
-            """
-            struct pt_regs {
-                unsigned long r15;
-                unsigned long r14;
-                unsigned long r13;
-                unsigned long r12;
-                unsigned long rbp;
-                unsigned long rbx;
-                unsigned long r11;
-                unsigned long r10;
-                unsigned long r9;
-                unsigned long r8;
-                unsigned long rax;
-                unsigned long rcx;
-                unsigned long rdx;
-                unsigned long rsi;
-                unsigned long rdi;
-                unsigned long orig_rax;
-                unsigned long rip;
-                unsigned long cs;
-                unsigned long eflags;
-                unsigned long rsp;
-                unsigned long ss;
-            };
-            """
-            ptregs_size = current_arch.ptrsize * 21
-
-            # Sometimes register values are stored a short distance away from the bottom of the kstack.
-            # It is unclear whether this depends on the kernel version.
-            # In 6.10.11 it was at offset 0, and in 6.10.0-rc2 it was at offset 16.
-            # For this reason, dynamic detection is used.
-            # TODO: Dynamic detection may also be necessary for x86, ARM, and ARM64.
-            for i in range(8):
-                init_process_kstack = read_int_from_memory(task_addrs[1] + offset_stack)
-                init_process_kstack_end = init_process_kstack + kstack_size
-                v = read_int_from_memory(init_process_kstack_end - current_arch.ptrsize * (i + 1))
-                if v == 0x2b: # ss segment default value
-                    bottom_offset = current_arch.ptrsize * i
-                    break
-            else:
-                bottom_offset = 0
+            ptregs_size = ptrsize * 21
+            distances = [ptregs_size + ptrsize * i for i in range(8)]
         elif is_x86_32():
-            """
-            struct pt_regs {
-                long ebx;
-                long ecx;
-                long edx;
-                long esi;
-                long edi;
-                long ebp;
-                long eax;
-                int xds;
-                int xes;
-                int xfs;
-                int xgs;
-                long orig_eax;
-                long eip;
-                int xcs;
-                long eflags;
-                long esp;
-                int xss;
-            };
-            """
-            ptregs_size = current_arch.ptrsize * 17
-            bottom_offset = current_arch.ptrsize * 2 # ?
+            ptregs_size = ptrsize * 17
+            distances = [ptregs_size + ptrsize * 2, ptregs_size + ptrsize * 4]
         elif is_arm64():
-            """
-            struct pt_regs {
-                u64 regs[31];
-                u64 sp;
-                u64 pc;
-                u64 pstate;
-                u64 orig_x0;
-                u64 syscallno;
-                u64 orig_addr_limit;
-                u64 pmr_save;
-                u64 stackframe[2];
-                u64 lockdep_hardirqs;
-                u64 exit_rcu;
-            };
-            """
-            ptregs_size = current_arch.ptrsize * 35
-            bottom_offset = current_arch.ptrsize * 7
+            kversion = Kernel.kernel_version()
+            gap = 16 if kversion < "4.14" else 0
+            distances = []
+            try:
+                distances.append(GefUtil.parse_and_eval_unsigned("sizeof(struct pt_regs)") + gap)
+            except gdb.error:
+                pass
+            if kversion < "4.9":
+                distances.append(ptrsize * 36 + gap)
+            elif "5.10" <= kversion < "6.18":
+                distances.append(ptrsize * 42)
+            distances += [ptrsize * 40, ptrsize * 42, ptrsize * 38]
+            distances = list(dict.fromkeys(distances))
         elif is_arm32():
-            """
-            struct pt_regs {
-                unsigned long uregs[18];
-            };
-            """
-            ptregs_size = current_arch.ptrsize * 18
-            bottom_offset = current_arch.ptrsize * 2 # ?
+            ptregs_size = ptrsize * 18
+            distances = [ptregs_size + ptrsize * 2]
         else:
             return None
 
-        offset_ptregs = kstack_size - ptregs_size - bottom_offset
-        return kstack_size, offset_ptregs
+        best = None
+        for kstack_size in kstack_sizes:
+            for distance in distances:
+                offset_ptregs = kstack_size - distance
+                score = 0
+                for kstack in user_kstacks:
+                    try:
+                        regs = self.get_regs(kstack, offset_ptregs)
+                    except gdb.MemoryError:
+                        continue
+                    if regs and self.is_user_regs(regs):
+                        score += 1
+                if best is None or score > best[0]:
+                    best = (score, kstack_size, offset_ptregs)
+
+        # the candidates that only a few tasks agree on are garbage
+        if best is None or best[0] * 2 < len(user_kstacks):
+            return None
+        return best[1:]
+
+    @staticmethod
+    def get_kstack_size():
+        """Return the kernel stack size that `ktask` verified with the saved ptregs, or None.
+        `ktask` must be initialized beforehand."""
+        task_command = __gef_command_instances__.get("ktask")
+        if getattr(task_command, "offset_stack", None) is None or getattr(task_command, "init_task", None) is None:
+            return None
+        if "task_addrs_temp" in task_command.__dict__:
+            return None
+        task_command.task_addrs_temp = tuple(KernelTaskCommand.get_task_list(task_command.init_task, task_command.offset_tasks))
+        try:
+            ret = task_command.get_offset_ptregs(task_command.offset_stack)
+        except (gdb.MemoryError, OverflowError):
+            ret = None
+        finally:
+            del task_command.task_addrs_temp
+        if ret is None:
+            return None
+        return ret[0]
+
+    @staticmethod
+    def is_user_regs(regs):
+        """Return whether `regs` looks like a context saved on the kernel entry from the user-land."""
+        if is_x86_64():
+            if regs["ss"] & 0xffff != 0x2b: # __USER_DS
+                return False
+            if regs["cs"] & 0xffff not in (0x33, 0x23): # __USER_CS, __USER32_CS
+                return False
+            return regs["eflags"] & 0x2 and regs["eflags"] >> 22 == 0
+        elif is_x86_32():
+            if regs["ss"] & 0xffff != 0x7b: # __USER_DS
+                return False
+            if regs["cs"] & 0xffff != 0x73: # __USER_CS
+                return False
+            return regs["eflags"] & 0x2 and regs["eflags"] >> 22 == 0
+        elif is_arm64():
+            pstate = regs["pstate"]
+            if pstate & 0x10:
+                # AArch32 user mode
+                if pstate & 0x1f != 0x10 or pstate >> 32:
+                    return False
+            else:
+                # AArch64 EL0t; allow only N,Z,C,V,TCO,DIT,SS,IL,SSBS,BTYPE,D,A,I,F and the bits above 32
+                if pstate & ~0x1f_f330_1fc0:
+                    return False
+            # an unused (zero-filled) area also has pstate == 0
+            if regs["sp"] == 0 or regs["pc"] == 0:
+                return False
+            return not AddressUtil.is_msb_on(regs["sp"]) and not AddressUtil.is_msb_on(regs["pc"])
+        elif is_arm32():
+            return regs["cpsr"] & 0x1f == 0x10 # USR mode
+        return False
 
     def get_regs(self, kstack, offset_ptregs):
         if is_x86_64():
@@ -76926,7 +76998,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
             regs[name] = value
         return regs
 
-    @Cache.cache_this_session(cache_None=False)
+    @Cache.cache_this_session(cache_None=False, per_inferior=True, until_new_objfile=True)
     def get_offset_pid(self):
         """
         struct task_struct {
@@ -76984,7 +77056,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
             return offset_pid
         return None
 
-    @Cache.cache_this_session(cache_None=False)
+    @Cache.cache_this_session(cache_None=False, per_inferior=True, until_new_objfile=True)
     def get_offset_canary(self, offset_pid):
         """
         struct task_struct {
@@ -77035,7 +77107,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
             return offset_stack_canary
         return None
 
-    @Cache.cache_this_session(cache_None=False)
+    @Cache.cache_this_session(cache_None=False, per_inferior=True, until_new_objfile=True)
     def get_offset_group_leader(self, offset_pid, offset_kcanary):
         """
         struct task_struct {
@@ -77067,7 +77139,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
         offset_group_leader = offset_real_parent + current_arch.ptrsize * (1 + 1 + 2 + 2)
         return offset_group_leader
 
-    @Cache.cache_this_session(cache_None=False)
+    @Cache.cache_this_session(cache_None=False, per_inferior=True, until_new_objfile=True)
     def get_offset_thread_group(self, offset_group_leader):
         """
         struct task_struct {
@@ -77098,7 +77170,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
             offset_thread_group = offset_group_leader + current_arch.ptrsize * (1 + 2 + 2 + (3 * 3))
         return offset_thread_group
 
-    @Cache.cache_this_session(cache_None=False)
+    @Cache.cache_this_session(cache_None=False, per_inferior=True, until_new_objfile=True)
     def get_offset_signal(self, offset_nsproxy):
         """
         struct task_struct {
@@ -77117,7 +77189,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
         # slow path
         return offset_nsproxy + current_arch.ptrsize
 
-    @Cache.cache_this_session(cache_None=False)
+    @Cache.cache_this_session(cache_None=False, per_inferior=True, until_new_objfile=True)
     def get_offset_files(self, offset_comm):
         """
         struct task_struct {
@@ -77196,7 +77268,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
             lwp_task_addrs.extend(lwps)
         return lwp_task_addrs
 
-    @Cache.cache_this_session(cache_None=False)
+    @Cache.cache_this_session(cache_None=False, per_inferior=True, until_new_objfile=True)
     def get_offset_nsproxy(self, offset_files):
         """
         struct task_struct {
@@ -77237,7 +77309,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
             offset_nsproxy += current_arch.ptrsize * 2
         return offset_nsproxy
 
-    @Cache.cache_this_session(cache_None=False)
+    @Cache.cache_this_session(cache_None=False, per_inferior=True, until_new_objfile=True)
     def get_offset_sighand(self, offset_files):
         """
         struct task_struct {
@@ -77344,6 +77416,60 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
         self.offset_d_inode = self.kpath.offset_d_inode
         return True
 
+    def iter_open_files(self, task):
+        """Yield (fd, struct file) of each open file of `task`."""
+        files = read_int_from_memory(task + self.offset_files)
+        if not is_valid_addr(files):
+            return
+        fdt = read_int_from_memory(files + self.offset_fdt)
+        if not is_valid_addr(fdt):
+            return
+        max_fds = read_int32_from_memory(fdt)
+        array = read_int_from_memory(fdt + current_arch.ptrsize)
+        for fd_number in range(max_fds):
+            file = read_int_from_memory(array + current_arch.ptrsize * fd_number)
+            if file == 0:
+                continue
+            yield fd_number, file
+        return
+
+    def initialize_file_path_offsets(self, task_addrs, echo_meta):
+        # The first open files are the samples. The first VMA of a process is not always file-backed,
+        # and the VMAs are unrelated to the file descriptors.
+        kpath = Kernel.Path.get_instance()
+        if kpath.initialized and kpath.offset_file_dentry is not None:
+            if echo_meta:
+                self.meta.extend(kpath.export_meta(self))
+            self.kpath = kpath
+            self.offset_dentry = kpath.offset_file_dentry
+            self.offset_d_inode = kpath.offset_d_inode
+            return True
+
+        tried = set()
+        for task in task_addrs:
+            try:
+                for _, file in self.iter_open_files(task):
+                    if file in tried or not is_valid_addr(file) or file & (current_arch.ptrsize - 1):
+                        continue
+                    tried.add(file)
+                    if kpath.initialize(file=file) and kpath.offset_file_dentry is not None:
+                        self.meta.extend(kpath.export_meta(self))
+                        self.meta.append((self.quiet_info, "file (sample): {:#x}".format(file)))
+                        self.kpath = kpath
+                        self.offset_dentry = kpath.offset_file_dentry
+                        self.offset_d_inode = kpath.offset_d_inode
+                        return True
+                    if len(tried) >= 0x10:
+                        break
+            except (gdb.MemoryError, OverflowError, RuntimeError):
+                pass
+            if len(tried) >= 0x10:
+                break
+
+        self.meta.extend(kpath.export_meta(self))
+        self.meta.append((self.quiet_err, "Could not find a valid open file"))
+        return None
+
     def initialize_files_offset(self):
         self.offset_files = self.get_offset_files(self.offset_comm)
         if self.offset_files is None:
@@ -77363,8 +77489,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
 
     def initialize_nsproxy_offsets(self):
         if self.kcred.offset_user_ns is None:
-            self.meta.append((self.quiet_err, "Could not find cred->user_ns"))
-            return None
+            self.meta.append((self.quiet_warn, "Could not find cred->user_ns; real_cred->user_ns is shown as unknown"))
 
         self.offset_nsproxy = self.get_offset_nsproxy(self.offset_files)
         if self.offset_nsproxy is None:
@@ -77557,9 +77682,9 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
         # dentry->d_parent
         # dentry->d_inode
         # inode->i_ino
-        if enabled["print_maps"] or enabled["print_fd"]:
+        if enabled["print_maps"]:
             if not self.initialize_vma_offsets(task_addrs):
-                self.disable_option(command_args, enabled, "print_maps", "print_fd")
+                self.disable_option(command_args, enabled, "print_maps")
 
         # task_struct->files
         if enabled["print_fd"] or enabled["print_sighand"] or enabled["print_namespace"] or \
@@ -77572,6 +77697,17 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
         # files_struct->fdt
         if enabled["print_fd"]:
             if not self.initialize_fdt_offset():
+                self.disable_option(command_args, enabled, "print_fd")
+
+        # file->f_path.mnt
+        # file->f_path.dentry
+        # dentry->d_iname
+        # dentry->d_parent
+        # dentry->d_inode
+        # inode->i_ino
+        if enabled["print_fd"]:
+            # the meta is already recorded if --print-maps resolved them
+            if not self.initialize_file_path_offsets(task_addrs, not enabled["print_maps"]):
                 self.disable_option(command_args, enabled, "print_fd")
 
         # cred->user_ns
@@ -77655,15 +77791,57 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
         self.out.append(GefUtil.make_legend(fmt.format(*legend)))
         return
 
+    @staticmethod
+    def get_nsproxy_members():
+        """Return [(name, offset), ...] of struct nsproxy.
+
+        struct nsproxy {
+            atomic_t count; // refcount_t (v6.1~)
+            struct uts_namespace *uts_ns;
+            struct ipc_namespace *ipc_ns;
+            struct mnt_namespace *mnt_ns;
+            struct pid_namespace *pid_ns_for_children; // pid_ns (~v3.10)
+            struct net *net_ns;
+            struct time_namespace *time_ns; // v5.6~
+            struct time_namespace *time_ns_for_children; // v5.6~
+            struct cgroup_namespace *cgroup_ns; // v4.6~
+        };
+        """
+        names = [
+            "count", "uts_ns", "ipc_ns", "mnt_ns", "pid_ns_for_children", "net_ns",
+            "time_ns", "time_ns_for_children", "cgroup_ns",
+        ]
+
+        # fast path
+        members = []
+        try:
+            gdb.parse_and_eval("(struct nsproxy*)0")
+            for name in names:
+                for field in ([name, "pid_ns"] if name == "pid_ns_for_children" else [name]):
+                    try:
+                        members.append((name, GefUtil.parse_and_eval_unsigned("&((struct nsproxy*)0).{:s}".format(field))))
+                        break
+                    except gdb.error:
+                        pass
+            if members and members[0][0] == "count":
+                return members
+        except gdb.error:
+            pass
+
+        # slow path
+        # `count` is 4 bytes, and the pointers follow it with the alignment
+        kversion = Kernel.kernel_version()
+        names = names[:6]
+        if "5.6" <= kversion:
+            names += ["time_ns", "time_ns_for_children"]
+        if "4.6" <= kversion:
+            names += ["cgroup_ns"]
+        return [(name, current_arch.ptrsize * i) for i, name in enumerate(names)]
+
     def get_namespace_context(self, task_addrs):
         if not self.args.print_namespace:
             return None
-        kversion = Kernel.kernel_version()
-        members = ["count", "uts_ns", "ipc_ns", "mnt_ns", "pid_ns_for_children", "net_ns"]
-        if "5.6" <= kversion:
-            members += ["time_ns", "time_ns_for_children"]
-        if "4.6" <= kversion:
-            members += ["cgroup_ns"]
+        members = KernelTaskCommand.get_nsproxy_members()
         if not task_addrs:
             return members, None, None
         init_cred = read_int_from_memory(task_addrs[0] + self.offset_cred)
@@ -77706,16 +77884,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
         legend = ["fd", "struct file", "struct dentry", "struct inode", "path"]
         self.out.append(GefUtil.make_legend(fmt.format(*legend)))
 
-        files = read_int_from_memory(task + self.offset_files)
-        fdt = read_int_from_memory(files + self.offset_fdt)
-        if not is_valid_addr(fdt):
-            return
-        max_fds = read_int32_from_memory(fdt)
-        array = read_int_from_memory(fdt + current_arch.ptrsize)
-        for fd_number in range(max_fds):
-            file = read_int_from_memory(array + current_arch.ptrsize * fd_number)
-            if file == 0:
-                continue
+        for fd_number, file in self.iter_open_files(task):
             dentry = read_int_from_memory(file + self.offset_dentry)
             inode = read_int_from_memory(dentry + self.offset_d_inode)
             filepath = self.kpath.get_file_path(file)
@@ -77758,17 +77927,21 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
         members, init_user_ns, init_nsproxy = namespace_context
         real_cred = read_int_from_memory(task + self.offset_cred - current_arch.ptrsize)
         user_ns = self.kcred.get_user_ns(real_cred)
-        self.out.append("{:30s} {:#018x} {:8s}".format(
-            "real_cred->user_ns", user_ns, str(user_ns == init_user_ns),
-        ).rstrip())
+        if user_ns is None:
+            self.out.append("{:30s} {:18s} {:8s}".format("real_cred->user_ns", "unknown", "-").rstrip())
+        else:
+            self.out.append("{:30s} {:#018x} {:8s}".format(
+                "real_cred->user_ns", user_ns, str(user_ns == init_user_ns),
+            ).rstrip())
 
         nsproxy = read_int_from_memory(task + self.offset_nsproxy)
-        for i, name in enumerate(members):
-            value = read_int_from_memory(nsproxy + current_arch.ptrsize * i)
-            if i == 0:
+        for name, offset in members:
+            if name == "count":
+                value = read_int32_from_memory(nsproxy + offset)
                 is_init_ns = "-"
             else:
-                init_value = read_int_from_memory(init_nsproxy + current_arch.ptrsize * i)
+                value = read_int_from_memory(nsproxy + offset)
+                init_value = read_int_from_memory(init_nsproxy + offset)
                 is_init_ns = str(value == init_value)
             self.out.append("{:30s} {:#018x} {:8s}".format(
                 "nsproxy->" + name, value, is_init_ns,
@@ -78118,7 +78291,7 @@ class KernelCredCommand(GenericCommand, BufferingOutput):
     ]
     _note_ = "\n".join(_note_)
 
-    @Cache.cache_this_session(cache_None=False)
+    @Cache.cache_this_session(cache_None=False, per_inferior=True, until_new_objfile=True)
     def initialize(self, print_thread):
         self.meta = []
 
@@ -164990,15 +165163,17 @@ class KernelVMMapCommand(GenericCommand, BufferingOutput):
             kstacks.append(kstack & 0xffff)
 
         # calc kstack size
-        kstacks = sorted(set(kstacks))
-        diffs = []
-        for i in range(len(kstacks) - 1):
-            diff = kstacks[i + 1] - kstacks[i]
-            diffs.append(diff)
-        if len(diffs) == 0:
-            kstack_size = get_pagesize() *2
-        else:
-            kstack_size = min(diffs)
+        kstack_size = KernelTaskCommand.get_kstack_size()
+        if kstack_size is None:
+            kstacks = sorted(set(kstacks))
+            diffs = []
+            for i in range(len(kstacks) - 1):
+                diff = kstacks[i + 1] - kstacks[i]
+                diffs.append(diff)
+            if len(diffs) == 0:
+                kstack_size = get_pagesize() *2
+            else:
+                kstack_size = min(diffs)
 
         # kstack
         for line in res.splitlines():
@@ -174900,7 +175075,10 @@ class KernelLsmCommand(GenericCommand, BufferingOutput):
             offset = fallback
         if offset is None or not objects:
             return None
-        if not all(self.is_blob_value(read_int_from_memory(x + offset, safe=True)) for x in objects):
+        # an object freed while listing is unreadable, so it is not an evidence either way
+        values = [read_int_from_memory(x + offset, safe=True) for x in objects]
+        values = [x for x in values if x is not None]
+        if not values or not all(self.is_blob_value(x) for x in values):
             return None
         return offset
 
