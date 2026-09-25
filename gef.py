@@ -17917,6 +17917,26 @@ class LinuxSignal:
     for number in range(63, 49, -1):
         NAMES[number] = "SIGRTMAX-{:d}".format(64 - number)
 
+    # the kernel UAPI numbers the RT signals from SIGRTMIN = 32
+    KERNEL_NAMES = {number: name for number, name in NAMES.items() if number < 32}
+    KERNEL_NAMES[32] = "SIGRTMIN"
+    for number in range(33, 49):
+        KERNEL_NAMES[number] = "SIGRTMIN+{:d}".format(number - 32)
+    for number in range(49, 65):
+        KERNEL_NAMES[number] = "SIGRTMAX-{:d}".format(64 - number) if number < 64 else "SIGRTMAX"
+
+    # the libc reserves the first RT signals for its internal use and moves its SIGRTMIN after them
+    LIBC_NAMES = {
+        "glibc": {32: "SIGCANCEL", 33: "SIGSETXID"},
+        "musl": {32: "SIGTIMER", 33: "SIGCANCEL", 34: "SIGSYNCCALL"},
+    }
+    for libc_names, rtmin in [(LIBC_NAMES["glibc"], 34), (LIBC_NAMES["musl"], 35)]:
+        libc_names[rtmin] = "SIGRTMIN"
+        for number in range(rtmin + 1, 50):
+            libc_names[number] = "SIGRTMIN+{:d}".format(number - rtmin)
+        for number in range(50, 65):
+            libc_names[number] = "SIGRTMAX-{:d}".format(64 - number) if number < 64 else "SIGRTMAX"
+
     FLAGS = (
         (0x0000_0001, "SA_NOCLDSTOP"),
         (0x0000_0002, "SA_NOCLDWAIT"),
@@ -17931,18 +17951,29 @@ class LinuxSignal:
         (0x8000_0000, "SA_RESETHAND"),
     )
 
+    # the flags that only the kernel sees
+    KERNEL_FLAGS = (
+        (0x0080_0000, "SA_IMMUTABLE"),
+    )
+
     @classmethod
-    def format_flags(cls, flags):
-        names = [name for value, name in cls.FLAGS if flags & value]
-        known = sum(value for value, name in cls.FLAGS)
+    def format_flags(cls, flags, extra=()):
+        table = cls.FLAGS + tuple(extra)
+        names = [name for value, name in table if flags & value]
+        known = sum(value for value, name in table)
         unknown = flags & ~known
         if unknown:
             names.append("{:#x}".format(unknown))
         return "|".join(names) if names else "-"
 
     @classmethod
-    def format_mask(cls, mask):
-        names = [cls.NAMES.get(number, "SIG{:d}".format(number))
+    def format_mask(cls, mask, names=None, compact=False):
+        if names is None:
+            names = cls.NAMES
+        if compact and bin(mask & 0xffff_ffff_ffff_ffff).count("1") > 32:
+            # a mask made by sigfillset() is shown by the signals it lacks
+            return "all except " + (cls.format_mask(~mask & 0xffff_ffff_ffff_ffff, names) if ~mask & 0xffff_ffff_ffff_ffff else "none")
+        names = [names.get(number, "SIG{:d}".format(number))
                  for number in range(1, 65) if mask & (1 << (number - 1))]
         return ",".join(names) if names else "-"
 
@@ -65469,6 +65500,9 @@ class KernelAddressHeuristicFinder:
                         KernelAddressHeuristicFinderUtil.arm32_movw_movt(res),
                         KernelAddressHeuristicFinderUtil.arm32_ldr_pc_relative(res),
                     )
+                elif is_riscv32() or is_riscv64():
+                    # auipc a1, hi20; ld a1, lo12(a1)
+                    g = KernelAddressHeuristicFinderUtil.riscv_auipc_use(res)
                 for x in g:
                     return x
         return None
@@ -73024,7 +73058,10 @@ class Kernel:
                             offset_mnt = cand_offset_mnt - current_arch.ptrsize * 2
                             break
                     else:
-                        raise RuntimeError("Could not find offsetof(file, f_path.mnt)")
+                        # plan 3 (for the arch that `slab-contains` does not support)
+                        offset_mnt = self.find_offset_file_mnt_by_links(file)
+                        if offset_mnt is None:
+                            raise RuntimeError("Could not find offsetof(file, f_path.mnt)")
             elif "6.12" <= kversion:
                 """
                 0x811f3180|+0x0000|+000: f_count        : 0x00000004
@@ -73081,6 +73118,28 @@ class Kernel:
                 else:
                     raise RuntimeError("Could not find offsetof(file, f_path.mnt)")
             return offset_mnt
+
+        def find_offset_file_mnt_by_links(self, file):
+            """Return the offset of f_path.mnt followed by f_path.dentry and f_inode, or None.
+            The dentry refers to the inode, and the inode refers to the super_block of the vfsmount."""
+            ptrsize = current_arch.ptrsize
+            offset_mnt_sb = getattr(self, "offset_vfsmount_mnt_sb", None) or ptrsize
+            for i in range(0x40):
+                try:
+                    mnt, dentry, inode = slice_unpack(read_memory(file + ptrsize * i, ptrsize * 3), ptrsize)
+                    if len({mnt, dentry, inode}) != 3:
+                        continue
+                    if not all(is_valid_addr(x) and x % ptrsize == 0 for x in (mnt, dentry, inode)):
+                        continue
+                    if inode not in slice_unpack(read_memory(dentry, 0x100), ptrsize):
+                        continue
+                    sb = read_int_from_memory(mnt + offset_mnt_sb)
+                    if not is_valid_addr(sb) or sb not in slice_unpack(read_memory(inode, 0x80), ptrsize):
+                        continue
+                except (gdb.MemoryError, OverflowError):
+                    continue
+                return ptrsize * i
+            return None
 
         @Cache.cache_this_session(cache_None=False)
         def get_offset_file_dentry(self, offset_mnt):
@@ -74215,6 +74274,92 @@ class Kernel:
                 return offset_fdt
             return None
 
+        # fs.nr_open is 1M by default, so a far larger `max_fds` is taken as broken
+        MAX_FDS_LIMIT = 0x100_0000
+
+        @staticmethod
+        @Cache.cache_this_session(per_inferior=True, until_new_objfile=True)
+        def get_fdtable_offsets():
+            """Return (offsetof(fdtable, fd), offsetof(fdtable, close_on_exec), offsetof(fdtable, open_fds)).
+
+            struct fdtable {
+                unsigned int max_fds;
+                struct file __rcu **fd;
+                unsigned long *close_on_exec;
+                unsigned long *open_fds;
+                unsigned long *full_fds_bits; // v4.4~
+                struct rcu_head rcu;
+            };
+            """
+            # fast path
+            try:
+                return tuple(GefUtil.parse_and_eval_unsigned("&((struct fdtable*)0).{:s}".format(name))
+                             for name in ["fd", "close_on_exec", "open_fds"])
+            except gdb.error:
+                pass
+
+            # slow path
+            ptrsize = current_arch.ptrsize
+            return ptrsize, ptrsize * 2, ptrsize * 3
+
+        @staticmethod
+        def get_open_fds(fdt):
+            """Return ([(fd, struct file, close-on-exec), ...], [warning, ...]) of `fdt`.
+
+            `max_fds` stays large after the table is expanded once, so only the slots whose bit is set
+            in `open_fds` are read. If the bitmaps are unreadable, every slot is read instead and
+            close-on-exec is None."""
+            ptrsize = current_arch.ptrsize
+            bits_per_long = ptrsize * 8
+            offset_fd, offset_close_on_exec, offset_open_fds = Kernel.Files.get_fdtable_offsets()
+            warnings = []
+
+            max_fds = read_int32_from_memory(fdt)
+            array = read_int_from_memory(fdt + offset_fd)
+            if max_fds > Kernel.Files.MAX_FDS_LIMIT:
+                warnings.append("max_fds {:#x} is too large; only the first {:#x} fds are read".format(max_fds, Kernel.Files.MAX_FDS_LIMIT))
+                max_fds = Kernel.Files.MAX_FDS_LIMIT
+            if not max_fds or not is_valid_addr(array):
+                return [], warnings
+
+            nr_words = (max_fds + bits_per_long - 1) // bits_per_long
+            try:
+                open_fds = read_int_from_memory(fdt + offset_open_fds)
+                close_on_exec = read_int_from_memory(fdt + offset_close_on_exec)
+                open_words = slice_unpack(read_memory(open_fds, nr_words * ptrsize), ptrsize)
+                cloexec_words = slice_unpack(read_memory(close_on_exec, nr_words * ptrsize), ptrsize)
+            except (gdb.MemoryError, OverflowError):
+                open_words = None
+
+            entries = []
+            if open_words is None:
+                warnings.append("The open fd bitmap is unreadable; every slot is read")
+                for fd in range(max_fds):
+                    file = read_int_from_memory(array + ptrsize * fd)
+                    if file:
+                        entries.append((fd, file, None))
+                return entries, warnings
+
+            reserved = 0
+            for i, word in enumerate(open_words):
+                if word == 0:
+                    continue
+                files = slice_unpack(read_memory(array + ptrsize * bits_per_long * i, ptrsize * bits_per_long), ptrsize)
+                for bit in range(bits_per_long):
+                    if not word & (1 << bit):
+                        continue
+                    fd = bits_per_long * i + bit
+                    if fd >= max_fds:
+                        break
+                    if files[bit] == 0:
+                        # between get_unused_fd_flags() and fd_install(), or broken
+                        reserved += 1
+                        continue
+                    entries.append((fd, files[bit], bool(cloexec_words[i] & (1 << bit))))
+            if reserved:
+                warnings.append("{:d} fd(s) are marked as open but have no file (reserved or broken)".format(reserved))
+            return entries, warnings
+
     class Signal:
         """Resolve the layout of ``struct signal_struct``."""
 
@@ -74249,7 +74394,7 @@ class Kernel:
     class Sighand:
         """Resolve the layout of ``struct sighand_struct`` and its action array."""
 
-        SIGNAL_NAMES = LinuxSignal.NAMES
+        SIGNAL_NAMES = LinuxSignal.KERNEL_NAMES
 
         @staticmethod
         @Cache.cache_this_session(cache_None=False, per_inferior=True, until_new_objfile=True)
@@ -74406,6 +74551,36 @@ class Kernel:
             return best[1]
 
         @staticmethod
+        @Cache.cache_this_session(per_inferior=True, until_new_objfile=True)
+        def get_offset_restorer_mask(sizeof_action):
+            """Return (offsetof(k_sigaction, sa.sa_restorer) or None, offsetof(k_sigaction, sa.sa_mask)).
+            sa_restorer exists only if the arch defines SA_RESTORER (e.g., RISC-V does not)."""
+            # fast path
+            try:
+                offset_mask = GefUtil.parse_and_eval_unsigned("&((struct k_sigaction*)0).sa.sa_mask")
+                try:
+                    offset_restorer = GefUtil.parse_and_eval_unsigned("&((struct k_sigaction*)0).sa.sa_restorer")
+                except gdb.error:
+                    offset_restorer = None
+                return offset_restorer, offset_mask
+            except gdb.error:
+                pass
+
+            # slow path
+            ptrsize = current_arch.ptrsize
+            if sizeof_action < ptrsize * 3 + 8:
+                return None, ptrsize * 2
+            return ptrsize * 2, ptrsize * 3
+
+        @staticmethod
+        def read_sigset(addr):
+            """Read a sigset_t (64 signals) as an integer, whose bit N-1 is signal N."""
+            if is_64bit():
+                return read_int_from_memory(addr)
+            # sig[0] holds the signals 1-32 even on big-endian
+            return read_int32_from_memory(addr) | (read_int32_from_memory(addr + 4) << 32)
+
+        @staticmethod
         def is_valid_action_array(action, sizeof_action):
             """Return whether all 64 elements read with the stride `sizeof_action` look like a k_sigaction."""
             # SA_NOCLDSTOP, SA_NOCLDWAIT, SA_SIGINFO, SA_UNSUPPORTED, SA_EXPOSE_TAGBITS, SA_IMMUTABLE,
@@ -74424,6 +74599,203 @@ class Kernel:
                 if flags & ~known_flags:
                     return False
             return True
+
+    class Namespace:
+        """Resolve the inode number and the hierarchy of the namespaces."""
+
+        # the inode number of each initial namespace (mnt and net ones are allocated dynamically until v6.18)
+        INIT_INUMS = {
+            "ipc": 0xEFFF_FFFF, "uts": 0xEFFF_FFFE, "user": 0xEFFF_FFFD, "pid": 0xEFFF_FFFC,
+            "cgroup": 0xEFFF_FFFB, "time": 0xEFFF_FFFA, "net": 0xEFFF_FFF9, "mnt": 0xEFFF_FFF8,
+        }
+
+        STRUCT_NAMES = {
+            "ipc": "ipc_namespace", "uts": "uts_namespace", "user": "user_namespace", "pid": "pid_namespace",
+            "cgroup": "cgroup_namespace", "time": "time_namespace", "net": "net", "mnt": "mnt_namespace",
+        }
+
+        @staticmethod
+        def read_object(addr, size):
+            """Read up to `size` bytes from `addr`, stopping at an unreadable page."""
+            data = b""
+            while len(data) < size:
+                chunk = min(size - len(data), get_pagesize() - (addr + len(data)) % get_pagesize())
+                try:
+                    data += read_memory(addr + len(data), chunk)
+                except (gdb.MemoryError, OverflowError):
+                    break
+            return data[:len(data) - len(data) % current_arch.ptrsize]
+
+        @staticmethod
+        def is_valid_inum(ns_type, inum):
+            # the others are allocated from 0xF0000000 (PROC_DYNAMIC_FIRST)
+            return inum == Kernel.Namespace.INIT_INUMS[ns_type] or inum >= 0xF000_0000
+
+        @staticmethod
+        @Cache.cache_this_session(cache_None=False, per_inferior=True, until_new_objfile=True)
+        def get_offset_inum(ns_type, init_ns, init_user_ns):
+            """Return the offset of the inode number (`ns.inum` v3.19~, `proc_inum` v3.8~v3.18) in the namespace.
+
+            struct ns_common {
+                ...                          // the reference count and the type on the recent kernels
+                atomic_long_t stashed;       // struct dentry *stashed on the recent kernels
+                const struct proc_ns_operations {
+                    const char *name;        // "uts", "ipc", "mnt", "pid", "net", "user", "cgroup" or "time"
+                    ...
+                } *ops;
+                unsigned int inum;
+                ...
+            };
+            """
+            ptrsize = current_arch.ptrsize
+
+            # fast path
+            try:
+                gdb.parse_and_eval("(struct {:s}*)0".format(Kernel.Namespace.STRUCT_NAMES[ns_type]))
+                for member in ["ns.inum", "proc_inum"]:
+                    try:
+                        return GefUtil.parse_and_eval_unsigned("&((struct {:s}*)0).{:s}".format(
+                            Kernel.Namespace.STRUCT_NAMES[ns_type], member,
+                        ))
+                    except gdb.error:
+                        pass
+                return None
+            except gdb.error:
+                pass
+
+            # slow path
+            if not init_ns or not is_valid_addr(init_ns):
+                return None
+            data = Kernel.Namespace.read_object(init_ns, 0x1000)
+            words = slice_unpack(data, ptrsize)
+            ints = slice_unpack(data, 4)
+
+            # plan 1 (v3.19~): `ops` is just before `inum`, and `ops->name` is the name of the type
+            for i, ops in enumerate(words[:-1]):
+                if not is_valid_addr(ops):
+                    continue
+                name = read_int_from_memory(ops, safe=True)
+                if not name or not is_valid_addr(name):
+                    continue
+                if read_cstring_from_memory(name, 16, safe=True) != ns_type:
+                    continue
+                offset_inum = ptrsize * (i + 1)
+                if Kernel.Namespace.is_valid_inum(ns_type, ints[offset_inum // 4]):
+                    return offset_inum
+
+            # plan 2 (v3.8~): the initial one holds a fixed number (mnt and net ones since v6.18),
+            # and `ops` is NULL if the kernel does not support the type (e.g. CONFIG_USER_NS=n)
+            kversion = Kernel.kernel_version()
+            if kversion is None or kversion < "3.8":
+                return None
+            for i, v in enumerate(ints):
+                if v == Kernel.Namespace.INIT_INUMS[ns_type]:
+                    return i * 4
+            if "3.19" <= kversion:
+                return None
+            # plan 3 (v3.8~v3.18): `proc_inum` of the dynamically numbered ones
+            if ns_type == "mnt":
+                # atomic_t count; unsigned int proc_inum;
+                if len(ints) > 1 and ints[1] >= 0xF000_0000:
+                    return 4
+            elif ns_type == "net" and init_user_ns:
+                # struct user_namespace *user_ns; unsigned int proc_inum;
+                for i, v in enumerate(words[:-1]):
+                    if v == init_user_ns and ints[(i + 1) * ptrsize // 4] >= 0xF000_0000:
+                        return (i + 1) * ptrsize
+            return None
+
+        @staticmethod
+        @Cache.cache_this_session(cache_None=False, per_inferior=True, until_new_objfile=True)
+        def get_offset_pid_ns_hierarchy(init_pid_ns, reapers):
+            """Return (offsetof(pid_namespace, level), offsetof(pid_namespace, parent)).
+
+            struct pid_namespace {
+                ...
+                struct task_struct *child_reaper;
+                struct kmem_cache *pid_cachep;
+                unsigned int level;
+                int pid_max; // v6.14~
+                struct pid_namespace *parent;
+                ...
+            };
+            """
+            # fast path
+            try:
+                offset_level = GefUtil.parse_and_eval_unsigned("&((struct pid_namespace*)0).level")
+                offset_parent = GefUtil.parse_and_eval_unsigned("&((struct pid_namespace*)0).parent")
+                return offset_level, offset_parent
+            except gdb.error:
+                pass
+
+            # slow path
+            # the child reaper of the initial one is the init process (or init_task until it starts)
+            ptrsize = current_arch.ptrsize
+            if not init_pid_ns or not is_valid_addr(init_pid_ns):
+                return None
+            data = Kernel.Namespace.read_object(init_pid_ns, 0x1000)
+            words = slice_unpack(data, ptrsize)
+            ints = slice_unpack(data, 4)
+            for i, v in enumerate(words[:-4]):
+                if v not in reapers or not is_valid_addr(words[i + 1]):
+                    continue
+                offset_level = ptrsize * (i + 2)
+                if ints[offset_level // 4] != 0:
+                    continue
+                for offset_parent in sorted({align(offset_level + 4, ptrsize), offset_level + 8}):
+                    if words[offset_parent // ptrsize] == 0:
+                        return offset_level, offset_parent
+            return None
+
+        @staticmethod
+        @Cache.cache_this_session(cache_None=False, per_inferior=True, until_new_objfile=True)
+        def get_offset_user_ns_hierarchy(init_user_ns, samples):
+            """Return (offsetof(user_namespace, parent), offsetof(user_namespace, level), offsetof(user_namespace, owner)).
+            It needs a user namespace other than the initial one when the debug information is unavailable.
+
+            struct user_namespace {
+                struct uid_gid_map uid_map;
+                struct uid_gid_map gid_map;
+                struct uid_gid_map projid_map;
+                ...
+                struct user_namespace *parent;
+                int level; // v3.11~
+                kuid_t owner;
+                kgid_t group;
+                ...
+            };
+            """
+            # fast path
+            try:
+                offset_parent = GefUtil.parse_and_eval_unsigned("&((struct user_namespace*)0).parent")
+                offset_level = GefUtil.parse_and_eval_unsigned("&((struct user_namespace*)0).level")
+                offset_owner = GefUtil.parse_and_eval_unsigned("&((struct user_namespace*)0).owner")
+                return offset_parent, offset_level, offset_owner
+            except gdb.error:
+                pass
+
+            # slow path
+            # `parent` is the only pointer to another user namespace before `ns`, and a child of the initial one has level 1
+            ptrsize = current_arch.ptrsize
+            candidates = None
+            for user_ns in samples:
+                if user_ns == init_user_ns or not is_valid_addr(user_ns):
+                    continue
+                data = Kernel.Namespace.read_object(user_ns, 0x200)
+                words = slice_unpack(data, ptrsize)
+                ints = slice_unpack(data, 4)
+                found = set()
+                for i, v in enumerate(words[:-1]):
+                    if v == user_ns or (v != init_user_ns and v not in samples):
+                        continue
+                    level = ints[(i + 1) * ptrsize // 4]
+                    if (v == init_user_ns and level == 1) or (v != init_user_ns and 1 < level <= 32):
+                        found.add(i * ptrsize)
+                candidates = found if candidates is None else candidates & found
+            if not candidates:
+                return None
+            offset_parent = min(candidates)
+            return offset_parent, offset_parent + ptrsize, offset_parent + ptrsize + 4
 
     class Cred:
         """A collection of utility functions that resolve the layout of `struct cred` and parse it.
@@ -75262,6 +75634,9 @@ class Kernel:
             elif is_arm32():
                 ret = gdb.execute("pagewalk --no-pager --disable-color", to_string=True)
                 offset_vm_flags = offset_vm_mm + (8 * 2 if "using long description" in ret else 4 * 2)
+            elif is_riscv32():
+                # pgprot_t is an unsigned long
+                offset_vm_flags = offset_vm_mm + 4 * 2
             else:
                 return None
             if offset_vm_mm == 0:
@@ -75307,6 +75682,24 @@ class Kernel:
                 if found:
                     return self.offset_vm_flags + current_arch.ptrsize * (i + 5)
             return None
+
+        def get_task_file_names(self, task):
+            """Return the names of the files ``task`` maps, which is cheaper than their paths."""
+            mm = read_int_from_memory(task + self.offset_task_mm)
+            if mm == 0:
+                return []
+
+            names = []
+            vm_files = set()
+            current, get_next_vma_area_struct = self.get_vm_area_struct(mm)
+            while current:
+                vm_file = read_int_from_memory(current + self.offset_vm_file)
+                if vm_file and vm_file not in vm_files:
+                    vm_files.add(vm_file)
+                    dentry = read_int_from_memory(vm_file + self.kpath.offset_file_dentry)
+                    names.append(self.kpath.get_dentry_name(dentry))
+                current = get_next_vma_area_struct(current)
+            return names
 
         def get_task_maps(self, task):
             """Return the virtual memory areas owned by ``task``."""
@@ -75439,6 +75832,19 @@ class Kernel:
                 flags = read_int_from_memory(thread_info)
                 return bool(flags & (1 << 11))
 
+            if (is_riscv32() or is_riscv64()) and "5.5" <= kversion:
+                if "6.3" <= kversion: # generic entry
+                    try:
+                        offset = GefUtil.parse_and_eval_unsigned("&((struct thread_info*)0).syscall_work")
+                    except gdb.error:
+                        offset = current_arch.ptrsize * 5
+                    flags = read_int_from_memory(thread_info + offset)
+                    bit = 0 # SYSCALL_WORK_SECCOMP
+                else:
+                    flags = read_int_from_memory(thread_info)
+                    bit = 8 # TIF_SECCOMP
+                return bool(flags & (1 << bit))
+
             return None
 
         def initialize(self, task_addrs, offset_stack, offset_signal):
@@ -75561,11 +75967,54 @@ class Kernel:
                     else:
                         old_layout = before4 == 2
                         old_offset_filter = 4
+                    # the word before `mode` may happen to be 2, so the filter chain itself must look like one
+                    if not (new_layout or old_layout):
+                        continue
+                    if not self.is_filter_chain(filt, before4 if new_layout else None):
+                        continue
                     # both are possible on 32-bit, when the word before `mode` happens to be 2
                     if new_layout and (not old_layout or "5.9" <= kversion):
                         return offset_filter - 8, 8, True
                     if old_layout:
                         return offset_filter - old_offset_filter, old_offset_filter, False
+            return None
+
+        @staticmethod
+        def is_filter_chain(filter_addr, filter_count):
+            """Return whether `filter_addr` heads a chain of `seccomp_filter`s, as long as `filter_count` if it is given.
+            Each filter begins with `refcount_t refs`."""
+            offset_prev = Kernel.Seccomp.find_offset_prev(filter_addr)
+            if offset_prev is None:
+                return False
+            if filter_count is not None and not 0 < filter_count <= 0x100:
+                return False
+            length = 0
+            while filter_addr:
+                refs = read_int32_from_memory(filter_addr, safe=True)
+                if refs is None or not 0 < refs < 0x10000 or length > 0x100:
+                    return False
+                length += 1
+                filter_addr = read_int_from_memory(filter_addr + offset_prev, safe=True)
+                if filter_addr is None or (filter_addr and not is_valid_addr(filter_addr)):
+                    return False
+            return filter_count is None or length == filter_count
+
+        @staticmethod
+        def find_offset_prev(filter_addr):
+            """Return the offset of `prev` in the `seccomp_filter` at `filter_addr`, which is followed by `prog`, or None."""
+            for i in range(0x100):
+                # a wrong candidate of `filter` may be at the end of a mapping
+                previous = read_int_from_memory(filter_addr + current_arch.ptrsize * i, safe=True)
+                prog = read_int_from_memory(filter_addr + current_arch.ptrsize * (i + 1), safe=True)
+                if previous is None or prog is None:
+                    break
+                if (previous & 0x7) or (previous != 0 and not is_valid_addr(previous)):
+                    continue
+                if (prog & 0xfff) or not is_valid_addr(prog):
+                    continue
+                if is_valid_addr(read_int_from_memory(prog)):
+                    continue
+                return current_arch.ptrsize * i
             return None
 
         @Cache.cache_this_session(cache_None=False)
@@ -75588,16 +76037,9 @@ class Kernel:
                 filter_addr = read_int_from_memory(task + self.offset_seccomp + self.offset_filter)
                 if not is_valid_addr(filter_addr):
                     continue
-                for i in range(0x100):
-                    previous = read_int_from_memory(filter_addr + current_arch.ptrsize * i)
-                    if (previous & 0x7) or (previous != 0 and not is_valid_addr(previous)):
-                        continue
-                    prog = read_int_from_memory(filter_addr + current_arch.ptrsize * (i + 1))
-                    if (prog & 0xfff) or not is_valid_addr(prog):
-                        continue
-                    if is_valid_addr(read_int_from_memory(prog)):
-                        continue
-                    return current_arch.ptrsize * i
+                offset_prev = self.find_offset_prev(filter_addr)
+                if offset_prev is not None:
+                    return offset_prev
             return None
 
         @staticmethod
@@ -77658,7 +78100,7 @@ class KernelCmdlineCommand(GenericCommand):
     @parse_args
     @only_if_gdb_running
     @only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
-    @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
+    @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64"))
     @only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
         if args.rescan:
@@ -78209,6 +78651,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
             x86_64: 8KiB (~v3.14), 16KiB (v3.15~), 32KiB (CONFIG_KASAN=y)
             ARM32: 8KiB, 16KiB (CONFIG_KASAN=y)
             ARM64: max(16KiB (32KiB if CONFIG_KASAN=y), PAGE_SIZE)
+            RISCV32: 8KiB, RISCV64: 16KiB (CONFIG_THREAD_SIZE_ORDER on the recent kernels, doubled if CONFIG_KASAN=y)
 
         The distance between the stack top and the saved ptregs:
             x86_32: sizeof(pt_regs) + 8 (or 16 if CONFIG_VM86=y)
@@ -78221,6 +78664,8 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
                 v5.10~v6.17: ..., orig_x0, syscallno, orig_addr_limit/sdei_ttbr1, pmr_save, stackframe[2],
                              lockdep_hardirqs, exit_rcu
                 v6.18~:      ..., orig_x0, syscallno/pmr, sdei_ttbr1, frame_record_meta stackframe
+            RISCV32/64: ALIGN(sizeof(pt_regs), 16)
+                epc, ra, sp, gp, tp, t0-t2, s0-s1, a0-a7, s2-s11, t3-t6, status, badaddr, cause, orig_a0
         """
         task_addrs = self.task_addrs_temp
         ptrsize = current_arch.ptrsize
@@ -78271,6 +78716,14 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
         elif is_arm32():
             ptregs_size = ptrsize * 18
             distances = [ptregs_size + ptrsize * 2]
+        elif is_riscv32() or is_riscv64():
+            distances = []
+            try:
+                distances.append(GefUtil.parse_and_eval_unsigned("sizeof(struct pt_regs)"))
+            except gdb.error:
+                pass
+            distances.append(ptrsize * 36)
+            distances = list(dict.fromkeys((x + 15) & ~15 for x in distances))
         else:
             return None
 
@@ -78345,6 +78798,15 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
             return not AddressUtil.is_msb_on(regs["sp"]) and not AddressUtil.is_msb_on(regs["pc"])
         elif is_arm32():
             return regs["cpsr"] & 0x1f == 0x10 # USR mode
+        elif is_riscv32() or is_riscv64():
+            # SPP is clear for a trap from U-mode, and SPIE is always set there
+            if regs["status"] & 0x100 or not regs["status"] & 0x20:
+                return False
+            if regs["sp"] == 0 or regs["epc"] == 0:
+                return False
+            if is_riscv64():
+                return not AddressUtil.is_msb_on(regs["sp"]) and not AddressUtil.is_msb_on(regs["epc"])
+            return True
         return False
 
     def get_regs(self, kstack, offset_ptregs):
@@ -78373,6 +78835,14 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
                 "r7", "r8", "r9", "r10", "r11", "r12",
                 "sp", "lr", "pc", "cpsr", "orig_r0",
             ]
+        elif is_riscv32() or is_riscv64():
+            regs_name = [
+                "epc", "ra", "sp", "gp", "tp", "t0", "t1", "t2",
+                "s0", "s1", "a0", "a1", "a2", "a3", "a4", "a5",
+                "a6", "a7", "s2", "s3", "s4", "s5", "s6", "s7",
+                "s8", "s9", "s10", "s11", "t3", "t4", "t5", "t6",
+                "status", "badaddr", "cause", "orig_a0",
+            ]
 
         ptregs_addr = kstack + offset_ptregs
         ptregs_size = len(regs_name) * current_arch.ptrsize
@@ -78389,6 +78859,11 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
         elif is_arm64():
             kernel_thread_regs = p64(0) * (len(regs_name) - 2) + p64(0x5) + p64(0)
             if regs_data == kernel_thread_regs:
+                return None
+        elif is_riscv32() or is_riscv64():
+            # copy_thread() of a kernel thread clears all but status (and gp)
+            epc, _ra, sp = slice_unpack(regs_data[:current_arch.ptrsize * 3], current_arch.ptrsize)
+            if epc == 0 and sp == 0:
                 return None
 
         # get regs value
@@ -78816,22 +79291,15 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
         self.offset_d_inode = self.kpath.offset_d_inode
         return True
 
-    def iter_open_files(self, task):
-        """Yield (fd, struct file) of each open file of `task`."""
+    def get_open_files(self, task):
+        """Return ([(fd, struct file, close-on-exec), ...], [warning, ...]) of `task`."""
         files = read_int_from_memory(task + self.offset_files)
         if not is_valid_addr(files):
-            return
+            return [], []
         fdt = read_int_from_memory(files + self.offset_fdt)
         if not is_valid_addr(fdt):
-            return
-        max_fds = read_int32_from_memory(fdt)
-        array = read_int_from_memory(fdt + current_arch.ptrsize)
-        for fd_number in range(max_fds):
-            file = read_int_from_memory(array + current_arch.ptrsize * fd_number)
-            if file == 0:
-                continue
-            yield fd_number, file
-        return
+            return [], []
+        return Kernel.Files.get_open_fds(fdt)
 
     def initialize_file_path_offsets(self, task_addrs, echo_meta):
         # The first open files are the samples. The first VMA of a process is not always file-backed,
@@ -78848,7 +79316,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
         tried = set()
         for task in task_addrs:
             try:
-                for _, file in self.iter_open_files(task):
+                for _fd, file, _cloexec in self.get_open_files(task)[0]:
                     if file in tried or not is_valid_addr(file) or file & (current_arch.ptrsize - 1):
                         continue
                     tried.add(file)
@@ -78949,7 +79417,27 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
             self.meta.append((self.quiet_err, "Could not find sizeof(action[0])"))
             return None
         self.meta.append((self.quiet_info, "sizeof(action[0]): {:#x}".format(self.sizeof_action)))
+
+        self.offset_sa_restorer, self.offset_sa_mask = Kernel.Sighand.get_offset_restorer_mask(self.sizeof_action)
+        if self.offset_sa_restorer is None:
+            self.meta.append((self.quiet_info, "offsetof(k_sigaction, sa.sa_restorer): None"))
+        else:
+            self.meta.append((self.quiet_info, "offsetof(k_sigaction, sa.sa_restorer): {:#x}".format(self.offset_sa_restorer)))
+        self.meta.append((self.quiet_info, "offsetof(k_sigaction, sa.sa_mask): {:#x}".format(self.offset_sa_mask)))
         self.signame_list = Kernel.Sighand.SIGNAL_NAMES
+        self.sa_flags_extra = LinuxSignal.KERNEL_FLAGS
+        if is_arm32():
+            self.sa_flags_extra += ((0x0200_0000, "SA_THIRTYTWO"),)
+
+        # the libc names of the RT signals need the mapped files
+        self.libc_kmm = Kernel.MM.get_instance()
+        try:
+            ret = self.libc_kmm.initialize(task_addrs, self.offset_mm)
+        except (gdb.MemoryError, OverflowError, RuntimeError):
+            ret = None
+        if not ret:
+            self.libc_kmm = None
+            self.meta.append((self.quiet_info, "The libc names of the RT signals are not shown"))
         return True
 
     def initialize_seccomp_offsets(self):
@@ -79238,16 +79726,71 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
             names += ["cgroup_ns"]
         return [(name, current_arch.ptrsize * i) for i, name in enumerate(names)]
 
+    # the type of the namespace each member of nsproxy points to
+    NSPROXY_NS_TYPES = {
+        "uts_ns": "uts", "ipc_ns": "ipc", "mnt_ns": "mnt", "pid_ns_for_children": "pid",
+        "net_ns": "net", "time_ns": "time", "time_ns_for_children": "time", "cgroup_ns": "cgroup",
+    }
+
     def get_namespace_context(self, task_addrs):
         if not self.args.print_namespace:
             return None
-        members = KernelTaskCommand.get_nsproxy_members()
+        context = {
+            "members": KernelTaskCommand.get_nsproxy_members(),
+            "init_user_ns": None, "init_nsproxy": None, "offset_inum": {},
+            "pid_hierarchy": None, "user_hierarchy": None,
+        }
         if not task_addrs:
-            return members, None, None
+            return context
         init_cred = read_int_from_memory(task_addrs[0] + self.offset_cred)
         init_user_ns = self.kcred.get_user_ns(init_cred)
         init_nsproxy = read_int_from_memory(task_addrs[0] + self.offset_nsproxy)
-        return members, init_user_ns, init_nsproxy
+        context["init_user_ns"] = init_user_ns
+        context["init_nsproxy"] = init_nsproxy
+
+        # the offsets are found from the initial namespaces
+        offset_inum = context["offset_inum"]
+        for name, offset in context["members"]:
+            ns_type = self.NSPROXY_NS_TYPES.get(name)
+            if ns_type is None or ns_type in offset_inum:
+                continue
+            init_ns = read_int_from_memory(init_nsproxy + offset, safe=True)
+            offset_inum[ns_type] = Kernel.Namespace.get_offset_inum(ns_type, init_ns, init_user_ns)
+            if ns_type == "pid":
+                reapers = tuple(x for x in task_addrs if read_int32_from_memory(x + self.offset_pid) == 1)
+                reapers = (task_addrs[0],) + reapers[:1]
+                context["pid_hierarchy"] = Kernel.Namespace.get_offset_pid_ns_hierarchy(init_ns, reapers)
+        if init_user_ns is not None:
+            offset_inum["user"] = Kernel.Namespace.get_offset_inum("user", init_user_ns, init_user_ns)
+            user_namespaces = []
+            for task in task_addrs:
+                user_ns = self.kcred.get_user_ns(read_int_from_memory(task + self.offset_cred - current_arch.ptrsize))
+                if user_ns and user_ns not in user_namespaces:
+                    user_namespaces.append(user_ns)
+            context["user_hierarchy"] = Kernel.Namespace.get_offset_user_ns_hierarchy(init_user_ns, tuple(user_namespaces))
+        return context
+
+    def get_namespace_detail(self, ns_type, ns, context):
+        """Return the inode number and the hierarchy of the namespace `ns` as strings."""
+        offset_inum = context["offset_inum"].get(ns_type)
+        if not ns or not is_valid_addr(ns):
+            return "-", ""
+        inum = "-"
+        if offset_inum is not None:
+            inum = "{:s}:[{:d}]".format(ns_type, read_int32_from_memory(ns + offset_inum))
+        detail = ""
+        if ns_type == "pid" and context["pid_hierarchy"] is not None:
+            offset_level, offset_parent = context["pid_hierarchy"]
+            level = read_int32_from_memory(ns + offset_level)
+            parent = read_int_from_memory(ns + offset_parent)
+            detail = "level={:d} parent={:#x}".format(level, parent)
+        elif ns_type == "user" and context["user_hierarchy"] is not None:
+            offset_parent, offset_level, offset_owner = context["user_hierarchy"]
+            level = read_int32_from_memory(ns + offset_level)
+            owner = read_int32_from_memory(ns + offset_owner)
+            parent = read_int_from_memory(ns + offset_parent)
+            detail = "level={:d} owner={:d} parent={:#x}".format(level, owner, parent)
+        return inum, detail
 
     def dump_maps(self, task, comm_string):
         maps = self.kmm.get_task_maps(task)
@@ -79266,7 +79809,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
             return
         self.out.append(titlify("registers of `{:s}`".format(comm_string)))
         nr_table = Syscall.get_syscall_table().nr_table
-        syscall_nr_regs = ["orig_rax", "orig_eax", "r7", "x8"]
+        syscall_nr_regs = ["orig_rax", "orig_eax", "r7", "x8", "a7"]
         for name, value in regs.items():
             if name in syscall_nr_regs and value in nr_table:
                 self.out.append("{:16s}: {:s} ({:s})".format(
@@ -79280,23 +79823,46 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
 
     def dump_files(self, task, comm_string):
         self.out.append(titlify("file descriptors of `{:s}`".format(comm_string)))
-        fmt = "{:3s} {:18s} {:18s} {:18s} {:s}"
-        legend = ["fd", "struct file", "struct dentry", "struct inode", "path"]
+        fmt = "{:4s} {:7s} {:18s} {:18s} {:18s} {:s}"
+        legend = ["fd", "cloexec", "struct file", "struct dentry", "struct inode", "path"]
         self.out.append(GefUtil.make_legend(fmt.format(*legend)))
 
-        for fd_number, file in self.iter_open_files(task):
+        entries, warnings = self.get_open_files(task)
+        for fd_number, file, cloexec in entries:
             dentry = read_int_from_memory(file + self.offset_dentry)
             inode = read_int_from_memory(dentry + self.offset_d_inode)
             filepath = self.kpath.get_file_path(file)
-            self.out.append("{:<3d} {:#018x} {:#018x} {:#018x} {:s}".format(
-                fd_number, file, dentry, inode, filepath,
+            self.out.append("{:<4d} {:7s} {:#018x} {:#018x} {:#018x} {:s}".format(
+                fd_number, "?" if cloexec is None else str(cloexec), file, dentry, inode, filepath,
             ))
+        for warning in warnings:
+            self.warn_add_out(warning)
         return
 
+    def get_task_libc(self, task):
+        """Return the libc ("glibc" or "musl") that `task` maps, or None if it is unknown (e.g., a static binary)."""
+        if self.libc_kmm is None:
+            return None
+        try:
+            names = self.libc_kmm.get_task_file_names(task)
+        except (gdb.MemoryError, OverflowError, RuntimeError):
+            return None
+        for name in names:
+            if re.fullmatch(r"libc\.so\.6|libc-2\.\d+\.so", name):
+                return "glibc"
+            if re.fullmatch(r"(?:ld-musl|libc\.musl)-\w+\.so\.1", name):
+                return "musl"
+        return None
+
     def dump_sighands(self, task, comm_string):
-        self.out.append(titlify("sighandlers of `{:s}`".format(comm_string)))
-        fmt = "{:14s} {:18s} {:18s} {:18s}"
-        legend = ["sig", "sigaction", "handler", "flags"]
+        libc = self.get_task_libc(task)
+        libc_names = LinuxSignal.LIBC_NAMES.get(libc, {})
+        if libc:
+            self.out.append(titlify("sighandlers of `{:s}` ({:s})".format(comm_string, libc)))
+        else:
+            self.out.append(titlify("sighandlers of `{:s}`".format(comm_string)))
+        fmt = "{:14s} {:11s} {:18s} {:18s} {:18s} {:42s} {:s}"
+        legend = ["sig", "libc name", "sigaction", "handler", "restorer", "flags", "mask"]
         self.out.append(GefUtil.make_legend(fmt.format(*legend)))
 
         sighand = read_int_from_memory(task + self.offset_sighand)
@@ -79313,38 +79879,49 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
             else:
                 handler = "{:#018x}".format(handler)
             flags = read_int_from_memory(sigaction + current_arch.ptrsize)
-            self.out.append("{:<2d} {:11s} {:#018x} {:18s} {:#018x}".format(
-                i + 1, signame, sigaction, handler, flags,
-            ))
+            # sa_restorer is used only with SA_RESTORER, and the libc may leave garbage there without it
+            if self.offset_sa_restorer is None or not flags & 0x0400_0000:
+                restorer = "-"
+            else:
+                restorer = "{:#018x}".format(read_int_from_memory(sigaction + self.offset_sa_restorer))
+            mask = Kernel.Sighand.read_sigset(sigaction + self.offset_sa_mask)
+            self.out.append("{:<2d} {:11s} {:11s} {:#018x} {:18s} {:18s} {:42s} {:s}".format(
+                i + 1, signame, libc_names.get(i + 1, "-"), sigaction, handler, restorer,
+                LinuxSignal.format_flags(flags, self.sa_flags_extra), LinuxSignal.format_mask(mask, self.signame_list, compact=True),
+            ).rstrip())
         return
 
     def dump_namespace(self, task, comm_string, namespace_context):
         self.out.append(titlify("namespace of `{:s}`".format(comm_string)))
-        fmt = "{:30s} {:18s} {:8s}"
-        legend = ["name", "value", "init_ns?"]
+        fmt = "{:30s} {:18s} {:8s} {:24s} {:s}"
+        legend = ["name", "value", "init_ns?", "inum", "detail"]
         self.out.append(GefUtil.make_legend(fmt.format(*legend)))
 
-        members, init_user_ns, init_nsproxy = namespace_context
+        init_user_ns = namespace_context["init_user_ns"]
+        init_nsproxy = namespace_context["init_nsproxy"]
         real_cred = read_int_from_memory(task + self.offset_cred - current_arch.ptrsize)
         user_ns = self.kcred.get_user_ns(real_cred)
         if user_ns is None:
             self.out.append("{:30s} {:18s} {:8s}".format("real_cred->user_ns", "unknown", "-").rstrip())
         else:
-            self.out.append("{:30s} {:#018x} {:8s}".format(
-                "real_cred->user_ns", user_ns, str(user_ns == init_user_ns),
+            inum, detail = self.get_namespace_detail("user", user_ns, namespace_context)
+            self.out.append("{:30s} {:#018x} {:8s} {:24s} {:s}".format(
+                "real_cred->user_ns", user_ns, str(user_ns == init_user_ns), inum, detail,
             ).rstrip())
 
         nsproxy = read_int_from_memory(task + self.offset_nsproxy)
-        for name, offset in members:
+        for name, offset in namespace_context["members"]:
             if name == "count":
                 value = read_int32_from_memory(nsproxy + offset)
                 is_init_ns = "-"
+                inum, detail = "-", ""
             else:
                 value = read_int_from_memory(nsproxy + offset)
                 init_value = read_int_from_memory(init_nsproxy + offset)
                 is_init_ns = str(value == init_value)
-            self.out.append("{:30s} {:#018x} {:8s}".format(
-                "nsproxy->" + name, value, is_init_ns,
+                inum, detail = self.get_namespace_detail(self.NSPROXY_NS_TYPES[name], value, namespace_context)
+            self.out.append("{:30s} {:#018x} {:8s} {:24s} {:s}".format(
+                "nsproxy->" + name, value, is_init_ns, inum, detail,
             ).rstrip())
         return
 
@@ -79480,7 +80057,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
     @parse_args
     @only_if_gdb_running
     @only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
-    @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
+    @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64"))
     @only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
         self.quiet_info("Wait for memory scan")
@@ -79538,7 +80115,7 @@ class KernelFilesCommand(GenericCommand):
     @parse_args
     @only_if_gdb_running
     @only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
-    @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
+    @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64"))
     @only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
         info("Redirect to `ktask -quF`")
@@ -79564,7 +80141,7 @@ class KernelSavedRegsCommand(GenericCommand):
     @parse_args
     @only_if_gdb_running
     @only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
-    @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
+    @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64"))
     @only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
         info("Redirect to `ktask -qur`")
@@ -79590,7 +80167,7 @@ class KernelSignalsCommand(GenericCommand):
     @parse_args
     @only_if_gdb_running
     @only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
-    @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
+    @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64"))
     @only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
         info("Redirect to `ktask -qus`")
@@ -79616,7 +80193,7 @@ class KernelNamespacesCommand(GenericCommand):
     @parse_args
     @only_if_gdb_running
     @only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
-    @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
+    @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64"))
     @only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
         info("Redirect to `ktask -quN`")
@@ -80603,6 +81180,7 @@ class KernelLoadCommand(GenericCommand):
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("path", metavar="VMLINUX_PATH", type=str, help="path of the vmlinux.")
+    parser.add_argument("-f", "--force", action="store_true", help="load the vmlinux even if it does not match the running kernel.")
     _syntax_ = parser.format_help()
 
     _note_ = [
@@ -80611,8 +81189,17 @@ class KernelLoadCommand(GenericCommand):
         "  2. The address of `_stext` in kallsyms and in the vmlinux",
         "  3. The exception vector address and its symbol in the vmlinux",
         "Sections linked below the image (e.g., x86_64 zero-based .data..percpu, ARM32 .vectors) are not relocated.",
+        "",
+        "Then the vmlinux is verified against the running kernel with:",
+        "  - the ELF class, machine and endianness",
+        "  - the GNU build ID in `.notes`, read from the relocated address in memory",
+        "  - the linux_banner",
+        "  - the addresses of sampled global functions in kallsyms",
+        "A clear mismatch is not loaded without `--force`.",
     ]
     _note_ = "\n".join(_note_)
+
+    KALLSYMS_SAMPLES = 64
 
     def __init__(self):
         super().__init__(complete=gdb.COMPLETE_FILENAME)
@@ -80682,6 +81269,135 @@ class KernelLoadCommand(GenericCommand):
             return slide
         return None
 
+    @staticmethod
+    def check_elf_header(elf):
+        """Return the list of the ELF header fields that do not match the target."""
+        mismatches = []
+        if (elf.e_class == Elf.ELF_64_BITS) != is_64bit():
+            mismatches.append("{:d}-bit".format(elf.get_bits()))
+        if (elf.e_endianness == Elf.LITTLE_ENDIAN) != Endian.is_little_endian():
+            mismatches.append("{:s}-endian".format("little" if elf.e_endianness == Elf.LITTLE_ENDIAN else "big"))
+        if is_x86_64():
+            expected = Elf.EM_X86_64
+        elif is_x86_32():
+            expected = Elf.EM_386
+        elif is_arm64():
+            expected = Elf.EM_AARCH64
+        elif is_arm32():
+            expected = Elf.EM_ARM
+        elif is_riscv32() or is_riscv64():
+            expected = Elf.EM_RISCV
+        else:
+            expected = None
+        if expected is not None and elf.e_machine != expected:
+            mismatches.append("e_machine={:d}".format(elf.e_machine))
+        return mismatches
+
+    @staticmethod
+    def get_build_id(elf):
+        """Return (address, build ID) of the NT_GNU_BUILD_ID note in the loaded sections, or None."""
+        endian = "<" if elf.e_endianness == Elf.LITTLE_ENDIAN else ">"
+        for shdr in elf.shdrs:
+            if shdr.sh_type != Elf.Shdr.SHT_NOTE or not shdr.sh_flags & Elf.Shdr.SHF_ALLOC:
+                continue
+            data = elf.read_shdr(shdr.sh_name)
+            pos = 0
+            while pos + 12 <= len(data):
+                namesz, descsz, note_type = struct.unpack(endian + "III", data[pos:pos + 12])
+                name_pos = pos + 12
+                desc_pos = name_pos + align(namesz, 4)
+                if desc_pos + descsz > len(data):
+                    break
+                if note_type == 3 and data[name_pos:name_pos + namesz] == b"GNU\0": # NT_GNU_BUILD_ID
+                    return shdr.sh_addr + desc_pos, data[desc_pos:desc_pos + descsz]
+                pos = desc_pos + align(descsz, 4)
+        return None
+
+    @staticmethod
+    def get_elf_function_samples(elf, count):
+        """Return {name: address} of the global functions spread over the whole .symtab."""
+        symtab = elf.read_shdr(".symtab")
+        strtab = elf.read_shdr(".strtab")
+        if not symtab or not strtab:
+            return {}
+
+        endian = "<" if elf.e_endianness == Elf.LITTLE_ENDIAN else ">"
+        if elf.e_class == Elf.ELF_64_BITS:
+            fmt, index_info, index_shndx, index_value = "IBBHQQ", 1, 3, 4
+        else:
+            fmt, index_info, index_shndx, index_value = "IIIBBH", 3, 5, 1
+        functions = []
+        for sym in struct.iter_unpack(endian + fmt, symtab):
+            # STB_GLOBAL, STT_FUNC, not SHN_UNDEF/SHN_ABS
+            if sym[index_info] != 0x12 or sym[index_shndx] in (0, 0xfff1) or not sym[index_value]:
+                continue
+            functions.append((sym[index_value], sym[0]))
+        functions.sort()
+        step = max(1, len(functions) // count)
+        samples = {}
+        for value, name_offset in functions[::step][:count]:
+            name = strtab[name_offset:strtab.find(b"\0", name_offset)].decode("ascii", "replace")
+            samples[name] = value
+        return samples
+
+    def verify(self, elf, slide):
+        """Return ([(source, result, remark), ...], whether a clear mismatch is found) of the checks after relocation."""
+        results = []
+        mismatched = False
+
+        # build ID
+        build_id = self.get_build_id(elf)
+        if build_id is None:
+            results.append(("build ID", "unknown", "no NT_GNU_BUILD_ID note in the vmlinux"))
+        else:
+            address, desc = build_id
+            try:
+                actual = read_memory(address + slide, len(desc))
+            except (gdb.MemoryError, OverflowError):
+                actual = None
+            if actual is None:
+                results.append(("build ID", "unknown", "{:s} is unreadable in memory".format(desc.hex())))
+            elif actual == desc:
+                results.append(("build ID", "match", desc.hex()))
+            else:
+                results.append(("build ID", "mismatch", "{:s} in the vmlinux, {:s} in memory".format(desc.hex(), actual.hex())))
+
+        # linux_banner
+        kversion = Kernel.kernel_version()
+        rodata = elf.read_shdr(".rodata")
+        if kversion is None or not kversion.address or rodata is None:
+            results.append(("linux_banner", "unknown", "not found"))
+        elif String.str2bytes(kversion.version_string) in rodata:
+            results.append(("linux_banner", "match", ""))
+        else:
+            results.append(("linux_banner", "mismatch", "another build or version"))
+
+        # kallsyms
+        samples = self.get_elf_function_samples(elf, self.KALLSYMS_SAMPLES)
+        matched = compared = 0
+        for name, value in samples.items():
+            addr = Ksym.get_addr(name)
+            if addr is None:
+                continue
+            compared += 1
+            if addr == AddressUtil.normalize_address(value + slide):
+                matched += 1
+        if compared < 8:
+            results.append(("kallsyms", "unknown", "{:d} of {:d} sampled functions found".format(compared, len(samples))))
+        elif matched * 10 >= compared * 9:
+            results.append(("kallsyms", "match", "{:d}/{:d} sampled functions".format(matched, compared)))
+        elif matched * 2 >= compared:
+            results.append(("kallsyms", "partial", "{:d}/{:d} sampled functions".format(matched, compared)))
+        else:
+            results.append(("kallsyms", "MISMATCH", "{:d}/{:d} sampled functions".format(matched, compared)))
+            mismatched = True
+
+        # another build of the same source still has the same symbols
+        if results[0][1] == "mismatch" and results[-1][1] != "match":
+            results[0] = ("build ID", "MISMATCH", results[0][2])
+            mismatched = True
+        return results, mismatched
+
     def get_slide_from_vector(self, elf):
         hint = Kernel.get_kernel_base_hint()
         if hint is None:
@@ -80718,6 +81434,15 @@ class KernelLoadCommand(GenericCommand):
             err("Invalid ELF")
             return
 
+        mismatches = self.check_elf_header(elf)
+        if mismatches:
+            message = "The vmlinux is for another target ({:s})".format(", ".join(mismatches))
+            if not args.force:
+                err(message)
+                info("Use `--force` to load it anyway")
+                return
+            warn(message)
+
         # `add-symbol-file FILE ADDR` relocates only .text, so pass the slide of the whole image instead.
         # ADDR must be the runtime .text, which is not the mapping start of the kernel (e.g., ARM64 .head.text).
         image_bases = [shdr.sh_addr for shdr in elf.shdrs if shdr.sh_name in (".head.text", ".text", ".init.text")]
@@ -80727,13 +81452,38 @@ class KernelLoadCommand(GenericCommand):
         image_base = min(image_bases)
 
         info("Wait for memory scan")
-        for get_slide in [self.get_slide_from_banner, self.get_slide_from_stext, self.get_slide_from_vector]:
+        slide_sources = [
+            ("linux_banner", self.get_slide_from_banner),
+            ("_stext in kallsyms", self.get_slide_from_stext),
+            ("exception vector", self.get_slide_from_vector),
+        ]
+        slide = slide_source = None
+        for source, get_slide in slide_sources:
             slide = get_slide(elf)
             if slide is not None:
+                slide_source = source
                 break
-        else:
+        if slide is None:
             err("Failed to resolve the KASLR offset")
             return
+        info("KASLR offset: {:#x} (from {:s})".format(slide, slide_source))
+
+        results, mismatched = self.verify(elf, slide)
+        for source, result, remark in results:
+            info("{:s}: {:s}{:s}".format(source, result, " ({:s})".format(remark) if remark else ""))
+        summary = {source: result for source, result, _remark in results}
+        if mismatched:
+            if not args.force:
+                err("The vmlinux does not match the running kernel")
+                info("Use `--force` to load it anyway")
+                return
+            warn("The vmlinux does not match the running kernel")
+        elif summary["build ID"] == "match" or (summary["linux_banner"] == "match" and summary["kallsyms"] != "partial"):
+            info("Confidence: high")
+        elif summary["kallsyms"] == "match":
+            info("Confidence: medium{:s}".format(" (another build, but the sampled symbols match)" if summary["build ID"] == "mismatch" else ""))
+        else:
+            warn("Confidence: low (nothing but the KASLR offset shows that the vmlinux matches)")
 
         cmd = "add-symbol-file {!r} -o {:#x}".format(args.path, slide)
         for shdr in elf.shdrs:
@@ -143464,7 +144214,7 @@ class KernelPipeCommand(GenericCommand, BufferingOutput):
         ret = gdb.execute("ktask --no-pager --user-process-only --print-fd", to_string=True)
         pipe_files = []
         for line in ret.splitlines():
-            m = re.search(r"\d+\s+(0x\S+) 0x\S+ (0x\S+) pipe:\[\d+\]", line)
+            m = re.search(r"\d+\s+\S+\s+(0x\S+) 0x\S+ (0x\S+) pipe:\[\d+\]", line)
             if not m:
                 continue
             file = int(m.group(1), 16)
@@ -144138,7 +144888,7 @@ class KernelSocketCommand(GenericCommand, BufferingOutput):
         socks = []
         pid, comm, task = None, None, None
         task_re = re.compile(r"^(0x\w+)\s+\S+\s+[UK]T?\s+(\d+)\s+(.+?)\s+0x\w+ \[")
-        fd_re = re.compile(r"^(\d+)\s+(0x\w+)\s+(0x\w+)\s+(0x\w+)\s+socket:\[(\d+)\]")
+        fd_re = re.compile(r"^(\d+)\s+\S+\s+(0x\w+)\s+(0x\w+)\s+(0x\w+)\s+socket:\[(\d+)\]")
         title_re = re.compile(r"file descriptors of `(.+)`")
         for line in ret.splitlines():
             line = line.strip()
@@ -175451,8 +176201,10 @@ class KernelLsmCommand(GenericCommand, BufferingOutput):
         "shown as `hook[NN]`. On v6.12 and later, names are read from generated static-call",
         "symbols such as `__SCK__lsm_static_call_<hook>_<N>`.",
         "",
-        "The v6.12+ discovery depends on static-call data symbols and may be unavailable",
-        "when CONFIG_KALLSYMS_ALL=n.",
+        "When CONFIG_KALLSYMS_ALL=n removes these data symbols, x86 decodes the trampolines",
+        "`__SCT__lsm_static_call_<hook>_<N>` (text symbols), and the other architectures take",
+        "the keys each `security_*` dispatcher loads. The latter names a hook point after its",
+        "dispatcher and misses the ones no dispatcher calls (e.g., inode_free_security_rcu).",
         "",
         "`--task` follows the security blobs instead. Until v5.0 the active major LSM owns each",
         "blob as a whole. From v5.1 the LSMs share one blob per object, and the offset of each",
@@ -175474,6 +176226,7 @@ class KernelLsmCommand(GenericCommand, BufferingOutput):
     _note_ = "\n".join(_note_)
 
     SCK_PREFIX = "__SCK__lsm_static_call_"
+    SCT_PREFIX = "__SCT__lsm_static_call_"
 
     # the prefixes the hook callbacks of each LSM use, tried from the longest one
     LSM_PREFIXES = (
@@ -175631,14 +176384,15 @@ class KernelLsmCommand(GenericCommand, BufferingOutput):
             return None
         return None
 
-    def iter_dispatchers(self):
+    def iter_dispatchers(self, count=None):
         """Yield (hook name, disassembly) of each `security_*` function."""
         ret = Ksym.get_kallsyms()
         if ret is None:
             return
         kallsyms, _kallsyms_map = ret
-        # RVC halves most instructions, and the head is often loaded after a call that allocates something
-        count = 64 if is_riscv32() or is_riscv64() else 40
+        if count is None:
+            # RVC halves most instructions, and the head is often loaded after a call that allocates something
+            count = 64 if is_riscv32() or is_riscv64() else 40
         seen = set()
         for addr, name, typ in sorted(kallsyms):
             if typ.lower() not in ("t", "w"):
@@ -175676,7 +176430,7 @@ class KernelLsmCommand(GenericCommand, BufferingOutput):
     #
 
     def collect_static_calls(self):
-        """Return {hook name: [(slot, key address), ...]} built from the static call keys."""
+        """Return {hook name: [(slot, key address, callback), ...]} built from the static call keys."""
         ret = Ksym.get_kallsyms()
         if ret is None:
             return {}
@@ -175688,31 +176442,342 @@ class KernelLsmCommand(GenericCommand, BufferingOutput):
             hook, _sep, slot = name[len(self.SCK_PREFIX):].rpartition("_")
             if not hook or not slot.isdigit():
                 continue
-            hooks.setdefault(hook, []).append((int(slot), addr))
+            func = read_int_from_memory(addr, safe=True)
+            if func is None:
+                continue
+            hooks.setdefault(hook, []).append((int(slot), addr, func))
         for entries in hooks.values():
             entries.sort()
         return hooks
 
+    def collect_static_call_trampolines(self):
+        """Return {hook name: [(slot, trampoline address, callback), ...]} decoded from the trampolines.
+
+        CONFIG_HAVE_STATIC_CALL (x86) generates a text symbol `__SCT__lsm_static_call_<hook>_<N>` for each slot,
+        which remains even if CONFIG_KALLSYMS_ALL=n. static_call_update() rewrites it into `jmp callback`,
+        or `ret` (or a jump to the return thunk) for an empty slot."""
+        if not is_x86():
+            return {}
+        ret = Ksym.get_kallsyms()
+        if ret is None:
+            return {}
+        kallsyms, _kallsyms_map = ret
+        hooks = {}
+        for addr, name, _typ in kallsyms:
+            if not name.startswith(self.SCT_PREFIX):
+                continue
+            hook, _sep, slot = name[len(self.SCT_PREFIX):].rpartition("_")
+            if not hook or not slot.isdigit():
+                continue
+            try:
+                code = read_memory(addr, 5)
+            except gdb.MemoryError:
+                continue
+            func = 0
+            if code[0] == 0xe9: # jmp rel32
+                target = AddressUtil.normalize_address(addr + 5 + struct.unpack("<i", code[1:5])[0])
+                if self.is_kernel_text(target) and "return_thunk" not in self.sym_name(target):
+                    func = target
+            hooks.setdefault(hook, []).append((int(slot), addr, func))
+        for entries in hooks.values():
+            entries.sort()
+        return hooks
+
+    def trace_dispatcher_refs(self, res):
+        """Return (the addresses of the globals whose value is called in the slot order, every global address
+        materialized) in the disassembled dispatcher of ARM32, ARM64 or RISC-V, e.g. `adrp x21;
+        add x21, x21, #lo; ldr x1, [x21, #off]; blr x1`. The base registers are tracked through the listing
+        in address order.
+
+        The call of each slot sits in an out-of-line block, and neither the block order nor the key address
+        order is the slot order. The main flow checks the slots in order and branches to the blocks
+        (a patched jump label, or `ldr; cmp; bgt` without CONFIG_JUMP_LABEL), so the calls are sorted by
+        the first branch into their block. The calls that no branch reaches follow in the code order."""
+        if is_arm64():
+            patterns = {
+                "base": r"adrp\s+(x\d+),\s*(0x[0-9a-f]+)",
+                "add": r"add\s+(x\d+),\s*(x\d+),\s*#(0x[0-9a-f]+|\d+)$",
+                "load": r"ldr\s+(x\d+),\s*\[(x\d+)(?:,\s*#(-?(?:0x[0-9a-f]+|\d+)))?\](?:\s*//.*)?$",
+                "icall": r"blr\s+(x\d+)",
+                "call": r"bl\s",
+                "branch": r"(?:b|b\.\w+|cbn?z\s+\w+,|tbn?z\s+\w+,\s*#\d+,)\s*(0x[0-9a-f]+)",
+                "jump": r"b\s",
+                "return": r"ret\b|br\s",
+            }
+            no_write = r"st\w*|cmp|cmn|tst|cbn?z|tbn?z|b|b\.\w+|br|blr|bl|ret|nop|ccmp|prfm|hint|bti|pac\w*|aut\w*"
+        elif is_arm32():
+            patterns = {
+                "movw": r"movw\s+(\w+),.*@\s*(0x[0-9a-f]+)",
+                "movt": r"movt\s+(\w+),.*@\s*(0x[0-9a-f]+)",
+                "literal": r"ldr\s+(\w+),\s*\[pc,\s*#-?\d+\]\s*@\s*(0x[0-9a-f]+)",
+                "add": r"add\s+(\w+),\s*(\w+),\s*#(\d+)",
+                "load": r"ldr\s+(\w+),\s*\[(\w+)(?:,\s*#(-?\d+))?\](?:\s*@.*)?$",
+                "icall": r"blx\s+(\w+)",
+                "call": r"bl\s",
+                "branch": r"b(?:[a-z]{2})?\s+(0x[0-9a-f]+)",
+                "jump": r"b\s",
+                "return": r"bx\s+lr|(?:ldm\w*|pop)\s+.*\bpc\}",
+            }
+            no_write = r"str\w*|stm\w*|push|cmp|cmn|tst|teq|b|b[a-z]{2}|bx|blx|bl|nop"
+        elif is_riscv32() or is_riscv64():
+            patterns = {
+                "auipc": r"auipc\s+(\w+),\s*(0x[0-9a-f]+|\d+)",
+                "add": r"addi\s+(\w+),\s*(\w+),\s*(-?\d+)",
+                "load": r"(?:ld|lw)\s+(\w+),\s*(-?\d+)\((\w+)\)",
+                "icall": r"jalr\s+(?:\w+,\s*(?:0)?\()?(\w+)\)?$",
+                "call": r"(?:jal|call|tail)\s|jalr\s+-?\d+\(",
+                "branch": r"(?:j|b\w+\s+\w+,(?:\s*\w+,)?)\s*(0x[0-9a-f]+)",
+                "jump": r"j\s",
+                "return": r"ret\b|jr\s",
+            }
+            no_write = r"s[bhwd]|b\w*|j|jr|jalr|ret|fence\S*|nop|wfi"
+        else:
+            return [], []
+
+        bases = {}
+        loaded = {}
+        called = []
+        branches = []
+        materialized = []
+        # the registers at each branch are taken to its target, which is reached after an epilogue in the listing
+        pending = {}
+        dead = False
+        for line in res.splitlines():
+            m = re.match(r"\s*(?:=>\s*)?(0x[0-9a-f]+)(?:\s+<[^>]*>)?:\s*(\S+)\s*(.*)", line)
+            if not m:
+                continue
+            pc, mnemonic = int(m.group(1), 16), m.group(2)
+            insn = "{:s} {:s}".format(mnemonic, m.group(3).strip())
+            if pc in pending:
+                if dead:
+                    bases, loaded = dict(pending[pc][0]), dict(pending[pc][1])
+                else:
+                    bases, loaded = dict(pending[pc][0], **bases), dict(pending[pc][1], **loaded)
+            dead = False
+            written = None
+            m = re.match(patterns["branch"], insn)
+            if m:
+                target = int(m.group(1), 16)
+                branches.append((pc, target))
+                pending.setdefault(target, (dict(bases), dict(loaded)))
+                dead = bool(re.match(patterns["jump"], insn))
+                continue
+            if re.match(patterns["return"], insn):
+                dead = True
+                continue
+            # A call does not forget the caller-saved registers, since the blocks after it are often
+            # reached by branches with those registers restored (e.g. `ldrd r2, [r11, #-28]` on ARM32).
+            m = re.match(patterns["icall"], insn)
+            if m:
+                if m.group(1) in loaded:
+                    called.append((pc, loaded[m.group(1)]))
+                continue
+            if re.match(patterns["call"], insn):
+                continue
+            if "base" in patterns and re.match(patterns["base"], insn):
+                m = re.match(patterns["base"], insn)
+                bases[m.group(1)] = int(m.group(2), 16)
+                loaded.pop(m.group(1), None)
+                materialized.append(bases[m.group(1)])
+                continue
+            if "auipc" in patterns and re.match(patterns["auipc"], insn):
+                m = re.match(patterns["auipc"], insn)
+                hi20 = int(m.group(2), 0) & 0xfffff
+                if hi20 & 0x80000:
+                    hi20 -= 0x100000
+                bases[m.group(1)] = AddressUtil.normalize_address(pc + (hi20 << 12))
+                loaded.pop(m.group(1), None)
+                continue
+            if "movw" in patterns:
+                m = re.match(patterns["movw"], insn)
+                if m:
+                    bases[m.group(1)] = int(m.group(2), 16)
+                    loaded.pop(m.group(1), None)
+                    continue
+                m = re.match(patterns["movt"], insn)
+                if m and m.group(1) in bases:
+                    bases[m.group(1)] = (bases[m.group(1)] & 0xffff) | (int(m.group(2), 16) << 16)
+                    materialized.append(bases[m.group(1)])
+                    continue
+                m = re.match(patterns["literal"], insn)
+                if m:
+                    value = read_int_from_memory(int(m.group(2), 16), safe=True)
+                    if value is not None:
+                        bases[m.group(1)] = value
+                        loaded.pop(m.group(1), None)
+                        materialized.append(value)
+                        continue
+            m = re.match(patterns["add"], insn)
+            if m and m.group(2) in bases:
+                bases[m.group(1)] = AddressUtil.normalize_address(bases[m.group(2)] + int(m.group(3), 0))
+                loaded.pop(m.group(1), None)
+                materialized.append(bases[m.group(1)])
+                continue
+            m = re.match(patterns["load"], insn)
+            if m:
+                if is_riscv32() or is_riscv64():
+                    dst, offset, base = m.group(1), m.group(2), m.group(3)
+                else:
+                    dst, base, offset = m.group(1), m.group(2), m.group(3)
+                if base in bases:
+                    addr = AddressUtil.normalize_address(bases[base] + int(offset or "0", 0))
+                    materialized.append(addr)
+                    bases.pop(dst, None)
+                    loaded[dst] = addr
+                    continue
+            # any other instruction overwrites its first operand
+            if not re.fullmatch(no_write, mnemonic):
+                m = re.match(r"\S+\s+(\w+)", insn)
+                if m:
+                    written = re.sub(r"^w(\d+)$", r"x\1", m.group(1))
+                    bases.pop(written, None)
+                    loaded.pop(written, None)
+
+        # the block of a call is the few instructions before it
+        first_branch = {}
+        for pc, target in sorted(branches):
+            for call_pc, key in called:
+                if 0 <= call_pc - target <= 0x40:
+                    first_branch.setdefault(key, pc)
+                    break
+        keys = list(dict.fromkeys(key for _pc, key in called))
+        keys.sort(key=lambda x: (x not in first_branch, first_branch.get(x, 0)))
+        return keys, list(dict.fromkeys(materialized))
+
+    # the hook points whose dispatcher has another name, which the static call keys are named after
+    DISPATCHER_HOOK_NAMES = {
+        "bprm_check": "bprm_check_security",
+        "file_alloc": "file_alloc_security", "file_free": "file_free_security",
+        "inode_alloc": "inode_alloc_security", "inode_free": "inode_free_security",
+        "sb_alloc": "sb_alloc_security", "sb_free": "sb_free_security",
+        "msg_msg_alloc": "msg_msg_alloc_security", "msg_msg_free": "msg_msg_free_security",
+        "msg_queue_alloc": "msg_queue_alloc_security", "msg_queue_free": "msg_queue_free_security",
+        "shm_alloc": "shm_alloc_security", "shm_free": "shm_free_security",
+        "sem_alloc": "sem_alloc_security", "sem_free": "sem_free_security",
+        "sk_alloc": "sk_alloc_security", "sk_free": "sk_free_security", "sk_clone": "sk_clone_security",
+        "sock_rcv_skb": "socket_sock_rcv_skb",
+        "prepare_creds": "cred_prepare", "transfer_creds": "cred_transfer",
+        "settime64": "settime", "free_mnt_opts": "sb_free_mnt_opts", "create_user_ns": "userns_create",
+        "vm_enough_memory_mm": "vm_enough_memory",
+        "xfrm_policy_alloc": "xfrm_policy_alloc_security", "xfrm_policy_free": "xfrm_policy_free_security",
+        "xfrm_policy_delete": "xfrm_policy_delete_security", "xfrm_state_free": "xfrm_state_free_security",
+        "xfrm_state_delete": "xfrm_state_delete_security",
+    }
+
+    def collect_static_call_dispatchers(self):
+        """Return {hook name: [(slot, key address, callback), ...]} built from the keys the dispatchers load.
+
+        Without CONFIG_HAVE_STATIC_CALL, a static call loads `key.func` and calls it, so a dispatcher calls
+        through every key of its hook point, and the keys of a hook point are adjacent. A few dispatchers iterate
+        `static_calls_table.<hook>[]` (struct lsm_static_call {key, trampoline, hl, active}) instead, which
+        holds the keys in the slot order.
+        Some dispatchers call another hook point too (e.g. inode_xattr_skipcap from security_inode_setxattr()),
+        so a key belongs to the dispatcher that refers to the fewest keys, and a dispatcher that owns several
+        hook points is split by the number of slots."""
+        ptrsize = current_arch.ptrsize
+        refs = {}
+        table_refs = {}
+        for hook, res in self.iter_dispatchers(count=400):
+            hook = self.DISPATCHER_HOOK_NAMES.get(hook, hook)
+            called, materialized = self.trace_dispatcher_refs(res)
+            keys = []
+            for addr in called:
+                value = read_int_from_memory(addr, safe=True)
+                if value is not None and (value == 0 or self.is_kernel_text(value)):
+                    keys.append(addr)
+            for addr in materialized:
+                value = read_int_from_memory(addr, safe=True)
+                if value and not self.is_kernel_text(value) and is_valid_addr(value):
+                    table_refs.setdefault(hook, []).append(addr)
+            refs[hook] = keys
+
+        counts = collections.Counter(len(keys) for keys in refs.values() if keys)
+        if not counts:
+            return {}
+        nr_slots = counts.most_common(1)[0][0]
+
+        stride = ptrsize * 4
+        for hook, candidates in table_refs.items():
+            for addr in candidates:
+                try:
+                    entries = [slice_unpack(read_memory(addr + stride * i, stride), ptrsize) for i in range(nr_slots)]
+                    keys = [key for key, _trampoline, _hl, _active in entries]
+                    funcs = [read_int_from_memory(key) for key in keys]
+                except (gdb.MemoryError, OverflowError):
+                    continue
+                # the trampoline is NULL without CONFIG_HAVE_STATIC_CALL, and every slot has its static key
+                if any(trampoline or not is_valid_addr(active) for _key, trampoline, _hl, active in entries):
+                    continue
+                # the keys of a hook point are adjacent, while other variables may be between them
+                if len(set(keys)) != nr_slots or max(keys) - min(keys) >= stride * nr_slots:
+                    continue
+                if any(func and not self.is_kernel_text(func) for func in funcs):
+                    continue
+                refs[hook] = list(dict.fromkeys(refs[hook] + keys))
+
+        owners = {}
+        for hook, keys in sorted(refs.items(), key=lambda x: (len(x[1]), len(x[0]), x[0])):
+            for key in keys:
+                owners.setdefault(key, hook)
+
+        hooks = {}
+        for hook, keys in sorted(refs.items()):
+            keys = [key for key in keys if owners[key] == hook]
+            if not keys:
+                continue
+            # the keys of each hook point are adjacent, while the slot order is the order in `refs`
+            groups = [keys]
+            if len(keys) > nr_slots and len(keys) % nr_slots == 0:
+                by_address = sorted(keys)
+                groups = [sorted(by_address[i:i + nr_slots], key=keys.index) for i in range(0, len(keys), nr_slots)]
+            unnamed = []
+            for group in groups:
+                # the slots are filled from the first one, so the empty keys follow
+                funcs = {key: read_int_from_memory(key) for key in group}
+                group = sorted(group, key=lambda x: not funcs[x])
+                entries = [(slot, key, funcs[key]) for slot, key in enumerate(group)]
+                guessed = None
+                if len(groups) > 1 and funcs[group[0]]:
+                    guessed = self.hook_name_from_callback(self.sym_name(funcs[group[0]]), None)
+                if guessed and guessed != hook:
+                    hooks.setdefault(guessed + " (guessed)", entries)
+                else:
+                    unnamed.append(entries)
+            # the one that has callbacks is its own hook point among the ones that cannot be named
+            unnamed.sort(key=lambda x: -sum(1 for _slot, _key, func in x if func))
+            for i, entries in enumerate(unnamed):
+                hooks.setdefault(hook if i == 0 else "{:s} (another hook point {:d})".format(hook, i), entries)
+        return hooks
+
     def dump_static_calls(self):
-        hooks = self.collect_static_calls()
+        sources = [
+            ("the static call keys", self.collect_static_calls),
+            ("the static call trampolines", self.collect_static_call_trampolines),
+            ("the keys the dispatchers load", self.collect_static_call_dispatchers),
+        ]
+        hooks = source = None
+        for name, collect in sources:
+            hooks = collect()
+            if hooks:
+                source = name
+                break
         if not hooks:
-            self.err_add_out("Could not find `{:s}*`; this kernel may be CONFIG_KALLSYMS_ALL=n".format(self.SCK_PREFIX))
+            self.err_add_out("Could not find the static calls of the hook points")
             return
         self.quiet_info_add_out("LSM framework: static calls (v6.12 or later)")
+        self.quiet_info_add_out("Static calls resolved from: {:s}".format(source))
         self.quiet_info_add_out("Number of the hook points: {:d}".format(len(hooks)))
+        where = "trampoline" if source == "the static call trampolines" else "key"
 
         resolved = {}
         lsms = set()
         for hook, entries in hooks.items():
             callbacks = []
-            for slot, key in entries:
-                func = read_int_from_memory(key, safe=True)
-                if func is None:
-                    continue
+            for slot, addr, func in entries:
                 if not func:
                     continue
                 name = self.sym_name(func)
-                callbacks.append((slot, key, func, name))
+                callbacks.append((slot, addr, func, name))
                 lsm = self.lsm_of_callback(name)
                 if lsm:
                     lsms.add(lsm)
@@ -175726,13 +176791,13 @@ class KernelLsmCommand(GenericCommand, BufferingOutput):
             if not self.match_filter(hook):
                 continue
             self.out.append("{:s} ({:d} callback{:s})".format(hook, len(callbacks), "" if len(callbacks) == 1 else "s"))
-            for slot, key, func, name in callbacks:
+            for slot, addr, func, name in callbacks:
                 line = "    {:s} <{:s}>".format(self.format_addr(func), name or "NO_SYMBOL")
                 lsm = self.lsm_of_callback(name)
                 if lsm:
                     line += " [{:s}]".format(lsm)
                 if self.args.meta:
-                    line += "  (slot {:d}, key {:s})".format(slot, self.format_addr(key))
+                    line += "  (slot {:d}, {:s} {:s})".format(slot, where, self.format_addr(addr))
                 self.out.append(line)
         return
 

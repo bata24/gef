@@ -8475,13 +8475,14 @@ Load the vmlinux without a load address.
 ### Syntax
 
 ```text
-usage: kload [-h] VMLINUX_PATH
+usage: kload [-h] [-f] VMLINUX_PATH
 
 positional arguments:
   VMLINUX_PATH  path of the vmlinux.
 
 options:
   -h, --help    show this help message and exit
+  -f, --force   load the vmlinux even if it does not match the running kernel.
 ```
 
 ### Notes
@@ -8492,6 +8493,13 @@ The KASLR offset is resolved in the following order and applied to all sections.
   2. The address of `_stext` in kallsyms and in the vmlinux
   3. The exception vector address and its symbol in the vmlinux
 Sections linked below the image (e.g., x86_64 zero-based .data..percpu, ARM32 .vectors) are not relocated.
+
+Then the vmlinux is verified against the running kernel with:
+  - the ELF class, machine and endianness
+  - the GNU build ID in `.notes`, read from the relocated address in memory
+  - the linux_banner
+  - the addresses of sampled global functions in kallsyms
+A clear mismatch is not loaded without `--force`.
 ```
 
 ## `kmod-load`
@@ -9685,8 +9693,10 @@ the head or member offset it references. A head that no dispatcher pointed at is
 shown as `hook[NN]`. On v6.12 and later, names are read from generated static-call
 symbols such as `__SCK__lsm_static_call_<hook>_<N>`.
 
-The v6.12+ discovery depends on static-call data symbols and may be unavailable
-when CONFIG_KALLSYMS_ALL=n.
+When CONFIG_KALLSYMS_ALL=n removes these data symbols, x86 decodes the trampolines
+`__SCT__lsm_static_call_<hook>_<N>` (text symbols), and the other architectures take
+the keys each `security_*` dispatcher loads. The latter names a hook point after its
+dispatcher and misses the ones no dispatcher calls (e.g., inode_free_security_rcu).
 
 `--task` follows the security blobs instead. Until v5.0 the active major LSM owns each
 blob as a whole. From v5.1 the LSMs share one blob per object, and the offset of each
