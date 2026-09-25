@@ -8800,8 +8800,21 @@ Simplified keyring structures:
 | type                           |
 | description                    |
 | payload.subscriptions (~v3.12) |---->struct keyring_list
+| payload.data[0] (auth key)     |---->struct request_key_auth
 | keys.root (v3.13~)             |---->assoc_array_ptr
 +--------------------------------+
+
++-request_key_auth-+
+| rcu (v5.3~)      |
+| usage (v7.2~)    |
+| target_key       |---->struct key (being constructed)
+| dest_keyring     |---->struct key
+| cred             |---->struct cred (requester)
+| callout_info     |
+| callout_len      |
+| pid              |
+| op[8] (v5.0~)    |
++------------------+
 
 [~v3.12]
 +-keyring_list-+
@@ -8811,7 +8824,7 @@ Simplified keyring structures:
 
 [v3.13~]
 keys.root ---> assoc_array_ptr (tagged)
-                +-- leaf -----> struct key
+                +-- leaf -----> struct key (bit 1 is set if it is a keyring)
                 +-- node -----> +-assoc_array_node-----+
                 |               | slots[16]            |---> assoc_array_ptr ...
                 |               +----------------------+
@@ -8820,6 +8833,7 @@ keys.root ---> assoc_array_ptr (tagged)
                                 +----------------------+
 
 A keyring leaf may itself be another keyring, so the command walks child keys recursively.
+The request-key authorisation key held by an upcall helper is shown as the `request` root.
 ```
 
 ## `knamespaces`

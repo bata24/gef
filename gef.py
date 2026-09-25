@@ -78538,8 +78538,21 @@ class KernelKeyringCommand(GenericCommand, BufferingOutput):
         "| type                           |",
         "| description                    |",
         "| payload.subscriptions (~v3.12) |---->struct keyring_list",
+        "| payload.data[0] (auth key)     |---->struct request_key_auth",
         "| keys.root (v3.13~)             |---->assoc_array_ptr",
         "+--------------------------------+",
+        "",
+        "+-request_key_auth-+",
+        "| rcu (v5.3~)      |",
+        "| usage (v7.2~)    |",
+        "| target_key       |---->struct key (being constructed)",
+        "| dest_keyring     |---->struct key",
+        "| cred             |---->struct cred (requester)",
+        "| callout_info     |",
+        "| callout_len      |",
+        "| pid              |",
+        "| op[8] (v5.0~)    |",
+        "+------------------+",
         "",
         "[~v3.12]",
         "+-keyring_list-+",
@@ -78549,7 +78562,7 @@ class KernelKeyringCommand(GenericCommand, BufferingOutput):
         "",
         "[v3.13~]",
         "keys.root ---> assoc_array_ptr (tagged)",
-        "                +-- leaf -----> struct key",
+        "                +-- leaf -----> struct key (bit 1 is set if it is a keyring)",
         "                +-- node -----> +-assoc_array_node-----+",
         "                |               | slots[16]            |---> assoc_array_ptr ...",
         "                |               +----------------------+",
@@ -78558,6 +78571,7 @@ class KernelKeyringCommand(GenericCommand, BufferingOutput):
         "                                +----------------------+",
         "",
         "A keyring leaf may itself be another keyring, so the command walks child keys recursively.",
+        "The request-key authorisation key held by an upcall helper is shown as the `request` root.",
     ]
     _note_ = "\n".join(_note_)
 
@@ -78565,6 +78579,7 @@ class KernelKeyringCommand(GenericCommand, BufferingOutput):
         "KeyInfo", "address usage serial type_addr type_name description expiry uid gid perm datalen state flags payload",
     )
     KeyRecord = collections.namedtuple("KeyRecord", "root depth parent address info status")
+    RequestAuth = collections.namedtuple("RequestAuth", "target target_info dest dest_info cred callout callout_len pid op")
 
     def member_offset(self, member):
         try:
@@ -78706,6 +78721,9 @@ class KernelKeyringCommand(GenericCommand, BufferingOutput):
         if self.offset_payload is None:
             if self.kversion < "3.13":
                 self.offset_payload = self.offset_description + 3 * current_arch.ptrsize
+            elif self.kversion < "4.4":
+                # desc_len and the two-word type_data precede payload.
+                self.offset_payload = self.offset_description + 4 * current_arch.ptrsize
             elif self.kversion < "5.3":
                 # keyring_index_key has an extra desc_len word after description.
                 self.offset_payload = self.offset_description + 2 * current_arch.ptrsize
@@ -78714,9 +78732,8 @@ class KernelKeyringCommand(GenericCommand, BufferingOutput):
 
         self.offset_keys_root = self.member_offset("keys.root")
         if self.offset_keys_root is None and "3.13" <= self.kversion:
-            if self.kversion < "4.8":
-                self.offset_keys_root = self.offset_description + 2 * current_arch.ptrsize
-            elif self.kversion < "5.3":
+            # keys follows desc_len and either type_data (~v4.3) or name_link (v4.4~).
+            if self.kversion < "5.3":
                 self.offset_keys_root = self.offset_description + 4 * current_arch.ptrsize
             else:
                 self.offset_keys_root = self.offset_description + 3 * current_arch.ptrsize
@@ -78765,6 +78782,7 @@ class KernelKeyringCommand(GenericCommand, BufferingOutput):
             self.tgcred_session_offset = self.tgcred_member_offset("session_keyring", align(12, ptrsize))
             self.tgcred_process_offset = self.tgcred_member_offset("process_keyring", self.tgcred_session_offset + ptrsize)
             self.meta.append((self.quiet_info, "offsetof(cred, thread_keyring): {:#x}".format(offsets["thread"])))
+            self.meta.append((self.quiet_info, "offsetof(cred, request_key_auth): {:#x}".format(offsets["request"])))
             self.meta.append((self.quiet_info, "offsetof(cred, tgcred): {:#x}".format(offsets["tgcred"])))
             self.meta.append((self.quiet_info, "offsetof(thread_group_cred, session_keyring): {:#x}".format(self.tgcred_session_offset)))
             self.meta.append((self.quiet_info, "offsetof(thread_group_cred, process_keyring): {:#x}".format(self.tgcred_process_offset)))
@@ -78777,6 +78795,7 @@ class KernelKeyringCommand(GenericCommand, BufferingOutput):
             }
             for name in ("session", "process", "thread"):
                 self.meta.append((self.quiet_info, "offsetof(cred, {:s}_keyring): {:#x}".format(name, self.cred_key_offsets[name])))
+            self.meta.append((self.quiet_info, "offsetof(cred, request_key_auth): {:#x}".format(self.cred_key_offsets["request"])))
         return True
 
     @staticmethod
@@ -78795,7 +78814,7 @@ class KernelKeyringCommand(GenericCommand, BufferingOutput):
 
     def task_roots(self, cred):
         if self.cred_key_offsets is None:
-            return [("thread", 0), ("process", 0), ("session", 0)]
+            return [("thread", 0), ("process", 0), ("session", 0), ("request", 0)]
         try:
             if self.kversion < "3.8":
                 thread = read_int_from_memory(cred + self.cred_key_offsets["thread"])
@@ -78809,9 +78828,10 @@ class KernelKeyringCommand(GenericCommand, BufferingOutput):
                 thread = read_int_from_memory(cred + self.cred_key_offsets["thread"])
                 process = read_int_from_memory(cred + self.cred_key_offsets["process"])
                 session = read_int_from_memory(cred + self.cred_key_offsets["session"])
+            request = read_int_from_memory(cred + self.cred_key_offsets["request"])
         except (gdb.MemoryError, OverflowError):
             return None
-        return [("thread", thread), ("process", process), ("session", session)]
+        return [("thread", thread), ("process", process), ("session", session), ("request", request)]
 
     def collect_tasks(self):
         command = self.task_command
@@ -78868,6 +78888,49 @@ class KernelKeyringCommand(GenericCommand, BufferingOutput):
         return self.KeyInfo(address, usage, serial, type_addr, type_name, description or "[anon]",
                             expiry, uid, gid, perm, datalen, state, flags, payload)
 
+    def read_request_key_auth(self, info):
+        if not info.payload or not is_valid_addr(info.payload):
+            return None
+        try:
+            target_serial = int(info.description, 16)
+        except ValueError:
+            return None
+
+        ptrsize = current_arch.ptrsize
+        try:
+            bases = [GefUtil.parse_and_eval_unsigned("&((struct request_key_auth *)0)->target_key")]
+        except gdb.error:
+            # rcu_head was added in front of target_key in v5.3, and refcount_t usage in v7.2.
+            bases = [0, 2 * ptrsize, 3 * ptrsize]
+        for base in bases:
+            address = info.payload + base
+            try:
+                target = read_int_from_memory(address)
+                dest = read_int_from_memory(address + ptrsize)
+                cred = read_int_from_memory(address + 2 * ptrsize)
+                callout_info = read_int_from_memory(address + 3 * ptrsize)
+                callout_len = read_int_from_memory(address + 4 * ptrsize)
+                pid = read_int32_from_memory(address + 5 * ptrsize)
+                op = read_memory(address + 5 * ptrsize + 4, 8)
+            except (gdb.MemoryError, OverflowError):
+                continue
+            # The auth key is described by the target key serial in hex.
+            target_info = self.read_key(target) if is_valid_addr(target) else None
+            if target_info is None or target_info.serial != target_serial:
+                continue
+            dest_info = self.read_key(dest) if dest and is_valid_addr(dest) else None
+            callout = None
+            if callout_info and is_valid_addr(callout_info):
+                try:
+                    callout = read_memory(callout_info, min(callout_len, 0x40))
+                except (gdb.MemoryError, OverflowError):
+                    pass
+            # op[] was added in v5.0.
+            op = op.split(b"\0")[0] if b"\0" in op else b""
+            op = op.decode() if re.fullmatch(rb"[a-z]{1,7}", op) else None
+            return self.RequestAuth(target, target_info, dest, dest_info, cred, callout, callout_len, pid, op)
+        return None
+
     @staticmethod
     def permission_string(perm):
         names = "vrwsla"
@@ -78879,29 +78942,44 @@ class KernelKeyringCommand(GenericCommand, BufferingOutput):
 
     def walk_assoc_array(self, root):
         leaves = []
-        stack = [root]
+        if root and not root & 1:
+            self.walk_error = "invalid assoc_array root {:#x}".format(root)
+            return leaves
+        stack = [(root, 0)]
         seen = set()
         ptrsize = current_arch.ptrsize
         while stack and len(leaves) < self.args.max_keys:
-            pointer = stack.pop()
+            pointer, parent = stack.pop()
             if not pointer:
                 continue
             if not pointer & 1:
-                if pointer not in leaves:
-                    leaves.append(pointer)
+                # Keyring leaves are tagged with KEYRING_PTR_SUBTYPE (bit 1).
+                leaf = pointer & ~2
+                if leaf not in leaves:
+                    leaves.append(leaf)
                 continue
             base = pointer & ~3
             if base in seen:
+                self.walk_error = "assoc_array node at {:#x} is linked twice".format(base)
                 continue
+            if len(seen) >= self.args.max_keys:
+                self.walk_error = "too many assoc_array nodes"
+                break
             seen.add(base)
             try:
+                back_pointer = read_int_from_memory(base)
+                if back_pointer != parent:
+                    self.walk_error = "assoc_array node at {:#x} has back_pointer {:#x} (expected {:#x})".format(
+                        base, back_pointer, parent,
+                    )
+                    continue
                 if pointer & 2:
                     offset_next = 2 * ptrsize if ptrsize == 8 else 3 * ptrsize
-                    stack.append(read_int_from_memory(base + offset_next))
+                    stack.append((read_int_from_memory(base + offset_next), pointer))
                 else:
                     offset_slots = 2 * ptrsize
                     for slot in range(15, -1, -1):
-                        stack.append(read_int_from_memory(base + offset_slots + slot * ptrsize))
+                        stack.append((read_int_from_memory(base + offset_slots + slot * ptrsize), pointer))
             except (gdb.MemoryError, OverflowError):
                 self.walk_error = "unreadable assoc_array node at {:#x}".format(base)
         return leaves
@@ -79009,7 +79087,8 @@ class KernelKeyringCommand(GenericCommand, BufferingOutput):
             ))
             if self.args.verbose and info:
                 parent = "none" if not record.parent else "{:#x}".format(record.parent)
-                expiry = "never" if info.expiry == 0 else str(info.expiry)
+                # Newer kernels use TIME64_MAX instead of 0 for keys that never expire.
+                expiry = "never" if info.expiry in (0, (1 << 63) - 1) else str(info.expiry)
                 self.out.append("  link:  parent={:s} type={:#x}".format(parent, info.type_addr))
                 self.out.append("  owner: uid={:d} gid={:d} refcount={:d}".format(info.uid, info.gid, info.usage))
                 self.out.append("  perm:  {:s}".format(self.permission_string(info.perm)))
@@ -79017,6 +79096,29 @@ class KernelKeyringCommand(GenericCommand, BufferingOutput):
                 self.out.append("  state: expiry={:s} state={:s} flags={:#x}".format(expiry, state, info.flags))
                 if info.type_name != "keyring":
                     self.out.append("  data:  payload={:#x}".format(info.payload))
+                if info.type_name == ".request_key_auth":
+                    self.append_request_key_auth(info)
+        return
+
+    def append_request_key_auth(self, info):
+        auth = self.read_request_key_auth(info)
+        if auth is None:
+            self.out.append("  auth:  [could not decode struct request_key_auth]")
+            return
+
+        def key_string(address, key_info):
+            if not address:
+                return "none"
+            if key_info is None:
+                return "{:#x} [unreadable struct key]".format(address)
+            return "{:#x} ({:s} {:s} {!r})".format(address, self.serial_string(key_info.serial), key_info.type_name, key_info.description)
+
+        self.out.append("  auth:  target={:s}".format(key_string(auth.target, auth.target_info)))
+        self.out.append("  auth:  dest_keyring={:s}".format(key_string(auth.dest, auth.dest_info)))
+        op = "n/a" if auth.op is None else auth.op
+        self.out.append("  auth:  cred={:#x} pid={:d} op={:s}".format(auth.cred, auth.pid, op))
+        callout = "none" if auth.callout is None else "{!r} ({:d} bytes)".format(auth.callout, auth.callout_len)
+        self.out.append("  auth:  callout_info={:s}".format(callout))
         return
 
     def append_walk_warnings(self):
