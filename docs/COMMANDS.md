@@ -8502,7 +8502,7 @@ Load the kernel module without a load address.
 ### Syntax
 
 ```text
-usage: kmod-load [-h] [--meta] [-n] [-q] name path
+usage: kmod-load [-h] [--force] [--meta] [-n] [-q] name path
 
 positional arguments:
   name            name of the loaded module to search for by `kmod`.
@@ -8510,6 +8510,7 @@ positional arguments:
 
 options:
   -h, --help      show this help message and exit
+  --force         load even if the file does not match the loaded module.
   --meta          display offset information.
   -n, --no-pager  do not use the pager.
   -q, --quiet     enable quiet mode.
@@ -8524,8 +8525,14 @@ kmod-load sample /path/to/sample.ko
 ### Notes
 
 ```text
-This command requires CONFIG_RANDSTRUCT=n.
+This command requires CONFIG_RANDSTRUCT=n, CONFIG_KALLSYMS=y and CONFIG_SYSFS=y (module->sect_attrs).
 It is useful if you have a kernel module with debuginfo at hand.
+
+The file is verified against the loaded module before loading:
+- ELF type, machine, class and endianness
+- The allocated section names
+- The .note.gnu.build-id section in memory, or the symbol addresses of the module kallsyms if it is unavailable
+A clear mismatch is rejected unless --force is specified.
 ```
 
 ## `ksymaddr-remote`
@@ -9737,8 +9744,12 @@ Simplified module structure:
                    | ...                            |      | typetab (v5.2~)|
                    +--------------------------------+      +----------------+
 
+Since v6.4, each type of mem[] (text, data, rodata, ro_after_init, init_*) is allocated separately,
+so each allocated type is displayed on its own line. Before v6.4, the whole core is displayed as `core`.
+
 Notes for -a option:
 - You can check the added symbols with the `symbols` command.
+- Symbols are applied per region of the module memory. Symbols outside them (e.g., per-cpu variables) are skipped.
 - Added symbols are in the format `module_name.symbol` to avoid collisions.
   When used from the command line, they must be enclosed in single quotes.
   e.g., `p 'virtio_net.__this_module'`

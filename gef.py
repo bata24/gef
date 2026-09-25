@@ -32104,22 +32104,14 @@ class KernelChecksecCommand(GenericCommand):
         return True
 
     def get_loaded_modules(self):
-        # Returns [[name, base, size], ...], or None if `kmod` failed.
+        # Returns [[name, base, size], ...] (a module has multiple regions since v6.4), or None if it failed.
         if self.loaded_modules is not False:
             return self.loaded_modules
-        self.loaded_modules = None
-        try:
-            output = Color.remove_color(gdb.execute("kmod --no-pager", to_string=True))
-        except gdb.error:
-            return None
-        if "Could not find any modules" in output:
-            self.loaded_modules = []
-        elif "Num of modules:" in output:
-            self.loaded_modules = []
-            for line in output.splitlines():
-                match = re.match(r"^0x[0-9a-f]+\s+(\S+)\s+(0x[0-9a-f]+)\s+(0x[0-9a-f]+)$", line.strip())
-                if match:
-                    self.loaded_modules.append([match.group(1), int(match.group(2), 16), int(match.group(3), 16)])
+        modules = Kernel.Module.get_instance().get_loaded_modules()
+        if modules is None:
+            self.loaded_modules = None
+        else:
+            self.loaded_modules = [[name, base, size] for _module, name, regions in modules for _type, base, size in regions]
         return self.loaded_modules
 
     def is_modules_supported(self):
@@ -66088,6 +66080,10 @@ class KernelAddressHeuristicFinder:
                         KernelAddressHeuristicFinderUtil.arm32_movw_movt_ldr(res),
                         KernelAddressHeuristicFinderUtil.arm32_ldr_pc_relative_ldr(res),
                     )
+                elif is_riscv64() or is_riscv32():
+                    g = KernelAddressHeuristicFinderUtil.riscv_auipc_use(res)
+                else:
+                    g = []
                 for x in g:
                     # modules is a list_head, so it passes even when no module is loaded
                     if is_double_link_list(x):
@@ -70889,17 +70885,25 @@ class Kernel:
             # The vector page is copied independently of the kernel image. Its
             # second page starts with pointers to core exception handlers, so it
             # remains a reliable hint even when execution is stopped in a module.
-            vbar = get_register("$VBAR") or get_register("$VBAR_EL1") or 0
-            sctlr = get_register("$SCTLR") or get_register("$SCTLR_EL1") or 0
-            # SCTLR.V overrides VBAR and selects the high-vector page.
-            vector_base = 0xffff_0000 if sctlr & (1 << 13) else vbar
-            try:
-                data = read_memory(vector_base + get_pagesize(), 0x10)
-            except gdb.MemoryError:
-                data = b""
-            for handler in slice_unpack(data, 4):
-                if 0x4000_0000 <= handler < 0xff00_0000 and handler & 3 == 0 and is_valid_addr(handler):
-                    return handler
+            # A kernel running in the secure state (e.g., vexpress-a9 without firmware) uses the banked
+            # secure registers, so they are tried too.
+            vector_bases = []
+            for sctlr_regs, vbar_regs in [
+                (("$SCTLR", "$SCTLR_EL1"), ("$VBAR", "$VBAR_EL1")),
+                (("$SCTLR_S", "$SCTLR_EL1_S"), ("$VBAR_S", "$VBAR_EL1_S")),
+            ]:
+                sctlr = get_register(sctlr_regs[0]) or get_register(sctlr_regs[1]) or 0
+                vbar = get_register(vbar_regs[0]) or get_register(vbar_regs[1]) or 0
+                # SCTLR.V overrides VBAR and selects the high-vector page.
+                vector_bases.append(0xffff_0000 if sctlr & (1 << 13) else vbar)
+            for vector_base in dict.fromkeys(vector_bases):
+                try:
+                    data = read_memory(vector_base + get_pagesize(), 0x10)
+                except gdb.MemoryError:
+                    continue
+                for handler in slice_unpack(data, 4):
+                    if 0x4000_0000 <= handler < 0xff00_0000 and handler & 3 == 0 and is_valid_addr(handler):
+                        return handler
 
         elif is_arm64():
             # `VBAR` register has interrupt vector address
@@ -75465,6 +75469,1128 @@ class Kernel:
                 ret = gdb.execute("x/40i {:#x}".format(filter_info.bpf_func), to_string=True).rstrip()
                 return [ret, "..."]
 
+    class Module:
+        """Resolve the layout of `struct module` and parse it.
+        It is shared by `kmod`, `kmod-load` and the commands that look up the loaded modules.
+
+        struct module {
+            enum module_state state;
+            struct list_head list;
+            char name[MODULE_NAME_LEN];
+            ...
+            struct module_memory mem[MOD_MEM_NUM_TYPES]; // v6.4~
+            struct module_layout core_layout;            // v4.5~v6.3
+            void *module_core;                           // ~v4.4
+            ...
+            struct mod_kallsyms __rcu *kallsyms;         // v4.5~
+            Elf_Sym *symtab, *core_symtab;               // ~v4.4
+            ...
+            struct module_sect_attrs *sect_attrs;
+            ...
+        };
+        """
+
+        # enum mod_mem_type (v6.4~)
+        MOD_MEM_TYPES = ["text", "data", "rodata", "ro_after_init", "init_text", "init_data", "init_rodata"]
+        # not a limit of the kernel, only to reject garbage
+        MAX_MODULE_SIZE = 0x4000_0000
+
+        @staticmethod
+        @Cache.cache_this_session(per_inferior=True, until_new_objfile=True)
+        def get_instance():
+            """Return the instance shared by every command, so that the offsets are resolved at most once."""
+            return Kernel.Module()
+
+        def __init__(self):
+            self.meta = []
+            self.initialized = False
+            self.modules = None
+            self.offset_name = None
+            self.memory_meta = []
+            self.memory_initialized = False
+            self.memory_kind = None
+            self.offset_base = None
+            self.offset_size = None
+            self.sizeof_module_memory = None
+            self.kallsyms_meta = []
+            self.kallsyms_initialized = False
+            self.offset_kallsyms = None
+            self.offset_symtab = None
+            self.sect_attrs_meta = []
+            self.sect_attrs_initialized = False
+            self.offset_sect_attrs = None
+            self.offset_attrs = None
+            self.offset_address = None
+            return
+
+        @staticmethod
+        def export_meta(command, meta):
+            """Convert the recorded meta lines into the (printer, line) pairs the commands use."""
+            level_map = {"info": command.quiet_info, "warn": command.quiet_warn, "err": command.quiet_err}
+            return [(level_map[level], line) for level, line in meta]
+
+        def initialize(self):
+            if self.initialized:
+                return True
+
+            self.meta = []
+            kversion = Kernel.kernel_version()
+            if kversion is None:
+                self.meta.append(("err", "Failed to resolve kernel version"))
+                return None
+
+            # modules
+            self.modules = KernelAddressHeuristicFinder.get_modules()
+            if self.modules is None:
+                self.meta.append(("err", "Could not find modules (CONFIG_MODULES may not be set)"))
+                return None
+            self.meta.append(("info", "modules: {:#x}".format(self.modules)))
+
+            # module->name
+            self.offset_name = current_arch.ptrsize * 3 # state + list_head
+            self.meta.append(("info", "offsetof(module, name): {:#x}".format(self.offset_name)))
+            self.initialized = True
+            return True
+
+        def initialize_memory(self, module_addrs):
+            if self.memory_initialized:
+                return True
+
+            self.memory_meta = []
+            kversion = Kernel.kernel_version()
+
+            # module->{mem,core_layout,module_core}
+            # (member name, size member name, getter)
+            mem = ("mem", "mem.size", self.get_offset_mem) # v6.4~
+            core_layout = ("core_layout", "core_layout.size", self.get_offset_core_layout) # v4.5~v6.4
+            module_core = ("module_core", "core_size", self.get_offset_module_core) # ~v4.4
+            # the kernel version only decides which layout is tried first, because distributions
+            # backport the layout change (e.g. Ubuntu 4.4 already has core_layout)
+            if "6.4" <= kversion:
+                plans = [mem, core_layout, module_core]
+            elif "4.5" <= kversion:
+                plans = [core_layout, mem, module_core]
+            else:
+                plans = [module_core, core_layout, mem]
+            for base_name, size_name, getter in plans:
+                ret = getter(module_addrs)
+                if ret is None:
+                    continue
+                self.offset_base, self.offset_size = ret[:2]
+                self.memory_meta.append(("info", "offsetof(module, {:s}): {:#x}".format(base_name, self.offset_base)))
+                self.memory_meta.append(("info", "offsetof(module, {:s}): {:#x}".format(size_name, self.offset_size)))
+                if base_name == "mem":
+                    self.sizeof_module_memory = ret[2]
+                    self.memory_meta.append(("info", "sizeof(module_memory): {:#x}".format(self.sizeof_module_memory)))
+                self.memory_kind = base_name
+                break
+            else:
+                self.memory_meta.append(("err", "Could not find module->{:s}".format(plans[0][0])))
+                return None
+            self.memory_initialized = True
+            return True
+
+        def initialize_kallsyms(self, module_addrs):
+            if self.kallsyms_initialized:
+                return True
+
+            self.kallsyms_meta = []
+            # the kernel version only decides which layout is tried first, because distributions
+            # backport the change of v4.5 (struct mod_kallsyms)
+            if Kernel.kernel_version() < "4.5":
+                self.offset_symtab = self.get_offset_symtab(module_addrs)
+                if self.offset_symtab is None:
+                    self.offset_kallsyms = self.get_offset_kallsyms(module_addrs)
+            else:
+                self.offset_kallsyms = self.get_offset_kallsyms(module_addrs)
+                if self.offset_kallsyms is None:
+                    self.offset_symtab = self.get_offset_symtab(module_addrs)
+
+            if self.offset_kallsyms is not None:
+                self.kallsyms_meta.append(("info", "offsetof(module, kallsyms): {:#x}".format(self.offset_kallsyms)))
+            elif self.offset_symtab is not None:
+                self.kallsyms_meta.append(("info", "offsetof(module, symtab): {:#x}".format(self.offset_symtab)))
+            else:
+                self.kallsyms_meta.append(("err", "Could not find module->kallsyms"))
+                return None
+            self.kallsyms_initialized = True
+            return True
+
+        def initialize_sect_attrs(self, module_addrs, preferred=None):
+            if self.sect_attrs_initialized:
+                return True
+
+            self.sect_attrs_meta = []
+            kversion = Kernel.kernel_version()
+
+            # the preferred module is tried first, but the layout is common to all modules
+            samples = [x for x in module_addrs if x != preferred][:8]
+            if preferred is not None:
+                samples = [preferred] + samples
+
+            errors = []
+            for module in samples:
+                # module->sect_attrs
+                offset_sect_attrs, sect_attrs = self.get_offset_sect_attrs(module)
+                if offset_sect_attrs is None:
+                    errors.append("Could not find module->sect_attrs (CONFIG_KALLSYMS or CONFIG_SYSFS may not be set)")
+                    continue
+                if sect_attrs is None:
+                    errors.append("module->sect_attrs is NULL or invalid (CONFIG_SYSFS may not be set, or its creation failed)")
+                    continue
+
+                # sect_attrs.grp.{attrs,bin_attrs}
+                offset_attrs, attribute_arr_ptr = self.get_offset_bin_attrs(sect_attrs)
+                if offset_attrs is None:
+                    errors.append("Could not find module->sect_attrs.grp.{attrs,bin_attrs}")
+                    continue
+
+                # ~6.13: module_sect_attr.address
+                # 6.14~: bin_attribute.private
+                offset_address = self.get_offset_address(module, attribute_arr_ptr)
+                if offset_address is None:
+                    if kversion < "6.14":
+                        errors.append("Could not find offset of module_sect_attr.address (section address)")
+                    else:
+                        errors.append("Could not find offset of bin_attribute.private (section address)")
+                    continue
+                break
+            else:
+                # the error of the preferred module is the most relevant
+                self.sect_attrs_meta.append(("err", errors[0] if errors else "Could not find any modules"))
+                return None
+
+            self.offset_sect_attrs, self.offset_attrs, self.offset_address = offset_sect_attrs, offset_attrs, offset_address
+            self.sect_attrs_meta.append(("info", "sample module: {:#x}".format(module)))
+            self.sect_attrs_meta.append(("info", "offsetof(module, sect_attrs): {:#x}".format(offset_sect_attrs)))
+            self.sect_attrs_meta.append(("info", "offsetof(module_sect_attrs, grp.{{attrs,bin_attrs}}): {:#x}".format(offset_attrs)))
+            if kversion < "6.14":
+                self.sect_attrs_meta.append(("info", "offsetof(module_sect_attr, address): {:#x}".format(offset_address)))
+            else:
+                self.sect_attrs_meta.append(("info", "offsetof(bin_attribute, private): {:#x}".format(offset_address)))
+            self.sect_attrs_initialized = True
+            return True
+
+        def get_module_addrs(self):
+            """Return the addresses of the loaded modules and the warnings (level, line) of the list walk.
+            The list is live, so it is walked on each call."""
+            if self.modules is None:
+                return None, []
+
+            meta = []
+            # struct module { enum module_state state; struct list_head list; ... };
+            lh = Kernel.ListHead(self.modules, current_arch.ptrsize)
+            entries = list(lh.iter_entries())
+            if lh.broken:
+                meta.append(("warn", "Stopped at {:s} module: {:#x}".format(lh.broken_reason, lh.broken_at)))
+                # the list is circular and doubly-linked, so the entries located behind the broken
+                # one are still reachable by following `prev` from the list head
+                seen = set(entries)
+                backward = list(lh.iter_entries(backward=True))
+                if lh.broken:
+                    meta.append(("warn", "Stopped at {:s} module: {:#x} (backward)".format(lh.broken_reason, lh.broken_at)))
+                entries += [x for x in reversed(backward) if x not in seen]
+                # the entries the walks stopped at are unreadable, they must not be passed to the
+                # `struct module` layout heuristics
+                entries = [x for x in entries if is_valid_addr(x)]
+            return entries, meta
+
+        def get_name(self, module):
+            return read_cstring_from_memory(module + self.offset_name)
+
+        def find_module(self, module_addrs, name):
+            for module in module_addrs:
+                if self.get_name(module) == name:
+                    return module
+            return None
+
+        def get_loaded_modules(self):
+            """Return [(module, name, regions), ...] for the commands that look up the loaded modules,
+            or None if the modules or their memory layout are unresolvable."""
+            try:
+                if not self.initialize():
+                    return None
+                module_addrs = self.get_module_addrs()[0]
+                if not module_addrs:
+                    return []
+                if not self.initialize_memory(module_addrs):
+                    return None
+                return [(module, self.get_name(module), self.get_regions(module)) for module in module_addrs]
+            except gdb.error:
+                return None
+
+        def is_valid_region(self, base, size):
+            if base == 0 or base & 0xfff:
+                return False
+            if size == 0 or size > self.MAX_MODULE_SIZE:
+                return False
+            return base + size <= (1 << (current_arch.ptrsize * 8))
+
+        def get_offset_mem(self, module_addrs): # v6.4~
+            """
+            ac3b43283923440900b4f36ca5f9f0b1ca43b70e changed the module layout information structure
+            MOD_TEXT = 0,
+            MOD_DATA,
+            MOD_RODATA,
+            MOD_RO_AFTER_INIT,
+            MOD_INIT_TEXT,
+            MOD_INIT_DATA,
+            MOD_INIT_RODATA,
+
+            struct module {
+                enum module_state state;
+                struct list_head list;
+                char name[MODULE_NAME_LEN]; // 64 - sizeof(unsigned long) bytes
+            #ifdef CONFIG_STACKTRACE_BUILD_ID
+                unsigned char build_id[BUILD_ID_SIZE_MAX]; // 20 bytes
+            #endif
+                struct module_kobject mkobj;
+                struct module_attribute *modinfo_attrs;
+                const char *version;
+                const char *srcversion;
+                struct kobject *holders_dir;
+                const struct kernel_symbol *syms;
+                const s32 *crcs;
+                unsigned int num_syms;
+            #ifdef CONFIG_ARCH_USES_CFI_TRAPS
+                s32 *kcfi_traps;
+                s32 *kcfi_traps_end;
+            #endif
+            #ifdef CONFIG_SYSFS
+                struct mutex param_lock;
+            #endif
+                struct kernel_param *kp;
+                unsigned int num_kp;
+                unsigned int num_gpl_syms;
+                const struct kernel_symbol *gpl_syms;
+                const s32 *gpl_crcs;
+                bool using_gplonly_symbols;
+            #ifdef CONFIG_MODULE_SIG
+                bool sig_ok;
+            #endif
+                bool async_probe_requested;
+                unsigned int num_exentries;
+                struct exception_table_entry *extable;
+                int (*init)(void);
+                struct module_memory mem[MOD_MEM_NUM_TYPES] __module_memory_align;    <-- here
+                struct mod_arch_specific arch;
+                unsigned long taints;
+            #ifdef CONFIG_GENERIC_BUG
+                unsigned num_bugs;
+                struct list_head bug_list;
+                struct bug_entry *bug_table;
+            #endif
+            #ifdef CONFIG_KALLSYMS
+                struct mod_kallsyms __rcu *kallsyms;
+                struct mod_kallsyms core_kallsyms;
+                struct module_sect_attrs *sect_attrs;
+                struct module_notes_attrs *notes_attrs;
+            #endif
+            };
+
+            struct module_memory {
+                void *base;
+                void *rw_copy; // v6.13~6.14
+                bool is_rox;   // v6.13~
+                unsigned int size;
+            #ifdef CONFIG_MODULES_TREE_LOOKUP
+                struct mod_tree_node mtn; (0x38)
+            #endif
+            };
+            """
+            # fast path
+            try:
+                offset_mem = GefUtil.parse_and_eval_unsigned("&((struct module*)0).mem")
+                offset_size = GefUtil.parse_and_eval_unsigned("&((struct module_memory*)0).size")
+                sizeof_module_memory = GefUtil.parse_and_eval_unsigned("sizeof(struct module_memory)")
+                return offset_mem, offset_mem + offset_size, sizeof_module_memory
+            except gdb.error:
+                pass
+
+            # slow_path
+            MOD_TEXT = 0
+            MOD_DATA = 1
+            MOD_RODATA = 2
+
+            kversion = Kernel.kernel_version()
+            if kversion < "6.13":
+                offset_size = current_arch.ptrsize # void*
+            elif "6.13" <= kversion < "6.15":
+                offset_size = current_arch.ptrsize * 2 + 4 # void*, void*, bool
+            else:
+                offset_size = current_arch.ptrsize + 4 # void*, bool
+            sizeof_module_memory_min = align_to_ptrsize(offset_size + 4)
+            sizeof_mod_tree_node = current_arch.ptrsize * 7
+            sizeof_module_memory_max = sizeof_module_memory_min + sizeof_mod_tree_node
+
+            # the struct module itself is in .gnu.linkonce.this_module, which is placed in mem[MOD_DATA]
+            for i in range(300):
+                offset_mem = i * current_arch.ptrsize
+                for sizeof_module_memory in (sizeof_module_memory_min, sizeof_module_memory_max):
+                    valid = True
+                    text_found = False
+                    for module in module_addrs:
+                        for mem_type in (MOD_TEXT, MOD_DATA, MOD_RODATA):
+                            mem_ptr = module + offset_mem + mem_type * sizeof_module_memory
+                            # memory access check
+                            if not is_valid_addr(mem_ptr + offset_size + 3):
+                                valid = False
+                                break
+                            cand_base = read_int_from_memory(mem_ptr)
+                            cand_size = read_int32_from_memory(mem_ptr + offset_size)
+                            # an empty type is not allocated
+                            if mem_type != MOD_DATA and cand_base == 0 and cand_size == 0:
+                                continue
+                            if not self.is_valid_region(cand_base, cand_size):
+                                valid = False
+                                break
+                            if mem_type == MOD_DATA and not cand_base <= module < cand_base + cand_size:
+                                valid = False
+                                break
+                            if mem_type == MOD_TEXT:
+                                text_found = True
+                        if not valid:
+                            break
+                    if valid and text_found:
+                        return offset_mem, offset_mem + offset_size, sizeof_module_memory
+            return None
+
+        def get_offset_core_layout(self, module_addrs): # v4.5 ~ v6.4
+            """
+            struct module { // kernel v4.5~
+                enum module_state state;
+                struct list_head list;
+                char name[MODULE_NAME_LEN]; // 64 - sizeof(unsigned long) bytes
+            #ifdef CONFIG_STACKTRACE_BUILD_ID
+                unsigned char build_id[BUILD_ID_SIZE_MAX]; // 20 bytes
+            #endif
+                struct module_kobject mkobj;
+                struct module_attribute *modinfo_attrs;
+                const char *version;
+                const char *srcversion;
+                struct kobject *holders_dir;
+                const struct kernel_symbol *syms;
+                const s32 *crcs;
+                unsigned int num_syms;
+            #ifdef CONFIG_CFI_CLANG
+                cfi_check_fn cfi_check;
+            #endif
+            #ifdef CONFIG_SYSFS
+                struct mutex param_lock;
+            #endif
+                struct kernel_param *kp;
+                unsigned int num_kp;
+                unsigned int num_gpl_syms;
+                const struct kernel_symbol *gpl_syms;
+                const s32 *gpl_crcs;
+                bool using_gplonly_symbols;
+            #ifdef CONFIG_MODULE_SIG
+                bool sig_ok;
+            #endif
+                bool async_probe_requested;
+                unsigned int num_exentries;
+                struct exception_table_entry *extable;
+                int (*init)(void);
+                struct module_layout core_layout __module_layout_align; <-- here
+                struct module_layout init_layout;
+            #ifdef CONFIG_ARCH_WANTS_MODULES_DATA_IN_VMALLOC
+                struct module_layout data_layout;
+            #endif
+                struct mod_arch_specific arch;
+                unsigned long taints;
+            #ifdef CONFIG_GENERIC_BUG
+                unsigned num_bugs;
+                struct list_head bug_list;
+                struct bug_entry *bug_table;
+            #endif
+            #ifdef CONFIG_KALLSYMS
+                struct mod_kallsyms __rcu *kallsyms;
+                struct mod_kallsyms core_kallsyms;
+                struct module_sect_attrs *sect_attrs;
+                struct module_notes_attrs *notes_attrs;
+            #endif
+                ...
+            };
+
+            struct module_layout {
+                /* The actual code + data. */
+                void *base;
+                /* Total size. */
+                unsigned int size;
+                /* The size of the executable code.  */
+                unsigned int text_size;
+                /* Size of RO section of the module (text+rodata) */
+                unsigned int ro_size;
+                /* Size of RO after init section */
+                unsigned int ro_after_init_size; // v4.8~
+            #ifdef CONFIG_MODULES_TREE_LOOKUP
+                struct mod_tree_node mtn;
+            #endif
+            };
+
+            [Example arm32]
+                gef> x/128xw 0x00000000bf22b084
+                0xbf22b084:     0xbf1bb044      0xc1696530      0x00006773      0x00000000
+                0xbf22b094:     0x00000000      0x00000000      0x00000000      0x00000000
+                0xbf22b0a4:     0x00000000      0x00000000      0x00000000      0x00000000
+                0xbf22b0b4:     0x00000000      0x00000000      0x00000000      0x00000000
+                0xbf22b0c4:     0x00000000      0xc1ec2d00      0xc1a11d80      0xbf1bb08c
+                0xbf22b0d4:     0xc1a11d8c      0xc1a11d80      0xc1628e38      0xc8e0b2c0
+                0xbf22b0e4:     0x00000003      0x00000007      0xbf22b080      0x00000000
+                0xbf22b0f4:     0xc8d4f380      0x00000000      0xc1e47400      0xc8f6d900
+                0xbf22b104:     0xc8f6d080      0xc8004300      0x00000000      0x00000000
+                0xbf22b114:     0x00000000      0x00000000      0x00000000      0x00000000
+                0xbf22b124:     0xbf22b124      0xbf22b124      0xbf22a990      0x00000003
+                0xbf22b134:     0x00000000      0x00000000      0x00000000      0x00000001
+                0xbf22b144:     0x00000000      0x00000000      0x00000000      0x00000000
+                0xbf22b154:     0x00000000      0xbf17e000      0x00000000      0x00000000
+                0xbf22b164:     0x00000000      0x00000000      0x00000000      0x00000000
+                0xbf22b174:     0x00000000      0x00000000      0x00000000      0xbf225000 <- core_layout.base
+                0xbf22b184:     0x00008000      0x00005000      0x00006000      0x00006000
+            """
+            # fast path
+            try:
+                offset_core_layout = GefUtil.parse_and_eval_unsigned("&((struct module*)0).core_layout")
+                offset_size = GefUtil.parse_and_eval_unsigned("&((struct module_layout*)0).size")
+                return offset_core_layout, offset_core_layout + offset_size
+            except gdb.error:
+                pass
+
+            # slow_path
+            for i in range(300):
+                offset_core_layout = i * current_arch.ptrsize
+                valid = True
+                for module in module_addrs:
+                    # memory access check
+                    core_layout_ptr = module + offset_core_layout
+                    if not is_valid_addr(core_layout_ptr + current_arch.ptrsize + 4 * 4 - 1):
+                        valid = False
+                        break
+                    # base and size check; the struct module itself is in the core layout
+                    cand_base = read_int_from_memory(core_layout_ptr)
+                    cand_size = read_int32_from_memory(core_layout_ptr + current_arch.ptrsize)
+                    if not self.is_valid_region(cand_base, cand_size) or not cand_base <= module < cand_base + cand_size:
+                        valid = False
+                        break
+                    # text_size check
+                    cand_text_size = read_int32_from_memory(core_layout_ptr + current_arch.ptrsize + 4 * 1)
+                    if cand_text_size > cand_size:
+                        valid = False
+                        break
+                    # ro_size check (text+rodata)
+                    cand_ro_size = read_int32_from_memory(core_layout_ptr + current_arch.ptrsize + 4 * 2)
+                    if cand_ro_size < cand_text_size or cand_ro_size > cand_size:
+                        valid = False
+                        break
+                    # ro_after_init_size check; it does not exist under v4.8, then the read hits
+                    # the tail padding (or init_layout.base of an already initialized module)
+                    cand_ro_after_init_size = read_int32_from_memory(core_layout_ptr + current_arch.ptrsize + 4 * 3)
+                    if cand_ro_after_init_size != 0:
+                        if cand_ro_after_init_size < cand_ro_size or cand_ro_after_init_size > cand_size:
+                            valid = False
+                            break
+                if valid:
+                    return offset_core_layout, offset_core_layout + current_arch.ptrsize
+            return None
+
+        def get_offset_module_core(self, module_addrs): # ~v4.4
+            """
+            struct module { // ~v4.4
+                enum module_state state;
+                struct list_head list;
+                char name[MODULE_NAME_LEN];
+                struct module_kobject mkobj;
+                struct module_attribute *modinfo_attrs;
+                const char *version;
+                const char *srcversion;
+                struct kobject *holders_dir;
+                const struct kernel_symbol *syms;
+                const unsigned long *crcs;
+                unsigned int num_syms;
+            #ifdef CONFIG_SYSFS
+                struct mutex param_lock;
+            #endif
+                struct kernel_param *kp;
+                unsigned int num_kp;
+                unsigned int num_gpl_syms;
+                const struct kernel_symbol *gpl_syms;
+                const unsigned long *gpl_crcs;
+            #ifdef CONFIG_UNUSED_SYMBOLS
+                const struct kernel_symbol *unused_syms;
+                const unsigned long *unused_crcs;
+                unsigned int num_unused_syms;
+                unsigned int num_unused_gpl_syms;
+                const struct kernel_symbol *unused_gpl_syms;
+                const unsigned long *unused_gpl_crcs;
+            #endif
+            #ifdef CONFIG_MODULE_SIG
+                bool sig_ok;
+            #endif
+                bool async_probe_requested;
+                const struct kernel_symbol *gpl_future_syms;
+                const unsigned long *gpl_future_crcs;
+                unsigned int num_gpl_future_syms;
+                unsigned int num_exentries;
+                struct exception_table_entry *extable;
+                int (*init)(void);
+                void *module_init ____cacheline_aligned;
+                /* Here is the actual code + data, vfree'd on unload. */
+                void *module_core;                                          <-- here
+                /* Here are the sizes of the init and core sections */
+                unsigned int init_size, core_size;
+                /* The size of the executable code in each section. */
+                unsigned int init_text_size, core_text_size;
+            #ifdef CONFIG_MODULES_TREE_LOOKUP
+                struct mod_tree_node mtn_core;
+                struct mod_tree_node mtn_init;
+            #endif
+                unsigned int init_ro_size, core_ro_size;
+                struct mod_arch_specific arch;
+                unsigned int taints;
+            #ifdef CONFIG_GENERIC_BUG
+                unsigned num_bugs;
+                struct list_head bug_list;
+                struct bug_entry *bug_table;
+            #endif
+            #ifdef CONFIG_KALLSYMS
+                struct mod_kallsyms *kallsyms;                              <-- here
+                struct mod_kallsyms core_kallsyms;
+                struct module_sect_attrs *sect_attrs;
+                struct module_notes_attrs *notes_attrs;
+            #endif
+                ...
+            };
+            """
+            # fast path
+            try:
+                offset_module_core = GefUtil.parse_and_eval_unsigned("&((struct module*)0).module_core")
+                offset_core_size = GefUtil.parse_and_eval_unsigned("&((struct module*)0).core_size")
+                return offset_module_core, offset_core_size
+            except gdb.error:
+                pass
+
+            # slow_path
+            for i in range(300):
+                offset_module_core = i * current_arch.ptrsize
+                valid = True
+                for module in module_addrs:
+                    module_core_ptr = module + offset_module_core
+                    # memory access check
+                    if not is_valid_addr(module_core_ptr + current_arch.ptrsize + 4 * 4 - 1):
+                        valid = False
+                        break
+                    # module_core and core_size check; the struct module itself is in the core
+                    cand_module_core = read_int_from_memory(module_core_ptr)
+                    cand_core_size = read_int32_from_memory(module_core_ptr + current_arch.ptrsize + 4 * 1)
+                    if not self.is_valid_region(cand_module_core, cand_core_size):
+                        valid = False
+                        break
+                    if not cand_module_core <= module < cand_module_core + cand_core_size:
+                        valid = False
+                        break
+                    # init_size check
+                    cand_init_size = read_int32_from_memory(module_core_ptr + current_arch.ptrsize)
+                    if cand_init_size > self.MAX_MODULE_SIZE:
+                        valid = False
+                        break
+                    # init_text_size check
+                    cand_init_text_size = read_int32_from_memory(module_core_ptr + current_arch.ptrsize + 4 * 2)
+                    if cand_init_text_size > cand_init_size:
+                        valid = False
+                        break
+                    # core_text_size check
+                    cand_core_text_size = read_int32_from_memory(module_core_ptr + current_arch.ptrsize + 4 * 3)
+                    if cand_core_text_size > cand_core_size:
+                        valid = False
+                        break
+                if valid:
+                    return offset_module_core, offset_module_core + current_arch.ptrsize + 4
+            return None
+
+        def get_regions(self, module):
+            if self.memory_kind != "mem":
+                base = read_int_from_memory(module + self.offset_base)
+                size = read_int32_from_memory(module + self.offset_size)
+                return [("core", base, size)]
+
+            # v6.4~: each type is allocated separately; an empty type (and init ones after the initialization) is NULL
+            regions = []
+            for i, region_name in enumerate(self.MOD_MEM_TYPES):
+                base = read_int_from_memory(module + self.offset_base + self.sizeof_module_memory * i)
+                size = read_int32_from_memory(module + self.offset_size + self.sizeof_module_memory * i)
+                if base and size:
+                    regions.append((region_name, base, size))
+            return regions
+
+        def get_offset_kallsyms(self, module_addrs):
+            """
+            struct mod_kallsyms {
+                Elf_Sym *symtab;
+                unsigned int num_symtab;
+                char *strtab;
+                char *typetab; // v5.2~
+            };
+            """
+            # fast path
+            try:
+                return GefUtil.parse_and_eval_unsigned("&((struct module*)0).kallsyms")
+            except gdb.error:
+                pass
+
+            # slow_path
+            kversion = Kernel.kernel_version()
+            sizeof_symtab_entry = 24 if is_64bit() else 16
+            for i in range(300):
+                offset_kallsyms = i * current_arch.ptrsize
+                valid = True
+                for module in module_addrs:
+                    kallsyms_ptr = module + offset_kallsyms
+                    # access check
+                    if not is_valid_addr(kallsyms_ptr):
+                        valid = False
+                        break
+                    # kallsyms access check
+                    cand_kallsyms = read_int_from_memory(kallsyms_ptr)
+                    if not is_valid_addr(cand_kallsyms):
+                        valid = False
+                        break
+                    # struct mod_kallsyms member access check
+                    cand_symtab = read_int_from_memory(cand_kallsyms)
+                    if not is_valid_addr(cand_symtab):
+                        valid = False
+                        break
+                    cand_num_symtab = read_int32_from_memory(cand_kallsyms + current_arch.ptrsize * 1)
+                    if cand_num_symtab == 0 or cand_num_symtab > 0x10_0000:
+                        valid = False
+                        break
+                    cand_strtab = read_int_from_memory(cand_kallsyms + current_arch.ptrsize * 2)
+                    if not is_valid_addr(cand_strtab):
+                        valid = False
+                        break
+                    # strtab is placed just after symtab
+                    if cand_strtab != cand_symtab + cand_num_symtab * sizeof_symtab_entry:
+                        valid = False
+                        break
+                    if "5.2" <= kversion:
+                        cand_typetab = read_int_from_memory(cand_kallsyms + current_arch.ptrsize * 3)
+                        if not is_valid_addr(cand_typetab):
+                            valid = False
+                            break
+                if valid:
+                    return offset_kallsyms
+            return None
+
+        def get_offset_symtab(self, module_addrs): # ~v4.4
+            """
+            struct module { // ~v4.4
+                ...
+            #ifdef CONFIG_KALLSYMS
+                Elf_Sym *symtab, *core_symtab;
+                unsigned int num_symtab, core_num_syms;
+                char *strtab, *core_strtab;
+                ...
+            #endif
+                ...
+            };
+            Once the module is initialized, symtab, num_symtab and strtab are replaced by the core_* ones.
+            """
+            # fast path
+            try:
+                return GefUtil.parse_and_eval_unsigned("&((struct module*)0).symtab")
+            except gdb.error:
+                pass
+
+            # slow path
+            sizeof_symtab_entry = 24 if is_64bit() else 16
+            for i in range(300):
+                offset_symtab = i * current_arch.ptrsize
+                valid = True
+                for module in module_addrs:
+                    symtab_ptr = module + offset_symtab
+                    num_symtab_ptr = symtab_ptr + current_arch.ptrsize * 2
+                    strtab_ptr = num_symtab_ptr + 4 * 2
+                    # access check
+                    if not is_valid_addr(symtab_ptr) or not is_valid_addr(strtab_ptr + current_arch.ptrsize * 2 - 1):
+                        valid = False
+                        break
+                    # symtab == core_symtab
+                    cand_symtab = read_int_from_memory(symtab_ptr)
+                    if cand_symtab != read_int_from_memory(symtab_ptr + current_arch.ptrsize) or not is_valid_addr(cand_symtab):
+                        valid = False
+                        break
+                    # num_symtab == core_num_syms
+                    cand_num_symtab = read_int32_from_memory(num_symtab_ptr)
+                    if cand_num_symtab != read_int32_from_memory(num_symtab_ptr + 4) or cand_num_symtab == 0 or cand_num_symtab > 0x10_0000:
+                        valid = False
+                        break
+                    # strtab == core_strtab
+                    cand_strtab = read_int_from_memory(strtab_ptr)
+                    if cand_strtab != read_int_from_memory(strtab_ptr + current_arch.ptrsize) or not is_valid_addr(cand_strtab):
+                        valid = False
+                        break
+                    # strtab is placed just after symtab
+                    if cand_strtab != cand_symtab + cand_num_symtab * sizeof_symtab_entry:
+                        valid = False
+                        break
+                if valid:
+                    return offset_symtab
+            return None
+
+        def parse_kallsyms(self, module, progress=False):
+            kversion = Kernel.kernel_version()
+
+            sizeof_symtab_entry = 24 if is_64bit() else 16
+            typetab = None
+            if self.offset_symtab is not None: # ~v4.4
+                symtab = read_int_from_memory(module + self.offset_symtab)
+                num_symtab = read_int32_from_memory(module + self.offset_symtab + current_arch.ptrsize * 2)
+                strtab = read_int_from_memory(module + self.offset_symtab + current_arch.ptrsize * 2 + 4 * 2)
+            else:
+                kallsyms = read_int_from_memory(module + self.offset_kallsyms)
+                symtab = read_int_from_memory(kallsyms + current_arch.ptrsize * 0)
+                num_symtab = read_int32_from_memory(kallsyms + current_arch.ptrsize * 1)
+                strtab = read_int_from_memory(kallsyms + current_arch.ptrsize * 2)
+                if "5.2" <= kversion:
+                    typetab = read_int_from_memory(kallsyms + current_arch.ptrsize * 3)
+            strtab_pos = 0
+
+            #gef_print("symtab: {:#x}".format(symtab))
+            #gef_print("sizeof_symtab_entry: {:#x}".format(sizeof_symtab_entry))
+            #gef_print("num_symab: {:#x}".format(num_symtab))
+            #gef_print("strtab: {:#x}".format(strtab))
+            #if "5.2" <= kversion:
+            #    gef_print("typetab: {:#x}".format(typetab))
+
+            entries = []
+            for i in ProgressBar(range(num_symtab), disable=not progress):
+                sym_addr = read_int_from_memory(symtab + sizeof_symtab_entry * i + current_arch.ptrsize)
+                sym_name = read_cstring_from_memory(strtab + strtab_pos)
+                strtab_pos += len(sym_name) + 1
+
+                if typetab is not None:
+                    sym_type = chr(read_int8_from_memory(typetab + i))
+                elif "5.0" <= kversion:
+                    # st_size
+                    if is_64bit():
+                        sym_type = chr(read_int8_from_memory(symtab + sizeof_symtab_entry * i + 16))
+                    else:
+                        sym_type = chr(read_int8_from_memory(symtab + sizeof_symtab_entry * i + 8))
+                else:
+                    # st_info
+                    if is_64bit():
+                        sym_type = chr(read_int8_from_memory(symtab + sizeof_symtab_entry * i + 4))
+                    else:
+                        sym_type = chr(read_int8_from_memory(symtab + sizeof_symtab_entry * i + 12))
+                entries.append([sym_addr, sym_type, sym_name])
+            return entries
+
+        def get_offset_sect_attrs(self, module_addr):
+            """
+            struct module {
+                ...
+            #ifdef CONFIG_KALLSYMS
+                struct mod_kallsyms __rcu *kallsyms;
+                struct mod_kallsyms core_kallsyms;
+                struct module_sect_attrs *sect_attrs;
+                struct module_notes_attrs *notes_attrs;
+            #endif
+                ...
+            };
+            """
+            # fast path
+            try:
+                offset_sect_attrs = GefUtil.parse_and_eval_unsigned("&((struct module*)0).sect_attrs")
+                # it is created only if CONFIG_SYSFS=y, and it is NULL if the creation failed
+                sect_attrs = read_int_from_memory(module_addr + offset_sect_attrs)
+                if not self.is_valid_sect_attrs(sect_attrs):
+                    return offset_sect_attrs, None
+                return offset_sect_attrs, sect_attrs
+            except gdb.error:
+                pass
+
+            # slow_path
+            for i in range(0x100):
+                offset_sect_attrs = current_arch.ptrsize * i
+                # access check
+                if not is_valid_addr(module_addr + offset_sect_attrs):
+                    continue
+                sect_attrs = read_int_from_memory(module_addr + offset_sect_attrs)
+                if not self.is_valid_sect_attrs(sect_attrs):
+                    continue
+                return offset_sect_attrs, sect_attrs
+
+            return None, None
+
+        """
+        This function looks for the module->sect_attrs.grp.{attrs,bin_attrs} field,
+        which is an array of pointers to the various structures `bin_attribute`
+        that represent a the various sections. The array is guaranteed to terminate
+        with a NULL pointer therefore we can safely use a while True to iterate the
+        array in `is_valid_attribute_arr`.
+        On recent systems module->sect_attrs.grp.attrs is 0 and the array of
+        pointers is found in module->sect_attrs.grp.bin_attrs instead, but the
+        logic is the same.
+        """
+        def is_valid_sect_attrs(self, sect_attrs):
+            if not is_valid_addr(sect_attrs):
+                return False
+            # Check that the pointer is properly aligned
+            if sect_attrs & (current_arch.ptrsize - 1):
+                return False
+            for offset in range(40):
+                attribute_arr_ptr = read_int_from_memory(sect_attrs + offset * current_arch.ptrsize, safe=True)
+                if attribute_arr_ptr is None:
+                    return False
+                if self.is_valid_attribute_arr(attribute_arr_ptr):
+                    return True
+            return False
+
+        @Cache.cache_until_next
+        def is_valid_attribute_arr(self, attribute_arr_ptr):
+            """
+            struct module_sect_attrs {
+                struct attribute_group {
+                    const char *name;
+                    umode_t (*is_visible)(struct kobject *, struct attribute *, int);
+                    umode_t (*is_bin_visible)(struct kobject *, struct bin_attribute *, int); // v4.4~
+                    size_t (*bin_size)(struct kobject *, const struct bin_attribute *, int); // v6.13~
+                    struct attribute **attrs;                          <--- here
+                    struct bin_attribute **bin_attrs; // v3.11~v6.12   <--- here
+                    union {
+                        struct bin_attribute **bin_attrs;              <--- here
+                        const struct bin_attribute *const *bin_attrs_new;
+                    }; // v6.13~
+                } grp;
+                unsigned int nsections; // ~v6.13
+                struct module_sect_attr {
+                    struct bin_attribute battr; // v5.7~
+                    struct module_attribute mattr; // ~v5.6
+                    char *name; // ~v5.6
+                    unsigned long address;
+                } attrs[]; // ~v6.13
+                struct bin_attribute attrs[]; // v6.14~
+            };
+
+            struct attribute {
+                const char *name;
+                umode_t mode;
+            #ifdef CONFIG_DEBUG_LOCK_ALLOC
+                bool ignore_lockdep:1;
+                struct lock_class_key *key;
+                struct lock_class_key skey;
+            #endif
+            };
+
+            struct bin_attribute { // v5.7~
+                struct attribute attr;
+                size_t size;
+                void *private;
+                struct address_space *(*f_mapping)(void); // v5.15~
+                struct address_space *mapping; // v5.12~5.14
+                ssize_t (*read)(struct file *, struct kobject *, struct bin_attribute *, char *, loff_t, size_t);
+                ssize_t (*read_new)(struct file *, struct kobject *, const struct bin_attribute *, char *, loff_t, size_t); // v6.13~6.17
+                ssize_t (*write)(struct file *, struct kobject *, struct bin_attribute *, char *, loff_t, size_t);
+                ssize_t (*write_new)(struct file *, struct kobject *, const struct bin_attribute *, char *, loff_t, size_t); // v6.13~6.17
+                loff_t (*llseek)(struct file *, struct kobject *, struct bin_attribute *, loff_t, int); // v6.7~
+                int (*mmap)(struct file *, struct kobject *, struct bin_attribute *attr, struct vm_area_struct *vma);
+            };
+
+            struct module_attribute { // ~v5.6
+                struct attribute attr;
+                ssize_t (*show)(struct module_attribute *, struct module_kobject *, char *);
+                ssize_t (*store)(struct module_attribute *, struct module_kobject *, const char *, size_t count);
+                void (*setup)(struct module *, const char *);
+                int (*test)(struct module *);
+                void (*free)(struct module *);
+            };
+            """
+            found = 0
+            while True:
+                if found > 0x200:
+                    # If we got to this point we can definitely return
+                    break
+                if not is_valid_addr(attribute_arr_ptr):
+                    return False
+                attribute = read_int_from_memory(attribute_arr_ptr)
+                if attribute == 0:
+                    break
+                if not is_valid_addr(attribute):
+                    return False
+                nameptr = read_int_from_memory(attribute)
+                if not self.is_valid_sectname(nameptr):
+                    return False
+                found += 1
+                attribute_arr_ptr += current_arch.ptrsize
+            return found > 0
+
+        def is_valid_sectname(self, nameptr):
+            if not is_valid_addr(nameptr):
+                return False
+            sectname = read_cstring_from_memory(nameptr)
+            if sectname is None or not sectname.startswith((".", "__", "_")):
+                if sectname and len(sectname) >= 4:
+                    self.sect_attrs_meta.append((
+                        "info",
+                        'possible section name (rejected for not starting with ".", "__" or "_"): {:s}'.format(sectname),
+                    ))
+                return False
+            return True
+
+        def get_offset_bin_attrs(self, sect_attrs):
+            kversion = Kernel.kernel_version()
+
+            # fast path
+            try:
+                if kversion < "3.11":
+                    offset_attrs = GefUtil.parse_and_eval_unsigned("&((struct attribute_group*)0).attrs")
+                    attrs_arr_ptr = read_int_from_memory(sect_attrs + offset_attrs)
+                    return offset_attrs, attrs_arr_ptr
+                else:
+                    # It is possible to use attrs or bin_attrs, so check both.
+                    offset_attrs = GefUtil.parse_and_eval_unsigned("&((struct attribute_group*)0).attrs")
+                    attrs_arr_ptr = read_int_from_memory(sect_attrs + offset_attrs)
+                    if is_valid_addr(attrs_arr_ptr):
+                        return offset_attrs, attrs_arr_ptr
+
+                    # Avoid relying on GDB's handling of anonymous union members in 6.14+.
+                    # bin_attrs/bin_attrs_new is immediately after attrs.
+                    offset_bin_attrs = offset_attrs + current_arch.ptrsize
+                    attrs_arr_ptr = read_int_from_memory(sect_attrs + offset_bin_attrs)
+                    return offset_bin_attrs, attrs_arr_ptr
+            except gdb.error:
+                pass
+
+            # slow path
+            for i in range(0x10):
+                offset_bin_attrs = current_arch.ptrsize * i
+                attrs_arr_ptr = read_int_from_memory(sect_attrs + offset_bin_attrs)
+                if not self.is_valid_attribute_arr(attrs_arr_ptr):
+                    continue
+                return offset_bin_attrs, attrs_arr_ptr
+
+            return None, None
+
+        """
+        This function aims at locating module_sect_attr->address or bin_attribute->private,
+        which stores the address of where the section resides in memory. To do so, it
+        performs a statistical analysis on the various section attribute structures to
+        identify pointer-sized values that are different for each one. If there is a
+        specific offset where a pointer is present and different for every structure,
+        it is very probable that the offset is that of the section address field.
+        """
+        def get_offset_address(self, module, attribute_arr_ptr):
+            kversion = Kernel.kernel_version()
+
+            # fast path
+            try:
+                if kversion < "6.14":
+                    return GefUtil.parse_and_eval_unsigned("&((struct module_sect_attr*)0).address")
+                return GefUtil.parse_and_eval_unsigned("&((struct bin_attribute*)0).private")
+            except gdb.error:
+                pass
+
+            # slow path
+            attrs_arr = []
+            curr_attr = attribute_arr_ptr
+            while True:
+                attribute = read_int_from_memory(curr_attr)
+                if attribute == 0:
+                    break
+                attrs_arr.append(attribute)
+                curr_attr += current_arch.ptrsize
+
+            if len(attrs_arr) < 2:
+                self.sect_attrs_meta.append(("warn", "module->sect_attrs.grp.bin_attrs has too few elements"))
+                return None
+
+            # Find size of struct bin_attribute by pointer arithmetic from list (assuming they are contiguous and in order)
+            attrs_arr.sort()
+            bin_attr_size_map = {}
+            for i in range(len(attrs_arr) - 1):
+                tmp_size = attrs_arr[i + 1] - attrs_arr[i]
+                if tmp_size not in bin_attr_size_map:
+                    bin_attr_size_map[tmp_size] = 1
+                else:
+                    bin_attr_size_map[tmp_size] += 1
+
+            # in fact:
+            # ~6.13: sizeof(module_sect_attr)
+            # 6.14~: sizeof(bin_attribute)
+            bin_attr_size = max(bin_attr_size_map, key=bin_attr_size_map.get)
+            bin_attr_size = min(bin_attr_size - bin_attr_size % current_arch.ptrsize, current_arch.ptrsize * 0x40)
+
+            # The struct module itself is the only content of .gnu.linkonce.this_module
+            for attr in attrs_arr:
+                nameptr = read_int_from_memory(attr)
+                if read_cstring_from_memory(nameptr, safe=True) != ".gnu.linkonce.this_module":
+                    continue
+                words = slice_unpack(read_memory(attr, bin_attr_size), current_arch.ptrsize)
+                if module in words:
+                    return words.index(module) * current_arch.ptrsize
+
+            # Statistical analysis to find pointers that differ across every structure
+            # First we find potential pointers and save their count and offset
+            offset_map = {}
+            for attr in attrs_arr:
+                data = read_memory(attr, bin_attr_size)
+                for i, word in enumerate(slice_unpack(data, current_arch.ptrsize)):
+                    offset = i * current_arch.ptrsize
+                    # TODO: Find a way to distinguish attrs.attr.{key,skey} from pointers
+                    #   Maybe we could skip the initial fields by using bin_attribute.size?
+                    if not AddressUtil.is_msb_on(word):
+                        continue
+                    if offset not in offset_map:
+                        offset_map[offset] = {}
+                    if word not in offset_map[offset]:
+                        offset_map[offset][word] = 1
+                    else:
+                        offset_map[offset][word] += 1
+                    # Remove pointers to strings if possible
+                    maybe_string = read_cstring_from_memory(word, safe=True)
+                    if maybe_string is None:
+                        continue
+                    if len(maybe_string) > 4:
+                        del offset_map[offset][word]
+
+            # Find the best candidate to avoid name pointers that are not deleted (don't know why that happens)
+            max_len = 0
+            offset_address = None
+            for offset, words in offset_map.items():
+                for _val, count in words.items():
+                    # If multiple identical pointers are found, they are not `address` and `private`.
+                    if count > 1:
+                        break
+                else:
+                    if len(words) > max_len:
+                        max_len = len(words)
+                        offset_address = offset
+            if max_len != 0:
+                return offset_address
+
+            return None
+
+        def get_sections(self, module):
+            """Return [(section name, address), ...] from `module->sect_attrs`, or None if it is unavailable."""
+            sect_attrs = read_int_from_memory(module + self.offset_sect_attrs)
+            if not self.is_valid_sect_attrs(sect_attrs):
+                return None
+            attribute_list = read_int_from_memory(sect_attrs + self.offset_attrs)
+            if not self.is_valid_attribute_arr(attribute_list):
+                return None
+
+            # get each section name and address
+            sections = []
+            while True:
+                attribute = read_int_from_memory(attribute_list)
+                if attribute == 0:
+                    break
+                nameptr = read_int_from_memory(attribute)
+                name = read_cstring_from_memory(nameptr)
+                addr = read_int_from_memory(attribute + self.offset_address)
+                sections.append((name, addr))
+                attribute_list += current_arch.ptrsize
+            return sections
+
     class Sysctl:
         """Resolve the sysctl layout and walk its directory and table trees.
 
@@ -79412,663 +80538,17 @@ class KernelModuleCommand(GenericCommand, BufferingOutput):
         "                   | ...                            |      | typetab (v5.2~)|",
         "                   +--------------------------------+      +----------------+",
         "",
+        "Since v6.4, each type of mem[] (text, data, rodata, ro_after_init, init_*) is allocated separately,",
+        "so each allocated type is displayed on its own line. Before v6.4, the whole core is displayed as `core`.",
+        "",
         "Notes for -a option:",
         "- You can check the added symbols with the `symbols` command.",
+        "- Symbols are applied per region of the module memory. Symbols outside them (e.g., per-cpu variables) are skipped.",
         "- Added symbols are in the format `module_name.symbol` to avoid collisions.",
         "  When used from the command line, they must be enclosed in single quotes.",
         "  e.g., `p 'virtio_net.__this_module'`",
     ]
     _note_ = "\n".join(_note_)
-
-    def get_modules_list(self, modules):
-        if modules is None:
-            return None, []
-
-        meta = []
-        # struct module { enum module_state state; struct list_head list; ... };
-        lh = Kernel.ListHead(modules, current_arch.ptrsize)
-        entries = list(lh.iter_entries())
-        if lh.broken:
-            meta.append((self.quiet_warn, "Stopped at {:s} module: {:#x}".format(lh.broken_reason, lh.broken_at)))
-            # the list is circular and doubly-linked, so the entries located behind the broken
-            # one are still reachable by following `prev` from the list head
-            seen = set(entries)
-            backward = list(lh.iter_entries(backward=True))
-            if lh.broken:
-                meta.append((self.quiet_warn, "Stopped at {:s} module: {:#x} (backward)".format(lh.broken_reason, lh.broken_at)))
-            entries += [x for x in reversed(backward) if x not in seen]
-            # the entries the walks stopped at are unreadable, they must not be passed to the
-            # `struct module` layout heuristics
-            entries = [x for x in entries if is_valid_addr(x)]
-        return entries, meta
-
-    def get_offset_mem(self, module_addrs): # v6.4~
-        """
-        ac3b43283923440900b4f36ca5f9f0b1ca43b70e changed the module layout information structure
-        MOD_TEXT = 0,
-        MOD_DATA,
-        MOD_RODATA,
-        MOD_RO_AFTER_INIT,
-        MOD_INIT_TEXT,
-        MOD_INIT_DATA,
-        MOD_INIT_RODATA,
-
-        struct module {
-            enum module_state state;
-            struct list_head list;
-            char name[MODULE_NAME_LEN]; // 64 - sizeof(unsigned long) bytes
-        #ifdef CONFIG_STACKTRACE_BUILD_ID
-            unsigned char build_id[BUILD_ID_SIZE_MAX]; // 20 bytes
-        #endif
-            struct module_kobject mkobj;
-            struct module_attribute *modinfo_attrs;
-            const char *version;
-            const char *srcversion;
-            struct kobject *holders_dir;
-            const struct kernel_symbol *syms;
-            const s32 *crcs;
-            unsigned int num_syms;
-        #ifdef CONFIG_ARCH_USES_CFI_TRAPS
-            s32 *kcfi_traps;
-            s32 *kcfi_traps_end;
-        #endif
-        #ifdef CONFIG_SYSFS
-            struct mutex param_lock;
-        #endif
-            struct kernel_param *kp;
-            unsigned int num_kp;
-            unsigned int num_gpl_syms;
-            const struct kernel_symbol *gpl_syms;
-            const s32 *gpl_crcs;
-            bool using_gplonly_symbols;
-        #ifdef CONFIG_MODULE_SIG
-            bool sig_ok;
-        #endif
-            bool async_probe_requested;
-            unsigned int num_exentries;
-            struct exception_table_entry *extable;
-            int (*init)(void);
-            struct module_memory mem[MOD_MEM_NUM_TYPES] __module_memory_align;    <-- here
-            struct mod_arch_specific arch;
-            unsigned long taints;
-        #ifdef CONFIG_GENERIC_BUG
-            unsigned num_bugs;
-            struct list_head bug_list;
-            struct bug_entry *bug_table;
-        #endif
-        #ifdef CONFIG_KALLSYMS
-            struct mod_kallsyms __rcu *kallsyms;
-            struct mod_kallsyms core_kallsyms;
-            struct module_sect_attrs *sect_attrs;
-            struct module_notes_attrs *notes_attrs;
-        #endif
-        };
-
-        struct module_memory {
-            void *base;
-            void *rw_copy; // v6.13~6.14
-            bool is_rox;   // v6.13~
-            unsigned int size;
-        #ifdef CONFIG_MODULES_TREE_LOOKUP
-            struct mod_tree_node mtn; (0x38)
-        #endif
-        };
-        """
-        # fast path
-        try:
-            offset_mem = GefUtil.parse_and_eval_unsigned("&((struct module*)0).mem")
-            offset_size = GefUtil.parse_and_eval_unsigned("&((struct module_memory*)0).size")
-            return offset_mem, offset_mem + offset_size
-        except gdb.error:
-            pass
-
-        # slow_path
-        MOD_TEXT = 0
-        MOD_DATA = 1
-        MOD_RODATA = 2
-        MOD_RO_AFTER_INIT = 3 # noqa: F841
-        MOD_INIT_TEXT = 4 # noqa: F841
-        MOD_INIT_DATA = 5 # noqa: F841
-        MOD_INIT_RODATA = 6 # noqa: F841
-        MOD_MEM_NUM_TYPES = 7 # noqa: F841
-
-        kversion = Kernel.kernel_version()
-        if kversion < "6.13":
-            offset_size = current_arch.ptrsize # void*
-        elif "6.13" <= kversion < "6.15":
-            offset_size = current_arch.ptrsize * 2 + 4 # void*, void*, bool
-        else:
-            offset_size = current_arch.ptrsize + 4 # void*, bool
-        sizeof_module_memory_min = align_to_ptrsize(offset_size + 4)
-        sizeof_mod_tree_node = current_arch.ptrsize * 7
-        sizeof_module_memory_max = sizeof_module_memory_min + sizeof_mod_tree_node
-
-        # TODO: only handles non init module type
-        for i in range(300):
-            offset_mem = i * current_arch.ptrsize
-            for sizeof_module_memory in (sizeof_module_memory_min, sizeof_module_memory_max):
-                valid = True
-                for module in module_addrs:
-                    for mem_type in (MOD_TEXT, MOD_DATA, MOD_RODATA):
-                        mem_ptr = module + offset_mem + mem_type * sizeof_module_memory
-                        # memory access check
-                        if not is_valid_addr(mem_ptr):
-                            valid = False
-                            break
-                        # base align check
-                        cand_base = read_int_from_memory(mem_ptr)
-                        if cand_base == 0 or cand_base & 0xfff:
-                            valid = False
-                            break
-                        # size check
-                        cand_size = read_int32_from_memory(mem_ptr + offset_size)
-                        if cand_size == 0 or cand_size > 0x10_0000:
-                            valid = False
-                            break
-                if valid:
-                    return offset_mem, offset_mem + offset_size
-        return None
-
-    def get_offset_core_layout(self, module_addrs): # v4.5 ~ v6.4
-        """
-        struct module { // kernel v4.5~
-            enum module_state state;
-            struct list_head list;
-            char name[MODULE_NAME_LEN]; // 64 - sizeof(unsigned long) bytes
-        #ifdef CONFIG_STACKTRACE_BUILD_ID
-            unsigned char build_id[BUILD_ID_SIZE_MAX]; // 20 bytes
-        #endif
-            struct module_kobject mkobj;
-            struct module_attribute *modinfo_attrs;
-            const char *version;
-            const char *srcversion;
-            struct kobject *holders_dir;
-            const struct kernel_symbol *syms;
-            const s32 *crcs;
-            unsigned int num_syms;
-        #ifdef CONFIG_CFI_CLANG
-            cfi_check_fn cfi_check;
-        #endif
-        #ifdef CONFIG_SYSFS
-            struct mutex param_lock;
-        #endif
-            struct kernel_param *kp;
-            unsigned int num_kp;
-            unsigned int num_gpl_syms;
-            const struct kernel_symbol *gpl_syms;
-            const s32 *gpl_crcs;
-            bool using_gplonly_symbols;
-        #ifdef CONFIG_MODULE_SIG
-            bool sig_ok;
-        #endif
-            bool async_probe_requested;
-            unsigned int num_exentries;
-            struct exception_table_entry *extable;
-            int (*init)(void);
-            struct module_layout core_layout __module_layout_align; <-- here
-            struct module_layout init_layout;
-        #ifdef CONFIG_ARCH_WANTS_MODULES_DATA_IN_VMALLOC
-            struct module_layout data_layout;
-        #endif
-            struct mod_arch_specific arch;
-            unsigned long taints;
-        #ifdef CONFIG_GENERIC_BUG
-            unsigned num_bugs;
-            struct list_head bug_list;
-            struct bug_entry *bug_table;
-        #endif
-        #ifdef CONFIG_KALLSYMS
-            struct mod_kallsyms __rcu *kallsyms;
-            struct mod_kallsyms core_kallsyms;
-            struct module_sect_attrs *sect_attrs;
-            struct module_notes_attrs *notes_attrs;
-        #endif
-            ...
-        };
-
-        struct module_layout {
-            /* The actual code + data. */
-            void *base;
-            /* Total size. */
-            unsigned int size;
-            /* The size of the executable code.  */
-            unsigned int text_size;
-            /* Size of RO section of the module (text+rodata) */
-            unsigned int ro_size;
-            /* Size of RO after init section */
-            unsigned int ro_after_init_size; // v4.8~
-        #ifdef CONFIG_MODULES_TREE_LOOKUP
-            struct mod_tree_node mtn;
-        #endif
-        };
-
-        [Example arm32]
-            gef> x/128xw 0x00000000bf22b084
-            0xbf22b084:     0xbf1bb044      0xc1696530      0x00006773      0x00000000
-            0xbf22b094:     0x00000000      0x00000000      0x00000000      0x00000000
-            0xbf22b0a4:     0x00000000      0x00000000      0x00000000      0x00000000
-            0xbf22b0b4:     0x00000000      0x00000000      0x00000000      0x00000000
-            0xbf22b0c4:     0x00000000      0xc1ec2d00      0xc1a11d80      0xbf1bb08c
-            0xbf22b0d4:     0xc1a11d8c      0xc1a11d80      0xc1628e38      0xc8e0b2c0
-            0xbf22b0e4:     0x00000003      0x00000007      0xbf22b080      0x00000000
-            0xbf22b0f4:     0xc8d4f380      0x00000000      0xc1e47400      0xc8f6d900
-            0xbf22b104:     0xc8f6d080      0xc8004300      0x00000000      0x00000000
-            0xbf22b114:     0x00000000      0x00000000      0x00000000      0x00000000
-            0xbf22b124:     0xbf22b124      0xbf22b124      0xbf22a990      0x00000003
-            0xbf22b134:     0x00000000      0x00000000      0x00000000      0x00000001
-            0xbf22b144:     0x00000000      0x00000000      0x00000000      0x00000000
-            0xbf22b154:     0x00000000      0xbf17e000      0x00000000      0x00000000
-            0xbf22b164:     0x00000000      0x00000000      0x00000000      0x00000000
-            0xbf22b174:     0x00000000      0x00000000      0x00000000      0xbf225000 <- core_layout.base
-            0xbf22b184:     0x00008000      0x00005000      0x00006000      0x00006000
-        """
-        # fast path
-        try:
-            offset_core_layout = GefUtil.parse_and_eval_unsigned("&((struct module*)0).core_layout")
-            offset_size = GefUtil.parse_and_eval_unsigned("&((struct module_layout*)0).size")
-            return offset_core_layout, offset_core_layout + offset_size
-        except gdb.error:
-            pass
-
-        # slow_path
-        for i in range(300):
-            offset_core_layout = i * current_arch.ptrsize
-            valid = True
-            for module in module_addrs:
-                # memory access check
-                core_layout_ptr = module + offset_core_layout
-                if not is_valid_addr(core_layout_ptr):
-                    valid = False
-                    break
-                # base align check
-                cand_base = read_int_from_memory(core_layout_ptr)
-                if cand_base == 0 or cand_base & 0xfff:
-                    valid = False
-                    break
-                # size check
-                cand_size = read_int32_from_memory(core_layout_ptr + current_arch.ptrsize)
-                if cand_size == 0 or cand_size > 0x20_0000:
-                    valid = False
-                    break
-                # text_size check
-                cand_text_size = read_int32_from_memory(core_layout_ptr + current_arch.ptrsize + 4 * 1)
-                if cand_text_size == 0 or cand_text_size > cand_size:
-                    valid = False
-                    break
-                # ro_size check (text+rodata)
-                cand_ro_size = read_int32_from_memory(core_layout_ptr + current_arch.ptrsize + 4 * 2)
-                if cand_ro_size < cand_text_size or cand_ro_size > cand_size:
-                    valid = False
-                    break
-                # ro_after_init_size check; it does not exist under v4.8, then the read hits
-                # the tail padding (or init_layout.base of an already initialized module)
-                cand_ro_after_init_size = read_int32_from_memory(core_layout_ptr + current_arch.ptrsize + 4 * 3)
-                if cand_ro_after_init_size != 0:
-                    if cand_ro_after_init_size < cand_ro_size or cand_ro_after_init_size > cand_size:
-                        valid = False
-                        break
-            if valid:
-                return offset_core_layout, offset_core_layout + current_arch.ptrsize
-        return None
-
-    def get_offset_module_core(self, module_addrs): # ~v4.4
-        """
-        struct module { // ~v4.4
-            enum module_state state;
-            struct list_head list;
-            char name[MODULE_NAME_LEN];
-            struct module_kobject mkobj;
-            struct module_attribute *modinfo_attrs;
-            const char *version;
-            const char *srcversion;
-            struct kobject *holders_dir;
-            const struct kernel_symbol *syms;
-            const unsigned long *crcs;
-            unsigned int num_syms;
-        #ifdef CONFIG_SYSFS
-            struct mutex param_lock;
-        #endif
-            struct kernel_param *kp;
-            unsigned int num_kp;
-            unsigned int num_gpl_syms;
-            const struct kernel_symbol *gpl_syms;
-            const unsigned long *gpl_crcs;
-        #ifdef CONFIG_UNUSED_SYMBOLS
-            const struct kernel_symbol *unused_syms;
-            const unsigned long *unused_crcs;
-            unsigned int num_unused_syms;
-            unsigned int num_unused_gpl_syms;
-            const struct kernel_symbol *unused_gpl_syms;
-            const unsigned long *unused_gpl_crcs;
-        #endif
-        #ifdef CONFIG_MODULE_SIG
-            bool sig_ok;
-        #endif
-            bool async_probe_requested;
-            const struct kernel_symbol *gpl_future_syms;
-            const unsigned long *gpl_future_crcs;
-            unsigned int num_gpl_future_syms;
-            unsigned int num_exentries;
-            struct exception_table_entry *extable;
-            int (*init)(void);
-            void *module_init ____cacheline_aligned;
-            /* Here is the actual code + data, vfree'd on unload. */
-            void *module_core;                                          <-- here
-            /* Here are the sizes of the init and core sections */
-            unsigned int init_size, core_size;
-            /* The size of the executable code in each section. */
-            unsigned int init_text_size, core_text_size;
-        #ifdef CONFIG_MODULES_TREE_LOOKUP
-            struct mod_tree_node mtn_core;
-            struct mod_tree_node mtn_init;
-        #endif
-            unsigned int init_ro_size, core_ro_size;
-            struct mod_arch_specific arch;
-            unsigned int taints;
-        #ifdef CONFIG_GENERIC_BUG
-            unsigned num_bugs;
-            struct list_head bug_list;
-            struct bug_entry *bug_table;
-        #endif
-        #ifdef CONFIG_KALLSYMS
-            struct mod_kallsyms *kallsyms;                              <-- here
-            struct mod_kallsyms core_kallsyms;
-            struct module_sect_attrs *sect_attrs;
-            struct module_notes_attrs *notes_attrs;
-        #endif
-            ...
-        };
-        """
-        # fast path
-        try:
-            offset_module_core = GefUtil.parse_and_eval_unsigned("&((struct module*)0).module_core")
-            offset_core_size = GefUtil.parse_and_eval_unsigned("&((struct module*)0).core_size")
-            return offset_module_core, offset_core_size
-        except gdb.error:
-            pass
-
-        # slow_path
-        for i in range(300):
-            offset_module_core = i * current_arch.ptrsize
-            valid = True
-            for module in module_addrs:
-                module_core_ptr = module + offset_module_core
-                # memory access check
-                if not is_valid_addr(module_core_ptr):
-                    valid = False
-                    break
-                # module_core align check
-                cand_module_core = read_int_from_memory(module_core_ptr)
-                if cand_module_core == 0 or cand_module_core & 0xfff:
-                    valid = False
-                    break
-                # init_size check
-                cand_init_size = read_int32_from_memory(module_core_ptr + current_arch.ptrsize)
-                if cand_init_size > 0x10_0000:
-                    valid = False
-                    break
-                # core_size check
-                cand_core_size = read_int32_from_memory(module_core_ptr + current_arch.ptrsize + 4 * 1)
-                if cand_core_size == 0 or cand_core_size > 0x10_0000:
-                    valid = False
-                    break
-                # init_text_size check
-                cand_init_text_size = read_int32_from_memory(module_core_ptr + current_arch.ptrsize + 4 * 2)
-                if cand_init_text_size > 0x10_0000:
-                    valid = False
-                    break
-                # core_text_size check
-                cand_core_text_size = read_int32_from_memory(module_core_ptr + current_arch.ptrsize + 4 * 3)
-                if cand_core_text_size == 0 or cand_core_text_size > cand_core_size:
-                    valid = False
-                    break
-            if valid:
-                return offset_module_core, offset_module_core + current_arch.ptrsize + 4
-        return None
-
-    def get_offset_kallsyms(self, module_addrs):
-        """
-        struct mod_kallsyms {
-            Elf_Sym *symtab;
-            unsigned int num_symtab;
-            char *strtab;
-            char *typetab; // v5.2~
-        };
-        """
-        # fast path
-        try:
-            return GefUtil.parse_and_eval_unsigned("&((struct module*)0).kallsyms")
-        except gdb.error:
-            pass
-
-        # slow_path
-        kversion = Kernel.kernel_version()
-        sizeof_symtab_entry = 24 if is_64bit() else 16
-        for i in range(300):
-            offset_kallsyms = i * current_arch.ptrsize
-            valid = True
-            for module in module_addrs:
-                kallsyms_ptr = module + offset_kallsyms
-                # access check
-                if not is_valid_addr(kallsyms_ptr):
-                    valid = False
-                    break
-                # kallsyms access check
-                cand_kallsyms = read_int_from_memory(kallsyms_ptr)
-                if not is_valid_addr(cand_kallsyms):
-                    valid = False
-                    break
-                # struct mod_kallsyms member access check
-                cand_symtab = read_int_from_memory(cand_kallsyms)
-                if not is_valid_addr(cand_symtab):
-                    valid = False
-                    break
-                cand_num_symtab = read_int32_from_memory(cand_kallsyms + current_arch.ptrsize * 1)
-                if cand_num_symtab == 0 or cand_num_symtab > 0x10_0000:
-                    valid = False
-                    break
-                cand_strtab = read_int_from_memory(cand_kallsyms + current_arch.ptrsize * 2)
-                if not is_valid_addr(cand_strtab):
-                    valid = False
-                    break
-                # strtab is placed just after symtab
-                if cand_strtab != cand_symtab + cand_num_symtab * sizeof_symtab_entry:
-                    valid = False
-                    break
-                if "5.2" <= kversion:
-                    cand_typetab = read_int_from_memory(cand_kallsyms + current_arch.ptrsize * 3)
-                    if not is_valid_addr(cand_typetab):
-                        valid = False
-                        break
-            if valid:
-                return offset_kallsyms
-        return None
-
-    def get_offset_symtab(self, module_addrs): # ~v4.4
-        """
-        struct module { // ~v4.4
-            ...
-        #ifdef CONFIG_KALLSYMS
-            Elf_Sym *symtab, *core_symtab;
-            unsigned int num_symtab, core_num_syms;
-            char *strtab, *core_strtab;
-            ...
-        #endif
-            ...
-        };
-        Once the module is initialized, symtab, num_symtab and strtab are replaced by the core_* ones.
-        """
-        # fast path
-        try:
-            return GefUtil.parse_and_eval_unsigned("&((struct module*)0).symtab")
-        except gdb.error:
-            pass
-
-        # slow path
-        sizeof_symtab_entry = 24 if is_64bit() else 16
-        for i in range(300):
-            offset_symtab = i * current_arch.ptrsize
-            valid = True
-            for module in module_addrs:
-                symtab_ptr = module + offset_symtab
-                num_symtab_ptr = symtab_ptr + current_arch.ptrsize * 2
-                strtab_ptr = num_symtab_ptr + 4 * 2
-                # access check
-                if not is_valid_addr(symtab_ptr) or not is_valid_addr(strtab_ptr + current_arch.ptrsize * 2 - 1):
-                    valid = False
-                    break
-                # symtab == core_symtab
-                cand_symtab = read_int_from_memory(symtab_ptr)
-                if cand_symtab != read_int_from_memory(symtab_ptr + current_arch.ptrsize) or not is_valid_addr(cand_symtab):
-                    valid = False
-                    break
-                # num_symtab == core_num_syms
-                cand_num_symtab = read_int32_from_memory(num_symtab_ptr)
-                if cand_num_symtab != read_int32_from_memory(num_symtab_ptr + 4) or cand_num_symtab == 0 or cand_num_symtab > 0x10_0000:
-                    valid = False
-                    break
-                # strtab == core_strtab
-                cand_strtab = read_int_from_memory(strtab_ptr)
-                if cand_strtab != read_int_from_memory(strtab_ptr + current_arch.ptrsize) or not is_valid_addr(cand_strtab):
-                    valid = False
-                    break
-                # strtab is placed just after symtab
-                if cand_strtab != cand_symtab + cand_num_symtab * sizeof_symtab_entry:
-                    valid = False
-                    break
-            if valid:
-                return offset_symtab
-        return None
-
-    @Cache.cache_this_session(cache_None=False)
-    def initialize(self):
-        self.meta = []
-
-        kversion = Kernel.kernel_version()
-        if kversion is None:
-            self.meta.append((self.quiet_err, "Failed to resolve kernel version"))
-            return None
-
-        # modules
-        self.modules = KernelAddressHeuristicFinder.get_modules()
-        if self.modules is None:
-            self.meta.append((self.quiet_err, "Could not find modules (CONFIG_MODULES may not be set)"))
-            return None
-        self.meta.append((self.quiet_info, "modules: {:#x}".format(self.modules)))
-
-        # the module list is live, so it is only a sample for the heuristics below
-        module_addrs = self.get_modules_list(self.modules)[0]
-        if module_addrs is None:
-            return None
-        if module_addrs == []:
-            self.meta.append((self.quiet_err, "Could not find any modules"))
-            return None
-
-        # module->name
-        self.offset_name = current_arch.ptrsize * 3 # state + list_head
-        self.meta.append((self.quiet_info, "offsetof(module, name): {:#x}".format(self.offset_name)))
-
-        # module->{mem,core_layout,module_core}
-        # (member name, size member name, getter)
-        mem = ("mem", "mem.size", self.get_offset_mem) # v6.4~
-        core_layout = ("core_layout", "core_layout.size", self.get_offset_core_layout) # v4.5~v6.4
-        module_core = ("module_core", "core_size", self.get_offset_module_core) # ~v4.4
-        # the kernel version only decides which layout is tried first, because distributions
-        # backport the layout change (e.g. Ubuntu 4.4 already has core_layout)
-        if "6.4" <= kversion:
-            plans = [mem, core_layout, module_core]
-        elif "4.5" <= kversion:
-            plans = [core_layout, mem, module_core]
-        else:
-            plans = [module_core, core_layout, mem]
-        for base_name, size_name, getter in plans:
-            ret = getter(module_addrs)
-            if ret is None:
-                continue
-            self.offset_base, self.offset_size = ret
-            self.meta.append((self.quiet_info, "offsetof(module, {:s}): {:#x}".format(base_name, self.offset_base)))
-            self.meta.append((self.quiet_info, "offsetof(module, {:s}): {:#x}".format(size_name, self.offset_size)))
-            break
-        else:
-            self.meta.append((self.quiet_err, "Could not find module->{:s}".format(plans[0][0])))
-            return None
-        return True
-
-    @Cache.cache_this_session(cache_None=False)
-    def resolve_offset_kallsyms(self):
-        self.meta = []
-
-        # module->kallsyms is used only by -s/--resolve-symbol and -a/--apply-symbol,
-        # so do not give up the whole module list when it is unresolvable
-        self.offset_kallsyms = None
-        self.offset_symtab = None
-        # the kernel version only decides which layout is tried first, because distributions
-        # backport the change of v4.5 (struct mod_kallsyms)
-        if Kernel.kernel_version() < "4.5":
-            self.offset_symtab = self.get_offset_symtab(self.module_addrs)
-            if self.offset_symtab is None:
-                self.offset_kallsyms = self.get_offset_kallsyms(self.module_addrs)
-        else:
-            self.offset_kallsyms = self.get_offset_kallsyms(self.module_addrs)
-            if self.offset_kallsyms is None:
-                self.offset_symtab = self.get_offset_symtab(self.module_addrs)
-
-        if self.offset_kallsyms is not None:
-            self.meta.append((self.quiet_info, "offsetof(module, kallsyms): {:#x}".format(self.offset_kallsyms)))
-        elif self.offset_symtab is not None:
-            self.meta.append((self.quiet_info, "offsetof(module, symtab): {:#x}".format(self.offset_symtab)))
-        else:
-            self.meta.append((self.quiet_err, "Could not find module->kallsyms"))
-            return None
-        return True
-
-    def parse_kallsyms(self, module):
-        kversion = Kernel.kernel_version()
-
-        sizeof_symtab_entry = 24 if is_64bit() else 16
-        typetab = None
-        if self.offset_symtab is not None: # ~v4.4
-            symtab = read_int_from_memory(module + self.offset_symtab)
-            num_symtab = read_int32_from_memory(module + self.offset_symtab + current_arch.ptrsize * 2)
-            strtab = read_int_from_memory(module + self.offset_symtab + current_arch.ptrsize * 2 + 4 * 2)
-        else:
-            kallsyms = read_int_from_memory(module + self.offset_kallsyms)
-            symtab = read_int_from_memory(kallsyms + current_arch.ptrsize * 0)
-            num_symtab = read_int32_from_memory(kallsyms + current_arch.ptrsize * 1)
-            strtab = read_int_from_memory(kallsyms + current_arch.ptrsize * 2)
-            if "5.2" <= kversion:
-                typetab = read_int_from_memory(kallsyms + current_arch.ptrsize * 3)
-        strtab_pos = 0
-
-        #gef_print("symtab: {:#x}".format(symtab))
-        #gef_print("sizeof_symtab_entry: {:#x}".format(sizeof_symtab_entry))
-        #gef_print("num_symab: {:#x}".format(num_symtab))
-        #gef_print("strtab: {:#x}".format(strtab))
-        #if "5.2" <= kversion:
-        #    gef_print("typetab: {:#x}".format(typetab))
-
-        entries = []
-        for i in ProgressBar(range(num_symtab), disable=self.args.quiet or self.args.apply_symbol):
-            sym_addr = read_int_from_memory(symtab + sizeof_symtab_entry * i + current_arch.ptrsize)
-            sym_name = read_cstring_from_memory(strtab + strtab_pos)
-            strtab_pos += len(sym_name) + 1
-
-            if typetab is not None:
-                sym_type = chr(read_int8_from_memory(typetab + i))
-            elif "5.0" <= kversion:
-                # st_size
-                if is_64bit():
-                    sym_type = chr(read_int8_from_memory(symtab + sizeof_symtab_entry * i + 16))
-                else:
-                    sym_type = chr(read_int8_from_memory(symtab + sizeof_symtab_entry * i + 8))
-            else:
-                # st_info
-                if is_64bit():
-                    sym_type = chr(read_int8_from_memory(symtab + sizeof_symtab_entry * i + 4))
-                else:
-                    sym_type = chr(read_int8_from_memory(symtab + sizeof_symtab_entry * i + 12))
-            entries.append([sym_addr, sym_type, sym_name])
-        return entries
 
     def print_symbol(self, entries, symbol_unsort):
         self.out.append(titlify("module symbols"))
@@ -80081,19 +80561,14 @@ class KernelModuleCommand(GenericCommand, BufferingOutput):
         self.out.append(titlify(""))
         return
 
-    def apply_symbol(self, module_name, text_base, entries):
+    def apply_symbol_region(self, module_name, region_name, text_base, text_end, entries):
         # remove old file
-        sym_elf_path = os.path.join(GEF_TEMP_DIR, "kmod-{:s}.elf".format(module_name))
+        sym_elf_path = os.path.join(GEF_TEMP_DIR, "kmod-{:s}-{:s}.elf".format(module_name, region_name))
         if os.path.exists(sym_elf_path):
             os.unlink(sym_elf_path)
 
         # make blank ELF
         text_base &= get_pagesize_mask_high()
-        if not entries:
-            self.quiet_err("No symbols")
-            return
-        # `entries` is in symtab order, not sorted by address
-        text_end = max(entry[0] for entry in entries)
         blank_elf = AddSymbolTemporaryCommand.create_blank_elf(text_base, text_end)
         if blank_elf is None:
             self.quiet_err("Failed to create blank ELF")
@@ -80102,9 +80577,6 @@ class KernelModuleCommand(GenericCommand, BufferingOutput):
         # create command
         cmd_string_arr = []
         for sym_addr, sym_type, sym_name in entries:
-            if sym_addr < text_base:
-                continue
-
             if sym_type in ["T", "t", "W", None]:
                 type_flag = "function"
             else:
@@ -80129,7 +80601,7 @@ class KernelModuleCommand(GenericCommand, BufferingOutput):
         for cmd_string_arr_sliced in slicer(cmd_string_arr, 10000 * 2):
             subprocess.check_output([objcopy] + cmd_string_arr_sliced + [blank_elf])
             processed_count += len(cmd_string_arr_sliced) // 2
-        self.quiet_info("{:s}: {:d} entries were processed".format(module_name, processed_count))
+        self.quiet_info("{:s} ({:s}): {:d} entries were processed".format(module_name, region_name, processed_count))
         os.rename(blank_elf, sym_elf_path)
 
         # apply
@@ -80138,67 +80610,107 @@ class KernelModuleCommand(GenericCommand, BufferingOutput):
         gdb.execute(cmd, to_string=True)
         return
 
+    def apply_symbol(self, module_name, regions, entries):
+        # the null symbol
+        entries = [entry for entry in entries if entry[0] and entry[2]]
+        if not entries:
+            self.quiet_err("No symbols")
+            return
+
+        # v6.4~ allocates each region separately, and a lower region may be placed after a higher one,
+        # so the symbols are embedded into an ELF per region
+        groups = {region_name: [] for region_name, _base, _size in regions}
+        skipped = []
+        for entry in entries:
+            sym_addr = entry[0]
+            region_name = next((name for name, base, size in regions if base <= sym_addr < base + size), None)
+            if region_name is None:
+                # the end marker of a region
+                region_name = next((name for name, base, size in regions if sym_addr == base + size), None)
+            if region_name is None:
+                skipped.append(entry)
+                continue
+            groups[region_name].append(entry)
+
+        if skipped:
+            # e.g., per-cpu variables
+            names = ", ".join(sym_name for _sym_addr, _sym_type, sym_name in skipped[:5])
+            if len(skipped) > 5:
+                names += ", ..."
+            self.quiet_warn("{:s}: {:d} symbols outside the module memory were skipped ({:s})".format(module_name, len(skipped), names))
+
+        for region_name, base, size in regions:
+            if not groups[region_name]:
+                continue
+            # `entries` is in symtab order, not sorted by address
+            text_end = max([base + size] + [entry[0] for entry in groups[region_name]])
+            self.apply_symbol_region(module_name, region_name, base, text_end, groups[region_name])
+        return
+
     def parse_module(self):
         if not self.args.apply_symbol:
             if not self.args.quiet:
-                fmt = "{:<18s} {:<24s} {:<18s} {:<18s}"
-                legend = ["module", "module->name", "base", "size"]
+                fmt = "{:<18s} {:<24s} {:<18s} {:<18s} {:s}"
+                legend = ["module", "module->name", "base", "size", "type"]
                 self.out.append(GefUtil.make_legend(fmt.format(*legend)))
 
-        for module in ProgressBar(self.module_addrs, disable=self.args.quiet or self.args.apply_symbol):
-            name_string = read_cstring_from_memory(module + self.offset_name)
+        progress = not self.args.quiet and not self.args.apply_symbol
+        for module in ProgressBar(self.module_addrs, disable=not progress):
+            name_string = self.kmod.get_name(module)
             if self.args.filter:
                 if not any(re_pattern.search(name_string) for re_pattern in self.args.filter):
                     continue
 
-            base = read_int_from_memory(module + self.offset_base)
-            size = read_int32_from_memory(module + self.offset_size)
+            regions = self.kmod.get_regions(module)
 
             if not self.args.apply_symbol:
-                self.out.append("{:#018x} {:<24s} {:#018x} {:#018x}".format(module, name_string, base, size))
+                for region_name, base, size in regions:
+                    self.out.append("{:#018x} {:<24s} {:#018x} {:#018x} {:s}".format(module, name_string, base, size, region_name))
 
             if self.args.resolve_symbol:
-                entries = self.parse_kallsyms(module)
+                entries = self.kmod.parse_kallsyms(module, progress=progress)
                 self.print_symbol(entries, self.args.symbol_unsort)
 
             elif self.args.apply_symbol:
-                entries = self.parse_kallsyms(module)
-                self.apply_symbol(name_string, base, entries)
+                entries = self.kmod.parse_kallsyms(module)
+                self.apply_symbol(name_string, regions, entries)
         return
 
     @parse_args
     @only_if_gdb_running
     @only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
-    @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
+    @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64"))
     @only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
         self.quiet_info("Wait for memory scan")
+        self.kmod = Kernel.Module.get_instance()
 
-        # initialize
-        ret = self.initialize()
+        # modules
+        ret = self.kmod.initialize()
         if args.meta or not ret:
-            for func, line in self.meta:
+            for func, line in self.kmod.export_meta(self, self.kmod.meta):
                 func(line)
         if not ret:
             self.quiet_err("Failed to initialize")
             return
 
         # get module addrs
-        self.module_addrs, meta = self.get_modules_list(self.modules)
-        for func, line in meta:
+        self.module_addrs, meta = self.kmod.get_module_addrs()
+        for func, line in self.kmod.export_meta(self, meta):
             func(line)
-        if self.module_addrs is None:
-            return
         if self.module_addrs == []:
             self.quiet_err("Could not find any modules")
             return
         self.quiet_info("Num of modules: {:d}".format(len(self.module_addrs)))
 
-        # module->kallsyms
+        # module->{mem,core_layout,module_core}, and module->kallsyms if needed
+        initializers = [(self.kmod.initialize_memory, "memory_meta")]
         if args.resolve_symbol or args.apply_symbol:
-            ret = self.resolve_offset_kallsyms()
+            initializers.append((self.kmod.initialize_kallsyms, "kallsyms_meta"))
+        for initializer, meta_name in initializers:
+            ret = initializer(self.module_addrs)
             if args.meta or not ret:
-                for func, line in self.meta:
+                for func, line in self.kmod.export_meta(self, getattr(self.kmod, meta_name)):
                     func(line)
             if not ret:
                 self.quiet_err("Failed to initialize")
@@ -80224,6 +80736,7 @@ class KernelModuleLoadCommand(GenericCommand):
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("name", type=str, help="name of the loaded module to search for by `kmod`.")
     parser.add_argument("path", type=str, help="path to compiled kernel module.")
+    parser.add_argument("--force", action="store_true", help="load even if the file does not match the loaded module.")
     parser.add_argument("--meta", action="store_true", help="display offset information.")
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
     parser.add_argument("-q", "--quiet", action="store_true", help="enable quiet mode.")
@@ -80235,416 +80748,151 @@ class KernelModuleLoadCommand(GenericCommand):
     _example_ = "\n".join(_example_).format(_cmdline_)
 
     _note_ = [
-        "This command requires CONFIG_RANDSTRUCT=n.",
+        "This command requires CONFIG_RANDSTRUCT=n, CONFIG_KALLSYMS=y and CONFIG_SYSFS=y (module->sect_attrs).",
         "It is useful if you have a kernel module with debuginfo at hand.",
+        "",
+        "The file is verified against the loaded module before loading:",
+        "- ELF type, machine, class and endianness",
+        "- The allocated section names",
+        "- The .note.gnu.build-id section in memory, or the symbol addresses of the module kallsyms if it is unavailable",
+        "A clear mismatch is rejected unless --force is specified.",
     ]
     _note_ = "\n".join(_note_)
 
-    def get_modules_list(self, modules):
-        # the warnings are returned instead of printed, because this is also called from the
-        # cached `initialize()`, where they would be printed only once and out of order
-        if modules is None:
-            return None, []
+    def get_module_kallsyms(self, module):
+        if not self.kmod.initialize_kallsyms(self.module_addrs):
+            return {}
+        kallsyms = {}
+        for addr, _type, name in self.kmod.parse_kallsyms(module):
+            kallsyms.setdefault(name, set()).add(addr)
+        return kallsyms
 
-        meta = []
-        # struct module { enum module_state state; struct list_head list; ... };
-        lh = Kernel.ListHead(modules, current_arch.ptrsize)
-        entries = list(lh.iter_entries())
-        if lh.broken:
-            meta.append((self.quiet_warn, "Stopped at {:s} module: {:#x}".format(lh.broken_reason, lh.broken_at)))
-            # the list is circular and doubly-linked, so the entries located behind the broken
-            # one are still reachable by following `prev` from the list head
-            seen = set(entries)
-            backward = list(lh.iter_entries(backward=True))
-            if lh.broken:
-                meta.append((self.quiet_warn, "Stopped at {:s} module: {:#x} (backward)".format(lh.broken_reason, lh.broken_at)))
-            entries += [x for x in reversed(backward) if x not in seen]
-            # the entries the walks stopped at are unreadable, they must not be passed to the
-            # `struct module` layout heuristics
-            entries = [x for x in entries if is_valid_addr(x)]
-        return entries, meta
+    def verify_file(self, module, sections):
+        # Returns (mismatches, verified_by)
+        elf = Elf.get_elf(self.args.path)
+        if elf is None or not elf.is_valid() or not elf.shdrs:
+            return ["It is not a valid ELF"], None
 
-    def get_offset_sect_attrs(self, module_addr):
-        """
-        struct module {
-            ...
-        #ifdef CONFIG_KALLSYMS
-            struct mod_kallsyms __rcu *kallsyms;
-            struct mod_kallsyms core_kallsyms;
-            struct module_sect_attrs *sect_attrs;
-            struct module_notes_attrs *notes_attrs;
-        #endif
-            ...
-        };
-        """
-        # fast path
-        try:
-            offset_sect_attrs = GefUtil.parse_and_eval_unsigned("&((struct module*)0).sect_attrs")
-            # Taking for granted the information we get is accurate we can reliably retrieve module->sect_attrs
-            sect_attrs = read_int_from_memory(module_addr + offset_sect_attrs)
-            return offset_sect_attrs, sect_attrs
-        except gdb.error:
-            pass
-
-        # slow_path
-        for i in range(0x100):
-            offset_sect_attrs = current_arch.ptrsize * i
-            # access check
-            if not is_valid_addr(module_addr + offset_sect_attrs):
-                continue
-            sect_attrs = read_int_from_memory(module_addr + offset_sect_attrs)
-            if not self.is_valid_sect_attrs(sect_attrs):
-                continue
-            return offset_sect_attrs, sect_attrs
-
-        return None, None
-
-    """
-    This function looks for the module->sect_attrs.grp.{attrs,bin_attrs} field,
-    which is an array of pointers to the various structures `bin_attribute`
-    that represent a the various sections. The array is guaranteed to terminate
-    with a NULL pointer therefore we can safely use a while True to iterate the
-    array in `is_valid_attribute_arr`.
-    On recent systems module->sect_attrs.grp.attrs is 0 and the array of
-    pointers is found in module->sect_attrs.grp.bin_attrs instead, but the
-    logic is the same.
-    """
-    def is_valid_sect_attrs(self, sect_attrs):
-        if not is_valid_addr(sect_attrs):
-            return False
-        # Check that the pointer is properly aligned
-        if sect_attrs & (current_arch.ptrsize - 1):
-            return False
-        for offset in range(40):
-            attribute_arr_ptr = read_int_from_memory(sect_attrs + offset * current_arch.ptrsize)
-            if self.is_valid_attribute_arr(attribute_arr_ptr):
-                return True
-        return False
-
-    @Cache.cache_until_next
-    def is_valid_attribute_arr(self, attribute_arr_ptr):
-        """
-        struct module_sect_attrs {
-            struct attribute_group {
-                const char *name;
-                umode_t (*is_visible)(struct kobject *, struct attribute *, int);
-                umode_t (*is_bin_visible)(struct kobject *, struct bin_attribute *, int); // v4.4~
-                size_t (*bin_size)(struct kobject *, const struct bin_attribute *, int); // v6.13~
-                struct attribute **attrs;                          <--- here
-                struct bin_attribute **bin_attrs; // v3.11~v6.12   <--- here
-                union {
-                    struct bin_attribute **bin_attrs;              <--- here
-                    const struct bin_attribute *const *bin_attrs_new;
-                }; // v6.13~
-            } grp;
-            unsigned int nsections; // ~v6.13
-            struct module_sect_attr {
-                struct bin_attribute battr; // v5.7~
-                struct module_attribute mattr; // ~v5.6
-                char *name; // ~v5.6
-                unsigned long address;
-            } attrs[]; // ~v6.13
-            struct bin_attribute attrs[]; // v6.14~
-        };
-
-        struct attribute {
-            const char *name;
-            umode_t mode;
-        #ifdef CONFIG_DEBUG_LOCK_ALLOC
-            bool ignore_lockdep:1;
-            struct lock_class_key *key;
-            struct lock_class_key skey;
-        #endif
-        };
-
-        struct bin_attribute { // v5.7~
-            struct attribute attr;
-            size_t size;
-            void *private;
-            struct address_space *(*f_mapping)(void); // v5.15~
-            struct address_space *mapping; // v5.12~5.14
-            ssize_t (*read)(struct file *, struct kobject *, struct bin_attribute *, char *, loff_t, size_t);
-            ssize_t (*read_new)(struct file *, struct kobject *, const struct bin_attribute *, char *, loff_t, size_t); // v6.13~6.17
-            ssize_t (*write)(struct file *, struct kobject *, struct bin_attribute *, char *, loff_t, size_t);
-            ssize_t (*write_new)(struct file *, struct kobject *, const struct bin_attribute *, char *, loff_t, size_t); // v6.13~6.17
-            loff_t (*llseek)(struct file *, struct kobject *, struct bin_attribute *, loff_t, int); // v6.7~
-            int (*mmap)(struct file *, struct kobject *, struct bin_attribute *attr, struct vm_area_struct *vma);
-        };
-
-        struct module_attribute { // ~v5.6
-            struct attribute attr;
-            ssize_t (*show)(struct module_attribute *, struct module_kobject *, char *);
-            ssize_t (*store)(struct module_attribute *, struct module_kobject *, const char *, size_t count);
-            void (*setup)(struct module *, const char *);
-            int (*test)(struct module *);
-            void (*free)(struct module *);
-        };
-        """
-        found = 0
-        while True:
-            if found > 0x200:
-                # If we got to this point we can definitely return
-                break
-            if not is_valid_addr(attribute_arr_ptr):
-                return False
-            attribute = read_int_from_memory(attribute_arr_ptr)
-            if attribute == 0:
-                break
-            if not is_valid_addr(attribute):
-                return False
-            nameptr = read_int_from_memory(attribute)
-            if not self.is_valid_sectname(nameptr):
-                return False
-            found += 1
-            attribute_arr_ptr += current_arch.ptrsize
-        return found > 0
-
-    def is_valid_sectname(self, nameptr):
-        if not is_valid_addr(nameptr):
-            return False
-        sectname = read_cstring_from_memory(nameptr)
-        if sectname is None or not sectname.startswith((".", "__", "_")):
-            if sectname and len(sectname) >= 4:
-                self.meta.append((
-                    self.quiet_info,
-                    'possible section name (rejected for not starting with ".", "__" or "_"): {:s}'.format(sectname),
-                ))
-            return False
-        return True
-
-    def get_offset_bin_attrs(self):
-        kversion = Kernel.kernel_version()
-
-        # fast path
-        try:
-            if kversion < "3.11":
-                offset_attrs = GefUtil.parse_and_eval_unsigned("&((struct attribute_group*)0).attrs")
-                attrs_arr_ptr = read_int_from_memory(self.cached_sect_attrs + offset_attrs)
-                return offset_attrs, attrs_arr_ptr
-            else:
-                # It is possible to use attrs or bin_attrs, so check both.
-                offset_attrs = GefUtil.parse_and_eval_unsigned("&((struct attribute_group*)0).attrs")
-                attrs_arr_ptr = read_int_from_memory(self.cached_sect_attrs + offset_attrs)
-                if is_valid_addr(attrs_arr_ptr):
-                    return offset_attrs, attrs_arr_ptr
-
-                # Avoid relying on GDB's handling of anonymous union members in 6.14+.
-                # bin_attrs/bin_attrs_new is immediately after attrs.
-                offset_bin_attrs = offset_attrs + current_arch.ptrsize
-                attrs_arr_ptr = read_int_from_memory(self.cached_sect_attrs + offset_bin_attrs)
-                return offset_bin_attrs, attrs_arr_ptr
-        except gdb.error:
-            pass
-
-        # slow path
-        for i in range(0x10):
-            offset_bin_attrs = current_arch.ptrsize * i
-            attrs_arr_ptr = read_int_from_memory(self.cached_sect_attrs + offset_bin_attrs)
-            if not self.is_valid_attribute_arr(attrs_arr_ptr):
-                continue
-            return offset_bin_attrs, attrs_arr_ptr
-
-        return None, None
-
-    """
-    This function aims at locating module_sect_attr->address or bin_attribute->private,
-    which stores the address of where the section resides in memory. To do so, it
-    performs a statistical analysis on the various section attribute structures to
-    identify pointer-sized values that are different for each one. If there is a
-    specific offset where a pointer is present and different for every structure,
-    it is very probable that the offset is that of the section address field.
-    """
-    def get_offset_address(self):
-        kversion = Kernel.kernel_version()
-
-        # fast path
-        try:
-            if kversion < "6.14":
-                return GefUtil.parse_and_eval_unsigned("&((struct module_sect_attr*)0).address")
-            return GefUtil.parse_and_eval_unsigned("&((struct bin_attribute*)0).private")
-        except gdb.error:
-            pass
-
-        # slow path
-        attrs_arr = []
-        curr_attr = self.cached_attribute_arr_ptr
-        while True:
-            attribute = read_int_from_memory(curr_attr)
-            if attribute == 0:
-                break
-            attrs_arr.append(attribute)
-            curr_attr += current_arch.ptrsize
-
-        if len(attrs_arr) < 2:
-            self.meta.append((self.quiet_err, "module->sect_attrs.grp.bin_attrs has too few elements"))
-            return None
-
-        # Find size of struct bin_attribute by pointer arithmetic from list (assuming they are contiguous and in order)
-        attrs_arr.sort()
-        bin_attr_size_map = {}
-        for i in range(len(attrs_arr) - 1):
-            tmp_size = attrs_arr[i + 1] - attrs_arr[i]
-            if tmp_size not in bin_attr_size_map:
-                bin_attr_size_map[tmp_size] = 1
-            else:
-                bin_attr_size_map[tmp_size] += 1
-
-        # in fact:
-        # ~6.13: sizeof(module_sect_attr)
-        # 6.14~: sizeof(bin_attribute)
-        bin_attr_size = max(bin_attr_size_map, key=bin_attr_size_map.get)
-
-        # Statistical analysis to find pointers that differ across every structure
-        # First we find potential pointers and save their count and offset
-        offset_map = {}
-        for attr in attrs_arr:
-            data = read_memory(attr, bin_attr_size)
-            for offset in range(0, bin_attr_size, current_arch.ptrsize):
-                word = int.from_bytes(data[offset:offset + current_arch.ptrsize], "little")
-                # TODO: Find a way to distinguish attrs.attr.{key,skey} from pointers
-                #   Maybe we could skip the initial fields by using bin_attribute.size?
-                if not AddressUtil.is_msb_on(word):
-                    continue
-                if offset not in offset_map:
-                    offset_map[offset] = {}
-                if word not in offset_map[offset]:
-                    offset_map[offset][word] = 1
-                else:
-                    offset_map[offset][word] += 1
-                # Remove pointers to strings if possible
-                maybe_string = read_cstring_from_memory(word, safe=True)
-                if maybe_string is None:
-                    continue
-                if len(maybe_string) > 4:
-                    del offset_map[offset][word]
-
-        # Find the best candidate to avoid name pointers that are not deleted (don't know why that happens)
-        max_len = 0
-        offset_address = None
-        for offset, words in offset_map.items():
-            for _val, count in words.items():
-                # If multiple identical pointers are found, they are not `address` and `private`.
-                if count > 1:
-                    break
-            else:
-                if len(words) > max_len:
-                    max_len = len(words)
-                    offset_address = offset
-        if max_len != 0:
-            return offset_address
-
-        return None
-
-    def get_requested_module(self, module_addrs):
-        for module in module_addrs:
-            if read_cstring_from_memory(module + self.offset_name) == self.args.name:
-                return module
-        return None
-
-    @Cache.cache_this_session(cache_None=False)
-    def initialize(self):
-        self.meta = []
-
-        kversion = Kernel.kernel_version()
-        if kversion is None:
-            self.meta.append((self.quiet_err, "Failed to resolve kernel version"))
-            return None
-
-        # modules
-        self.modules = KernelAddressHeuristicFinder.get_modules()
-        if self.modules is None:
-            self.meta.append((self.quiet_err, "Could not find modules (maybe, CONFIG_MODULES is not set)"))
-            return None
-        self.meta.append((self.quiet_info, "modules: {:#x}".format(self.modules)))
-
-        # modules list
-        module_addrs = self.get_modules_list(self.modules)[0]
-        if module_addrs is None:
-            return None
-        if module_addrs == []:
-            self.meta.append((self.quiet_err, "Could not find any modules"))
-            return None
-
-        # module->name
-        self.offset_name = current_arch.ptrsize * 3 # state + list_head
-        self.meta.append((self.quiet_info, "offsetof(module, name): {:#x}".format(self.offset_name)))
-
-        # Find requested module
-        self.req_module = self.get_requested_module(module_addrs)
-        if self.req_module is None:
-            self.meta.append((self.quiet_err, "Could not find requested module"))
-            return None
-        self.meta.append((self.quiet_info, f"module: {hex(self.req_module)}"))
-
-        # module->sect_attrs
-        self.offset_sect_attrs, self.cached_sect_attrs = self.get_offset_sect_attrs(self.req_module)
-        if self.offset_sect_attrs is None:
-            self.meta.append((self.quiet_err, "Could not find module->sect_attrs"))
-            return None
-        self.meta.append((self.quiet_info, "offsetof(module, sect_attrs): {:#x}".format(self.offset_sect_attrs)))
-
-        # sect_attrs.grp.{attrs,bin_attrs}
-        self.offset_attrs, self.cached_attribute_arr_ptr = self.get_offset_bin_attrs()
-        if self.offset_attrs is None:
-            self.meta.append((self.quiet_err, "Could not find module->sect_attrs.grp.{attrs,bin_attrs}"))
-            return None
-        self.meta.append((self.quiet_info, "offsetof(module_sect_attrs, grp.{{attrs,bin_attrs}}): {:#x}".format(self.offset_attrs)))
-
-        # ~6.13: module_sect_attr.address
-        # 6.14~: bin_attribute.private
-        self.offset_address = self.get_offset_address()
-        if self.offset_address is None:
-            if kversion < "6.14":
-                self.meta.append((self.quiet_err, "Could not find offset of module_sect_attr.address (section address)"))
-            else:
-                self.meta.append((self.quiet_err, "Could not find offset of bin_attribute.private (section address)"))
-            return None
-        if kversion < "6.14":
-            self.meta.append((self.quiet_info, "offsetof(module_sect_attr, address): {:#x}".format(self.offset_address)))
+        # architecture
+        if is_x86_64():
+            machine = Elf.EM_X86_64
+        elif is_x86_32():
+            machine = Elf.EM_386
+        elif is_arm64():
+            machine = Elf.EM_AARCH64
+        elif is_arm32():
+            machine = Elf.EM_ARM
         else:
-            self.meta.append((self.quiet_info, "offsetof(bin_attribute, private): {:#x}".format(self.offset_address)))
+            machine = Elf.EM_RISCV
+        mismatches = []
+        if elf.e_type != Elf.ET_REL:
+            mismatches.append("e_type is {:#x}, not ET_REL".format(elf.e_type))
+        if elf.e_machine != machine:
+            mismatches.append("e_machine is {:#x}, but the target is {:#x}".format(elf.e_machine, machine))
+        if elf.e_class != (Elf.ELF_64_BITS if is_64bit() else Elf.ELF_32_BITS):
+            mismatches.append("ELF class does not match the pointer size of the target")
+        if (elf.e_endianness == Elf.BIG_ENDIAN) != Endian.is_big_endian():
+            mismatches.append("ELF endianness does not match the target")
+        if mismatches:
+            return mismatches, None
 
-        return True
+        # section names; the loader allocates .symtab and .strtab, and drops some sections (e.g., .modinfo)
+        runtime_sections = dict(sections)
+        missing = [name for name in runtime_sections if elf.get_shdr(name) is None]
+        if missing:
+            mismatches.append("sections not found in the file: {:s}".format(", ".join(missing)))
+        file_sections = [s.sh_name for s in elf.shdrs if s.sh_flags & Elf.Shdr.SHF_ALLOC and s.sh_size]
+        dropped = [name for name in file_sections if name not in runtime_sections]
+        dropped = [name for name in dropped if name not in (".modinfo", "__versions", ".data..percpu")]
+        if dropped:
+            self.quiet_warn("Sections not loaded (GDB uses the address in the file): {:s}".format(", ".join(dropped)))
 
-    def kmod_load(self, module_addrs):
-        for module in module_addrs:
-            name_string = read_cstring_from_memory(module + self.offset_name)
-            if name_string != self.args.name:
-                continue
+        # build-id
+        note = elf.read_shdr(".note.gnu.build-id")
+        note_addr = runtime_sections.get(".note.gnu.build-id")
+        if note and note_addr:
+            loaded_note = read_memory(note_addr, len(note)) if is_valid_addr(note_addr + len(note) - 1) else None
+            if loaded_note == note:
+                return mismatches, "build-id"
+            if loaded_note is not None:
+                mismatches.append("build-id does not match")
+                return mismatches, None
 
-            # get nsections
-            sect_attrs = read_int_from_memory(module + self.offset_sect_attrs)
-            attribute_list = read_int_from_memory(sect_attrs + self.offset_attrs)
-
-            # get each section name and address
-            sections = []
-            while True:
-                attribute = read_int_from_memory(attribute_list)
-                if attribute == 0:
-                    break
-                nameptr = read_int_from_memory(attribute)
-                name = read_cstring_from_memory(nameptr)
-                # self.quiet_info("attr={:#x}".format(attribute))
-                addr = read_int_from_memory(attribute + self.offset_address)
-                self.quiet_info("name={:s}, addr={:#x}".format(name, addr))
-                sections.append((name, addr))
-                attribute_list += current_arch.ptrsize
-
-                # unneeded, but for convenience
-                gdb.set_convenience_variable(name.replace(".", "").replace("-", ""), addr)
-
-            # load
-            command = " ".join(['-s {:s} {:#x}'.format(name, addr) for (name, addr) in sections])
-            gdb.execute("add-symbol-file {!r} {:s}".format(self.args.path, command))
-            break
+        # module kallsyms
+        symtab = elf.read_shdr(".symtab")
+        strtab = elf.read_shdr(".strtab")
+        if not symtab or not strtab:
+            return mismatches, None
+        kallsyms = self.get_module_kallsyms(module)
+        endian = "<" if elf.e_endianness == Elf.LITTLE_ENDIAN else ">"
+        if elf.e_class == Elf.ELF_64_BITS:
+            # Elf64_Sym: st_name, st_info, st_other, st_shndx, st_value, st_size
+            fmt, index_info, index_shndx, index_value = "IBBHQQ", 1, 3, 4
         else:
+            # Elf32_Sym: st_name, st_value, st_size, st_info, st_other, st_shndx
+            fmt, index_info, index_shndx, index_value = "IIIBBH", 3, 5, 1
+        matched = 0
+        different = []
+        for sym in struct.iter_unpack(endian + fmt, symtab):
+            if sym[index_info] & 0xf not in (1, 2): # STT_OBJECT, STT_FUNC
+                continue
+            if not 0 < sym[index_shndx] < len(elf.shdrs):
+                continue
+            section_addr = runtime_sections.get(elf.shdrs[sym[index_shndx]].sh_name)
+            if section_addr is None:
+                continue
+            name = strtab[sym[0]:strtab.find(b"\0", sym[0])].decode("utf-8", "replace")
+            if name not in kallsyms:
+                continue
+            if section_addr + sym[index_value] in kallsyms[name]:
+                matched += 1
+            else:
+                different.append(name)
+        if different:
+            names = ", ".join(different[:5]) + (", ..." if len(different) > 5 else "")
+            mismatches.append("{:d} symbols differ from the module kallsyms: {:s}".format(len(different), names))
+            return mismatches, None
+        if matched:
+            return mismatches, "{:d} symbols of the module kallsyms".format(matched)
+        return mismatches, None
+
+    def kmod_load(self):
+        module = self.kmod.find_module(self.module_addrs, self.args.name)
+        if module is None:
             self.quiet_err("Could not find {:s}".format(self.args.name))
+            return
+
+        sections = self.kmod.get_sections(module)
+        if not sections:
+            self.quiet_err("module->sect_attrs of {:s} is NULL or invalid".format(self.args.name))
+            return
+        for name, addr in sections:
+            self.quiet_info("name={:s}, addr={:#x}".format(name, addr))
+            # unneeded, but for convenience
+            gdb.set_convenience_variable(name.replace(".", "").replace("-", ""), addr)
+
+        # verify
+        mismatches, verified_by = self.verify_file(module, sections)
+        for mismatch in mismatches:
+            self.quiet_err("Mismatch: {:s}".format(mismatch))
+        if mismatches:
+            if not self.args.force:
+                self.quiet_err("{:s} does not match the loaded module {:s} (use --force to load anyway)".format(self.args.path, self.args.name))
+                return
+        elif verified_by:
+            self.quiet_info("Verified by {:s}".format(verified_by))
+        else:
+            self.quiet_warn("Could not verify beyond the architecture and the section names")
+
+        # load; .symtab and .strtab are allocated only in memory for the module kallsyms
+        command = " ".join(['-s {:s} {:#x}'.format(name, addr) for (name, addr) in sections if name not in (".symtab", ".strtab")])
+        gdb.execute("add-symbol-file {!r} {:s}".format(self.args.path, command))
         return
 
     @parse_args
     @only_if_gdb_running
     @only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
-    @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
+    @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64"))
     @only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
         if not os.path.exists(args.path):
@@ -80659,31 +80907,41 @@ class KernelModuleLoadCommand(GenericCommand):
             self.quiet_err("Unsupported before v3.0")
             return
 
-        # initialize
-        ret = self.initialize()
+        self.kmod = Kernel.Module.get_instance()
+
+        # modules
+        ret = self.kmod.initialize()
         if args.meta or not ret:
-            for func, line in self.meta:
+            for func, line in self.kmod.export_meta(self, self.kmod.meta):
                 func(line)
         if not ret:
             self.quiet_err("Failed to initialize")
             return
 
         # get module addrs
-        module_addrs, meta = self.get_modules_list(self.modules)
-        for func, line in meta:
+        self.module_addrs, meta = self.kmod.get_module_addrs()
+        for func, line in self.kmod.export_meta(self, meta):
             func(line)
-        if module_addrs is None:
-            return
-        if module_addrs == []:
+        if self.module_addrs == []:
             self.quiet_err("Could not find any modules")
             return
-        self.quiet_info("Num of modules: {:d}".format(len(module_addrs)))
+        self.quiet_info("Num of modules: {:d}".format(len(self.module_addrs)))
+
+        # module->sect_attrs
+        requested = self.kmod.find_module(self.module_addrs, args.name)
+        ret = self.kmod.initialize_sect_attrs(self.module_addrs, requested)
+        if args.meta or not ret:
+            for func, line in self.kmod.export_meta(self, self.kmod.sect_attrs_meta):
+                func(line)
+        if not ret:
+            self.quiet_err("Failed to initialize")
+            return
 
         if args.meta:
             return
 
         # doit
-        self.kmod_load(module_addrs)
+        self.kmod_load()
         return
 
 
@@ -87031,66 +87289,35 @@ class KernelConfigCommand(GenericCommand, BufferingOutput):
             info("Could not find IKCFG_ST in .rodata")
         return configs
 
-    def get_module_memory_ranges(self, module, kmod_meta):
-        # v6.4~: `kmod` shows only module->mem[MOD_TEXT], but the config is in module->mem[MOD_RODATA]
-        MOD_RODATA = 2
-        r1 = re.search(r"offsetof\(module, mem\): (0x\S+)", kmod_meta)
-        r2 = re.search(r"offsetof\(module, mem\.size\): (0x\S+)", kmod_meta)
-        if not r1 or not r2:
-            return []
-        offset_mem = int(r1.group(1), 16)
-        offset_size = int(r2.group(1), 16) - offset_mem
-
-        try:
-            sizeof_module_memory_list = [GefUtil.parse_and_eval_unsigned("sizeof(struct module_memory)")]
-        except gdb.error:
-            sizeof_module_memory_min = align_to_ptrsize(offset_size + 4)
-            sizeof_mod_tree_node = current_arch.ptrsize * 7
-            sizeof_module_memory_list = [sizeof_module_memory_min, sizeof_module_memory_min + sizeof_mod_tree_node]
-
-        ranges = []
-        for sizeof_module_memory in sizeof_module_memory_list:
-            mem_ptr = module + offset_mem + MOD_RODATA * sizeof_module_memory
-            if not is_valid_addr(mem_ptr + offset_size):
-                continue
-            base = read_int_from_memory(mem_ptr)
-            size = read_int32_from_memory(mem_ptr + offset_size)
-            if base and base & 0xfff == 0 and 0 < size <= 0x100_0000 and is_valid_addr(base):
-                ranges.append((base, base + size))
-        return ranges
-
     def get_config_from_module(self):
-        kmod_meta = Color.remove_color(gdb.execute("kmod --no-pager --meta", to_string=True))
-        if "Could not find any modules" in kmod_meta:
-            info("The configs module is not loaded")
-            return None
-        if "CONFIG_MODULES may not be set" in kmod_meta:
+        kmod = Kernel.Module.get_instance()
+        if not kmod.initialize():
             info("Could not find modules (CONFIG_MODULES may not be set)")
             return None
-        if "Num of modules:" not in kmod_meta:
-            info("Could not list the modules")
+        module_addrs = kmod.get_module_addrs()[0]
+        module = kmod.find_module(module_addrs, "configs")
+        if module is None:
+            info("The configs module is not loaded")
             return None
-
-        module_re = r"^(0x[0-9a-f]+)\s+configs\s+(0x[0-9a-f]+)\s+(0x[0-9a-f]+)$"
-        ret = Color.remove_color(gdb.execute("kmod --quiet --no-pager --filter ^configs$ --resolve-symbol", to_string=True))
-        r = re.search(module_re, ret, re.M)
-        if not r:
-            # module->kallsyms may be unresolvable, so retry without symbols
-            ret = Color.remove_color(gdb.execute("kmod --quiet --no-pager --filter ^configs$", to_string=True))
-            r = re.search(module_re, ret, re.M)
-            if not r:
-                info("The configs module is not loaded")
-                return None
-        module, base, size = [int(x, 16) for x in r.groups()]
         info("configs module: {:#x}".format(module))
 
-        symbols = {name: int(addr, 16) for addr, name in re.findall(r"^(0x[0-9a-f]+) \S (kernel_config_data(?:_end)?)$", ret, re.M)}
+        # module->kallsyms may be unresolvable, then the module memory is searched
+        symbols = {}
+        try:
+            if kmod.initialize_kallsyms(module_addrs):
+                symbols = {name: addr for addr, _type, name in kmod.parse_kallsyms(module)}
+        except gdb.error:
+            pass
         if "kernel_config_data" in symbols:
             configs = self.extract_config(symbols["kernel_config_data"], symbols.get("kernel_config_data_end"))
             if configs is not None:
                 return configs
 
-        ranges = [(base, base + size)] + self.get_module_memory_ranges(module, kmod_meta)
+        if not kmod.initialize_memory(module_addrs):
+            info("Could not resolve the memory of the configs module")
+            return None
+        # since v6.4, the config is in the rodata region
+        ranges = [(base, base + size) for _type, base, size in kmod.get_regions(module)]
         for start, end in sorted(set(ranges)):
             configs = self.search_config(start, end, 0x1000 if is_kgdb() else 0x100000)
             if configs is not None:
@@ -139532,6 +139759,11 @@ class KobjCommand(GenericCommand):
             except Exception:
                 pass
 
+        # modules may be outside MODULES_VADDR~MODULES_END (e.g., ARM64 with KASLR allocates them in vmalloc)
+        for _module, _name, regions in Kernel.Module.get_instance().get_loaded_modules() or []:
+            for _type, base, size in regions:
+                add(base, base + size, "modules", "module")
+
         try:
             consts = F.consts()
             add(consts.MODULES_VADDR, consts.MODULES_END, "modules", "module")
@@ -139798,20 +140030,14 @@ class KobjCommand(GenericCommand):
 
     def report_module(self, addr):
         self.emit("Allocator", "module loader (vmalloc-backed)")
-        out = self.run("kmod --quiet --no-pager")
-        for line in out.splitlines():
-            fields = line.split()
-            if len(fields) != 4:
-                continue
-            try:
-                base, size = int(fields[2], 16), int(fields[3], 16)
-            except ValueError:
-                continue
-            if base <= addr < base + size:
-                self.emit("Module", fields[1])
+        for _module, name, regions in Kernel.Module.get_instance().get_loaded_modules() or []:
+            for region_name, base, size in regions:
+                if not base <= addr < base + size:
+                    continue
+                self.emit("Module", name)
                 self.emit("Object base", "{:#x}".format(base))
                 self.emit("Object offset", "+{:#x}".format(addr - base))
-                self.emit("Candidate", "kernel module image ({:s})".format(fields[1]))
+                self.emit("Candidate", "kernel module image ({:s} {:s})".format(name, region_name))
                 self.emit("Confidence", "high")
                 self.report_symbol(addr)
                 return
@@ -165652,25 +165878,13 @@ class KernelVMMapCommand(GenericCommand, BufferingOutput):
     def resolve_each_module(self):
         self.quiet_info("Resolving each module")
 
-        try:
-            res = gdb.execute("kmod --quiet --no-pager", to_string=True)
-        except gdb.error:
-            return
-
-        for line in res.splitlines():
-            if not line:
-                continue
-            fields = line.split()
-            if len(fields) != 4:
-                continue
-            try:
-                module_base = int(fields[2], 16)
-                module_size = align_to_pagesize(int(fields[3], 16))
-            except ValueError:
-                continue
-            module_name = fields[1]
-            description = "kernel module ({:s})".format(module_name)
-            self.insert_region(module_base, module_size, description)
+        for _module, module_name, regions in Kernel.Module.get_instance().get_loaded_modules() or []:
+            for region_name, module_base, module_size in regions:
+                if region_name == "core":
+                    description = "kernel module ({:s})".format(module_name)
+                else:
+                    description = "kernel module ({:s} {:s})".format(module_name, region_name)
+                self.insert_region(module_base, align_to_pagesize(module_size), description)
         return
 
     def resolve_vdso(self):
