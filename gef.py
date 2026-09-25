@@ -71431,6 +71431,7 @@ class Kernel:
     @staticmethod
     @Cache.cache_this_session(cache_None=False)
     def kernel_cmdline():
+
         def get_saved_command_line_candidates():
             if is_kdb():
                 yield Symbol.get_symbol_by_monitor("saved_command_line")
@@ -131642,6 +131643,7 @@ class HashTestCommand(HashCommand, BufferingOutput):
         return
 
     def disable_hash_cffi(self):
+
         def disabled_init_cffi_backend(hash_obj):
             hash_obj.USE_CFFI = False
             return
@@ -142819,6 +142821,7 @@ class KernelPipeCommand(GenericCommand, BufferingOutput):
                         help="filter by specific struct inode.")
     parser.add_argument("-f", "--file-filter", type=AddressUtil.parse_address, default=[], action="append",
                         help="filter by specific struct file.")
+    parser.add_argument("-r", "--rescan", action="store_true", help="do not use cached offset.")
     parser.add_argument("--meta", action="store_true", help="display offset information.")
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
     parser.add_argument("-q", "--quiet", action="store_true", help="show result only.")
@@ -142830,7 +142833,8 @@ class KernelPipeCommand(GenericCommand, BufferingOutput):
     _example_ = "\n".join(_example_).format(_cmdline_)
 
     _note_ = [
-        "This command requires CONFIG_RANDSTRUCT=n.",
+        "This command requires CONFIG_RANDSTRUCT=n, unless the debug info of vmlinux is loaded.",
+        "A notification pipe (CONFIG_WATCH_QUEUE) can hold more entries than `max`.",
         "",
         "Simplified pipe structure:",
         "",
@@ -142859,53 +142863,100 @@ class KernelPipeCommand(GenericCommand, BufferingOutput):
     ]
     _note_ = "\n".join(_note_)
 
-    @Cache.cache_this_session(cache_None=False)
+    # the resolved layout; `initialize()` returns them since its cache is per inferior, not per instance
+    LAYOUT_ATTRS = (
+        "ring_buffer", "offset_i_pipe", "offset_head", "offset_tail", "sizeof_pipe_index_t",
+        "offset_max_usage", "offset_ring_size", "offset_nrbufs", "offset_curbuf", "offset_buffers",
+        "offset_bufs", "offset_watch_queue", "offset_page", "offset_offset", "offset_len", "offset_ops",
+        "offset_flags", "sizeof_pipe_buffer", "meta",
+    )
+
+    @Cache.cache_this_session(cache_None=False, per_inferior=True, until_new_objfile=True)
     def initialize(self):
         # handed over from the caller; it is only a sample for the heuristics below
         pipe_files = self.pipe_files_temp
-        self.meta = []
+
+        meta = []
+        for use_dwarf in [True, False]:
+            for name in self.LAYOUT_ATTRS:
+                setattr(self, name, None)
+            self.meta = meta
+            if use_dwarf and not self.resolve_by_dwarf():
+                continue
+            if self.resolve_by_heuristic(pipe_files):
+                if self.is_consistent_layout(pipe_files):
+                    return {name: getattr(self, name) for name in self.LAYOUT_ATTRS}
+                self.meta.append((self.quiet_err, "The resolved offsets do not match the pipes in memory"))
+            if use_dwarf:
+                # the debug info may be for another build
+                meta = [
+                    self.meta[0],
+                    (self.quiet_warn, "The debug info does not match the pipes in memory; fall back to heuristic"),
+                ]
+        return None
+
+    def resolve_by_dwarf(self):
+
+        def offsetof(type_name, member):
+            try:
+                return GefUtil.parse_and_eval_unsigned("&((struct {:s}*)0)->{:s}".format(type_name, member))
+            except gdb.error:
+                return None
+
+        def sizeof(expr):
+            try:
+                return GefUtil.parse_and_eval_unsigned("sizeof({:s})".format(expr))
+            except gdb.error:
+                return None
+
+        found = []
 
         # inode->i_pipe
-        offset_i_pipe = self.get_offset_i_pipe(pipe_files)
-        if not offset_i_pipe:
-            self.meta.append((self.quiet_err, "Could not find inode->i_pipe"))
-            return None
-        self.offset_i_pipe = offset_i_pipe
-        self.meta.append((self.quiet_info, "offsetof(inode, i_pipe): {:#x}".format(self.offset_i_pipe)))
+        self.offset_i_pipe = offsetof("inode", "i_pipe")
+        if self.offset_i_pipe is not None:
+            found.append("inode")
 
-        kversion = Kernel.kernel_version()
-        if "5.5" <= kversion:
-            # pipe_inode_info->{head,tail,max_usage,ring_size}
-            ret = self.get_offset_head_or_nrbuf(pipe_files)
-            if ret is None:
-                self.meta.append((self.quiet_err, "Could not find pipe_inode_info->head"))
-                return None
-            self.offset_head = ret
-            self.meta.append((self.quiet_info, "offsetof(pipe_inode_info, head): {:#x}".format(self.offset_head)))
-            if kversion >= "6.14" and is_32bit():
-                self.sizeof_pipe_index_t = 2
-            else:
-                self.sizeof_pipe_index_t = 4
-            self.offset_tail = self.offset_head + self.sizeof_pipe_index_t
-            self.meta.append((self.quiet_info, "offsetof(pipe_inode_info, tail): {:#x}".format(self.offset_tail)))
-            self.offset_max_usage = self.offset_tail + self.sizeof_pipe_index_t
-            self.meta.append((self.quiet_info, "offsetof(pipe_inode_info, max_usage): {:#x}".format(self.offset_max_usage)))
-            self.offset_ring_size = self.offset_max_usage + 4
-            self.meta.append((self.quiet_info, "offsetof(pipe_inode_info, ring_size): {:#x}".format(self.offset_ring_size)))
+        # pipe_inode_info->{head,tail,max_usage,ring_size} (v5.5~) or {nrbufs,curbuf,buffers} (~v5.4)
+        offsets = [offsetof("pipe_inode_info", x) for x in ["head", "tail", "max_usage", "ring_size"]]
+        sizeof_pipe_index_t = sizeof("((struct pipe_inode_info*)0)->head")
+        if None not in offsets and sizeof_pipe_index_t in [2, 4]:
+            self.ring_buffer = True
+            self.offset_head, self.offset_tail, self.offset_max_usage, self.offset_ring_size = offsets
+            self.sizeof_pipe_index_t = sizeof_pipe_index_t
         else:
-            # pipe_inode_info->{nrbuf,curbuf,buffers}
-            ret = self.get_offset_head_or_nrbuf(pipe_files)
-            if ret is None:
-                self.meta.append((self.quiet_err, "Could not find pipe_inode_info->nrbuf"))
-                return None
-            self.offset_nrbuf = ret
-            self.meta.append((self.quiet_info, "offsetof(pipe_inode_info, nrbuf): {:#x}".format(self.offset_nrbuf)))
-            self.offset_curbuf = self.offset_nrbuf + 4
-            self.meta.append((self.quiet_info, "offsetof(pipe_inode_info, curbuf): {:#x}".format(self.offset_curbuf)))
-            self.offset_buffers = self.offset_curbuf + 4
-            self.meta.append((self.quiet_info, "offsetof(pipe_inode_info, buffers): {:#x}".format(self.offset_buffers)))
+            offsets = [offsetof("pipe_inode_info", x) for x in ["nrbufs", "curbuf", "buffers"]]
+            if None not in offsets:
+                self.ring_buffer = False
+                self.offset_nrbufs, self.offset_curbuf, self.offset_buffers = offsets
+        if self.ring_buffer is not None:
+            found.append("pipe_inode_info")
+            self.offset_bufs = offsetof("pipe_inode_info", "bufs")
+            # CONFIG_WATCH_QUEUE=y (v5.8~)
+            self.offset_watch_queue = offsetof("pipe_inode_info", "watch_queue")
 
-        # pipe_buffer->{page, offset, len, flags}
+        # pipe_buffer->{page, offset, len, ops, flags}
+        offsets = [offsetof("pipe_buffer", x) for x in ["page", "offset", "len", "ops", "flags"]]
+        sizeof_pipe_buffer = sizeof("struct pipe_buffer")
+        if None not in offsets and sizeof_pipe_buffer:
+            self.offset_page, self.offset_offset, self.offset_len, self.offset_ops, self.offset_flags = offsets
+            self.sizeof_pipe_buffer = sizeof_pipe_buffer
+            found.append("pipe_buffer")
+
+        if found:
+            self.meta.append((self.quiet_info, "Use the debug info of {:s}".format(", ".join(found))))
+        return bool(found)
+
+    def resolve_by_heuristic(self, pipe_files):
+        kversion = Kernel.kernel_version()
+        if self.ring_buffer is None:
+            self.ring_buffer = "5.5" <= kversion
+            if self.ring_buffer:
+                if kversion >= "6.14" and is_32bit():
+                    self.sizeof_pipe_index_t = 2
+                else:
+                    self.sizeof_pipe_index_t = 4
+
+        # pipe_buffer->{page, offset, len, ops, flags}
         """
         struct pipe_buffer {
             struct page *page;
@@ -142915,24 +142966,133 @@ class KernelPipeCommand(GenericCommand, BufferingOutput):
             unsigned long private;
         };
         """
-        self.offset_page = 0
-        self.meta.append((self.quiet_info, "offsetof(pipe_buffer, page): {:#x}".format(self.offset_page)))
-        self.offset_offset = current_arch.ptrsize
-        self.meta.append((self.quiet_info, "offsetof(pipe_buffer, offset): {:#x}".format(self.offset_offset)))
-        self.offset_len = self.offset_offset + 4
-        self.meta.append((self.quiet_info, "offsetof(pipe_buffer, len): {:#x}".format(self.offset_len)))
-        self.offset_flags = self.offset_len + 4 + current_arch.ptrsize
-        self.meta.append((self.quiet_info, "offsetof(pipe_buffer, flags): {:#x}".format(self.offset_flags)))
-        self.sizeof_pipe_buffer = align_to_ptrsize(self.offset_flags + 4) + current_arch.ptrsize
-        self.meta.append((self.quiet_info, "sizeof(pipe_buffer): {:#x}".format(self.sizeof_pipe_buffer)))
+        if self.sizeof_pipe_buffer is None:
+            self.offset_page = 0
+            self.offset_offset = current_arch.ptrsize
+            self.offset_len = self.offset_offset + 4
+            self.offset_ops = self.offset_len + 4
+            self.offset_flags = self.offset_ops + current_arch.ptrsize
+            self.sizeof_pipe_buffer = align_to_ptrsize(self.offset_flags + 4) + current_arch.ptrsize
+
+        # inode->i_pipe
+        if self.offset_i_pipe is None:
+            offset_i_pipe = self.get_offset_i_pipe(pipe_files)
+            if not offset_i_pipe:
+                self.meta.append((self.quiet_err, "Could not find inode->i_pipe"))
+                return None
+            self.offset_i_pipe = offset_i_pipe
+
+        if self.ring_buffer and self.offset_head is None:
+            # pipe_inode_info->{head,tail,max_usage,ring_size}
+            ret = self.get_offset_head_or_nrbuf(pipe_files)
+            if ret is None:
+                self.meta.append((self.quiet_err, "Could not find pipe_inode_info->head"))
+                return None
+            self.offset_head, self.offset_tail, self.offset_max_usage, self.offset_ring_size = self.get_header_offsets(ret)
+        elif not self.ring_buffer and self.offset_nrbufs is None:
+            # pipe_inode_info->{nrbufs,curbuf,buffers}
+            ret = self.get_offset_head_or_nrbuf(pipe_files)
+            if ret is None:
+                self.meta.append((self.quiet_err, "Could not find pipe_inode_info->nrbufs"))
+                return None
+            self.offset_nrbufs, self.offset_curbuf, self.offset_buffers = self.get_header_offsets(ret)
 
         # pipe_inode_info->bufs
-        offset_bufs = self.get_offset_bufs(pipe_files)
-        if not offset_bufs:
-            self.meta.append((self.quiet_err, "Could not find pipe_inode_info->bufs"))
-            return None
-        self.offset_bufs = offset_bufs
+        if self.offset_bufs is None:
+            offset_bufs = self.get_offset_bufs(pipe_files)
+            if not offset_bufs:
+                self.meta.append((self.quiet_err, "Could not find pipe_inode_info->bufs"))
+                return None
+            self.offset_bufs = offset_bufs
+
+        self.meta.append((self.quiet_info, "offsetof(inode, i_pipe): {:#x}".format(self.offset_i_pipe)))
+        if self.ring_buffer:
+            self.meta.append((self.quiet_info, "offsetof(pipe_inode_info, head): {:#x}".format(self.offset_head)))
+            self.meta.append((self.quiet_info, "offsetof(pipe_inode_info, tail): {:#x}".format(self.offset_tail)))
+            self.meta.append((self.quiet_info, "sizeof(pipe_index_t): {:#x}".format(self.sizeof_pipe_index_t)))
+            self.meta.append((self.quiet_info, "offsetof(pipe_inode_info, max_usage): {:#x}".format(self.offset_max_usage)))
+            self.meta.append((self.quiet_info, "offsetof(pipe_inode_info, ring_size): {:#x}".format(self.offset_ring_size)))
+        else:
+            self.meta.append((self.quiet_info, "offsetof(pipe_inode_info, nrbufs): {:#x}".format(self.offset_nrbufs)))
+            self.meta.append((self.quiet_info, "offsetof(pipe_inode_info, curbuf): {:#x}".format(self.offset_curbuf)))
+            self.meta.append((self.quiet_info, "offsetof(pipe_inode_info, buffers): {:#x}".format(self.offset_buffers)))
         self.meta.append((self.quiet_info, "offsetof(pipe_inode_info, bufs): {:#x}".format(self.offset_bufs)))
+        if self.offset_watch_queue is not None:
+            self.meta.append((self.quiet_info, "offsetof(pipe_inode_info, watch_queue): {:#x}".format(self.offset_watch_queue)))
+        self.meta.append((self.quiet_info, "offsetof(pipe_buffer, page): {:#x}".format(self.offset_page)))
+        self.meta.append((self.quiet_info, "offsetof(pipe_buffer, offset): {:#x}".format(self.offset_offset)))
+        self.meta.append((self.quiet_info, "offsetof(pipe_buffer, len): {:#x}".format(self.offset_len)))
+        self.meta.append((self.quiet_info, "offsetof(pipe_buffer, ops): {:#x}".format(self.offset_ops)))
+        self.meta.append((self.quiet_info, "offsetof(pipe_buffer, flags): {:#x}".format(self.offset_flags)))
+        self.meta.append((self.quiet_info, "sizeof(pipe_buffer): {:#x}".format(self.sizeof_pipe_buffer)))
+        return True
+
+    def get_header_offsets(self, offset=None):
+        """Return the offsets of (head, tail, max_usage, ring_size) for v5.5~, or (nrbufs, curbuf, buffers) for ~v5.4.
+        They are the resolved ones, or derived from `offset` as a candidate of the first member."""
+        if offset is None:
+            if self.ring_buffer:
+                return self.offset_head, self.offset_tail, self.offset_max_usage, self.offset_ring_size
+            return self.offset_nrbufs, self.offset_curbuf, self.offset_buffers
+        if self.ring_buffer:
+            size = self.sizeof_pipe_index_t
+            return offset, offset + size, offset + size * 2, offset + size * 2 + 4
+        return offset, offset + 4, offset + 8
+
+    def read_ring_state(self, pipe_inode_info, offsets=None):
+        """Return (head, tail, used, max_usage, ring_size). ~v5.4 is converted to the same form."""
+        if offsets is None:
+            offsets = self.get_header_offsets()
+        if self.ring_buffer:
+            offset_head, offset_tail, offset_max_usage, offset_ring_size = offsets
+            # read each index, since the order of the 16-bit indices in a 32-bit word depends on the endianness
+            if self.sizeof_pipe_index_t == 2:
+                head = read_int16_from_memory(pipe_inode_info + offset_head)
+                tail = read_int16_from_memory(pipe_inode_info + offset_tail)
+            else:
+                head = read_int32_from_memory(pipe_inode_info + offset_head)
+                tail = read_int32_from_memory(pipe_inode_info + offset_tail)
+            max_usage = read_int32_from_memory(pipe_inode_info + offset_max_usage)
+            ring_size = read_int32_from_memory(pipe_inode_info + offset_ring_size)
+            used = (head - tail) & ((1 << (self.sizeof_pipe_index_t * 8)) - 1)
+            return head, tail, used, max_usage, ring_size
+
+        offset_nrbufs, offset_curbuf, offset_buffers = offsets
+        nrbufs = read_int32_from_memory(pipe_inode_info + offset_nrbufs)
+        curbuf = read_int32_from_memory(pipe_inode_info + offset_curbuf)
+        buffers = read_int32_from_memory(pipe_inode_info + offset_buffers)
+        return curbuf + nrbufs, curbuf, nrbufs, buffers, buffers
+
+    def is_valid_ring_state(self, state):
+        _head, tail, used, max_usage, ring_size = state
+        if ring_size == 0 or ring_size > 0x10000:
+            return False
+        # A notification pipe (v5.8~v5.16) has a ring of the requested number of notes (up to 512).
+        if ring_size & (ring_size - 1) and (not self.ring_buffer or ring_size > 512):
+            return False
+        if not self.ring_buffer:
+            return used <= ring_size and tail < ring_size
+        # A notification pipe fills the ring regardless of max_usage.
+        return 0 < max_usage <= ring_size and used <= ring_size
+
+    def is_consistent_layout(self, pipe_files):
+        seen = set()
+        for _file, inode in pipe_files:
+            if inode in seen:
+                continue
+            seen.add(inode)
+            try:
+                pipe_inode_info = read_int_from_memory(inode + self.offset_i_pipe)
+                if not is_valid_addr(pipe_inode_info):
+                    return False
+                state = self.read_ring_state(pipe_inode_info)
+                if not self.is_valid_ring_state(state):
+                    return False
+                bufs = read_int_from_memory(pipe_inode_info + self.offset_bufs)
+                if not is_valid_addr(bufs) or not is_valid_addr(bufs + state[4] * self.sizeof_pipe_buffer - 1):
+                    return False
+            except gdb.MemoryError:
+                return False
         return True
 
     def get_offset_i_pipe(self, pipe_files):
@@ -143130,7 +143290,6 @@ class KernelPipeCommand(GenericCommand, BufferingOutput):
             if pipe_inode_info not in pipe_inode_infos:
                 pipe_inode_infos.append(pipe_inode_info)
 
-        kversion = Kernel.kernel_version()
         PAGE_SIZE = KernelAddressHeuristicFinder.consts().PAGE_SIZE
         fallback_offset = None
         for i in range(0x80):
@@ -143150,31 +143309,11 @@ class KernelPipeCommand(GenericCommand, BufferingOutput):
                     found = False
                     break
 
-                if kversion >= "5.5":
-                    ring_size = read_int32_from_memory(pipe_inode_info + self.offset_ring_size)
-                    if kversion >= "6.14" and is_32bit():
-                        head_tail = read_int32_from_memory(pipe_inode_info + self.offset_head)
-                        head = head_tail & 0xffff
-                        tail = head_tail >> 16
-                        pipe_index_mask = 0xffff
-                    else:
-                        head = read_int32_from_memory(pipe_inode_info + self.offset_head)
-                        tail = read_int32_from_memory(pipe_inode_info + self.offset_tail)
-                        pipe_index_mask = 0xffff_ffff
-                    used = (head - tail) & pipe_index_mask
-                else:
-                    ring_size = read_int32_from_memory(pipe_inode_info + self.offset_buffers)
-                    used = read_int32_from_memory(pipe_inode_info + self.offset_nrbuf)
-
-                if ring_size == 0 or ring_size > 0x10000:
+                state = self.read_ring_state(pipe_inode_info)
+                if not self.is_valid_ring_state(state):
                     found = False
                     break
-                if ring_size & (ring_size - 1):
-                    found = False
-                    break
-                if used > ring_size:
-                    found = False
-                    break
+                ring_size = state[4]
                 if not is_valid_addr(bufs + ring_size * self.sizeof_pipe_buffer - 1):
                     found = False
                     break
@@ -143184,7 +143323,7 @@ class KernelPipeCommand(GenericCommand, BufferingOutput):
                     page = read_int_from_memory(base + self.offset_page)
                     offset = read_int32_from_memory(base + self.offset_offset)
                     len_ = read_int32_from_memory(base + self.offset_len)
-                    ops = read_int_from_memory(base + self.offset_len + 4)
+                    ops = read_int_from_memory(base + self.offset_ops)
                     flags = read_int32_from_memory(base + self.offset_flags)
                     if page and not is_valid_addr(page):
                         found = False
@@ -143282,7 +143421,7 @@ class KernelPipeCommand(GenericCommand, BufferingOutput):
                 self.meta.append((self.quiet_info, "offset of bufs is found by heuristic way3-1"))
                 return current_arch.ptrsize * i
             # before v5.5, pipe_buffer is allocated not from slub, but `user` is allocated from slub.
-            if kversion < "5.5" and "uid_cache" in ret:
+            if not self.ring_buffer and "uid_cache" in ret:
                 self.meta.append((self.quiet_info, "offset of bufs is found by heuristic way3-2"))
                 return current_arch.ptrsize * (i - 1)
         return None
@@ -143302,45 +143441,18 @@ class KernelPipeCommand(GenericCommand, BufferingOutput):
             pipe_inode_info = read_int_from_memory(inode + offset_i_pipe)
             pipe_inode_infos.append(pipe_inode_info)
 
-        kversion = Kernel.kernel_version()
+        # the header resolved from the debug info only needs to be validated
+        if self.get_header_offsets()[0] is not None:
+            candidates = [self.get_header_offsets()[0]]
+        else:
+            candidates = [current_arch.ptrsize * i for i in range(3, 0x40)]
 
-        for i in range(3, 0x40):
-            offset = current_arch.ptrsize * i
+        for offset in candidates:
+            offsets = self.get_header_offsets(offset)
             found = True
             for pipe_inode_info in pipe_inode_infos:
-                if kversion < "5.5":
-                    nrbuf = read_int32_from_memory(pipe_inode_info + offset)
-                    curbuf = read_int32_from_memory(pipe_inode_info + offset + 4)
-                    buffers = read_int32_from_memory(pipe_inode_info + offset + 8)
-                    if buffers == 0 or buffers > 0x10000 or buffers & (buffers - 1):
-                        found = False
-                        break
-                    if nrbuf > buffers or curbuf >= buffers:
-                        found = False
-                        break
-                    continue
-
-                if kversion >= "6.14" and is_32bit():
-                    head_tail = read_int32_from_memory(pipe_inode_info + offset)
-                    head = head_tail & 0xffff
-                    tail = head_tail >> 16
-                    max_usage = read_int32_from_memory(pipe_inode_info + offset + 4)
-                    ring_size = read_int32_from_memory(pipe_inode_info + offset + 8)
-                    pipe_index_mask = 0xffff
-                else:
-                    head = read_int32_from_memory(pipe_inode_info + offset)
-                    tail = read_int32_from_memory(pipe_inode_info + offset + 4)
-                    max_usage = read_int32_from_memory(pipe_inode_info + offset + 8)
-                    ring_size = read_int32_from_memory(pipe_inode_info + offset + 12)
-                    pipe_index_mask = 0xffff_ffff
-                used = (head - tail) & pipe_index_mask
-                if ring_size == 0 or ring_size > 0x10000:
-                    found = False
-                    break
-                if ring_size & (ring_size - 1):
-                    found = False
-                    break
-                if max_usage == 0 or max_usage > ring_size or used > max_usage:
+                state = self.read_ring_state(pipe_inode_info, offsets)
+                if not self.is_valid_ring_state(state):
                     found = False
                     break
             if found:
@@ -143392,7 +143504,6 @@ class KernelPipeCommand(GenericCommand, BufferingOutput):
         heap_page_color = Config.get_gef_setting("theme.heap_page_address")
         freed_address_color = Config.get_gef_setting("theme.heap_chunk_address_freed")
         used_address_color = Config.get_gef_setting("theme.heap_chunk_address_used")
-        kversion = Kernel.kernel_version()
 
         inodes = {}
         for file, inode in pipe_files:
@@ -143414,36 +143525,37 @@ class KernelPipeCommand(GenericCommand, BufferingOutput):
             pipe_buffer = read_int_from_memory(pipe_inode_info + self.offset_bufs)
             self.out.append("    pipe_buffer: {:#x}".format(pipe_buffer))
 
-            if "5.5" <= kversion:
-                if kversion >= "6.14" and is_32bit():
-                    head_tail = read_int32_from_memory(pipe_inode_info + self.offset_head)
-                    head = head_tail & 0xffff
-                    tail = head_tail >> 16
-                    pipe_index_mask = 0xffff
-                else:
-                    head = read_int32_from_memory(pipe_inode_info + self.offset_head)
-                    tail = read_int32_from_memory(pipe_inode_info + self.offset_tail)
-                    pipe_index_mask = 0xffff_ffff
-                max_usage = read_int32_from_memory(pipe_inode_info + self.offset_max_usage)
-                ring_size = read_int32_from_memory(pipe_inode_info + self.offset_ring_size)
+            state = self.read_ring_state(pipe_inode_info)
+            head, tail, used, max_usage, ring_size = state
+            if self.ring_buffer:
                 self.out.append("    head: {:d}, tail: {:d}, max: {:d}, ring_size: {:d}".format(
                     head, tail, max_usage, ring_size,
                 ))
-                used = (head - tail) & pipe_index_mask
             else:
-                nrbuf = read_int32_from_memory(pipe_inode_info + self.offset_nrbuf)
-                curbuf = read_int32_from_memory(pipe_inode_info + self.offset_curbuf)
-                buffers = read_int32_from_memory(pipe_inode_info + self.offset_buffers)
                 self.out.append("    nrbuf: {:d}, curbuf: {:d}, buffers: {:d}".format(
-                    nrbuf, curbuf, buffers,
+                    used, tail, ring_size,
                 ))
-                head = curbuf + nrbuf
-                tail = curbuf
-                max_usage = buffers
-                used = nrbuf
+            if not self.is_valid_ring_state(state):
+                self.err_add_out("Unexpected pipe state")
+                continue
 
-            used_range = {(tail + x) % max_usage for x in range(used)}
-            for idx in range(max_usage):
+            # the kernel indexes the ring by `& (ring_size - 1)`, even if ring_size is not a power of 2
+            mask = ring_size - 1
+            used_range = {(tail + x) & mask for x in range(used)}
+
+            watch_queue = 0
+            if self.offset_watch_queue is not None:
+                watch_queue = read_int_from_memory(pipe_inode_info + self.offset_watch_queue)
+            if watch_queue:
+                self.out.append("    watch_queue: {:#x} (notification pipe)".format(watch_queue))
+            else:
+                ops_set = set()
+                for idx in used_range:
+                    ops_set.add(read_int_from_memory(pipe_buffer + self.sizeof_pipe_buffer * idx + self.offset_ops))
+                if any(Ksym.get_name(ops) == "watch_queue_pipe_buf_ops" for ops in ops_set if ops):
+                    self.out.append("    notification pipe")
+
+            for idx in range(ring_size):
                 base = pipe_buffer + self.sizeof_pipe_buffer * idx
                 page = read_int_from_memory(base + self.offset_page)
                 offset = read_int32_from_memory(base + self.offset_offset)
@@ -143456,12 +143568,12 @@ class KernelPipeCommand(GenericCommand, BufferingOutput):
                 else:
                     status = Color.colorify("free", freed_address_color)
 
-                if head % max_usage == idx:
+                if head & mask == idx:
                     head_marker = "head"
                 else:
                     head_marker = "    "
 
-                if tail % max_usage == idx:
+                if tail & mask == idx:
                     tail_marker = "tail"
                 else:
                     tail_marker = "    "
@@ -143486,9 +143598,10 @@ class KernelPipeCommand(GenericCommand, BufferingOutput):
     def do_invoke(self, args):
         self.quiet_info("Wait for memory scan")
 
+        # the allocator is only used by the fallback heuristics
         allocator = Kernel.get_slab_type()
-        if allocator not in ["SLUB", "SLUB_TINY", "SLAB"]:
-            err("Unsupported: SLOB, Unknown allocator")
+        if allocator not in ["SLUB", "SLUB_TINY", "SLAB", "SLOB"]:
+            err("Unsupported: Unknown allocator")
             return
 
         # init
@@ -143504,10 +143617,23 @@ class KernelPipeCommand(GenericCommand, BufferingOutput):
             self.quiet_info("Nothing to dump")
             return
 
+        if args.rescan:
+            Cache.clear_cache_for(self.initialize)
+
         # the pipe list is live data, so it must not become a cache key of
         # `initialize()`. Hand it over as a temporary attribute instead.
         self.pipe_files_temp = pipe_files
         ret = self.initialize()
+        if ret:
+            for name, value in ret.items():
+                setattr(self, name, value)
+            # the cached offsets may be for the pipes of another kernel
+            if not self.is_consistent_layout(pipe_files):
+                Cache.clear_cache_for(self.initialize)
+                ret = self.initialize()
+                if ret:
+                    for name, value in ret.items():
+                        setattr(self, name, value)
         del self.pipe_files_temp
         if args.meta or not ret:
             for func, line in self.meta:
@@ -179595,6 +179721,7 @@ class KernelNftablesCommand(GenericCommand, BufferingOutput):
             type_name.split()[1], xt_name, self.field_int(value, "revision"), size, info_text)
 
     def nested_expr_addresses(self, value):
+
         def is_expr_pointer(pointer_type):
             return pointer_type.code == gdb.TYPE_CODE_PTR and pointer_type.target().strip_typedefs().tag == "nft_expr"
 

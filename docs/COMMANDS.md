@@ -10149,7 +10149,7 @@ Dump pipe information.
 ### Syntax
 
 ```text
-usage: kpipe [-h] [-hh] [-i INODE_FILTER] [-f FILE_FILTER] [--meta] [-n] [-q]
+usage: kpipe [-h] [-hh] [-i INODE_FILTER] [-f FILE_FILTER] [-r] [--meta] [-n] [-q]
 
 options:
   -h, --help            show this help message and exit
@@ -10158,6 +10158,7 @@ options:
                         filter by specific struct inode.
   -f, --file-filter FILE_FILTER
                         filter by specific struct file.
+  -r, --rescan          do not use cached offset.
   --meta                display offset information.
   -n, --no-pager        do not use the pager.
   -q, --quiet           show result only.
@@ -10172,7 +10173,8 @@ kpipe -q
 ### Notes
 
 ```text
-This command requires CONFIG_RANDSTRUCT=n.
+This command requires CONFIG_RANDSTRUCT=n, unless the debug info of vmlinux is loaded.
+A notification pipe (CONFIG_WATCH_QUEUE) can hold more entries than `max`.
 
 Simplified pipe structure:
 
