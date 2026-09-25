@@ -66093,47 +66093,97 @@ class KernelAddressHeuristicFinder:
     @staticmethod
     @switch_to_intel_syntax
     def get_chrdevs():
+
+        def is_chrdevs(x):
+            # Each of the 255 buckets is NULL or a chain of char_device_struct hashed by major % 255.
+            try:
+                if not is_valid_addr(x):
+                    return False
+                found = False
+                for i in range(255):
+                    v = read_int_from_memory(x + current_arch.ptrsize * i)
+                    seen = set()
+                    while v:
+                        if v in seen or not is_valid_addr(v):
+                            return False
+                        seen.add(v)
+                        if read_int32_from_memory(v + current_arch.ptrsize) % 255 != i:
+                            return False
+                        found = True
+                        v = read_int_from_memory(v)
+                return found
+            except gdb.MemoryError:
+                return False
+
+        def get_candidates(res):
+            if is_x86_64():
+                return itertools.chain(
+                    KernelAddressHeuristicFinderUtil.x64_qword_ptr_array_base(res),
+                    KernelAddressHeuristicFinderUtil.x64_lea_array_base(res),
+                    KernelAddressHeuristicFinderUtil.x64_qword_ptr_disp_load(res),
+                    KernelAddressHeuristicFinderUtil.x64_lea_reg_const(res),
+                )
+            elif is_x86_32():
+                return itertools.chain(
+                    KernelAddressHeuristicFinderUtil.x86_dword_ptr_array4_base(res),
+                    KernelAddressHeuristicFinderUtil.x64_lea_reg_const(res),
+                )
+            elif is_arm64():
+                # gcc splits the page offset into two adds in some builds
+                return itertools.chain(
+                    KernelAddressHeuristicFinderUtil.aarch64_adrp_add_add(res),
+                    KernelAddressHeuristicFinderUtil.aarch64_adrp_add(res),
+                )
+            elif is_arm32():
+                return itertools.chain(
+                    KernelAddressHeuristicFinderUtil.arm32_movw_movt_ldr(res),
+                    KernelAddressHeuristicFinderUtil.arm32_ldr_pc_relative(res),
+                    KernelAddressHeuristicFinderUtil.arm32_movw_movt(res),
+                )
+            return []
+
         # plan 1 (directly)
         if KernelAddressHeuristicFinder.USE_DIRECTLY:
             x = Ksym.get_addr("chrdevs")
             if x:
                 return x
+            # the address from the debug information is not relocated by KASLR
+            try:
+                x = GefUtil.parse_and_eval_unsigned("&chrdevs")
+                if is_chrdevs(x):
+                    return x
+            except gdb.error:
+                pass
 
         kversion = Kernel.kernel_version()
 
-        # plan 2 (available v2.6.16.12 or later)
+        # plan 2 (available v2.6.16.12 or later, if CONFIG_PROC_FS=y)
+        tried = set()
         if kversion and "2.6.17" <= kversion:
             addr = Ksym.get_addr("chrdev_show")
             if addr:
                 res = gdb.execute("x/30i {:#x}".format(addr), to_string=True)
-                if is_x86_64():
-                    g = itertools.chain(
-                        KernelAddressHeuristicFinderUtil.x64_qword_ptr_array_base(res),
-                        KernelAddressHeuristicFinderUtil.x64_lea_reg_const(res),
-                    )
-                elif is_x86_32():
-                    g = KernelAddressHeuristicFinderUtil.x86_dword_ptr_array4_base(res)
-                elif is_arm64():
-                    # gcc splits the page offset into two adds in some builds
-                    g = itertools.chain(
-                        KernelAddressHeuristicFinderUtil.aarch64_adrp_add_add(res),
-                        KernelAddressHeuristicFinderUtil.aarch64_adrp_add(res),
-                    )
-                elif is_arm32():
-                    g = itertools.chain(
-                        KernelAddressHeuristicFinderUtil.arm32_movw_movt_ldr(res),
-                        KernelAddressHeuristicFinderUtil.arm32_ldr_pc_relative(res),
-                        KernelAddressHeuristicFinderUtil.arm32_movw_movt(res),
-                    )
-                for x in g:
-                    if not is_valid_addr(x):
+                for x in get_candidates(res):
+                    if x in tried:
                         continue
-                    for i in range(255):
-                        v = read_int_from_memory(x + current_arch.ptrsize * i)
-                        if not is_single_link_list(v):
-                            break
-                    else:
-                        # Case where all 255 entries meet the conditions
+                    tried.add(x)
+                    if is_chrdevs(x):
+                        return x
+
+        # plan 3 (available v2.6.x or later)
+        # Unlike chrdev_show, the registration functions exist even when CONFIG_PROC_FS=n.
+        anchors = [
+            "__register_chrdev_region", "__unregister_chrdev_region", "find_dynamic_major",
+            "register_chrdev_region", "alloc_chrdev_region", "unregister_chrdev_region",
+        ]
+        for anchor in anchors:
+            for addr in Ksym.get_addrs(anchor, match="split"):
+                res = KernelAddressHeuristicFinderUtil.disassemble_until_next_symbol(addr, 200)
+                for x in get_candidates(res):
+                    if x in tried:
+                        continue
+                    tried.add(x)
+                    if is_chrdevs(x):
                         return x
         return None
 
@@ -66165,6 +66215,69 @@ class KernelAddressHeuristicFinder:
                         KernelAddressHeuristicFinderUtil.arm32_ldr_pc_relative_ldr(res),
                     )
                 for x in g:
+                    return x
+        return None
+
+    @staticmethod
+    @switch_to_intel_syntax
+    def get_devices_kset():
+
+        def is_devices_kset(x):
+            # *x is a kset, and its embedded kobject is named "devices".
+            # spinlock_t before the kobject is empty on UP kernels.
+            try:
+                kset = read_int_from_memory(x)
+                if not is_valid_addr(kset):
+                    return False
+                for i in range(2, 0x20):
+                    name = read_int_from_memory(kset + current_arch.ptrsize * i)
+                    if is_valid_addr(name) and read_cstring_from_memory(name) == "devices":
+                        return True
+            except gdb.MemoryError:
+                return False
+            return False
+
+        # plan 1 (directly)
+        if KernelAddressHeuristicFinder.USE_DIRECTLY:
+            x = Ksym.get_addr("devices_kset")
+            if x:
+                return x
+            # the address from the debug information is not relocated by KASLR
+            try:
+                x = GefUtil.parse_and_eval_unsigned("&devices_kset")
+                if is_devices_kset(x):
+                    return x
+            except gdb.error:
+                pass
+
+        # plan 2 (available v2.6.25 or later)
+        for anchor in ["device_initialize", "devices_kset_move_last"]:
+            addr = Ksym.get_addr(anchor)
+            if not addr:
+                continue
+            res = KernelAddressHeuristicFinderUtil.disassemble_until_next_symbol(addr, 30)
+            if is_x86_64():
+                g = itertools.chain(
+                    KernelAddressHeuristicFinderUtil.x64_qword_ptr_rip_base(res),
+                    KernelAddressHeuristicFinderUtil.x64_qword_ptr_ds(res),
+                )
+            elif is_x86_32():
+                g = KernelAddressHeuristicFinderUtil.x86_noptr_ds(res)
+            elif is_arm64():
+                # devices_kset may be loaded from the address of its neighbor (e.g., `add x20, x20, #0x1c0; ldr x2, [x20, #8]`)
+                g = itertools.chain(
+                    KernelAddressHeuristicFinderUtil.aarch64_adrp_ldr(res),
+                    KernelAddressHeuristicFinderUtil.aarch64_adrp_add_ldr(res),
+                )
+            elif is_arm32():
+                g = itertools.chain(
+                    KernelAddressHeuristicFinderUtil.arm32_movw_movt_ldr(res),
+                    KernelAddressHeuristicFinderUtil.arm32_ldr_pc_relative_ldr(res),
+                )
+            else:
+                g = []
+            for x in g:
+                if is_devices_kset(x):
                     return x
         return None
 
@@ -73891,6 +74004,155 @@ class Kernel:
             devname = read_cstring_from_memory(devname_p)
             return devname
 
+    class Device:
+        """Resolve `struct device` in devices_kset, which every registered device joins.
+
+        struct kset {
+            struct list_head list;
+            spinlock_t list_lock;
+            struct kobject kobj;
+            const struct kset_uevent_ops *uevent_ops;
+        };
+        static struct kset *devices_kset;
+
+        struct device {
+            struct kobject kobj; // v5.2~
+            struct device *parent;
+            struct device_private *p;
+            struct kobject kobj; // ~v5.1
+            ...
+            dev_t devt;
+            ...
+            struct class *class;
+            ...
+        };
+        """
+
+        def __init__(self):
+            self.meta = []
+            self.devices = []
+            return
+
+        @staticmethod
+        def offsetof(type_name, member):
+            try:
+                return GefUtil.parse_and_eval_unsigned("&((struct {:s}*)0)->{:s}".format(type_name, member))
+            except gdb.error:
+                return None
+
+        def get_offset_devt(self, kobjs):
+            """Return the offsets of devt and class from the kobject embedded in struct device.
+            They depend on many CONFIGs, so they are searched with the devices which drivers/char/mem.c always creates."""
+            anchors = {"null": 1 << 20 | 3, "zero": 1 << 20 | 5}
+            samples = {}
+            scan_size = 0x800
+            for kobj, name in kobjs:
+                if name in anchors and name not in samples:
+                    try:
+                        samples[name] = read_memory(kobj, scan_size)
+                    except gdb.MemoryError:
+                        continue
+            if len(samples) != len(anchors):
+                return None, None
+
+            offset_devt = None
+            for offset in range(0, scan_size - 4, 4):
+                if all(u32(samples[name][offset:offset + 4]) == devt for name, devt in anchors.items()):
+                    offset_devt = offset
+                    break
+            if offset_devt is None:
+                return None, None
+
+            # both are in the "mem" class
+            ptrsize = current_arch.ptrsize
+            unpack = u64 if ptrsize == 8 else u32
+            start = (offset_devt + 4 + ptrsize - 1) & ~(ptrsize - 1)
+            for offset in range(start, min(offset_devt + 0x100, scan_size - ptrsize), ptrsize):
+                classes = {unpack(sample[offset:offset + ptrsize]) for sample in samples.values()}
+                if len(classes) != 1:
+                    continue
+                class_ = classes.pop()
+                if not is_valid_addr(class_):
+                    continue
+                name = read_int_from_memory(class_)
+                if is_valid_addr(name) and read_cstring_from_memory(name) == "mem":
+                    return offset_devt, offset
+            return offset_devt, None
+
+        def initialize(self):
+            """Collect [[device, name, devt, class_name], ...] of the devices which have devt."""
+            self.meta = []
+            self.devices = []
+
+            devices_kset = KernelAddressHeuristicFinder.get_devices_kset()
+            if devices_kset is None:
+                self.meta.append(("err", "Could not find devices_kset"))
+                return None
+            self.meta.append(("info", "devices_kset: {:#x}".format(devices_kset)))
+            kset = read_int_from_memory(devices_kset)
+
+            offsetof = Kernel.Device.offsetof
+            offset_list = offsetof("kset", "list")
+            offset_entry = offsetof("kobject", "entry")
+            offset_kobj = offsetof("device", "kobj")
+            offset_devt = offsetof("device", "devt")
+            offset_class = offsetof("device", "class")
+            offset_class_name = offsetof("class", "name")
+            dwarf = None not in (offset_list, offset_entry, offset_kobj, offset_devt, offset_class, offset_class_name)
+            if dwarf:
+                offset_devt -= offset_kobj
+                offset_class -= offset_kobj
+            else:
+                offset_list, offset_entry, offset_class_name = 0, current_arch.ptrsize, 0
+                offset_kobj = 0 if Kernel.kernel_version() >= "5.2" else current_arch.ptrsize * 2
+
+            # kobjects in devices_kset->list
+            kobjs = []
+            head = kset + offset_list
+            seen = set()
+            current = read_int_from_memory(head)
+            while current != head:
+                if current in seen or not is_valid_addr(current):
+                    self.meta.append(("warn", "Stopped at broken devices_kset list: {:#x}".format(current)))
+                    break
+                seen.add(current)
+                kobj = current - offset_entry
+                name_ptr = read_int_from_memory(kobj, safe=True)
+                name = read_cstring_from_memory(name_ptr, safe=True) if name_ptr else None
+                kobjs.append((kobj, name or "<None>"))
+                current = read_int_from_memory(current)
+
+            if not dwarf:
+                offset_devt, offset_class = self.get_offset_devt(kobjs)
+                if offset_devt is None:
+                    self.meta.append(("err", "Could not find offsetof(device, devt)"))
+                    return None
+                self.meta.append(("info", "offsetof(device, devt) - offsetof(device, kobj): {:#x}".format(offset_devt)))
+                if offset_class is None:
+                    self.meta.append(("warn", "Could not find offsetof(device, class)"))
+                else:
+                    self.meta.append(("info", "offsetof(device, class) - offsetof(device, kobj): {:#x}".format(offset_class)))
+
+            for kobj, name in kobjs:
+                devt = read_int32_from_memory(kobj + offset_devt, safe=True)
+                if not devt:
+                    continue
+                class_name = "???"
+                if offset_class is not None:
+                    class_ = read_int_from_memory(kobj + offset_class, safe=True)
+                    if class_ == 0:
+                        class_name = "<None>"
+                    elif is_valid_addr(class_):
+                        class_name = read_cstring_from_memory(read_int_from_memory(class_ + offset_class_name), safe=True) or "???"
+                self.devices.append([kobj - offset_kobj, name, devt, class_name])
+            return True
+
+        def export_meta(self, command, demote_err=False):
+            """Convert the recorded meta lines into the (printer, line) pairs the commands use."""
+            err = command.quiet_warn if demote_err else command.quiet_err
+            level_map = {"info": command.quiet_info, "warn": command.quiet_warn, "err": err}
+            return [(level_map[level], line) for level, line in self.meta]
+
     class Files:
         """Resolve the layout of ``struct files_struct``."""
 
@@ -80953,6 +81215,7 @@ class KernelBlockDevicesCommand(GenericCommand, BufferingOutput):
     _category_ = "06-g. Qemu-system/KGDB Cooperation - Linux Advanced"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("--meta", action="store_true", help="display offset information.")
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
     parser.add_argument("-q", "--quiet", action="store_true", help="enable quiet mode.")
     _syntax_ = parser.format_help()
@@ -80963,17 +81226,94 @@ class KernelBlockDevicesCommand(GenericCommand, BufferingOutput):
     _example_ = "\n".join(_example_).format(_cmdline_)
 
     _note_ = [
-        "This command requires CONFIG_RANDSTRUCT=n.",
-        "If there are too many block devices, detection may fail.",
-        "This is because block devices are not managed in a single location,",
-        "so the bdev_cache dump is supplemented with block devices referenced by mounted filesystems.",
+        "This command requires CONFIG_RANDSTRUCT=n unless vmlinux with debug information is loaded.",
+        "",
+        "If the debug information has struct block_device, block devices are listed from the inodes of the bdev",
+        "pseudo filesystem. Otherwise, the bdev_cache dump, which does not include full slabs, is supplemented with",
+        "block devices referenced by mounted filesystems. The others are found by the layout measured with them,",
+        "from the block devices in devices_kset (v5.11~) or from the inodes of the bdev pseudo filesystem (~v5.10).",
+        "RISC-V is supported only with the debug information.",
+        "",
+        "The name is built from bd_disk->disk_name and the partition number, in the same way as the kernel.",
+        "Before v5.11, bd_disk is set only while the block device is opened.",
+        "If it cannot be resolved, the name is guessed from the major/minor number and marked as `(guessed)`.",
     ]
     _note_ = "\n".join(_note_)
 
+    BLOCK_EXT_MAJOR = 259
+
     def __init__(self):
         super().__init__(complete=gdb.COMPLETE_LOCATION)
-        self.offset_bd_dev = None
         return
+
+    def initialize_dwarf(self):
+        """Resolve the layout from the debug information. Return True if struct block_device is available."""
+        offsetof = Kernel.Device.offsetof
+        self.offset_bd_dev = offsetof("block_device", "bd_dev")
+        self.offset_bd_disk = offsetof("block_device", "bd_disk")
+        gendisk = [offsetof("gendisk", m) for m in ("major", "first_minor", "minors", "disk_name")]
+        if self.offset_bd_dev is None or self.offset_bd_disk is None or None in gendisk:
+            return False
+        self.offset_gendisk = gendisk
+
+        self.partno_kind = None
+        self.offset_bd_partno = offsetof("block_device", "bd_partno")
+        if self.offset_bd_partno is not None:
+            self.partno_kind = "u8"
+        else:
+            self.offset_bd_partno = offsetof("block_device", "__bd_flags")
+            if self.offset_bd_partno is not None:
+                self.partno_kind = "flags"
+            else:
+                self.offset_bd_part = offsetof("block_device", "bd_part")
+                self.offset_hd_partno = offsetof("hd_struct", "partno")
+                if self.offset_bd_part is not None and self.offset_hd_partno is not None:
+                    self.partno_kind = "part"
+
+        self.meta.append((self.quiet_info, "layout source: debug information"))
+        self.meta.append((self.quiet_info, "offsetof(block_device, bd_dev): {:#x}".format(self.offset_bd_dev)))
+        self.meta.append((self.quiet_info, "offsetof(block_device, bd_disk): {:#x}".format(self.offset_bd_disk)))
+        self.meta.append((self.quiet_info, "offsetof(gendisk, disk_name): {:#x}".format(self.offset_gendisk[3])))
+        return True
+
+    def get_bdev_list_from_inodes(self):
+        """Walk blockdev_superblock->s_inodes. Each inode is embedded in struct bdev_inode with its block_device."""
+        offsetof = Kernel.Device.offsetof
+        offset_vfs_inode = offsetof("bdev_inode", "vfs_inode")
+        offset_s_inodes = offsetof("super_block", "s_inodes")
+        offset_s_type = offsetof("super_block", "s_type")
+        offset_i_sb_list = offsetof("inode", "i_sb_list")
+        if None in (offset_vfs_inode, offset_s_inodes, offset_s_type, offset_i_sb_list):
+            return None
+
+        blockdev_superblock = Ksym.get_addr("blockdev_superblock")
+        if blockdev_superblock is None:
+            try:
+                blockdev_superblock = GefUtil.parse_and_eval_unsigned("&blockdev_superblock")
+            except gdb.error:
+                return None
+        sb = read_int_from_memory(blockdev_superblock, safe=True)
+        if not is_valid_addr(sb):
+            return None
+        # the address from the debug information is not relocated by KASLR, so check what it points to
+        fst = read_int_from_memory(sb + offset_s_type, safe=True)
+        if not is_valid_addr(fst) or read_cstring_from_memory(read_int_from_memory(fst), safe=True) != "bdev":
+            return None
+        self.meta.append((self.quiet_info, "blockdev_superblock: {:#x}".format(blockdev_superblock)))
+        self.meta.append((self.quiet_info, "offsetof(bdev_inode, vfs_inode): {:#x}".format(offset_vfs_inode)))
+
+        head = sb + offset_s_inodes
+        bdevs = []
+        seen = set()
+        current = read_int_from_memory(head)
+        while current != head:
+            if current in seen or not is_valid_addr(current):
+                self.meta.append((self.quiet_warn, "Stopped at broken s_inodes list: {:#x}".format(current)))
+                break
+            seen.add(current)
+            bdevs.append(current - offset_i_sb_list - offset_vfs_inode)
+            current = read_int_from_memory(current)
+        return bdevs
 
     def get_bdev_list(self):
         allocator = Kernel.get_slab_type()
@@ -80997,61 +81337,203 @@ class KernelBlockDevicesCommand(GenericCommand, BufferingOutput):
             bdevs.append(bdev)
         return bdevs
 
-    def get_mounted_bdev_list(self):
-        """Get bdevs which the slab allocator lists cannot reach."""
-        ret = gdb.execute("kfilesystems --quiet --no-pager --skip-mount-path", to_string=True)
+    def get_mounted_bdev_candidates(self):
+        """Get bdevs which the slab allocator lists cannot reach, as [(bdev, s_dev), ...] not yet verified.
+
+        struct super_block {
+            ...
+            struct block_device *s_bdev;
+            struct bdev_handle *s_bdev_handle; // v6.6.47~v6.8
+            struct file *s_bdev_file; // v6.9~
+            struct backing_dev_info *s_bdi;
+            struct mtd_info *s_mtd;
+            struct hlist_node s_instances;
+            ...
+        };
+        """
+        kversion = Kernel.kernel_version()
+        if kversion < "3.3":
+            return []
+        kfs = Kernel.FileSystem.get_instance()
+        try:
+            ret = kfs.initialize()
+        except gdb.MemoryError:
+            ret = None
+        if not ret:
+            self.meta.append((self.quiet_warn, "Could not resolve super_block; mounted block devices are not supplemented"))
+            return []
+
+        ptrsize = current_arch.ptrsize
+        distances = (3, 4) if kversion < "6.6.47" else (4, 3)
+        candidates = []
+        seen = set()
+        fst = read_int_from_memory(kfs.file_systems)
+        if fst:
+            fst -= kfs.offset_hlist_node
+        while fst and fst not in seen and is_valid_addr(fst):
+            seen.add(fst)
+            s_instances = read_int_from_memory(fst + kfs.offset_fs_supers)
+            while s_instances and s_instances not in seen and is_valid_addr(s_instances):
+                seen.add(s_instances)
+                s_dev = read_int32_from_memory(s_instances - kfs.offset_s_instances + kfs.offset_s_dev)
+                if s_dev >> 20:
+                    for distance in distances:
+                        bdev = read_int_from_memory(s_instances - ptrsize * distance)
+                        if is_valid_addr(bdev):
+                            candidates.append((bdev, s_dev))
+                s_instances = read_int_from_memory(s_instances)
+            fst = read_int_from_memory(fst + kfs.offset_link)
+            if fst:
+                fst -= kfs.offset_hlist_node
+        return candidates
+
+    def read_gendisk(self, gendisk):
+        """Return (major, first_minor, minors, disk_name) if `gendisk` looks like struct gendisk."""
+        if gendisk in self.gendisk_cache:
+            return self.gendisk_cache[gendisk]
+        self.gendisk_cache[gendisk] = None
+        if not gendisk or not is_valid_addr(gendisk):
+            return None
+        offset_major, offset_first_minor, offset_minors, offset_disk_name = self.offset_gendisk
+        try:
+            major = read_int32_from_memory(gendisk + offset_major)
+            first_minor = read_int32_from_memory(gendisk + offset_first_minor)
+            minors = read_int32_from_memory(gendisk + offset_minors)
+            name = read_memory(gendisk + offset_disk_name, 32).split(b"\0")[0]
+        except gdb.MemoryError:
+            return None
+        if not (0 < major < 4096 and first_minor < (1 << 20) and minors <= (1 << 20)):
+            return None
+        if not (0 < len(name) < 32 and all(0x21 <= c < 0x7f for c in name)):
+            return None
+        self.gendisk_cache[gendisk] = (major, first_minor, minors, name.decode())
+        return self.gendisk_cache[gendisk]
+
+    def is_disk_of(self, gd, dev):
+        major, minor = dev >> 20, dev & ((1 << 20) - 1)
+        if major == 0:
+            return False
+        if gd[0] == major and gd[1] <= minor < gd[1] + max(gd[2], 1):
+            return True
+        # partitions over the minors of the disk are numbered from BLOCK_EXT_MAJOR
+        return major == self.BLOCK_EXT_MAJOR
+
+    def resolve_layout(self, samples):
+        """Resolve the offsets of bd_dev and bd_disk without the debug information.
+
+        [~v5.10]
+        struct block_device {
+            dev_t bd_dev;
+            ...
+            struct gendisk *bd_disk;     // set while opened
+            ...
+        };
+
+        [v5.11~]
+        struct block_device {
+            sector_t bd_start_sect;      // sector_t: u64
+            sector_t bd_nr_sectors;      // sector_t: u64, v5.16~
+            struct gendisk *bd_disk;     // v6.4~
+            struct request_queue *bd_queue;  // v6.4~
+            struct disk_stats __percpu *bd_stats;
+            unsigned long bd_stamp;
+            bool bd_read_only;           // ~v6.9
+            u8 bd_partno;                // v6.4~v6.9
+            bool bd_write_holder;        // v6.4~v6.9
+            bool bd_has_submit_bio;      // v6.4~v6.9
+            atomic_t __bd_flags;         // v6.10~, the lower 8 bits are the partition number
+            dev_t bd_dev;
+            ...
+            struct gendisk *bd_disk;     // ~v6.3
+            ...
+        };
+        """
         kversion = Kernel.kernel_version()
         ptrsize = current_arch.ptrsize
+        self.offset_gendisk = [0, 4, 8, 12]
 
-        # Until v6.17 s_mounts is a list head pointing at mount->mnt_instance.
-        # Since v6.18 it points directly at struct mount.
-        common1 = ptrsize * 4
-        sizeof_vfsmount = ptrsize * (3 if kversion < "5.12" else 4)
-        if kversion < "3.13":
-            sizeof_union = 0
-        elif kversion < "6.12":
-            sizeof_union = ptrsize * 2
+        # candidates of bd_dev in the order the version suggests. They are checked against bd_disk,
+        # so a layout backported to another version is also found.
+        offset_v64 = 8 * 2 + ptrsize * 4 + 4
+        layouts = [0, 8 * 1 + ptrsize * 2 + 4, 8 * 2 + ptrsize * 2 + 4, offset_v64]
+        if kversion < "5.11":
+            index = 0
+        elif kversion < "5.16":
+            index = 1
+        elif kversion < "6.4":
+            index = 2
         else:
-            sizeof_union = ptrsize * 3
-        offset_mnt_instance = common1 + sizeof_vfsmount + sizeof_union + ptrsize + ptrsize * 4
+            index = 3
+        layouts.insert(0, layouts.pop(index))
 
-        bdevs = []
-        for line in ret.splitlines():
-            fields = Color.remove_color(line).split()
-            if len(fields) < 8 or not fields[2].startswith("0x"):
-                continue
+        # bd_disk is searched as the pointer to a gendisk which covers bd_dev
+        scan_size = 0x800
+        votes = {}
+        for bdev in samples[:32]:
             try:
-                major, minor = int(fields[-5]), int(fields[-4])
-                super_block = int(fields[2], 16)
-                mount = int(fields[-3], 16)
-            except ValueError:
+                data = read_memory(bdev, scan_size)
+            except gdb.MemoryError:
                 continue
-            if major == 0:
-                continue
-
-            if kversion < "6.18":
-                mount_links = {
-                    mount + offset_mnt_instance + delta
-                    for delta in (-ptrsize, 0, ptrsize)
-                }
-                offset_s_bdev = ptrsize * 2
-            else:
-                mount_links = {mount}
-                offset_s_bdev = ptrsize
-
-            # s_mounts is before s_instances, which kfilesystems searches within
-            # the first 100 pointer-sized fields of struct super_block.
-            for offset in range(0, ptrsize * 100, ptrsize):
-                if read_int_from_memory(super_block + offset) not in mount_links:
+            for offset_disk in range(0, scan_size, ptrsize):
+                gd = self.read_gendisk(u64(data[offset_disk:offset_disk + 8]) if ptrsize == 8 else u32(data[offset_disk:offset_disk + 4]))
+                if gd is None:
                     continue
-                bdev = read_int_from_memory(super_block + offset + offset_s_bdev)
-                if not is_valid_addr(bdev):
-                    break
-                bdev_major, bdev_minor, _ = self.get_dev_num(bdev)
-                if (bdev_major, bdev_minor) == (major, minor):
-                    bdevs.append(bdev)
-                break
-        return bdevs
+                for offset_dev in layouts:
+                    if self.is_disk_of(gd, u32(data[offset_dev:offset_dev + 4])):
+                        votes[offset_dev, offset_disk] = votes.get((offset_dev, offset_disk), 0) + 1
+
+        if votes:
+            self.offset_bd_dev, self.offset_bd_disk = max(votes, key=lambda k: (votes[k], -layouts.index(k[0]), -k[1]))
+        else:
+            self.offset_bd_dev, self.offset_bd_disk = layouts[0], (16 if layouts[0] == offset_v64 else None)
+
+        # the partition number is also needed for partitions over the minors of the disk
+        self.partno_kind = None
+        if self.offset_bd_dev == offset_v64:
+            if kversion < "6.10":
+                self.partno_kind, self.offset_bd_partno = "u8", self.offset_bd_dev - 3
+            else:
+                self.partno_kind, self.offset_bd_partno = "flags", self.offset_bd_dev - 4
+
+        self.meta.append((self.quiet_info, "layout source: heuristic"))
+        self.meta.append((self.quiet_info, "offsetof(block_device, bd_dev): {:#x}".format(self.offset_bd_dev)))
+        if self.offset_bd_disk is None:
+            self.meta.append((self.quiet_warn, "Could not find offsetof(block_device, bd_disk)"))
+        else:
+            self.meta.append((self.quiet_info, "offsetof(block_device, bd_disk): {:#x}".format(self.offset_bd_disk)))
+        return
+
+    def get_partno(self, bdev, dev, gd):
+        major, minor = dev >> 20, dev & ((1 << 20) - 1)
+        if gd[0] == major and gd[1] <= minor < gd[1] + max(gd[2], 1):
+            return minor - gd[1]
+        if self.partno_kind == "u8":
+            return read_int8_from_memory(bdev + self.offset_bd_partno, safe=True)
+        if self.partno_kind == "flags":
+            flags = read_int32_from_memory(bdev + self.offset_bd_partno, safe=True)
+            return None if flags is None else flags & 0xff
+        if self.partno_kind == "part":
+            part = read_int_from_memory(bdev + self.offset_bd_part, safe=True)
+            if part and is_valid_addr(part):
+                return read_int32_from_memory(part + self.offset_hd_partno, safe=True)
+        return None
+
+    def get_disk_name(self, bdev, dev, gendisk=None):
+        """Return (gendisk, name) from bd_disk as the kernel names the block device, or (0, None)."""
+        if gendisk is None:
+            if self.offset_bd_disk is None:
+                return 0, None
+            gendisk = read_int_from_memory(bdev + self.offset_bd_disk, safe=True)
+        gd = self.read_gendisk(gendisk)
+        if gd is None or not self.is_disk_of(gd, dev):
+            return 0, None
+        partno = self.get_partno(bdev, dev, gd)
+        if partno is None:
+            return gendisk, None
+        name = gd[3]
+        if partno:
+            name = "{:s}{:s}{:d}".format(name, "p" if name[-1].isdigit() else "", partno)
+        return gendisk, "/dev/" + name
 
     @staticmethod
     def get_bdev_name(major, minor):
@@ -81304,47 +81786,143 @@ class KernelBlockDevicesCommand(GenericCommand, BufferingOutput):
         return "???"
 
     def get_dev_num(self, bdev):
-        """
+        dev = read_int32_from_memory(bdev + self.offset_bd_dev, safe=True)
+        if dev is None:
+            return 0, 0, 0
+        return dev, dev >> 20, dev & ((1 << 20) - 1)
+
+    def get_bdevs(self):
+        self.gendisk_cache = {}
+        self.device_names = {}
+
+        dwarf = self.initialize_dwarf()
+        if dwarf:
+            bdevs = self.get_bdev_list_from_inodes()
+            if bdevs is not None:
+                self.meta.append((self.quiet_info, "bdev source: blockdev_superblock->s_inodes"))
+                return bdevs
+
+        if is_riscv32() or is_riscv64():
+            self.meta.append((self.quiet_err, "Unsupported: RISC-V without the debug information of struct block_device"))
+            return None
+
+        self.meta.append((self.quiet_info, "bdev source: bdev_cache and mounted filesystems"))
+        bdevs = self.get_bdev_list() or []
+        candidates = self.get_mounted_bdev_candidates()
+        if not dwarf:
+            self.resolve_layout(bdevs + [bdev for bdev, _ in candidates])
+
+        # the candidates next to s_bdev are verified with s_dev and bd_disk
+        for bdev, s_dev in candidates:
+            if self.get_dev_num(bdev)[0] != s_dev:
+                continue
+            if self.offset_bd_disk is not None and self.get_disk_name(bdev, s_dev)[0] == 0:
+                continue
+            bdevs.append(bdev)
+
+        bdevs.extend(self.get_bdev_list_from_devices(bdevs))
+        bdevs.extend(self.get_bdev_list_from_bd_inode(bdevs))
+        return bdevs
+
+    def get_bdev_list_from_bd_inode(self, samples):
+        """Get the bdevs in full slabs before v5.11, which the slab dump cannot reach.
+        Every inode of bdev_inode is on blockdev_superblock->s_inodes, and bdev->bd_inode points to the inode
+        of itself. So the offset of inode->i_sb_list is measured with a known bdev, then the list is walked.
+
         [~v5.10]
         struct block_device {
-            dev_t                       bd_dev;
+            dev_t bd_dev;
+            int bd_openers;
+            struct inode *bd_inode;
             ...
         };
 
-        [v5.11~]
-        struct block_device {
-            sector_t                    bd_start_sect;      // sector_t: u64
-            sector_t                    bd_nr_sectors;      // sector_t: u64, v5.17~
-            struct gendisk             *bd_disk;            // v6.4~
-            struct request_queue       *bd_queue;           // v6.4~
-            struct disk_stats __percpu *bd_stats;
-            unsigned long               bd_stamp;
-            bool                        bd_read_only;       // 1byte + 3byte padding
-            dev_t                       bd_dev;
-            ...
+        struct bdev_inode {
+            struct block_device bdev;
+            struct inode vfs_inode;
         };
         """
-        if self.offset_bd_dev is None:
-            kversion = Kernel.kernel_version()
-            if kversion < "5.11":
-                self.offset_bd_dev = 0
-            elif kversion < "5.16":
-                self.offset_bd_dev = 8 * 1 + current_arch.ptrsize * 2 + 4
-            elif kversion < "6.4":
-                self.offset_bd_dev = 8 * 2 + current_arch.ptrsize * 2 + 4
-            else:
-                self.offset_bd_dev = 8 * 2 + current_arch.ptrsize * 4 + 4
+        if Kernel.kernel_version() >= "5.11" or self.offset_bd_dev != 0:
+            return []
+        ptrsize = current_arch.ptrsize
+        offset_bd_inode = 8
 
-        dev = read_int32_from_memory(bdev + self.offset_bd_dev)
-        major = dev >> 20
-        minor = dev & ((1 << 20) - 1)
-        name = KernelBlockDevicesCommand.get_bdev_name(major, minor)
-        return major, minor, name
+        def walk(start, offset_i_sb_list, offset_vfs_inode):
+            # the list is circular through the list head in the super_block. The root inode of the bdev
+            # pseudo filesystem is also on it, and they are the only non-bdev nodes.
+            bdevs = []
+            others = 0
+            seen = {start}
+            current = read_int_from_memory(start, safe=True)
+            while current != start:
+                if current in seen or not current or not is_valid_addr(current):
+                    return None
+                seen.add(current)
+                inode = current - offset_i_sb_list
+                bdev = inode - offset_vfs_inode
+                if read_int_from_memory(bdev + offset_bd_inode, safe=True) == inode:
+                    bdevs.append(bdev)
+                else:
+                    others += 1
+                current = read_int_from_memory(current, safe=True)
+            if others > 2 or not bdevs:
+                return None
+            return bdevs
+
+        for sample in set(samples):
+            inode = read_int_from_memory(sample + offset_bd_inode, safe=True)
+            if not inode or not (0 < inode - sample < 0x1000) or not is_valid_addr(inode):
+                continue
+            offset_vfs_inode = inode - sample
+            # other lists such as i_io_list may link a part of them, so the longest one is taken
+            best = None
+            for offset in range(0, 0x200, ptrsize):
+                bdevs = walk(inode + offset, offset, offset_vfs_inode)
+                if bdevs is not None and (best is None or len(bdevs) > len(best[1])):
+                    best = (offset, bdevs)
+            if best:
+                self.meta.append((self.quiet_info, "offsetof(inode, i_sb_list): {:#x}".format(best[0])))
+                return best[1]
+        return []
+
+    def get_bdev_list_from_devices(self, samples):
+        """Get the bdevs in full slabs, which the slab dump cannot reach.
+        Since v5.11, struct block_device embeds bd_device, which is in devices_kset as a device of the "block" class.
+        Its offset is measured with the bdevs already found."""
+        if Kernel.kernel_version() < "5.11" or not samples:
+            return []
+        kdev = Kernel.Device()
+        if not kdev.initialize():
+            self.meta.extend(kdev.export_meta(self, demote_err=True))
+            return []
+        block_devices = {}
+        for device, _name, devt, class_name in kdev.devices:
+            if class_name == "block":
+                block_devices.setdefault(devt, []).append(device)
+
+        deltas = {}
+        for bdev in set(samples):
+            for device in block_devices.get(self.get_dev_num(bdev)[0], []):
+                deltas[device - bdev] = deltas.get(device - bdev, 0) + 1
+        if not deltas:
+            self.meta.append((self.quiet_warn, "Could not find offsetof(block_device, bd_device)"))
+            return []
+        delta = max(deltas, key=deltas.get)
+        self.meta.append((self.quiet_info, "offsetof(block_device, bd_device): {:#x}".format(delta)))
+
+        bdevs = []
+        for devt, devices in block_devices.items():
+            for device in devices:
+                if self.get_dev_num(device - delta)[0] == devt:
+                    bdevs.append(device - delta)
+        # the kobject of bd_device is named as the kernel names the block device
+        self.device_names = {device - delta: name for device, name, _devt, class_name in kdev.devices if class_name == "block"}
+        return bdevs
 
     @parse_args
     @only_if_gdb_running
     @only_if_specific_gdb_mode(mode=("qemu-system", "vmware"))
-    @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
+    @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64"))
     @only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
         self.quiet_info("Wait for memory scan")
@@ -81353,34 +81931,53 @@ class KernelBlockDevicesCommand(GenericCommand, BufferingOutput):
             self.quiet_err("Could not find Linux kernel")
             return
 
-        bdevs = self.get_bdev_list() or []
-        bdevs.extend(self.get_mounted_bdev_list())
-        bdevs = list(set(bdevs))
-        if not bdevs:
-            self.quiet_err("Could not find any bdev")
+        self.meta = []
+        bdevs = self.get_bdevs()
+        if args.meta or bdevs is None:
+            for func, line in self.meta:
+                func(line)
+        if bdevs is None or args.meta:
+            return
+
+        # ignore bdev if major is 0
+        bdevs_with_info = []
+        for bdev in set(bdevs):
+            dev, major, minor = self.get_dev_num(bdev)
+            if major == 0:
+                continue
+            gendisk, name = self.get_disk_name(bdev, dev)
+            bdevs_with_info.append([major, minor, bdev, gendisk, name])
+
+        # bd_disk may be unset (e.g., a partition not opened before v5.11), but a disk that another
+        # block device refers to also covers it
+        gendisks = {gendisk: self.read_gendisk(gendisk) for _, _, _, gendisk, _ in bdevs_with_info if gendisk}
+        for entry in bdevs_with_info:
+            major, minor, bdev, gendisk, name = entry
+            if name is None:
+                for gendisk, gd in gendisks.items():
+                    if gd[0] == major and gd[1] <= minor < gd[1] + max(gd[2], 1):
+                        entry[3:] = self.get_disk_name(bdev, major << 20 | minor, gendisk)
+                        break
+            if entry[4] is None and bdev in self.device_names:
+                entry[4] = "/dev/" + self.device_names[bdev]
+            if entry[4] is None:
+                entry[4] = KernelBlockDevicesCommand.get_bdev_name(major, minor) + " (guessed)"
+
+        if not bdevs_with_info:
+            if bdevs:
+                self.quiet_err("Could not find any bdev (after filtering major == 0)")
+            else:
+                self.quiet_err("Could not find any bdev")
             return
 
         self.out = []
         if not args.quiet:
-            fmt = "{:<18s} {:<18s} {:<6s} {:<6s}"
-            legend = ["bdev", "name (guessed)", "major", "minor"]
+            fmt = "{:<18s} {:<18s} {:<6s} {:<6s} {:s}"
+            legend = ["bdev", "gendisk", "major", "minor", "name"]
             self.out.append(GefUtil.make_legend(fmt.format(*legend)))
 
-        # ignore bdev if major is 0
-        bdevs = [bdev for bdev in bdevs if self.get_dev_num(bdev)[0] != 0]
-        if not bdevs:
-            self.quiet_err("Could not find any bdev (after filtering major == 0)")
-            return
-
-        # parse major, minor and name
-        bdevs_with_info = []
-        for bdev in bdevs:
-            major, minor, name = self.get_dev_num(bdev)
-            bdevs_with_info.append([major, minor, name, bdev])
-
-        # print
-        for major, minor, name, bdev in sorted(bdevs_with_info):
-            self.out.append("{:#018x} {:<18s} {:<6d} {:<6d}".format(bdev, name, major, minor).rstrip())
+        for major, minor, bdev, gendisk, name in sorted(bdevs_with_info):
+            self.out.append("{:#018x} {:#018x} {:<6d} {:<6d} {:s}".format(bdev, gendisk, major, minor, name))
 
         self.print_output(check_terminal_size=True)
         return
@@ -81395,13 +81992,22 @@ class KernelCharacterDevicesCommand(GenericCommand, BufferingOutput):
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("-hh", "--help-simple", action="store_true", help="show help without ASCII diagram.")
+    parser.add_argument("-N", "--nodes", action="store_true",
+                        help="list the device nodes (struct device with devt) instead of the registered ranges.")
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
     parser.add_argument("-v", "--verbose", action="store_true", help="enable verbose mode.")
     parser.add_argument("-q", "--quiet", action="store_true", help="enable quiet mode.")
     _syntax_ = parser.format_help()
 
+    _example_ = [
+        "{0:s} -n",
+        "{0:s} -n -v",
+        "{0:s} -n --nodes",
+    ]
+    _example_ = "\n".join(_example_).format(_cmdline_)
+
     _note_ = [
-        "This command requires CONFIG_RANDSTRUCT=n.",
+        "This command requires CONFIG_RANDSTRUCT=n unless vmlinux with debug information is loaded.",
         "",
         "Simplified cdev structure:",
         "",
@@ -81423,6 +82029,12 @@ class KernelCharacterDevicesCommand(GenericCommand, BufferingOutput):
         "",
         "The character devices are managed at chrdevs[] and cdev_map.",
         "This command use each of them for getting structure information.",
+        "",
+        "Each line is a registered range of minors, not a device node.",
+        "`name (guessed)` is guessed from the static major/minor table only when the range has a single minor.",
+        "`-v` also shows the cdevs registered in the middle of a range (e.g., each tty port).",
+        "`--nodes` lists the device nodes from devices_kset with their sysfs names and the cdev that serves each.",
+        "Block devices are excluded from them.",
     ]
     _note_ = "\n".join(_note_)
 
@@ -82325,7 +82937,7 @@ class KernelCharacterDevicesCommand(GenericCommand, BufferingOutput):
                 addr = read_int_from_memory(addr)
         return chrdev_addrs
 
-    def get_cdev_list(self): # [[cdev, major, minor], [...] ...]
+    def get_cdev_list(self): # [[cdev, major, minor, range], [...] ...]
         """
         struct kobj_map {
             struct probe {
@@ -82388,16 +83000,51 @@ class KernelCharacterDevicesCommand(GenericCommand, BufferingOutput):
             while addr:
                 cdev = read_int_from_memory(addr + 6 * current_arch.ptrsize)
                 dev = read_int32_from_memory(addr + current_arch.ptrsize)
+                range_ = read_int_from_memory(addr + 2 * current_arch.ptrsize)
                 major = dev >> 20
                 minor = dev & ((1 << 20) - 1)
                 if cdev and cdev not in seen:
-                    cdev_addrs.append([cdev, major, minor])
+                    cdev_addrs.append([cdev, major, minor, range_])
                     seen.add(cdev)
                 addr = read_int_from_memory(addr)
         return cdev_addrs
 
+    def is_file_operations(self, ops):
+        """Check the owner and the function pointers of `ops`. Return None if it cannot be decided,
+        because a kernel address is unreadable (e.g., the module region of ARM32 LPAE).
+        The second member is `fop_flags` since v6.10, so a small value is also accepted there.
+        All members but the owner may be NULL (e.g., portdev_fops of virtio_console)."""
+        if not ops:
+            return False
+        if not is_valid_addr(ops):
+            return None if AddressUtil.is_msb_on(ops) else False
+        try:
+            members = [read_int_from_memory(ops + current_arch.ptrsize * i) for i in range(20)]
+        except gdb.MemoryError:
+            return None
+        if members[1] < 0x10000:
+            members[1] = 0
+        unknown = False
+        for x in members:
+            if not x or is_valid_addr(x):
+                continue
+            if not AddressUtil.is_msb_on(x):
+                return False
+            unknown = True
+        return None if unknown else True
+
     def get_offset_ops(self, cdevs):
-        for i in range(3, 0x20):
+        try:
+            offset_ops = GefUtil.parse_and_eval_unsigned("&((struct cdev*)0)->ops")
+            self.quiet_info("offsetof(cdev, ops): {:#x}".format(offset_ops))
+            return offset_ops
+        except gdb.error:
+            pass
+
+        # cdev->list follows cdev->ops, but its position depends on struct kobject
+        # (e.g., CONFIG_DEBUG_KOBJECT_RELEASE adds a delayed_work), so it is searched widely.
+        # Lists in kobject such as the release work entry are rejected by checking cdev->ops.
+        for i in range(3, 0x100):
             offset_list = i * current_arch.ptrsize
             valid = True
             for cdev in cdevs:
@@ -82428,13 +83075,55 @@ class KernelCharacterDevicesCommand(GenericCommand, BufferingOutput):
                     break
             else:
                 # for loop is finished until last element
-                if valid:
-                    offset_ops = offset_list - current_arch.ptrsize
+                offset_ops = offset_list - current_arch.ptrsize
+                checked = [self.is_file_operations(read_int_from_memory(cdev + offset_ops)) for cdev in cdevs]
+                if False not in checked and True in checked:
                     self.quiet_info("offsetof(cdev, ops): {:#x}".format(offset_ops))
                     return offset_ops
 
         self.quiet_err("Could not find offsetof(cdev, ops)")
         return None
+
+    def print_nodes(self, regions, cdev_addrs, off_ops):
+        kdev = Kernel.Device()
+        ret = kdev.initialize()
+        for func, line in kdev.export_meta(self):
+            func(line)
+        if not ret:
+            return
+
+        def find_region(major, minor):
+            for m in regions:
+                if m["major"] == major and m["minor"] <= minor < m["minor"] + m["count"]:
+                    return m["name"]
+            return None
+
+        def find_cdev(major, minor):
+            # kobj_lookup() takes the narrowest range
+            found = [(range_, cdev) for cdev, ma, mi, range_ in cdev_addrs if ma == major and mi <= minor < mi + range_]
+            return min(found)[1] if found else 0
+
+        self.out = []
+        if not self.args.quiet:
+            fmt = "{:<18s} {:<20s} {:<12s} {:<6s} {:<6s} {:<18s} {:<18s} {:<s}"
+            legend = ["device", "name (sysfs)", "class", "major", "minor", "chrdev name", "cdev", "cdev->ops"]
+            self.out.append(GefUtil.make_legend(fmt.format(*legend)))
+
+        for device, name, devt, class_name in sorted(kdev.devices, key=lambda x: (x[2], x[0])):
+            major, minor = devt >> 20, devt & ((1 << 20) - 1)
+            region_name = find_region(major, minor)
+            cdev = find_cdev(major, minor)
+            if class_name == "block":
+                continue
+            if class_name == "???" and region_name is None and cdev == 0:
+                # the class is unknown, and the block devices are not in the registries of the character devices
+                continue
+            ops = read_int_from_memory(cdev + off_ops) if cdev else 0
+            self.out.append("{:#018x} {:<20s} {:<12s} {:<6d} {:<6d} {:<18s} {:#018x} {:#018x}{:s}".format(
+                device, name, class_name, major, minor, region_name or "-", cdev, ops, Symbol.get_symbol_string(ops),
+            ))
+        self.print_output(check_terminal_size=True)
+        return
 
     @parse_args
     @only_if_gdb_running
@@ -82453,18 +83142,21 @@ class KernelCharacterDevicesCommand(GenericCommand, BufferingOutput):
 
         # merge chrdev (from chrdevs)
         merged = {}
+        regions = []
         for chrdev in chrdev_addrs:
             major = read_int32_from_memory(chrdev + current_arch.ptrsize)
             minor = read_int32_from_memory(chrdev + current_arch.ptrsize + 4)
+            count = read_int32_from_memory(chrdev + current_arch.ptrsize + 4 * 2)
             name_string = read_cstring_from_memory(chrdev + current_arch.ptrsize + 4 * 3) or "<None>"
             off = chrdev + current_arch.ptrsize + 4 * 3 + 64
             while off % current_arch.ptrsize: # align
                 off += 1
             cdev = read_int_from_memory(off)
-            merged[major, minor] = {"chrdev": chrdev, "name": name_string, "cdev": cdev}
+            merged[major, minor] = {"chrdev": chrdev, "name": name_string, "cdev": cdev, "count": count}
+            regions.append({"major": major, "minor": minor, "count": count, "name": name_string})
 
         # merge cdev (from cdev_map)
-        for cdev, major, minor in cdev_addrs:
+        for cdev, major, minor, range_ in cdev_addrs:
             kobj = read_int_from_memory(cdev)
             name_string = read_cstring_from_memory(kobj) or "<None>"
 
@@ -82474,12 +83166,38 @@ class KernelCharacterDevicesCommand(GenericCommand, BufferingOutput):
                 if merged[major, minor]["name"] == "<None>":
                     merged[major, minor]["name"] = name_string
             else:
-                merged[major, minor] = {"chrdev": 0x0, "name": name_string, "cdev": cdev}
+                merged[major, minor] = {"chrdev": 0x0, "name": name_string, "cdev": cdev, "count": range_}
+
+            # a cdev must be added in a range registered by register_chrdev_region() or its variants
+            last = minor + range_ - 1
+            if not any(m["major"] == major and m["minor"] <= minor and last < m["minor"] + m["count"] for m in regions):
+                self.quiet_warn("cdev {:#x} ({:d}:{:d}-{:d}) is not in any range of chrdevs".format(cdev, major, minor, last))
 
         # add ops info
         off_ops = self.get_offset_ops([v["cdev"] for k, v in merged.items() if v["cdev"]])
         if off_ops is None:
             return
+
+        # cdev->dev and cdev->count are what cdev_add() registered to cdev_map
+        offsetof = Kernel.Device.offsetof
+        off_dev = offsetof("cdev", "dev")
+        if off_dev is None:
+            off_dev = off_ops + current_arch.ptrsize * 3
+        off_count = offsetof("cdev", "count")
+        if off_count is None:
+            off_count = off_dev + 4
+        for cdev, major, minor, range_ in cdev_addrs:
+            dev = read_int32_from_memory(cdev + off_dev)
+            count = read_int32_from_memory(cdev + off_count)
+            if (dev, count) != (major << 20 | minor, range_):
+                self.quiet_warn("cdev {:#x} ({:d}:{:d}, count {:d}) differs from cdev_map ({:d}:{:d}, range {:d})".format(
+                    cdev, dev >> 20, dev & ((1 << 20) - 1), count, major, minor, range_,
+                ))
+
+        if args.nodes:
+            self.print_nodes(regions, cdev_addrs, off_ops)
+            return
+
         for k in merged.keys():
             if merged[k]["cdev"]:
                 merged[k]["ops"] = read_int_from_memory(merged[k]["cdev"] + off_ops)
@@ -82488,9 +83206,12 @@ class KernelCharacterDevicesCommand(GenericCommand, BufferingOutput):
             merged[k]["ops_sym"] = Symbol.get_symbol_string(merged[k]["ops"])
 
         # add parent info
+        off_parent = offsetof("cdev", "kobj.parent")
+        if off_parent is None:
+            off_parent = current_arch.ptrsize * 3
         for k in merged.keys():
             if merged[k]["cdev"]:
-                parent = read_int_from_memory(merged[k]["cdev"] + current_arch.ptrsize * 3)
+                parent = read_int_from_memory(merged[k]["cdev"] + off_parent)
                 merged[k]["parent"] = parent
                 if parent:
                     if not is_valid_addr(parent):
@@ -82510,20 +83231,26 @@ class KernelCharacterDevicesCommand(GenericCommand, BufferingOutput):
         # print
         self.out = []
         if not args.quiet:
-            fmt = "{:<18s} {:<18s} {:<24s} {:<6s} {:<6s} {:<18s} {:<18s} {:18s} {:<s}"
+            fmt = "{:<18s} {:<18s} {:<24s} {:<6s} {:<15s} {:<7s} {:<18s} {:<18s} {:18s} {:<s}"
             legend = [
-                "chrdev", "name", "name (guessed)", "major", "minor",
+                "chrdev", "name", "name (guessed)", "major", "minor", "count",
                 "cdev", "cdev->kobj.parent", "parent_name", "cdev->ops",
             ]
             self.out.append(GefUtil.make_legend(fmt.format(*legend)))
 
         for (major, minor), m in sorted(merged.items()):
-            guessed_name = KernelCharacterDevicesCommand.guess_cdev_path(major, minor)
             if not args.verbose:
                 if m["chrdev"] == 0:
                     continue
-            self.out.append("{:#018x} {:<18s} {:<24s} {:<6d} {:<6d} {:#018x} {:#018x} {:<18s} {:#018x}{:s}".format(
-                m["chrdev"], m["name"], guessed_name, major, minor,
+            count = m["count"]
+            if count == 1:
+                minors = "{:d}".format(minor)
+                guessed_name = KernelCharacterDevicesCommand.guess_cdev_path(major, minor)
+            else:
+                minors = "{:d}-{:d}".format(minor, minor + count - 1)
+                guessed_name = "-"
+            self.out.append("{:#018x} {:<18s} {:<24s} {:<6d} {:<15s} {:<7d} {:#018x} {:#018x} {:<18s} {:#018x}{:s}".format(
+                m["chrdev"], m["name"], guessed_name, major, minors, count,
                 m["cdev"], m["parent"], m["parent_name"], m["ops"], m["ops_sym"],
             ))
 

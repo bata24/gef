@@ -9009,10 +9009,11 @@ Display block device list.
 ### Syntax
 
 ```text
-usage: kbdev [-h] [-n] [-q]
+usage: kbdev [-h] [--meta] [-n] [-q]
 
 options:
   -h, --help      show this help message and exit
+  --meta          display offset information.
   -n, --no-pager  do not use the pager.
   -q, --quiet     enable quiet mode.
 ```
@@ -9026,10 +9027,17 @@ kbdev -q
 ### Notes
 
 ```text
-This command requires CONFIG_RANDSTRUCT=n.
-If there are too many block devices, detection may fail.
-This is because block devices are not managed in a single location,
-so the bdev_cache dump is supplemented with block devices referenced by mounted filesystems.
+This command requires CONFIG_RANDSTRUCT=n unless vmlinux with debug information is loaded.
+
+If the debug information has struct block_device, block devices are listed from the inodes of the bdev
+pseudo filesystem. Otherwise, the bdev_cache dump, which does not include full slabs, is supplemented with
+block devices referenced by mounted filesystems. The others are found by the layout measured with them,
+from the block devices in devices_kset (v5.11~) or from the inodes of the bdev pseudo filesystem (~v5.10).
+RISC-V is supported only with the debug information.
+
+The name is built from bd_disk->disk_name and the partition number, in the same way as the kernel.
+Before v5.11, bd_disk is set only while the block device is opened.
+If it cannot be resolved, the name is guessed from the major/minor number and marked as `(guessed)`.
 ```
 
 ## `kbpf`
@@ -9107,20 +9115,29 @@ Display character device list.
 ### Syntax
 
 ```text
-usage: kcdev [-h] [-hh] [-n] [-v] [-q]
+usage: kcdev [-h] [-hh] [-N] [-n] [-v] [-q]
 
 options:
   -h, --help          show this help message and exit
   -hh, --help-simple  show help without ASCII diagram.
+  -N, --nodes         list the device nodes (struct device with devt) instead of the registered ranges.
   -n, --no-pager      do not use the pager.
   -v, --verbose       enable verbose mode.
   -q, --quiet         enable quiet mode.
 ```
 
+### Examples
+
+```gdb
+kcdev -n
+kcdev -n -v
+kcdev -n --nodes
+```
+
 ### Notes
 
 ```text
-This command requires CONFIG_RANDSTRUCT=n.
+This command requires CONFIG_RANDSTRUCT=n unless vmlinux with debug information is loaded.
 
 Simplified cdev structure:
 
@@ -9142,6 +9159,12 @@ Simplified cdev structure:
 
 The character devices are managed at chrdevs[] and cdev_map.
 This command use each of them for getting structure information.
+
+Each line is a registered range of minors, not a device node.
+`name (guessed)` is guessed from the static major/minor table only when the range has a single minor.
+`-v` also shows the cdevs registered in the middle of a range (e.g., each tty port).
+`--nodes` lists the device nodes from devices_kset with their sysfs names and the cdev that serves each.
+Block devices are excluded from them.
 ```
 
 ## `kclock-source`
