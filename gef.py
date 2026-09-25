@@ -62972,13 +62972,15 @@ class KernelAddressHeuristicFinderUtil:
                 yield w
 
     @staticmethod
-    def riscv_auipc_gen(res, use_addi, use_mem, skip, skip_msb_check, read_valid, word_only=False):
+    def riscv_auipc_gen(res, use_addi, use_mem, skip, skip_msb_check, read_valid, word_only=False, follow_addi=False):
         """Yield the addresses built from `auipc rd, hi20` and the following `lo12(rd)`.
 
         GDB does not annotate the pc-relative result for RISC-V, so it is computed here.
         `use_addi` takes `addi rX, rd, lo12` (the address itself), and `use_mem` takes the
         displacement of a load/store such as `ld rX, lo12(rd)` or `sd rX, lo12(rd)`.
-        `word_only` limits the latter to the accesses as wide as a pointer."""
+        `word_only` limits the latter to the accesses as wide as a pointer.
+        `follow_addi` keeps the result of `addi` as a base, for a member accessed at an offset
+        from the address of the whole object (e.g. `addi s4, s4, lo12` then `ld s2, 176(s4)`)."""
         bases = {}
         for line in res.splitlines():
             m = re.match(r"\s*(?:=>\s*)?(0x[0-9a-f]+)(?:\s+<[^>]*>)?:\s*(\S+)\s*(.*)", line)
@@ -62996,13 +62998,21 @@ class KernelAddressHeuristicFinderUtil:
             if mnemonic == "addi" and len(ops) == 3 and ops[1] in bases:
                 if use_addi:
                     w = AddressUtil.normalize_address(bases[ops[1]] + int(ops[2], 0))
+                if follow_addi:
+                    bases[ops[0]] = bases[ops[1]] + int(ops[2], 0)
             elif use_mem and (not word_only or mnemonic in (("ld", "sd") if is_64bit() else ("lw", "sw"))):
                 mm = re.fullmatch(r"(-?\d+)\((\w+)\)", ops[-1])
                 if mm and mm.group(2) in bases:
                     w = AddressUtil.normalize_address(bases[mm.group(2)] + int(mm.group(1)))
             # a store, a branch and a fence write no register; anything else overwrites the first operand
             if mnemonic in ("jal", "jalr", "call", "tail"):
-                bases.clear()
+                if follow_addi:
+                    # a whole object is usually kept in a callee-saved register across calls
+                    bases = {k: v for k, v in bases.items() if re.fullmatch(r"s\d+|fp", k)}
+                else:
+                    bases.clear()
+            elif follow_addi and mnemonic == "addi" and ops[1] in bases:
+                pass
             elif not re.fullmatch(r"(?:c\.)?(?:f?s[bhwdq]|b\w+|j|jr|ret|fence\S*|nop|wfi)", mnemonic):
                 bases.pop(ops[0], None)
             if w is None:
@@ -173919,6 +173929,12 @@ class KernelLsmCommand(GenericCommand, BufferingOutput):
     parser.add_argument("hook", metavar="HOOK", nargs="*", help="the hook point name, or a part of it. (e.g., file_open)")
     parser.add_argument("-hh", "--help-simple", action="store_true", help="show help without ASCII diagram.")
     parser.add_argument("-a", "--all", action="store_true", help="also show the hook points that have no callback.")
+    parser.add_argument("--task", action="store_true", help="show the LSM security blobs of each task instead of the hooks.")
+    parser.add_argument("-p", "--pid", type=lambda x: int(x, 0), help="with --task, filter by task pid.")
+    parser.add_argument("-T", "--task-filter", action="append", type=AddressUtil.parse_address, default=[],
+                        help="with --task, filter by specific task_struct address.")
+    parser.add_argument("-f", "--filter", action="append", type=re.compile, default=[], help="with --task, comm string REGEXP filter.")
+    parser.add_argument("-v", "--verbose", action="store_true", help="with --task, decode the blobs of the open files of each task too.")
     parser.add_argument("--meta", action="store_true", help="display offset information.")
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
     parser.add_argument("-q", "--quiet", action="store_true", help="show result only.")
@@ -173928,6 +173944,8 @@ class KernelLsmCommand(GenericCommand, BufferingOutput):
         "{0:s}                   # list every hook point that has a callback",
         "{0:s} file_open         # list the callbacks of the hook points matching `file_open`",
         "{0:s} -a                # list every hook point including the empty ones",
+        "{0:s} --task            # list the security blob and the LSM labels of each task",
+        "{0:s} --task -p 1337    # decode the blobs of the task, its cred and its open files and inodes",
     ]
     _example_ = "\n".join(_example_).format(_cmdline_)
 
@@ -173963,6 +173981,23 @@ class KernelLsmCommand(GenericCommand, BufferingOutput):
         "",
         "The v6.12+ discovery depends on static-call data symbols and may be unavailable",
         "when CONFIG_KALLSYMS_ALL=n.",
+        "",
+        "`--task` follows the security blobs instead. Until v5.0 the active major LSM owns each",
+        "blob as a whole. From v5.1 the LSMs share one blob per object, and the offset of each",
+        "part is read from `<lsm>_blob_sizes`; without the symbol it is guessed from the samples.",
+        "",
+        "+-task_struct-+                    +-cred-----+     +-file-------+    +-inode------+",
+        "| security    |--> blob (v5.1~)    | ...      |     | ...        |    | i_sb       |",
+        "| cred        |------------------->| security |-+   | f_security |-+  | i_mapping  |",
+        "+-------------+                    +----------+ |   +------------+ |  | i_security |-+",
+        "                                                |                  |  +------------+ |",
+        "   +-blob--------------+ <----------------------+------------------+-----------------+",
+        "   | part of LSM A     | <-- offset from <lsmA>_blob_sizes.lbs_*",
+        "   | part of LSM B     | <-- offset from <lsmB>_blob_sizes.lbs_*",
+        "   +-------------------+",
+        "",
+        "SELinux, Smack, AppArmor, TOMOYO and Landlock parts are decoded. This mode requires",
+        "CONFIG_RANDSTRUCT=n.",
     ]
     _note_ = "\n".join(_note_)
 
@@ -173977,7 +174012,7 @@ class KernelLsmCommand(GenericCommand, BufferingOutput):
         ("ima", "ima_"),
         ("integrity", "integrity_"),
         ("ipe", "ipe_"),
-        ("landlock", "landlock_"),
+        ("landlock", "landlock_"), ("landlock", "hook_"),
         ("loadpin", "loadpin_"),
         ("lockdown", "lockdown_"),
         ("safesetid", "safesetid_"),
@@ -173996,6 +174031,10 @@ class KernelLsmCommand(GenericCommand, BufferingOutput):
             return name
         s = Symbol.get_symbol_string(addr, nosymbol_string="")
         return s.strip().strip("<>")
+
+    @staticmethod
+    def format_addr(value):
+        return Color.colorify(AddressUtil.format_address(value), "bold blue")
 
     def read_cstring(self, addr, size=32):
         """Read a NUL-terminated ASCII string, or return '' if it is not one."""
@@ -174079,6 +174118,13 @@ class KernelLsmCommand(GenericCommand, BufferingOutput):
                 KernelAddressHeuristicFinderUtil.arm32_ldr_pc_relative_ldr(res),
                 KernelAddressHeuristicFinderUtil.arm32_ldr_pc_relative(res),
             )
+        elif is_riscv32() or is_riscv64():
+            # gcc may materialize the address of the whole array and load a head at an offset from it,
+            # so take the loaded heads before the addresses themselves
+            g = itertools.chain(
+                KernelAddressHeuristicFinderUtil.riscv_auipc_gen(res, False, True, 0, False, False, word_only=True, follow_addi=True),
+                KernelAddressHeuristicFinderUtil.riscv_auipc_addi(res),
+            )
         else:
             return []
         # `get_kernel_image_range()` stops at the RW range gef could detect, and the array
@@ -174119,6 +174165,8 @@ class KernelLsmCommand(GenericCommand, BufferingOutput):
         if ret is None:
             return
         kallsyms, _kallsyms_map = ret
+        # RVC halves most instructions, and the head is often loaded after a call that allocates something
+        count = 64 if is_riscv32() or is_riscv64() else 40
         seen = set()
         for addr, name, typ in sorted(kallsyms):
             if typ.lower() not in ("t", "w"):
@@ -174130,7 +174178,7 @@ class KernelLsmCommand(GenericCommand, BufferingOutput):
                 continue
             seen.add(hook)
             try:
-                res = KernelAddressHeuristicFinderUtil.disassemble_until_next_symbol(addr, 40)
+                res = KernelAddressHeuristicFinderUtil.disassemble_until_next_symbol(addr, count)
             except gdb.error:
                 continue
             yield hook, res
@@ -174206,14 +174254,13 @@ class KernelLsmCommand(GenericCommand, BufferingOutput):
             if not self.match_filter(hook):
                 continue
             self.out.append("{:s} ({:d} callback{:s})".format(hook, len(callbacks), "" if len(callbacks) == 1 else "s"))
-            for i, (slot, key, func, name) in enumerate(callbacks):
-                mark = "`-" if i == len(callbacks) - 1 else "|-"
-                line = "  {:s} {:s} <{:s}>".format(mark, AddressUtil.format_address(func), name or "NO_SYMBOL")
+            for slot, key, func, name in callbacks:
+                line = "    {:s} <{:s}>".format(self.format_addr(func), name or "NO_SYMBOL")
                 lsm = self.lsm_of_callback(name)
                 if lsm:
                     line += " [{:s}]".format(lsm)
                 if self.args.meta:
-                    line += "  (slot {:d}, key {:#x})".format(slot, key)
+                    line += "  (slot {:d}, key {:s})".format(slot, self.format_addr(key))
                 self.out.append(line)
         return
 
@@ -174230,24 +174277,37 @@ class KernelLsmCommand(GenericCommand, BufferingOutput):
     # v4.2 - v6.11: security_hook_heads, an array of the lists of struct security_hook_list
     #
 
-    def walk_head(self, head, is_list_head):
-        """Return the `struct security_hook_list` linked from the head."""
+    def walk_head(self, head, is_list_head, off_head):
+        """Return the `struct security_hook_list`s linked from the head, or None if it is not a valid list.
+
+        Every node must link back to the previous link and to the head, and hold a kernel text callback,
+        so that a neighboring variable or a kmem_cache is never taken as a hook list."""
+        ptrsize = current_arch.ptrsize
+        first = read_int_from_memory(head, safe=True)
+        if first is None:
+            return None
+        if is_list_head:
+            last = read_int_from_memory(head + ptrsize, safe=True)
+        end = head if is_list_head else 0
         nodes = []
-        seen = set()
-        current = read_int_from_memory(head, safe=True)
-        if current is None:
-            return nodes
-        while current and current != head and current not in seen and len(nodes) < 64:
-            if not is_valid_addr(current):
-                break
-            seen.add(current)
+        prev = head
+        current = first
+        while current != end:
+            if current in nodes or len(nodes) >= 64 or not is_valid_addr(current):
+                return None
+            # `list.prev` of list_head, or `list.pprev` of hlist_node that is the address of the previous `next`
+            back = read_int_from_memory(current + ptrsize, safe=True)
+            owner = read_int_from_memory(current + off_head * ptrsize, safe=True)
+            func = read_int_from_memory(current + (off_head + 1) * ptrsize, safe=True)
+            if back != prev or owner != head or not self.is_kernel_text(func):
+                return None
             nodes.append(current)
+            prev = current
             current = read_int_from_memory(current, safe=True)
             if current is None:
-                break
-        if is_list_head and current != head:
-            # a list_head that did not go around is not a valid chain
-            return []
+                return None
+        if is_list_head and last != prev:
+            return None
         return nodes
 
     def find_node_offsets(self, anchors):
@@ -174301,64 +174361,148 @@ class KernelLsmCommand(GenericCommand, BufferingOutput):
                     break
         return anchors
 
-    def get_head_array_range(self, refs, anchors):
-        """Return [start, end) of the security_hook_heads array."""
-        ptrsize = current_arch.ptrsize
+    def get_hook_heads_type(self):
+        """Return (sizeof(struct security_hook_heads), {member offset: name}) from the debug type, or (None, {})."""
+        struct_type = GefUtil.cached_lookup_type("struct security_hook_heads")
+        if struct_type is None or not struct_type.sizeof:
+            return None, {}
+        return struct_type.sizeof, {f.bitpos // 8: f.name for f in struct_type.fields()}
+
+    def get_head_array_base(self, refs, anchors, member_names):
+        """Return the address of the security_hook_heads array, or None if it is unknown."""
         base = Ksym.get_addr("security_hook_heads")
-        if base is not None:
+        if base is not None or not member_names:
+            return base
+        # The debug type tells the offset of each member, so the confirmed heads referred to by the dispatcher
+        # of the same name locate the array.
+        offset_by_name = {name: offset for offset, name in member_names.items()}
+        heads = {h for h, _n in anchors}
+        votes = {}
+        for hook, candidates in refs.items():
+            offset = offset_by_name.get(hook)
+            if offset is None:
+                continue
+            for head in candidates:
+                if head in heads:
+                    votes[head - offset] = votes.get(head - offset, 0) + 1
+        if not votes:
+            return None
+        return max(votes.items(), key=lambda kv: kv[1])[0]
+
+    def get_head_array_range(self, refs, anchors, stride, is_valid_head, is_empty_head, base, sizeof):
+        """Return [start, end) of the security_hook_heads array."""
+        if base is not None and sizeof:
+            return base, base + sizeof
+        heads = sorted({h for h, _n in anchors})
+        if not heads:
+            return None, None
+        lo, hi = heads[0], heads[-1] + stride
+        if base is not None and base <= lo:
+            # The next symbol bounds the array, but a variable that follows it can lack a symbol.
             ret = Ksym.get_kallsyms()
             kallsyms, _kallsyms_map = ret if ret else ([], {})
             end = min([a for a, _n, _t in kallsyms if a > base], default=None)
-            if end is not None and base < end:
-                return base, end
-        if not anchors:
-            return None, None
+            if end is not None and hi <= end:
+                lo = base
+                while hi < end and is_valid_head(hi):
+                    hi += stride
+                # the alignment padding before the next variable looks like empty heads
+                referred = {x for candidates in refs.values() for x in candidates}
+                while hi - stride > heads[-1] and hi - stride not in referred and is_empty_head(hi - stride):
+                    hi -= stride
+                return lo, hi
+
         # Without the symbol the range comes from the heads that were confirmed to hold a hook list, which misses the empty ones
-        # at both ends. Widen it with the candidates the dispatchers referred to, as long as they stay adjacent to the confirmed run.
-        heads = sorted({h for h, _n in anchors})
-        lo, hi = heads[0], heads[-1]
-        candidates = sorted({x for values in refs.values() for x in values if x % ptrsize == 0})
-        margin = ptrsize * 0x80
-        for x in candidates:
-            if lo - margin <= x < lo:
-                lo = x
-            elif hi < x <= hi + margin:
-                hi = x
-        return lo, hi + ptrsize
+        # at both ends. Widen it to the heads the dispatchers referred to, as long as every head up to there is a valid list.
+        # A dispatcher that already refers to a head in the range may also refer to a neighbor of the array (e.g. `lsm_inode_cache`
+        # of security_inode_alloc()), so only the dispatchers that have none are used.
+        margin = stride * 0x80
+        changed = True
+        while changed:
+            changed = False
+            for candidates in refs.values():
+                if any(lo <= x < hi for x in candidates):
+                    continue
+                for x in sorted(candidates, key=lambda x: min(abs(x - lo), abs(x - hi))):
+                    if (x - lo) % stride:
+                        continue
+                    if lo - margin <= x < lo:
+                        slots = range(x, lo, stride)
+                    elif hi <= x < hi + margin:
+                        slots = range(hi, x + stride, stride)
+                    else:
+                        continue
+                    if all(is_valid_head(s) for s in slots):
+                        lo, hi = min(lo, x), max(hi, x + stride)
+                        changed = True
+                        break
+        return lo, hi
 
     def dump_hook_heads(self):
         ptrsize = current_arch.ptrsize
         refs = self.collect_hook_head_refs()
         anchors = self.find_head_anchors(refs)
-        start, end = self.get_head_array_range(refs, anchors)
-        if start is None:
-            self.err_add_out("Could not find `security_hook_heads`")
-            return
         # both `struct list_head list` and `struct hlist_node list` take two pointers
         off_head = self.find_node_offsets(anchors) or 2
 
-        name_by_head = {}
-        for hook, candidates in refs.items():
-            for head in candidates:
-                if start <= head < end and head % ptrsize == 0 and head not in name_by_head:
-                    name_by_head[head] = hook
-                    break
-
-        self.quiet_info_add_out("LSM framework: security_hook_heads (v4.2 - v6.11)")
-        self.quiet_info_add_out("security_hook_heads: {:#x}-{:#x}".format(start, end))
-        self.quiet_info_add_out("Number of the recovered hook point names: {:d}".format(len(name_by_head)))
-        if self.args.meta:
-            self.quiet_info_add_out("offsetof(security_hook_list, head): {:#x}".format(off_head * ptrsize))
-
         # v4.11 turned each head from a `struct list_head` into a `struct hlist_head`, which halves the stride.
-        # The distance between the recovered heads shows it directly, so trust that when there are enough of them.
+        # The distance between the confirmed heads shows it directly, so trust that when there are enough of them.
         kversion = Kernel.kernel_version()
         stride = ptrsize * 2 if kversion and kversion < "4.11" else ptrsize
-        heads = sorted(name_by_head)
+        heads = sorted({h for h, _n in anchors})
         gaps = [b - a for a, b in zip(heads, heads[1:]) if b > a]
         if len(gaps) >= 8:
             stride = ptrsize * 2 if min(gaps) >= ptrsize * 2 else ptrsize
         is_list_head = stride == ptrsize * 2
+
+        walked = {}
+
+        def walk(head):
+            if head not in walked:
+                walked[head] = self.walk_head(head, is_list_head, off_head)
+            return walked[head]
+
+        sizeof, member_names = self.get_hook_heads_type()
+        base = self.get_head_array_base(refs, anchors, member_names)
+        start, end = self.get_head_array_range(refs, anchors, stride, lambda x: walk(x) is not None, lambda x: walk(x) == [], base, sizeof)
+        if start is None:
+            self.err_add_out("Could not find `security_hook_heads`")
+            return
+
+        # A dispatcher may call another hook point first (e.g. inode_xattr_skipcap from security_inode_setxattr() and
+        # security_inode_removexattr() on v6.10~), so a head that only one dispatcher refers to is taken first.
+        # A wrapper such as security_capable_noaudit() refers to the head of another hook point, and the shortest name
+        # is the canonical one among the dispatchers that refer to the head first.
+        heads_by_hook = {}
+        for hook, candidates in refs.items():
+            heads_by_hook[hook] = [x for x in candidates if start <= x < end and (x - start) % stride == 0 and walk(x) is not None]
+        users = collections.Counter(x for heads in heads_by_hook.values() for x in set(heads))
+        name_by_head = {}
+        hooks = sorted(heads_by_hook, key=lambda x: (len(x), x))
+        for hook in hooks:
+            head = next((x for x in heads_by_hook[hook] if users[x] == 1), None)
+            if head is not None:
+                name_by_head[head] = hook
+        # the head a dispatcher refers to first is its own one rather than the ones it refers to later
+        named = set(name_by_head.values())
+        for rank in range(max((len(x) for x in heads_by_hook.values()), default=0)):
+            for hook in hooks:
+                if hook in named or rank >= len(heads_by_hook[hook]):
+                    continue
+                head = heads_by_hook[hook][rank]
+                if head not in name_by_head:
+                    name_by_head[head] = hook
+                    named.add(hook)
+        if base == start and sizeof:
+            for offset, name in member_names.items():
+                name_by_head[start + offset] = name
+
+        self.quiet_info_add_out("LSM framework: security_hook_heads (v4.2 - v6.11)")
+        self.quiet_info_add_out("security_hook_heads: {:s}-{:s}".format(self.format_addr(start), self.format_addr(end)))
+        self.quiet_info_add_out("Number of the recovered hook point names: {:d}".format(len(name_by_head)))
+        if self.args.meta:
+            self.quiet_info_add_out("offsetof(security_hook_list, head): {:#x}".format(off_head * ptrsize))
+
         if self.args.meta:
             self.quiet_info_add_out("sizeof(each head): {:#x} ({:s})".format(stride, "list_head" if is_list_head else "hlist_head"))
 
@@ -174366,8 +174510,8 @@ class KernelLsmCommand(GenericCommand, BufferingOutput):
         nodes_seen = set()
         for i in range((end - start) // stride):
             head = start + i * stride
-            nodes = self.walk_head(head, is_list_head)
-            nodes_seen.update(nodes)
+            nodes = walk(head)
+            nodes_seen.update(nodes or [])
             chains.append((i, head, nodes))
 
         # the `lsm` member was added at v4.12, which widens `struct security_hook_list`.
@@ -174383,7 +174527,7 @@ class KernelLsmCommand(GenericCommand, BufferingOutput):
         lsms = set()
         for i, head, nodes in chains:
             callbacks = []
-            for node in nodes:
+            for node in nodes or []:
                 try:
                     func = read_int_from_memory(node + (off_head + 1) * ptrsize)
                     # Probe the owner slot even when neighboring-node distances could not prove that the member exists
@@ -174405,26 +174549,28 @@ class KernelLsmCommand(GenericCommand, BufferingOutput):
                 name = self.hook_name_from_callback(callbacks[0][2], callbacks[0][3])
                 if name:
                     name += " (guessed)"
-            rows.append((i, head, name, callbacks))
+            rows.append((i, head, name, nodes is None, callbacks))
         self.dump_lsm_list(lsms)
 
-        for i, head, name, callbacks in rows:
-            if not callbacks and not self.args.all:
+        for i, head, name, broken, callbacks in rows:
+            if not callbacks and not broken and not self.args.all:
                 continue
             label = name or "hook[{:d}]".format(i)
             if not self.match_filter(label):
                 continue
-            line = "{:s} ({:d} callback{:s})".format(label, len(callbacks), "" if len(callbacks) == 1 else "s")
+            if broken:
+                line = "{:s} (broken list)".format(label)
+            else:
+                line = "{:s} ({:d} callback{:s})".format(label, len(callbacks), "" if len(callbacks) == 1 else "s")
             if self.args.meta:
-                line += "  (head {:#x})".format(head)
+                line += "  (head {:s})".format(self.format_addr(head))
             self.out.append(line)
-            for j, (node, func, func_name, lsm) in enumerate(callbacks):
-                mark = "`-" if j == len(callbacks) - 1 else "|-"
-                line = "  {:s} {:s} <{:s}>".format(mark, AddressUtil.format_address(func), func_name or "NO_SYMBOL")
+            for node, func, func_name, lsm in callbacks:
+                line = "    {:s} <{:s}>".format(self.format_addr(func), func_name or "NO_SYMBOL")
                 if lsm:
                     line += " [{:s}]".format(lsm)
                 if self.args.meta:
-                    line += "  (hook_list {:#x})".format(node)
+                    line += "  (hook_list {:s})".format(self.format_addr(node))
                 self.out.append(line)
         return
 
@@ -174489,7 +174635,7 @@ class KernelLsmCommand(GenericCommand, BufferingOutput):
 
         lsm = self.read_cstring(ops, 16)
         self.quiet_info_add_out("LSM framework: security_ops (v4.1 or earlier)")
-        self.quiet_info_add_out("security_ops: {:#x} -> {:#x} <{:s}>".format(addr, ops, self.sym_name(ops) or "NO_SYMBOL"))
+        self.quiet_info_add_out("security_ops: {:s} -> {:s} <{:s}>".format(self.format_addr(addr), self.format_addr(ops), self.sym_name(ops) or "NO_SYMBOL"))
         self.dump_lsm_list({lsm} if lsm else set())
 
         # the largest member the dispatchers touch is the tightest bound on the struct;
@@ -174542,12 +174688,647 @@ class KernelLsmCommand(GenericCommand, BufferingOutput):
             if self.args.meta:
                 line += " (+{:#x})".format(disp)
             self.out.append(line)
-            self.out.append("  `- {:s} <{:s}>{:s}".format(
-                AddressUtil.format_address(func), func_name or "NO_SYMBOL", " [{:s}]".format(hook_lsm) if hook_lsm else "",
+            self.out.append("    {:s} <{:s}>{:s}".format(
+                self.format_addr(func), func_name or "NO_SYMBOL", " [{:s}]".format(hook_lsm) if hook_lsm else "",
             ))
         return
 
+    #
+    # --task: the security blobs of task_struct, cred, file and inode
+    #
+
+    # the index of each member of `struct lsm_blob_sizes` (v5.1 or later), which holds ints
+    BLOB_SIZES_INDEX = (
+        ("7.1", {"cred": 0, "file": 1, "inode": 4, "task": 11}),
+        ("6.12", {"cred": 0, "file": 1, "inode": 3, "task": 10}),
+        ("5.13", {"cred": 0, "file": 1, "inode": 2, "task": 6}),
+        ("5.1", {"cred": 0, "file": 1, "inode": 2, "task": 5}),
+    )
+
+    # the kinds of blobs each LSM keeps, as [since, until) of the kernel version
+    BLOB_USERS = {
+        "selinux": {"cred": (None, None), "file": (None, None), "inode": (None, None), "task": ("6.18", None)},
+        "smack": {"cred": (None, None), "file": (None, None), "inode": (None, None)},
+        "apparmor": {"cred": (None, None), "file": (None, None), "task": ("5.1", None)},
+        "tomoyo": {"cred": (None, "5.1"), "task": ("5.1", None)},
+        "landlock": {"cred": ("5.13", None), "file": ("6.2", None), "inode": ("5.13", None)},
+        "bpf": {"inode": ("5.10", None), "task": ("5.11", None)},
+        "integrity": {"inode": ("6.9", None)},
+        "ima": {"inode": ("6.9", None)},
+        "evm": {"inode": ("6.9", None)},
+        "ipe": {"inode": ("6.12", None)},
+    }
+
+    # the parts of the blobs that decode_blob() understands
+    DECODABLE_BLOBS = {
+        "selinux": ("cred", "task", "file", "inode"),
+        "smack": ("cred", "file", "inode"),
+        "apparmor": ("cred", "task", "file"),
+        "tomoyo": ("cred", "task"),
+        "landlock": ("cred",),
+    }
+    # the parts that are valid with NULL pointers, which cannot be located by decoding
+    WEAK_BLOBS = (("landlock", "cred"), ("apparmor", "task"))
+
+    def is_blob_user(self, lsm, kind):
+        version_range = self.BLOB_USERS.get(lsm, {}).get(kind)
+        if version_range is None:
+            return False
+        since, until = version_range
+        kversion = Kernel.kernel_version()
+        if since is not None and kversion < since:
+            return False
+        if until is not None and kversion >= until:
+            return False
+        return True
+
+    def trace_arg_accesses(self, res):
+        """Return ([offsets stored zero], [offsets loaded]) of the pointer-sized members accessed through the first argument.
+
+        A register that holds the argument plus a constant is followed too, because a member far from the head is
+        reached by adding the upper part of the offset first (e.g. `lui a0, 0x1; add s1, s1, a0; sd zero, -1384(s1)`)."""
+        branch = r"b(?:\.\w+|eq|ne|cs|cc|hs|lo|mi|pl|vs|vc|hi|ls|ge|lt|gt|le|al)?"
+        if is_x86():
+            width = "QWORD" if is_x86_64() else "DWORD"
+            mem = width + r" PTR \[(?P<base>\w+)(?P<disp>[+-]0x\w+)?\]"
+            # -mregparm=3 on x86_32
+            arg, clobbered = ("rdi", "rax rcx rdx rsi rdi r8 r9 r10 r11") if is_x86_64() else ("eax", "eax ecx edx")
+            rules = [
+                ("store", r"(?:mov|and)\s+" + mem + r",(?P<src>\w+)"),
+                ("call", r"call.*"),
+                ("probe", r"(?:cmp|test)\s+\w+," + mem),
+                ("skip", r"(?:j\w+|cmp|test|push|nop\w*|ret\w*|bt)(?:\s.*)?|\S+\s+\w+ PTR .*"),
+                ("load", r"(?:mov|add)\s+(?P<dst>\w+)," + mem),
+                ("move", r"mov\s+(?P<dst>\w+),(?P<src>\w+)"),
+                # `lea esi,[esi+eiz*1+0x0]` is a multi-byte nop
+                ("add", r"lea\s+(?P<dst>\w+),(?:ds:)?\[(?P<src>\w+)(?:\+eiz\*1)?(?P<imm>[+-]0x\w+)?\]"),
+                ("add", r"add\s+(?P<dst>(?P<src>\w+)),(?P<imm>0x\w+)"),
+                ("zero", r"xor\s+(?P<dst>\w+),(?P=dst)"),
+            ]
+        elif is_arm64() or is_arm32():
+            mem = r"\s+(?P<{:s}>\w+),\s*\[(?P<base>\w+)(?:,\s*#(?P<disp>-?\w+))?\]"
+            arg, clobbered = ("x0", " ".join("x{:d}".format(i) for i in range(19)) + " x30") if is_arm64() else ("r0", "r0 r1 r2 r3 ip lr")
+            rules = [
+                ("store", r"(?:str|stur)(?:\.w)?" + mem.format("src")),
+                ("call", r"(?:bl|blx|blr)\s.*"),
+                ("skip", r"(?:st\w*|push|cmp|cmn|tst|teq|" + branch + r"|cbn?z|tbn?z|ret|nop|bx\w*|dmb|dsb|isb|pld\w*)(?:\.[wn])?(?:\s.*)?"),
+                ("load", r"(?:ldr|ldur)(?:\.w)?" + mem.format("dst")),
+                ("move", r"movs?(?:\.w)?\s+(?P<dst>\w+),\s*(?P<src>[a-z]\w*)"),
+                ("const", r"movs?(?:\.w)?\s+(?P<dst>\w+),\s*#(?P<imm>\w+)"),
+                ("add", r"adds?(?:\.w)?\s+(?P<dst>\w+),\s*(?P<src>\w+),\s*#(?P<imm>\w+)(?:,\s*lsl\s*#(?P<shift>\d+))?"),
+            ]
+        elif is_riscv32() or is_riscv64():
+            size = "d" if is_64bit() else "w"
+            mem = r",(?P<disp>-?\d+)\((?P<base>\w+)\)"
+            arg = "a0"
+            clobbered = "ra " + " ".join("a{:d}".format(i) for i in range(8)) + " " + " ".join("t{:d}".format(i) for i in range(7))
+            rules = [
+                ("store", r"s" + size + r"\s+(?P<src>\w+)" + mem),
+                ("call", r"(?:jal|jalr|call|tail)(?:\s.*)?"),
+                ("skip", r"(?:c\.)?(?:f?s[bhwdq]|b\w+|j|jr|ret|fence\S*|nop|wfi)(?:\s.*)?"),
+                ("load", r"l" + size + r"\s+(?P<dst>\w+)" + mem),
+                ("move", r"mv\s+(?P<dst>\w+),(?P<src>\w+)"),
+                ("const", r"li\s+(?P<dst>\w+),(?P<imm>-?\w+)"),
+                ("const", r"lui\s+(?P<dst>\w+),(?P<imm>\w+)(?P<shift>)"),
+                ("add", r"addi\s+(?P<dst>\w+),(?P<src>\w+),(?P<imm>-?\w+)"),
+                ("add", r"add\s+(?P<dst>\w+),(?P<src>\w+),(?P<reg>\w+)"),
+            ]
+        else:
+            return [], []
+
+        def norm(reg):
+            # x86_64: the 32-bit name of a register refers to the same one
+            if reg and is_x86_64():
+                reg = re.sub(r"^e([abcd]x|[sd]i|[sb]p)$", r"r\1", reg)
+                reg = re.sub(r"^(r\d+)d$", r"\1", reg)
+            return reg
+
+        def imm(x):
+            try:
+                return int(x, 0)
+            except (TypeError, ValueError):
+                return None
+
+        clobbered = clobbered.split()
+        aliases = {arg: 0} # register -> the argument plus this delta
+        consts = {} # register -> value (zero, or the upper part of an offset)
+        stores, loads = [], []
+        for line in res.splitlines():
+            m = re.match(r"\s*(?:=>\s*)?0x[0-9a-f]+(?:\s+<[^>]*>)?:\s*(.*)", line)
+            if not m:
+                continue
+            insn = re.split(r"\s+(?:#|;|//|@)\s", m.group(1))[0].strip()
+            kind, g = None, {}
+            for kind, regex in rules:
+                m = re.fullmatch(regex, insn)
+                if m:
+                    g = {k: norm(v) for k, v in m.groupdict().items()}
+                    break
+            else:
+                kind = None
+            if kind == "store":
+                src = g["src"]
+                # a pointer-sized store only; ARM64 has `w` registers for 32-bit
+                if g["base"] in aliases and not src.startswith("w") and (src in ("xzr", "zero") or imm(src) == 0 or consts.get(src) == 0):
+                    stores.append(aliases[g["base"]] + (imm(g["disp"]) or 0))
+                continue
+            if kind == "call":
+                for reg in clobbered:
+                    aliases.pop(reg, None)
+                    consts.pop(reg, None)
+                continue
+            if kind in ("load", "probe") and g["base"] in aliases and not g.get("dst", "").startswith("w"):
+                loads.append(aliases[g["base"]] + (imm(g["disp"]) or 0))
+            if kind in ("skip", "probe"):
+                continue
+            if kind is None:
+                m = re.match(r"\S+\s+(\w+)", insn)
+                g = {"dst": norm(m.group(1)) if m else None}
+            dst = g["dst"]
+            alias = aliases.get(g.get("src"))
+            if kind == "add" and alias is None and g.get("reg") in aliases:
+                # `add rd, rs1, rs2` is commutative
+                g["src"], g["reg"] = g["reg"], g["src"]
+                alias = aliases[g["src"]]
+            aliases.pop(dst, None)
+            consts.pop(dst, None)
+            if kind == "move" and alias is not None:
+                aliases[dst] = alias
+            elif kind == "add" and alias is not None and imm(g.get("imm")) is not None:
+                aliases[dst] = alias + (imm(g["imm"]) << int(g.get("shift") or 0))
+            elif kind == "add" and alias is not None and g.get("reg") in consts:
+                aliases[dst] = alias + consts[g["reg"]]
+            elif kind == "zero":
+                consts[dst] = 0
+            elif kind == "const" and imm(g["imm"]) is not None:
+                consts[dst] = imm(g["imm"]) << (12 if g.get("shift") == "" else 0)
+        return stores, loads
+
+    def find_arg_member_offset(self, func_names):
+        """Return the offset of the member a function clears through its first argument (e.g. `task->security = NULL`
+        in security_task_free()), or the one it reads if it clears nothing."""
+        for name in func_names:
+            addr = Ksym.get_addr(name)
+            if addr is None:
+                continue
+            try:
+                res = KernelAddressHeuristicFinderUtil.disassemble_until_next_symbol(addr, 80)
+            except gdb.error:
+                continue
+            stores, loads = self.trace_arg_accesses(res)
+            for offset in stores + loads:
+                if 0 < offset < 0x4000 and offset % current_arch.ptrsize == 0:
+                    return offset
+        return None
+
+    def get_member_offset(self, type_name, member):
+        try:
+            return GefUtil.parse_and_eval_unsigned("&(({:s} *)0)->{:s}".format(type_name, member))
+        except gdb.error:
+            return None
+
+    def is_blob_value(self, value):
+        return value == 0 or (value % current_arch.ptrsize == 0 and is_valid_addr(value))
+
+    def resolve_member_offset(self, type_name, member, objects, funcs=(), fallback=None):
+        """Return offsetof(type, member) from the debug type, from what `funcs` access through the first argument, or
+        `fallback`, if the member of every object is NULL or a valid address."""
+        offset = self.get_member_offset(type_name, member)
+        if offset is None:
+            offset = self.find_arg_member_offset(funcs)
+        if offset is None:
+            offset = fallback
+        if offset is None or not objects:
+            return None
+        if not all(self.is_blob_value(read_int_from_memory(x + offset, safe=True)) for x in objects):
+            return None
+        return offset
+
+    def resolve_security_offsets(self, lsms, creds, files):
+        """Return {kind: offsetof(object, security)}; a kind that could not be found is omitted."""
+        kversion = Kernel.kernel_version()
+        offsets = {}
+        # Kernel.Cred finds it from `user_ns`, which cred has had since v3.5
+        offsets["cred"] = self.task_command.kcred.offset_security
+        if offsets["cred"] is None:
+            funcs = ["{:s}_cred_free".format(lsm) for lsm in sorted(lsms)] + ["security_cred_free"]
+            offsets["cred"] = self.resolve_member_offset("struct cred", "security", creds, funcs)
+        # it has existed since v4.12, but nothing used it before v5.1
+        funcs = ["security_task_free"] if kversion >= "5.1" else []
+        offsets["task"] = self.resolve_member_offset("struct task_struct", "security", self.task_addrs, funcs)
+        if files:
+            # the LSM freed its own blob until v5.0, while some distro kernels backported the v5.1 way
+            funcs = ["{:s}_file_free_security".format(lsm) for lsm in sorted(lsms)] if kversion < "5.1" else []
+            offsets["file"] = self.resolve_member_offset("struct file", "f_security", files, funcs + ["security_file_free"])
+            # `i_security` follows `i_sb` and `i_mapping`
+            offset_i_sb = getattr(self.task_command.kpath, "offset_i_sb", None)
+            fallback = None if offset_i_sb is None else offset_i_sb + current_arch.ptrsize * 2
+            inodes = [x for x in (self.get_file_inode(file) for file in files) if x]
+            offsets["inode"] = self.resolve_member_offset("struct inode", "i_security", inodes, fallback=fallback)
+        return {kind: offset for kind, offset in offsets.items() if offset is not None}
+
+    def get_blob_sizes_offset(self, lsm, kind):
+        """Return the offset of the part `lsm` owns in the blob of `kind`, read from `<lsm>_blob_sizes`, or None."""
+        sym = {"bpf": "bpf_lsm_blob_sizes", "ipe": "ipe_blobs"}.get(lsm, "{:s}_blob_sizes".format(lsm))
+        addr = Ksym.get_addr(sym)
+        if addr is None:
+            return None
+        offset = self.get_member_offset("struct lsm_blob_sizes", "lbs_{:s}".format(kind))
+        if offset is None:
+            kversion = Kernel.kernel_version()
+            for version, index in self.BLOB_SIZES_INDEX:
+                if kversion >= version:
+                    offset = index[kind] * 4
+                    break
+        if offset is None:
+            return None
+        value = read_int32_from_memory(addr + offset, safe=True)
+        # lsm_set_blob_size() aligns each part to a pointer
+        if value is None or value >= 0x1000 or value % current_arch.ptrsize:
+            return None
+        return value
+
+    def resolve_blob_layout(self, lsms, samples):
+        """Return {kind: [(lsm, offset, how), ...]}, the part each active LSM owns in the blob of each kind.
+
+        Until v5.0 the major LSM owns the whole blob (offset 0). From v5.1 one blob is shared by the LSMs, and
+        the offset of each part is read from `<lsm>_blob_sizes`. Without the symbol, the only user owns the head
+        of the blob, and otherwise the offset where the part decodes on most samples is taken (guessed)."""
+        kversion = Kernel.kernel_version()
+        layout = {}
+        for kind, values in samples.items():
+            users = [lsm for lsm in sorted(lsms) if self.is_blob_user(lsm, kind)]
+            entries = []
+            for lsm in users:
+                if lsm not in self.DECODABLE_BLOBS:
+                    continue
+                if kversion < "5.1":
+                    entries.append((lsm, 0, "whole"))
+                    continue
+                # a new member of `struct lsm_blob_sizes` shifts the index, so check the offset with the samples
+                decodable = kind in self.DECODABLE_BLOBS[lsm]
+                offset = self.get_blob_sizes_offset(lsm, kind)
+                if offset is not None:
+                    if not decodable or self.count_decodable(lsm, kind, offset, values) * 2 >= len([x for x in values if x[0]]):
+                        entries.append((lsm, offset, "{:s}_blob_sizes".format(lsm)))
+                        continue
+                if len(users) == 1:
+                    # the inode blob starts with a `struct rcu_head` to free it
+                    offset = current_arch.ptrsize * 2 if kind == "inode" else 0
+                    if not decodable or self.count_decodable(lsm, kind, offset, values) * 2 >= len([x for x in values if x[0]]):
+                        entries.append((lsm, offset, "only user"))
+                        continue
+                    # a distro kernel may put its own data at the head (e.g. the display LSM slot of Ubuntu)
+                    offset = self.guess_blob_offset(lsm, kind, values, allow_weak=True)
+                else:
+                    offset = self.guess_blob_offset(lsm, kind, values) if decodable else None
+                entries.append((lsm, offset, "guessed"))
+            # the part of the LSM initialized first starts at the head of the blob
+            base = current_arch.ptrsize * 2 if kind == "inode" and kversion >= "5.1" else 0
+            unknown = [i for i, (_lsm, offset, _how) in enumerate(entries) if offset is None]
+            if len(unknown) == 1 and len(entries) == len(users) and all(offset != base for _lsm, offset, _how in entries):
+                entries[unknown[0]] = (entries[unknown[0]][0], base, "guessed")
+            layout[kind] = entries
+        return layout
+
+    def count_decodable(self, lsm, kind, offset, samples):
+        return sum(1 for blob, obj in samples if blob and self.decode_blob(lsm, kind, blob + offset, obj) is not None)
+
+    def guess_blob_offset(self, lsm, kind, samples, allow_weak=False):
+        """Return the lowest offset where the part decodes on the majority of the samples. The same part of the next object
+        in the slab also decodes beyond the end of the blob, and so does a later member that looks like the first one."""
+        if (lsm, kind) in self.WEAK_BLOBS and not allow_weak:
+            return None
+        blobs = [(blob, obj) for blob, obj in samples if blob]
+        if not blobs:
+            return None
+        for offset in range(0, 0x80, current_arch.ptrsize):
+            if self.count_decodable(lsm, kind, offset, blobs) * 2 > len(blobs):
+                return offset
+        return None
+
+    def read_label(self, addr, pattern=r"[\x21-\x7e][\x20-\x7e]*"):
+        """Read the string at `addr` if it looks like a label."""
+        # do not cross the page, which may be unmapped
+        name = self.read_cstring(addr, min(0x100, get_pagesize() - addr % get_pagesize()))
+        if name and re.fullmatch(pattern, name):
+            return name
+        return ""
+
+    def apparmor_label_name(self, label):
+        """Return the name of an `aa_label` (v4.13~) or an `aa_profile` (~v4.12)."""
+        if not label or not is_valid_addr(label):
+            return ""
+        # the refcount, rb_node, rcu_head and proxy come before `hname` of aa_label, and `name` is the first member of aa_profile
+        for i in range(12):
+            ptr = read_int_from_memory(label + i * current_arch.ptrsize, safe=True)
+            if ptr is None:
+                break
+            if ptr and is_valid_addr(ptr):
+                name = self.read_label(ptr)
+                if len(name) >= 2:
+                    return name
+        return ""
+
+    def smack_label_name(self, skp):
+        """Return the label of a `struct smack_known`, or of a label string of old kernels."""
+        if not skp or not is_valid_addr(skp):
+            return ""
+        # smk_known follows `struct list_head list` and `struct hlist_node smk_hashed`
+        ptr = read_int_from_memory(skp + current_arch.ptrsize * 4, safe=True)
+        if ptr and is_valid_addr(ptr):
+            name = self.read_label(ptr, r"[\x21-\x7e]{1,255}")
+            if name:
+                return name
+        return self.read_label(skp, r"[\x21-\x7e]{1,255}")
+
+    def tomoyo_domain_name(self, domain):
+        """Return the name of a `struct tomoyo_domain_info`, found through `domainname`."""
+        if not domain or not is_valid_addr(domain):
+            return ""
+        # domainname follows `list` and `acl_info_list[]`
+        for i in range(2, 10):
+            path_info = read_int_from_memory(domain + i * current_arch.ptrsize, safe=True)
+            if not path_info or not is_valid_addr(path_info):
+                continue
+            ptr = read_int_from_memory(path_info, safe=True)
+            if ptr and is_valid_addr(ptr):
+                name = self.read_label(ptr, r"<[\x20-\x7e]+")
+                if name:
+                    return name
+        return ""
+
+    def format_label_ptr(self, ptr, name):
+        if not ptr:
+            return "0x0"
+        return "{:s}{:s}".format(AddressUtil.format_address(ptr), " ({:s})".format(name) if name else "")
+
+    def decode_blob(self, lsm, kind, part, obj):
+        """Return (summary, detail) of the part of the blob `lsm` owns, or None if it does not look like one.
+        `part` is the address of the part, and `obj` is the object that owns the blob."""
+        kversion = Kernel.kernel_version()
+        ptrsize = current_arch.ptrsize
+        stacked = kversion >= "5.1"
+        if not part or not is_valid_addr(part):
+            return None
+
+        def sids(names, offset=0):
+            """Return the u32 SIDs at `part + offset` and their detail, or (None, "") if one is not a SID."""
+            values = [read_int32_from_memory(part + offset + i * 4, safe=True) for i in range(len(names))]
+            if not all(x is not None and x < 0x100000 for x in values):
+                return None, ""
+            return values, " ".join("{:s}={:d}".format(n, x) for n, x in zip(names, values))
+
+        def labels(names, resolve, ptrs=None, optional=False):
+            """Return the label of the first pointer and the detail of all, or None if the first is not labeled
+            (if `optional`, if a non-NULL one is not labeled). `ptrs` defaults to the pointers at `part`."""
+            if ptrs is None:
+                ptrs = [read_int_from_memory(part + i * ptrsize, safe=True) for i in range(len(names))]
+            if not all(x is not None and self.is_blob_value(x) for x in ptrs):
+                return None
+            resolved = [resolve(x) if x else "" for x in ptrs]
+            unlabeled = any(x and not y for x, y in zip(ptrs, resolved)) if optional else not resolved[0]
+            if unlabeled:
+                return None
+            return resolved[0], " ".join("{:s}={:s}".format(n, self.format_label_ptr(x, y)) for n, x, y in zip(names, ptrs, resolved))
+
+        if lsm == "selinux":
+            if kind == "cred":
+                values, detail = sids(["osid", "sid", "exec_sid", "create_sid", "keycreate_sid", "sockcreate_sid"])
+                if values and values[0] and values[1]:
+                    return "sid={:d}".format(values[1]), detail
+            elif kind == "task":
+                values, detail = sids(["avdcache.sid", "avdcache.seqno"])
+                if values:
+                    return "", detail
+            elif kind == "file":
+                # isid is 0 for a file that was not opened through a path (e.g. a pipe)
+                values, detail = sids(["sid", "fown_sid", "isid", "pseqno"])
+                if values and values[0] and values[1]:
+                    return "sid={:d}".format(values[0]), detail
+            elif kind == "inode" and read_int_from_memory(part, safe=True) == obj:
+                # inode, list, task_sid, sid, sclass, initialized
+                values, detail = sids(["task_sid", "sid"], ptrsize * 3)
+                sclass = read_int16_from_memory(part + ptrsize * 3 + 8, safe=True)
+                initialized = read_int8_from_memory(part + ptrsize * 3 + 10, safe=True)
+                if values and sclass is not None and initialized is not None:
+                    detail = "inode={:s} {:s} sclass={:d} initialized={:d}".format(AddressUtil.format_address(obj), detail, sclass, initialized)
+                    return "sid={:d}".format(values[1]), detail
+
+        elif lsm == "apparmor":
+            if kind == "cred":
+                # a pointer to the label (v5.1~), the label itself (v4.17~), or the first member of struct aa_task_ctx (~v4.16)
+                ptrs = [part] if not stacked and kversion >= "4.17" else None
+                return labels(["label"], self.apparmor_label_name, ptrs)
+            if kind == "task":
+                ret = labels(["nnp", "onexec", "previous"], self.apparmor_label_name, optional=True)
+                return ret and ("", ret[1])
+            if kind == "file" and kversion < "4.13":
+                allow = read_int16_from_memory(part, safe=True)
+                if allow is not None:
+                    return "", "allow={:#x}".format(allow)
+            elif kind == "file":
+                # the label follows a spinlock, which grows after SPINLOCK_MAGIC with CONFIG_DEBUG_SPINLOCK
+                for i in (range(2, 12) if read_int32_from_memory(part + 4, safe=True) == 0xdead4ead else [1]):
+                    ret = labels(["label"], self.apparmor_label_name, [read_int_from_memory(part + i * ptrsize, safe=True)])
+                    if ret is not None:
+                        return ret
+
+        elif lsm == "smack":
+            if kind == "cred":
+                return labels(["smk_task", "smk_forked"], self.smack_label_name)
+            if kind == "inode":
+                return labels(["smk_inode", "smk_task", "smk_mmap"], self.smack_label_name)
+            if kind == "file":
+                return labels(["smk_file"], self.smack_label_name, None if stacked else [part])
+
+        elif lsm == "tomoyo":
+            if kind == "cred" and not stacked:
+                return labels(["domain"], self.tomoyo_domain_name, [part])
+            if kind == "task" and stacked:
+                return labels(["domain_info", "old_domain_info"], self.tomoyo_domain_name)
+
+        elif lsm == "landlock" and kind == "cred":
+            domain = read_int_from_memory(part, safe=True)
+            if domain is not None and self.is_blob_value(domain):
+                return "domain={:#x}".format(domain) if domain else "", "domain={:s}".format(self.format_label_ptr(domain, ""))
+        return None
+
+    def get_task_files(self, task, limit=0x400):
+        """Return [(fd, file), ...] of the task."""
+        task_command = self.task_command
+        ptrsize = current_arch.ptrsize
+        files = read_int_from_memory(task + task_command.offset_files, safe=True)
+        if not files or not is_valid_addr(files):
+            return []
+        fdt = read_int_from_memory(files + task_command.offset_fdt, safe=True)
+        if not fdt or not is_valid_addr(fdt):
+            return []
+        max_fds = read_int32_from_memory(fdt, safe=True)
+        array = read_int_from_memory(fdt + ptrsize, safe=True)
+        if not max_fds or not array or not is_valid_addr(array):
+            return []
+        ret = []
+        for fd in range(min(max_fds, 0x10000)):
+            file = read_int_from_memory(array + fd * ptrsize, safe=True)
+            if file is None:
+                break
+            if file and is_valid_addr(file):
+                ret.append((fd, file))
+                if len(ret) >= limit:
+                    break
+        return ret
+
+    def get_file_inode(self, file):
+        task_command = self.task_command
+        dentry = read_int_from_memory(file + task_command.offset_dentry, safe=True)
+        if not dentry or not is_valid_addr(dentry):
+            return None
+        inode = read_int_from_memory(dentry + task_command.offset_d_inode, safe=True)
+        if not inode or not is_valid_addr(inode):
+            return None
+        return inode
+
+    def detect_lsms(self, kversion):
+        """Return the set of the active LSMs, recovered from the registered hooks."""
+        saved_out = self.out
+        self.out = []
+        self.detected_lsms = set()
+        try:
+            self.dump_hooks(kversion)
+        finally:
+            self.out = saved_out
+        return self.detected_lsms
+
+    def format_parts(self, kind, obj, blob, indent):
+        lines = []
+        for lsm, offset, _how in self.blob_layout.get(kind, []) if blob else []:
+            decodable = kind in self.DECODABLE_BLOBS.get(lsm, ())
+            if offset is None:
+                if decodable:
+                    lines.append("{:s}[{:s} +?] (unknown offset)".format(indent, lsm))
+                continue
+            label = "{:s}[{:s} +{:#x}]".format(indent, lsm, offset)
+            decoded = self.decode_blob(lsm, kind, blob + offset, obj)
+            if decoded is not None:
+                lines.append("{:s} {:s}".format(label, decoded[1]))
+                continue
+            words = [read_int_from_memory(blob + offset + i * current_arch.ptrsize, safe=True) for i in range(2)]
+            raw = " ".join("?" if x is None else AddressUtil.format_address(x) for x in words)
+            lines.append("{:s} {:s} {:s}".format(label, "(could not decode)" if decodable else "raw:", raw))
+        return lines
+
+    def get_labels(self, task, cred, cred_blob, task_blob):
+        """Return the short labels of a task, decoded from the blobs of its cred and task_struct."""
+        labels = []
+        for kind, obj, blob in [("cred", cred, cred_blob), ("task", task, task_blob)]:
+            for lsm, offset, _how in self.blob_layout.get(kind, []) if blob else []:
+                decoded = None if offset is None else self.decode_blob(lsm, kind, blob + offset, obj)
+                if decoded and decoded[0]:
+                    labels.append("{:s}:{:s}".format(lsm, decoded[0]))
+        return labels
+
+    def dump_task_detail(self, entry):
+        task, pid, comm, cred, cred_blob, task_blob = entry
+        offsets = self.security_offsets
+        self.out.append('task: {:s} (pid: {:d}, comm: "{:s}")'.format(AddressUtil.format_address(task), pid, comm))
+        self.out.append("    cred->security  {:s} (cred: {:s})".format(AddressUtil.format_address(cred_blob or 0), AddressUtil.format_address(cred)))
+        self.out.extend(self.format_parts("cred", cred, cred_blob, " " * 8))
+        if "task" in offsets:
+            self.out.append("    task->security  {:s}".format(AddressUtil.format_address(task_blob or 0)))
+            self.out.extend(self.format_parts("task", task, task_blob, " " * 8))
+        if "file" in offsets or "inode" in offsets:
+            for fd, file in self.get_task_files(task):
+                inode = self.get_file_inode(file)
+                self.out.append("    fd {:<3d} {:s} (file: {:s}, inode: {:s})".format(
+                    fd, self.task_command.kpath.get_file_path(file), AddressUtil.format_address(file), AddressUtil.format_address(inode or 0),
+                ))
+                for kind, member, obj in [("file", "f_security", file), ("inode", "i_security", inode)]:
+                    if kind in offsets and obj:
+                        blob = read_int_from_memory(obj + offsets[kind], safe=True)
+                        self.out.append("        {:s}  {:s}".format(member, AddressUtil.format_address(blob or 0)))
+                        self.out.extend(self.format_parts(kind, obj, blob, " " * 12))
+        self.out.append("")
+        return
+
+    def dump_task_table(self, entries):
+        width = 2 + current_arch.ptrsize * 2
+        fmt = "{:%ds} {:>7s} {:16s} {:%ds} {:%ds} {:s}" % (width, width, width)
+        if not self.args.quiet:
+            legend = ["task", "pid", "comm", "cred->security", "task->security", "labels"]
+            self.out.append(GefUtil.make_legend(fmt.format(*legend)))
+        for task, pid, comm, cred, cred_blob, task_blob in entries:
+            task_blob_str = "-" if "task" not in self.security_offsets else AddressUtil.format_address(task_blob or 0)
+            self.out.append(fmt.format(
+                AddressUtil.format_address(task), str(pid), comm, AddressUtil.format_address(cred_blob or 0), task_blob_str,
+                " ".join(self.get_labels(task, cred, cred_blob, task_blob)),
+            ))
+        return
+
+    def dump_task_blobs(self, kversion):
+        args = self.args
+        detail = bool(args.verbose or args.pid is not None or args.task_filter or args.filter)
+        self.meta = []
+        task_command = KernelTaskCommand.borrow(self, print_fd=detail)
+        if args.meta or task_command is None:
+            for func, line in self.meta:
+                func(line)
+        if task_command is None:
+            return
+        self.task_command = task_command
+        self.task_addrs = KernelTaskCommand.get_task_list(task_command.init_task, task_command.offset_tasks)
+        lsms = self.detect_lsms(kversion)
+
+        tasks = []
+        for task in self.task_addrs:
+            pid = read_int32_from_memory(task + task_command.offset_pid, safe=True)
+            comm = read_cstring_from_memory(task + task_command.offset_comm, safe=True)
+            cred = read_int_from_memory(task + task_command.offset_cred, safe=True)
+            if pid is not None and comm is not None and cred and is_valid_addr(cred):
+                tasks.append((task, pid, comm, cred))
+        files = []
+        if detail and getattr(task_command, "kpath", None) is not None:
+            files = [file for task in tasks for _fd, file in self.get_task_files(task[0])][:0x400]
+        self.security_offsets = offsets = self.resolve_security_offsets(lsms, [x[3] for x in tasks], files)
+        if "cred" not in offsets:
+            self.err_add_out("Could not find cred->security; this kernel may be CONFIG_SECURITY=n")
+            return
+
+        def read_blob(kind, obj):
+            return read_int_from_memory(obj + offsets[kind], safe=True) if kind in offsets else None
+
+        entries = [(task, pid, comm, cred, read_blob("cred", cred), read_blob("task", task)) for task, pid, comm, cred in tasks]
+        inodes = [x for x in dict.fromkeys(self.get_file_inode(file) for file in files) if x]
+        samples = {"cred": [(e[4], e[3]) for e in entries], "task": [(e[5], e[0]) for e in entries]}
+        samples.update({"file": [(read_blob("file", x), x) for x in files], "inode": [(read_blob("inode", x), x) for x in inodes]})
+        self.blob_layout = self.resolve_blob_layout(lsms, {kind: v for kind, v in samples.items() if kind in offsets})
+
+        self.dump_lsm_list(lsms)
+        members = {"task": "task_struct, security", "cred": "cred, security", "file": "file, f_security", "inode": "inode, i_security"}
+        for kind in ("task", "cred", "file", "inode"):
+            if args.meta and kind in offsets:
+                self.quiet_info_add_out("offsetof({:s}): {:#x}".format(members[kind], offsets[kind]))
+        for kind in ("task", "cred", "file", "inode"):
+            parts = self.blob_layout.get(kind)
+            if parts:
+                layout = ", ".join("{:s} {:s} ({:s})".format(
+                    lsm, "+?" if offset is None else "+{:#x}".format(offset), how) for lsm, offset, how in parts)
+                self.quiet_info_add_out("The {:s} blob: {:s}".format(kind, layout))
+
+        selected = [e for e in entries if (args.pid is None or e[1] == args.pid) and (not args.task_filter or e[0] in args.task_filter)
+                    and (not args.filter or any(x.search(e[2]) for x in args.filter))]
+        if not selected:
+            self.err_add_out("No task matched")
+            return
+        if detail:
+            for entry in selected:
+                self.dump_task_detail(entry)
+        else:
+            self.dump_task_table(selected)
+        return
+
     def dump_lsm_list(self, lsms):
+        self.detected_lsms = set(lsms)
         if lsms:
             self.quiet_info_add_out("LSMs detected or inferred from hooks: {:s}".format(", ".join(sorted(lsms))))
         return
@@ -174556,6 +175337,19 @@ class KernelLsmCommand(GenericCommand, BufferingOutput):
         if not self.args.hook:
             return True
         return any(h in name for h in self.args.hook)
+
+    def dump_hooks(self, kversion):
+        if Ksym.get_addrs(self.SCK_PREFIX, match="prefix"):
+            self.dump_static_calls()
+        elif not self.has_lsm_framework():
+            self.err_add_out("No LSM dispatcher was found; this kernel may be CONFIG_SECURITY=n")
+        elif kversion >= "6.12":
+            self.dump_static_calls()
+        elif kversion >= "4.2":
+            self.dump_hook_heads()
+        else:
+            self.dump_security_ops()
+        return
 
     def has_lsm_framework(self):
         """Return True if this kernel looks like CONFIG_SECURITY=y.
@@ -174573,7 +175367,7 @@ class KernelLsmCommand(GenericCommand, BufferingOutput):
     @parse_args
     @only_if_gdb_running
     @only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
-    @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
+    @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64"))
     @only_if_in_kernel_or_kpti_disabled
     @switch_to_intel_syntax
     def do_invoke(self, args):
@@ -174589,16 +175383,10 @@ class KernelLsmCommand(GenericCommand, BufferingOutput):
 
         self.klayout = Kernel.get_layout()
 
-        if Ksym.get_addrs(self.SCK_PREFIX, match="prefix"):
-            self.dump_static_calls()
-        elif not self.has_lsm_framework():
-            self.err_add_out("No LSM dispatcher was found; this kernel may be CONFIG_SECURITY=n")
-        elif kversion >= "6.12":
-            self.dump_static_calls()
-        elif kversion >= "4.2":
-            self.dump_hook_heads()
+        if args.task:
+            self.dump_task_blobs(kversion)
         else:
-            self.dump_security_ops()
+            self.dump_hooks(kversion)
 
         self.print_output(check_terminal_size=True)
         return

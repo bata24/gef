@@ -9569,18 +9569,24 @@ Dump the registered Linux Security Module hooks.
 ### Syntax
 
 ```text
-usage: klsm [-h] [-hh] [-a] [--meta] [-n] [-q] [HOOK ...]
+usage: klsm [-h] [-hh] [-a] [--task] [-p PID] [-T TASK_FILTER] [-f FILTER] [-v] [--meta] [-n] [-q] [HOOK ...]
 
 positional arguments:
-  HOOK                the hook point name, or a part of it. (e.g., file_open)
+  HOOK                  the hook point name, or a part of it. (e.g., file_open)
 
 options:
-  -h, --help          show this help message and exit
-  -hh, --help-simple  show help without ASCII diagram.
-  -a, --all           also show the hook points that have no callback.
-  --meta              display offset information.
-  -n, --no-pager      do not use the pager.
-  -q, --quiet         show result only.
+  -h, --help            show this help message and exit
+  -hh, --help-simple    show help without ASCII diagram.
+  -a, --all             also show the hook points that have no callback.
+  --task                show the LSM security blobs of each task instead of the hooks.
+  -p, --pid PID         with --task, filter by task pid.
+  -T, --task-filter TASK_FILTER
+                        with --task, filter by specific task_struct address.
+  -f, --filter FILTER   with --task, comm string REGEXP filter.
+  -v, --verbose         with --task, decode the blobs of the open files of each task too.
+  --meta                display offset information.
+  -n, --no-pager        do not use the pager.
+  -q, --quiet           show result only.
 ```
 
 ### Examples
@@ -9589,6 +9595,8 @@ options:
 klsm                   # list every hook point that has a callback
 klsm file_open         # list the callbacks of the hook points matching `file_open`
 klsm -a                # list every hook point including the empty ones
+klsm --task            # list the security blob and the LSM labels of each task
+klsm --task -p 1337    # decode the blobs of the task, its cred and its open files and inodes
 ```
 
 ### Notes
@@ -9625,6 +9633,23 @@ symbols such as `__SCK__lsm_static_call_<hook>_<N>`.
 
 The v6.12+ discovery depends on static-call data symbols and may be unavailable
 when CONFIG_KALLSYMS_ALL=n.
+
+`--task` follows the security blobs instead. Until v5.0 the active major LSM owns each
+blob as a whole. From v5.1 the LSMs share one blob per object, and the offset of each
+part is read from `<lsm>_blob_sizes`; without the symbol it is guessed from the samples.
+
++-task_struct-+                    +-cred-----+     +-file-------+    +-inode------+
+| security    |--> blob (v5.1~)    | ...      |     | ...        |    | i_sb       |
+| cred        |------------------->| security |-+   | f_security |-+  | i_mapping  |
++-------------+                    +----------+ |   +------------+ |  | i_security |-+
+                                                |                  |  +------------+ |
+   +-blob--------------+ <----------------------+------------------+-----------------+
+   | part of LSM A     | <-- offset from <lsmA>_blob_sizes.lbs_*
+   | part of LSM B     | <-- offset from <lsmB>_blob_sizes.lbs_*
+   +-------------------+
+
+SELinux, Smack, AppArmor, TOMOYO and Landlock parts are decoded. This mode requires
+CONFIG_RANDSTRUCT=n.
 ```
 
 ## `kmod`
