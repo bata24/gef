@@ -9443,7 +9443,7 @@ options:
 ### Notes
 
 ```text
-This command requires CONFIG_RANDSTRUCT=n.
+This command requires CONFIG_RANDSTRUCT=n unless vmlinux with debug information is loaded.
 
 Simplified file_systems structure:
 

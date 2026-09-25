@@ -69063,7 +69063,10 @@ class KernelAddressHeuristicFinder:
                 addr = Ksym.get_addr(symbol)
                 if not addr:
                     continue
-                res = gdb.execute("x/{:d}i {:#x}".format(instruction_count, addr), to_string=True)
+                try:
+                    res = gdb.execute("x/{:d}i {:#x}".format(instruction_count, addr), to_string=True)
+                except gdb.MemoryError:
+                    continue
                 if is_x86_64():
                     g = KernelAddressHeuristicFinderUtil.x64_qword_ptr_rip_base(res, read_valid=True)
                 elif is_x86_32():
@@ -73689,8 +73692,10 @@ class Kernel:
         };
         """
 
+        MAX_FILE_SYSTEM_TYPES = 0x400
+
         @staticmethod
-        @Cache.cache_this_session
+        @Cache.cache_this_session(per_inferior=True, until_new_objfile=True)
         def get_instance():
             """Return the instance shared by every command, so that the offsets are resolved at most once."""
             return Kernel.FileSystem()
@@ -73698,19 +73703,30 @@ class Kernel:
         def __init__(self):
             self.meta = []
             self.initialized = False
+            self.ptrsize = None
             self.file_systems = None
             self.kpath = None
             self.kpath_ready = False
             self.offset_s_type = None
+            self.offset_mount_next_for_sb = None
             self.sample_mount = None
             return
 
         def initialize(self):
             if self.initialized:
-                return True
+                # The instance is separated per inferior, but a reconnection to another kernel keeps it
+                # when the connection event is not available. Resolve again if the layout does not fit.
+                if self.ptrsize == current_arch.ptrsize and self.kpath is Kernel.Path.get_instance():
+                    if self.verify_layout():
+                        return True
+                self.initialized = False
 
             self.meta = []
+            self.ptrsize = current_arch.ptrsize
+            self.kpath = None
             self.kpath_ready = False
+            self.offset_mount_next_for_sb = None
+            self.sample_mount = None
 
             # file_systems
             self.file_systems = KernelAddressHeuristicFinder.get_file_systems()
@@ -73742,78 +73758,64 @@ class Kernel:
                 struct lock_class_key i_alloc_sem_key; // ~v3.0
             };
             """
-            # file_system_type->name
-            self.offset_name = 0
-            self.meta.append(("info", "offsetof(file_system_type, name): {:#x}".format(self.offset_name)))
-
             kversion = Kernel.kernel_version()
-            if "7.2" <= kversion:
-                link_member = "list"
-            else:
-                link_member = "next"
-            self.offset_link = KernelAddressHeuristicFinder.file_system_type_link_offset(kversion)
-            self.offset_hlist_node = self.offset_link if "7.2" <= kversion else 0
-            self.meta.append(("info", "offsetof(file_system_type, {:s}): {:#x}".format(link_member, self.offset_link)))
+            offsetof = Kernel.Device.offsetof
+            use_debug_info = False
 
-            list_size = current_arch.ptrsize * (2 if self.offset_hlist_node else 1)
-            self.offset_fs_supers = self.offset_link + list_size
+            offset_name = offsetof("file_system_type", "name")
+            offset_next = offsetof("file_system_type", "next")
+            offset_list = offsetof("file_system_type", "list")
+            offset_fs_supers = offsetof("file_system_type", "fs_supers")
+            if offset_name is not None and offset_fs_supers is not None and (offset_next is None) != (offset_list is None):
+                self.offset_name = offset_name
+                if offset_list is not None:
+                    link_member = "list"
+                    self.offset_link = offset_list
+                    self.offset_hlist_node = offset_list
+                else:
+                    link_member = "next"
+                    self.offset_link = offset_next
+                    self.offset_hlist_node = 0
+                self.offset_fs_supers = offset_fs_supers
+                use_debug_info = True
+                self.meta.append(("info", "struct file_system_type layout: debug information"))
+            else:
+                self.offset_name = 0
+                if "7.2" <= kversion:
+                    link_member = "list"
+                else:
+                    link_member = "next"
+                self.offset_link = KernelAddressHeuristicFinder.file_system_type_link_offset(kversion)
+                self.offset_hlist_node = self.offset_link if "7.2" <= kversion else 0
+                list_size = current_arch.ptrsize * (2 if self.offset_hlist_node else 1)
+                self.offset_fs_supers = self.offset_link + list_size
+                self.meta.append(("info", "struct file_system_type layout: version fallback"))
+
+            # file_system_type->name
+            self.meta.append(("info", "offsetof(file_system_type, name): {:#x}".format(self.offset_name)))
+            # file_system_type->{next,list}
+            self.meta.append(("info", "offsetof(file_system_type, {:s}): {:#x}".format(link_member, self.offset_link)))
+            # file_system_type->fs_supers
             self.meta.append(("info", "offsetof(file_system_type, fs_supers): {:#x}".format(self.offset_fs_supers)))
 
-            """
-            struct super_block {
-                struct list_head s_list;
-                dev_t s_dev; // u32
-                unsigned char s_dirt; // ~v3.5
-                unsigned char s_blocksize_bits;
-                unsigned long s_blocksize;
-                ...
-                struct hlist_node s_instances;  <-- fs_supers points here
-                ...
-            } __randomize_layout;
-            """
-            # super_block->s_dev
-            self.offset_s_dev = current_arch.ptrsize * 2
-            self.meta.append(("info", "offsetof(super_block, s_dev): {:#x}".format(self.offset_s_dev)))
-
-            # super_block->s_instances
-            current = read_int_from_memory(self.file_systems)
-            if current:
-                current -= self.offset_hlist_node
-            while True:
-                if current == 0:
-                    self.meta.append(("err", "Could not find file_systems who has valid fs_supers"))
-                    return None
-                fs_supers = read_int_from_memory(current + self.offset_fs_supers)
-                if is_valid_addr(fs_supers):
-                    break
-                current = read_int_from_memory(current + self.offset_link)
-                if current:
-                    current -= self.offset_hlist_node
-
-            for i in range(1, 100):
-                offset_base = current_arch.ptrsize * i
-                """
-                0xffff8cb085375800|+0x0000|+000: 0xffff8cb085373000  -> // s_list.next
-                0xffff8cb085375808|+0x0008|+001: 0xffff8cb088b77000  -> // s_list.prev
-                0xffff8cb085375810|+0x0010|+002: 0x0000000c00000021 // s_blocksize_bits, s_dev
-                0xffff8cb085375818|+0x0018|+003: 0x0000000000001000 // s_blocksize
-                0xffff8cb085375820|+0x0020|+004: 0x7fffffffffffffff
-                0xffff8cb085375828|+0x0028|+005: 0xffffffff8c33f260 <shmem_fs_type>
-                0xffff8cb085375830|+0x0030|+006: 0xffffffff8ba36da0 <shmem_ops>
-                """
-                # check s_list
-                if not is_double_link_list(fs_supers - offset_base):
-                    continue
-
-                # check s_blocksize
-                x = read_int_from_memory(fs_supers - offset_base + current_arch.ptrsize * 2 + 4 * 2)
-                if x == 0x1000:
-                    self.offset_s_instances = offset_base
-                    break
-            else:
-                self.meta.append(("err", "Could not find super_block->s_instances"))
+            # collect file_system_types who have valid fs_supers
+            samples = []
+            try:
+                for fst in self.iter_file_system_types():
+                    if not self.get_fst_name(fst):
+                        break
+                    fs_supers = read_int_from_memory(fst + self.offset_fs_supers)
+                    if is_valid_addr(fs_supers):
+                        samples.append((fst, fs_supers))
+                        if len(samples) == 4:
+                            break
+            except (gdb.MemoryError, OverflowError):
+                pass
+            if not samples:
+                self.meta.append(("err", "Could not find file_systems who has valid fs_supers"))
+                if use_debug_info:
+                    self.meta.append(("err", "The debug information may not match the running kernel"))
                 return None
-            self.meta.append(("info", "offsetof(super_block, s_instances): {:#x}".format(self.offset_s_instances)))
 
             """
             struct super_block {
@@ -73823,27 +73825,46 @@ class Kernel:
                 unsigned char s_blocksize_bits;
                 unsigned long s_blocksize;
                 loff_t s_maxbytes;
-                struct file_system_type *s_type;  <-- points back to `current`
+                struct file_system_type *s_type;  <-- points back to the file_system_type
                 ...
-            };
+                struct hlist_node s_instances;  <-- fs_supers points here
+                ...
+            } __randomize_layout;
             """
-            # super_block->s_type
-            # s_maxbytes is an 8-byte aligned loff_t, so the offset is not a multiple of ptrsize on 32-bit
-            sb = fs_supers - self.offset_s_instances
-            self.offset_s_type = (((current_arch.ptrsize * 3 + 8) + 7) & ~7) + 8
-            try:
-                if read_int_from_memory(sb + self.offset_s_type) != current:
-                    self.offset_s_type = None
-                    for i in range(3, 0x20):
-                        if read_int_from_memory(sb + current_arch.ptrsize * i) == current:
-                            self.offset_s_type = current_arch.ptrsize * i
-                            break
-            except (gdb.MemoryError, OverflowError):
-                self.offset_s_type = None
-            if self.offset_s_type is None:
-                self.meta.append(("warn", "Could not find super_block->s_type"))
+            # super_block->s_dev
+            self.offset_s_dev = offsetof("super_block", "s_dev")
+            if self.offset_s_dev is None:
+                self.offset_s_dev = current_arch.ptrsize * 2
+            self.meta.append(("info", "offsetof(super_block, s_dev): {:#x}".format(self.offset_s_dev)))
+
+            # super_block->s_instances
+            self.offset_s_instances = offsetof("super_block", "s_instances")
+            self.offset_s_type = offsetof("super_block", "s_type")
+            if self.offset_s_instances is not None and self.offset_s_type is not None:
+                use_debug_info = True
+                self.meta.append(("info", "struct super_block layout: debug information"))
             else:
-                self.meta.append(("info", "offsetof(super_block, s_type): {:#x}".format(self.offset_s_type)))
+                for fst, fs_supers in samples:
+                    ret = self.find_offset_s_instances(fst, fs_supers)
+                    if ret:
+                        self.offset_s_instances, self.offset_s_type = ret
+                        break
+                else:
+                    self.meta.append(("err", "Could not find super_block->s_instances"))
+                    return None
+                self.meta.append(("info", "struct super_block layout: heuristic"))
+            self.meta.append(("info", "offsetof(super_block, s_instances): {:#x}".format(self.offset_s_instances)))
+
+            # super_block->s_type
+            self.meta.append(("info", "offsetof(super_block, s_type): {:#x}".format(self.offset_s_type)))
+
+            if not self.verify_layout():
+                if use_debug_info:
+                    self.meta.append(("err", "super_block->s_type does not point back to file_system_type"))
+                    self.meta.append(("err", "The debug information does not match the running kernel"))
+                else:
+                    self.meta.append(("err", "Could not verify super_block->s_type"))
+                return None
 
             """
             struct super_block { // ~v3.11
@@ -73881,18 +73902,39 @@ class Kernel:
             # the switch from `struct list_head` to `struct mount *` is backported to some v6.17.
             # Each candidate is `(offset, is_direct)`; `is_direct` means s_mounts holds the address
             # of the struct mount itself instead of the address of a list_head inside it.
-            if kversion < "3.12":
-                current = fs_supers - current_arch.ptrsize * 2
-                double_link_list_count = 0
-                while True:
-                    if is_double_link_list(current):
-                        double_link_list_count += 1
-                    if double_link_list_count == 3:
-                        difference = fs_supers - current
-                        self.offset_s_mounts = self.offset_s_instances - difference
+            offset_s_mounts = offsetof("super_block", "s_mounts")
+            offset_mnt_instance = offsetof("mount", "mnt_instance")
+            offset_mnt_next_for_sb = offsetof("mount", "mnt_next_for_sb")
+            offset_mnt_devname = offsetof("mount", "mnt_devname")
+            use_debug_info_mount = False
+            if offset_s_mounts is not None and offset_mnt_devname is not None:
+                if offset_mnt_instance is not None:
+                    use_debug_info_mount = True
+                    s_mounts_candidates = [(offset_s_mounts, False)]
+                elif offset_mnt_next_for_sb is not None:
+                    use_debug_info_mount = True
+                    s_mounts_candidates = [(offset_s_mounts, True)]
+            if use_debug_info_mount:
+                self.offset_s_mounts = offset_s_mounts
+            elif kversion < "3.12":
+                s_mounts_candidates = []
+                for fs_supers in [sample[1] for sample in samples]:
+                    current = fs_supers - current_arch.ptrsize * 2
+                    double_link_list_count = 0
+                    for _ in range(0x40):
+                        if is_double_link_list(current):
+                            double_link_list_count += 1
+                        if double_link_list_count == 3:
+                            difference = fs_supers - current
+                            s_mounts_candidates.append((self.offset_s_instances - difference, False))
+                            break
+                        current -= current_arch.ptrsize
+                    if s_mounts_candidates:
                         break
-                    current -= current_arch.ptrsize
-                s_mounts_candidates = [(self.offset_s_mounts, False)]
+                else:
+                    self.meta.append(("err", "Could not find super_block->s_mounts"))
+                    return None
+                self.offset_s_mounts = s_mounts_candidates[0][0]
             else:
                 listed5 = (self.offset_s_instances - current_arch.ptrsize * 5, False)
                 listed6 = (self.offset_s_instances - current_arch.ptrsize * 6, False)
@@ -73953,56 +73995,101 @@ class Kernel:
             self.offset_mount_mnt_parent = self.kpath.offset_mount_mnt_parent
             self.offset_mount_mnt_mountpoint = self.kpath.offset_mount_mnt_mountpoint
             self.offset_mount_mnt = self.kpath.offset_mount_mnt
+            offset_mnt_sb = self.offset_mount_mnt + self.kpath.offset_vfsmount_mnt_sb
+            # the super_blocks of the sampled file_system_types, some of which have no mount
+            super_blocks = []
+            for sample in samples:
+                s_instances = sample[1]
+                while is_valid_addr(s_instances) and len(super_blocks) < 0x20:
+                    super_blocks.append(s_instances - self.offset_s_instances)
+                    s_instances = read_int_from_memory(s_instances, safe=True)
 
-            sb = fs_supers - self.offset_s_instances
-            # What the version suggests is kept unless a candidate reaches a struct mount that
-            # points back to this super_block, which settles s_mounts and mnt_instance together.
-            self.offset_mount_mnt_instance = 0 if s_mounts_candidates[0][1] else offset_after_mnt_child
-            self.offset_mount_mnt_devname = nominal_mnt_devname
-            found = False
-            for offset_s_mounts, is_direct in s_mounts_candidates:
-                head = read_int_from_memory(sb + offset_s_mounts)
-                if not is_valid_addr(head):
-                    continue
-                if is_direct:
-                    # s_mounts points to the top of struct mount, because mnt_instance is
-                    # replaced by mnt_next_for_sb/mnt_pprev_for_sb (same size, 2 pointers)
-                    deltas = (0,)
-                    base = 0
+            if use_debug_info_mount:
+                if s_mounts_candidates[0][1]:
+                    self.offset_mount_mnt_instance = 0
+                    self.offset_mount_next_for_sb = offset_mnt_next_for_sb
                 else:
-                    # s_mounts points to mount->mnt_instance
-                    deltas = (0, -current_arch.ptrsize, current_arch.ptrsize)
-                    base = offset_after_mnt_child
-                for delta in deltas:
-                    offset_mount_mnt_instance = base + delta
-                    if offset_mount_mnt_instance < 0:
+                    self.offset_mount_mnt_instance = offset_mnt_instance
+                self.offset_mount_mnt_devname = offset_mnt_devname
+                self.meta.append(("info", "struct super_block->s_mounts layout: debug information"))
+                # the first super_block that has a mount must be pointed back to by mnt_sb
+                for sb in super_blocks:
+                    head = read_int_from_memory(sb + self.offset_s_mounts, safe=True)
+                    if not head or head == sb + self.offset_s_mounts:
                         continue
-                    mount = head - offset_mount_mnt_instance
-                    if not is_valid_addr(mount):
-                        continue
-                    if read_int_from_memory(mount + self.offset_mount_mnt + current_arch.ptrsize) != sb:
-                        continue
-                    self.offset_s_mounts = offset_s_mounts
-                    self.offset_mount_mnt_instance = offset_mount_mnt_instance
-                    self.offset_mount_mnt_devname = nominal_mnt_devname + delta
-                    if is_direct and is_32bit():
-                        # CONFIG_SMP=n uses two ints here instead of a percpu pointer. This is one pointer
-                        # wider only on 32-bit kernels. When s_mounts points directly to struct mount, the
-                        # mnt_sb check above cannot detect it; identify the two adjacent list_head fields instead.
-                        offset_mnt_mounts = offset_after_mnt_child - common2
-                        for d in (0, current_arch.ptrsize):
-                            a = mount + offset_mnt_mounts + d
-                            b = a + current_arch.ptrsize * 2
-                            if is_double_link_list(a) and is_double_link_list(b):
-                                self.offset_mount_mnt_devname += d
-                                break
-                    found = True
+                    mount = self.get_mount(head)
+                    if read_int_from_memory(mount + offset_mnt_sb, safe=True) != sb:
+                        self.meta.append(("err", "mount->mnt.mnt_sb does not point back to super_block"))
+                        self.meta.append(("err", "The debug information does not match the running kernel"))
+                        return None
                     break
-                if found:
-                    break
+                else:
+                    self.meta.append(("err", "Could not find super_block->s_mounts pointed back to by mount->mnt.mnt_sb"))
+                    self.meta.append(("err", "The debug information does not match the running kernel"))
+                    return None
+            else:
+                # What the version suggests is kept unless a candidate reaches a struct mount that
+                # points back to this super_block, which settles s_mounts and mnt_instance together.
+                self.offset_mount_mnt_instance = 0 if s_mounts_candidates[0][1] else offset_after_mnt_child
+                self.offset_mount_mnt_devname = nominal_mnt_devname
+                found = False
+                for sb in super_blocks:
+                    for offset_s_mounts, is_direct in s_mounts_candidates:
+                        head = read_int_from_memory(sb + offset_s_mounts)
+                        if not is_valid_addr(head):
+                            continue
+                        if is_direct:
+                            # s_mounts points to the top of struct mount, because mnt_instance is
+                            # replaced by mnt_next_for_sb/mnt_pprev_for_sb (same size, 2 pointers)
+                            deltas = (0,)
+                            base = 0
+                        else:
+                            # s_mounts points to mount->mnt_instance
+                            deltas = (0, -current_arch.ptrsize, current_arch.ptrsize)
+                            base = offset_after_mnt_child
+                        for delta in deltas:
+                            offset_mount_mnt_instance = base + delta
+                            if offset_mount_mnt_instance < 0:
+                                continue
+                            mount = head - offset_mount_mnt_instance
+                            if not is_valid_addr(mount):
+                                continue
+                            if read_int_from_memory(mount + offset_mnt_sb) != sb:
+                                continue
+                            self.offset_s_mounts = offset_s_mounts
+                            self.offset_mount_mnt_instance = offset_mount_mnt_instance
+                            self.offset_mount_mnt_devname = nominal_mnt_devname + delta
+                            if is_direct and is_32bit():
+                                # CONFIG_SMP=n uses two ints here instead of a percpu pointer. This is one pointer
+                                # wider only on 32-bit kernels. When s_mounts points directly to struct mount, the
+                                # mnt_sb check above cannot detect it; identify the two adjacent list_head fields instead.
+                                offset_mnt_mounts = offset_after_mnt_child - common2
+                                for d in (0, current_arch.ptrsize):
+                                    a = mount + offset_mnt_mounts + d
+                                    b = a + current_arch.ptrsize * 2
+                                    if is_double_link_list(a) and is_double_link_list(b):
+                                        self.offset_mount_mnt_devname += d
+                                        break
+                            if is_direct:
+                                # mnt_next_for_sb is placed where mnt_instance was, just before mnt_pprev_for_sb and mnt_devname
+                                self.offset_mount_next_for_sb = self.offset_mount_mnt_devname - current_arch.ptrsize * 2
+                            found = True
+                            break
+                        if found:
+                            break
+                    if found:
+                        break
+                if not found:
+                    sb = super_blocks[0]
+                    if s_mounts_candidates[0][1]:
+                        self.offset_mount_next_for_sb = offset_after_mnt_child
             head = read_int_from_memory(sb + self.offset_s_mounts)
             self.meta.append(("info", "offsetof(super_block, s_mounts): {:#x}".format(self.offset_s_mounts)))
-            self.meta.append(("info", "offsetof(mount, mnt_instance): {:#x}".format(self.offset_mount_mnt_instance)))
+            if self.offset_mount_next_for_sb is None:
+                self.meta.append(("info", "offsetof(mount, mnt_instance): {:#x}".format(self.offset_mount_mnt_instance)))
+            else:
+                self.meta.append(("info", "offsetof(mount, mnt_next_for_sb): {:#x}".format(self.offset_mount_next_for_sb)))
+            self.meta.append(("info", "offsetof(mount, mnt_devname): {:#x}".format(self.offset_mount_mnt_devname)))
 
             # vfsmount->mnt_root
             self.offset_vfsmount_mnt_root = self.kpath.offset_vfsmount_mnt_root
@@ -74020,6 +74107,82 @@ class Kernel:
                 self.sample_mount = mount
             self.initialized = True
             return True
+
+        def iter_file_system_types(self):
+            """Yield each registered file_system_type. It stops at a cyclic or unreadable entry."""
+            seen = set()
+            fst = read_int_from_memory(self.file_systems)
+            while fst and len(seen) < self.MAX_FILE_SYSTEM_TYPES:
+                fst -= self.offset_hlist_node
+                if fst in seen or not is_valid_addr(fst):
+                    return
+                seen.add(fst)
+                yield fst
+                fst = read_int_from_memory(fst + self.offset_link)
+            return
+
+        def find_offset_s_type(self, sb, fst):
+            """Return offsetof(super_block, s_type), found by the pointer back to the file_system_type."""
+            # s_maxbytes is an 8-byte aligned loff_t, so the offset is not a multiple of ptrsize on 32-bit
+            offset_s_type = (((current_arch.ptrsize * 3 + 8) + 7) & ~7) + 8
+            try:
+                if read_int_from_memory(sb + offset_s_type) == fst:
+                    return offset_s_type
+                for i in range(3, 0x20):
+                    if read_int_from_memory(sb + current_arch.ptrsize * i) == fst:
+                        return current_arch.ptrsize * i
+            except (gdb.MemoryError, OverflowError):
+                pass
+            return None
+
+        def find_offset_s_instances(self, fst, fs_supers):
+            """Return (offsetof(super_block, s_instances), offsetof(super_block, s_type)) found with a super_block of `fst`."""
+            for i in range(1, 100):
+                offset_base = current_arch.ptrsize * i
+                sb = fs_supers - offset_base
+                """
+                0xffff8cb085375800|+0x0000|+000: 0xffff8cb085373000  -> // s_list.next
+                0xffff8cb085375808|+0x0008|+001: 0xffff8cb088b77000  -> // s_list.prev
+                0xffff8cb085375810|+0x0010|+002: 0x0000000c00000021 // s_blocksize_bits, s_dev
+                0xffff8cb085375818|+0x0018|+003: 0x0000000000001000 // s_blocksize
+                0xffff8cb085375820|+0x0020|+004: 0x7fffffffffffffff
+                0xffff8cb085375828|+0x0028|+005: 0xffffffff8c33f260 <shmem_fs_type>
+                0xffff8cb085375830|+0x0030|+006: 0xffffffff8ba36da0 <shmem_ops>
+                """
+                # check s_blocksize and s_blocksize_bits
+                # s_blocksize is not a constant; sysfs etc. use PAGE_SIZE, and hugetlbfs uses the huge page size
+                try:
+                    bits = read_memory(sb + current_arch.ptrsize * 2 + 4, 2) # s_blocksize_bits (v3.6~), or s_dirt and it
+                    blocksize = read_int_from_memory(sb + current_arch.ptrsize * 2 + 4 * 2)
+                except (gdb.MemoryError, OverflowError):
+                    continue
+                if not any(0 < b < current_arch.ptrsize * 8 and blocksize == 1 << b for b in bits):
+                    continue
+
+                # check s_list
+                if not is_double_link_list(sb):
+                    continue
+
+                # check s_type
+                offset_s_type = self.find_offset_s_type(sb, fst)
+                if offset_s_type is not None:
+                    return offset_base, offset_s_type
+            return None
+
+        def verify_layout(self):
+            """Check the resolved layout with the first super_block, whose s_type must point back to its file_system_type."""
+            try:
+                for fst in self.iter_file_system_types():
+                    if not self.get_fst_name(fst):
+                        return False
+                    fs_supers = read_int_from_memory(fst + self.offset_fs_supers)
+                    if not is_valid_addr(fs_supers):
+                        continue
+                    sb = fs_supers - self.offset_s_instances
+                    return read_int_from_memory(sb + self.offset_s_type) == fst
+            except (gdb.MemoryError, OverflowError):
+                pass
+            return False
 
         def export_meta(self, command, demote_err=False):
             """Convert the recorded meta lines into the (printer, line) pairs the commands use."""
@@ -74048,6 +74211,13 @@ class Kernel:
             """Convert the address super_block->s_mounts links to into the struct mount itself."""
             mount = mnt_instance - self.offset_mount_mnt_instance
             return mount
+
+        def get_next_mnt_instance(self, mnt_instance):
+            """Return the next entry of super_block->s_mounts.
+            It is a list_head (~v6.17) or a NULL-terminated chain of struct mount (v6.18~)."""
+            if self.offset_mount_next_for_sb is None:
+                return read_int_from_memory(mnt_instance)
+            return read_int_from_memory(mnt_instance + self.offset_mount_next_for_sb)
 
         def get_dev_name(self, mount):
             """Return mount->mnt_devname, the source of the mount as mount(2) received it."""
@@ -85316,7 +85486,7 @@ class KernelFileSystemsCommand(GenericCommand, BufferingOutput):
     _syntax_ = parser.format_help()
 
     _note_ = [
-        "This command requires CONFIG_RANDSTRUCT=n.",
+        "This command requires CONFIG_RANDSTRUCT=n unless vmlinux with debug information is loaded.",
         "",
         "Simplified file_systems structure:",
         "",
@@ -85376,7 +85546,7 @@ class KernelFileSystemsCommand(GenericCommand, BufferingOutput):
 
         # The reason is unclear, but this works.
         if path_info.crossed is False and filepath == "/":
-            next_mnt_instance = read_int_from_memory(mnt_instance)
+            next_mnt_instance = kfs.get_next_mnt_instance(mnt_instance)
             if next_mnt_instance:
                 ret = self.get_mount_point(next_mnt_instance)
                 if ret:
