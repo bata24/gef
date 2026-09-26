@@ -191,47 +191,6 @@ def get_current_arch(): # noqa
     return current_arch
 
 
-def perf(f): # noqa
-    """Decorator wrapper to measure performance."""
-
-    @functools.wraps(f)
-    def wrapper(*args, **kwargs):
-        import line_profiler
-        pr = line_profiler.LineProfiler()
-        pr.add_function(f)
-        pr.enable()
-        ret = f(*args, **kwargs)
-        pr.disable()
-        s = io.StringIO()
-        pr.print_stats(stream=s)
-        print(s.getvalue())
-        return ret
-
-    return wrapper
-
-
-def cperf(f): # noqa
-    """Decorator wrapper to measure performance."""
-
-    @functools.wraps(f)
-    def wrapper(*args, **kwargs):
-        import cProfile
-        import pstats
-        pr = cProfile.Profile()
-        pr.enable()
-        ret = f(*args, **kwargs)
-        pr.disable()
-        s = io.StringIO()
-        #sortby = pstats.SortKey.CUMULATIVE
-        sortby = pstats.SortKey.TIME
-        ps = pstats.Stats(pr, stream=s).sort_stats(sortby)
-        ps.print_stats(20)
-        print(s.getvalue())
-        return ret
-
-    return wrapper
-
-
 class DisplayHook:
     """It enables pretty printing of list, dict, set, and so on.
     It also displays in hexadecimal by default."""
@@ -6671,6 +6630,7 @@ class ProgressBar:
 
 
 class ModuleLoader:
+
     def load_capstone(f):
         """Decorator wrapper to load capstone."""
 
@@ -6689,7 +6649,6 @@ class ModuleLoader:
                 raise ImportWarning(msg) from err
 
         return wrapper
-
 
     def load_unicorn(f):
         """Decorator wrapper to load unicorn."""
@@ -6724,7 +6683,6 @@ class ModuleLoader:
 
         return wrapper
 
-
     def load_keystone(f):
         """Decorator wrapper to load keystone."""
 
@@ -6738,7 +6696,6 @@ class ModuleLoader:
                 raise ImportWarning(msg) from err
 
         return wrapper
-
 
     def load_ropper(f):
         """Decorator wrapper to load ropper."""
@@ -6754,7 +6711,6 @@ class ModuleLoader:
 
         return wrapper
 
-
     def load_binwalk(f):
         """Decorator wrapper to load binwalk."""
 
@@ -6768,7 +6724,6 @@ class ModuleLoader:
                 raise ImportWarning(msg) from err
 
         return wrapper
-
 
     def load_angr(f):
         """Decorator wrapper to load angr."""
@@ -13584,316 +13539,353 @@ def is_alive():
         return False
 
 
-def parse_args(f):
-    """Decorator wrapper to parse args for command."""
+class Decorator:
+    """A collection of decorators."""
 
-    @functools.wraps(f)
-    def wrapper(self, argv, **kwargs):
-        try:
-            self.parser.exit = lambda *_: exec("if _: print(_[1]);\nraise(GefUtil.ArgparseExitProxyException(_))")
-            args = self.parser.parse_args(argv)
-        except GefUtil.ArgparseExitProxyException as e:
-            if not e.args[0]: # when --help or -h
-                self.usage(after_syntax_only=True)
-            return
-        except Exception as e:
-            err("Invalid argument: {}".format(e))
-            return
-        if hasattr(args, "help_simple") and args.help_simple:
-            self.usage(simple=True)
-            return
-        self.args = args
-        return f(self, args, **kwargs)
+    @staticmethod
+    def parse_args(f):
+        """Decorator wrapper to parse args for command."""
 
-    return wrapper
-
-
-def switch_to_intel_syntax(f):
-    """Decorator to temporarily switch to Intel syntax."""
-
-    @functools.wraps(f)
-    def wrapper(*args, **kwargs):
-        if not is_x86():
-            return f(*args, **kwargs)
-
-        att = gdb.parameter("disassembly-flavor") == "att"
-        if att:
-            gdb.execute("set disassembly-flavor intel", to_string=True)
-        ret = f(*args, **kwargs)
-        if att:
-            gdb.execute("set disassembly-flavor att", to_string=True)
-        return ret
-
-    return wrapper
-
-
-def cpu_context_dependent(f):
-    """Decorator for the heuristics whose answer depends on which CPU (= gdb thread) is selected.
-    The result is memoized per CPU context, so an answer resolved on one CPU is never reused
-    on another one. If `KF.DEBUG_CONTEXT` is set, each resolution is reported together with
-    the CPU context it was resolved in."""
-
-    @functools.wraps(f)
-    def wrapper(*args, **kwargs):
-        ret = f(*args, **kwargs)
-        if KernelAddressHeuristicFinder.DEBUG_CONTEXT:
-            thread = gdb.selected_thread()
-            cpu = KernelPerCpu.get_cpu_label(thread) if thread else "cpu?"
-            value = "None" if ret is None else "{:#x}".format(ret)
-            # Report to the real stderr, not via gef_print. These heuristics are often called
-            # from a nested `gdb.execute(..., to_string=True)`, which swallows gef_print().
-            sys.__stderr__.write("{} {:s}: {:s}() -> {:s}\n".format(
-                Color.colorify("[D]", "bold magenta"), cpu, f.__qualname__, value,
-            ))
-        return ret
-
-    return Cache.cache_until_next(wrapper, cache_None=False, per_cpu=True)
-
-
-def only_if_gdb_running(f):
-    """Decorator wrapper to check if GDB is running."""
-
-    @functools.wraps(f)
-    def wrapper(*args, **kwargs):
-        if is_alive():
-            return f(*args, **kwargs)
-        else:
-            warn("No debugging session active")
-            return
-
-    return wrapper
-
-
-def only_if_gdb_target_local(f):
-    """Decorator wrapper to check if GDB is running locally (target not remote)."""
-
-    @functools.wraps(f)
-    def wrapper(*args, **kwargs):
-        if not is_remote_debug():
-            return f(*args, **kwargs)
-        else:
-            warn("This command is not supported for remote sessions")
-            return
-
-    return wrapper
-
-
-def only_if_in_kernel(f):
-    """Decorator wrapper to check if context is in kernel."""
-
-    @functools.wraps(f)
-    def wrapper(*args, **kwargs):
-        if is_in_kernel():
-            return f(*args, **kwargs)
-        else:
-            warn("Run in kernel context")
-            return
-
-    return wrapper
-
-
-def only_if_in_kernel_or_kpti_disabled(f):
-    """Decorator wrapper to check if context is in kernel or kpti disabled."""
-
-    @functools.wraps(f)
-    def wrapper(*args, **kwargs):
-
-        def is_kpti_enabled():
+        @functools.wraps(f)
+        def wrapper(self, argv, **kwargs):
             try:
-                s = KernelAddressHeuristicFinder.get_saved_command_line()
-            except gdb.MemoryError:
+                self.parser.exit = lambda *_: exec("if _: print(_[1]);\nraise(GefUtil.ArgparseExitProxyException(_))")
+                args = self.parser.parse_args(argv)
+            except GefUtil.ArgparseExitProxyException as e:
+                if not e.args[0]: # when --help or -h
+                    self.usage(after_syntax_only=True)
+                return
+            except Exception as e:
+                err("Invalid argument: {}".format(e))
+                return
+            if hasattr(args, "help_simple") and args.help_simple:
+                self.usage(simple=True)
+                return
+            self.args = args
+            return f(self, args, **kwargs)
+
+        return wrapper
+
+    @staticmethod
+    def switch_to_intel_syntax(f):
+        """Decorator to temporarily switch to Intel syntax."""
+
+        @functools.wraps(f)
+        def wrapper(*args, **kwargs):
+            if not is_x86():
+                return f(*args, **kwargs)
+
+            att = gdb.parameter("disassembly-flavor") == "att"
+            if att:
+                gdb.execute("set disassembly-flavor intel", to_string=True)
+            ret = f(*args, **kwargs)
+            if att:
+                gdb.execute("set disassembly-flavor att", to_string=True)
+            return ret
+
+        return wrapper
+
+    @staticmethod
+    def only_if_gdb_running(f):
+        """Decorator wrapper to check if GDB is running."""
+
+        @functools.wraps(f)
+        def wrapper(*args, **kwargs):
+            if is_alive():
+                return f(*args, **kwargs)
+            else:
+                warn("No debugging session active")
+                return
+
+        return wrapper
+
+    @staticmethod
+    def only_if_gdb_target_local(f):
+        """Decorator wrapper to check if GDB is running locally (target not remote)."""
+
+        @functools.wraps(f)
+        def wrapper(*args, **kwargs):
+            if not is_remote_debug():
+                return f(*args, **kwargs)
+            else:
+                warn("This command is not supported for remote sessions")
+                return
+
+        return wrapper
+
+    @staticmethod
+    def only_if_in_kernel(f):
+        """Decorator wrapper to check if context is in kernel."""
+
+        @functools.wraps(f)
+        def wrapper(*args, **kwargs):
+            if is_in_kernel():
+                return f(*args, **kwargs)
+            else:
+                warn("Run in kernel context")
+                return
+
+        return wrapper
+
+    @staticmethod
+    def only_if_in_kernel_or_kpti_disabled(f):
+        """Decorator wrapper to check if context is in kernel or kpti disabled."""
+
+        @functools.wraps(f)
+        def wrapper(*args, **kwargs):
+
+            def is_kpti_enabled():
+                try:
+                    s = KernelAddressHeuristicFinder.get_saved_command_line()
+                except gdb.MemoryError:
+                    return True
+                if s and is_valid_addr(s):
+                    # You can access the kernel's .data area while in userland.
+                    # This means KPTI is disabled.
+                    return False
                 return True
-            if s and is_valid_addr(s):
-                # You can access the kernel's .data area while in userland.
-                # This means KPTI is disabled.
-                return False
-            return True
 
-        if is_in_kernel():
-            return f(*args, **kwargs)
-        elif not is_kpti_enabled():
-            return f(*args, **kwargs)
-        else:
-            warn("Run in kernel context, or disable KPTI")
-            return
+            if is_in_kernel():
+                return f(*args, **kwargs)
+            elif not is_kpti_enabled():
+                return f(*args, **kwargs)
+            else:
+                warn("Run in kernel context, or disable KPTI")
+                return
 
-    return wrapper
+        return wrapper
 
-
-def only_if_kvm_disabled(f):
-    """Decorator wrapper to check if there is not `-enable-kvm` option."""
-
-    @functools.wraps(f)
-    def wrapper(*args, **kwargs):
-        if is_kvm_enabled():
-            err("Disable `-enable-kvm` option for qemu-system")
-            return
-        return f(*args, **kwargs)
-
-    return wrapper
-
-
-def only_if_smp_disabled(f):
-    """Decorator wrapper to check if there is not `-smp N` option."""
-
-    @functools.wraps(f)
-    def wrapper(*args, **kwargs):
-        if is_smp_enabled():
-            err("Disable `-smp N` option for qemu-system")
-            return
-        return f(*args, **kwargs)
-
-    return wrapper
-
-
-def require_arch_set(f):
-    """Decorator wrapper to check if current_arch is not None."""
-
-    @functools.wraps(f)
-    def wrapper(*args, **kwargs):
-        if current_arch is not None:
-            return f(*args, **kwargs)
-        else:
-            err("Unsupported architecture")
-            return
-
-    return wrapper
-
-
-def only_if_specific_gdb_mode(mode=()):
-    """Decorator wrapper to check if the gdb mode is specific."""
-
-    def wrapper(f):
+    @staticmethod
+    def only_if_kvm_disabled(f):
+        """Decorator wrapper to check if there is not `-enable-kvm` option."""
 
         @functools.wraps(f)
-        def inner_f(*args, **kwargs):
-            for m in mode:
-                checker = GDB_MODE_CHECKERS.get(m)
-                if checker is not None and checker():
-                    return f(*args, **kwargs)
-            warn("This command is not supported in this gdb mode")
-            if "kgdb" in mode:
-                if is_in_kernel() and not is_qemu_system() and not is_vmware():
-                    info("For KGDB: Try `gef config gef.kgdb_force True`")
-            return
-
-        return inner_f
-
-    return wrapper
-
-
-def exclude_specific_gdb_mode(mode=()):
-    """Decorator wrapper to check if the gdb mode is specific."""
-
-    def wrapper(f):
-
-        @functools.wraps(f)
-        def inner_f(*args, **kwargs):
-            for m in mode:
-                checker = GDB_MODE_CHECKERS.get(m)
-                if checker is not None and checker():
-                    warn("This command is not supported in this gdb mode")
-                    return
+        def wrapper(*args, **kwargs):
+            if is_kvm_enabled():
+                err("Disable `-enable-kvm` option for qemu-system")
+                return
             return f(*args, **kwargs)
 
-        return inner_f
+        return wrapper
 
-    return wrapper
-
-
-def only_if_specific_arch(arch=()):
-    """Decorator wrapper to check if the architecture is specific."""
-
-    def wrapper(f):
+    @staticmethod
+    def only_if_smp_disabled(f):
+        """Decorator wrapper to check if there is not `-smp N` option."""
 
         @functools.wraps(f)
-        def inner_f(*args, **kwargs):
-            for a in arch:
-                checker = ARCH_CHECKERS.get(a)
-                if checker is not None and checker():
-                    return f(*args, **kwargs)
-            warn("This command is not supported on this architecture")
-            return
-
-        return inner_f
-
-    return wrapper
-
-
-def exclude_specific_arch(arch=()):
-    """Decorator wrapper to check if the architecture is specific."""
-
-    def wrapper(f):
-
-        @functools.wraps(f)
-        def inner_f(*args, **kwargs):
-            for a in arch:
-                checker = ARCH_CHECKERS.get(a)
-                if checker is not None and checker():
-                    warn("This command is not supported on this architecture")
-                    return
+        def wrapper(*args, **kwargs):
+            if is_smp_enabled():
+                err("Disable `-smp N` option for qemu-system")
+                return
             return f(*args, **kwargs)
 
-        return inner_f
+        return wrapper
 
-    return wrapper
+    @staticmethod
+    def require_arch_set(f):
+        """Decorator wrapper to check if current_arch is not None."""
 
+        @functools.wraps(f)
+        def wrapper(*args, **kwargs):
+            if current_arch is not None:
+                return f(*args, **kwargs)
+            else:
+                err("Unsupported architecture")
+                return
 
-def timeout(duration):
-    """Decorator to handle timeout."""
+        return wrapper
 
-    def timeout_worker(conn, function, args, kwargs):
-        try:
-            result = function(*args, **kwargs)
-            conn.send((True, result))
-        except BaseException as e:
+    @staticmethod
+    def only_if_specific_gdb_mode(mode=()):
+        """Decorator wrapper to check if the gdb mode is specific."""
+
+        def wrapper(f):
+
+            @functools.wraps(f)
+            def inner_f(*args, **kwargs):
+                for m in mode:
+                    checker = GDB_MODE_CHECKERS.get(m)
+                    if checker is not None and checker():
+                        return f(*args, **kwargs)
+                warn("This command is not supported in this gdb mode")
+                if "kgdb" in mode:
+                    if is_in_kernel() and not is_qemu_system() and not is_vmware():
+                        info("For KGDB: Try `gef config gef.kgdb_force True`")
+                return
+
+            return inner_f
+
+        return wrapper
+
+    @staticmethod
+    def exclude_specific_gdb_mode(mode=()):
+        """Decorator wrapper to check if the gdb mode is specific."""
+
+        def wrapper(f):
+
+            @functools.wraps(f)
+            def inner_f(*args, **kwargs):
+                for m in mode:
+                    checker = GDB_MODE_CHECKERS.get(m)
+                    if checker is not None and checker():
+                        warn("This command is not supported in this gdb mode")
+                        return
+                return f(*args, **kwargs)
+
+            return inner_f
+
+        return wrapper
+
+    @staticmethod
+    def only_if_specific_arch(arch=()):
+        """Decorator wrapper to check if the architecture is specific."""
+
+        def wrapper(f):
+
+            @functools.wraps(f)
+            def inner_f(*args, **kwargs):
+                for a in arch:
+                    checker = ARCH_CHECKERS.get(a)
+                    if checker is not None and checker():
+                        return f(*args, **kwargs)
+                warn("This command is not supported on this architecture")
+                return
+
+            return inner_f
+
+        return wrapper
+
+    @staticmethod
+    def exclude_specific_arch(arch=()):
+        """Decorator wrapper to check if the architecture is specific."""
+
+        def wrapper(f):
+
+            @functools.wraps(f)
+            def inner_f(*args, **kwargs):
+                for a in arch:
+                    checker = ARCH_CHECKERS.get(a)
+                    if checker is not None and checker():
+                        warn("This command is not supported on this architecture")
+                        return
+                return f(*args, **kwargs)
+
+            return inner_f
+
+        return wrapper
+
+    @staticmethod
+    def timeout(duration):
+        """Decorator to handle timeout."""
+
+        def timeout_worker(conn, function, args, kwargs):
             try:
-                conn.send((False, e))
-            except BaseException as send_error:
-                conn.send((False, RuntimeError("failed to send child result: %r" % send_error)))
-        finally:
-            conn.close()
+                result = function(*args, **kwargs)
+                conn.send((True, result))
+            except BaseException as e:
+                try:
+                    conn.send((False, e))
+                except BaseException as send_error:
+                    conn.send((False, RuntimeError("failed to send child result: %r" % send_error)))
+            finally:
+                conn.close()
 
-    def wrapper(function):
-        import multiprocessing
-        import multiprocessing.connection
-        import signal
+        def wrapper(function):
+            import multiprocessing
+            import multiprocessing.connection
+            import signal
 
-        ctx = multiprocessing.get_context("fork")
+            ctx = multiprocessing.get_context("fork")
 
-        @functools.wraps(function)
-        def inner_f(*args, **kwargs):
-            parent_conn, child_conn = ctx.Pipe(duplex=False)
-            p = ctx.Process(target=timeout_worker, args=(child_conn, function, args, kwargs))
-            p.start()
-            child_conn.close()
+            @functools.wraps(function)
+            def inner_f(*args, **kwargs):
+                parent_conn, child_conn = ctx.Pipe(duplex=False)
+                p = ctx.Process(target=timeout_worker, args=(child_conn, function, args, kwargs))
+                p.start()
+                child_conn.close()
 
-            ready = multiprocessing.connection.wait([parent_conn, p.sentinel], duration)
+                ready = multiprocessing.connection.wait([parent_conn, p.sentinel], duration)
 
-            if parent_conn in ready:
-                success, result = parent_conn.recv()
+                if parent_conn in ready:
+                    success, result = parent_conn.recv()
+                    parent_conn.close()
+                    p.join()
+                    if success:
+                        return result
+                    raise result
+
                 parent_conn.close()
-                p.join()
-                if success:
-                    return result
-                raise result
+                p.terminate()
+                p.join(0.2)
 
-            parent_conn.close()
-            p.terminate()
-            p.join(0.2)
+                if p.is_alive():
+                    if hasattr(p, "kill"):
+                        p.kill()
+                    else:
+                        os.kill(p.pid, signal.SIGKILL)
+                    p.join()
 
-            if p.is_alive():
-                if hasattr(p, "kill"):
-                    p.kill()
-                else:
-                    os.kill(p.pid, signal.SIGKILL)
-                p.join()
+                raise multiprocessing.TimeoutError
 
-            raise multiprocessing.TimeoutError
+            return inner_f
 
-        return inner_f
+        return wrapper
 
-    return wrapper
+    @staticmethod
+    def only_if_events_supported(event_type):
+        """Decorator for checking if GDB supports events without crashing."""
+
+        def wrap(f):
+
+            def wrapped_f(*args, **kwargs):
+                if hasattr(gdb.events, event_type):
+                    return f(*args, **kwargs)
+                warn("GDB events cannot be set: {:s}".format(event_type))
+
+            return wrapped_f
+
+        return wrap
+
+    @staticmethod # noqa
+    def perf(f):
+        """Decorator wrapper to measure performance."""
+
+        @functools.wraps(f)
+        def wrapper(*args, **kwargs):
+            import line_profiler
+            pr = line_profiler.LineProfiler()
+            pr.add_function(f)
+            pr.enable()
+            ret = f(*args, **kwargs)
+            pr.disable()
+            s = io.StringIO()
+            pr.print_stats(stream=s)
+            print(s.getvalue())
+            return ret
+
+        return wrapper
+
+    @staticmethod # noqa
+    def cperf(f):
+        """Decorator wrapper to measure performance."""
+
+        @functools.wraps(f)
+        def wrapper(*args, **kwargs):
+            import cProfile
+            import pstats
+            pr = cProfile.Profile()
+            pr.enable()
+            ret = f(*args, **kwargs)
+            pr.disable()
+            s = io.StringIO()
+            #sortby = pstats.SortKey.CUMULATIVE
+            sortby = pstats.SortKey.TIME
+            ps = pstats.Stats(pr, stream=s).sort_stats(sortby)
+            ps.print_stats(20)
+            print(s.getvalue())
+            return ret
+
+        return wrapper
 
 
 def to_unsigned_long(v):
@@ -15638,7 +15630,7 @@ class UnicornKeystoneCapstone:
         addr = kwargs.get("addr", 0x1000)
 
         # `asm "[]"` returns no response
-        @timeout(duration=1)
+        @Decorator.timeout(duration=1)
         def ks_asm(code, addr):
             return ks.asm(code, addr)
 
@@ -16163,111 +16155,96 @@ def get_pagesize_mask_high():
     return ~(auxval["AT_PAGESZ"] - 1)
 
 
-def only_if_events_supported(event_type):
-    """Decorator for checking if GDB supports events without crashing."""
-
-    def wrap(f):
-
-        def wrapped_f(*args, **kwargs):
-            if hasattr(gdb.events, event_type):
-                return f(*args, **kwargs)
-            warn("GDB events cannot be set: {:s}".format(event_type))
-
-        return wrapped_f
-
-    return wrap
-
-
 class EventHooking:
     """A collection of utility functions that hook up specified events."""
 
     @staticmethod
-    @only_if_events_supported("cont")
+    @Decorator.only_if_events_supported("cont")
     def gef_on_continue_hook(func):
         return gdb.events.cont.connect(func)
 
     @staticmethod
-    @only_if_events_supported("cont")
+    @Decorator.only_if_events_supported("cont")
     def gef_on_continue_unhook(func):
         return gdb.events.cont.disconnect(func)
 
     @staticmethod
-    @only_if_events_supported("stop")
+    @Decorator.only_if_events_supported("stop")
     def gef_on_stop_hook(func):
         return gdb.events.stop.connect(func)
 
     @staticmethod
-    @only_if_events_supported("stop")
+    @Decorator.only_if_events_supported("stop")
     def gef_on_stop_unhook(func):
         return gdb.events.stop.disconnect(func)
 
     @staticmethod
-    @only_if_events_supported("exited")
+    @Decorator.only_if_events_supported("exited")
     def gef_on_exit_hook(func):
         return gdb.events.exited.connect(func)
 
     @staticmethod
-    @only_if_events_supported("exited")
+    @Decorator.only_if_events_supported("exited")
     def gef_on_exit_unhook(func):
         return gdb.events.exited.disconnect(func)
 
     @staticmethod
-    @only_if_events_supported("connection_removed")
+    @Decorator.only_if_events_supported("connection_removed")
     def gef_on_connection_removed_hook(func):
         return gdb.events.connection_removed.connect(func)
 
     @staticmethod
-    @only_if_events_supported("connection_removed")
+    @Decorator.only_if_events_supported("connection_removed")
     def gef_on_connection_removed_unhook(func):
         return gdb.events.connection_removed.disconnect(func)
 
     @staticmethod
-    @only_if_events_supported("new_objfile")
+    @Decorator.only_if_events_supported("new_objfile")
     def gef_on_new_hook(func):
         return gdb.events.new_objfile.connect(func)
 
     @staticmethod
-    @only_if_events_supported("new_objfile")
+    @Decorator.only_if_events_supported("new_objfile")
     def gef_on_new_unhook(func):
         return gdb.events.new_objfile.disconnect(func)
 
     @staticmethod
-    @only_if_events_supported("free_objfile")
+    @Decorator.only_if_events_supported("free_objfile")
     def gef_on_free_objfile_hook(func):
         return gdb.events.free_objfile.connect(func)
 
     @staticmethod
-    @only_if_events_supported("free_objfile")
+    @Decorator.only_if_events_supported("free_objfile")
     def gef_on_free_objfile_unhook(func):
         return gdb.events.free_objfile.disconnect(func)
 
     @staticmethod
-    @only_if_events_supported("clear_objfiles")
+    @Decorator.only_if_events_supported("clear_objfiles")
     def gef_on_clear_objfiles_hook(func):
         return gdb.events.clear_objfiles.connect(func)
 
     @staticmethod
-    @only_if_events_supported("clear_objfiles")
+    @Decorator.only_if_events_supported("clear_objfiles")
     def gef_on_clear_objfiles_unhook(func):
         return gdb.events.clear_objfiles.disconnect(func)
 
     @staticmethod
-    @only_if_events_supported("memory_changed")
+    @Decorator.only_if_events_supported("memory_changed")
     def gef_on_memchanged_hook(func):
         return gdb.events.memory_changed.connect(func)
 
     @staticmethod
-    @only_if_events_supported("memory_changed")
+    @Decorator.only_if_events_supported("memory_changed")
     def gef_on_memchanged_unhook(func):
         return gdb.events.memory_changed.disconnect(func)
 
     @staticmethod
-    @only_if_events_supported("register_changed")
+    @Decorator.only_if_events_supported("register_changed")
     def gef_on_regchanged_hook(func):
         return gdb.events.register_changed.connect(func)
 
     @staticmethod
-    @only_if_events_supported("register_changed")
+    @Decorator.only_if_events_supported("register_changed")
     def gef_on_regchanged_unhook(func):
         return gdb.events.register_changed.disconnect(func)
 
@@ -16579,7 +16556,7 @@ class BufferingOutput:
 #         super().__init__(complete=gdb.COMPLETE_FILENAME)
 #         return
 #
-#     @parse_args
+#     @Decorator.parse_args
 #     def do_invoke(self, args):
 #         return
 
@@ -16718,7 +16695,7 @@ class GefThemeCommand(GenericCommand, BufferingOutput):
         list_all_color_sample(Color.colors["highlight"])
         return
 
-    @parse_args
+    @Decorator.parse_args
     def do_invoke(self, args):
         self.out = []
 
@@ -16803,7 +16780,7 @@ class HighlightCommand(GenericCommand):
         self.add_setting("regex", False, "Enable regex highlighting")
         return
 
-    @parse_args
+    @Decorator.parse_args
     def do_invoke(self, args):
         self.usage()
         return
@@ -16833,7 +16810,7 @@ class HighlightListCommand(GenericCommand):
             ))
         return
 
-    @parse_args
+    @Decorator.parse_args
     def do_invoke(self, args):
         self.print_highlight_table()
         return
@@ -16849,7 +16826,7 @@ class HighlightClearCommand(GenericCommand):
     parser = argparse.ArgumentParser(prog=_cmdline_)
     _syntax_ = parser.format_help()
 
-    @parse_args
+    @Decorator.parse_args
     def do_invoke(self, args):
         HighlightCommand.highlight_table.clear()
         return
@@ -16877,7 +16854,7 @@ class HighlightAddCommand(GenericCommand):
     ]
     _note_ = "\n".join(_note_)
 
-    @parse_args
+    @Decorator.parse_args
     def do_invoke(self, args):
         for a in args.color:
             if a not in Color.colors.keys():
@@ -16903,7 +16880,7 @@ class HighlightRemoveCommand(GenericCommand):
     ]
     _example_ = "\n".join(_example_).format(_cmdline_)
 
-    @parse_args
+    @Decorator.parse_args
     def do_invoke(self, args):
         HighlightCommand.highlight_table.pop(args.match, None)
         return
@@ -17001,10 +16978,10 @@ class NextiForQemuUserCommand(GenericCommand):
         SimpleInternalTemporaryBreakpoint(loc=insn_next.address)
         return
 
-    @parse_args
-    @only_if_gdb_running
-    @only_if_specific_gdb_mode(mode=("qemu-user",))
-    @only_if_specific_arch(arch=("OR1K", "CRIS"))
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.only_if_specific_gdb_mode(mode=("qemu-user",))
+    @Decorator.only_if_specific_arch(arch=("OR1K", "CRIS"))
     def do_invoke(self, args):
         if is_cris():
             self.ni_set_bp_for_branch()
@@ -17090,10 +17067,10 @@ class StepiForQemuUserCommand(GenericCommand):
         SimpleInternalTemporaryBreakpoint(loc=insn_next.address)
         return
 
-    @parse_args
-    @only_if_gdb_running
-    @only_if_specific_gdb_mode(mode=("qemu-user",))
-    @only_if_specific_arch(arch=("OR1K", "CRIS"))
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.only_if_specific_gdb_mode(mode=("qemu-user",))
+    @Decorator.only_if_specific_arch(arch=("OR1K", "CRIS"))
     def do_invoke(self, args):
         if is_cris():
             self.si_set_bp_for_branch()
@@ -17234,9 +17211,9 @@ class ContinueForQemuUserCommand(GenericCommand):
             pass
         return
 
-    @parse_args
-    @only_if_gdb_running
-    @only_if_specific_gdb_mode(mode=("qemu-user", "pin"))
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.only_if_specific_gdb_mode(mode=("qemu-user", "pin"))
     def do_invoke(self, args):
         if is_qemu_user() or is_pin():
             if Pid.get_pid():
@@ -17276,10 +17253,10 @@ class StepiForKGDBCommand(GenericCommand):
     ]
     _note_ = "\n".join(_note_)
 
-    @parse_args
-    @only_if_gdb_running
-    @only_if_specific_gdb_mode(mode=("kgdb",))
-    @only_if_specific_arch(arch=("ARM64",))
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.only_if_specific_gdb_mode(mode=("kgdb",))
+    @Decorator.only_if_specific_arch(arch=("ARM64",))
     def do_invoke(self, args):
         old_cpsr = get_register("$cpsr")
         instr = read_int32_from_memory(current_arch.pc, safe=True)
@@ -17358,8 +17335,8 @@ class UpCommand(GenericCommand):
         Config.set_gef_setting("context_trace.nb_lines", nb_lines)
         return
 
-    @parse_args
-    @only_if_gdb_running
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
     def do_invoke(self, args):
         try:
             current_frame = gdb.selected_frame()
@@ -17414,8 +17391,8 @@ class DownCommand(GenericCommand):
         Config.set_gef_setting("context_trace.nb_lines", nb_lines)
         return
 
-    @parse_args
-    @only_if_gdb_running
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
     def do_invoke(self, args):
         try:
             current_frame = gdb.selected_frame()
@@ -17456,7 +17433,7 @@ class HistoryCommand(GenericCommand, BufferingOutput):
             prev_ret = ret
         return list(history.values())
 
-    @parse_args
+    @Decorator.parse_args
     def do_invoke(self, args):
         self.out = self.get_history()
         self.print_output(skip_color=True)
@@ -17555,8 +17532,8 @@ class DisplayTypeCommand(GenericCommand, BufferingOutput):
         self.out = s.format_string(styling=True).splitlines()
         return True
 
-    @parse_args
-    @only_if_gdb_running
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
     def do_invoke(self, args):
         # lookup type
         tp = GefUtil.cached_lookup_type(args.type)
@@ -17617,9 +17594,9 @@ class BreakRelativeVirtualAddressCommand(GenericCommand):
     delayed_breakpoints = set()
     delayed_bp_set = False
 
-    @parse_args
-    @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
-    @require_arch_set
+    @Decorator.parse_args
+    @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @Decorator.require_arch_set
     def do_invoke(self, args):
         elf = Elf.get_elf()
         if elf is None or not elf.is_valid():
@@ -17740,8 +17717,8 @@ class PrintFormatCommand(GenericCommand):
             out = sdata
         return out
 
-    @parse_args
-    @only_if_gdb_running
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
     def do_invoke(self, args):
         if args.format in ["hex", "hexn", "hexs", "hexsn"] and args.bitlen != 8:
             err("{:s} must be bit == 8".format(args.format))
@@ -17863,10 +17840,10 @@ class CanaryCommand(GenericCommand):
                 prev_addr = addr
         return
 
-    @parse_args
-    @only_if_gdb_running
-    @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware"))
-    @require_arch_set
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware"))
+    @Decorator.require_arch_set
     def do_invoke(self, args):
         self.dump_canary()
         return
@@ -18038,11 +18015,11 @@ class SignalHandlersCommand(GenericCommand, BufferingOutput):
         value = AddressUtil.format_address(handler, long_fmt=True)
         return "{:s} {:s}".format(value, symbol).rstrip()
 
-    @parse_args
-    @only_if_gdb_running
-    @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "rr", "wine"))
-    @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
-    @require_arch_set
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "rr", "wine"))
+    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
+    @Decorator.require_arch_set
     def do_invoke(self, args):
         syscall_number = self.get_rt_sigaction_number()
         if syscall_number is None:
@@ -18159,10 +18136,10 @@ class AuxvCommand(GenericCommand):
         51 : "AT_MINSIGSTKSZ",       # stack needed for signal delivery
     }
 
-    @parse_args
-    @only_if_gdb_running
-    @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
-    @require_arch_set
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @Decorator.require_arch_set
     def do_invoke(self, args):
         auxval = Auxv.get_auxiliary_values(args.force_heuristic)
         if not auxval:
@@ -18324,10 +18301,10 @@ class ArgvCommand(GenericCommand, BufferingOutput):
         self.print_from_proc("/proc/{:d}/cmdline".format(Pid.get_pid()))
         return
 
-    @parse_args
-    @only_if_gdb_running
-    @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
-    @require_arch_set
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @Decorator.require_arch_set
     def do_invoke(self, args):
         self.out = []
         self.dump_dl_argv()
@@ -18448,10 +18425,10 @@ class EnvpCommand(GenericCommand, BufferingOutput):
         self.print_from_proc("/proc/{:d}/environ".format(Pid.get_pid()))
         return
 
-    @parse_args
-    @only_if_gdb_running
-    @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
-    @require_arch_set
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @Decorator.require_arch_set
     def do_invoke(self, args):
         self.out = []
         self.dump_environ()
@@ -18476,9 +18453,9 @@ class DumpArgsCommand(GenericCommand):
                         help="assume here is out of the function.")
     _syntax_ = parser.format_help()
 
-    @parse_args
-    @only_if_gdb_running
-    @require_arch_set
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.require_arch_set
     def do_invoke(self, args):
         gef_print(titlify("info args (snapshot)"))
         gdb.execute("info args")
@@ -18513,10 +18490,10 @@ class VdsoCommand(GenericCommand, BufferingOutput):
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
     _syntax_ = parser.format_help()
 
-    @parse_args
-    @only_if_gdb_running
-    @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware"))
-    @require_arch_set
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware"))
+    @Decorator.require_arch_set
     def do_invoke(self, args):
         # get map entry
         maps = ProcessMap.get_process_maps()
@@ -18588,10 +18565,10 @@ class VvarCommand(GenericCommand, BufferingOutput):
             pos += block_size
         return out[:size]
 
-    @parse_args
-    @only_if_gdb_running
-    @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "rr"))
-    @only_if_specific_arch(arch=("x86_32", "x86_64"))
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "rr"))
+    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64"))
     def do_invoke(self, args):
         # get map entry
         maps = ProcessMap.get_process_maps()
@@ -19043,10 +19020,10 @@ class IouringDumpCommand(GenericCommand, BufferingOutput):
         self.dump(name, sqes, self.read_user(maps, sqes, size), lines)
         return
 
-    @parse_args
-    @only_if_gdb_running
-    @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "rr", "wine"))
-    @require_arch_set
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "rr", "wine"))
+    @Decorator.require_arch_set
     def do_invoke(self, args):
         # get map entry
         maps = ProcessMap.get_process_maps()
@@ -19103,8 +19080,8 @@ class PidCommand(GenericCommand):
     parser = argparse.ArgumentParser(prog=_cmdline_)
     _syntax_ = parser.format_help()
 
-    @parse_args
-    @only_if_gdb_running
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
     def do_invoke(self, args):
         pid = Pid.get_pid()
         if pid:
@@ -19134,9 +19111,9 @@ class TidCommand(GenericCommand):
     parser = argparse.ArgumentParser(prog=_cmdline_)
     _syntax_ = parser.format_help()
 
-    @parse_args
-    @only_if_gdb_running
-    @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware"))
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware"))
     def do_invoke(self, args):
         ptid = gdb.selected_thread().ptid
         gef_print("TID: {:d}".format(ptid[1] or ptid[2]))
@@ -19153,8 +19130,8 @@ class FilenameCommand(GenericCommand):
     parser = argparse.ArgumentParser(prog=_cmdline_)
     _syntax_ = parser.format_help()
 
-    @parse_args
-    @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware"))
+    @Decorator.parse_args
+    @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware"))
     def do_invoke(self, args):
         filepath = Path.get_filepath()
         if filepath:
@@ -19636,10 +19613,10 @@ class ProcInfoCommand(GenericCommand):
                     gef_print("{:30s}  ->  {:s}".format(fullpath, content))
         return
 
-    @parse_args
-    @only_if_gdb_running
-    @only_if_gdb_target_local
-    @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "rr"))
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.only_if_gdb_target_local
+    @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "rr"))
     def do_invoke(self, args):
         self.show_info_proc()
         self.show_info_proc_extra()
@@ -19679,10 +19656,10 @@ class FileDescriptorsCommand(GenericCommand):
                 gef_print("{:32s}  ->  {:s}".format(fullpath, os.readlink(fullpath)))
         return
 
-    @parse_args
-    @only_if_gdb_running
-    @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
-    @require_arch_set
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @Decorator.require_arch_set
     def do_invoke(self, args):
         self.fd_dump()
         return
@@ -20018,11 +19995,11 @@ class ProcDumpCommand(GenericCommand, BufferingOutput):
                 self.dump_default(path)
         return
 
-    @parse_args
-    @only_if_gdb_running
-    @only_if_gdb_target_local
-    @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware"))
-    @require_arch_set
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.only_if_gdb_target_local
+    @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware"))
+    @Decorator.require_arch_set
     def do_invoke(self, args):
         self.out = []
         self.proc_dump()
@@ -20213,10 +20190,10 @@ class CapabilityCommand(GenericCommand, BufferingOutput):
             self.out.append("Root ID    : {:#010x} - {:s}".format(caps["rootid"], msg))
         return
 
-    @parse_args
-    @only_if_gdb_target_local
-    @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
-    @require_arch_set
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_target_local
+    @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @Decorator.require_arch_set
     def do_invoke(self, args):
         self.out = []
         self.print_capability_from_pid()
@@ -20321,10 +20298,10 @@ class SmartMemoryDumpCommand(GenericCommand):
             warn('This dry run mode skips dumping; add "--commit" to proceed')
         return
 
-    @parse_args
-    @only_if_gdb_running
-    @exclude_specific_gdb_mode(mode=("kgdb", "vmware"))
-    @require_arch_set
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.exclude_specific_gdb_mode(mode=("kgdb", "vmware"))
+    @Decorator.require_arch_set
     def do_invoke(self, args):
         if is_qemu_system():
             maps = AddrMap.get_maps(scope="kernel")
@@ -20490,11 +20467,11 @@ class HijackFdCommand(GenericCommand):
         ok("Success")
         return
 
-    @parse_args
-    @only_if_gdb_running
-    @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "rr", "wine"))
-    @exclude_specific_arch(arch=("CRIS",))
-    @require_arch_set
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "rr", "wine"))
+    @Decorator.exclude_specific_arch(arch=("CRIS",))
+    @Decorator.require_arch_set
     def do_invoke(self, args):
         # In old version of qemu, the file descriptor was sometimes shifted by a
         # constant value on i386 (fd returned by the syscall == actual opened fd + 80).
@@ -20936,10 +20913,10 @@ class XtapCommand(GenericCommand):
             info("Inferior exited")
         return bp_was_hit
 
-    @parse_args
-    @only_if_gdb_running
-    @exclude_specific_gdb_mode(mode=("qemu-system", "qemu-user", "kgdb", "vmware", "wine"))
-    @only_if_specific_arch(arch=("x86_32", "x86_64"))
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "qemu-user", "kgdb", "vmware", "wine"))
+    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64"))
     def do_invoke(self, args):
         self.target_fds = list(args.fd)
         self.maxlen = args.maxlen
@@ -21052,10 +21029,10 @@ class ScanSectionCommand(GenericCommand):
                     break
         return
 
-    @parse_args
-    @only_if_gdb_running
-    @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware"))
-    @require_arch_set
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware"))
+    @Decorator.require_arch_set
     def do_invoke(self, args):
         haystack = args.haystack
         needle = args.needle
@@ -21241,10 +21218,10 @@ class FindSyscallCommand(GenericCommand, BufferingOutput):
                 break
         return
 
-    @parse_args
-    @only_if_gdb_running
-    @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware"))
-    @require_arch_set
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware"))
+    @Decorator.require_arch_set
     def do_invoke(self, args):
         if not current_arch.syscall_insn:
             err("Unsupported arch")
@@ -21661,8 +21638,8 @@ class SearchPatternCommand(GenericCommand):
                 pattern_utf16 = "".join([x + "\\x00" for x in pattern])
         return (pattern, pattern_utf16)
 
-    @parse_args
-    @only_if_gdb_running
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
     def do_invoke(self, args):
         if args.kernel_only or args.user_only:
             if not is_qemu_system():
@@ -21978,11 +21955,11 @@ class PtrDemangleCommand(GenericCommand):
             return PtrDemangleCommand.get_cookie_from_static_relro()
         return None
 
-    @parse_args
-    @only_if_gdb_running
-    @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware"))
-    @exclude_specific_arch(arch=("SPARC32", "XTENSA", "CRIS"))
-    @require_arch_set
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware"))
+    @Decorator.exclude_specific_arch(arch=("SPARC32", "XTENSA", "CRIS"))
+    @Decorator.require_arch_set
     def do_invoke(self, args):
         if args.source:
             s = GefUtil.get_source(current_arch.decode_cookie)
@@ -22024,11 +22001,11 @@ class PtrMangleCommand(GenericCommand):
     parser.add_argument("-f", "--force-heuristic", action="store_true", help="do not use symbols to detect PTR_MANGLE")
     _syntax_ = parser.format_help()
 
-    @parse_args
-    @only_if_gdb_running
-    @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware"))
-    @exclude_specific_arch(arch=("SPARC32", "XTENSA", "CRIS"))
-    @require_arch_set
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware"))
+    @Decorator.exclude_specific_arch(arch=("SPARC32", "XTENSA", "CRIS"))
+    @Decorator.require_arch_set
     def do_invoke(self, args):
         if args.source:
             s = GefUtil.get_source(current_arch.encode_cookie)
@@ -22123,11 +22100,11 @@ class SearchMangledPtrCommand(GenericCommand):
             del mem
         return locations
 
-    @parse_args
-    @only_if_gdb_running
-    @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
-    @exclude_specific_arch(arch=("SPARC32", "XTENSA", "CRIS"))
-    @require_arch_set
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @Decorator.exclude_specific_arch(arch=("SPARC32", "XTENSA", "CRIS"))
+    @Decorator.require_arch_set
     def do_invoke(self, args):
         # init
         cookie = PtrDemangleCommand.get_cookie(force_heuristic=args.force_heuristic)
@@ -22273,10 +22250,10 @@ class SearchCfiGadgetsCommand(GenericCommand, BufferingOutput):
             self.disasm_addrs(filtered_addrs)
         return
 
-    @parse_args
-    @only_if_gdb_running
-    @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
-    @only_if_specific_arch(arch=("x86_32", "x86_64"))
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64"))
     def do_invoke(self, args):
         # get saved filename (for caching)
         filepath = Path.get_filepath()
@@ -22545,9 +22522,9 @@ class EditFlagsCommand(GenericCommand):
         gef_print("\n".join([" " * 2 + e for e in elements]))
         return
 
-    @parse_args
-    @only_if_gdb_running
-    @require_arch_set
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.require_arch_set
     def do_invoke(self, args):
         if current_arch.flag_register is None:
             warn("This command is not supported on this architecture")
@@ -22585,11 +22562,11 @@ class KillThreadsCommand(GenericCommand):
     ]
     _example_ = "\n".join(_example_).format(_cmdline_)
 
-    @parse_args
-    @only_if_gdb_running
-    @exclude_specific_gdb_mode(mode=("qemu-system", "qemu-user", "kgdb", "vmware", "wine"))
-    @exclude_specific_arch(arch=("CRIS",))
-    @require_arch_set
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "qemu-user", "kgdb", "vmware", "wine"))
+    @Decorator.exclude_specific_arch(arch=("CRIS",))
+    @Decorator.require_arch_set
     def do_invoke(self, args):
         # print tid list and exit
         if not args.all and not args.thread_id and not args.exclude:
@@ -22660,11 +22637,11 @@ class CallSyscallCommand(GenericCommand):
     ]
     _example_ = "\n".join(_example_).format(_cmdline_)
 
-    @parse_args
-    @only_if_gdb_running
-    @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "rr", "wine"))
-    @exclude_specific_arch(arch=("CRIS",))
-    @require_arch_set
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "rr", "wine"))
+    @Decorator.exclude_specific_arch(arch=("CRIS",))
+    @Decorator.require_arch_set
     def do_invoke(self, args):
         if current_arch is None:
             err("current_arch is not set")
@@ -22735,11 +22712,11 @@ class MmapMemoryCommand(GenericCommand):
     # On the CRIS architecture, setting a value to a register using the gdb `set` command will cause strange behavior.
     # So even if the assembly code is correct, it should not use this command.
 
-    @parse_args
-    @only_if_gdb_running
-    @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "rr", "wine"))
-    @exclude_specific_arch(arch=("CRIS",))
-    @require_arch_set
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "rr", "wine"))
+    @Decorator.exclude_specific_arch(arch=("CRIS",))
+    @Decorator.require_arch_set
     def do_invoke(self, args):
         # syscall name (mmap or mmap2 or arch-specific)
         syscall_table = Syscall.get_syscall_table()
@@ -22837,11 +22814,11 @@ class MunmapMemoryCommand(GenericCommand):
     # On the CRIS architecture, setting a value to a register using the gdb `set` command will cause strange behavior.
     # So even if the assembly code is correct, it should not use this command.
 
-    @parse_args
-    @only_if_gdb_running
-    @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "rr", "wine"))
-    @exclude_specific_arch(arch=("CRIS",))
-    @require_arch_set
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "rr", "wine"))
+    @Decorator.exclude_specific_arch(arch=("CRIS",))
+    @Decorator.require_arch_set
     def do_invoke(self, args):
         # location
         sect = ProcessMap.process_lookup_address(args.location)
@@ -22914,11 +22891,11 @@ class MprotectCommand(GenericCommand):
     # On the CRIS architecture, setting a value to a register using the gdb `set` command will cause strange behavior.
     # So even if the assembly code is correct, it should not use this command.
 
-    @parse_args
-    @only_if_gdb_running
-    @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "rr", "wine"))
-    @exclude_specific_arch(arch=("CRIS",))
-    @require_arch_set
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "rr", "wine"))
+    @Decorator.exclude_specific_arch(arch=("CRIS",))
+    @Decorator.require_arch_set
     def do_invoke(self, args):
         # location
         sect = ProcessMap.process_lookup_address(args.location)
@@ -23198,10 +23175,10 @@ class ReadSystemRegisterForKgdbCommand(GenericCommand):
                 return ret["reg"][return_register]
         return None
 
-    @parse_args
-    @only_if_gdb_running
-    @only_if_specific_gdb_mode(mode=("kgdb",))
-    @only_if_specific_arch(arch=("x86_64", "ARM64"))
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.only_if_specific_gdb_mode(mode=("kgdb",))
+    @Decorator.only_if_specific_arch(arch=("x86_64", "ARM64"))
     def do_invoke(self, args):
         if current_arch is None:
             err("current_arch is not set")
@@ -23911,10 +23888,10 @@ class ReadSystemRegisterForQemuArmCommand(GenericCommand):
             return None
         return ret["reg"][current_arch.return_register]
 
-    @parse_args
-    @only_if_gdb_running
-    @only_if_specific_gdb_mode(mode=("qemu-system",))
-    @only_if_specific_arch(arch=("ARM32",))
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.only_if_specific_gdb_mode(mode=("qemu-system",))
+    @Decorator.only_if_specific_arch(arch=("ARM32",))
     def do_invoke(self, args):
         if current_arch is None:
             err("current_arch is not set")
@@ -25245,11 +25222,11 @@ class UnicornEmulateCommand(GenericCommand):
         last_insn = dis[-1]
         return last_insn.address
 
-    @parse_args
-    @only_if_gdb_running
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
     @ModuleLoader.load_capstone
     @ModuleLoader.load_unicorn
-    @require_arch_set
+    @Decorator.require_arch_set
     def do_invoke(self, args):
         if current_arch.unicorn_support is False:
             warn("This command is not supported on this architecture")
@@ -26028,12 +26005,12 @@ class UnicornEmulateScriptCommand(GenericCommand):
         os.unlink(tmp_filename)
         return
 
-    @parse_args
-    @only_if_gdb_running
-    @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
     @ModuleLoader.load_capstone
     @ModuleLoader.load_unicorn
-    @require_arch_set
+    @Decorator.require_arch_set
     def do_invoke(self, args):
         if current_arch.unicorn_support is False:
             warn("This command is not supported on this architecture")
@@ -26303,10 +26280,10 @@ class FutureCallsCommand(GenericCommand, BufferingOutput):
             if not self.step(tracer, parent, insn):
                 return False
 
-    @parse_args
-    @only_if_gdb_running
-    @require_arch_set
-    @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.require_arch_set
+    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
     @ModuleLoader.load_capstone
     @ModuleLoader.load_unicorn
     def do_invoke(self, args):
@@ -26588,10 +26565,10 @@ class AngrCommand(GenericCommand):
             gef_print(e.output.decode("utf-8").rstrip())
         return
 
-    @parse_args
-    @only_if_gdb_running
-    @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
-    @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
     @ModuleLoader.load_angr
     def do_invoke(self, args):
         if not args.find or not args.sym:
@@ -26661,8 +26638,8 @@ class StubCommand(GenericCommand):
         super().__init__(complete=gdb.COMPLETE_LOCATION)
         return
 
-    @parse_args
-    @only_if_gdb_running
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
     def do_invoke(self, args):
         loc = "*{:#x}".format(args.location)
         StubBreakpoint(loc, args.retval)
@@ -26713,10 +26690,10 @@ class CapstoneDisassembleCommand(GenericCommand):
         self.add_setting("nb_lines_code_default", 50, "Number of instruction if no length is specified.")
         return
 
-    @parse_args
-    @only_if_gdb_running
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
     @ModuleLoader.load_capstone
-    @require_arch_set
+    @Decorator.require_arch_set
     def do_invoke(self, args):
         kwargs = {}
         for arg in args.args:
@@ -26809,10 +26786,10 @@ class GlibcHeapCommand(GenericCommand):
         self.add_setting("tcache_max_count", -1, "Max chunks per tcache bin (if configured by GLIBC_TUNABLES)")
         return
 
-    @parse_args
-    @only_if_gdb_running
-    @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
-    @require_arch_set
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @Decorator.require_arch_set
     def do_invoke(self, args):
         self.usage()
         return
@@ -26831,10 +26808,10 @@ class GlibcHeapTopCommand(GenericCommand):
                         help="the address or number to interpret as an arena. (default: main_arena)")
     _syntax_ = parser.format_help()
 
-    @parse_args
-    @only_if_gdb_running
-    @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
-    @require_arch_set
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @Decorator.require_arch_set
     def do_invoke(self, args):
         # parse arena
         arena = GlibcHeap.get_arena(args.arena_addr)
@@ -26876,10 +26853,10 @@ class GlibcHeapArenasCommand(GenericCommand):
     parser = argparse.ArgumentParser(prog=_cmdline_)
     _syntax_ = parser.format_help()
 
-    @parse_args
-    @only_if_gdb_running
-    @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
-    @require_arch_set
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @Decorator.require_arch_set
     def do_invoke(self, args):
         # main_arena
         arena = GlibcHeap.get_main_arena()
@@ -27040,10 +27017,10 @@ class GlibcHeapArenaCommand(GenericCommand, BufferingOutput):
             self.out.append("}")
         return
 
-    @parse_args
-    @only_if_gdb_running
-    @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
-    @require_arch_set
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @Decorator.require_arch_set
     def do_invoke(self, args):
         # parse arena
         arena = GlibcHeap.get_arena(args.arena_addr)
@@ -27089,10 +27066,10 @@ class GlibcHeapChunkCommand(GenericCommand):
         super().__init__(complete=gdb.COMPLETE_LOCATION)
         return
 
-    @parse_args
-    @only_if_gdb_running
-    @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
-    @require_arch_set
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @Decorator.require_arch_set
     def do_invoke(self, args):
         # parse arena
         arena = GlibcHeap.get_arena(args.arena_addr)
@@ -27242,10 +27219,10 @@ class GlibcHeapChunksCommand(GenericCommand, BufferingOutput):
         pbar.close()
         return
 
-    @parse_args
-    @only_if_gdb_running
-    @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
-    @require_arch_set
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @Decorator.require_arch_set
     def do_invoke(self, args):
         # parse arena
         arena = GlibcHeap.get_arena(args.arena_addr)
@@ -27396,10 +27373,10 @@ class GlibcHeapParseCommand(GenericCommand, BufferingOutput):
         pbar.close()
         return
 
-    @parse_args
-    @only_if_gdb_running
-    @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
-    @require_arch_set
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @Decorator.require_arch_set
     def do_invoke(self, args):
         # parse arena
         arena = GlibcHeap.get_arena(args.arena_addr)
@@ -27586,10 +27563,10 @@ class GlibcHeapBinsSimpleCommand(GenericCommand):
             ))
         return
 
-    @parse_args
-    @only_if_gdb_running
-    @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
-    @require_arch_set
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @Decorator.require_arch_set
     def do_invoke(self, args):
         # parse arena
         arena = GlibcHeap.get_arena(args.arena_addr)
@@ -27884,10 +27861,10 @@ class GlibcHeapBinsCommand(GenericCommand, GlibcHeapBinsDump, BufferingOutput):
         super().__init__(prefix=True)
         return
 
-    @parse_args
-    @only_if_gdb_running
-    @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
-    @require_arch_set
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @Decorator.require_arch_set
     def do_invoke(self, args):
         # parse arena
         arena = GlibcHeap.get_arena(args.arena_addr)
@@ -27974,10 +27951,10 @@ class GlibcHeapTcachebinsCommand(GenericCommand, GlibcHeapBinsDump, BufferingOut
         super().__init__(complete=gdb.COMPLETE_LOCATION)
         return
 
-    @parse_args
-    @only_if_gdb_running
-    @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
-    @require_arch_set
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @Decorator.require_arch_set
     def do_invoke(self, args):
         # Determine if we are using libc with tcache built in (2.26+)
         if get_libc_version() < (2, 26):
@@ -28033,10 +28010,10 @@ class GlibcHeapFastbinsYCommand(GenericCommand, GlibcHeapBinsDump, BufferingOutp
         super().__init__(complete=gdb.COMPLETE_LOCATION)
         return
 
-    @parse_args
-    @only_if_gdb_running
-    @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
-    @require_arch_set
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @Decorator.require_arch_set
     def do_invoke(self, args):
         # parse arena
         arena = GlibcHeap.get_arena(args.arena_addr)
@@ -28085,10 +28062,10 @@ class GlibcHeapUnsortedBinsCommand(GenericCommand, GlibcHeapBinsDump, BufferingO
         super().__init__(complete=gdb.COMPLETE_LOCATION)
         return
 
-    @parse_args
-    @only_if_gdb_running
-    @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
-    @require_arch_set
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @Decorator.require_arch_set
     def do_invoke(self, args):
         # parse arena
         arena = GlibcHeap.get_arena(args.arena_addr)
@@ -28141,10 +28118,10 @@ class GlibcHeapSmallBinsCommand(GenericCommand, GlibcHeapBinsDump, BufferingOutp
         super().__init__(complete=gdb.COMPLETE_LOCATION)
         return
 
-    @parse_args
-    @only_if_gdb_running
-    @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
-    @require_arch_set
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @Decorator.require_arch_set
     def do_invoke(self, args):
         # parse arena
         arena = GlibcHeap.get_arena(args.arena_addr)
@@ -28211,10 +28188,10 @@ class GlibcHeapLargeBinsCommand(GenericCommand, GlibcHeapBinsDump, BufferingOutp
         super().__init__(complete=gdb.COMPLETE_LOCATION)
         return
 
-    @parse_args
-    @only_if_gdb_running
-    @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
-    @require_arch_set
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @Decorator.require_arch_set
     def do_invoke(self, args):
         # parse arena
         arena = GlibcHeap.get_arena(args.arena_addr)
@@ -28568,10 +28545,10 @@ class GlibcHeapTryFreeCommand(GenericCommand):
             info("patch revert ok")
         return
 
-    @parse_args
-    @only_if_gdb_running
-    @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
-    @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
     def do_invoke(self, args):
         self.doit("free", args.address, None)
         return
@@ -28602,10 +28579,10 @@ class GlibcHeapTryMallocCommand(GlibcHeapTryFreeCommand):
     ]
     _example_ = "\n".join(_example_).format(_cmdline_)
 
-    @parse_args
-    @only_if_gdb_running
-    @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
-    @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
     def do_invoke(self, args):
         self.doit("malloc", args.size, None)
         return
@@ -28638,10 +28615,10 @@ class GlibcHeapTryReallocCommand(GlibcHeapTryFreeCommand):
     ]
     _example_ = "\n".join(_example_).format(_cmdline_)
 
-    @parse_args
-    @only_if_gdb_running
-    @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
-    @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
     def do_invoke(self, args):
         self.doit("realloc", args.address, args.size)
         return
@@ -28674,10 +28651,10 @@ class GlibcHeapTryCallocCommand(GlibcHeapTryFreeCommand):
     ]
     _example_ = "\n".join(_example_).format(_cmdline_)
 
-    @parse_args
-    @only_if_gdb_running
-    @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
-    @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
     def do_invoke(self, args):
         self.doit("calloc", args.size, args.nmemb)
         return
@@ -28722,9 +28699,9 @@ class GlibcHeapTcacheIndexHelperCommand(GenericCommand):
         info("&tcache.entries[{:d}] = {!s}".format(index, ProcessMap.lookup_address(entry_addr)))
         return
 
-    @parse_args
-    @only_if_gdb_running
-    @require_arch_set
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.require_arch_set
     def do_invoke(self, args):
         # Determine if we are using libc with tcache built in (2.26+)
         if get_libc_version() < (2, 26):
@@ -28904,10 +28881,10 @@ class GlibcHeapFindFakeFastCommand(GenericCommand, BufferingOutput):
                 pos += unit
         return
 
-    @parse_args
-    @only_if_gdb_running
-    @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
-    @require_arch_set
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @Decorator.require_arch_set
     def do_invoke(self, args):
         MIN_SIZE = GlibcHeap.HeapInfo.MIN_SIZE()
         if args.size < MIN_SIZE:
@@ -28949,10 +28926,10 @@ class GlibcHeapExtractHeapAddrCommand(GenericCommand):
             L = (L << 8) + element
         return L << 12
 
-    @parse_args
-    @only_if_gdb_running
-    @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
-    @require_arch_set
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @Decorator.require_arch_set
     def do_invoke(self, args):
         if args.source:
             s = GefUtil.get_source(GlibcHeapExtractHeapAddrCommand.reveal)
@@ -28987,10 +28964,10 @@ class GlibcHeapCalcProtectedFdCommand(GenericCommand):
     ]
     _example_ = "\n".join(_example_).format(_cmdline_)
 
-    @parse_args
-    @only_if_gdb_running
-    @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
-    @require_arch_set
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @Decorator.require_arch_set
     def do_invoke(self, args):
         loc = args.location
         if args.as_base:
@@ -29173,10 +29150,10 @@ class GlibcHeapVisualHeapCommand(GenericCommand, BufferingOutput):
         pbar.close()
         return
 
-    @parse_args
-    @only_if_gdb_running
-    @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
-    @require_arch_set
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @Decorator.require_arch_set
     def do_invoke(self, args):
         # parse arena
         arena = GlibcHeap.get_arena(args.arena_addr)
@@ -29392,10 +29369,10 @@ class GlibcHeapDumpImageCommand(GenericCommand):
             )
         return cmd
 
-    @parse_args
-    @only_if_gdb_running
-    @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
-    @require_arch_set
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @Decorator.require_arch_set
     def do_invoke(self, args):
         try:
             GefUtil.which("convert") # imagemagick
@@ -29569,10 +29546,10 @@ class GlibcHeapSnapshotCommand(GenericCommand):
             return None
         return raw, info
 
-    @parse_args
-    @only_if_gdb_running
-    @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
-    @require_arch_set
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @Decorator.require_arch_set
     def do_invoke(self, args):
         # parse arena
         arena = GlibcHeap.get_arena(args.arena_addr)
@@ -29817,10 +29794,10 @@ class GlibcHeapSnapshotCompareCommand(GenericCommand, BufferingOutput):
             self.out.append(line)
         return
 
-    @parse_args
-    @only_if_gdb_running
-    @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
-    @require_arch_set
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @Decorator.require_arch_set
     def do_invoke(self, args):
         if args.file_path is not None and args.file_path2 is not None:
             ret1 = GlibcHeapSnapshotCommand.read_snapshot(self.args.file_path)
@@ -30051,9 +30028,9 @@ class RegistersCommand(GenericCommand):
                 lines += self.dump_seg_reg_x86_16()
         return lines
 
-    @parse_args
-    @only_if_gdb_running
-    @require_arch_set
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.require_arch_set
     def do_invoke(self, args):
         unavailable_regs = self.get_unavailable_regs()
 
@@ -30107,11 +30084,11 @@ class RopperCommand(GenericCommand):
         gef_print(help_text, less=True)
         return
 
-    # Need not @parse_args because argparse can't stop interpreting options for ropper.
-    @only_if_gdb_running
-    @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware"))
+    # Need not @Decorator.parse_args because argparse can't stop interpreting options for ropper.
+    @Decorator.only_if_gdb_running
+    @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware"))
     @ModuleLoader.load_ropper
-    @require_arch_set
+    @Decorator.require_arch_set
     def do_invoke(self, argv):
         if "-h" in argv or "--help" in argv:
             self.print_help()
@@ -30233,10 +30210,10 @@ class RpCommand(GenericCommand, BufferingOutput):
                 self.out.append(x)
         return
 
-    @parse_args
-    @only_if_gdb_running
-    @exclude_specific_gdb_mode(mode=("kgdb", "vmware"))
-    @only_if_specific_arch(arch=("x86_32", "x86_64"))
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.exclude_specific_gdb_mode(mode=("kgdb", "vmware"))
+    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64"))
     def do_invoke(self, args):
         try:
             rp = GefUtil.which("rp-lin")
@@ -30347,7 +30324,7 @@ class AssembleCommand(GenericCommand):
     ]
     _example_ = "\n".join(_example_).format(_cmdline_)
 
-    @parse_args
+    @Decorator.parse_args
     @ModuleLoader.load_keystone
     def do_invoke(self, args):
         if (args.arch, args.mode) == (None, None):
@@ -30469,7 +30446,7 @@ class DisassembleCommand(GenericCommand):
     ]
     _example_ = "\n".join(_example_).format(_cmdline_)
 
-    @parse_args
+    @Decorator.parse_args
     @ModuleLoader.load_capstone
     def do_invoke(self, args):
         if (args.arch, args.mode) == (None, None):
@@ -30728,9 +30705,9 @@ class AsmListCommand(GenericCommand):
         self.cache = valid_patterns
         return valid_patterns
 
-    @parse_args
+    @Decorator.parse_args
     @ModuleLoader.load_capstone
-    @require_arch_set
+    @Decorator.require_arch_set
     def do_invoke(self, args):
         if (args.arch, args.mode) == (None, None):
             if is_alive():
@@ -30841,9 +30818,9 @@ class ProcessSearchCommand(GenericCommand, BufferingOutput):
             yield t
         return
 
-    @parse_args
-    @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware"))
-    @require_arch_set
+    @Decorator.parse_args
+    @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware"))
+    @Decorator.require_arch_set
     def do_invoke(self, args):
         if args.pattern:
             pattern = re.compile(args.pattern)
@@ -31434,7 +31411,7 @@ class ElfInfoCommand(GenericCommand):
                     self.out.append(hexdump(section_data, show_symbol=False, base=s.sh_offset))
         return
 
-    @parse_args
+    @Decorator.parse_args
     def do_invoke(self, args):
         local_filepath = None
         remote_filepath = None
@@ -32003,9 +31980,9 @@ class ChecksecCommand(GenericCommand):
         self.check_gdb_ASLR()
         return
 
-    @parse_args
-    @exclude_specific_gdb_mode(mode=("wine", "kgdb"))
-    @require_arch_set
+    @Decorator.parse_args
+    @Decorator.exclude_specific_gdb_mode(mode=("wine", "kgdb"))
+    @Decorator.require_arch_set
     def do_invoke(self, args):
         if is_qemu_system() or is_vmware():
             info("Redirect to kchecksec")
@@ -34037,11 +34014,11 @@ class KernelChecksecCommand(GenericCommand):
         )
         return
 
-    @parse_args
-    @only_if_gdb_running
-    @only_if_specific_gdb_mode(mode=("qemu-system", "vmware"))
-    @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
-    @only_if_in_kernel_or_kpti_disabled
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware"))
+    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
+    @Decorator.only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
         self.print_security_properties_qemu_system()
         return
@@ -34194,10 +34171,10 @@ class ExploitableCommand(GenericCommand):
         self.details.append("=> no specific heuristic matched.")
         return "unknown", "Could not classify this stop with the available heuristics."
 
-    @parse_args
-    @only_if_gdb_running
-    @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware"))
-    @only_if_specific_arch(arch=("x86_32", "x86_64"))
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware"))
+    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64"))
     def do_invoke(self, args):
         self.details = []
         key, headline = self.classify()
@@ -36726,8 +36703,8 @@ class DwarfExceptionHandlerInfoCommand(GenericCommand, BufferingOutput):
     ]
     _note_ = "\n".join(_note_)
 
-    @parse_args
-    @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @Decorator.parse_args
+    @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
     def do_invoke(self, args):
         local_filepath = None
         remote_filepath = None
@@ -36874,10 +36851,10 @@ class UnwindInfoCommand(GenericCommand):
         linked_base = min(phdr.p_vaddr - phdr.p_offset for phdr in load_segments)
         return DwarfExceptionHandler(elf), mapped_base - linked_base
 
-    @parse_args
-    @only_if_gdb_running
-    @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware"))
-    @require_arch_set
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware"))
+    @Decorator.require_arch_set
     def do_invoke(self, args):
         pc = current_arch.pc if args.location is None else args.location
         handler, load_bias = self.find_handler(pc)
@@ -36949,7 +36926,7 @@ class MultiBreakCommand(GenericCommand):
     ]
     _note_ = "\n".join(_note_)
 
-    @parse_args
+    @Decorator.parse_args
     def do_invoke(self, args):
         for bp in args.location:
             gdb.execute("b *{:#x}".format(bp))
@@ -37018,9 +36995,9 @@ class MainBreakCommand(GenericCommand):
         _, val = current_arch.get_ith_parameter(0)
         return val
 
-    @parse_args
-    @only_if_gdb_running
-    @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
     def do_invoke(self, args):
         try:
             main_address = AddressUtil.parse_address("main")
@@ -37055,8 +37032,8 @@ class LoadBreakCommand(GenericCommand):
     parser = argparse.ArgumentParser(prog=_cmdline_)
     _syntax_ = parser.format_help()
 
-    @parse_args
-    @only_if_gdb_running
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
     def do_invoke(self, args):
         if gdb.parameter("stop-on-solib-events"):
             err("stop-on-solib-events is already 1")
@@ -37156,8 +37133,8 @@ class EntryBreakCommand(GenericCommand):
         # automatically continue
         return
 
-    # Need not @parse_args because argparse can't stop interpreting argument for start.
-    @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    # Need not @Decorator.parse_args because argparse can't stop interpreting argument for start.
+    @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
     def do_invoke(self, argv):
         if is_alive():
             if is_remote_debug():
@@ -37246,7 +37223,7 @@ class CommandBreakCommand(GenericCommand):
     ]
     _example_ = "\n".join(_example_).format(_cmdline_)
 
-    @parse_args
+    @Decorator.parse_args
     def do_invoke(self, args):
         location = args.location
         if location is None:
@@ -37303,8 +37280,8 @@ class RegisterDumpBreakCommand(GenericCommand):
     ]
     _example_ = "\n".join(_example_).format(_cmdline_)
 
-    @parse_args
-    @require_arch_set
+    @Decorator.parse_args
+    @Decorator.require_arch_set
     def do_invoke(self, args):
         if not args.regs:
             self.usage()
@@ -37356,8 +37333,8 @@ class BreakIfTakenCommand(GenericCommand):
     parser.add_argument("--hw", action="store_true", help="use hardware breakpoint.")
     _syntax_ = parser.format_help()
 
-    @parse_args
-    @require_arch_set
+    @Decorator.parse_args
+    @Decorator.require_arch_set
     def do_invoke(self, args):
         TakenOrNotBreakpoint(args.location, True, args.hw)
         return
@@ -37376,8 +37353,8 @@ class BreakIfNotTakenCommand(GenericCommand):
     parser.add_argument("--hw", action="store_true", help="use hardware breakpoint.")
     _syntax_ = parser.format_help()
 
-    @parse_args
-    @require_arch_set
+    @Decorator.parse_args
+    @Decorator.require_arch_set
     def do_invoke(self, args):
         TakenOrNotBreakpoint(args.location, False, args.hw)
         return
@@ -37560,7 +37537,7 @@ class ContextCommand(GenericCommand):
             print("\x1b[H\x1b[2J", end="")
         return
 
-    @parse_args
+    @Decorator.parse_args
     def do_invoke(self, args):
         # check on/off
         if "off" in args.commands:
@@ -37695,7 +37672,7 @@ class ContextLegendCommand(GenericCommand):
             gef_print(legend, redirect=redirect)
         return
 
-    @parse_args
+    @Decorator.parse_args
     def do_invoke(self, args):
         redirect = ContextCommand.get_redirect("legend", args.ignore_redirect)
         try:
@@ -37976,7 +37953,7 @@ class ContextRegistersCommand(GenericCommand):
         self.context_regs_syscall_errno(redirect)
         return
 
-    @parse_args
+    @Decorator.parse_args
     def do_invoke(self, args):
         redirect = ContextCommand.get_redirect("regs", args.ignore_redirect)
         try:
@@ -38058,7 +38035,7 @@ class ContextStackCommand(GenericCommand):
         )
         return
 
-    @parse_args
+    @Decorator.parse_args
     def do_invoke(self, args):
         redirect = ContextCommand.get_redirect("stack", args.ignore_redirect)
         try:
@@ -38420,7 +38397,7 @@ class ContextCodeCommand(GenericCommand):
                     pass
         return
 
-    @parse_args
+    @Decorator.parse_args
     def do_invoke(self, args):
         redirect = ContextCommand.get_redirect("code", args.ignore_redirect)
         try:
@@ -38633,7 +38610,7 @@ class ContextMemoryAccessCommand(GenericCommand):
         self.context_memory_access3(redirect) # for x86/x64 - cs/ss/ds/es
         return
 
-    @parse_args
+    @Decorator.parse_args
     def do_invoke(self, args):
         redirect = ContextCommand.get_redirect("mem_access", args.ignore_redirect)
         self.is_context_title_written = False
@@ -38874,7 +38851,7 @@ class ContextArgumentsCommand(GenericCommand):
         self.print_guessed_arguments(function_name, redirect)
         return
 
-    @parse_args
+    @Decorator.parse_args
     def do_invoke(self, args):
         redirect = ContextCommand.get_redirect("args", args.ignore_redirect)
         try:
@@ -39042,7 +39019,7 @@ class ContextSourceCommand(GenericCommand):
                 gef_print("{:1s}{:2s}{:s}".format(bp_prefix, "", future_line), redirect=redirect)
         return
 
-    @parse_args
+    @Decorator.parse_args
     def do_invoke(self, args):
         redirect = ContextCommand.get_redirect("source", args.ignore_redirect)
         try:
@@ -39083,7 +39060,7 @@ class ContextMemoryWatchCommand(GenericCommand):
             ContextCommand.execute_command(cmd, redirect)
         return
 
-    @parse_args
+    @Decorator.parse_args
     def do_invoke(self, args):
         redirect = ContextCommand.get_redirect("mem_watch", args.ignore_redirect)
         try:
@@ -39218,7 +39195,7 @@ class ContextTraceCommand(GenericCommand):
         orig_frame.select()
         return
 
-    @parse_args
+    @Decorator.parse_args
     def do_invoke(self, args):
         redirect = ContextCommand.get_redirect("trace", args.ignore_redirect)
         try:
@@ -39383,7 +39360,7 @@ class ContextThreadsCommand(GenericCommand):
                 pass
         return
 
-    @parse_args
+    @Decorator.parse_args
     def do_invoke(self, args):
         redirect = ContextCommand.get_redirect("threads", args.ignore_redirect)
         try:
@@ -39450,7 +39427,7 @@ class ContextExtraCommand(GenericCommand):
                 err(str(e), redirect=redirect)
         return
 
-    @parse_args
+    @Decorator.parse_args
     def do_invoke(self, args):
         redirect = ContextCommand.get_redirect("extra", args.ignore_redirect)
         try:
@@ -39482,9 +39459,9 @@ class MemoryCommand(GenericCommand):
         super().__init__(prefix=True)
         return
 
-    @parse_args
-    @only_if_gdb_running
-    @require_arch_set
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.require_arch_set
     def do_invoke(self, args):
         self.usage()
         return
@@ -39519,9 +39496,9 @@ class MemoryWatchCommand(GenericCommand):
         super().__init__(complete=gdb.COMPLETE_LOCATION)
         return
 
-    @parse_args
-    @only_if_gdb_running
-    @require_arch_set
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.require_arch_set
     def do_invoke(self, args):
         MemoryWatchCommand.mem_watches[args.address] = (args.count, args.unit)
         ok("Adding memwatch to {:#x}".format(args.address))
@@ -39550,9 +39527,9 @@ class MemoryUnwatchCommand(GenericCommand):
         super().__init__(complete=gdb.COMPLETE_LOCATION)
         return
 
-    @parse_args
-    @only_if_gdb_running
-    @require_arch_set
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.require_arch_set
     def do_invoke(self, args):
         res = MemoryWatchCommand.mem_watches.pop(args.address, None)
         if not res:
@@ -39572,9 +39549,9 @@ class MemoryResetCommand(GenericCommand):
     parser = argparse.ArgumentParser(prog=_cmdline_)
     _syntax_ = parser.format_help()
 
-    @parse_args
-    @only_if_gdb_running
-    @require_arch_set
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.require_arch_set
     def do_invoke(self, args):
         MemoryWatchCommand.mem_watches.clear()
         ok("Memory watches cleared")
@@ -39591,9 +39568,9 @@ class MemoryWatchListCommand(GenericCommand):
     parser = argparse.ArgumentParser(prog=_cmdline_)
     _syntax_ = parser.format_help()
 
-    @parse_args
-    @only_if_gdb_running
-    @require_arch_set
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.require_arch_set
     def do_invoke(self, args):
         if not MemoryWatchCommand.mem_watches:
             info("No memory watches")
@@ -39711,8 +39688,8 @@ class HexdumpCommand(GenericCommand, BufferingOutput):
             read_end -= get_pagesize()
         return None
 
-    @parse_args
-    @only_if_gdb_running
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
     def do_invoke(self, args):
         if args.phys:
             if not is_qemu_system() and not is_vmware() and not is_kgdb():
@@ -39773,8 +39750,8 @@ class XxdCommand(HexdumpCommand):
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
     _syntax_ = parser.format_help()
 
-    @parse_args
-    @only_if_gdb_running
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
     def do_invoke(self, args):
         flags = []
         if args.phys:
@@ -39898,8 +39875,8 @@ class HexdumpFlexibleCommand(GenericCommand, BufferingOutput):
             self.out.append(line)
         return
 
-    @parse_args
-    @only_if_gdb_running
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
     def do_invoke(self, args):
         if args.phys:
             if not is_qemu_system() and not is_vmware() and not is_kgdb():
@@ -39960,8 +39937,8 @@ class LoadFileCommand(GenericCommand):
     ]
     _note_ = "\n".join(_note_)
 
-    @parse_args
-    @only_if_gdb_running
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
     def do_invoke(self, args):
         if not os.path.exists(args.file_path):
             err("Could not find {:s}".format(args.file_path))
@@ -40035,10 +40012,10 @@ class LoadFileMmapCommand(GenericCommand):
     ]
     _note_ = "\n".join(_note_)
 
-    @parse_args
-    @only_if_gdb_running
-    @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware"))
-    @require_arch_set
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware"))
+    @Decorator.require_arch_set
     def do_invoke(self, args):
         if not os.path.exists(args.file_path):
             err("Could not find {:s}".format(args.file_path))
@@ -40277,9 +40254,9 @@ class PatchCommand(GenericCommand):
             return
 
     # for qword, dword, word, byte sub-commands
-    @parse_args
-    @only_if_gdb_running
-    @exclude_specific_gdb_mode(mode=("rr",))
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.exclude_specific_gdb_mode(mode=("rr",))
     def do_invoke(self, args):
         SUPPORTED_SIZES = {
             "qword": (8, "Q"),
@@ -40461,9 +40438,9 @@ class PatchStringCommand(PatchCommand):
         super().__init__(prefix=False, complete=gdb.COMPLETE_LOCATION)
         return
 
-    @parse_args
-    @only_if_gdb_running
-    @exclude_specific_gdb_mode(mode=("rr",))
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.exclude_specific_gdb_mode(mode=("rr",))
     def do_invoke(self, args):
         if args.phys:
             if not is_qemu_system():
@@ -40510,9 +40487,9 @@ class PatchHexCommand(PatchCommand):
         super().__init__(prefix=False, complete=gdb.COMPLETE_LOCATION)
         return
 
-    @parse_args
-    @only_if_gdb_running
-    @exclude_specific_gdb_mode(mode=("rr",))
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.exclude_specific_gdb_mode(mode=("rr",))
     def do_invoke(self, args):
         if args.phys:
             if not is_qemu_system():
@@ -40560,9 +40537,9 @@ class PatchPatternCommand(PatchCommand):
         super().__init__(prefix=False, complete=gdb.COMPLETE_LOCATION)
         return
 
-    @parse_args
-    @only_if_gdb_running
-    @exclude_specific_gdb_mode(mode=("rr",))
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.exclude_specific_gdb_mode(mode=("rr",))
     def do_invoke(self, args):
         if args.phys:
             if not is_qemu_system():
@@ -40645,10 +40622,10 @@ class PatchNopCommand(PatchCommand):
         self.PatchInfo(addr, insn * count, length=patch_bytes, phys=self.args.phys).patch()
         return
 
-    @parse_args
-    @only_if_gdb_running
-    @exclude_specific_gdb_mode(mode=("rr",))
-    @require_arch_set
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.exclude_specific_gdb_mode(mode=("rr",))
+    @Decorator.require_arch_set
     def do_invoke(self, args):
         if current_arch.nop_insn is None:
             err("This command is not supported on this architecture")
@@ -40723,10 +40700,10 @@ class PatchInfloopCommand(PatchCommand):
         self.PatchInfo(addr, insn, phys=self.args.phys).patch()
         return
 
-    @parse_args
-    @only_if_gdb_running
-    @exclude_specific_gdb_mode(mode=("rr",))
-    @require_arch_set
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.exclude_specific_gdb_mode(mode=("rr",))
+    @Decorator.require_arch_set
     def do_invoke(self, args):
         if current_arch.infloop_insn is None:
             err("This command is not supported on this architecture")
@@ -40788,10 +40765,10 @@ class PatchTrapCommand(PatchCommand):
         self.PatchInfo(addr, insn, phys=self.args.phys).patch()
         return
 
-    @parse_args
-    @only_if_gdb_running
-    @exclude_specific_gdb_mode(mode=("rr",))
-    @require_arch_set
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.exclude_specific_gdb_mode(mode=("rr",))
+    @Decorator.require_arch_set
     def do_invoke(self, args):
         if current_arch.trap_insn is None:
             err("This command is not supported on this architecture")
@@ -40853,10 +40830,10 @@ class PatchRetCommand(PatchCommand):
         self.PatchInfo(addr, insn, phys=self.args.phys).patch()
         return
 
-    @parse_args
-    @only_if_gdb_running
-    @exclude_specific_gdb_mode(mode=("rr",))
-    @require_arch_set
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.exclude_specific_gdb_mode(mode=("rr",))
+    @Decorator.require_arch_set
     def do_invoke(self, args):
         if current_arch.ret_insn is None:
             err("This command is not supported on this architecture")
@@ -40918,10 +40895,10 @@ class PatchSyscallCommand(PatchCommand):
         self.PatchInfo(addr, insn, phys=self.args.phys).patch()
         return
 
-    @parse_args
-    @only_if_gdb_running
-    @exclude_specific_gdb_mode(mode=("rr", "wine"))
-    @require_arch_set
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.exclude_specific_gdb_mode(mode=("rr", "wine"))
+    @Decorator.require_arch_set
     def do_invoke(self, args):
         if current_arch.syscall_insn is None:
             err("This command is not supported on this architecture")
@@ -40961,9 +40938,9 @@ class PatchHistoryCommand(PatchCommand, BufferingOutput):
         super().__init__(prefix=False)
         return
 
-    @parse_args
-    @only_if_gdb_running
-    @exclude_specific_gdb_mode(mode=("rr",))
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.exclude_specific_gdb_mode(mode=("rr",))
     def do_invoke(self, args):
         self.out = []
 
@@ -41014,9 +40991,9 @@ class PatchRevertCommand(PatchCommand):
         super().__init__(prefix=False)
         return
 
-    @parse_args
-    @only_if_gdb_running
-    @exclude_specific_gdb_mode(mode=("rr",))
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.exclude_specific_gdb_mode(mode=("rr",))
     def do_invoke(self, args):
         if len(PatchCommand.patch_history) == 0:
             info("Patch history stack is empty")
@@ -41090,9 +41067,9 @@ class PatchRangeReplaceCommand(PatchCommand):
             pos = found_pos + len(self.args.hstr_from)
         return
 
-    @parse_args
-    @only_if_gdb_running
-    @exclude_specific_gdb_mode(mode=("rr",))
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.exclude_specific_gdb_mode(mode=("rr",))
     def do_invoke(self, args):
         if args.phys:
             if not is_qemu_system():
@@ -41516,9 +41493,9 @@ class DereferenceCommand(GenericCommand):
             out.reverse()
         return out
 
-    @parse_args
-    @only_if_gdb_running
-    @require_arch_set
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.require_arch_set
     def do_invoke(self, args):
         if args.slab_contains or args.slab_contains_unaligned or args.phys:
             if not (is_qemu_system() or is_kgdb() or is_vmware()):
@@ -41621,9 +41598,9 @@ class ASLRCommand(GenericCommand):
         # finally, look for possible values for given prefix
         return [s for s in self.modes if s and s.startswith(text.strip())]
 
-    @parse_args
-    @only_if_gdb_target_local
-    @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_target_local
+    @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
     def do_invoke(self, args):
         if is_attach() or is_remote_debug():
             warn("ASLR setting is ignored because it is remote or attached process")
@@ -41673,8 +41650,8 @@ class FollowCommand(GenericCommand):
         # finally, look for possible values for given prefix
         return [s for s in self.modes if s and s.startswith(text.strip())]
 
-    @parse_args
-    @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware"))
+    @Decorator.parse_args
+    @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware"))
     def do_invoke(self, args):
         if args.command is None:
             follow = gdb.parameter("follow-fork-mode")
@@ -41703,7 +41680,7 @@ class SmartCppFunctionNameCommand(GenericCommand):
     parser = argparse.ArgumentParser(prog=_cmdline_)
     _syntax_ = parser.format_help()
 
-    @parse_args
+    @Decorator.parse_args
     def do_invoke(self, args):
         setting = Config.get_gef_setting("context.smart_cpp_function_name")
         gdb.execute("gef config context.smart_cpp_function_name {!s}".format(not setting), to_string=True)
@@ -41733,7 +41710,7 @@ class ExtraCommand(GenericCommand):
         super().__init__(prefix=prefix)
         return
 
-    @parse_args
+    @Decorator.parse_args
     def do_invoke(self, args):
         self.usage()
         return
@@ -41754,7 +41731,7 @@ class ExtraAddCommand(ExtraCommand):
         super().__init__(prefix=False)
         return
 
-    @parse_args
+    @Decorator.parse_args
     def do_invoke(self, args):
         ContextExtraCommand.context_extra_commands.append(" ".join(args.cmd))
         return
@@ -41774,7 +41751,7 @@ class ExtraListCommand(ExtraCommand):
         super().__init__(prefix=False)
         return
 
-    @parse_args
+    @Decorator.parse_args
     def do_invoke(self, args):
         if not ContextExtraCommand.context_extra_commands:
             warn("Nothing to display")
@@ -41800,7 +41777,7 @@ class ExtraRemoveCommand(ExtraCommand):
         super().__init__(prefix=False)
         return
 
-    @parse_args
+    @Decorator.parse_args
     def do_invoke(self, args):
         if args.index < len(ContextExtraCommand.context_extra_commands):
             ContextExtraCommand.context_extra_commands.pop(args.index)
@@ -41823,7 +41800,7 @@ class ExtraClearCommand(ExtraCommand):
         super().__init__(prefix=False)
         return
 
-    @parse_args
+    @Decorator.parse_args
     def do_invoke(self, args):
         ContextExtraCommand.context_extra_commands = []
         return
@@ -41857,8 +41834,8 @@ class CommentCommand(GenericCommand):
         super().__init__(prefix=prefix)
         return
 
-    @parse_args
-    @require_arch_set
+    @Decorator.parse_args
+    @Decorator.require_arch_set
     def do_invoke(self, args):
         self.usage()
         return
@@ -41881,8 +41858,8 @@ class CommentAddCommand(CommentCommand):
         super().__init__(prefix=False)
         return
 
-    @parse_args
-    @require_arch_set
+    @Decorator.parse_args
+    @Decorator.require_arch_set
     def do_invoke(self, args):
         comms = ContextCodeCommand.context_comments.get(args.location, [])
         ContextCodeCommand.context_comments[args.location] = comms + [args.comment]
@@ -41903,8 +41880,8 @@ class CommentLsCommand(CommentCommand):
         super().__init__(prefix=False)
         return
 
-    @parse_args
-    @require_arch_set
+    @Decorator.parse_args
+    @Decorator.require_arch_set
     def do_invoke(self, args):
         if not ContextCodeCommand.context_comments:
             warn("Nothing to display")
@@ -41933,8 +41910,8 @@ class CommentRemoveCommand(CommentCommand):
         super().__init__(prefix=False)
         return
 
-    @parse_args
-    @require_arch_set
+    @Decorator.parse_args
+    @Decorator.require_arch_set
     def do_invoke(self, args):
         if args.location not in ContextCodeCommand.context_comments:
             err("Invalid location")
@@ -41965,8 +41942,8 @@ class CommentClearCommand(CommentCommand):
         super().__init__(prefix=False)
         return
 
-    @parse_args
-    @require_arch_set
+    @Decorator.parse_args
+    @Decorator.require_arch_set
     def do_invoke(self, args):
         ContextCodeCommand.context_comments = {}
         return
@@ -42073,9 +42050,9 @@ class VMMapCommand(GenericCommand, BufferingOutput):
         self.out.append(legend)
         return
 
-    @parse_args
-    @only_if_gdb_running
-    @exclude_specific_gdb_mode(mode=("kgdb",))
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.exclude_specific_gdb_mode(mode=("kgdb",))
     def do_invoke(self, args):
         if is_qemu_system() or is_vmware():
             if is_arm32_cortex_m():
@@ -42197,8 +42174,8 @@ class XFilesCommand(GenericCommand, BufferingOutput):
     ]
     _example_ = "\n".join(_example_).format(_cmdline_)
 
-    @parse_args
-    @only_if_gdb_running
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
     def do_invoke(self, args):
         self.out = []
 
@@ -42310,10 +42287,10 @@ class XInfoCommand(GenericCommand):
         gef_print(ret.rstrip())
         return
 
-    @parse_args
-    @only_if_gdb_running
-    @exclude_specific_gdb_mode(mode=("kgdb",))
-    @require_arch_set
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.exclude_specific_gdb_mode(mode=("kgdb",))
+    @Decorator.require_arch_set
     def do_invoke(self, args):
         if args.location == []:
             locations = [current_arch.pc]
@@ -42361,8 +42338,8 @@ class XorMemoryCommand(GenericCommand):
         super().__init__(prefix=True)
         return
 
-    @parse_args
-    @only_if_gdb_running
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
     def do_invoke(self, args):
         self.usage()
         return
@@ -42394,8 +42371,8 @@ class XorMemoryDisplayCommand(GenericCommand, BufferingOutput):
         super().__init__(complete=gdb.COMPLETE_LOCATION)
         return
 
-    @parse_args
-    @only_if_gdb_running
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
     def do_invoke(self, args):
         self.out = []
 
@@ -42445,8 +42422,8 @@ class XorMemoryPatchCommand(GenericCommand):
         super().__init__(complete=gdb.COMPLETE_LOCATION)
         return
 
-    @parse_args
-    @only_if_gdb_running
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
     def do_invoke(self, args):
         start_addr = args.location
         end_addr = args.location + args.size
@@ -42482,7 +42459,7 @@ class PatternCommand(GenericCommand):
         self.add_setting("length", 1024, "Initial length of a cyclic buffer to generate")
         return
 
-    @parse_args
+    @Decorator.parse_args
     def do_invoke(self, args):
         self.usage()
         return
@@ -42536,7 +42513,7 @@ class PatternCreateCommand(GenericCommand):
         cycle = AddressUtil.get_memory_alignment()
         return bytes(itertools.islice(PatternCreateCommand.de_bruijn(charset, cycle), length))
 
-    @parse_args
+    @Decorator.parse_args
     def do_invoke(self, args):
         if args.size is None:
             size = Config.get_gef_setting("pattern.length")
@@ -42605,8 +42582,8 @@ class PatternSearchCommand(GenericCommand):
             search_pattern(inv_pattern)
         return
 
-    @parse_args
-    @only_if_gdb_running
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
     def do_invoke(self, args):
         if args.size is None:
             size = Config.get_gef_setting("pattern.length") * 64
@@ -42652,10 +42629,10 @@ class SigreturnCommand(GenericCommand):
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
     _syntax_ = parser.format_help()
 
-    @parse_args
-    @only_if_gdb_running
-    @exclude_specific_gdb_mode(mode=("wine",))
-    @only_if_specific_arch(arch=(
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.exclude_specific_gdb_mode(mode=("wine",))
+    @Decorator.only_if_specific_arch(arch=(
         "x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64", "MIPS32", "MIPSN32", "MIPS64", "PPC64",
         "S390X", "LOONGARCH64", "SPARC64", "SH4", "M68K", "ALPHA", "HPPA32",
     ))
@@ -43214,10 +43191,10 @@ class UcontextCommand(GenericCommand):
         fields.sort(key=lambda x: x[0])
         return fields
 
-    @parse_args
-    @only_if_gdb_running
-    @exclude_specific_gdb_mode(mode=("wine",))
-    @only_if_specific_arch(arch=(
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.exclude_specific_gdb_mode(mode=("wine",))
+    @Decorator.only_if_specific_arch(arch=(
         "x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64", "MIPS32", "MIPSN32", "MIPS64", "PPC32", "PPC64",
         "S390X", "LOONGARCH64", "SPARC64", "SH4", "M68K", "ALPHA", "HPPA32",
     ))
@@ -43497,10 +43474,10 @@ class JmpbufCommand(GenericCommand):
             return None
         return layout
 
-    @parse_args
-    @only_if_gdb_running
-    @exclude_specific_gdb_mode(mode=("wine",))
-    @only_if_specific_arch(arch=(
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.exclude_specific_gdb_mode(mode=("wine",))
+    @Decorator.only_if_specific_arch(arch=(
         "x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64", "MIPS32", "MIPSN32", "MIPS64", "PPC32", "PPC64",
         "S390X", "LOONGARCH64", "SPARC64", "SH4", "M68K", "ALPHA", "HPPA32", "OR1K", "MICROBLAZE", "ARC32", "ARC64",
         "CSKY",
@@ -43625,8 +43602,8 @@ class SropHintCommand(GenericCommand):
             pos = offset + size
         return s
 
-    @parse_args
-    @exclude_specific_gdb_mode(mode=("wine",))
+    @Decorator.parse_args
+    @Decorator.exclude_specific_gdb_mode(mode=("wine",))
     def do_invoke(self, args):
         if args.arch is None:
             if is_x86_64():
@@ -43805,7 +43782,7 @@ class Ret2dlHintCommand(GenericCommand):
     parser = argparse.ArgumentParser(prog=_cmdline_)
     _syntax_ = parser.format_help()
 
-    @parse_args
+    @Decorator.parse_args
     def do_invoke(self, args):
         s = ""
         s += "  +-.got/.got.plt @ itself---------+\n"
@@ -44063,10 +44040,10 @@ class LinkMapCommand(GenericCommand, BufferingOutput):
                 break
         return link_map
 
-    @parse_args
-    @only_if_gdb_running
-    @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
-    @require_arch_set
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @Decorator.require_arch_set
     def do_invoke(self, args):
         Cache.reset_gef_caches(all=True)
 
@@ -44493,10 +44470,10 @@ class DynamicCommand(GenericCommand, BufferingOutput):
             info("_DYNAMIC: {!s} [{!s}]".format(dynamic, dynamic.section.permission))
         return dynamic
 
-    @parse_args
-    @only_if_gdb_running
-    @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
-    @require_arch_set
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @Decorator.require_arch_set
     def do_invoke(self, args):
         dynamic_size = args.dynamic_size
         if args.dynamic_address:
@@ -45123,11 +45100,11 @@ class DestructorDumpCommand(GenericCommand):
                 gef_print("    -> {:s}: {!s}{:s}".format(self.C(addr), func, sym))
         return
 
-    @parse_args
-    @only_if_gdb_running
-    @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
-    @exclude_specific_arch(arch=("SPARC32", "XTENSA", "CRIS"))
-    @require_arch_set
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @Decorator.exclude_specific_arch(arch=("SPARC32", "XTENSA", "CRIS"))
+    @Decorator.require_arch_set
     def do_invoke(self, args):
         Cache.reset_gef_caches(all=True)
 
@@ -45239,9 +45216,9 @@ class FpChainCommand(GenericCommand):
             pass
         return None
 
-    @parse_args
-    @only_if_gdb_running
-    @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
     def do_invoke(self, args):
         if args.address is None:
             io_list_all = self.get_io_list_all()
@@ -45506,9 +45483,9 @@ class StandardIoCommand(GenericCommand, BufferingOutput):
             self.process_member(m, struct_io_jump_t_member, struct_io_wide_data_jump_t_array)
         return
 
-    @parse_args
-    @only_if_gdb_running
-    @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
     def do_invoke(self, args):
         if args.address:
             struct_io_file_array = []
@@ -46033,9 +46010,9 @@ class GotCommand(GenericCommand, BufferingOutput):
             self.out.append(line)
         return
 
-    @parse_args
-    @only_if_gdb_running
-    @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
     def do_invoke(self, args):
         try:
             GefUtil.which(Config.get_gef_setting("gef.objdump_command"))
@@ -46194,9 +46171,9 @@ class GotAllCommand(GenericCommand, BufferingOutput):
     parser.add_argument("--cppfilt", action="store_true", help="use c++filt to demangle.")
     _syntax_ = parser.format_help()
 
-    @parse_args
-    @only_if_gdb_running
-    @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
     def do_invoke(self, args):
         verbose = ["", "-v"][args.verbose]
         remote = ["", "-r"][args.remote]
@@ -46373,9 +46350,9 @@ class FormatStringSearchCommand(GenericCommand):
         ok("Removed {:d} FormatStringBreakpoint".format(bp_count))
         return
 
-    @parse_args
-    @exclude_specific_gdb_mode(mode=("wine",))
-    @require_arch_set
+    @Decorator.parse_args
+    @Decorator.exclude_specific_gdb_mode(mode=("wine",))
+    @Decorator.require_arch_set
     def do_invoke(self, args):
         if args.remove_breakpoint:
             self.remove_breakpoints()
@@ -47136,9 +47113,9 @@ class GlibcHeapTracerCommand(GenericCommand):
             pass
         return
 
-    @parse_args
-    @only_if_gdb_running
-    @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
     def do_invoke(self, args):
         if args.dump_current_list:
             self.dump_tracked_allocations()
@@ -47237,7 +47214,7 @@ class SyscallSearchCommand(GenericCommand, BufferingOutput):
             self.out.append("NR={:<#14x}{:s}{:s}".format(entry.nr, Color.boldify(entry.name), params))
         return
 
-    @parse_args
+    @Decorator.parse_args
     def do_invoke(self, args):
         syscall_num = None
         syscall_name_pattern = ".*"
@@ -58787,10 +58764,10 @@ class SyscallArgsCommand(GenericCommand):
             gef_print(line)
         return
 
-    @parse_args
-    @only_if_gdb_running
-    @exclude_specific_gdb_mode(mode=("wine",))
-    @require_arch_set
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.exclude_specific_gdb_mode(mode=("wine",))
+    @Decorator.require_arch_set
     def do_invoke(self, args):
         if args.nr is not None:
             syscall_register, nr = "-", args.nr
@@ -58836,9 +58813,9 @@ class CodeBaseCommand(GenericCommand):
         gdb.set_convenience_variable(var_name, addr)
         return
 
-    @parse_args
-    @only_if_gdb_running
-    @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware"))
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware"))
     def do_invoke(self, args):
         # user specific
         if args.set is not None:
@@ -59050,9 +59027,9 @@ class HeapBaseCommand(GenericCommand):
 
         return None
 
-    @parse_args
-    @only_if_gdb_running
-    @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
     def do_invoke(self, args):
         # user specific
         if args.set is not None:
@@ -59159,9 +59136,9 @@ class LibcBaseCommand(GenericCommand):
         info("If version detection is failing, you can fix it with: `gef config libc.assume_version (2,39)`")
         return
 
-    @parse_args
-    @only_if_gdb_running
-    @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware"))
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware"))
     def do_invoke(self, args):
         # user specific
         if args.set is not None:
@@ -59252,9 +59229,9 @@ class LdBaseCommand(GenericCommand):
             gef_print("ver:\t{:s}".format(String.bytes2str(pos.group(0))))
         return
 
-    @parse_args
-    @only_if_gdb_running
-    @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware"))
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware"))
     def do_invoke(self, args):
         # user specific
         if args.set is not None:
@@ -59485,10 +59462,10 @@ class MagicCommand(GenericCommand):
             self.resolve_and_print("'DW.ref.__gxx_personality_v0'", codebase)
         return
 
-    @parse_args
-    @only_if_gdb_running
-    @exclude_specific_gdb_mode(mode=("wine", "kgdb"))
-    @require_arch_set
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.exclude_specific_gdb_mode(mode=("wine", "kgdb"))
+    @Decorator.require_arch_set
     def do_invoke(self, args):
         if is_qemu_system() or is_vmware():
             info("Redirect to kmagic")
@@ -59808,11 +59785,11 @@ class KernelMagicCommand(GenericCommand):
             )
         return
 
-    @parse_args
-    @only_if_gdb_running
-    @only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
-    @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
-    @only_if_in_kernel_or_kpti_disabled
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
+    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
+    @Decorator.only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
         self.magic_kernel()
         return
@@ -59939,10 +59916,10 @@ class OneGadgetCommand(GenericCommand):
                 valid_lines.append("")
         return "\n".join(valid_lines)
 
-    @parse_args
-    @only_if_gdb_running
-    @only_if_gdb_target_local
-    @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.only_if_gdb_target_local
+    @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
     def do_invoke(self, args):
         try:
             one_gadget_command = GefUtil.which("one_gadget")
@@ -60022,8 +59999,8 @@ class SeccompCommand(GenericCommand):
                 err("install with `gem install seccomp-tools` or build `ceccomp`")
                 return None
 
-    @parse_args
-    @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @Decorator.parse_args
+    @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
     def do_invoke(self, args):
         if args.force_seccomp_tools:
             ret = self.get_seccomp_tools_command()
@@ -60105,9 +60082,9 @@ class SysregCommand(GenericCommand):
             gef_print("  |  ".join(out))
         return
 
-    @parse_args
-    @only_if_gdb_running
-    @require_arch_set
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.require_arch_set
     def do_invoke(self, args):
         if is_kgdb() and not kgdb_has_system_registers():
             err("Unsupported in kgdb mode without access to system registers")
@@ -60158,11 +60135,11 @@ class MmxSetCommand(GenericCommand):
         ExecAsm(codes, regs=regs).exec_code()
         return
 
-    @parse_args
-    @only_if_gdb_running
-    @exclude_specific_gdb_mode(mode=("rr", "kgdb"))
-    @only_if_specific_arch(arch=("x86_32", "x86_64"))
-    @only_if_kvm_disabled
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.exclude_specific_gdb_mode(mode=("rr", "kgdb"))
+    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64"))
+    @Decorator.only_if_kvm_disabled
     def do_invoke(self, args):
         # arg parse
         try:
@@ -60222,10 +60199,10 @@ class MmxCommand(GenericCommand):
             gef_print("{:s} : {:#018x}  |  {:s}  |".format(red(regname), regs[i], reghex))
         return
 
-    @parse_args
-    @only_if_gdb_running
-    @exclude_specific_gdb_mode(mode=("kgdb",))
-    @only_if_specific_arch(arch=("x86_32", "x86_64"))
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.exclude_specific_gdb_mode(mode=("kgdb",))
+    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64"))
     def do_invoke(self, args):
         self.print_mmx()
         return
@@ -60247,10 +60224,10 @@ class XmmSetCommand(GenericCommand):
     ]
     _example_ = "\n".join(_example_).format(_cmdline_)
 
-    @parse_args
-    @only_if_gdb_running
-    @exclude_specific_gdb_mode(mode=("rr", "kgdb"))
-    @only_if_specific_arch(arch=("x86_32", "x86_64"))
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.exclude_specific_gdb_mode(mode=("rr", "kgdb"))
+    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64"))
     def do_invoke(self, args):
         # arg parse
         try:
@@ -60351,9 +60328,9 @@ class SseCommand(GenericCommand):
         BitInfo("$mxcsr", 32, bit_info).print(reg)
         return
 
-    @only_if_gdb_running
-    @exclude_specific_gdb_mode(mode=("kgdb",))
-    @only_if_specific_arch(arch=("x86_32", "x86_64"))
+    @Decorator.only_if_gdb_running
+    @Decorator.exclude_specific_gdb_mode(mode=("kgdb",))
+    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64"))
     def do_invoke(self, argv):
         if "-h" in argv:
             self.usage()
@@ -60412,10 +60389,10 @@ class AvxCommand(GenericCommand):
             err("Could not find avx registers")
         return
 
-    @parse_args
-    @only_if_gdb_running
-    @exclude_specific_gdb_mode(mode=("kgdb",))
-    @only_if_specific_arch(arch=("x86_32", "x86_64"))
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.exclude_specific_gdb_mode(mode=("kgdb",))
+    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64"))
     def do_invoke(self, args):
         self.print_avx()
         return
@@ -60471,10 +60448,10 @@ class Avx512Command(GenericCommand):
             err("Could not find avx512 registers")
         return
 
-    @parse_args
-    @only_if_gdb_running
-    @exclude_specific_gdb_mode(mode=("kgdb",))
-    @only_if_specific_arch(arch=("x86_64",))
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.exclude_specific_gdb_mode(mode=("kgdb",))
+    @Decorator.only_if_specific_arch(arch=("x86_64",))
     def do_invoke(self, args):
         self.print_avx512()
         return
@@ -60811,10 +60788,10 @@ class FpuCommand(GenericCommand):
         BitInfo("$fop", 11).print(reg)
         return
 
-    @parse_args
-    @only_if_gdb_running
-    @exclude_specific_gdb_mode(mode=("kgdb",))
-    @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.exclude_specific_gdb_mode(mode=("kgdb",))
+    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
     def do_invoke(self, args):
         if is_x86():
             self.print_fpu_x86()
@@ -61426,9 +61403,9 @@ class ErrnoCommand(GenericCommand, BufferingOutput):
 
         return ERRNO_BASE_DICT | ERRNO_DICT
 
-    @parse_args
-    @exclude_specific_gdb_mode(mode=("wine",))
-    @require_arch_set
+    @Decorator.parse_args
+    @Decorator.exclude_specific_gdb_mode(mode=("wine",))
+    @Decorator.require_arch_set
     def do_invoke(self, args):
         ERRNO_DICT = ErrnoCommand.get_errno_dict()
 
@@ -61487,9 +61464,9 @@ class DistanceCommand(GenericCommand):
                         help="the address to calculate the offset as abs(A - B).")
     _syntax_ = parser.format_help()
 
-    @parse_args
-    @only_if_gdb_running
-    @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware"))
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware"))
     def do_invoke(self, args):
         if args.address_b is not None:
             offset = abs(args.address_a - args.address_b)
@@ -61591,7 +61568,7 @@ class U2dCommand(GenericCommand):
             gef_print("  {:10s} ---> ???".format("nan"))
         return
 
-    @parse_args
+    @Decorator.parse_args
     def do_invoke(self, args):
         try:
             if "." in args.value:
@@ -61622,7 +61599,7 @@ class UnsignedCommand(GenericCommand):
     ]
     _example_ = "\n".join(_example_).format(_cmdline_)
 
-    @parse_args
+    @Decorator.parse_args
     def do_invoke(self, args):
         gef_print("input: {:#x}".format(args.value))
 
@@ -61659,7 +61636,7 @@ class AddressifyCommand(GenericCommand):
     ]
     _example_ = "\n".join(_example_).format(_cmdline_)
 
-    @parse_args
+    @Decorator.parse_args
     def do_invoke(self, args):
         hex_value = ""
         for value in args.value:
@@ -62089,7 +62066,7 @@ class ConvertCommand(GenericCommand, BufferingOutput):
             self.string_caesar(value)
         return
 
-    @parse_args
+    @Decorator.parse_args
     def do_invoke(self, args):
         self.usage()
         return
@@ -62120,8 +62097,8 @@ class ConvertMemoryCommand(ConvertCommand):
         super().__init__(prefix=False, complete=gdb.COMPLETE_LOCATION)
         return
 
-    @parse_args
-    @only_if_gdb_running
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
     def do_invoke(self, args):
         try:
             value = read_memory(args.location, args.size)
@@ -62160,7 +62137,7 @@ class ConvertValueCommand(ConvertCommand):
         super().__init__(prefix=False)
         return
 
-    @parse_args
+    @Decorator.parse_args
     def do_invoke(self, args):
         if args.hex: # "41414141" -> "\x41\x41\x41\x41"
             value = GefUtil.fromhex_ignore_invalid(args.value, to_str=True)
@@ -65457,6 +65434,28 @@ class KernelAddressHeuristicFinder:
     USE_KSYSCTL = True # for debug
     DEBUG_CONTEXT = False # for debug; report which CPU context resolved each cpu-dependent heuristic
 
+    def cpu_context_dependent(f):
+        """Decorator for the heuristics whose answer depends on which CPU (= gdb thread) is selected.
+        The result is memoized per CPU context, so an answer resolved on one CPU is never reused
+        on another one. If `KF.DEBUG_CONTEXT` is set, each resolution is reported together with
+        the CPU context it was resolved in."""
+
+        @functools.wraps(f)
+        def wrapper(*args, **kwargs):
+            ret = f(*args, **kwargs)
+            if KernelAddressHeuristicFinder.DEBUG_CONTEXT:
+                thread = gdb.selected_thread()
+                cpu = KernelPerCpu.get_cpu_label(thread) if thread else "cpu?"
+                value = "None" if ret is None else "{:#x}".format(ret)
+                # Report to the real stderr, not via gef_print. These heuristics are often called
+                # from a nested `gdb.execute(..., to_string=True)`, which swallows gef_print().
+                sys.__stderr__.write("{} {:s}: {:s}() -> {:s}\n".format(
+                    Color.colorify("[D]", "bold magenta"), cpu, f.__qualname__, value,
+                ))
+            return ret
+
+        return Cache.cache_until_next(wrapper, cache_None=False, per_cpu=True)
+
     @staticmethod
     @Cache.cache_this_session(cache_None=False, until_new_objfile=True)
     def consts():
@@ -65475,7 +65474,7 @@ class KernelAddressHeuristicFinder:
         return None
 
     @staticmethod
-    @switch_to_intel_syntax
+    @Decorator.switch_to_intel_syntax
     def get_saved_command_line():
         # Do not use Ksym.get_addr since this function is used to discover KPTI,
         # because Ksym.get_addr uses a cache.
@@ -65508,7 +65507,7 @@ class KernelAddressHeuristicFinder:
         return None
 
     @staticmethod
-    @switch_to_intel_syntax
+    @Decorator.switch_to_intel_syntax
     def get_current_task():
         if not is_x86():
             return None
@@ -65683,7 +65682,7 @@ class KernelAddressHeuristicFinder:
 
     @staticmethod
     @cpu_context_dependent
-    @switch_to_intel_syntax
+    @Decorator.switch_to_intel_syntax
     def get_init_task():
         # plan 1 (directly)
         if KernelAddressHeuristicFinder.USE_DIRECTLY:
@@ -65955,7 +65954,7 @@ class KernelAddressHeuristicFinder:
         return None
 
     @staticmethod
-    @switch_to_intel_syntax
+    @Decorator.switch_to_intel_syntax
     def get_init_cred():
         # plan 1 (directly)
         if KernelAddressHeuristicFinder.USE_DIRECTLY:
@@ -65974,7 +65973,7 @@ class KernelAddressHeuristicFinder:
         return None
 
     @staticmethod
-    @switch_to_intel_syntax
+    @Decorator.switch_to_intel_syntax
     def get_init_net():
         # plan 1 (directly)
         if KernelAddressHeuristicFinder.USE_DIRECTLY:
@@ -66056,7 +66055,7 @@ class KernelAddressHeuristicFinder:
         return None
 
     @staticmethod
-    @switch_to_intel_syntax
+    @Decorator.switch_to_intel_syntax
     def get_init_user_ns():
         # plan 1 (directly)
         if KernelAddressHeuristicFinder.USE_DIRECTLY:
@@ -66090,7 +66089,7 @@ class KernelAddressHeuristicFinder:
         return None
 
     @staticmethod
-    @switch_to_intel_syntax
+    @Decorator.switch_to_intel_syntax
     def get_modules():
         # plan 1 (directly)
         if KernelAddressHeuristicFinder.USE_DIRECTLY:
@@ -66145,7 +66144,7 @@ class KernelAddressHeuristicFinder:
         return None
 
     @staticmethod
-    @switch_to_intel_syntax
+    @Decorator.switch_to_intel_syntax
     def get_chrdevs():
 
         def is_chrdevs(x):
@@ -66242,7 +66241,7 @@ class KernelAddressHeuristicFinder:
         return None
 
     @staticmethod
-    @switch_to_intel_syntax
+    @Decorator.switch_to_intel_syntax
     def get_cdev_map():
         # plan 1 (directly)
         if KernelAddressHeuristicFinder.USE_DIRECTLY:
@@ -66273,7 +66272,7 @@ class KernelAddressHeuristicFinder:
         return None
 
     @staticmethod
-    @switch_to_intel_syntax
+    @Decorator.switch_to_intel_syntax
     def get_devices_kset():
 
         def is_devices_kset(x):
@@ -66337,7 +66336,7 @@ class KernelAddressHeuristicFinder:
 
     @staticmethod
     @Cache.cache_this_session(per_inferior=True, until_new_objfile=True)
-    @switch_to_intel_syntax
+    @Decorator.switch_to_intel_syntax
     def get_sys_call_table_x64():
         if not is_x86_64():
             return None
@@ -66399,7 +66398,7 @@ class KernelAddressHeuristicFinder:
 
     @staticmethod
     @Cache.cache_this_session(per_inferior=True, until_new_objfile=True)
-    @switch_to_intel_syntax
+    @Decorator.switch_to_intel_syntax
     def get_sys_call_table_x32():
         if not is_x86_64():
             return None
@@ -66435,7 +66434,7 @@ class KernelAddressHeuristicFinder:
 
     @staticmethod
     @Cache.cache_this_session(per_inferior=True, until_new_objfile=True)
-    @switch_to_intel_syntax
+    @Decorator.switch_to_intel_syntax
     def get_sys_call_table_x86():
         if not is_x86():
             return None
@@ -66636,7 +66635,7 @@ class KernelAddressHeuristicFinder:
         return None
 
     @staticmethod
-    @switch_to_intel_syntax
+    @Decorator.switch_to_intel_syntax
     def get_per_cpu_offset():
         # plan 1 (directly)
         if KernelAddressHeuristicFinder.USE_DIRECTLY:
@@ -66677,7 +66676,7 @@ class KernelAddressHeuristicFinder:
         return None
 
     @staticmethod
-    @switch_to_intel_syntax
+    @Decorator.switch_to_intel_syntax
     def find_per_cpu_static_range(offsets):
         """Return (`__per_cpu_start`, `__per_cpu_end`), or (None, None) if they are unknown.
 
@@ -66790,7 +66789,7 @@ class KernelAddressHeuristicFinder:
         return None
 
     @staticmethod
-    @switch_to_intel_syntax
+    @Decorator.switch_to_intel_syntax
     def find_cpu_mask(kind, anchors):
         """Return the address of the cpu mask bitmap of `kind` found in the code of `anchors`, or None.
 
@@ -66838,7 +66837,7 @@ class KernelAddressHeuristicFinder:
         return None
 
     @staticmethod
-    @switch_to_intel_syntax
+    @Decorator.switch_to_intel_syntax
     def get_slab_caches():
         # plan 1 (directly)
         if KernelAddressHeuristicFinder.USE_DIRECTLY:
@@ -66976,7 +66975,7 @@ class KernelAddressHeuristicFinder:
         return None
 
     @staticmethod
-    @switch_to_intel_syntax
+    @Decorator.switch_to_intel_syntax
     def get_slab_kset():
         # plan 1 (directly)
         if KernelAddressHeuristicFinder.USE_DIRECTLY:
@@ -67011,7 +67010,7 @@ class KernelAddressHeuristicFinder:
         return None
 
     @staticmethod
-    @switch_to_intel_syntax
+    @Decorator.switch_to_intel_syntax
     def get_modprobe_path():
         # plan 1 (directly)
         if KernelAddressHeuristicFinder.USE_DIRECTLY:
@@ -67043,7 +67042,7 @@ class KernelAddressHeuristicFinder:
         return None
 
     @staticmethod
-    @switch_to_intel_syntax
+    @Decorator.switch_to_intel_syntax
     def get_poweroff_cmd():
         # plan 1 (directly)
         if KernelAddressHeuristicFinder.USE_DIRECTLY:
@@ -67072,7 +67071,7 @@ class KernelAddressHeuristicFinder:
         return None
 
     @staticmethod
-    @switch_to_intel_syntax
+    @Decorator.switch_to_intel_syntax
     def get_core_pattern():
         # plan 1 (directly)
         if KernelAddressHeuristicFinder.USE_DIRECTLY:
@@ -67107,7 +67106,7 @@ class KernelAddressHeuristicFinder:
         return None
 
     @staticmethod
-    @switch_to_intel_syntax
+    @Decorator.switch_to_intel_syntax
     def get_phys_base():
         if not is_x86_64():
             return None
@@ -67150,7 +67149,7 @@ class KernelAddressHeuristicFinder:
         return None
 
     @staticmethod
-    @switch_to_intel_syntax
+    @Decorator.switch_to_intel_syntax
     def get_PAGE_OFFSET_base():
         if not is_x86_64():
             return None
@@ -67192,12 +67191,12 @@ class KernelAddressHeuristicFinder:
         return None
 
     @staticmethod
-    @switch_to_intel_syntax
+    @Decorator.switch_to_intel_syntax
     def get_PAGE_OFFSET():
         return KernelAddressHeuristicFinder.consts().PAGE_OFFSET
 
     @staticmethod
-    @switch_to_intel_syntax
+    @Decorator.switch_to_intel_syntax
     def _get_PAGE_OFFSET():
         if is_x86_64():
             # plan 1 (fixed address)
@@ -67219,17 +67218,17 @@ class KernelAddressHeuristicFinder:
         return None
 
     @staticmethod
-    @switch_to_intel_syntax
+    @Decorator.switch_to_intel_syntax
     def get_PAGE_OFFSET_END():
         return KernelAddressHeuristicFinder.consts().PAGE_OFFSET_END
 
     @staticmethod
-    @switch_to_intel_syntax
+    @Decorator.switch_to_intel_syntax
     def get_VMALLOC_START():
         return KernelAddressHeuristicFinder.consts().VMALLOC_START
 
     @staticmethod
-    @switch_to_intel_syntax
+    @Decorator.switch_to_intel_syntax
     def _get_VMALLOC_START():
         # plan 1 (directly)
         if KernelAddressHeuristicFinder.USE_DIRECTLY:
@@ -67358,19 +67357,19 @@ class KernelAddressHeuristicFinder:
         return vmalloc_start if is_x86_64() else None
 
     @staticmethod
-    @switch_to_intel_syntax
+    @Decorator.switch_to_intel_syntax
     def get_VMALLOC_END():
         return KernelAddressHeuristicFinder.consts().VMALLOC_END
 
     @staticmethod
-    @switch_to_intel_syntax
+    @Decorator.switch_to_intel_syntax
     def get_VMEMMAP_START():
         if is_x86_64() or is_arm64():
             return KernelAddressHeuristicFinder.consts().VMEMMAP_START
         return None
 
     @staticmethod
-    @switch_to_intel_syntax
+    @Decorator.switch_to_intel_syntax
     def _get_VMEMMAP_START():
         if is_x86_64():
             # plan 1 (fixed address)
@@ -67432,14 +67431,14 @@ class KernelAddressHeuristicFinder:
         return None
 
     @staticmethod
-    @switch_to_intel_syntax
+    @Decorator.switch_to_intel_syntax
     def get_VMEMMAP_END():
         if is_x86_64() or is_arm64():
             return KernelAddressHeuristicFinder.consts().VMEMMAP_END
         return None
 
     @staticmethod
-    @switch_to_intel_syntax
+    @Decorator.switch_to_intel_syntax
     def get_end_of_fixed_addresses():
         if not is_x86() and not is_arm64():
             return
@@ -67469,7 +67468,7 @@ class KernelAddressHeuristicFinder:
         return None
 
     @staticmethod
-    @switch_to_intel_syntax
+    @Decorator.switch_to_intel_syntax
     def get_sizeof_cpu_entry_area():
         if not is_x86_32():
             return None
@@ -67485,7 +67484,7 @@ class KernelAddressHeuristicFinder:
         return None
 
     @staticmethod
-    @switch_to_intel_syntax
+    @Decorator.switch_to_intel_syntax
     def get_mem_section():
         if not is_x86_32() and not is_arm32():
             return None
@@ -67534,7 +67533,7 @@ class KernelAddressHeuristicFinder:
         return None
 
     @staticmethod
-    @switch_to_intel_syntax
+    @Decorator.switch_to_intel_syntax
     def get_mem_map():
         if not is_x86_32() and not is_arm32():
             return None
@@ -67587,7 +67586,7 @@ class KernelAddressHeuristicFinder:
         return None
 
     @staticmethod
-    @switch_to_intel_syntax
+    @Decorator.switch_to_intel_syntax
     def get_page_address_htable():
         if not is_x86_32() and not is_arm32():
             return None
@@ -67615,7 +67614,7 @@ class KernelAddressHeuristicFinder:
         return None
 
     @staticmethod
-    @switch_to_intel_syntax
+    @Decorator.switch_to_intel_syntax
     def get_clocksource_tsc():
         if not is_x86():
             return None
@@ -67650,7 +67649,7 @@ class KernelAddressHeuristicFinder:
         return None
 
     @staticmethod
-    @switch_to_intel_syntax
+    @Decorator.switch_to_intel_syntax
     def get_clocksource_list():
 
         def looks_like_clocksource_list(addr):
@@ -67718,7 +67717,7 @@ class KernelAddressHeuristicFinder:
         return None
 
     @staticmethod
-    @switch_to_intel_syntax
+    @Decorator.switch_to_intel_syntax
     def get_current_clocksource(clocksource_addresses):
         """Return the clocksource `curr_clocksource` points to."""
         clocksource_addresses = set(clocksource_addresses)
@@ -67801,7 +67800,7 @@ class KernelAddressHeuristicFinder:
         return first_listed_clocksource(res)
 
     @staticmethod
-    @switch_to_intel_syntax
+    @Decorator.switch_to_intel_syntax
     def get_capability_hooks():
         # plan 1 (directly)
         if KernelAddressHeuristicFinder.USE_DIRECTLY:
@@ -67867,7 +67866,7 @@ class KernelAddressHeuristicFinder:
         return None
 
     @staticmethod
-    @switch_to_intel_syntax
+    @Decorator.switch_to_intel_syntax
     def get_n_tty_ops():
         # plan 1 (directly)
         if KernelAddressHeuristicFinder.USE_DIRECTLY:
@@ -67903,7 +67902,7 @@ class KernelAddressHeuristicFinder:
         return None
 
     @staticmethod
-    @switch_to_intel_syntax
+    @Decorator.switch_to_intel_syntax
     def get_tty_ldiscs():
         # plan 1 (directly)
         if KernelAddressHeuristicFinder.USE_DIRECTLY:
@@ -67955,7 +67954,7 @@ class KernelAddressHeuristicFinder:
         return None
 
     @staticmethod
-    @switch_to_intel_syntax
+    @Decorator.switch_to_intel_syntax
     def get_sysctl_table_root():
         # plan 1 (directly)
         if KernelAddressHeuristicFinder.USE_DIRECTLY:
@@ -67990,7 +67989,7 @@ class KernelAddressHeuristicFinder:
         return None
 
     @staticmethod
-    @switch_to_intel_syntax
+    @Decorator.switch_to_intel_syntax
     def get_selinux_state():
         # plan 1 (directly)
         if KernelAddressHeuristicFinder.USE_DIRECTLY:
@@ -68049,7 +68048,7 @@ class KernelAddressHeuristicFinder:
         return None
 
     @staticmethod
-    @switch_to_intel_syntax
+    @Decorator.switch_to_intel_syntax
     def get_apparmor_enabled():
         # plan 1 (directly)
         if KernelAddressHeuristicFinder.USE_DIRECTLY:
@@ -68092,7 +68091,7 @@ class KernelAddressHeuristicFinder:
         return None
 
     @staticmethod
-    @switch_to_intel_syntax
+    @Decorator.switch_to_intel_syntax
     def get_apparmor_initialized():
         # plan 1 (directly)
         if KernelAddressHeuristicFinder.USE_DIRECTLY:
@@ -68126,7 +68125,7 @@ class KernelAddressHeuristicFinder:
         return None
 
     @staticmethod
-    @switch_to_intel_syntax
+    @Decorator.switch_to_intel_syntax
     def get_kernel_locked_down():
         # plan 1 (directly)
         if KernelAddressHeuristicFinder.USE_DIRECTLY:
@@ -68183,7 +68182,7 @@ class KernelAddressHeuristicFinder:
         return None
 
     @staticmethod
-    @switch_to_intel_syntax
+    @Decorator.switch_to_intel_syntax
     def get_tomoyo_enabled():
         # plan 1 (directly)
         if KernelAddressHeuristicFinder.USE_DIRECTLY:
@@ -68338,7 +68337,7 @@ class KernelAddressHeuristicFinder:
         return get_from_check_profile()
 
     @staticmethod
-    @switch_to_intel_syntax
+    @Decorator.switch_to_intel_syntax
     def get_mmap_min_addr():
         # plan 1 (directly)
         if KernelAddressHeuristicFinder.USE_DIRECTLY:
@@ -68389,7 +68388,7 @@ class KernelAddressHeuristicFinder:
         return None
 
     @staticmethod
-    @switch_to_intel_syntax
+    @Decorator.switch_to_intel_syntax
     def get_dac_mmap_min_addr():
         # plan 1 (directly)
         if KernelAddressHeuristicFinder.USE_DIRECTLY:
@@ -68435,7 +68434,7 @@ class KernelAddressHeuristicFinder:
         return None
 
     @staticmethod
-    @switch_to_intel_syntax
+    @Decorator.switch_to_intel_syntax
     def get_sysctl_unprivileged_userfaultfd():
         # plan 1 (directly)
         if KernelAddressHeuristicFinder.USE_DIRECTLY:
@@ -68474,7 +68473,7 @@ class KernelAddressHeuristicFinder:
         return None
 
     @staticmethod
-    @switch_to_intel_syntax
+    @Decorator.switch_to_intel_syntax
     def get_sysctl_unprivileged_bpf_disabled():
         # plan 1 (directly)
         if KernelAddressHeuristicFinder.USE_DIRECTLY:
@@ -68508,7 +68507,7 @@ class KernelAddressHeuristicFinder:
         return None
 
     @staticmethod
-    @switch_to_intel_syntax
+    @Decorator.switch_to_intel_syntax
     def get_kptr_restrict():
         # plan 1 (directly)
         if KernelAddressHeuristicFinder.USE_DIRECTLY:
@@ -68542,7 +68541,7 @@ class KernelAddressHeuristicFinder:
         return None
 
     @staticmethod
-    @switch_to_intel_syntax
+    @Decorator.switch_to_intel_syntax
     def get_sysctl_perf_event_paranoid():
         # plan 1 (directly)
         if KernelAddressHeuristicFinder.USE_DIRECTLY:
@@ -68576,7 +68575,7 @@ class KernelAddressHeuristicFinder:
         return None
 
     @staticmethod
-    @switch_to_intel_syntax
+    @Decorator.switch_to_intel_syntax
     def get_dmesg_restrict():
         # plan 1 (directly)
         if KernelAddressHeuristicFinder.USE_DIRECTLY:
@@ -68617,7 +68616,7 @@ class KernelAddressHeuristicFinder:
         return None
 
     @staticmethod
-    @switch_to_intel_syntax
+    @Decorator.switch_to_intel_syntax
     def get_kexec_load_disabled():
         # plan 1 (directly)
         if KernelAddressHeuristicFinder.USE_DIRECTLY:
@@ -68662,7 +68661,7 @@ class KernelAddressHeuristicFinder:
         return None
 
     @staticmethod
-    @switch_to_intel_syntax
+    @Decorator.switch_to_intel_syntax
     def get_loadpin_enabled():
         # plan 1 (from ksysctl)
         if KernelAddressHeuristicFinder.USE_KSYSCTL:
@@ -68672,7 +68671,7 @@ class KernelAddressHeuristicFinder:
         return None
 
     @staticmethod
-    @switch_to_intel_syntax
+    @Decorator.switch_to_intel_syntax
     def get_loadpin_enforce():
         # plan 1 (from ksysctl)
         if KernelAddressHeuristicFinder.USE_KSYSCTL:
@@ -68682,7 +68681,7 @@ class KernelAddressHeuristicFinder:
         return None
 
     @staticmethod
-    @switch_to_intel_syntax
+    @Decorator.switch_to_intel_syntax
     def get_ptrace_scope():
         # plan 1 (directly)
         if KernelAddressHeuristicFinder.USE_DIRECTLY:
@@ -68716,7 +68715,7 @@ class KernelAddressHeuristicFinder:
         return None
 
     @staticmethod
-    @switch_to_intel_syntax
+    @Decorator.switch_to_intel_syntax
     def get_vdso_image_64():
         if not is_x86_64():
             return None
@@ -68757,7 +68756,7 @@ class KernelAddressHeuristicFinder:
         return None
 
     @staticmethod
-    @switch_to_intel_syntax
+    @Decorator.switch_to_intel_syntax
     def get_vdso_image_x32():
         if not is_x86_64():
             return None
@@ -68785,7 +68784,7 @@ class KernelAddressHeuristicFinder:
         return None
 
     @staticmethod
-    @switch_to_intel_syntax
+    @Decorator.switch_to_intel_syntax
     def get_vdso_image_32():
         if not is_x86():
             return None
@@ -69069,7 +69068,7 @@ class KernelAddressHeuristicFinder:
         return current_arch.ptrsize * 6
 
     @staticmethod
-    @switch_to_intel_syntax
+    @Decorator.switch_to_intel_syntax
     def get_file_systems():
 
         def looks_like_file_systems(addr):
@@ -69131,7 +69130,7 @@ class KernelAddressHeuristicFinder:
         return None
 
     @staticmethod
-    @switch_to_intel_syntax
+    @Decorator.switch_to_intel_syntax
     def get_printk_rb_static():
         # plan 1 (directly)
         if KernelAddressHeuristicFinder.USE_DIRECTLY:
@@ -69178,7 +69177,7 @@ class KernelAddressHeuristicFinder:
         return None
 
     @staticmethod
-    @switch_to_intel_syntax
+    @Decorator.switch_to_intel_syntax
     def get_log_first_idx():
         # plan 1 (directly)
         if KernelAddressHeuristicFinder.USE_DIRECTLY:
@@ -69219,7 +69218,7 @@ class KernelAddressHeuristicFinder:
         return None
 
     @staticmethod
-    @switch_to_intel_syntax
+    @Decorator.switch_to_intel_syntax
     def get_log_next_idx():
         # plan 1 (directly)
         if KernelAddressHeuristicFinder.USE_DIRECTLY:
@@ -69258,7 +69257,7 @@ class KernelAddressHeuristicFinder:
         return None
 
     @staticmethod
-    @switch_to_intel_syntax
+    @Decorator.switch_to_intel_syntax
     def get___log_buf():
         # plan 1 (directly)
         if KernelAddressHeuristicFinder.USE_DIRECTLY:
@@ -69308,7 +69307,7 @@ class KernelAddressHeuristicFinder:
         return None
 
     @staticmethod
-    @switch_to_intel_syntax
+    @Decorator.switch_to_intel_syntax
     def get_log_buf_len():
         # plan 1 (directly)
         if KernelAddressHeuristicFinder.USE_DIRECTLY:
@@ -69364,7 +69363,7 @@ class KernelAddressHeuristicFinder:
         return None
 
     @staticmethod
-    @switch_to_intel_syntax
+    @Decorator.switch_to_intel_syntax
     def get_idt_base():
         if is_x86():
             if is_qemu_system():
@@ -69380,7 +69379,7 @@ class KernelAddressHeuristicFinder:
         return None
 
     @staticmethod
-    @switch_to_intel_syntax
+    @Decorator.switch_to_intel_syntax
     def get_gdt_base():
         if is_x86():
             if is_qemu_system():
@@ -69396,7 +69395,7 @@ class KernelAddressHeuristicFinder:
         return None
 
     @staticmethod
-    @switch_to_intel_syntax
+    @Decorator.switch_to_intel_syntax
     def get_tss_base():
         if is_x86():
             if is_qemu_system():
@@ -69407,7 +69406,7 @@ class KernelAddressHeuristicFinder:
         return None
 
     @staticmethod
-    @switch_to_intel_syntax
+    @Decorator.switch_to_intel_syntax
     def get_ldt_base():
         if is_x86():
             if is_qemu_system():
@@ -69421,7 +69420,7 @@ class KernelAddressHeuristicFinder:
         return None
 
     @staticmethod
-    @switch_to_intel_syntax
+    @Decorator.switch_to_intel_syntax
     def get_node_data():
         # when CONFIG_NUMA=y (maybe)
 
@@ -69503,7 +69502,7 @@ class KernelAddressHeuristicFinder:
         return None
 
     @staticmethod
-    @switch_to_intel_syntax
+    @Decorator.switch_to_intel_syntax
     def get_node_data0():
         # when CONFIG_NUMA=n
         # This method can only be called when `get_node_data()` fails.
@@ -69537,7 +69536,7 @@ class KernelAddressHeuristicFinder:
         return None
 
     @staticmethod
-    @switch_to_intel_syntax
+    @Decorator.switch_to_intel_syntax
     def get_prog_idr():
         # plan 1 (directly)
         if KernelAddressHeuristicFinder.USE_DIRECTLY:
@@ -69558,7 +69557,7 @@ class KernelAddressHeuristicFinder:
         return None
 
     @staticmethod
-    @switch_to_intel_syntax
+    @Decorator.switch_to_intel_syntax
     def get_map_idr():
         # plan 1 (directly)
         if KernelAddressHeuristicFinder.USE_DIRECTLY:
@@ -69579,7 +69578,7 @@ class KernelAddressHeuristicFinder:
         return None
 
     @staticmethod
-    @switch_to_intel_syntax
+    @Decorator.switch_to_intel_syntax
     def get_vmap_area_list():
         # plan 1 (directly)
         if KernelAddressHeuristicFinder.USE_DIRECTLY:
@@ -69702,7 +69701,7 @@ class KernelAddressHeuristicFinder:
         return fallback
 
     @staticmethod
-    @switch_to_intel_syntax
+    @Decorator.switch_to_intel_syntax
     def get_vmap_nodes_busy_head():
         kversion = Kernel.version()
         if kversion is None or kversion < "6.9":
@@ -69782,7 +69781,7 @@ class KernelAddressHeuristicFinder:
         return None
 
     @staticmethod
-    @switch_to_intel_syntax
+    @Decorator.switch_to_intel_syntax
     def get_free_vmap_area_list():
         # plan 1 (directly)
         if KernelAddressHeuristicFinder.USE_DIRECTLY:
@@ -70015,7 +70014,7 @@ class KernelAddressHeuristicFinder:
         return None
 
     @staticmethod
-    @switch_to_intel_syntax
+    @Decorator.switch_to_intel_syntax
     def get_timer_bases():
         # plan 1 (directly)
         if KernelAddressHeuristicFinder.USE_DIRECTLY:
@@ -70160,7 +70159,7 @@ class KernelAddressHeuristicFinder:
         return None
 
     @staticmethod
-    @switch_to_intel_syntax
+    @Decorator.switch_to_intel_syntax
     def get_hrtimer_bases():
         # plan 1 (directly)
         if KernelAddressHeuristicFinder.USE_DIRECTLY:
@@ -70260,7 +70259,7 @@ class KernelAddressHeuristicFinder:
         return None
 
     @staticmethod
-    @switch_to_intel_syntax
+    @Decorator.switch_to_intel_syntax
     def get_jiffies():
         # plan 1 (directly)
         if KernelAddressHeuristicFinder.USE_DIRECTLY:
@@ -70288,7 +70287,7 @@ class KernelAddressHeuristicFinder:
         return None
 
     @staticmethod
-    @switch_to_intel_syntax
+    @Decorator.switch_to_intel_syntax
     def get_pci_root_buses():
         # plan 1 (directly)
         if KernelAddressHeuristicFinder.USE_DIRECTLY:
@@ -70319,7 +70318,7 @@ class KernelAddressHeuristicFinder:
         return None
 
     @staticmethod
-    @switch_to_intel_syntax
+    @Decorator.switch_to_intel_syntax
     def get_ioport_resource():
         # plan 1 (directly)
         if KernelAddressHeuristicFinder.USE_DIRECTLY:
@@ -70426,7 +70425,7 @@ class KernelAddressHeuristicFinder:
         return None
 
     @staticmethod
-    @switch_to_intel_syntax
+    @Decorator.switch_to_intel_syntax
     def get_iomem_resource():
         # plan 1 (directly)
         if KernelAddressHeuristicFinder.USE_DIRECTLY:
@@ -70463,7 +70462,7 @@ class KernelAddressHeuristicFinder:
         return None
 
     @staticmethod
-    @switch_to_intel_syntax
+    @Decorator.switch_to_intel_syntax
     def get_db_list():
         # need DMA_SHARED_BUFFER=y
 
@@ -70510,7 +70509,7 @@ class KernelAddressHeuristicFinder:
         return None
 
     @staticmethod
-    @switch_to_intel_syntax
+    @Decorator.switch_to_intel_syntax
     def get_debugfs_list():
         # need DMA_SHARED_BUFFER=y
 
@@ -70571,7 +70570,7 @@ class KernelAddressHeuristicFinder:
         return None
 
     @staticmethod
-    @switch_to_intel_syntax
+    @Decorator.switch_to_intel_syntax
     def get_dmabuf_list():
         # need DMA_SHARED_BUFFER=y
 
@@ -70656,7 +70655,7 @@ class KernelAddressHeuristicFinder:
         return None
 
     @staticmethod
-    @switch_to_intel_syntax
+    @Decorator.switch_to_intel_syntax
     def get_irq_desc_tree():
         # plan 1 (directly)
         if KernelAddressHeuristicFinder.USE_DIRECTLY:
@@ -70691,7 +70690,7 @@ class KernelAddressHeuristicFinder:
         return None
 
     @staticmethod
-    @switch_to_intel_syntax
+    @Decorator.switch_to_intel_syntax
     def get_sparse_irqs():
         # plan 1 (directly)
         if KernelAddressHeuristicFinder.USE_DIRECTLY:
@@ -70735,7 +70734,7 @@ class KernelAddressHeuristicFinder:
         return None
 
     @staticmethod
-    @switch_to_intel_syntax
+    @Decorator.switch_to_intel_syntax
     def get_slub_tlbflush_queue():
         # plan 1 (directly)
         if KernelAddressHeuristicFinder.USE_DIRECTLY:
@@ -70764,7 +70763,7 @@ class KernelAddressHeuristicFinder:
         return None
 
     @staticmethod
-    @switch_to_intel_syntax
+    @Decorator.switch_to_intel_syntax
     def get_slub_addr_base():
         # plan 1 (directly)
         if KernelAddressHeuristicFinder.USE_DIRECTLY:
@@ -70833,7 +70832,7 @@ class KernelAddressHeuristicFinder:
         return None
 
     @staticmethod
-    @switch_to_intel_syntax
+    @Decorator.switch_to_intel_syntax
     def get_slub_addr_current():
         if Kernel.version() < "6.6":
             return None
@@ -78456,11 +78455,11 @@ class KernelAddressHeuristicSelftestCommand(GenericCommand, BufferingOutput):
             return "{:#x}".format(value)
         return str(value)
 
-    @parse_args
-    @only_if_gdb_running
-    @only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
-    @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
-    @only_if_in_kernel_or_kpti_disabled
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
+    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
+    @Decorator.only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
         gdb.set_convenience_variable("ks_selftest_failures", -1)
         self.quiet_info("Wait for kallsyms and heuristic scans")
@@ -78582,11 +78581,11 @@ class KernelbaseCommand(GenericCommand):
     parser.add_argument("-q", "--quiet", action="store_true", help="enable quiet mode.")
     _syntax_ = parser.format_help()
 
-    @parse_args
-    @only_if_gdb_running
-    @only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
-    @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64"))
-    @only_if_in_kernel_or_kpti_disabled
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
+    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64"))
+    @Decorator.only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
         if args.rescan:
             Cache.reset_gef_caches(all=True)
@@ -78633,11 +78632,11 @@ class KernelVersionCommand(GenericCommand):
     parser.add_argument("-q", "--quiet", action="store_true", help="enable quiet mode.")
     _syntax_ = parser.format_help()
 
-    @parse_args
-    @only_if_gdb_running
-    @only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
-    @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64"))
-    @only_if_in_kernel_or_kpti_disabled
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
+    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64"))
+    @Decorator.only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
         if args.rescan:
             Kernel.version_override = None
@@ -78686,11 +78685,11 @@ class KernelCmdlineCommand(GenericCommand):
     parser.add_argument("-q", "--quiet", action="store_true", help="enable quiet mode.")
     _syntax_ = parser.format_help()
 
-    @parse_args
-    @only_if_gdb_running
-    @only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
-    @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64"))
-    @only_if_in_kernel_or_kpti_disabled
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
+    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64"))
+    @Decorator.only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
         if args.rescan:
             Cache.reset_gef_caches(all=True)
@@ -78856,11 +78855,11 @@ class KernelCurrentCommand(GenericCommand):
                 self.quiet_err("Failed to resolve `__per_cpu_offset`")
         return
 
-    @parse_args
-    @only_if_gdb_running
-    @only_if_specific_gdb_mode(mode=("qemu-system", "vmware"))
-    @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64"))
-    @only_if_in_kernel_or_kpti_disabled
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware"))
+    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64"))
+    @Decorator.only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
         self.quiet_info("Wait for memory scan")
 
@@ -80660,11 +80659,11 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
             self.dump_task(task, current_tasks, namespace_context)
         return
 
-    @parse_args
-    @only_if_gdb_running
-    @only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
-    @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64"))
-    @only_if_in_kernel_or_kpti_disabled
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
+    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64"))
+    @Decorator.only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
         self.quiet_info("Wait for memory scan")
 
@@ -80718,11 +80717,11 @@ class KernelFilesCommand(GenericCommand):
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
     _syntax_ = parser.format_help()
 
-    @parse_args
-    @only_if_gdb_running
-    @only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
-    @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64"))
-    @only_if_in_kernel_or_kpti_disabled
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
+    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64"))
+    @Decorator.only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
         info("Redirect to `ktask -quF`")
 
@@ -80744,11 +80743,11 @@ class KernelSavedRegsCommand(GenericCommand):
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
     _syntax_ = parser.format_help()
 
-    @parse_args
-    @only_if_gdb_running
-    @only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
-    @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64"))
-    @only_if_in_kernel_or_kpti_disabled
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
+    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64"))
+    @Decorator.only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
         info("Redirect to `ktask -qur`")
 
@@ -80770,11 +80769,11 @@ class KernelSignalsCommand(GenericCommand):
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
     _syntax_ = parser.format_help()
 
-    @parse_args
-    @only_if_gdb_running
-    @only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
-    @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64"))
-    @only_if_in_kernel_or_kpti_disabled
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
+    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64"))
+    @Decorator.only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
         info("Redirect to `ktask -qus`")
 
@@ -80796,11 +80795,11 @@ class KernelNamespacesCommand(GenericCommand):
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
     _syntax_ = parser.format_help()
 
-    @parse_args
-    @only_if_gdb_running
-    @only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
-    @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64"))
-    @only_if_in_kernel_or_kpti_disabled
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
+    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64"))
+    @Decorator.only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
         info("Redirect to `ktask -quN`")
 
@@ -81019,11 +81018,11 @@ class KernelCredCommand(GenericCommand, BufferingOutput):
             filtered.append(entry)
         return filtered
 
-    @parse_args
-    @only_if_gdb_running
-    @only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
-    @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
-    @only_if_in_kernel_or_kpti_disabled
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
+    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
+    @Decorator.only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
         self.quiet_info("Wait for memory scan")
 
@@ -81706,11 +81705,11 @@ class KernelKeyringCommand(GenericCommand, BufferingOutput):
         self.out.extend("[!] " + message for message in self.walk_errors)
         return
 
-    @parse_args
-    @only_if_gdb_running
-    @only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
-    @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
-    @only_if_in_kernel_or_kpti_disabled
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
+    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
+    @Decorator.only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
         self.quiet_info("Wait for memory scan")
         if args.max_depth < 0 or args.max_keys <= 0:
@@ -82021,9 +82020,9 @@ class KernelLoadCommand(GenericCommand):
                 return slide
         return None
 
-    @parse_args
-    @only_if_gdb_running
-    @only_if_specific_gdb_mode(mode=("qemu-system", "vmware"))
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware"))
     def do_invoke(self, args):
         if not os.path.exists(args.path):
             err("Invalid path")
@@ -82289,11 +82288,11 @@ class KernelModuleCommand(GenericCommand, BufferingOutput):
                 self.apply_symbol(name_string, regions, entries)
         return
 
-    @parse_args
-    @only_if_gdb_running
-    @only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
-    @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64"))
-    @only_if_in_kernel_or_kpti_disabled
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
+    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64"))
+    @Decorator.only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
         self.quiet_info("Wait for memory scan")
         self.kmod = Kernel.modules()
@@ -82502,11 +82501,11 @@ class KernelModuleLoadCommand(GenericCommand):
         gdb.execute("add-symbol-file {!r} {:s}".format(self.args.path, command))
         return
 
-    @parse_args
-    @only_if_gdb_running
-    @only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
-    @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64"))
-    @only_if_in_kernel_or_kpti_disabled
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
+    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64"))
+    @Decorator.only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
         if not os.path.exists(args.path):
             self.quiet_err("Could not find {:s}".format(args.path))
@@ -83270,11 +83269,11 @@ class KernelBlockDevicesCommand(GenericCommand, BufferingOutput):
         self.device_names = {device - delta: name for device, name, _devt, class_name in kdev.devices if class_name == "block"}
         return bdevs
 
-    @parse_args
-    @only_if_gdb_running
-    @only_if_specific_gdb_mode(mode=("qemu-system", "vmware"))
-    @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64"))
-    @only_if_in_kernel_or_kpti_disabled
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware"))
+    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64"))
+    @Decorator.only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
         self.quiet_info("Wait for memory scan")
 
@@ -84476,11 +84475,11 @@ class KernelCharacterDevicesCommand(GenericCommand, BufferingOutput):
         self.print_output(check_terminal_size=True)
         return
 
-    @parse_args
-    @only_if_gdb_running
-    @only_if_specific_gdb_mode(mode=("qemu-system", "vmware"))
-    @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
-    @only_if_in_kernel_or_kpti_disabled
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware"))
+    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
+    @Decorator.only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
         self.quiet_info("Wait for memory scan")
 
@@ -85655,11 +85654,11 @@ class KernelOperationsCommand(GenericCommand, BufferingOutput):
         assert set(members.keys()) == set(self.types)
         return members
 
-    @parse_args
-    @only_if_gdb_running
-    @only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
-    @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
-    @only_if_in_kernel_or_kpti_disabled
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
+    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
+    @Decorator.only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
         # parse version
         if args.version:
@@ -85926,11 +85925,11 @@ class KernelSysctlCommand(GenericCommand, BufferingOutput):
         self.meta = Kernel.export_meta(self, self.ksysctl.meta)
         return ret
 
-    @parse_args
-    @only_if_gdb_running
-    @only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
-    @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64"))
-    @only_if_in_kernel_or_kpti_disabled
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
+    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64"))
+    @Decorator.only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
         self.exact_found = False
         if args.exact and not args.filter:
@@ -86129,11 +86128,11 @@ class KernelFileSystemsCommand(GenericCommand, BufferingOutput):
                 fst -= self.kfs.offset_hlist_node
         return
 
-    @parse_args
-    @only_if_gdb_running
-    @only_if_specific_gdb_mode(mode=("qemu-system", "vmware"))
-    @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
-    @only_if_in_kernel_or_kpti_disabled
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware"))
+    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
+    @Decorator.only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
         self.quiet_info("Wait for memory scan")
 
@@ -86534,11 +86533,11 @@ class KernelPathCommand(GenericCommand, BufferingOutput):
         self.out.append("{:#018x} {:18s} {:18s} {:12s} {:s}".format(dentry, "-", "-", path_info.status, path))
         return
 
-    @parse_args
-    @only_if_gdb_running
-    @only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
-    @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64"))
-    @only_if_in_kernel_or_kpti_disabled
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
+    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64"))
+    @Decorator.only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
         self.quiet_info("Wait for memory scan")
 
@@ -86834,11 +86833,11 @@ class KernelVfsCommand(GenericCommand, BufferingOutput):
         self.dump_dentry(dentry, "      ", mount, path)
         return
 
-    @parse_args
-    @only_if_gdb_running
-    @only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
-    @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
-    @only_if_in_kernel_or_kpti_disabled
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
+    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
+    @Decorator.only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
         self.quiet_info("Wait for memory scan")
 
@@ -87247,11 +87246,11 @@ class KernelMountCommand(GenericCommand, BufferingOutput):
             self.dump_mount(mount, mark, root)
         return
 
-    @parse_args
-    @only_if_gdb_running
-    @only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
-    @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
-    @only_if_in_kernel_or_kpti_disabled
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
+    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
+    @Decorator.only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
         self.quiet_info("Wait for memory scan")
 
@@ -87381,11 +87380,11 @@ class KernelClockSourceCommand(GenericCommand, BufferingOutput):
                 return candidate_offset
         return None
 
-    @parse_args
-    @only_if_gdb_running
-    @only_if_specific_gdb_mode(mode=("qemu-system", "vmware"))
-    @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
-    @only_if_in_kernel_or_kpti_disabled
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware"))
+    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
+    @Decorator.only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
         self.quiet_info("Wait for memory scan")
 
@@ -87991,11 +87990,11 @@ class KernelTimerCommand(GenericCommand, BufferingOutput):
                     i += 1
         return
 
-    @parse_args
-    @only_if_gdb_running
-    @only_if_specific_gdb_mode(mode=("qemu-system", "vmware"))
-    @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
-    @only_if_in_kernel_or_kpti_disabled
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware"))
+    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
+    @Decorator.only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
         kversion = Kernel.version()
         if kversion is None:
@@ -88451,7 +88450,7 @@ class KernelWorkqueueCommand(GenericCommand, BufferingOutput):
                 return timer_base + offset
         return None
 
-    @switch_to_intel_syntax
+    @Decorator.switch_to_intel_syntax
     def old_timer_base_candidates(self):
         """Return per-cpu tvec_bases base addresses (symbol and heuristic)."""
         address = Ksym.get_addr("tvec_bases")
@@ -88828,11 +88827,11 @@ class KernelWorkqueueCommand(GenericCommand, BufferingOutput):
             self.out.append(line)
         return
 
-    @parse_args
-    @only_if_gdb_running
-    @only_if_specific_gdb_mode(mode=("qemu-system", "vmware"))
-    @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
-    @only_if_in_kernel_or_kpti_disabled
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware"))
+    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
+    @Decorator.only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
         kversion = Kernel.version()
         if kversion is None:
@@ -89361,11 +89360,11 @@ class KernelPciDeviceCommand(GenericCommand, BufferingOutput):
         self.walk_pci_bus(first_root_bus)
         return
 
-    @parse_args
-    @only_if_gdb_running
-    @only_if_specific_gdb_mode(mode=("qemu-system", "vmware"))
-    @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
-    @only_if_in_kernel_or_kpti_disabled
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware"))
+    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
+    @Decorator.only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
         self.quiet_info("Wait for memory scan")
 
@@ -89566,11 +89565,11 @@ class KernelConfigCommand(GenericCommand, BufferingOutput):
             "or CONFIG_IKCONFIG=m without loading the configs module")
         return None
 
-    @parse_args
-    @only_if_gdb_running
-    @only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
-    @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64"))
-    @only_if_in_kernel_or_kpti_disabled
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
+    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64"))
+    @Decorator.only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
         self.quiet_info("Wait for memory scan")
 
@@ -89662,11 +89661,11 @@ class KernelSearchCodePtrCommand(GenericCommand, BufferingOutput):
             valid |= ret
         return valid
 
-    @parse_args
-    @only_if_gdb_running
-    @only_if_specific_gdb_mode(mode=("qemu-system", "vmware"))
-    @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
-    @only_if_in_kernel_or_kpti_disabled
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware"))
+    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
+    @Decorator.only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
         if args.max_range and args.max_range % current_arch.ptrsize:
             err("The range must be a multiple of the pointer size")
@@ -89949,10 +89948,10 @@ class KernelDiffCommand(GenericCommand, BufferingOutput):
         info("Removed {:d} snapshot{}".format(len(paths), "s" if len(paths) != 1 else ""))
         return
 
-    @only_if_gdb_running
-    @only_if_specific_gdb_mode(mode=("qemu-system", "vmware"))
-    @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
-    @only_if_in_kernel_or_kpti_disabled
+    @Decorator.only_if_gdb_running
+    @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware"))
+    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
+    @Decorator.only_if_in_kernel_or_kpti_disabled
     def save_current_snapshot(self, args):
         commands = self.get_commands(args)
         if not commands:
@@ -89970,10 +89969,10 @@ class KernelDiffCommand(GenericCommand, BufferingOutput):
         ok("Kernel snapshot saved as [{:d}]: {:s}".format(index, path))
         return
 
-    @only_if_gdb_running
-    @only_if_specific_gdb_mode(mode=("qemu-system", "vmware"))
-    @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
-    @only_if_in_kernel_or_kpti_disabled
+    @Decorator.only_if_gdb_running
+    @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware"))
+    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
+    @Decorator.only_if_in_kernel_or_kpti_disabled
     def compare_with_current(self, args, index):
         ret = self.get_snapshot_by_index(index)
         if ret is None:
@@ -90014,7 +90013,7 @@ class KernelDiffCommand(GenericCommand, BufferingOutput):
         )
         return
 
-    @parse_args
+    @Decorator.parse_args
     def do_invoke(self, args):
         if args.action == "save":
             self.save_current_snapshot(args)
@@ -90425,11 +90424,11 @@ class KernelDmesgCommand(GenericCommand, BufferingOutput):
                 break # something is wrong
         return
 
-    @parse_args
-    @only_if_gdb_running
-    @only_if_specific_gdb_mode(mode=("qemu-system", "vmware"))
-    @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
-    @only_if_in_kernel_or_kpti_disabled
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware"))
+    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
+    @Decorator.only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
         self.quiet_info("Wait for memory scan")
 
@@ -90586,8 +90585,8 @@ class StringsCommand(GenericCommand, BufferingOutput):
                         queue_iter.total = len(queue)
         return
 
-    @parse_args
-    @only_if_gdb_running
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
     def do_invoke(self, args):
         if args.location is None:
             if is_qemu_system() or is_kgdb() or is_in_kernel():
@@ -90766,7 +90765,7 @@ class KernelSyscallsCommand(GenericCommand, BufferingOutput):
         return tuple(function_addrs)
 
     @Cache.cache_this_session(per_inferior=True, until_new_objfile=True)
-    @switch_to_intel_syntax
+    @Decorator.switch_to_intel_syntax
     def parse_syscall_table(self, sys_call_table_addr, indices=None):
         table = []
         index_iter = itertools.count() if indices is None else indices
@@ -90925,11 +90924,11 @@ class KernelSyscallsCommand(GenericCommand, BufferingOutput):
             )
         return
 
-    @parse_args
-    @only_if_gdb_running
-    @only_if_specific_gdb_mode(mode=("qemu-system", "vmware"))
-    @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
-    @only_if_in_kernel_or_kpti_disabled
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware"))
+    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
+    @Decorator.only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
         self.out = []
         self.dump_syscall_tables()
@@ -91328,10 +91327,10 @@ class TlsCommand(GenericCommand, BufferingOutput):
         self.out.extend(r.rstrip().splitlines())
         return
 
-    @parse_args
-    @only_if_gdb_running
-    @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware"))
-    @require_arch_set
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware"))
+    @Decorator.require_arch_set
     def do_invoke(self, args):
         if not current_arch.tls_supported:
             warn("This command is not supported on this architecture")
@@ -91375,10 +91374,10 @@ class FsbaseCommand(GenericCommand):
     ]
     _note_ = "\n".join(_note_)
 
-    @parse_args
-    @only_if_gdb_running
-    @only_if_specific_arch(arch=("x86_32", "x86_64"))
-    @exclude_specific_gdb_mode(mode=("qiling", "kgdb"))
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64"))
+    @Decorator.exclude_specific_gdb_mode(mode=("qiling", "kgdb"))
     def do_invoke(self, args):
         fsbase = current_arch.get_fs()
         if fsbase is not None:
@@ -91397,10 +91396,10 @@ class GsbaseCommand(GenericCommand):
     parser = argparse.ArgumentParser(prog=_cmdline_)
     _syntax_ = parser.format_help()
 
-    @parse_args
-    @only_if_gdb_running
-    @exclude_specific_gdb_mode(mode=("qiling", "kgdb"))
-    @only_if_specific_arch(arch=("x86_32", "x86_64"))
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.exclude_specific_gdb_mode(mode=("qiling", "kgdb"))
+    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64"))
     def do_invoke(self, args):
         gsbase = current_arch.get_gs()
         if gsbase is not None:
@@ -91956,9 +91955,9 @@ class GdtInfoCommand(GenericCommand, BufferingOutput):
         self.out.append("-------------------------------------------------------------------------- 0byte")
         return
 
-    @parse_args
-    @exclude_specific_gdb_mode(mode=("wine",))
-    @only_if_specific_arch(arch=("x86_32", "x86_64", "x86_16"))
+    @Decorator.parse_args
+    @Decorator.exclude_specific_gdb_mode(mode=("wine",))
+    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "x86_16"))
     def do_invoke(self, args):
         self.out = []
 
@@ -92215,9 +92214,9 @@ class IdtInfoCommand(GenericCommand, BufferingOutput):
         self.out.append(" * p                : Segment present flag")
         return
 
-    @parse_args
-    @exclude_specific_gdb_mode(mode=("wine",))
-    @only_if_specific_arch(arch=("x86_32", "x86_64", "x86_16"))
+    @Decorator.parse_args
+    @Decorator.exclude_specific_gdb_mode(mode=("wine",))
+    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "x86_16"))
     def do_invoke(self, args):
         self.out = []
 
@@ -92390,8 +92389,8 @@ class MemoryCompareCommand(GenericCommand, BufferingOutput):
             self.info_add_out("No difference")
         return
 
-    @parse_args
-    @only_if_gdb_running
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
     def do_invoke(self, args):
         if args.phys1 or args.phys2:
             if not is_qemu_system():
@@ -92459,8 +92458,8 @@ class MemorySetCommand(GenericCommand):
             return
         return
 
-    @parse_args
-    @only_if_gdb_running
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
     def do_invoke(self, args):
         if args.phys:
             if not is_qemu_system():
@@ -92544,8 +92543,8 @@ class MemoryCopyCommand(GenericCommand):
             return
         return
 
-    @parse_args
-    @only_if_gdb_running
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
     def do_invoke(self, args):
         if args.phys1 or args.phys2:
             if not is_qemu_system():
@@ -92603,8 +92602,8 @@ class MemorySwapCommand(GenericCommand):
             return
         return
 
-    @parse_args
-    @only_if_gdb_running
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
     def do_invoke(self, args):
         if args.phys1 or args.phys2:
             if not is_qemu_system():
@@ -92661,8 +92660,8 @@ class MemoryInsertCommand(GenericCommand):
             return
         return
 
-    @parse_args
-    @only_if_gdb_running
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
     def do_invoke(self, args):
         if args.phys1 or args.phys2:
             if not is_qemu_system():
@@ -131559,7 +131558,7 @@ class HashCommand(GenericCommand):
                 return True
         return False
 
-    @parse_args
+    @Decorator.parse_args
     def do_invoke(self, args):
         self.usage()
         return
@@ -131646,8 +131645,8 @@ class HashMemoryCommand(HashCommand, BufferingOutput):
             self.out.append(line)
         return
 
-    @parse_args
-    @only_if_gdb_running
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
     def do_invoke(self, args):
         self.out = []
         self.out.append("Address: {:#x}".format(args.location))
@@ -131730,7 +131729,7 @@ class HashFileCommand(HashCommand, BufferingOutput):
             self.out.append(line)
         return
 
-    @parse_args
+    @Decorator.parse_args
     def do_invoke(self, args):
         self.out = []
         if not os.path.exists(args.filename):
@@ -131803,7 +131802,7 @@ class HashValueCommand(HashCommand, BufferingOutput):
             self.out.append(line)
         return
 
-    @parse_args
+    @Decorator.parse_args
     def do_invoke(self, args):
         if args.hex: # "41414141" -> b"\x41\x41\x41\x41"
             value = GefUtil.fromhex_ignore_invalid(args.value)
@@ -131863,7 +131862,7 @@ class HashListCommand(HashCommand, BufferingOutput):
             i += 1
         return
 
-    @parse_args
+    @Decorator.parse_args
     def do_invoke(self, args):
         self.out = []
         self.process()
@@ -133181,7 +133180,7 @@ class HashTestCommand(HashCommand, BufferingOutput):
 
         return manager()
 
-    @parse_args
+    @Decorator.parse_args
     def do_invoke(self, args):
         self.out = []
         if args.no_cffi:
@@ -133676,7 +133675,7 @@ class HashKnownCollisionCommand(HashCommand, BufferingOutput):
         self.show_hash_info(sha1_1, sha1_2, "sha1")
         return
 
-    @parse_args
+    @Decorator.parse_args
     def do_invoke(self, args):
         self.out = []
         self.show_md5_hash_collision()
@@ -133707,7 +133706,7 @@ class JsonCommand(GenericCommand, BufferingOutput):
         super().__init__(prefix=prefix, complete=complete)
         return
 
-    @parse_args
+    @Decorator.parse_args
     def do_invoke(self, args):
         self.usage()
         return
@@ -133750,8 +133749,8 @@ class JsonMemoryCommand(JsonCommand):
             pos += 1
         return s
 
-    @parse_args
-    @only_if_gdb_running
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
     def do_invoke(self, args):
         j = self.read_json(args.location)
         if not j:
@@ -133791,7 +133790,7 @@ class JsonValueCommand(JsonCommand):
         super().__init__(prefix=False)
         return
 
-    @parse_args
+    @Decorator.parse_args
     def do_invoke(self, args):
         try:
             jstr = json.dumps(json.loads(self.args.value), indent=2)
@@ -134112,7 +134111,7 @@ class CrcCommand(GenericCommand, BufferingOutput):
         line = "{:20s}:[{:2d}b/{:2d}B] {:s}".format(cname, bit, byte, crc)
         return line
 
-    @parse_args
+    @Decorator.parse_args
     def do_invoke(self, args):
         self.usage()
         return
@@ -134170,8 +134169,8 @@ class CrcMemoryCommand(CrcCommand):
             del mem
         return cfunc.finalhex()
 
-    @parse_args
-    @only_if_gdb_running
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
     def do_invoke(self, args):
         self.out = []
         self.out.append("Address: {:#x}".format(args.location))
@@ -134230,8 +134229,8 @@ class CrcFileCommand(CrcCommand):
                 del data
         return cfunc.finalhex()
 
-    @parse_args
-    @only_if_gdb_running
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
     def do_invoke(self, args):
         self.out = []
         if not os.path.exists(args.filename):
@@ -134282,7 +134281,7 @@ class CrcValueCommand(CrcCommand):
         super().__init__(prefix=False)
         return
 
-    @parse_args
+    @Decorator.parse_args
     def do_invoke(self, args):
         if args.hex: # "41414141" -> b"\x41\x41\x41\x41"
             value = GefUtil.fromhex_ignore_invalid(args.value)
@@ -134651,7 +134650,7 @@ class Crc32revCommand(GenericCommand):
             err("No bridge found under given constraints.")
         return
 
-    @parse_args
+    @Decorator.parse_args
     def do_invoke(self, args):
         if self.args.list == (self.args.wanted_crc is not None):
             self.usage()
@@ -135198,7 +135197,7 @@ class BaseNDecodeCommand(GenericCommand, BufferingOutput):
             yield (bname, bfunc)
         return None
 
-    @parse_args
+    @Decorator.parse_args
     def do_invoke(self, args):
         self.usage()
         return
@@ -135228,8 +135227,8 @@ class BaseNDecodeMemoryCommand(BaseNDecodeCommand):
         super().__init__(prefix=False, complete=gdb.COMPLETE_LOCATION)
         return
 
-    @parse_args
-    @only_if_gdb_running
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
     def do_invoke(self, args):
         self.out = []
         self.out.append("Address: {:#x}".format(args.location))
@@ -135274,7 +135273,7 @@ class BaseNDecodeValueCommand(BaseNDecodeCommand):
         super().__init__(prefix=False)
         return
 
-    @parse_args
+    @Decorator.parse_args
     def do_invoke(self, args):
         if args.hex: # "41414141" -> b"\x41\x41\x41\x41"
             value = GefUtil.fromhex_ignore_invalid(args.value)
@@ -135335,7 +135334,7 @@ class BaseNEncodeCommand(GenericCommand, BufferingOutput):
             yield (bname, bfunc)
         return None
 
-    @parse_args
+    @Decorator.parse_args
     def do_invoke(self, args):
         self.usage()
         return
@@ -135365,8 +135364,8 @@ class BaseNEncodeMemoryCommand(BaseNEncodeCommand):
         super().__init__(prefix=False, complete=gdb.COMPLETE_LOCATION)
         return
 
-    @parse_args
-    @only_if_gdb_running
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
     def do_invoke(self, args):
         self.out = []
         self.out.append("Address: {:#x}".format(args.location))
@@ -135414,7 +135413,7 @@ class BaseNEncodeValueCommand(BaseNEncodeCommand):
         super().__init__(prefix=False)
         return
 
-    @parse_args
+    @Decorator.parse_args
     def do_invoke(self, args):
         if args.hex: # "41414141" -> b"\x41\x41\x41\x41"
             value = GefUtil.fromhex_ignore_invalid(args.value)
@@ -135463,7 +135462,7 @@ class MorseDecodeCommand(GenericCommand):
         super().__init__(prefix=prefix, complete=complete)
         return
 
-    @parse_args
+    @Decorator.parse_args
     def do_invoke(self, args):
         self.usage()
         return
@@ -135492,8 +135491,8 @@ class MorseDecodeMemoryCommand(MorseDecodeCommand):
         super().__init__(prefix=False, complete=gdb.COMPLETE_LOCATION)
         return
 
-    @parse_args
-    @only_if_gdb_running
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
     def do_invoke(self, args):
         gef_print("Address: {:#x}".format(args.location))
         gef_print("Size: {:#x}".format(args.size))
@@ -135529,7 +135528,7 @@ class MorseDecodeValueCommand(MorseDecodeCommand):
         super().__init__(prefix=False)
         return
 
-    @parse_args
+    @Decorator.parse_args
     def do_invoke(self, args):
         decoded = String.morse_decode(args.value)
         gef_print("{!s}".format(decoded))
@@ -135558,7 +135557,7 @@ class MorseEncodeCommand(GenericCommand):
         super().__init__(prefix=prefix, complete=complete)
         return
 
-    @parse_args
+    @Decorator.parse_args
     def do_invoke(self, args):
         self.usage()
         return
@@ -135587,8 +135586,8 @@ class MorseEncodeMemoryCommand(MorseEncodeCommand):
         super().__init__(prefix=False, complete=gdb.COMPLETE_LOCATION)
         return
 
-    @parse_args
-    @only_if_gdb_running
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
     def do_invoke(self, args):
         gef_print("Address: {:#x}".format(args.location))
         gef_print("Size: {:#x}".format(args.size))
@@ -135624,7 +135623,7 @@ class MorseEncodeValueCommand(MorseEncodeCommand):
         super().__init__(prefix=False)
         return
 
-    @parse_args
+    @Decorator.parse_args
     def do_invoke(self, args):
         encoded = String.morse_encode(args.value)
         gef_print("{!s}".format(encoded))
@@ -135698,8 +135697,8 @@ class IsMemoryZeroCommand(GenericCommand):
         info("Length of 0x00: {:d}".format(found_addr.value - start))
         return
 
-    @parse_args
-    @only_if_gdb_running
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
     def do_invoke(self, args):
         if args.phys:
             if not is_qemu_system():
@@ -135753,8 +135752,8 @@ class StringLengthCommand(GenericCommand):
             current += len(data)
         return None
 
-    @parse_args
-    @only_if_gdb_running
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
     def do_invoke(self, args):
         if args.phys:
             if not is_qemu_system():
@@ -135830,8 +135829,8 @@ class SequenceLengthCommand(GenericCommand):
             current += read_size
         return None
 
-    @parse_args
-    @only_if_gdb_running
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
     def do_invoke(self, args):
         if args.phys:
             if not is_qemu_system():
@@ -135943,7 +135942,7 @@ class MultiLineCommand(GenericCommand):
             return False # fail
         return True
 
-    # Need not @parse_args because argparse can't stop interpreting options for user specified command.
+    # Need not @Decorator.parse_args because argparse can't stop interpreting options for user specified command.
     def do_invoke(self, argv):
         if len(argv) == 1 and argv[0] == "-h":
             self.usage()
@@ -135988,7 +135987,7 @@ class TimeCommand(GenericCommand):
         super().__init__(complete=gdb.COMPLETE_COMMAND)
         return
 
-    # Need not @parse_args because argparse can't stop interpreting options for user specified command.
+    # Need not @Decorator.parse_args because argparse can't stop interpreting options for user specified command.
     def do_invoke(self, argv):
         if len(argv) == 1 and argv[0] == "-h":
             self.usage()
@@ -136042,7 +136041,7 @@ class SaveOutputCommand(GenericCommand):
         super().__init__(prefix=False, complete=gdb.COMPLETE_COMMAND)
         return
 
-    # Need not @parse_args because argparse can't stop interpreting options for user specified command.
+    # Need not @Decorator.parse_args because argparse can't stop interpreting options for user specified command.
     def do_invoke(self, argv):
         if len(argv) == 1 and argv[0] == "-h":
             self.usage()
@@ -136129,7 +136128,7 @@ class DiffOutputCommand(GenericCommand):
 
         return sorted(saved_files, key=lambda x:os.path.getmtime(x[:-4] + ".cmd"))
 
-    @parse_args
+    @Decorator.parse_args
     def do_invoke(self, args):
         self.usage()
         return
@@ -136168,7 +136167,7 @@ class DiffOutputColordiffCommand(DiffOutputCommand):
         result = subprocess.getoutput(cmd)
         return result
 
-    @parse_args
+    @Decorator.parse_args
     def do_invoke(self, args):
         try:
             self.colordiff = GefUtil.which("colordiff")
@@ -136232,7 +136231,7 @@ class DiffOutputGitDiffCommand(DiffOutputCommand):
         result = subprocess.getoutput(cmd)
         return result
 
-    @parse_args
+    @Decorator.parse_args
     def do_invoke(self, args):
         try:
             self.git = GefUtil.which("git")
@@ -136278,7 +136277,7 @@ class DiffOutputListCommand(DiffOutputCommand):
         super().__init__(prefix=False)
         return
 
-    @parse_args
+    @Decorator.parse_args
     def do_invoke(self, args):
         file_list = self.get_saved_files()
         max_path = max([len(fname) for fname in file_list] + [40])
@@ -136313,7 +136312,7 @@ class DiffOutputClearCommand(DiffOutputCommand):
         super().__init__(prefix=False)
         return
 
-    @parse_args
+    @Decorator.parse_args
     def do_invoke(self, args):
         if args.all:
             for path in self.get_saved_files():
@@ -136412,9 +136411,9 @@ class IiCommand(GenericCommand):
                 gef_print(line[:pos] + ": " + bytecode_hex + " " + line[pos:])
         return
 
-    @parse_args
-    @only_if_gdb_running
-    @require_arch_set
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.require_arch_set
     def do_invoke(self, args):
         if args.location is None:
             location = current_arch.pc
@@ -136457,7 +136456,7 @@ class ConstGrepCommand(GenericCommand):
             return None
         return content
 
-    @parse_args
+    @Decorator.parse_args
     def do_invoke(self, args):
         srcdir = "/usr/include"
         pattern = re.compile(r"^#define\s+\S*" + args.pattern)
@@ -139439,11 +139438,11 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
             return None
         return self.walk_caches(target_names, list(range(self.ncpus)))[1:]
 
-    @parse_args
-    @only_if_gdb_running
-    @only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
-    @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
-    @only_if_in_kernel_or_kpti_disabled
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
+    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
+    @Decorator.only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
         if args.help_for_slab_virtual:
             gef_print(self._note2_.strip())
@@ -140267,11 +140266,11 @@ class SlubTinyDumpCommand(GenericCommand, BufferingOutput):
             return None
         return self.walk_caches(target_names)[1:]
 
-    @parse_args
-    @only_if_gdb_running
-    @only_if_specific_gdb_mode(mode=("qemu-system", "vmware"))
-    @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
-    @only_if_in_kernel_or_kpti_disabled
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware"))
+    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
+    @Decorator.only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
         self.quiet_info("Wait for memory scan")
 
@@ -141155,11 +141154,11 @@ class SlabDumpCommand(GenericCommand, BufferingOutput):
             return None
         return self.walk_caches(target_names, list(range(self.ncpus)))[1:]
 
-    @parse_args
-    @only_if_gdb_running
-    @only_if_specific_gdb_mode(mode=("qemu-system", "vmware"))
-    @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
-    @only_if_in_kernel_or_kpti_disabled
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware"))
+    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
+    @Decorator.only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
         self.quiet_info("Wait for memory scan")
 
@@ -141582,11 +141581,11 @@ class SlobDumpCommand(GenericCommand, BufferingOutput):
         parsed_caches, _parsed_freelist = self.walk_caches(target_names)
         return parsed_caches[1:]
 
-    @parse_args
-    @only_if_gdb_running
-    @only_if_specific_gdb_mode(mode=("qemu-system", "vmware"))
-    @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
-    @only_if_in_kernel_or_kpti_disabled
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware"))
+    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
+    @Decorator.only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
         self.quiet_info("Wait for memory scan")
 
@@ -141909,11 +141908,11 @@ class SlabContainsCommand(GenericCommand):
             ))
         return
 
-    @parse_args
-    @only_if_gdb_running
-    @only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
-    @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
-    @only_if_in_kernel_or_kpti_disabled
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
+    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
+    @Decorator.only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
         self.quiet_info("Wait for memory scan")
 
@@ -142349,11 +142348,11 @@ class KobjCommand(GenericCommand):
             self.emit("Symbol", sym.strip())
         return
 
-    @parse_args
-    @only_if_gdb_running
-    @only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
-    @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
-    @only_if_in_kernel_or_kpti_disabled
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
+    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
+    @Decorator.only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
         self.quiet_info("Resolving")
         self.rr = "-r " if args.rescan else ""
@@ -142828,11 +142827,11 @@ class KmemCacheAliasCommand(GenericCommand, BufferingOutput):
             self.out.append("No caches found matching filters")
         return
 
-    @parse_args
-    @only_if_gdb_running
-    @only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
-    @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
-    @only_if_in_kernel_or_kpti_disabled
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
+    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
+    @Decorator.only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
         self.quiet_info("Wait for memory scan")
 
@@ -143947,11 +143946,11 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
                                 self.out.append(str(entry))
         return
 
-    @parse_args
-    @only_if_gdb_running
-    @only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
-    @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
-    @only_if_in_kernel_or_kpti_disabled
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
+    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
+    @Decorator.only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
         kversion = Kernel.version()
         if kversion is None:
@@ -144307,11 +144306,11 @@ class BuddyContainsCommand(BuddyDumpCommand):
             self.parse_free_lists(page)
         return
 
-    @parse_args
-    @only_if_gdb_running
-    @only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
-    @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
-    @only_if_in_kernel_or_kpti_disabled
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
+    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
+    @Decorator.only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
         kversion = Kernel.version()
         if kversion < "3.1":
@@ -145134,11 +145133,11 @@ class KernelPipeCommand(GenericCommand, BufferingOutput):
                 self.out.append(out)
         return
 
-    @parse_args
-    @only_if_gdb_running
-    @only_if_specific_gdb_mode(mode=("qemu-system", "vmware"))
-    @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
-    @only_if_in_kernel_or_kpti_disabled
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware"))
+    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
+    @Decorator.only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
         self.quiet_info("Wait for memory scan")
 
@@ -145915,11 +145914,11 @@ class KernelSocketCommand(GenericCommand, BufferingOutput):
             return None
         return socks
 
-    @parse_args
-    @only_if_gdb_running
-    @only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
-    @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64"))
-    @only_if_in_kernel_or_kpti_disabled
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
+    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64"))
+    @Decorator.only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
         self.out = []
         if args.dump:
@@ -146460,11 +146459,11 @@ class KernelSkbCommand(GenericCommand, BufferingOutput):
         self.quiet_info("sk_buff_data_t: {:s} ({:s})".format("offset" if layout["tail_is_offset"] else "pointer", source))
         return
 
-    @parse_args
-    @only_if_gdb_running
-    @only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
-    @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64"))
-    @only_if_in_kernel_or_kpti_disabled
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
+    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64"))
+    @Decorator.only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
         skb = args.skb
         self.out = []
@@ -146970,11 +146969,11 @@ class KernelBpfCommand(GenericCommand, BufferingOutput):
                     self.out.append(res.rstrip())
         return
 
-    @parse_args
-    @only_if_gdb_running
-    @only_if_specific_gdb_mode(mode=("qemu-system", "vmware"))
-    @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
-    @only_if_in_kernel_or_kpti_disabled
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware"))
+    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
+    @Decorator.only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
         self.quiet_info("Wait for memory scan")
 
@@ -147501,11 +147500,11 @@ class KernelIpcsCommand(GenericCommand, BufferingOutput):
                 ))
         return
 
-    @parse_args
-    @only_if_gdb_running
-    @only_if_specific_gdb_mode(mode=("qemu-system", "vmware"))
-    @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
-    @only_if_in_kernel_or_kpti_disabled
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware"))
+    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
+    @Decorator.only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
         self.quiet_info("Wait for memory scan")
 
@@ -147675,11 +147674,11 @@ class KernelDeviceIOCommand(GenericCommand, BufferingOutput):
         self.seen = set()
         return self.dump_resource(addr, sizeof_resource_size_t)
 
-    @parse_args
-    @only_if_gdb_running
-    @only_if_specific_gdb_mode(mode=("qemu-system", "vmware"))
-    @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64"))
-    @only_if_in_kernel_or_kpti_disabled
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware"))
+    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64"))
+    @Decorator.only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
         self.quiet_info("Wait for memory scan")
 
@@ -148043,11 +148042,11 @@ class KernelDmaBufCommand(GenericCommand, BufferingOutput):
             self.dump_sgl(sgl)
         return
 
-    @parse_args
-    @only_if_gdb_running
-    @only_if_specific_gdb_mode(mode=("qemu-system", "vmware"))
-    @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
-    @only_if_in_kernel_or_kpti_disabled
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware"))
+    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
+    @Decorator.only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
         self.quiet_info("Wait for memory scan")
 
@@ -148337,11 +148336,11 @@ class KernelIrqCommand(GenericCommand, BufferingOutput):
                     ).rstrip())
         return
 
-    @parse_args
-    @only_if_gdb_running
-    @only_if_specific_gdb_mode(mode=("qemu-system", "vmware"))
-    @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
-    @only_if_in_kernel_or_kpti_disabled
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware"))
+    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
+    @Decorator.only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
         self.quiet_info("Wait for memory scan")
 
@@ -148485,11 +148484,11 @@ class KernelNetDeviceCommand(GenericCommand, BufferingOutput):
             info("Please note that the address detected as `net_device` is precisely the address of &net_device.name")
         return
 
-    @parse_args
-    @only_if_gdb_running
-    @only_if_specific_gdb_mode(mode=("qemu-system", "vmware"))
-    @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
-    @only_if_in_kernel_or_kpti_disabled
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware"))
+    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
+    @Decorator.only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
         self.quiet_info("Wait for memory scan")
 
@@ -148742,11 +148741,11 @@ class VmallocDumpCommand(GenericCommand, BufferingOutput):
                         pass
         return
 
-    @parse_args
-    @only_if_gdb_running
-    @only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
-    @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
-    @only_if_in_kernel_or_kpti_disabled
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
+    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
+    @Decorator.only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
         self.quiet_info("Wait for memory scan")
 
@@ -148869,10 +148868,10 @@ class KtypesCommand(GenericCommand, BufferingOutput):
         GefUtil.os_system("{!r} btf dump file {!r} format c > {!r}".format(GefUtil.which("bpftool"), raw_path, header_path))
         return header_path
 
-    @parse_args
-    @only_if_gdb_running
-    @only_if_specific_gdb_mode(mode=("qemu-system", "vmware"))
-    @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware"))
+    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
     def do_invoke(self, args):
         if not self.check_command():
             return
@@ -148939,10 +148938,10 @@ class KtypesLoadCommand(KtypesCommand):
 
         return obj_path
 
-    @parse_args
-    @only_if_gdb_running
-    @only_if_specific_gdb_mode(mode=("qemu-system", "vmware"))
-    @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware"))
+    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
     def do_invoke(self, args):
         if not self.check_command():
             return
@@ -150654,10 +150653,10 @@ class KsymaddrRemoteCommand(GenericCommand, BufferingOutput):
         err("Could not find cached config (Run the `ksymaddr-remote` command at least once)")
         return
 
-    @parse_args
-    @only_if_gdb_running
-    @only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
-    @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64"))
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
+    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64"))
     def do_invoke(self, args):
         if args.print_saved_config:
             self.print_saved_config()
@@ -150789,11 +150788,11 @@ class VmlinuxToElfApplyCommand(GenericCommand):
         # Success
         return symboled_vmlinux_file
 
-    @parse_args
-    @only_if_gdb_running
-    @only_if_specific_gdb_mode(mode=("qemu-system", "vmware"))
-    @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
-    @only_if_in_kernel
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware"))
+    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
+    @Decorator.only_if_in_kernel
     def do_invoke(self, args):
         info("Wait for memory scan")
 
@@ -151351,10 +151350,10 @@ class TcmallocDumpCommand(GenericCommand, BufferingOutput):
                 self.dump_central_cache_freelist_single(addr, i, j)
         return
 
-    @parse_args
-    @only_if_gdb_running
-    @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
-    @only_if_specific_arch(arch=("x86_64",))
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @Decorator.only_if_specific_arch(arch=("x86_64",))
     def do_invoke(self, args):
         self.out = []
         if not self.initialize():
@@ -151658,10 +151657,10 @@ class GoHeapDumpCommand(GenericCommand, BufferingOutput):
                 self.dump_mspan_data(mspan)
         return
 
-    @parse_args
-    @only_if_gdb_running
-    @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
-    @only_if_specific_arch(arch=("x86_64",))
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @Decorator.only_if_specific_arch(arch=("x86_64",))
     def do_invoke(self, args):
         self.out = []
         if not self.initialize():
@@ -151888,10 +151887,10 @@ class TlsfHeapDumpCommand(GenericCommand, BufferingOutput):
                     current = next_
         return
 
-    @parse_args
-    @only_if_gdb_running
-    @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
-    @only_if_specific_arch(arch=("x86_64",))
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @Decorator.only_if_specific_arch(arch=("x86_64",))
     def do_invoke(self, args):
         if args.pool:
             pool_addr = args.pool
@@ -152092,10 +152091,10 @@ class HoardHeapDumpCommand(GenericCommand, BufferingOutput):
                 current = read_int_from_memory(current)
         return
 
-    @parse_args
-    @only_if_gdb_running
-    @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
-    @only_if_specific_arch(arch=("x86_64",))
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @Decorator.only_if_specific_arch(arch=("x86_64",))
     def do_invoke(self, args):
         if args.superblock:
             super_blocks = args.superblock
@@ -152949,10 +152948,10 @@ class MimallocHeapDumpCommand(GenericCommand, BufferingOutput):
 
         return None
 
-    @parse_args
-    @only_if_gdb_running
-    @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
-    @only_if_specific_arch(arch=("x86_64",))
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @Decorator.only_if_specific_arch(arch=("x86_64",))
     def do_invoke(self, args):
         if args.mi_heap_main:
             mi_heap_main = args.mi_heap_main
@@ -153460,10 +153459,10 @@ class SnmallocHeapDumpCommand(GenericCommand, BufferingOutput):
             self.out.append(" -> {:#x}".format(obj))
         return
 
-    @parse_args
-    @only_if_gdb_running
-    @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
-    @only_if_specific_arch(arch=("x86_64",))
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @Decorator.only_if_specific_arch(arch=("x86_64",))
     def do_invoke(self, args):
         self.out = []
         if not self.initialize():
@@ -154065,10 +154064,10 @@ class CageCommand(GenericCommand, BufferingOutput):
             return True
         return False
 
-    @parse_args
-    @only_if_gdb_running
-    @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
-    @only_if_specific_arch(arch=("x86_64",))
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @Decorator.only_if_specific_arch(arch=("x86_64",))
     def do_invoke(self, args):
         maps = ProcessMap.get_process_maps()
         if not maps:
@@ -154374,10 +154373,10 @@ class V8ListMapsCommand(GenericCommand, BufferingOutput):
             self.out.append(line)
         return
 
-    @parse_args
-    @only_if_gdb_running
-    @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
-    @only_if_specific_arch(arch=("x86_64",))
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @Decorator.only_if_specific_arch(arch=("x86_64",))
     def do_invoke(self, args):
         cage_base = V8ListMapsCommand.get_cage_base()
         if not cage_base:
@@ -154884,10 +154883,10 @@ class V8DumpSpaceCommand(GenericCommand, BufferingOutput):
             self.walk_space(start, limit, cage_base)
         return
 
-    @parse_args
-    @only_if_gdb_running
-    @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
-    @only_if_specific_arch(arch=("x86_64",))
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @Decorator.only_if_specific_arch(arch=("x86_64",))
     def do_invoke(self, args):
         cage_base = V8ListMapsCommand.get_cage_base()
         if not cage_base:
@@ -154951,9 +154950,9 @@ class V8Command(GenericCommand):
                 return True
         return False
 
-    @parse_args
-    @only_if_gdb_running
-    @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
     def do_invoke(self, args):
         if args.load_v8_gdbinit:
             gdbinit_filename = self.get_gdbinit()
@@ -156036,10 +156035,10 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
             self.out.append(text)
         return
 
-    @parse_args
-    @only_if_gdb_running
-    @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
-    @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
     def do_invoke(self, args):
         if is_32bit():
             self.align_pad = None
@@ -156348,10 +156347,10 @@ class ScallocHeapDumpCommand(GenericCommand, BufferingOutput):
             current += 0x20_0000 # kVirtualSpanSize
         return span
 
-    @parse_args
-    @only_if_gdb_running
-    @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
-    @only_if_specific_arch(arch=("x86_64",))
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @Decorator.only_if_specific_arch(arch=("x86_64",))
     def do_invoke(self, args):
         object_space = self.get_object_space()
         if object_space is None:
@@ -157015,10 +157014,10 @@ class SsmallocHeapDumpCommand(GenericCommand, BufferingOutput):
             self.dump_global_queue("released_dc_head[{:#x}]".format(index), queue_addr)
         return
 
-    @parse_args
-    @only_if_gdb_running
-    @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
-    @only_if_specific_arch(arch=("x86_64",))
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @Decorator.only_if_specific_arch(arch=("x86_64",))
     def do_invoke(self, args):
         self.out = []
 
@@ -157562,10 +157561,10 @@ class MuslHeapDumpCommand(GenericCommand, BufferingOutput):
                 current = meta.next
         return
 
-    @parse_args
-    @only_if_gdb_running
-    @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
-    @only_if_specific_arch(arch=("x86_32", "x86_64"))
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64"))
     def do_invoke(self, args):
         self.out = []
 
@@ -158113,10 +158112,10 @@ class UclibcNgHeapDumpCommand(GenericCommand, BufferingOutput):
         self.verbose_add_out("(heap_base):         {:#x}".format(malloc_state.heap_base))
         return
 
-    @parse_args
-    @only_if_gdb_running
-    @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
-    @only_if_specific_arch(arch=("x86_32", "x86_64"))
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64"))
     def do_invoke(self, args):
         self.out = []
 
@@ -158395,10 +158394,10 @@ class UclibcNgVisualHeapCommand(UclibcNgHeapDumpCommand, BufferingOutput):
         pbar.close()
         return
 
-    @parse_args
-    @only_if_gdb_running
-    @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
-    @only_if_specific_arch(arch=("x86_32", "x86_64"))
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64"))
     def do_invoke(self, args):
         malloc_state = self.read_malloc_state(args.malloc_state)
         if malloc_state is None:
@@ -158491,8 +158490,8 @@ class XStringCommand(GenericCommand, BufferingOutput):
                 address += pos + 1
         return
 
-    @parse_args
-    @only_if_gdb_running
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
     def do_invoke(self, args):
         if args.count is None:
             count = 1
@@ -158546,8 +158545,8 @@ class XColoredCommand(GenericCommand, BufferingOutput):
         Color.cyanify,
     ]
 
-    @parse_args
-    @only_if_gdb_running
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
     def do_invoke(self, args):
         if args.color_num < 1 or len(self.colors) < args.color_num:
             err("Invalid --color-num")
@@ -158666,10 +158665,10 @@ class XphysAddrCommand(GenericCommand):
 
         return None
 
-    @parse_args
-    @only_if_gdb_running
-    @only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
-    @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64"))
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
+    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64"))
     def do_invoke(self, args):
         # arg parse
         ret = XphysAddrCommand.parse_type_unit_count(args.format)
@@ -158786,10 +158785,10 @@ class XSecureMemAddrCommand(GenericCommand):
         ))
         return
 
-    @parse_args
-    @only_if_gdb_running
-    @only_if_specific_gdb_mode(mode=("qemu-system",))
-    @only_if_specific_arch(arch=("ARM32", "ARM64"))
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.only_if_specific_gdb_mode(mode=("qemu-system",))
+    @Decorator.only_if_specific_arch(arch=("ARM32", "ARM64"))
     def do_invoke(self, args):
         # arg parse
         ret = XphysAddrCommand.parse_type_unit_count(args.format)
@@ -158912,10 +158911,10 @@ class WSecureMemAddrCommand(GenericCommand):
             err("Failed to write adata")
         return
 
-    @parse_args
-    @only_if_gdb_running
-    @only_if_specific_gdb_mode(mode=("qemu-system",))
-    @only_if_specific_arch(arch=("ARM32", "ARM64"))
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.only_if_specific_gdb_mode(mode=("qemu-system",))
+    @Decorator.only_if_specific_arch(arch=("ARM32", "ARM64"))
     def do_invoke(self, args):
         try:
             if args.mode == "byte":
@@ -159012,10 +159011,10 @@ class BreakSecureMemAddrCommand(GenericCommand):
         info("Moving back to EL{:d}".format(saved_el))
         return
 
-    @parse_args
-    @only_if_gdb_running
-    @only_if_specific_gdb_mode(mode=("qemu-system",))
-    @only_if_specific_arch(arch=("ARM32", "ARM64"))
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.only_if_specific_gdb_mode(mode=("qemu-system",))
+    @Decorator.only_if_specific_arch(arch=("ARM32", "ARM64"))
     def do_invoke(self, args):
         if args.verbose:
             info("Phys address: {:#x}".format(args.location))
@@ -159213,10 +159212,10 @@ class OpteeBreakTaAddrCommand(GenericCommand):
 
         return __thread_enter_user_mode
 
-    @parse_args
-    @only_if_gdb_running
-    @only_if_specific_gdb_mode(mode=("qemu-system",))
-    @only_if_specific_arch(arch=("ARM32", "ARM64"))
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.only_if_specific_gdb_mode(mode=("qemu-system",))
+    @Decorator.only_if_specific_arch(arch=("ARM32", "ARM64"))
     def do_invoke(self, args):
         thread_enter_user_mode_virt = self.search_thread_enter_user_mode()
         if thread_enter_user_mode_virt is None:
@@ -159393,10 +159392,10 @@ class OpteeSmcServiceDumpCommand(GenericCommand, BufferingOutput):
             ))
         return
 
-    @parse_args
-    @only_if_gdb_running
-    @only_if_specific_gdb_mode(mode=("qemu-system",))
-    @only_if_specific_arch(arch=("ARM64",))
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.only_if_specific_gdb_mode(mode=("qemu-system",))
+    @Decorator.only_if_specific_arch(arch=("ARM64",))
     def do_invoke(self, args):
         sm = SecureMemory.get_area(args.verbose)
         if sm is None:
@@ -159519,7 +159518,7 @@ class OpteeTaDumpCommand(GenericCommand, BufferingOutput):
         super().__init__(prefix=prefix, complete=complete)
         return
 
-    @parse_args
+    @Decorator.parse_args
     def do_invoke(self, args):
         self.usage()
         return
@@ -159813,10 +159812,10 @@ class OpteeTaDumpMemoryCommand(OpteeTaDumpCommand):
                 ))
         return
 
-    @parse_args
-    @only_if_gdb_running
-    @only_if_specific_gdb_mode(mode=("qemu-system",))
-    @only_if_specific_arch(arch=("ARM32", "ARM64"))
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.only_if_specific_gdb_mode(mode=("qemu-system",))
+    @Decorator.only_if_specific_arch(arch=("ARM32", "ARM64"))
     def do_invoke(self, args):
         entry = next((
             entry for entry in AddrMap.get_maps(scope="optee")
@@ -160000,7 +159999,7 @@ class OpteeTaDumpDirectoryCommand(OpteeTaDumpCommand):
                     self.out.append("")
         return
 
-    @parse_args
+    @Decorator.parse_args
     def do_invoke(self, args):
         if not os.path.isdir(args.host_dir):
             err("Could not find directory")
@@ -160204,10 +160203,10 @@ class OpteeShmListCommand(GenericCommand, BufferingOutput):
                 ))
         return
 
-    @parse_args
-    @only_if_gdb_running
-    @only_if_specific_gdb_mode(mode=("qemu-system",))
-    @only_if_specific_arch(arch=("ARM32", "ARM64"))
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.only_if_specific_gdb_mode(mode=("qemu-system",))
+    @Decorator.only_if_specific_arch(arch=("ARM32", "ARM64"))
     def do_invoke(self, args):
         entry = next((
             entry for entry in AddrMap.get_maps(scope="optee")
@@ -160559,10 +160558,10 @@ class OpteeBgetDumpCommand(GenericCommand, BufferingOutput):
                     break
         return
 
-    @parse_args
-    @only_if_gdb_running
-    @only_if_specific_gdb_mode(mode=("qemu-system",))
-    @only_if_specific_arch(arch=("ARM32", "ARM64"))
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.only_if_specific_gdb_mode(mode=("qemu-system",))
+    @Decorator.only_if_specific_arch(arch=("ARM32", "ARM64"))
     def do_invoke(self, args):
         self.out = []
 
@@ -161389,11 +161388,11 @@ class CpuidCommand(GenericCommand, BufferingOutput):
             o(c(edx, 14, 0x3_ffff,    "EDX 31-14: Reserved"))
         return
 
-    @parse_args
-    @only_if_gdb_running
-    @exclude_specific_gdb_mode(mode=("rr", "kgdb"))
-    @only_if_specific_arch(arch=("x86_32", "x86_64"))
-    @only_if_kvm_disabled
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.exclude_specific_gdb_mode(mode=("rr", "kgdb"))
+    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64"))
+    @Decorator.only_if_kvm_disabled
     def do_invoke(self, args):
         self.out = []
 
@@ -161575,12 +161574,12 @@ class MsrCommand(GenericCommand):
         ret = ExecAsm(codes, regs=regs).exec_code()
         return bool(ret)
 
-    @parse_args
-    @only_if_gdb_running
-    @only_if_specific_gdb_mode(mode=("qemu-system", "vmware"))
-    @only_if_specific_arch(arch=("x86_32", "x86_64"))
-    @only_if_in_kernel
-    @only_if_kvm_disabled
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware"))
+    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64"))
+    @Decorator.only_if_in_kernel
+    @Decorator.only_if_kvm_disabled
     def do_invoke(self, args):
         # list
         if args.msr_target is None and args.msr_value is None:
@@ -161660,12 +161659,12 @@ class CetCommand(GenericCommand):
                 gef_print("{:20s} : {:x}".format(k, v))
         return
 
-    @parse_args
-    @only_if_gdb_running
-    @only_if_specific_gdb_mode(mode=("qemu-system", "vmware"))
-    @only_if_specific_arch(arch=("x86_32", "x86_64"))
-    @only_if_in_kernel
-    @only_if_kvm_disabled
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware"))
+    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64"))
+    @Decorator.only_if_in_kernel
+    @Decorator.only_if_kvm_disabled
     def do_invoke(self, args):
         cr4 = get_register("cr4", use_monitor=True)
         gef_print(titlify("CET summary"))
@@ -161717,10 +161716,10 @@ class MteTagsCommand(GenericCommand):
                         help="repeat count for MTE tag displaying (every 16 bytes).")
     _syntax_ = parser.format_help()
 
-    @parse_args
-    @only_if_gdb_running
-    @exclude_specific_gdb_mode(mode=("rr",))
-    @only_if_specific_arch(arch=("ARM64",))
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.exclude_specific_gdb_mode(mode=("rr",))
+    @Decorator.only_if_specific_arch(arch=("ARM64",))
     def do_invoke(self, args):
         auxv = Auxv.get_auxiliary_values()
         HWCAP2_MTE = 1 << 18
@@ -161750,10 +161749,10 @@ class PacKeysCommand(GenericCommand):
     parser = argparse.ArgumentParser(prog=_cmdline_)
     _syntax_ = parser.format_help()
 
-    @parse_args
-    @only_if_gdb_running
-    @only_if_specific_gdb_mode(mode=("qemu-system",))
-    @only_if_specific_arch(arch=("ARM64",))
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.only_if_specific_gdb_mode(mode=("qemu-system",))
+    @Decorator.only_if_specific_arch(arch=("ARM64",))
     def do_invoke(self, args):
         for keyname in ["APIA", "APIB", "APDA", "APDB", "APGA"]:
             try:
@@ -161967,10 +161966,10 @@ class VBARCommand(GenericCommand, BufferingOutput):
                     SwitchELCommand.set_cpsr(base_CPSR)
         return
 
-    @parse_args
-    @only_if_gdb_running
-    @only_if_specific_gdb_mode(mode=("qemu-system",))
-    @only_if_specific_arch(arch=("ARM32", "ARM64"))
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.only_if_specific_gdb_mode(mode=("qemu-system",))
+    @Decorator.only_if_specific_arch(arch=("ARM32", "ARM64"))
     def do_invoke(self, args):
         self.out = []
         if is_arm32():
@@ -162485,9 +162484,9 @@ class QemuRegistersCommand(GenericCommand, BufferingOutput):
                 self.qregisters_x86_x64()
         return
 
-    @parse_args
-    @only_if_gdb_running
-    @only_if_specific_gdb_mode(mode=("qemu-system",))
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.only_if_specific_gdb_mode(mode=("qemu-system",))
     def do_invoke(self, args):
         self.out = []
         self.qregisters()
@@ -162574,10 +162573,10 @@ class SmmStatusCommand(GenericCommand, BufferingOutput):
             self.warn_add_out("Could not read SMRAM at {:#x}".format(preview))
         return
 
-    @parse_args
-    @only_if_gdb_running
-    @only_if_specific_gdb_mode(mode=("qemu-system",))
-    @only_if_specific_arch(arch=("x86_32", "x86_64"))
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.only_if_specific_gdb_mode(mode=("qemu-system",))
+    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64"))
     def do_invoke(self, args):
         status = SystemManagementMemory.get_smm_status()
         if args.quiet:
@@ -162651,10 +162650,10 @@ class SmmDumpCommand(GenericCommand):
         info("Saved to {:s} ({:s})".format(filepath, GefUtil.get_size_str(len(data))))
         return
 
-    @parse_args
-    @only_if_gdb_running
-    @only_if_specific_gdb_mode(mode=("qemu-system",))
-    @only_if_specific_arch(arch=("x86_32", "x86_64"))
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.only_if_specific_gdb_mode(mode=("qemu-system",))
+    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64"))
     def do_invoke(self, args):
         status = SystemManagementMemory.get_smm_status()
         smram = status["smram"]
@@ -163002,10 +163001,10 @@ class Virt2PhysCommand(GenericCommand):
     ]
     _example_ = "\n".join(_example_).format(_cmdline_)
 
-    @parse_args
-    @only_if_gdb_running
-    @only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
-    @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
+    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
     def do_invoke(self, args):
         force_secure = None
         if is_arm32() or is_arm64():
@@ -163044,10 +163043,10 @@ class Phys2VirtCommand(GenericCommand):
     ]
     _example_ = "\n".join(_example_).format(_cmdline_)
 
-    @parse_args
-    @only_if_gdb_running
-    @only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
-    @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
+    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
     def do_invoke(self, args):
         force_secure = None
         if is_arm32() or is_arm64():
@@ -167613,10 +167612,10 @@ class PagewalkCommand(GenericCommand, BufferingOutput):
         super().__init__(prefix=type(self) is PagewalkCommand)
         return
 
-    # Need not @parse_args because argparse can't stop interpreting options for pagewalk sub-command.
-    @only_if_gdb_running
-    @only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
-    @only_if_specific_arch(arch=("x86_32", "x86_64", "x86_16", "ARM32", "ARM64", "RISCV32", "RISCV64"))
+    # Need not @Decorator.parse_args because argparse can't stop interpreting options for pagewalk sub-command.
+    @Decorator.only_if_gdb_running
+    @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
+    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "x86_16", "ARM32", "ARM64", "RISCV32", "RISCV64"))
     def do_invoke(self, argv):
         if is_x86_32() or is_x86_16():
             gdb.execute("pagewalk x86 {}".format(" ".join(argv)))
@@ -167661,10 +167660,10 @@ class PagewalkRiscvCommand(PagewalkCommand):
     parser.add_argument("-q", "--quiet", action="store_true", help="show result only.")
     _syntax_ = parser.format_help()
 
-    @parse_args
-    @only_if_gdb_running
-    @only_if_specific_gdb_mode(mode=("qemu-system", "vmware"))
-    @only_if_specific_arch(arch=("RISCV32", "RISCV64"))
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware"))
+    @Decorator.only_if_specific_arch(arch=("RISCV32", "RISCV64"))
     def do_invoke(self, args):
         self.page_table = PageTableRiscv()
 
@@ -167714,10 +167713,10 @@ class PagewalkX64Command(PagewalkCommand):
     parser.add_argument("-q", "--quiet", action="store_true", help="show result only.")
     _syntax_ = parser.format_help()
 
-    @parse_args
-    @only_if_gdb_running
-    @only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
-    @only_if_specific_arch(arch=("x86_32", "x86_64", "x86_16"))
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
+    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "x86_16"))
     def do_invoke(self, args):
         self.page_table = PageTableX64()
         if args.include_esp_fixup_stacks and not is_x86_64():
@@ -167770,10 +167769,10 @@ class PagewalkArmCommand(PagewalkCommand):
     parser.add_argument("-q", "--quiet", action="store_true", help="show result only.")
     _syntax_ = parser.format_help()
 
-    @parse_args
-    @only_if_gdb_running
-    @only_if_specific_gdb_mode(mode=("qemu-system",))
-    @only_if_specific_arch(arch=("ARM32",))
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.only_if_specific_gdb_mode(mode=("qemu-system",))
+    @Decorator.only_if_specific_arch(arch=("ARM32",))
     def do_invoke(self, args):
         self.page_table = PageTableArm32()
         if args.optee and is_qemu_system():
@@ -167819,10 +167818,10 @@ class PagewalkArm64Command(PagewalkCommand):
     parser.add_argument("-q", "--quiet", action="store_true", help="show result only.")
     _syntax_ = parser.format_help()
 
-    @parse_args
-    @only_if_gdb_running
-    @only_if_specific_gdb_mode(mode=("qemu-system", "kgdb"))
-    @only_if_specific_arch(arch=("ARM64",))
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "kgdb"))
+    @Decorator.only_if_specific_arch(arch=("ARM64",))
     def do_invoke(self, args):
         self.page_table = PageTableArm64()
         if args.optee and is_qemu_system():
@@ -167890,10 +167889,10 @@ class SwitchELCommand(GenericCommand):
         info("$cpsr = {:#x} (EL{:d})".format(CPSR, CurrentEL))
         return
 
-    @parse_args
-    @only_if_gdb_running
-    @only_if_specific_gdb_mode(mode=("qemu-system",))
-    @only_if_specific_arch(arch=("ARM64",))
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.only_if_specific_gdb_mode(mode=("qemu-system",))
+    @Decorator.only_if_specific_arch(arch=("ARM64",))
     def do_invoke(self, args):
         self.switch_el(args.target_el)
         return
@@ -168820,11 +168819,11 @@ class KernelVMMapCommand(GenericCommand, BufferingOutput):
             self.out.append(GefUtil.make_legend(fmt.format(*legend)))
         return
 
-    @parse_args
-    @only_if_gdb_running
-    @only_if_specific_gdb_mode(mode=("qemu-system", "vmware"))
-    @only_if_specific_arch(arch=("x86_64", "x86_32", "ARM64", "ARM32"))
-    @only_if_in_kernel_or_kpti_disabled
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware"))
+    @Decorator.only_if_specific_arch(arch=("x86_64", "x86_32", "ARM64", "ARM32"))
+    @Decorator.only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
         if self.args.include_esp_fixup_stacks and not is_x86_64():
             err("Unsupported --include-esp-fixup-stacks option in this arch")
@@ -169238,11 +169237,11 @@ class PageCommand(GenericCommand):
             return None
         return page
 
-    @parse_args
-    @only_if_gdb_running
-    @only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
-    @only_if_specific_arch(arch=("x86_64", "x86_32", "ARM64", "ARM32"))
-    @only_if_in_kernel
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
+    @Decorator.only_if_specific_arch(arch=("x86_64", "x86_32", "ARM64", "ARM32"))
+    @Decorator.only_if_in_kernel
     def do_invoke(self, args):
         self.usage(simple=True)
         return
@@ -169271,11 +169270,11 @@ class PageToVirtCommand(PageCommand, BufferingOutput):
         super().__init__(prefix=False, complete=gdb.COMPLETE_LOCATION)
         return
 
-    @parse_args
-    @only_if_gdb_running
-    @only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
-    @only_if_specific_arch(arch=("x86_64", "x86_32", "ARM64", "ARM32"))
-    @only_if_in_kernel
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
+    @Decorator.only_if_specific_arch(arch=("x86_64", "x86_32", "ARM64", "ARM32"))
+    @Decorator.only_if_in_kernel
     def do_invoke(self, args):
         if args.rescan:
             Cache.clear_cache_for(self.initialize)
@@ -169328,11 +169327,11 @@ class PageFromVirtCommand(PageCommand, BufferingOutput):
         super().__init__(prefix=False, complete=gdb.COMPLETE_LOCATION)
         return
 
-    @parse_args
-    @only_if_gdb_running
-    @only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
-    @only_if_specific_arch(arch=("x86_64", "x86_32", "ARM64", "ARM32"))
-    @only_if_in_kernel
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
+    @Decorator.only_if_specific_arch(arch=("x86_64", "x86_32", "ARM64", "ARM32"))
+    @Decorator.only_if_in_kernel
     def do_invoke(self, args):
         if args.rescan:
             Cache.clear_cache_for(self.initialize)
@@ -169388,11 +169387,11 @@ class PageToPhysCommand(PageCommand, BufferingOutput):
         super().__init__(prefix=False, complete=gdb.COMPLETE_LOCATION)
         return
 
-    @parse_args
-    @only_if_gdb_running
-    @only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
-    @only_if_specific_arch(arch=("x86_64", "x86_32", "ARM64", "ARM32"))
-    @only_if_in_kernel
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
+    @Decorator.only_if_specific_arch(arch=("x86_64", "x86_32", "ARM64", "ARM32"))
+    @Decorator.only_if_in_kernel
     def do_invoke(self, args):
         if args.rescan:
             Cache.clear_cache_for(self.initialize)
@@ -169439,11 +169438,11 @@ class PhysToPageCommand(PageCommand, BufferingOutput):
         super().__init__(prefix=False, complete=gdb.COMPLETE_LOCATION)
         return
 
-    @parse_args
-    @only_if_gdb_running
-    @only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
-    @only_if_specific_arch(arch=("x86_64", "x86_32", "ARM64", "ARM32"))
-    @only_if_in_kernel
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
+    @Decorator.only_if_specific_arch(arch=("x86_64", "x86_32", "ARM64", "ARM32"))
+    @Decorator.only_if_in_kernel
     def do_invoke(self, args):
         if args.rescan:
             Cache.clear_cache_for(self.initialize)
@@ -169818,11 +169817,11 @@ class SlabVirtualCommand(GenericCommand):
             return None
         return self.virt_to_slab(max(r))
 
-    @parse_args
-    @only_if_gdb_running
-    @only_if_specific_gdb_mode(mode=("qemu-system",))
-    @only_if_specific_arch(arch=("x86_64",))
-    @only_if_in_kernel
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.only_if_specific_gdb_mode(mode=("qemu-system",))
+    @Decorator.only_if_specific_arch(arch=("x86_64",))
+    @Decorator.only_if_in_kernel
     def do_invoke(self, args):
         if not args.meta and (args.mode is None or args.address is None):
             err("mode and ADDRESS are needed")
@@ -170267,10 +170266,10 @@ class PageInfoCommand(GenericCommand):
         gef_print("refcount        : {:#x}".format(refcount))
         return
 
-    @parse_args
-    @only_if_gdb_running
-    @only_if_specific_gdb_mode(mode=("qemu-system",))
-    @only_if_in_kernel
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.only_if_specific_gdb_mode(mode=("qemu-system",))
+    @Decorator.only_if_in_kernel
     def do_invoke(self, args):
         kversion = Kernel.version()
         if kversion < "4.18":
@@ -170350,11 +170349,11 @@ class HighMemDumpCommand(GenericCommand, BufferingOutput):
             self.info_add_out("No highmem entries were found.")
         return
 
-    @parse_args
-    @only_if_gdb_running
-    @only_if_specific_gdb_mode(mode=("qemu-system", "vmware"))
-    @only_if_specific_arch(arch=("x86_32", "ARM32"))
-    @only_if_in_kernel_or_kpti_disabled
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware"))
+    @Decorator.only_if_specific_arch(arch=("x86_32", "ARM32"))
+    @Decorator.only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
         self.quiet_info("Wait for memory scan")
 
@@ -170497,9 +170496,9 @@ class QemuDeviceInfoCommand(GenericCommand, BufferingOutput):
                 self.out.append("    {:s}".format(line))
         return
 
-    @parse_args
-    @only_if_gdb_running
-    @only_if_specific_gdb_mode(mode=("qemu-system",))
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.only_if_specific_gdb_mode(mode=("qemu-system",))
     def do_invoke(self, args):
         self.out = []
         device_name = self.get_device_name()
@@ -170766,10 +170765,10 @@ class QemuMemoryRegionDumpCommand(GenericCommand, BufferingOutput):
             link = read_int_from_memory(link + self.offset_subregions_link)
         return
 
-    @parse_args
-    @only_if_gdb_running
-    @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
-    @require_arch_set
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @Decorator.require_arch_set
     def do_invoke(self, args):
         self.out = []
         ret = self.initialize()
@@ -170861,9 +170860,9 @@ class StringsContinueCommand(GenericCommand):
             gef_print("{:s} = {:#x} -> {:s}".format(Color.greenify(regname), addr, Color.colorify(repr(string), string_color)))
         return
 
-    @parse_args
-    @only_if_gdb_running
-    @require_arch_set
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.require_arch_set
     def do_invoke(self, args):
         if args.min_length <= 0:
             err("--min-length must be greater than zero")
@@ -170950,9 +170949,9 @@ class XUntilCommand(GenericCommand):
                         help="[FOR DEVELOPER] used internally in gef, please don't use it.")
     _syntax_ = parser.format_help()
 
-    @parse_args
-    @only_if_gdb_running
-    @require_arch_set
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.require_arch_set
     def do_invoke(self, args):
         if args.address is None:
             stop_addr = Disasm.gef_instruction_n(current_arch.pc, 1).address
@@ -170982,9 +170981,9 @@ class XSkipCommand(GenericCommand):
                         help="the count to skip.")
     _syntax_ = parser.format_help()
 
-    @parse_args
-    @only_if_gdb_running
-    @require_arch_set
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.require_arch_set
     def do_invoke(self, args):
         if args.count <= 0:
             err("Invalid count")
@@ -171197,9 +171196,9 @@ class ExecUntilCommand(GenericCommand):
                 gdb.execute("context")
         return
 
-    @parse_args
-    @only_if_gdb_running
-    @require_arch_set
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.require_arch_set
     def do_invoke(self, args):
         self.usage()
         return
@@ -171231,9 +171230,9 @@ class ExecUntilCallCommand(ExecUntilCommand):
     def is_target_insn(self, insn):
         return current_arch.is_call(insn)
 
-    @parse_args
-    @only_if_gdb_running
-    @require_arch_set
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.require_arch_set
     def do_invoke(self, args):
         self.exec_next()
         return
@@ -171268,9 +171267,9 @@ class ExecUntilJumpCommand(ExecUntilCommand):
     def is_target_insn(self, insn):
         return self.check_jump_taken(insn)
 
-    @parse_args
-    @only_if_gdb_running
-    @require_arch_set
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.require_arch_set
     def do_invoke(self, args):
         self.exec_next()
         return
@@ -171311,9 +171310,9 @@ class ExecUntilIndirectBranchCommand(ExecUntilCommand):
                     return True
         return False
 
-    @parse_args
-    @only_if_gdb_running
-    @only_if_specific_arch(arch=("x86_32", "x86_64"))
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64"))
     def do_invoke(self, args):
         self.exec_next()
         return
@@ -171348,9 +171347,9 @@ class ExecUntilAllBranchCommand(ExecUntilCommand):
     def is_target_insn(self, insn):
         return current_arch.is_call(insn) or self.check_jump_taken(insn) or current_arch.is_ret(insn)
 
-    @parse_args
-    @only_if_gdb_running
-    @require_arch_set
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.require_arch_set
     def do_invoke(self, args):
         self.exec_next()
         return
@@ -171400,10 +171399,10 @@ class ExecUntilSyscallCommand(ExecUntilCommand):
                 return True
         return False
 
-    @parse_args
-    @only_if_gdb_running
-    @exclude_specific_gdb_mode(mode=("wine",))
-    @require_arch_set
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.exclude_specific_gdb_mode(mode=("wine",))
+    @Decorator.require_arch_set
     def do_invoke(self, args):
         self.exec_next()
         return
@@ -171435,9 +171434,9 @@ class ExecUntilRetCommand(ExecUntilCommand):
     def is_target_insn(self, insn):
         return current_arch.is_ret(insn)
 
-    @parse_args
-    @only_if_gdb_running
-    @require_arch_set
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.require_arch_set
     def do_invoke(self, args):
         self.exec_next()
         return
@@ -171469,9 +171468,9 @@ class ExecUntilMemaccessCommand(ExecUntilCommand):
     def is_target_insn(self, insn):
         return "[" in str(insn)
 
-    @parse_args
-    @only_if_gdb_running
-    @require_arch_set
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.require_arch_set
     def do_invoke(self, args):
         self.exec_next()
         return
@@ -171514,9 +171513,9 @@ class ExecUntilKeywordReCommand(ExecUntilCommand):
                 return True
         return False
 
-    @parse_args
-    @only_if_gdb_running
-    @require_arch_set
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.require_arch_set
     def do_invoke(self, args):
         self.exec_next()
         return
@@ -171562,9 +171561,9 @@ class ExecUntilCondCommand(ExecUntilCommand):
             return True
         return bool(v)
 
-    @parse_args
-    @only_if_gdb_running
-    @require_arch_set
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.require_arch_set
     def do_invoke(self, args):
         condition = args.condition
         if re.search(r"[^><!=]=[^=]", condition):
@@ -171622,10 +171621,10 @@ class ExecUntilUserCodeCommand(ExecUntilCommand):
                 return True
         return False
 
-    @parse_args
-    @only_if_gdb_running
-    @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
-    @require_arch_set
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @Decorator.require_arch_set
     def do_invoke(self, args):
         filepath = Path.get_filepath(append_proc_root_prefix=False)
         if not filepath and is_remote_debug():
@@ -171671,10 +171670,10 @@ class ExecUntilLibcCodeCommand(ExecUntilCommand):
                 return True
         return False
 
-    @parse_args
-    @only_if_gdb_running
-    @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
-    @require_arch_set
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @Decorator.require_arch_set
     def do_invoke(self, args):
         libc_targets = ("libc-2.", "libc.so.6", "libuClibc-")
         libc = ProcessMap.process_lookup_path(libc_targets)
@@ -171714,10 +171713,10 @@ class ExecUntilSecureWorldCommand(ExecUntilCommand):
     def is_target_insn(self, _insn):
         return is_in_secure()
 
-    @parse_args
-    @only_if_gdb_running
-    @only_if_specific_gdb_mode(mode=("qemu-system",))
-    @only_if_specific_arch(arch=("ARM32", "ARM64"))
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.only_if_specific_gdb_mode(mode=("qemu-system",))
+    @Decorator.only_if_specific_arch(arch=("ARM32", "ARM64"))
     def do_invoke(self, args):
         self.args.skip_lib = False
 
@@ -171755,10 +171754,10 @@ class ExecUntilRegionChangeCommand(ExecUntilCommand):
             return False
         return True
 
-    @parse_args
-    @only_if_gdb_running
-    @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
-    @require_arch_set
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @Decorator.require_arch_set
     def do_invoke(self, args):
         self.args.skip_lib = False
 
@@ -171949,9 +171948,9 @@ class CallTraceCommand(ExecUntilCommand):
                 gdb.execute("context")
         return
 
-    @parse_args
-    @only_if_gdb_running
-    @require_arch_set
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.require_arch_set
     def do_invoke(self, args):
         if not self.args.no_file_output:
             fd, fname = GefUtil.mkstemp(prefix="call-trace", suffix=".log")
@@ -172000,11 +171999,11 @@ class UsermodehelperTracerCommand(GenericCommand):
     parser = argparse.ArgumentParser(prog=_cmdline_)
     _syntax_ = parser.format_help()
 
-    @parse_args
-    @only_if_gdb_running
-    @only_if_specific_gdb_mode(mode=("qemu-system", "vmware"))
-    @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
-    @only_if_in_kernel
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware"))
+    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
+    @Decorator.only_if_in_kernel
     def do_invoke(self, args):
         info("Resolving the function addresses")
         addr = Ksym.get_addr("call_usermodehelper_setup")
@@ -172094,11 +172093,11 @@ class ThunkTracerCommand(GenericCommand):
     parser = argparse.ArgumentParser(prog=_cmdline_)
     _syntax_ = parser.format_help()
 
-    @parse_args
-    @only_if_gdb_running
-    @only_if_specific_gdb_mode(mode=("qemu-system",))
-    @only_if_specific_arch(arch=("x86_32", "x86_64"))
-    @only_if_in_kernel
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.only_if_specific_gdb_mode(mode=("qemu-system",))
+    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64"))
+    @Decorator.only_if_in_kernel
     def do_invoke(self, args):
         info("Wait for memory scan")
         maps = AddrMap.get_maps(scope="kernel")
@@ -172913,12 +172912,12 @@ class KmallocTracerCommand(GenericCommand):
                 breakpoints.append(bp)
         return breakpoints
 
-    @parse_args
-    @only_if_gdb_running
-    @only_if_specific_gdb_mode(mode=("qemu-system",))
-    @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
-    @only_if_in_kernel
-    @only_if_kvm_disabled
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.only_if_specific_gdb_mode(mode=("qemu-system",))
+    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
+    @Decorator.only_if_in_kernel
+    @Decorator.only_if_kvm_disabled
     def do_invoke(self, args):
         info("Wait for memory scan")
 
@@ -174313,13 +174312,13 @@ class KmallocAllocatedByCommand(GenericCommand):
         gdb.execute("continue")
         return
 
-    @parse_args
-    @only_if_gdb_running
-    @only_if_specific_gdb_mode(mode=("qemu-system",))
-    @only_if_specific_arch(arch=("x86_64",))
-    @only_if_in_kernel
-    @only_if_kvm_disabled
-    @only_if_smp_disabled
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.only_if_specific_gdb_mode(mode=("qemu-system",))
+    @Decorator.only_if_specific_arch(arch=("x86_64",))
+    @Decorator.only_if_in_kernel
+    @Decorator.only_if_kvm_disabled
+    @Decorator.only_if_smp_disabled
     def do_invoke(self, args):
         info("Wait for memory scan")
 
@@ -174633,12 +174632,12 @@ class KuafWatchCommand(GenericCommand):
         self.emit_event("FREE", to_free, cache, caller_pc, sym)
         return False
 
-    @parse_args
-    @only_if_gdb_running
-    @only_if_specific_gdb_mode(mode=("qemu-system",))
-    @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
-    @only_if_in_kernel
-    @only_if_kvm_disabled
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.only_if_specific_gdb_mode(mode=("qemu-system",))
+    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
+    @Decorator.only_if_in_kernel
+    @Decorator.only_if_kvm_disabled
     def do_invoke(self, args):
         if args.cache is None and not args.address:
             err("Specify an ADDRESS or --cache CACHE")
@@ -175145,12 +175144,12 @@ class KpageWatchCommand(GenericCommand):
                 return sym, func_addr
         return None, None
 
-    @parse_args
-    @only_if_gdb_running
-    @only_if_specific_gdb_mode(mode=("qemu-system",))
-    @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
-    @only_if_in_kernel
-    @only_if_kvm_disabled
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.only_if_specific_gdb_mode(mode=("qemu-system",))
+    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
+    @Decorator.only_if_in_kernel
+    @Decorator.only_if_kvm_disabled
     def do_invoke(self, args):
         if not args.pfn and not args.page and not args.address:
             err("Specify an ADDRESS, --page PAGE or --pfn PFN")
@@ -175412,12 +175411,12 @@ class KernelTraceCommand(GenericCommand):
             self.addr_range_ng_cache.append(page_start)
             return False
 
-    @parse_args
-    @only_if_gdb_running
-    @only_if_specific_gdb_mode(mode=("qemu-system", "vmware"))
-    @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
-    @only_if_in_kernel
-    @only_if_kvm_disabled
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware"))
+    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
+    @Decorator.only_if_in_kernel
+    @Decorator.only_if_kvm_disabled
     def do_invoke(self, args):
         info("Wait for memory scan")
 
@@ -175966,10 +175965,10 @@ class UefiOvmfInfoCommand(GenericCommand):
         gef_print("RUNTIME: It will be mapped by OS when SetVirtualAddressMap() is called")
         return
 
-    @parse_args
-    @only_if_gdb_running
-    @only_if_specific_gdb_mode(mode=("qemu-system",))
-    @only_if_specific_arch(arch=("x86_32", "x86_64"))
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.only_if_specific_gdb_mode(mode=("qemu-system",))
+    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64"))
     def do_invoke(self, args):
         gef_print(titlify("SEC (Security) phase variables"))
         gef_print("Unimplemented")
@@ -176128,8 +176127,8 @@ class AddSymbolTemporaryCommand(GenericCommand):
         open(blank_elf, "wb").write(data)
         return blank_elf
 
-    @parse_args
-    @only_if_gdb_running
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
     def do_invoke(self, args):
         try:
             objcopy = GefUtil.which(Config.get_gef_setting("gef.objcopy_command"))
@@ -176247,11 +176246,11 @@ class KsymaddrRemoteApplyCommand(GenericCommand):
         os.rename(blank_elf, sym_elf_path)
         return True
 
-    @parse_args
-    @only_if_gdb_running
-    @only_if_specific_gdb_mode(mode=("qemu-system", "vmware"))
-    @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64"))
-    @only_if_in_kernel
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware"))
+    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64"))
+    @Decorator.only_if_in_kernel
     def do_invoke(self, args):
         try:
             GefUtil.which(Config.get_gef_setting("gef.objcopy_command"))
@@ -176388,8 +176387,8 @@ class KernelWalkCommand(GenericCommand, BufferingOutput):
             self.add_entry_out(idx, entry)
         return
 
-    @parse_args
-    @only_if_gdb_running
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
     def do_invoke(self, args):
         self.usage(simple=True)
         return
@@ -176470,8 +176469,8 @@ class KernelWalkListCommand(KernelWalkCommand):
             idx += 1
         return
 
-    @parse_args
-    @only_if_gdb_running
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
     def do_invoke(self, args):
         self.out = []
         self.quiet_info_add_out("head address: {:#x}".format(args.address))
@@ -176513,8 +176512,8 @@ class KernelWalkRbtreeCommand(KernelWalkCommand):
         super().__init__(prefix=False, complete=gdb.COMPLETE_LOCATION)
         return
 
-    @parse_args
-    @only_if_gdb_running
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
     def do_invoke(self, args):
         if not is_valid_addr(args.address):
             err("Invalid address")
@@ -176572,10 +176571,10 @@ class KernelWalkRadixTreeCommand(KernelWalkCommand):
         super().__init__(prefix=False, complete=gdb.COMPLETE_LOCATION)
         return
 
-    @parse_args
-    @only_if_gdb_running
-    @only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
-    @only_if_in_kernel_or_kpti_disabled
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
+    @Decorator.only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
         kversion = Kernel.version()
         if kversion is None:
@@ -176648,10 +176647,10 @@ class KernelWalkXArrayCommand(KernelWalkCommand):
         super().__init__(prefix=False, complete=gdb.COMPLETE_LOCATION)
         return
 
-    @parse_args
-    @only_if_gdb_running
-    @only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
-    @only_if_in_kernel_or_kpti_disabled
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
+    @Decorator.only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
         kversion = Kernel.version()
         if kversion is None:
@@ -176716,10 +176715,10 @@ class KernelWalkMapleTreeCommand(KernelWalkCommand):
         super().__init__(prefix=False, complete=gdb.COMPLETE_LOCATION)
         return
 
-    @parse_args
-    @only_if_gdb_running
-    @only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
-    @only_if_in_kernel_or_kpti_disabled
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
+    @Decorator.only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
         kversion = Kernel.version()
         if kversion is None:
@@ -176969,10 +176968,10 @@ class KernelPerCpuCommand(GenericCommand, BufferingOutput):
         self.add_dump_out(addr)
         return
 
-    @parse_args
-    @only_if_gdb_running
-    @only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
-    @only_if_in_kernel_or_kpti_disabled
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
+    @Decorator.only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
         if Kernel.version() is None:
             err("Could not find Linux kernel")
@@ -177287,10 +177286,10 @@ class KernelRefsCommand(GenericCommand, BufferingOutput):
             return "cache: {:s}  object: {:#x}+{:#x}".format(obj["name"], obj["object_base"], obj["offset"])
         return ""
 
-    @parse_args
-    @only_if_gdb_running
-    @only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
-    @only_if_in_kernel_or_kpti_disabled
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
+    @Decorator.only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
         if args.tolerance < 0:
             err("The tolerance must not be negative")
@@ -179109,12 +179108,12 @@ class KernelLsmCommand(GenericCommand, BufferingOutput):
                     if name.startswith("security_") and typ.lower() in ("t", "w"))
         return count >= 16
 
-    @parse_args
-    @only_if_gdb_running
-    @only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
-    @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64"))
-    @only_if_in_kernel_or_kpti_disabled
-    @switch_to_intel_syntax
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
+    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64"))
+    @Decorator.only_if_in_kernel_or_kpti_disabled
+    @Decorator.switch_to_intel_syntax
     def do_invoke(self, args):
         # the kernel version and the memory layout are resolved below and both are slow,
         # so tell the user before anything starts
@@ -179845,11 +179844,11 @@ class KernelIoUringCommand(GenericCommand, BufferingOutput):
             return None
         return True
 
-    @parse_args
-    @only_if_gdb_running
-    @only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
-    @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
-    @only_if_in_kernel_or_kpti_disabled
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
+    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
+    @Decorator.only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
         self.args = args
         if args.fd is not None and args.pid is None:
@@ -182954,11 +182953,11 @@ class KernelNftablesCommand(GenericCommand, BufferingOutput):
             return None
         return True
 
-    @parse_args
-    @only_if_gdb_running
-    @only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
-    @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
-    @only_if_in_kernel_or_kpti_disabled
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
+    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
+    @Decorator.only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
         self.args = args
         self.family_filter = None
@@ -183185,9 +183184,9 @@ class PeekPageFrameCommand(GenericCommand, BufferingOutput):
             self.out.append("{:#018x} {:>8} {:s}".format(data["address"], pfn_str, flags_str))
         return
 
-    @parse_args
-    @only_if_gdb_running
-    @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
     def do_invoke(self, args):
         pid = Pid.get_pid()
         if pid is None:
@@ -183292,9 +183291,9 @@ class PeekPageFlagsCommand(GenericCommand, BufferingOutput):
         path = "/proc/kpageflags"
         return self.read_file(path, pfn)
 
-    @parse_args
-    @only_if_gdb_running
-    @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
     def do_invoke(self, args):
         if args.pfn is None:
             err("You must provide a PFN")
@@ -183332,9 +183331,9 @@ class StackFrameCommand(GenericCommand):
     parser = argparse.ArgumentParser(prog=_cmdline_)
     _syntax_ = parser.format_help()
 
-    @parse_args
-    @only_if_gdb_running
-    @require_arch_set
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.require_arch_set
     def do_invoke(self, args):
         ptrsize = current_arch.ptrsize
         try:
@@ -183857,9 +183856,9 @@ class StackRecoverCommand(GenericCommand, BufferingOutput):
             operands += Symbol.get_symbol_string(target)
         return "{:s}{:s}".format(insn.mnemonic, " " + operands if operands else "")
 
-    @parse_args
-    @only_if_gdb_running
-    @require_arch_set
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.require_arch_set
     def do_invoke(self, args):
         pc = current_arch.pc
         sp = current_arch.sp
@@ -184011,9 +184010,9 @@ class XRefTelescopeCommand(SearchPatternCommand, BufferingOutput):
             self.xref_telescope(AddressUtil.format_address(loc), depth - 1, [loc] + history)
         return
 
-    @parse_args
-    @only_if_gdb_running
-    @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware"))
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware"))
     def do_invoke(self, args):
         self.found_count = 0
 
@@ -184046,8 +184045,8 @@ class XrefToStringCommand(GenericCommand):
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
     _syntax_ = parser.format_help()
 
-    @parse_args
-    @only_if_gdb_running
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
     def do_invoke(self, args):
         info("Redirect to `xref-telescope STRING 2`")
 
@@ -184101,7 +184100,7 @@ class BytearrayCommand(GenericCommand):
             x = x[:pos - 2] + middle + x[pos + 2:]
         return x
 
-    @parse_args
+    @Decorator.parse_args
     def do_invoke(self, args):
         excluded = set()
         for b in args.badchars:
@@ -184244,8 +184243,8 @@ class SixelMemoryCommand(GenericCommand):
             gef_print("[{}] type:{} data:{}".format(i, data.type, data.data))
         return
 
-    @parse_args
-    @only_if_gdb_running
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
     def do_invoke(self, args):
         try:
             convert_command = GefUtil.which("convert") # imagemagick
@@ -184379,8 +184378,8 @@ class FrequencyAnalysisCommand(GenericCommand, BufferingOutput):
             self.out.append(f"  {b:02X}: {c:>10d} |{bar}")
         return
 
-    @parse_args
-    @only_if_gdb_running
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
     def do_invoke(self, args):
 
         if args.size is None:
@@ -184493,8 +184492,8 @@ class VisualDumpCommand(GenericCommand):
         )
         return cmd
 
-    @parse_args
-    @only_if_gdb_running
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
     def do_invoke(self, args):
         try:
             GefUtil.which("convert") # imagemagick
@@ -184600,9 +184599,9 @@ class FiletypeMemoryCommand(GenericCommand):
         os.unlink(filepath)
         return
 
-    @parse_args
-    @only_if_gdb_running
-    @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware"))
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware"))
     def do_invoke(self, args):
         if not is_valid_addr(args.address):
             err("Memory read error")
@@ -184697,9 +184696,9 @@ class BinwalkMemoryCommand(GenericCommand):
             warn('This dry run mode skips executing binwalk; add "--commit" to proceed')
         return
 
-    @parse_args
-    @only_if_gdb_running
-    @exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware"))
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware"))
     @ModuleLoader.load_binwalk
     def do_invoke(self, args):
         self.memory_binwalk()
@@ -184808,8 +184807,8 @@ class BincompareCommand(GenericCommand, BufferingOutput):
             self.info_add_out("No difference")
         return
 
-    @parse_args
-    @only_if_gdb_running
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
     def do_invoke(self, args):
         # file_data
         if not os.path.isfile(args.filename):
@@ -184935,8 +184934,8 @@ class SymbolsCommand(GenericCommand, BufferingOutput):
 
         return
 
-    @parse_args
-    @only_if_gdb_running
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
     def do_invoke(self, args):
         if args.use_cache and hasattr(self, "cache") and self.cache:
             self.out = self.cache[::]
@@ -185045,8 +185044,8 @@ class TypesCommand(GenericCommand, BufferingOutput):
             Config.set_gef_setting("context.smart_cpp_function_name", old_smart_setting)
         return
 
-    @parse_args
-    @only_if_gdb_running
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
     def do_invoke(self, args):
         if args.use_cache and hasattr(self, "cache") and self.cache:
             self.out = self.cache[::]
@@ -185115,7 +185114,7 @@ class GefCommand(GenericCommand):
         self.add_setting("kgdb_system_registers", False, "Whether KGDB provides access to system registers")
         return
 
-    @parse_args
+    @Decorator.parse_args
     def do_invoke(self, args):
         gdb.execute("gef help") # for frequent use
         return
@@ -185192,7 +185191,7 @@ class GefHelpCommand(GenericCommand, BufferingOutput):
 
         return output
 
-    @parse_args
+    @Decorator.parse_args
     def do_invoke(self, args):
         self.out = []
         self.out.append(titlify("GEF - GDB Enhanced Features"))
@@ -185312,7 +185311,7 @@ class GefConfigCommand(GenericCommand):
         # finally, look for possible values for given prefix
         return [s.split(".", 1)[1] for s in settings if s and s.startswith(text.strip())]
 
-    @parse_args
+    @Decorator.parse_args
     def do_invoke(self, args):
         # list all configs
         if (args.setting_name, args.setting_value) == (None, None):
@@ -185351,7 +185350,7 @@ class GefSaveCommand(GenericCommand):
     parser.add_argument("-q", "--quiet", action="store_true", help="quiet execution.")
     _syntax_ = parser.format_help()
 
-    @parse_args
+    @Decorator.parse_args
     def do_invoke(self, args):
         cfg = configparser.RawConfigParser()
         old_sect = None
@@ -185399,7 +185398,7 @@ class GefRestoreCommand(GenericCommand):
     parser.add_argument("-q", "--quiet", action="store_true", help="quiet execution.")
     _syntax_ = parser.format_help()
 
-    @parse_args
+    @Decorator.parse_args
     def do_invoke(self, args):
         if not os.access(GEF_RC, os.R_OK):
             self.quiet_info("Could not find {:s}, GEF uses default settings".format(GEF_RC))
@@ -185478,7 +185477,7 @@ class GefMissingCommand(GenericCommand):
     ]
     _note_ = "\n".join(_note_)
 
-    @parse_args
+    @Decorator.parse_args
     def do_invoke(self, args):
         missing_commands = Gef.missing_commands.keys()
         if not missing_commands:
@@ -185500,7 +185499,7 @@ class GefReloadCommand(GenericCommand):
     parser = argparse.ArgumentParser(prog=_cmdline_)
     _syntax_ = parser.format_help()
 
-    @parse_args
+    @Decorator.parse_args
     def do_invoke(self, args):
         info("Check syntax {:s}".format(GEF_FILEPATH))
 
@@ -185558,7 +185557,7 @@ class GefResetCacheCommand(GenericCommand):
     parser.add_argument("--hard", action="store_true", help="also delete under {:s}.".format(GEF_TEMP_DIR))
     _syntax_ = parser.format_help()
 
-    @parse_args
+    @Decorator.parse_args
     def do_invoke(self, args):
         Cache.reset_gef_caches(all=True)
 
@@ -185593,7 +185592,7 @@ class GefResetBreakpointsCommand(GenericCommand):
                     pass
         return None
 
-    @parse_args
+    @Decorator.parse_args
     def do_invoke(self, args):
         breakpoints = gdb.breakpoints()
         n = len(breakpoints)
@@ -185695,7 +185694,7 @@ class GefArchListCommand(GenericCommand, BufferingOutput):
             queue = cls.__subclasses__() + queue
         return
 
-    @parse_args
+    @Decorator.parse_args
     def do_invoke(self, args):
         self.out = []
         self.listup_arch_info()
@@ -185713,7 +185712,7 @@ class GefRaiseExceptionCommand(GenericCommand):
     parser = argparse.ArgumentParser(prog=_cmdline_)
     _syntax_ = parser.format_help()
 
-    @parse_args
+    @Decorator.parse_args
     def do_invoke(self, args):
         raise RuntimeError("Test exception")
 
@@ -185791,6 +185790,11 @@ class GefPyObjListCommand(GenericCommand, BufferingOutput):
             elif gobj.upper() == gobj and t is not class_type:
                 global_configs.append("{!s} {!s}".format(t, gobj))
             elif t is class_type:
+                for name, member in vars(obj).items() if obj.__name__ == gobj else ():
+                    if isinstance(member, staticmethod):
+                        member = member.__func__
+                    if type(member) is function_type and member.__doc__ and member.__doc__.startswith("Decorator"):
+                        decorators.append("{!s} {:s}.{:s}".format(type(member), gobj, name))
                 if gobj.endswith("Command"):
                     command_classes.append("{!s} {!s}".format(t, gobj))
                 elif gobj.endswith("Breakpoint") or gobj.endswith("Watchpoint"):
@@ -185840,7 +185844,7 @@ class GefPyObjListCommand(GenericCommand, BufferingOutput):
         self.out.extend(sorted(others))
         return
 
-    @parse_args
+    @Decorator.parse_args
     def do_invoke(self, args):
         self.out = []
         self.listup_pyobject()
@@ -185864,7 +185868,7 @@ class GefAvailableCommandListCommand(GenericCommand, BufferingOutput):
 
     @staticmethod
     def get_decorators(function):
-        """Return [(name, args), ...] of the decorators of function, e.g., ("only_if_specific_arch", ("x86_64",))."""
+        """Return [(name, args), ...] of the decorators of function, e.g., ("Decorator.only_if_specific_arch", ("x86_64",))."""
         import ast
         import textwrap
 
@@ -185928,15 +185932,15 @@ class GefAvailableCommandListCommand(GenericCommand, BufferingOutput):
             "ModuleLoader.load_angr": "angr",
         }
         for name, args in decorators:
-            if name == "require_arch_set" and current_arch is None:
+            if name == "Decorator.require_arch_set" and current_arch is None:
                 return "current_arch is None"
-            if name == "only_if_specific_arch" and not self.check_checkers(args, ARCH_CHECKERS):
+            if name == "Decorator.only_if_specific_arch" and not self.check_checkers(args, ARCH_CHECKERS):
                 return "Unsupported arch"
-            if name == "exclude_specific_arch" and self.check_checkers(args, ARCH_CHECKERS):
+            if name == "Decorator.exclude_specific_arch" and self.check_checkers(args, ARCH_CHECKERS):
                 return "Unsupported arch"
-            if name == "only_if_specific_gdb_mode" and not self.check_checkers(args, GDB_MODE_CHECKERS):
+            if name == "Decorator.only_if_specific_gdb_mode" and not self.check_checkers(args, GDB_MODE_CHECKERS):
                 return "Unsupported gdb mode"
-            if name == "exclude_specific_gdb_mode" and self.check_checkers(args, GDB_MODE_CHECKERS):
+            if name == "Decorator.exclude_specific_gdb_mode" and self.check_checkers(args, GDB_MODE_CHECKERS):
                 return "Unsupported gdb mode"
             if name in packages:
                 import_name = "keystone" if packages[name] == "keystone-engine" else packages[name]
@@ -185965,8 +185969,8 @@ class GefAvailableCommandListCommand(GenericCommand, BufferingOutput):
             self.add_out(cmdline, reason is None, reason or "")
         return
 
-    @parse_args
-    @only_if_gdb_running
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
     def do_invoke(self, args):
         self.out = []
         self.listup_avail_comms()
@@ -186129,7 +186133,7 @@ class GefDumpCommandsCommand(GenericCommand):
 
         return "\n".join(lines).rstrip() + "\n"
 
-    @parse_args
+    @Decorator.parse_args
     def do_invoke(self, args):
         output = self.render_commands()
         with open(args.output, "w", encoding="utf-8") as f:
@@ -186165,7 +186169,7 @@ class GefSetArchCommand(GenericCommand):
             gef_print("{:s} {:s}".format(arch, words))
         return
 
-    @parse_args
+    @Decorator.parse_args
     def do_invoke(self, args):
         if args.list:
             self.arch_listup()
@@ -186193,7 +186197,7 @@ class GefStatusCommand(GenericCommand):
     parser = argparse.ArgumentParser(prog=_cmdline_)
     _syntax_ = parser.format_help()
 
-    @parse_args
+    @Decorator.parse_args
     def do_invoke(self, args):
         gef_print(titlify("GDB/ELF settings"))
         show_arch = gdb.execute("show architecture", to_string=True).rstrip()
@@ -186539,7 +186543,7 @@ class GefVersionCommand(GenericCommand):
         gdb.execute("show configuration")
         return
 
-    @parse_args
+    @Decorator.parse_args
     def do_invoke(self, args):
         if args.compact:
             self.show_compact_info()
@@ -186558,7 +186562,7 @@ class GefCheckUpdateCommand(GenericCommand):
     parser = argparse.ArgumentParser(prog=_cmdline_)
     _syntax_ = parser.format_help()
 
-    @parse_args
+    @Decorator.parse_args
     def do_invoke(self, args):
         gef_remote = "https://raw.githubusercontent.com/bata24/gef/dev/gef.py"
         gef_remote_data = http_get(gef_remote)
@@ -186686,7 +186690,7 @@ class GefTmuxSetupCommand(GenericCommand):
         Cache.reset_gef_caches(all=True)
         return
 
-    @parse_args
+    @Decorator.parse_args
     def do_invoke(self, args):
         try:
             GefUtil.which("tmux")
@@ -186781,7 +186785,7 @@ class AliasesCommand(GenericCommand):
         super().__init__(prefix=prefix)
         return
 
-    @parse_args
+    @Decorator.parse_args
     def do_invoke(self, args):
         self.usage()
         return
@@ -186809,7 +186813,7 @@ class AliasesAddCommand(AliasesCommand):
         super().__init__(prefix=False)
         return
 
-    @parse_args
+    @Decorator.parse_args
     def do_invoke(self, args):
         if args.alias in __gef_command_instances__:
             err("Not allowed due to circular references")
@@ -186835,7 +186839,7 @@ class AliasesRmCommand(AliasesCommand):
         super().__init__(prefix=False)
         return
 
-    @parse_args
+    @Decorator.parse_args
     def do_invoke(self, args):
         global __gef_alias_instances__
 
@@ -186861,7 +186865,7 @@ class AliasesListCommand(AliasesCommand, BufferingOutput):
         super().__init__(prefix=False)
         return
 
-    @parse_args
+    @Decorator.parse_args
     def do_invoke(self, args):
         width = max(len(x) for x in __gef_alias_instances__.keys())
 
