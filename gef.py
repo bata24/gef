@@ -75090,6 +75090,8 @@ class Kernel:
 
         CredInfo = collections.namedtuple("CredInfo", "usage ids securebits caps security user_ns group_info")
 
+        ID_NAMES = ["uid", "gid", "suid", "sgid", "euid", "egid", "fsuid", "fsgid"]
+
         # capability index -> name (CAP_LAST_CAP is 40 as of v5.8)
         CAP_NAMES = [
             "CAP_CHOWN", "CAP_DAC_OVERRIDE", "CAP_DAC_READ_SEARCH", "CAP_FOWNER", "CAP_FSETID",
@@ -75121,9 +75123,12 @@ class Kernel:
             self.meta = []
             self.initialized = False
             self.sizeof_usage = None
+            self.offset_usage = 0
             self.offset_uid = None
+            self.offset_ids = []
             self.offset_securebits = None
             self.offset_cap = None
+            self.offset_caps = []
             self.cap_is_u32_array = False
             self.cap_members = []
             self.cap_full = 0
@@ -75151,10 +75156,25 @@ class Kernel:
             self.offset_uid, self.sizeof_usage = ret
             self.meta.append(("info", "offsetof(cred, uid): {:#x}".format(self.offset_uid)))
             self.meta.append(("info", "sizeof(cred->usage): {:#x}".format(self.sizeof_usage)))
-            if self.offset_uid != self.sizeof_usage:
-                self.meta.append(("info", "CONFIG_DEBUG_CREDENTIALS seems to be y"))
 
-            self.offset_securebits = self.offset_uid + 4 * 8
+            # CONFIG_RANDSTRUCT=y shuffles every member, so each one is resolved separately if possible
+            offset_ids = [self.offsetof(name) for name in self.ID_NAMES]
+            offset_usage = self.offsetof("usage")
+            offset_securebits = self.offsetof("securebits")
+            use_debug_info = None not in offset_ids and offset_usage is not None and offset_securebits is not None
+            if use_debug_info:
+                self.meta.append(("info", "struct cred layout: debug information"))
+                self.offset_usage = offset_usage
+                self.offset_ids = offset_ids
+                self.offset_securebits = offset_securebits
+                if self.offset_usage != 0:
+                    self.meta.append(("info", "offsetof(cred, usage): {:#x}".format(self.offset_usage)))
+            else:
+                if self.offset_uid != self.sizeof_usage:
+                    self.meta.append(("info", "CONFIG_DEBUG_CREDENTIALS seems to be y"))
+                self.offset_usage = 0
+                self.offset_ids = [self.offset_uid + 4 * i for i in range(len(self.ID_NAMES))]
+                self.offset_securebits = self.offset_uid + 4 * 8
             self.meta.append(("info", "offsetof(cred, securebits): {:#x}".format(self.offset_securebits)))
 
             self.offset_cap, self.cap_is_u32_array = self.get_offset_cap(init_cred, self.offset_uid)
@@ -75166,7 +75186,12 @@ class Kernel:
                 self.cap_members = ["cap_inheritable", "cap_permitted", "cap_effective", "cap_bset"]
                 if "4.3" <= kversion:
                     self.cap_members.append("cap_ambient")
-                self.cap_full = self.read_cap(init_cred + self.offset_cap + 8) # init_cred has CAP_FULL_SET
+                offset_caps = [self.offsetof(name) for name in self.cap_members]
+                if use_debug_info and None not in offset_caps:
+                    self.offset_caps = offset_caps
+                else:
+                    self.offset_caps = [self.offset_cap + 8 * i for i in range(len(self.cap_members))]
+                self.cap_full = self.read_cap(init_cred + self.offset_caps[1]) # init_cred has CAP_FULL_SET
 
             self.offset_user_ns = self.get_offset_user_ns(init_cred, self.offset_uid)
             if self.offset_user_ns is None:
@@ -75175,8 +75200,13 @@ class Kernel:
                 return True
             self.meta.append(("info", "offsetof(cred, user_ns): {:#x}".format(self.offset_user_ns)))
 
-            if self.offset_cap is not None:
-                self.offset_security, has_keys = self.get_tail_offsets(self.offset_user_ns)
+            tail = None
+            if use_debug_info:
+                tail = self.offsetof("security"), self.offsetof("thread_keyring") is not None
+            elif self.offset_cap is not None:
+                tail = self.get_tail_offsets(self.offset_user_ns)
+            if tail is not None:
+                self.offset_security, has_keys = tail
                 if has_keys is None:
                     self.meta.append(("warn", "Could not tell the members between cap_ambient and user_ns"))
                 elif self.offset_security is None:
@@ -75200,6 +75230,27 @@ class Kernel:
             """Convert the recorded meta lines into the (printer, line) pairs the commands use."""
             level_map = {"info": command.quiet_info, "warn": command.quiet_warn, "err": command.quiet_err}
             return [(level_map[level], line) for level, line in self.meta]
+
+        @staticmethod
+        def offsetof(member, type_name="cred"):
+            try:
+                return GefUtil.parse_and_eval_unsigned("&((struct {:s}*)0)->{:s}".format(type_name, member))
+            except gdb.error:
+                return None
+
+        @staticmethod
+        @Cache.cache_this_session(per_inferior=True, until_new_objfile=True)
+        def get_group_info_layout():
+            """Return (offsetof(group_info, ngroups), offsetof(group_info, gid)), where gid is small_block for ~v4.8."""
+            if "4.9" <= Kernel.kernel_version():
+                member, offset_gid = "gid", 4 * 2 # usage, ngroups
+            else:
+                member, offset_gid = "small_block", 4 * 3 # usage, ngroups, nblocks
+            offset_ngroups = Kernel.Cred.offsetof("ngroups", "group_info")
+            offset_gid_debug = Kernel.Cred.offsetof(member, "group_info")
+            if offset_ngroups is None or offset_gid_debug is None:
+                return 4, offset_gid
+            return offset_ngroups, offset_gid_debug
 
         def read_cap(self, addr, is_u32_array=None):
             """Read kernel_cap_t as a 64-bit mask. The u32 array (~v6.2) holds capability 0-31 in cap[0]
@@ -75637,7 +75688,7 @@ class Kernel:
 
         def get_ids(self, cred, count=8):
             """Return the first `count` of uid, gid, suid, sgid, euid, egid, fsuid and fsgid."""
-            return [read_int32_from_memory(cred + self.offset_uid + 4 * i) for i in range(count)]
+            return [read_int32_from_memory(cred + offset) for offset in self.offset_ids[:count]]
 
         def get_user_ns(self, cred):
             """Return cred->user_ns, or None when its offset could not be resolved."""
@@ -75649,12 +75700,12 @@ class Kernel:
             """Return the members of `cred` as a CredInfo, or None if it is unreadable."""
             try:
                 if self.sizeof_usage == 4:
-                    usage = read_int32_from_memory(cred)
+                    usage = read_int32_from_memory(cred + self.offset_usage)
                 else:
-                    usage = read_int_from_memory(cred)
+                    usage = read_int_from_memory(cred + self.offset_usage)
                 ids = self.get_ids(cred)
                 securebits = read_int32_from_memory(cred + self.offset_securebits)
-                caps = [self.read_cap(cred + self.offset_cap + 8 * i) for i in range(len(self.cap_members))]
+                caps = [self.read_cap(cred + offset) for offset in self.offset_caps]
                 values = []
                 for offset in (self.offset_security, self.offset_user_ns, self.offset_group_info):
                     values.append(None if offset is None else read_int_from_memory(cred + offset))
@@ -75691,16 +75742,15 @@ class Kernel:
             return "|".join(names)
 
         def get_groups_str(self, group_info, max_display=0x10):
-            ngroups = read_int32_from_memory(group_info + 4, safe=True)
+            offset_ngroups, offset_gid = self.get_group_info_layout()
+            ngroups = read_int32_from_memory(group_info + offset_ngroups, safe=True)
             if ngroups is None:
                 return None
             if ngroups > 0x10000:
                 return None
             if "4.9" <= Kernel.kernel_version():
-                offset_gid = 4 * 2 # usage, ngroups
                 available = ngroups
             else:
-                offset_gid = 4 * 3 # usage, ngroups, nblocks
                 available = min(ngroups, 32) # NGROUPS_SMALL; the rest is in blocks[]
             gids = []
             try:
@@ -75733,6 +75783,7 @@ class Kernel:
             self.offset_task_mm = None
             self.offset_vm_mm = None
             self.offset_vm_start = None
+            self.offset_vm_end = None
             self.offset_vm_flags = None
             self.offset_vm_file = None
             self.kpath = None
@@ -75758,10 +75809,17 @@ class Kernel:
                 return None
             self.meta.append(("info", "offsetof(vm_area_struct, vm_mm): {:#x}".format(self.offset_vm_mm)))
 
-            # ~v3.7 heads the struct with vm_mm, so vm_start, vm_end and vm_next
-            # are all one pointer later.
-            self.offset_vm_start = current_arch.ptrsize if self.offset_vm_mm == 0 else 0
+            offset_vm_start = self.offsetof("vm_area_struct", "vm_start")
+            offset_vm_end = self.offsetof("vm_area_struct", "vm_end")
+            if offset_vm_start is not None and offset_vm_end is not None:
+                self.offset_vm_start, self.offset_vm_end = offset_vm_start, offset_vm_end
+            else:
+                # ~v3.7 heads the struct with vm_mm, so vm_start, vm_end and vm_next
+                # are all one pointer later.
+                self.offset_vm_start = current_arch.ptrsize if self.offset_vm_mm == 0 else 0
+                self.offset_vm_end = self.offset_vm_start + current_arch.ptrsize
             self.meta.append(("info", "offsetof(vm_area_struct, vm_start): {:#x}".format(self.offset_vm_start)))
+            self.meta.append(("info", "offsetof(vm_area_struct, vm_end): {:#x}".format(self.offset_vm_end)))
 
             self.offset_vm_flags = self.get_offset_vm_flags(self.offset_vm_mm)
             if self.offset_vm_flags is None:
@@ -75807,20 +75865,41 @@ class Kernel:
                     vma = get_next_vma_area_struct(vma)
             return None, None
 
+        @staticmethod
+        def offsetof(type_name, member):
+            try:
+                return GefUtil.parse_and_eval_unsigned("&((struct {:s}*)0)->{:s}".format(type_name, member))
+            except gdb.error:
+                return None
+
+        @staticmethod
+        @Cache.cache_this_session(per_inferior=True, until_new_objfile=True)
+        def get_vma_link_offsets():
+            """Return (offsetof(mm_struct, mmap), offsetof(vm_area_struct, vm_next), offsetof(mm_struct, mm_mt.ma_root))
+            from the debug information. Each one is None if it is not available."""
+            return (
+                Kernel.MM.offsetof("mm_struct", "mmap"),
+                Kernel.MM.offsetof("vm_area_struct", "vm_next"),
+                Kernel.MM.offsetof("mm_struct", "mm_mt.ma_root"),
+            )
+
         def get_vm_area_struct(self, mm):
             """Return the first VMA and a callable that advances to the next one."""
             kversion = Kernel.kernel_version()
             if kversion is None:
                 return None, None
+            offset_mmap, offset_vm_next, offset_ma_root = Kernel.MM.get_vma_link_offsets()
             if kversion < "6.1":
-                vm_area_struct = read_int_from_memory(mm)
+                vm_area_struct = read_int_from_memory(mm + (offset_mmap or 0))
 
                 def get_next_vma_area_struct(current):
+                    if offset_vm_next is not None:
+                        return read_int_from_memory(current + offset_vm_next)
                     return read_int_from_memory(current + self.offset_vm_start + current_arch.ptrsize * 2)
 
             else:
                 # Linux 6.1 replaced mm_struct.mmap with mm_struct.mm_mt.
-                mm_mt = Kernel.MapleTree(mm)
+                mm_mt = Kernel.MapleTree(mm, offset_ma_root)
                 if mm_mt.find_root_offset(current_arch.ptrsize * 0x20) is None:
                     raise RuntimeError("Could not find offsetof(mm_struct, mm_mt.ma_root)")
                 get_next_vma_area_struct = mm_mt.get_next
@@ -75944,7 +76023,7 @@ class Kernel:
             current, get_next_vma_area_struct = self.get_vm_area_struct(mm)
             while current:
                 vm_start = read_int_from_memory(current + self.offset_vm_start)
-                vm_end = read_int_from_memory(current + self.offset_vm_start + current_arch.ptrsize)
+                vm_end = read_int_from_memory(current + self.offset_vm_end)
                 vm_flags = read_int_from_memory(current + self.offset_vm_flags)
                 vm_file = read_int_from_memory(current + self.offset_vm_file)
                 filepath = self.kpath.get_file_path(vm_file)
@@ -78060,6 +78139,7 @@ class KernelAddressHeuristicSelftestCommand(GenericCommand, BufferingOutput):
             "get_sys_call_table_arm64": "sys_call_table",
             "get_sys_call_table_arm64_compat": "compat_sys_call_table",
             "get_per_cpu_offset": "__per_cpu_offset",
+            "get_PAGE_OFFSET_base": "page_offset_base",
             "get_current_clocksource": "curr_clocksource",
             "get_vmap_nodes_busy_head": "vmap_nodes",
         }
@@ -78555,7 +78635,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
     _example_ = "\n".join(_example_).format(_cmdline_)
 
     _note_ = [
-        "This command requires CONFIG_RANDSTRUCT=n.",
+        "This command requires CONFIG_RANDSTRUCT=n unless vmlinux with debug information is loaded.",
         "",
         "Simplified task_struct structure:",
         "",
@@ -78816,6 +78896,17 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
                 if val1 == val2 and val1 != 0:
                     return offset_cred
         return None
+
+    @Cache.cache_this_session(cache_None=False, per_inferior=True, until_new_objfile=True)
+    def get_offset_real_cred(self, offset_cred):
+        # fast path
+        try:
+            return GefUtil.parse_and_eval_unsigned("&((struct task_struct*)0).real_cred")
+        except gdb.error:
+            pass
+
+        # slow path
+        return offset_cred - current_arch.ptrsize
 
     @Cache.cache_this_session(cache_None=False, per_inferior=True, until_new_objfile=True)
     def get_offset_stack(self):
@@ -79262,16 +79353,18 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
             ...
         };
         """
+        kversion = Kernel.kernel_version()
+        if kversion is None:
+            return None
+
         # fast path
         try:
-            return GefUtil.parse_and_eval_unsigned("&((struct task_struct*)0).thread_group")
+            member = "thread_node" if "6.7" <= kversion else "thread_group"
+            return GefUtil.parse_and_eval_unsigned("&((struct task_struct*)0).{:s}".format(member))
         except gdb.error:
             pass
 
         # slow path
-        kversion = Kernel.kernel_version()
-        if kversion is None:
-            return None
         if "4.19" <= kversion:
             offset_thread_group = offset_group_leader + current_arch.ptrsize * (1 + 2 + 2 + 1 + (2 * 4))
         else:
@@ -79770,6 +79863,10 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
             return None
         self.meta.append((self.quiet_info, "offsetof(task_struct, cred): {:#x}".format(self.offset_cred)))
 
+        # task_struct->real_cred
+        self.offset_real_cred = self.get_offset_real_cred(self.offset_cred)
+        self.meta.append((self.quiet_info, "offsetof(task_struct, real_cred): {:#x}".format(self.offset_real_cred)))
+
         # struct cred
         cred_samples = []
         for task in task_addrs[:0x8]:
@@ -79997,7 +80094,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
             offset_inum["user"] = Kernel.Namespace.get_offset_inum("user", init_user_ns, init_user_ns)
             user_namespaces = []
             for task in task_addrs:
-                user_ns = self.kcred.get_user_ns(read_int_from_memory(task + self.offset_cred - current_arch.ptrsize))
+                user_ns = self.kcred.get_user_ns(read_int_from_memory(task + self.offset_real_cred))
                 if user_ns and user_ns not in user_namespaces:
                     user_namespaces.append(user_ns)
             context["user_hierarchy"] = Kernel.Namespace.get_offset_user_ns_hierarchy(init_user_ns, tuple(user_namespaces))
@@ -80132,7 +80229,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
 
         init_user_ns = namespace_context["init_user_ns"]
         init_nsproxy = namespace_context["init_nsproxy"]
-        real_cred = read_int_from_memory(task + self.offset_cred - current_arch.ptrsize)
+        real_cred = read_int_from_memory(task + self.offset_real_cred)
         user_ns = self.kcred.get_user_ns(real_cred)
         if user_ns is None:
             self.out.append("{:30s} {:18s} {:8s}".format("real_cred->user_ns", "unknown", "-").rstrip())
@@ -80469,7 +80566,7 @@ class KernelCredCommand(GenericCommand, BufferingOutput):
     _example_ = "\n".join(_example_).format(_cmdline_)
 
     _note_ = [
-        "This command requires CONFIG_RANDSTRUCT=n.",
+        "This command requires CONFIG_RANDSTRUCT=n unless vmlinux with debug information is loaded.",
         "",
         "Simplified credential structure:",
         "",
@@ -80618,7 +80715,7 @@ class KernelCredCommand(GenericCommand, BufferingOutput):
                 pid = read_int32_from_memory(task + task_command.offset_pid)
                 comm = read_cstring_from_memory(task + task_command.offset_comm)
                 cred = read_int_from_memory(task + task_command.offset_cred)
-                real_cred = read_int_from_memory(task + task_command.offset_cred - current_arch.ptrsize)
+                real_cred = read_int_from_memory(task + task_command.offset_real_cred)
                 if self.args.user_process_only:
                     mm = read_int_from_memory(task + task_command.offset_mm)
                     if mm == 0 or pid == 0:
@@ -86195,7 +86292,7 @@ class KernelVfsCommand(GenericCommand, BufferingOutput):
     _example_ = "\n".join(_example_).format(_cmdline_)
 
     _note_ = [
-        "This command requires CONFIG_RANDSTRUCT=n.",
+        "This command requires CONFIG_RANDSTRUCT=n unless vmlinux with debug information is loaded.",
         "",
         "ADDRESS is detected as struct file, dentry or inode unless --type is specified.",
         "The filesystem type and mount device are best-effort when debug information is unavailable.",
@@ -86502,7 +86599,7 @@ class KernelMountCommand(GenericCommand, BufferingOutput):
     _example_ = "\n".join(_example_).format(_cmdline_)
 
     _note_ = [
-        "This command requires CONFIG_RANDSTRUCT=n.",
+        "This command requires CONFIG_RANDSTRUCT=n unless vmlinux with debug information is loaded.",
         "",
         "- Walks `mnt_mounts/mnt_child`, so all mounts in the namespace are shown, including bind mounts sharing a `super_block`.",
         "  `kfilesystems` instead shows filesystem types and all their `super_block`s, mounted or not.",
@@ -143925,7 +144022,7 @@ class KernelPipeCommand(GenericCommand, BufferingOutput):
     _example_ = "\n".join(_example_).format(_cmdline_)
 
     _note_ = [
-        "This command requires CONFIG_RANDSTRUCT=n, unless the debug info of vmlinux is loaded.",
+        "This command requires CONFIG_RANDSTRUCT=n unless vmlinux with debug information is loaded.",
         "A notification pipe (CONFIG_WATCH_QUEUE) can hold more entries than `max`.",
         "",
         "Simplified pipe structure:",
@@ -144777,7 +144874,7 @@ class KernelSocketCommand(GenericCommand, BufferingOutput):
     _example_ = "\n".join(_example_).format(_cmdline_)
 
     _note_ = [
-        "This command requires CONFIG_RANDSTRUCT=n.",
+        "This command requires CONFIG_RANDSTRUCT=n unless vmlinux with debug information is loaded.",
         "",
         "Simplified socket structure:",
         "",
@@ -176564,7 +176661,7 @@ class KernelLsmCommand(GenericCommand, BufferingOutput):
         "   +-------------------+",
         "",
         "SELinux, Smack, AppArmor, TOMOYO and Landlock parts are decoded. This mode requires",
-        "CONFIG_RANDSTRUCT=n.",
+        "CONFIG_RANDSTRUCT=n unless vmlinux with debug information is loaded.",
     ]
     _note_ = "\n".join(_note_)
 
