@@ -70327,8 +70327,9 @@ class KernelAddressHeuristicFinder:
             else:
                 rw_data = ro_data
                 # On kernels where the linear mapping is RWX, get_layout() cannot
-                # distinguish .data from the rest of the mapping.  Search the contiguous
+                # distinguish .data from the rest of the mapping.  Search also the contiguous
                 # area immediately following .rodata, where ioport_resource is defined.
+                # .data may be in the capped .rodata of the RWX layout, so .rodata is searched too.
                 if klayout.ro_end and klayout.maps:
                     rw_end = klayout.ro_end
                     for entry in klayout.maps:
@@ -70338,8 +70339,7 @@ class KernelAddressHeuristicFinder:
                             break
                     rw_size = min(rw_end - klayout.ro_end, 0x1000000)
                     if rw_size:
-                        rw_base = klayout.ro_end
-                        rw_data = read_memory(rw_base, rw_size)
+                        rw_data = ro_data + read_memory(klayout.ro_end, rw_size)
             pos = -1
             while True:
                 # search for aligned string from .rodata
@@ -70361,9 +70361,28 @@ class KernelAddressHeuristicFinder:
                         break
                     if pos2 % current_arch.ptrsize != 0:
                         continue
-                    # TODO: How to find the exact value of sizeof(resource_size_t)
-                    maybe_ioport_resource = rw_base + pos2 - current_arch.ptrsize * 2
-                    return maybe_ioport_resource
+                    # `name` follows `start` and `end`, whose size is sizeof(resource_size_t), which is 8 even on
+                    # 32-bit kernels with CONFIG_PHYS_ADDR_T_64BIT=y. ioport_resource is {0, IO_SPACE_LIMIT,
+                    # "PCI IO", IORESOURCE_IO}, and its first child links back to it through `parent`.
+                    name_addr = rw_base + pos2
+                    flags = read_int_from_memory(name_addr + current_arch.ptrsize, safe=True)
+                    if flags is None or flags & 0x100 == 0: # IORESOURCE_IO
+                        continue
+                    kversion = Kernel.kernel_version()
+                    has_desc = int(bool(kversion and "4.5" <= kversion))
+                    child = read_int_from_memory(name_addr + current_arch.ptrsize * (4 + has_desc), safe=True)
+                    candidates = []
+                    for sizeof_resource_size_t in dict.fromkeys([current_arch.ptrsize, 8]):
+                        maybe_ioport_resource = name_addr - sizeof_resource_size_t * 2
+                        if child and is_valid_addr(child):
+                            parent = read_int_from_memory(child + sizeof_resource_size_t * 2 + current_arch.ptrsize * (2 + has_desc), safe=True)
+                            if parent == maybe_ioport_resource:
+                                return maybe_ioport_resource
+                        start = rw_data[pos2 - sizeof_resource_size_t * 2:pos2 - sizeof_resource_size_t]
+                        if pos2 >= sizeof_resource_size_t * 2 and start == b"\0" * sizeof_resource_size_t:
+                            candidates.append(maybe_ioport_resource)
+                    if candidates:
+                        return candidates[0]
         return None
 
     @staticmethod
@@ -70891,10 +70910,6 @@ class Kernel:
             """Return a copy whose text base and data range are refined from the iomem resource tree."""
             if not (is_qemu_system() or is_vmware()) or not self.ro_base:
                 return self
-            # Without strict RWX, old RISC-V kernels in the linear map have one RWX mapping up to the end of RAM,
-            # which makes kdevio scan all of it. They also have no "Kernel data" resource (e.g., v5.4).
-            if (is_riscv32() or is_riscv64()) and self.rwx:
-                return self
 
             klayout = self
             try:
@@ -70964,7 +70979,11 @@ class Kernel:
 
             if not self.rw_base:
                 vmem_end = AddressUtil.get_vmem_end()
-                rw_base = lookup(("_sdata",), self.ro_base + 1, vmem_end)
+                # RISC-V puts `_sdata` right before .rodata, i.e., in the page of ro_base in the RWX layout.
+                # Then the start of .data is `init_thread_union` (only with CONFIG_KALLSYMS_ALL=y).
+                rw_base = lookup(("_sdata",), self.ro_base + get_pagesize(), vmem_end)
+                if rw_base is None and (is_riscv32() or is_riscv64()):
+                    rw_base = lookup(("__start_init_task", "init_thread_union"), self.ro_base + get_pagesize(), vmem_end)
                 # .data may be in the same RWX mapping as .rodata
                 if rw_base is not None and (self.rwx or self.ro_end <= rw_base):
                     rw_end = lookup(("_end", "__bss_stop", "_edata"), rw_base + 1, vmem_end)
@@ -71266,24 +71285,47 @@ class Kernel:
             dic["rwx"] = True
             start = dic["text_base"] + get_pagesize() * 8
             end = dic["text_end"]
-            block_size = 0x20
-            zero_data = b"\0" * block_size
-            for addr in range(start, end, get_pagesize()):
-                data_prev = read_memory(addr - block_size, block_size)
-                if data_prev == zero_data:
-                    data = read_memory(addr, get_pagesize())
-                    if b"Linux version" in data:
-                        dic["ro_base"] = addr
-                        dic["ro_end"] = end
-                        dic["text_end"] = addr
-                        # In this case, rw_base is not detected from the mapping,
-                        # but it is refined later from the iomem resource tree or kallsyms.
-                        dic["rw_base"] = 0
-                        dic["rw_end"] = 0
-                        break
-            else:
-                # Not found, so fast return
-                return Kernel.Layout.build(dic, apply_data_range_hint)
+
+            # .rodata may start in the middle of the page where .text ends (e.g., RISC-V v5.4), so that page
+            # is not preceded by zeros, and the first record of the printk buffer (.bss) is picked instead.
+            # linux_banner ends with a newline and NUL unlike the record, so the page containing it is tried first.
+            ro_base = None
+            chunk_size = 0x10_0000
+            for addr in range(start, end, chunk_size):
+                try:
+                    # read a little more to find the banner across the chunk boundary
+                    data = read_memory(addr, min(chunk_size + 0x200, end - addr))
+                except gdb.MemoryError:
+                    continue
+                r = re.search(rb"Linux version \d+\.\d+\.\d+[ -~]+\n\0", data)
+                if r and r.start() < chunk_size:
+                    ro_base = (addr + r.start()) & get_pagesize_mask_high()
+                    break
+
+            if ro_base is None:
+                block_size = 0x20
+                zero_data = b"\0" * block_size
+                for addr in range(start, end, get_pagesize()):
+                    data_prev = read_memory(addr - block_size, block_size)
+                    if data_prev == zero_data:
+                        data = read_memory(addr, get_pagesize())
+                        if b"Linux version" in data:
+                            ro_base = addr
+                            break
+                else:
+                    # Not found, so fast return
+                    return Kernel.Layout.build(dic, apply_data_range_hint)
+
+            dic["ro_base"] = ro_base
+            # Without strict RWX, old RISC-V kernels (e.g., v5.4) map the image in the linear map, and this mapping
+            # continues up to the end of RAM. Cap .rodata to a plausible size, otherwise the kallsyms scan takes
+            # minutes. The end is refined later from kallsyms.
+            dic["ro_end"] = min(end, ro_base + max((ro_base - dic["text_base"]) * 2, 0x100_0000))
+            dic["text_end"] = ro_base
+            # In this case, rw_base is not detected from the mapping,
+            # but it is refined later from the iomem resource tree or kallsyms.
+            dic["rw_base"] = 0
+            dic["rw_end"] = 0
 
         else:
             # 3. Search for the kernel RW base.
@@ -71448,7 +71490,10 @@ class Kernel:
                 continue
             if klayout.rw_base and entry.vstart >= klayout.rw_base:
                 continue
-            end = min(entry.vend, klayout.rw_base) if klayout.rw_base else entry.vend
+            # the RWX mapping of old RISC-V kernels continues up to the end of RAM
+            end = min(entry.vend, klayout.rw_base or klayout.ro_end)
+            if entry.vstart >= end:
+                continue
             area.append([max(entry.vstart, klayout.text_base), end])
         if area == []:
             return None
@@ -71462,6 +71507,13 @@ class Kernel:
             matches = list(re.finditer(rb"(Linux version \d+\.\d+\.\d+[ -~]+\n)\0", data))
             if not matches:
                 continue
+            # If .data is not separated from the RWX .rodata, .bss is searched too. There the printk ringbuffer
+            # (v5.10~) keeps a copy of the banner with a newline and NUL, which may be longer by leftovers of
+            # other records. So a copy of an earlier banner with a longer tail is skipped.
+            matches = [x for x in matches if not any(
+                y.start() < x.start() and y.group(1) != x.group(1) and x.group(1).startswith(y.group(1)[:-1])
+                for y in matches
+            )]
             r = max(matches, key=lambda match: len(match.group(1)))
 
             version_string = r.group(1).decode("ascii").rstrip()
@@ -147252,9 +147304,8 @@ class KernelDeviceIOCommand(GenericCommand, BufferingOutput):
     ]
     _note_ = "\n".join(_note_)
 
-    @Cache.cache_this_session(cache_None=False)
-    def get_sizeof_resource_size_t(self):
-        addr = self.resource_addr_temp
+    @Cache.cache_this_session(cache_None=False, per_inferior=True, until_new_objfile=True)
+    def get_sizeof_resource_size_t(self, addr):
         name_ptr = read_int_from_memory(addr + 0x8 * 2) # sizeof(resource_size_t) == 8
         if name_ptr and is_valid_addr(name_ptr):
             name = read_cstring_from_memory(name_ptr)
@@ -147291,7 +147342,11 @@ class KernelDeviceIOCommand(GenericCommand, BufferingOutput):
         elif sizeof_resource_size_t == 4:
             start = read_int32_from_memory(addr)
             end = read_int32_from_memory(addr + 4)
-        name = read_cstring_from_memory(read_int_from_memory(addr + sizeof_resource_size_t * 2))
+        # `name` may be NULL (e.g., DEFINE_RES_MEM), or its page may be unreadable
+        name_ptr = read_int_from_memory(addr + sizeof_resource_size_t * 2)
+        name = "<unnamed>" if name_ptr == 0 else read_cstring_from_memory(name_ptr, safe=True)
+        if name is None:
+            name = "<unreadable>"
         flags = read_int_from_memory(addr + sizeof_resource_size_t * 2 + current_arch.ptrsize)
 
         ret = [(addr, start, end, name, flags)]
@@ -147314,9 +147369,7 @@ class KernelDeviceIOCommand(GenericCommand, BufferingOutput):
         return ret
 
     def get_resources(self, addr):
-        self.resource_addr_temp = addr
-        sizeof_resource_size_t = self.get_sizeof_resource_size_t()
-        del self.resource_addr_temp
+        sizeof_resource_size_t = self.get_sizeof_resource_size_t(addr)
         if sizeof_resource_size_t is None:
             err("Not recognized sizeof(resource_size_t)")
             return []
@@ -148952,9 +149005,12 @@ class Ksym:
                 # Unless there is a compelling reason, do not modify it.
                 base_size = 0x10_0000
                 step = 0x10_0000
-                for candidate_size in range(base_size, klayout.ro_size, step):
+                Ksym.kernel_img = b""
+                # the last partial step is tried too
+                for candidate_size in itertools.chain(range(base_size, klayout.ro_size, step), [klayout.ro_size]):
                     Ksym.ro_size = candidate_size
-                    Ksym.kernel_img = read_memory(Ksym.ro_base, Ksym.ro_size)
+                    # read only the grown part
+                    Ksym.kernel_img += read_memory(Ksym.ro_base + len(Ksym.kernel_img), Ksym.ro_size - len(Ksym.kernel_img))
                     Ksym.verbose_info(verbose, "ro_base: {:#x}-{:#x}".format(Ksym.ro_base, Ksym.ro_base + Ksym.ro_size))
                     ret = Ksym.KsymParse.initialize(rescan, verbose)
                     if ret:
