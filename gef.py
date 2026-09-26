@@ -66009,6 +66009,8 @@ class KernelAddressHeuristicFinder:
                     g = KernelAddressHeuristicFinderUtil.aarch64_adrp_add(res)
                 elif is_arm32():
                     g = KernelAddressHeuristicFinderUtil.arm32_movw_movt(res)
+                elif is_riscv64() or is_riscv32():
+                    g = KernelAddressHeuristicFinderUtil.riscv_auipc_addi(res)
                 for x in g:
                     if looks_like_init_net(x):
                         return x
@@ -66026,6 +66028,8 @@ class KernelAddressHeuristicFinder:
                     g = KernelAddressHeuristicFinderUtil.aarch64_adrp_add(res)
                 elif is_arm32():
                     g = KernelAddressHeuristicFinderUtil.arm32_movw_movt(res)
+                elif is_riscv64() or is_riscv32():
+                    g = KernelAddressHeuristicFinderUtil.riscv_auipc_addi(res)
                 for x in g:
                     if not is_valid_addr(x):
                         continue
@@ -66044,6 +66048,8 @@ class KernelAddressHeuristicFinder:
                     g = KernelAddressHeuristicFinderUtil.aarch64_adrp_add(res)
                 elif is_arm32():
                     g = KernelAddressHeuristicFinderUtil.arm32_movw_movt(res)
+                elif is_riscv64() or is_riscv32():
+                    g = KernelAddressHeuristicFinderUtil.riscv_auipc_addi(res)
                 for x in g:
                     if looks_like_init_net(x):
                         return x
@@ -66077,6 +66083,8 @@ class KernelAddressHeuristicFinder:
                     g = KernelAddressHeuristicFinderUtil.aarch64_adrp_add(res)
                 elif is_arm32():
                     g = KernelAddressHeuristicFinderUtil.arm32_movw_movt(res)
+                elif is_riscv64() or is_riscv32():
+                    g = KernelAddressHeuristicFinderUtil.riscv_auipc_addi(res)
                 for x in g:
                     return x
         return None
@@ -67973,6 +67981,10 @@ class KernelAddressHeuristicFinder:
                         KernelAddressHeuristicFinderUtil.arm32_movw_movt(res),
                         KernelAddressHeuristicFinderUtil.arm32_ldr_pc_relative(res),
                     )
+                elif is_riscv64() or is_riscv32():
+                    g = KernelAddressHeuristicFinderUtil.riscv_auipc_addi(res)
+                else:
+                    g = []
                 for x in g:
                     return x
         return None
@@ -71079,14 +71091,42 @@ class Kernel:
         if not is_valid_addr(addr):
             return None
         ret = gdb.execute("slab-contains --quiet {:#x}".format(addr), to_string=True).strip()
-        if not ret:
-            return None
         ret_plain = Color.remove_color(ret)
+        # an unsupported architecture or allocator prints a message instead
+        if not re.search(r"^name: ", ret_plain, re.M):
+            return None
         if not allow_unaligned and "remarks: unaligned" in ret_plain:
             return None
         if keep_color:
             return ret
         return ret_plain
+
+    @staticmethod
+    @Cache.cache_until_next(per_inferior=True)
+    def get_slab_object(addr):
+        """Return the dict of the slab object that contains `addr` resolved as `slab-contains`, or None."""
+        if Kernel.get_slab_type() not in ["SLUB", "SLUB_TINY", "SLAB"] or not (is_x86() or is_arm32() or is_arm64()):
+            return None
+        obj = __gef_command_instances__["slab-contains"].get_slab_object(addr)
+        if obj["error"]:
+            return None
+        return obj
+
+    @staticmethod
+    def get_slab_caches(target_names=()):
+        """Return (allocator, [kmem_cache, ...]) parsed by the dump command of the running allocator.
+        Each kmem_cache is the dict built by `slub-dump`, `slub-tiny-dump`, `slab-dump` or `slob-dump`,
+        so its members depend on the allocator. The list is None if they cannot be parsed."""
+        allocator = Kernel.get_slab_type()
+        command_name = {
+            "SLUB": "slub-dump", "SLUB_TINY": "slub-tiny-dump", "SLAB": "slab-dump", "SLOB": "slob-dump",
+        }.get(allocator)
+        if command_name is None or not (is_x86() or is_arm32() or is_arm64()):
+            return allocator, None
+        try:
+            return allocator, __gef_command_instances__[command_name].get_kmem_caches(list(target_names))
+        except gdb.error:
+            return allocator, None
 
     @staticmethod
     def page2virt(page):
@@ -74113,7 +74153,7 @@ class KernelFileSystem:
         };
         """
         kversion = Kernel.version()
-        offsetof = KernelDevice.offsetof
+        offsetof = GefUtil.offsetof
         use_debug_info = False
 
         offset_name = offsetof("file_system_type", "name")
@@ -74624,7 +74664,7 @@ class KernelDevice:
         self.meta.append(("info", "devices_kset: {:#x}".format(devices_kset)))
         kset = read_int_from_memory(devices_kset)
 
-        offsetof = KernelDevice.offsetof
+        offsetof = GefUtil.offsetof
         offset_list = offsetof("kset", "list")
         offset_entry = offsetof("kobject", "entry")
         offset_kobj = offsetof("device", "kobj")
@@ -74679,13 +74719,6 @@ class KernelDevice:
                     class_name = read_cstring_from_memory(read_int_from_memory(class_ + offset_class_name), safe=True) or "???"
             self.devices.append([kobj - offset_kobj, name, devt, class_name])
         return True
-
-    @staticmethod
-    def offsetof(type_name, member):
-        try:
-            return GefUtil.parse_and_eval_unsigned("&((struct {:s}*)0)->{:s}".format(type_name, member))
-        except gdb.error:
-            return None
 
     def get_offset_devt(self, kobjs):
         """Return the offsets of devt and class from the kobject embedded in struct device.
@@ -75442,9 +75475,9 @@ class KernelCred:
         self.meta.append(("info", "sizeof(cred->usage): {:#x}".format(self.sizeof_usage)))
 
         # CONFIG_RANDSTRUCT=y shuffles every member, so each one is resolved separately if possible
-        offset_ids = [self.offsetof(name) for name in self.ID_NAMES]
-        offset_usage = self.offsetof("usage")
-        offset_securebits = self.offsetof("securebits")
+        offset_ids = [GefUtil.offsetof("cred", name) for name in self.ID_NAMES]
+        offset_usage = GefUtil.offsetof("cred", "usage")
+        offset_securebits = GefUtil.offsetof("cred", "securebits")
         use_debug_info = None not in offset_ids and offset_usage is not None and offset_securebits is not None
         if use_debug_info:
             self.meta.append(("info", "struct cred layout: debug information"))
@@ -75470,7 +75503,7 @@ class KernelCred:
             self.cap_members = ["cap_inheritable", "cap_permitted", "cap_effective", "cap_bset"]
             if "4.3" <= kversion:
                 self.cap_members.append("cap_ambient")
-            offset_caps = [self.offsetof(name) for name in self.cap_members]
+            offset_caps = [GefUtil.offsetof("cred", name) for name in self.cap_members]
             if use_debug_info and None not in offset_caps:
                 self.offset_caps = offset_caps
             else:
@@ -75486,7 +75519,7 @@ class KernelCred:
 
         tail = None
         if use_debug_info:
-            tail = self.offsetof("security"), self.offsetof("thread_keyring") is not None
+            tail = GefUtil.offsetof("cred", "security"), GefUtil.offsetof("cred", "thread_keyring") is not None
         elif self.offset_cap is not None:
             tail = self.get_tail_offsets(self.offset_user_ns)
         if tail is not None:
@@ -75590,13 +75623,6 @@ class KernelCred:
         return out
 
     @staticmethod
-    def offsetof(member, type_name="cred"):
-        try:
-            return GefUtil.parse_and_eval_unsigned("&((struct {:s}*)0)->{:s}".format(type_name, member))
-        except gdb.error:
-            return None
-
-    @staticmethod
     @Cache.cache_this_session(per_inferior=True, until_new_objfile=True)
     def get_group_info_layout():
         """Return (offsetof(group_info, ngroups), offsetof(group_info, gid)), where gid is small_block for ~v4.8."""
@@ -75604,8 +75630,8 @@ class KernelCred:
             member, offset_gid = "gid", 4 * 2 # usage, ngroups
         else:
             member, offset_gid = "small_block", 4 * 3 # usage, ngroups, nblocks
-        offset_ngroups = KernelCred.offsetof("ngroups", "group_info")
-        offset_gid_debug = KernelCred.offsetof(member, "group_info")
+        offset_ngroups = GefUtil.offsetof("group_info", "ngroups")
+        offset_gid_debug = GefUtil.offsetof("group_info", member)
         if offset_ngroups is None or offset_gid_debug is None:
             return 4, offset_gid
         return offset_ngroups, offset_gid_debug
@@ -76083,8 +76109,8 @@ class KernelMM:
             return None
         self.meta.append(("info", "offsetof(vm_area_struct, vm_mm): {:#x}".format(self.offset_vm_mm)))
 
-        offset_vm_start = self.offsetof("vm_area_struct", "vm_start")
-        offset_vm_end = self.offsetof("vm_area_struct", "vm_end")
+        offset_vm_start = GefUtil.offsetof("vm_area_struct", "vm_start")
+        offset_vm_end = GefUtil.offsetof("vm_area_struct", "vm_end")
         if offset_vm_start is not None and offset_vm_end is not None:
             self.offset_vm_start, self.offset_vm_end = offset_vm_start, offset_vm_end
         else:
@@ -76176,21 +76202,14 @@ class KernelMM:
         return None, None
 
     @staticmethod
-    def offsetof(type_name, member):
-        try:
-            return GefUtil.parse_and_eval_unsigned("&((struct {:s}*)0)->{:s}".format(type_name, member))
-        except gdb.error:
-            return None
-
-    @staticmethod
     @Cache.cache_this_session(per_inferior=True, until_new_objfile=True)
     def get_vma_link_offsets():
         """Return (offsetof(mm_struct, mmap), offsetof(vm_area_struct, vm_next), offsetof(mm_struct, mm_mt.ma_root))
         from the debug information. Each one is None if it is not available."""
         return (
-            KernelMM.offsetof("mm_struct", "mmap"),
-            KernelMM.offsetof("vm_area_struct", "vm_next"),
-            KernelMM.offsetof("mm_struct", "mm_mt.ma_root"),
+            GefUtil.offsetof("mm_struct", "mmap"),
+            GefUtil.offsetof("vm_area_struct", "vm_next"),
+            GefUtil.offsetof("mm_struct", "mm_mt.ma_root"),
         )
 
     def get_vm_area_struct(self, mm):
@@ -77880,7 +77899,6 @@ class KernelSysctl:
             int (*is_seen)(struct ctl_table_set *);
             struct ctl_dir dir;
         } default_set;
-        struct ctl_table_set *(*lookup)(struct ctl_table_root *root);
         ...
     };
 
@@ -77889,6 +77907,7 @@ class KernelSysctl:
             struct ctl_table *ctl_table;
             int ctl_table_size;               // v6.6~
             ...
+            struct ctl_table_root *root;
             struct ctl_table_set *set;
             struct ctl_dir *parent;
             ...
@@ -77916,6 +77935,46 @@ class KernelSysctl:
     Entry = collections.namedtuple("SysctlEntry", "header table path mode")
     Data = collections.namedtuple("SysctlData", "maxlen address handler ctset namespace")
 
+    # The representation of ctl_table.data is decided by proc_handler, not by maxlen.
+    # A string, or (element size (0: pointer size, None: maxlen), signed, unit).
+    HANDLER_TYPES = {
+        "addrconf_sysctl_stable_secret": "string",
+        "cdrom_sysctl_info": "string",
+        "devkmsg_sysctl_set_loglvl": "string",
+        "numa_zonelist_order_handler": "string",
+        "proc_allowed_congestion_control": "string",
+        "proc_do_uts_string": "string",
+        "proc_dostring": "string",
+        "proc_dostring_coredump": "string",
+        "proc_tcp_available_congestion_control": "string",
+        "proc_tcp_available_ulp": "string",
+        "seccomp_actions_logged_handler": "string",
+        "set_default_qdisc": "string",
+        "proc_dointvec": (4, True, ""),
+        "proc_dointvec_conv": (4, True, ""),
+        "proc_dointvec_minmax": (4, True, ""),
+        "proc_dointvec_minmax_coredump": (4, True, ""),
+        "proc_dointvec_minmax_sysadmin": (4, True, ""),
+        "proc_dointvec_minmax_warn_RT_change": (4, True, ""),
+        "proc_douintvec": (4, False, ""),
+        "proc_douintvec_conv": (4, False, ""),
+        "proc_douintvec_minmax": (4, False, ""),
+        "proc_dopipe_max_size": (4, False, ""),
+        "proc_dou8vec_minmax": (1, False, ""),
+        "proc_dobool": (None, False, ""),
+        "proc_doulongvec_minmax": (0, False, ""),
+        "proc_doulongvec_minmax_conv": (0, False, ""),
+        "proc_dointvec_jiffies": (4, True, "jiffies"),
+        "proc_dointvec_userhz_jiffies": (4, True, "jiffies"),
+        "proc_dointvec_ms_jiffies": (4, True, "jiffies"),
+        "proc_dointvec_ms_jiffies_minmax": (4, True, "jiffies"),
+        "proc_doulongvec_ms_jiffies_minmax": (0, False, "jiffies"),
+        # custom handlers passing a temporary table of another type, or wrapping a custom handler
+        "ipv4_ping_group_range": (4, False, ""),
+        "proc_cap_handler": None,
+        "proc_watchdog_common": (4, True, ""),
+    }
+
     @classmethod
     @Cache.cache_this_session(per_inferior=True, until_new_objfile=True)
     def get_instance(cls):
@@ -77927,19 +77986,26 @@ class KernelSysctl:
         self.sysctl_table_root = None
         self.root_ctl_dir = None
         self.root_rb_node = None
+        self.offset_default_set = None
+        self.offset_set_dir = None
+        self.offset_ctl_table = None
         self.offset_rb_node = None
         self.offset_parent = None
+        self.offset_node_header = None
+        self.offset_procname = None
+        self.offset_data = None
         self.offset_maxlen = None
         self.offset_mode = None
         self.offset_handler = None
         self.offset_ctl_table_size = None
-        self.offset_lookup = None
+        self.offset_root = None
         self.offset_set = None
         self.sizeof_ctl_table = None
-        self.net_ctset = None
-        self.user_ctset = None
+        self.init_net = None
+        self.ctsets = {}
         self.ctset_namespaces = {}
-        self.str_types = []
+        self.handler_types = {}
+        self.known_handlers = {}
         return
 
     def initialize(self, force=False):
@@ -77955,11 +78021,28 @@ class KernelSysctl:
             return None
         self.meta.append(("info", "sysctl_table_root: {:#x}".format(self.sysctl_table_root)))
 
-        self.resolve_layout(Kernel.version())
-        self.resolve_namespace_sets()
-        self.resolve_string_handlers()
+        by_debug_info = self.resolve_layout_by_debug_info()
+        if by_debug_info and self.is_valid_layout():
+            self.meta.append(("info", "layout: debug info"))
+        else:
+            if by_debug_info:
+                # e.g., the debug information of another build
+                self.meta.append(("warn", "The debug information does not match the sysctl tree"))
+            self.resolve_layout(Kernel.version())
+            if not self.is_valid_layout():
+                self.meta.append(("err", "Could not resolve the layout (CONFIG_RANDSTRUCT=y needs the debug information)"))
+                return None
+            self.meta.append(("info", "layout: kernel version"))
+        self.meta.append(("info", "offsetof(ctl_table, procname): {:#x}".format(self.offset_procname)))
+        self.meta.append(("info", "offsetof(ctl_table, data): {:#x}".format(self.offset_data)))
+        self.meta.append(("info", "offsetof(ctl_table, maxlen): {:#x}".format(self.offset_maxlen)))
+        self.meta.append(("info", "offsetof(ctl_table, mode): {:#x}".format(self.offset_mode)))
+        self.meta.append(("info", "offsetof(ctl_table, proc_handler): {:#x}".format(self.offset_handler)))
+        self.meta.append(("info", "sizeof(ctl_table): {:#x}".format(self.sizeof_ctl_table)))
 
-        self.root_ctl_dir = self.sysctl_table_root + current_arch.ptrsize
+        self.resolve_namespace_sets()
+        self.resolve_handler_types()
+
         self.root_rb_node = read_int_from_memory(self.root_ctl_dir + self.offset_rb_node)
         self.meta.append(("info", "root_ctl_dir: {:#x}".format(self.root_ctl_dir)))
         self.meta.append(("info", "root_rb_node: {:#x}".format(self.root_rb_node)))
@@ -77987,7 +78070,7 @@ class KernelSysctl:
     def parse_entry(self, entry, include_namespace=False):
         """Read the value-related fields of one ctl_table entry."""
         maxlen = read_int32_from_memory(entry.table + self.offset_maxlen)
-        address = read_int_from_memory(entry.table + current_arch.ptrsize)
+        address = read_int_from_memory(entry.table + self.offset_data)
         handler = read_int_from_memory(entry.table + self.offset_handler)
         ctset = None
         namespace = "-"
@@ -77996,8 +78079,42 @@ class KernelSysctl:
             namespace = self.ctset_namespaces.get(ctset, "-")
         return self.Data(maxlen, address, handler, ctset, namespace)
 
+    def resolve_layout_by_debug_info(self):
+        """Resolve the structure offsets from the loaded debug information. Return False if any is missing."""
+        offsetof = GefUtil.offsetof
+        self.offset_default_set = offsetof("ctl_table_root", "default_set")
+        self.offset_set_dir = offsetof("ctl_table_set", "dir")
+        self.offset_ctl_table = offsetof("ctl_dir", "header.ctl_table")
+        self.offset_root = offsetof("ctl_dir", "header.root")
+        self.offset_set = offsetof("ctl_dir", "header.set")
+        self.offset_parent = offsetof("ctl_dir", "header.parent")
+        self.offset_rb_node = offsetof("ctl_dir", "root.rb_node")
+        self.offset_node_header = offsetof("ctl_node", "header")
+        self.offset_procname = offsetof("ctl_table", "procname")
+        self.offset_data = offsetof("ctl_table", "data")
+        self.offset_maxlen = offsetof("ctl_table", "maxlen")
+        self.offset_mode = offsetof("ctl_table", "mode")
+        self.offset_handler = offsetof("ctl_table", "proc_handler")
+        self.sizeof_ctl_table = GefUtil.sizeof("ctl_table")
+        if None in [
+            self.offset_default_set, self.offset_set_dir, self.offset_root, self.offset_ctl_table,
+            self.offset_set, self.offset_parent, self.offset_rb_node, self.offset_node_header,
+            self.offset_procname, self.offset_data, self.offset_maxlen, self.offset_mode,
+            self.offset_handler, self.sizeof_ctl_table,
+        ]:
+            return False
+        # v6.6~
+        self.offset_ctl_table_size = offsetof("ctl_dir", "header.ctl_table_size")
+        return True
+
     def resolve_layout(self, kversion):
         """Resolve version- and architecture-dependent structure offsets."""
+        self.offset_default_set = 0
+        self.offset_set_dir = current_arch.ptrsize
+        self.offset_ctl_table = 0
+        self.offset_node_header = current_arch.ptrsize * 3
+        self.offset_procname = 0
+        self.offset_data = current_arch.ptrsize
         if is_64bit():
             if kversion < "4.9.120":
                 self.offset_rb_node = 0x48
@@ -78054,9 +78171,37 @@ class KernelSysctl:
         # Since v6.10 ctl_table has no sentinel, so ctl_table_size (added in
         # v6.6) is needed to bound the array.
         self.offset_ctl_table_size = None if kversion < "6.6" else current_arch.ptrsize
-        self.offset_lookup = current_arch.ptrsize + self.offset_rb_node + current_arch.ptrsize
         self.offset_set = self.offset_parent - current_arch.ptrsize
+        self.offset_root = self.offset_set - current_arch.ptrsize
         return
+
+    def is_valid_layout(self):
+        """Check the layout with the root directory and its first child, which is always a directory.
+
+        sysctl_table_root.default_set.dir.header.set points to sysctl_table_root.default_set,
+        and a top-level directory has the root directory as its parent and a ctl_table entry of S_IFDIR."""
+        self.root_ctl_dir = self.sysctl_table_root + self.offset_default_set + self.offset_set_dir
+        default_set = self.sysctl_table_root + self.offset_default_set
+        if read_int_from_memory(self.root_ctl_dir + self.offset_set, safe=True) != default_set:
+            return False
+        if read_int_from_memory(self.root_ctl_dir + self.offset_root, safe=True) != self.sysctl_table_root:
+            return False
+        rb_node = read_int_from_memory(self.root_ctl_dir + self.offset_rb_node, safe=True)
+        if not rb_node or not is_valid_addr(rb_node):
+            return False
+        ctl_dir = read_int_from_memory(rb_node + self.offset_node_header, safe=True)
+        if not ctl_dir or not is_valid_addr(ctl_dir):
+            return False
+        if read_int_from_memory(ctl_dir + self.offset_parent, safe=True) != self.root_ctl_dir:
+            return False
+        ctl_table = read_int_from_memory(ctl_dir + self.offset_ctl_table, safe=True)
+        if not ctl_table or not is_valid_addr(ctl_table):
+            return False
+        mode = read_int16_from_memory(ctl_table + self.offset_mode, safe=True)
+        if mode is None or (mode & 0o170000) != 0o040000:
+            return False
+        procname = read_int_from_memory(ctl_table + self.offset_procname, safe=True)
+        return bool(procname and read_cstring_from_memory(procname, max_length=0x40, safe=True))
 
     @staticmethod
     def find_set(start, handlers):
@@ -78071,52 +78216,86 @@ class KernelSysctl:
         return None
 
     def resolve_namespace_sets(self):
-        """Resolve the roots used by the net.* and user.* symlinks."""
-        self.ctset_namespaces = {self.sysctl_table_root: "global"}
+        """Resolve the sets of the initial namespaces that the symlinks (net.*, user.*, and ipc since v5.17) lead to."""
+        self.ctset_namespaces = {self.sysctl_table_root + self.offset_default_set: "global"}
+        self.ctsets = {}
 
-        self.net_ctset = None
-        init_net = KernelAddressHeuristicFinder.get_init_net()
+        self.init_net = init_net = KernelAddressHeuristicFinder.get_init_net()
         is_seen = Ksym.get_addr("is_seen")
         if init_net and is_seen:
-            self.net_ctset = self.find_set(init_net, {is_seen})
-            if self.net_ctset is not None:
-                self.ctset_namespaces[self.net_ctset] = "net:{:#018x}".format(init_net)
+            self.add_set(self.find_set(init_net, {is_seen}), "net:{:#018x}".format(init_net))
 
-        self.user_ctset = None
-        init_user_ns = KernelAddressHeuristicFinder.get_init_user_ns()
+        # the user, ipc and mqueue namespaces have their own `set_is_seen` and `set_lookup`
         set_is_seen = Ksym.get_addrs("set_is_seen")
+        init_user_ns = KernelAddressHeuristicFinder.get_init_user_ns()
         if init_user_ns and set_is_seen:
-            self.user_ctset = self.find_set(init_user_ns, set_is_seen)
-            if self.user_ctset is not None:
-                self.ctset_namespaces[self.user_ctset] = "user:{:#018x}".format(init_user_ns)
+            self.add_set(self.find_set(init_user_ns, set_is_seen), "user:{:#018x}".format(init_user_ns))
+
+        init_ipc_ns = Ksym.get_addr("init_ipc_ns")
+        if init_ipc_ns and set_is_seen:
+            # mq_set and ipc_set
+            ctset = self.find_set(init_ipc_ns, set_is_seen)
+            if self.add_set(ctset, "ipc:{:#018x}".format(init_ipc_ns)):
+                ctset = self.find_set(ctset + current_arch.ptrsize, set_is_seen)
+                self.add_set(ctset, "ipc:{:#018x}".format(init_ipc_ns))
         return
 
-    def resolve_string_handlers(self):
-        """Resolve proc handlers whose data is known to be a string."""
-        known_handlers = [
-            "addrconf_sysctl_stable_secret",
-            "cdrom_sysctl_info",
-            "devkmsg_sysctl_set_loglvl",
-            "numa_zonelist_order_handler",
-            "proc_allowed_congestion_control",
-            "proc_do_uts_string",
-            "proc_dostring",
-            "proc_dostring_coredump",
-            "proc_tcp_available_congestion_control",
-            "proc_tcp_available_ulp",
-            "seccomp_actions_logged_handler",
-            "set_default_qdisc",
-        ]
-        self.str_types = []
-        for handler in known_handlers:
-            handler_addr = Ksym.get_addr(handler)
-            if handler_addr:
-                self.str_types.append(handler_addr)
+    def add_set(self, ctset, namespace):
+        """Register a ctl_table_set by the ctl_table_root that the symlinks to it have as data."""
+        if ctset is None or ctset in self.ctset_namespaces:
+            return False
+        ctl_dir = ctset + self.offset_set_dir
+        if read_int_from_memory(ctl_dir + self.offset_set, safe=True) != ctset:
+            return False
+        root = read_int_from_memory(ctl_dir + self.offset_root, safe=True)
+        self.ctsets[root] = ctset
+        self.ctset_namespaces[ctset] = namespace
+        return True
+
+    def resolve_handler_types(self):
+        """Resolve the addresses of the proc handlers whose data representation is known."""
+        self.handler_types = {}
+        self.known_handlers = {}
+        for name, handler_type in self.HANDLER_TYPES.items():
+            addr = Ksym.get_addr(name)
+            if addr:
+                self.handler_types[addr] = handler_type
+                # a wrapper of a string handler formats binary data (e.g., proc_do_uuid)
+                if handler_type not in [None, "string"]:
+                    self.known_handlers[addr] = handler_type
         return
+
+    def get_handler_type(self, handler):
+        """Return the data representation of `handler`, or None if unknown.
+        A custom handler is classified by the known handlers it calls, if they agree."""
+        if handler in self.handler_types:
+            return self.handler_types[handler]
+        self.handler_types[handler] = None
+        if not is_valid_addr(handler):
+            return None
+        try:
+            res = KernelAddressHeuristicFinderUtil.disassemble_until_next_symbol(handler, 128)
+        except gdb.error:
+            return None
+        targets = set()
+        for line in res.splitlines():
+            targets.update(int(x, 16) for x in re.findall(r"0x[0-9a-f]+", line.partition(":")[2]))
+        if is_riscv64() or is_riscv32():
+            # a far call is `auipc ra, hi20` and `jalr ra, lo12(ra)`
+            targets.update(KernelAddressHeuristicFinderUtil.riscv_auipc_gen(
+                res, use_addi=False, use_mem=True, skip=0, skip_msb_check=False, read_valid=False,
+            ))
+        found = {self.known_handlers[x] for x in targets if x in self.known_handlers}
+        if len(found) == 1:
+            self.handler_types[handler] = found.pop()
+        elif len({x[:2] for x in found}) == 1:
+            # e.g., a handler calling both proc_dointvec and proc_dointvec_jiffies
+            self.handler_types[handler] = found.pop()[:2] + ("",)
+        return self.handler_types[handler]
 
     def get_param_path(self, ctl_dir, ctl_table):
         """Build and remember the dotted path for a ctl_table entry."""
-        procname = read_int_from_memory(ctl_table)
+        procname = read_int_from_memory(ctl_table + self.offset_procname)
         if procname == 0:
             return None
         procname_str = read_cstring_from_memory(procname)
@@ -78138,25 +78317,19 @@ class KernelSysctl:
         return ctl_table + self.sizeof_ctl_table * num_entries
 
     def get_symlink_root(self, ctl_table, skip_symlink):
-        """Return the RB root selected by a net.* or user.* symlink."""
+        """Return the RB root of the set that a symlink leads to."""
         if skip_symlink:
             return None
-        ctset = None
-        root = read_int_from_memory(ctl_table + current_arch.ptrsize)
-        if is_valid_addr(root + self.offset_lookup):
-            lookup = read_int_from_memory(root + self.offset_lookup)
-            if lookup == Ksym.get_addr("net_ctl_header_lookup"):
-                ctset = self.net_ctset
-            elif lookup == Ksym.get_addr("set_lookup"):
-                ctset = self.user_ctset
+        root = read_int_from_memory(ctl_table + self.offset_data)
+        ctset = self.ctsets.get(root)
         if ctset is None or ctset in self.seen_ctset:
             return None
         self.seen_ctset.add(ctset)
-        return read_int_from_memory(ctset + current_arch.ptrsize + self.offset_rb_node)
+        return read_int_from_memory(ctset + self.offset_set_dir + self.offset_rb_node)
 
     def walk_table(self, ctl_dir, skip_symlink, progress):
         """Yield data entries in one ctl_table array and follow its symlinks."""
-        ctl_table = read_int_from_memory(ctl_dir)
+        ctl_table = read_int_from_memory(ctl_dir + self.offset_ctl_table)
         ctl_table_end = self.get_table_end(ctl_dir, ctl_table)
         while ctl_table not in self.seen_ctl_table:
             if ctl_table_end is not None and ctl_table >= ctl_table_end:
@@ -78187,7 +78360,7 @@ class KernelSysctl:
         if progress is not None:
             progress.update(1)
 
-        ctl_dir = read_int_from_memory(rb_node + current_arch.ptrsize * 3)
+        ctl_dir = read_int_from_memory(rb_node + self.offset_node_header)
         if ctl_dir not in self.seen_ctl_dir:
             self.seen_ctl_dir.add(ctl_dir)
             yield from self.walk_table(ctl_dir, skip_symlink, progress)
@@ -80991,12 +81164,6 @@ class KernelKeyringCommand(GenericCommand, BufferingOutput):
     KeyRecord = collections.namedtuple("KeyRecord", "root depth parent address info status")
     RequestAuth = collections.namedtuple("RequestAuth", "target target_info dest dest_info cred callout callout_len pid op")
 
-    def member_offset(self, member):
-        try:
-            return GefUtil.parse_and_eval_unsigned("&((struct key *)0)->{:s}".format(member))
-        except gdb.error:
-            return None
-
     def type_name(self, type_addr):
         if not type_addr or not is_valid_addr_addr(type_addr):
             return None
@@ -81011,7 +81178,7 @@ class KernelKeyringCommand(GenericCommand, BufferingOutput):
         return None
 
     def find_type_offset(self, key):
-        offset = self.member_offset("type")
+        offset = GefUtil.offsetof("key", "type")
         if offset is not None:
             return offset
         if key is None:
@@ -81033,7 +81200,7 @@ class KernelKeyringCommand(GenericCommand, BufferingOutput):
         return max(candidates)[2] if candidates else None
 
     def find_description_offset(self, key):
-        offset = self.member_offset("description")
+        offset = GefUtil.offsetof("key", "description")
         if offset is not None:
             return offset
 
@@ -81061,7 +81228,7 @@ class KernelKeyringCommand(GenericCommand, BufferingOutput):
         return None
 
     def find_datalen_offset(self):
-        offset = self.member_offset("datalen")
+        offset = GefUtil.offsetof("key", "datalen")
         if offset is not None:
             return offset
 
@@ -81096,7 +81263,7 @@ class KernelKeyringCommand(GenericCommand, BufferingOutput):
             self.meta.append((self.quiet_err, "Could not find key->description"))
             return None
 
-        self.offset_flags = self.member_offset("flags")
+        self.offset_flags = GefUtil.offsetof("key", "flags")
         if self.offset_flags is None:
             if self.kversion < "3.13":
                 self.offset_flags = self.offset_description - current_arch.ptrsize
@@ -81106,28 +81273,28 @@ class KernelKeyringCommand(GenericCommand, BufferingOutput):
                 self.offset_flags = self.offset_type - 3 * current_arch.ptrsize
 
         self.offset_datalen = self.find_datalen_offset()
-        self.offset_perm = self.member_offset("perm")
+        self.offset_perm = GefUtil.offsetof("key", "perm")
         if self.offset_perm is None:
             self.offset_perm = self.offset_datalen - 6
-        self.offset_uid = self.member_offset("uid")
+        self.offset_uid = GefUtil.offsetof("key", "uid")
         if self.offset_uid is None:
             self.offset_uid = self.offset_datalen - 14
-        self.offset_gid = self.member_offset("gid")
+        self.offset_gid = GefUtil.offsetof("key", "gid")
         if self.offset_gid is None:
             self.offset_gid = self.offset_datalen - 10
 
-        self.offset_expiry = self.member_offset("expiry")
+        self.offset_expiry = GefUtil.offsetof("key", "expiry")
         if self.offset_expiry is None:
             time_size = 8 if "4.15" <= self.kversion else current_arch.ptrsize
             time_fields = 2 if "3.5" <= self.kversion else 1
             self.offset_expiry = self.offset_uid - time_size * time_fields
         self.sizeof_expiry = 8 if "4.15" <= self.kversion else current_arch.ptrsize
 
-        self.offset_state = self.member_offset("state")
+        self.offset_state = GefUtil.offsetof("key", "state")
         if self.offset_state is None and "4.14" <= self.kversion:
             self.offset_state = self.offset_datalen + 2
 
-        self.offset_payload = self.member_offset("payload")
+        self.offset_payload = GefUtil.offsetof("key", "payload")
         if self.offset_payload is None:
             if self.kversion < "3.13":
                 self.offset_payload = self.offset_description + 3 * current_arch.ptrsize
@@ -81140,7 +81307,7 @@ class KernelKeyringCommand(GenericCommand, BufferingOutput):
             else:
                 self.offset_payload = self.offset_description + current_arch.ptrsize
 
-        self.offset_keys_root = self.member_offset("keys.root")
+        self.offset_keys_root = GefUtil.offsetof("key", "keys.root")
         if self.offset_keys_root is None and "3.13" <= self.kversion:
             # keys follows desc_len and either type_data (~v4.3) or name_link (v4.4~).
             if self.kversion < "5.3":
@@ -82432,7 +82599,7 @@ class KernelBlockDevicesCommand(GenericCommand, BufferingOutput):
 
     def initialize_dwarf(self):
         """Resolve the layout from the debug information. Return True if struct block_device is available."""
-        offsetof = KernelDevice.offsetof
+        offsetof = GefUtil.offsetof
         self.offset_bd_dev = offsetof("block_device", "bd_dev")
         self.offset_bd_disk = offsetof("block_device", "bd_disk")
         gendisk = [offsetof("gendisk", m) for m in ("major", "first_minor", "minors", "disk_name")]
@@ -82462,7 +82629,7 @@ class KernelBlockDevicesCommand(GenericCommand, BufferingOutput):
 
     def get_bdev_list_from_inodes(self):
         """Walk blockdev_superblock->s_inodes. Each inode is embedded in struct bdev_inode with its block_device."""
-        offsetof = KernelDevice.offsetof
+        offsetof = GefUtil.offsetof
         offset_vfs_inode = offsetof("bdev_inode", "vfs_inode")
         offset_s_inodes = offsetof("super_block", "s_inodes")
         offset_s_type = offsetof("super_block", "s_type")
@@ -84363,7 +84530,7 @@ class KernelCharacterDevicesCommand(GenericCommand, BufferingOutput):
             return
 
         # cdev->dev and cdev->count are what cdev_add() registered to cdev_map
-        offsetof = KernelDevice.offsetof
+        offsetof = GefUtil.offsetof
         off_dev = offsetof("cdev", "dev")
         if off_dev is None:
             off_dev = off_ops + current_arch.ptrsize * 3
@@ -85590,13 +85757,15 @@ class KernelSysctlCommand(GenericCommand, BufferingOutput):
 
     _example_ = [
         "{0:s} --filter modprobe             # filter by parameter name",
-        "{0:s} --fitler kernel.modprobe -e   # exact match",
+        "{0:s} --filter kernel.modprobe -e   # exact match",
         "{0:s} -s                            # skip symlink (improves performance with many .net.* and user.* entries)",
     ]
     _example_ = "\n".join(_example_).format(_cmdline_)
 
     _note_ = [
-        "This command requires CONFIG_RANDSTRUCT=n.",
+        "This command requires CONFIG_RANDSTRUCT=n unless vmlinux with debug information is loaded.",
+        "ParamValue is decoded as proc_handler (or the known handler it calls) reads it:",
+        "strings, integer vectors (`jiffies` is the raw stored count), or `raw:` bytes if unknown.",
         "",
         "Simplified sysctl_table structure:",
         "",
@@ -85662,25 +85831,43 @@ class KernelSysctlCommand(GenericCommand, BufferingOutput):
             return "{:#018x}".format(data.address), "-"
 
         address = "{:#018x}".format(data.address)
-        if data.handler in self.ksysctl.str_types:
-            value = "{!r}".format(read_cstring_from_memory(data.address))
-        elif data.maxlen == 4:
-            value = "{:#018x}".format(read_int32_from_memory(data.address))
-        elif data.maxlen == 8:
-            value = "{:#018x}".format(read_int64_from_memory(data.address))
-        elif data.maxlen == 1:
-            value = "{:#018x}".format(read_int8_from_memory(data.address))
-        elif data.maxlen == 0:
+        if data.maxlen == 0:
             if not self.args.verbose:
                 return None
-            value = "-"
-        else:
-            value = read_cstring_from_memory(data.address)
-            if value and value.isprintable() and len(value) >= 2:
-                value = "{!r}".format(value)
-            else:
-                value = "{:#018x}".format(read_int_from_memory(data.address))
+            return address, "-"
+        try:
+            value = self.decode_value(data, self.ksysctl.get_handler_type(data.handler))
+        except gdb.MemoryError:
+            value = "???"
         return address, value
+
+    def decode_value(self, data, handler_type):
+        # some handlers take the net namespace as data (e.g., proc_fib_multipath_hash_seed)
+        if data.address == self.ksysctl.init_net:
+            return "-"
+        maxlen = min(data.maxlen, 0x1000)
+        if handler_type == "string":
+            value = read_cstring_from_memory(data.address, max_length=maxlen)
+            if value is not None:
+                return "{!r}".format(value)
+        elif handler_type is not None:
+            size, signed, unit = handler_type
+            if size is None:
+                size = maxlen
+            elif size == 0:
+                size = current_arch.ptrsize
+            count = maxlen // size if size in [1, 2, 4, 8] else 0
+            if count:
+                max_count = 0x10
+                raw = read_memory(data.address, min(count, max_count) * size)
+                values = [str(u2i(x, size * 8) if signed else x) for x in slice_unpack(raw, size)]
+                if count > max_count:
+                    values.append("...")
+                if unit:
+                    values.append(unit)
+                return " ".join(values)
+        raw = read_memory(data.address, min(maxlen, 0x20))
+        return "raw:{:s}{:s}".format(raw.hex(), "..." if maxlen > 0x20 else "")
 
     def dump_data(self, entry):
         if not self.should_be_print(entry.path):
@@ -85742,7 +85929,7 @@ class KernelSysctlCommand(GenericCommand, BufferingOutput):
     @parse_args
     @only_if_gdb_running
     @only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
-    @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
+    @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64"))
     @only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
         self.exact_found = False
@@ -87908,16 +88095,6 @@ class KernelWorkqueueCommand(GenericCommand, BufferingOutput):
     ]
     _note_ = "\n".join(_note_)
 
-    def member_offset(self, type_name, member):
-        try:
-            struct_type = GefUtil.cached_lookup_type(type_name)
-            if struct_type is None:
-                return None
-            field = next(field for field in struct_type.fields() if field.name == member)
-            return field.bitpos // 8
-        except (gdb.error, StopIteration, TypeError):
-            return None
-
     def is_callback(self, address):
         if not address or not is_valid_addr(address):
             return False
@@ -87956,7 +88133,7 @@ class KernelWorkqueueCommand(GenericCommand, BufferingOutput):
         }
 
     def find_name_offset(self, workqueues):
-        offset = self.member_offset("struct workqueue_struct", "name")
+        offset = GefUtil.offsetof("struct workqueue_struct", "name")
         if offset is not None:
             self.name_is_pointer = False
             return offset
@@ -88024,9 +88201,9 @@ class KernelWorkqueueCommand(GenericCommand, BufferingOutput):
         if pool in self.pool_worklist_offsets:
             return pool + self.pool_worklist_offsets[pool]
 
-        offset = self.member_offset("struct worker_pool", "worklist")
+        offset = GefUtil.offsetof("struct worker_pool", "worklist")
         if offset is None and self.kversion < "3.9":
-            offset = self.member_offset("struct global_cwq", "worklist")
+            offset = GefUtil.offsetof("struct global_cwq", "worklist")
         if offset is not None:
             head = pool + offset
             if is_double_link_list(head):
@@ -88044,9 +88221,9 @@ class KernelWorkqueueCommand(GenericCommand, BufferingOutput):
         return None
 
     def find_pool_cpu(self, pool, worklist):
-        offset = self.member_offset("struct worker_pool", "cpu")
+        offset = GefUtil.offsetof("struct worker_pool", "cpu")
         if offset is None and self.kversion < "3.6":
-            offset = self.member_offset("struct global_cwq", "cpu")
+            offset = GefUtil.offsetof("struct global_cwq", "cpu")
         if offset is not None:
             try:
                 return read_int32_from_memory(pool + offset, signed=True)
@@ -88176,9 +88353,9 @@ class KernelWorkqueueCommand(GenericCommand, BufferingOutput):
                 self.append_record(records, work, "pending", owner, pool)
 
         # Throttled work is linked from pool_workqueue.delayed_works/inactive_works.
-        exact_offset = self.member_offset("struct pool_workqueue", "inactive_works")
+        exact_offset = GefUtil.offsetof("struct pool_workqueue", "inactive_works")
         if exact_offset is None:
-            exact_offset = self.member_offset("struct pool_workqueue", "delayed_works")
+            exact_offset = GefUtil.offsetof("struct pool_workqueue", "delayed_works")
         for unit in self.units:
             heads = []
             if exact_offset is not None:
@@ -88551,29 +88728,29 @@ class KernelWorkqueueCommand(GenericCommand, BufferingOutput):
             address: name for address, name, symbol_type in kallsyms[0] if symbol_type.lower() in ("t", "w")
         } if kallsyms else {}
 
-        self.offset_work_data = self.member_offset("struct work_struct", "data") or 0
-        self.offset_work_entry = self.member_offset("struct work_struct", "entry")
+        self.offset_work_data = GefUtil.offsetof("struct work_struct", "data") or 0
+        self.offset_work_entry = GefUtil.offsetof("struct work_struct", "entry")
         if self.offset_work_entry is None:
             self.offset_work_entry = current_arch.ptrsize
-        self.offset_work_func = self.member_offset("struct work_struct", "func")
+        self.offset_work_func = GefUtil.offsetof("struct work_struct", "func")
         if self.offset_work_func is None:
             self.offset_work_func = current_arch.ptrsize * 3
 
-        self.offset_wq_list = self.member_offset("struct workqueue_struct", "list")
+        self.offset_wq_list = GefUtil.offsetof("struct workqueue_struct", "list")
         if self.offset_wq_list is None:
             self.offset_wq_list = current_arch.ptrsize * 2
-        self.offset_wq_pwqs = self.member_offset("struct workqueue_struct", "pwqs") or 0
-        self.offset_pwq_pool = self.member_offset("struct pool_workqueue", "pool") or 0
-        self.offset_pwq_wq = self.member_offset("struct pool_workqueue", "wq")
+        self.offset_wq_pwqs = GefUtil.offsetof("struct workqueue_struct", "pwqs") or 0
+        self.offset_pwq_pool = GefUtil.offsetof("struct pool_workqueue", "pool") or 0
+        self.offset_pwq_wq = GefUtil.offsetof("struct pool_workqueue", "wq")
         if self.offset_pwq_wq is None:
             self.offset_pwq_wq = current_arch.ptrsize
-        self.offset_pwqs_node = self.member_offset("struct pool_workqueue", "pwqs_node")
-        self.offset_delayed_timer = self.member_offset("struct delayed_work", "timer")
-        self.offset_delayed_wq = self.member_offset("struct delayed_work", "wq")
-        self.offset_timer_expires = self.member_offset("struct timer_list", "expires")
+        self.offset_pwqs_node = GefUtil.offsetof("struct pool_workqueue", "pwqs_node")
+        self.offset_delayed_timer = GefUtil.offsetof("struct delayed_work", "timer")
+        self.offset_delayed_wq = GefUtil.offsetof("struct delayed_work", "wq")
+        self.offset_timer_expires = GefUtil.offsetof("struct timer_list", "expires")
         if self.offset_timer_expires is None:
             self.offset_timer_expires = current_arch.ptrsize * 2
-        self.offset_timer_func = self.member_offset("struct timer_list", "function")
+        self.offset_timer_func = GefUtil.offsetof("struct timer_list", "function")
         if self.offset_timer_func is None:
             # v3.0-v4.1 has `struct tvec_base *base` between `expires` and `function`;
             # v4.2 dropped it when timer_list.entry became an hlist_node.
@@ -138634,7 +138811,8 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
         return
 
     # for sheaf / barn
-    def get_sheaf_objects(self, kmem_cache):
+    @staticmethod
+    def get_sheaf_objects(kmem_cache):
         objects = []
 
         # cpu sheaves
@@ -139207,42 +139385,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
             self.args = args # revert
         return
 
-    @parse_args
-    @only_if_gdb_running
-    @only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
-    @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
-    @only_if_in_kernel_or_kpti_disabled
-    def do_invoke(self, args):
-        if args.help_for_slab_virtual:
-            gef_print(self._note2_.strip())
-            return
-
-        self.quiet_info("Wait for memory scan")
-
-        allocator = Kernel.get_slab_type()
-        if allocator == "SLUB":
-            pass
-        elif allocator == "SLUB_TINY":
-            self.quiet_err("Unsupported; You should use `slub-tiny-dump`")
-            return
-        elif allocator == "SLAB":
-            self.quiet_err("Unsupported; You should use `slab-dump`")
-            return
-        elif allocator == "SLOB":
-            self.quiet_err("Unsupported; You should use `slob-dump`")
-            return
-        else:
-            self.quiet_err("Unsupported: Unknown allocator")
-            return
-
-        # The slub-dump command is used by page2virt and kmagic to find vmemmap and sizeof(struct page).
-        # Therefore, slub-dump itself may be called recursively (up to once) from slub-dump.
-        # If a recursive call is made, various parameters held by self will be destroyed.
-        # It's very tricky, but if we make sure to call page2virt first,
-        # no further calls will be made and it will work without any problems.
-        if not args.skip_page2virt:
-            self.warmup_page2virt()
-
+    def setup(self, args):
         if args.no_byte_swap is None:
             self.swap = None
         else:
@@ -139283,7 +139426,56 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
             self.dump_target_node = True
             if args.skip_sheaf:
                 self.dump_target_cpu_sheaves = False
+        return
 
+    def get_kmem_caches(self, target_names):
+        """Return the parsed kmem_caches of `target_names` (all if empty) instead of dumping them,
+        with the cpu, partial and node slabs as `-vv`. Return None if the initialization fails."""
+        self.args = self.parser.parse_args(["--vverbose", "--quiet"])
+        self.warmup_page2virt()
+        self.setup(self.args)
+        self.maps = None
+        if not self.initialize():
+            return None
+        return self.walk_caches(target_names, list(range(self.ncpus)))[1:]
+
+    @parse_args
+    @only_if_gdb_running
+    @only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
+    @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
+    @only_if_in_kernel_or_kpti_disabled
+    def do_invoke(self, args):
+        if args.help_for_slab_virtual:
+            gef_print(self._note2_.strip())
+            return
+
+        self.quiet_info("Wait for memory scan")
+
+        allocator = Kernel.get_slab_type()
+        if allocator == "SLUB":
+            pass
+        elif allocator == "SLUB_TINY":
+            self.quiet_err("Unsupported; You should use `slub-tiny-dump`")
+            return
+        elif allocator == "SLAB":
+            self.quiet_err("Unsupported; You should use `slab-dump`")
+            return
+        elif allocator == "SLOB":
+            self.quiet_err("Unsupported; You should use `slob-dump`")
+            return
+        else:
+            self.quiet_err("Unsupported: Unknown allocator")
+            return
+
+        # The slub-dump command is used by page2virt and kmagic to find vmemmap and sizeof(struct page).
+        # Therefore, slub-dump itself may be called recursively (up to once) from slub-dump.
+        # If a recursive call is made, various parameters held by self will be destroyed.
+        # It's very tricky, but if we make sure to call page2virt first,
+        # no further calls will be made and it will work without any problems.
+        if not args.skip_page2virt:
+            self.warmup_page2virt()
+
+        self.setup(args)
         self.maps = None
         self.out = []
         self.slubwalk(args.cache_name, args.cpu)
@@ -140064,6 +140256,16 @@ class SlubTinyDumpCommand(GenericCommand, BufferingOutput):
             # self.args will be overwritten. this is workaround.
             self.args = args # revert
         return
+
+    def get_kmem_caches(self, target_names):
+        """Return the parsed kmem_caches of `target_names` (all if empty) instead of dumping them.
+        Return None if the initialization fails."""
+        self.args = self.parser.parse_args(["--quiet"])
+        self.warmup_page2virt()
+        self.maps = None
+        if not self.initialize():
+            return None
+        return self.walk_caches(target_names)[1:]
 
     @parse_args
     @only_if_gdb_running
@@ -140944,6 +141146,15 @@ class SlabDumpCommand(GenericCommand, BufferingOutput):
         self.dump_caches(target_names, target_cpus, parsed_caches)
         return
 
+    def get_kmem_caches(self, target_names):
+        """Return the parsed kmem_caches of `target_names` (all if empty) instead of dumping them.
+        Return None if the initialization fails."""
+        self.args = self.parser.parse_args(["--quiet"])
+        self.maps = None
+        if not self.initialize():
+            return None
+        return self.walk_caches(target_names, list(range(self.ncpus)))[1:]
+
     @parse_args
     @only_if_gdb_running
     @only_if_specific_gdb_mode(mode=("qemu-system", "vmware"))
@@ -141361,6 +141572,16 @@ class SlobDumpCommand(GenericCommand, BufferingOutput):
         self.dump_caches(target_names, parsed_caches, parsed_freelist)
         return
 
+    def get_kmem_caches(self, target_names):
+        """Return the parsed kmem_caches of `target_names` (all if empty) instead of dumping them.
+        They are only the metadata, since SLOB has no slab page owned by a kmem_cache.
+        Return None if the initialization fails."""
+        self.args = self.parser.parse_args(["--quiet"])
+        if not self.initialize():
+            return None
+        parsed_caches, _parsed_freelist = self.walk_caches(target_names)
+        return parsed_caches[1:]
+
     @parse_args
     @only_if_gdb_running
     @only_if_specific_gdb_mode(mode=("qemu-system", "vmware"))
@@ -141531,73 +141752,54 @@ class SlabContainsCommand(GenericCommand):
             return int(r.group(1), 16)
         return None
 
-    def check_slab_dump(self, target_addr, slab_cache_name):
+    @staticmethod
+    def is_freed(object_base, slab_cache_name):
+        """Return True if `object_base` is in a freelist of the cache, or None if the cache cannot be parsed."""
+        allocator, kmem_caches = Kernel.get_slab_caches([slab_cache_name])
+        if not kmem_caches:
+            return None
+        kmem_cache = kmem_caches[0]
+        freed_addresses = []
+        if allocator == "SLUB":
+            for kmem_cache_cpu in kmem_cache.get("kmem_cache_cpu", {}).values():
+                freed_addresses += kmem_cache_cpu["freelist"]
+                freed_addresses += kmem_cache_cpu.get("active_page", {}).get("freelist", [])
+                for page in kmem_cache_cpu.get("partial_pages", []):
+                    freed_addresses += page.get("freelist", [])
+            for page_list in kmem_cache.get("nodes_partial", []) + kmem_cache.get("nodes_full", []):
+                for page in page_list:
+                    freed_addresses += page.get("freelist", [])
+            freed_addresses += SlubDumpCommand.get_sheaf_objects(kmem_cache)
+        elif allocator == "SLUB_TINY":
+            for page_list in kmem_cache["nodes"]:
+                for page in page_list:
+                    freed_addresses += page.get("freelist", [])
+        elif allocator == "SLAB":
+            freed_addresses += kmem_cache["array_cache"]["freelist_all"]
+            for slabs_list in kmem_cache["nodes"]:
+                for page_list in slabs_list.values():
+                    for page in page_list:
+                        freed_addresses += [page["s_mem"] + kmem_cache["size"] * idx for idx in page.get("freelist", [])]
+        return object_base in freed_addresses
 
-        def get_freed_addresses(res):
-            freed_addresses = []
-            res = Color.remove_color(res)
-            in_freelist_section = 0
-            for line in res.splitlines():
-                line = line.rstrip()
-                if not in_freelist_section:
-                    if re.match(r"^        (freelist|objects:)", line):
-                        in_freelist_section = 1
-                    elif re.match(r"^        entry:", line):
-                        in_freelist_section = 2
-                elif in_freelist_section == 1:
-                    if not line.startswith("                  0x"):
-                        in_freelist_section = 0
-                elif in_freelist_section == 2:
-                    if not line.startswith("               0x"):
-                        in_freelist_section = 0
-                if in_freelist_section == 1:
-                    r = re.search(r"0x\S+ (0x\S+)", line)
-                    if r:
-                        freed_chunk = int(r.group(1), 16)
-                        freed_addresses.append(freed_chunk)
-                elif in_freelist_section == 2:
-                    r = re.search(r"(0x\S+)", line)
-                    if r:
-                        freed_chunk = int(r.group(1), 16)
-                        freed_addresses.append(freed_chunk)
-            return freed_addresses
+    def get_slab_object(self, address):
+        """Return the dict of the slab object that contains `address`.
+        `error` is set if it is not resolved, and the other members are set as far as they are resolved."""
+        allocator = Kernel.get_slab_type()
+        obj = {"pages": [], "error": None}
+        if not self.initialize(allocator):
+            obj["error"] = "Failed to initialize"
+            return obj
 
-        if self.allocator == "SLUB":
-            res = gdb.execute("slub-dump --node --no-pager --quiet {:s}".format(slab_cache_name), to_string=True)
-        elif self.allocator == "SLUB_TINY":
-            res = gdb.execute("slub-tiny-dump --no-pager --quiet {:s}".format(slab_cache_name), to_string=True)
-        elif self.allocator == "SLAB":
-            res = gdb.execute("slab-dump --no-pager --quiet {:s}".format(slab_cache_name), to_string=True)
-        else:
-            return
-
-        freed_addresses = get_freed_addresses(res)
-
-        freed_address_color = Config.get_gef_setting("theme.heap_chunk_address_freed")
-        used_address_color = Config.get_gef_setting("theme.heap_chunk_address_used")
-        if target_addr in freed_addresses:
-            self.quiet_print("status: {:s} (found object base in freelist)".format(
-                Color.colorify("freed", freed_address_color),
-            ))
-        else:
-            self.quiet_print("status: {:s} (not found object base in freelist)".format(
-                Color.colorify("in-use", used_address_color),
-            ))
-        return
-
-    def slab_contains(self):
-        current = self.args.address & get_pagesize_mask_high()
-        chunk_label_color = Config.get_gef_setting("theme.heap_chunk_label")
-        chunk_size_color = Config.get_gef_setting("theme.heap_chunk_size")
-
+        current = address & get_pagesize_mask_high()
         try:
             while True:
                 page = self.virt2page_wrapper(current)
                 if page is None:
-                    self.quiet_err("Invalid address")
-                    return
+                    obj["error"] = "Invalid address"
+                    return obj
 
-                self.quiet_print("{:s}: {:#x}".format(Kernel.slab_page_str(), page))
+                obj["pages"].append(page)
 
                 page_next = read_int_from_memory(page + self.page_offset_next)
                 if page_next & 1:
@@ -141606,8 +141808,8 @@ class SlabContainsCommand(GenericCommand):
 
                 kmem_cache = read_int_from_memory(page + self.page_offset_slab_cache)
                 if kmem_cache == 0:
-                    self.quiet_err("This address is not managed by slab (kmem_cache=0)")
-                    return
+                    obj["error"] = "This address is not managed by slab (kmem_cache=0)"
+                    return obj
 
                 if (kmem_cache & get_pagesize_mask_high()) == 0xdead_0000_0000_0000:
                     current -= get_pagesize()
@@ -141617,24 +141819,24 @@ class SlabContainsCommand(GenericCommand):
                     current -= get_pagesize()
                     continue
 
-                self.quiet_print("kmem_cache: {:#x}".format(kmem_cache))
-                self.quiet_print("base: {:#x}".format(current))
+                obj["kmem_cache"] = kmem_cache
+                obj["base"] = current
                 break
         except (gdb.MemoryError, ZeroDivisionError):
-            self.quiet_err("Memory read error")
-            return
+            obj["error"] = "Memory read error"
+            return obj
 
         try:
             slab_cache_name_ptr = read_int_from_memory(kmem_cache + self.kmem_cache_offset_name)
             slab_cache_name = read_cstring_from_memory(slab_cache_name_ptr)
             if slab_cache_name is None:
-                self.quiet_err('This address is not managed by slab (slab_cache_name="")')
-                return
+                obj["error"] = 'This address is not managed by slab (slab_cache_name="")'
+                return obj
 
             slab_cache_size = read_int32_from_memory(kmem_cache + self.kmem_cache_offset_size)
             slab_cache_object_size = read_int32_from_memory(kmem_cache + self.kmem_cache_offset_object_size)
 
-            if self.allocator in ["SLUB", "SLUB_TINY"]:
+            if allocator in ["SLUB", "SLUB_TINY"]:
                 red_left_pad = read_int_from_memory(kmem_cache + self.kmem_cache_offset_red_left_pad)
                 color_offset = 0
                 x = read_int_from_memory(page + self.page_offset_inuse_objects_frozen)
@@ -141647,36 +141849,64 @@ class SlabContainsCommand(GenericCommand):
                 gfporder = read_int32_from_memory(kmem_cache + self.kmem_cache_offset_gfporder)
                 num_pages = 1 << gfporder
 
-            # `inuse` is not displayed because it is not a reliable reference value.
+            # `inuse` is not resolved because it is not a reliable reference value.
             # The value of `slab->inuse` also includes the number of chunks registered in `kmem_cache_cpu->freelist` etc.
             # However, what the user actually wants is the number of chunks that are truly in use,
             # excluding those accounted for by `kmem_cache_cpu->freelist`.
             # Accurately deriving that value is non-trivial.
-            gef_print("name: {:s}  object_size: {:s} (chunk_size: {:#x})  num_pages: {:#x}".format(
-                Color.colorify(slab_cache_name, chunk_label_color),
-                Color.colorify_hex(slab_cache_object_size, chunk_size_color),
-                slab_cache_size, num_pages,
-            ))
+            obj["name"] = slab_cache_name
+            obj["object_size"] = slab_cache_object_size
+            obj["chunk_size"] = slab_cache_size
+            obj["num_pages"] = num_pages
 
             first_object = current + red_left_pad + color_offset
-            delta = self.args.address - first_object
-
+            delta = address - first_object
             if delta < 0:
+                obj["object_base"] = None
+                obj["offset"] = None
+            else:
+                obj["object_base"] = first_object + (delta // slab_cache_size) * slab_cache_size
+                obj["offset"] = delta % slab_cache_size
+        except (gdb.MemoryError, ZeroDivisionError):
+            obj["error"] = "Memory read error"
+        return obj
+
+    def slab_contains(self):
+        chunk_label_color = Config.get_gef_setting("theme.heap_chunk_label")
+        chunk_size_color = Config.get_gef_setting("theme.heap_chunk_size")
+
+        obj = self.get_slab_object(self.args.address)
+        for page in obj["pages"]:
+            self.quiet_print("{:s}: {:#x}".format(Kernel.slab_page_str(), page))
+        if "kmem_cache" in obj:
+            self.quiet_print("kmem_cache: {:#x}".format(obj["kmem_cache"]))
+            self.quiet_print("base: {:#x}".format(obj["base"]))
+        if "name" in obj:
+            gef_print("name: {:s}  object_size: {:s} (chunk_size: {:#x})  num_pages: {:#x}".format(
+                Color.colorify(obj["name"], chunk_label_color),
+                Color.colorify_hex(obj["object_size"], chunk_size_color),
+                obj["chunk_size"], obj["num_pages"],
+            ))
+            if obj["object_base"] is None:
                 gef_print("remarks: {:s}".format(Color.redify("before first object")))
                 return
+            self.quiet_print("object_base: {:#x}".format(obj["object_base"]))
+            if obj["offset"] != 0:
+                gef_print("remarks: {:s} (offset: +{:#x})".format(Color.redify("unaligned"), obj["offset"]))
+        if obj["error"]:
+            self.quiet_err(obj["error"])
+            return
 
-            object_base = first_object + (delta // slab_cache_size) * slab_cache_size
-            object_offset = delta % slab_cache_size
-
-            self.quiet_print("object_base: {:#x}".format(object_base))
-
-            if object_offset != 0:
-                gef_print("remarks: {:s} (offset: +{:#x})".format(Color.redify("unaligned"), object_offset))
-
-            # resolve freelist and print chunk status (in-use or freed)
-            self.check_slab_dump(object_base, slab_cache_name)
-        except (gdb.MemoryError, ZeroDivisionError):
-            self.quiet_err("Memory read error")
+        # resolve freelist and print chunk status (in-use or freed)
+        freed = self.is_freed(obj["object_base"], obj["name"])
+        if freed:
+            self.quiet_print("status: {:s} (found object base in freelist)".format(
+                Color.colorify("freed", Config.get_gef_setting("theme.heap_chunk_address_freed")),
+            ))
+        elif freed is not None:
+            self.quiet_print("status: {:s} (not found object base in freelist)".format(
+                Color.colorify("in-use", Config.get_gef_setting("theme.heap_chunk_address_used")),
+            ))
         return
 
     @parse_args
@@ -144221,19 +144451,8 @@ class KernelPipeCommand(GenericCommand, BufferingOutput):
         return None
 
     def resolve_by_dwarf(self):
-
-        def offsetof(type_name, member):
-            try:
-                return GefUtil.parse_and_eval_unsigned("&((struct {:s}*)0)->{:s}".format(type_name, member))
-            except gdb.error:
-                return None
-
-        def sizeof(expr):
-            try:
-                return GefUtil.parse_and_eval_unsigned("sizeof({:s})".format(expr))
-            except gdb.error:
-                return None
-
+        offsetof = GefUtil.offsetof
+        sizeof = GefUtil.sizeof
         found = []
 
         # inode->i_pipe
@@ -176840,6 +177059,9 @@ class KernelRefsCommand(GenericCommand, BufferingOutput):
         "- Hits are annotated with their likely context: the preceding kallsyms symbol, per-cpu variable and CPU,",
         "  or slab cache and object boundary. Kallsyms ownership is only a heuristic.",
         "- Only pointer-size-aligned raw pointers are found; encoded, tagged, XORed, mangled, or unaligned pointers are missed.",
+        "- `-c` scans the slab pages reachable from the per-cpu and per-node lists and the sheaves.",
+        "  SLUB links no full slab without CONFIG_SLUB_DEBUG, and SLOB has no slab page owned by a cache.",
+        "- The slab cache of a hit is resolved on x86 and ARM only.",
         "- Use `kobj ADDRESS` to identify the referenced object.",
     ]
     _note_ = "\n".join(_note_)
@@ -176876,50 +177098,66 @@ class KernelRefsCommand(GenericCommand, BufferingOutput):
         return "{:s}+{:#x}".format(name, addr - sym_addr)
 
     def collect_cache_ranges(self, name):
-        """Return the slab page ranges of the kmem_cache `name` by parsing the allocator dump."""
-        slab_type = Kernel.get_slab_type()
-        cmd = {"SLUB": "slub-dump -vv -s", "SLUB_TINY": "slub-tiny-dump -s",
-               "SLAB": "slab-dump -s", "SLOB": "slob-dump -v -s"}.get(slab_type)
-        if cmd is None:
-            self.err_add_out("Unsupported allocator: {!s}".format(slab_type))
+        """Return the slab page ranges of the kmem_cache `name`."""
+        allocator, kmem_caches = Kernel.get_slab_caches([name])
+        if kmem_caches is None:
+            self.err_add_out("Could not parse the kmem_caches (allocator: {!s})".format(allocator))
             return []
-        cmd = "{:s} --quiet --no-pager {:s}".format(cmd, name)
-        try:
-            res = Color.remove_color(gdb.execute(cmd, to_string=True))
-        except gdb.error:
-            res = ""
+        if not kmem_caches:
+            self.err_add_out("The cache `{:s}` was not found".format(name))
+            return []
+        if allocator == "SLOB":
+            self.err_add_out("SLOB has no slab page owned by a kmem_cache")
+            return []
+
+        kmem_cache = kmem_caches[0]
+        pages = []
+        if allocator == "SLUB":
+            for kmem_cache_cpu in kmem_cache.get("kmem_cache_cpu", {}).values():
+                pages += [kmem_cache_cpu["active_page"]] + kmem_cache_cpu["partial_pages"]
+            for page_list in kmem_cache.get("nodes_partial", []) + kmem_cache.get("nodes_full", []):
+                pages += page_list
+            pages = [(p.get("virt_addr"), p.get("num_pages")) for p in pages]
+            # v6.18~: a sheaf holds freed objects whose slab no list may reach
+            for chunk in SlubDumpCommand.get_sheaf_objects(kmem_cache):
+                if not isinstance(chunk, int) or not chunk:
+                    continue
+                if any(vaddr and num_pages and vaddr <= chunk < vaddr + num_pages * get_pagesize() for vaddr, num_pages in pages):
+                    continue
+                obj = Kernel.get_slab_object(chunk)
+                if obj and obj["name"] == name:
+                    pages.append((obj["base"], obj["num_pages"]))
+                else:
+                    pages.append((chunk & get_pagesize_mask_high(), 1))
+        elif allocator == "SLUB_TINY":
+            for page_list in kmem_cache["nodes"]:
+                pages += [(p.get("virt_addr"), p.get("num_pages")) for p in page_list]
+        elif allocator == "SLAB":
+            for slabs_list in kmem_cache["nodes"]:
+                for page_list in slabs_list.values():
+                    pages += [(p.get("s_mem_base"), kmem_cache["pagesperslab"]) for p in page_list]
+
+        seen = set()
+        for vaddr, num_pages in pages:
+            if vaddr and num_pages and 0 < num_pages <= 0x1000:
+                seen.update(range(vaddr, vaddr + num_pages * get_pagesize(), get_pagesize()))
         ranges = []
-        # both slub-dump and slab-dump print the page as `virtual address...: ADDR` + `num pages: N`
-        regex = r"virtual address[^:]*:\s*(0x\w+)\s*\n\s*num pages:\s*(\w+)"
-        for m in re.finditer(regex, res):
-            vaddr = int(m.group(1), 16)
-            num_pages = int(m.group(2), 0)
-            if vaddr and 0 < num_pages <= 0x1000:
-                ranges.append((vaddr, num_pages * get_pagesize(), "slab:{:s}".format(name)))
+        for vaddr in sorted(seen):
+            if ranges and ranges[-1][0] + ranges[-1][1] == vaddr:
+                ranges[-1] = (ranges[-1][0], ranges[-1][1] + get_pagesize(), ranges[-1][2])
+            else:
+                ranges.append((vaddr, get_pagesize(), "slab:{:s}".format(name)))
         if not ranges:
             self.err_add_out("No slab page was found for the cache `{:s}`".format(name))
         return ranges
 
     def collect_object_range(self, addr):
         """Return the range of the slab object that contains `addr`."""
-        res = Kernel.get_slab_contains(addr, allow_unaligned=True)
-        if not res:
+        obj = Kernel.get_slab_object(addr)
+        if obj is None or obj["object_base"] is None:
             self.err_add_out("{:#x} is not in a slab object".format(addr))
             return []
-        m = re.search(r"^name: (\S+)\s+object_size: \S+ \(chunk_size: (0x\w+)\)", res, re.M)
-        if not m:
-            self.err_add_out("Could not resolve the object size of {:#x}".format(addr))
-            return []
-        name, size = m.group(1), int(m.group(2), 16)
-        base = addr
-        m = re.search(r"^object_base: (0x\w+)", res, re.M)
-        if m:
-            base = int(m.group(1), 16)
-        else:
-            m = re.search(r"remarks: unaligned \(offset: \+(0x\w+)\)", res)
-            if m:
-                base = addr - int(m.group(1), 16)
-        return [(base, size, "object:{:s}".format(name))]
+        return [(obj["object_base"], obj["chunk_size"], "object:{:s}".format(obj["name"]))]
 
     def collect_physmap_ranges(self):
         """Return every writable kernel mapping outside the kernel image."""
@@ -177042,20 +177280,11 @@ class KernelRefsCommand(GenericCommand, BufferingOutput):
                 return "cpu{:d} (dynamic per-cpu)".format(cpu)
             return "cpu{:d} <{:s}+{:#x}>".format(cpu, sym[0], sym[1])
 
-        res = Kernel.get_slab_contains(addr, allow_unaligned=True)
-        if res:
-            m = re.search(r"^name: (\S+)", res, re.M)
-            name = m.group(1) if m else "?"
-            if "before first object" in res:
-                return "cache: {:s}".format(name)
-            # --quiet keeps `remarks`, which carries the offset, but drops `object_base`
-            m = re.search(r"^object_base: (0x\w+)", res, re.M)
-            if m:
-                base = int(m.group(1), 16)
-            else:
-                m = re.search(r"remarks: unaligned \(offset: \+(0x\w+)\)", res)
-                base = addr - int(m.group(1), 16) if m else addr
-            return "cache: {:s}  object: {:#x}+{:#x}".format(name, base, addr - base)
+        obj = Kernel.get_slab_object(addr)
+        if obj is not None:
+            if obj["object_base"] is None:
+                return "cache: {:s}".format(obj["name"])
+            return "cache: {:s}  object: {:#x}+{:#x}".format(obj["name"], obj["object_base"], obj["offset"])
         return ""
 
     @parse_args
@@ -178400,19 +178629,13 @@ class KernelLsmCommand(GenericCommand, BufferingOutput):
                     return offset
         return None
 
-    def get_member_offset(self, type_name, member):
-        try:
-            return GefUtil.parse_and_eval_unsigned("&(({:s} *)0)->{:s}".format(type_name, member))
-        except gdb.error:
-            return None
-
     def is_blob_value(self, value):
         return value == 0 or (value % current_arch.ptrsize == 0 and is_valid_addr(value))
 
     def resolve_member_offset(self, type_name, member, objects, funcs=(), fallback=None):
         """Return offsetof(type, member) from the debug type, from what `funcs` access through the first argument, or
         `fallback`, if the member of every object is NULL or a valid address."""
-        offset = self.get_member_offset(type_name, member)
+        offset = GefUtil.offsetof(type_name, member)
         if offset is None:
             offset = self.find_arg_member_offset(funcs)
         if offset is None:
@@ -178455,7 +178678,7 @@ class KernelLsmCommand(GenericCommand, BufferingOutput):
         addr = Ksym.get_addr(sym)
         if addr is None:
             return None
-        offset = self.get_member_offset("struct lsm_blob_sizes", "lbs_{:s}".format(kind))
+        offset = GefUtil.offsetof("struct lsm_blob_sizes", "lbs_{:s}".format(kind))
         if offset is None:
             kversion = Kernel.version()
             for version, index in self.BLOB_SIZES_INDEX:
@@ -179010,17 +179233,6 @@ class KernelIoUringCommand(GenericCommand, BufferingOutput):
                 return value, member
         return None, None
 
-    def member_offset(self, type_name, member):
-        key = (type_name, member)
-        if key in self.offset_cache:
-            return self.offset_cache[key]
-        try:
-            offset = GefUtil.parse_and_eval_unsigned("&(({:s} *)0)->{:s}".format(type_name, member))
-        except gdb.error:
-            offset = None
-        self.offset_cache[key] = offset
-        return offset
-
     @staticmethod
     def is_ring_path(path):
         return path == "anon_inode:[io_uring]" or path == "[io_uring]" or path.endswith(":[io_uring]")
@@ -179355,8 +179567,8 @@ class KernelIoUringCommand(GenericCommand, BufferingOutput):
         return self.eval_unsigned("struct io_kiocb", request, "ctx")
 
     def walk_request_list(self, ctx, ctx_member, req_member, state):
-        head_offset = self.member_offset("struct io_ring_ctx", ctx_member)
-        req_offset = self.member_offset("struct io_kiocb", req_member)
+        head_offset = GefUtil.offsetof("struct io_ring_ctx", ctx_member)
+        req_offset = GefUtil.offsetof("struct io_kiocb", req_member)
         if head_offset is None or req_offset is None:
             return []
         head = ctx + head_offset
@@ -179374,7 +179586,7 @@ class KernelIoUringCommand(GenericCommand, BufferingOutput):
 
     def walk_request_slist(self, ctx, ctx_member, req_member, state):
         first = self.eval_unsigned("struct io_ring_ctx", ctx, ctx_member + ".first")
-        req_offset = self.member_offset("struct io_kiocb", req_member)
+        req_offset = GefUtil.offsetof("struct io_kiocb", req_member)
         if first is None or req_offset is None:
             return []
         requests = []
@@ -179390,8 +179602,8 @@ class KernelIoUringCommand(GenericCommand, BufferingOutput):
         return requests
 
     def walk_request_container_list(self, ctx, ctx_member, container_type, list_member, request_member, state):
-        head_offset = self.member_offset("struct io_ring_ctx", ctx_member)
-        list_offset = self.member_offset(container_type, list_member)
+        head_offset = GefUtil.offsetof("struct io_ring_ctx", ctx_member)
+        list_offset = GefUtil.offsetof(container_type, list_member)
         if head_offset is None or list_offset is None:
             return []
         requests = []
@@ -179606,7 +179818,7 @@ class KernelIoUringCommand(GenericCommand, BufferingOutput):
             ("struct io_kiocb", "opcode"), ("struct io_kiocb", "ctx"),
             ("struct task_struct", "io_uring"),
         ]:
-            offset = self.member_offset(type_name, member)
+            offset = GefUtil.offsetof(type_name, member)
             self.quiet_info("offsetof({:s}, {:s}): {:s}".format(
                 type_name.replace("struct ", ""), member,
                 "unavailable" if offset is None else "{:#x}".format(offset),
@@ -179614,7 +179826,6 @@ class KernelIoUringCommand(GenericCommand, BufferingOutput):
         return
 
     def initialize(self):
-        self.offset_cache = {}
         self.meta = []
         self.kversion = Kernel.version()
         if self.kversion is None:
@@ -179867,16 +180078,6 @@ class KernelNftablesCommand(GenericCommand, BufferingOutput):
         self.netns_ops_off = None
         return
 
-    def member_offset(self, type_name, member):
-        try:
-            struct_type = GefUtil.cached_lookup_type(type_name)
-            if struct_type is None:
-                return None
-            field = next(field for field in struct_type.fields() if field.name == member)
-            return field.bitpos // 8
-        except (gdb.error, StopIteration, TypeError):
-            return None
-
     def member_type_code(self, type_name, member):
         try:
             struct_type = GefUtil.cached_lookup_type(type_name)
@@ -179908,7 +180109,7 @@ class KernelNftablesCommand(GenericCommand, BufferingOutput):
         type_name = self.kind_type(kind)
         if type_name is None:
             return entry, None
-        list_off = self.member_offset(type_name, "list")
+        list_off = GefUtil.offsetof(type_name, "list")
         size = self.type_size(type_name)
         if list_off is None or size is None or size <= 0:
             return entry, None
@@ -179919,12 +180120,12 @@ class KernelNftablesCommand(GenericCommand, BufferingOutput):
         type_name = self.kind_type(kind)
         if type_name is None:
             return None
-        name_off = self.member_offset(type_name, "name")
+        name_off = GefUtil.offsetof(type_name, "name")
         if name_off is not None:
             return name_off
         if kind == "objects":
-            key_off = self.member_offset("struct nft_object", "key")
-            key_name_off = self.member_offset("struct nft_object_hash_key", "name")
+            key_off = GefUtil.offsetof("struct nft_object", "key")
+            key_name_off = GefUtil.offsetof("struct nft_object_hash_key", "name")
             if key_off is not None and key_name_off is not None:
                 return key_off + key_name_off
         return None
@@ -180098,7 +180299,7 @@ class KernelNftablesCommand(GenericCommand, BufferingOutput):
         return self.cstr(self.rd(base + name_off) or 0)
 
     def typed_name_at(self, base, type_name, member="name"):
-        offset = self.member_offset(type_name, member)
+        offset = GefUtil.offsetof(type_name, member)
         code = self.member_type_code(type_name, member)
         if offset is None or code is None:
             return None
@@ -180132,7 +180333,7 @@ class KernelNftablesCommand(GenericCommand, BufferingOutput):
 
     def net_generic_candidates(self, net):
         # Prefer the real struct net.gen offset when debug type information is available.
-        gen_off = self.member_offset("struct net", "gen")
+        gen_off = GefUtil.offsetof("struct net", "gen")
         if gen_off is not None:
             gen = self.rd(net + gen_off)
             return [gen] if self.net_generic_candidate_info(gen) is not None else []
@@ -180186,7 +180387,7 @@ class KernelNftablesCommand(GenericCommand, BufferingOutput):
         return ln, base
 
     def net_generic_ptr_base(self, gen, ln):
-        ptr_off = self.member_offset("struct net_generic", "ptr")
+        ptr_off = GefUtil.offsetof("struct net_generic", "ptr")
         # Current kernels place the flexible ptr[] member at offset zero in an anonymous union.
         # GDB exposes only that unnamed union in some DWARF versions, so the direct field lookup
         # above cannot see ptr even though the struct type itself is available.
@@ -180264,7 +180465,7 @@ class KernelNftablesCommand(GenericCommand, BufferingOutput):
 
     def detect_table_name(self, entries, min_off=0, max_off=None):
         # Prefer the real member offset when type information is present.
-        typed_off = self.member_offset("struct nft_table", "name")
+        typed_off = GefUtil.offsetof("struct nft_table", "name")
         if typed_off is not None:
             names = [self.name_at(entry, typed_off) for entry in entries[:8]]
             return typed_off if all(self.looks_name(name) for name in names) else None
@@ -180296,15 +180497,15 @@ class KernelNftablesCommand(GenericCommand, BufferingOutput):
                 heads.append(head)
                 self.candidate_head_sources[head] = source
 
-        nft_off = self.member_offset("struct net", "nft")
-        tables_off = self.member_offset("struct netns_nftables", "tables")
+        nft_off = GefUtil.offsetof("struct net", "nft")
+        tables_off = GefUtil.offsetof("struct netns_nftables", "tables")
         if nft_off is not None and tables_off is not None:
             add_head(net + nft_off + tables_off, "type:net.nft.tables")
         elif self.type_size("struct net") is None:
             for offset in range(0, self.net_scan_size(), current_arch.ptrsize):
                 add_head(net + offset, "heuristic:struct net scan")
 
-        pernet_tables_off = self.member_offset("struct nftables_pernet", "tables")
+        pernet_tables_off = GefUtil.offsetof("struct nftables_pernet", "tables")
         for struct_addr in self.gather_structs(net):
             if pernet_tables_off is not None:
                 add_head(struct_addr + pernet_tables_off, "type:nftables_pernet.tables")
@@ -180323,11 +180524,11 @@ class KernelNftablesCommand(GenericCommand, BufferingOutput):
         return kinds
 
     def legacy_af_offsets(self):
-        list_off = self.member_offset("struct nft_af_info", "list")
-        family_off = self.member_offset("struct nft_af_info", "family")
-        nhooks_off = self.member_offset("struct nft_af_info", "nhooks")
-        owner_off = self.member_offset("struct nft_af_info", "owner")
-        tables_off = self.member_offset("struct nft_af_info", "tables")
+        list_off = GefUtil.offsetof("struct nft_af_info", "list")
+        family_off = GefUtil.offsetof("struct nft_af_info", "family")
+        nhooks_off = GefUtil.offsetof("struct nft_af_info", "nhooks")
+        owner_off = GefUtil.offsetof("struct nft_af_info", "owner")
+        tables_off = GefUtil.offsetof("struct nft_af_info", "tables")
         if None not in (list_off, family_off, nhooks_off, owner_off, tables_off):
             return {
                 "list": list_off,
@@ -180385,8 +180586,8 @@ class KernelNftablesCommand(GenericCommand, BufferingOutput):
     def legacy_af_groups(self, net):
         offsets = self.legacy_af_offsets()
         heads = []
-        nft_off = self.member_offset("struct net", "nft")
-        af_info_off = self.member_offset("struct netns_nftables", "af_info")
+        nft_off = GefUtil.offsetof("struct net", "nft")
+        af_info_off = GefUtil.offsetof("struct netns_nftables", "af_info")
         if nft_off is not None and af_info_off is not None:
             heads.append((net + nft_off + af_info_off, "type:net.nft.af_info"))
         else:
@@ -180412,8 +180613,8 @@ class KernelNftablesCommand(GenericCommand, BufferingOutput):
         }
 
     def legacy_table_name_info(self, table, child_count):
-        list_off = self.member_offset("struct nft_table", "list")
-        name_off = self.member_offset("struct nft_table", "name")
+        list_off = GefUtil.offsetof("struct nft_table", "list")
+        name_off = GefUtil.offsetof("struct nft_table", "name")
         if list_off is not None and name_off is not None:
             base = table - list_off
             name = self.typed_name_at(base, "struct nft_table")
@@ -180435,7 +180636,7 @@ class KernelNftablesCommand(GenericCommand, BufferingOutput):
         return base, name_off, name, "heuristic"
 
     def legacy_table_layout(self, table, child_count):
-        typed = [self.member_offset("struct nft_table", kind)
+        typed = [GefUtil.offsetof("struct nft_table", kind)
                  for kind in self.legacy_child_kinds()]
         if all(offset is not None for offset in typed):
             offsets = typed
@@ -180479,7 +180680,7 @@ class KernelNftablesCommand(GenericCommand, BufferingOutput):
                 if kinds is None:
                     continue
 
-                use_off = self.member_offset("struct nft_table", "use")
+                use_off = GefUtil.offsetof("struct nft_table", "use")
                 if use_off is None:
                     use_off = current_arch.ptrsize * 2 * (1 + len(child_kinds)) + 8
                 use = self.rd32(table + use_off)
@@ -180516,7 +180717,7 @@ class KernelNftablesCommand(GenericCommand, BufferingOutput):
     def typed_table_list_layout(self):
         ptr = current_arch.ptrsize
         stride = ptr * 2
-        offsets = [self.member_offset("struct nft_table", member)
+        offsets = [GefUtil.offsetof("struct nft_table", member)
                    for member in ("chains", "sets", "objects", "flowtables")]
         if any(offset is None for offset in offsets):
             return None
@@ -180669,8 +180870,8 @@ class KernelNftablesCommand(GenericCommand, BufferingOutput):
         name = self.name_at(table, name_off)
         if self.looks_identifier_name(name):
             score += 1
-        if tail_layout is None and self.member_offset("struct nft_table", "use") is None \
-                and self.member_offset("struct nft_table", "family") is None:
+        if tail_layout is None and GefUtil.offsetof("struct nft_table", "use") is None \
+                and GefUtil.offsetof("struct nft_table", "family") is None:
             tail_layout = self.find_table_tail_layout([table], name_off, chain_off)
         family, use = self.table_family_use(table, name_off, tail_layout=tail_layout)
         if family is not None:
@@ -180771,8 +180972,8 @@ class KernelNftablesCommand(GenericCommand, BufferingOutput):
                 continue
 
             tail_layout = None
-            use_off = self.member_offset("struct nft_table", "use")
-            family_off = self.member_offset("struct nft_table", "family")
+            use_off = GefUtil.offsetof("struct nft_table", "use")
+            family_off = GefUtil.offsetof("struct nft_table", "family")
             if use_off is None and family_off is None:
                 tail_layout = self.find_table_tail_layout(entries, name_off, layouts[0])
                 if tail_layout is None:
@@ -180805,8 +181006,8 @@ class KernelNftablesCommand(GenericCommand, BufferingOutput):
             return None
 
         # Prefer the real ops->type->name path when debug type information is available.
-        type_off = self.member_offset("struct nft_expr_ops", "type")
-        name_off = self.member_offset("struct nft_expr_type", "name")
+        type_off = GefUtil.offsetof("struct nft_expr_ops", "type")
+        name_off = GefUtil.offsetof("struct nft_expr_type", "name")
         if type_off is not None and name_off is not None:
             expr_type = self.rd(ops + type_off)
             if expr_type and AddressUtil.is_msb_on(expr_type):
@@ -180838,7 +181039,7 @@ class KernelNftablesCommand(GenericCommand, BufferingOutput):
             return None
 
         # Prefer the real nft_expr_ops.size field when type information is available.
-        size_off = self.member_offset("struct nft_expr_ops", "size")
+        size_off = GefUtil.offsetof("struct nft_expr_ops", "size")
         if size_off is not None:
             size = self.rd32(ops + size_off)
             if size is None or not (current_arch.ptrsize <= size <= 0x400) or size % current_arch.ptrsize:
@@ -180964,7 +181165,7 @@ class KernelNftablesCommand(GenericCommand, BufferingOutput):
         if len(blobs) == 1:
             return blobs[0]
 
-        list_off = self.member_offset("struct nft_chain", "list")
+        list_off = GefUtil.offsetof("struct nft_chain", "list")
         if list_off is not None:
             chain = self.typed_struct(entry - list_off, "struct nft_chain")
             net = self.typed_struct(self.field_int(chain, "table", "net"), "struct net")
@@ -180994,10 +181195,10 @@ class KernelNftablesCommand(GenericCommand, BufferingOutput):
         if entry in self.chain_blob_cache:
             return self.chain_blob_cache[entry]
 
-        list_off = self.member_offset("struct nft_chain", "list")
+        list_off = GefUtil.offsetof("struct nft_chain", "list")
         blob_offsets = [
-            self.member_offset("struct nft_chain", "blob_gen_0"),
-            self.member_offset("struct nft_chain", "blob_gen_1"),
+            GefUtil.offsetof("struct nft_chain", "blob_gen_0"),
+            GefUtil.offsetof("struct nft_chain", "blob_gen_1"),
         ]
         if self.kversion < "5.17" and all(offset is None for offset in blob_offsets):
             self.chain_blob_cache[entry] = None
@@ -181084,8 +181285,8 @@ class KernelNftablesCommand(GenericCommand, BufferingOutput):
             return self.rules_list_cache[key]
 
         ptr = current_arch.ptrsize
-        list_off = self.member_offset("struct nft_chain", "list")
-        rules_member_off = self.member_offset("struct nft_chain", "rules")
+        list_off = GefUtil.offsetof("struct nft_chain", "list")
+        rules_member_off = GefUtil.offsetof("struct nft_chain", "rules")
         if list_off is not None and rules_member_off is not None:
             rules_off = rules_member_off - list_off
             head = entry + rules_off
@@ -181203,7 +181404,7 @@ class KernelNftablesCommand(GenericCommand, BufferingOutput):
         tables_set = set(entries)
         tables = []
         stride = current_arch.ptrsize * 2
-        name_source = "type" if self.member_offset("struct nft_table", "name") == name_off else "heuristic"
+        name_source = "type" if GefUtil.offsetof("struct nft_table", "name") == name_off else "heuristic"
         for tbase in entries:
             name = self.name_at(tbase, name_off) or "?"
             chain_off = self.find_table_list_layout(tbase, name_off=name_off)
@@ -181243,8 +181444,8 @@ class KernelNftablesCommand(GenericCommand, BufferingOutput):
     def table_family_use_details(self, tbase, name_off, tail_layout=None):
         family = None
         use = None
-        use_off = self.member_offset("struct nft_table", "use")
-        family_off = self.member_offset("struct nft_table", "family")
+        use_off = GefUtil.offsetof("struct nft_table", "use")
+        family_off = GefUtil.offsetof("struct nft_table", "family")
         if use_off is not None or family_off is not None:
             if use_off is not None:
                 value = self.rd32(tbase + use_off)
@@ -181443,7 +181644,7 @@ class KernelNftablesCommand(GenericCommand, BufferingOutput):
         if ns_off is None:
             return []
         ops = self.rd(init_net + ns_off)
-        list_off = self.member_offset("struct net", "list")
+        list_off = GefUtil.offsetof("struct net", "list")
         offsets = [list_off] if list_off is not None else range(0, self.MEMBER_SCAN, current_arch.ptrsize)
         for offset in offsets:
             if offset == ns_off:
@@ -181492,7 +181693,7 @@ class KernelNftablesCommand(GenericCommand, BufferingOutput):
             entries = self.walk_list(head, maxent=0x100)
             if self.walk_list_status(head, maxent=0x100) not in ("ok", "empty"):
                 return ["[broken hook list]"]
-            list_off = self.member_offset("struct nft_hook", "list") or 0
+            list_off = GefUtil.offsetof("struct nft_hook", "list") or 0
             devices = []
             for entry in entries:
                 hook = self.typed_struct(entry - list_off, "struct nft_hook")
@@ -181516,7 +181717,7 @@ class KernelNftablesCommand(GenericCommand, BufferingOutput):
         return devices
 
     def chain_detail(self, entry, family):
-        list_off = self.member_offset("struct nft_chain", "list")
+        list_off = GefUtil.offsetof("struct nft_chain", "list")
         if list_off is None:
             return []
         chain = entry - list_off
@@ -181537,7 +181738,7 @@ class KernelNftablesCommand(GenericCommand, BufferingOutput):
             text += " " + self.udata_string(udata)
         lines = [text]
 
-        chain_off = self.member_offset("struct nft_base_chain", "chain")
+        chain_off = GefUtil.offsetof("struct nft_base_chain", "chain")
         if flags is None or not flags & self.NFT_CHAIN_BASE or chain_off is None:
             return lines
         base = self.typed_struct(chain - chain_off, "struct nft_base_chain")
@@ -181558,8 +181759,8 @@ class KernelNftablesCommand(GenericCommand, BufferingOutput):
         return lines
 
     def base_chain_range(self, entry):
-        list_off = self.member_offset("struct nft_chain", "list")
-        chain_off = self.member_offset("struct nft_base_chain", "chain")
+        list_off = GefUtil.offsetof("struct nft_chain", "list")
+        chain_off = GefUtil.offsetof("struct nft_base_chain", "chain")
         size = self.type_size("struct nft_base_chain")
         if None in (list_off, chain_off, size):
             return None
@@ -181570,7 +181771,7 @@ class KernelNftablesCommand(GenericCommand, BufferingOutput):
         return base, base + size
 
     def set_detail(self, entry):
-        list_off = self.member_offset("struct nft_set", "list")
+        list_off = GefUtil.offsetof("struct nft_set", "list")
         if list_off is None:
             return [], None
         value = self.typed_struct(entry - list_off, "struct nft_set")
@@ -181609,7 +181810,7 @@ class KernelNftablesCommand(GenericCommand, BufferingOutput):
         return [text], value
 
     def object_detail(self, entry):
-        list_off = self.member_offset("struct nft_object", "list")
+        list_off = GefUtil.offsetof("struct nft_object", "list")
         if list_off is None:
             return []
         value = self.typed_struct(entry - list_off, "struct nft_object")
@@ -181628,7 +181829,7 @@ class KernelNftablesCommand(GenericCommand, BufferingOutput):
         return [text]
 
     def flowtable_detail(self, entry):
-        list_off = self.member_offset("struct nft_flowtable", "list")
+        list_off = GefUtil.offsetof("struct nft_flowtable", "list")
         if list_off is None:
             return []
         value = self.typed_struct(entry - list_off, "struct nft_flowtable")
@@ -181656,7 +181857,7 @@ class KernelNftablesCommand(GenericCommand, BufferingOutput):
     def rule_detail(self, rule):
         # control-plane struct nft_rule: list_head, u64 {handle:42, genmask:2, dlen:12, udata:1}, data[]
         value = self.typed_struct(rule, "struct nft_rule")
-        data_off = self.member_offset("struct nft_rule", "data")
+        data_off = GefUtil.offsetof("struct nft_rule", "data")
         ulen = None
         if self.field(value, "dlen") is not None and data_off is not None:
             genmask = self.field_int(value, "genmask")
@@ -181713,7 +181914,7 @@ class KernelNftablesCommand(GenericCommand, BufferingOutput):
         return details
 
     def expr_ops_size(self, ops):
-        size_off = self.member_offset("struct nft_expr_ops", "size")
+        size_off = GefUtil.offsetof("struct nft_expr_ops", "size")
         if size_off is None:
             return None
         size = self.rd32(ops + size_off)
@@ -181747,7 +181948,7 @@ class KernelNftablesCommand(GenericCommand, BufferingOutput):
         return None
 
     def xt_expr_string(self, ops, name, private, room):
-        data_off = self.member_offset("struct nft_expr_ops", "data")
+        data_off = GefUtil.offsetof("struct nft_expr_ops", "data")
         if data_off is None:
             return None
         type_name, size_member = ("struct xt_match", "matchsize") if name == "match" else ("struct xt_target", "targetsize")
@@ -181794,7 +181995,7 @@ class KernelNftablesCommand(GenericCommand, BufferingOutput):
 
     def expr_detail(self, start, end, name, depth=0):
         lines = ["expr {:s} {:s} size={:#x}".format(name, self.addr_str(start), end - start)]
-        data_off = self.member_offset("struct nft_expr", "data")
+        data_off = GefUtil.offsetof("struct nft_expr", "data")
         ops = self.rd(start)
         if data_off is None or not ops:
             return lines
@@ -181891,7 +182092,7 @@ class KernelNftablesCommand(GenericCommand, BufferingOutput):
         table = graph["tables"][0]
         if table["layout"] is not None:
             source = "type" if self.typed_table_list_layout() is not None or graph.get("legacy_af") \
-                and self.member_offset("struct nft_table", "chains") is not None else "heuristic"
+                and GefUtil.offsetof("struct nft_table", "chains") is not None else "heuristic"
             for kind in ("chains", "sets", "objects", "flowtables"):
                 if kind in table["layout"]:
                     lines.append(self.offset_meta("nft_table." + kind, table["layout"][kind], source))
@@ -181904,12 +182105,12 @@ class KernelNftablesCommand(GenericCommand, BufferingOutput):
         if tail_meta is not None:
             lines.append(tail_meta)
 
-        chain_list_off = self.member_offset("struct nft_chain", "list")
-        chain_name_off = self.member_offset("struct nft_chain", "name")
+        chain_list_off = GefUtil.offsetof("struct nft_chain", "list")
+        chain_name_off = GefUtil.offsetof("struct nft_chain", "name")
         lines.append(self.offset_meta("nft_chain.list", chain_list_off, "type" if chain_list_off is not None else "heuristic"))
         lines.append(self.offset_meta("nft_chain.name", chain_name_off, "type" if chain_name_off is not None else "heuristic"))
         for member in ("blob_gen_0", "blob_gen_1"):
-            offset = self.member_offset("struct nft_chain", member)
+            offset = GefUtil.offsetof("struct nft_chain", member)
             lines.append(self.offset_meta("nft_chain." + member, offset, "type" if offset is not None else "heuristic"))
 
         chains = table["kinds"].get("chains", (None, [], None))[1]
@@ -181920,8 +182121,8 @@ class KernelNftablesCommand(GenericCommand, BufferingOutput):
             rules_off = self.find_rules_list(chain, table["addr"])
             lines.append(self.offset_meta("chain rules list", rules_off, "heuristic"))
 
-        expr_type_off = self.member_offset("struct nft_expr_ops", "type")
-        expr_size_off = self.member_offset("struct nft_expr_ops", "size")
+        expr_type_off = GefUtil.offsetof("struct nft_expr_ops", "type")
+        expr_size_off = GefUtil.offsetof("struct nft_expr_ops", "size")
         lines.append(self.offset_meta("nft_expr_ops.type", expr_type_off, "type" if expr_type_off is not None else "heuristic"))
         lines.append(self.offset_meta("nft_expr_ops.size", expr_size_off, "type" if expr_size_off is not None else "heuristic"))
 
@@ -181929,7 +182130,7 @@ class KernelNftablesCommand(GenericCommand, BufferingOutput):
         if sets:
             set_info = self.set_info(sets[0])
             lines.append(self.offset_meta("nft_set.ops", set_info["ops_off"],
-                                          "type" if self.member_offset("struct nft_set", "ops") is not None else "heuristic"))
+                                          "type" if GefUtil.offsetof("struct nft_set", "ops") is not None else "heuristic"))
             lines.append(self.offset_meta("nft_set.data", set_info["data_off"],
                                           "type" if set_info["data_off"] is not None else "heuristic"))
             lines.append("  {:<28s} {:s}".format("set backend", set_info["backend"] or "not found"))
@@ -182083,7 +182284,7 @@ class KernelNftablesCommand(GenericCommand, BufferingOutput):
         if kind is not None:
             type_name = self.kind_type(kind)
             if type_name is not None:
-                list_off = self.member_offset(type_name, "list")
+                list_off = GefUtil.offsetof(type_name, "list")
                 if list_off is not None:
                     base = entry - list_off
                     name = self.typed_name_at(base, type_name)
@@ -182166,7 +182367,7 @@ class KernelNftablesCommand(GenericCommand, BufferingOutput):
         if not ops or not AddressUtil.is_msb_on(ops):
             return None, None
 
-        walk_off = self.member_offset("struct nft_set_ops", "walk")
+        walk_off = GefUtil.offsetof("struct nft_set_ops", "walk")
         offsets = [walk_off] if walk_off is not None else range(0, 0x180, current_arch.ptrsize)
         for offset in offsets:
             function = self.rd(ops + offset)
@@ -182201,13 +182402,13 @@ class KernelNftablesCommand(GenericCommand, BufferingOutput):
         return callbacks >= 8 and nearby_callbacks >= 8
 
     def set_layout(self, entry):
-        list_off = self.member_offset("struct nft_set", "list")
+        list_off = GefUtil.offsetof("struct nft_set", "list")
         base = entry - (list_off or 0)
-        ops_off = self.member_offset("struct nft_set", "ops")
-        data_off = self.member_offset("struct nft_set", "data")
-        klen_off = self.member_offset("struct nft_set", "klen")
-        dlen_off = self.member_offset("struct nft_set", "dlen")
-        nelems_off = self.member_offset("struct nft_set", "nelems")
+        ops_off = GefUtil.offsetof("struct nft_set", "ops")
+        data_off = GefUtil.offsetof("struct nft_set", "data")
+        klen_off = GefUtil.offsetof("struct nft_set", "klen")
+        dlen_off = GefUtil.offsetof("struct nft_set", "dlen")
+        nelems_off = GefUtil.offsetof("struct nft_set", "nelems")
 
         ops = self.rd(base + ops_off) if ops_off is not None else None
         backend, walk_name = self.set_ops_backend(ops)
@@ -182237,7 +182438,7 @@ class KernelNftablesCommand(GenericCommand, BufferingOutput):
         nelems = self.rd32(base + nelems_off) if nelems_off is not None else None
         if nelems == 0:
             # Some kernels count elements only for sets with a maximum size.
-            size_off = self.member_offset("struct nft_set", "size")
+            size_off = GefUtil.offsetof("struct nft_set", "size")
             if size_off is None or not self.rd32(base + size_off):
                 nelems = None
         backend_candidates = None
@@ -182324,9 +182525,9 @@ class KernelNftablesCommand(GenericCommand, BufferingOutput):
         return elements, "ok"
 
     def walk_hash_set(self, private):
-        node_off = self.member_offset("struct nft_hash_elem", "node")
+        node_off = GefUtil.offsetof("struct nft_hash_elem", "node")
         if node_off is None:
-            node_off = self.member_offset("struct nft_hash_elem", "hnode") or 0
+            node_off = GefUtil.offsetof("struct nft_hash_elem", "hnode") or 0
         if self.kversion < "3.19":
             heads = self.rd(private)
             buckets = self.rd32(private + current_arch.ptrsize)
@@ -182341,15 +182542,15 @@ class KernelNftablesCommand(GenericCommand, BufferingOutput):
         table = self.rd(private)
         if not table or not AddressUtil.is_msb_on(table):
             return [], "broken"
-        size_off = self.member_offset("struct bucket_table", "size") or 0
+        size_off = GefUtil.offsetof("struct bucket_table", "size") or 0
         size = self.rd(table + size_off) if self.kversion == "3.19" else self.rd32(table + size_off)
         if size is None or not (1 <= size <= self.MAX_SET_SCAN) or size & (size - 1):
             return [], "broken"
 
-        node_off = self.member_offset("struct nft_rhash_elem", "node")
+        node_off = GefUtil.offsetof("struct nft_rhash_elem", "node")
         if node_off is None:
-            node_off = self.member_offset("struct nft_hash_elem", "node") or 0
-        buckets_off = self.member_offset("struct bucket_table", "buckets")
+            node_off = GefUtil.offsetof("struct nft_hash_elem", "node") or 0
+        buckets_off = GefUtil.offsetof("struct bucket_table", "buckets")
         offsets = [buckets_off] if buckets_off is not None else []
         for offset in (current_arch.ptrsize, 0x20, 0x40, 0x80, 0x100):
             if offset not in offsets:
@@ -182364,7 +182565,7 @@ class KernelNftablesCommand(GenericCommand, BufferingOutput):
         return best
 
     def walk_rbtree_set(self, private):
-        node_off = self.member_offset("struct nft_rbtree_elem", "node") or 0
+        node_off = GefUtil.offsetof("struct nft_rbtree_elem", "node") or 0
         root = self.rd(private)
         if root is None:
             return [], "broken"
@@ -182392,7 +182593,7 @@ class KernelNftablesCommand(GenericCommand, BufferingOutput):
         return (nodes, "limit") if stack else (nodes, "ok")
 
     def walk_bitmap_set(self, private):
-        head_off = self.member_offset("struct nft_bitmap_elem", "head") or 0
+        head_off = GefUtil.offsetof("struct nft_bitmap_elem", "head") or 0
         entries = self.walk_list(private, maxent=self.MAX_SET_SCAN)
         status = self.walk_list_status(private, maxent=self.MAX_SET_SCAN)
         if status == "limit":
@@ -182400,11 +182601,11 @@ class KernelNftablesCommand(GenericCommand, BufferingOutput):
         return [entry - head_off for entry in entries], status
 
     def walk_pipapo_set_typed(self, private):
-        match_off = self.member_offset("struct nft_pipapo", "match")
-        count_off = self.member_offset("struct nft_pipapo_match", "field_count")
-        fields_off = self.member_offset("struct nft_pipapo_match", "f")
-        rules_off = self.member_offset("struct nft_pipapo_field", "rules")
-        table_off = self.member_offset("struct nft_pipapo_field", "mt")
+        match_off = GefUtil.offsetof("struct nft_pipapo", "match")
+        count_off = GefUtil.offsetof("struct nft_pipapo_match", "field_count")
+        fields_off = GefUtil.offsetof("struct nft_pipapo_match", "f")
+        rules_off = GefUtil.offsetof("struct nft_pipapo_field", "rules")
+        table_off = GefUtil.offsetof("struct nft_pipapo_field", "mt")
         field_size = self.type_size("struct nft_pipapo_field")
         bucket_size = self.type_size("union nft_pipapo_map_bucket") or current_arch.ptrsize
         if None in (match_off, count_off, fields_off, rules_off, table_off, field_size):
@@ -182491,7 +182692,7 @@ class KernelNftablesCommand(GenericCommand, BufferingOutput):
     def set_element_ext_candidates(self, element, backend):
         candidates = []
         for type_name in self.set_element_type_names(backend):
-            offset = self.member_offset(type_name, "ext")
+            offset = GefUtil.offsetof(type_name, "ext")
             if offset is not None and element + offset not in candidates:
                 candidates.append(element + offset)
 
@@ -182516,7 +182717,7 @@ class KernelNftablesCommand(GenericCommand, BufferingOutput):
 
         # v3.x predates nft_set_ext. Prefer a typed key member, then its stable legacy layout.
         for type_name in self.set_element_type_names(backend):
-            key_off = self.member_offset(type_name, "key")
+            key_off = GefUtil.offsetof(type_name, "key")
             if key_off is not None:
                 try:
                     key = bytes(read_memory(element + key_off, klen))
@@ -182636,7 +182837,7 @@ class KernelNftablesCommand(GenericCommand, BufferingOutput):
         # Nodes are (start, end-or-None, description). Type information provides exact ranges for
         # the top-level nftables objects; stripped targets retain exact/nearest semantics.
         nodes = []
-        table_list_off = self.member_offset("struct nft_table", "list")
+        table_list_off = GefUtil.offsetof("struct nft_table", "list")
         table_size = self.type_size("struct nft_table")
         for table in graph["tables"]:
             if not self.table_selected(table):
@@ -186694,6 +186895,30 @@ class GefUtil:
         try:
             return gdb.lookup_type(_type).strip_typedefs()
         except RuntimeError:
+            return None
+
+    @staticmethod
+    @Cache.cache_this_session(per_inferior=True, until_new_objfile=True)
+    def offsetof(type_name, member):
+        """Return offsetof(type_name, member) from the loaded debug information, or None if unavailable.
+        `type_name` is a C type such as `struct file`; a bare name means a struct. `member` may be nested (`a.b`)."""
+        if " " not in type_name:
+            type_name = "struct " + type_name
+        try:
+            return GefUtil.parse_and_eval_unsigned("&(({:s} *)0)->{:s}".format(type_name, member))
+        except gdb.error:
+            return None
+
+    @staticmethod
+    @Cache.cache_this_session(per_inferior=True, until_new_objfile=True)
+    def sizeof(name):
+        """Return sizeof(name) from the loaded debug information, or None if unavailable or 0 (incomplete type).
+        `name` is a C type or expression such as `struct file`; a bare name means a struct."""
+        if " " not in name:
+            name = "struct " + name
+        try:
+            return GefUtil.parse_and_eval_unsigned("sizeof({:s})".format(name)) or None
+        except gdb.error:
             return None
 
     @staticmethod
