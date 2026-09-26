@@ -6,6 +6,7 @@ import os
 import re
 import ast
 import shutil
+import argparse
 
 
 def get_comment_start(lines, start_lineno):
@@ -103,6 +104,31 @@ def top_level_function_ranges_from_file(path):
     return result
 
 
+def commented_class_ranges_from_file(path):
+    with open(path, "r", encoding="utf-8") as f:
+        lines = f.read().splitlines()
+
+    result = {}
+    class_re = re.compile(
+        r"^#\s*class\s+([A-Za-z_][A-Za-z0-9_]*)"
+        r"(?:\s*\([^#]*\))?\s*:\s*$"
+    )
+
+    for idx, line in enumerate(lines):
+        match = class_re.match(line)
+        if match is None:
+            continue
+
+        start = get_comment_start(lines, idx + 1) - 1
+        end = idx + 1
+        while end < len(lines) and lines[end].lstrip().startswith("#"):
+            end += 1
+
+        result[match.group(1)] = (start, end)
+
+    return result
+
+
 def used_decorator_names_from_file(path):
     with open(path, "r", encoding="utf-8") as f:
         src = f.read()
@@ -135,31 +161,59 @@ def used_decorator_names_from_file(path):
 def function_groups_from_file(path):
     top_level_funcs = top_level_function_ranges_from_file(path)
     used_decorators = used_decorator_names_from_file(path)
-
-    decorator_dic = {}
-    rw_dic = {}
-    checker_dic = {}
-
     forced_decorators = {"perf", "cperf"}
+
+    named_groups = {
+        "update": {"http_get", "update_gef"},
+        "architecture": {"get_current_arch", "get_arch", "set_arch"},
+        "display": {"hexon", "hexoff", "gef_print", "titlify", "err", "warn", "ok", "info"},
+        "libc": {"get_libc_version"},
+        "utility": {
+            "slicer", "slice_unpack", "align", "align_to_ptrsize", "align_to_pagesize",
+            "byteswap", "xor", "ror", "rol", "hexdump", "to_unsigned_long",
+        },
+        "instruction": {"get_insn", "get_insn_next", "get_insn_prev"},
+        "physmode": {"enable_phys", "disable_phys"},
+        "packing": {"p8", "p16", "p32", "p64", "u8", "u16", "u32", "u64", "u128", "u2i"},
+        "register": {"get_register"},
+        "page": {"get_pagesize", "get_pagesize_mask_low", "get_pagesize_mask_high"},
+    }
+
+    groups = {}
 
     for name, rng in top_level_funcs.items():
         if name in used_decorators or name in forced_decorators:
-            decorator_dic[name] = rng
-            continue
+            group = "decorator"
+        elif re.match(r"^(read|write)_[A-Za-z0-9_]+$", name):
+            group = "memory"
+        elif re.match(r"^is_[A-Za-z0-9_]+$", name) or name == "kgdb_has_system_registers":
+            group = "checker"
+        else:
+            group = next((key for key, names in named_groups.items() if name in names), "misc")
 
-        if re.match(r"^(read|write)_[A-Za-z0-9_]+$", name):
-            rw_dic[name] = rng
-            continue
+        groups.setdefault(group, {})[name] = rng
 
-        if re.match(r"^is_[A-Za-z0-9_]+$", name) or name in ["kgdb_has_system_registers"]:
-            checker_dic[name] = rng
-            continue
+    return groups
 
-    return {
-        "decorator": decorator_dic,
-        "rw": rw_dic,
-        "checker": checker_dic,
-    }
+
+def write_function_groups(path, output_dir, function_groups):
+    with open(path, "r", encoding="utf-8") as f:
+        lines = f.read().splitlines()
+
+    function_dir = os.path.join(output_dir, "lib", "function")
+
+    for group_name, functions in function_groups.items():
+        chunks = []
+        for _, (start, end) in sorted(functions.items(), key=lambda item: item[1][0]):
+            chunks.extend(lines[start:end])
+            chunks.extend(["", ""])
+
+        if chunks:
+            del chunks[-2:]
+
+        file_path = os.path.join(function_dir, group_name + ".py")
+        with open(file_path, "w", encoding="utf-8") as f:
+            f.write("\n".join(chunks) + "\n")
 
 
 def hash_groups_from_file(path):
@@ -249,11 +303,11 @@ def hash_groups_from_file(path):
     }
 
 
-def write_hash_groups(path, save_dir, hash_info):
+def write_hash_groups(path, output_dir, hash_info):
     with open(path, "r", encoding="utf-8") as f:
         lines = f.read().splitlines()
 
-    hash_dir = os.path.join(save_dir, "lib", "hash")
+    hash_dir = os.path.join(output_dir, "lib", "hash")
     if not os.path.exists(hash_dir):
         os.mkdir(hash_dir)
 
@@ -304,15 +358,22 @@ def collapse_blank_lines_between_from_imports(lines):
 
     while i < len(lines):
         line = lines[i]
-        if is_from_import(line):
+        if not is_from_import(line):
             result.append(line)
-            j = i + 1
-            while j < len(lines) and lines[j] == "":
-                j += 1
-            if j < len(lines) and is_from_import(lines[j]):
-                i = j
-                continue
             i += 1
+            continue
+
+        j = i + 1
+        while j < len(lines) and lines[j] == "":
+            j += 1
+
+        if j < len(lines) and is_from_import(lines[j]):
+            blank_count = j - i - 1
+            both_hash = line.startswith("from lib.hash.") and lines[j].startswith("from lib.hash.")
+            if blank_count != 2 and not both_hash:
+                line += f"  # de-split-blank-lines: {blank_count}"
+            result.append(line)
+            i = j
             continue
 
         result.append(line)
@@ -321,83 +382,81 @@ def collapse_blank_lines_between_from_imports(lines):
     return result
 
 
-def split_gef(path, class_dic, global_dic, function_groups, save_dir):
+def split_gef(path, class_dic, commented_class_dic, global_dic, function_groups, output_dir):
     with open(path, "r", encoding="utf-8") as f:
         lines = f.read().splitlines()
 
     hash_info = hash_groups_from_file(path)
     hash_imports = []
+    write_function_groups(path, output_dir, function_groups)
 
     new_gef = []
     pos = 0
 
     items = []
     for class_name, (s, e) in class_dic.items():
-        items.append(("class", class_name, s, e))
+        items.append(("class", class_name, s, e, None))
+    for class_name, (s, e) in commented_class_dic.items():
+        items.append(("commented_class", class_name, s, e, None))
     for global_name, (s, e) in global_dic.items():
-        items.append(("global", global_name, s, e))
-    for decorator_name, (s, e) in function_groups["decorator"].items():
-        items.append(("decorator", decorator_name, s, e))
-    for rw_name, (s, e) in function_groups["rw"].items():
-        items.append(("rw", rw_name, s, e))
-    for checker_name, (s, e) in function_groups["checker"].items():
-        items.append(("checker", checker_name, s, e))
+        items.append(("global", global_name, s, e, None))
+    for group_name, functions in function_groups.items():
+        for function_name, (s, e) in functions.items():
+            items.append(("function", function_name, s, e, group_name))
 
     if hash_info is not None:
         hash_s, hash_e = hash_info["hash_range"]
         items = [item for item in items if not (item[0] == "class" and item[1] == "Hash")]
-        items.append(("hash", "Hash", hash_s, hash_e))
-        hash_imports = write_hash_groups(path, save_dir, hash_info)
+        items.append(("hash", "Hash", hash_s, hash_e, None))
+        hash_imports = write_hash_groups(path, output_dir, hash_info)
 
     items.sort(key=lambda x: x[2])
 
-    for item_type, name, s, e in items:
+    for item_type, name, s, e, group_name in items:
         new_gef.extend(lines[pos:s])
         code = lines[s:e]
 
         if item_type == "class":
             if name.endswith("Command"):
-                file_path = os.path.join(save_dir, "lib", "command", name + ".py")
+                file_path = os.path.join(output_dir, "lib", "command", name + ".py")
                 new_gef.append(f"from lib.command.{name} import {name}")
             elif is_syscall_class_name(name):
-                file_path = os.path.join(save_dir, "lib", "syscall", name + ".py")
+                file_path = os.path.join(output_dir, "lib", "syscall", name + ".py")
                 new_gef.append(f"from lib.syscall.{name} import {name}")
             elif is_breakpoint_class_name(name):
-                file_path = os.path.join(save_dir, "lib", "bp", name + ".py")
+                file_path = os.path.join(output_dir, "lib", "bp", name + ".py")
                 new_gef.append(f"from lib.bp.{name} import {name}")
             elif (s + 1) < len(lines) and ("GEF representation of " in lines[s + 1]) and ("architecture." in lines[s + 1]):
-                file_path = os.path.join(save_dir, "lib", "arch", name + ".py")
+                file_path = os.path.join(output_dir, "lib", "arch", name + ".py")
                 new_gef.append(f"from lib.arch.{name} import {name}")
             else:
-                file_path = os.path.join(save_dir, "lib", name + ".py")
+                file_path = os.path.join(output_dir, "lib", name + ".py")
                 new_gef.append(f"from lib.{name} import {name}")
 
             with open(file_path, "w", encoding="utf-8") as f:
-                f.write("\n".join(code))
+                f.write("\n".join(code) + "\n")
+        elif item_type == "commented_class":
+            if name.endswith("Command"):
+                module_path = f"lib.command.{name}"
+                file_path = os.path.join(output_dir, "lib", "command", name + ".py")
+            elif "Architecture" in "\n".join(code):
+                module_path = f"lib.arch.{name}"
+                file_path = os.path.join(output_dir, "lib", "arch", name + ".py")
+            else:
+                module_path = f"lib.{name}"
+                file_path = os.path.join(output_dir, "lib", name + ".py")
+
+            new_gef.append(f"# from {module_path} import {name}")
+            with open(file_path, "w", encoding="utf-8") as f:
+                f.write("\n".join(code) + "\n")
         elif item_type == "global":
-            file_path = os.path.join(save_dir, "lib", "syscall", name + ".py")
+            file_path = os.path.join(output_dir, "lib", "syscall", name + ".py")
             new_gef.append(f"from lib.syscall.{name} import {name}")
 
             with open(file_path, "w", encoding="utf-8") as f:
                 f.write("\n".join(code))
-        elif item_type == "decorator":
-            file_path = os.path.join(save_dir, "lib", "decorator", name + ".py")
-            new_gef.append(f"from lib.decorator.{name} import {name}")
-
-            with open(file_path, "w", encoding="utf-8") as f:
-                f.write("\n".join(code))
-        elif item_type == "rw":
-            file_path = os.path.join(save_dir, "lib", "rw", name + ".py")
-            new_gef.append(f"from lib.rw.{name} import {name}")
-
-            with open(file_path, "w", encoding="utf-8") as f:
-                f.write("\n".join(code))
-        elif item_type == "checker":
-            file_path = os.path.join(save_dir, "lib", "checker", name + ".py")
-            new_gef.append(f"from lib.checker.{name} import {name}")
-
-            with open(file_path, "w", encoding="utf-8") as f:
-                f.write("\n".join(code))
+        elif item_type == "function":
+            new_gef.append(f"from lib.function.{group_name} import {name}")
         elif item_type == "hash":
             new_gef.extend(hash_imports)
         else:
@@ -410,13 +469,13 @@ def split_gef(path, class_dic, global_dic, function_groups, save_dir):
     idx = new_gef.index("import traceback") + 1
     new_gef = (
         new_gef[:idx]
-        + ['sys.path.insert(0, "' + os.path.join(os.path.dirname(__file__), "save") + '")']
+        + ['sys.path.insert(0, "' + os.path.join(os.path.dirname(__file__), "output") + '")']
         + new_gef[idx:]
     )
 
     new_gef = collapse_blank_lines_between_from_imports(new_gef)
 
-    file_name = os.path.join(save_dir, "gef-splitted.py")
+    file_name = os.path.join(output_dir, "gef-splitted.py")
     with open(file_name, "w", encoding="utf-8") as f:
         f.write("\n".join(new_gef))
 
@@ -425,33 +484,41 @@ def split_gef(path, class_dic, global_dic, function_groups, save_dir):
 
 if __name__ == "__main__":
     base_dir = os.path.dirname(__file__)
-    save_dir = os.path.join(base_dir, "save")
-    if os.path.exists(save_dir):
-        shutil.rmtree(save_dir)
+    parser = argparse.ArgumentParser(description="Split gef.py into files for AI code review.")
+    parser.add_argument(
+        "gef_path",
+        nargs="?",
+        default=os.path.normpath(os.path.join(base_dir, "../..")),
+        help="path to gef.py or its directory (default: ../.. relative to this script)",
+    )
+    args = parser.parse_args()
 
-    if not os.path.exists(save_dir):
-        os.mkdir(save_dir)
-    if not os.path.exists(os.path.join(save_dir, "lib")):
-        os.mkdir(os.path.join(save_dir, "lib"))
-    if not os.path.exists(os.path.join(save_dir, "lib", "command")):
-        os.mkdir(os.path.join(save_dir, "lib", "command"))
-    if not os.path.exists(os.path.join(save_dir, "lib", "bp")):
-        os.mkdir(os.path.join(save_dir, "lib", "bp"))
-    if not os.path.exists(os.path.join(save_dir, "lib", "arch")):
-        os.mkdir(os.path.join(save_dir, "lib", "arch"))
-    if not os.path.exists(os.path.join(save_dir, "lib", "syscall")):
-        os.mkdir(os.path.join(save_dir, "lib", "syscall"))
-    if not os.path.exists(os.path.join(save_dir, "lib", "hash")):
-        os.mkdir(os.path.join(save_dir, "lib", "hash"))
-    if not os.path.exists(os.path.join(save_dir, "lib", "decorator")):
-        os.mkdir(os.path.join(save_dir, "lib", "decorator"))
-    if not os.path.exists(os.path.join(save_dir, "lib", "rw")):
-        os.mkdir(os.path.join(save_dir, "lib", "rw"))
-    if not os.path.exists(os.path.join(save_dir, "lib", "checker")):
-        os.mkdir(os.path.join(save_dir, "lib", "checker"))
+    output_dir = os.path.join(base_dir, "output")
+    if os.path.exists(output_dir):
+        shutil.rmtree(output_dir)
 
-    gef_path = os.path.normpath(os.path.join(base_dir, "../../gef.py"))
+    if not os.path.exists(output_dir):
+        os.mkdir(output_dir)
+    if not os.path.exists(os.path.join(output_dir, "lib")):
+        os.mkdir(os.path.join(output_dir, "lib"))
+    if not os.path.exists(os.path.join(output_dir, "lib", "command")):
+        os.mkdir(os.path.join(output_dir, "lib", "command"))
+    if not os.path.exists(os.path.join(output_dir, "lib", "bp")):
+        os.mkdir(os.path.join(output_dir, "lib", "bp"))
+    if not os.path.exists(os.path.join(output_dir, "lib", "arch")):
+        os.mkdir(os.path.join(output_dir, "lib", "arch"))
+    if not os.path.exists(os.path.join(output_dir, "lib", "syscall")):
+        os.mkdir(os.path.join(output_dir, "lib", "syscall"))
+    if not os.path.exists(os.path.join(output_dir, "lib", "hash")):
+        os.mkdir(os.path.join(output_dir, "lib", "hash"))
+    if not os.path.exists(os.path.join(output_dir, "lib", "function")):
+        os.mkdir(os.path.join(output_dir, "lib", "function"))
+
+    gef_path = os.path.abspath(args.gef_path)
+    if os.path.isdir(gef_path):
+        gef_path = os.path.join(gef_path, "gef.py")
     class_dic = class_ranges_from_file(gef_path)
+    commented_class_dic = commented_class_ranges_from_file(gef_path)
     global_dic = global_ranges_from_file(gef_path)
     function_groups = function_groups_from_file(gef_path)
-    split_gef(gef_path, class_dic, global_dic, function_groups, save_dir)
+    split_gef(gef_path, class_dic, commented_class_dic, global_dic, function_groups, output_dir)
