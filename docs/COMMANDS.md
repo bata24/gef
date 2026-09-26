@@ -10064,13 +10064,14 @@ kpath --all 0xffff888003b0a000
 ### Notes
 
 ```text
-This command requires CONFIG_RANDSTRUCT=n.
+This command requires CONFIG_RANDSTRUCT=n unless vmlinux with debug information is loaded.
 
 - Without `--pid/--task`, paths are resolved to the mount-namespace root.
   With either option, resolution stops at `task->fs->root`; `outside-root` means the target lies outside it.
 - A bare dentry has no mount information. If multiple mounts match, `ambiguous` is shown; use `--all` to list them.
 - The target mount namespace is searched first, then other namespaces reachable through scanned tasks.
   `no-mount` means no matching reachable mount was found, which is normal for pseudo-filesystems or unmounted mounts.
+- Only a bare dentry and `--pid/--task` need the task list. The other types are resolved from the object alone.
 
 Simplified path structure:
 

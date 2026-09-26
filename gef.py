@@ -69081,6 +69081,10 @@ class KernelAddressHeuristicFinder:
                         KernelAddressHeuristicFinderUtil.arm32_movw_movt(res, read_valid=True),
                         KernelAddressHeuristicFinderUtil.arm32_ldr_pc_relative(res, read_valid=True),
                     )
+                elif is_riscv64() or is_riscv32():
+                    g = KernelAddressHeuristicFinderUtil.riscv_auipc_use(res, read_valid=True)
+                else:
+                    continue
                 for x in g:
                     if looks_like_file_systems(x):
                         return x
@@ -73337,11 +73341,27 @@ class Kernel:
                 offset_d_parent -= current_arch.ptrsize
             return None
 
+        def is_linked_list_head(self, addr):
+            """Return whether the list_head at `addr` is linked with both neighbors, or None if they are unreadable.
+            Only the neighbors are read, so an unreadable entry elsewhere in the list does not matter."""
+            try:
+                next_entry = read_int_from_memory(addr)
+                prev_entry = read_int_from_memory(addr + current_arch.ptrsize)
+                if not is_valid_addr(next_entry) or not is_valid_addr(prev_entry):
+                    return False
+                return read_int_from_memory(next_entry + current_arch.ptrsize) == addr and read_int_from_memory(prev_entry) == addr
+            except (gdb.MemoryError, OverflowError):
+                return None
+
         def get_offset_mnt_mounts(self, mount):
             """Resolve mount->{mnt_mounts,mnt_child}. CONFIG_SMP=n shifts them by one or two words."""
             if self.offset_mount_mnt_mounts is not None:
-                if (is_double_link_list(mount + self.offset_mount_mnt_mounts)
-                        and is_double_link_list(mount + self.offset_mount_mnt_child)):
+                checks = [
+                    self.is_linked_list_head(mount + self.offset_mount_mnt_mounts),
+                    self.is_linked_list_head(mount + self.offset_mount_mnt_child),
+                ]
+                # an unreadable neighbor disproves nothing
+                if False not in checks:
                     return self.offset_mount_mnt_mounts
                 # Debug information can describe another vmlinux than the remote
                 # target.  Do not retain an offset that the live object disproves.
@@ -73353,14 +73373,23 @@ class Kernel:
                 offset = self.nominal_mnt_mounts + delta
                 if offset < 0:
                     continue
-                if not is_double_link_list(mount + offset):
+                if not self.is_linked_list_head(mount + offset):
                     continue
-                if not is_double_link_list(mount + offset + ptrsize * 2):
+                if not self.is_linked_list_head(mount + offset + ptrsize * 2):
                     continue
-                children = Kernel.ListHead(mount + offset, offset + ptrsize * 2).parse()
-                if children is None:
+                # the children behind an unreadable one are checked backward
+                lh = Kernel.ListHead(mount + offset, offset + ptrsize * 2)
+                children = list(lh.iter_entries())
+                if lh.broken_reason == "cyclic":
                     continue
-                if any(read_int_from_memory(c + self.offset_mount_mnt_parent) != mount for c in children):
+                if lh.broken:
+                    children += list(lh.iter_entries(backward=True))
+                    if lh.broken_reason == "cyclic":
+                        continue
+                parents = [read_int_from_memory(c + self.offset_mount_mnt_parent, safe=True) for c in children]
+                if any(p is not None and p != mount for p in parents):
+                    continue
+                if children and parents.count(mount) == 0:
                     continue
                 self.offset_mount_mnt_mounts = offset
                 self.offset_mount_mnt_child = offset + ptrsize * 2
@@ -73431,23 +73460,27 @@ class Kernel:
                     return offset
             return None
 
-        def is_dentry(self, dentry):
+        def is_dentry(self, dentry, strict=True):
+            """`strict=False` accepts a dentry whose parent is unreadable, so that the walk can report it."""
             if not is_valid_addr(dentry) or dentry & (current_arch.ptrsize - 1):
                 return False
             try:
                 if not is_valid_addr(read_int_from_memory(dentry + self.offset_dname_name)):
                     return False
-                parent = read_int_from_memory(dentry + self.offset_d_parent)
-                if not is_valid_addr(parent) or parent & (current_arch.ptrsize - 1):
-                    return False
-                if not is_valid_addr(read_int_from_memory(parent + self.offset_dname_name)):
-                    return False
                 inode = read_int_from_memory(dentry + self.offset_d_inode)
                 if inode and (not is_valid_addr(inode) or inode & (current_arch.ptrsize - 1)):
                     return False
-            except gdb.MemoryError:
+                parent = read_int_from_memory(dentry + self.offset_d_parent)
+                if not parent or parent & (current_arch.ptrsize - 1):
+                    return False
+            except (gdb.MemoryError, OverflowError):
                 return False
-            return True
+            try:
+                if not is_valid_addr(parent):
+                    return not strict
+                return is_valid_addr(read_int_from_memory(parent + self.offset_dname_name))
+            except (gdb.MemoryError, OverflowError):
+                return not strict
 
         def is_vfsmount(self, vfsmnt):
             if not is_valid_addr(vfsmnt) or vfsmnt & (current_arch.ptrsize - 1):
@@ -73464,7 +73497,7 @@ class Kernel:
                 mnt_parent = read_int_from_memory(mount + self.offset_mount_mnt_parent)
                 if not is_valid_addr(mnt_parent) or mnt_parent & (current_arch.ptrsize - 1):
                     return False
-            except gdb.MemoryError:
+            except (gdb.MemoryError, OverflowError):
                 return False
             return True
 
@@ -73484,7 +73517,7 @@ class Kernel:
             try:
                 vfsmnt = read_int_from_memory(path)
                 dentry = read_int_from_memory(path + current_arch.ptrsize)
-            except gdb.MemoryError:
+            except (gdb.MemoryError, OverflowError):
                 return False
             return self.is_vfsmount(vfsmnt) and self.is_dentry(dentry)
 
@@ -73498,7 +73531,7 @@ class Kernel:
                 name = read_cstring_from_memory(dentry + self.offset_d_iname)
                 if name:
                     return name
-            except gdb.MemoryError:
+            except (gdb.MemoryError, OverflowError):
                 return default
             return default
 
@@ -73511,7 +73544,7 @@ class Kernel:
                 if read_int_from_memory(dentry + self.offset_d_parent) == dentry:
                     return False
                 return read_int_from_memory(dentry + offset_d_hash_pprev) == 0
-            except gdb.MemoryError:
+            except (gdb.MemoryError, OverflowError):
                 return False
 
         def get_root_mount(self, mount):
@@ -73530,6 +73563,8 @@ class Kernel:
         def iter_mounts(self, root_mount, max_mounts=0x1000):
             """Walk the whole mount tree from `root_mount` via mnt_mounts/mnt_child."""
             if self.get_offset_mnt_mounts(root_mount) is None:
+                # the children are unknown, but the root itself is a member of the tree
+                yield root_mount
                 return
             seen = set()
             stack = [root_mount]
@@ -73539,12 +73574,18 @@ class Kernel:
                     continue
                 seen.add(mount)
                 yield mount
-                head = mount + self.offset_mount_mnt_mounts
-                if not is_double_link_list(head):
-                    continue
-                for child in Kernel.ListHead(head, self.offset_mount_mnt_child).iter_entries():
-                    if is_valid_addr(child) and child not in seen:
-                        stack.append(child)
+                # An unreadable or corrupted child breaks the list, so the children behind it are
+                # picked up backward. Every child must point back to the mount it is listed in.
+                lh = Kernel.ListHead(mount + self.offset_mount_mnt_mounts, self.offset_mount_mnt_child)
+                children = list(lh.iter_entries())
+                if lh.broken:
+                    children += list(lh.iter_entries(backward=True))
+                for child in children:
+                    if child in seen or not is_valid_addr(child):
+                        continue
+                    if read_int_from_memory(child + self.offset_mount_mnt_parent, safe=True) != mount:
+                        continue
+                    stack.append(child)
             return
 
         def prepend_path(self, dentry, vfsmnt, root=None, unknown=""):
@@ -73565,10 +73606,9 @@ class Kernel:
                     break
                 seen.add((vfsmnt, dentry))
 
-                try:
-                    mnt_root = read_int_from_memory(vfsmnt + self.offset_vfsmount_mnt_root)
-                    parent = read_int_from_memory(dentry + self.offset_d_parent)
-                except gdb.MemoryError:
+                mnt_root = read_int_from_memory(vfsmnt + self.offset_vfsmount_mnt_root, safe=True)
+                parent = read_int_from_memory(dentry + self.offset_d_parent, safe=True)
+                if mnt_root is None or parent is None:
                     status = "unreadable"
                     break
 
@@ -73578,7 +73618,11 @@ class Kernel:
                         status = "unreadable"
                         break
                     if mount != mnt_parent and is_valid_addr(mnt_parent):
-                        dentry = read_int_from_memory(mount + self.offset_mount_mnt_mountpoint)
+                        mountpoint = read_int_from_memory(mount + self.offset_mount_mnt_mountpoint, safe=True)
+                        if mountpoint is None:
+                            status = "unreadable"
+                            break
+                        dentry = mountpoint
                         mount = mnt_parent
                         vfsmnt = mount + self.offset_mount_mnt
                         crossed = True
@@ -73601,20 +73645,29 @@ class Kernel:
 
         def dentry_path(self, dentry, unknown=""):
             """Rebuild the pathname by following d_parent only, without crossing any mount."""
+            return self.get_dentry_path_info(dentry, unknown).path
+
+        def get_dentry_path_info(self, dentry, unknown=""):
+            """Same as dentry_path(), but return a PathInfo whose status tells if the walk stopped halfway."""
             names = []
             seen = set()
-            while is_valid_addr(dentry) and dentry not in seen:
+            status = "unreadable"
+            while is_valid_addr(dentry):
+                if dentry in seen:
+                    status = "cyclic"
+                    break
                 seen.add(dentry)
                 names.append(self.get_dentry_name(dentry, unknown))
                 parent = read_int_from_memory(dentry + self.offset_d_parent, safe=True)
                 if parent is None:
                     break
                 if parent == dentry:
+                    status = "no-mount"
                     break
                 dentry = parent
             if not names:
-                return ""
-            return os.path.join(*names[::-1])
+                return Kernel.Path.PathInfo("", status, False, None)
+            return Kernel.Path.PathInfo(os.path.join(*names[::-1]), status, False, None)
 
         def get_ino(self, dentry):
             inode = read_int_from_memory(dentry + self.offset_d_inode)
@@ -73632,8 +73685,14 @@ class Kernel:
                     return "anon_inode:{:s}".format(filepath)
                 else:
                     return "pipe:[{:d}]".format(self.get_ino(dentry))
-            except gdb.MemoryError:
+            except (gdb.MemoryError, OverflowError):
                 return filepath
+
+        def decorate_path(self, path_info, dentry):
+            """Apply decorate_pseudo_path(), or mark the partial pathname if the walk stopped halfway."""
+            if path_info.status in ("unreadable", "cyclic"):
+                return os.path.join("???", path_info.path) if path_info.path else "???"
+            return self.decorate_pseudo_path(path_info.path, dentry)
 
         @Cache.cache_until_next
         def get_file_path(self, file, root=None):
@@ -73643,8 +73702,7 @@ class Kernel:
 
             dentry = read_int_from_memory(file + self.offset_file_dentry)
             vfsmnt = read_int_from_memory(file + self.offset_file_mnt)
-            filepath = self.prepend_path(dentry, vfsmnt, root).path
-            filepath = self.decorate_pseudo_path(filepath, dentry)
+            filepath = self.decorate_path(self.prepend_path(dentry, vfsmnt, root), dentry)
             # like d_path(), mark only a real pathname, not the notation of a pseudo filesystem
             if filepath.startswith("/") and self.is_unlinked(dentry):
                 filepath += " (deleted)"
@@ -73653,19 +73711,24 @@ class Kernel:
         def get_mount_path(self, mount, root=None):
             """Return the pathname of the mountpoint of `mount`."""
             vfsmnt = mount + self.offset_mount_mnt
-            dentry = read_int_from_memory(vfsmnt + self.offset_vfsmount_mnt_root)
+            dentry = read_int_from_memory(vfsmnt + self.offset_vfsmount_mnt_root, safe=True)
+            if dentry is None:
+                return Kernel.Path.PathInfo("", "unreadable", False, mount)
             return self.prepend_path(dentry, vfsmnt, root)
 
         def get_task_root(self, task, offset_fs):
             """Return the (vfsmount, dentry) pair of the root the task sees, i.e. task->fs->root."""
-            if not is_valid_addr_addr(task + offset_fs):
+            try:
+                if not is_valid_addr_addr(task + offset_fs):
+                    return None
+                fs = read_int_from_memory(task + offset_fs)
+                offset_root = self.get_offset_fs_root(fs)
+                if offset_root is None:
+                    return None
+                vfsmnt = read_int_from_memory(fs + offset_root)
+                dentry = read_int_from_memory(fs + offset_root + current_arch.ptrsize)
+            except (gdb.MemoryError, OverflowError):
                 return None
-            fs = read_int_from_memory(task + offset_fs)
-            offset_root = self.get_offset_fs_root(fs)
-            if offset_root is None:
-                return None
-            vfsmnt = read_int_from_memory(fs + offset_root)
-            dentry = read_int_from_memory(fs + offset_root + current_arch.ptrsize)
             if not self.is_vfsmount(vfsmnt) or not self.is_dentry(dentry):
                 return None
             return (vfsmnt, dentry)
@@ -85707,13 +85770,14 @@ class KernelPathCommand(GenericCommand, BufferingOutput):
     _example_ = "\n".join(_example_).format(_cmdline_)
 
     _note_ = [
-        "This command requires CONFIG_RANDSTRUCT=n.",
+        "This command requires CONFIG_RANDSTRUCT=n unless vmlinux with debug information is loaded.",
         "",
         "- Without `--pid/--task`, paths are resolved to the mount-namespace root.",
         "  With either option, resolution stops at `task->fs->root`; `outside-root` means the target lies outside it.",
         "- A bare dentry has no mount information. If multiple mounts match, `ambiguous` is shown; use `--all` to list them.",
         "- The target mount namespace is searched first, then other namespaces reachable through scanned tasks.",
         "  `no-mount` means no matching reachable mount was found, which is normal for pseudo-filesystems or unmounted mounts.",
+        "- Only a bare dentry and `--pid/--task` need the task list. The other types are resolved from the object alone.",
         "",
         "Simplified path structure:",
         "",
@@ -85742,45 +85806,119 @@ class KernelPathCommand(GenericCommand, BufferingOutput):
 
     def initialize(self):
         self.meta = []
+        self.task_command = None
+        self.task_tried = False
+        self.offset_fs = None
+        self.root_mount = None
 
         kversion = Kernel.kernel_version()
         if kversion is None:
             self.meta.append((self.quiet_err, "Could not find Linux kernel"))
             return None
 
-        task_command = KernelTaskCommand.borrow(self, print_fd=True)
-        if task_command is None:
-            return None
-
-        self.task_command = task_command
         self.kpath = Kernel.Path.get_instance()
-        if not self.kpath.initialized:
-            self.meta.append((self.quiet_err, "Could not resolve the struct dentry layout"))
+        if not self.initialize_layout(kversion):
             return None
 
-        if task_command.offset_files is None:
+        if self.args.meta:
+            self.initialize_tasks()
+        return True
+
+    def get_seed_dentry(self, address, kind):
+        """Return the dentry the object of `kind` refers to, used to resolve the dentry layout."""
+        kpath = self.kpath
+        if kind == "dentry":
+            return address
+        if kind == "path":
+            return read_int_from_memory(address + current_arch.ptrsize)
+        if kind == "mount":
+            address += kpath.offset_mount_mnt
+        return read_int_from_memory(address + kpath.offset_vfsmount_mnt_root)
+
+    def initialize_layout(self, kversion):
+        kpath = self.kpath
+        if kpath.initialized:
+            self.meta.extend(kpath.export_meta(self))
+            return True
+
+        # plan 1: the root dentry of a registered filesystem, which needs no task
+        if "3.3" <= kversion:
+            kfs = Kernel.FileSystem.get_instance()
+            if kfs.initialize() and kpath.initialized:
+                self.meta.extend(kpath.export_meta(self))
+                self.meta.append((self.quiet_info, "dentry (sample): the root of a mount in file_systems"))
+                return True
+
+        # plan 2: the object given with --type
+        kind = self.args.type
+        if kind != "auto" and kpath.ensure_mount_offsets():
+            try:
+                if kind == "file":
+                    ret = kpath.initialize(file=self.args.address)
+                else:
+                    ret = kpath.initialize(dentry=self.get_seed_dentry(self.args.address, kind))
+            except (gdb.MemoryError, OverflowError, RuntimeError):
+                ret = None
+            if ret:
+                self.meta.extend(kpath.export_meta(self))
+                self.meta.append((self.quiet_info, "{:s} (sample): {:#x}".format(kind, self.args.address)))
+                return True
+
+        # plan 3: the open files of the tasks
+        task_command = KernelTaskCommand.borrow(self, print_fd=True)
+        if task_command is not None and kpath.initialized:
+            self.task_command = task_command
+            return True
+
+        self.meta.append((self.quiet_err, "Could not resolve the struct dentry layout"))
+        if kind == "auto":
+            self.meta.append((self.quiet_err, "Specifying the type with --type may help"))
+        return None
+
+    def initialize_tasks(self):
+        """Resolve what walking the tasks needs. Only a bare dentry and --pid/--task need it."""
+        if self.task_tried:
+            return self.offset_fs is not None
+        self.task_tried = True
+
+        task_command = self.task_command
+        if task_command is None:
+            task_command = KernelTaskCommand.borrow(self)
+            if task_command is None:
+                return None
+
+        # task_struct->fs sits just before task_struct->files, which init_task is enough to find
+        task_command.task_addrs_temp = (task_command.init_task,)
+        try:
+            offset_files = task_command.get_offset_files(task_command.offset_comm)
+        except (gdb.MemoryError, OverflowError):
+            offset_files = None
+        finally:
+            del task_command.task_addrs_temp
+        if offset_files is None:
             self.meta.append((self.quiet_err, "Could not find task_struct->files"))
             return None
-        self.offset_fs = self.kpath.get_offset_task_fs(task_command.offset_files)
-        if self.offset_fs is None:
+        offset_fs = self.kpath.get_offset_task_fs(offset_files)
+        if offset_fs is None:
             self.meta.append((self.quiet_err, "Could not find task_struct->fs"))
             return None
-        self.meta.append((self.quiet_info, "offsetof(task_struct, fs): {:#x}".format(self.offset_fs)))
+        self.meta.append((self.quiet_info, "offsetof(task_struct, fs): {:#x}".format(offset_fs)))
 
-        self.init_root = self.kpath.get_task_root(task_command.init_task, self.offset_fs)
-        if self.init_root is None:
+        init_root = self.kpath.get_task_root(task_command.init_task, offset_fs)
+        if init_root is None:
             self.meta.append((self.quiet_warn, "Could not find init_task->fs->root"))
-            self.root_mount = None
         else:
-            self.root_mount = self.kpath.get_root_mount(self.init_root[0] - self.kpath.offset_mount_mnt)
+            self.root_mount = self.kpath.get_root_mount(init_root[0] - self.kpath.offset_mount_mnt)
             self.meta.append((self.quiet_info, "root mount: {:#x}".format(self.root_mount)))
+        self.task_command = task_command
+        self.offset_fs = offset_fs
         return True
 
     def get_task_by_pid(self, pid):
         task_command = self.task_command
         task_addrs = KernelTaskCommand.get_task_list(task_command.init_task, task_command.offset_tasks)
         for task in task_addrs:
-            if read_int32_from_memory(task + task_command.offset_pid) == pid:
+            if read_int32_from_memory(task + task_command.offset_pid, safe=True) == pid:
                 return task
         return None
 
@@ -85789,6 +85927,13 @@ class KernelPathCommand(GenericCommand, BufferingOutput):
         args = self.args
         if args.pid is None and args.task is None:
             return True, None, None
+
+        n = len(self.meta)
+        if not self.initialize_tasks():
+            for func, line in self.meta[n:]:
+                func(line)
+            err("Could not resolve task_struct->fs->root, which --pid/--task needs")
+            return False, None, None
 
         task = args.task
         if task is None:
@@ -85811,10 +85956,12 @@ class KernelPathCommand(GenericCommand, BufferingOutput):
             return "vfsmount"
         if kpath.is_path(address):
             return "path"
-        if kpath.is_dentry(address):
-            return "dentry"
+        # f_path.dentry and f_op of a file can pass as d_parent and d_name.name of a dentry,
+        # so the stricter check of a file, whose f_path must hold both objects, goes first
         if self.resolve_targets(address, "file"):
             return "file"
+        if kpath.is_dentry(address):
+            return "dentry"
         return None
 
     def get_primary_root(self, task_root):
@@ -85866,6 +86013,9 @@ class KernelPathCommand(GenericCommand, BufferingOutput):
         answer the user is asking about."""
         kpath = self.kpath
 
+        if not self.initialize_tasks():
+            return []
+
         chain = []
         seen = set()
         current = dentry
@@ -85896,10 +86046,7 @@ class KernelPathCommand(GenericCommand, BufferingOutput):
                 vfsmnt = read_int_from_memory(address)
                 dentry = read_int_from_memory(address + ptrsize)
             elif kind == "file":
-                if kpath.offset_file_mnt is None and not kpath.initialize_file_offsets(address):
-                    return []
-                vfsmnt = read_int_from_memory(address + kpath.offset_file_mnt)
-                dentry = read_int_from_memory(address + kpath.offset_file_dentry)
+                return self.resolve_file(address)
             elif kind in ("mount", "vfsmount"):
                 vfsmnt = address + kpath.offset_mount_mnt if kind == "mount" else address
                 dentry = read_int_from_memory(vfsmnt + kpath.offset_vfsmount_mnt_root)
@@ -85908,9 +86055,30 @@ class KernelPathCommand(GenericCommand, BufferingOutput):
         except (gdb.MemoryError, OverflowError, RuntimeError):
             return []
 
-        if not kpath.is_vfsmount(vfsmnt) or not kpath.is_dentry(dentry):
+        # an explicit type is trusted even if the parent of the dentry is unreadable, which the walk reports
+        if not kpath.is_vfsmount(vfsmnt) or not kpath.is_dentry(dentry, strict=self.args.type == "auto"):
             return []
         return [(vfsmnt, dentry)]
+
+    def resolve_file(self, file):
+        kpath = self.kpath
+        probing = kpath.offset_file_mnt is None
+        n = len(kpath.meta)
+        try:
+            if not probing or kpath.initialize_file_offsets(file):
+                vfsmnt = read_int_from_memory(file + kpath.offset_file_mnt)
+                dentry = read_int_from_memory(file + kpath.offset_file_dentry)
+                strict = probing or self.args.type == "auto"
+                if kpath.is_vfsmount(vfsmnt) and kpath.is_dentry(dentry, strict=strict):
+                    return [(vfsmnt, dentry)]
+        except (gdb.MemoryError, OverflowError, RuntimeError):
+            pass
+        if probing:
+            # the offsets were guessed from this object, which turned out not to be a file
+            kpath.offset_file_mnt = None
+            kpath.offset_file_dentry = None
+            del kpath.meta[n:]
+        return []
 
     def dump(self, targets, root):
         kpath = self.kpath
@@ -85925,7 +86093,7 @@ class KernelPathCommand(GenericCommand, BufferingOutput):
             status = path_info.status
             if len(targets) > 1 and status == "normal":
                 status = "ambiguous"
-            path = kpath.decorate_pseudo_path(path_info.path, dentry) or "???"
+            path = kpath.decorate_path(path_info, dentry) or "???"
             if kpath.is_unlinked(dentry):
                 path += " (deleted)"
             self.out.append("{:#018x} {:#018x} {:#018x} {:12s} {:s}".format(dentry, vfsmnt - kpath.offset_mount_mnt, vfsmnt, status, path))
@@ -85939,16 +86107,17 @@ class KernelPathCommand(GenericCommand, BufferingOutput):
             fmt = "{:18s} {:18s} {:18s} {:12s} {:s}"
             legend = ["dentry", "mount", "vfsmount", "status", "path"]
             self.out.append(GefUtil.make_legend(fmt.format(*legend)))
-        path = self.kpath.decorate_pseudo_path(self.kpath.dentry_path(dentry), dentry) or "???"
+        path_info = self.kpath.get_dentry_path_info(dentry)
+        path = self.kpath.decorate_path(path_info, dentry) or "???"
         if self.kpath.is_unlinked(dentry):
             path += " (deleted)"
-        self.out.append("{:#018x} {:18s} {:18s} {:12s} {:s}".format(dentry, "-", "-", "no-mount", path))
+        self.out.append("{:#018x} {:18s} {:18s} {:12s} {:s}".format(dentry, "-", "-", path_info.status, path))
         return
 
     @parse_args
     @only_if_gdb_running
     @only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
-    @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
+    @only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64"))
     @only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
         self.quiet_info("Wait for memory scan")
@@ -85984,7 +86153,10 @@ class KernelPathCommand(GenericCommand, BufferingOutput):
         self.out = []
         if not targets:
             if kind == "dentry":
-                self.quiet_warn("Could not find a mount holding this dentry")
+                if self.offset_fs is None:
+                    self.quiet_warn("Could not walk the tasks, so no mount was searched (see --meta)")
+                else:
+                    self.quiet_warn("Could not find a mount holding this dentry")
                 self.dump_without_mount(args.address)
             else:
                 err("Could not interpret {:#x} as struct {:s}".format(args.address, kind))
