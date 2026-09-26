@@ -164788,7 +164788,8 @@ class PageTableArm32(PageTable):
         if not entries:
             return
 
-        fmt = "{:37s}  {:37s}  {:10s}  {:20s}  {:s}"
+        flags_width = max(20, *[len(e.flags) for e in entries])
+        fmt = "{:37s}  {:37s}  {:10s}  {:%ds}  {:s}" % flags_width
         legend = ["Virtual address start-end", "Physical address start-end", "Total size", "Flags", "Hint (Maybe)"]
         gef_print(GefUtil.make_legend(fmt.format(*legend)))
 
@@ -164856,8 +164857,8 @@ class PageTableArm32(PageTable):
                     hint = "TA .data / stack"
             else:
                 hint = ""
-            gef_print("{:#018x}-{:#018x}  {:#018x}-{:#018x}  {:<#10x}  {:20s}  {:s}".format(
-                e.vstart, e.vend, e.pstart, e.pend, e.vsize, e.flags, hint,
+            gef_print("{:#018x}-{:#018x}  {:#018x}-{:#018x}  {:<#10x}  {:{:d}s}  {:s}".format(
+                e.vstart, e.vend, e.pstart, e.pend, e.vsize, e.flags, flags_width, hint,
             ).rstrip())
         return
 
