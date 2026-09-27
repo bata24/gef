@@ -8711,7 +8711,7 @@ kcred -f 'sh$' -v
 ### Notes
 
 ```text
-This command requires CONFIG_RANDSTRUCT=n.
+This command requires CONFIG_RANDSTRUCT=n unless vmlinux with debug information is loaded.
 
 Simplified credential structure:
 
@@ -8952,7 +8952,7 @@ ktask --all                  # it means -mritFsSN
 ### Notes
 
 ```text
-This command requires CONFIG_RANDSTRUCT=n.
+This command requires CONFIG_RANDSTRUCT=n unless vmlinux with debug information is loaded.
 
 Simplified task_struct structure:
 
@@ -9509,6 +9509,7 @@ kio-uring --type request 0xffff888056780000 -v
 `iouring-dump` dumps userland io_uring mappings; this command follows kernel objects.
 io_uring first appeared in Linux v5.1. Older kernels are detected without scanning.
 DWARF is used when available. Without it, ring discovery uses open fd paths and validated ring metadata.
+ADDRESS with `--type ctx` or `--type request` needs neither the task list nor the VFS layout.
 Live request lists are transient and may be incomplete while another CPU is running.
 
 Kernel object graph:
@@ -9594,33 +9595,40 @@ options:
   -hh, --help-simple  show help without ASCII diagram.
   --meta              display offset information.
   -n, --no-pager      do not use the pager.
-  -v, --verbose       enable verbose mode.
+  -v, --verbose       also show unused IRQs, the count, the flow handler and the affinity.
   -q, --quiet         show result only.
 ```
 
 ### Notes
 
 ```text
+Each action of a shared IRQ is shown on its own line. `count` is the sum of the per-cpu counts (-v).
+The affinity is shown only with the debug information (vmlinux or `ktypes-load`).
+
 Simplified irq structure:
 
-+-irq_desc_tree(~6.5)-+   +--->+-radix/xa node---+   +--->+-irq_desc----+
-| lock                |   |    | shift           |   |    | ...         |
-| flags               |   |    | ...             |   |    | irq_data    |
-| rnode/xa_head       |---+    | count           |   |    |   ...       |
-+---------------------+        | ...             |   |    |   irq       |
-                               | slots[0]        |---+    |   ...       |
-                               | slots[1]        |   ^    | ...         |
-                               | ...             |   |    | action      |
-                               | slots[15 or 63] |   |    |   handler   |
-                               | ...             |   |    |   ...       |
-                               +-----------------+   |    |   name      |
-                                                     |    |   ...       |
-+-sparce_irq(6.5~)-+   +-->+-maple_node------+       |    | ...         |
-| ...              |   |   | ...             |       |    +-------------+
-| ma_root          |---+   | mr64|ma64|alloc |       |
-| ...              |       |   ...           |       |
-+------------------+       |   slot[]        |-------+
-                           +-----------------+
++-irq_desc_tree(~6.5)-+   +--->+-radix/xa node---+   +--->+-irq_desc------+
+| lock                |   |    | shift           |   |    | ...           |
+| flags               |   |    | ...             |   |    | irq_data      |
+| rnode/xa_head       |---+    | count           |   |    |   irq         |
++---------------------+        | ...             |   |    |   hwirq       |
+                               | slots[0]        |---+    |   chip        |--->name
+                               | slots[1]        |   ^    |   ...         |
+                               | ...             |   |    | kstat_irqs    |--->per-cpu count
+                               | slots[15 or 63] |   |    | handle_irq    |
+                               | ...             |   |    | action        |---+
+                               +-----------------+   |    | ...           |   |
+                                                     |    +---------------+   |
++-sparse_irqs(6.5~)-+   +-->+-maple_node------+      |                        |
+| ...               |   |   | ...             |      |    +-irqaction-+<------+
+| ma_root           |---+   | mr64|ma64|alloc |      |    | handler   |
+| ...               |       |   ...           |      |    | ...       |
++-------------------+       |   slot[]        |------+    | next      |--->irqaction (shared IRQ)
+                            +-----------------+      |    | ...       |
+                                                     |    | name      |
++-irq_desc[NR_IRQS] (CONFIG_SPARSE_IRQ=n)-+          |    +-----------+
+| irq_desc[0], irq_desc[1], ...           |----------+
++-----------------------------------------+
 ```
 
 ## `klsm`
@@ -9713,7 +9721,7 @@ part is read from `<lsm>_blob_sizes`; without the symbol it is guessed from the 
    +-------------------+
 
 SELinux, Smack, AppArmor, TOMOYO and Landlock parts are decoded. This mode requires
-CONFIG_RANDSTRUCT=n.
+CONFIG_RANDSTRUCT=n unless vmlinux with debug information is loaded.
 ```
 
 ## `kmod`
@@ -9821,7 +9829,7 @@ kmount --all --tasks
 ### Notes
 
 ```text
-This command requires CONFIG_RANDSTRUCT=n.
+This command requires CONFIG_RANDSTRUCT=n unless vmlinux with debug information is loaded.
 
 - Walks `mnt_mounts/mnt_child`, so all mounts in the namespace are shown, including bind mounts sharing a `super_block`.
   `kfilesystems` instead shows filesystem types and all their `super_block`s, mounted or not.
@@ -10184,7 +10192,7 @@ kpipe -q
 ### Notes
 
 ```text
-This command requires CONFIG_RANDSTRUCT=n, unless the debug info of vmlinux is loaded.
+This command requires CONFIG_RANDSTRUCT=n unless vmlinux with debug information is loaded.
 A notification pipe (CONFIG_WATCH_QUEUE) can hold more entries than `max`.
 
 Simplified pipe structure:
@@ -10262,6 +10270,9 @@ krefs -t 0x100 0xffff888012345600               # also catch the interior pointe
 - Hits are annotated with their likely context: the preceding kallsyms symbol, per-cpu variable and CPU,
   or slab cache and object boundary. Kallsyms ownership is only a heuristic.
 - Only pointer-size-aligned raw pointers are found; encoded, tagged, XORed, mangled, or unaligned pointers are missed.
+- `-c` scans the slab pages reachable from the per-cpu and per-node lists and the sheaves.
+  SLUB links no full slab without CONFIG_SLUB_DEBUG, and SLOB has no slab page owned by a cache.
+- The slab cache of a hit is resolved on x86 and ARM only.
 - Use `kobj ADDRESS` to identify the referenced object.
 ```
 
@@ -10273,7 +10284,7 @@ Parse a single sk_buff and show its buffer layout, refcount and fragment informa
 ### Syntax
 
 ```text
-usage: kskb [-h] [-hh] [-d] [-n] [-q] [SKB_ADDR]
+usage: kskb [-h] [-hh] [-d] [--meta] [-n] [-q] [SKB_ADDR]
 
 positional arguments:
   SKB_ADDR            a `struct sk_buff` address.
@@ -10281,7 +10292,8 @@ positional arguments:
 options:
   -h, --help          show this help message and exit
   -hh, --help-simple  show help without ASCII diagram.
-  -d, --dump          hexdump the first 64 bytes of the data buffer.
+  -d, --dump          hexdump the first 64 bytes of the linear packet data.
+  --meta              display offset information.
   -n, --no-pager      do not use the pager.
   -q, --quiet         show result only.
 ```
@@ -10323,8 +10335,11 @@ v           v             v             v
 |<-------- tail --------->|             |
 |<---------------- end ---------------->|
 
-skb_shared_info (at head + end) holds nr_frags, frag_list, ...
+skb_shared_info (at head + end) holds nr_frags, frag_list, frags[] ...
 On 64-bit, tail/end are u32 offsets from head; on 32-bit they are absolute pointers.
+The offsets are taken from the debug information if available, otherwise probed from the memory.
+frags[] is decoded only with the debug information.
+truesize is an accounting value (e.g., 2 for a local TCP pure ACK), not the buffer size.
 ```
 
 ## `ksock`
@@ -10349,7 +10364,7 @@ options:
   -f, --comm-filter COMM_FILTER
                         comm string REGEXP filter.
   -l, --list-skb        list each skb address in the queues.
-  -d, --dump            hexdump the first 64 bytes of each listed skb's data buffer (implies --list-skb).
+  -d, --dump            hexdump the first 64 bytes of each listed skb's linear packet data (implies --list-skb).
   --meta                display offset information.
   -n, --no-pager        do not use the pager.
   -q, --quiet           show result only.
@@ -10367,7 +10382,7 @@ ksock 0xffff888012345000
 ### Notes
 
 ```text
-This command requires CONFIG_RANDSTRUCT=n.
+This command requires CONFIG_RANDSTRUCT=n unless vmlinux with debug information is loaded.
 
 Simplified socket structure:
 
@@ -10389,8 +10404,9 @@ Simplified socket structure:
                                     +-------------------------+
 
 The skc_state value is protocol-dependent; TCP_* names are shown only when the
-resolved protocol is TCP-like. Queue and callback offsets are recovered heuristically
-because struct sock varies with the kernel version and configuration.
+resolved protocol is TCP-like. The offsets are taken from the debug information if available,
+otherwise recovered heuristically because struct sock varies with the kernel version and configuration.
+The protocol is shown only when its `struct proto` is verified.
 
 Use `kskb ADDR` to inspect a single sk_buff in detail.
 ```
@@ -10447,14 +10463,16 @@ options:
 
 ```gdb
 ksysctl --filter modprobe             # filter by parameter name
-ksysctl --fitler kernel.modprobe -e   # exact match
+ksysctl --filter kernel.modprobe -e   # exact match
 ksysctl -s                            # skip symlink (improves performance with many .net.* and user.* entries)
 ```
 
 ### Notes
 
 ```text
-This command requires CONFIG_RANDSTRUCT=n.
+This command requires CONFIG_RANDSTRUCT=n unless vmlinux with debug information is loaded.
+ParamValue is decoded as proc_handler (or the known handler it calls) reads it:
+strings, integer vectors (`jiffies` is the raw stored count), or `raw:` bytes if unknown.
 
 Simplified sysctl_table structure:
 
@@ -10584,7 +10602,7 @@ kvfs --type inode 0xffff888003b0a000
 ### Notes
 
 ```text
-This command requires CONFIG_RANDSTRUCT=n.
+This command requires CONFIG_RANDSTRUCT=n unless vmlinux with debug information is loaded.
 
 ADDRESS is detected as struct file, dentry or inode unless --type is specified.
 The filesystem type and mount device are best-effort when debug information is unavailable.
@@ -10939,6 +10957,10 @@ Simplified workqueue structures (`==>` shows where each column comes from):
 - For `delayed` work, `cpu` is the CPU whose timer wheel holds the timer.
 - `--object` scans `[object, object+size)` for initialized `work_struct`s, including unqueued `idle` work.
   `delayed_work` is recognized by its `delayed_work_timer_fn` timer when available.
+  It does not need the workqueue list, though `queue` is then unknown.
+- The running work is found from `worker_pool.busy_hash` (`global_cwq` before v3.6).
+- `delayed` needs the `ktimer` layout on v4.8 or later; other states are listed without it.
+- The member offsets come from the debug information (vmlinux or `ktypes-load`) when available.
 ```
 
 # 06-h. Qemu-system/KGDB Cooperation - Linux Allocator

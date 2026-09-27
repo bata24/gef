@@ -63036,6 +63036,26 @@ class KernelAddressHeuristicFinderUtil:
         return KernelAddressHeuristicFinderUtil.riscv_auipc_gen(res, True, True, skip, skip_msb_check, read_valid, word_only=True)
 
     @staticmethod
+    def riscv_gp_relative(res):
+        """Yield the addresses built from `gp` with `addi rX, gp, lo12` or accessed as `lw/ld rX, lo12(gp)`.
+
+        The linker relaxes an access near `__global_pointer$` to a gp-relative one, and the
+        kernel keeps `__global_pointer$` in `gp` while it runs."""
+        gp = Ksym.get_addr("__global_pointer$")
+        if not gp:
+            try:
+                gp = get_register("$gp")
+            except gdb.error:
+                return
+        if not gp or not AddressUtil.is_msb_on(gp):
+            return
+        for line in res.splitlines():
+            m = re.search(r"\baddi\s+\w+,\s*gp,\s*(-?\d+)$", line) or re.search(r"\b(?:lw|ld)\s+\w+,\s*(-?\d+)\(gp\)", line)
+            if m:
+                yield AddressUtil.normalize_address(gp + int(m.group(1)))
+        return
+
+    @staticmethod
     def get_kernel_image_range():
         """Return [start, end) of the kernel image (.text/.rodata/.data/.bss), or None if unknown."""
         try:
@@ -69933,18 +69953,26 @@ class KernelAddressHeuristicFinder:
             for address in Ksym.get_addrs(anchor, match="split"):
                 res = KernelAddressHeuristicFinderUtil.disassemble_until_next_symbol(address, 500)
                 if is_x86_64() or is_x86_32():
-                    candidates = KernelAddressHeuristicFinderUtil.x64_x86_any_const(res)
+                    g = KernelAddressHeuristicFinderUtil.x64_x86_any_const(res)
                 elif is_arm64():
-                    candidates = itertools.chain(
+                    g = itertools.chain(
                         KernelAddressHeuristicFinderUtil.aarch64_adrp_add(res),
                         KernelAddressHeuristicFinderUtil.aarch64_adrp_add_add(res),
                     )
                 elif is_arm32():
-                    candidates = itertools.chain(
+                    g = itertools.chain(
                         KernelAddressHeuristicFinderUtil.arm32_movw_movt(res),
                         KernelAddressHeuristicFinderUtil.arm32_ldr_pc_relative(res),
                     )
-                for x in candidates:
+                elif is_riscv32() or is_riscv64():
+                    # `workqueues.next` may be loaded directly (e.g. `auipc a5, ...` then `lw s0, ...(a5)`)
+                    g = itertools.chain(
+                        KernelAddressHeuristicFinderUtil.riscv_auipc_use(res),
+                        KernelAddressHeuristicFinderUtil.riscv_gp_relative(res),
+                    )
+                else:
+                    g = []
+                for x in g:
                     if looks_like_workqueues(x):
                         return x
                     if (is_arm32() or is_arm64()) and KernelAddressHeuristicFinderUtil.is_in_kernel_image(x):
@@ -70055,6 +70083,8 @@ class KernelAddressHeuristicFinder:
                 elif is_arm32():
                     g = KernelAddressHeuristicFinderUtil.arm32_movw_movt(res, skip_msb_check=True)
                     g2 = []
+                else:
+                    g, g2 = [], []
                 g, g2 = list(g), list(g2)
 
                 # pattern3: 32-bit
@@ -70193,6 +70223,8 @@ class KernelAddressHeuristicFinder:
                 elif is_arm32():
                     g = KernelAddressHeuristicFinderUtil.arm32_movw_movt(res, skip_msb_check=True)
                     g2 = []
+                else:
+                    g, g2 = [], []
                 g, g2 = list(g), list(g2)
 
                 # pattern3: 32-bit
@@ -70685,6 +70717,10 @@ class KernelAddressHeuristicFinder:
                     )
                 elif is_arm32():
                     g = KernelAddressHeuristicFinderUtil.arm32_movw_movt(res)
+                elif is_riscv32() or is_riscv64():
+                    g = KernelAddressHeuristicFinderUtil.riscv_auipc_addi(res)
+                else:
+                    g = []
                 for x in g:
                     return x
         return None
@@ -70729,7 +70765,66 @@ class KernelAddressHeuristicFinder:
                         KernelAddressHeuristicFinderUtil.arm32_movw_movt(res),
                         KernelAddressHeuristicFinderUtil.arm32_ldr_pc_relative(res),
                     )
+                elif is_riscv32() or is_riscv64():
+                    g = KernelAddressHeuristicFinderUtil.riscv_auipc_addi(res)
+                else:
+                    g = []
                 for x in g:
+                    return x
+        return None
+
+    @staticmethod
+    @Decorator.switch_to_intel_syntax
+    def get_irq_desc():
+        """Return the static `irq_desc[NR_IRQS]` of CONFIG_SPARSE_IRQ=n, or None."""
+
+        def is_irq_desc_array(address):
+            # early_irq_init() sets irq_desc[i].irq_data.irq = i for every descriptor.
+            try:
+                words = slice_unpack(read_memory(address, 0x2000), 4)
+            except gdb.MemoryError:
+                return False
+            for offset in range(0, 0x100 // 4):
+                if words[offset] != 0:
+                    continue
+                for stride in range(0x20 // 4, 0x800 // 4):
+                    if offset + stride * 3 >= len(words):
+                        break
+                    if all(words[offset + stride * i] == i for i in range(1, 4)):
+                        return True
+            return False
+
+        # plan 1 (directly)
+        if KernelAddressHeuristicFinder.USE_DIRECTLY:
+            x = Ksym.get_addr("irq_desc")
+            if x:
+                return x
+
+        # plan 2 (from irq_to_desc)
+        # `return (irq < NR_IRQS) ? irq_desc + irq : NULL;` computes the address of the array.
+        addr = Ksym.get_addr("irq_to_desc")
+        if addr:
+            res = KernelAddressHeuristicFinderUtil.disassemble_until_next_symbol(addr, 20)
+            if is_x86_64() or is_x86_32():
+                g = KernelAddressHeuristicFinderUtil.x64_x86_any_const(res)
+            elif is_arm64():
+                g = itertools.chain(
+                    KernelAddressHeuristicFinderUtil.aarch64_adrp_add_add(res),
+                    KernelAddressHeuristicFinderUtil.aarch64_adrp_add(res),
+                )
+            elif is_arm32():
+                # the range check makes the load conditional (e.g. `ldrls r3, [pc, #12]`)
+                res = re.sub(r"\bldr(?:eq|ne|cs|hs|cc|lo|mi|pl|vs|vc|hi|ls|ge|lt|gt|le)\b", "ldr", res)
+                g = itertools.chain(
+                    KernelAddressHeuristicFinderUtil.arm32_movw_movt(res),
+                    KernelAddressHeuristicFinderUtil.arm32_ldr_pc_relative(res),
+                )
+            elif is_riscv32() or is_riscv64():
+                g = KernelAddressHeuristicFinderUtil.riscv_auipc_addi(res)
+            else:
+                g = []
+            for x in g:
+                if is_irq_desc_array(x):
                     return x
         return None
 
@@ -71994,16 +72089,27 @@ class KernelXArray:
         if self.head_offset is not None:
             return self.head_offset
 
+        # The shared offset may come from another target or config, so reuse it
+        # only if the head there links back, or if nothing here can be verified.
         cls = type(self)
-        if cls.offset_xa_head is not None:
-            self.head_offset = cls.offset_xa_head
-            return self.head_offset
+        cached = cls.offset_xa_head
+        if cached is not None:
+            entry = read_int_from_memory(self.address + cached, safe=True)
+            if entry is not None and cls.cache_head_offset(self.address + cached, entry):
+                self.head_offset = cached
+                return self.head_offset
 
         for offset in range(0, max_offset, cls.ptrsize):
-            entry = read_int_from_memory(self.address + offset)
+            entry = read_int_from_memory(self.address + offset, safe=True)
+            if entry is None:
+                break
             if cls.cache_head_offset(self.address + offset, entry):
                 self.head_offset = offset
                 return self.head_offset
+
+        if cached is not None and cached < max_offset:
+            self.head_offset = cls.offset_xa_head = cached
+            return self.head_offset
         return None
 
     def parse_entry(self, entry):
@@ -72098,7 +72204,7 @@ class KernelRadixTree:
         """Return the list of all leaf entries in the radix_tree."""
         return list(self.iter_entries())
 
-    def parse_indexed(self):
+    def parse_indexed(self): # noqa
         """Return the list of (index, entry) pairs in the radix_tree."""
         return list(self.iter_indexed_entries())
 
@@ -88091,17 +88197,33 @@ class KernelWorkqueueCommand(GenericCommand, BufferingOutput):
         "- For `delayed` work, `cpu` is the CPU whose timer wheel holds the timer.",
         "- `--object` scans `[object, object+size)` for initialized `work_struct`s, including unqueued `idle` work.",
         "  `delayed_work` is recognized by its `delayed_work_timer_fn` timer when available.",
+        "  It does not need the workqueue list, though `queue` is then unknown.",
+        "- The running work is found from `worker_pool.busy_hash` (`global_cwq` before v3.6).",
+        "- `delayed` needs the `ktimer` layout on v4.8 or later; other states are listed without it.",
+        "- The member offsets come from the debug information (vmlinux or `ktypes-load`) when available.",
     ]
     _note_ = "\n".join(_note_)
 
+    BUSY_WORKER_HASH_SIZE = 64
+
     def is_callback(self, address):
+        """Return True if `address` is the entry of a function in the kernel or module text."""
         if not address or not is_valid_addr(address):
             return False
         if self.klayout.text_base <= address < self.klayout.text_end:
-            return True
-        if not AddressUtil.is_msb_on(address):
-            return False
-        return address in self.kallsyms_text
+            # a work function is a function entry, not an address in the middle of one
+            return not self.kallsyms_text or address in self.kallsyms_text
+        # the type of kallsyms alone is not enough (e.g., `workqueues` is `t` in some v6.14+ builds)
+        return any(start <= address < end for start, end in self.get_module_text_ranges())
+
+    def get_module_text_ranges(self):
+        if self.module_text_ranges is None:
+            self.module_text_ranges = []
+            for _module, _name, regions in Kernel.modules().get_loaded() or []:
+                for region_name, base, size in regions:
+                    if region_name in ("core", "text", "init_text"):
+                        self.module_text_ranges.append((base, base + size))
+        return self.module_text_ranges
 
     def format_symbol(self, address):
         symbol = Symbol.get_symbol_string(address)
@@ -88112,11 +88234,11 @@ class KernelWorkqueueCommand(GenericCommand, BufferingOutput):
             return " <{:s}>".format(name)
         return " <NO_SYMBOL>"
 
-    def read_work(self, work):
+    def read_work(self, work, check_function=True):
         try:
             data = read_int_from_memory(work + self.offset_work_data)
             function = read_int_from_memory(work + self.offset_work_func)
-            if not self.is_callback(function):
+            if check_function and not self.is_callback(function):
                 return None
             entry = work + self.offset_work_entry
             next_entry = read_int_from_memory(entry)
@@ -88176,64 +88298,74 @@ class KernelWorkqueueCommand(GenericCommand, BufferingOutput):
     def find_pwq_from_node(self, node, workqueue):
         if self.offset_pwqs_node is not None:
             candidate = AddressUtil.normalize_address(node - self.offset_pwqs_node)
-            owner = read_int_from_memory(candidate + self.offset_pwq_wq, safe=True)
-            if owner is None:
-                return None
-            if owner == workqueue:
-                return candidate
+        else:
+            # pool_workqueue is aligned to 1 << WORK_STRUCT_PWQ_SHIFT (at least 256) for work_struct.data,
+            # and pwqs_node is within the first 256 bytes
+            candidate = node & ~0xff
+        owner = read_int_from_memory(candidate + self.offset_pwq_wq, safe=True)
+        pool = read_int_from_memory(candidate + self.offset_pwq_pool, safe=True)
+        if owner != workqueue or not pool or not is_valid_addr(pool):
+            return None
+        return candidate
 
-        for offset in range(0, 0x300, current_arch.ptrsize):
-            candidate = AddressUtil.normalize_address(node - offset)
-            try:
-                if read_int_from_memory(candidate + current_arch.ptrsize) != workqueue:
-                    continue
-                pool = read_int_from_memory(candidate)
-                if is_valid_addr(pool):
-                    if self.find_worklist(pool) is not None:
-                        self.offset_pwqs_node = offset
-                        return candidate
-            except (gdb.MemoryError, OverflowError):
-                continue
-        return None
+    def work_belongs_to_pool(self, work, pool):
+        """Return True if `work` is a queued work whose pool_workqueue belongs to `pool`."""
+        parsed = self.read_work(work)
+        if parsed is None or not parsed["data"] & 1: # WORK_STRUCT_PENDING
+            return False
+        if not parsed["data"] & 4: # WORK_STRUCT_PWQ (WORK_STRUCT_CWQ before v3.9)
+            return False
+        for mask in (0xff, 0x1ff):
+            pwq = parsed["data"] & ~mask
+            if read_int_from_memory(pwq + self.offset_pwq_pool, safe=True) == pool:
+                return True
+        return False
+
+    def is_worklist(self, head, pool):
+        """Return True if `head` is an empty list or a list of the works queued to `pool`."""
+        try:
+            if not is_double_link_list(head):
+                return False
+        except (gdb.MemoryError, OverflowError):
+            return False
+        works = list(itertools.islice(KernelListHead(head, self.offset_work_entry).iter_entries(), 8))
+        return all(self.work_belongs_to_pool(work, pool) for work in works)
 
     def find_worklist(self, pool):
-        if pool in self.pool_worklist_offsets:
-            return pool + self.pool_worklist_offsets[pool]
+        if self.offset_pool_worklist is not None:
+            return pool + self.offset_pool_worklist
 
-        offset = GefUtil.offsetof("struct worker_pool", "worklist")
-        if offset is None and self.kversion < "3.9":
-            offset = GefUtil.offsetof("struct global_cwq", "worklist")
-        if offset is not None:
-            head = pool + offset
-            if is_double_link_list(head):
-                self.pool_worklist_offsets[pool] = offset
-                return head
-
-        for offset in range(0, 0x180, current_arch.ptrsize):
-            head = pool + offset
-            try:
-                if is_double_link_list(head):
-                    self.pool_worklist_offsets[pool] = offset
-                    return head
-            except gdb.MemoryError:
-                continue
-        return None
+        if self.worklist_offset is None:
+            # worklist is the first list_head of worker_pool (global_cwq before v3.6) in every version.
+            # It is verified by the works linked there, since the idle workers also form a list.
+            pools = sorted({unit["pool"] for unit in self.units})
+            for offset in range(0, 0x180, current_arch.ptrsize):
+                if pools and all(self.is_worklist(p + offset, p) for p in pools):
+                    self.worklist_offset = offset
+                    self.meta.append((self.quiet_info, "offsetof(worker_pool, worklist): {:#x} (heuristic)".format(offset)))
+                    break
+            else:
+                self.worklist_offset = False
+                self.meta.append((self.quiet_warn, "offsetof(worker_pool, worklist): Not found"))
+        if self.worklist_offset is False:
+            return None
+        return pool + self.worklist_offset
 
     def find_pool_cpu(self, pool, worklist):
-        offset = GefUtil.offsetof("struct worker_pool", "cpu")
-        if offset is None and self.kversion < "3.6":
-            offset = GefUtil.offsetof("struct global_cwq", "cpu")
-        if offset is not None:
-            try:
-                return read_int32_from_memory(pool + offset, signed=True)
-            except gdb.MemoryError:
-                return None
+        if self.offset_pool_cpu is not None:
+            return read_int32_from_memory(pool + self.offset_pool_cpu, signed=True, safe=True)
+
+        # a per-cpu pool is in the per-cpu area of its cpu; an unbound one is not
+        resolved = Kernel.per_cpu().resolve(pool)
+        if resolved is not None and Kernel.per_cpu().is_smp:
+            return resolved[0]
 
         end = worklist - pool
         if self.kversion < "3.9":
             return self.pool_cpu_hints.get(pool)
 
-        field_count = 3 if self.kversion == "3.9" else 4
+        # v3.9 has cpu, id and flags before worklist; v3.10 adds node after cpu
+        field_count = 3 if self.kversion < "3.10" else 4
         ptrsize = current_arch.ptrsize
         for offset in range(0, end, 4):
             tail = end - offset - field_count * 4
@@ -88259,16 +88391,17 @@ class KernelWorkqueueCommand(GenericCommand, BufferingOutput):
         units = []
         for workqueue in workqueues:
             try:
-                flags = read_int32_from_memory(workqueue)
-                base = read_int_from_memory(workqueue + current_arch.ptrsize)
+                flags = read_int32_from_memory(workqueue + self.offset_wq_flags)
+                base = read_int_from_memory(workqueue + self.offset_wq_cpu_wq)
             except gdb.MemoryError:
+                self.incomplete.append("workqueue {:#x} is unreadable".format(workqueue))
                 continue
             # a WQ_UNBOUND workqueue holds one shared pool instead of a per-cpu one
             for cpu, unit in enumerate([base] if flags & 2 else percpu.addrs_of(base)):
                 try:
-                    if read_int_from_memory(unit + current_arch.ptrsize) != workqueue:
+                    if read_int_from_memory(unit + self.offset_pwq_wq) != workqueue:
                         continue
-                    pool = read_int_from_memory(unit)
+                    pool = read_int_from_memory(unit + self.offset_pwq_pool)
                 except gdb.MemoryError:
                     continue
                 if not is_valid_addr(pool):
@@ -88288,7 +88421,8 @@ class KernelWorkqueueCommand(GenericCommand, BufferingOutput):
         units = []
         for workqueue in workqueues:
             head = workqueue + self.offset_wq_pwqs
-            for node in KernelListHead(head).iter_entries():
+            lh = KernelListHead(head)
+            for node in lh.iter_entries():
                 pwq = self.find_pwq_from_node(node, workqueue)
                 if pwq is None:
                     continue
@@ -88302,6 +88436,8 @@ class KernelWorkqueueCommand(GenericCommand, BufferingOutput):
                     "pool": pool,
                     "cpu": None,
                 })
+            if lh.broken:
+                self.incomplete.append("the pwqs list of {:#x} is broken at {:#x}".format(workqueue, lh.broken_at))
         return units
 
     def owner_for_data(self, data):
@@ -88314,10 +88450,12 @@ class KernelWorkqueueCommand(GenericCommand, BufferingOutput):
                 return owner
         return None
 
-    def append_record(self, records, work, state, owner=None, pool=None, timer=None, expires=None):
-        parsed = self.read_work(work)
+    def append_record(self, records, work, state, owner=None, pool=None, timer=None, expires=None, function=None):
+        parsed = self.read_work(work, check_function=function is None)
         if parsed is None:
             return
+        if function is not None:
+            parsed["function"] = function
         if owner is None:
             owner = self.owner_for_data(parsed["data"])
         cpu = owner["cpu"] if owner is not None else None
@@ -88343,22 +88481,23 @@ class KernelWorkqueueCommand(GenericCommand, BufferingOutput):
         for pool in pools:
             worklist = self.find_worklist(pool)
             if worklist is None:
+                self.incomplete.append("the worklist of pool {:#x} is not found".format(pool))
                 continue
-            for work in KernelListHead(worklist, self.offset_work_entry).iter_entries():
+            lh = KernelListHead(worklist, self.offset_work_entry)
+            for work in lh.iter_entries():
                 data = read_int_from_memory(work + self.offset_work_data, safe=True)
                 if data is None:
                     continue
                 owner = self.owner_for_data(data)
                 self.append_record(records, work, "pending", owner, pool)
+            if lh.broken:
+                self.incomplete.append("the worklist of pool {:#x} is broken at {:#x}".format(pool, lh.broken_at))
 
         # Throttled work is linked from pool_workqueue.delayed_works/inactive_works.
-        exact_offset = GefUtil.offsetof("struct pool_workqueue", "inactive_works")
-        if exact_offset is None:
-            exact_offset = GefUtil.offsetof("struct pool_workqueue", "delayed_works")
         for unit in self.units:
             heads = []
-            if exact_offset is not None:
-                heads.append(unit["address"] + exact_offset)
+            if self.offset_pwq_inactive is not None:
+                heads.append(unit["address"] + self.offset_pwq_inactive)
             else:
                 for offset in range(current_arch.ptrsize * 2, 0x180, current_arch.ptrsize):
                     head = unit["address"] + offset
@@ -88375,41 +88514,82 @@ class KernelWorkqueueCommand(GenericCommand, BufferingOutput):
                     self.append_record(records, work, "inactive", unit, unit["pool"])
         return
 
-    def collect_running_records(self, records):
-        seen_workers = set()
-        for pool in {unit["pool"] for unit in self.units}:
+    def iter_busy_workers(self, pool):
+        """Iterate the workers in the busy_hash of `pool`, each linked back through hentry.pprev."""
+        ptrsize = current_arch.ptrsize
+        if self.offset_pool_busy_hash is not None:
+            buckets = [pool + self.offset_pool_busy_hash + ptrsize * i for i in range(self.BUSY_WORKER_HASH_SIZE)]
+        else:
+            # busy_hash is in worker_pool since v3.9, and in global_cwq, which contains the pools, before that
             start = pool - 0x1000 if self.kversion < "3.9" else pool
             try:
-                words = slice_unpack(read_memory(start, 0x2000), current_arch.ptrsize)
+                words = slice_unpack(read_memory(start, 0x2000), ptrsize)
             except gdb.MemoryError:
                 start = pool
                 try:
-                    words = slice_unpack(read_memory(start, 0x1000), current_arch.ptrsize)
+                    words = slice_unpack(read_memory(start, 0x1000), ptrsize)
                 except gdb.MemoryError:
+                    self.incomplete.append("the busy_hash of pool {:#x} is unreadable".format(pool))
+                    return
+            buckets = [start + ptrsize * i for i, word in enumerate(words) if word and is_valid_addr(word)]
+
+        seen = set()
+        for bucket in buckets:
+            link = bucket
+            worker = read_int_from_memory(bucket, safe=True)
+            while worker and worker not in seen and is_valid_addr(worker):
+                if read_int_from_memory(worker + ptrsize, safe=True) != link: # hlist_node.pprev
+                    break
+                seen.add(worker)
+                yield worker
+                link = worker
+                worker = read_int_from_memory(worker, safe=True)
+        return
+
+    def read_running_work(self, worker, pools, pool):
+        """Return (current_work, current_pwq, the pool, the running function) of a busy worker, or None."""
+        work = read_int_from_memory(worker + self.offset_worker_current_work, safe=True)
+        if not work or not is_valid_addr(work):
+            return None
+        worker_layouts = [(self.offset_worker_current_func, self.offset_worker_current_pwq)]
+        if self.offset_worker_current_func is None and GefUtil.offsetof("worker", "current_cwq") is None:
+            # current_func (v3.9) is also backported to some v3.8.y
+            worker_layouts.insert(0, (current_arch.ptrsize * 3, current_arch.ptrsize * 4))
+        for offset_func, offset_pwq in worker_layouts:
+            pwq = read_int_from_memory(worker + offset_pwq, safe=True)
+            if not pwq or not is_valid_addr(pwq):
+                continue
+            # current_pwq links back to the pool (a global_cwq shares one busy_hash between its pools)
+            pwq_pool = read_int_from_memory(pwq + self.offset_pwq_pool, safe=True)
+            if pwq_pool not in pools or self.kversion >= "3.9" and pwq_pool != pool:
+                continue
+            if offset_func is not None:
+                function = read_int_from_memory(worker + offset_func, safe=True)
+            else:
+                function = read_int_from_memory(work + self.offset_work_func, safe=True)
+            if self.is_callback(function):
+                return work, pwq, pwq_pool, function
+        return None
+
+    def collect_running_records(self, records):
+        pools = {unit["pool"] for unit in self.units}
+        seen_workers = set()
+        for pool in pools:
+            for worker in self.iter_busy_workers(pool):
+                if worker in seen_workers:
                     continue
-            for first_worker in words:
-                worker = first_worker
-                while worker not in seen_workers and is_valid_addr(worker):
-                    try:
-                        work = read_int_from_memory(worker + current_arch.ptrsize * 2)
-                        if not is_valid_addr(work):
-                            break
-                        work_function = read_int_from_memory(work + self.offset_work_func)
-                        if self.kversion < "3.9":
-                            current_function = work_function
-                            owner_address = read_int_from_memory(worker + current_arch.ptrsize * 3)
-                        else:
-                            current_function = read_int_from_memory(worker + current_arch.ptrsize * 3)
-                            owner_address = read_int_from_memory(worker + current_arch.ptrsize * 4)
-                        if current_function != work_function or not self.is_callback(current_function):
-                            break
-                        next_worker = read_int_from_memory(worker)
-                    except gdb.MemoryError:
-                        break
-                    owner = self.units_by_address.get(owner_address)
-                    self.append_record(records, work, "running", owner, pool)
-                    seen_workers.add(worker)
-                    worker = next_worker
+                # the window of a pool may cover the busy_hash of the next one
+                running = self.read_running_work(worker, pools, pool)
+                if running is None:
+                    continue
+                seen_workers.add(worker)
+                work, pwq, pwq_pool, function = running
+                owner = self.units_by_address.get(pwq)
+                if owner is None:
+                    wq = read_int_from_memory(pwq + self.offset_pwq_wq, safe=True)
+                    owner = self.workqueues_by_address.get(wq)
+                # current_func is what runs; the work may already be reinitialized or freed
+                self.append_record(records, work, "running", owner, pwq_pool, function=function)
         return
 
     def iter_hlist(self, head):
@@ -88630,6 +88810,7 @@ class KernelWorkqueueCommand(GenericCommand, BufferingOutput):
 
         timer_command = __gef_command_instances__.get("ktimer")
         if timer_command is None or not timer_command.initialize(classic=True, high_resolution=False):
+            self.incomplete.append("delayed works are not scanned since the timer wheel is not resolved")
             return
 
         for cpu, timer_base in enumerate(timer_command.per_cpu_timer_bases):
@@ -88712,57 +88893,109 @@ class KernelWorkqueueCommand(GenericCommand, BufferingOutput):
             self.append_record(records, work, state, owner, None, timer, expires)
         return
 
-    @Cache.cache_this_session(cache_None=False)
+    @Cache.cache_this_session(cache_None=False, per_inferior=True, until_new_objfile=True)
+    def resolve_layout(self):
+        """Return {name: (offset, source)} of the workqueue structures, preferring the type information.
+
+        An offset that is None is searched in memory at each call."""
+        kversion = Kernel.version()
+        ptrsize = current_arch.ptrsize
+        layout = {}
+
+        def member(name, candidates, fallback, fallback_source="fixed"):
+            label = "offsetof({:s}, {:s})".format(*candidates[0])
+            for type_name, member_name in candidates:
+                offset = GefUtil.offsetof(type_name, member_name)
+                if offset is not None:
+                    layout[name] = (offset, "debug info", "offsetof({:s}, {:s})".format(type_name, member_name))
+                    return
+            layout[name] = (fallback, fallback_source if fallback is not None else "searched", label)
+            return
+
+        pwq_type = "pool_workqueue" if kversion >= "3.9" else "cpu_workqueue_struct"
+        pool_type = "worker_pool" if kversion >= "3.6" else "global_cwq"
+        member("offset_work_data", [("work_struct", "data")], 0)
+        member("offset_work_entry", [("work_struct", "entry")], ptrsize)
+        member("offset_work_func", [("work_struct", "func")], ptrsize * 3)
+        member("offset_wq_list", [("workqueue_struct", "list")], ptrsize * 2)
+        if kversion >= "3.10":
+            member("offset_wq_pwqs", [("workqueue_struct", "pwqs")], 0)
+            layout["offset_wq_flags"] = layout["offset_wq_cpu_wq"] = (None, "unused", None)
+        else:
+            layout["offset_wq_pwqs"] = (None, "unused", None)
+            member("offset_wq_flags", [("workqueue_struct", "flags")], 0)
+            member("offset_wq_cpu_wq", [("workqueue_struct", "pool_wq"), ("workqueue_struct", "cpu_wq")], ptrsize)
+        member("offset_pwq_pool", [(pwq_type, "pool"), (pwq_type, "gcwq")], 0)
+        member("offset_pwq_wq", [(pwq_type, "wq")], ptrsize)
+        if kversion >= "3.10":
+            member("offset_pwqs_node", [(pwq_type, "pwqs_node")], None, "aligned pool_workqueue")
+        else:
+            layout["offset_pwqs_node"] = (None, "unused", None)
+        # delayed_works is renamed to inactive_works in v5.15
+        member("offset_pwq_inactive", [(pwq_type, "inactive_works"), (pwq_type, "delayed_works")][::1 if kversion >= "5.15" else -1], None)
+        member("offset_pool_worklist", [(pool_type, "worklist")], None)
+        member("offset_pool_cpu", [(pool_type, "cpu")], None, "per-cpu area")
+        if kversion >= "3.9" or kversion < "3.6":
+            member("offset_pool_busy_hash", [(pool_type, "busy_hash")], None)
+        else:
+            layout["offset_pool_busy_hash"] = (None, "searched", "offsetof(global_cwq, busy_hash)")
+        member("offset_worker_current_work", [("worker", "current_work")], ptrsize * 2)
+        if kversion >= "3.9":
+            member("offset_worker_current_func", [("worker", "current_func")], ptrsize * 3)
+            member("offset_worker_current_pwq", [("worker", "current_pwq")], ptrsize * 4)
+        else:
+            layout["offset_worker_current_func"] = (None, "unused", None)
+            member("offset_worker_current_pwq", [("worker", "current_cwq")], ptrsize * 3)
+        member("offset_delayed_timer", [("delayed_work", "timer")], None)
+        member("offset_delayed_wq", [("delayed_work", "wq")], None)
+        member("offset_timer_expires", [("timer_list", "expires")], ptrsize * 2)
+        # v3.0-v4.1 has `struct tvec_base *base` between `expires` and `function`;
+        # v4.2 dropped it when timer_list.entry became an hlist_node.
+        member("offset_timer_func", [("timer_list", "function")], ptrsize * (4 if kversion < "4.2" else 3))
+
+        workqueues = KernelAddressHeuristicFinder.get_workqueues()
+        layout["workqueues"] = (workqueues, None, None)
+        return layout
+
     def initialize(self):
         self.meta = []
+        self.incomplete = []
         self.kversion = Kernel.version()
         self.klayout = Kernel.layout()
         cpu_offsets = Kernel.per_cpu().offsets
         self.max_cpu = max(len(cpu_offsets), 1) if cpu_offsets else 0x2000
-        self.pool_worklist_offsets = {}
         self.pool_cpu_hints = {}
-        kallsyms = Ksym.peek()
+        self.worklist_offset = None
+        self.module_text_ranges = None
+        kallsyms = Ksym.get_kallsyms()
         self.kallsyms_names = {address: name for address, name, symbol_type in kallsyms[0]} if kallsyms else {}
         self.kallsyms_text = {
             address: name for address, name, symbol_type in kallsyms[0] if symbol_type.lower() in ("t", "w")
         } if kallsyms else {}
 
-        self.offset_work_data = GefUtil.offsetof("struct work_struct", "data") or 0
-        self.offset_work_entry = GefUtil.offsetof("struct work_struct", "entry")
-        if self.offset_work_entry is None:
-            self.offset_work_entry = current_arch.ptrsize
-        self.offset_work_func = GefUtil.offsetof("struct work_struct", "func")
-        if self.offset_work_func is None:
-            self.offset_work_func = current_arch.ptrsize * 3
+        layout = self.resolve_layout()
+        for name, (value, source, label) in layout.items():
+            setattr(self, name, value)
+            if label is not None:
+                value = "{:#x}".format(value) if value is not None else "-"
+                self.meta.append((self.quiet_info, "{:s}: {:s} ({:s})".format(label, value, source)))
+        self.delayed_timer_functions = set(Ksym.get_addrs("delayed_work_timer_fn") or [])
 
-        self.offset_wq_list = GefUtil.offsetof("struct workqueue_struct", "list")
-        if self.offset_wq_list is None:
-            self.offset_wq_list = current_arch.ptrsize * 2
-        self.offset_wq_pwqs = GefUtil.offsetof("struct workqueue_struct", "pwqs") or 0
-        self.offset_pwq_pool = GefUtil.offsetof("struct pool_workqueue", "pool") or 0
-        self.offset_pwq_wq = GefUtil.offsetof("struct pool_workqueue", "wq")
-        if self.offset_pwq_wq is None:
-            self.offset_pwq_wq = current_arch.ptrsize
-        self.offset_pwqs_node = GefUtil.offsetof("struct pool_workqueue", "pwqs_node")
-        self.offset_delayed_timer = GefUtil.offsetof("struct delayed_work", "timer")
-        self.offset_delayed_wq = GefUtil.offsetof("struct delayed_work", "wq")
-        self.offset_timer_expires = GefUtil.offsetof("struct timer_list", "expires")
-        if self.offset_timer_expires is None:
-            self.offset_timer_expires = current_arch.ptrsize * 2
-        self.offset_timer_func = GefUtil.offsetof("struct timer_list", "function")
-        if self.offset_timer_func is None:
-            # v3.0-v4.1 has `struct tvec_base *base` between `expires` and `function`;
-            # v4.2 dropped it when timer_list.entry became an hlist_node.
-            self.offset_timer_func = current_arch.ptrsize * (4 if self.kversion < "4.2" else 3)
-
-        self.workqueues = KernelAddressHeuristicFinder.get_workqueues()
+        self.workqueues_by_address = {}
+        self.units = []
+        self.units_by_address = {}
+        self.system_wq = None
+        self.offset_wq_name = None
+        self.name_is_pointer = False
         if self.workqueues is None:
             self.meta.append((self.quiet_err, "workqueues: Not found"))
             return None
         self.meta.append((self.quiet_info, "workqueues: {:#x}".format(self.workqueues)))
 
-        workqueues = list(KernelListHead(self.workqueues, self.offset_wq_list).iter_entries())
-        self.system_wq = None
+        lh = KernelListHead(self.workqueues, self.offset_wq_list)
+        workqueues = list(lh.iter_entries())
+        if lh.broken:
+            self.incomplete.append("the workqueues list is broken at {:#x}".format(lh.broken_at))
         system_wq_ptr = Ksym.get_addr("system_wq")
         if system_wq_ptr is not None:
             self.system_wq = read_int_from_memory(system_wq_ptr, safe=True)
@@ -88774,7 +89007,6 @@ class KernelWorkqueueCommand(GenericCommand, BufferingOutput):
                 self.offset_wq_name,
             )))
 
-        self.workqueues_by_address = {}
         for workqueue in workqueues:
             self.workqueues_by_address[workqueue] = {
                 "wq": workqueue,
@@ -88788,9 +89020,9 @@ class KernelWorkqueueCommand(GenericCommand, BufferingOutput):
             self.units = self.collect_new_units(workqueues)
         self.units_by_address = {unit["address"]: unit for unit in self.units}
 
-        self.delayed_timer_functions = set(Ksym.get_addrs("delayed_work_timer_fn") or [])
         self.meta.append((self.quiet_info, "workqueue count: {:d}".format(len(workqueues))))
         self.meta.append((self.quiet_info, "pool_workqueue/cpu_workqueue count: {:d}".format(len(self.units))))
+        self.meta.append((self.quiet_info, "worker_pool count: {:d}".format(len({unit["pool"] for unit in self.units}))))
         return bool(workqueues)
 
     def print_records(self, records, object_address=None):
@@ -88827,10 +89059,18 @@ class KernelWorkqueueCommand(GenericCommand, BufferingOutput):
             self.out.append(line)
         return
 
+    def collect_records(self):
+        records = {}
+        if self.units:
+            self.collect_list_records(records)
+            self.collect_running_records(records)
+        self.collect_delayed_records(records)
+        return records
+
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
-    @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware"))
-    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
+    @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
+    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64"))
     @Decorator.only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
         kversion = Kernel.version()
@@ -88851,25 +89091,36 @@ class KernelWorkqueueCommand(GenericCommand, BufferingOutput):
 
         self.quiet_info("Wait for memory scan")
         ret = self.initialize()
-        if args.meta or not ret:
+        # --object inspects the given range, so the workqueue list is optional for it
+        if not ret and (args.meta or args.object is None):
             for func, line in self.meta:
                 func(line)
-        if not ret or args.meta:
             return
 
-        records = {}
-        self.collect_list_records(records)
-        self.collect_running_records(records)
-        self.collect_delayed_records(records)
         if args.object is not None:
-            end = AddressUtil.normalize_address(args.object + args.size)
-            records = {work: record for work, record in records.items() if args.object <= work < end}
+            records = {}
+            if ret:
+                records = self.collect_records()
+                end = AddressUtil.normalize_address(args.object + args.size)
+                records = {work: record for work, record in records.items() if args.object <= work < end}
             self.scan_address_range(records, args.object, args.size)
+        else:
+            records = self.collect_records()
+
+        if args.meta:
+            for func, line in self.meta:
+                func(line)
+            self.quiet_info("record count: {:d}".format(len(records)))
+            for reason in self.incomplete:
+                self.quiet_warn("Incomplete: {:s}".format(reason))
+            return
 
         self.out = []
         self.print_records(records, args.object)
         if not records:
             self.quiet_info_add_out("No pending or running work items found")
+        for reason in self.incomplete:
+            self.warn_add_out("Incomplete: {:s}".format(reason))
         self.print_output(check_terminal_size=True)
         return
 
@@ -148089,86 +148340,336 @@ class KernelIrqCommand(GenericCommand, BufferingOutput):
     parser.add_argument("-hh", "--help-simple", action="store_true", help="show help without ASCII diagram.")
     parser.add_argument("--meta", action="store_true", help="display offset information.")
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
-    parser.add_argument("-v", "--verbose", action="store_true", help="enable verbose mode.")
+    parser.add_argument("-v", "--verbose", action="store_true",
+                        help="also show unused IRQs, the count, the flow handler and the affinity.")
     parser.add_argument("-q", "--quiet", action="store_true", help="show result only.")
     _syntax_ = parser.format_help()
 
     _note_ = [
+        "Each action of a shared IRQ is shown on its own line. `count` is the sum of the per-cpu counts (-v).",
+        "The affinity is shown only with the debug information (vmlinux or `ktypes-load`).",
+        "",
         "Simplified irq structure:",
         "",
-        "+-irq_desc_tree(~6.5)-+   +--->+-radix/xa node---+   +--->+-irq_desc----+",
-        "| lock                |   |    | shift           |   |    | ...         |",
-        "| flags               |   |    | ...             |   |    | irq_data    |",
-        "| rnode/xa_head       |---+    | count           |   |    |   ...       |",
-        "+---------------------+        | ...             |   |    |   irq       |",
-        "                               | slots[0]        |---+    |   ...       |",
-        "                               | slots[1]        |   ^    | ...         |",
-        "                               | ...             |   |    | action      |",
-        "                               | slots[15 or 63] |   |    |   handler   |",
-        "                               | ...             |   |    |   ...       |",
-        "                               +-----------------+   |    |   name      |",
-        "                                                     |    |   ...       |",
-        "+-sparce_irq(6.5~)-+   +-->+-maple_node------+       |    | ...         |",
-        "| ...              |   |   | ...             |       |    +-------------+",
-        "| ma_root          |---+   | mr64|ma64|alloc |       |",
-        "| ...              |       |   ...           |       |",
-        "+------------------+       |   slot[]        |-------+",
-        "                           +-----------------+",
+        "+-irq_desc_tree(~6.5)-+   +--->+-radix/xa node---+   +--->+-irq_desc------+",
+        "| lock                |   |    | shift           |   |    | ...           |",
+        "| flags               |   |    | ...             |   |    | irq_data      |",
+        "| rnode/xa_head       |---+    | count           |   |    |   irq         |",
+        "+---------------------+        | ...             |   |    |   hwirq       |",
+        "                               | slots[0]        |---+    |   chip        |--->name",
+        "                               | slots[1]        |   ^    |   ...         |",
+        "                               | ...             |   |    | kstat_irqs    |--->per-cpu count",
+        "                               | slots[15 or 63] |   |    | handle_irq    |",
+        "                               | ...             |   |    | action        |---+",
+        "                               +-----------------+   |    | ...           |   |",
+        "                                                     |    +---------------+   |",
+        "+-sparse_irqs(6.5~)-+   +-->+-maple_node------+      |                        |",
+        "| ...               |   |   | ...             |      |    +-irqaction-+<------+",
+        "| ma_root           |---+   | mr64|ma64|alloc |      |    | handler   |",
+        "| ...               |       |   ...           |      |    | ...       |",
+        "+-------------------+       |   slot[]        |------+    | next      |--->irqaction (shared IRQ)",
+        "                            +-----------------+      |    | ...       |",
+        "                                                     |    | name      |",
+        "+-irq_desc[NR_IRQS] (CONFIG_SPARSE_IRQ=n)-+          |    +-----------+",
+        "| irq_desc[0], irq_desc[1], ...           |----------+",
+        "+-----------------------------------------+",
     ]
     _note_ = "\n".join(_note_)
 
-    @Cache.cache_this_session(cache_None=False)
+    MAX_ACTIONS = 64
+    MAX_NR_IRQS = 0x10000
+
+    def add_offset_meta(self, name, offset, source):
+        if offset is None:
+            self.meta.append((self.quiet_warn, "{:s}: Not found".format(name)))
+        else:
+            self.meta.append((self.quiet_info, "{:s}: {:#x} ({:s})".format(name, offset, source)))
+        return
+
+    def find_desc_array_layout(self, base):
+        """Return (offsetof(irq_desc, irq_data.irq), sizeof(irq_desc), NR_IRQS) of irq_desc[] at `base`, or None.
+
+        early_irq_init() sets irq_desc[i].irq_data.irq = i for every descriptor, so the
+        array ends where the sequence breaks."""
+        offset_irq = GefUtil.offsetof("irq_desc", "irq_data.irq")
+        stride = GefUtil.sizeof("irq_desc")
+        if offset_irq is not None and stride:
+            candidates = [(offset_irq, stride)]
+        else:
+            try:
+                words = slice_unpack(read_memory(base, 0x2000), 4)
+            except gdb.MemoryError:
+                return None
+            candidates = []
+            for offset in range(0, 0x100 // 4):
+                if words[offset] != 0:
+                    continue
+                for step in range(0x20 // 4, 0x800 // 4):
+                    if offset + step * 3 >= len(words):
+                        break
+                    if all(words[offset + step * i] == i for i in range(1, 4)):
+                        candidates.append((offset * 4, step * 4))
+                        break
+
+        for offset_irq, stride in candidates:
+            count = 0
+            while count < self.MAX_NR_IRQS:
+                irq = read_int32_from_memory(base + stride * count + offset_irq, safe=True)
+                if irq != count:
+                    break
+                count += 1
+            if count >= 4:
+                return offset_irq, stride, count
+        return None
+
+    def resolve_array(self, base):
+        """Return the layout of irq_desc[] at `base` (CONFIG_SPARSE_IRQ=n), or None."""
+        if not base:
+            return None
+        array = self.find_desc_array_layout(base)
+        if array is None:
+            return None
+        offset_irq, stride, count = array
+        self.meta.append((self.quiet_info, "irq_desc[]: {:#x} (CONFIG_SPARSE_IRQ=n)".format(base)))
+        self.meta.append((self.quiet_info, "sizeof(irq_desc): {:#x}".format(stride)))
+        self.meta.append((self.quiet_info, "NR_IRQS: {:d}".format(count)))
+        return {"kind": "array", "root": base, "stride": stride, "count": count, "offset_irq": offset_irq}
+
+    def resolve_tree(self, root, root_name):
+        """Return the layout of the tree at `root` (CONFIG_SPARSE_IRQ=y), or None."""
+        kversion = Kernel.version()
+        ptrsize = current_arch.ptrsize
+        self.meta.append((self.quiet_info, "{:s}: {:#x}".format(root_name, root)))
+
+        if kversion < "4.20":
+            tree = KernelRadixTree(root, GefUtil.offsetof("radix_tree_root", "rnode"))
+            if tree.find_rnode_offset(ptrsize * 10) is None:
+                self.meta.append((self.quiet_err, "Could not find radix_tree_root->rnode. (maybe uninitialized?)"))
+                return None
+            self.meta.append((self.quiet_info, "offsetof(radix_tree_root, rnode): {:#x}".format(tree.rnode_offset)))
+            return {"kind": "radix", "root": root, "head_offset": tree.rnode_offset}
+
+        if kversion < "6.5":
+            tree = KernelXArray(root, GefUtil.offsetof("xarray", "xa_head"))
+            if tree.find_head_offset(ptrsize * 10) is None:
+                self.meta.append((self.quiet_err, "Could not find xa_head. (maybe uninitialized?)"))
+                return None
+            self.meta.append((self.quiet_info, "offsetof(xarray, xa_head): {:#x}".format(tree.head_offset)))
+            return {"kind": "xarray", "root": root, "head_offset": tree.head_offset}
+
+        tree = KernelMapleTree(root, GefUtil.offsetof("maple_tree", "ma_root"))
+        if tree.find_root_offset(ptrsize * 0x10) is None:
+            self.meta.append((self.quiet_err, "Could not find offsetof(maple_tree, ma_root)"))
+            return None
+        self.meta.append((self.quiet_info, "offsetof(maple_tree, ma_root): {:#x}".format(tree.root_offset)))
+        return {"kind": "maple", "root": root, "head_offset": tree.root_offset}
+
+    def resolve_container(self):
+        """Return the layout of the container that holds every irq_desc, or None."""
+        if Kernel.version() < "6.5":
+            root = KernelAddressHeuristicFinder.get_irq_desc_tree()
+            root_name = "irq_desc_tree"
+        else:
+            root = KernelAddressHeuristicFinder.get_sparse_irqs()
+            root_name = "sparse_irqs"
+
+        # CONFIG_SPARSE_IRQ=n: irq_to_desc() refers to the static irq_desc[] instead of the tree
+        if root:
+            layout = self.resolve_array(root) or self.resolve_tree(root, root_name)
+            if layout:
+                return layout
+        layout = self.resolve_array(KernelAddressHeuristicFinder.get_irq_desc())
+        if layout:
+            return layout
+        if not root:
+            self.meta.append((self.quiet_err, "Could not find {:s} or irq_desc[]".format(root_name)))
+        return None
+
+    def iter_descs(self, layout):
+        """Return [(index or None, irq_desc), ...] and whether the walk was complete."""
+        kind = layout["kind"]
+        if kind == "array":
+            return [(i, layout["root"] + layout["stride"] * i) for i in range(layout["count"])], True
+
+        # a tree node may be unreadable (e.g., KGDB), so keep what has been collected
+        descs = []
+        try:
+            if kind == "radix":
+                tree = KernelRadixTree(layout["root"], layout["head_offset"])
+                for index, desc in tree.iter_indexed_entries():
+                    descs.append((index, desc))
+            elif kind == "xarray":
+                tree = KernelXArray(layout["root"], layout["head_offset"])
+                descs = [(None, desc) for desc in tree.parse()]
+            else:
+                tree = KernelMapleTree(layout["root"], layout["head_offset"])
+                for desc in tree.iter_entries():
+                    descs.append((None, desc))
+        except (gdb.MemoryError, OverflowError):
+            return descs, False
+        return descs, True
+
+    def resolve_offset_irq(self, layout, indexed_descs, descs):
+        offset = GefUtil.offsetof("irq_desc", "irq_data.irq")
+        if offset is not None:
+            return offset, "debug info"
+        if layout["kind"] == "array":
+            return layout["offset_irq"], "irq_desc[] indices"
+
+        ptrsize = current_arch.ptrsize
+        if Kernel.version() < "4.3":
+            # Before irq_data->common became a reliable back pointer, use the radix-tree index.
+            indexed = [x for x in indexed_descs if x[0] is not None]
+            if not indexed:
+                return None, None
+            samples = [indexed[i] for i in sorted({0, len(indexed) // 2, len(indexed) - 1})]
+            candidates = set(range(0, ptrsize * 10, 4))
+            for irq, irq_desc in samples:
+                values = slice_unpack(read_memory(irq_desc, ptrsize * 10), 4)
+                candidates &= {i * 4 for i, value in enumerate(values) if value == irq}
+            if len(candidates) != 1:
+                return None, None
+            return candidates.pop(), "radix-tree indices"
+
+        if is_x86():
+            desc = descs[0]
+        else:
+            # ARM may have invalid descs[irq=0]
+            desc = descs[-1]
+        self.meta.append((self.quiet_info, "desc: {:#x}".format(desc)))
+        for i in range(100):
+            x = read_int_from_memory(desc + ptrsize * i)
+            if x == desc:
+                # irq_data.common points to irq_desc.irq_common_data, followed by u32 mask and irq
+                if is_32bit():
+                    return ptrsize * i - 8, "irq_data.common"
+                return ptrsize * i - 12, "irq_data.common" # for padding
+        return None, None
+
+    def check_action(self, action, irq):
+        """Return None if `action` is not a struct irqaction, else whether it holds `irq`."""
+        if not is_valid_addr(action):
+            return None
+        try:
+            data = read_memory(action, 0x48)
+        except gdb.MemoryError:
+            return None
+        handler = slice_unpack(data[:current_arch.ptrsize], current_arch.ptrsize)[0]
+        if not AddressUtil.is_msb_on(handler) or not is_valid_addr(handler):
+            return None
+        # irqaction.irq follows handler and a few pointers in every version
+        return irq in slice_unpack(data[current_arch.ptrsize:], 4)
+
+    def resolve_offset_flow_action(self, offset_irq, descs):
+        offset_flow = GefUtil.offsetof("irq_desc", "handle_irq")
+        offset_action = GefUtil.offsetof("irq_desc", "action")
+        if offset_flow is not None and offset_action is not None:
+            return offset_flow, offset_action, "debug info"
+
+        # Every descriptor has a flow handler (handle_bad_irq by default) in the kernel text.
+        # It is followed by action, or by preflow_handler (CONFIG_IRQ_PREFLOW_FASTEOI, ~v5.4) and action.
+        # Small flag values cannot be told from pointers by is_valid_addr() on 32-bit, so they are not used.
+        ptrsize = current_arch.ptrsize
+        klayout = Kernel.layout()
+        irqs = [read_int32_from_memory(d + offset_irq, safe=True) for d in descs]
+        for offset in range(align_to_ptrsize(offset_irq + 4), offset_irq + 0x200, ptrsize):
+            values = [read_int_from_memory(d + offset, safe=True) for d in descs]
+            values = [v for v in values if v is not None]
+            if not values or not all(klayout.text_base <= v < klayout.text_end for v in values):
+                continue
+            for offset_action in [offset + ptrsize, offset + ptrsize * 2]:
+                actions = [(read_int_from_memory(d + offset_action, safe=True), irq) for d, irq in zip(descs, irqs)]
+                results = [self.check_action(a, irq) for a, irq in actions if a]
+                # the chained IRQs share the static chained_action, whose irq is 0
+                if results and None not in results and results.count(True) * 2 >= len(results):
+                    return offset, offset_action, "heuristic"
+            return offset, offset + ptrsize, "heuristic (no irqaction to verify)"
+        return None, None, None
+
+    def resolve_offset_name(self, actions):
+        offset = GefUtil.offsetof("irqaction", "name")
+        if offset is not None:
+            return offset, "debug info"
+
+        for i in range(100):
+            names = [read_int_from_memory(a + current_arch.ptrsize * i) for a in actions]
+            names = [x for x in names if is_valid_addr(x) and read_cstring_from_memory(x)]
+            if len(names) * 2 > len(actions):
+                return current_arch.ptrsize * i, "heuristic"
+        return None, None
+
+    def resolve_offset_next(self):
+        offset = GefUtil.offsetof("irqaction", "next")
+        if offset is not None:
+            return offset, "debug info"
+
+        # handler, [flags (~v3.4)], dev_id, [percpu_dev_id (v3.3~) or affinity (v7.0~)], next
+        kversion = Kernel.version()
+        if "3.3" <= kversion < "3.5":
+            return current_arch.ptrsize * 4, "version"
+        return current_arch.ptrsize * 3, "version"
+
+    def resolve_offset_hwirq_chip(self, offset_irq):
+        offset_hwirq = GefUtil.offsetof("irq_desc", "irq_data.hwirq")
+        offset_chip = GefUtil.offsetof("irq_desc", "irq_data.chip")
+        if offset_chip is not None:
+            return offset_hwirq, offset_chip, "debug info"
+
+        kversion = Kernel.version()
+        ptrsize = current_arch.ptrsize
+        if kversion < "3.1":
+            # irq, node, state_use_accessors, chip
+            return None, align_to_ptrsize(offset_irq + 4 * 3), "version"
+        offset_hwirq = align_to_ptrsize(offset_irq + 4)
+        if kversion < "4.3":
+            # irq, hwirq, node, state_use_accessors, chip
+            return offset_hwirq, align_to_ptrsize(offset_hwirq + ptrsize + 4 * 2), "version"
+        # mask, irq, hwirq, common, chip
+        return offset_hwirq, offset_hwirq + ptrsize * 2, "version"
+
+    def resolve_offset_chip_name(self):
+        offset = GefUtil.offsetof("irq_chip", "name")
+        if offset is not None:
+            return offset, "debug info"
+        # parent_device is before name in v4.8 ~ v5.17
+        if "4.8" <= Kernel.version() < "5.18":
+            return current_arch.ptrsize, "version"
+        return 0, "version"
+
+    def resolve_affinity(self):
+        """Return (offsetof(irq_desc, affinity cpumask), whether it is a pointer) from the debug information."""
+        for member in ["irq_common_data.affinity", "irq_data.affinity"]:
+            offset = GefUtil.offsetof("irq_desc", member)
+            if offset is None:
+                continue
+            try:
+                value_type = gdb.parse_and_eval("((struct irq_desc *)0)->{:s}".format(member)).type.strip_typedefs()
+            except gdb.error:
+                continue
+            return offset, value_type.code == gdb.TYPE_CODE_PTR
+        return None, None
+
+    @Cache.cache_this_session(cache_None=False, per_inferior=True, until_new_objfile=True)
     def initialize(self):
         self.meta = []
 
-        kversion = Kernel.version()
+        layout = self.resolve_container()
+        if layout is None:
+            return None
 
-        if kversion < "6.5":
-            self.irq_desc_tree = KernelAddressHeuristicFinder.get_irq_desc_tree()
-            if self.irq_desc_tree is None:
-                self.meta.append((self.quiet_err, "Could not find irq_desc_tree"))
-                return None
-
-            if kversion < "4.20":
-                self.irq_radix = KernelRadixTree(self.irq_desc_tree)
-                if self.irq_radix.find_rnode_offset(current_arch.ptrsize * 10) is None:
-                    self.meta.append((self.quiet_err, "Could not find radix_tree_root->rnode. (maybe uninitialized?)"))
-                    return None
-                self.meta.append((self.quiet_info, "offsetof(radix_tree_root, rnode): {:#x}".format(self.irq_radix.rnode_offset)))
-                indexed_descs = self.irq_radix.parse_indexed()
-                descs = [desc for _, desc in indexed_descs]
-            else:
-                self.irq_xarray = KernelXArray(self.irq_desc_tree)
-                if self.irq_xarray.find_head_offset(current_arch.ptrsize * 10) is None:
-                    self.meta.append((self.quiet_err, "Could not find xa_head. (maybe uninitialized?)"))
-                    return None
-                self.meta.append((self.quiet_info, "offsetof(xarray, xa_head): {:#x}".format(self.irq_xarray.head_offset)))
-
-                descs = self.irq_xarray.parse()
-
-        else:
-            # "6.5" <= kversion
-            self.sparse_irqs = KernelAddressHeuristicFinder.get_sparse_irqs()
-            if self.sparse_irqs is None:
-                self.meta.append((self.quiet_err, "Could not find sparse_irqs"))
-                return None
-
-            self.irq_maple = KernelMapleTree(self.sparse_irqs)
-            if self.irq_maple.find_root_offset(current_arch.ptrsize * 0x10) is None:
-                self.meta.append((self.quiet_err, "Could not find offsetof(maple_tree, ma_root)"))
-                return None
-            self.meta.append((self.quiet_info, "offsetof(maple_tree, ma_root): {:#x}".format(self.irq_maple.root_offset)))
-
-            descs = self.irq_maple.parse()
-
-        if not descs:
+        indexed_descs, _complete = self.iter_descs(layout)
+        indexed_descs = [(i, d) for i, d in indexed_descs if is_valid_addr(d)]
+        if not indexed_descs:
             self.meta.append((self.quiet_err, "Could not find any valid irq_desc"))
             return None
+        descs = [d for _, d in indexed_descs]
+        # a long static array is sampled to keep the scan short
+        samples = descs[:0x100]
 
         # irq_desc->{irq,action}
         """
         struct irq_desc {
-            struct irq_common_data {
+            struct irq_common_data {             // v4.3~
                 unsigned int __private state_use_accessors;
             #ifdef CONFIG_NUMA
                 unsigned int node;
@@ -148186,10 +148687,10 @@ class KernelIrqCommand(GenericCommand, BufferingOutput):
             #endif
             } irq_common_data;
             struct irq_data {
-                u32 mask;
+                u32 mask;                        // v4.3~
                 unsigned int irq;
-                unsigned long hwirq;
-                struct irq_common_data *common;
+                unsigned long hwirq;             // v3.1~
+                struct irq_common_data *common;  // v4.3~
                 struct irq_chip *chip;
                 struct irq_domain *domain;
             #ifdef CONFIG_IRQ_DOMAIN_HIERARCHY
@@ -148197,149 +148698,238 @@ class KernelIrqCommand(GenericCommand, BufferingOutput):
             #endif
                 void *chip_data;
             } irq_data;
-            unsigned int __percpu *kstat_irqs;
+            unsigned int __percpu *kstat_irqs;   // struct irqstat __percpu * (v6.10~)
             irq_flow_handler_t handle_irq;
+        #ifdef CONFIG_IRQ_PREFLOW_FASTEOI        // ~v5.4
+            irq_preflow_handler_t preflow_handler;
+        #endif
             struct irqaction *action;
             unsigned int status_use_accessors;
             unsigned int core_internal_state__do_not_mess_with_it;
             ...
         };
         """
-
-        if is_x86():
-            desc = descs[0]
-        else:
-            # ARM may have invalid descs[irq=0]
-            desc = descs[-1]
-        self.meta.append((self.quiet_info, "desc: {:#x}".format(desc)))
-
-        if kversion < "4.3":
-            # Before irq_data->common became a reliable back pointer, use the radix-tree index.
-            samples = [indexed_descs[i] for i in sorted({0, len(indexed_descs) // 2, len(indexed_descs) - 1})]
-            candidates = set(range(0, current_arch.ptrsize * 10, 4))
-            for irq, irq_desc in samples:
-                values = slice_unpack(read_memory(irq_desc, current_arch.ptrsize * 10), 4)
-                candidates &= {i * 4 for i, value in enumerate(values) if value == irq}
-            if len(candidates) != 1:
-                self.meta.append((self.quiet_err, "Could not find irq_desc->irq_data.irq from radix-tree indices"))
-                return None
-            self.offset_irq = candidates.pop()
-            self.meta.append((self.quiet_info, "offsetof(irq_desc, irq_data.irq): {:#x}".format(self.offset_irq)))
-        else:
-            for i in range(100):
-                x = read_int_from_memory(desc + current_arch.ptrsize * i)
-                if x == desc:
-                    if is_32bit():
-                        self.offset_irq = current_arch.ptrsize * i - 8
-                    else:
-                        self.offset_irq = current_arch.ptrsize * i - 12 # for padding
-                    self.meta.append((self.quiet_info, "offsetof(irq_desc, irq_data.irq): {:#x}".format(self.offset_irq)))
-                    break
-            else:
-                self.meta.append((self.quiet_err, "Could not find irq_desc->irq_data.irq"))
-                return None
-
-        ofs_irq = align_to_ptrsize(self.offset_irq + 4 * 2)
-        for i in range(100):
-            x = any(is_valid_addr(read_int_from_memory(d + ofs_irq + current_arch.ptrsize * i)) for d in descs)
-            y = any(is_valid_addr(read_int_from_memory(d + ofs_irq + current_arch.ptrsize * (i + 1))) for d in descs)
-            if not x and not y:
-                ofs_action_candidate = ofs_irq + current_arch.ptrsize * i - current_arch.ptrsize
-                values = [x for x in (read_int_from_memory(d + ofs_action_candidate) for d in set(descs)) if x]
-                if len(values) != len(set(values)):
-                    continue
-                if any(is_valid_addr_addr(x) for x in values):
-                    self.offset_action = ofs_action_candidate
-                    self.meta.append((self.quiet_info, "offsetof(irq_desc, action): {:#x}".format(self.offset_action)))
-                    break
-        else:
-            self.meta.append((self.quiet_err, "Could not find irq_desc->action"))
+        layout["offset_irq"], source = self.resolve_offset_irq(layout, indexed_descs, samples)
+        self.add_offset_meta("offsetof(irq_desc, irq_data.irq)", layout["offset_irq"], source)
+        if layout["offset_irq"] is None:
             return None
 
-        # irqaction->{handler,name}
+        layout["offset_hwirq"], layout["offset_chip"], source = self.resolve_offset_hwirq_chip(layout["offset_irq"])
+        chips = [read_int_from_memory(d + layout["offset_chip"], safe=True) for d in samples]
+        if not any(x and is_valid_addr(x) for x in chips):
+            layout["offset_chip"] = None
+        if layout["offset_hwirq"] is not None:
+            self.add_offset_meta("offsetof(irq_desc, irq_data.hwirq)", layout["offset_hwirq"], source)
+        self.add_offset_meta("offsetof(irq_desc, irq_data.chip)", layout["offset_chip"], source)
+
+        layout["offset_flow"], layout["offset_action"], source = self.resolve_offset_flow_action(layout["offset_irq"], samples)
+        self.add_offset_meta("offsetof(irq_desc, handle_irq)", layout["offset_flow"], source)
+        self.add_offset_meta("offsetof(irq_desc, action)", layout["offset_action"], source)
+        if layout["offset_action"] is None:
+            return None
+
+        # kstat_irqs is right before handle_irq
+        layout["offset_kstat"] = GefUtil.offsetof("irq_desc", "kstat_irqs")
+        source = "debug info"
+        if layout["offset_kstat"] is None:
+            layout["offset_kstat"] = layout["offset_flow"] - current_arch.ptrsize
+            source = "heuristic"
+        self.add_offset_meta("offsetof(irq_desc, kstat_irqs)", layout["offset_kstat"], source)
+
+        layout["offset_affinity"], layout["affinity_is_pointer"] = self.resolve_affinity()
+        self.add_offset_meta("offsetof(irq_desc, affinity)", layout["offset_affinity"], "debug info")
+
+        layout["offset_chip_name"], source = self.resolve_offset_chip_name()
+        self.add_offset_meta("offsetof(irq_chip, name)", layout["offset_chip_name"], source)
+
+        # irqaction->{handler,next,name}
         """
         struct irqaction {
             irq_handler_t handler;
-            void *dev_id;
-            void __percpu *percpu_dev_id;
+            unsigned long flags;                 // ~v3.4
+            void *dev_id;                        // in a union with percpu_dev_id (v7.0~)
+            void __percpu *percpu_dev_id;        // v3.3~
+            const struct cpumask *affinity;      // v7.0~
             struct irqaction *next;
             irq_handler_t thread_fn;
             struct task_struct *thread;
-            struct irqaction *secondary;
+            struct irqaction *secondary;         // v4.5~
             unsigned int irq;
-            unsigned int flags;
+            unsigned int flags;                  // v3.5~
             unsigned long thread_flags;
             unsigned long thread_mask;
             const char *name;
             struct proc_dir_entry *dir;
         } ____cacheline_internodealigned_in_smp;
         """
-        self.offset_handler = 0
-        self.meta.append((self.quiet_info, "offsetof(irqaction, handler): {:#x}".format(self.offset_handler)))
+        layout["offset_handler"] = GefUtil.offsetof("irqaction", "handler")
+        source = "debug info"
+        if layout["offset_handler"] is None:
+            layout["offset_handler"] = 0
+            source = "fixed"
+        self.add_offset_meta("offsetof(irqaction, handler)", layout["offset_handler"], source)
 
-        actions = [x for x in (read_int_from_memory(d + self.offset_action) for d in descs) if is_valid_addr(x)]
-        for i in range(100):
-            names = [read_int_from_memory(a + current_arch.ptrsize * i) for a in actions]
-            names = [x for x in names if is_valid_addr(x) and read_cstring_from_memory(x)]
-            if len(names) * 2 > len(actions):
-                self.offset_name = current_arch.ptrsize * i
-                self.meta.append((self.quiet_info, "offsetof(irqaction, name): {:#x}".format(self.offset_name)))
-                break
-        else:
-            self.meta.append((self.quiet_err, "Could not find irqaction->name"))
+        layout["offset_next"], source = self.resolve_offset_next()
+        self.add_offset_meta("offsetof(irqaction, next)", layout["offset_next"], source)
+
+        actions = [read_int_from_memory(d + layout["offset_action"], safe=True) for d in samples]
+        actions = [x for x in actions if x and is_valid_addr(x)]
+        if not actions:
+            self.meta.append((self.quiet_err, "Could not find any irqaction"))
+            return None
+        layout["offset_name"], source = self.resolve_offset_name(actions)
+        self.add_offset_meta("offsetof(irqaction, name)", layout["offset_name"], source)
+        if layout["offset_name"] is None:
             return None
 
-        return True
+        layout["meta"] = self.meta
+        return layout
 
-    def dump_irq(self):
-        kversion = Kernel.version()
+    def read_actions(self, layout, action, irq):
+        """Return [(irqaction, handler, name), ...] of the shared action chain."""
+        actions = []
+        seen = set()
+        while action and action not in seen and len(actions) < self.MAX_ACTIONS:
+            if not is_valid_addr(action):
+                break
+            seen.add(action)
+            handler = read_int_from_memory(action + layout["offset_handler"], safe=True)
+            name_ptr = read_int_from_memory(action + layout["offset_name"], safe=True)
+            if handler is None or name_ptr is None:
+                break
+            # a chained action always has a primary handler (irq_default_primary_handler at least)
+            if actions and not self.check_action(action, irq):
+                break
+            name = read_cstring_from_memory(name_ptr, safe=True) if is_valid_addr(name_ptr) else None
+            actions.append((action, handler, name or "???"))
+            action = read_int_from_memory(action + layout["offset_next"], safe=True)
+        return actions
 
-        if kversion < "4.20":
-            descs = self.irq_radix.parse()
-        elif kversion < "6.5":
-            descs = self.irq_xarray.parse()
-        else:
-            descs = self.irq_maple.parse()
+    def read_chip_name(self, layout, desc):
+        if layout["offset_chip"] is None:
+            return "-"
+        chip = read_int_from_memory(desc + layout["offset_chip"], safe=True)
+        if not chip or not is_valid_addr(chip):
+            return "-"
+        name_ptr = read_int_from_memory(chip + layout["offset_chip_name"], safe=True)
+        if not name_ptr or not is_valid_addr(name_ptr):
+            return "-"
+        name = read_cstring_from_memory(name_ptr, max_length=64, safe=True)
+        if not name or not name.isprintable():
+            return "-"
+        return name
+
+    def read_count(self, layout, desc):
+        if layout["offset_kstat"] is None:
+            return None
+        kstat_irqs = read_int_from_memory(desc + layout["offset_kstat"], safe=True)
+        percpu = Kernel.per_cpu()
+        if not kstat_irqs or not percpu.nr_cpus:
+            return None
+        total = 0
+        for address in percpu.addrs_of(kstat_irqs):
+            count = read_int32_from_memory(address, safe=True)
+            if count is None:
+                return None
+            total += count
+        return total
+
+    def read_affinity(self, layout, desc):
+        if layout["offset_affinity"] is None:
+            return None
+        address = desc + layout["offset_affinity"]
+        if layout["affinity_is_pointer"]:
+            address = read_int_from_memory(address, safe=True)
+        cpus = Kernel.per_cpu().read_cpu_mask(address)
+        if cpus is None:
+            return None
+        return KernelPerCpuCommand.format_cpus(cpus)
+
+    def dump_irq(self, layout):
+        indexed_descs, complete = self.iter_descs(layout)
+        if not complete:
+            self.warn_add_out("The walk of the irq_desc container stopped at an unreadable node")
 
         entries = {}
-        for desc in descs:
-            irq = read_int32_from_memory(desc + self.offset_irq)
-            action = read_int_from_memory(desc + self.offset_action)
-            if action == 0:
-                entries[irq] = [desc, action, None, None]
-            else:
-                handler = read_int_from_memory(action + self.offset_handler)
-                name_ptr = read_int_from_memory(action + self.offset_name)
-                name = read_cstring_from_memory(name_ptr) or "???"
-                entries[irq] = [desc, action, handler, name]
+        for index, desc in indexed_descs:
+            irq = read_int32_from_memory(desc + layout["offset_irq"], safe=True)
+            action = read_int_from_memory(desc + layout["offset_action"], safe=True)
+            if irq is None or action is None:
+                continue # unreadable, e.g., KGDB
+            if index is not None and irq != index:
+                continue
+            entries[irq] = {
+                "desc": desc,
+                "actions": self.read_actions(layout, action, irq),
+                "hwirq": read_int_from_memory(desc + layout["offset_hwirq"], safe=True) if layout["offset_hwirq"] is not None else None,
+                "chip": self.read_chip_name(layout, desc),
+            }
 
-        fmt = "{:3s} {:18s} {:18s} {:24s} {:18s}"
-        legend = ["irq", "irq_desc", "action", "name", "handler"]
-        self.out.append(GefUtil.make_legend(fmt.format(*legend)))
+        if not entries:
+            self.err_add_out("Could not read any irq_desc")
+            return
 
-        for i in range(256):
-            if i in entries:
-                desc, action, handler, name = entries[i]
-                if action:
-                    symbol = Symbol.get_symbol_string(handler, nosymbol_string=" <NO_SYMBOL>")
-                    self.out.append("{:3d} {:#018x} {:#018x} {:24s} {:#018x}{:s}".format(
-                        i, desc, action, name, handler, symbol,
-                    ).rstrip())
-                else:
-                    self.out.append("{:3d} {:#018x} {:18s} {:24s} {:18s}".format(
-                        i, desc, "unused", "-", "-",
-                    ).rstrip())
-            else:
-                if self.args.verbose:
-                    self.out.append("{:3d} {:18s} {:18s} {:24s} {:18s}".format(
-                        i, "unused", "unused", "-", "-",
-                    ).rstrip())
+        width = AddressUtil.get_format_address_width()
+        chip_width = max([8] + [len(e["chip"]) for e in entries.values()])
+        name_width = max([16] + [len(a[2]) for e in entries.values() for a in e["actions"]])
+        fmt = "{:>4s} {:{w}s} {:>8s} {:{cw}s} {:{w}s} {:{nw}s} {:s}"
+        legend = ["irq", "irq_desc", "hwirq", "chip", "action", "name", "handler"]
+        self.out.append(GefUtil.make_legend(fmt.format(*legend, w=width, cw=chip_width, nw=name_width)))
+
+        if self.args.verbose:
+            irqs = range(max(entries) + 1)
+        elif layout["kind"] == "array":
+            # every descriptor of the static array exists, so list only the requested ones
+            irqs = sorted(irq for irq, e in entries.items() if e["actions"])
+        else:
+            irqs = sorted(entries)
+
+        for irq in irqs:
+            entry = entries.get(irq)
+            if entry is None:
+                self.out.append(fmt.format(
+                    str(irq), "unused", "-", "-", "unused", "-", "-", w=width, cw=chip_width, nw=name_width,
+                ).rstrip())
+                continue
+
+            desc = entry["desc"]
+            hwirq = "-" if entry["hwirq"] is None else "{:#x}".format(entry["hwirq"])
+            extras = []
+            if self.args.verbose:
+                count = self.read_count(layout, desc)
+                if count is not None:
+                    extras.append("count={:d}".format(count))
+                if layout["offset_flow"] is not None:
+                    flow = read_int_from_memory(desc + layout["offset_flow"], safe=True)
+                    if flow is not None:
+                        extras.append("flow={:#x}{:s}".format(flow, Symbol.get_symbol_string(flow, nosymbol_string=" <NO_SYMBOL>")))
+                affinity = self.read_affinity(layout, desc)
+                if affinity is not None:
+                    extras.append("affinity={:s}".format(affinity))
+            extras = "  [" + ", ".join(extras) + "]" if extras else ""
+
+            columns = [str(irq), "{:#0{:d}x}".format(desc, width), hwirq, entry["chip"]]
+            if not entry["actions"]:
+                line = fmt.format(*columns, "unused", "-", "-", w=width, cw=chip_width, nw=name_width).rstrip()
+                self.out.append(line + extras)
+                continue
+
+            for i, (action, handler, name) in enumerate(entry["actions"]):
+                if i > 0:
+                    # the following actions of a shared IRQ
+                    columns = ["", "", "", ""]
+                symbol = Symbol.get_symbol_string(handler, nosymbol_string=" <NO_SYMBOL>")
+                line = fmt.format(
+                    *columns, "{:#0{:d}x}".format(action, width), name, "{:#0{:d}x}{:s}".format(handler, width, symbol),
+                    w=width, cw=chip_width, nw=name_width,
+                ).rstrip()
+                self.out.append(line + (extras if i == 0 else ""))
         return
 
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
-    @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware"))
-    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
+    @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
+    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64"))
     @Decorator.only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
         self.quiet_info("Wait for memory scan")
@@ -148348,18 +148938,20 @@ class KernelIrqCommand(GenericCommand, BufferingOutput):
         if kversion is None:
             err("Could not find Linux kernel")
             return
-        ret = self.initialize()
-        if args.meta or not ret:
+        layout = self.initialize()
+        if layout:
+            self.meta = layout["meta"]
+        if args.meta or not layout:
             for func, line in self.meta:
                 func(line)
-        if not ret:
+        if not layout:
             return
 
         if args.meta:
             return
 
         self.out = []
-        self.dump_irq()
+        self.dump_irq(layout)
         self.print_output(check_terminal_size=True)
         return
 
@@ -179169,6 +179761,7 @@ class KernelIoUringCommand(GenericCommand, BufferingOutput):
         "`iouring-dump` dumps userland io_uring mappings; this command follows kernel objects.",
         "io_uring first appeared in Linux v5.1. Older kernels are detected without scanning.",
         "DWARF is used when available. Without it, ring discovery uses open fd paths and validated ring metadata.",
+        "ADDRESS with `--type ctx` or `--type request` needs neither the task list nor the VFS layout.",
         "Live request lists are transient and may be incomplete while another CPU is running.",
         "",
         "Kernel object graph:",
@@ -179240,62 +179833,110 @@ class KernelIoUringCommand(GenericCommand, BufferingOutput):
     def is_power_of_two(value):
         return value != 0 and value & (value - 1) == 0
 
-    def ring_memory_layout(self, rings):
-        """Recognize and decode the metadata shared by every combined io_rings layout."""
-        if not is_valid_addr(rings) or rings & (current_arch.ptrsize - 1):
+    # struct io_uring { u32 head ____cacheline_aligned_in_smp; u32 tail ____cacheline_aligned_in_smp; }
+    # places head/tail at each cacheline (32/64/128 bytes, in u32 units here) on CONFIG_SMP=y,
+    # or back to back on CONFIG_SMP=n and v7.0 or later.
+    RING_STRIDES = (1, 8, 16, 32)
+
+    def read_ring_words(self, ring):
+        # the rings are mapped to the userland, so they start at a page boundary
+        if not is_valid_addr(ring) or ring & 0xfff:
             return None
         try:
-            words = slice_unpack(read_memory(rings, 0x300), 4)
+            return slice_unpack(read_memory(ring, 0x300), 4)
         except (gdb.MemoryError, OverflowError, struct.error):
             return None
-        single = False
-        for index in range(len(words) - 3):
+
+    @staticmethod
+    def is_ring_padding(words, stride, count):
+        """Return True if the padding between `count` cacheline aligned u32 fields is zero."""
+        return all(words[i] == 0 for i in range(stride * count) if i % stride)
+
+    def ring_memory_layout(self, rings):
+        """Recognize and decode the combined io_rings (v5.4~) in memory."""
+        words = self.read_ring_words(rings)
+        if words is None:
+            return None
+        for stride in self.RING_STRIDES:
+            # sq.head, sq.tail, cq.head and cq.tail are followed by the masks and the entries
+            index = stride * 4
             sq_mask, cq_mask, sq_entries, cq_entries = words[index:index + 4]
-            if self.is_power_of_two(cq_mask) and sq_mask + 1 == cq_mask and cq_mask <= 0x100000:
-                single = True
             if not self.is_power_of_two(sq_entries) or not self.is_power_of_two(cq_entries):
                 continue
-            if sq_entries > 0x100000 or cq_entries > 0x200000:
+            # the CQ is never smaller than the SQ (twice as large by default)
+            if sq_entries > 0x100000 or cq_entries > 0x200000 or cq_entries < sq_entries:
                 continue
-            if sq_mask + 1 == sq_entries and cq_mask + 1 == cq_entries:
-                if index < 4:
-                    continue
-                result = {
-                    "address": rings, "heuristic": True,
-                    "sq_head": words[index - 4], "sq_tail": words[index - 3],
-                    "cq_head": words[index - 2], "cq_tail": words[index - 1],
-                    "sq_mask": sq_mask, "cq_mask": cq_mask,
-                    "sq_entries": sq_entries, "cq_entries": cq_entries,
-                    "dropped": words[index + 4] if index + 4 < len(words) else None,
-                    "sq_flags": words[index + 5] if index + 5 < len(words) else None,
-                    "cq_flags": None, "overflow": None,
-                }
-                if self.kversion >= "5.8":
-                    result["cq_flags"] = words[index + 6] if index + 6 < len(words) else None
-                    result["overflow"] = words[index + 7] if index + 7 < len(words) else None
-                else:
-                    result["overflow"] = words[index + 6] if index + 6 < len(words) else None
-                return result
-        # Linux v5.1 kept SQ and CQ in separate mappings, so only one mask/entries pair is present.
-        return {"address": rings, "heuristic": True} if single else None
+            if sq_mask + 1 != sq_entries or cq_mask + 1 != cq_entries:
+                continue
+            if not self.is_ring_padding(words, stride, 4):
+                continue
+            sq_head, sq_tail, cq_head, cq_tail = (words[stride * i] for i in range(4))
+            if (sq_tail - sq_head) & 0xffff_ffff > sq_entries or (cq_tail - cq_head) & 0xffff_ffff > cq_entries:
+                continue
+            result = {
+                "address": rings, "heuristic": True,
+                "sq_head": sq_head, "sq_tail": sq_tail, "cq_head": cq_head, "cq_tail": cq_tail,
+                "sq_mask": sq_mask, "cq_mask": cq_mask,
+                "sq_entries": sq_entries, "cq_entries": cq_entries,
+                "dropped": words[index + 4], "sq_flags": words[index + 5],
+                "cq_flags": None, "overflow": None,
+            }
+            if self.kversion >= "5.8":
+                result["cq_flags"] = words[index + 6]
+                result["overflow"] = words[index + 7]
+            else:
+                result["overflow"] = words[index + 6]
+            return result
+        return None
 
-    def ring_memory_score(self, rings):
-        layout = self.ring_memory_layout(rings)
-        if layout is None:
-            return 0
-        return 3 if "sq_head" in layout else 1
+    def single_ring_layout(self, ring):
+        """Recognize and decode io_sq_ring or io_cq_ring (v5.1~v5.3), each having its own head and tail."""
+        words = self.read_ring_words(ring)
+        if words is None:
+            return None
+        for stride in self.RING_STRIDES:
+            index = stride * 2
+            mask, entries = words[index:index + 2]
+            if not self.is_power_of_two(entries) or entries > 0x200000 or mask + 1 != entries:
+                continue
+            if not self.is_ring_padding(words, stride, 2):
+                continue
+            head, tail = words[0], words[stride]
+            if (tail - head) & 0xffff_ffff > entries:
+                continue
+            # io_sq_ring has dropped and flags, and io_cq_ring has overflow after them
+            return {"address": ring, "head": head, "tail": tail, "mask": mask, "entries": entries,
+                    "extra": words[index + 2:index + 4]}
+        return None
 
     def find_rings_heuristic(self, ctx):
+        """Return the ring metadata found from the pointers in io_ring_ctx, or None."""
         if not is_valid_addr(ctx) or ctx & (current_arch.ptrsize - 1):
             return None
         try:
             pointers = slice_unpack(read_memory(ctx, 0x400), current_arch.ptrsize)
         except (gdb.MemoryError, OverflowError, struct.error):
             return None
+        singles = []
         for pointer in pointers:
-            if self.ring_memory_score(pointer):
-                return pointer
-        return None
+            layout = self.ring_memory_layout(pointer)
+            if layout is not None:
+                return layout
+            if self.kversion < "5.4" and pointer not in [x["address"] for x in singles]:
+                layout = self.single_ring_layout(pointer)
+                if layout is not None:
+                    singles.append(layout)
+        # io_ring_ctx has sq_ring before cq_ring
+        pairs = [(sq, cq) for i, sq in enumerate(singles) for cq in singles[i + 1:] if cq["entries"] >= sq["entries"]]
+        if not pairs:
+            return None
+        sq, cq = pairs[0]
+        return {
+            "address": sq["address"], "cq_address": cq["address"], "heuristic": True,
+            "sq_head": sq["head"], "sq_tail": sq["tail"], "cq_head": cq["head"], "cq_tail": cq["tail"],
+            "sq_mask": sq["mask"], "cq_mask": cq["mask"], "sq_entries": sq["entries"], "cq_entries": cq["entries"],
+            "dropped": sq["extra"][0], "sq_flags": sq["extra"][1], "cq_flags": None, "overflow": cq["extra"][0],
+        }
 
     def context_score(self, ctx):
         if not is_valid_addr(ctx) or ctx & (current_arch.ptrsize - 1):
@@ -179307,7 +179948,7 @@ class KernelIoUringCommand(GenericCommand, BufferingOutput):
         cq_ring = self.eval_unsigned("struct io_ring_ctx", ctx, "cq_ring")
         if is_valid_addr(sq_ring) and is_valid_addr(cq_ring):
             return 10 if self.ring_stats(ctx) is not None else 0
-        return self.ring_memory_score(self.find_rings_heuristic(ctx) or 0)
+        return 3 if self.find_rings_heuristic(ctx) is not None else 0
 
     def context_from_file(self, file):
         ctx = self.eval_unsigned("struct file", file, "private_data")
@@ -179330,8 +179971,29 @@ class KernelIoUringCommand(GenericCommand, BufferingOutput):
         score, index, ctx = max(candidates)
         return ctx, "validated file member +{:#x}".format(index * current_arch.ptrsize)
 
+    def get_task_command(self):
+        """Return `ktask` initialized for the fd scan, or None. It is resolved on first use,
+        so a ctx/request given by ADDRESS does not depend on the task layout."""
+        if self.task_command is False:
+            self.task_command = KernelTaskCommand.borrow(self, print_fd=True)
+            if self.task_command is not None and (self.task_command.offset_files is None or self.task_command.offset_fdt is None):
+                self.meta.append((self.quiet_err, "Could not find task_struct->files->fdt"))
+                self.task_command = None
+        return self.task_command
+
+    def get_kpath(self):
+        """Return the VFS resolver, or None. It is resolved on first use like get_task_command()."""
+        if self.kpath is False:
+            self.kpath = Kernel.path()
+            if not self.kpath.initialized:
+                self.meta.append((self.quiet_err, "Could not resolve the VFS object layout"))
+                self.kpath = None
+        return self.kpath
+
     def task_info(self, task):
-        command = self.task_command
+        command = self.get_task_command()
+        if command is None:
+            return None, "???"
         try:
             pid = read_int32_from_memory(task + command.offset_pid)
             comm = read_cstring_from_memory(task + command.offset_comm) or "???"
@@ -179348,7 +180010,7 @@ class KernelIoUringCommand(GenericCommand, BufferingOutput):
         return "{:#x} {:s}[{:d}]".format(task, comm, pid)
 
     def iter_task_files(self, task):
-        command = self.task_command
+        command = self.get_task_command()
         try:
             files = read_int_from_memory(task + command.offset_files)
             fdt = read_int_from_memory(files + command.offset_fdt)
@@ -179365,7 +180027,10 @@ class KernelIoUringCommand(GenericCommand, BufferingOutput):
         return
 
     def find_ring_files(self):
-        command = self.task_command
+        command = self.get_task_command()
+        kpath = self.get_kpath()
+        if command is None or kpath is None:
+            return None
         tasks = KernelTaskCommand.get_task_list(command.init_task, command.offset_tasks)
         rings = []
         for task in tasks:
@@ -179376,7 +180041,7 @@ class KernelIoUringCommand(GenericCommand, BufferingOutput):
                 if self.args.fd is not None and fd != self.args.fd:
                     continue
                 try:
-                    path = self.kpath.get_file_path(file)
+                    path = kpath.get_file_path(file)
                 except (gdb.MemoryError, OverflowError, RuntimeError):
                     continue
                 if not self.is_ring_path(path):
@@ -179389,7 +180054,7 @@ class KernelIoUringCommand(GenericCommand, BufferingOutput):
         return rings
 
     def path_for_file(self, file):
-        if not is_valid_addr(file):
+        if not is_valid_addr(file) or self.get_kpath() is None:
             return ""
         try:
             return self.kpath.get_file_path(file)
@@ -179437,10 +180102,7 @@ class KernelIoUringCommand(GenericCommand, BufferingOutput):
                 "cq_address": cq,
             }
 
-        rings = self.find_rings_heuristic(ctx)
-        if rings:
-            return self.ring_memory_layout(rings)
-        return None
+        return self.find_rings_heuristic(ctx)
 
     def format_optional(self, value):
         return "?" if value is None else "{:#x}".format(value)
@@ -179743,13 +180405,16 @@ class KernelIoUringCommand(GenericCommand, BufferingOutput):
     def dump_context(self, ctx, owners):
         self.out.append(titlify("struct io_ring_ctx {:#x}".format(ctx)))
         for owner in owners:
-            if owner.get("file"):
+            if owner.get("file") and owner.get("task") is None:
+                # the file given by ADDRESS; its owner task is not searched
+                self.out.append("  file             : {:#x} {:s}".format(owner["file"], owner.get("path", "")).rstrip())
+            elif owner.get("file"):
                 self.out.append("  owner            : {:s}[{:d}] task={:#x} fd={:d} file={:#x} {:s}".format(
                     owner.get("comm", "???"), owner.get("pid", -1), owner.get("task", 0), owner.get("fd", -1),
                     owner["file"], owner.get("path", ""),
                 ).rstrip())
-                if owner.get("ctx_source"):
-                    self.out.append("  private_data     : {:s}".format(owner["ctx_source"]))
+            if owner.get("file") and owner.get("ctx_source"):
+                self.out.append("  private_data     : {:s}".format(owner["ctx_source"]))
 
         flags = self.eval_unsigned("struct io_ring_ctx", ctx, "flags")
         int_flags = self.eval_unsigned("struct io_ring_ctx", ctx, "int_flags")
@@ -179761,8 +180426,6 @@ class KernelIoUringCommand(GenericCommand, BufferingOutput):
         stats = self.ring_stats(ctx)
         if stats is None:
             self.out.append("  rings            : unavailable")
-        elif "sq_head" not in stats:
-            self.out.append("  rings            : {:#x} (validated; field layout unavailable)".format(stats["address"]))
         else:
             cq_address = " cq={:#x}".format(stats["cq_address"]) if stats.get("cq_address") else ""
             source = " (validated memory layout)" if stats.get("heuristic") else ""
@@ -179793,11 +180456,7 @@ class KernelIoUringCommand(GenericCommand, BufferingOutput):
             return "ctx"
         if self.request_context(address) and self.context_score(self.request_context(address)):
             return "request"
-        try:
-            path = self.kpath.get_file_path(address)
-        except (gdb.MemoryError, OverflowError, RuntimeError):
-            path = ""
-        if self.is_ring_path(path):
+        if self.is_ring_path(self.path_for_file(address)):
             return "file"
         return None
 
@@ -179830,24 +180489,15 @@ class KernelIoUringCommand(GenericCommand, BufferingOutput):
         if self.kversion is None:
             self.meta.append((self.quiet_err, "Could not find Linux kernel"))
             return None
-        if self.kversion < "5.1":
-            return True
-        self.task_command = KernelTaskCommand.borrow(self, print_fd=True)
-        if self.task_command is None:
-            return None
-        if self.task_command.offset_files is None or self.task_command.offset_fdt is None:
-            self.meta.append((self.quiet_err, "Could not find task_struct->files->fdt"))
-            return None
-        self.kpath = Kernel.path()
-        if not self.kpath.initialized:
-            self.meta.append((self.quiet_err, "Could not resolve the VFS object layout"))
-            return None
+        # the task list and the VFS are needed only to find the rings from the fds
+        self.task_command = False
+        self.kpath = False
         return True
 
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
-    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
+    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64"))
     @Decorator.only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
         self.args = args
@@ -179867,9 +180517,11 @@ class KernelIoUringCommand(GenericCommand, BufferingOutput):
             self.quiet_warn("This kernel predates io_uring, which first appeared in mainline v5.1")
             return
         if args.meta:
+            fd_scan = self.get_task_command() is not None and self.get_kpath() is not None
             for func, line in self.meta:
                 func(line)
             self.print_meta()
+            self.quiet_info("ring discovery from fds: {:s}".format("available" if fd_scan else "unavailable"))
             return
 
         self.out = []
@@ -179885,7 +180537,11 @@ class KernelIoUringCommand(GenericCommand, BufferingOutput):
             elif address_type == "file":
                 path = self.path_for_file(args.address)
                 ctx, source = self.context_from_file(args.address)
-                if not self.is_ring_path(path) or ctx is None:
+                if self.kpath is None:
+                    for func, line in self.meta:
+                        func(line)
+                    self.err_add_out("An io_uring file cannot be verified without the VFS object layout")
+                elif not self.is_ring_path(path) or ctx is None:
                     self.err_add_out("Could not interpret {:#x} as an io_uring file".format(args.address))
                 else:
                     self.dump_context(ctx, [{"file": args.address, "path": path, "ctx_source": source}])
@@ -179900,6 +180556,11 @@ class KernelIoUringCommand(GenericCommand, BufferingOutput):
             return
 
         ring_files = self.find_ring_files()
+        if ring_files is None:
+            for func, line in self.meta:
+                func(line)
+            self.quiet_err("Failed to initialize the fd scan (ADDRESS with --type ctx/request does not need it)")
+            return
         contexts = collections.OrderedDict()
         unresolved = []
         for owner in ring_files:
