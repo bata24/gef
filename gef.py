@@ -67743,11 +67743,20 @@ class KernelAddressHeuristicFinder:
                         KernelAddressHeuristicFinderUtil.arm32_movw_movt(res),
                         KernelAddressHeuristicFinderUtil.arm32_ldr_pc_relative(res),
                     )
+                elif is_riscv32() or is_riscv64():
+                    g = itertools.chain(
+                        KernelAddressHeuristicFinderUtil.riscv_auipc_addi(res),
+                        KernelAddressHeuristicFinderUtil.riscv_gp_relative(res),
+                    )
+                else:
+                    g = []
                 for x in g:
-                    if not is_arm32() and not is_arm64():
+                    if is_x86():
                         return x
                     if looks_like_clocksource_list(x):
                         return x
+                    if is_riscv32() or is_riscv64():
+                        continue
 
                     # ARM compilers may materialize a nearby base address and use an immediate offset for
                     # clocksource_list. Recover the actual list head instead of returning the unadjusted base.
@@ -67793,6 +67802,11 @@ class KernelAddressHeuristicFinder:
                     KernelAddressHeuristicFinderUtil.arm32_ldr_pc_relative_ldr(res),
                     KernelAddressHeuristicFinderUtil.arm32_movw_movt(res),
                     KernelAddressHeuristicFinderUtil.arm32_ldr_pc_relative(res),
+                )
+            if is_riscv32() or is_riscv64():
+                return itertools.chain(
+                    KernelAddressHeuristicFinderUtil.riscv_auipc_use(res),
+                    KernelAddressHeuristicFinderUtil.riscv_gp_relative(res),
                 )
             return []
 
@@ -70005,6 +70019,43 @@ class KernelAddressHeuristicFinder:
     @staticmethod
     def find_timer_base_clk(timer_base, cpu):
         """Check the layout invariants of `struct timer_base`, and return the offset of `clk`."""
+        layout = KernelAddressHeuristicFinder.find_timer_base_layout(timer_base, cpu)
+        if layout is None:
+            return None
+        return layout[0]
+
+    @staticmethod
+    def check_timer_wheel(timer_base, offset_pending, offset_vectors, wheel_size):
+        """Return (the number of the mismatches with `pending_map`, the number of the non-empty buckets)
+        of the timer wheel, or None if a bucket is broken.
+
+        The bit of `pending_map` is set exactly when the bucket is not empty, except for the bucket
+        being moved under the lock."""
+        ptrsize = current_arch.ptrsize
+        bits = ptrsize * 8
+        try:
+            pending = slice_unpack(read_memory(timer_base + offset_pending, wheel_size // 8), ptrsize)
+            vectors = slice_unpack(read_memory(timer_base + offset_vectors, wheel_size * ptrsize), ptrsize)
+        except gdb.MemoryError:
+            return None
+
+        mismatch = nonempty = 0
+        for i, first in enumerate(vectors):
+            if bool(first) != bool((pending[i // bits] >> (i % bits)) & 1):
+                mismatch += 1
+            if first == 0:
+                continue
+            head = timer_base + offset_vectors + i * ptrsize
+            if not is_valid_addr(first) or read_int_from_memory(first + ptrsize, safe=True) != head:
+                return None
+            nonempty += 1
+        return mismatch, nonempty
+
+    @staticmethod
+    def find_timer_base_layout(timer_base, cpu):
+        """Check the layout invariants of `struct timer_base`.
+        Return (offset of `clk`, [(offset of `vectors`, WHEEL_SIZE), ...]), or None.
+        Both WHEEL_SIZEs are returned for an empty wheel, since it cannot tell them apart."""
         ptrsize = current_arch.ptrsize
         unpack = u64 if ptrsize == 8 else u32
 
@@ -70043,23 +70094,17 @@ class KernelAddressHeuristicFinder:
                     continue
 
             # Since the v4.8 timer-wheel rewrite WHEEL_SIZE is 512 or 576, depending on HZ.
+            # A 576-bucket wheel whose last `pending_map` word is 0 also passes the check of
+            # the heads as a 512-bucket one shifted by a word, so `pending_map` decides it.
+            found = []
             for wheel_size in (512, 576):
                 offset_vectors = offset_cpu + 8 + wheel_size // 8
-                try:
-                    vectors = slice_unpack(read_memory(timer_base + offset_vectors, wheel_size * ptrsize), ptrsize)
-                except gdb.MemoryError:
-                    continue
-
-                for i, first in enumerate(vectors):
-                    if first == 0:
-                        continue
-                    head = timer_base + offset_vectors + i * ptrsize
-                    valid = (is_valid_addr(first)
-                             and read_int_from_memory(first + ptrsize, safe=True) == head)
-                    if not valid:
-                        break
-                else:
-                    return offset_clk
+                result = KernelAddressHeuristicFinder.check_timer_wheel(timer_base, offset_cpu + 8, offset_vectors, wheel_size)
+                if result is not None and result[0] <= 1:
+                    found.append((result[0], offset_vectors, wheel_size))
+            if found:
+                best = min(found)[0]
+                return offset_clk, [(offset_vectors, wheel_size) for mismatch, offset_vectors, wheel_size in found if mismatch == best]
         return None
 
     @staticmethod
@@ -70077,12 +70122,14 @@ class KernelAddressHeuristicFinder:
         if kversion and "4.8" <= kversion:
             for addr in Ksym.get_addrs("run_timer_softirq", match="split"):
                 res = KernelAddressHeuristicFinderUtil.disassemble_until_next_symbol(addr, 20)
-                if is_arm32():
+                if is_arm32() or is_riscv32() or is_riscv64():
                     # v6.19: `run_timer_softirq()` only passes the index to `__run_timer_base()`,
                     # so `timer_bases` is referenced in the callee.
                     # 0xc04052ec <run_timer_softirq+4>: mov r0,#0
                     # 0xc04052f0 <run_timer_softirq+8>: bl  0xc0405264 <__run_timer_base>
-                    m = re.search(r"bl\s+(0x\w+)", res)
+                    # 0xffffffff800bf74e <run_timer_softirq+8>:  li  a0,0
+                    # 0xffffffff800bf750 <run_timer_softirq+10>: jal 0xffffffff800bf6de <__run_timer_base>
+                    m = re.search(r"\b(?:bl|jal)\s+(0x\w+)", res)
                     if m:
                         res += gdb.execute("x/20i {:s}".format(m.group(1)), to_string=True)
                 if is_x86_64():
@@ -70096,14 +70143,28 @@ class KernelAddressHeuristicFinder:
                         KernelAddressHeuristicFinderUtil.x64_x86_mov_reg_const(res),
                     )
                 elif is_x86_32():
-                    g = KernelAddressHeuristicFinderUtil.x64_x86_mov_reg_const(res, skip_msb_check=True)
+                    # v7.x: 0xc1193ef6 <run_timer_softirq+38>: lea ebx,[eax-0x3d8a8b20] <-- timer_bases (0xc27574e0)
+                    g = itertools.chain(
+                        KernelAddressHeuristicFinderUtil.x64_x86_mov_reg_const(res, skip_msb_check=True),
+                        KernelAddressHeuristicFinderUtil.x64_lea_reg_const(res, skip_msb_check=True),
+                    )
                     g2 = KernelAddressHeuristicFinderUtil.x64_x86_dword_ptr_src(res)
                 elif is_arm64():
                     g = KernelAddressHeuristicFinderUtil.aarch64_adrp_add(res, skip_msb_check=True)
                     g2 = []
                 elif is_arm32():
-                    g = KernelAddressHeuristicFinderUtil.arm32_movw_movt(res, skip_msb_check=True)
+                    g = itertools.chain(
+                        KernelAddressHeuristicFinderUtil.arm32_movw_movt(res, skip_msb_check=True),
+                        KernelAddressHeuristicFinderUtil.arm32_ldr_pc_relative(res),
+                    )
                     g2 = []
+                elif is_riscv32() or is_riscv64():
+                    # the per-cpu symbol is a linked address, which is also `&timer_bases` with CONFIG_SMP=n
+                    g = list(itertools.chain(
+                        KernelAddressHeuristicFinderUtil.riscv_auipc_addi(res, skip_msb_check=True),
+                        KernelAddressHeuristicFinderUtil.riscv_gp_relative(res),
+                    ))
+                    g2 = g
                 else:
                     g, g2 = [], []
                 g, g2 = list(g), list(g2)
@@ -70139,9 +70200,10 @@ class KernelAddressHeuristicFinder:
                     for x in sorted(g):
                         if x & (current_arch.ptrsize - 1):
                             continue
-                        if cpu_offset and all(
-                            KernelAddressHeuristicFinder.find_timer_base_clk(AddressUtil.normalize_address(offset + x), cpu) is not None
-                            for cpu, offset in enumerate(cpu_offset)
+                        cpu_addrs = Kernel.per_cpu().possible_addrs_of(x)
+                        if cpu_addrs and all(
+                            KernelAddressHeuristicFinder.find_timer_base_clk(addr, cpu) is not None
+                            for cpu, addr in cpu_addrs
                         ):
                             return x
                 else:
@@ -70171,6 +70233,147 @@ class KernelAddressHeuristicFinder:
         return None
 
     @staticmethod
+    def find_tvec_base_layout(tvec_base, cpu):
+        """Check the layout invariants of `struct tvec_base` used before v4.8.
+        Return (offset of `tv1`, the number of the buckets, True if they are hlist_head), or None.
+
+        struct tvec_base {
+            spinlock_t lock;
+            struct timer_list *running_timer;
+            unsigned long timer_jiffies;
+            unsigned long next_timer;
+            unsigned long active_timers; // v3.6~
+            unsigned long all_timers;    // v3.16~
+            int cpu;                     // v3.17~
+            bool migration_enabled;      // v4.2~
+            bool nohz_active;            // v4.2~
+            struct tvec_root tv1;        // TVR_SIZE (256, or 64 with CONFIG_BASE_SMALL=y) buckets
+            struct tvec tv2;             // TVN_SIZE (64, or 16 with CONFIG_BASE_SMALL=y) buckets
+            struct tvec tv3;
+            struct tvec tv4;
+            struct tvec tv5;
+        } ____cacheline_aligned;
+
+        The bucket is `struct list_head` (~v4.1) or `struct hlist_head` (v4.2~).
+        """
+        ptrsize = current_arch.ptrsize
+        try:
+            header = read_memory(tvec_base, 0x100)
+        except gdb.MemoryError:
+            return None
+        words = slice_unpack(header, ptrsize)
+
+        for nr_buckets in (512, 128):
+            # ~v4.1: even an empty list_head is linked (to itself)
+            for i in range(len(words)):
+                offset = i * ptrsize
+                try:
+                    heads = slice_unpack(read_memory(tvec_base + offset, nr_buckets * ptrsize * 2), ptrsize)
+                except gdb.MemoryError:
+                    break
+                for j in range(nr_buckets):
+                    head = tvec_base + offset + j * ptrsize * 2
+                    next_entry, prev_entry = heads[j * 2], heads[j * 2 + 1]
+                    if next_entry == head and prev_entry == head:
+                        continue
+                    if not is_valid_addr(next_entry) or not is_valid_addr(prev_entry):
+                        break
+                    if (read_int_from_memory(next_entry + ptrsize, safe=True) != head or
+                            read_int_from_memory(prev_entry, safe=True) != head):
+                        break
+                else:
+                    return offset, nr_buckets, False
+
+            # v4.2~: an empty hlist_head is NULL, so `cpu` and the flags anchor the position,
+            # and `all_timers` is the number of the timers linked from the buckets
+            for offset_cpu in range(ptrsize * 4, len(header) - 8, ptrsize):
+                if u32(header[offset_cpu:offset_cpu + 4]) != cpu:
+                    continue
+                if any(x > 1 for x in header[offset_cpu + 4:offset_cpu + 6]):
+                    continue
+                if words[offset_cpu // ptrsize - 4] == 0: # timer_jiffies
+                    continue
+                all_timers = words[offset_cpu // ptrsize - 1]
+                offset = align(offset_cpu + 6, ptrsize)
+                try:
+                    heads = slice_unpack(read_memory(tvec_base + offset, nr_buckets * ptrsize), ptrsize)
+                except gdb.MemoryError:
+                    continue
+                count = 0
+                for j, first in enumerate(heads):
+                    link = tvec_base + offset + j * ptrsize
+                    node = first
+                    while node and count <= all_timers + 1:
+                        if not is_valid_addr(node) or read_int_from_memory(node + ptrsize, safe=True) != link:
+                            break
+                        count += 1
+                        link = node
+                        node = read_int_from_memory(node, safe=True)
+                    if node:
+                        break
+                else:
+                    # one may be being moved under the lock
+                    if count and abs(count - all_timers) <= 1:
+                        return offset, nr_buckets, True
+        return None
+
+    @staticmethod
+    @Decorator.switch_to_intel_syntax
+    def get_tvec_bases():
+        """Return the per-cpu `tvec_bases` used before v4.8.
+        It is a pointer to `struct tvec_base` (~v4.1), or the struct itself (v4.2~)."""
+
+        def is_tvec_bases(x):
+            slot = Kernel.per_cpu().addr_of(x, 0)
+            if slot is None or slot & (current_arch.ptrsize - 1):
+                return False
+            base = read_int_from_memory(slot, safe=True)
+            if base and is_valid_addr(base) and KernelAddressHeuristicFinder.find_tvec_base_layout(base, 0):
+                return True
+            return KernelAddressHeuristicFinder.find_tvec_base_layout(slot, 0) is not None
+
+        # plan 1 (directly)
+        if KernelAddressHeuristicFinder.USE_DIRECTLY:
+            x = Ksym.get_addr("tvec_bases")
+            if x:
+                return x
+
+        kversion = Kernel.version()
+
+        # plan 2 (available v2.6.x ~ v4.7)
+        if kversion and kversion < "4.8":
+            for addr in Ksym.get_addrs("run_timer_softirq", match="split"):
+                res = KernelAddressHeuristicFinderUtil.disassemble_until_next_symbol(addr, 100)
+                if is_x86_64() or is_x86_32():
+                    # 0xffffffff8106ab4d <run_timer_softirq+13>: mov rbx,QWORD PTR gs:0xd780 <-- tvec_bases (~v4.1)
+                    # 0xffffffff810913e1 <run_timer_softirq+17>: mov rbx,QWORD PTR gs:[rip+0x7ef7bf97] # 0xd380
+                    # 0xffffffff810b7e13 <run_timer_softirq+3>:  mov rbx,0xe740                <-- tvec_bases (v4.2~)
+                    g = itertools.chain(
+                        KernelAddressHeuristicFinderUtil.x64_x86_mov_reg_const(res, skip_msb_check=True),
+                        KernelAddressHeuristicFinderUtil.x64_x86_any_const(res, skip_msb_check=True),
+                        (int(v, 16) for v in re.findall(r"(?:fs|gs):0x([0-9a-fA-F]+)", res)),
+                        (int(v, 16) for v in re.findall(r"(?:fs|gs):\[rip[+-]0x[0-9a-fA-F]+\].*#\s*(0x[0-9a-fA-F]+)", res)),
+                    )
+                elif is_arm64():
+                    g = KernelAddressHeuristicFinderUtil.aarch64_adrp_add(res, skip_msb_check=True)
+                elif is_arm32():
+                    g = itertools.chain(
+                        KernelAddressHeuristicFinderUtil.arm32_movw_movt(res, skip_msb_check=True),
+                        KernelAddressHeuristicFinderUtil.arm32_ldr_pc_relative(res),
+                    )
+                elif is_riscv32() or is_riscv64():
+                    g = itertools.chain(
+                        KernelAddressHeuristicFinderUtil.riscv_auipc_addi(res, skip_msb_check=True),
+                        KernelAddressHeuristicFinderUtil.riscv_gp_relative(res),
+                    )
+                else:
+                    g = []
+                for x in g:
+                    if is_tvec_bases(x):
+                        return x
+        return None
+
+    @staticmethod
     def find_clock_base_anchor(hrtimer_cpu_base):
         """Find `clock_base[]` by the back-pointer `clock_base[i].cpu_base`.
 
@@ -70196,16 +70399,17 @@ class KernelAddressHeuristicFinder:
 
         # `clock_base[i].index == i` (HRTIMER_BASE_MONOTONIC, _REALTIME, _BOOTTIME, _TAI, ...)
         # tells the real head and stride apart from the lockdep pointers. Every supported
-        # version has 4 clock bases or more.
+        # version has 3 clock bases or more (HRTIMER_BASE_TAI is added at v3.10).
         for (offset, v), (next_offset, next_v) in itertools.combinations(candidates, 2):
             if v != next_v:
                 continue
             size = next_offset - offset
             try:
-                index = [u32(read_memory(hrtimer_cpu_base + offset + size * n + ptrsize, 4)) for n in range(4)]
+                index = [u32(read_memory(hrtimer_cpu_base + offset + size * n + ptrsize, 4)) for n in range(3)]
+                third = read_int_from_memory(hrtimer_cpu_base + offset + size * 2)
             except gdb.MemoryError:
                 continue
-            if index == [0, 1, 2, 3]:
+            if index == [0, 1, 2] and third == v:
                 return offset, size, v
         return None
 
@@ -70220,8 +70424,8 @@ class KernelAddressHeuristicFinder:
 
         kversion = Kernel.version()
 
-        # plan 2 (available v3.10 or later; HRTIMER_BASE_TAI makes `clock_base[]` 4 elements)
-        if kversion and "3.10" <= kversion:
+        # plan 2 (available v3.0 or later)
+        if kversion and "3.0" <= kversion:
             for addr in Ksym.get_addrs("hrtimer_run_queues", match="split"):
                 res = KernelAddressHeuristicFinderUtil.disassemble_until_next_symbol(addr, 20)
                 if is_x86_64():
@@ -70236,14 +70440,24 @@ class KernelAddressHeuristicFinder:
                     g = itertools.chain(
                         KernelAddressHeuristicFinderUtil.x64_x86_mov_reg_const(res, skip_msb_check=True),
                         KernelAddressHeuristicFinderUtil.x86_ds_absolute(res, skip_msb_check=True),
+                        KernelAddressHeuristicFinderUtil.x64_lea_reg_const(res, skip_msb_check=True),
                     )
                     g2 = KernelAddressHeuristicFinderUtil.x64_x86_mov_reg_const(res)
                 elif is_arm64():
                     g = KernelAddressHeuristicFinderUtil.aarch64_adrp_add(res, skip_msb_check=True)
                     g2 = []
                 elif is_arm32():
-                    g = KernelAddressHeuristicFinderUtil.arm32_movw_movt(res, skip_msb_check=True)
+                    g = itertools.chain(
+                        KernelAddressHeuristicFinderUtil.arm32_movw_movt(res, skip_msb_check=True),
+                        KernelAddressHeuristicFinderUtil.arm32_ldr_pc_relative(res),
+                    )
                     g2 = []
+                elif is_riscv32() or is_riscv64():
+                    g = list(itertools.chain(
+                        KernelAddressHeuristicFinderUtil.riscv_auipc_addi(res, skip_msb_check=True),
+                        KernelAddressHeuristicFinderUtil.riscv_gp_relative(res),
+                    ))
+                    g2 = g
                 else:
                     g, g2 = [], []
                 g, g2 = list(g), list(g2)
@@ -70285,8 +70499,8 @@ class KernelAddressHeuristicFinder:
                         addr_cpu0 = Kernel.per_cpu().addr_of(x, 0)
                         anchor = KernelAddressHeuristicFinder.find_clock_base_anchor(addr_cpu0)
                         if anchor and all(
-                            KernelAddressHeuristicFinder.find_clock_base_anchor(AddressUtil.normalize_address(offset + x))
-                            for offset in cpu_offset[1:]
+                            KernelAddressHeuristicFinder.find_clock_base_anchor(addr)
+                            for cpu, addr in Kernel.per_cpu().possible_addrs_of(x) if cpu
                         ):
                             return AddressUtil.normalize_address(x - (addr_cpu0 - anchor[2]))
                 else:
@@ -70334,7 +70548,17 @@ class KernelAddressHeuristicFinder:
                 elif is_arm64():
                     g = KernelAddressHeuristicFinderUtil.aarch64_adrp_ldr(res)
                 elif is_arm32():
-                    g = KernelAddressHeuristicFinderUtil.arm32_movw_movt(res)
+                    g = itertools.chain(
+                        KernelAddressHeuristicFinderUtil.arm32_movw_movt(res),
+                        KernelAddressHeuristicFinderUtil.arm32_ldr_pc_relative(res),
+                    )
+                elif is_riscv32() or is_riscv64():
+                    g = itertools.chain(
+                        KernelAddressHeuristicFinderUtil.riscv_auipc_use(res),
+                        KernelAddressHeuristicFinderUtil.riscv_gp_relative(res),
+                    )
+                else:
+                    g = []
                 for x in g:
                     return x
         return None
@@ -72720,6 +72944,7 @@ class KernelPerCpu:
         pc.effective_offsets             # -> the displacement of every cpu, [0] when not SMP
         pc.get_base(1) / pc.get_bases()  # -> __per_cpu_start + __per_cpu_offset[cpu]
         pc.addr_of(Ksym.get_addr("runqueues"), 1)  # -> per_cpu(runqueues, 1)
+        pc.possible_addrs_of(Ksym.get_addr("runqueues"))  # -> [(cpu, per_cpu(runqueues, cpu)), ...] of the possible cpus
         pc.unit_range(1) / pc.unit_ranges()        # -> [start, end) of each unit
         pc.resolve(addr)                 # -> (cpu, static_addr, (name, offset)) or None
         pc.offsets                       # -> the raw `__per_cpu_offset[]`, [] when not SMP
@@ -72919,6 +73144,31 @@ class KernelPerCpu:
     def addrs_of(self, static_addr):
         """Return per_cpu(the variable at `static_addr`, cpu) for every cpu."""
         return [self.addr_of(static_addr, cpu) for cpu in range(self.nr_cpus)]
+
+    def possible_addrs_of(self, static_addr):
+        """Return [(cpu, per_cpu(the variable at `static_addr`, cpu)), ...] of the possible cpus.
+
+        `__per_cpu_offset[]` may have the preallocated unit of an impossible cpu, which can be
+        unreadable or garbage. It is told by the possible mask, by the present mask if it is unknown
+        (a cpu that has never been present has no per-cpu state), or by the unreadable unit."""
+        possible = None
+        if self.nr_cpus > 1:
+            masks = self.get_cpu_masks()
+            possible = masks.get("possible")
+            if possible is None:
+                possible = masks.get("present")
+        addrs = []
+        for cpu in range(self.nr_cpus):
+            addr = self.addr_of(static_addr, cpu)
+            if addr is None:
+                continue
+            if possible is not None:
+                if cpu not in possible:
+                    continue
+            elif cpu and read_int_from_memory(addr, safe=True) is None:
+                continue
+            addrs.append((cpu, addr))
+        return addrs
 
     def unit_range(self, cpu):
         """Return [start, end) of the per-cpu unit of `cpu`, or None if it is unknown.
@@ -77143,6 +77393,15 @@ class KernelModule:
             return [(module, self.get_name(module), self.get_regions(module)) for module in module_addrs]
         except gdb.error:
             return None
+
+    def get_text_ranges(self):
+        """Return [(start, end, module, name), ...] of the text of the loaded modules, or [] if unresolvable."""
+        ranges = []
+        for module, name, regions in self.get_loaded() or []:
+            for region_name, base, size in regions:
+                if region_name in ("core", "text", "init_text"):
+                    ranges.append((base, base + size, module, name))
+        return ranges
 
     def get_regions(self, module):
         if self.memory_kind != "mem":
@@ -87416,6 +87675,7 @@ class KernelClockSourceCommand(GenericCommand, BufferingOutput):
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("-hh", "--help-simple", action="store_true", help="show help without ASCII diagram.")
+    parser.add_argument("--meta", action="store_true", help="display offset information.")
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
     parser.add_argument("-q", "--quiet", action="store_true", help="enable quiet mode.")
     _syntax_ = parser.format_help()
@@ -87429,127 +87689,330 @@ class KernelClockSourceCommand(GenericCommand, BufferingOutput):
         "| list_head        |--->| list        |--->...",
         "+------------------+    | ...         |",
         "                        +-------------+",
+        "",
+        "- The list is sorted by `rating` in descending order. `active` is the one `curr_clocksource` points to.",
+        "- `frequency` is derived from `mult` and `shift` (ns = (cycles * mult) >> shift), and `bits` from `mask`.",
+        "- `flags`: CONT (IS_CONTINUOUS), VERIFY (MUST_VERIFY), CALIB (CALIBRATED), WD (WATCHDOG),",
+        "  HRES (VALID_FOR_HRES), UNSTABLE, NONSTOP (SUSPEND_NONSTOP), RESELECT,",
+        "  VERIFY_PERCPU (~v7.0) or INLINE (CAN_INLINE_READ; v7.1~), COUPLED (HAS_COUPLED_CLOCK_EVENT), WDTEST, WDTEST_PERCPU.",
+        "- The module is shown for a clocksource registered by a loadable module.",
+        "- The member offsets come from the debug information (vmlinux or `ktypes-load`) when available.",
     ]
     _note_ = "\n".join(_note_)
 
-    def get_offset_list(self, clocksource):
-        """
+    FLAGS = [
+        (0x1, "CONT"),
+        (0x2, "VERIFY"),
+        (0x4, "CALIB"),
+        (0x10, "WD"),
+        (0x20, "HRES"),
+        (0x40, "UNSTABLE"),
+        (0x80, "NONSTOP"),
+        (0x100, "RESELECT"),
+        (0x200, "VERIFY_PERCPU"),
+        (0x400, "COUPLED"),
+        (0x800, "WDTEST"),
+        (0x1000, "WDTEST_PERCPU"),
+    ]
+
+    @Cache.cache_this_session(cache_None=False, per_inferior=True, until_new_objfile=True)
+    def resolve_layout(self):
+        """Return {member: offset} of `struct clocksource` from the debug information, or None."""
+        layout = {}
+        for name in ("list", "read", "mask", "mult", "shift", "name", "rating", "flags", "owner"):
+            layout[name] = GefUtil.offsetof("clocksource", name)
+        if None in [layout[name] for name in ("list", "read", "mask", "mult", "shift", "name")]:
+            return None
+        return layout
+
+    def find_module(self, address=None, module=None):
+        """Return the name of the loaded module whose text contains `address`, or which is `module`."""
+        if self.module_text_ranges is None:
+            self.module_text_ranges = Kernel.modules().get_text_ranges()
+        for start, end, addr, name in self.module_text_ranges:
+            if start <= (address or 0) < end or addr == module:
+                return name
+        return None
+
+    def is_callback(self, address):
+        """Return True if `address` is in the kernel text or the text of a loaded module."""
+        if not address or not is_valid_addr(address):
+            return False
+        if self.klayout.text_base is not None and self.klayout.text_end is not None:
+            if self.klayout.text_base <= address < self.klayout.text_end:
+                return True
+        return self.find_module(address) is not None
+
+    def read_name(self, address):
+        name = read_cstring_from_memory(address, safe=True) if is_valid_addr(address) else None
+        if not name or len(name) > 64 or not name.isprintable():
+            return None
+        return name
+
+    def is_clocksource(self, cs, offsets):
+        """Check the members of the clocksource at `cs` that every registered one has."""
+        try:
+            read = read_int_from_memory(cs + offsets["read"])
+            mask = read_int64_from_memory(cs + offsets["mask"])
+            mult = read_int32_from_memory(cs + offsets["mult"])
+            shift = read_int32_from_memory(cs + offsets["shift"])
+            name = read_int_from_memory(cs + offsets["name"])
+        except gdb.MemoryError:
+            return False
+        if not mask or mask & (mask + 1) or not mult or shift > 64:
+            return False
+        # a clocksource can be registered by a module (e.g., scx200_hrt), so its `read` is in the module
+        return self.is_callback(read) and self.read_name(name) is not None
+
+    def find_offsets(self):
+        """Return {member: offset} found from the nodes of clocksource_list, or None.
+
         struct clocksource {
             u64 (*read)(struct clocksource *cs);
+            u64 cycle_last; // ~v3.16
             u64 mask;
             u32 mult;
             u32 shift;
             u64 max_idle_ns;
             u32 maxadj;
-            u32 uncertainty_margin;
+            u32 uncertainty_margin; // v5.14~v7.0
         #ifdef CONFIG_ARCH_CLOCKSOURCE_DATA
             struct arch_clocksource_data archdata;
         #endif
             u64 max_cycles;
+            u64 max_raw_delta; // v6.13~
             const char *name;
             struct list_head list;
+            u32 freq_khz; // v6.11~
             int rating;
-            enum clocksource_ids id;
-            enum vdso_clock_mode vdso_clock_mode;
+            enum clocksource_ids id; // v5.13~
+            enum vdso_clock_mode vdso_clock_mode; // v5.7~
             unsigned long flags;
-            int (*enable)(struct clocksource *cs);
-            void (*disable)(struct clocksource *cs);
-            void (*suspend)(struct clocksource *cs);
-            void (*resume)(struct clocksource *cs);
-            void (*mark_unstable)(struct clocksource *cs);
-            void (*tick_stable)(struct clocksource *cs);
-        #ifdef CONFIG_CLOCKSOURCE_WATCHDOG
-            struct list_head wd_list;
-            u64 cs_last;
-            u64 wd_last;
-        #endif
-            struct module *owner;
+            ...
+            struct module *owner; // v3.13~
         };
-        """
-        klayout = Kernel.layout()
-        if klayout.text_base is None or klayout.text_end is None:
-            return None
 
-        nodes = KernelListHead(clocksource).parse()
-        if not nodes:
-            return None
-
+        `read` is the head and `name` is right before `list` in every version. A node that
+        does not match is tolerated only when the others agree, since it is a corruption."""
+        ptrsize = current_arch.ptrsize
         if is_x86_32():
             base_mask_offsets = (4, 8)
         elif is_arm32():
             # AAPCS aligns u64 to 8 bytes, while the legacy APCS ABI aligns it to 4.
             base_mask_offsets = (8, 4)
+        elif is_riscv32():
+            base_mask_offsets = (8,)
         else:
-            base_mask_offsets = (current_arch.ptrsize,)
+            base_mask_offsets = (ptrsize,)
         # Some old kernels have cycle_last between read and mask. Check both
         # layouts instead of applying the extra u64 to every v3.x kernel.
         mask_offsets = tuple(dict.fromkeys(
             offset for base in base_mask_offsets for offset in (base, base + 8)
         ))
 
+        tolerance = 1 if len(self.nodes) >= 3 else 0
         for i in range(5, 64):
-            candidate_offset = i * current_arch.ptrsize
-            for node in nodes:
-                candidate = node - candidate_offset
-                read = read_int_from_memory(candidate)
-                if not (klayout.text_base <= read < klayout.text_end):
-                    break
-
-                for mask_offset in mask_offsets:
-                    mask = read_int64_from_memory(candidate + mask_offset)
-                    mult = read_int32_from_memory(candidate + mask_offset + 8)
-                    shift = read_int32_from_memory(candidate + mask_offset + 12)
-                    if mask and mask & (mask + 1) == 0 and mult and shift <= 64:
-                        break
+            offset_list = i * ptrsize
+            for offset_mask in mask_offsets:
+                offsets = {
+                    "list": offset_list,
+                    "read": 0,
+                    "mask": offset_mask,
+                    "mult": offset_mask + 8,
+                    "shift": offset_mask + 12,
+                    "name": offset_list - ptrsize,
+                }
+                failed = 0
+                for node in self.nodes:
+                    if not self.is_clocksource(node - offset_list, offsets):
+                        failed += 1
+                        if failed > tolerance:
+                            break
                 else:
-                    break
-            else:
-                return candidate_offset
+                    return offsets
         return None
+
+    def find_offset_rating(self, clocksources):
+        """`rating` follows `list` (and `freq_khz` at v6.11~). The list is sorted by it in descending order."""
+        after = self.offsets["list"] + current_arch.ptrsize * 2
+        candidates = [after + 4, after] if self.kversion >= "6.11" else [after, after + 4]
+        for offset in candidates:
+            ratings = [read_int32_from_memory(cs + offset, signed=True, safe=True) for cs in clocksources]
+            if None in ratings or not any(ratings) or any(not 0 <= r < 0x10000 for r in ratings):
+                continue
+            if ratings == sorted(ratings, reverse=True):
+                return offset
+        return None
+
+    def find_offset_flags(self, clocksources):
+        ptrsize = current_arch.ptrsize
+        after = self.offsets["list"] + ptrsize * 2
+        if self.kversion >= "6.11":
+            offset = after + 16 # freq_khz, rating, id, vdso_clock_mode
+        elif self.kversion >= "5.13":
+            offset = align(after + 12, ptrsize) # rating, id, vdso_clock_mode
+        elif self.kversion >= "5.7":
+            offset = after + 8 # rating, vdso_clock_mode
+        elif self.kversion >= "3.1":
+            offset = align(after + 4, ptrsize) + ptrsize * 2 # rating, enable, disable
+        else:
+            offset = align(after + 4, ptrsize) + ptrsize * 3 # rating, vread, enable, disable
+        values = [read_int_from_memory(cs + offset, safe=True) for cs in clocksources]
+        if None in values or not any(values) or any(v >= 0x2000 for v in values):
+            return None
+        return offset
+
+    def initialize(self):
+        self.meta = []
+        self.incomplete = []
+        self.kversion = Kernel.version()
+        self.klayout = Kernel.layout()
+        self.module_text_ranges = None
+
+        self.clocksource_list = KernelAddressHeuristicFinder.get_clocksource_list()
+        if self.clocksource_list is None:
+            self.meta.append((self.quiet_err, "Could not find clocksource_list"))
+            return False
+        self.meta.append((self.quiet_info, "clocksource_list: {:#x}".format(self.clocksource_list)))
+
+        lh = KernelListHead(self.clocksource_list)
+        self.nodes = list(lh.iter_entries())
+        if lh.broken:
+            self.incomplete.append("clocksource_list is broken at {:#x}".format(lh.broken_at))
+        if not self.nodes:
+            self.meta.append((self.quiet_err, "clocksource_list is empty"))
+            return False
+
+        layout = self.resolve_layout()
+        if layout is not None:
+            self.offsets = dict(layout)
+            sources = dict.fromkeys(self.offsets, "debug info")
+        else:
+            self.offsets = self.find_offsets()
+            if self.offsets is None:
+                self.meta.append((self.quiet_err, "Could not determine offsetof(clocksource, list) from clocksource_list"))
+                return False
+            clocksources = [node - self.offsets["list"] for node in self.nodes]
+            clocksources = [cs for cs in clocksources if self.is_clocksource(cs, self.offsets)]
+            self.offsets["rating"] = self.find_offset_rating(clocksources)
+            self.offsets["flags"] = self.find_offset_flags(clocksources)
+            self.offsets["owner"] = None
+            sources = dict.fromkeys(self.offsets, "heuristic")
+            sources["owner"] = "the module text of read"
+
+        for name, offset in self.offsets.items():
+            label = "offsetof(clocksource, {:s})".format(name)
+            if offset is None:
+                self.meta.append((self.quiet_info, "{:s}: - ({:s})".format(label, sources[name])))
+            else:
+                self.meta.append((self.quiet_info, "{:s}: {:#x} ({:s})".format(label, offset, sources[name])))
+        self.meta.append((self.quiet_info, "clocksource count: {:d}".format(len(self.nodes))))
+        return True
+
+    def format_frequency(self, mult, shift):
+        if not mult or shift > 64:
+            return "-"
+        hz = (10 ** 9 << shift) / mult
+        for unit, scale in (("GHz", 10 ** 9), ("MHz", 10 ** 6), ("kHz", 10 ** 3)):
+            if hz >= scale:
+                return "{:.3f} {:s}".format(hz / scale, unit)
+        return "{:.0f} Hz".format(hz)
+
+    def format_flags(self, flags):
+        if flags is None:
+            return "-"
+        names = []
+        for bit, name in self.FLAGS:
+            if flags & bit:
+                if bit == 0x200 and self.kversion >= "7.1":
+                    name = "INLINE"
+                names.append(name)
+                flags &= ~bit
+        if flags:
+            names.append("{:#x}".format(flags))
+        return "|".join(names) or "0"
+
+    def read_clocksource(self, node):
+        cs = node - self.offsets["list"]
+        if not self.is_clocksource(cs, self.offsets):
+            return None
+
+        read = read_int_from_memory(cs + self.offsets["read"])
+        mask = read_int64_from_memory(cs + self.offsets["mask"])
+        mult = read_int32_from_memory(cs + self.offsets["mult"])
+        shift = read_int32_from_memory(cs + self.offsets["shift"])
+        rating = flags = None
+        if self.offsets["rating"] is not None:
+            rating = read_int32_from_memory(cs + self.offsets["rating"], signed=True, safe=True)
+        if self.offsets["flags"] is not None:
+            flags = read_int_from_memory(cs + self.offsets["flags"], safe=True)
+        if self.offsets["owner"] is None:
+            module = self.find_module(address=read)
+        else:
+            owner = read_int_from_memory(cs + self.offsets["owner"], safe=True)
+            module = owner and (self.find_module(module=owner) or "{:#x}".format(owner))
+        return {
+            "address": cs,
+            "name": self.read_name(read_int_from_memory(cs + self.offsets["name"])),
+            "read": read,
+            "bits": mask.bit_length(),
+            "frequency": self.format_frequency(mult, shift),
+            "rating": "-" if rating is None else str(rating),
+            "flags": self.format_flags(flags),
+            "module": module,
+        }
 
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
-    @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware"))
-    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
+    @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
+    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64"))
     @Decorator.only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
         self.quiet_info("Wait for memory scan")
 
-        clocksource_list = KernelAddressHeuristicFinder.get_clocksource_list()
-        if clocksource_list is None:
-            self.quiet_err("Could not find clocksource_list")
+        ret = self.initialize()
+        if args.meta or not ret:
+            for func, line in self.meta:
+                func(line)
+        if not ret:
             return
-        self.quiet_info("clocksource_list: {:#x}".format(clocksource_list))
-
-        offset_list = self.get_offset_list(clocksource_list)
-        if offset_list is None:
-            self.quiet_err("Could not determine offsetof(clocksource, list) from clocksource_list")
-            return
-        self.quiet_info("offsetof(clocksource, list): {:#x}".format(offset_list))
 
         entries = []
-        for current in KernelListHead(clocksource_list).iter_entries():
-            cs = current - offset_list
-            read = read_int_from_memory(cs)
-            read_sym = Symbol.get_symbol_string(read, nosymbol_string=" <NO_SYMBOL>")
-            name_addr = read_int_from_memory(current - current_arch.ptrsize)
-            name = read_cstring_from_memory(name_addr)
-            entries.append((cs, name, read, read_sym))
+        for node in self.nodes:
+            entry = self.read_clocksource(node)
+            if entry is None:
+                self.incomplete.append("the clocksource of the node {:#x} is corrupted".format(node))
+                continue
+            entries.append(entry)
 
-        active = KernelAddressHeuristicFinder.get_current_clocksource(tuple(entry[0] for entry in entries))
+        if args.meta:
+            for reason in self.incomplete:
+                self.quiet_warn("Incomplete: {:s}".format(reason))
+            return
+
+        active = KernelAddressHeuristicFinder.get_current_clocksource(tuple(entry["address"] for entry in entries))
 
         self.out = []
         width = AddressUtil.get_format_address_width()
+        flags_width = max([5] + [len(entry["flags"]) for entry in entries])
+        fmt = "{:<{w}s} {:20s} {:8s} {:>6s} {:>13s} {:>4s} {:<{fw}s} "
         if not args.quiet:
-            fmt = "{:<{:d}s} {:20s} {:8s} {:<{:d}s} {:<{:d}s}"
-            legend = ["address", width, "name", "status", "read", width, "symbol", width]
-            self.out.append(GefUtil.make_legend(fmt.format(*legend)))
+            legend = ["address", "name", "status", "rating", "frequency", "bits", "flags"]
+            legend = fmt.format(*legend, w=width, fw=flags_width) + "{:<{w}s} {:s}".format("read", "symbol", w=width)
+            self.out.append(GefUtil.make_legend(legend))
 
-        for cs, name, read, read_sym in entries:
-            status = "active" if cs == active else ""
-            self.out.append("{:#0{:d}x} {:20s} {:8s} {:#0{:d}x}{:s}".format(
-                cs, width, name, status, read, width, read_sym,
-            ))
+        for entry in entries:
+            status = "active" if entry["address"] == active else ""
+            line = fmt.format(
+                "{:#0{:d}x}".format(entry["address"], width), entry["name"], status, entry["rating"],
+                entry["frequency"], str(entry["bits"]), entry["flags"], w=width, fw=flags_width,
+            )
+            line += "{:#0{:d}x}{:s}".format(entry["read"], width, Symbol.get_symbol_string(entry["read"], nosymbol_string=" <NO_SYMBOL>"))
+            if entry["module"]:
+                line += "  [module: {:s}]".format(entry["module"])
+            self.out.append(line)
+        for reason in self.incomplete:
+            self.warn_add_out("Incomplete: {:s}".format(reason))
 
         self.print_output(check_terminal_size=True)
         return
@@ -87591,6 +88054,9 @@ class KernelTimerCommand(GenericCommand, BufferingOutput):
         "| ...                |",
         "+--------------------+",
         "",
+        "Before v4.8, each cpu has one `tvec_base` (pointed by `tvec_bases` before v4.2) with 512 buckets",
+        "(tv1 to tv5). They are `struct list_head` before v4.2, and `struct hlist_head` after.",
+        "",
         "Simplified hrtimer structure (per-cpu):",
         "",
         "+-hrtimer_cpu_bases--+",
@@ -87609,11 +88075,34 @@ class KernelTimerCommand(GenericCommand, BufferingOutput):
         "| clock_bases[8]     |        | ...           |",
         "|   ...              |        +---------------+",
         "+--------------------+",
+        "",
+        "- Classic timers are sorted by `time_to_expired`, the signed difference from `jiffies` in unsigned long.",
+        "- hrtimers are sorted by `expires`, since they are listed in the order of the rbtree.",
+        "- The member offsets come from the debug information (vmlinux or `ktypes-load`) when available.",
+        "  They are verified by `timer_base.cpu` and `hrtimer_clock_base.cpu_base` and `index`.",
     ]
     _note_ = "\n".join(_note_)
 
+    clockid_dict = {
+        0: "CLOCK_REALTIME",
+        1: "CLOCK_MONOTONIC",
+        2: "CLOCK_PROCESS_CPUTIME_ID",
+        3: "CLOCK_THREAD_CPUTIME_ID",
+        4: "CLOCK_MONOTONIC_RAW",
+        5: "CLOCK_REALTIME_COARSE",
+        6: "CLOCK_MONOTONIC_COARSE",
+        7: "CLOCK_BOOTTIME",
+        8: "CLOCK_REALTIME_ALARM",
+        9: "CLOCK_BOOTTIME_ALARM",
+        10: "CLOCK_SGI_CYCLE",
+        11: "CLOCK_TAI",
+    }
+
     def initialize(self, classic=True, high_resolution=True):
         self.meta = []
+        self.incomplete = []
+        self.klayout = Kernel.layout()
+        self.module_text_ranges = None
 
         # resolve __per_cpu_offset
         self.percpu = Kernel.per_cpu()
@@ -87622,45 +88111,101 @@ class KernelTimerCommand(GenericCommand, BufferingOutput):
         else:
             self.meta.append((self.quiet_info, "__per_cpu_offset: {:#x}".format(self.percpu.per_cpu_offset)))
 
-        self.classic_timer_initialized = False
-        self.hrtimer_initialized = False
+        self.classic = None
+        self.hrtimer = None
         if classic:
-            self.classic_timer_initialized = bool(self.initialize_classic_timer())
-            self.meta.extend(self.classic_timer_meta)
+            self.classic = self.get_classic_layout()
         if high_resolution:
-            self.hrtimer_initialized = bool(self.initialize_hrtimer())
-            self.meta.extend(self.hrtimer_meta)
+            self.hrtimer = self.get_hrtimer_layout()
+        self.classic_timer_initialized = self.classic is not None
+        self.hrtimer_initialized = self.hrtimer is not None
         return self.classic_timer_initialized or self.hrtimer_initialized
 
-    @Cache.cache_this_session(cache_None=False)
-    def initialize_classic_timer(self):
-        self.classic_timer_meta = []
-
-        ### classic timer (unit: tick)
-
-        # timer_bases
-        self.timer_bases = KernelAddressHeuristicFinder.get_timer_bases()
-        if not self.timer_bases:
-            self.classic_timer_meta.append((self.quiet_err, "timer_bases: Not found"))
+    def get_classic_layout(self):
+        layout = self.resolve_classic_layout()
+        if layout is not None and not self.verify_classic_layout(layout):
+            # the target has been replaced since the layout was cached
+            Cache.clear_cache_for(self.resolve_classic_layout)
+            layout = self.resolve_classic_layout()
+        if layout is None:
+            self.meta.extend(Kernel.export_meta(self, self.classic_meta))
             return None
-        self.classic_timer_meta.append((self.quiet_info, "timer_bases: {:#x}".format(self.timer_bases)))
+        if not layout["verified"]:
+            # resolve it again the next time
+            Cache.clear_cache_for(self.resolve_classic_layout)
+        self.meta.extend(Kernel.export_meta(self, layout["meta"]))
+        return layout
 
-        # per_cpu_timer_bases
-        self.per_cpu_timer_bases = self.percpu.addrs_of(self.timer_bases)
+    def get_hrtimer_layout(self):
+        layout = self.resolve_hrtimer_bases()
+        if layout is not None and not self.verify_hrtimer_bases(layout, self.percpu.addr_of(layout["hrtimer_bases"], 0)):
+            Cache.clear_cache_for(self.resolve_hrtimer_bases)
+            Cache.clear_cache_for(self.resolve_hrtimer_members)
+            layout = self.resolve_hrtimer_bases()
+        if layout is None:
+            self.meta.extend(Kernel.export_meta(self, self.hrtimer_meta))
+            return None
+        self.meta.extend(Kernel.export_meta(self, layout["meta"]))
 
-        # len(timer_bases); NR_BASES is 1 unless CONFIG_NO_HZ_COMMON=y.
-        # `tick_nohz_idle_enter` is a global function that exists only with CONFIG_NO_HZ_COMMON=y.
-        # (`sysctl_timer_migration` is a data symbol, so it is invisible with CONFIG_KALLSYMS_ALL=n)
-        if not Ksym.get_addr("tick_nohz_idle_enter"):
-            self.nr_bases = 1
-        elif Kernel.version() < "6.10":
-            self.nr_bases = 2 # BASE_STD, BASE_DEF
-        else:
-            self.nr_bases = 3 # BASE_LOCAL, BASE_GLOBAL, BASE_DEF
-        self.classic_timer_meta.append((self.quiet_info, "nr_bases: {:d}".format(self.nr_bases)))
+        members = self.resolve_hrtimer_members()
+        if members is None:
+            # every rbtree is empty now, so the offsets are not verified and must not be cached
+            members = self.guess_hrtimer_members()
+        self.meta.extend(Kernel.export_meta(self, members["meta"]))
+        return {**layout, **members}
 
-        # sizeof(struct timer_base)
+    def resolve_timer_list(self, meta, kind):
+        """Return the offsets of `struct timer_list`.
+
+        struct timer_list {
+            struct hlist_node entry; // struct list_head (~v4.1)
+            unsigned long expires;
+            struct tvec_base *base; // ~v4.1
+            void (*function)(struct timer_list *); // (unsigned long) ~v4.14
+            unsigned long data; // ~v4.14
+            u32 flags; // v4.2~
+        #ifdef CONFIG_LOCKDEP
+            struct lockdep_map lockdep_map;
+        #endif
+        };
         """
+        ptrsize = current_arch.ptrsize
+        offsets = {}
+        fixed = {"expires": ptrsize * 2, "function": ptrsize * (4 if kind == "tvec_list" else 3)}
+        for name, value in fixed.items():
+            offset = GefUtil.offsetof("timer_list", name)
+            source = "debug info"
+            if offset is None:
+                offset, source = value, "fixed"
+            offsets["offset_" + name] = offset
+            meta.append(("info", "offsetof(timer_list, {:s}): {:#x} ({:s})".format(name, offset, source)))
+        return offsets
+
+    def is_timer_base_header(self, timer_base, cpu, offset_clk):
+        """Check the members of `struct timer_base` that never change after the initialization."""
+        ptrsize = current_arch.ptrsize
+        try:
+            clk = read_int_from_memory(timer_base + offset_clk)
+            next_expiry = read_int_from_memory(timer_base + offset_clk + ptrsize)
+            data = read_memory(timer_base + offset_clk + ptrsize * 2, 7)
+        except gdb.MemoryError:
+            return False
+        if clk == 0 or u32(data[:4]) != cpu or any(x > 1 for x in data[4:]):
+            return False
+        # see `find_timer_base_layout()`
+        return not next_expiry or abs(self.time_to_expire(next_expiry, clk)) < 1 << 30
+
+    def count_timer_bases(self, cpu_addrs, offset_clk, stride, limit):
+        nr_bases = 1
+        while nr_bases < limit:
+            if not all(self.is_timer_base_header(addr + stride * nr_bases, cpu, offset_clk) for cpu, addr in cpu_addrs[:4]):
+                break
+            nr_bases += 1
+        return nr_bases
+
+    def resolve_timer_base(self, timer_bases, meta):
+        """Return the layout of `timer_bases[NR_BASES]` (v4.8~), or None.
+
         struct timer_base {
             raw_spinlock_t lock;
             struct timer_list *running_timer;
@@ -87678,52 +88223,353 @@ class KernelTimerCommand(GenericCommand, BufferingOutput):
             struct hlist_head vectors[WHEEL_SIZE];
         } ____cacheline_aligned;
         """
-        self.sizeof_timer_base = 0
-        if self.nr_bases > 1:
-            timer_base = self.per_cpu_timer_bases[0]
+        ptrsize = current_arch.ptrsize
+        cpu_addrs = self.percpu.possible_addrs_of(timer_bases)
+        if not cpu_addrs or cpu_addrs[0][0] != 0:
+            meta.append(("err", "per-cpu timer_bases: Not found"))
+            return None
 
-            # Look for the first member that is neither NULL nor a pointer. Which member that is
-            # depends on the config: `lock` keeps the ticket counter on ARM32 and the magic with
-            # CONFIG_DEBUG_SPINLOCK, otherwise the first one is `clk`. Running the same scan
-            # from `timer_bases[0]` calibrates that, so the difference is the exact stride.
-            found = []
-            for i in (0, 512):
-                while True:
-                    v = read_int_from_memory(timer_base + current_arch.ptrsize * i, safe=True)
-                    if v is None:
-                        self.classic_timer_meta.append((self.quiet_err, "Memory read error"))
-                        return None
-                    if v != 0 and not is_valid_addr(v):
-                        found.append(current_arch.ptrsize * i)
+        offset_vectors = GefUtil.offsetof("timer_base", "vectors")
+        offset_cpu = GefUtil.offsetof("timer_base", "cpu")
+        offset_clk = GefUtil.offsetof("timer_base", "clk")
+        sizeof_timer_base = GefUtil.sizeof("timer_base")
+        sizeof_vectors = GefUtil.sizeof("((struct timer_base *)0)->vectors")
+        if None not in (offset_vectors, offset_cpu, offset_clk, sizeof_timer_base, sizeof_vectors):
+            if all(self.is_timer_base_header(addr, cpu, offset_clk) for cpu, addr in cpu_addrs[:4]):
+                try:
+                    nr_bases = GefUtil.parse_and_eval_unsigned("sizeof(timer_bases)") // sizeof_timer_base
+                    source_nr_bases = "debug info"
+                except gdb.error:
+                    nr_bases = self.count_timer_bases(cpu_addrs, offset_clk, sizeof_timer_base, 3)
+                    source_nr_bases = "heuristic"
+                return {
+                    "nr_bases": (nr_bases, source_nr_bases),
+                    "sizeof_timer_base": (sizeof_timer_base, "debug info"),
+                    "offset_vectors": (offset_vectors, "debug info"),
+                    "offset_cpu": (offset_cpu, "debug info"),
+                    "nr_vectors": (sizeof_vectors // ptrsize, "debug info"),
+                }
+            meta.append(("warn", "The debug information of struct timer_base does not match the memory"))
+
+        found = KernelAddressHeuristicFinder.find_timer_base_layout(cpu_addrs[0][1], 0)
+        if found is None:
+            meta.append(("err", "Could not determine the layout of struct timer_base"))
+            return None
+        offset_clk, wheels = found
+        offset_cpu = offset_clk + ptrsize * 2
+
+        # NR_BASES is 1 without CONFIG_NO_HZ_COMMON, 2 (BASE_STD, BASE_DEF) before v6.10,
+        # and 3 (BASE_LOCAL, BASE_GLOBAL, BASE_DEF) after. Each of them is cacheline aligned.
+        # `tick_nohz_idle_enter` is a global function that exists only with CONFIG_NO_HZ_COMMON=y.
+        # (`sysctl_timer_migration` is a data symbol, so it is invisible with CONFIG_KALLSYMS_ALL=n)
+        if not Ksym.get_addr("tick_nohz_idle_enter"):
+            limit = 1
+        elif Kernel.version() < "6.10":
+            limit = 2
+        else:
+            limit = 3
+        if len(cpu_addrs) > 1:
+            # the cpu number of each base is a strong evidence, which a vendor backport cannot break
+            limit = 3
+
+        # An empty wheel matches both WHEEL_SIZEs, so every base of every cpu is checked.
+        # The stride found from the next base also tells the right one.
+        candidates = []
+        for offset_vectors, wheel_size in wheels:
+            end = offset_vectors + wheel_size * ptrsize
+            stride, nr_bases = align(end, 64), 1
+            for cacheline in (64, 128, 32, 256):
+                size = align(end, cacheline)
+                if all(self.is_timer_base_header(addr + size, cpu, offset_clk) for cpu, addr in cpu_addrs[:4]):
+                    stride = size
+                    nr_bases = self.count_timer_bases(cpu_addrs, offset_clk, stride, limit)
+                    break
+            nonempty = 0
+            for _cpu, addr in cpu_addrs:
+                for n in range(nr_bases):
+                    result = KernelAddressHeuristicFinder.check_timer_wheel(addr + stride * n, offset_cpu + 8, offset_vectors, wheel_size)
+                    if result is None or result[0] > 1:
                         break
-                    i += 1
-            self.sizeof_timer_base = found[1] - found[0]
+                    nonempty += result[1]
+                else:
+                    continue
+                break
+            else:
+                candidates.append((nr_bases, nonempty, stride, offset_vectors, wheel_size))
+        if not candidates:
+            meta.append(("err", "Could not determine the layout of struct timer_base"))
+            return None
+
+        candidates.sort(reverse=True)
+        nr_bases, nonempty, stride, offset_vectors, wheel_size = candidates[0]
+        verified = len(candidates) == 1 or candidates[1][:2] != (nr_bases, nonempty)
+        if not verified:
+            meta.append(("warn", "Every timer wheel is empty, so WHEEL_SIZE is not verified"))
+        return {
+            "verified": (verified, "heuristic"),
+            "nr_bases": (nr_bases, "heuristic"),
+            "sizeof_timer_base": (stride, "heuristic"),
+            "offset_vectors": (offset_vectors, "heuristic"),
+            "offset_cpu": (offset_cpu, "heuristic"),
+            "nr_vectors": (wheel_size, "heuristic"),
+        }
+
+    def resolve_tvec_base(self, tvec_bases, meta):
+        """Return the layout of `tvec_bases` (~v4.7), or None. See `find_tvec_base_layout()`."""
+        ptrsize = current_arch.ptrsize
+        slot = self.percpu.addr_of(tvec_bases, 0)
+        if slot is None:
+            meta.append(("err", "per-cpu tvec_bases: Not found"))
+            return None
+
+        # ~v4.1 holds a pointer to the struct, and v4.2~ holds the struct itself
+        for pointer in (True, False):
+            base = read_int_from_memory(slot, safe=True) if pointer else slot
+            if not base or not is_valid_addr(base):
+                continue
+            offset_tv1 = GefUtil.offsetof("tvec_base", "tv1")
+            offset_tv5 = GefUtil.offsetof("tvec_base", "tv5")
+            sizeof_tv5 = GefUtil.sizeof("((struct tvec_base *)0)->tv5")
+            sizeof_head = GefUtil.sizeof("((struct tvec_base *)0)->tv1.vec[0]")
+            if None not in (offset_tv1, offset_tv5, sizeof_tv5, sizeof_head):
+                nr_vectors = (offset_tv5 + sizeof_tv5 - offset_tv1) // sizeof_head
+                found = (offset_tv1, nr_vectors, sizeof_head == ptrsize)
+                source = "debug info"
+            else:
+                found = KernelAddressHeuristicFinder.find_tvec_base_layout(base, 0)
+                source = "heuristic"
+            if found is None:
+                continue
+            offset_vectors, nr_vectors, is_hlist = found
+            return {
+                "pointer": (pointer, source),
+                "offset_vectors": (offset_vectors, source),
+                "nr_vectors": (nr_vectors, source),
+                "hlist": (is_hlist, source),
+                # `int cpu` is followed by 2 bools with hlist_head (v4.2~)
+                "offset_cpu": (offset_vectors - 8 if is_hlist else None, source),
+            }
+        meta.append(("err", "Could not determine the layout of struct tvec_base"))
+        return None
+
+    @Cache.cache_this_session(cache_None=False, per_inferior=True, until_new_objfile=True)
+    def resolve_classic_layout(self):
+        """Return the layout of the timer wheel, verified by the memory, or None."""
+        self.classic_meta = meta = []
+
+        kind = None
+        timer_bases = KernelAddressHeuristicFinder.get_timer_bases()
+        if timer_bases:
+            meta.append(("info", "timer_bases: {:#x}".format(timer_bases)))
+            base_layout = self.resolve_timer_base(timer_bases, meta)
+            kind = "wheel"
+        else:
+            tvec_bases = KernelAddressHeuristicFinder.get_tvec_bases()
+            if not tvec_bases:
+                meta.append(("err", "timer_bases: Not found"))
+                return None
+            meta.append(("info", "tvec_bases: {:#x}".format(tvec_bases)))
+            base_layout = self.resolve_tvec_base(tvec_bases, meta)
+            if base_layout:
+                kind = "tvec_hlist" if base_layout["hlist"][0] else "tvec_list"
+        if base_layout is None:
+            return None
+
+        layout = {"kind": kind, "verified": True}
+        if kind == "wheel":
+            layout["timer_bases"] = timer_bases
+        else:
+            layout["tvec_bases"] = tvec_bases
+        for name, (value, source) in base_layout.items():
+            layout[name] = value
+            if name in ("offset_cpu", "hlist", "verified"):
+                continue
+            label = {
+                "nr_bases": "NR_BASES",
+                "sizeof_timer_base": "sizeof(timer_base)",
+                "offset_vectors": "offsetof({:s}, vectors)".format("timer_base" if kind == "wheel" else "tvec_base"),
+                "nr_vectors": "the number of the buckets",
+                "pointer": "tvec_bases is a pointer",
+            }[name]
+            if name == "pointer":
+                fmt = "{:s}: {!s} ({:s})"
+            elif name.startswith("nr_"):
+                fmt = "{:s}: {:d} ({:s})"
+            else:
+                fmt = "{:s}: {:#x} ({:s})"
+            meta.append(("info", fmt.format(label, value, source)))
+        layout.update(self.resolve_timer_list(meta, kind))
 
         # jiffies
-        self.jiffies = KernelAddressHeuristicFinder.get_jiffies()
-        if not self.jiffies:
-            self.classic_timer_meta.append((self.quiet_err, "jiffies: Not found"))
+        jiffies = KernelAddressHeuristicFinder.get_jiffies()
+        if not jiffies:
+            meta.append(("err", "jiffies: Not found"))
             return None
-        self.classic_timer_meta.append((self.quiet_info, "jiffies: {:#x}".format(self.jiffies)))
+        meta.append(("info", "jiffies: {:#x}".format(jiffies)))
+        layout["jiffies"] = jiffies
+        layout["meta"] = meta
+        return layout
+
+    def iter_classic_bases(self, layout):
+        """Yield (cpu, the index of timer_base or None, the address of timer_base/tvec_base)."""
+        if layout["kind"] == "wheel":
+            for cpu, addr in self.percpu.possible_addrs_of(layout["timer_bases"]):
+                for n in range(layout["nr_bases"]):
+                    yield cpu, n, addr + layout["sizeof_timer_base"] * n
+            return
+
+        for cpu, slot in self.percpu.possible_addrs_of(layout["tvec_bases"]):
+            base = slot
+            if layout["pointer"]:
+                base = read_int_from_memory(slot, safe=True)
+                if not base or not is_valid_addr(base):
+                    self.incomplete.append("tvec_bases of cpu{:d} is unreadable".format(cpu))
+                    continue
+            yield cpu, None, base
+        return
+
+    def verify_classic_base(self, layout, cpu, base):
+        ptrsize = current_arch.ptrsize
+        if layout["offset_cpu"] is not None:
+            return read_int32_from_memory(base + layout["offset_cpu"], safe=True) == cpu
+        # the empty list_head of tv1 links to itself
+        head = base + layout["offset_vectors"]
+        first = read_int_from_memory(head, safe=True)
+        return bool(first) and read_int_from_memory(first + ptrsize, safe=True) == head
+
+    def verify_classic_layout(self, layout):
+        for cpu, _n, base in self.iter_classic_bases(layout):
+            return self.verify_classic_base(layout, cpu, base)
+        return False
+
+    def walk_hlist(self, head):
+        """Return the nodes of the hlist at `head` verified by `pprev`, and the reason if the walk stopped."""
+        ptrsize = current_arch.ptrsize
+        nodes = []
+        link = head
+        node = read_int_from_memory(head, safe=True)
+        while node:
+            # it also stops at a cycle, where `pprev` does not point to the current link
+            if not is_valid_addr(node) or read_int_from_memory(node + ptrsize, safe=True) != link:
+                return nodes, "broken at {:#x}".format(node)
+            nodes.append(node)
+            link = node
+            node = read_int_from_memory(node, safe=True)
+        if node is None:
+            return nodes, "unreadable at {:#x}".format(link)
+        return nodes, None
+
+    def collect_classic_timers(self):
+        """Return [{"cpu", "base", "timer", "expires", "function"}, ...] of every queued timer_list."""
+        layout = self.classic
+        ptrsize = current_arch.ptrsize
+        is_hlist = layout["kind"] != "tvec_list"
+        sizeof_head = ptrsize if is_hlist else ptrsize * 2
+        timers = []
+        for cpu, n, base in self.iter_classic_bases(layout):
+            name = "cpu{:d} {:s}".format(cpu, "timer_base[{:d}]".format(n) if n is not None else "tvec_base")
+            if not self.verify_classic_base(layout, cpu, base):
+                self.incomplete.append("{:s} ({:#x}) does not match the layout".format(name, base))
+                continue
+            vectors = base + layout["offset_vectors"]
+            try:
+                heads = slice_unpack(read_memory(vectors, layout["nr_vectors"] * sizeof_head), ptrsize)
+            except gdb.MemoryError:
+                self.incomplete.append("{:s} ({:#x}) is unreadable".format(name, base))
+                continue
+            for i in range(layout["nr_vectors"]):
+                head = vectors + i * sizeof_head
+                if is_hlist:
+                    if heads[i] == 0:
+                        continue
+                    nodes, reason = self.walk_hlist(head)
+                else:
+                    if heads[i * 2] == head:
+                        continue
+                    lh = KernelListHead(head)
+                    nodes = list(lh.iter_entries())
+                    reason = "{:s} at {:#x}".format(lh.broken_reason, lh.broken_at) if lh.broken else None
+                if reason:
+                    self.incomplete.append("the bucket {:d} of {:s} is {:s}".format(i, name, reason))
+                for timer in nodes:
+                    expires = read_int_from_memory(timer + layout["offset_expires"], safe=True)
+                    function = read_int_from_memory(timer + layout["offset_function"], safe=True)
+                    if expires is None or function is None:
+                        self.incomplete.append("timer_list {:#x} is unreadable".format(timer))
+                        continue
+                    timers.append({"cpu": cpu, "base": n, "timer": timer, "expires": expires, "function": function})
+        return timers
+
+    def get_classic_timers(self):
+        """Return {"timers": [{"cpu", "base", "timer", "expires", "function"}, ...], "incomplete": [reason, ...]}
+        of every queued timer_list without printing, or None if the timer wheel is not resolved."""
+        if not self.initialize(classic=True, high_resolution=False):
+            return None
+        timers = self.collect_classic_timers()
+        return {"timers": timers, "incomplete": self.incomplete}
+
+    def time_to_expire(self, expires, now):
+        """Return `expires - now` as the kernel does in `time_after()`, which wraps in unsigned long."""
+        bits = current_arch.ptrsize * 8
+        diff = (expires - now) & ((1 << bits) - 1)
+        if diff >> (bits - 1):
+            diff -= 1 << bits
+        return diff
+
+    def get_cpu_label(self, cpu):
+        online = self.cpu_masks.get("online") if self.cpu_masks else None
+        if online is not None and cpu not in online:
+            return "cpu{:d} (offline)".format(cpu)
+        return "cpu{:d}".format(cpu)
+
+    def dump_timer(self):
+        layout = self.classic
+        jiffies = read_int_from_memory(layout["jiffies"], safe=True)
+        if jiffies is None:
+            self.err_add_out("jiffies is unreadable")
+            return
+
+        timers = {}
+        for timer in self.collect_classic_timers():
+            timers.setdefault((timer["cpu"], timer["base"]), []).append(timer)
+
+        for cpu, n, base in self.iter_classic_bases(layout):
+            if n is None:
+                self.out.append(titlify("{:s} tvec_base: {:#x}".format(self.get_cpu_label(cpu), base)))
+            else:
+                self.out.append(titlify("{:s} timer_base[{:d}]: {:#x}".format(self.get_cpu_label(cpu), n, base)))
+
+            # print legend
+            if not self.args.quiet:
+                fmt = "{:18s}  {:18s}  {:23s}  {:18s} {:s}"
+                legend = ["timer_list", "expires", "time_to_expired", "function", "symbol"]
+                self.out.append(GefUtil.make_legend(fmt.format(*legend)))
+
+            entries = timers.get((cpu, n), [])
+            for timer in sorted(entries, key=lambda x: self.time_to_expire(x["expires"], jiffies)):
+                sym = Symbol.get_symbol_string(timer["function"], nosymbol_string=" <NO_SYMBOL>")
+                tte = self.time_to_expire(timer["expires"], jiffies)
+                self.out.append("{:#018x}  {:#018x}  {:#018x} tick  {:#018x}{:s}".format(
+                    timer["timer"], timer["expires"], tte, timer["function"], sym,
+                ).rstrip())
+        return
+
+    def verify_hrtimer_bases(self, layout, cpu_base):
+        """Check `clock_base[i].cpu_base == cpu_base` and `clock_base[i].index == i`."""
+        if cpu_base is None:
+            return False
+        for n in range(layout["nr_clock_bases"]):
+            htb = cpu_base + layout["offset_clock_base"] + layout["sizeof_clock_base"] * n
+            if read_int_from_memory(htb + layout["offset_cpu_base"], safe=True) != cpu_base:
+                return False
+            if read_int32_from_memory(htb + layout["offset_index"], safe=True) != n:
+                return False
         return True
 
-    @Cache.cache_this_session(cache_None=False)
-    def initialize_hrtimer(self):
-        self.hrtimer_meta = []
+    @Cache.cache_this_session(cache_None=False, per_inferior=True, until_new_objfile=True)
+    def resolve_hrtimer_bases(self):
+        """Return the layout of `hrtimer_cpu_base.clock_base[]`, verified by the memory, or None.
 
-        ### High-resolution kernel timer (unit: nano seconds)
-
-        # hrtimer_bases
-        self.hrtimer_bases = KernelAddressHeuristicFinder.get_hrtimer_bases()
-        if not self.hrtimer_bases:
-            self.hrtimer_meta.append((self.quiet_err, "hrtimer_bases: Not found"))
-            return None
-        self.hrtimer_meta.append((self.quiet_info, "hrtimer_bases: {:#x}".format(self.hrtimer_bases)))
-
-        # per_cpu_hrtimer_bases
-        self.per_cpu_hrtimer_cpu_bases = self.percpu.addrs_of(self.hrtimer_bases)
-
-        """
         struct hrtimer_cpu_base {
             raw_spinlock_t lock;
             unsigned int cpu;
@@ -87763,11 +88609,16 @@ class KernelTimerCommand(GenericCommand, BufferingOutput):
                     struct rb_root head;             // ~v5.3
                     struct timerqueue_node *next;    // ~v5.3
                 } active;
+                ktime_t resolution; // ~v4.1
                 ktime_t (*get_time)(void); // ~v6.17
+                ktime_t softirq_time; // ~v4.1
                 ktime_t offset;
             } __hrtimer_clock_base_align clock_base[HRTIMER_MAX_CLOCK_BASES];
             call_single_data_t csd;
         } ____cacheline_aligned;
+
+        The members before `clock_base[]` differ a lot between the versions (e.g., `clock_base[]` is
+        right after `lock` before v3.10), but `clock_base[]` is found by its `cpu_base` and `index`.
 
         DEFINE_PER_CPU(struct hrtimer_cpu_base, hrtimer_bases) =
         {
@@ -87789,7 +88640,7 @@ class KernelTimerCommand(GenericCommand, BufferingOutput):
                     .clockid = CLOCK_BOOTTIME,
                     .get_time = &ktime_get_boottime,
                 },
-                {
+                {                                         // v3.10~
                     .index = HRTIMER_BASE_TAI,
                     .clockid = CLOCK_TAI,
                     .get_time = &ktime_get_clocktai,
@@ -87799,148 +88650,124 @@ class KernelTimerCommand(GenericCommand, BufferingOutput):
                     .clockid = CLOCK_MONOTONIC,
                     .get_time = &ktime_get,
                 },
-                {                                         // v4.16~
-                    .index = HRTIMER_BASE_REALTIME_SOFT,
-                    .clockid = CLOCK_REALTIME,
-                    .get_time = &ktime_get_real,
-                },
-                {                                         // v4.16~
-                    .index = HRTIMER_BASE_BOOTTIME_SOFT,
-                    .clockid = CLOCK_BOOTTIME,
-                    .get_time = &ktime_get_boottime,
-                },
-                {                                         // v4.16~
-                    .index = HRTIMER_BASE_TAI_SOFT,
-                    .clockid = CLOCK_TAI,
-                    .get_time = &ktime_get_clocktai,
-                },
+                ...                                       // v4.16~ (REALTIME_SOFT, BOOTTIME_SOFT, TAI_SOFT)
             }
         };
         """
-
-        hrtimer_cpu_base = self.per_cpu_hrtimer_cpu_bases[0]
-
+        self.hrtimer_meta = meta = []
+        ptrsize = current_arch.ptrsize
         kversion = Kernel.version()
-        if kversion < "4.16":
-            self.num_of_clock_base = 4
-        else:
-            self.num_of_clock_base = 8
 
-        # `clock_base[i].cpu_base` points back to the `hrtimer_cpu_base` itself, so it gives the
-        # head and the stride of `clock_base[]` directly. Unlike the calculation from `get_time`
-        # below, it is exact even when the tail of `struct hrtimer_clock_base` is padded up to
-        # the alignment (~v4.15), and it is the only way for v6.18 or later where `get_time`
-        # has been removed.
-        anchor = KernelAddressHeuristicFinder.find_clock_base_anchor(hrtimer_cpu_base)
-        if anchor:
-            self.offset_clock_base, self.sizeof_hrtimer_clock_base, _ = anchor
-        self.offset_clockid = current_arch.ptrsize + 4 # cpu_base, index
-
-        # A merge-window build names the previous release (`6.17.0-11846-g...`) but already has
-        # the next layout, so look for `get_time` instead of deciding by version alone.
-        ktime_get = Ksym.get_addr("ktime_get")
-        ktime_get_real = Ksym.get_addr("ktime_get_real")
-        ktime_get_ofs = None
-        ktime_get_real_ofs = None
-        if kversion < "6.18" and ktime_get and ktime_get_real:
-            limit = self.offset_clock_base + self.sizeof_hrtimer_clock_base * 2 if anchor else 0x400
-            for ofs in range(0, limit, current_arch.ptrsize):
-                v = read_int_from_memory(hrtimer_cpu_base + ofs, safe=True)
-                if v is None:
-                    break
-                if v == ktime_get:
-                    ktime_get_ofs = ofs
-                elif v == ktime_get_real:
-                    ktime_get_real_ofs = ofs
-                if ktime_get_ofs and ktime_get_real_ofs:
-                    break
-
-        if ktime_get_ofs and ktime_get_real_ofs:
-            if not anchor:
-                # fallback: `get_time` and `offset` are the last members of the structure
-                self.sizeof_hrtimer_clock_base = ktime_get_real_ofs - ktime_get_ofs
-                clock_base_1 = ktime_get_ofs + current_arch.ptrsize + 8 # get_time, offset
-                self.offset_clock_base = clock_base_1 - self.sizeof_hrtimer_clock_base
-            self.offset_get_time = ktime_get_ofs - self.offset_clock_base
-            self.offset_rb_root = self.offset_get_time - current_arch.ptrsize * 2
-        elif anchor:
-            self.offset_get_time = None # removed at v6.18
-            self.resolve_offset_rb_root(hrtimer_cpu_base + self.offset_clock_base)
-        else:
-            self.hrtimer_meta.append((self.quiet_err, "clock_base: Not found"))
+        hrtimer_bases = KernelAddressHeuristicFinder.get_hrtimer_bases()
+        if not hrtimer_bases:
+            meta.append(("err", "hrtimer_bases: Not found"))
+            return None
+        meta.append(("info", "hrtimer_bases: {:#x}".format(hrtimer_bases)))
+        hrtimer_cpu_base = self.percpu.addr_of(hrtimer_bases, 0)
+        if hrtimer_cpu_base is None:
+            meta.append(("err", "per-cpu hrtimer_bases: Not found"))
             return None
 
-        # struct hrtimer: `{rb_node, expires}, _softexpires, function, base, state, ...`
-        self.offset_expires = current_arch.ptrsize * 3
-        self.offset_function = current_arch.ptrsize * 3 + 8 * 2
-        if "6.18" <= kversion:
-            self.resolve_hrtimer_member_offset()
-        return True
+        layout = {"hrtimer_bases": hrtimer_bases}
+        offset_clock_base = GefUtil.offsetof("hrtimer_cpu_base", "clock_base")
+        sizeof_clock_base = GefUtil.sizeof("hrtimer_clock_base")
+        sizeof_clock_bases = GefUtil.sizeof("((struct hrtimer_cpu_base *)0)->clock_base")
+        members = {name: GefUtil.offsetof("hrtimer_clock_base", name) for name in ("cpu_base", "index", "clockid", "get_time")}
+        source = None
+        if None not in (offset_clock_base, sizeof_clock_base, sizeof_clock_bases, members["cpu_base"], members["index"], members["clockid"]):
+            layout.update({
+                "offset_clock_base": offset_clock_base,
+                "sizeof_clock_base": sizeof_clock_base,
+                "nr_clock_bases": sizeof_clock_bases // sizeof_clock_base,
+                "offset_cpu_base": members["cpu_base"],
+                "offset_index": members["index"],
+                "offset_clockid": members["clockid"],
+                "offset_get_time": members["get_time"],
+            })
+            if self.verify_hrtimer_bases(layout, hrtimer_cpu_base):
+                source = "debug info"
+            else:
+                meta.append(("warn", "The debug information of struct hrtimer_clock_base does not match the memory"))
 
-    def resolve_hrtimer_member_offset(self):
-        """Resolve the offsets of `expires` and `function` in `struct hrtimer`.
+        if source is None:
+            source = "heuristic"
+            layout.update({"offset_cpu_base": 0, "offset_index": ptrsize, "offset_clockid": ptrsize + 4})
 
-        `struct timerqueue_node` has gained a sorted list at v7.1, which shifts the members
-        placed after it. `base`, which points back to the hrtimer_clock_base, is used as
-        an anchor to absorb such a difference.
-        """
-        ptrsize = current_arch.ptrsize
+            # `clock_base[i].cpu_base` points back to the `hrtimer_cpu_base` itself, so it gives the
+            # head and the stride of `clock_base[]` directly. Unlike the calculation from `get_time`
+            # below, it is exact even when the tail of `struct hrtimer_clock_base` is padded up to
+            # the alignment (~v4.15), and it is the only way for v6.18 or later where `get_time`
+            # has been removed.
+            anchor = KernelAddressHeuristicFinder.find_clock_base_anchor(hrtimer_cpu_base)
+            if anchor:
+                layout["offset_clock_base"], layout["sizeof_clock_base"], _ = anchor
 
-        for hrtimer_cpu_base in self.per_cpu_hrtimer_cpu_bases:
-            clock_base = hrtimer_cpu_base + self.offset_clock_base
-            for base_n in range(self.num_of_clock_base):
-                htb = clock_base + self.sizeof_hrtimer_clock_base * base_n
-                for hrtimer in KernelRBTree(htb + self.offset_rb_root).parse():
-                    try:
-                        for i in range(3, 0x80 // ptrsize):
-                            if read_int_from_memory(hrtimer + ptrsize * i) != htb:
-                                continue
-                            offset_base = ptrsize * i
-                            if self.is_kernel_text_ptr(hrtimer + offset_base - ptrsize):
-                                # `..., expires}, _softexpires, function, base` (~v7.0)
-                                # `function` is right before `base`
-                                self.offset_expires = offset_base - ptrsize - 8 * 2
-                                self.offset_function = offset_base - ptrsize
-                            else:
-                                # `..., prev, next, expires}, base, is_queued, ..., is_lazy,
-                                #  _softexpires, function` (v7.1~); `expires` is right before `base`
-                                self.offset_expires = offset_base - 8
-                                for j in range(i + 1, 0x80 // ptrsize):
-                                    if self.is_kernel_text_ptr(hrtimer + ptrsize * j):
-                                        self.offset_function = ptrsize * j
-                                        break
-                            return
-                    except gdb.MemoryError:
-                        continue
+            # A merge-window build names the previous release (`6.17.0-11846-g...`) but already has
+            # the next layout, so look for `get_time` instead of deciding by version alone.
+            ktime_get = Ksym.get_addr("ktime_get")
+            ktime_get_real = Ksym.get_addr("ktime_get_real")
+            ktime_get_ofs = None
+            ktime_get_real_ofs = None
+            if kversion < "6.18" and ktime_get and ktime_get_real:
+                limit = layout["offset_clock_base"] + layout["sizeof_clock_base"] * 2 if anchor else 0x400
+                for ofs in range(0, limit, ptrsize):
+                    v = read_int_from_memory(hrtimer_cpu_base + ofs, safe=True)
+                    if v is None:
+                        break
+                    if v == ktime_get:
+                        ktime_get_ofs = ofs
+                    elif v == ktime_get_real:
+                        ktime_get_real_ofs = ofs
+                    if ktime_get_ofs and ktime_get_real_ofs:
+                        break
+
+            if ktime_get_ofs and ktime_get_real_ofs:
+                if not anchor:
+                    # fallback: `get_time` and `offset` are the last members of the structure
+                    layout["sizeof_clock_base"] = ktime_get_real_ofs - ktime_get_ofs
+                    clock_base_1 = ktime_get_ofs + ptrsize + 8 # get_time, offset
+                    layout["offset_clock_base"] = clock_base_1 - layout["sizeof_clock_base"]
+                layout["offset_get_time"] = ktime_get_ofs - layout["offset_clock_base"]
+            elif anchor:
+                layout["offset_get_time"] = None # removed at v6.18
+            else:
+                meta.append(("err", "clock_base: Not found"))
+                return None
+
+            # HRTIMER_MAX_CLOCK_BASES is 3 (~v3.9), 4 (v3.10~) or 8 (v4.16~)
+            nr_clock_bases = 0
+            while nr_clock_bases < 8:
+                layout["nr_clock_bases"] = nr_clock_bases + 1
+                if not self.verify_hrtimer_bases(layout, hrtimer_cpu_base):
+                    break
+                nr_clock_bases += 1
+            layout["nr_clock_bases"] = nr_clock_bases
+            if nr_clock_bases < 3:
+                meta.append(("err", "clock_base: Not found"))
+                return None
+
+        layout["source"] = source
+        meta.append(("info", "offsetof(hrtimer_cpu_base, clock_base): {:#x} ({:s})".format(layout["offset_clock_base"], source)))
+        meta.append(("info", "sizeof(hrtimer_clock_base): {:#x} ({:s})".format(layout["sizeof_clock_base"], source)))
+        meta.append(("info", "HRTIMER_MAX_CLOCK_BASES: {:d} ({:s})".format(layout["nr_clock_bases"], source)))
+        meta.append(("info", "offsetof(hrtimer_clock_base, clockid): {:#x} ({:s})".format(layout["offset_clockid"], source)))
+        if layout["offset_get_time"] is not None:
+            meta.append(("info", "offsetof(hrtimer_clock_base, get_time): {:#x} ({:s})".format(layout["offset_get_time"], source)))
+        layout["meta"] = meta
+        return layout
+
+    def iter_clock_bases(self):
+        """Yield (cpu, hrtimer_cpu_base, index, hrtimer_clock_base)."""
+        layout = self.resolve_hrtimer_bases()
+        for cpu, cpu_base in self.percpu.possible_addrs_of(layout["hrtimer_bases"]):
+            for n in range(layout["nr_clock_bases"]):
+                yield cpu, cpu_base, n, cpu_base + layout["offset_clock_base"] + layout["sizeof_clock_base"] * n
         return
 
-    def is_kernel_text_ptr(self, address):
-        """Check whether the value at `address` looks like a pointer to the kernel."""
-        v = read_int_from_memory(address)
-        return AddressUtil.is_msb_on(v) and is_valid_addr(v)
-
-    def resolve_offset_rb_root(self, clock_base):
-        """Resolve the offset of `active` (struct rb_root_cached) in hrtimer_clock_base.
-
-        It is used for v6.18 or later, where it cannot be derived from `get_time`.
-        """
-        ptrsize = current_arch.ptrsize
-
-        # `active` follows cpu_base, index, clockid, seq and running.
-        # It is just a calculation, so verify it and scan if it is wrong (e.g., CONFIG_LOCKDEP=y).
-        expected = ((ptrsize + 4 + 4 + 4 + ptrsize - 1) & ~(ptrsize - 1)) + ptrsize
-        for ofs in [expected] + list(range(ptrsize * 2, self.sizeof_hrtimer_clock_base - 8, ptrsize)):
-            if self.is_rb_root_cached(clock_base, ofs):
-                self.offset_rb_root = ofs
-                return
-        self.offset_rb_root = expected # every rbtree is empty, so it cannot be verified
-        return
-
-    def is_rb_root_cached(self, clock_base, ofs):
-        """Check whether `clock_base[*] + ofs` looks like a `struct rb_root_cached`."""
+    def is_rb_root_cached(self, htbs, ofs):
+        """Check whether `htb + ofs` looks like a `struct rb_root_cached` (or `timerqueue_head`) for all `htbs`."""
         found = False
-        for base_n in range(self.num_of_clock_base):
-            htb = clock_base + self.sizeof_hrtimer_clock_base * base_n
+        for htb in htbs:
             try:
                 rb_root = read_int_from_memory(htb + ofs)
                 rb_leftmost = read_int_from_memory(htb + ofs + current_arch.ptrsize)
@@ -87957,8 +88784,60 @@ class KernelTimerCommand(GenericCommand, BufferingOutput):
             found = True
         return found
 
-    def dump_hrtimer(self):
-        """
+    def is_callback(self, address):
+        """Return True if `address` is in the kernel text or the text of a loaded module."""
+        if not address or not is_valid_addr(address):
+            return False
+        if self.klayout.text_base is not None and self.klayout.text_end is not None:
+            if self.klayout.text_base <= address < self.klayout.text_end:
+                return True
+        if self.module_text_ranges is None:
+            self.module_text_ranges = Kernel.modules().get_text_ranges()
+        return any(start <= address < end for start, end, _module, _name in self.module_text_ranges)
+
+    def guess_offset_active(self):
+        """Return the offset of `active` in `struct hrtimer_clock_base` expected from the version."""
+        ptrsize = current_arch.ptrsize
+        kversion = Kernel.version()
+        align_u64 = 4 if is_x86_32() else 8
+        offset = align(ptrsize + 4 + 4, ptrsize) # cpu_base, index, clockid
+        if kversion >= "4.16":
+            offset += 4 # seq (without CONFIG_LOCKDEP)
+            if kversion >= "7.1":
+                offset = align(offset, align_u64) + 8 # expires_next
+            offset = align(offset, ptrsize) + ptrsize # running
+        return offset
+
+    def find_hrtimer_members(self, samples):
+        """Resolve the offsets of `expires`, `function` and `base` in `struct hrtimer` from the queued ones.
+
+        `struct timerqueue_node` has gained a sorted list at v7.1, which shifts the members
+        placed after it. `base`, which points back to the hrtimer_clock_base, is used as
+        an anchor to absorb such a difference."""
+        ptrsize = current_arch.ptrsize
+        if not samples:
+            return None
+        for i in range(3, 0x80 // ptrsize):
+            offset_base = ptrsize * i
+            if not all(read_int_from_memory(hrtimer + offset_base, safe=True) == htb for hrtimer, htb in samples):
+                continue
+            if all(self.is_callback(read_int_from_memory(hrtimer + offset_base - ptrsize, safe=True)) for hrtimer, _ in samples):
+                # `..., expires}, _softexpires, function, base` (~v7.0)
+                # `function` is right before `base`
+                return offset_base - ptrsize - 8 * 2, offset_base - ptrsize, offset_base
+            # `..., prev, next, expires}, base, is_queued, ..., is_lazy,
+            #  _softexpires, function` (v7.1~); `expires` is right before `base`
+            for j in range(i + 1, 0x80 // ptrsize):
+                if all(self.is_callback(read_int_from_memory(hrtimer + ptrsize * j, safe=True)) for hrtimer, _ in samples):
+                    return offset_base - 8, ptrsize * j, offset_base
+            return None
+        return None
+
+    @Cache.cache_this_session(cache_None=False, per_inferior=True, until_new_objfile=True)
+    def resolve_hrtimer_members(self):
+        """Return the offsets of `hrtimer_clock_base.active` and `struct hrtimer`, verified by the queued
+        hrtimers, or None if they are not verified (e.g., every rbtree is empty).
+
         struct hrtimer { // ~v7.0
             struct timerqueue_node {
                 struct rb_node {
@@ -87999,136 +88878,201 @@ class KernelTimerCommand(GenericCommand, BufferingOutput):
         `qemu-buildroot-x64-7.0-rc7` still uses the old layout, and
         `qemu-buildroot-x64-7.1.1` uses the new one.
         """
+        layout = self.resolve_hrtimer_bases()
+        if layout is None:
+            return None
+        meta = []
 
-        clockid_dict = {
-            0: "CLOCK_REALTIME",
-            1: "CLOCK_MONOTONIC",
-            2: "CLOCK_PROCESS_CPUTIME_ID",
-            3: "CLOCK_THREAD_CPUTIME_ID",
-            4: "CLOCK_MONOTONIC_RAW",
-            5: "CLOCK_REALTIME_COARSE",
-            6: "CLOCK_MONOTONIC_COARSE",
-            7: "CLOCK_BOOTTIME",
-            8: "CLOCK_REALTIME_ALARM",
-            9: "CLOCK_BOOTTIME_ALARM",
-            10: "CLOCK_SGI_CYCLE",
-            11: "CLOCK_TAI",
+        offsets = self.get_hrtimer_member_type_info(layout)
+        htbs = [htb for _cpu, _cpu_base, _n, htb in self.iter_clock_bases()]
+        ptrsize = current_arch.ptrsize
+        # `active` follows cpu_base, index, clockid (, seq, (expires_next,) running).
+        # It is just a calculation, so verify it and scan if it is wrong (e.g., CONFIG_LOCKDEP=y).
+        candidates = [self.guess_offset_active()] + list(range(ptrsize * 2, layout["sizeof_clock_base"] - 8, ptrsize))
+        if offsets is not None:
+            candidates.insert(0, offsets["offset_active"])
+        for offset_active in candidates:
+            if self.is_rb_root_cached(htbs, offset_active):
+                break
+        else:
+            return None
+        samples = self.collect_hrtimer_samples(htbs, offset_active)
+
+        if offsets is not None:
+            if offsets["offset_active"] == offset_active and all(
+                read_int_from_memory(hrtimer + offsets["offset_base"], safe=True) == htb for hrtimer, htb in samples
+            ):
+                source = "debug info"
+            else:
+                meta.append(("warn", "The debug information of struct hrtimer does not match the memory"))
+                offsets = None
+        if offsets is None:
+            source = "heuristic"
+            members = self.find_hrtimer_members(samples)
+            if members is None:
+                return None
+            offsets = {"offset_active": offset_active}
+            offsets["offset_expires"], offsets["offset_function"], offsets["offset_base"] = members
+
+        meta.append(("info", "offsetof(hrtimer_clock_base, active): {:#x} ({:s})".format(offsets["offset_active"], source)))
+        meta.append(("info", "offsetof(hrtimer, node.expires): {:#x} ({:s})".format(offsets["offset_expires"], source)))
+        meta.append(("info", "offsetof(hrtimer, function): {:#x} ({:s})".format(offsets["offset_function"], source)))
+        meta.append(("info", "offsetof(hrtimer, base): {:#x} ({:s})".format(offsets["offset_base"], source)))
+        offsets["meta"] = meta
+        return offsets
+
+    def get_hrtimer_member_type_info(self, layout):
+        """Return the offsets of `hrtimer_clock_base.active` and `struct hrtimer` from the debug information,
+        or None if they are unavailable or `clock_base[]` does not match it."""
+        offsets = {
+            "offset_active": GefUtil.offsetof("hrtimer_clock_base", "active"),
+            "offset_expires": GefUtil.offsetof("hrtimer", "node.expires"),
+            "offset_function": GefUtil.offsetof("hrtimer", "function"),
+            "offset_base": GefUtil.offsetof("hrtimer", "base"),
+        }
+        if None in offsets.values() or layout["source"] != "debug info":
+            return None
+        return offsets
+
+    def collect_hrtimer_samples(self, htbs, offset_active):
+        """Return [(hrtimer, hrtimer_clock_base), ...] of some queued hrtimers."""
+        samples = []
+        for htb in htbs:
+            nodes, _reason = self.walk_rbtree(htb + offset_active)
+            samples += [(hrtimer, htb) for hrtimer in nodes[:4]]
+            if len(samples) >= 16:
+                break
+        return samples
+
+    def guess_hrtimer_members(self):
+        """Return the offsets from the debug information or expected from the version, used only while
+        they cannot be verified."""
+        offsets = self.get_hrtimer_member_type_info(self.resolve_hrtimer_bases())
+        if offsets is not None:
+            offsets["meta"] = [
+                ("warn", "Every hrtimer rbtree is empty, so the following offsets are not verified"),
+                ("info", "offsetof(hrtimer_clock_base, active): {:#x} (debug info)".format(offsets["offset_active"])),
+                ("info", "offsetof(hrtimer, node.expires): {:#x} (debug info)".format(offsets["offset_expires"])),
+                ("info", "offsetof(hrtimer, function): {:#x} (debug info)".format(offsets["offset_function"])),
+                ("info", "offsetof(hrtimer, base): {:#x} (debug info)".format(offsets["offset_base"])),
+            ]
+            return offsets
+
+        ptrsize = current_arch.ptrsize
+        align_u64 = 4 if is_x86_32() else 8
+        offset_active = self.guess_offset_active()
+        if Kernel.version() < "7.1":
+            offset_expires = align(ptrsize * 3, align_u64) # rb_node
+            offset_function = offset_expires + 8 * 2 # expires, _softexpires
+            offset_base = offset_function + ptrsize
+        else:
+            offset_expires = align(ptrsize * 5, align_u64) # rb_node, prev, next
+            offset_base = offset_expires + 8
+            offset_function = align(offset_base + ptrsize + 5, align_u64) + 8 # base, 5 bools, _softexpires
+        meta = [
+            ("warn", "Every hrtimer rbtree is empty, so the following offsets are not verified"),
+            ("info", "offsetof(hrtimer_clock_base, active): {:#x} (version)".format(offset_active)),
+            ("info", "offsetof(hrtimer, node.expires): {:#x} (version)".format(offset_expires)),
+            ("info", "offsetof(hrtimer, function): {:#x} (version)".format(offset_function)),
+            ("info", "offsetof(hrtimer, base): {:#x} (version)".format(offset_base)),
+        ]
+        return {
+            "offset_active": offset_active,
+            "offset_expires": offset_expires,
+            "offset_function": offset_function,
+            "offset_base": offset_base,
+            "meta": meta,
         }
 
-        for cpu, hrtimer_cpu_base in enumerate(self.per_cpu_hrtimer_cpu_bases):
-            clock_base = hrtimer_cpu_base + self.offset_clock_base
-            for base_n in range(self.num_of_clock_base):
-                htb = clock_base + self.sizeof_hrtimer_clock_base * base_n
-                clockid = read_int32_from_memory(htb + self.offset_clockid)
-                if self.offset_get_time is None: # v6.18 or later
-                    self.out.append(titlify("cpu{:d} hrtimer_clock_base[{:d}]: {:#x}  [{:s}]".format(
-                        cpu, base_n, htb,
-                        clockid_dict.get(clockid, "UNKNOWN"),
-                    )).rstrip())
-                else:
-                    get_time = read_int_from_memory(htb + self.offset_get_time)
-                    self.out.append(titlify("cpu{:d} hrtimer_clock_base[{:d}]: {:#x}  [{:s}; get_time: {:#x}{:s}]".format(
-                        cpu, base_n, htb,
-                        clockid_dict.get(clockid, "UNKNOWN"),
-                        get_time,
-                        Symbol.get_symbol_string(get_time, nosymbol_string=" <NO_SYMBOL>"),
-                    )).rstrip())
+    def walk_rbtree(self, root):
+        """Return the nodes of the rbtree at `root` in order, verified by their parent, and the reason if the walk stopped."""
+        ptrsize = current_arch.ptrsize
+        nodes = []
+        stack = []
+        seen = set()
+        parent = 0
+        node = read_int_from_memory(root, safe=True)
+        if node is None:
+            return nodes, "unreadable at {:#x}".format(root)
+        while stack or node:
+            while node:
+                if node in seen or not is_valid_addr(node):
+                    return nodes, "broken at {:#x}".format(node)
+                parent_color = read_int_from_memory(node, safe=True)
+                if parent_color is None or parent_color & ~0b11 != parent:
+                    return nodes, "broken at {:#x}".format(node)
+                seen.add(node)
+                stack.append(node)
+                parent = node
+                node = read_int_from_memory(node + ptrsize * 2, safe=True) # rb_left
+                if node is None:
+                    return nodes, "unreadable at {:#x}".format(parent)
+            node = stack.pop()
+            nodes.append(node)
+            parent = node
+            node = read_int_from_memory(node + ptrsize, safe=True) # rb_right
+            if node is None:
+                return nodes, "unreadable at {:#x}".format(parent)
+        return nodes, None
 
-                # print legend
-                if not self.args.quiet:
-                    fmt = "{:18s}  {:18s}  {:23s}  {:18s} {:s}"
-                    legend = ["hrtimer", "expires", "time_to_expired", "function", "symbol"]
-                    self.out.append(GefUtil.make_legend(fmt.format(*legend)))
+    def dump_hrtimer(self):
+        layout = self.hrtimer
+        for cpu, cpu_base, n, htb in self.iter_clock_bases():
+            name = "cpu{:d} hrtimer_clock_base[{:d}]".format(cpu, n)
+            if (read_int_from_memory(htb + layout["offset_cpu_base"], safe=True) != cpu_base or
+                    read_int32_from_memory(htb + layout["offset_index"], safe=True) != n):
+                self.incomplete.append("{:s} ({:#x}) does not match the layout".format(name, htb))
+                continue
+            clockid = read_int32_from_memory(htb + layout["offset_clockid"])
+            if layout["offset_get_time"] is None: # v6.18 or later
+                self.out.append(titlify("{:s} hrtimer_clock_base[{:d}]: {:#x}  [{:s}]".format(
+                    self.get_cpu_label(cpu), n, htb,
+                    self.clockid_dict.get(clockid, "UNKNOWN"),
+                )).rstrip())
+            else:
+                get_time = read_int_from_memory(htb + layout["offset_get_time"])
+                self.out.append(titlify("{:s} hrtimer_clock_base[{:d}]: {:#x}  [{:s}; get_time: {:#x}{:s}]".format(
+                    self.get_cpu_label(cpu), n, htb,
+                    self.clockid_dict.get(clockid, "UNKNOWN"),
+                    get_time,
+                    Symbol.get_symbol_string(get_time, nosymbol_string=" <NO_SYMBOL>"),
+                )).rstrip())
 
-                for hrtimer in KernelRBTree(htb + self.offset_rb_root).parse():
-                    expires = read_int64_from_memory(hrtimer + self.offset_expires)
-                    function = read_int_from_memory(hrtimer + self.offset_function)
-                    if is_32bit() and not is_valid_addr(function):
-                        expires = read_int64_from_memory(hrtimer + self.offset_expires + 4)
-                        function = read_int_from_memory(hrtimer + self.offset_function + 4)
-                    self.out.append("{:#018x}  {:#018x}  {:23s}  {:#018x}{:s}".format(
-                        hrtimer, expires,
-                        "? (too hard to calc)",
-                        function,
-                        Symbol.get_symbol_string(function, nosymbol_string=" <NO_SYMBOL>"),
-                    ).rstrip())
-        return
+            # print legend
+            if not self.args.quiet:
+                fmt = "{:18s}  {:18s}  {:23s}  {:18s} {:s}"
+                legend = ["hrtimer", "expires", "time_to_expired", "function", "symbol"]
+                self.out.append(GefUtil.make_legend(fmt.format(*legend)))
 
-    def dump_timer(self):
-        """
-        struct timer_list {
-            struct hlist_node entry;
-            unsigned long expires;
-            void (*function)(struct timer_list *);
-            u32 flags;
-        #ifdef CONFIG_LOCKDEP
-            struct lockdep_map lockdep_map;
-        #endif
-        };
-        """
-
-        jiffies = read_int_from_memory(self.jiffies)
-
-        for cpu, timer_base in enumerate(self.per_cpu_timer_bases):
-            # dump timer_list
-            for base_n in range(self.nr_bases):
-                tb = timer_base + self.sizeof_timer_base * base_n
-                self.out.append(titlify("cpu{:d} timer_base[{:d}]: {:#x}".format(cpu, base_n, tb)))
-
-                # print legend
-                if not self.args.quiet:
-                    fmt = "{:18s}  {:18s}  {:23s}  {:18s} {:s}"
-                    legend = ["timer_list", "expires", "time_to_expired", "function", "symbol"]
-                    self.out.append(GefUtil.make_legend(fmt.format(*legend)))
-
-                i = 0
-                while True:
-                    addr = tb + current_arch.ptrsize * i
-                    v = read_int_from_memory(addr, safe=True)
-                    if v is None:
-                        self.err_add_out("Memory read error")
-                        return
-
-                    if v == 0:
-                        i += 1
-                        continue
-
-                    if i < 512:
-                        if not is_valid_addr(v):
-                            i += 1
-                            continue
-                        if read_int_from_memory(v + current_arch.ptrsize) != addr:
-                            i += 1
-                            continue
-                    else:
-                        if not is_valid_addr(v):
-                            break
-                        if read_int_from_memory(v + current_arch.ptrsize) != addr:
-                            break
-
-                    timer_list = v
-                    expires = read_int_from_memory(timer_list + current_arch.ptrsize * 2)
-                    function = read_int_from_memory(timer_list + current_arch.ptrsize * 3)
-                    sym = Symbol.get_symbol_string(function, nosymbol_string=" <NO_SYMBOL>")
-                    tte = expires - jiffies
-                    self.out.append("{:#018x}  {:#018x}  {:#018x} tick  {:#018x}{:s}".format(
-                        v, expires, tte, function, sym,
-                    ).rstrip())
-                    i += 1
+            nodes, reason = self.walk_rbtree(htb + layout["offset_active"])
+            if reason:
+                self.incomplete.append("the rbtree of {:s} is {:s}".format(name, reason))
+            for hrtimer in nodes:
+                expires = read_int64_from_memory(hrtimer + layout["offset_expires"], safe=True)
+                function = read_int_from_memory(hrtimer + layout["offset_function"], safe=True)
+                if expires is None or function is None:
+                    self.incomplete.append("hrtimer {:#x} is unreadable".format(hrtimer))
+                    continue
+                self.out.append("{:#018x}  {:#018x}  {:23s}  {:#018x}{:s}".format(
+                    hrtimer, expires,
+                    "? (too hard to calc)",
+                    function,
+                    Symbol.get_symbol_string(function, nosymbol_string=" <NO_SYMBOL>"),
+                ).rstrip())
         return
 
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
-    @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware"))
-    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
+    @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
+    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64"))
     @Decorator.only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
         kversion = Kernel.version()
         if kversion is None:
             err("Could not find Linux kernel")
             return
-        if kversion < "4.8":
-            err("Unsupported before v4.8")
+        if kversion < "3.0":
+            err("Unsupported before v3.0")
             return
 
         self.quiet_info("Wait for memory scan")
@@ -88145,11 +89089,14 @@ class KernelTimerCommand(GenericCommand, BufferingOutput):
         if args.meta:
             return
 
+        self.cpu_masks = self.percpu.get_cpu_masks()
         self.out = []
         if self.classic_timer_initialized:
             self.dump_timer()
         if self.hrtimer_initialized:
             self.dump_hrtimer()
+        for reason in self.incomplete:
+            self.warn_add_out("Incomplete: {:s}".format(reason))
         self.print_output(check_terminal_size=True)
         return
 
@@ -88220,7 +89167,7 @@ class KernelWorkqueueCommand(GenericCommand, BufferingOutput):
         "  `delayed_work` is recognized by its `delayed_work_timer_fn` timer when available.",
         "  It does not need the workqueue list, though `queue` is then unknown.",
         "- The running work is found from `worker_pool.busy_hash` (`global_cwq` before v3.6).",
-        "- `delayed` needs the `ktimer` layout on v4.8 or later; other states are listed without it.",
+        "- `delayed` needs the `ktimer` layout; other states are listed without it.",
         "- The member offsets come from the debug information (vmlinux or `ktypes-load`) when available.",
     ]
     _note_ = "\n".join(_note_)
@@ -88239,11 +89186,7 @@ class KernelWorkqueueCommand(GenericCommand, BufferingOutput):
 
     def get_module_text_ranges(self):
         if self.module_text_ranges is None:
-            self.module_text_ranges = []
-            for _module, _name, regions in Kernel.modules().get_loaded() or []:
-                for region_name, base, size in regions:
-                    if region_name in ("core", "text", "init_text"):
-                        self.module_text_ranges.append((base, base + size))
+            self.module_text_ranges = [(start, end) for start, end, _module, _name in Kernel.modules().get_text_ranges()]
         return self.module_text_ranges
 
     def format_symbol(self, address):
@@ -88613,156 +89556,6 @@ class KernelWorkqueueCommand(GenericCommand, BufferingOutput):
                 self.append_record(records, work, "running", owner, pwq_pool, function=function)
         return
 
-    def iter_hlist(self, head):
-        """Iterate a Linux hlist and stop safely if it is corrupt."""
-        current = read_int_from_memory(head, safe=True)
-        if current is None:
-            return
-        seen = set()
-        while current and current not in seen and is_valid_addr(current):
-            seen.add(current)
-            yield current
-            current = read_int_from_memory(current, safe=True)
-            if current is None:
-                break
-        return
-
-    def find_old_timer_vectors(self, timer_base):
-        """Return the first list-head-based tvec vector head (v3.0-v4.1)."""
-        ptrsize = current_arch.ptrsize
-        for offset in range(0, 0x100, ptrsize):
-            valid = True
-            for index in range(512):
-                head = timer_base + offset + index * ptrsize * 2
-                try:
-                    next_entry = read_int_from_memory(head)
-                    prev_entry = read_int_from_memory(head + ptrsize)
-                    if not is_valid_addr(next_entry) or not is_valid_addr(prev_entry):
-                        valid = False
-                        break
-                    if (read_int_from_memory(next_entry + ptrsize) != head or
-                            read_int_from_memory(prev_entry) != head):
-                        valid = False
-                        break
-                except gdb.MemoryError:
-                    valid = False
-                    break
-            if valid:
-                return timer_base + offset
-        return None
-
-    @Decorator.switch_to_intel_syntax
-    def old_timer_base_candidates(self):
-        """Return per-cpu tvec_bases base addresses (symbol and heuristic)."""
-        address = Ksym.get_addr("tvec_bases")
-        candidates = [address] if address else []
-        for anchor in Ksym.get_addrs("run_timer_softirq", match="split"):
-            res = KernelAddressHeuristicFinderUtil.disassemble_until_next_symbol(anchor, 100)
-            if is_x86_64() or is_x86_32():
-                candidates.extend(KernelAddressHeuristicFinderUtil.x64_x86_any_const(res, skip_msb_check=True))
-                candidates.extend(int(value, 16) for value in re.findall(r"(?:fs|gs):0x([0-9a-fA-F]+)", res))
-                for line in res.splitlines():
-                    if "gs:" not in line and "fs:" not in line:
-                        continue
-                    match = re.search(r"#\s*(0x[0-9a-fA-F]+)", line)
-                    if match:
-                        candidates.append(int(match.group(1), 16))
-            elif is_arm64():
-                candidates.extend(KernelAddressHeuristicFinderUtil.aarch64_adrp_add(res, skip_msb_check=True))
-            elif is_arm32():
-                candidates.extend(KernelAddressHeuristicFinderUtil.arm32_movw_movt(res, skip_msb_check=True))
-                candidates.extend(KernelAddressHeuristicFinderUtil.arm32_ldr_pc_relative(res))
-        return candidates
-
-    def find_old_timer_bases(self):
-        """Find each CPU's list-head-based tvec_base used before v4.2."""
-        bases = []
-        boot_base = Ksym.get_addr("boot_tvec_bases")
-        if boot_base and self.find_old_timer_vectors(boot_base) is not None:
-            bases.append((0, boot_base))
-
-        percpu = Kernel.per_cpu()
-        for candidate in self.old_timer_base_candidates():
-            if candidate is None or candidate & (current_arch.ptrsize - 1):
-                continue
-            found = []
-            for cpu in range(percpu.nr_cpus):
-                slot = percpu.addr_of(candidate, cpu)
-                timer_base = read_int_from_memory(slot, safe=True)
-                if timer_base is None:
-                    break
-                timer_base &= ~(current_arch.ptrsize - 1)
-                if self.find_old_timer_vectors(timer_base) is None:
-                    break
-                found.append((cpu, timer_base))
-            if found:
-                return found
-        return bases
-
-    # tvec_base holds tv1 (TVR_SIZE) + tv2..tv5 (TVN_SIZE each) buckets after a
-    # small header, so this window covers the whole per-cpu struct.
-    OLD_HLIST_WINDOW = 0x1400
-
-    def count_hlist_buckets(self, base):
-        """Count populated hlist_head buckets in a v4.2-v4.7 tvec_base."""
-        ptrsize = current_arch.ptrsize
-        count = 0
-        for offset in range(0, self.OLD_HLIST_WINDOW, ptrsize):
-            slot = base + offset
-            try:
-                first = read_int_from_memory(slot)
-                if first == 0 or not is_valid_addr(first):
-                    continue
-                if read_int_from_memory(first + ptrsize) == slot:  # hlist_node.pprev
-                    count += 1
-            except gdb.MemoryError:
-                break
-        return count
-
-    def find_old_hlist_bases(self):
-        """Find each CPU's hlist-based tvec_base used in v4.2-v4.7."""
-        percpu = Kernel.per_cpu()
-        for candidate in self.old_timer_base_candidates():
-            if candidate is None or candidate & (current_arch.ptrsize - 1):
-                continue
-            found = []
-            for cpu in range(percpu.nr_cpus):
-                base = percpu.addr_of(candidate, cpu)
-                if self.count_hlist_buckets(base) < 4:
-                    break
-                found.append((cpu, base))
-            if found:
-                return found
-        return []
-
-    def collect_old_hlist_records(self, records):
-        ptrsize = current_arch.ptrsize
-        for cpu, base in self.find_old_hlist_bases():
-            for offset in range(0, self.OLD_HLIST_WINDOW, ptrsize):
-                slot = base + offset
-                try:
-                    first = read_int_from_memory(slot)
-                    if first == 0 or not is_valid_addr(first):
-                        continue
-                    if read_int_from_memory(first + ptrsize) != slot:
-                        continue
-                except gdb.MemoryError:
-                    break
-                for timer in self.iter_hlist(slot):
-                    function = read_int_from_memory(timer + self.offset_timer_func, safe=True)
-                    if function is None:
-                        continue
-                    if function not in self.delayed_timer_functions:
-                        continue
-                    work = self.find_delayed_work(timer)
-                    if work is None:
-                        continue
-                    expires = read_int_from_memory(timer + self.offset_timer_expires)
-                    owner = self.find_delayed_owner(work, timer)
-                    self.append_record(records, work, "delayed", owner, None, timer, expires)
-                    records[work]["cpu"] = cpu
-        return
-
     def find_delayed_work(self, timer):
         if self.offset_delayed_timer is not None:
             work = timer - self.offset_delayed_timer
@@ -88801,77 +89594,22 @@ class KernelWorkqueueCommand(GenericCommand, BufferingOutput):
     def collect_delayed_records(self, records):
         if not self.delayed_timer_functions:
             return
-        if self.kversion < "4.8":
-            # v3.0-v4.1 use a list_head-based tvec wheel; v4.2-v4.7 switched the
-            # buckets to hlist_head. Pick the layout by which base finder succeeds.
-            old_bases = self.find_old_timer_bases()
-            if not old_bases:
-                self.collect_old_hlist_records(records)
-                return
-            for cpu, timer_base in old_bases:
-                vectors = self.find_old_timer_vectors(timer_base)
-                if vectors is None:
-                    continue
-                for index in range(512):
-                    head = vectors + index * current_arch.ptrsize * 2
-                    for timer in KernelListHead(head).iter_entries():
-                        function = read_int_from_memory(timer + self.offset_timer_func, safe=True)
-                        if function is None:
-                            continue
-                        if function not in self.delayed_timer_functions:
-                            continue
-                        work = self.find_delayed_work(timer)
-                        if work is None:
-                            continue
-                        expires = read_int_from_memory(timer + self.offset_timer_expires)
-                        owner = self.find_delayed_owner(work, timer)
-                        self.append_record(records, work, "delayed", owner, None, timer, expires)
-                        records[work]["cpu"] = cpu
-            return
-
         timer_command = __gef_command_instances__.get("ktimer")
-        if timer_command is None or not timer_command.initialize(classic=True, high_resolution=False):
+        classic_timers = timer_command.get_classic_timers() if timer_command is not None else None
+        if classic_timers is None:
             self.incomplete.append("delayed works are not scanned since the timer wheel is not resolved")
             return
+        self.incomplete.extend("the timer wheel: {:s}".format(reason) for reason in classic_timers["incomplete"])
 
-        for cpu, timer_base in enumerate(timer_command.per_cpu_timer_bases):
-            for base_n in range(timer_command.nr_bases):
-                base = timer_base + timer_command.sizeof_timer_base * base_n
-                i = 0
-                while True:
-                    head = base + current_arch.ptrsize * i
-                    try:
-                        first = read_int_from_memory(head)
-                        if first == 0:
-                            i += 1
-                            continue
-                        if not is_valid_addr(first):
-                            if i >= 512:
-                                break
-                            i += 1
-                            continue
-                        if read_int_from_memory(first + current_arch.ptrsize) != head:
-                            if i >= 512:
-                                break
-                            i += 1
-                            continue
-                    except gdb.MemoryError:
-                        break
-
-                    for timer in self.iter_hlist(head):
-                        function = read_int_from_memory(timer + self.offset_timer_func, safe=True)
-                        if function is None:
-                            continue
-                        if function not in self.delayed_timer_functions:
-                            continue
-                        work = self.find_delayed_work(timer)
-                        if work is None:
-                            continue
-                        expires = read_int_from_memory(timer + self.offset_timer_expires)
-                        owner = self.find_delayed_owner(work, timer)
-                        self.append_record(records, work, "delayed", owner, None, timer, expires)
-                        records[work]["cpu"] = cpu
-                    i += 1
+        for timer in classic_timers["timers"]:
+            if timer["function"] not in self.delayed_timer_functions:
+                continue
+            work = self.find_delayed_work(timer["timer"])
+            if work is None:
+                continue
+            owner = self.find_delayed_owner(work, timer["timer"])
+            self.append_record(records, work, "delayed", owner, None, timer["timer"], timer["expires"])
+            records[work]["cpu"] = timer["cpu"]
         return
 
     def scan_address_range(self, records, address, size):

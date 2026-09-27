@@ -9183,11 +9183,12 @@ Dump the clocksource list.
 ### Syntax
 
 ```text
-usage: kclock-source [-h] [-hh] [-n] [-q]
+usage: kclock-source [-h] [-hh] [--meta] [-n] [-q]
 
 options:
   -h, --help          show this help message and exit
   -hh, --help-simple  show help without ASCII diagram.
+  --meta              display offset information.
   -n, --no-pager      do not use the pager.
   -q, --quiet         enable quiet mode.
 ```
@@ -9203,6 +9204,14 @@ Simplified clocksource structure:
 | list_head        |--->| list        |--->...
 +------------------+    | ...         |
                         +-------------+
+
+- The list is sorted by `rating` in descending order. `active` is the one `curr_clocksource` points to.
+- `frequency` is derived from `mult` and `shift` (ns = (cycles * mult) >> shift), and `bits` from `mask`.
+- `flags`: CONT (IS_CONTINUOUS), VERIFY (MUST_VERIFY), CALIB (CALIBRATED), WD (WATCHDOG),
+  HRES (VALID_FOR_HRES), UNSTABLE, NONSTOP (SUSPEND_NONSTOP), RESELECT,
+  VERIFY_PERCPU (~v7.0) or INLINE (CAN_INLINE_READ; v7.1~), COUPLED (HAS_COUPLED_CLOCK_EVENT), WDTEST, WDTEST_PERCPU.
+- The module is shown for a clocksource registered by a loadable module.
+- The member offsets come from the debug information (vmlinux or `ktypes-load`) when available.
 ```
 
 ## `kconfig`
@@ -10546,6 +10555,9 @@ Simplified timer structure (per-cpu):
 | ...                |
 +--------------------+
 
+Before v4.8, each cpu has one `tvec_base` (pointed by `tvec_bases` before v4.2) with 512 buckets
+(tv1 to tv5). They are `struct list_head` before v4.2, and `struct hlist_head` after.
+
 Simplified hrtimer structure (per-cpu):
 
 +-hrtimer_cpu_bases--+
@@ -10564,6 +10576,11 @@ Simplified hrtimer structure (per-cpu):
 | clock_bases[8]     |        | ...           |
 |   ...              |        +---------------+
 +--------------------+
+
+- Classic timers are sorted by `time_to_expired`, the signed difference from `jiffies` in unsigned long.
+- hrtimers are sorted by `expires`, since they are listed in the order of the rbtree.
+- The member offsets come from the debug information (vmlinux or `ktypes-load`) when available.
+  They are verified by `timer_base.cpu` and `hrtimer_clock_base.cpu_base` and `index`.
 ```
 
 ## `kvfs`
@@ -10959,7 +10976,7 @@ Simplified workqueue structures (`==>` shows where each column comes from):
   `delayed_work` is recognized by its `delayed_work_timer_fn` timer when available.
   It does not need the workqueue list, though `queue` is then unknown.
 - The running work is found from `worker_pool.busy_hash` (`global_cwq` before v3.6).
-- `delayed` needs the `ktimer` layout on v4.8 or later; other states are listed without it.
+- `delayed` needs the `ktimer` layout; other states are listed without it.
 - The member offsets come from the debug information (vmlinux or `ktypes-load`) when available.
 ```
 
