@@ -139234,142 +139234,33 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
         return True
 
     @staticmethod
+    @Cache.cache_this_session(per_inferior=True, until_new_objfile=True)
+    def get_flag_masks():
+        enum_type = GefUtil.cached_lookup_type("enum _slab_flag_bits")
+        if enum_type is None:
+            return None
+
+        flags_dic = {}
+        for field in enum_type.fields():
+            if field.name and field.name.startswith("_SLAB_") and field.name != "_SLAB_FLAGS_LAST_BIT":
+                flags_dic[1 << int(field.enumval)] = "SLAB_" + field.name[6:]
+        return flags_dic or None
+
+    @staticmethod
     def get_flags_str(flags_value):
-        kversion = Kernel.version()
-        if kversion < "4.6":
-            flags_dic = {
-                0x8000_0000: "__OBJECT_POISON", # v3.1 <= kernel
-                0x4000_0000: "__CMPXCHG_DOUBLE", # v3.1 <= kernel
-                #0x2000_0000: "",
-                #0x1000_0000: "",
-                #0x0800_0000: "",
-                0x0400_0000: "SLAB_ACCOUNT", # v4.5 <= kernel
-                0x0200_0000: "SLAB_FAILSLAB",
-                0x0100_0000: "SLAB_NOTRACK",
-                0x0080_0000: "SLAB_NOLEAKTRACE",
-                0x0040_0000: "SLAB_DEBUG_OBJECTS",
-                0x0020_0000: "SLAB_TRACE",
-                0x0010_0000: "SLAB_MEM_SPREAD",
-                0x0008_0000: "SLAB_DESTROY_BY_RCU",
-                0x0004_0000: "SLAB_PANIC",
-                0x0002_0000: "SLAB_RECLAIM_ACCOUNT",
-                0x0001_0000: "SLAB_STORE_USER",
-                #0x0000_8000: "",
-                0x0000_4000: "SLAB_CACHE_DMA",
-                0x0000_2000: "SLAB_HWCACHE_ALIGN",
-                #0x0000_1000: "",
-                0x0000_0800: "SLAB_POISON",
-                0x0000_0400: "SLAB_RED_ZONE",
-                0x0000_0200: "SLAB_DEBUG_INITIAL", # kernel < v2.6.22
-                0x0000_0100: "SLAB_DEBUG_FREE",
-            }
-        elif kversion < "4.12":
-            flags_dic = {
-                0x8000_0000: "__OBJECT_POISON",
-                0x4000_0000: "__CMPXCHG_DOUBLE",
-                #0x2000_0000: "",
-                #0x1000_0000: "",
-                0x0800_0000: "SLAB_KASAN", # v4.6 <= kernel
-                0x0400_0000: "SLAB_ACCOUNT",
-                0x0200_0000: "SLAB_FAILSLAB",
-                0x0100_0000: "SLAB_NOTRACK",
-                0x0080_0000: "SLAB_NOLEAKTRACE",
-                0x0040_0000: "SLAB_DEBUG_OBJECTS",
-                0x0020_0000: "SLAB_TRACE",
-                0x0010_0000: "SLAB_MEM_SPREAD",
-                0x0008_0000: "SLAB_DESTROY_BY_RCU",
-                0x0004_0000: "SLAB_PANIC",
-                0x0002_0000: "SLAB_RECLAIM_ACCOUNT",
-                0x0001_0000: "SLAB_STORE_USER",
-                #0x0000_8000: "",
-                0x0000_4000: "SLAB_CACHE_DMA",
-                0x0000_2000: "SLAB_HWCACHE_ALIGN",
-                #0x0000_1000: "",
-                0x0000_0800: "SLAB_POISON",
-                0x0000_0400: "SLAB_RED_ZONE",
-                #0x0000_0200: "",
-                0x0000_0100: "SLAB_CONSISTENCY_CHECKS", # v4.6 <= kernel
-            }
-        elif kversion < "5.19":
-            flags_dic = {
-                0x8000_0000: "__OBJECT_POISON",
-                0x4000_0000: "__CMPXCHG_DOUBLE",
-                #0x2000_0000: "",
-                0x1000_0000: "SLAB_DEACTIVATED", # v5.3 <= kernel < v5.18
-                0x0800_0000: "SLAB_KASAN",
-                0x0400_0000: "SLAB_ACCOUNT",
-                0x0200_0000: "SLAB_FAILSLAB",
-                0x0100_0000: "SLAB_NOTRACK", # kernel < v4.14.21
-                0x0080_0000: "SLAB_NOLEAKTRACE",
-                0x0040_0000: "SLAB_DEBUG_OBJECTS",
-                0x0020_0000: "SLAB_TRACE",
-                0x0010_0000: "SLAB_MEM_SPREAD",
-                0x0008_0000: "SLAB_TYPESAFE_BY_RCU", # v4.12 <= kernel
-                0x0004_0000: "SLAB_PANIC",
-                0x0002_0000: "SLAB_RECLAIM_ACCOUNT",
-                0x0001_0000: "SLAB_STORE_USER",
-                0x0000_8000: "SLAB_CACHE_DMA32", # v4.19.33 <= kernel < v4.20, v5.0 <= kernel
-                0x0000_4000: "SLAB_CACHE_DMA",
-                0x0000_2000: "SLAB_HWCACHE_ALIGN",
-                #0x0000_1000: "",
-                0x0000_0800: "SLAB_POISON",
-                0x0000_0400: "SLAB_RED_ZONE",
-                #0x0000_0200: "",
-                0x0000_0100: "SLAB_CONSISTENCY_CHECKS",
-            }
-        elif kversion < "6.9":
-            flags_dic = {
-                0x8000_0000: "__OBJECT_POISON",
-                0x4000_0000: "__CMPXCHG_DOUBLE",
-                0x2000_0000: "SLAB_SKIP_KFENCE", # v6.1 <= kernel
-                0x1000_0000: "SLAB_NO_USER_FLAGS", # v5.19 <= kernel
-                0x0800_0000: "SLAB_KASAN",
-                0x0400_0000: "SLAB_ACCOUNT",
-                0x0200_0000: "SLAB_FAILSLAB",
-                0x0100_0000: "SLAB_NO_MERGE", # v6.5 <= kernel
-                0x0080_0000: "SLAB_NOLEAKTRACE",
-                0x0040_0000: "SLAB_DEBUG_OBJECTS",
-                0x0020_0000: "SLAB_TRACE",
-                0x0010_0000: "SLAB_MEM_SPREAD",
-                0x0008_0000: "SLAB_TYPESAFE_BY_RCU",
-                0x0004_0000: "SLAB_PANIC",
-                0x0002_0000: "SLAB_RECLAIM_ACCOUNT",
-                0x0001_0000: "SLAB_STORE_USER",
-                0x0000_8000: "SLAB_CACHE_DMA32",
-                0x0000_4000: "SLAB_CACHE_DMA",
-                0x0000_2000: "SLAB_HWCACHE_ALIGN",
-                0x0000_1000: "SLAB_KMALLOC", # v6.1 <= kernel
-                0x0000_0800: "SLAB_POISON",
-                0x0000_0400: "SLAB_RED_ZONE",
-                #0x0000_0200: "",
-                0x0000_0100: "SLAB_CONSISTENCY_CHECKS",
-            }
-        else:
-            flags_dic = {
-                0x0000_0400: "SLAB_TRACE",
-                0x0000_0200: "SLAB_TYPESAFE_BY_RCU",
-                0x0000_0100: "SLAB_PANIC",
-                0x0000_0080: "SLAB_STORE_USER",
-                0x0000_0040: "SLAB_CACHE_DMA32",
-                0x0000_0020: "SLAB_CACHE_DMA",
-                0x0000_0010: "SLAB_HWCACHE_ALIGN",
-                0x0000_0008: "SLAB_KMALLOC",
-                0x0000_0004: "SLAB_POISON",
-                0x0000_0002: "SLAB_RED_ZONE",
-                0x0000_0001: "SLAB_CONSISTENCY_CHECKS",
-            }
+        flags_dic = SlubDumpCommand.get_flag_masks()
+        if flags_dic is None:
+            return None
+
         flags = []
         unparsed_flags = flags_value
-        for k, v in flags_dic.items():
-            if flags_value & k:
-                flags.append(v)
-                unparsed_flags &= ~k
-        flags.append(hex(unparsed_flags))
-
-        flags_str = " | ".join(flags)
-        if flags_str == "":
-            flags_str = "none"
-        return flags_str
+        for mask, name in flags_dic.items():
+            if flags_value & mask:
+                flags.append(name)
+                unparsed_flags &= ~mask
+        if unparsed_flags:
+            flags.append(hex(unparsed_flags))
+        return " | ".join(flags) or "none"
 
     def get_next_kmem_cache(self, addr, point_to_base=True):
         if point_to_base:
@@ -140244,7 +140135,10 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
             kmem_cache_addr_s = Color.colorify_hex(kmem_cache["address"], slab_address_color)
             self.out.append("  kmem_cache: {:s}".format(kmem_cache_addr_s))
             self.out.append("    name: {:s}".format(Color.colorify(kmem_cache["name"], chunk_label_color)))
-            self.out.append("    flags: {:#x} ({:s})".format(kmem_cache["flags"], kmem_cache["flags_str"]))
+            flags_str = kmem_cache["flags_str"]
+            self.out.append("    flags: {:#x}{:s}".format(
+                kmem_cache["flags"], " ({:s})".format(flags_str) if flags_str is not None else "",
+            ))
             object_size_s = Color.colorify_hex(kmem_cache["object_size"], chunk_size_color)
             self.out.append("    object size: {:s} (chunk size: {:#x})".format(object_size_s, kmem_cache["size"]))
             self.out.append("    offset (next pointer in chunk): {:#x}".format(kmem_cache["offset"]))
@@ -141206,7 +141100,10 @@ class SlubTinyDumpCommand(GenericCommand, BufferingOutput):
             self.out.append("")
             self.out.append("  kmem_cache: {:#x}".format(kmem_cache["address"]))
             self.out.append("    name: {:s}".format(Color.colorify(kmem_cache["name"], chunk_label_color)))
-            self.out.append("    flags: {:#x} ({:s})".format(kmem_cache["flags"], kmem_cache["flags_str"]))
+            flags_str = kmem_cache["flags_str"]
+            self.out.append("    flags: {:#x}{:s}".format(
+                kmem_cache["flags"], " ({:s})".format(flags_str) if flags_str is not None else "",
+            ))
             object_size_s = Color.colorify_hex(kmem_cache["object_size"], chunk_size_color)
             self.out.append("    object size: {:s} (chunk size: {:#x})".format(object_size_s, kmem_cache["size"]))
             self.out.append("    offset (next pointer in chunk): {:#x}".format(kmem_cache["offset"]))
@@ -142072,7 +141969,10 @@ class SlabDumpCommand(GenericCommand, BufferingOutput):
             self.out.append("")
             self.out.append("  kmem_cache: {:#x}".format(kmem_cache["address"]))
             self.out.append("    name: {:s}".format(Color.colorify(kmem_cache["name"], chunk_label_color)))
-            self.out.append("    flags: {:#x} ({:s})".format(kmem_cache["flags"], kmem_cache["flags_str"]))
+            flags_str = kmem_cache["flags_str"]
+            self.out.append("    flags: {:#x}{:s}".format(
+                kmem_cache["flags"], " ({:s})".format(flags_str) if flags_str is not None else "",
+            ))
             object_size_s = Color.colorify_hex(kmem_cache["object_size"], chunk_size_color)
             self.out.append("    object size: {:s} (chunk size: {:#x})".format(object_size_s, kmem_cache["size"]))
             self.out.append("    object per slab: {:#x}".format(kmem_cache["objperslab"]))
@@ -142539,7 +142439,10 @@ class SlobDumpCommand(GenericCommand, BufferingOutput):
                 self.out.append("  kmem_cache: {:#x}".format(kmem_cache["address"]))
                 colored_name = Color.colorify(kmem_cache["name"], chunk_label_color)
                 self.out.append("    name: {:s}".format(colored_name))
-                self.out.append("    flags: {:#x} ({:s})".format(kmem_cache["flags"], kmem_cache["flags_str"]))
+                flags_str = kmem_cache["flags_str"]
+                self.out.append("    flags: {:#x}{:s}".format(
+                    kmem_cache["flags"], " ({:s})".format(flags_str) if flags_str is not None else "",
+                ))
                 object_size_s = Color.colorify_hex(kmem_cache["object_size"], chunk_size_color)
                 self.out.append("    object size: {:s} (chunk size: {:#x})".format(object_size_s, kmem_cache["size"]))
                 self.out.append("    next: {:#x}".format(kmem_cache["next"]))
@@ -150045,25 +149948,6 @@ class VmallocDumpCommand(GenericCommand, BufferingOutput):
             areas.append([used, va_start, va_end, va_size, flags])
         return areas
 
-    def get_flags(self, flags_value):
-        flags_dic = {
-            0x0000_0001: "VM_IOREMAP",
-            0x0000_0002: "VM_ALLOC",
-            0x0000_0004: "VM_MAP",
-            0x0000_0008: "VM_USERMAP",
-            0x0000_0010: "VM_DMA_COHERENT",
-            0x0000_0020: "VM_UNINITIALIZED",
-            0x0000_0040: "VM_NO_GUARD",
-            0x0000_0080: "VM_KASAN",
-            0x0000_0100: "VM_FLUSH_RESET_PERMS",
-            0x0000_0200: "VM_MAP_PUT_PAGES",
-        }
-        flags = []
-        for k, v in flags_dic.items():
-            if flags_value & k:
-                flags.append(v)
-        return "|".join(flags)
-
     def dump_areas(self, areas):
         fmt = "{:4s} {:6s} {:37s} {:18s} {:s}"
         legend = ["#", "state", "virtual address", "size", "flags"]
@@ -150080,15 +149964,15 @@ class VmallocDumpCommand(GenericCommand, BufferingOutput):
             if used:
                 virt_str = Color.colorify(virt_str, used_address_color)
                 state = "in-use"
-                flags_str = self.get_flags(flags)
-                flags_str = flags_str.rstrip()
-                if not flags_str:
-                    flags_str = "-"
+                self.out.append("{:<4d} {:6s} {:s} {:s} {:#x}".format(
+                    idx, state, virt_str, size_str, flags,
+                ))
             else:
                 virt_str = Color.colorify(virt_str, freed_address_color)
                 state = "freed"
-                flags_str = "-"
-            self.out.append("{:<4d} {:6s} {:s} {:s} {:s}".format(idx, state, virt_str, size_str, flags_str))
+                self.out.append("{:<4d} {:6s} {:s} {:s} {:s}".format(
+                    idx, state, virt_str, size_str, "-",
+                ))
 
             # dump chunks
             if self.args.hexdump_used and used:
