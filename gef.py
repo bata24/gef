@@ -179,6 +179,7 @@ GCI                         = __gef_command_instances__ # short cut for debug # 
 __gef_alias_instances__     = {} # gef alias instances
 GAI                         = __gef_alias_instances__ # short cut for debug # noqa: F841
 current_arch                = None # keep Architecture instance
+current_arch_context        = None # the target which current_arch is resolved for
 
 GEF_RC                      = os.getenv("GEF_RC") or os.path.join(os.getenv("HOME") or "~", ".gef.rc")
 GEF_TEMP_DIR                = os.path.join(tempfile.gettempdir(), "gef")
@@ -15333,8 +15334,8 @@ class EventHandler:
                     pass
                 Cache.reset_gef_caches()
 
-        # GEF will resolve the architecture if it is unknown.
-        if current_arch is None:
+        # GEF will resolve the architecture if it is unknown or the target has changed.
+        if current_arch is None or current_arch_context != get_arch_context():
             set_arch()
 
         kpti_transition = is_in_kpti_transition()
@@ -15903,7 +15904,7 @@ ARCH_CHECKERS = {
 }
 
 
-@Cache.cache_until_next
+@Cache.cache_until_next(per_inferior=True)
 def get_arch():
     """Return the binary's architecture."""
     if is_alive():
@@ -15942,11 +15943,28 @@ def get_arch():
     return arch_str
 
 
+def get_arch_context():
+    """Return the selected inferior and its GDB architecture name.
+    `current_arch` must be resolved again when this value changes (e.g., `inferior N`, or reconnecting to another target)."""
+    try:
+        inferior = gdb.selected_inferior()
+    except Exception:
+        return None
+    if not hasattr(inferior, "architecture"): # ~gdb 10.1
+        return inferior.num, None
+    try:
+        return inferior.num, inferior.architecture().name()
+    except gdb.error:
+        return inferior.num, None
+
+
 def set_arch(arch_str=None):
     """Set the current architecture.
     If an arch is explicitly specified, use that one. Otherwise prefer the loaded ELF and fall back to GDB.
     Return the selected arch, or raise an OSError."""
-    global current_arch
+    global current_arch, current_arch_context
+
+    current_arch_context = get_arch_context()
 
     # get defined arch
     arches = {}
@@ -16358,6 +16376,9 @@ class GenericCommand(gdb.Command):
 
     def invoke(self, args, from_tty): # noqa
         try:
+            # Another inferior or target may be selected since the architecture was resolved.
+            if current_arch is not None and current_arch_context != get_arch_context():
+                set_arch()
             argv = gdb.string_to_argv(args)
             if self._repeat_:
                 self.set_repeat_count(argv, from_tty)
@@ -89865,6 +89886,11 @@ class KernelSearchCodePtrCommand(GenericCommand, BufferingOutput):
         entry = AddrMap.find_virtual(addr, maps=self.klayout.maps)
         return str(entry.permission) if entry else "???"
 
+    def is_kernel_addr(self, addr):
+        import bisect
+        i = bisect.bisect_right(self.map_starts, addr) - 1
+        return 0 <= i and addr < self.map_ends[i]
+
     def search(self, backtrack_info, addr, max_range, depth):
         if depth == 0:
             if not (self.klayout.text_base <= addr < self.klayout.text_end):
@@ -89884,7 +89910,7 @@ class KernelSearchCodePtrCommand(GenericCommand, BufferingOutput):
 
         valid = False
         if depth not in self.invalid_addrs:
-            self.invalid_addrs[depth] = []
+            self.invalid_addrs[depth] = set()
 
         for offset in range(0, max_range + current_arch.ptrsize, current_arch.ptrsize):
             # align to 32bit / 64bit
@@ -89893,8 +89919,7 @@ class KernelSearchCodePtrCommand(GenericCommand, BufferingOutput):
             if cur & (current_arch.ptrsize - 1) != 0:
                 continue
             # is kernel address?
-            # TODO: more suitable check for kernel address
-            if (cur >> (current_arch.ptrsize * 8 - 1)) == 0:
+            if not self.is_kernel_addr(cur):
                 continue
             # is accessible?
             if not is_valid_addr(cur):
@@ -89908,7 +89933,7 @@ class KernelSearchCodePtrCommand(GenericCommand, BufferingOutput):
             # recursive
             ret = self.search(new_backtrack_info, v, max_range, depth - 1)
             if ret is False:
-                self.invalid_addrs[depth].append(v)
+                self.invalid_addrs[depth].add(v)
             valid |= ret
         return valid
 
@@ -89933,17 +89958,30 @@ class KernelSearchCodePtrCommand(GenericCommand, BufferingOutput):
             err("Unsupported environment which has RWX data area")
             return
 
+        maps = sorted(self.klayout.maps, key=lambda entry: entry.vstart)
+        self.map_starts = [entry.vstart for entry in maps]
+        self.map_ends = [entry.vend for entry in maps]
         self.invalid_addrs = {}
         self.out = []
 
-        if not is_valid_addr(self.klayout.rw_base):
+        # The data area may contain unmapped holes (e.g., freed __init between .data and .bss)
+        rw_data = []
+        for entry in maps:
+            start = max(entry.vstart, self.klayout.rw_base)
+            end = min(entry.vend, self.klayout.rw_end)
+            if start >= end:
+                continue
+            try:
+                data = read_memory(start, end - start)
+            except gdb.MemoryError:
+                continue
+            for i, rw_d in enumerate(slice_unpack(data, current_arch.ptrsize)):
+                rw_data.append((start + i * current_arch.ptrsize, rw_d))
+        if not rw_data:
             err("Memory read error")
             return
-        rw_data = read_memory(self.klayout.rw_base, self.klayout.rw_size)
-        rw_data = slice_unpack(rw_data, current_arch.ptrsize)
 
-        for i, rw_d in ProgressBar(enumerate(rw_data), total=len(rw_data), disable=self.args.quiet):
-            rw_addr = self.klayout.rw_base + i * current_arch.ptrsize
+        for rw_addr, rw_d in ProgressBar(rw_data, total=len(rw_data), disable=self.args.quiet):
             backtrack_info = [(rw_addr, 0)]
             self.search(backtrack_info, rw_d, args.max_range, args.depth - 1)
 
