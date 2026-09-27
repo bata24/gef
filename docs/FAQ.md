@@ -583,26 +583,6 @@ Do not use `~` in paths that point to the `gef.py` directory in `.gdbinit`.
 Python's `inspect` may not expand tildes reliably; use absolute paths instead.
 I encountered this behavior in Python 3.9.2 on Debian 11.
 
-## When using qemu-user, an error occurs when continuing execution.
-Is the error something like this?
-```
-...
-dwarf2/dwz.c:188: internal-error: dwarf2_read_dwz_file: Assertion `is_main_thread ()' failed.
-A problem internal to GDB has been detected,
-further debugging may prove unreliable.
------ Backtrace -----
-...
-```
-If so, this is caused by the `continue-for-qemu-user` command.
-This problem occurs only when the configuration option `continue_for_qemu_user.use_fork` is set to `False`.
-
-`continue-for-qemu-user` is a wrapper for the `c`(`continue`) command that allows `Ctrl+C` to be accepted even during `continue` under `qemu-user`.
-On some architectures, this wrapper may not work properly when running dynamically linked binaries with `qemu-user`.
-
-There are two ways to work around this:
-- Use the `main-break` command to reach `main` once; after that, this error will no longer occur.
-- Use the `continue` command instead of the `c` command (but `Ctrl+C` will not work).
-
 
 # About the Internal Mechanism
 

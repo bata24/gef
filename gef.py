@@ -15346,10 +15346,24 @@ class EventHandler:
         # set `c`, `ni` and `si` command hooks for qemu-user and pin
         if EventHandler.__gef_check_once__:
             if is_qemu_user() or is_pin():
-                gdb.execute("define c\ncontinue-for-qemu-user\nend")
+                gdb.execute("define c\n"
+                            "if $argc == 0\n"
+                            "continue-for-qemu-user\n"
+                            "else\n"
+                            "if $argc == 1\n"
+                            "continue-for-qemu-user $arg0\n"
+                            "else\n"
+                            "continue-for-qemu-user $arg0 $arg1\n"
+                            "end\n"
+                            "end\n"
+                            "end")
                 if is_or1k() or is_cris():
-                    gdb.execute("define si\nstepi-for-qemu-user\nend")
-                    gdb.execute("define ni\nnexti-for-qemu-user\nend")
+                    gdb.execute("define si\nif $argc == 0\n"
+                                "stepi-for-qemu-user\nelse\n"
+                                "stepi-for-qemu-user $arg0\nend\nend")
+                    gdb.execute("define ni\nif $argc == 0\n"
+                                "nexti-for-qemu-user\nelse\n"
+                                "nexti-for-qemu-user $arg0\nend\nend")
 
         # disable for cortex-m
         if EventHandler.__gef_check_once__:
@@ -16907,11 +16921,46 @@ class HighlightRemoveCommand(GenericCommand):
         return
 
 
+class QemuUserStepBreakpointGroup:
+    def __init__(self):
+        self.breakpoints = []
+        return
+
+    def add(self, bp):
+        self.breakpoints.append(bp)
+        return
+
+    def delete(self):
+        for bp in self.breakpoints:
+            try:
+                if bp.is_valid():
+                    bp.delete()
+            except gdb.error as e:
+                err("Failed to remove internal breakpoint: {}".format(e))
+        self.breakpoints.clear()
+        return
+
+
 class SimpleInternalTemporaryBreakpoint(gdb.Breakpoint):
     """A simple wrapper that takes into account the bug where temporary breakpoints isn't deleted after it is hit."""
 
-    def __init__(self, loc):
+    @staticmethod
+    def get_qemu_user_step_instruction(is_next=False):
+        instruction_name = "next" if is_next else "current"
+        try:
+            insn = get_insn_next() if is_next else get_insn()
+        except gdb.error as e:
+            err("Unable to decode the {} instruction: {}".format(instruction_name, e))
+            return None
+        if insn is None:
+            err("Unable to decode the {} instruction.".format(instruction_name))
+            return None
+        return insn
+
+    def __init__(self, loc, group=None):
         super().__init__("*{:#x}".format(loc), gdb.BP_BREAKPOINT, internal=True, temporary=True)
+        if group is not None:
+            group.add(self)
         return
 
     def stop(self):
@@ -16925,9 +16974,12 @@ class SimpleInternalTemporaryBreakpoint(gdb.Breakpoint):
 class SecondBreakpoint(gdb.Breakpoint):
     """Breakpoint which sets a 2nd breakpoint, when hit."""
 
-    def __init__(self, loc, second_loc):
+    def __init__(self, loc, second_loc, group=None):
         self.second_loc = second_loc
+        self.group = group
         super().__init__("*{:#x}".format(loc), gdb.BP_BREAKPOINT, internal=True, temporary=True)
+        if group is not None:
+            group.add(self)
         return
 
     def stop(self):
@@ -16935,25 +16987,26 @@ class SecondBreakpoint(gdb.Breakpoint):
         self.enabled = False
 
         Cache.reset_gef_caches()
-        SimpleInternalTemporaryBreakpoint(loc=self.second_loc)
+        SimpleInternalTemporaryBreakpoint(loc=self.second_loc, group=self.group)
         return True
 
 
 @register_command
 class NextiForQemuUserCommand(GenericCommand):
-    """`ni` wrapper for some specific architectures (OpenRISC 1000 and CRIS)."""
+    """`ni` wrapper for specific architectures; COUNT is unsupported."""
 
     _cmdline_ = "nexti-for-qemu-user"
     _category_ = "01-c. Debugging Support - Basic Command Extension"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
-    parser.add_argument("args", metavar="ARGS", nargs="*",
-                        help="An array of arguments to pass as is to the nexti command. (default: %(default)s)")
+    parser.add_argument("count", metavar="COUNT", nargs="?",
+                        help="Unsupported. Run this command without COUNT to step once.")
     _syntax_ = parser.format_help()
 
     _note_ = [
         "Only when qemu-user with specific architecture, the `ni` command is redirected to `nexti-for-qemu-user`.",
         "This setting is done only once, when `hook_stop_handler` is called for the first time.",
+        "COUNT arguments are not supported.",
         "",
         "Target architecture:",
         "  OpenRISC 1000: branch operations don't work well, so GEF uses breakpoints to simulate.",
@@ -16961,7 +17014,7 @@ class NextiForQemuUserCommand(GenericCommand):
     ]
     _note_ = "\n".join(_note_)
 
-    def ni_set_bp_for_branch(self):
+    def ni_set_bp_for_branch(self, group):
         target = None
         delay_slot = False
 
@@ -16971,8 +17024,9 @@ class NextiForQemuUserCommand(GenericCommand):
             # gdb.selected_frame() may error for unknown reasons (often during kernel startup).
             frame = None
 
-        insn = get_insn()
-        insn_next = get_insn_next()
+        insn = SimpleInternalTemporaryBreakpoint.get_qemu_user_step_instruction()
+        if insn is None:
+            return False
 
         if insn and current_arch.is_jump(insn):
             target = ContextCodeCommand.get_branch_addr(insn)
@@ -16982,67 +17036,88 @@ class NextiForQemuUserCommand(GenericCommand):
             delay_slot = current_arch.has_ret_delay_slot
 
         if target is None:
-            return
+            return True
 
         # something wrong if infinity loop on CRIS architecture
         if is_cris() and target == insn.address:
-            SecondBreakpoint(loc=insn_next.address, second_loc=target)
-            return
+            insn_next = SimpleInternalTemporaryBreakpoint.get_qemu_user_step_instruction(is_next=True)
+            if insn_next is None:
+                return False
+            SecondBreakpoint(loc=insn_next.address, second_loc=target, group=group)
+            return True
 
-        SimpleInternalTemporaryBreakpoint(loc=target)
         if delay_slot:
-            SimpleInternalTemporaryBreakpoint(loc=insn_next.address)
-        return
+            insn_next = SimpleInternalTemporaryBreakpoint.get_qemu_user_step_instruction(is_next=True)
+            if insn_next is None:
+                return False
 
-    def ni_set_bp_next(self):
-        insn_next = get_insn_next()
-        SimpleInternalTemporaryBreakpoint(loc=insn_next.address)
-        return
+        SimpleInternalTemporaryBreakpoint(loc=target, group=group)
+        if delay_slot:
+            SimpleInternalTemporaryBreakpoint(loc=insn_next.address, group=group)
+        return True
+
+    def ni_set_bp_next(self, group):
+        insn_next = SimpleInternalTemporaryBreakpoint.get_qemu_user_step_instruction(is_next=True)
+        if insn_next is None:
+            return False
+        SimpleInternalTemporaryBreakpoint(loc=insn_next.address, group=group)
+        return True
 
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.only_if_specific_gdb_mode(mode=("qemu-user",))
     @Decorator.only_if_specific_arch(arch=("OR1K", "CRIS"))
     def do_invoke(self, args):
-        if is_cris():
-            self.ni_set_bp_for_branch()
-            self.ni_set_bp_next()
-            gdb.execute("c") # use c wrapper
+        if args.count is not None:
+            err("COUNT is not supported by `nexti-for-qemu-user`.")
             return
 
-        if is_or1k():
-            self.ni_set_bp_for_branch()
-
-        cmd = "nexti " + " ".join(args.args)
+        group = QemuUserStepBreakpointGroup()
         try:
-            gdb.execute(cmd.rstrip())
-        except gdb.error:
-            exc_type, exc_value, exc_traceback = sys.exc_info()
-            if str(exc_value).startswith("Cannot access memory at address"):
-                if is_valid_addr(current_arch.pc):
-                    gdb.execute("xuntil --from-wrapper")
+            if is_cris():
+                if not self.ni_set_bp_for_branch(group) or not self.ni_set_bp_next(group):
+                    return
+                gdb.execute("c") # use c wrapper
+                return
+
+            if is_or1k():
+                if not self.ni_set_bp_for_branch(group):
+                    return
+
+            try:
+                gdb.execute("nexti")
+            except gdb.error:
+                exc_type, exc_value, exc_traceback = sys.exc_info()
+                if str(exc_value).startswith("Cannot access memory at address"):
+                    if is_valid_addr(current_arch.pc):
+                        gdb.execute("xuntil --from-wrapper")
+                    else:
+                        err(exc_value)
                 else:
                     err(exc_value)
-            else:
-                err(exc_value)
+        except gdb.error as e:
+            err(e)
+        finally:
+            group.delete()
         return
 
 
 @register_command
 class StepiForQemuUserCommand(GenericCommand):
-    """`si` wrapper for some specific architectures (OpenRISC 1000 and CRIS)."""
+    """`si` wrapper for specific architectures; COUNT is unsupported."""
 
     _cmdline_ = "stepi-for-qemu-user"
     _category_ = "01-c. Debugging Support - Basic Command Extension"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
-    parser.add_argument("args", metavar="ARGS", nargs="*",
-                        help="An array of arguments to pass as is to the stepi command. (default: %(default)s)")
+    parser.add_argument("count", metavar="COUNT", nargs="?",
+                        help="Unsupported. Run this command without COUNT to step once.")
     _syntax_ = parser.format_help()
 
     _note_ = [
         "Only when qemu-user with specific architecture, the `si` command is redirected to `stepi-for-qemu-user`.",
         "This setting is done only once, when `hook_stop_handler` is called for the first time.",
+        "COUNT arguments are not supported.",
         "",
         "Target architecture:",
         "  OpenRISC 1000: branch operations don't work well, so GEF uses breakpoints to simulate.",
@@ -17050,7 +17125,7 @@ class StepiForQemuUserCommand(GenericCommand):
     ]
     _note_ = "\n".join(_note_)
 
-    def si_set_bp_for_branch(self):
+    def si_set_bp_for_branch(self, group):
         target = None
         delay_slot = False
 
@@ -17060,8 +17135,9 @@ class StepiForQemuUserCommand(GenericCommand):
             # gdb.selected_frame() may error for unknown reasons (often during kernel startup).
             frame = None
 
-        insn = get_insn()
-        insn_next = get_insn_next()
+        insn = SimpleInternalTemporaryBreakpoint.get_qemu_user_step_instruction()
+        if insn is None:
+            return False
 
         if insn and (current_arch.is_jump(insn) or current_arch.is_call(insn)): # si also stops at `call` target
             target = ContextCodeCommand.get_branch_addr(insn)
@@ -17071,49 +17147,69 @@ class StepiForQemuUserCommand(GenericCommand):
             delay_slot = current_arch.has_ret_delay_slot
 
         if target is None:
-            return
+            return True
 
         # something wrong if infinity loop on CRIS architecture
         if is_cris() and target == insn.address:
-            SecondBreakpoint(loc=insn_next.address, second_loc=target)
-            return
+            insn_next = SimpleInternalTemporaryBreakpoint.get_qemu_user_step_instruction(is_next=True)
+            if insn_next is None:
+                return False
+            SecondBreakpoint(loc=insn_next.address, second_loc=target, group=group)
+            return True
 
-        SimpleInternalTemporaryBreakpoint(loc=target)
         if delay_slot:
-            SimpleInternalTemporaryBreakpoint(loc=insn_next.address)
-        return
+            insn_next = SimpleInternalTemporaryBreakpoint.get_qemu_user_step_instruction(is_next=True)
+            if insn_next is None:
+                return False
 
-    def si_set_bp_next(self):
-        insn_next = get_insn_next()
-        SimpleInternalTemporaryBreakpoint(loc=insn_next.address)
-        return
+        SimpleInternalTemporaryBreakpoint(loc=target, group=group)
+        if delay_slot:
+            SimpleInternalTemporaryBreakpoint(loc=insn_next.address, group=group)
+        return True
+
+    def si_set_bp_next(self, group):
+        insn_next = SimpleInternalTemporaryBreakpoint.get_qemu_user_step_instruction(is_next=True)
+        if insn_next is None:
+            return False
+        SimpleInternalTemporaryBreakpoint(loc=insn_next.address, group=group)
+        return True
 
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.only_if_specific_gdb_mode(mode=("qemu-user",))
     @Decorator.only_if_specific_arch(arch=("OR1K", "CRIS"))
     def do_invoke(self, args):
-        if is_cris():
-            self.si_set_bp_for_branch()
-            self.si_set_bp_next()
-            gdb.execute("c") # use c wrapper
+        if args.count is not None:
+            err("COUNT is not supported by `stepi-for-qemu-user`.")
             return
 
-        if is_or1k():
-            self.si_set_bp_for_branch()
-
-        cmd = "stepi " + " ".join(args.args)
+        group = QemuUserStepBreakpointGroup()
         try:
-            gdb.execute(cmd.rstrip())
-        except gdb.error:
-            exc_type, exc_value, exc_traceback = sys.exc_info()
-            if str(exc_value).startswith("Cannot access memory at address"):
-                if is_valid_addr(current_arch.pc):
-                    gdb.execute("xuntil --from-wrapper")
+            if is_cris():
+                if not self.si_set_bp_for_branch(group) or not self.si_set_bp_next(group):
+                    return
+                gdb.execute("c") # use c wrapper
+                return
+
+            if is_or1k():
+                if not self.si_set_bp_for_branch(group):
+                    return
+
+            try:
+                gdb.execute("stepi")
+            except gdb.error:
+                exc_type, exc_value, exc_traceback = sys.exc_info()
+                if str(exc_value).startswith("Cannot access memory at address"):
+                    if is_valid_addr(current_arch.pc):
+                        gdb.execute("xuntil --from-wrapper")
+                    else:
+                        err(exc_value)
                 else:
                     err(exc_value)
-            else:
-                err(exc_value)
+        except gdb.error as e:
+            err(e)
+        finally:
+            group.delete()
         return
 
 
@@ -17125,76 +17221,23 @@ class ContinueForQemuUserCommand(GenericCommand):
     _category_ = "01-c. Debugging Support - Basic Command Extension"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
-    parser.add_argument("args", metavar="ARGS", nargs="*",
-                        help="An array of arguments to pass as is to the continue command. (default: %(default)s)")
+    parser.add_argument("-a", dest="all_threads", action="count", default=0,
+                        help="Continue all stopped threads in non-stop mode.")
+    parser.add_argument("ignore_count", metavar="IGNORE-COUNT", nargs="?",
+                        help="Ignore the current breakpoint N-1 times.")
     _syntax_ = parser.format_help()
 
     _note_ = [
         "Only when qemu-user or pin, the `c` command is redirected to `continue-for-qemu-user`.",
         "This setting is done only once, when hook_stop_handler is called for the first time.",
         "Nested `c` command causes a problem, so in that case gef executes the original continue command instead.",
-        "Internally, SIGINT is monitored in a forked child process (default) or another thread.",
+        "Internally, SIGINT is monitored in a forked child process.",
     ]
     _note_ = "\n".join(_note_)
 
     nested = False
 
-    def __init__(self):
-        super().__init__()
-        # In the previous old implementation, Ctrl+C signal was monitored by thread. It was quite stable.
-        # However, if you use this method before libc.so is loaded, gdb will crash on non-x86 architectures.
-        # This is because the code executes gdb.execute("continue") in a non-main thread.
-        # However, signals can only be monitored in the main thread, so there was no way to avoid this.
-        # In the new implementation, Ctrl+C signal is monitored by forked child process.
-        # It seems to work well so far, but there may be cases where it doesn't work properly.
-        self.add_setting("use_fork", True, "Ctrl+C is monitored by forked process. If False, monitored by thread.")
-        return
-
-    def continue_for_qemu_thread(self):
-        import signal
-        import threading
-        thread_started = False
-        thread_finished = False
-
-        pid = Pid.get_pid()
-
-        def continue_thread():
-            nonlocal thread_started, thread_finished
-            thread_started = True
-            try:
-                gdb.execute("continue")
-            except gdb.error:
-                exc_type, exc_value, exc_traceback = sys.exc_info()
-                err(exc_value)
-            thread_finished = True
-            return
-
-        def sig_handler(_signum, _frame):
-            # do not use get_pid() in this func.
-            # get_pid() uses `maintenance packet` command internally,
-            # but it cannot be used when the non-static program is running.
-            os.kill(pid, signal.SIGTRAP)
-            return
-
-        th = threading.Thread(target=continue_thread, daemon=True)
-        th.start()
-        while thread_started is False:
-            time.sleep(0.1)
-        old = signal.signal(signal.SIGINT, sig_handler)
-        while thread_finished is False:
-            time.sleep(0.1)
-        th.join()
-        signal.signal(signal.SIGINT, old)
-        return
-
-    def pid_is_alive(self, pid):
-        try:
-            os.kill(pid, 0)
-        except OSError:
-            return False
-        return True
-
-    def continue_for_qemu_fork(self):
+    def continue_for_qemu_fork(self, command):
         import signal
 
         parent_pid = Pid.get_pid()
@@ -17204,53 +17247,70 @@ class ContinueForQemuUserCommand(GenericCommand):
 
             # child
             def sig_handler(_signum, _frame):
-                nonlocal signal_monitoring
-                os.kill(parent_pid, signal.SIGTRAP)
-                signal_monitoring = False
+                nonlocal signal_received
+                signal_received = True
                 return
 
-            signal_monitoring = True
-            old = signal.signal(signal.SIGINT, sig_handler)
-            while signal_monitoring:
+            signal_received = False
+            signal.signal(signal.SIGINT, sig_handler)
+            while True:
+                if signal_received:
+                    os.kill(parent_pid, signal.SIGTRAP)
                 time.sleep(0.1)
-            signal.signal(signal.SIGINT, old)
-            os._exit(0)
 
-        # parent
         try:
-            gdb.execute("continue")
+            gdb.execute(command)
         except gdb.error:
             exc_type, exc_value, exc_traceback = sys.exc_info()
             err(exc_value)
-
-        # clean up
-        try:
-            if self.pid_is_alive(child_pid):
-                os.kill(child_pid, signal.SIGKILL)
-            os.waitpid(child_pid, os.WNOHANG)
-        except (ProcessLookupError, ChildProcessError):
-            pass
+        finally:
+            try:
+                while True:
+                    try:
+                        os.kill(child_pid, signal.SIGKILL)
+                        break
+                    except InterruptedError:
+                        continue
+                    except ProcessLookupError:
+                        break
+            finally:
+                while True:
+                    try:
+                        os.waitpid(child_pid, 0)
+                        break
+                    except InterruptedError:
+                        continue
+                    except ChildProcessError:
+                        break
         return
 
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.only_if_specific_gdb_mode(mode=("qemu-user", "pin"))
     def do_invoke(self, args):
+        if args.all_threads > 1 or (args.all_threads and args.ignore_count is not None):
+            err("`-a` cannot be used more than once or with an ignore count.")
+            return
+
+        command = "continue"
+        if args.all_threads:
+            command += " -a"
+        elif args.ignore_count is not None:
+            command += " " + args.ignore_count
+
         if is_qemu_user() or is_pin():
             if Pid.get_pid():
                 if not self.nested:
                     self.nested = True
-                    if Config.get_gef_setting("continue_for_qemu_user.use_fork"):
-                        self.continue_for_qemu_fork()
-                    else:
-                        self.continue_for_qemu_thread()
-                    self.nested = False
+                    try:
+                        self.continue_for_qemu_fork(command)
+                    finally:
+                        self.nested = False
                     return
 
         # fall back to original continue command
         try:
-            cmd = "continue " + " ".join(args.args)
-            gdb.execute(cmd.rstrip())
+            gdb.execute(command)
         except gdb.error:
             exc_type, exc_value, exc_traceback = sys.exc_info()
             err(exc_value)

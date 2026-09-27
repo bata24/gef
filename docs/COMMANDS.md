@@ -552,13 +552,14 @@ regdump-break 0x55555555aab9 -t "state changed" -r rax
 ### Syntax
 
 ```text
-usage: continue-for-qemu-user [-h] [ARGS ...]
+usage: continue-for-qemu-user [-h] [-a] [IGNORE-COUNT]
 
 positional arguments:
-  ARGS        An array of arguments to pass as is to the continue command. (default: None)
+  IGNORE-COUNT  Ignore the current breakpoint N-1 times.
 
 options:
-  -h, --help  show this help message and exit
+  -h, --help    show this help message and exit
+  -a            Continue all stopped threads in non-stop mode.
 ```
 
 ### Notes
@@ -567,7 +568,7 @@ options:
 Only when qemu-user or pin, the `c` command is redirected to `continue-for-qemu-user`.
 This setting is done only once, when hook_stop_handler is called for the first time.
 Nested `c` command causes a problem, so in that case gef executes the original continue command instead.
-Internally, SIGINT is monitored in a forked child process (default) or another thread.
+Internally, SIGINT is monitored in a forked child process.
 ```
 
 ## `down`
@@ -619,16 +620,16 @@ multi-line x/4xg $rax; ---t TAG; x/4xg $rbx  # `---t TAG`: bold white line (`=`)
 
 ## `nexti-for-qemu-user`
 
-`ni` wrapper for some specific architectures (OpenRISC 1000 and CRIS).
+`ni` wrapper for specific architectures; COUNT is unsupported.
 
 
 ### Syntax
 
 ```text
-usage: nexti-for-qemu-user [-h] [ARGS ...]
+usage: nexti-for-qemu-user [-h] [COUNT]
 
 positional arguments:
-  ARGS        An array of arguments to pass as is to the nexti command. (default: None)
+  COUNT       Unsupported. Run this command without COUNT to step once.
 
 options:
   -h, --help  show this help message and exit
@@ -639,6 +640,7 @@ options:
 ```text
 Only when qemu-user with specific architecture, the `ni` command is redirected to `nexti-for-qemu-user`.
 This setting is done only once, when `hook_stop_handler` is called for the first time.
+COUNT arguments are not supported.
 
 Target architecture:
   OpenRISC 1000: branch operations don't work well, so GEF uses breakpoints to simulate.
@@ -664,21 +666,21 @@ options:
 ```text
 Only for AArch64 + kgdb.
 Temporarily masks IRQ before `stepi`, then restores the original state
-unless the stepped instruction intentionally modified DAIF.I.
+unless the stepped instruction intentionally modified DAIF.I or entered an exception.
 ```
 
 ## `stepi-for-qemu-user`
 
-`si` wrapper for some specific architectures (OpenRISC 1000 and CRIS).
+`si` wrapper for specific architectures; COUNT is unsupported.
 
 
 ### Syntax
 
 ```text
-usage: stepi-for-qemu-user [-h] [ARGS ...]
+usage: stepi-for-qemu-user [-h] [COUNT]
 
 positional arguments:
-  ARGS        An array of arguments to pass as is to the stepi command. (default: None)
+  COUNT       Unsupported. Run this command without COUNT to step once.
 
 options:
   -h, --help  show this help message and exit
@@ -689,6 +691,7 @@ options:
 ```text
 Only when qemu-user with specific architecture, the `si` command is redirected to `stepi-for-qemu-user`.
 This setting is done only once, when `hook_stop_handler` is called for the first time.
+COUNT arguments are not supported.
 
 Target architecture:
   OpenRISC 1000: branch operations don't work well, so GEF uses breakpoints to simulate.
