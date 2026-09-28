@@ -14116,12 +14116,26 @@ def is_over_serial():
         return None
     if not is_remote_debug():
         return False
+
+    serial_device = re.compile(
+        r"/dev/(?:tty(?:S\d+|AMA\d+|USB\S*|ACM\d+|XRUSB\S*)|serial/by-(?:id|path)/\S+)"
+    )
     try:
         dev = gdb.selected_inferior().connection.details
-        return dev.startswith(("/dev/ttyS", "/dev/ttyAMA", "/dev/ttyUSB"))
+        if dev and serial_device.search(str(dev)):
+            return True
     except AttributeError:
         # before gdb 11.x: AttributeError: 'gdb.Inferior' object has no attribute 'connection'
-        return False
+        pass
+
+    for command in ("info target", "maintenance print target-stack"):
+        try:
+            details = gdb.execute(command, to_string=True, from_tty=False)
+        except gdb.error:
+            continue
+        if serial_device.search(details):
+            return True
+    return False
 
 
 @Cache.cache_this_session(cache_None=False)
@@ -17323,6 +17337,7 @@ class StepiForKGDBCommand(GenericCommand):
 
     _cmdline_ = "stepi-for-kgdb"
     _category_ = "01-c. Debugging Support - Basic Command Extension"
+    irq_mask_bit = 0x80 # DAIF.I
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     _syntax_ = parser.format_help()
@@ -17330,47 +17345,241 @@ class StepiForKGDBCommand(GenericCommand):
     _note_ = [
         "Only for AArch64 + kgdb.",
         "Temporarily masks IRQ before `stepi`, then restores the original state",
-        "unless the stepped instruction intentionally modified DAIF.I.",
+        "unless the stepped instruction intentionally modified DAIF.I or entered an exception.",
     ]
     _note_ = "\n".join(_note_)
+
+    @staticmethod
+    def get_exception_registers():
+        """Return readable ELR/SPSR values for detecting exception transitions."""
+        registers = {}
+        for name in ["$elr_el1", "$elr_el2", "$elr_el3", "$spsr_el1", "$spsr_el2", "$spsr_el3"]:
+            value = get_register(name)
+            if value is not None:
+                registers[name] = value
+        return registers
+
+    @staticmethod
+    def get_daif_update(instruction):
+        """Return the instruction's DAIF action and intended IRQ bit.
+
+        Read MSR source registers before stepping; a None IRQ bit preserves PSTATE.
+        """
+        if (instruction & 0xffff_f0df) == 0xd503_40df: # MSR DAIFSet/DAIFClr, #imm
+            immediate = (instruction >> 8) & 0xf
+            if immediate & 0x2:
+                return "write", 0 if instruction & 0x20 else 1
+            return "write", 0
+
+        if (instruction & 0xffff_ffe0) == 0xd51b_4220: # MSR DAIF, Xn
+            source_register = instruction & 0x1f
+            source = 0 if source_register == 31 else get_register("$x{:d}".format(source_register))
+            if source is None:
+                raise gdb.error("Could not read the source register for `msr daif`")
+            return "write", (source >> 7) & 1
+
+        if instruction in (0xd69f_03e0, 0xd69f_0bff, 0xd69f_0fff): # ERET/ERETAA/ERETAB
+            return "preserve", None
+
+        exception_instruction = instruction & 0xffe0_001f
+        if exception_instruction in (
+            0xd400_0001, # SVC
+            0xd400_0002, # HVC
+            0xd400_0003, # SMC
+            0xd420_0000, # BRK
+            0xd440_0000, # HLT
+            0xd4a0_0001, # DCPS1
+            0xd4a0_0002, # DCPS2
+            0xd4a0_0003, # DCPS3
+        ):
+            return "preserve", None
+
+        return None, 0
+
+    @staticmethod
+    def is_branch_instruction(instruction):
+        """Identify ordinary branches for the post-step PC check.
+
+        Matching the saved opcode avoids disassembly and Instruction creation,
+        making it more efficient here than using current_arch.is_call. It covers
+        the calls, jumps and returns needed for this check, while is_call only
+        recognizes calls. Exception returns are handled as PSTATE transitions.
+        """
+        if (instruction & 0x7c00_0000) == 0x1400_0000: # B/BL
+            return True
+        if (instruction & 0xff00_0010) == 0x5400_0000: # B.cond
+            return True
+        if (instruction & 0x7e00_0000) in (0x3400_0000, 0x3600_0000): # CBZ/CBNZ/TBZ/TBNZ
+            return True
+        if (instruction & 0xffff_fc1f) in (0xd61f_0000, 0xd63f_0000, 0xd65f_0000): # BR/BLR/RET
+            return True
+        if instruction in (0xd65f_0bff, 0xd65f_0fff): # RETAA/RETAB
+            return True
+        return False
+
+    @staticmethod
+    def exception_state_changed(old_pc, instruction, new_pc, old_cpsr, new_cpsr, old_registers):
+        """Detect exception transitions from PC, processor mode and ELR/SPSR changes."""
+        if new_pc != old_pc + 4 and not StepiForKGDBCommand.is_branch_instruction(instruction):
+            return True
+        if (old_cpsr & 0x1f) != (new_cpsr & 0x1f):
+            return True
+
+        for name, old_value in old_registers.items():
+            new_value = get_register(name)
+            if new_value is not None and new_value != old_value:
+                return True
+        return False
+
+    @staticmethod
+    def thread_matches(thread, state):
+        """Check whether a valid thread matches the saved KGDB CPU identity."""
+        try:
+            return thread is not None and thread.is_valid() and thread.num == state["thread_num"] and thread.ptid == state["ptid"]
+        except (AttributeError, gdb.error):
+            return False
+
+    def mask_irq(self, cpsr):
+        """Try to mask IRQs, verify the write and attempt rollback on failure."""
+        try:
+            masked_cpsr = cpsr | self.irq_mask_bit
+            gdb.execute("set $cpsr = {:#x}".format(masked_cpsr), to_string=True)
+            if get_register("$cpsr") == masked_cpsr:
+                return True
+            message = "The target did not accept the temporary DAIF.I mask; `stepi` was not run"
+        except (gdb.error, KeyboardInterrupt) as e:
+            message = "Could not temporarily set DAIF.I: {}".format(e)
+        try:
+            if get_register("$cpsr") != cpsr:
+                gdb.execute("set $cpsr = {:#x}".format(cpsr), to_string=True)
+        except gdb.error:
+            pass
+        err(message)
+        return False
+
+    @staticmethod
+    @contextlib.contextmanager
+    def capture_stop(events):
+        """Capture step stop events and disconnect the temporary hook on exit."""
+        callback = events.append
+        connected = False
+        try:
+            EventHooking.gef_on_stop_hook(callback)
+            connected = True
+        except (AttributeError, gdb.error):
+            pass
+        try:
+            yield
+        finally:
+            if connected:
+                try:
+                    EventHooking.gef_on_stop_unhook(callback)
+                except (AttributeError, gdb.error):
+                    pass
+        return
+
+    def restore_irq(self, state, irq, event, step_succeeded):
+        """Apply the IRQ policy to the original CPU, preserving the selected thread."""
+        try:
+            result_thread = gdb.selected_thread()
+        except gdb.error:
+            result_thread = None
+        result_matches = self.thread_matches(result_thread, state)
+        try:
+            try:
+                thread = state["thread"]
+                source_available = thread.is_valid() and not thread.is_running()
+                if source_available and not result_matches:
+                    thread.switch()
+            except (AttributeError, gdb.error):
+                source_available = False
+            pc = get_register("$pc") if source_available else None
+            cpsr = get_register("$cpsr") if source_available else None
+            if pc is None or cpsr is None:
+                warn("Could not inspect the original KGDB CPU after `stepi`; its DAIF.I state was left unchanged")
+                return
+
+            signal = getattr(event, "stop_signal", None)
+            event_thread = getattr(event, "inferior_thread", None)
+            event_type = type(event).__name__
+            same_cpu = result_matches and (event_thread is None or self.thread_matches(event_thread, state))
+            unexpected_signal = signal not in (None, "SIGTRAP")
+            normal_stop = event is None or signal == "SIGTRAP" or (signal is None and event_type in ("SignalEvent", "BreakpointEvent"))
+            step_verified = step_succeeded and same_cpu and normal_stop
+            transitioned = self.exception_state_changed(
+                state["pc"], state["instruction"], pc, state["cpsr"], cpsr, state["exception_registers"],
+            )
+            did_not_advance = (
+                pc == state["pc"] and not transitioned
+                and (signal == "SIGINT" or not step_succeeded or event_type == "BreakpointEvent" or not same_cpu)
+            )
+            if did_not_advance:
+                irq = 0
+            elif irq is None or transitioned or unexpected_signal:
+                return
+            elif not step_verified and pc != state["pc"] and state["action"] is None:
+                if cpsr & self.irq_mask_bit:
+                    warn("Could not verify a normal single-step stop; DAIF.I was left masked")
+                return
+
+            restored_cpsr = (cpsr & ~self.irq_mask_bit) | (self.irq_mask_bit if irq else 0)
+            if restored_cpsr == cpsr:
+                return
+            try:
+                gdb.execute("set $cpsr = {:#x}".format(restored_cpsr), to_string=True)
+                verified_cpsr = get_register("$cpsr")
+                if verified_cpsr is None or (verified_cpsr & self.irq_mask_bit) != (restored_cpsr & self.irq_mask_bit):
+                    warn("The target did not confirm the restored DAIF.I value")
+            except gdb.error as e:
+                warn("Could not restore DAIF.I on the original KGDB CPU: {}".format(e))
+        finally:
+            if result_thread is not None and not result_matches:
+                try:
+                    if result_thread.is_valid():
+                        result_thread.switch()
+                except gdb.error:
+                    pass
+        return
 
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.only_if_specific_gdb_mode(mode=("kgdb",))
     @Decorator.only_if_specific_arch(arch=("ARM64",))
     def do_invoke(self, args):
-        old_cpsr = get_register("$cpsr")
-        instr = read_int32_from_memory(current_arch.pc, safe=True)
-        if instr is None:
-            err("Memory read error")
+        """Step once with a temporary IRQ mask and restore it when appropriate."""
+        pc = get_register("$pc")
+        cpsr = get_register("$cpsr")
+        if pc is None or cpsr is None:
+            err("Could not read the current PC and CPSR")
             return
-
-        irq_mask_bit = 0x80 # DAIF.I
-        gdb.execute("set $cpsr = {:#x}".format(old_cpsr | irq_mask_bit), to_string=True)
+        if cpsr & self.irq_mask_bit:
+            gdb.execute("stepi", from_tty=True)
+            return
 
         try:
-            gdb.execute("stepi", from_tty=True)
-        except gdb.error:
-            gdb.execute("set $cpsr = {:#x}".format(old_cpsr), to_string=True)
-            raise
-
-        if old_cpsr & irq_mask_bit:
+            instruction = int.from_bytes(gdb.selected_inferior().read_memory(pc, 4), "little")
+            action, irq = self.get_daif_update(instruction)
+        except gdb.error as e:
+            err("Could not prepare the KGDB step: {}".format(e))
             return
 
-        new_cpsr = get_register("$cpsr")
+        thread = gdb.selected_thread()
+        state = {
+            "thread": thread, "thread_num": thread.num, "ptid": thread.ptid,
+            "pc": pc, "cpsr": cpsr, "instruction": instruction, "action": action,
+            "exception_registers": self.get_exception_registers(),
+        }
+        if not self.mask_irq(cpsr):
+            return
 
-        # If the stepped instruction itself modified DAIF.I, preserve that result.
-        if (instr & 0xffff_f0ff) == 0xd503_40df: # MSR DAIFSet/DAIFClr, #imm
-            if (instr & 0x200) == 0:
-                new_cpsr &= ~irq_mask_bit
-        elif (instr & 0xffff_ffe0) == 0xd51b_4220: # MSR DAIF, Xn
-            regval = get_register("$x{:d}".format(instr & 0x1f))
-            if (regval & irq_mask_bit) == 0:
-                new_cpsr &= ~irq_mask_bit
-        else:
-            new_cpsr &= ~irq_mask_bit
-
-        gdb.execute("set $cpsr = {:#x}".format(new_cpsr), to_string=True)
+        events = []
+        step_succeeded = False
+        try:
+            with self.capture_stop(events):
+                gdb.execute("stepi", from_tty=True)
+                step_succeeded = True
+        finally:
+            self.restore_irq(state, irq, events[-1] if events else None, step_succeeded)
         return
 
 
