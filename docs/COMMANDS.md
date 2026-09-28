@@ -12255,25 +12255,35 @@ Dump device information for qemu-escape.
 ### Syntax
 
 ```text
-usage: qemu-device-info [-h] [-d DEVICE] [-n]
+usage: qemu-device-info [-h] [-d DEVICE | -l] [--qemu-binary QEMU_BINARY] [-N | -A] [-n]
 
 options:
-  -h, --help           show this help message and exit
-  -d, --device DEVICE  device name.
-  -n, --no-pager       do not use the pager.
+  -h, --help            show this help message and exit
+  -d, --device DEVICE   exact device name, id, or QOM path.
+  -l, --list            list active devices and owner-linked memory entries.
+  --qemu-binary QEMU_BINARY
+                        path to the qemu-system binary.
+  -N, --no-nm           do not show QEMU symbols from nm.
+  -A, --all-nm          show all symbols from nm.
+  -n, --no-pager        do not use the pager.
 ```
 
 ### Examples
 
 ```gdb
-qemu-device-info -d cydf-vga  # Specify a device name
-qemu-device-info -d cydf      # Specify a characteristic part of the device name
+qemu-device-info -l                           # List devices and owner-linked entry counts
+qemu-device-info -d cydf-vga                  # Select exact device name
+qemu-device-info -d net0                      # Select exact device id
+qemu-device-info -d /machine/peripheral/net0  # Select exact QOM path
+qemu-device-info -d net0 -N                   # Skip nm symbols
+qemu-device-info -d net0 -A                   # Show all nm symbols
 ```
 
 ### Notes
 
 ```text
 qemu-system must be running on the local host.
+Use `qemu-system-memory-region-dump` for more detailed physical memory-region information.
 ```
 
 ## `uefi-ovmf-info`
