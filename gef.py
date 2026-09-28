@@ -589,7 +589,7 @@ class MemoryCache:
         try:
             return gdb.selected_inferior().read_memory(addr, length).tobytes()
         except gdb.MemoryError as e:
-            out = b""
+            out = bytearray()
             try:
                 while len(out) < length:
                     # a value bigger than `max-value-size` (64KB by default) is refused,
@@ -600,7 +600,7 @@ class MemoryCache:
                     out += value.bytes # `Value.bytes` needs GDB 14 or later
             except (gdb.error, AttributeError):
                 raise e from None
-            return out
+            return bytes(out)
         except gdb.error as e:
             # a core file raises it for a region that is not dumped
             if "unavailable" in str(e):
@@ -66231,7 +66231,7 @@ class KernelAddressHeuristicFinder:
                 data = read_memory(scan_base, scan_size)
             except gdb.MemoryError:
                 # Some pages may be absent from the page tables of the halted context.
-                data = b""
+                data = bytearray()
                 for off in range(0, scan_size, 0x1_0000):
                     chunk_size = min(0x1_0000, scan_size - off)
                     try:
@@ -91837,7 +91837,7 @@ class StringsCommand(GenericCommand, BufferingOutput):
 
         for location, search_range, depth in queue_iter:
             # get data
-            data = b""
+            data = bytearray()
             try:
                 # read range
                 data += read_memory(location, search_range)
@@ -95712,11 +95712,11 @@ class Hash:
             if not isinstance(data, (bytes, bytearray, memoryview)):
                 raise TypeError("data must be bytes-like")
             self.count += len(data)
-            self.buf += data
-            while len(self.buf) >= 64:
-                block = self.buf[:64]
-                self.buf = self.buf[64:]
-                self.process_block(block)
+            data = self.buf + bytes(data)
+            end = len(data) - len(data) % self.block_size
+            for off in range(0, end, self.block_size):
+                self.process_block(data[off:off + self.block_size])
+            self.buf = data[end:]
             return self
 
         def rho(self, a, n, c):
@@ -96192,7 +96192,7 @@ class Hash:
                     raise ValueError("r must be non-negative")
                 self.r = int(r)
 
-            self.buffer = b""
+            self.buffer = bytearray()
             self.w = 64
             self.n = 89
             self.c = 16
@@ -96216,7 +96216,7 @@ class Hash:
         def update(self, data):
             if not isinstance(data, (bytes, bytearray, memoryview)):
                 raise TypeError("data must be bytes-like")
-            self.buffer += bytes(data)
+            self.buffer.extend(bytes(data))
             return self
 
         def digest(self):
@@ -96588,11 +96588,11 @@ class Hash:
             if not data:
                 return self
             self.total += len(data)
-            self.buf += bytes(data)
-            while len(self.buf) >= 64:
-                block = self.buf[:64]
-                self.buf = self.buf[64:]
-                self.transform(block)
+            data = self.buf + bytes(data)
+            end = len(data) - len(data) % self.block_size
+            for off in range(0, end, self.block_size):
+                self.transform(data[off:off + self.block_size])
+            self.buf = data[end:]
             return self
 
         def pad(self):
@@ -98722,7 +98722,7 @@ class Hash:
 
         def __init__(self, seed=0):
             self.seed = seed & 0xffff_ffff_ffff_ffff
-            self.buf = b""
+            self.buf = bytearray()
             return
 
         def update(self, data):
@@ -98730,8 +98730,7 @@ class Hash:
                 return self
             if not isinstance(data, (bytes, bytearray, memoryview)):
                 raise TypeError("data must be bytes-like")
-            b = bytes(data)
-            self.buf += b
+            self.buf.extend(bytes(data))
             return self
 
         def hexdigest(self):
@@ -135032,7 +135031,7 @@ class JsonMemoryCommand(JsonCommand):
 
     def read_json(self, loc):
         pos = 0
-        s = b""
+        s = bytearray()
         while True:
             try:
                 blob = read_memory(loc + pos, 1)
@@ -135043,7 +135042,7 @@ class JsonMemoryCommand(JsonCommand):
                 break
             s += blob
             pos += 1
-        return s
+        return bytes(s)
 
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
@@ -150824,20 +150823,23 @@ class Ksym:
                 # Unless there is a compelling reason, do not modify it.
                 base_size = 0x10_0000
                 step = 0x10_0000
-                Ksym.kernel_img = b""
-                # the last partial step is tried too
-                for candidate_size in itertools.chain(range(base_size, klayout.ro_size, step), [klayout.ro_size]):
-                    Ksym.ro_size = candidate_size
-                    # read only the grown part
-                    Ksym.kernel_img += read_memory(Ksym.ro_base + len(Ksym.kernel_img), Ksym.ro_size - len(Ksym.kernel_img))
-                    Ksym.verbose_info(verbose, "ro_base: {:#x}-{:#x}".format(Ksym.ro_base, Ksym.ro_base + Ksym.ro_size))
-                    ret = Ksym.KsymParse.initialize(rescan, verbose)
-                    if ret:
-                        # found
-                        break
-                else:
-                    # not found
-                    return None
+                Ksym.kernel_img = bytearray()
+                try:
+                    # the last partial step is tried too
+                    for candidate_size in itertools.chain(range(base_size, klayout.ro_size, step), [klayout.ro_size]):
+                        Ksym.ro_size = candidate_size
+                        # read only the grown part
+                        Ksym.kernel_img.extend(read_memory(Ksym.ro_base + len(Ksym.kernel_img), Ksym.ro_size - len(Ksym.kernel_img)))
+                        Ksym.verbose_info(verbose, "ro_base: {:#x}-{:#x}".format(Ksym.ro_base, Ksym.ro_base + Ksym.ro_size))
+                        ret = Ksym.KsymParse.initialize(rescan, verbose)
+                        if ret:
+                            # found
+                            break
+                    else:
+                        # not found
+                        return None
+                finally:
+                    Ksym.kernel_img = bytes(Ksym.kernel_img)
 
             # here, we got all offsets to read kallsyms
             return Ksym.KsymParse.read_kallsyms()
@@ -159969,15 +159971,16 @@ class XStringCommand(GenericCommand, BufferingOutput):
             # read string
             current = address
             size = get_pagesize() - (address & get_pagesize_mask_low())
-            s = b""
+            s = bytearray()
             while True:
                 # check accessibility
                 if not is_valid_addr(current):
                     break
 
                 # read string
+                start = len(s)
                 s += read_memory(current, size)
-                pos = s.find(b"\0")
+                pos = s.find(b"\0", start)
                 if pos != -1:
                     s = s[:pos]
                     break
@@ -159987,6 +159990,7 @@ class XStringCommand(GenericCommand, BufferingOutput):
                 size = get_pagesize()
 
             # cut off
+            s = bytes(s)
             if max_length and len(s) >= max_length:
                 cs = s[:max_length] + b"..."
             else:
@@ -185780,14 +185784,16 @@ class SixelMemoryCommand(GenericCommand):
             read_size = get_pagesize()
 
         MAX_FILE_SIZE = get_pagesize() * 4096 # 16MB
-        jpg_data = b"" # except header
+        jpg_data = bytearray() # except header
         while len(jpg_data) < MAX_FILE_SIZE:
+            start = max(0, len(jpg_data) - 1)
             try:
                 jpg_data += read_memory(pos, read_size)
             except (gdb.MemoryError, MemoryError):
                 return None
-            if b"\xff\xd9" in jpg_data:
-                image_data_size = jpg_data.index(b"\xff\xd9") + 2
+            marker_pos = jpg_data.find(b"\xff\xd9", start)
+            if marker_pos != -1:
+                image_data_size = marker_pos + 2
                 return header_size + image_data_size
             pos += read_size
             read_size = get_pagesize()
@@ -185802,14 +185808,16 @@ class SixelMemoryCommand(GenericCommand):
             read_size = get_pagesize()
 
         MAX_FILE_SIZE = get_pagesize() * 4096 # 16MB
-        png_data = b""
+        png_data = bytearray()
         while len(png_data) < MAX_FILE_SIZE:
+            start = max(0, len(png_data) - 3)
             try:
                 png_data += read_memory(pos, read_size)
             except (gdb.MemoryError, MemoryError):
                 return None
-            if b"IEND" in png_data:
-                image_data_size = png_data.index(b"IEND") + 4
+            marker_pos = png_data.find(b"IEND", start)
+            if marker_pos != -1:
+                image_data_size = marker_pos + 4
                 return image_data_size + 4 # crc
             pos += read_size
             read_size = get_pagesize()
