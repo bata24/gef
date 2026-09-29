@@ -74267,6 +74267,27 @@ class KernelPath:
             self.meta.append(("info", "offsetof(inode, i_sb): {:#x}".format(self.offset_i_sb)))
         return True
 
+    def initialize_inode_offsets(self, inode):
+        self.offset_i_mode = self.get_offset_i_mode()
+        self.offset_i_ino = self.get_offset_i_ino(inode)
+        self.offset_i_sb = self.get_offset_i_sb(inode)
+        if None in (self.offset_i_mode, self.offset_i_ino, self.offset_i_sb):
+            return None
+
+        try:
+            mode = read_int16_from_memory(inode + self.offset_i_mode)
+            super_block = read_int_from_memory(inode + self.offset_i_sb)
+            read_int_from_memory(inode + self.offset_i_ino)
+        except (gdb.MemoryError, OverflowError):
+            return None
+        if mode == 0 or not is_valid_addr(super_block):
+            return None
+
+        self.meta.append(("info", "offsetof(inode, i_mode): {:#x}".format(self.offset_i_mode)))
+        self.meta.append(("info", "offsetof(inode, i_ino): {:#x}".format(self.offset_i_ino)))
+        self.meta.append(("info", "offsetof(inode, i_sb): {:#x}".format(self.offset_i_sb)))
+        return True
+
     @Cache.cache_this_session(cache_None=False)
     def get_offset_file_mnt(self, file):
         """
@@ -87355,43 +87376,82 @@ class KernelVfsCommand(GenericCommand, BufferingOutput):
             self.meta.append((self.quiet_err, "Could not find Linux kernel"))
             return None
 
-        self.task_command = KernelTaskCommand.borrow(self, print_fd=True)
-        if self.task_command is None:
-            return None
-
+        self.task_command = None
         self.kpath = Kernel.path()
-        if not self.kpath.initialized:
-            self.meta.append((self.quiet_err, "Could not resolve the VFS object layout"))
-            return None
-        if self.kpath.offset_i_sb is None:
-            self.meta.append((self.quiet_err, "Could not find inode->i_sb"))
-            return None
+
+        fd_mode = self.args.pid is not None or self.args.fd is not None
+        if fd_mode:
+            self.task_command = KernelTaskCommand.borrow(self, print_fd=True)
+            if self.task_command is None:
+                return None
+            self.kpath = Kernel.path()
+
+        kind = self.args.type
+        address = self.args.address
+        if address is not None and not fd_mode:
+            try:
+                if kind == "inode":
+                    if not self.kpath.initialize_inode_offsets(address):
+                        self.meta.append((self.quiet_err, "Could not resolve the inode layout"))
+                        return None
+                elif kind == "file":
+                    if not self.kpath.initialize(file=address):
+                        self.meta.append((self.quiet_err, "Could not resolve the file layout"))
+                        return None
+                elif kind == "dentry":
+                    if not self.kpath.initialize(dentry=address):
+                        self.meta.append((self.quiet_err, "Could not resolve the dentry layout"))
+                        return None
+            except (gdb.MemoryError, OverflowError, RuntimeError):
+                self.meta.append((self.quiet_err, "Could not resolve the VFS object layout"))
+                return None
 
         # KernelFileSystem adds the filesystem name and mount source. It relies on struct
         # mount, introduced in v3.3, so older kernels use the stable super_block fields below.
         self.kfs = None
-        if "3.3" <= kversion:
+        if "3.3" <= kversion and kind != "inode":
             kfs = Kernel.file_system()
             if kfs.initialize():
                 self.kfs = kfs
             self.meta.extend(Kernel.export_meta(self, kfs.meta, demote_err=True))
 
+        if address is not None and not fd_mode and kind == "auto" and not self.kpath.initialized:
+            try:
+                if not self.kpath.initialize(file=address) and not self.kpath.initialize(dentry=address):
+                    if not self.kpath.initialize_inode_offsets(address) or not self.is_inode(address):
+                        self.meta.append((self.quiet_err, "Could not resolve the VFS object layout"))
+                        return None
+            except (gdb.MemoryError, OverflowError, RuntimeError):
+                self.meta.append((self.quiet_err, "Could not resolve the VFS object layout"))
+                return None
+
+        if address is not None and not fd_mode and kind != "inode" and not self.kpath.initialized:
+            self.meta.append((self.quiet_err, "Could not resolve the VFS object layout"))
+            return None
+        if fd_mode and not self.kpath.initialized:
+            self.meta.append((self.quiet_err, "Could not resolve the VFS object layout"))
+            return None
+
+        self.meta.extend(Kernel.export_meta(self, self.kpath.meta))
+
         self.offset_s_dev = current_arch.ptrsize * 2
-        # loff_t is 8-byte aligned on the supported 64-bit ABIs and 4-byte aligned on
-        # i386/ARM32, placing s_type at 0x28 and 0x1c respectively.
-        self.offset_s_type = 0x28 if is_64bit() else 0x1c
+        # loff_t uses 8-byte alignment on ARM32, unlike the i386 ABI.
+        loff_t_align = 4
+        if is_64bit() or is_arm32():
+            loff_t_align = 8
+        s_maxbytes_end = current_arch.ptrsize * 3 + 8
+        offset_s_maxbytes = align(s_maxbytes_end, loff_t_align)
+        self.offset_s_type = offset_s_maxbytes + 8
+        offset_s_dev = GefUtil.offsetof("super_block", "s_dev")
+        offset_s_type = GefUtil.offsetof("super_block", "s_type")
         if self.kfs is not None:
-            self.offset_s_dev = self.kfs.offset_s_dev
             if self.kfs.offset_s_type is not None:
                 self.offset_s_type = self.kfs.offset_s_type
-        try:
-            self.offset_s_dev = GefUtil.parse_and_eval_unsigned("&((struct super_block*)0).s_dev")
-        except gdb.error:
-            pass
-        try:
-            self.offset_s_type = GefUtil.parse_and_eval_unsigned("&((struct super_block*)0).s_type")
-        except gdb.error:
-            pass
+            self.offset_s_dev = self.kfs.offset_s_dev
+        if offset_s_dev is not None:
+            self.offset_s_dev = offset_s_dev
+        if offset_s_type is not None:
+            self.offset_s_type = offset_s_type
         self.meta.append((self.quiet_info, "offsetof(super_block, s_dev): {:#x}".format(self.offset_s_dev)))
         self.meta.append((self.quiet_info, "offsetof(super_block, s_type): {:#x}".format(self.offset_s_type)))
         return True
@@ -87454,9 +87514,9 @@ class KernelVfsCommand(GenericCommand, BufferingOutput):
         return kpath.is_vfsmount(vfsmnt) and kpath.is_dentry(dentry)
 
     def detect_type(self, address):
-        if self.is_file(address):
+        if self.kpath.initialized and self.is_file(address):
             return "file"
-        if self.kpath.is_dentry(address):
+        if self.kpath.initialized and self.kpath.is_dentry(address):
             return "dentry"
         if self.is_inode(address):
             return "inode"
@@ -87483,8 +87543,12 @@ class KernelVfsCommand(GenericCommand, BufferingOutput):
                 return name
         try:
             fst = read_int_from_memory(super_block + self.offset_s_type)
+            if not is_valid_addr(fst):
+                return "???"
             name_addr = read_int_from_memory(fst)
-            return read_cstring_from_memory(name_addr) or "???"
+            if not is_valid_addr(name_addr):
+                return "???"
+            return read_cstring_from_memory(name_addr, max_length=64, safe=True) or "???"
         except (gdb.MemoryError, OverflowError):
             return "???"
 
@@ -87676,8 +87740,6 @@ class KernelMountCommand(GenericCommand, BufferingOutput):
         (0x00_0080, "nosymfollow", "5.10"),
         (0x00_0100, "shrinkable"),
         (0x00_0200, "write_hold"),
-        (0x00_1000, "shared"),
-        (0x00_2000, "unbindable"),
         (0x00_4000, "internal"),
         (0x04_0000, "lock_atime", "3.17"),
         (0x08_0000, "lock_noexec", "3.17"),
@@ -87687,7 +87749,6 @@ class KernelMountCommand(GenericCommand, BufferingOutput):
         (0x80_0000, "locked", "3.17"),
         (0x100_0000, "doomed"),
         (0x200_0000, "sync_umount"),
-        (0x400_0000, "marked"),
         (0x800_0000, "umount", "3.18"),
         (0x1000_0000, "onrb"),
     ]
@@ -87700,12 +87761,24 @@ class KernelMountCommand(GenericCommand, BufferingOutput):
         if kversion is None:
             self.meta.append((self.quiet_err, "Could not find Linux kernel"))
             return None
+        self.kversion = kversion
 
-        task_command = KernelTaskCommand.borrow(self, print_fd=True, print_namespace=True)
+        task_command = KernelTaskCommand.borrow(
+            self, print_fd=kversion < "3.3", print_namespace=True,
+        )
         if task_command is None:
             return None
         self.task_command = task_command
         self.offset_nsproxy = getattr(task_command, "offset_nsproxy", None)
+
+        self.kfs = Kernel.file_system()
+        kfs_ret = None
+        if "3.3" <= kversion:
+            kfs_ret = self.kfs.initialize()
+        self.meta.extend(Kernel.export_meta(self, self.kfs.meta, demote_err=True))
+        if not kfs_ret:
+            self.meta.append((self.quiet_warn, "Could not resolve the super_block layout; fstype and devname are not shown"))
+            self.kfs = None
 
         self.kpath = Kernel.path()
         if not self.kpath.initialized:
@@ -87720,14 +87793,6 @@ class KernelMountCommand(GenericCommand, BufferingOutput):
             self.meta.append((self.quiet_err, "Could not find task_struct->fs"))
             return None
         self.meta.append((self.quiet_info, "offsetof(task_struct, fs): {:#x}".format(self.offset_fs)))
-
-        # the filesystem type and the device name are optional, so a failure here is not fatal
-        self.kfs = Kernel.file_system()
-        kfs_ret = self.kfs.initialize() if "3.3" <= kversion else None
-        self.meta.extend(Kernel.export_meta(self, self.kfs.meta, demote_err=True))
-        if not kfs_ret:
-            self.meta.append((self.quiet_warn, "Could not resolve the super_block layout; fstype and devname are not shown"))
-            self.kfs = None
 
         self.namespaces = self.collect_namespaces()
         if not self.namespaces:
@@ -87757,6 +87822,34 @@ class KernelMountCommand(GenericCommand, BufferingOutput):
             self.meta.append((self.quiet_info, "MNT_ONRB: {:s} (live mount flags)".format(
                 "present" if self.mnt_onrb_present else "absent",
             )))
+
+        self.offset_mnt_t_flags = GefUtil.offsetof("mount", "mnt_t_flags")
+        self.offset_mnt_master = GefUtil.offsetof("mount", "mnt_master")
+        self.offset_mnt_group_id = GefUtil.offsetof("mount", "mnt_group_id")
+        self.offset_mnt_id = GefUtil.offsetof("mount", "mnt_id")
+        self.offset_mnt_share = GefUtil.offsetof("mount", "mnt_share")
+        self.offset_mnt_slave = GefUtil.offsetof("mount", "mnt_slave")
+        for member, offset in (
+            ("mnt_t_flags", self.offset_mnt_t_flags),
+            ("mnt_master", self.offset_mnt_master),
+            ("mnt_group_id", self.offset_mnt_group_id),
+            ("mnt_id", self.offset_mnt_id),
+            ("mnt_share", self.offset_mnt_share),
+            ("mnt_slave", self.offset_mnt_slave),
+        ):
+            if offset is not None:
+                self.meta.append((self.quiet_info, "offsetof(mount, {:s}): {:#x}".format(member, offset)))
+
+        if self.offset_mnt_t_flags is not None:
+            self.propagation_flag_source = "mnt_t_flags (debug information)"
+            self.mnt_slave_is_hlist = True
+        elif kversion < "6.17":
+            self.propagation_flag_source = "mnt_flags (version fallback)"
+            self.mnt_slave_is_hlist = False
+        else:
+            self.propagation_flag_source = "mnt_share/mnt_slave lists (version fallback)"
+            self.mnt_slave_is_hlist = True
+        self.meta.append((self.quiet_info, "Mount propagation source: {:s}".format(self.propagation_flag_source)))
         return True
 
     def get_mnt_ns(self, task):
@@ -87866,22 +87959,113 @@ class KernelMountCommand(GenericCommand, BufferingOutput):
                 stack.append((child, child_prefix, i == 0, False))
         return
 
-    def get_mnt_flags_str(self, mount):
+    def get_mnt_flags(self, mount):
         if self.offset_mnt_flags is None:
-            return "???"
-        flags = read_int32_from_memory(mount + self.offset_mnt_flags, safe=True)
+            return None
+        return read_int32_from_memory(mount + self.offset_mnt_flags, safe=True)
+
+    def get_mount_list_node_status(self, mount, offset, hlist=False):
+        if offset is None:
+            return None
+        node = mount + offset
+        next_entry = read_int_from_memory(node, safe=True)
+        prev_entry = read_int_from_memory(node + current_arch.ptrsize, safe=True)
+        if next_entry is None or prev_entry is None:
+            return None
+        if hlist:
+            if prev_entry == 0:
+                return False
+            if not is_valid_addr(prev_entry):
+                return None
+            first = read_int_from_memory(prev_entry, safe=True)
+            if first is None:
+                return None
+            return first == node
+        if not is_valid_addr(next_entry) or not is_valid_addr(prev_entry):
+            return None
+        if read_int_from_memory(next_entry + current_arch.ptrsize, safe=True) != node:
+            return None
+        if read_int_from_memory(prev_entry, safe=True) != node:
+            return None
+        return next_entry != node
+
+    def get_mnt_propagation_str(self, mount):
+        flags = self.get_mnt_flags(mount)
+        t_flags = None
+        if self.offset_mnt_t_flags is not None:
+            t_flags = read_int32_from_memory(mount + self.offset_mnt_t_flags, safe=True)
+
+        shared_flag = None
+        unbindable = None
+        if t_flags is not None:
+            shared_flag = bool(t_flags & 1)
+            unbindable = bool(t_flags & 2)
+        elif self.kversion < "6.17" and flags is not None:
+            shared_flag = bool(flags & 0x1000)
+            unbindable = bool(flags & 0x2000)
+
+        shared_list = self.get_mount_list_node_status(mount, self.offset_mnt_share)
+        shared = shared_flag
+        if shared is None:
+            shared = shared_list
+        mismatch = shared_flag is not None and shared_list is not None and shared_flag != shared_list
+
+        master = None
+        if self.offset_mnt_master is not None:
+            master = read_int_from_memory(mount + self.offset_mnt_master, safe=True)
+            if master == 0:
+                master = False
+            elif master is not None:
+                if is_valid_addr(master):
+                    master = True
+                else:
+                    master = None
+        slave_list = self.get_mount_list_node_status(mount, self.offset_mnt_slave, self.mnt_slave_is_hlist)
+        slave = master
+        if slave is None:
+            slave = slave_list
+        if master is not None and slave_list is not None and master != slave_list:
+            mismatch = True
+
+        if shared is False and slave is False and unbindable is None:
+            state = "private,?unbindable"
+        else:
+            states = []
+            for value, name in ((shared, "shared"), (slave, "slave"), (unbindable, "unbindable")):
+                if value is True:
+                    states.append(name)
+                elif value is None:
+                    states.append("?" + name)
+            if not states:
+                state = "private"
+            else:
+                state = ",".join(states)
+        if mismatch:
+            state += " (list mismatch)"
+        return state
+
+    def get_mnt_flags_str(self, mount):
+        flags = self.get_mnt_flags(mount)
         if flags is None:
             return "???"
-        kversion = Kernel.version()
         names = ["ro" if flags & self.MNT_READONLY else "rw"]
         for entry in self.MNT_FLAGS:
             bit, name = entry[0], entry[1]
-            if len(entry) > 2 and kversion < entry[2]:
+            if len(entry) > 2 and self.kversion < entry[2]:
                 continue
             if name == "onrb" and not self.mnt_onrb_present:
                 continue
             if flags & bit:
                 names.append(name)
+        if self.offset_mnt_t_flags is not None:
+            t_flags = read_int32_from_memory(mount + self.offset_mnt_t_flags, safe=True)
+            if t_flags is not None:
+                if t_flags & 4:
+                    names.append("marked")
+                if t_flags & 8:
+                    names.append("umount_candidate")
+        elif self.kversion < "6.17" and flags & 0x0400_0000:
+            names.append("marked")
         return ",".join(names)
 
     def dump_mount(self, mount, mark, root):
@@ -87905,9 +88089,39 @@ class KernelMountCommand(GenericCommand, BufferingOutput):
         if path_info.status != "normal":
             path += " ({:s})".format(path_info.status)
 
-        self.out.append("{:#018x} {:#018x} {:#018x} {:#018x} {:12s} {:20s} {:45s} {:s}".format(
-            mount, vfsmnt, mnt_root, super_block, fstype or "???", devname or "???",
-            mark + path, self.get_mnt_flags_str(mount),
+        mount_id = None
+        if self.offset_mnt_id is not None:
+            mount_id = read_int32_from_memory(
+                mount + self.offset_mnt_id, safe=True, signed=True,
+            )
+        group_id = None
+        if self.offset_mnt_group_id is not None:
+            group_id = read_int32_from_memory(
+                mount + self.offset_mnt_group_id, safe=True, signed=True,
+            )
+        master = None
+        if self.offset_mnt_master is not None:
+            master = read_int_from_memory(mount + self.offset_mnt_master, safe=True)
+        if mount_id is None:
+            mount_id = "?"
+        else:
+            mount_id = str(mount_id)
+        if group_id is None:
+            group_id = "?"
+        else:
+            group_id = str(group_id)
+        if master is None:
+            master = "?"
+        elif master == 0:
+            master = "none"
+        elif is_valid_addr(master):
+            master = "{:#x}".format(master)
+        else:
+            master = "?"
+
+        self.out.append("{:#018x} {:#018x} {:#018x} {:#018x} {:12s} {:20s} {:45s} {:24s} {:>7s} {:>10s} {:18s} {:s}".format(
+            mount, vfsmnt, mnt_root, super_block, fstype or "???", devname or "???", mark + path,
+            self.get_mnt_flags_str(mount), mount_id, group_id, master, self.get_mnt_propagation_str(mount),
         ))
         return
 
@@ -87942,8 +88156,11 @@ class KernelMountCommand(GenericCommand, BufferingOutput):
             self.quiet_info_add_out("the tree starts at the mount of task->fs->root: {:#018x}".format(tree_root))
 
         if not self.args.quiet:
-            fmt = "{:18s} {:18s} {:18s} {:18s} {:12s} {:20s} {:45s} {:s}"
-            legend = ["mount", "vfsmount", "mnt_root", "super_block", "fstype", "devname", "mount_point", "mnt_flags"]
+            fmt = "{:18s} {:18s} {:18s} {:18s} {:12s} {:20s} {:45s} {:24s} {:>7s} {:>10s} {:18s} {:s}"
+            legend = [
+                "mount", "vfsmount", "mnt_root", "super_block", "fstype", "devname",
+                "mount_point", "mnt_flags", "mnt_id", "peer_group", "mnt_master", "propagation",
+            ]
             self.out.append(GefUtil.make_legend(fmt.format(*legend)))
 
         for mount, mark in self.walk_tree(tree_root):
@@ -87953,7 +88170,7 @@ class KernelMountCommand(GenericCommand, BufferingOutput):
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
-    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
+    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64"))
     @Decorator.only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
         self.quiet_info("Wait for memory scan")
@@ -150379,6 +150596,13 @@ class KtypesCommand(GenericCommand, BufferingOutput):
                 GefUtil.which("aarch64-linux-gnu-gcc")
             elif is_arm32():
                 GefUtil.which("arm-linux-gnueabihf-gcc")
+            elif is_riscv64():
+                GefUtil.which("riscv64-linux-gnu-gcc")
+            elif is_riscv32():
+                try:
+                    GefUtil.which("riscv32-linux-gnu-gcc")
+                except FileNotFoundError:
+                    GefUtil.which("riscv64-linux-gnu-gcc")
         except FileNotFoundError as e:
             err("{}".format(e))
             return False
@@ -150440,7 +150664,7 @@ class KtypesCommand(GenericCommand, BufferingOutput):
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware"))
-    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
+    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64"))
     def do_invoke(self, args):
         if not self.check_command():
             return
@@ -150491,6 +150715,13 @@ class KtypesLoadCommand(KtypesCommand):
                 gcc, opt = GefUtil.which("aarch64-linux-gnu-gcc"), ""
             elif is_arm32():
                 gcc, opt = GefUtil.which("arm-linux-gnueabihf-gcc"), ""
+            elif is_riscv64():
+                gcc, opt = GefUtil.which("riscv64-linux-gnu-gcc"), ""
+            elif is_riscv32():
+                try:
+                    gcc, opt = GefUtil.which("riscv32-linux-gnu-gcc"), ""
+                except FileNotFoundError:
+                    gcc, opt = GefUtil.which("riscv64-linux-gnu-gcc"), "-march=rv32imac -mabi=ilp32"
         except FileNotFoundError as e:
             err("{}".format(e))
             return None
@@ -150510,7 +150741,7 @@ class KtypesLoadCommand(KtypesCommand):
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware"))
-    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
+    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64"))
     def do_invoke(self, args):
         if not self.check_command():
             return
@@ -151323,8 +151554,14 @@ class Ksym:
                 position = Ksym.offset_kallsyms_markers + Ksym.kallsyms_markers_table_element_size
                 # check MSB of the element of kallsyms_markers
                 while Ksym.kernel_img[position + (Ksym.kallsyms_markers_table_element_size - 1)] == 0:
-                    a = u32(Ksym.kernel_img[position - Ksym.kallsyms_markers_table_element_size:position]) # prev
-                    b = u32(Ksym.kernel_img[position:position + Ksym.kallsyms_markers_table_element_size]) # current
+                    previous = Ksym.kernel_img[
+                        position - Ksym.kallsyms_markers_table_element_size:position
+                    ]
+                    current = Ksym.kernel_img[
+                        position:position + Ksym.kallsyms_markers_table_element_size
+                    ]
+                    a = u32(bytes(previous)) # prev
+                    b = u32(bytes(current)) # current
                     # kallsyms_markers are monotonically increasing.
                     # and it doesn't increase very dramatically.
                     if a > b or b - a > 0x10_0000:
