@@ -68012,6 +68012,19 @@ class KernelAddressHeuristicFinder:
     @Decorator.switch_to_intel_syntax
     def get_clocksource_list():
 
+        ptrsize = current_arch.ptrsize
+        if is_x86_32():
+            base_mask_offsets = (4, 8)
+        elif is_arm32():
+            base_mask_offsets = (8, 4)
+        elif is_riscv32():
+            base_mask_offsets = (8,)
+        else:
+            base_mask_offsets = (ptrsize,)
+        mask_offsets = tuple(dict.fromkeys(
+            offset for base in base_mask_offsets for offset in (base, base + 8)
+        ))
+
         def looks_like_clocksource_list(addr):
             if not is_double_link_list(addr, min_len=1):
                 return False
@@ -68026,23 +68039,34 @@ class KernelAddressHeuristicFinder:
             if not name or len(name) > 64 or not name.isprintable():
                 return False
 
-            for i in range(7, 64):
-                clocksource = current - current_arch.ptrsize * i
-                read = read_int_from_memory(clocksource)
+            for i in range(5, 64):
+                clocksource = current - ptrsize * i
+                read = read_int_from_memory(clocksource, safe=True)
                 if not is_valid_addr(read):
                     continue
-                mask = read_int64_from_memory(clocksource + 8)
-                mult = read_int32_from_memory(clocksource + 16)
-                shift = read_int32_from_memory(clocksource + 20)
-                if mask and mult and shift <= 64:
-                    return True
+                for offset_mask in mask_offsets:
+                    mask = read_int64_from_memory(clocksource + offset_mask, safe=True)
+                    mult = read_int32_from_memory(clocksource + offset_mask + 8, safe=True)
+                    shift = read_int32_from_memory(clocksource + offset_mask + 12, safe=True)
+                    if mask and not mask & (mask + 1) and mult and shift is not None and shift <= 64:
+                        return True
             return False
+
+        def is_empty_clocksource_list(addr):
+            return (
+                read_int_from_memory(addr, safe=True) == addr
+                and read_int_from_memory(addr + current_arch.ptrsize, safe=True) == addr
+            )
 
         # plan 1 (directly)
         if KernelAddressHeuristicFinder.USE_DIRECTLY:
             x = Ksym.get_addr("clocksource_list")
             if x:
-                return x
+                try:
+                    if is_empty_clocksource_list(x) or looks_like_clocksource_list(x):
+                        return x
+                except gdb.MemoryError:
+                    pass
 
         kversion = Kernel.version()
 
@@ -68071,7 +68095,9 @@ class KernelAddressHeuristicFinder:
                     g = []
                 for x in g:
                     if is_x86():
-                        return x
+                        if looks_like_clocksource_list(x):
+                            return x
+                        continue
                     if looks_like_clocksource_list(x):
                         return x
                     if is_riscv32() or is_riscv64():
@@ -77145,20 +77171,20 @@ class KernelSeccomp:
 
     def disassemble(self, filter_info):
         """Return disassembly lines for one seccomp filter, or None on an invalid target."""
-        if self.tools_command and is_valid_addr(filter_info.orig_prog):
-            count = read_int16_from_memory(filter_info.orig_prog)
-            prog = read_int_from_memory(filter_info.orig_prog + current_arch.ptrsize)
-            data = read_memory(prog, count * 8)
-            tmp_fd, tmp_path = GefUtil.mkstemp(prefix="ktask")
-            try:
-                with os.fdopen(tmp_fd, "wb") as fdw:
-                    fdw.write(data)
-                return GefUtil.gef_execute_external(self.tools_command + [tmp_path], as_list=True)
-            finally:
-                os.unlink(tmp_path)
-        if not is_valid_addr(filter_info.bpf_func):
-            return None
         try:
+            if self.tools_command and is_valid_addr(filter_info.orig_prog):
+                count = read_int16_from_memory(filter_info.orig_prog)
+                prog = read_int_from_memory(filter_info.orig_prog + current_arch.ptrsize)
+                data = read_memory(prog, count * 8)
+                tmp_fd, tmp_path = GefUtil.mkstemp(prefix="ktask")
+                try:
+                    with os.fdopen(tmp_fd, "wb") as fdw:
+                        fdw.write(data)
+                    return GefUtil.gef_execute_external(self.tools_command + [tmp_path], as_list=True)
+                finally:
+                    os.unlink(tmp_path)
+            if not is_valid_addr(filter_info.bpf_func):
+                return None
             __import__("capstone")
             data = read_memory(filter_info.bpf_func, filter_info.jited_len)
             lines = []
@@ -77174,6 +77200,8 @@ class KernelSeccomp:
         except ImportError:
             ret = gdb.execute("x/40i {:#x}".format(filter_info.bpf_func), to_string=True).rstrip()
             return [ret, "..."]
+        except gdb.MemoryError:
+            return None
 
     @staticmethod
     def is_enabled(task_addr, offset_stack):
@@ -77707,6 +77735,13 @@ class KernelModule:
         """Return [(start, end, module, name), ...] of the text of the loaded modules, or [] if unresolvable."""
         ranges = []
         for module, name, regions in self.get_loaded() or []:
+            if self.memory_kind in ("module_core", "core_layout"):
+                base = read_int_from_memory(module + self.offset_base, safe=True)
+                size = read_int32_from_memory(module + self.offset_size + 4, safe=True)
+                core_size = read_int32_from_memory(module + self.offset_size, safe=True)
+                if base and size and core_size is not None and size <= core_size:
+                    ranges.append((base, base + size, module, name))
+                continue
             for region_name, base, size in regions:
                 if region_name in ("core", "text", "init_text"):
                     ranges.append((base, base + size, module, name))
@@ -81254,7 +81289,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
             )
             disassembly = self.kseccomp.disassemble(filter_info)
             if disassembly is None:
-                self.err_add_out("Memory read error")
+                self.warn_add_out("Could not read seccomp filter {:#x}".format(filter_info.address))
             else:
                 self.out.extend(disassembly)
         return True
@@ -88254,7 +88289,7 @@ class KernelClockSourceCommand(GenericCommand, BufferingOutput):
             return None
         return name
 
-    def is_clocksource(self, cs, offsets):
+    def is_clocksource(self, cs, offsets, check_callback=True):
         """Check the members of the clocksource at `cs` that every registered one has."""
         try:
             read = read_int_from_memory(cs + offsets["read"])
@@ -88266,8 +88301,10 @@ class KernelClockSourceCommand(GenericCommand, BufferingOutput):
             return False
         if not mask or mask & (mask + 1) or not mult or shift > 64:
             return False
+        if not is_valid_addr(read) or self.read_name(name) is None:
+            return False
         # a clocksource can be registered by a module (e.g., scx200_hrt), so its `read` is in the module
-        return self.is_callback(read) and self.read_name(name) is not None
+        return not check_callback or self.is_callback(read)
 
     def find_offsets(self):
         """Return {member: offset} found from the nodes of clocksource_list, or None.
@@ -88367,12 +88404,65 @@ class KernelClockSourceCommand(GenericCommand, BufferingOutput):
             return None
         return offset
 
+    def validate_type_info_offsets(self, clocksources, sources):
+        rating_offset = self.offsets["rating"]
+        rating_guess = self.find_offset_rating(clocksources)
+        if rating_offset is None:
+            self.offsets["rating"] = rating_guess
+            sources["rating"] = "heuristic"
+        else:
+            ratings = [read_int32_from_memory(cs + rating_offset, signed=True, safe=True) for cs in clocksources]
+            valid = (
+                None not in ratings
+                and any(ratings)
+                and all(0 <= rating < 0x10000 for rating in ratings)
+                and ratings == sorted(ratings, reverse=True)
+            )
+            if not valid:
+                self.offsets["rating"] = rating_guess
+                sources["rating"] = "heuristic"
+                self.meta.append((self.quiet_warn, "The debug information offset of clocksource.rating does not match clocksource_list"))
+
+        flags_offset = self.offsets["flags"]
+        flags_guess = self.find_offset_flags(clocksources)
+        if flags_offset is None:
+            self.offsets["flags"] = flags_guess
+            sources["flags"] = "heuristic"
+        else:
+            flags = [read_int_from_memory(cs + flags_offset, safe=True) for cs in clocksources]
+            valid = None not in flags and all(value < 0x2000 for value in flags)
+            if not valid or (not any(flags) and flags_guess is not None and flags_guess != flags_offset):
+                self.offsets["flags"] = flags_guess
+                sources["flags"] = "heuristic"
+                self.meta.append((self.quiet_warn, "The debug information offset of clocksource.flags does not match clocksource_list"))
+
+        owner_offset = self.offsets["owner"]
+        if owner_offset is None:
+            sources["owner"] = "the module text of read"
+            return
+        for cs in clocksources:
+            owner = read_int_from_memory(cs + owner_offset, safe=True)
+            read = read_int_from_memory(cs + self.offsets["read"], safe=True)
+            if owner is None or read is None:
+                owner_offset = None
+                break
+            owner_module = self.find_module(module=owner) if owner else None
+            callback_module = self.find_module(address=read)
+            if (owner and owner_module is None) or (callback_module and owner_module != callback_module):
+                owner_offset = None
+                break
+        if owner_offset is None:
+            self.offsets["owner"] = None
+            sources["owner"] = "the module text of read"
+            self.meta.append((self.quiet_warn, "The debug information offset of clocksource.owner does not match clocksource_list"))
+
     def initialize(self):
         self.meta = []
         self.incomplete = []
         self.kversion = Kernel.version()
         self.klayout = Kernel.layout()
         self.module_text_ranges = None
+        self.use_type_info = False
 
         self.clocksource_list = KernelAddressHeuristicFinder.get_clocksource_list()
         if self.clocksource_list is None:
@@ -88387,12 +88477,27 @@ class KernelClockSourceCommand(GenericCommand, BufferingOutput):
         if not self.nodes:
             self.meta.append((self.quiet_err, "clocksource_list is empty"))
             return False
+        try:
+            valid_list = is_double_link_list(self.clocksource_list)
+        except gdb.MemoryError:
+            valid_list = False
+        if not valid_list:
+            self.incomplete.append("clocksource_list has inconsistent links")
 
         layout = self.resolve_layout()
         if layout is not None:
-            self.offsets = dict(layout)
-            sources = dict.fromkeys(self.offsets, "debug info")
-        else:
+            valid = sum(
+                self.is_clocksource(node - layout["list"], layout, check_callback=False)
+                for node in self.nodes
+            )
+            if valid >= max(1, len(self.nodes) - 1):
+                self.offsets = dict(layout)
+                self.use_type_info = True
+                sources = dict.fromkeys(self.offsets, "debug info")
+            else:
+                self.meta.append((self.quiet_warn, "The debug information of struct clocksource does not match clocksource_list"))
+                layout = None
+        if layout is None:
             self.offsets = self.find_offsets()
             if self.offsets is None:
                 self.meta.append((self.quiet_err, "Could not determine offsetof(clocksource, list) from clocksource_list"))
@@ -88404,6 +88509,14 @@ class KernelClockSourceCommand(GenericCommand, BufferingOutput):
             self.offsets["owner"] = None
             sources = dict.fromkeys(self.offsets, "heuristic")
             sources["owner"] = "the module text of read"
+
+        if self.use_type_info:
+            clocksources = [
+                node - self.offsets["list"]
+                for node in self.nodes
+                if self.is_clocksource(node - self.offsets["list"], self.offsets, check_callback=False)
+            ]
+            self.validate_type_info_offsets(clocksources, sources)
 
         for name, offset in self.offsets.items():
             label = "offsetof(clocksource, {:s})".format(name)
@@ -88439,7 +88552,7 @@ class KernelClockSourceCommand(GenericCommand, BufferingOutput):
 
     def read_clocksource(self, node):
         cs = node - self.offsets["list"]
-        if not self.is_clocksource(cs, self.offsets):
+        if not self.is_clocksource(cs, self.offsets, check_callback=not self.use_type_info):
             return None
 
         read = read_int_from_memory(cs + self.offsets["read"])
@@ -88608,6 +88721,7 @@ class KernelTimerCommand(GenericCommand, BufferingOutput):
         self.incomplete = []
         self.klayout = Kernel.layout()
         self.module_text_ranges = None
+        self.cpu_masks = None
 
         # resolve __per_cpu_offset
         self.percpu = Kernel.per_cpu()
@@ -88615,7 +88729,6 @@ class KernelTimerCommand(GenericCommand, BufferingOutput):
             self.meta.append((self.quiet_info, "__per_cpu_offset: Not found"))
         else:
             self.meta.append((self.quiet_info, "__per_cpu_offset: {:#x}".format(self.percpu.per_cpu_offset)))
-
         self.classic = None
         self.hrtimer = None
         if classic:
@@ -89022,10 +89135,21 @@ class KernelTimerCommand(GenericCommand, BufferingOutput):
         return diff
 
     def get_cpu_label(self, cpu):
-        online = self.cpu_masks.get("online") if self.cpu_masks else None
-        if online is not None and cpu not in online:
-            return "cpu{:d} (offline)".format(cpu)
-        return "cpu{:d}".format(cpu)
+        states = []
+        if self.cpu_masks:
+            possible = self.cpu_masks.get("possible")
+            present = self.cpu_masks.get("present")
+            online = self.cpu_masks.get("online")
+            if possible is not None:
+                states.append("possible" if cpu in possible else "impossible")
+            if present is not None:
+                states.append("present" if cpu in present else "not present")
+            if online is not None:
+                states.append("online" if cpu in online else "offline")
+        label = "cpu{:d}".format(cpu)
+        if states:
+            label += " ({:s})".format(", ".join(states))
+        return label
 
     def dump_timer(self):
         layout = self.classic
@@ -89528,14 +89652,20 @@ class KernelTimerCommand(GenericCommand, BufferingOutput):
                     read_int32_from_memory(htb + layout["offset_index"], safe=True) != n):
                 self.incomplete.append("{:s} ({:#x}) does not match the layout".format(name, htb))
                 continue
-            clockid = read_int32_from_memory(htb + layout["offset_clockid"])
+            clockid = read_int32_from_memory(htb + layout["offset_clockid"], safe=True)
+            if clockid is None:
+                self.incomplete.append("{:s} clockid is unreadable".format(name))
+                continue
             if layout["offset_get_time"] is None: # v6.18 or later
                 self.out.append(titlify("{:s} hrtimer_clock_base[{:d}]: {:#x}  [{:s}]".format(
                     self.get_cpu_label(cpu), n, htb,
                     self.clockid_dict.get(clockid, "UNKNOWN"),
                 )).rstrip())
             else:
-                get_time = read_int_from_memory(htb + layout["offset_get_time"])
+                get_time = read_int_from_memory(htb + layout["offset_get_time"], safe=True)
+                if get_time is None:
+                    self.incomplete.append("{:s} get_time is unreadable".format(name))
+                    continue
                 self.out.append(titlify("{:s} hrtimer_clock_base[{:d}]: {:#x}  [{:s}; get_time: {:#x}{:s}]".format(
                     self.get_cpu_label(cpu), n, htb,
                     self.clockid_dict.get(clockid, "UNKNOWN"),
@@ -89558,6 +89688,12 @@ class KernelTimerCommand(GenericCommand, BufferingOutput):
                 if expires is None or function is None:
                     self.incomplete.append("hrtimer {:#x} is unreadable".format(hrtimer))
                     continue
+                timer_base = read_int_from_memory(hrtimer + layout["offset_base"], safe=True)
+                if timer_base != htb:
+                    self.incomplete.append("hrtimer {:#x} does not point back to {:s}".format(hrtimer, name))
+                    continue
+                if not self.is_callback(function):
+                    self.incomplete.append("hrtimer {:#x} callback {:#x} is outside kernel/module text".format(hrtimer, function))
                 self.out.append("{:#018x}  {:#018x}  {:23s}  {:#018x}{:s}".format(
                     hrtimer, expires,
                     "? (too hard to calc)",
@@ -89583,6 +89719,10 @@ class KernelTimerCommand(GenericCommand, BufferingOutput):
         self.quiet_info("Wait for memory scan")
 
         ret = self.initialize(classic=not args.hr_only, high_resolution=not args.classic_only)
+        self.cpu_masks = self.percpu.get_cpu_masks()
+        for name, cpus in self.cpu_masks.items():
+            value = "unknown" if cpus is None else ", ".join(str(cpu) for cpu in sorted(cpus)) or "none"
+            self.meta.append((self.quiet_info, "cpu {:s}: {:s}".format(name, value)))
         failed = ((not args.hr_only and not self.classic_timer_initialized)
                   or (not args.classic_only and not self.hrtimer_initialized))
         if args.meta or failed:
@@ -89594,7 +89734,6 @@ class KernelTimerCommand(GenericCommand, BufferingOutput):
         if args.meta:
             return
 
-        self.cpu_masks = self.percpu.get_cpu_masks()
         self.out = []
         if self.classic_timer_initialized:
             self.dump_timer()
