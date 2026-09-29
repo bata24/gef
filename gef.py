@@ -15312,9 +15312,38 @@ class ProcessMap:
 class EventHandler:
     """A collection of handler functions that are called when the specified events occur."""
 
+    continue_hooks_enabled = True
+
     @staticmethod
     def continue_handler(_event):
         """GDB event handler for new object continue cases."""
+        return
+
+    @staticmethod
+    def selected_context_handler(_event):
+        """Enable continue handlers only when the selected inferior has a thread."""
+        return EventHandler.update_continue_hooks()
+
+    @staticmethod
+    def new_thread_handler(_event):
+        gdb.post_event(EventHandler.update_continue_hooks)
+        return
+
+    @staticmethod
+    def update_continue_hooks():
+        enabled = gdb.selected_thread() is not None
+        if enabled == EventHandler.continue_hooks_enabled:
+            return
+
+        handlers = (
+            EventHandler.continue_handler,
+            ContextRegistersCommand.update_registers,
+            ContextExtraCommand.empty_extra_messages,
+        )
+        hook = EventHooking.gef_on_continue_hook if enabled else EventHooking.gef_on_continue_unhook
+        for handler in handlers:
+            hook(handler)
+        EventHandler.continue_hooks_enabled = enabled
         return
 
     __gef_check_once__ = True # the flag to process only once at startup
@@ -16213,6 +16242,26 @@ class EventHooking:
     @Decorator.only_if_events_supported("cont")
     def gef_on_continue_unhook(func):
         return gdb.events.cont.disconnect(func)
+
+    @staticmethod
+    @Decorator.only_if_events_supported("selected_context")
+    def gef_on_selected_context_hook(func):
+        return gdb.events.selected_context.connect(func)
+
+    @staticmethod
+    @Decorator.only_if_events_supported("selected_context")
+    def gef_on_selected_context_unhook(func):
+        return gdb.events.selected_context.disconnect(func)
+
+    @staticmethod
+    @Decorator.only_if_events_supported("new_thread")
+    def gef_on_new_thread_hook(func):
+        return gdb.events.new_thread.connect(func)
+
+    @staticmethod
+    @Decorator.only_if_events_supported("new_thread")
+    def gef_on_new_thread_unhook(func):
+        return gdb.events.new_thread.disconnect(func)
 
     @staticmethod
     @Decorator.only_if_events_supported("stop")
@@ -187506,7 +187555,12 @@ class GefReloadCommand(GenericCommand):
             err("Reload aborted")
             return
 
-        EventHooking.gef_on_continue_unhook(EventHandler.continue_handler)
+        if EventHandler.continue_hooks_enabled:
+            EventHooking.gef_on_continue_unhook(EventHandler.continue_handler)
+            EventHooking.gef_on_continue_unhook(ContextRegistersCommand.update_registers)
+            EventHooking.gef_on_continue_unhook(ContextExtraCommand.empty_extra_messages)
+        EventHooking.gef_on_selected_context_unhook(EventHandler.selected_context_handler)
+        EventHooking.gef_on_new_thread_unhook(EventHandler.new_thread_handler)
         EventHooking.gef_on_stop_unhook(EventHandler.hook_stop_handler)
         EventHooking.gef_on_new_unhook(EventHandler.new_objfile_handler)
         EventHooking.gef_on_free_objfile_unhook(EventHandler.del_objfile_handler)
@@ -189458,6 +189512,10 @@ class Gef:
 
         # gdb events configuration
         EventHooking.gef_on_continue_hook(EventHandler.continue_handler)
+        if hasattr(gdb.events, "selected_context"):
+            EventHooking.gef_on_selected_context_hook(EventHandler.selected_context_handler)
+            EventHooking.gef_on_new_thread_hook(EventHandler.new_thread_handler)
+            EventHandler.update_continue_hooks()
         EventHooking.gef_on_stop_hook(EventHandler.hook_stop_handler)
         EventHooking.gef_on_new_hook(EventHandler.new_objfile_handler)
         EventHooking.gef_on_free_objfile_hook(EventHandler.del_objfile_handler)
