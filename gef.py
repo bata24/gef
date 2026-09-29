@@ -12718,7 +12718,7 @@ def read_physmem(paddr, size, already_physmode=False):
         # for KDB; not supported by KGDB
         # Note: `mdp` command can only handle aligned addresses.
         paddr_aligned = paddr & ~0xf
-        read_n_line = (size + (paddr - paddr_aligned) + 15) // 16
+        read_n_line = align(size + (paddr - paddr_aligned), 16) // 16
         try:
             res = gdb.execute("monitor mdp {:#x} {:d}".format(paddr_aligned, read_n_line), to_string=True)
             """
@@ -13187,7 +13187,9 @@ class SystemManagementMemory:
             data[offset:offset + len(chunk)] = chunk
 
         stats["smm_chunks"] = len(chunks)
-        total_chunks = ((base & 0xfff) + size + 0xfff) // 0x1000 if size else 0
+        total_chunks = 0
+        if size:
+            total_chunks = align((base & 0xfff) + size, 0x1000) // 0x1000
         stats["fallback_chunks"] = total_chunks - stats["smm_chunks"]
         result = bytes(data)
         return (result, stats) if return_stats else result
@@ -18811,9 +18813,7 @@ class DumpArgsCommand(GenericCommand):
         for i in range(count):
             key, val = current_arch.get_ith_parameter(i, in_func=not args.out_of_function)
 
-            width = len(key)
-            while width % 4:
-                width += 1
+            width = align(len(key), 4)
             gef_print("{:>{:d}s} = {:s}".format(key, width, AddressUtil.recursive_dereference_to_string(val)))
         return
 
@@ -60407,7 +60407,7 @@ class SysregCommand(GenericCommand):
             return
         COLUMN = 3
         length = len(regs)
-        length_of_each_bank = (length + COLUMN - 1) // COLUMN
+        length_of_each_bank = align(length, COLUMN) // COLUMN
         for i in range(length_of_each_bank):
             out = []
             for j in range(COLUMN):
@@ -62128,7 +62128,7 @@ class ConvertCommand(GenericCommand, BufferingOutput):
             self.out.append("bit-reverse16:  {:#06x}".format(br16))
             self.out.append("bit-reverse32:  {:#010x}".format(br32))
             self.out.append("bit-reverse64:  {:#018x}".format(br64))
-            bl = (value.bit_length() + 3) // 4 * 4
+            bl = align(value.bit_length(), 4)
             if bl > 64:
                 brN = bit_reverse(value, bl)
                 self.out.append("bit-reverse:    {:#0{:d}x}".format(brN, bl // 4 + 2))
@@ -73512,7 +73512,7 @@ class KernelPerCpu:
             return None
         bits = current_arch.ptrsize * 8
         cpus = set()
-        for i in range((max(self.nr_cpus, 1) + bits - 1) // bits):
+        for i in range(align(max(self.nr_cpus, 1), bits) // bits):
             word = read_int_from_memory(addr + i * current_arch.ptrsize, safe=True)
             if word is None:
                 return None
@@ -75584,7 +75584,7 @@ class KernelFiles:
         if not max_fds or not is_valid_addr(array):
             return [], warnings
 
-        nr_words = (max_fds + bits_per_long - 1) // bits_per_long
+        nr_words = align(max_fds, bits_per_long) // bits_per_long
         try:
             open_fds = read_int_from_memory(fdt + offset_open_fds)
             close_on_exec = read_int_from_memory(fdt + offset_close_on_exec)
@@ -94502,7 +94502,7 @@ class Hash:
         def state_bytes(self, nbytes):
             # Serialize the first nbytes of the state (little-endian lanes)
             out = bytearray()
-            lanes = (nbytes + 7) // 8
+            lanes = align(nbytes, 8) // 8
             for i in range(lanes):
                 out.extend(struct.pack("<Q", self.state[i] & 0xffff_ffff_ffff_ffff))
             return bytes(out[:nbytes])
@@ -136471,7 +136471,7 @@ class BaseNCodec:
         xbtoa = name == "base85-xbtoa"
         checks = (0, 0, 0)
         result = ""
-        padding = (4 - len(data) % 4) % 4
+        padding = align(len(data), 4) - len(data)
         for pos in range(0, len(data), 4):
             block = data[pos:pos + 4]
             if xbtoa:
@@ -151347,7 +151347,7 @@ class Ksym:
                     return False
 
             position += 1
-            position += -position % 4
+            position = align(position, 4)
 
             Ksym.KsymParse.set_offset(verbose, "kallsyms_token_table", position)
             return True
@@ -151630,7 +151630,7 @@ class Ksym:
             # go back that number of bytes
             position = Ksym.offset_kallsyms_markers
             position -= kallsyms_markers_last_entry
-            position += -position % Ksym.kallsyms_markers_table_element_size
+            position = align(position, Ksym.kallsyms_markers_table_element_size)
 
             if position <= 0:
                 Ksym.verbose_err(verbose, "Could not find kallsyms_names")
@@ -151698,7 +151698,7 @@ class Ksym:
             position = Ksym.offset_kallsyms_names
             # kallsyms_names should be aligned.
             # This optimization is based on experience and is applied for now.
-            position += -position % step
+            position = align(position, step)
 
             while True:
                 if position < 0:
