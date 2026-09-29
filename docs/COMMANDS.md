@@ -9243,13 +9243,15 @@ Dump I/O-port and I/O-memory information.
 ### Syntax
 
 ```text
-usage: kdevio [-h] [-hh] [-n] [-q]
+usage: kdevio [-h] [-hh] [--meta] [--resource RESOURCE] [-n] [-q]
 
 options:
-  -h, --help          show this help message and exit
-  -hh, --help-simple  show help without ASCII diagram.
-  -n, --no-pager      do not use the pager.
-  -q, --quiet         show result only.
+  -h, --help           show this help message and exit
+  -hh, --help-simple   show help without ASCII diagram.
+  --meta               display resource layout information.
+  --resource RESOURCE  walk a resource tree at ADDRESS.
+  -n, --no-pager       do not use the pager.
+  -q, --quiet          show result only.
 ```
 
 ### Notes

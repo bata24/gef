@@ -15922,6 +15922,7 @@ GDB_MODE_CHECKERS = {
     "vmware": is_vmware,
     "kgdb": is_kgdb,
     "kdb": is_kdb,
+    "core": is_core_file,
     "qiling": is_qiling,
     "rr": is_rr,
     "wine": is_wine,
@@ -70907,6 +70908,10 @@ class KernelAddressHeuristicFinder:
                     g = KernelAddressHeuristicFinderUtil.aarch64_adrp_add(res, read_valid=True)
                 elif is_arm32():
                     g = KernelAddressHeuristicFinderUtil.arm32_movw_movt(res, read_valid=True)
+                elif is_riscv32() or is_riscv64():
+                    g = KernelAddressHeuristicFinderUtil.riscv_auipc_addi(res, read_valid=True)
+                else:
+                    g = []
                 for x in g:
                     if KernelAddressHeuristicFinderUtil.is_in_kernel_image(x) and is_double_link_list(x):
                         return x
@@ -70923,10 +70928,12 @@ class KernelAddressHeuristicFinder:
 
         kversion = Kernel.version()
 
-        # plan 2 (available v3.3 or later)
-        if kversion and "3.3" <= kversion:
-            addr = Ksym.get_addr("pci_scan_bus")
-            if addr:
+        # plan 2
+        if kversion:
+            for anchor in ("pci_scan_bus", "pci_scan_bus_parented"):
+                addr = Ksym.get_addr(anchor)
+                if not addr:
+                    continue
                 res = gdb.execute("x/30i {:#x}".format(addr), to_string=True)
                 if is_x86_64():
                     g = KernelAddressHeuristicFinderUtil.x64_x86_mov_reg_const(res, r"r\w+")
@@ -70938,42 +70945,30 @@ class KernelAddressHeuristicFinder:
                     g = KernelAddressHeuristicFinderUtil.arm32_movw_movt(res)
                 elif is_riscv32() or is_riscv64():
                     g = KernelAddressHeuristicFinderUtil.riscv_auipc_addi(res)
+                else:
+                    g = []
                 for x in g:
-                    name_ptr = read_int_from_memory(x + 0x8 * 2) # sizeof(resource_size_t) == 8
-                    if name_ptr and is_valid_addr(name_ptr):
-                        name = read_cstring_from_memory(name_ptr)
-                        if name == "PCI IO":
-                            return x
-                    name_ptr = read_int_from_memory(x + 0x4 * 2) # sizeof(resource_size_t) == 4
-                    if name_ptr and is_valid_addr(name_ptr):
-                        name = read_cstring_from_memory(name_ptr)
-                        if name == "PCI IO":
-                            return x
+                    layout = KernelResourceLayout.get_layout(x, "PCI IO", 0x100)
+                    if layout:
+                        return x
 
         # plan 3 (from .rodata)
         klayout = Kernel.layout(use_iomem=False)
         if klayout.ro_base and klayout.ro_size and is_valid_addr(klayout.ro_base):
             ro_data = read_memory(klayout.ro_base, klayout.ro_size)
-            rw_base = klayout.ro_base
+            rw_ranges = [(klayout.ro_base, ro_data)]
             if klayout.rw_base and klayout.rw_size:
-                rw_base = klayout.rw_base
-                rw_data = read_memory(klayout.rw_base, min(klayout.rw_size, 0x1000000))
-            else:
-                rw_data = ro_data
-                # On kernels where the linear mapping is RWX, Kernel.layout() cannot
-                # distinguish .data from the rest of the mapping.  Search also the contiguous
-                # area immediately following .rodata, where ioport_resource is defined.
-                # .data may be in the capped .rodata of the RWX layout, so .rodata is searched too.
-                if klayout.ro_end and klayout.maps:
-                    rw_end = klayout.ro_end
-                    for entry in klayout.maps:
-                        if entry.vstart <= rw_end < entry.vend or entry.vstart == rw_end:
-                            rw_end = max(rw_end, entry.vend)
-                        elif entry.vstart > rw_end:
-                            break
-                    rw_size = min(rw_end - klayout.ro_end, 0x1000000)
-                    if rw_size:
-                        rw_data = ro_data + read_memory(klayout.ro_end, rw_size)
+                rw_ranges.append((klayout.rw_base, read_memory(klayout.rw_base, min(klayout.rw_size, 0x1000000))))
+            if klayout.ro_end and klayout.maps:
+                rw_end = klayout.ro_end
+                for entry in klayout.maps:
+                    if entry.vstart <= rw_end < entry.vend or entry.vstart == rw_end:
+                        rw_end = max(rw_end, entry.vend)
+                    elif entry.vstart > rw_end:
+                        break
+                rw_size = min(rw_end - klayout.ro_end, 0x1000000)
+                if rw_size:
+                    rw_ranges.append((klayout.ro_end, read_memory(klayout.ro_end, rw_size)))
             pos = -1
             while True:
                 # search for aligned string from .rodata
@@ -70987,36 +70982,22 @@ class KernelAddressHeuristicFinder:
                 else:
                     addr_byteseq = p64(klayout.ro_base + pos)
 
-                # search for it from .data
-                pos2 = -1
-                while True:
-                    pos2 = rw_data.find(addr_byteseq, pos2 + 1)
-                    if pos2 == -1:
-                        break
-                    if pos2 % current_arch.ptrsize != 0:
-                        continue
-                    # `name` follows `start` and `end`, whose size is sizeof(resource_size_t), which is 8 even on
-                    # 32-bit kernels with CONFIG_PHYS_ADDR_T_64BIT=y. ioport_resource is {0, IO_SPACE_LIMIT,
-                    # "PCI IO", IORESOURCE_IO}, and its first child links back to it through `parent`.
-                    name_addr = rw_base + pos2
-                    flags = read_int_from_memory(name_addr + current_arch.ptrsize, safe=True)
-                    if flags is None or flags & 0x100 == 0: # IORESOURCE_IO
-                        continue
-                    kversion = Kernel.version()
-                    has_desc = int(bool(kversion and "4.5" <= kversion))
-                    child = read_int_from_memory(name_addr + current_arch.ptrsize * (4 + has_desc), safe=True)
-                    candidates = []
-                    for sizeof_resource_size_t in dict.fromkeys([current_arch.ptrsize, 8]):
-                        maybe_ioport_resource = name_addr - sizeof_resource_size_t * 2
-                        if child and is_valid_addr(child):
-                            parent = read_int_from_memory(child + sizeof_resource_size_t * 2 + current_arch.ptrsize * (2 + has_desc), safe=True)
-                            if parent == maybe_ioport_resource:
+                for rw_base, rw_data in rw_ranges:
+                    pos2 = -1
+                    while True:
+                        pos2 = rw_data.find(addr_byteseq, pos2 + 1)
+                        if pos2 == -1:
+                            break
+                        if pos2 % current_arch.ptrsize != 0:
+                            continue
+                        name_addr = rw_base + pos2
+                        for sizeof_resource_size_t in (8, 4):
+                            maybe_ioport_resource = name_addr - sizeof_resource_size_t * 2
+                            layout = KernelResourceLayout.get_layout(
+                                maybe_ioport_resource, "PCI IO", 0x100, name_addr,
+                            )
+                            if layout:
                                 return maybe_ioport_resource
-                        start = rw_data[pos2 - sizeof_resource_size_t * 2:pos2 - sizeof_resource_size_t]
-                        if pos2 >= sizeof_resource_size_t * 2 and start == b"\0" * sizeof_resource_size_t:
-                            candidates.append(maybe_ioport_resource)
-                    if candidates:
-                        return candidates[0]
         return None
 
     @staticmethod
@@ -71031,29 +71012,18 @@ class KernelAddressHeuristicFinder:
         # plan 2 (from ioport_resource)
         x = KernelAddressHeuristicFinder.get_ioport_resource()
         if x:
-            # offsetof(resource, name)
-            offset_name = None
-            name_ptr = read_int_from_memory(x + 0x8 * 2) # sizeof(resource_size_t) == 8
-            if name_ptr and is_valid_addr(name_ptr):
-                name = read_cstring_from_memory(name_ptr)
-                if name == "PCI IO":
-                    offset_name = 0x8 * 2
-            if offset_name is None:
-                name_ptr = read_int_from_memory(x + 0x4 * 2) # sizeof(resource_size_t) == 4
-                if name_ptr and is_valid_addr(name_ptr):
-                    name = read_cstring_from_memory(name_ptr)
-                    if name == "PCI IO":
-                        offset_name = 0x4 * 2
-
-            # find "PCI mem"
-            if offset_name is not None:
-                for i in range(-30, 30):
-                    diff = (current_arch.ptrsize * i)
-                    name_ptr = read_int_from_memory(x + diff)
-                    if name_ptr and is_valid_addr(name_ptr):
-                        name = read_cstring_from_memory(name_ptr)
-                        if name == "PCI mem":
-                            return x + diff - offset_name
+            layout = KernelResourceLayout.get_layout(x, "PCI IO", 0x100)
+            if layout:
+                for i in range(-0x1000, 0x1000, current_arch.ptrsize):
+                    name_addr = x + i
+                    name_ptr = read_int_from_memory(name_addr, safe=True)
+                    if not name_ptr or not is_valid_addr(name_ptr):
+                        continue
+                    if read_cstring_from_memory(name_ptr, safe=True) != "PCI mem":
+                        continue
+                    root = name_addr - layout["name"]
+                    if KernelResourceLayout.get_layout(root, "PCI mem", 0x200, name_addr):
+                        return root
         return None
 
     @staticmethod
@@ -90419,6 +90389,134 @@ class KernelWorkqueueCommand(GenericCommand, BufferingOutput):
         return
 
 
+class KernelResourceLayout:
+    """Resolve the ABI-dependent layout of `struct resource`.
+
+    struct resource {
+        resource_size_t start;
+        resource_size_t end;
+        const char *name;
+        unsigned long flags;
+        unsigned long desc; // v4.5~, sometimes backported
+        struct resource *parent;
+        struct resource *sibling;
+        struct resource *child;
+    };
+    """
+
+    @staticmethod
+    def get_type_layout():
+        try:
+            resource_type = gdb.lookup_type("struct resource").strip_typedefs()
+        except (gdb.error, RuntimeError):
+            return None
+
+        fields = {}
+        try:
+            for field in resource_type.fields():
+                if field.name and field.bitpos is not None and field.bitpos % 8 == 0:
+                    fields[field.name] = (field.bitpos // 8, int(field.type.strip_typedefs().sizeof))
+            size = int(resource_type.sizeof)
+        except (gdb.error, RuntimeError, ValueError, TypeError):
+            return None
+
+        required = ("start", "end", "name", "flags", "parent", "sibling", "child")
+        if any(name not in fields for name in required):
+            return None
+        width = fields["start"][1]
+        if width not in (4, 8) or fields["end"][1] != width:
+            return None
+        if fields["name"][1] != current_arch.ptrsize or fields["flags"][1] != current_arch.ptrsize:
+            return None
+        if any(fields[name][1] != current_arch.ptrsize for name in ("parent", "sibling", "child")):
+            return None
+        return {
+            "start": fields["start"][0], "end": fields["end"][0], "name": fields["name"][0],
+            "flags": fields["flags"][0], "desc": fields.get("desc", (None, None))[0],
+            "parent": fields["parent"][0], "sibling": fields["sibling"][0], "child": fields["child"][0],
+            "width": width, "size": size, "source": "DWARF",
+        }
+
+    @staticmethod
+    def fallback_layout(width, has_desc):
+        name = width * 2
+        flags = name + current_arch.ptrsize
+        parent = flags + current_arch.ptrsize * (2 if has_desc else 1)
+        sibling = parent + current_arch.ptrsize
+        child = sibling + current_arch.ptrsize
+        return {
+            "start": 0, "end": width, "name": name, "flags": flags,
+            "desc": flags + current_arch.ptrsize if has_desc else None,
+            "parent": parent, "sibling": sibling, "child": child,
+            "width": width, "size": child + current_arch.ptrsize, "source": "heuristic",
+        }
+
+    @staticmethod
+    def read_size(addr, width):
+        if width == 8:
+            return read_int64_from_memory(addr, safe=True)
+        if width == 4:
+            return read_int32_from_memory(addr, safe=True)
+        return None
+
+    @staticmethod
+    def validate(addr, layout, expected_name=None, expected_flag=None, name_addr=None, allow_name_unknown=False):
+        if not addr or not is_valid_addr(addr):
+            return False
+        if name_addr is not None and addr + layout["name"] != name_addr:
+            return False
+        start = KernelResourceLayout.read_size(addr + layout["start"], layout["width"])
+        end = KernelResourceLayout.read_size(addr + layout["end"], layout["width"])
+        name_ptr = read_int_from_memory(addr + layout["name"], safe=True)
+        flags = read_int_from_memory(addr + layout["flags"], safe=True)
+        if start is None or end is None or start > end or not name_ptr or flags is None:
+            return False
+        if expected_flag is not None and flags & expected_flag == 0:
+            return False
+        if expected_name is not None:
+            if allow_name_unknown and is_kgdb():
+                pass
+            elif not is_valid_addr(name_ptr) or read_cstring_from_memory(name_ptr, safe=True) != expected_name:
+                return False
+        elif not is_valid_addr(name_ptr):
+            return False
+        child = read_int_from_memory(addr + layout["child"], safe=True)
+        if child:
+            if not is_valid_addr(child):
+                return False
+            parent = read_int_from_memory(child + layout["parent"], safe=True)
+            if parent not in (addr, None):
+                return False
+        return True
+
+    @staticmethod
+    def get_layout(addr, expected_name=None, expected_flag=None, name_addr=None):
+        typed_layout = KernelResourceLayout.get_type_layout()
+        if typed_layout and KernelResourceLayout.validate(
+            addr, typed_layout, expected_name, expected_flag, name_addr, allow_name_unknown=True,
+        ):
+            return typed_layout
+
+        candidates = []
+        for width in dict.fromkeys((current_arch.ptrsize, 8, 4)):
+            for has_desc in (False, True):
+                layout = KernelResourceLayout.fallback_layout(width, has_desc)
+                if KernelResourceLayout.validate(addr, layout, expected_name, expected_flag, name_addr):
+                    candidates.append(layout)
+        if not candidates:
+            return None
+        if len(candidates) == 1:
+            return candidates[0]
+        version = Kernel.version()
+        desc_layouts = [layout for layout in candidates if layout["desc"] is not None]
+        plain_layouts = [layout for layout in candidates if layout["desc"] is None]
+        if version and version >= "4.5" and desc_layouts:
+            return desc_layouts[0]
+        if plain_layouts:
+            return plain_layouts[0]
+        return candidates[0]
+
+
 @register_command
 class KernelPciDeviceCommand(GenericCommand, BufferingOutput):
     """Dump the PCI devices."""
@@ -90469,23 +90567,118 @@ class KernelPciDeviceCommand(GenericCommand, BufferingOutput):
     ]
     _note_ = "\n".join(_note_)
 
-    @Cache.cache_this_session(cache_None=False)
+    def type_offset(self, type_name, member, fallback=None):
+        offset = GefUtil.offsetof(type_name, member)
+        return fallback if offset is None else int(offset)
+
+    def list_items(self, head, container_offset=0):
+        items = []
+        first = read_int_from_memory(head, safe=True)
+        previous = head
+        node = first
+        seen = set()
+        while node and node != head:
+            if not is_valid_addr(node) or node in seen:
+                self.incomplete.append("invalid or cyclic list at {:#x}".format(node))
+                break
+            seen.add(node)
+            node_previous = read_int_from_memory(node + current_arch.ptrsize, safe=True)
+            next_node = read_int_from_memory(node, safe=True)
+            if node_previous != previous or not next_node:
+                self.incomplete.append("broken list backlink at {:#x}".format(node))
+                break
+            items.append(node - container_offset)
+            previous = node
+            node = next_node
+            if len(seen) > 100000:
+                self.incomplete.append("list limit reached at {:#x}".format(head))
+                break
+        if first is None:
+            self.incomplete.append("unreadable list head at {:#x}".format(head))
+        return items
+
+    def find_name_offset(self, objects, type_offset, pattern):
+        if type_offset is not None:
+            for obj in objects:
+                name_ptr = read_int_from_memory(obj + type_offset, safe=True)
+                name = read_cstring_from_memory(name_ptr, safe=True) if name_ptr and is_valid_addr(name_ptr) else None
+                if name and re.fullmatch(pattern, name):
+                    return type_offset, "DWARF"
+
+        scores = {}
+        for obj in objects:
+            for i in range(128):
+                offset = current_arch.ptrsize * i
+                name_ptr = read_int_from_memory(obj + offset, safe=True)
+                if not name_ptr or not is_valid_addr(name_ptr):
+                    continue
+                name = read_cstring_from_memory(name_ptr, safe=True)
+                if name and re.fullmatch(pattern, name):
+                    scores[offset] = scores.get(offset, 0) + 1
+        if not scores:
+            return None, None
+        return max(scores, key=scores.get), "heuristic"
+
+    def get_all_buses(self, roots):
+        buses = []
+        seen = set()
+        stack = list(reversed(roots))
+        while stack:
+            bus = stack.pop()
+            if bus in seen:
+                continue
+            seen.add(bus)
+            buses.append(bus)
+            children = self.list_items(bus + self.offset_pci_bus_children, self.offset_pci_bus_children)
+            stack.extend(reversed(children))
+        return buses
+
+    def infer_resource_array(self, dev, dev_name):
+        resource_layout = KernelResourceLayout.get_type_layout()
+        type_offset = self.type_offset("struct pci_dev", "resource")
+        if resource_layout and type_offset is not None:
+            name_ptr = read_int_from_memory(dev + type_offset + resource_layout["name"], safe=True)
+            if name_ptr and read_cstring_from_memory(name_ptr, safe=True) == dev_name:
+                return type_offset, resource_layout, "DWARF"
+
+        candidates = []
+        for width in dict.fromkeys((current_arch.ptrsize, 8, 4)):
+            for has_desc in (False, True):
+                layout = KernelResourceLayout.fallback_layout(width, has_desc)
+                for i in range(1, 300):
+                    name_addr = dev + self.offset_pci_dev_dev + current_arch.ptrsize * i
+                    name_ptr = read_int_from_memory(name_addr, safe=True)
+                    if not name_ptr or not is_valid_addr(name_ptr):
+                        continue
+                    if read_cstring_from_memory(name_ptr, safe=True) != dev_name:
+                        continue
+                    base = name_addr - layout["name"]
+                    if base <= dev + self.offset_pci_dev_dev or base % current_arch.ptrsize:
+                        continue
+                    matches = 0
+                    for index in range(16):
+                        entry = base + layout["size"] * index
+                        pointer = read_int_from_memory(entry + layout["name"], safe=True)
+                        if pointer and read_cstring_from_memory(pointer, safe=True) == dev_name:
+                            matches += 1
+                    if matches >= 6:
+                        candidates.append((matches, base - dev, layout))
+        if not candidates:
+            return None, None, None
+        matches, offset, layout = max(candidates, key=lambda item: item[0])
+        layout["source"] = "heuristic"
+        return offset, layout, "heuristic"
+
     def initialize(self):
         self.meta = []
-
-        # pci_root_buses
+        self.incomplete = []
         self.pci_root_buses = KernelAddressHeuristicFinder.get_pci_root_buses()
         if not self.pci_root_buses:
             self.meta.append((self.quiet_err, "Could not find pci_root_buses"))
             return None
         self.meta.append((self.quiet_info, "pci_root_buses: {:#x}".format(self.pci_root_buses)))
 
-        first_root_bus = read_int_from_memory(self.pci_root_buses)
-        if self.pci_root_buses == first_root_bus:
-            self.meta.append((warn, "No PCI devices found"))
-            return None
-
-        # pci_bus->{node,children,devices}
+        # pci_bus->{node,children,devices,dev}
         """
         struct pci_bus {
             struct list_head node;
@@ -90514,7 +90707,7 @@ class KernelPciDeviceCommand(GenericCommand, BufferingOutput):
             struct device *bridge;
             struct device {
                 struct kobject {
-                    const char *name; <-- search for this
+                    const char *name; // e.g. "0000:00"
                     ...
                 } kobj;
                 ...
@@ -90525,23 +90718,12 @@ class KernelPciDeviceCommand(GenericCommand, BufferingOutput):
         };
         """
 
+        ptrsize = current_arch.ptrsize
         self.offset_pci_bus_node = 0
-        self.offset_pci_bus_children = current_arch.ptrsize * 3
-        self.offset_pci_bus_devices = current_arch.ptrsize * 5
+        self.offset_pci_bus_children = self.type_offset("struct pci_bus", "children", ptrsize * 3)
+        self.offset_pci_bus_devices = self.type_offset("struct pci_bus", "devices", ptrsize * 5)
 
-        # pci_bus->dev
-        for i in range(100):
-            v = read_int_from_memory(first_root_bus + current_arch.ptrsize * i)
-            if is_valid_addr(v):
-                if read_cstring_from_memory(v) == "0000:00":
-                    self.offset_pci_bus_dev = current_arch.ptrsize * i
-                    self.meta.append((self.quiet_info, "offsetof(pci_bus, dev): {:#x}".format(self.offset_pci_bus_dev)))
-                    break
-        else:
-            self.meta.append((self.quiet_err, "Could not find pci_bus->dev"))
-            return None
-
-        # pci_dev->{bus_list,vendor,device,subsystem_vendor,subsystem_device,class,revision}
+        # pci_dev->{bus_list,vendor,device,subsystem_vendor,subsystem_device,class,revision,dev,resource}
         """
         struct pci_dev {
             struct list_head bus_list;
@@ -90561,7 +90743,7 @@ class KernelPciDeviceCommand(GenericCommand, BufferingOutput):
             ...
             struct device {
                 struct kobject {
-                    const char *name; <-- search for this
+                    const char *name; // e.g. "0000:00:00.0"
                     ...
                 } kobj;
                 ...
@@ -90573,51 +90755,65 @@ class KernelPciDeviceCommand(GenericCommand, BufferingOutput):
         };
         """
 
-        self.offset_pci_dev_bus_list = 0
-        self.offset_pci_dev_vendor = current_arch.ptrsize * 7 + 4
-        self.offset_pci_dev_device = self.offset_pci_dev_vendor + 2
-        self.offset_pci_dev_subsystem_vendor = self.offset_pci_dev_device + 2
-        self.offset_pci_dev_subsystem_device = self.offset_pci_dev_subsystem_vendor + 2
-        self.offset_pci_dev_class = self.offset_pci_dev_subsystem_device + 2
-        self.offset_pci_dev_revision = self.offset_pci_dev_class + 4
+        self.offset_pci_dev_bus_list = self.type_offset("struct pci_dev", "bus_list", 0)
+        self.offset_pci_dev_bus = self.type_offset("struct pci_dev", "bus", ptrsize * 2)
+        self.offset_pci_dev_vendor = self.type_offset("struct pci_dev", "vendor", ptrsize * 7 + 4)
+        self.offset_pci_dev_device = self.type_offset("struct pci_dev", "device", self.offset_pci_dev_vendor + 2)
+        self.offset_pci_dev_subsystem_vendor = self.type_offset(
+            "struct pci_dev", "subsystem_vendor", self.offset_pci_dev_device + 2,
+        )
+        self.offset_pci_dev_subsystem_device = self.type_offset(
+            "struct pci_dev", "subsystem_device", self.offset_pci_dev_subsystem_vendor + 2,
+        )
+        self.offset_pci_dev_class = self.type_offset("struct pci_dev", "class", self.offset_pci_dev_subsystem_device + 2)
+        self.offset_pci_dev_revision = self.type_offset("struct pci_dev", "revision", self.offset_pci_dev_class + 4)
 
-        # pci_dev->dev
-        first_dev = read_int_from_memory(first_root_bus + self.offset_pci_bus_devices)
-        for i in range(100):
-            v = read_int_from_memory(first_dev + current_arch.ptrsize * i)
-            if is_valid_addr(v):
-                if read_cstring_from_memory(v) == "0000:00:00.0":
-                    self.offset_pci_dev_dev = current_arch.ptrsize * i
-                    self.meta.append((self.quiet_info, "offsetof(pci_dev, dev): {:#x}".format(self.offset_pci_dev_dev)))
-                    break
-        else:
+        self.root_buses = self.list_items(self.pci_root_buses)
+        if not self.root_buses:
+            self.meta.append((warn, "No PCI devices found"))
+            return None
+        self.buses = self.get_all_buses(self.root_buses)
+        self.offset_pci_bus_dev, bus_source = self.find_name_offset(
+            self.buses, self.type_offset("struct pci_bus", "dev.kobj.name"), r"[0-9a-fA-F]{4}:[0-9a-fA-F]{2}",
+        )
+        if self.offset_pci_bus_dev is None:
+            self.meta.append((self.quiet_err, "Could not find pci_bus->dev"))
+            return None
+        self.meta.append((self.quiet_info, "offsetof(pci_bus, dev): {:#x} ({:s})".format(self.offset_pci_bus_dev, bus_source)))
+
+        devices = []
+        for bus in self.buses:
+            devices.extend(self.list_items(bus + self.offset_pci_bus_devices, self.offset_pci_dev_bus_list))
+        if not devices:
+            self.meta.append((warn, "No PCI devices found"))
+            return None
+        self.offset_pci_dev_dev, dev_source = self.find_name_offset(
+            devices, self.type_offset("struct pci_dev", "dev.kobj.name"),
+            r"[0-9a-fA-F]{4}:[0-9a-fA-F]{2}:[0-9a-fA-F]{2}\.[0-7]",
+        )
+        if self.offset_pci_dev_dev is None:
             self.meta.append((self.quiet_err, "Could not find pci_dev->dev"))
             return None
+        self.meta.append((self.quiet_info, "offsetof(pci_dev, dev): {:#x} ({:s})".format(self.offset_pci_dev_dev, dev_source)))
 
-        # pci_dev->resource
-        """
-        struct resource {
-            resource_size_t start;
-            resource_size_t end;
-            const char *name;
-            unsigned long flags;
-            unsigned long desc;
-            struct resource *parent, *sibling, *child;
-        };
-        """
-
-        ofs_base = self.offset_pci_dev_dev + current_arch.ptrsize
-        for i in range(200):
-            v = read_int_from_memory(first_dev + ofs_base + current_arch.ptrsize * i)
-            if is_valid_addr(v):
-                if read_cstring_from_memory(v) == "0000:00:00.0":
-                    self.offset_pci_dev_resource = ofs_base + current_arch.ptrsize * i - 0x10
-                    self.sizeof_resource = 0x10 + current_arch.ptrsize * 6
-                    self.meta.append((self.quiet_info, "offsetof(pci_dev, resource): {:#x}".format(self.offset_pci_dev_resource)))
-                    break
-        else:
+        resource_offset = self.resource_layout = resource_source = None
+        for dev in devices:
+            dev_name_ptr = read_int_from_memory(dev + self.offset_pci_dev_dev, safe=True)
+            dev_name = read_cstring_from_memory(dev_name_ptr, safe=True) if dev_name_ptr and is_valid_addr(dev_name_ptr) else None
+            if not dev_name:
+                continue
+            resource_offset, self.resource_layout, resource_source = self.infer_resource_array(dev, dev_name)
+            if resource_offset is not None:
+                break
+        if resource_offset is None:
             self.meta.append((self.quiet_err, "Could not find pci_dev->resource"))
             return None
+        self.offset_pci_dev_resource = resource_offset
+        self.sizeof_resource = self.resource_layout["size"]
+        self.meta.append((self.quiet_info, "offsetof(pci_dev, resource): {:#x} ({:s})".format(resource_offset, resource_source)))
+        self.meta.append((self.quiet_info, "struct resource: source={:s}, size={:#x}, resource_size_t={:d}".format(
+            self.resource_layout["source"], self.sizeof_resource, self.resource_layout["width"],
+        )))
 
         # pci.ids
         pci_ids_file_name = "/usr/share/misc/pci.ids"
@@ -90799,116 +90995,110 @@ class KernelPciDeviceCommand(GenericCommand, BufferingOutput):
             label_list.append("      -> No results found from `monitor info mtree -f`")
         return label_list
 
-    def walk_devices(self, dev):
+    def walk_devices(self, bus):
         if not self.args.quiet:
             fmt = "{:18s} {:12s} {:7s} {:10s} {:10s} {:3s} {:s}"
             legend = ["pci_dev", "name", "class", "vendor:dev", "subsystem", "rev", "description"]
             self.out.append(GefUtil.make_legend(fmt.format(*legend)))
 
-        if not dev:
-            return
-
-        while dev not in self.seen_dev:
+        for dev in self.list_items(bus + self.offset_pci_bus_devices, self.offset_pci_dev_bus_list):
+            if dev in self.seen_dev:
+                self.incomplete.append("duplicate PCI device at {:#x}".format(dev))
+                continue
             self.seen_dev.add(dev)
+            if read_int_from_memory(dev + self.offset_pci_dev_bus, safe=True) != bus:
+                self.incomplete.append("invalid pci_dev->bus at {:#x}".format(dev))
+                continue
 
-            # parse device info
-            dev_name = read_cstring_from_memory(read_int_from_memory(dev + self.offset_pci_dev_dev))
-            vendor = read_int16_from_memory(dev + self.offset_pci_dev_vendor)
-            device = read_int16_from_memory(dev + self.offset_pci_dev_device)
-            sub_vendor = read_int16_from_memory(dev + self.offset_pci_dev_subsystem_vendor)
-            sub_device = read_int16_from_memory(dev + self.offset_pci_dev_subsystem_device)
-            revision = read_int8_from_memory(dev + self.offset_pci_dev_revision)
+            name_ptr = read_int_from_memory(dev + self.offset_pci_dev_dev, safe=True)
+            dev_name = read_cstring_from_memory(name_ptr, safe=True) if name_ptr and is_valid_addr(name_ptr) else None
+            if not dev_name or not re.fullmatch(r"[0-9a-fA-F]{4}:[0-9a-fA-F]{2}:[0-9a-fA-F]{2}\.[0-7]", dev_name):
+                self.incomplete.append("invalid pci_dev name at {:#x}".format(dev))
+                continue
 
-            # u32:class = u8:unused || u8:base_class || u8:sub_class || u8:programming-interface
-            class_val = read_int32_from_memory(dev + self.offset_pci_dev_class)
+            vendor = read_int16_from_memory(dev + self.offset_pci_dev_vendor, safe=True)
+            device = read_int16_from_memory(dev + self.offset_pci_dev_device, safe=True)
+            sub_vendor = read_int16_from_memory(dev + self.offset_pci_dev_subsystem_vendor, safe=True)
+            sub_device = read_int16_from_memory(dev + self.offset_pci_dev_subsystem_device, safe=True)
+            revision = read_int8_from_memory(dev + self.offset_pci_dev_revision, safe=True)
+            class_val = read_int32_from_memory(dev + self.offset_pci_dev_class, safe=True)
+            if None in (vendor, device, sub_vendor, sub_device, revision, class_val):
+                self.incomplete.append("unreadable PCI device at {:#x}".format(dev))
+                continue
+
             prgif = class_val & 0xff
             sub_class = (class_val >> 8) & 0xff
             base_class = (class_val >> 16) & 0xff
-
             desc = self.get_description(base_class, sub_class, prgif, vendor, device, sub_vendor, sub_device)
             self.out.append("{:#018x} {:s} {:02x}{:02x}:{:02x} {:04x}:{:04x}  {:04x}:{:04x}  {:02x}  {:s}".format(
                 dev, dev_name, base_class, sub_class, prgif, vendor, device, sub_vendor, sub_device, revision, desc,
             ))
 
-            if self.args.verbose:
-                # parse resource
-                i = 0
-                while True:
-                    resource_i = dev + self.offset_pci_dev_resource + self.sizeof_resource * i
-
-                    # parse resource name
-                    resource_i_name = read_int_from_memory(resource_i + 8 * 2)
-                    if not is_valid_addr(resource_i_name):
-                        break
-                    if read_cstring_from_memory(resource_i_name) != dev_name:
-                        break
-
-                    # parse resource address
-                    resource_i_start = read_int_from_memory(resource_i + 8 * 0)
-                    resource_i_end = read_int_from_memory(resource_i + 8 * 1)
-                    # struct resource uses an inclusive end address, matching resource_size().
-                    resource_i_size = resource_i_end - resource_i_start + 1
-
-                    if resource_i_start != 0 and resource_i_end != 0:
-                        # parse resource flags
-                        resource_i_flags = read_int_from_memory(resource_i + 8 * 2 + current_arch.ptrsize)
-                        flag_str = KernelPciDeviceCommand.get_flags_str(resource_i_flags)
-                        if (resource_i_flags & 0x300) == 0x300:
-                            type_str = "RegOffs"
-                        elif resource_i_flags & 0x100:
-                            type_str = "I/O-Mem"
-                        elif resource_i_flags & 0x200:
-                            type_str = "PhysMem"
-                        else:
-                            type_str = "???"
-
-                        self.out.append("  [{:d}] {:7s}: {:#010x}-{:#010x} (sz:{:#010x}) flags:{:#x} ({:s})".format(
-                            i, type_str, resource_i_start, resource_i_end, resource_i_size, resource_i_flags, flag_str,
-                        ))
-
-                        # add more details
-                        ret = self.search_label(resource_i_start, resource_i_end)
-                        self.out.extend(ret)
-                    i += 1
-
-            # goto next
-            dev = read_int_from_memory(dev + self.offset_pci_dev_bus_list)
-        return
-
-    def walk_pci_bus(self, bus):
-        if not bus:
-            return
-
-        while bus not in self.seen_bus:
-            self.seen_bus.add(bus)
-            bus_name = read_cstring_from_memory(read_int_from_memory(bus + self.offset_pci_bus_dev))
-            self.out.append(titlify("Bus {:s}: {:#x}".format(bus_name, bus)))
-
-            # parse device
-            self.seen_dev.add(bus + self.offset_pci_bus_devices)
-            dev = read_int_from_memory(bus + self.offset_pci_bus_devices)
-            self.walk_devices(dev)
-
-            # parse child
-            self.seen_bus.add(bus + self.offset_pci_bus_children)
-            first_child_bus = read_int_from_memory(bus + self.offset_pci_bus_children)
-            self.walk_pci_bus(first_child_bus)
-
-            # goto next
-            bus = read_int_from_memory(bus + self.offset_pci_bus_node)
+            if not self.args.verbose:
+                continue
+            for i in range(16):
+                resource_i = dev + self.offset_pci_dev_resource + self.sizeof_resource * i
+                resource_name_ptr = read_int_from_memory(resource_i + self.resource_layout["name"], safe=True)
+                if not resource_name_ptr or not is_valid_addr(resource_name_ptr):
+                    break
+                if read_cstring_from_memory(resource_name_ptr, safe=True) != dev_name:
+                    break
+                resource_i_start = KernelResourceLayout.read_size(
+                    resource_i + self.resource_layout["start"], self.resource_layout["width"],
+                )
+                resource_i_end = KernelResourceLayout.read_size(
+                    resource_i + self.resource_layout["end"], self.resource_layout["width"],
+                )
+                resource_i_flags = read_int_from_memory(resource_i + self.resource_layout["flags"], safe=True)
+                if None in (resource_i_start, resource_i_end, resource_i_flags):
+                    self.incomplete.append("unreadable PCI resource at {:#x}".format(resource_i))
+                    break
+                if resource_i_start == 0 and resource_i_end == 0:
+                    continue
+                resource_i_size = resource_i_end - resource_i_start + 1
+                flag_str = KernelPciDeviceCommand.get_flags_str(resource_i_flags)
+                if (resource_i_flags & 0x300) == 0x300:
+                    type_str = "RegOffs"
+                elif resource_i_flags & 0x100:
+                    type_str = "I/O-Mem"
+                elif resource_i_flags & 0x200:
+                    type_str = "PhysMem"
+                else:
+                    type_str = "???"
+                self.out.append("  [{:d}] {:7s}: {:#010x}-{:#010x} (sz:{:#010x}) flags:{:#x} ({:s})".format(
+                    i, type_str, resource_i_start, resource_i_end, resource_i_size, resource_i_flags, flag_str,
+                ))
+                self.out.extend(self.search_label(resource_i_start, resource_i_end))
         return
 
     def dump_pci(self):
-        first_root_bus = read_int_from_memory(self.pci_root_buses)
-        self.seen_bus = {self.pci_root_buses}
+        self.seen_bus = set()
         self.seen_dev = set()
-        self.walk_pci_bus(first_root_bus)
+        self.incomplete = list(self.incomplete)
+        stack = list(reversed(self.root_buses))
+        while stack:
+            bus = stack.pop()
+            if bus in self.seen_bus:
+                self.incomplete.append("duplicate PCI bus at {:#x}".format(bus))
+                continue
+            self.seen_bus.add(bus)
+            name_ptr = read_int_from_memory(bus + self.offset_pci_bus_dev, safe=True)
+            bus_name = read_cstring_from_memory(name_ptr, safe=True) if name_ptr and is_valid_addr(name_ptr) else None
+            if not bus_name or not re.fullmatch(r"[0-9a-fA-F]{4}:[0-9a-fA-F]{2}", bus_name):
+                self.incomplete.append("invalid pci_bus name at {:#x}".format(bus))
+                continue
+            self.out.append(titlify("Bus {:s}: {:#x}".format(bus_name, bus)))
+            self.walk_devices(bus)
+            children = self.list_items(bus + self.offset_pci_bus_children, self.offset_pci_bus_children)
+            stack.extend(reversed(children))
+        if self.incomplete:
+            self.out.extend("Incomplete: {:s}".format(reason) for reason in self.incomplete)
         return
 
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware"))
-    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
+    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64"))
     @Decorator.only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
         self.quiet_info("Wait for memory scan")
@@ -149033,6 +149223,8 @@ class KernelDeviceIOCommand(GenericCommand, BufferingOutput):
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("-hh", "--help-simple", action="store_true", help="show help without ASCII diagram.")
+    parser.add_argument("--meta", action="store_true", help="display resource layout information.")
+    parser.add_argument("--resource", type=lambda value: int(value, 0), help="walk a resource tree at ADDRESS.")
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
     parser.add_argument("-q", "--quiet", action="store_true", help="show result only.")
     _syntax_ = parser.format_help()
@@ -149066,133 +149258,131 @@ class KernelDeviceIOCommand(GenericCommand, BufferingOutput):
     ]
     _note_ = "\n".join(_note_)
 
-    @Cache.cache_this_session(cache_None=False, per_inferior=True, until_new_objfile=True)
-    def get_sizeof_resource_size_t(self, addr):
-        name_ptr = read_int_from_memory(addr + 0x8 * 2) # sizeof(resource_size_t) == 8
-        if name_ptr and is_valid_addr(name_ptr):
-            name = read_cstring_from_memory(name_ptr)
-            if name in ["PCI IO", "PCI mem"]:
-                return 0x8
+    def dump_resource(self, addr, layout):
+        resources = []
+        seen = set()
+        stack = [(addr, None)]
+        root = addr
 
-        name_ptr = read_int_from_memory(addr + 0x4 * 2) # sizeof(resource_size_t) == 4
-        if name_ptr and is_valid_addr(name_ptr):
-            name = read_cstring_from_memory(name_ptr)
-            if name in ["PCI IO", "PCI mem"]:
-                return 0x4
-        return None
+        while stack:
+            addr, expected_parent = stack.pop()
+            if not addr:
+                continue
+            if not is_valid_addr(addr):
+                self.incomplete.append("invalid resource pointer {:#x}".format(addr))
+                continue
+            if addr in seen:
+                self.incomplete.append("resource cycle at {:#x}".format(addr))
+                continue
+            seen.add(addr)
+            if len(seen) > 100000:
+                self.incomplete.append("resource limit reached")
+                break
 
-    def dump_resource(self, addr, sizeof_resource_size_t):
-        if not is_valid_addr(addr):
+            start = KernelResourceLayout.read_size(addr + layout["start"], layout["width"])
+            end = KernelResourceLayout.read_size(addr + layout["end"], layout["width"])
+            name_ptr = read_int_from_memory(addr + layout["name"], safe=True)
+            flags = read_int_from_memory(addr + layout["flags"], safe=True)
+            parent = read_int_from_memory(addr + layout["parent"], safe=True)
+            sibling = read_int_from_memory(addr + layout["sibling"], safe=True)
+            child = read_int_from_memory(addr + layout["child"], safe=True)
+            if None in (start, end, name_ptr, flags, parent, sibling, child):
+                self.incomplete.append("unreadable resource at {:#x}".format(addr))
+                continue
+            if expected_parent is not None and parent != expected_parent:
+                self.incomplete.append("invalid parent backlink at {:#x}".format(addr))
+                if sibling and sibling != addr:
+                    stack.append((sibling, expected_parent))
+                continue
+            name = "<unnamed>" if name_ptr == 0 else read_cstring_from_memory(name_ptr, safe=True)
+            if name is None:
+                name = "<unreadable>"
+                self.incomplete.append("unreadable resource name at {:#x}".format(addr))
+            if start > end:
+                self.incomplete.append("invalid resource range at {:#x}".format(addr))
+                if sibling and sibling != addr:
+                    stack.append((sibling, expected_parent))
+                if child:
+                    stack.append((child, addr))
+                continue
+
+            resources.append((addr, start, end, name, flags))
+            if sibling and sibling != root and sibling != addr:
+                stack.append((sibling, expected_parent))
+            if child:
+                stack.append((child, addr))
+        return resources
+
+    def get_resources(self, addr, expected_name=None, expected_flag=None):
+        self.layout = KernelResourceLayout.get_layout(addr, expected_name, expected_flag)
+        self.incomplete = []
+        if self.layout is None:
             return []
-        if addr in self.seen:
-            return []
-        self.seen.add(addr)
-
-        """
-        struct resource {
-            resource_size_t start; // 4 or 8
-            resource_size_t end; // 4 or 8
-            const char *name;
-            unsigned long flags;
-            unsigned long desc; // v4.5~
-            struct resource *parent, *sibling, *child;
-        };
-        """
-        if sizeof_resource_size_t == 8:
-            start = read_int64_from_memory(addr)
-            end = read_int64_from_memory(addr + 8)
-        elif sizeof_resource_size_t == 4:
-            start = read_int32_from_memory(addr)
-            end = read_int32_from_memory(addr + 4)
-        # `name` may be NULL (e.g., DEFINE_RES_MEM), or its page may be unreadable
-        name_ptr = read_int_from_memory(addr + sizeof_resource_size_t * 2)
-        name = "<unnamed>" if name_ptr == 0 else read_cstring_from_memory(name_ptr, safe=True)
-        if name is None:
-            name = "<unreadable>"
-        flags = read_int_from_memory(addr + sizeof_resource_size_t * 2 + current_arch.ptrsize)
-
-        ret = [(addr, start, end, name, flags)]
-
-        kversion = Kernel.version()
-        if "4.5" <= kversion:
-            parent = read_int_from_memory(addr + sizeof_resource_size_t * 2 + current_arch.ptrsize * 3)
-            ret += self.dump_resource(parent, sizeof_resource_size_t)
-            sibling = read_int_from_memory(addr + sizeof_resource_size_t * 2 + current_arch.ptrsize * 4)
-            ret += self.dump_resource(sibling, sizeof_resource_size_t)
-            child = read_int_from_memory(addr + sizeof_resource_size_t * 2 + current_arch.ptrsize * 5)
-            ret += self.dump_resource(child, sizeof_resource_size_t)
-        else:
-            parent = read_int_from_memory(addr + sizeof_resource_size_t * 2 + current_arch.ptrsize * 2)
-            ret += self.dump_resource(parent, sizeof_resource_size_t)
-            sibling = read_int_from_memory(addr + sizeof_resource_size_t * 2 + current_arch.ptrsize * 3)
-            ret += self.dump_resource(sibling, sizeof_resource_size_t)
-            child = read_int_from_memory(addr + sizeof_resource_size_t * 2 + current_arch.ptrsize * 4)
-            ret += self.dump_resource(child, sizeof_resource_size_t)
-        return ret
-
-    def get_resources(self, addr):
-        sizeof_resource_size_t = self.get_sizeof_resource_size_t(addr)
-        if sizeof_resource_size_t is None:
-            err("Not recognized sizeof(resource_size_t)")
-            return []
-        self.seen = set()
-        return self.dump_resource(addr, sizeof_resource_size_t)
+        return self.dump_resource(addr, self.layout)
 
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
-    @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware"))
-    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64"))
+    @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb", "core"))
     @Decorator.only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
         self.quiet_info("Wait for memory scan")
 
         self.out = []
 
-        # ioport
-        ioport_resource = KernelAddressHeuristicFinder.get_ioport_resource()
-        if not ioport_resource:
-            err("Could not find ioport_resource")
+        if args.resource is not None:
+            roots = [("Resource tree", args.resource, None, None)]
         else:
-            info("ioport_resource: {:#x}".format(ioport_resource))
+            roots = [
+                ("I/O-port", KernelAddressHeuristicFinder.get_ioport_resource(), "PCI IO", 0x100),
+                ("I/O-memory", KernelAddressHeuristicFinder.get_iomem_resource(), "PCI mem", 0x200),
+            ]
 
-            resources = self.get_resources(ioport_resource)
+        for title, root, expected_name, expected_flag in roots:
+            if not root:
+                err("Could not find {:s}".format(title))
+                continue
+            resources = self.get_resources(root, expected_name, expected_flag)
+            if self.layout is None:
+                err("Could not recognize struct resource at {:#x}".format(root))
+                continue
+            info("{:s}: {:#x}".format(title, root))
+            if args.meta:
+                self.out.append("{:s}: {:#x}".format(title, root))
+                self.out.append("struct resource: source={:s}, size={:#x}, resource_size_t={:d}".format(
+                    self.layout["source"], self.layout["size"], self.layout["width"],
+                ))
+                for name in ("start", "end", "name", "flags", "desc", "parent", "sibling", "child"):
+                    if self.layout[name] is not None:
+                        self.out.append("offsetof(resource, {:s}): {:#x}".format(name, self.layout[name]))
+                self.out.append("resources: {:d}, status: {:s}".format(
+                    len(resources), "partial" if self.incomplete else "complete",
+                ))
+                self.out.extend("Incomplete: {:s}".format(reason) for reason in self.incomplete)
+                continue
+
             if resources:
                 name_width = max(len(res[3]) for res in resources)
             else:
                 name_width = 4
-
-            self.out.append(titlify("I/O-port"))
-            fmt = "{:18s} {:17s} {:{:d}s} {:s}"
-            legend = ["resource", "I/O address", "name", name_width, "flags"]
-            self.out.append(GefUtil.make_legend(fmt.format(*legend)))
-
-            for addr, start, end, name, flags in sorted(resources, key=lambda x: x[1]):
-                self.out.append("{:#018x} {:#08x}-{:#08x} {:{:d}s} {:#010x} ({:s})".format(
-                    addr, start, end, name, name_width, flags, KernelPciDeviceCommand.get_flags_str(flags),
-                ))
-
-        # iomem
-        iomem_resource = KernelAddressHeuristicFinder.get_iomem_resource()
-        if not iomem_resource:
-            err("Could not find iomem_resource")
-        else:
-            info("iomem_resource: {:#x}".format(iomem_resource))
-
-            resources = self.get_resources(iomem_resource)
-            if resources:
-                name_width = max(len(res[3]) for res in resources)
+            if title == "I/O-port":
+                fmt = "{:18s} {:17s} {:{:d}s} {:s}"
+                legend = ["resource", "I/O address", "name", name_width, "flags"]
             else:
-                name_width = 4
-
-            self.out.append(titlify("I/O-memory"))
-            fmt = "{:18s} {:37s} {:{:d}s} {:s}"
-            legend = ["resource", "Physical address", "name", name_width, "flags"]
+                fmt = "{:18s} {:37s} {:{:d}s} {:s}"
+                legend = ["resource", "Physical address", "name", name_width, "flags"]
+            self.out.append(titlify(title))
             self.out.append(GefUtil.make_legend(fmt.format(*legend)))
-
             for addr, start, end, name, flags in sorted(resources, key=lambda x: x[1]):
-                self.out.append("{:#018x} {:#018x}-{:#018x} {:{:d}s} {:#010x} ({:s})".format(
-                    addr, start, end, name, name_width, flags, KernelPciDeviceCommand.get_flags_str(flags),
-                ))
+                if title == "I/O-port":
+                    line = "{:#018x} {:#08x}-{:#08x} {:{:d}s} {:#010x} ({:s})".format(
+                        addr, start, end, name, name_width, flags, KernelPciDeviceCommand.get_flags_str(flags),
+                    )
+                else:
+                    line = "{:#018x} {:#018x}-{:#018x} {:{:d}s} {:#010x} ({:s})".format(
+                        addr, start, end, name, name_width, flags, KernelPciDeviceCommand.get_flags_str(flags),
+                    )
+                self.out.append(line)
+            self.out.extend("Incomplete: {:s}".format(reason) for reason in self.incomplete)
 
         self.print_output(check_terminal_size=True)
         return
@@ -152133,7 +152323,7 @@ class Ksym:
                 if Ksym.Config.load(["num_symbols", "offset_kallsyms_num_syms"], rescan): # load temporarily
                     position = Ksym.offset_kallsyms_num_syms
                     num_syms = Ksym.kernel_img[position:position + 8] if position >= 0 else b""
-                    if len(num_syms) == 8 and Ksym.num_symbols not in (u32(num_syms[:4]), u64(num_syms)):
+                    if len(num_syms) == 8 and Ksym.num_symbols not in (u32(bytes(num_syms[:4])), u64(bytes(num_syms))):
                         Ksym.Config.remove()
 
             ret = Ksym.KsymParse.find_token_table(rescan, verbose)
