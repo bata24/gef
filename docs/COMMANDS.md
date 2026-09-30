@@ -9344,12 +9344,13 @@ Dump the ring buffer of the dmesg area.
 ### Syntax
 
 ```text
-usage: kdmesg [-h] [-hh] [-c] [-n] [-q]
+usage: kdmesg [-h] [-hh] [-c] [--meta] [-n] [-q]
 
 options:
   -h, --help          show this help message and exit
   -hh, --help-simple  show help without ASCII diagram.
   -c, --use-cache     use previous result.
+  --meta              display offset information.
   -n, --no-pager      do not use the pager.
   -q, --quiet         enable quiet mode.
 ```
@@ -9363,9 +9364,11 @@ kdmesg -q
 ### Notes
 
 ```text
-The information such as [T1] is the thread ID.
+The information such as [T1] or [C0] is the caller context ID.
 Originally, this information is displayed when CONFIG_PRINTK_CALLER=y.
 However it is always displayed because it is useful.
+
+prb points to the active ringbuffer; it may point to storage other than printk_rb_static.
 
 Simplified dmesg structure (5.10~):
 
@@ -9406,7 +9409,7 @@ Simplified dmesg structure (5.10~):
   2-A. (Seq-based printk_info): Preserving text data length, time, thread ID, etc. for each entry.
   2-B. (Id-based printk_info): Preserving seq for ring buffer reuse.
 
-Simplified dmesg structure (~5.10):
+Simplified dmesg structure (3.5~5.9):
 
 +-----------+
 | __log_buf |-------->+-log_buffer-----+   ^     ^
@@ -9432,6 +9435,23 @@ Simplified dmesg structure (~5.10):
                       | ...            |         |
                       | text[text_len] |         |
                       +----------------+         v
+
+Simplified dmesg structure (~3.4):
+
++-----------+
+| log_buf   |-------->+-log_buffer-----+         ^
++-----------+         | text bytes     |         |
+                      | ...            |         |
+                      | text bytes     |         |
++-----------+         |                |         |    +-------------+
+| log_end   |-------->| next write     |         |<---| log_buf_len |
++-----------+         | text bytes     |         |    +-------------+
+ % log_buf_len        | ...            |         |
+                      | text bytes     |         |
+                      +----------------+         v
+The buffer is one circular byte array; there are no per-record headers.
+log_end is a byte counter; its position in the buffer is log_end % log_buf_len.
+log_buf points to active storage, which may differ from the initial __log_buf.
 ```
 
 ## `kfilesystems`
