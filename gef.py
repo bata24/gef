@@ -63534,6 +63534,15 @@ class KernelAddressHeuristicFinderUtil:
         return "\n".join(lines)
 
     @staticmethod
+    def has_networking_symbols():
+        ret = Ksym.get_kallsyms()
+        if ret is None or not ret[0]:
+            return None
+        return any(Ksym.get_addrs(name, match="split") for name in (
+            "init_net", "__ksymtab_init_net", "net_initial_ns", "alloc_netdev_mqs", "net_ns_init", "sock_init",
+        ))
+
+    @staticmethod
     def collect_idr_candidates(prefix):
         """Return the address constants materialized by the functions whose name starts with `prefix`."""
         candidates = []
@@ -66368,7 +66377,10 @@ class KernelAddressHeuristicFinder:
                 elif is_arm64():
                     g = KernelAddressHeuristicFinderUtil.aarch64_adrp_add(res)
                 elif is_arm32():
-                    g = KernelAddressHeuristicFinderUtil.arm32_movw_movt(res)
+                    g = itertools.chain(
+                        KernelAddressHeuristicFinderUtil.arm32_movw_movt(res),
+                        KernelAddressHeuristicFinderUtil.arm32_ldr_pc_relative(res),
+                    )
                 elif is_riscv64() or is_riscv32():
                     g = KernelAddressHeuristicFinderUtil.riscv_auipc_addi(res)
                 for x in g:
@@ -151008,7 +151020,10 @@ class KernelNetDeviceCommand(GenericCommand, BufferingOutput):
         # init_net
         self.init_net = KernelAddressHeuristicFinder.get_init_net()
         if self.init_net is None:
-            self.meta.append((self.quiet_err, "Could not find init_net"))
+            if KernelAddressHeuristicFinderUtil.has_networking_symbols() is False:
+                self.meta.append((self.quiet_warn, "No core networking symbols found; this kernel may be built with CONFIG_NET=n"))
+            else:
+                self.meta.append((self.quiet_err, "Could not find init_net"))
             return None
         self.meta.append((self.quiet_info, "init_net: {:#x}".format(self.init_net)))
 
@@ -186054,7 +186069,10 @@ class KernelNftablesCommand(GenericCommand, BufferingOutput):
             return
         self.nets = self.iter_nets()
         if not self.nets:
-            err("Could not find init_net")
+            if KernelAddressHeuristicFinderUtil.has_networking_symbols() is False:
+                warn("No core networking symbols found; this kernel may be built with CONFIG_NET=n")
+            else:
+                err("Could not find init_net")
             return
 
         nets = self.nets
