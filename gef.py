@@ -93035,6 +93035,12 @@ class KernelSyscallsCommand(GenericCommand, BufferingOutput):
     ]
     _example_ = "\n".join(_example_).format(_cmdline_)
 
+    _note_ = [
+        "On x86, Linux v6.9 and later dispatch syscalls via switch statements.",
+        "This command shows a table for readability; remaining syscall tables are used for tracing, not dispatch.",
+    ]
+    _note_ = "\n".join(_note_)
+
     @staticmethod
     def is_plausible_address(addr):
         """Check an address without issuing a remote memory read."""

@@ -10008,9 +10008,11 @@ consecutive list_head fields; legacy tables have the lists available in that ker
 Table discovery first validates this list topology and child->table back-references, then
 uses rule/expression decoding only for the actual chains instead of for every table candidate.
 
-Offsets are recovered from runtime invariants rather than requiring type info. nftables names
-may be up to 255 bytes; identifier-like names are preferred only as a heuristic and are not a
-kernel validity rule. The datapath representation changed from linked nft_rule objects before
+Rule headers, blob fields, set extensions and backend layouts prefer kernel type information.
+Stripped targets use versioned layout fallbacks; --meta reports the selected source and offsets.
+Broken walks keep validated entries where possible and mark the output as partial.
+nftables names may be up to 255 bytes; identifier-like names are preferred only as a heuristic
+and are not a kernel validity rule. The datapath representation changed from linked nft_rule objects before
 v5.17 to a contiguous nft_rule_blob in mainline v5.17 and later; the control-plane rule list
 still exists on newer kernels, and both representations are understood where applicable.
 
@@ -10468,6 +10470,13 @@ options:
 ```gdb
 ksyscalls
 ksyscalls --filter write
+```
+
+### Notes
+
+```text
+On x86, Linux v6.9 and later dispatch syscalls via switch statements.
+This command shows a table for readability; remaining syscall tables are used for tracing, not dispatch.
 ```
 
 ## `ksysctl`
