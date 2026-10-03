@@ -147082,6 +147082,9 @@ class KernelPipeCommand(GenericCommand, BufferingOutput):
                 return None
             self.offset_bufs = offset_bufs
 
+        if self.offset_watch_queue is None and Ksym.get_addr("watch_queue_set_size"):
+            self.offset_watch_queue = self.offset_bufs + current_arch.ptrsize * 2
+
         self.meta.append((self.quiet_info, "offsetof(inode, i_pipe): {:#x}".format(self.offset_i_pipe)))
         if self.ring_buffer:
             self.meta.append((self.quiet_info, "offsetof(pipe_inode_info, head): {:#x}".format(self.offset_head)))
@@ -147140,17 +147143,33 @@ class KernelPipeCommand(GenericCommand, BufferingOutput):
         buffers = read_int32_from_memory(pipe_inode_info + offset_buffers)
         return curbuf + nrbufs, curbuf, nrbufs, buffers, buffers
 
-    def is_valid_ring_state(self, state):
-        _head, tail, used, max_usage, ring_size = state
+    def is_valid_ring_state(self, state, notification=False):
+        tail, used, max_usage, ring_size = state[1:]
         if ring_size == 0 or ring_size > 0x10000:
             return False
         # A notification pipe (v5.8~v5.16) has a ring of the requested number of notes (up to 512).
-        if ring_size & (ring_size - 1) and (not self.ring_buffer or ring_size > 512):
+        if ring_size & (ring_size - 1) and (
+            not notification or not self.ring_buffer or ring_size > 512 or Kernel.version() >= "5.17"
+        ):
             return False
         if not self.ring_buffer:
             return used <= ring_size and tail < ring_size
         # A notification pipe fills the ring regardless of max_usage.
-        return 0 < max_usage <= ring_size and used <= ring_size
+        return 0 < max_usage <= ring_size and used <= (ring_size if notification else max_usage)
+
+    def has_watch_queue(self, pipe_inode_info, offset_bufs=None):
+        offset = self.offset_watch_queue
+        if offset is None:
+            if offset_bufs is None or not Ksym.get_addr("watch_queue_set_size"):
+                return False
+            offset = offset_bufs + current_arch.ptrsize * 2
+        watch_queue = read_int_from_memory(pipe_inode_info + offset)
+        if not watch_queue or not is_valid_addr(watch_queue):
+            return False
+        offset_pipe = GefUtil.offsetof("watch_queue", "pipe")
+        if offset_pipe is None:
+            offset_pipe = current_arch.ptrsize * 3
+        return is_valid_addr_addr(watch_queue + offset_pipe) and read_int_from_memory(watch_queue + offset_pipe) == pipe_inode_info
 
     def is_consistent_layout(self, pipe_files):
         seen = set()
@@ -147163,7 +147182,7 @@ class KernelPipeCommand(GenericCommand, BufferingOutput):
                 if not is_valid_addr(pipe_inode_info):
                     return False
                 state = self.read_ring_state(pipe_inode_info)
-                if not self.is_valid_ring_state(state):
+                if not self.is_valid_ring_state(state, self.has_watch_queue(pipe_inode_info)):
                     return False
                 bufs = read_int_from_memory(pipe_inode_info + self.offset_bufs)
                 if not is_valid_addr(bufs) or not is_valid_addr(bufs + state[4] * self.sizeof_pipe_buffer - 1):
@@ -147369,7 +147388,9 @@ class KernelPipeCommand(GenericCommand, BufferingOutput):
 
         PAGE_SIZE = KernelAddressHeuristicFinder.consts().PAGE_SIZE
         fallback_offset = None
-        for i in range(0x80):
+        first_offset = align_to_ptrsize(self.get_header_offsets()[-1] + 4)
+        image_range = KernelAddressHeuristicFinderUtil.get_kernel_image_range()
+        for i in range(first_offset // current_arch.ptrsize, 0x80):
             offset_bufs = current_arch.ptrsize * i
             found = True
             followed_by_user = True
@@ -147385,9 +147406,12 @@ class KernelPipeCommand(GenericCommand, BufferingOutput):
                 if bufs == pipe_inode_info or is_double_link_list(pipe_inode_info + offset_bufs):
                     found = False
                     break
+                if image_range and image_range[0] <= bufs < image_range[1]:
+                    found = False
+                    break
 
                 state = self.read_ring_state(pipe_inode_info)
-                if not self.is_valid_ring_state(state):
+                if not self.is_valid_ring_state(state, self.has_watch_queue(pipe_inode_info, offset_bufs)):
                     found = False
                     break
                 ring_size = state[4]
@@ -147434,7 +147458,7 @@ class KernelPipeCommand(GenericCommand, BufferingOutput):
                 continue
             seen.add(inode)
             pipe_inode_info = read_int_from_memory(inode + self.offset_i_pipe)
-            for i in range(0x40):
+            for i in range(first_offset // current_arch.ptrsize, 0x40):
                 offset_bufs = current_arch.ptrsize * i
                 if not is_valid_addr_addr(pipe_inode_info + offset_bufs):
                     continue
@@ -147444,6 +147468,8 @@ class KernelPipeCommand(GenericCommand, BufferingOutput):
                     continue
                 # bufs
                 bufs = read_int_from_memory(pipe_inode_info + offset_bufs)
+                if image_range and image_range[0] <= bufs < image_range[1]:
+                    continue
                 if is_64bit():
                     if not is_valid_addr_addr(bufs + current_arch.ptrsize * 0): # page
                         continue
@@ -147479,7 +147505,7 @@ class KernelPipeCommand(GenericCommand, BufferingOutput):
         # plan 3
         inode = pipe_files[0][1]
         pipe_inode_info = read_int_from_memory(inode + self.offset_i_pipe)
-        for i in range(0x80):
+        for i in range(first_offset // current_arch.ptrsize, 0x80):
             if not is_valid_addr(pipe_inode_info + current_arch.ptrsize * i):
                 break
             v = read_int_from_memory(pipe_inode_info + current_arch.ptrsize * i)
@@ -147488,6 +147514,8 @@ class KernelPipeCommand(GenericCommand, BufferingOutput):
                 continue
             # bufs is not self
             if v == pipe_inode_info:
+                continue
+            if image_range and image_range[0] <= v < image_range[1]:
                 continue
             # skip invalid chunk
             ret = Kernel.get_slab_contains(v)
@@ -147528,8 +147556,15 @@ class KernelPipeCommand(GenericCommand, BufferingOutput):
             offsets = self.get_header_offsets(offset)
             found = True
             for pipe_inode_info in pipe_inode_infos:
+                if self.get_header_offsets()[0] is None:
+                    if not is_double_link_list(pipe_inode_info + offset - current_arch.ptrsize * 2):
+                        found = False
+                        break
+                    if is_double_link_list(pipe_inode_info + offset):
+                        found = False
+                        break
                 state = self.read_ring_state(pipe_inode_info, offsets)
-                if not self.is_valid_ring_state(state):
+                if not self.is_valid_ring_state(state, bool(Ksym.get_addr("watch_queue_set_size"))):
                     found = False
                     break
             if found:
@@ -147539,6 +147574,10 @@ class KernelPipeCommand(GenericCommand, BufferingOutput):
     def get_pipe_files(self):
         # struct file of pipe
         ret = gdb.execute("ktask --no-pager --user-process-only --print-fd", to_string=True)
+        ret = Color.remove_color(ret)
+        if "Exception raised" in ret or "Disabled --print-fd" in ret:
+            self.quiet_err("Could not enumerate pipe files; see `ktask --print-fd`")
+            return None
         pipe_files = []
         for line in ret.splitlines():
             m = re.search(r"\d+\s+\S+\s+(0x\S+) 0x\S+ (0x\S+) pipe:\[\d+\]", line)
@@ -147551,7 +147590,7 @@ class KernelPipeCommand(GenericCommand, BufferingOutput):
             self.quiet_info("Num of pipe: {:d}".format(len({x[1] for x in pipe_files})))
             return pipe_files
 
-        for line in Color.remove_color(ret).splitlines():
+        for line in ret.splitlines():
             if line.startswith("[!]"):
                 self.quiet_err(line[3:].lstrip())
                 return None
@@ -147612,7 +147651,7 @@ class KernelPipeCommand(GenericCommand, BufferingOutput):
                 self.out.append("    nrbuf: {:d}, curbuf: {:d}, buffers: {:d}".format(
                     used, tail, ring_size,
                 ))
-            if not self.is_valid_ring_state(state):
+            if not self.is_valid_ring_state(state, self.has_watch_queue(pipe_inode_info)):
                 self.err_add_out("Unexpected pipe state")
                 continue
 
