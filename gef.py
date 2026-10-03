@@ -653,7 +653,7 @@ class MemoryCache:
         return out[offset:offset + length]
 
     @staticmethod
-    @Cache.cache_until_next
+    @Cache.cache_until_next(per_cpu=True)
     def get_arm32_lpae_root():
         """Return the physical address of ARM32 Linux's LPAE master page table.
 
@@ -688,7 +688,17 @@ class MemoryCache:
                 addresses = ret[1].get("swapper_pg_dir", [])
                 swapper = addresses[0] if addresses else None
         if swapper is None:
-            return None
+            try:
+                ttbr1 = int(gdb.parse_and_eval("$TTBR1"))
+            except gdb.error:
+                ttbr1 = get_register("$TTBR1", use_mbed_exec=True)
+            if ttbr1 is None:
+                return None
+            root = ttbr1 & MemoryCache.ARM32_LPAE_PHYS_MASK
+            # With a 3G/1G split, TTBR1 points to the last PMD after the PGD and three PMDs.
+            if (ttbcr >> 16) & 7 == 2:
+                root -= 0x4000
+            return root if root > 0 else None
 
         try:
             result = gdb.execute("monitor gva2gpa {:#x}".format(swapper), to_string=True)
@@ -12830,6 +12840,12 @@ def is_valid_addr(addr):
         MemoryCache.read_raw(addr, 1)
         return True
     except gdb.MemoryError:
+        if MemoryCache.get_arm32_lpae_root() is not None:
+            try:
+                MemoryCache.read(addr, 1, reader=MemoryCache.read_arm32_lpae, namespace="arm32-lpae-swapper")
+                return True
+            except gdb.MemoryError:
+                pass
         return False
 
 
