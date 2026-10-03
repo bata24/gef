@@ -17670,15 +17670,18 @@ class UpCommand(GenericCommand):
 
     def do_up(self, current_frame):
         # check if target frame is available
-        n = self.args.n
+        n = abs(self.args.n)
         while current_frame and n:
             if not current_frame.is_valid():
                 break
-            current_frame = current_frame.older()
+            next_frame = current_frame.older() if self.args.n > 0 else current_frame.newer()
+            if not next_frame or not next_frame.is_valid():
+                break
+            current_frame = next_frame
             n -= 1
 
         # go to target frame
-        if n == 0 and current_frame:
+        if current_frame and current_frame.is_valid():
             current_frame.select()
 
         # back up
@@ -17686,7 +17689,7 @@ class UpCommand(GenericCommand):
         nb_lines = Config.get_gef_setting("context_trace.nb_lines")
 
         # change temporarily
-        Config.set_gef_setting("context_trace.nb_lines_before", 0x100)
+        Config.set_gef_setting("context_trace.nb_lines_before", 0xff)
         Config.set_gef_setting("context_trace.nb_lines", 0x100)
 
         # print
@@ -17726,15 +17729,18 @@ class DownCommand(GenericCommand):
 
     def do_down(self, current_frame):
         # check if target frame is available
-        n = self.args.n
+        n = abs(self.args.n)
         while current_frame and n:
             if not current_frame.is_valid():
                 break
-            current_frame = current_frame.newer()
+            next_frame = current_frame.newer() if self.args.n > 0 else current_frame.older()
+            if not next_frame or not next_frame.is_valid():
+                break
+            current_frame = next_frame
             n -= 1
 
         # go to target frame
-        if n == 0 and current_frame:
+        if current_frame and current_frame.is_valid():
             current_frame.select()
 
         # back up
@@ -17742,7 +17748,7 @@ class DownCommand(GenericCommand):
         nb_lines = Config.get_gef_setting("context_trace.nb_lines")
 
         # change temporarily
-        Config.set_gef_setting("context_trace.nb_lines_before", 0x100)
+        Config.set_gef_setting("context_trace.nb_lines_before", 0xff)
         Config.set_gef_setting("context_trace.nb_lines", 0x100)
 
         # print
