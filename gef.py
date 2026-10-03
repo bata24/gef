@@ -16871,30 +16871,26 @@ class HighlightCommand(GenericCommand):
     def highlight_text(text):
         """Highlight text using highlight_table { match -> color } settings.
 
-        If RegEx is enabled it will create a match group around all items in the
-        highlight_table and wrap the specified color in the highlight_table
-        around those matches.
-
-        If RegEx is disabled, split by ANSI codes and 'colorify' each match found
-        within the specified string."""
+        Split by ANSI codes and color each literal or regex match in the text.
+        Invalid regex patterns are ignored."""
         if not HighlightCommand.highlight_table:
             return text
 
-        if Config.get_gef_setting("highlight.regex"):
-            for match, color in HighlightCommand.highlight_table.items():
-                text = re.sub("(" + match + ")", Color.colorify("\\1", color), text)
-            return text
-
-        ansiSplit = re.split(r"(\033\[[\d;]*m)", text)
+        regex = Config.get_gef_setting("highlight.regex")
         for match, color in HighlightCommand.highlight_table.items():
-            for index, val in enumerate(ansiSplit):
-                found = val.find(match)
-                if found > -1:
-                    ansiSplit[index] = val.replace(match, Color.colorify(match, color))
-                    break
-            text = "".join(ansiSplit)
+            if regex:
+                try:
+                    pattern = re.compile(match)
+                except re.error:
+                    continue
             ansiSplit = re.split(r"(\033\[[\d;]*m)", text)
-        return "".join(ansiSplit)
+            for index in range(0, len(ansiSplit), 2):
+                if regex:
+                    ansiSplit[index] = pattern.sub(lambda m, color=color: Color.colorify(m.group(0), color), ansiSplit[index])
+                else:
+                    ansiSplit[index] = ansiSplit[index].replace(match, Color.colorify(match, color))
+            text = "".join(ansiSplit)
+        return text
 
     def __init__(self):
         super().__init__(prefix=True)
@@ -16980,6 +16976,12 @@ class HighlightAddCommand(GenericCommand):
         for a in args.color:
             if a not in Color.colors.keys():
                 err("Invalid color")
+                return
+        if Config.get_gef_setting("highlight.regex"):
+            try:
+                re.compile(args.match)
+            except re.error as e:
+                err("Invalid regex: {}".format(e))
                 return
         HighlightCommand.highlight_table[args.match] = " ".join(args.color)
         return
@@ -190385,11 +190387,11 @@ class GefUtil:
             for line in res.splitlines():
                 tty, height, width = line.split(":")
                 if tty == redirect:
-                    return int(height), int(width)
+                    return int(height) or 600, int(width) or 100
 
         try:
             tty_columns, tty_rows = os.get_terminal_size()
-            return tty_rows, tty_columns
+            return tty_rows or 600, tty_columns or 100
         except OSError:
             return 600, 100
 
