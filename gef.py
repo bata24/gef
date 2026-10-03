@@ -18026,6 +18026,7 @@ class PrintFormatCommand(GenericCommand):
     _note_ = [
         '"hexn" means hex with new-line.',
         '"hexs" means hex with separator.',
+        "JavaScript uses BigInt for 64-bit values.",
     ]
     _note_ = "\n".join(_note_)
 
@@ -18068,10 +18069,11 @@ class PrintFormatCommand(GenericCommand):
             for x in data:
                 sdata += "{:02x}{:s}".format(x, separator)
         else:
+            suffix = "n" if self.args.format == "js" and self.args.bitlen == 64 else ""
             for i, x in enumerate(data):
                 if (i % 8) == 0:
                     sdata += "    "
-                sdata += "{:#0{}x}, ".format(x, self.args.bitlen // 4 + 2)
+                sdata += "{:#0{}x}{:s}, ".format(x, self.args.bitlen // 4 + 2, suffix)
                 if (i % 8) == 7:
                     sdata += "\n"
         sdata = sdata.rstrip()
