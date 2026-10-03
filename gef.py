@@ -17872,10 +17872,14 @@ class DisplayTypeCommand(GenericCommand, BufferingOutput):
                 else:
                     msg = "    {:s}    {} {:s} : {:d};".format(offsz_str, type_str, name_str, field.bitsize)
             else: # gdb.TYPE_CODE_ENUM
-                offsz_str = "/* {:#06x} | {:#06x} */".format(0, 4)
-                type_str = "int"
+                offsz_str = "/* {:#06x} | {:#06x} */".format(0, tp.sizeof)
+                try:
+                    type_str = Instruction.smartify_text(str(tp.target()))
+                except (gdb.error, RuntimeError):
+                    type_str = Instruction.smartify_text(str(tp))
                 name_str = Color.cyanify(Instruction.smartify_text(name))
-                msg = "    {:s}    {} {:s} = {:#x};".format(offsz_str, type_str, name_str, field.enumval)
+                value = int(gdb.Value(field.enumval).cast(tp))
+                msg = "    {:s}    {} {:s} = {:#x};".format(offsz_str, type_str, name_str, value)
             self.out.append(msg)
         self.out.append("}} // total: {:#x} bytes".format(tp.sizeof))
         return True
