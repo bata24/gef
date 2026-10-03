@@ -66478,6 +66478,35 @@ class KernelAddressHeuristicFinder:
         return None
 
     @staticmethod
+    def get_init_ipc_ns():
+        # plan 1 (directly)
+        if KernelAddressHeuristicFinder.USE_DIRECTLY:
+            x = Ksym.get_addr("init_ipc_ns")
+            if x:
+                return x
+
+        kversion = Kernel.version()
+
+        # plan 2 (available v3.8 or later)
+        # init_task.nsproxy is init_nsproxy, whose uts, ipc and pid namespaces are all in the kernel image,
+        # and the initial ipc namespace has the fixed inode number.
+        init_task = KernelAddressHeuristicFinder.get_init_task() if kversion and "3.8" <= kversion else None
+        if init_task:
+            is_in_kernel_image = KernelAddressHeuristicFinderUtil.is_in_kernel_image
+            members = dict(KernelTaskCommand.get_nsproxy_members())
+            data = KernelNamespace.read_object(init_task, 0x4000)
+            for x in KernelAddressHeuristicFinderUtil.filter_in_kernel_image(slice_unpack(data, current_arch.ptrsize)):
+                namespaces = [
+                    read_int_from_memory(x + members[name], safe=True) for name in ["uts_ns", "ipc_ns", "pid_ns_for_children"]
+                ]
+                if not all(ns and is_in_kernel_image(ns) for ns in namespaces):
+                    continue
+                ipc_ns = namespaces[1]
+                if KernelNamespace.INIT_INUMS["ipc"] in slice_unpack(KernelNamespace.read_object(ipc_ns, 0x1000), 4):
+                    return ipc_ns
+        return None
+
+    @staticmethod
     @Decorator.switch_to_intel_syntax
     def get_modules():
         # plan 1 (directly)
@@ -68393,9 +68422,13 @@ class KernelAddressHeuristicFinder:
 
         kversion = Kernel.version()
 
-        # plan 2 (available v3.4 or later)
-        if kversion and "3.4" <= kversion:
-            addr = Ksym.get_addr("register_sysctl") or Ksym.get_addr("register_sysctl_sz")
+        # plan 2 (available v2.6.25 or later)
+        # register_sysctl() is added in v3.4, and register_sysctl_paths() passes the same root until v3.3.
+        if kversion:
+            if "3.4" <= kversion:
+                addr = Ksym.get_addr("register_sysctl") or Ksym.get_addr("register_sysctl_sz")
+            else:
+                addr = Ksym.get_addr("register_sysctl_paths")
             if addr:
                 res = gdb.execute("x/20i {:#x}".format(addr), to_string=True)
                 if is_x86_64():
@@ -78830,10 +78863,36 @@ class KernelSysctl:
         const char *procname;
         void *data;
         int maxlen;
-        umode_t mode;
+        umode_t mode;                         // mode_t (~v3.2)
         struct ctl_table *child;              // ~v6.4
+        struct ctl_table *parent;             // ~v3.3
         enum sysctl_table_type type;          // v6.5~v6.10
         proc_handler *proc_handler;
+        ...
+    };
+
+    Until v3.3, each root has a list of headers, and each header has a ctl_table tree linked by `child`.
+
+    struct ctl_table_root {
+        struct list_head root_list;
+        struct ctl_table_set {
+            struct list_head list;
+            struct ctl_table_set *parent;
+            int (*is_seen)(struct ctl_table_set *);
+        } default_set;
+        struct ctl_table_set *(*lookup)(struct ctl_table_root *root, struct nsproxy *namespaces);
+        ...
+    };
+
+    struct ctl_table_header {
+        struct ctl_table *ctl_table;
+        struct list_head ctl_entry;
+        int used;
+        int count;
+        struct completion *unregistering;
+        struct ctl_table *ctl_table_arg;
+        struct ctl_table_root *root;
+        struct ctl_table_set *set;
         ...
     };
     """
@@ -78907,6 +78966,12 @@ class KernelSysctl:
         self.offset_root = None
         self.offset_set = None
         self.sizeof_ctl_table = None
+        # ~v3.3
+        self.is_legacy = False
+        self.offset_lookup = None
+        self.offset_is_seen = 0
+        self.offset_ctl_entry = None
+        self.offset_child = None
         self.init_net = None
         self.ctsets = {}
         self.ctset_namespaces = {}
@@ -78927,6 +78992,8 @@ class KernelSysctl:
             return None
         self.meta.append(("info", "sysctl_table_root: {:#x}".format(self.sysctl_table_root)))
 
+        kversion = Kernel.version()
+        self.is_legacy = kversion is not None and kversion < "3.4"
         by_debug_info = self.resolve_layout_by_debug_info()
         if by_debug_info and self.is_valid_layout():
             self.meta.append(("info", "layout: debug info"))
@@ -78934,7 +79001,7 @@ class KernelSysctl:
             if by_debug_info:
                 # e.g., the debug information of another build
                 self.meta.append(("warn", "The debug information does not match the sysctl tree"))
-            self.resolve_layout(Kernel.version())
+            self.resolve_layout(kversion)
             if not self.is_valid_layout():
                 self.meta.append(("err", "Could not resolve the layout (CONFIG_RANDSTRUCT=y needs the debug information)"))
                 return None
@@ -78949,9 +79016,10 @@ class KernelSysctl:
         self.resolve_namespace_sets()
         self.resolve_handler_types()
 
-        self.root_rb_node = read_int_from_memory(self.root_ctl_dir + self.offset_rb_node)
-        self.meta.append(("info", "root_ctl_dir: {:#x}".format(self.root_ctl_dir)))
-        self.meta.append(("info", "root_rb_node: {:#x}".format(self.root_rb_node)))
+        if not self.is_legacy:
+            self.root_rb_node = read_int_from_memory(self.root_ctl_dir + self.offset_rb_node)
+            self.meta.append(("info", "root_ctl_dir: {:#x}".format(self.root_ctl_dir)))
+            self.meta.append(("info", "root_rb_node: {:#x}".format(self.root_rb_node)))
         self.initialized = True
         return True
 
@@ -78969,6 +79037,9 @@ class KernelSysctl:
         self.seen_ctl_dir = set()
         self.seen_ctl_table = set()
         self.seen_ctset = set()
+        if self.is_legacy:
+            yield from self.walk_legacy_roots(skip_symlink, progress)
+            return
         self.parent_paths = {self.root_ctl_dir: ""}
         yield from self.walk_node(self.root_rb_node, skip_symlink, progress)
         return
@@ -78987,6 +79058,8 @@ class KernelSysctl:
 
     def resolve_layout_by_debug_info(self):
         """Resolve the structure offsets from the loaded debug information. Return False if any is missing."""
+        if self.is_legacy:
+            return self.resolve_legacy_layout_by_debug_info()
         offsetof = GefUtil.offsetof
         self.offset_default_set = offsetof("ctl_table_root", "default_set")
         self.offset_set_dir = offsetof("ctl_table_set", "dir")
@@ -79013,8 +79086,35 @@ class KernelSysctl:
         self.offset_ctl_table_size = offsetof("ctl_dir", "header.ctl_table_size")
         return True
 
+    def resolve_legacy_layout_by_debug_info(self):
+        """Resolve the structure offsets of v3.0~v3.3 from the loaded debug information. Return False if any is missing."""
+        offsetof = GefUtil.offsetof
+        self.offset_default_set = offsetof("ctl_table_root", "default_set")
+        self.offset_lookup = offsetof("ctl_table_root", "lookup")
+        self.offset_is_seen = offsetof("ctl_table_set", "is_seen")
+        self.offset_ctl_table = offsetof("ctl_table_header", "ctl_table")
+        self.offset_ctl_entry = offsetof("ctl_table_header", "ctl_entry")
+        self.offset_root = offsetof("ctl_table_header", "root")
+        self.offset_set = offsetof("ctl_table_header", "set")
+        self.offset_procname = offsetof("ctl_table", "procname")
+        self.offset_data = offsetof("ctl_table", "data")
+        self.offset_maxlen = offsetof("ctl_table", "maxlen")
+        self.offset_mode = offsetof("ctl_table", "mode")
+        self.offset_child = offsetof("ctl_table", "child")
+        self.offset_handler = offsetof("ctl_table", "proc_handler")
+        self.sizeof_ctl_table = GefUtil.sizeof("ctl_table")
+        return None not in [
+            self.offset_default_set, self.offset_lookup, self.offset_is_seen, self.offset_ctl_table,
+            self.offset_ctl_entry, self.offset_root, self.offset_set, self.offset_procname,
+            self.offset_data, self.offset_maxlen, self.offset_mode, self.offset_child,
+            self.offset_handler, self.sizeof_ctl_table,
+        ]
+
     def resolve_layout(self, kversion):
         """Resolve version- and architecture-dependent structure offsets."""
+        if self.is_legacy:
+            self.resolve_legacy_layout(kversion)
+            return
         self.offset_default_set = 0
         self.offset_set_dir = current_arch.ptrsize
         self.offset_ctl_table = 0
@@ -79081,11 +79181,37 @@ class KernelSysctl:
         self.offset_root = self.offset_set - current_arch.ptrsize
         return
 
+    def resolve_legacy_layout(self, kversion):
+        """Resolve version- and architecture-dependent structure offsets of v3.0~v3.3."""
+        ptrsize = current_arch.ptrsize
+        self.offset_default_set = ptrsize * 2
+        self.offset_lookup = ptrsize * 6
+        self.offset_is_seen = ptrsize * 3
+        self.offset_ctl_table = 0
+        self.offset_ctl_entry = ptrsize
+        # after `int used` and `int count`, unregistering and ctl_table_arg precede root
+        self.offset_root = align_to_ptrsize(ptrsize * 3 + 8) + ptrsize * 2
+        self.offset_set = self.offset_root + ptrsize
+        self.offset_procname = 0
+        self.offset_data = ptrsize
+        self.offset_maxlen = ptrsize * 2
+        self.offset_mode = ptrsize * 2 + 4
+        self.offset_child = ptrsize * 2 + 8
+        self.offset_handler = self.offset_child + ptrsize * 2
+        # poll (v3.2~), extra1 and extra2 follow proc_handler
+        if kversion < "3.2":
+            self.sizeof_ctl_table = self.offset_handler + ptrsize * 3
+        else:
+            self.sizeof_ctl_table = self.offset_handler + ptrsize * 4
+        return
+
     def is_valid_layout(self):
         """Check the layout with the root directory and its first child, which is always a directory.
 
         sysctl_table_root.default_set.dir.header.set points to sysctl_table_root.default_set,
         and a top-level directory has the root directory as its parent and a ctl_table entry of S_IFDIR."""
+        if self.is_legacy:
+            return self.is_valid_legacy_layout()
         self.root_ctl_dir = self.sysctl_table_root + self.offset_default_set + self.offset_set_dir
         default_set = self.sysctl_table_root + self.offset_default_set
         if read_int_from_memory(self.root_ctl_dir + self.offset_set, safe=True) != default_set:
@@ -79109,36 +79235,70 @@ class KernelSysctl:
         procname = read_int_from_memory(ctl_table + self.offset_procname, safe=True)
         return bool(procname and read_cstring_from_memory(procname, max_length=0x40, safe=True))
 
+    def is_valid_legacy_layout(self):
+        """Check the layout of v3.0~v3.3 with the first header and its first two entries.
+
+        sysctl_table_root.default_set.list starts with root_table_header, which points back to the root and the set,
+        and its ctl_table is root_table, whose entries ("kernel", "vm", ...) are directories having `child`."""
+        default_set = self.sysctl_table_root + self.offset_default_set
+        ctl_entry = read_int_from_memory(default_set, safe=True)
+        if not ctl_entry or not is_valid_addr(ctl_entry):
+            return False
+        header = ctl_entry - self.offset_ctl_entry
+        if read_int_from_memory(header + self.offset_root, safe=True) != self.sysctl_table_root:
+            return False
+        if read_int_from_memory(header + self.offset_set, safe=True) != default_set:
+            return False
+        ctl_table = read_int_from_memory(header + self.offset_ctl_table, safe=True)
+        if not ctl_table or not is_valid_addr(ctl_table):
+            return False
+        for entry in [ctl_table, ctl_table + self.sizeof_ctl_table]:
+            child = read_int_from_memory(entry + self.offset_child, safe=True)
+            if not child or not is_valid_addr(child):
+                return False
+            procname = read_int_from_memory(entry + self.offset_procname, safe=True)
+            if not procname or not read_cstring_from_memory(procname, max_length=0x40, safe=True):
+                return False
+        return True
+
     @staticmethod
-    def find_set(start, handlers):
+    def find_set(start, handlers, offset_is_seen=0):
         """Find a ctl_table_set by its is_seen callback."""
         current = start
         remaining = 0x1000
         while remaining: # avoid unbounded scan
             if read_int_from_memory(current) in handlers:
-                return current
+                return current - offset_is_seen
             current += current_arch.ptrsize
             remaining -= 1
         return None
 
     def resolve_namespace_sets(self):
-        """Resolve the sets of the initial namespaces that the symlinks (net.*, user.*, and ipc since v5.17) lead to."""
+        """Resolve the sets of the initial namespaces that the symlinks (net.*, user.*, and ipc since v5.19) lead to."""
         self.ctset_namespaces = {self.sysctl_table_root + self.offset_default_set: "global"}
         self.ctsets = {}
+        if self.is_legacy:
+            # a root without `lookup` (e.g., net_sysctl_ro_root) shares its default set among the namespaces
+            for root in KernelListHead(self.sysctl_table_root).iter_entries():
+                if read_int_from_memory(root + self.offset_lookup, safe=True) == 0:
+                    self.ctset_namespaces[root + self.offset_default_set] = "global"
 
         self.init_net = init_net = KernelAddressHeuristicFinder.get_init_net()
         is_seen = Ksym.get_addr("is_seen")
         if init_net and is_seen:
-            self.add_set(self.find_set(init_net, {is_seen}), "net:{:#018x}".format(init_net))
+            ctset = self.find_set(init_net, {is_seen}, self.offset_is_seen)
+            self.add_set(ctset, "net:{:#018x}".format(init_net))
 
         # the user, ipc and mqueue namespaces have their own `set_is_seen` and `set_lookup`
         set_is_seen = Ksym.get_addrs("set_is_seen")
+        if not set_is_seen:
+            return
         init_user_ns = KernelAddressHeuristicFinder.get_init_user_ns()
-        if init_user_ns and set_is_seen:
+        if init_user_ns:
             self.add_set(self.find_set(init_user_ns, set_is_seen), "user:{:#018x}".format(init_user_ns))
 
-        init_ipc_ns = Ksym.get_addr("init_ipc_ns")
-        if init_ipc_ns and set_is_seen:
+        init_ipc_ns = KernelAddressHeuristicFinder.get_init_ipc_ns()
+        if init_ipc_ns:
             # mq_set and ipc_set
             ctset = self.find_set(init_ipc_ns, set_is_seen)
             if self.add_set(ctset, "ipc:{:#018x}".format(init_ipc_ns)):
@@ -79147,10 +79307,17 @@ class KernelSysctl:
         return
 
     def add_set(self, ctset, namespace):
-        """Register a ctl_table_set by the ctl_table_root that the symlinks to it have as data."""
+        """Register a ctl_table_set by the ctl_table_root that the symlinks to it have as data.
+        Until v3.3, the set has no directory, and the root is taken from the first header in its list."""
         if ctset is None or ctset in self.ctset_namespaces:
             return False
-        ctl_dir = ctset + self.offset_set_dir
+        if self.is_legacy:
+            ctl_entry = read_int_from_memory(ctset, safe=True)
+            if not ctl_entry or ctl_entry == ctset:
+                return False
+            ctl_dir = ctl_entry - self.offset_ctl_entry
+        else:
+            ctl_dir = ctset + self.offset_set_dir
         if read_int_from_memory(ctl_dir + self.offset_set, safe=True) != ctset:
             return False
         root = read_int_from_memory(ctl_dir + self.offset_root, safe=True)
@@ -79277,6 +79444,47 @@ class KernelSysctl:
         yield from self.walk_node(right, skip_symlink, progress)
         left = read_int_from_memory(rb_node + current_arch.ptrsize * 2) & ~1
         yield from self.walk_node(left, skip_symlink, progress)
+        return
+
+    def walk_legacy_roots(self, skip_symlink, progress):
+        """Walk the headers of each root (v3.0~v3.3).
+        A root with `lookup` has a set for each namespace (net.*), and the set of the initial one is walked."""
+        for root in KernelListHead(self.sysctl_table_root).iter_entries(include_head=True):
+            if read_int_from_memory(root + self.offset_lookup) == 0:
+                ctset = root + self.offset_default_set
+            elif skip_symlink:
+                continue
+            else:
+                ctset = self.ctsets.get(root)
+            if ctset is None or ctset in self.seen_ctset:
+                continue
+            self.seen_ctset.add(ctset)
+            for header in KernelListHead(ctset, self.offset_ctl_entry).iter_entries():
+                if progress is not None:
+                    progress.update(1)
+                ctl_table = read_int_from_memory(header + self.offset_ctl_table)
+                yield from self.walk_legacy_table(header, ctl_table, "")
+        return
+
+    def walk_legacy_table(self, header, ctl_table, parent_path):
+        """Yield data entries in one ctl_table array and its child arrays (v3.0~v3.3)."""
+        while ctl_table not in self.seen_ctl_table:
+            self.seen_ctl_table.add(ctl_table)
+            procname = read_int_from_memory(ctl_table + self.offset_procname)
+            procname_str = read_cstring_from_memory(procname) if procname else None
+            if not procname_str:
+                break
+            param_path = (parent_path + "." + procname_str).lstrip(".")
+
+            mode = read_int32_from_memory(ctl_table + self.offset_mode)
+            child = read_int_from_memory(ctl_table + self.offset_child)
+            if child:
+                yield from self.walk_legacy_table(header, child, param_path)
+            elif mode > 0o777:
+                break
+            else:
+                yield self.Entry(header, ctl_table, param_path, mode)
+            ctl_table += self.sizeof_ctl_table
         return
 
 
