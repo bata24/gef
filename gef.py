@@ -6487,6 +6487,8 @@ class Symbol:
     @Cache.cache_this_session(until_new_objfile=True)
     def get_symbol_string(addr, nosymbol_string=""):
         """e.g., 0xffffffff9f6bd2a1 -> ' <commit_creds+0x1>'. Be careful to include leading spaces."""
+        if addr is None:
+            return nosymbol_string
         try:
             if isinstance(addr, str):
                 addr = Color.remove_color(addr)
@@ -71864,6 +71866,11 @@ class Kernel:
         return KernelMM.get_instance()
 
     @staticmethod
+    def bpf():
+        """Return the BPF resolver."""
+        return KernelBpf.get_instance()
+
+    @staticmethod
     def seccomp():
         """Return the seccomp resolver."""
         return KernelSeccomp.get_instance()
@@ -74731,25 +74738,7 @@ class KernelPath:
             offset_mnt = self.find_offset_file_mnt_by_links(file)
             if offset_mnt is not None:
                 return offset_mnt
-            if is_64bit():
-                candidates = [64] + [current_arch.ptrsize * i for i in range(5, 0x20)]
-            else:
-                candidates = [current_arch.ptrsize * (i + 9) for i in range(16)]
-            for cand_offset_mnt in candidates:
-                # f_path.mnt
-                if not is_valid_addr_addr(file + cand_offset_mnt):
-                    continue
-                # f_path.mnt.mnt_root
-                x = read_int_from_memory(read_int_from_memory(file + cand_offset_mnt))
-                if not is_valid_addr(x):
-                    continue
-                # f_path.dentry
-                if not is_valid_addr_addr(file + cand_offset_mnt + current_arch.ptrsize):
-                    continue
-                offset_mnt = cand_offset_mnt
-                break
-            else:
-                raise RuntimeError("Could not find offsetof(file, f_path.mnt)")
+            return None
         return offset_mnt
 
     def find_offset_file_mnt_by_links(self, file):
@@ -74757,12 +74746,12 @@ class KernelPath:
         The dentry refers to the inode of the file (`f_inode`, next to f_path until v6.11 and before it since v6.12),
         and the inode refers to the super_block of the vfsmount."""
         ptrsize = current_arch.ptrsize
+        offset_mnt_root = getattr(self, "offset_vfsmount_mnt_root", None) or 0
         offset_mnt_sb = getattr(self, "offset_vfsmount_mnt_sb", None) or ptrsize
         try:
             words = slice_unpack(read_memory(file, ptrsize * 0x42), ptrsize)
         except (gdb.MemoryError, OverflowError):
             return None
-        inodes = [x for x in words if is_valid_addr(x) and x % ptrsize == 0]
         for i in range(0x40):
             mnt, dentry = words[i], words[i + 1]
             if mnt == dentry:
@@ -74770,15 +74759,20 @@ class KernelPath:
             if not all(is_valid_addr(x) and x % ptrsize == 0 for x in (mnt, dentry)):
                 continue
             try:
+                offset_iname = self.get_offset_d_iname(dentry)
+                if offset_iname is None:
+                    continue
+                inode = read_int_from_memory(dentry + self.get_offset_d_inode(offset_iname))
+                if not is_valid_addr(inode) or inode % ptrsize or inode not in words:
+                    continue
                 sb = read_int_from_memory(mnt + offset_mnt_sb)
                 if not is_valid_addr(sb):
                     continue
-                dentry_words = set(slice_unpack(read_memory(dentry, 0x100), ptrsize))
-                for inode in inodes:
-                    if inode in (mnt, dentry) or inode not in dentry_words:
-                        continue
-                    if sb in slice_unpack(read_memory(inode, 0x80), ptrsize):
-                        return ptrsize * i
+                root = read_int_from_memory(mnt + offset_mnt_root)
+                if not is_valid_addr(root) or self.get_offset_d_iname(root) is None:
+                    continue
+                if sb in slice_unpack(read_memory(inode, 0x80), ptrsize):
+                    return ptrsize * i
             except (gdb.MemoryError, OverflowError):
                 continue
         return None
@@ -77288,8 +77282,470 @@ class KernelMM:
         return None
 
 
+class KernelBpf:
+    """Resolve BPF layouts and read the registered programs and maps."""
+
+    # include/uapi/linux/bpf.h
+    defined_prog_types = [
+        "UNSPEC",
+        "SOCKET_FILTER",
+        "KPROBE",
+        "SCHED_CLS",
+        "SCHED_ACT",
+        "TRACEPOINT",
+        "XDP",
+        "PERF_EVENT",
+        "CGROUP_SKB",
+        "CGROUP_SOCK",
+        "LWT_IN",
+        "LWT_OUT",
+        "LWT_XMIT",
+        "SOCK_OPS",
+        "SK_SKB",
+        "CGROUP_DEVICE",
+        "SK_MSG",
+        "RAW_TRACEPOINT",
+        "CGROUP_SOCK_ADDR",
+        "LWT_SEG6LOCAL",
+        "LIRC_MODE2",
+        "SK_REUSEPORT",
+        "FLOW_DISSECTOR",
+        "CGROUP_SYSCTL",
+        "RAW_TRACEPOINT_WRITABLE",
+        "CGROUP_SOCKOPT",
+        "TRACING",
+        "STRUCT_OPS",
+        "EXT",
+        "LSM",
+        "SK_LOOKUP",
+        "SYSCALL",
+        "NETFILTER",
+    ]
+
+    defined_attach_types = [
+        "CGROUP_INET_INGRESS",
+        "CGROUP_INET_EGRESS",
+        "CGROUP_INET_SOCK_CREATE",
+        "CGROUP_SOCK_OPS",
+        "SK_SKB_STREAM_PARSER",
+        "SK_SKB_STREAM_VERDICT",
+        "CGROUP_DEVICE",
+        "SK_MSG_VERDICT",
+        "CGROUP_INET4_BIND",
+        "CGROUP_INET6_BIND",
+        "CGROUP_INET4_CONNECT",
+        "CGROUP_INET6_CONNECT",
+        "CGROUP_INET4_POST_BIND",
+        "CGROUP_INET6_POST_BIND",
+        "CGROUP_UDP4_SENDMSG",
+        "CGROUP_UDP6_SENDMSG",
+        "LIRC_MODE2",
+        "FLOW_DISSECTOR",
+        "CGROUP_SYSCTL",
+        "CGROUP_UDP4_RECVMSG",
+        "CGROUP_UDP6_RECVMSG",
+        "CGROUP_GETSOCKOPT",
+        "CGROUP_SETSOCKOPT",
+        "TRACE_RAW_TP",
+        "TRACE_FENTRY",
+        "TRACE_FEXIT",
+        "MODIFY_RETURN",
+        "LSM_MAC",
+        "TRACE_ITER",
+        "CGROUP_INET4_GETPEERNAME",
+        "CGROUP_INET6_GETPEERNAME",
+        "CGROUP_INET4_GETSOCKNAME",
+        "CGROUP_INET6_GETSOCKNAME",
+        "XDP_DEVMAP",
+        "CGROUP_INET_SOCK_RELEASE",
+        "XDP_CPUMAP",
+        "SK_LOOKUP",
+        "XDP",
+        "SK_SKB_VERDICT",
+        "SK_REUSEPORT_SELECT",
+        "SK_REUSEPORT_SELECT_OR_MIGRATE",
+        "PERF_EVENT",
+        "TRACE_KPROBE_MULTI",
+        "LSM_CGROUP",
+        "STRUCT_OPS",
+        "NETFILTER",
+        "TCX_INGRESS",
+        "TCX_EGRESS",
+        "TRACE_UPROBE_MULTI",
+        "CGROUP_UNIX_CONNECT",
+        "CGROUP_UNIX_SENDMSG",
+        "CGROUP_UNIX_RECVMSG",
+        "CGROUP_UNIX_GETPEERNAME",
+        "CGROUP_UNIX_GETSOCKNAME",
+        "NETKIT_PRIMARY",
+        "NETKIT_PEER",
+        "TRACE_KPROBE_SESSION",
+        "TRACE_UPROBE_SESSION",
+        "TRACE_FSESSION",
+        "TRACE_FENTRY_MULTI",
+        "TRACE_FEXIT_MULTI",
+        "TRACE_FSESSION_MULTI",
+    ]
+
+    defined_map_types = [
+        "UNSPEC",
+        "HASH",
+        "ARRAY",
+        "PROG_ARRAY",
+        "PERF_EVENT_ARRAY",
+        "PERCPU_HASH",
+        "PERCPU_ARRAY",
+        "STACK_TRACE",
+        "CGROUP_ARRAY",
+        "LRU_HASH",
+        "LRU_PERCPU_HASH",
+        "LPM_TRIE",
+        "ARRAY_OF_MAPS",
+        "HASH_OF_MAPS",
+        "DEVMAP",
+        "SOCKMAP",
+        "CPUMAP",
+        "XSKMAP",
+        "SOCKHASH",
+        "CGROUP_STORAGE",
+        "REUSEPORT_SOCKARRAY",
+        "PERCPU_CGROUP_STORAGE",
+        "QUEUE",
+        "STACK",
+        "SK_STORAGE",
+        "DEVMAP_HASH",
+        "STRUCT_OPS",
+        "RINGBUF",
+        "INODE_STORAGE",
+        "TASK_STORAGE",
+        "BLOOM_FILTER",
+        "USER_RINGBUF",
+        "CGRP_STORAGE",
+        "ARENA",
+        "INSN_ARRAY",
+        "RHASH",
+    ]
+
+    # ARRAY, PROG_ARRAY, PERF_EVENT_ARRAY, PERCPU_ARRAY, CGROUP_ARRAY, ARRAY_OF_MAPS (allocated by array_map_alloc)
+    array_map_types = (2, 3, 4, 6, 8, 12)
+
+    @classmethod
+    @Cache.cache_this_session(per_inferior=True, until_new_objfile=True)
+    def get_instance(cls):
+        return cls()
+
+    def __init__(self):
+        self.meta = []
+        self.prog_xarray = None
+        self.map_xarray = None
+        self.offset_union_array = None
+        self.seccomp_tools_command = None
+        return
+
+    @Cache.cache_this_session(cache_None=False)
+    def initialize(self):
+        self.meta = []
+
+        # get global address
+        prog_idr = KernelAddressHeuristicFinder.get_prog_idr()
+        if not prog_idr:
+            return None
+        self.meta.append(("info", "prog_idr: {:#x}".format(prog_idr)))
+
+        map_idr = KernelAddressHeuristicFinder.get_map_idr()
+        if not map_idr:
+            return None
+        self.meta.append(("info", "map_idr: {:#x}".format(map_idr)))
+
+        # idr->idr_rt->xa_head; see KernelXArray for struct xarray and struct xa_node
+        max_sizeof_idr = min(abs(prog_idr - map_idr), current_arch.ptrsize * 20)
+        self.prog_xarray = KernelXArray(prog_idr)
+        self.map_xarray = KernelXArray(map_idr)
+        if self.prog_xarray.find_head_offset(max_sizeof_idr) is None:
+            self.meta.append(("err", "Could not find xa_head. (maybe uninitialized?)"))
+            return None
+        self.meta.append(("info", "offsetof(xarray, xa_head): {:#x}".format(self.prog_xarray.head_offset)))
+
+        # xa_node->{shift,count,slots}
+        self.meta.append(("info", "offsetof(xa_node, shift): {:#x}".format(self.prog_xarray.offset_shift)))
+        self.meta.append(("info", "offsetof(xa_node, count): {:#x}".format(self.prog_xarray.offset_count)))
+        self.meta.append(("info", "offsetof(xa_node, slots): {:#x}".format(self.prog_xarray.offset_slots)))
+
+        # parse progs, maps
+        try:
+            progs = self.prog_xarray.parse()
+            self.meta.append(("info", "Num of progs: {:d}".format(len(progs))))
+            maps = self.map_xarray.parse()
+            self.meta.append(("info", "Num of maps: {:d}".format(len(maps))))
+        except gdb.MemoryError:
+            self.meta.append(("err", "Not found"))
+            return None
+
+        """
+        struct bpf_prog {
+            u16 pages;
+            u16 jited:1,
+                jit_requested:1,
+                gpl_compatible:1,
+                cb_access:1,
+                dst_needed:1,
+                blinded:1,
+                is_func:1,
+                kprobe_override:1,
+                has_callchain_buf:1,
+                enforce_expected_attach_type:1,
+                call_get_stack:1;
+            enum bpf_prog_type type;
+            enum bpf_attach_type expected_attach_type;
+            u32 len;
+            u32 jited_len;
+            union {
+                u8 digest[SHA256_DIGEST_SIZE]; // v6.18~
+                u8 tag[BPF_TAG_SIZE];
+            };
+            struct bpf_prog_stats __percpu *stats; // v5.12~
+            int __percpu *active;                  // v5.12~
+            unsigned int (*bpf_func)(const void *ctx, const struct bpf_insn *insn); // v5.12~
+            struct bpf_prog_aux *aux;
+            struct sock_fprog_kern *orig_prog;
+            unsigned int (*bpf_func)(const void *ctx, const struct bpf_insn *insn); // ~v5.11
+            struct sock_filter insns[0];
+            struct bpf_insn insnsi[];
+        };
+        """
+        offsets = self.get_prog_offsets()
+        self.offset_prog_type = offsets["type"]
+        self.offset_expected_attach_type = offsets["expected_attach_type"]
+        self.offset_len = offsets["len"]
+        self.offset_jited_len = offsets["jited_len"]
+        self.offset_tag = offsets["tag"]
+        self.offset_aux = offsets["aux"]
+        self.offset_bpf_func = offsets["bpf_func"]
+        self.offset_orig_prog = offsets["orig_prog"]
+        for member, offset in offsets.items():
+            if offset is not None:
+                self.meta.append(("info", "offsetof(bpf_prog, {:s}): {:#x}".format(member, offset)))
+
+        try:
+            self.seccomp_tools_command = [GefUtil.which("ceccomp"), "disasm", "-c", "always"]
+            self.meta.append(("info", "ceccomp is found"))
+        except FileNotFoundError:
+            try:
+                self.seccomp_tools_command = [GefUtil.which("seccomp-tools"), "disasm"]
+                self.meta.append(("info", "seccomp-tools is found"))
+                if is_arm32():
+                    self.meta.append(("warn", "`seccomp-tools` is not supported on ARM32. "
+                                                      "Consider using `ceccomp` instead, as it supports ARM32."))
+                    self.meta.append(("info", "GEF uses `capstone-disassemble bpf_func`"))
+                    self.seccomp_tools_command = None
+            except FileNotFoundError:
+                self.meta.append(("info", "Could not find ceccomp or seccomp-tools, GEF uses `capstone-disassemble bpf_func`"))
+                self.seccomp_tools_command = None
+
+        if maps:
+            """
+            struct bpf_map {
+                u8 sha[SHA256_DIGEST_SIZE]; // v6.18~
+                u32 excl;                 // v7.2~
+                const struct bpf_map_ops *ops;
+                struct bpf_map *inner_map_meta;
+            #ifdef CONFIG_SECURITY
+                void *security;
+            #endif
+                enum bpf_map_type map_type;
+                u32 key_size;
+                u32 value_size;
+                u32 max_entries;
+                ...
+            };
+            """
+            # bpf_map->{map_type,key_size,value_size,max_entries}
+            self.offset_map_type = GefUtil.offsetof("struct bpf_map", "map_type")
+            if self.offset_map_type is None:
+                kversion = Kernel.version()
+                offset_ops = 32 if "6.18" <= kversion else 0
+                if "7.2" <= kversion:
+                    offset_ops = align_to_ptrsize(offset_ops + 4)
+                self.offset_map_type = offset_ops + current_arch.ptrsize * 2
+                cand = read_int_from_memory(maps[0] + self.offset_map_type)
+                if cand == 0 or is_valid_addr(cand):
+                    self.offset_map_type += current_arch.ptrsize
+            self.offset_key_size = self.offset_map_type + 4
+            self.offset_value_size = self.offset_key_size + 4
+            self.offset_max_entries = self.offset_value_size + 4
+            self.meta.append(("info", "offsetof(bpf_map, map_type): {:#x}".format(self.offset_map_type)))
+            self.meta.append(("info", "offsetof(bpf_map, key_size): {:#x}".format(self.offset_key_size)))
+            self.meta.append(("info", "offsetof(bpf_map, value_size): {:#x}".format(self.offset_value_size)))
+            self.meta.append(("info", "offsetof(bpf_map, max_entries): {:#x}".format(self.offset_max_entries)))
+
+            """
+            struct bpf_array {
+                struct bpf_map map;
+                u32 elem_size;
+                u32 index_mask;
+                struct bpf_array_aux *aux;
+                union {
+                    char value[0] __aligned(8);
+                    void *ptrs[0] __aligned(8);
+                    void __percpu *pptrs[0] __aligned(8);
+                };
+            };
+            """
+            # bpf_array->union_array
+            # Only an array map has the elem_size/index_mask pair, so scan every array map instead of assuming maps[0] is one.
+            # Every map type allocated by array_map_alloc() is a bpf_array, not only BPF_MAP_TYPE_ARRAY.
+            # The offset is a layout constant, so the first map that resolves it is enough.
+            self.offset_union_array = GefUtil.offsetof("struct bpf_array", "value")
+            for m in maps:
+                if self.offset_union_array is not None:
+                    break
+                if read_int32_from_memory(m + self.offset_map_type) not in self.array_map_types:
+                    continue
+                value_size = read_int32_from_memory(m + self.offset_value_size)
+                value_size_aligned_8 = align(value_size, 8)
+                max_entries = read_int32_from_memory(m + self.offset_max_entries)
+                k = 1
+                while k < max_entries:
+                    k <<= 1
+                index_mask = k - 1
+
+                sizeof_cache_line = 0x40 # ?
+                base = m + sizeof_cache_line * 3
+                for i in range(100):
+                    pos = base + current_arch.ptrsize * i
+                    x = read_int32_from_memory(pos)
+                    y = read_int32_from_memory(pos + 4)
+                    if x == value_size_aligned_8 and y == index_mask:
+                        self.offset_union_array = align((pos - m) + 4 * 2 + current_arch.ptrsize, 8)
+                        break
+                if self.offset_union_array is not None:
+                    break
+            if self.offset_union_array is None:
+                # Keep going; the array column is the only thing that cannot be shown.
+                self.meta.append(("warn", "Could not find offsetof(bpf_array, union_array)"))
+            else:
+                self.meta.append(("info", "offsetof(bpf_array, union_array): {:#x}".format(self.offset_union_array)))
+        return True
+
+    @staticmethod
+    @Cache.cache_this_session(per_inferior=True, until_new_objfile=True)
+    def get_prog_offsets():
+        """Return bpf_prog member offsets, preferring the target's debug information."""
+        kversion = Kernel.version()
+        if kversion is None or kversion < "3.16":
+            return {}
+
+        ptrsize = current_arch.ptrsize
+        offsets = dict.fromkeys(["type", "expected_attach_type", "len", "jited_len", "tag", "aux", "orig_prog", "bpf_func"])
+        if kversion < "3.17":
+            offsets.update(len=4, orig_prog=8, bpf_func=8 + ptrsize * 3)
+        elif kversion < "3.18":
+            offsets.update(len=0, orig_prog=ptrsize, bpf_func=ptrsize * 2)
+        elif kversion < "4.1":
+            offsets.update(len=4, orig_prog=8, aux=8 + ptrsize, bpf_func=8 + ptrsize * 2)
+        else:
+            if kversion < "4.10":
+                offsets.update(len=4, type=8)
+                end = 12
+            else:
+                offsets.update(type=4, len=8)
+                end = 12
+                if "4.13" <= kversion:
+                    offsets["jited_len"] = end
+                    end += 4
+                if "4.17" <= kversion:
+                    offsets.update(expected_attach_type=8, len=12, jited_len=16)
+                    end = 20
+                if "7.2.6" <= kversion:
+                    offsets.update(type=8, expected_attach_type=12, len=16, jited_len=20)
+                    end = 24
+                offsets["tag"] = end
+                end += 32 if "6.18" <= kversion else 8
+            offsets["aux"] = align_to_ptrsize(end)
+            offsets["bpf_func"] = offsets["aux"] + ptrsize * 2
+            if "5.12" <= kversion:
+                offsets["aux"] += ptrsize * 3
+            offsets["orig_prog"] = offsets["aux"] + ptrsize
+
+        type_name = "struct sk_filter" if kversion < "3.17" else "struct bpf_prog"
+        for member in offsets:
+            offset = GefUtil.offsetof(type_name, member)
+            if offset is not None:
+                offsets[member] = offset
+        return offsets
+
+    def get_progs(self):
+        progs = []
+        for prog in self.prog_xarray.parse():
+            progs.append({
+                "address": prog,
+                "type": read_int32_from_memory(prog + self.offset_prog_type),
+                "expected_attach_type": read_int32_from_memory(prog + self.offset_expected_attach_type),
+                "jited_len": read_int32_from_memory(prog + self.offset_jited_len),
+                "orig_prog": read_int_from_memory(prog + self.offset_orig_prog),
+                "tag": read_int64_from_memory(prog + self.offset_tag),
+                "aux": read_int_from_memory(prog + self.offset_aux),
+                "bpf_func": read_int_from_memory(prog + self.offset_bpf_func),
+            })
+        return progs
+
+    def get_maps(self):
+        maps = []
+        for m in self.map_xarray.parse():
+            map_type = read_int32_from_memory(m + self.offset_map_type)
+            union_array = None
+            if map_type in self.array_map_types and self.offset_union_array is not None:
+                union_array = m + self.offset_union_array
+            maps.append({
+                "address": m,
+                "type": map_type,
+                "key_size": read_int32_from_memory(m + self.offset_key_size),
+                "value_size": read_int32_from_memory(m + self.offset_value_size),
+                "max_entries": read_int32_from_memory(m + self.offset_max_entries),
+                "union_array": union_array,
+            })
+        return maps
+
+    @staticmethod
+    def disassemble_prog(orig_prog, bpf_func, jited_len, tools_command=None):
+        """Return disassembly lines for a BPF program, or None on an invalid target."""
+        try:
+            if tools_command and is_valid_addr(orig_prog):
+                count = read_int16_from_memory(orig_prog)
+                prog = read_int_from_memory(orig_prog + current_arch.ptrsize)
+                data = read_memory(prog, count * 8)
+                tmp_fd, tmp_path = GefUtil.mkstemp(prefix="kbpf")
+                try:
+                    with os.fdopen(tmp_fd, "wb") as fdw:
+                        fdw.write(data)
+                    return GefUtil.gef_execute_external(tools_command + [tmp_path], as_list=True)
+                finally:
+                    os.unlink(tmp_path)
+            if not is_valid_addr(bpf_func):
+                return None
+            if not jited_len:
+                return [gdb.execute("x/40i {:#x}".format(bpf_func), to_string=True).rstrip(), "..."]
+            __import__("capstone")
+            data = read_memory(bpf_func, jited_len)
+            lines = []
+            dump_count = 0
+            for insn in Disasm.capstone_disassemble(
+                bpf_func, jited_len, code=data.hex(),
+            ):
+                lines.append(insn.colored_text(10))
+                dump_count += insn.size
+                if dump_count >= jited_len:
+                    break
+            return lines
+        except ImportError:
+            ret = gdb.execute("x/40i {:#x}".format(bpf_func), to_string=True).rstrip()
+            return [ret, "..."]
+        except gdb.MemoryError:
+            return None
+
+
 class KernelSeccomp:
-    """Resolve seccomp/BPF layouts and parse filters attached to tasks."""
+    """Resolve seccomp layouts and parse filters attached to tasks."""
 
     TaskInfo = collections.namedtuple("SeccompTaskInfo", "address mode mode_name filter_count first_filter")
     FilterInfo = collections.namedtuple("SeccompFilterInfo", "address previous prog bpf_func jited_len orig_prog")
@@ -77317,7 +77773,7 @@ class KernelSeccomp:
         self.offset_prog = None
         self.offset_bpf_func = None
         self.offset_orig_prog = None
-        self.offset_jited_len = 16
+        self.offset_jited_len = None
         self.tools_command = None
         return
 
@@ -77350,6 +77806,8 @@ class KernelSeccomp:
             return None
         self.meta.append(("info", "offsetof(seccomp_filter, prog): {:#x}".format(self.offset_prog)))
 
+        offsets = KernelBpf.get_prog_offsets()
+        self.offset_jited_len = offsets.get("jited_len")
         self.offset_bpf_func = self.get_offset_bpf_func()
         if self.offset_bpf_func is None:
             self.meta.append(("err", "Could not find bpf_prog->bpf_func"))
@@ -77416,44 +77874,16 @@ class KernelSeccomp:
             previous = read_int_from_memory(filter_current + self.offset_prev)
             bpf_func = read_int_from_memory(prog + self.offset_bpf_func)
             orig_prog = read_int_from_memory(prog + self.offset_orig_prog)
-            jited_len = read_int32_from_memory(prog + self.offset_jited_len)
+            jited_len = read_int32_from_memory(prog + self.offset_jited_len) if self.offset_jited_len is not None else 0
             yield self.FilterInfo(filter_current, previous, prog, bpf_func, jited_len, orig_prog)
             filter_current = previous
             remaining -= 1
 
     def disassemble(self, filter_info):
         """Return disassembly lines for one seccomp filter, or None on an invalid target."""
-        try:
-            if self.tools_command and is_valid_addr(filter_info.orig_prog):
-                count = read_int16_from_memory(filter_info.orig_prog)
-                prog = read_int_from_memory(filter_info.orig_prog + current_arch.ptrsize)
-                data = read_memory(prog, count * 8)
-                tmp_fd, tmp_path = GefUtil.mkstemp(prefix="ktask")
-                try:
-                    with os.fdopen(tmp_fd, "wb") as fdw:
-                        fdw.write(data)
-                    return GefUtil.gef_execute_external(self.tools_command + [tmp_path], as_list=True)
-                finally:
-                    os.unlink(tmp_path)
-            if not is_valid_addr(filter_info.bpf_func):
-                return None
-            __import__("capstone")
-            data = read_memory(filter_info.bpf_func, filter_info.jited_len)
-            lines = []
-            dump_count = 0
-            for insn in Disasm.capstone_disassemble(
-                filter_info.bpf_func, filter_info.jited_len, code=data.hex(),
-            ):
-                lines.append(insn.colored_text(10))
-                dump_count += insn.size
-                if dump_count >= filter_info.jited_len:
-                    break
-            return lines
-        except ImportError:
-            ret = gdb.execute("x/40i {:#x}".format(filter_info.bpf_func), to_string=True).rstrip()
-            return [ret, "..."]
-        except gdb.MemoryError:
-            return None
+        return KernelBpf.disassemble_prog(
+            filter_info.orig_prog, filter_info.bpf_func, filter_info.jited_len, self.tools_command,
+        )
 
     @staticmethod
     def is_enabled(task_addr, offset_stack):
@@ -77688,56 +78118,14 @@ class KernelSeccomp:
             return None
         return offset_prev + current_arch.ptrsize
 
-    @Cache.cache_this_session(cache_None=False)
     def get_offset_bpf_func(self):
-        # fast path
-        try:
-            return GefUtil.parse_and_eval_unsigned("&((struct bpf_prog*)0).bpf_func")
-        except gdb.error:
-            pass
-
-        # slow path
-        maps = AddrMap.get_maps(scope="kernel")
-        for task in self.task_addrs:
-            if not self.is_enabled(task, self.offset_stack):
-                continue
-            filter_addr = read_int_from_memory(task + self.offset_seccomp + self.offset_filter)
-            if not is_valid_addr(filter_addr):
-                continue
-            bpf_prog = read_int_from_memory(filter_addr + self.offset_prog)
-            for i in range(0x100):
-                candidate = read_int_from_memory(bpf_prog + current_arch.ptrsize * i)
-                entry = AddrMap.find_virtual(candidate, maps=maps)
-                if entry is None or not entry.is_executable():
-                    continue
-                if read_int_from_memory(candidate) != 0:
-                    return current_arch.ptrsize * i
-        return None
+        return KernelBpf.get_prog_offsets().get("bpf_func")
 
     @staticmethod
-    @Cache.cache_this_session(cache_None=False, per_inferior=True, until_new_objfile=True)
     def get_offset_orig_prog(offset_bpf_func):
-        # fast path
-        try:
-            return GefUtil.parse_and_eval_unsigned("&((struct bpf_prog*)0).orig_prog")
-        except gdb.error:
-            pass
-
-        # slow path
         if offset_bpf_func is None:
             return None
-        kversion = Kernel.version()
-        if kversion is None:
-            return None
-        if "5.12" <= kversion:
-            return offset_bpf_func + current_arch.ptrsize * 2
-        if "4.1" <= kversion:
-            return offset_bpf_func - current_arch.ptrsize
-        if "3.18" <= kversion:
-            return offset_bpf_func - current_arch.ptrsize * 2
-        if "3.16" <= kversion:
-            return offset_bpf_func - current_arch.ptrsize
-        return None
+        return KernelBpf.get_prog_offsets().get("orig_prog")
 
 
 class KernelModule:
@@ -81021,6 +81409,9 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
             if enabled.get(option, False):
                 enabled[option] = False
                 setattr(command_args, option, False)
+                if option == "print_fd" and not getattr(command_args, "meta", False):
+                    reason = next((line for func, line in reversed(self.meta) if func == self.quiet_err), "File layout unresolved")
+                    warn("Disabled --print-fd: {:s} (see `ktask --print-fd --meta`)".format(reason))
                 self.meta.append((self.quiet_warn, "Disabled --{:s}".format(option.replace("_", "-"))))
         return
 
@@ -149143,326 +149534,12 @@ class KernelBpfCommand(GenericCommand, BufferingOutput):
     ]
     _note_ = "\n".join(_note_)
 
-    @Cache.cache_this_session(cache_None=False)
-    def initialize(self):
-        self.meta = []
-
-        # get global address
-        prog_idr = KernelAddressHeuristicFinder.get_prog_idr()
-        if not prog_idr:
-            return None
-        self.meta.append((self.quiet_info, "prog_idr: {:#x}".format(prog_idr)))
-
-        map_idr = KernelAddressHeuristicFinder.get_map_idr()
-        if not map_idr:
-            return None
-        self.meta.append((self.quiet_info, "map_idr: {:#x}".format(map_idr)))
-
-        kversion = Kernel.version()
-
-        # idr->idr_rt->xa_head; see KernelXArray for struct xarray and struct xa_node
-        max_sizeof_idr = min(abs(prog_idr - map_idr), current_arch.ptrsize * 20)
-        self.prog_xarray = KernelXArray(prog_idr)
-        self.map_xarray = KernelXArray(map_idr)
-        if self.prog_xarray.find_head_offset(max_sizeof_idr) is None:
-            self.meta.append((err, "Could not find xa_head. (maybe uninitialized?)"))
-            return None
-        self.meta.append((self.quiet_info, "offsetof(xarray, xa_head): {:#x}".format(self.prog_xarray.head_offset)))
-
-        # xa_node->{shift,count,slots}
-        self.meta.append((self.quiet_info, "offsetof(xa_node, shift): {:#x}".format(self.prog_xarray.offset_shift)))
-        self.meta.append((self.quiet_info, "offsetof(xa_node, count): {:#x}".format(self.prog_xarray.offset_count)))
-        self.meta.append((self.quiet_info, "offsetof(xa_node, slots): {:#x}".format(self.prog_xarray.offset_slots)))
-
-        # parse progs, maps
-        try:
-            progs = self.prog_xarray.parse()
-            self.meta.append((self.quiet_info, "Num of progs: {:d}".format(len(progs))))
-            maps = self.map_xarray.parse()
-            self.meta.append((self.quiet_info, "Num of maps: {:d}".format(len(maps))))
-        except gdb.MemoryError:
-            self.meta.append((self.quiet_err, "Not found"))
-            return None
-
-        """
-        struct bpf_prog {
-            u16 pages;
-            u16 jited:1,
-                jit_requested:1,
-                gpl_compatible:1,
-                cb_access:1,
-                dst_needed:1,
-                blinded:1,
-                is_func:1,
-                kprobe_override:1,
-                has_callchain_buf:1,
-                enforce_expected_attach_type:1,
-                call_get_stack:1;
-            enum bpf_prog_type type;
-            enum bpf_attach_type expected_attach_type;
-            u32 len;
-            u32 jited_len;
-            u8 tag[BPF_TAG_SIZE]; // 8 byte
-            struct bpf_prog_stats __percpu *stats; // v5.12~
-            int __percpu *active;                  // v5.12~
-            unsigned int (*bpf_func)(const void *ctx, const struct bpf_insn *insn); // v5.12~
-            struct bpf_prog_aux *aux;
-            struct sock_fprog_kern *orig_prog;
-            unsigned int (*bpf_func)(const void *ctx, const struct bpf_insn *insn); // ~v5.11
-            const struct bpf_insn *insn);
-            struct sock_filter insns[0];
-            struct bpf_insn insnsi[];
-        };
-        """
-        # bpf_prog->{type,expected_attach_type,len,jited_len,tag,aux}
-        self.offset_prog_type = 4
-        self.offset_expected_attach_type = self.offset_prog_type + 4
-        self.offset_len = self.offset_expected_attach_type + 4
-        self.offset_jited_len = self.offset_len + 4
-        self.offset_tag = self.offset_jited_len + 4
-        if "5.12" <= kversion:
-            self.offset_aux = align_to_ptrsize(self.offset_tag + 8) + current_arch.ptrsize * 3
-            self.offset_bpf_func = self.offset_aux - current_arch.ptrsize
-        else:
-            self.offset_aux = align_to_ptrsize(self.offset_tag + 8)
-            self.offset_bpf_func = self.offset_aux + current_arch.ptrsize * 2
-        self.offset_orig_prog = self.offset_aux + current_arch.ptrsize
-        self.meta.append((self.quiet_info, "offsetof(bpf_prog, type): {:#x}".format(self.offset_prog_type)))
-        self.meta.append((self.quiet_info, "offsetof(bpf_prog, expected_attach_type): {:#x}".format(self.offset_expected_attach_type)))
-        self.meta.append((self.quiet_info, "offsetof(bpf_prog, len): {:#x}".format(self.offset_len)))
-        self.meta.append((self.quiet_info, "offsetof(bpf_prog, jited_len): {:#x}".format(self.offset_jited_len)))
-        self.meta.append((self.quiet_info, "offsetof(bpf_prog, tag): {:#x}".format(self.offset_tag)))
-        self.meta.append((self.quiet_info, "offsetof(bpf_prog, aux): {:#x}".format(self.offset_aux)))
-        self.meta.append((self.quiet_info, "offsetof(bpf_prog, bpf_func): {:#x}".format(self.offset_bpf_func)))
-        self.meta.append((self.quiet_info, "offsetof(bpf_prog, orig_prog): {:#x}".format(self.offset_orig_prog)))
-
-        try:
-            self.seccomp_tools_command = [GefUtil.which("ceccomp"), "disasm", "-c", "always"]
-            self.meta.append((self.quiet_info, "ceccomp is found"))
-        except FileNotFoundError:
-            try:
-                self.seccomp_tools_command = [GefUtil.which("seccomp-tools"), "disasm"]
-                self.meta.append((self.quiet_info, "seccomp-tools is found"))
-                if is_arm32():
-                    self.meta.append((self.quiet_warn, "`seccomp-tools` is not supported on ARM32. "
-                                                      "Consider using `ceccomp` instead, as it supports ARM32."))
-                    self.meta.append((self.quiet_info, "GEF uses `capstone-disassemble bpf_func`"))
-                    self.seccomp_tools_command = None
-            except FileNotFoundError:
-                self.meta.append((self.quiet_info, "Could not find ceccomp or seccomp-tools, GEF uses `capstone-disassemble bpf_func`"))
-                self.seccomp_tools_command = None
-
-        if maps:
-            """
-            struct bpf_map {
-                const struct bpf_map_ops *ops ____cacheline_aligned;
-                struct bpf_map *inner_map_meta;
-            #ifdef CONFIG_SECURITY
-                void *security;
-            #endif
-                enum bpf_map_type map_type;
-                u32 key_size;
-                u32 value_size;
-                u32 max_entries;
-                ...
-            };
-            """
-            # bpf_map->{map_type,key_size,value_size,max_entries}
-            cand = read_int_from_memory(maps[0] + current_arch.ptrsize * 2)
-            if cand == 0 or is_valid_addr(cand):
-                self.offset_map_type = current_arch.ptrsize * 3
-            else:
-                self.offset_map_type = current_arch.ptrsize * 2
-            self.offset_key_size = self.offset_map_type + 4
-            self.offset_value_size = self.offset_key_size + 4
-            self.offset_max_entries = self.offset_value_size + 4
-            self.meta.append((self.quiet_info, "offsetof(bpf_map, map_type): {:#x}".format(self.offset_map_type)))
-            self.meta.append((self.quiet_info, "offsetof(bpf_map, key_size): {:#x}".format(self.offset_key_size)))
-            self.meta.append((self.quiet_info, "offsetof(bpf_map, value_size): {:#x}".format(self.offset_value_size)))
-            self.meta.append((self.quiet_info, "offsetof(bpf_map, max_entries): {:#x}".format(self.offset_max_entries)))
-
-            """
-            struct bpf_array {
-                struct bpf_map map;
-                u32 elem_size;
-                u32 index_mask;
-                struct bpf_array_aux *aux;
-                union {
-                    char value[0] __aligned(8);
-                    void *ptrs[0] __aligned(8);
-                    void __percpu *pptrs[0] __aligned(8);
-                };
-            };
-            """
-            # bpf_array->union_array
-            # Only an array map has the elem_size/index_mask pair, so scan every array map instead of assuming maps[0] is one.
-            # Every map type allocated by array_map_alloc() is a bpf_array, not only BPF_MAP_TYPE_ARRAY.
-            # The offset is a layout constant, so the first map that resolves it is enough.
-            self.offset_union_array = None
-            for m in maps:
-                if read_int32_from_memory(m + self.offset_map_type) not in self.array_map_types:
-                    continue
-                value_size = read_int32_from_memory(m + self.offset_value_size)
-                value_size_aligned_8 = align(value_size, 8)
-                max_entries = read_int32_from_memory(m + self.offset_max_entries)
-                k = 1
-                while k < max_entries:
-                    k <<= 1
-                index_mask = k - 1
-
-                sizeof_cache_line = 0x40 # ?
-                base = m + sizeof_cache_line * 3
-                for i in range(100):
-                    pos = base + current_arch.ptrsize * i
-                    x = read_int32_from_memory(pos)
-                    y = read_int32_from_memory(pos + 4)
-                    if x == value_size_aligned_8 and y == index_mask:
-                        self.offset_union_array = (pos - m) + 4 * 2 + current_arch.ptrsize
-                        break
-                if self.offset_union_array is not None:
-                    break
-            if self.offset_union_array is None:
-                # Keep going; the array column is the only thing that cannot be shown.
-                self.meta.append((self.quiet_warn, "Could not find offsetof(bpf_array, union_array)"))
-            else:
-                self.meta.append((self.quiet_info, "offsetof(bpf_array, union_array): {:#x}".format(self.offset_union_array)))
-        return True
-
-    # include/uapi/linux/bpf.h
-    defined_prog_types = [
-        "UNSPEC",
-        "SOCKET_FILTER",
-        "KPROBE",
-        "SCHED_CLS",
-        "SCHED_ACT",
-        "TRACEPOINT",
-        "XDP",
-        "PERF_EVENT",
-        "CGROUP_SKB",
-        "CGROUP_SOCK",
-        "LWT_IN",
-        "LWT_OUT",
-        "LWT_XMIT",
-        "SOCK_OPS",
-        "SK_SKB",
-        "CGROUP_DEVICE",
-        "SK_MSG",
-        "RAW_TRACEPOINT",
-        "CGROUP_SOCK_ADDR",
-        "LWT_SEG6LOCAL",
-        "LIRC_MODE2",
-        "SK_REUSEPORT",
-        "FLOW_DISSECTOR",
-        "CGROUP_SYSCTL",
-        "RAW_TRACEPOINT_WRITABLE",
-        "CGROUP_SOCKOPT",
-        "TRACING",
-        "STRUCT_OPS",
-        "EXT",
-        "LSM",
-        "SK_LOOKUP",
-        "SYSCALL",
-        "NETFILTER",
-    ]
-
-    defined_attach_types = [
-        "CGROUP_INET_INGRESS",
-        "CGROUP_INET_EGRESS",
-        "CGROUP_INET_SOCK_CREATE",
-        "CGROUP_SOCK_OPS",
-        "SK_SKB_STREAM_PARSER",
-        "SK_SKB_STREAM_VERDICT",
-        "CGROUP_DEVICE",
-        "SK_MSG_VERDICT",
-        "CGROUP_INET4_BIND",
-        "CGROUP_INET6_BIND",
-        "CGROUP_INET4_CONNECT",
-        "CGROUP_INET6_CONNECT",
-        "CGROUP_INET4_POST_BIND",
-        "CGROUP_INET6_POST_BIND",
-        "CGROUP_UDP4_SENDMSG",
-        "CGROUP_UDP6_SENDMSG",
-        "LIRC_MODE2",
-        "FLOW_DISSECTOR",
-        "CGROUP_SYSCTL",
-        "CGROUP_UDP4_RECVMSG",
-        "CGROUP_UDP6_RECVMSG",
-        "CGROUP_GETSOCKOPT",
-        "CGROUP_SETSOCKOPT",
-        "TRACE_RAW_TP",
-        "TRACE_FENTRY",
-        "TRACE_FEXIT",
-        "MODIFY_RETURN",
-        "LSM_MAC",
-        "TRACE_ITER",
-        "CGROUP_INET4_GETPEERNAME",
-        "CGROUP_INET6_GETPEERNAME",
-        "CGROUP_INET4_GETSOCKNAME",
-        "CGROUP_INET6_GETSOCKNAME",
-        "XDP_DEVMAP",
-        "CGROUP_INET_SOCK_RELEASE",
-        "XDP_CPUMAP",
-        "SK_LOOKUP",
-        "XDP",
-        "SK_SKB_VERDICT",
-        "SK_REUSEPORT_SELECT",
-        "SK_REUSEPORT_SELECT_OR_MIGRATE",
-        "PERF_EVENT",
-        "TRACE_KPROBE_MULTI",
-        "LSM_CGROUP",
-        "STRUCT_OPS",
-        "NETFILTER",
-        "TCX_INGRESS",
-        "TCX_EGRESS",
-        "TRACE_UPROBE_MULTI",
-        "CGROUP_UNIX_CONNECT",
-        "CGROUP_UNIX_SENDMSG",
-        "CGROUP_UNIX_RECVMSG",
-        "CGROUP_UNIX_GETPEERNAME",
-        "CGROUP_UNIX_GETSOCKNAME",
-        "NETKIT_PRIMARY",
-        "NETKIT_PEER",
-        "TRACE_KPROBE_SESSION",
-        "TRACE_UPROBE_SESSION",
-        "TRACE_FSESSION",
-        "TRACE_FENTRY_MULTI",
-        "TRACE_FEXIT_MULTI",
-        "TRACE_FSESSION_MULTI",
-    ]
-
     def dump_bpf_progs_func(self, orig_prog, bpf_func, jited_len):
-        if self.seccomp_tools_command and is_valid_addr(orig_prog):
-            # use seccomp-tools or ceccomp
-            cnt = read_int16_from_memory(orig_prog)
-            prog = read_int_from_memory(orig_prog + current_arch.ptrsize)
-            data = read_memory(prog, cnt * 8)
-            tmp_fd, tmp_path = GefUtil.mkstemp(prefix="kbpf")
-            with os.fdopen(tmp_fd, "wb") as fdw:
-                fdw.write(data)
-            ret = GefUtil.gef_execute_external(self.seccomp_tools_command + [tmp_path], as_list=True)
-            self.out.extend(ret)
-            os.unlink(tmp_path)
-            return
-
-        if is_valid_addr(bpf_func):
-            try:
-                __import__("capstone")
-                # use capstone
-                data = read_memory(bpf_func, jited_len)
-                dump_count = 0
-                for insn in Disasm.capstone_disassemble(bpf_func, jited_len, code=data.hex()):
-                    msg = insn.colored_text(10)
-                    self.out.append(msg)
-                    dump_count += insn.size
-                    if dump_count >= jited_len:
-                        return
-            except ImportError:
-                ret = gdb.execute("x/40i {:#x}".format(bpf_func), to_string=True).rstrip()
-                self.out.append(ret)
-                self.out.append("...")
-                return
-
-        self.err_add_out("Memory read error")
+        lines = self.kbpf.disassemble_prog(orig_prog, bpf_func, jited_len, self.kbpf.seccomp_tools_command)
+        if lines is None:
+            self.err_add_out("Memory read error")
+        else:
+            self.out.extend(lines)
         return
 
     def dump_bpf_progs(self, progs):
@@ -149473,63 +149550,21 @@ class KernelBpfCommand(GenericCommand, BufferingOutput):
 
         fmt = "{:<3d} {:#018x} {:23s} {:30s} {:#018x} {:#018x} {:#018x} {:<#9x} {:#018x}"
         for i, prog in enumerate(progs):
-            bpf_type = read_int32_from_memory(prog + self.offset_prog_type)
-            bpf_attach_type = read_int32_from_memory(prog + self.offset_expected_attach_type)
-            jited_len = read_int32_from_memory(prog + self.offset_jited_len)
-            orig_prog = read_int_from_memory(prog + self.offset_orig_prog)
-            t1 = self.defined_prog_types[bpf_type] if bpf_type < len(self.defined_prog_types) else "???"
-            t2 = self.defined_attach_types[bpf_attach_type] if bpf_attach_type < len(self.defined_attach_types) else "???"
-            tag = read_int64_from_memory(prog + self.offset_tag)
-            aux = read_int_from_memory(prog + self.offset_aux)
-            bpf_func = read_int_from_memory(prog + self.offset_bpf_func)
-            self.out.append(fmt.format(i, prog, t1, t2, tag, aux, bpf_func, jited_len, orig_prog))
+            bpf_type = prog["type"]
+            bpf_attach_type = prog["expected_attach_type"]
+            jited_len = prog["jited_len"]
+            orig_prog = prog["orig_prog"]
+            t1 = self.kbpf.defined_prog_types[bpf_type] if bpf_type < len(self.kbpf.defined_prog_types) else "???"
+            t2 = self.kbpf.defined_attach_types[bpf_attach_type] if bpf_attach_type < len(self.kbpf.defined_attach_types) else "???"
+            tag = prog["tag"]
+            aux = prog["aux"]
+            bpf_func = prog["bpf_func"]
+            self.out.append(fmt.format(i, prog["address"], t1, t2, tag, aux, bpf_func, jited_len, orig_prog))
 
             if self.args.verbose:
                 self.dump_bpf_progs_func(orig_prog, bpf_func, jited_len)
                 self.out.append(titlify(""))
         return
-
-    defined_map_types = [
-        "UNSPEC",
-        "HASH",
-        "ARRAY",
-        "PROG_ARRAY",
-        "PERF_EVENT_ARRAY",
-        "PERCPU_HASH",
-        "PERCPU_ARRAY",
-        "STACK_TRACE",
-        "CGROUP_ARRAY",
-        "LRU_HASH",
-        "LRU_PERCPU_HASH",
-        "LPM_TRIE",
-        "ARRAY_OF_MAPS",
-        "HASH_OF_MAPS",
-        "DEVMAP",
-        "SOCKMAP",
-        "CPUMAP",
-        "XSKMAP",
-        "SOCKHASH",
-        "CGROUP_STORAGE",
-        "REUSEPORT_SOCKARRAY",
-        "PERCPU_CGROUP_STORAGE",
-        "QUEUE",
-        "STACK",
-        "SK_STORAGE",
-        "DEVMAP_HASH",
-        "STRUCT_OPS",
-        "RINGBUF",
-        "INODE_STORAGE",
-        "TASK_STORAGE",
-        "BLOOM_FILTER",
-        "USER_RINGBUF",
-        "CGRP_STORAGE",
-        "ARENA",
-        "INSN_ARRAY",
-        "RHASH",
-    ]
-
-    # ARRAY, PROG_ARRAY, PERF_EVENT_ARRAY, PERCPU_ARRAY, CGROUP_ARRAY, ARRAY_OF_MAPS (allocated by array_map_alloc)
-    array_map_types = (2, 3, 4, 6, 8, 12)
 
     def dump_bpf_maps(self, maps):
         self.out.append(titlify("map_idr"))
@@ -149539,21 +149574,19 @@ class KernelBpfCommand(GenericCommand, BufferingOutput):
 
         fmt = "{:<3d} {:#018x} {:21s} {:#010x} {:#010x} {:#010x} {:18s}"
         for i, m in enumerate(maps):
-            map_type = read_int32_from_memory(m + self.offset_map_type)
-            t1 = self.defined_map_types[map_type] if map_type < len(self.defined_map_types) else "???"
-            key_size = read_int32_from_memory(m + self.offset_key_size)
-            val_size = read_int32_from_memory(m + self.offset_value_size)
-            max_ents = read_int32_from_memory(m + self.offset_max_entries)
-            if map_type not in self.array_map_types:
-                union_array = None
+            map_type = m["type"]
+            t1 = self.kbpf.defined_map_types[map_type] if map_type < len(self.kbpf.defined_map_types) else "???"
+            key_size = m["key_size"]
+            val_size = m["value_size"]
+            max_ents = m["max_entries"]
+            union_array = m["union_array"]
+            if map_type not in self.kbpf.array_map_types:
                 array = "-"
-            elif self.offset_union_array is None:
-                union_array = None
+            elif union_array is None:
                 array = "???"
             else:
-                union_array = m + self.offset_union_array
                 array = "{:#018x}".format(union_array)
-            self.out.append(fmt.format(i, m, t1, key_size, val_size, max_ents, array).rstrip())
+            self.out.append(fmt.format(i, m["address"], t1, key_size, val_size, max_ents, array).rstrip())
 
             if self.args.verbose:
                 if union_array is not None and map_type == 2: # ARRAY
@@ -149567,6 +149600,7 @@ class KernelBpfCommand(GenericCommand, BufferingOutput):
     @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
     @Decorator.only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
+        self.kbpf = Kernel.bpf()
         self.quiet_info("Wait for memory scan")
 
         kversion = Kernel.version()
@@ -149587,9 +149621,9 @@ class KernelBpfCommand(GenericCommand, BufferingOutput):
             return
 
         # init
-        ret = self.initialize()
+        ret = self.kbpf.initialize()
         if args.meta or not ret:
-            for func, line in self.meta:
+            for func, line in Kernel.export_meta(self, self.kbpf.meta):
                 func(line)
         if not ret:
             self.quiet_err("Failed to initialize")
@@ -149599,8 +149633,8 @@ class KernelBpfCommand(GenericCommand, BufferingOutput):
             return
 
         try:
-            progs = self.prog_xarray.parse()
-            maps = self.map_xarray.parse()
+            progs = self.kbpf.get_progs() if not args.only_maps else []
+            maps = self.kbpf.get_maps() if not args.only_progs else []
         except gdb.MemoryError:
             self.quiet_err("Not found")
             return
