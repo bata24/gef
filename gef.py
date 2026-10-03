@@ -12700,7 +12700,11 @@ def read_physmem(paddr, size, already_physmode=False):
             if not line:
                 continue
             data = line.split()[1:]
-            out += bytes([int(x, 16) for x in data])
+            try:
+                out += bytes([int(x, 16) for x in data])
+            except ValueError:
+                # e.g., "Cannot access memory"
+                return None
         return out
 
     def kgdb_use_physmap(paddr, size):
@@ -168426,7 +168430,11 @@ class PageTableArm32(PageTable):
         self.quiet_info_add_out("$TTBCR{}: {:#x}".format(self.suffix, TTBCR))
         self.quiet_info_add_out("T0SZ: {:#x}".format(T0SZ))
         self.quiet_info_add_out("PL0 base: {:#x}".format(pl0_base))
-        if not self.args.use_cache or not self.ttbr0_mappings:
+        if (TTBCR >> 7) & 1:
+            # TTBCR.EPD0 disables the walk with TTBR0 (e.g., CONFIG_CPU_TTBR0_PAN=y while in the kernel)
+            self.quiet_info_add_out("EPD0: 1 (TTBR0 is not used)")
+            self.ttbr0_mappings = []
+        elif not self.args.use_cache or not self.ttbr0_mappings:
             self.flags_strings_cache = {}
             self.do_pagewalk_long(pl0_base)
             self.flags_strings_cache = None
