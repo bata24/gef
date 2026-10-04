@@ -28222,6 +28222,11 @@ class GlibcHeapBinsDump:
         if get_libc_version() < (2, 26):
             return
 
+        if arena.tcache_perthread_struct is None:
+            self.out.append(titlify("tcache"))
+            self.err_add_out("Not found tcache_perthread_struct")
+            return
+
         self.out.append(titlify("tcache (&tcache_perthread_struct: {:#x})".format(
             arena.tcache_perthread_struct,
         )))
@@ -28370,8 +28375,10 @@ class GlibcHeapBinsDump:
         fw, bk = arena.get_bins_i(index)
 
         if bk == 0 and fw == 0:
-            warn("Invalid backward and forward bin pointers(fd==bk==NULL)")
-            return -1
+            self.warn_add_out("{:s}[idx={:d}]: Invalid backward and forward bin pointers(fd==bk==NULL)".format(
+                bin_name, index,
+            ))
+            return 0
 
         bins_addr = arena.addrof_bins_i(index)
         head = bins_addr - current_arch.ptrsize * 2
@@ -28408,6 +28415,8 @@ class GlibcHeapBinsDump:
                 break
             seen_bk.add(chunk.address)
             try:
+                if chunk.fwd is None or chunk.bck is None:
+                    raise gdb.MemoryError("Cannot access the links")
                 mb.append(" -> {!s}".format(chunk))
             except gdb.MemoryError:
                 mb.append(Color.colorify(
@@ -28435,6 +28444,8 @@ class GlibcHeapBinsDump:
                     break
                 seen_fw.add(chunk.address)
                 try:
+                    if chunk.fwd is None or chunk.bck is None:
+                        raise gdb.MemoryError("Cannot access the links")
                     mf.append(" -> {!s}".format(chunk))
                 except gdb.MemoryError:
                     mf.append(Color.colorify(
@@ -28445,6 +28456,7 @@ class GlibcHeapBinsDump:
                 fw = chunk.fwd
 
         # concat
+        fw, bk = arena.get_bins_i(index)
         m = []
         m.append("{:s}[idx={:d}, size={:s}, @{!s}]: fd={!s}, bk={!s}".format(
             bin_name, index, size_str,
@@ -28531,8 +28543,6 @@ class GlibcHeapBinsCommand(GenericCommand, GlibcHeapBinsDump, BufferingOutput):
             bins = {}
             for i in range(1, 63):
                 nb_chunk = self.pprint_bin(arena, i, "small_bins", args.verbose)
-                if nb_chunk < 0:
-                    break
                 if nb_chunk > 0:
                     bins[i] = nb_chunk
             self.info_add_out("Found {:d} valid chunks in {:d} small bins (when traced from `bk`)".format(
@@ -28544,8 +28554,6 @@ class GlibcHeapBinsCommand(GenericCommand, GlibcHeapBinsDump, BufferingOutput):
             bins = {}
             for i in range(63, 126):
                 nb_chunk = self.pprint_bin(arena, i, "large_bins", args.verbose)
-                if nb_chunk < 0:
-                    break
                 if nb_chunk > 0:
                     bins[i] = nb_chunk
             self.info_add_out("Found {:d} valid chunks in {:d} large bins (when traced from `bk`)".format(
@@ -28781,8 +28789,6 @@ class GlibcHeapSmallBinsCommand(GenericCommand, GlibcHeapBinsDump, BufferingOutp
 
                 # print
                 nb_chunk = self.pprint_bin(arena, i, "small_bins", args.verbose)
-                if nb_chunk < 0:
-                    break
                 if nb_chunk > 0:
                     bins[i] = nb_chunk
             self.info_add_out("Found {:d} valid chunks in {:d} small bins (when traced from `bk`)".format(
@@ -28851,8 +28857,6 @@ class GlibcHeapLargeBinsCommand(GenericCommand, GlibcHeapBinsDump, BufferingOutp
 
                 # print
                 nb_chunk = self.pprint_bin(arena, i, "large_bins", args.verbose)
-                if nb_chunk < 0:
-                    break
                 if nb_chunk > 0:
                     bins[i] = nb_chunk
             self.info_add_out("Found {:d} valid chunks in {:d} large bins (when traced from `bk`)".format(
@@ -29349,6 +29353,10 @@ class GlibcHeapTcacheIndexHelperCommand(GenericCommand):
 
         if arena.heap_base is None or not is_valid_addr(arena.heap_base):
             err("Heap is not initialized")
+            return
+
+        if arena.tcache_perthread_struct is None:
+            err("Not found tcache_perthread_struct")
             return
 
         # doit
