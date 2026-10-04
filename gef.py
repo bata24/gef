@@ -5089,8 +5089,9 @@ class GlibcHeap:
                 return (sz >> 4) - 2 if SIZE_SZ == 8 else (sz >> 3) - 2
 
             SIZE_SZ = current_arch.ptrsize
+            MALLOC_ALIGN_MASK = GlibcHeap.HeapInfo.MALLOC_ALIGNMENT() - 1
             MAX_FAST_SIZE = (80 * SIZE_SZ // 4)
-            NFASTBINS = fastbin_index(MAX_FAST_SIZE) - 1
+            NFASTBINS = fastbin_index((MAX_FAST_SIZE + SIZE_SZ + MALLOC_ALIGN_MASK) & ~MALLOC_ALIGN_MASK) + 1
             chunks_all = {}
             for i in range(NFASTBINS):
                 # head check
@@ -5797,7 +5798,7 @@ class GlibcHeap:
 
         # fastbins
         if is_64bit():
-            for i in range(7):
+            for i in range(10):
                 size = MIN_SIZE + i * 0x10
                 table["fastbins"][i] = {"size": size}
         elif (is_x86_32() or is_riscv32() or is_ppc32()) and get_libc_version() >= (2, 26):
@@ -5807,8 +5808,10 @@ class GlibcHeap:
             table["fastbins"][2] = {"size": 0x20}
             table["fastbins"][4] = {"size": 0x30}
             table["fastbins"][6] = {"size": 0x40}
+            table["fastbins"][8] = {"size": 0x50}
+            table["fastbins"][10] = {"size": 0x60}
         else:
-            for i in range(7):
+            for i in range(10):
                 size = MIN_SIZE + i * 8
                 table["fastbins"][i] = {"size": size}
 
@@ -5817,7 +5820,7 @@ class GlibcHeap:
 
         # smallbins
         for i in range(1, 63):
-            if is_64bit() or (is_x86_32() and get_libc_version() >= (2, 26)):
+            if is_64bit() or ((is_x86_32() or is_riscv32() or is_ppc32()) and get_libc_version() >= (2, 26)):
                 size = MIN_SIZE + (i - 1) * 0x10
             else:
                 size = MIN_SIZE + (i - 1) * 0x8
@@ -5859,7 +5862,7 @@ class GlibcHeap:
             table["large_bins"][94] = {"size_min": 0xbc0, "size_max": 0xc00}
             table["large_bins"][95] = {"size_min": 0xc00, "size_max": 0xc40}
             table["large_bins"][96] = {"size_min": 0xc40, "size_max": 0xe00}
-        elif is_x86_32() and get_libc_version() >= (2, 26):
+        elif (is_x86_32() or is_riscv32() or is_ppc32()) and get_libc_version() >= (2, 26):
             table["large_bins"][63] = {"size_min": 0x3f0, "size_max": 0x400}
             table["large_bins"][64] = {"size_min": 0x400, "size_max": 0x440}
             table["large_bins"][65] = {"size_min": 0x440, "size_max": 0x480}
@@ -28125,8 +28128,11 @@ class GlibcHeapBinsSimpleCommand(GenericCommand):
                                 ProcessMap.lookup_address(c), Symbol.get_symbol_string(c),
                             ))
                     if m or self.args.verbose:
-                        size = GlibcHeap.get_binsize_table()["fastbins"][i]["size"]
-                        gef_print("{:#x} [{:d}]: {:s}".format(size, i, " -> ".join(m)).rstrip())
+                        bin_table = GlibcHeap.get_binsize_table()["fastbins"]
+                        if i in bin_table:
+                            gef_print("{:#x} [{:d}]: {:s}".format(bin_table[i]["size"], i, " -> ".join(m)).rstrip())
+                        else:
+                            gef_print("[{:d}]: {:s}".format(i, " -> ".join(m)).rstrip())
             else:
                 info("No fastbins in this version of libc")
 
@@ -28303,8 +28309,9 @@ class GlibcHeapBinsDump:
             return (sz >> 4) - 2 if SIZE_SZ == 8 else (sz >> 3) - 2
 
         SIZE_SZ = current_arch.ptrsize
+        MALLOC_ALIGN_MASK = GlibcHeap.HeapInfo.MALLOC_ALIGNMENT() - 1
         MAX_FAST_SIZE = 80 * SIZE_SZ // 4
-        NFASTBINS = fastbin_index(MAX_FAST_SIZE) - 1
+        NFASTBINS = fastbin_index((MAX_FAST_SIZE + SIZE_SZ + MALLOC_ALIGN_MASK) & ~MALLOC_ALIGN_MASK) + 1
 
         self.out.append(titlify("fastbins"))
         corrupted_msg_color = Config.get_gef_setting("theme.heap_corrupted_msg")
