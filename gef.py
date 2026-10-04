@@ -18982,6 +18982,235 @@ class VvarCommand(GenericCommand, BufferingOutput):
 
 
 @register_command
+class CppVtableCommand(GenericCommand, BufferingOutput):
+    """Dump C++ virtual tables and RTTI from an object or base subobject."""
+
+    _cmdline_ = "cpp-vtable"
+    _category_ = "02-e. Process Information - Complex Structure Information"
+
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("address", metavar="ADDRESS", type=AddressUtil.parse_address,
+                        help="the address of a C++ object or polymorphic base subobject.")
+    parser.add_argument("-c", "--count", type=int, default=64,
+                        help="maximum number of virtual function entries per table. (default: 64)")
+    parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
+    _syntax_ = parser.format_help()
+
+    _example_ = [
+        "{0:s} 0x55555556b2a0",
+        "{0:s} '&object'",
+        "{0:s} '(Base2 *)&object' -c 8",
+    ]
+    _example_ = "\n".join(_example_).format(_cmdline_)
+
+    _note_ = [
+        "Uses the Itanium C++ ABI with pointer-sized virtual function entries (Linux GCC/Clang).",
+        "No debug information is required; RTTI is decoded from target memory.",
+        "Stripped functions are shown by address; class names are recovered from RTTI.",
+        "Relative vtables and function descriptors are unsupported.",
+        "RTTI supplies inheritance and secondary tables, including virtual base offsets.",
+        "Without RTTI, only the specified subobject's table is displayed.",
+        "Function enumeration stops at non-code entries or --count; the ABI stores no table length.",
+    ]
+    _note_ = "\n".join(_note_)
+
+    def read_vtable(self, address):
+        vptr = read_int_from_memory(address)
+        if not vptr or vptr % self.ptrsize:
+            raise ValueError("Invalid vptr")
+        offset_to_top = read_int_from_memory(vptr - 2 * self.ptrsize, signed=True)
+        rtti = read_int_from_memory(vptr - self.ptrsize)
+        return {"vptr": vptr, "rtti": rtti, "offset_to_top": offset_to_top, "top": address + offset_to_top}
+
+    def read_typeinfo(self, address):
+        if address in self.typeinfos:
+            return self.typeinfos[address]
+        vptr = read_int_from_memory(address)
+        nameptr = read_int_from_memory(address + self.ptrsize)
+        name = read_cstring_from_memory(nameptr, max_length=0x1000, safe=True) if nameptr else None
+        if not vptr or not name or name.endswith("[...]"):
+            raise ValueError("Invalid RTTI at {:#x}".format(address))
+
+        location = Symbol.gdb_get_location(vptr)
+        kind_name = location[0] if location else ""
+        kinds = ("__class_type_info", "__si_class_type_info", "__vmi_class_type_info")
+        if not any(kind in kind_name for kind in kinds):
+            meta = read_int_from_memory(vptr - self.ptrsize, safe=True)
+            meta_nameptr = read_int_from_memory(meta + self.ptrsize, safe=True) if meta else None
+            kind_name = read_cstring_from_memory(meta_nameptr, max_length=0x100, safe=True) if meta_nameptr else ""
+        kind = next((kind for kind in kinds if kind in (kind_name or "")), None)
+        if kind is None:
+            raise ValueError("Unsupported RTTI at {:#x}".format(address))
+
+        if self.cppfilt:
+            try:
+                result = GefUtil.gef_execute_external([self.cppfilt, "_ZTS" + name.lstrip("*")]).strip()
+                if result.startswith("typeinfo name for "):
+                    name = result[len("typeinfo name for "):]
+            except (OSError, subprocess.CalledProcessError):
+                pass
+
+        bases = []
+        flags = 0
+        if kind == "__si_class_type_info":
+            bases.append((read_int_from_memory(address + 2 * self.ptrsize), 0, 2))
+        elif kind == "__vmi_class_type_info":
+            flags = read_int32_from_memory(address + 2 * self.ptrsize)
+            count = read_int32_from_memory(address + 2 * self.ptrsize + 4)
+            if count > 256:
+                raise ValueError("Too many RTTI bases at {:#x}".format(address))
+            for i in range(count):
+                entry = address + 2 * self.ptrsize + 8 + i * 2 * self.ptrsize
+                base = read_int_from_memory(entry)
+                offset_flags = read_int_from_memory(entry + self.ptrsize, signed=True)
+                bases.append((base, offset_flags >> 8, offset_flags & 0xff))
+
+        result = {"name": name, "kind": kind, "flags": flags, "bases": bases}
+        self.typeinfos[address] = result
+        return result
+
+    def dump_inheritance(self, rtti, address, root, tables, seen, depth=0, attributes="", prefix="", last=True):
+        if depth >= 32 or len(seen) >= 256:
+            self.warn_add_out("Inheritance traversal limit reached")
+            return
+        try:
+            record = self.read_typeinfo(rtti)
+        except (gdb.error, ValueError, OverflowError) as exception:
+            self.warn_add_out("Failed to read base RTTI: {!s}".format(exception))
+            return
+
+        flags = []
+        if record["flags"] & 1:
+            flags.append("repeated bases")
+        if record["flags"] & 2:
+            flags.append("diamond")
+        details = ", ".join(filter(None, (attributes, ", ".join(flags))))
+        tree = prefix + ("\u2514\u2500\u2500 " if last else "\u251c\u2500\u2500 ") if depth else ""
+        self.out.append("  {!s} {:s}{:s} (offset {:+d}){:s}".format(
+            ProcessMap.lookup_address(address), tree, record["name"], address - root["top"],
+            " [" + details + "]" if details else "",
+        ))
+        key = (rtti, address)
+        if key in seen:
+            return
+        seen.add(key)
+
+        try:
+            table = self.read_vtable(address)
+            if table["rtti"] == root["rtti"] and table["top"] == root["top"]:
+                tables[address] = table
+        except (gdb.error, ValueError, OverflowError):
+            pass
+
+        if depth:
+            prefix += "    " if last else "\u2502   "
+        for i, (base, offset, flags) in enumerate(record["bases"]):
+            attributes = "public" if flags & 2 else "non-public"
+            if flags & 1:
+                attributes += ", virtual"
+                vptr = read_int_from_memory(address, safe=True)
+                displacement = read_int_from_memory(vptr + offset, safe=True, signed=True) if vptr else None
+                if displacement is None:
+                    self.warn_add_out("Failed to read virtual base offset at {:#x}".format(address))
+                    continue
+                base_address = address + displacement
+            else:
+                base_address = address + offset
+            self.dump_inheritance(base, base_address, root, tables, seen, depth + 1, attributes,
+                                  prefix, i == len(record["bases"]) - 1)
+        return
+
+    def is_function(self, address):
+        if not address:
+            return False
+        if is_arm32():
+            address &= ~1
+        return ProcessMap.lookup_address(address).is_in_text_segment()
+
+    def dump_functions(self, table, count):
+        table_symbol = Symbol.gdb_get_location(table["vptr"])
+        for i in range(count):
+            slot = table["vptr"] + i * self.ptrsize
+            slot_symbol = Symbol.gdb_get_location(slot)
+            if table_symbol and slot_symbol and slot_symbol[0] != table_symbol[0]:
+                break
+            function = read_int_from_memory(slot, safe=True)
+            if function is None:
+                self.warn_add_out("Unreadable vtable entry at {:#x}".format(slot))
+                break
+            if function == 0:
+                next_entry = read_int_from_memory(slot + self.ptrsize, safe=True)
+                if next_entry and not self.is_function(next_entry):
+                    try:
+                        self.read_typeinfo(next_entry)
+                    except (gdb.error, ValueError, OverflowError):
+                        pass
+                    else:
+                        break
+            if function and not self.is_function(function):
+                break
+            symbol = Symbol.get_symbol_string(function) if function else " <null>"
+            self.out.append("{:10s} {!s}{:s}".format("[{:d}]".format(i), ProcessMap.lookup_address(function), symbol))
+        else:
+            self.warn_add_out("Function entry limit reached; use --count to adjust it")
+        return
+
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @Decorator.require_arch_set
+    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64", "MIPS32", "MIPS64", "MIPSN32", "RISCV32", "RISCV64"))
+    def do_invoke(self, args):
+        if args.count <= 0:
+            err("--count must be positive")
+            return
+
+        self.ptrsize = AddressUtil.get_memory_alignment()
+        self.typeinfos = {}
+        self.out = []
+        try:
+            self.cppfilt = GefUtil.which(Config.get_gef_setting("gef.cppfilt_command"))
+        except FileNotFoundError:
+            self.cppfilt = None
+
+        try:
+            table = self.read_vtable(args.address)
+            rtti = self.read_typeinfo(table["rtti"]) if table["rtti"] else None
+            if rtti is None:
+                symbol = Symbol.gdb_get_location(table["vptr"] - self.ptrsize)
+                if not (symbol and symbol[0].startswith(("vtable for ", "_ZTV"))) and not any(
+                    self.is_function(read_int_from_memory(table["vptr"] + i * self.ptrsize, safe=True))
+                    for i in range(3)
+                ):
+                    raise ValueError("No virtual function pointer found")
+        except (gdb.error, ValueError, OverflowError) as exception:
+            err("Failed to read C++ object at {:#x}: {!s}".format(args.address, exception))
+            return
+
+        self.out.append("{:10s} {!s}".format("Object:", ProcessMap.lookup_address(args.address)))
+        self.out.append("{:10s} {!s}".format("Top:", ProcessMap.lookup_address(table["top"])))
+        tables = {args.address: table}
+        if rtti:
+            self.out.append("{:10s} {:s}".format("Type:", rtti["name"]))
+            self.out.append("")
+            self.out.append("Inheritance:")
+            self.dump_inheritance(table["rtti"], table["top"], table, tables, set())
+        else:
+            self.warn_add_out("RTTI is unavailable; inheritance and secondary tables cannot be resolved")
+
+        for address, entry in tables.items():
+            self.out.append("")
+            self.out.append("{:10s} {!s} (offset {:+d})".format("Subobject:", ProcessMap.lookup_address(address), address - table["top"]))
+            self.out.append("{:10s} {!s}{:s}".format("vptr:", ProcessMap.lookup_address(entry["vptr"]), Symbol.get_symbol_string(entry["vptr"])))
+            self.out.append("{:10s} {!s}{:s}".format("RTTI:", ProcessMap.lookup_address(entry["rtti"]), Symbol.get_symbol_string(entry["rtti"])))
+            self.out.append("offset-to-top: {:d}".format(entry["offset_to_top"]))
+            self.dump_functions(entry, args.count)
+
+        self.print_output(check_terminal_size=True)
+        return
+
+
+@register_command
 class IouringDumpCommand(GenericCommand, BufferingOutput):
     """Dump the userland io_uring rings."""
 

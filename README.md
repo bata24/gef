@@ -898,6 +898,8 @@ For a comprehensive list and additional details, see [docs/SUPPORTED-MODE.md](do
     - ![](images/ucontext.png)
 - `jmpbuf`: displays the registers saved in a `jmp_buf` or `sigjmp_buf` of glibc, with `PTR_MANGLE` decoded.
     - ![](images/jmpbuf.png)
+- `cpp-vtable`: dumps C++ virtual tables and RTTI from an object or base subobject.
+    - ![](images/cpp-vtable.png)
 
 ### Other
 - The category is introduced in `gef help`.

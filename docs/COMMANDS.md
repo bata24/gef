@@ -2857,6 +2857,45 @@ options:
 ```
 
 # 02-e. Process Information - Complex Structure Information
+## `cpp-vtable`
+
+Dump C++ virtual tables and RTTI from an object or base subobject.
+
+
+### Syntax
+
+```text
+usage: cpp-vtable [-h] [-c COUNT] [-n] ADDRESS
+
+positional arguments:
+  ADDRESS            the address of a C++ object or polymorphic base subobject.
+
+options:
+  -h, --help         show this help message and exit
+  -c, --count COUNT  maximum number of virtual function entries per table. (default: 64)
+  -n, --no-pager     do not use the pager.
+```
+
+### Examples
+
+```gdb
+cpp-vtable 0x55555556b2a0
+cpp-vtable '&object'
+cpp-vtable '(Base2 *)&object' -c 8
+```
+
+### Notes
+
+```text
+Uses the Itanium C++ ABI with pointer-sized virtual function entries (Linux GCC/Clang).
+No debug information is required; RTTI is decoded from target memory.
+Stripped functions are shown by address; class names are recovered from RTTI.
+Relative vtables and function descriptors are unsupported.
+RTTI supplies inheritance and secondary tables, including virtual base offsets.
+Without RTTI, only the specified subobject's table is displayed.
+Function enumeration stops at non-code entries or --count; the ABI stores no table length.
+```
+
 ## `dtor-dump`
 
 Display registered destructor functions.
@@ -8050,8 +8089,8 @@ lookup working, but there the variables cannot be named nor looked up by name.
 CONFIG_SMP=n has no `__per_cpu_offset` at all, and `&var` is the address as is.
 Whether it is CONFIG_SMP=n or just unresolved is told by the "SMP" of the banner.
 
-The number of cpus is `nr_cpu_ids`, the upper bound of the cpu ids, not the number
-of online cpus. Each cpu is tagged with the possible/present/online cpu masks,
+The cpu-id upper bound comes from `nr_cpu_ids` or the possible cpu mask; it is
+estimated from `__per_cpu_offset[]` if both are unknown. Each cpu is tagged with the masks,
 which are recovered from `init_cpu_*()`/`set_cpu_online()` without the symbols.
 ```
 
@@ -12691,6 +12730,7 @@ print-format -f py -b 8 -l 256 $rsp
 ```text
 "hexn" means hex with new-line.
 "hexs" means hex with separator.
+JavaScript uses BigInt for 64-bit values.
 ```
 
 # 07-d. Misc - Show Example
