@@ -900,6 +900,7 @@ For a comprehensive list and additional details, see [docs/SUPPORTED-MODE.md](do
     - ![](images/jmpbuf.png)
 - `cpp-vtable`: dumps C++ virtual tables and RTTI from an object or base subobject.
     - ![](images/cpp-vtable.png)
+- `cpp-mangle`/`cpp-demangle`: mangles/demangles a C++ name by the Itanium C++ ABI.
 
 ### Other
 - The category is introduced in `gef help`.

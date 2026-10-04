@@ -12536,6 +12536,77 @@ convert value "\\x41\\x42\\x43\\x44" -v
 convert value --hex "41 42 43 44" -v
 ```
 
+## `cpp-demangle`
+
+Demangle C++ names by the Itanium C++ ABI.
+
+
+### Syntax
+
+```text
+usage: cpp-demangle [-h] [-t] NAME [NAME ...]
+
+positional arguments:
+  NAME        the mangled name to demangle.
+
+options:
+  -h, --help  show this help message and exit
+  -t, --type  demangle types such as RTTI names (e.g., `St9exception`).
+```
+
+### Examples
+
+```gdb
+cpp-demangle _ZNK2ns3Foo3barEiPKc
+cpp-demangle _ZTV3Foo _ZTI3Foo
+cpp-demangle -t N2ns3FooE
+```
+
+### Notes
+
+```text
+Uses the demangler of GDB (`demangle -l c++`).
+```
+
+## `cpp-mangle`
+
+Mangle a C++ name by the Itanium C++ ABI.
+
+
+### Syntax
+
+```text
+usage: cpp-mangle [-h] [-t] NAME [NAME ...]
+
+positional arguments:
+  NAME        the demangled name to mangle.
+
+options:
+  -h, --help  show this help message and exit
+  -t, --type  mangle a type (the form of RTTI names) instead of a function or variable.
+```
+
+### Examples
+
+```gdb
+cpp-mangle 'ns::Foo::bar(int, char const*) const'
+cpp-mangle 'std::vector<int, std::allocator<int> >::push_back(int const&)'
+cpp-mangle 'vtable for ns::Foo'
+cpp-mangle -t 'ns::Foo*'
+```
+
+### Notes
+
+```text
+Uses the Itanium C++ ABI (Linux GCC/Clang). NAME is written in the form printed by `cpp-demangle`.
+Typedefs and default template arguments are not expanded (e.g., write std::basic_string<...> instead of std::string).
+Constructors and destructors are encoded as the complete object variants (C1/D1).
+An operator with one parameter in a scope is treated as a binary member operator.
+Template parameter references (T_), parameter packs and internal linkage are not recovered from the demangled form,
+so function templates and such symbols may differ from the compiler output.
+Lambdas, unnamed types and expressions in template arguments are unsupported.
+```
+
 ## `u2d`
 
 Convert type (unsigned long <-> double/float).

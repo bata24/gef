@@ -62777,6 +62777,559 @@ class ConvertValueCommand(ConvertCommand):
         return
 
 
+@register_command
+class CppMangleCommand(GenericCommand):
+    """Mangle a C++ name by the Itanium C++ ABI."""
+
+    _cmdline_ = "cpp-mangle"
+    _category_ = "07-a. Misc - Conversion"
+
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("-t", "--type", action="store_true",
+                        help="mangle a type (the form of RTTI names) instead of a function or variable.")
+    parser.add_argument("name", metavar="NAME", nargs="+", help="the demangled name to mangle.")
+    _syntax_ = parser.format_help()
+
+    _example_ = [
+        "{0:s} 'ns::Foo::bar(int, char const*) const'",
+        "{0:s} 'std::vector<int, std::allocator<int> >::push_back(int const&)'",
+        "{0:s} 'vtable for ns::Foo'",
+        "{0:s} -t 'ns::Foo*'",
+    ]
+    _example_ = "\n".join(_example_).format(_cmdline_)
+
+    _note_ = [
+        "Uses the Itanium C++ ABI (Linux GCC/Clang). NAME is written in the form printed by `cpp-demangle`.",
+        "Typedefs and default template arguments are not expanded (e.g., write std::basic_string<...> instead of std::string).",
+        "Constructors and destructors are encoded as the complete object variants (C1/D1).",
+        "An operator with one parameter in a scope is treated as a binary member operator.",
+        "Template parameter references (T_), parameter packs and internal linkage are not recovered from the demangled form,",
+        "so function templates and such symbols may differ from the compiler output.",
+        "Lambdas, unnamed types and expressions in template arguments are unsupported.",
+    ]
+    _note_ = "\n".join(_note_)
+
+    OPERATORS = {
+        "new": "nw", "new[]": "na", "delete": "dl", "delete[]": "da",
+        "~": "co", "+": "pl", "-": "mi", "*": "ml", "/": "dv", "%": "rm", "&": "an", "|": "or", "^": "eo",
+        "=": "aS", "+=": "pL", "-=": "mI", "*=": "mL", "/=": "dV", "%=": "rM", "&=": "aN", "|=": "oR", "^=": "eO",
+        "<<": "ls", ">>": "rs", "<<=": "lS", ">>=": "rS", "==": "eq", "!=": "ne", "<": "lt", ">": "gt",
+        "<=": "le", ">=": "ge", "<=>": "ss", "!": "nt", "&&": "aa", "||": "oo", "++": "pp", "--": "mm",
+        ",": "cm", "->*": "pm", "->": "pt", "()": "cl", "[]": "ix",
+    }
+    UNARY_OPERATORS = {"+": "ps", "-": "ng", "&": "ad", "*": "de"}
+    BUILTINS = {
+        "void": "v", "bool": "b", "wchar_t": "w", "float": "f", "__float128": "g",
+        "char8_t": "Du", "char16_t": "Ds", "char32_t": "Di", "decimal32": "Df", "decimal64": "Dd", "decimal128": "De",
+        "_Float16": "DF16_", "_Float32": "DF32_", "_Float64": "DF64_", "_Float128": "DF128_", "_Float32x": "DF32x", "_Float64x": "DF64x",
+    }
+    INTEGER_WORDS = ("signed", "unsigned", "short", "long", "int", "char", "double", "__int128")
+    ABBREVIATIONS = {
+        "St9allocator": "Sa",
+        "St12basic_string": "Sb",
+        "St12basic_stringIcSt11char_traitsIcESt9allocatorIcEE": "Ss",
+        "St13basic_istreamIcSt11char_traitsIcEE": "Si",
+        "St13basic_ostreamIcSt11char_traitsIcEE": "So",
+        "St14basic_iostreamIcSt11char_traitsIcEE": "Sd",
+    }
+    SPECIAL_NAMES = {
+        "vtable for ": "TV",
+        "VTT for ": "TT",
+        "typeinfo for ": "TI",
+        "typeinfo name for ": "TS",
+        "guard variable for ": "GV",
+    }
+    RE_TOKEN = re.compile(
+        r"\(anonymous namespace\)|\[abi:\w+\]|\.\.\.|::|->\*|->|<<=|>>=|<=>|<<|>>|<=|>=|==|!=|&&|\|\||\+\+|--|[-+*/%&|^]=|\w+|\S",
+    )
+
+    def peek(self, n=0):
+        if self.pos + n < len(self.tokens):
+            return self.tokens[self.pos + n]
+        return None
+
+    def pop(self):
+        token = self.peek()
+        if token is None:
+            raise ValueError("Unexpected end of input")
+        self.pos += 1
+        return token
+
+    def expect(self, token):
+        if self.pop() != token:
+            raise ValueError("`{:s}` is expected after `{:s}`".format(token, " ".join(self.tokens[:self.pos - 1])))
+        return
+
+    def is_identifier(self, token):
+        if token in ("const", "volatile", "operator", "decltype") or token in self.BUILTINS or token in self.INTEGER_WORDS:
+            return False
+        return token == "(anonymous namespace)" or re.fullmatch(r"[A-Za-z_]\w*", token or "") is not None
+
+    def parse_qualified_name(self):
+        if self.peek() == "::":
+            self.pop()
+        comps = [self.parse_component()]
+        while self.peek() == "::" and self.peek(1) != "*":
+            self.pop()
+            comps.append(self.parse_component())
+        if comps[-1]["kind"] == "id" and len(comps) > 1 and comps[-1]["name"] == comps[-2]["name"]:
+            comps[-1]["kind"] = "ctor"
+        return comps
+
+    def parse_component(self):
+        token = self.pop()
+        comp = {"kind": "id", "name": token, "tags": "", "args": None}
+        if token == "~":
+            comp["kind"] = "dtor"
+            comp["name"] = self.pop()
+        elif token == "operator":
+            comp["kind"] = "op"
+            token = self.pop()
+            if token in ("new", "delete") and self.peek() == "[" and self.peek(1) == "]":
+                self.pos += 2
+                token += "[]"
+            elif token in ("(", "["):
+                token += ")" if token == "(" else "]"
+                self.expect(token[1])
+            elif token not in self.OPERATORS:
+                self.pos -= 1
+                comp["kind"] = "conv"
+                comp["type"] = self.parse_type(allow_func=False)
+            comp["name"] = token
+            comp["code"] = self.OPERATORS.get(token)
+        elif token == "(anonymous namespace)":
+            comp["kind"] = "anon"
+        elif not self.is_identifier(token):
+            raise ValueError("Unexpected token `{:s}`".format(token))
+        while (self.peek() or "").startswith("[abi:"):
+            tag = self.pop()[5:-1]
+            comp["tags"] += "B{:d}{:s}".format(len(tag), tag)
+        if self.peek() == "<":
+            comp["args"] = self.parse_template_args()
+        return comp
+
+    def parse_template_args(self):
+        self.expect("<")
+        args = []
+        while self.peek() != ">":
+            args.append(self.parse_template_arg())
+            if self.peek() != ",":
+                break
+            self.pop()
+        self.expect(">")
+        return args
+
+    def parse_template_arg(self):
+        token = self.peek()
+        if token in ("true", "false"):
+            self.pop()
+            return ("L", ("b", "b"), str(int(token == "true")))
+        if token == "(":
+            self.pop()
+            t = self.parse_type()
+            self.expect(")")
+            negative = self.peek() == "-" and self.pop()
+            return ("L", t, ("n" if negative else "") + str(int(self.pop(), 0)))
+        if token == "-" or re.fullmatch(r"\d\w*", token or ""):
+            negative = token == "-" and self.pop()
+            m = re.fullmatch(r"(0x[0-9a-f]+|\d+)(u?)(l{0,2})(u?)", self.pop(), re.I)
+            if not m:
+                raise ValueError("Unsupported template argument")
+            code = ["ij", "lm", "xy"][len(m.group(3))][bool(m.group(2) or m.group(4))]
+            return ("L", ("b", code), ("n" if negative else "") + str(int(m.group(1), 0)))
+        return self.parse_type()
+
+    def parse_type(self, allow_func=True):
+        quals = ""
+        words = []
+        t = None
+        while True:
+            token = self.peek()
+            if token in ("const", "volatile"):
+                quals += "K" if token == "const" else "V"
+            elif t is None and (token in self.BUILTINS or token in self.INTEGER_WORDS):
+                words.append(token)
+            elif t is None and not words and token == "decltype":
+                self.pop()
+                self.expect("(")
+                self.expect("nullptr")
+                self.expect(")")
+                t = ("b", "Dn")
+                continue
+            elif t is None and not words and (token == "::" or self.is_identifier(token)):
+                t = ("n", self.parse_qualified_name())
+                continue
+            else:
+                break
+            self.pop()
+        if words:
+            t = ("b", self.builtin_code(words))
+        if t is None:
+            raise ValueError("Type is expected after `{:s}`".format(" ".join(self.tokens[:self.pos])))
+        return self.parse_declarator(allow_func)(self.qualify(t, quals))
+
+    def builtin_code(self, words):
+        longs = words.count("long")
+        unsigned = "unsigned" in words
+        others = [w for w in words if w not in ("signed", "unsigned", "short", "long", "int")]
+        if others == ["char"]:
+            return "h" if unsigned else "a" if "signed" in words else "c"
+        if others == ["double"]:
+            return "e" if longs else "d"
+        if others == ["__int128"]:
+            return "o" if unsigned else "n"
+        if (others and len(words) > 1) or longs > 2:
+            raise ValueError("Unsupported type `{:s}`".format(" ".join(words)))
+        if others:
+            return self.BUILTINS[others[0]]
+        if "short" in words:
+            return "st"[unsigned]
+        return ["ij", "lm", "xy"][longs][unsigned]
+
+    def qualify(self, t, quals):
+        if t[0] == "cv":
+            quals += t[1]
+            t = t[2]
+        quals = "".join(q for q in "rVK" if q in quals)
+        return ("cv", quals, t) if quals else t
+
+    def parse_declarator(self, allow_func):
+        ops = []
+        while True:
+            token = self.peek()
+            if token == "*":
+                ops.append(("P",))
+            elif token in ("&", "&&"):
+                ops.append(("R" if token == "&" else "O",))
+            elif token in ("const", "volatile", "__restrict", "restrict"):
+                ops.append(("cv", {"const": "K", "volatile": "V"}.get(token, "r")))
+            elif token == "::" or self.is_identifier(token):
+                saved = self.pos
+                comps = self.parse_qualified_name()
+                if self.peek() != "::" or self.peek(1) != "*":
+                    self.pos = saved
+                    break
+                self.pos += 1
+                ops.append(("M", ("n", comps)))
+            else:
+                break
+            self.pop()
+
+        inner = None
+        if self.peek() == "(":
+            saved = self.pos
+            self.pop()
+            inner = self.parse_declarator(True)
+            if self.pos == saved + 1 or self.peek() != ")":
+                self.pos = saved
+                inner = None
+            else:
+                self.pop()
+
+        suffixes = []
+        while True:
+            if self.peek() == "(" and (allow_func or (inner and not suffixes)):
+                params = self.parse_params()
+                suffixes.append(("F", params) + self.parse_method_quals())
+            elif self.peek() == "[":
+                self.pop()
+                size = "" if self.peek() == "]" else str(int(self.pop(), 0))
+                self.expect("]")
+                suffixes.append(("A", size))
+            else:
+                break
+
+        def wrap(t):
+            for op in ops:
+                if op[0] == "cv":
+                    t = self.qualify(t, op[1])
+                elif op[0] == "M":
+                    t = ("M", op[1], t)
+                else:
+                    t = (op[0], t)
+            for suffix in reversed(suffixes):
+                if suffix[0] == "F":
+                    t = ("F", t) + suffix[1:]
+                else:
+                    t = ("A", suffix[1], t)
+            return inner(t) if inner else t
+
+        return wrap
+
+    def parse_params(self):
+        self.expect("(")
+        params = []
+        while self.peek() != ")":
+            if self.peek() == "...":
+                self.pop()
+                params.append(("b", "z"))
+            else:
+                params.append(self.parse_type())
+                if self.is_identifier(self.peek()):
+                    self.pop()
+            if self.peek() != ",":
+                break
+            self.pop()
+        self.expect(")")
+        return params or [("b", "v")]
+
+    def parse_method_quals(self):
+        quals = ""
+        ref = ""
+        while self.peek() in ("const", "volatile", "&", "&&"):
+            token = self.pop()
+            if token in ("&", "&&"):
+                ref = "R" if token == "&" else "O"
+            else:
+                quals += "K" if token == "const" else "V"
+        return "".join(q for q in "VK" if q in quals), ref
+
+    def unqualified(self, comp, encode_type):
+        kind = comp["kind"]
+        if kind == "id" and comp["name"] == "std":
+            return "St"
+        if kind == "ctor":
+            return "C1" + comp["tags"]
+        if kind == "dtor":
+            return "D1" + comp["tags"]
+        if kind == "op":
+            return comp["code"] + comp["tags"]
+        if kind == "conv":
+            return "cv" + encode_type(comp["type"])
+        if kind == "anon":
+            return "12_GLOBAL__N_1"
+        return "{:d}{:s}{:s}".format(len(comp["name"]), comp["name"], comp["tags"])
+
+    def template_args(self, args, encode_type):
+        out = ""
+        for arg in args:
+            if arg[0] == "L":
+                out += "L" + encode_type(arg[1]) + arg[2] + "E"
+            else:
+                out += encode_type(arg)
+        return "I" + out + "E"
+
+    def name_key(self, comps):
+        key = ""
+        for comp in comps:
+            key += self.unqualified(comp, self.type_key)
+            if comp["args"] is not None:
+                key += self.template_args(comp["args"], self.type_key)
+        return key
+
+    def type_key(self, t):
+        kind = t[0]
+        if kind == "b":
+            return t[1]
+        if kind == "n":
+            return self.name_key(t[1])
+        if kind == "cv":
+            return t[1] + self.type_key(t[2])
+        if kind == "F":
+            return t[3] + "F" + "".join(self.type_key(x) for x in [t[1]] + t[2]) + t[4] + "E"
+        if kind == "A":
+            return "A" + t[1] + "_" + self.type_key(t[2])
+        if kind == "M":
+            return "M" + self.type_key(t[1]) + self.type_key(t[2])
+        return kind + self.type_key(t[1])
+
+    def substitute(self, key):
+        if key in self.ABBREVIATIONS:
+            return self.ABBREVIATIONS[key]
+        if key not in self.subs:
+            return None
+        index = self.subs.index(key)
+        if index == 0:
+            return "S_"
+        digits = ""
+        index -= 1
+        while True:
+            digits = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"[index % 36] + digits
+            index //= 36
+            if index == 0:
+                return "S{:s}_".format(digits)
+
+    def encode_prefix(self, comps, add=True):
+        key = self.name_key(comps)
+        if key == "St":
+            return key
+        if add and self.substitute(key):
+            return self.substitute(key)
+        last = comps[-1]
+        if last["args"] is not None:
+            out = self.encode_template_prefix(comps) + self.template_args(last["args"], self.encode_type)
+        else:
+            out = (self.encode_prefix(comps[:-1]) if len(comps) > 1 else "") + self.unqualified(last, self.encode_type)
+        if add:
+            self.subs.append(key)
+        return out
+
+    def encode_template_prefix(self, comps):
+        key = self.name_key(comps[:-1]) + self.unqualified(comps[-1], self.type_key)
+        if self.substitute(key):
+            return self.substitute(key)
+        out = (self.encode_prefix(comps[:-1]) if len(comps) > 1 else "") + self.unqualified(comps[-1], self.encode_type)
+        self.subs.append(key)
+        return out
+
+    def encode_name(self, comps, quals=""):
+        std = len(comps) > 1 and self.name_key(comps[:1]) == "St"
+        if not quals and len(comps) == 1 + std:
+            return self.encode_prefix(comps, add=False)
+        return "N" + quals + self.encode_prefix(comps, add=False) + "E"
+
+    def encode_type(self, t):
+        kind = t[0]
+        if kind == "b":
+            return t[1]
+        key = self.type_key(t)
+        if self.substitute(key):
+            return self.substitute(key)
+        if kind == "n":
+            out = self.encode_name(t[1])
+        elif kind == "cv":
+            out = t[1] + self.encode_type(t[2])
+        elif kind == "F":
+            out = t[3] + "F" + "".join(self.encode_type(x) for x in [t[1]] + t[2]) + t[4] + "E"
+        elif kind == "A":
+            out = "A" + t[1] + "_" + self.encode_type(t[2])
+        elif kind == "M":
+            out = "M" + self.encode_type(t[1]) + self.encode_type(t[2])
+        else:
+            out = kind + self.encode_type(t[1])
+        self.subs.append(key)
+        return out
+
+    def encode_entity(self):
+        ret = None
+        saved = self.pos
+        try:
+            comps = self.parse_qualified_name()
+            if self.peek() not in ("(", None):
+                raise ValueError
+        except ValueError:
+            self.pos = saved
+            ret = self.parse_type()
+            comps = self.parse_qualified_name()
+        if self.peek() != "(":
+            return self.encode_name(comps)
+
+        params = self.parse_params()
+        quals, ref = self.parse_method_quals()
+        last = comps[-1]
+        if last["kind"] == "op":
+            count = len(params) - (params == [("b", "v")])
+            if count + (len(comps) > 1 and count < 2) == 1 and last["name"] in self.UNARY_OPERATORS:
+                last["code"] = self.UNARY_OPERATORS[last["name"]]
+        out = self.encode_name(comps, quals + ref)
+        if ret and last["args"] is not None:
+            out += self.encode_type(ret)
+        out += "".join(self.encode_type(p) for p in params)
+        if self.peek() == "::":
+            self.pop()
+            out = "Z" + out + "E" + self.encode_entity()
+        return out
+
+    def mangle(self, name, is_type=False):
+        prefix = ""
+        for special, code in self.SPECIAL_NAMES.items():
+            if name.startswith(special):
+                name = name[len(special):]
+                prefix = code
+                is_type = code != "GV"
+                break
+
+        self.tokens = []
+        for token in self.RE_TOKEN.findall(name):
+            # `>>` closes two template argument lists unless it is an operator name
+            if token in (">>", ">=", ">>=") and self.tokens[-1:] != ["operator"]:
+                self.tokens += list(token)
+            else:
+                self.tokens.append(token)
+        self.pos = 0
+        self.subs = []
+
+        if is_type:
+            out = self.encode_type(self.parse_type())
+        elif len(self.tokens) == 1 and self.is_identifier(self.tokens[0]) and not prefix:
+            return self.tokens[0]
+        else:
+            out = self.encode_entity()
+        if self.peek() is not None:
+            raise ValueError("Unexpected token `{:s}`".format(self.peek()))
+        if is_type and not prefix:
+            return out
+        return "_Z" + prefix + out
+
+    @Decorator.parse_args
+    def do_invoke(self, args):
+        name = " ".join(args.name)
+        try:
+            mangled = self.mangle(name, is_type=args.type)
+        except ValueError as e:
+            err("Failed to mangle: {!s}".format(e))
+            return
+
+        gef_print("{:10s} {:s}".format("Mangled:", mangled))
+        if mangled != name:
+            demangled = CppDemangleCommand.demangle(mangled, is_type=args.type)
+            if demangled is None:
+                warn("Failed to demangle the result")
+            else:
+                gef_print("{:10s} {:s}".format("Demangled:", demangled))
+        return
+
+
+@register_command
+class CppDemangleCommand(GenericCommand):
+    """Demangle C++ names by the Itanium C++ ABI."""
+
+    _cmdline_ = "cpp-demangle"
+    _category_ = "07-a. Misc - Conversion"
+
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("-t", "--type", action="store_true",
+                        help="demangle types such as RTTI names (e.g., `St9exception`).")
+    parser.add_argument("name", metavar="NAME", nargs="+", help="the mangled name to demangle.")
+    _syntax_ = parser.format_help()
+
+    _example_ = [
+        "{0:s} _ZNK2ns3Foo3barEiPKc",
+        "{0:s} _ZTV3Foo _ZTI3Foo",
+        "{0:s} -t N2ns3FooE",
+    ]
+    _example_ = "\n".join(_example_).format(_cmdline_)
+
+    _note_ = [
+        "Uses the demangler of GDB (`demangle -l c++`).",
+    ]
+    _note_ = "\n".join(_note_)
+
+    @staticmethod
+    def demangle(name, is_type=False):
+        if is_type:
+            name = "_ZTS" + name
+        try:
+            demangled = gdb.execute("demangle -l c++ -- {:s}".format(name), to_string=True).strip()
+        except gdb.error:
+            return None
+        if is_type:
+            if not demangled.startswith("typeinfo name for "):
+                return None
+            demangled = demangled[len("typeinfo name for "):]
+        return demangled
+
+    @Decorator.parse_args
+    def do_invoke(self, args):
+        for name in args.name:
+            demangled = self.demangle(name, is_type=args.type)
+            if demangled is None:
+                err("Failed to demangle {:s}".format(name))
+            else:
+                gef_print(demangled)
+        return
+
+
 class KernelAddressHeuristicFinderUtil:
     """A class that has utility for KernelAddressHeuristicFinder."""
 
