@@ -29078,7 +29078,12 @@ class GlibcHeapTryFreeCommand(GenericCommand):
                 ok("{:s} succeeded".format(name))
             else:
                 allocated_address = self.get_allocated_address(emulator)
-                ok("{:s} succeeded: {:s}".format(name, Color.colorify_hex(allocated_address, "bold")))
+                # realloc(ptr, 0) frees ptr and returns NULL
+                if allocated_address == 0 and not (name == "realloc" and self.args.size == 0):
+                    success = False
+                    err("{:s} failed: {:s}".format(name, Color.boldify("NULL returned")))
+                else:
+                    ok("{:s} succeeded: {:s}".format(name, Color.colorify_hex(allocated_address, "bold")))
         return success
 
     def changed_mem_patches(self, emulator):
@@ -29114,61 +29119,62 @@ class GlibcHeapTryFreeCommand(GenericCommand):
         # The arguments of free, malloc, realloc, and calloc are at most 2
         patch_info = self.make_patch_info(caller_address, arg1, arg2)
 
-        # modify (registers, memories)
-        for regname, regvalue in patch_info.regs_new.items():
-            if self.args.verbose:
-                info("set {:s}={:#x}".format(regname, regvalue))
-            gdb.execute("set {:s}={:#x}".format(regname, regvalue))
         tag = PatchCommand.PatchInfo.get_unique_tag()
-        for patch_addr, patch_code in patch_info.patches.items():
+        try:
+            # modify (registers, memories)
+            for regname, regvalue in patch_info.regs_new.items():
+                if self.args.verbose:
+                    info("set {:s}={:#x}".format(regname, regvalue))
+                gdb.execute("set {:s}={:#x}".format(regname, regvalue))
+            for patch_addr, patch_code in patch_info.patches.items():
+                if self.args.verbose:
+                    info("patch hex {:#x} {:s}".format(patch_addr, patch_code.hex()))
+                PatchCommand.PatchInfo(patch_addr, patch_code, tag=tag).patch(silent=not self.args.verbose)
+
+            # execute: run the emulation in-process and read its result directly, instead of
+            # invoking the `unicorn-emulate` command and parsing its text output.
+            # equivalent to `unicorn-emulate -t <stop_address> -A -E`.
+            kwargs = {
+                "start_insn": current_arch.pc,
+                "end_insn": patch_info.stop_address,
+                "nb_gadget": None,
+                "add_sse": False,
+                "verbose": False,
+                "quiet": False,
+                "only_insns": False,
+                "patch_got": True,    # -A
+                "emulate_mmap": True, # -E
+            }
+            # we read the emulator state directly, so suppress its printed dump unless -v
+            emulator = UnicornEmulateCommand.run_in_process(kwargs, suppress_output=not self.args.verbose)
+
+            # print
+            if emulator is not None:
+                success = self.print_result(name, emulator)
+
+                # temporarily execute command
+                if success and self.args.command:
+                    # temporarily reflects changes in memory
+                    patches = self.changed_mem_patches(emulator)
+                    for addr, value in patches.items():
+                        PatchCommand.PatchInfo(addr, value, tag=tag).patch(silent=not self.args.verbose)
+                    # do command
+                    for cmd in self.args.command:
+                        try:
+                            gef_print(titlify(cmd, color="bold", msg_color="bold"))
+                            gdb.execute(cmd)
+                        except Exception:
+                            exc_type, exc_value, exc_traceback = sys.exc_info()
+                            gef_print(exc_value)
+        finally:
+            # revert (registers, memories, thread locking)
+            for regname, regvalue in patch_info.regs_old.items():
+                if self.args.verbose:
+                    info("set {:s}={:#x}".format(regname, regvalue))
+                gdb.execute("set {:s}={:#x}".format(regname, regvalue))
+            PatchCommand.PatchInfo.revert_to_tag(tag, silent=not self.args.verbose)
             if self.args.verbose:
-                info("patch hex {:#x} {:s}".format(patch_addr, patch_code.hex()))
-            PatchCommand.PatchInfo(patch_addr, patch_code, tag=tag).patch(silent=not self.args.verbose)
-
-        # execute: run the emulation in-process and read its result directly, instead of
-        # invoking the `unicorn-emulate` command and parsing its text output.
-        # equivalent to `unicorn-emulate -t <stop_address> -A -E`.
-        kwargs = {
-            "start_insn": current_arch.pc,
-            "end_insn": patch_info.stop_address,
-            "nb_gadget": None,
-            "add_sse": False,
-            "verbose": False,
-            "quiet": False,
-            "only_insns": False,
-            "patch_got": True,    # -A
-            "emulate_mmap": True, # -E
-        }
-        # we read the emulator state directly, so suppress its printed dump unless -v
-        emulator = UnicornEmulateCommand.run_in_process(kwargs, suppress_output=not self.args.verbose)
-
-        # print
-        if emulator is not None:
-            success = self.print_result(name, emulator)
-
-            # temporarily execute command
-            if success and self.args.command:
-                # temporarily reflects changes in memory
-                patches = self.changed_mem_patches(emulator)
-                for addr, value in patches.items():
-                    PatchCommand.PatchInfo(addr, value, tag=tag).patch(silent=not self.args.verbose)
-                # do command
-                for cmd in self.args.command:
-                    try:
-                        gef_print(titlify(cmd, color="bold", msg_color="bold"))
-                        gdb.execute(cmd)
-                    except Exception:
-                        exc_type, exc_value, exc_traceback = sys.exc_info()
-                        gef_print(exc_value)
-
-        # revert (registers, memories, thread locking)
-        for regname, regvalue in patch_info.regs_old.items():
-            if self.args.verbose:
-                info("set {:s}={:#x}".format(regname, regvalue))
-            gdb.execute("set {:s}={:#x}".format(regname, regvalue))
-        PatchCommand.PatchInfo.revert_to_tag(tag, silent=not self.args.verbose)
-        if self.args.verbose:
-            info("patch revert ok")
+                info("patch revert ok")
         return
 
     @Decorator.parse_args
