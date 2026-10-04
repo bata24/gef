@@ -23151,8 +23151,15 @@ class MmapMemoryCommand(GenericCommand):
 
         # flags
         flags = 0x22 # MAP_ANONYMOUS | MAP_PRIVATE
+        map_fixed = 0x10
+        if is_alpha():
+            flags = 0x12
+            map_fixed = 0x100
+        elif is_hppa32() or is_hppa64():
+            flags = 0x12
+            map_fixed = 0x04
         if args.location is not None:
-            flags |= 0x10 # MAP_FIXED
+            flags |= map_fixed
         if is_mips32() or is_mips64() or is_mipsn32():
             flags |= 0x800 # MAP_DENYWRITE (why?)
 
@@ -98631,6 +98638,9 @@ class ExecAsm:
         self.debug = debug
         # output is always stdout
         self.stdout = 1
+        self.pc = None
+        self.thread = None
+        self.stops = []
 
         codes = []
         if target_codes:
@@ -98649,6 +98659,7 @@ class ExecAsm:
         return
 
     def get_state(self):
+        gdb.newest_frame().select()
         d = {}
 
         # pc
@@ -98673,6 +98684,7 @@ class ExecAsm:
 
         # reg
         for reg, v in d["reg"].items():
+            gdb.newest_frame().select()
             if get_register(reg) == v:
                 continue
             if (is_hppa32() or is_hppa64()) and reg == "$pc":
@@ -98686,6 +98698,7 @@ class ExecAsm:
                     pass
                 else:
                     info("set {:s} = {:#x} is failed".format(reg, v))
+        gdb.newest_frame().select()
         return
 
     def close_stdout(self):
@@ -98725,19 +98738,14 @@ class ExecAsm:
                     info("set {:s} = {:#x} is failed".format(reg, v))
         return
 
-    def exec_code(self):
-        # backup
-        d = self.get_state()
-
-        # modify code, regs
-        self.modify_regs()
-        write_memory(d["pc"], self.code)
+    def modify_code(self, pc):
+        write_memory(pc, self.code)
         if self.debug:
             gdb.execute("context")
 
         # skip infloop
         if self.code:
-            dst = d["pc"] + len(current_arch.infloop_insn)
+            dst = pc + len(current_arch.infloop_insn)
             if current_arch.has_delay_slot:
                 dst += len(current_arch.nop_insn)
             if is_hppa32() or is_hppa64():
@@ -98750,44 +98758,103 @@ class ExecAsm:
                 gdb.execute("set $npc = {:#x}".format(dst2), to_string=True)
             else:
                 gdb.execute("set $pc = {:#x}".format(dst), to_string=True)
+        self.pc = current_arch.pc
+        return
+
+    def execute_with_bp(self):
+        bp = None
+        try:
+            bp_addr = self.pc
+            if len(self.insn_sizes) >= self.step:
+                # the disassembler may decode the injected code in a stale mode (e.g., ARM vs Thumb)
+                bp_addr += sum(self.insn_sizes[:self.step])
+            else:
+                for _ in range(self.step):
+                    bp_addr += get_insn(bp_addr).size
+            bp = gdb.Breakpoint("*{:#x}".format(bp_addr), gdb.BP_BREAKPOINT, internal=True)
+            gdb.execute("c", to_string=True) # use c wrapper
+        except gdb.error:
+            pass
+        finally:
+            if bp:
+                bp.delete()
+        return
+
+    def exec_code(self, check_complete=False):
+        # backup
+        d = self.get_state()
+        self.thread = gdb.selected_thread()
+        self.stops.clear()
+
+        # modify code, regs
+        self.modify_regs()
+        self.modify_code(d["pc"])
 
         # exec
+        stop_handler = self.stops.append
         self.close_stdout()
-        if self.debug:
-            gdb.execute("context")
-        if self.use_bp:
-            bp = None
-            try:
-                bp_addr = current_arch.pc
-                insn_sizes = getattr(self, "insn_sizes", [])
-                if len(insn_sizes) >= self.step:
-                    # the disassembler may decode the injected code in a stale mode (e.g., ARM vs Thumb)
-                    bp_addr += sum(insn_sizes[:self.step])
-                else:
-                    for _ in range(self.step):
-                        bp_addr += get_insn(bp_addr).size
-                bp = gdb.Breakpoint("*{:#x}".format(bp_addr), gdb.BP_BREAKPOINT, internal=True)
-                gdb.execute("continue", to_string=True)
-            except gdb.error:
-                pass
-            finally:
-                if bp:
-                    bp.delete()
-        else:
-            try:
-                gdb.execute("stepi {:d}".format(self.step), to_string=True)
-            except gdb.MemoryError:
-                pass
-        if self.debug:
-            gdb.execute("context")
-        self.revert_stdout()
+        EventHooking.gef_on_stop_hook(stop_handler)
+        try:
+            if self.debug:
+                gdb.execute("context")
+            if self.use_bp:
+                self.execute_with_bp()
+            else:
+                try:
+                    gdb.execute("stepi {:d}".format(self.step), to_string=True)
+                except gdb.MemoryError:
+                    if check_complete:
+                        return None
+            if self.debug:
+                gdb.execute("context")
 
-        # get result
-        ret = self.get_state()
+            # get result
+            if check_complete and not self.is_complete():
+                return None
+            ret = self.get_state()
+        except gdb.error:
+            if not check_complete:
+                raise
+            return None
+        finally:
+            EventHooking.gef_on_stop_unhook(stop_handler)
+            if check_complete and gdb.selected_thread() != self.thread:
+                self.thread.switch()
+            self.revert_stdout()
+            self.revert_state(d)
 
-        # revert
-        self.revert_state(d)
         return ret
+
+    def is_complete(self):
+        gdb.newest_frame().select()
+        if not self.use_bp and self.step == 1 and current_arch.pc == self.pc and \
+                self.stops and gdb.selected_thread() == self.thread:
+            event = self.stops[-1]
+            if not isinstance(event, (gdb.SignalEvent, gdb.BreakpointEvent)) and \
+                    getattr(event, "details", {}).get("reason") in (None, "end-stepping-range"):
+                gdb.execute("stepi 1", to_string=True)
+                gdb.newest_frame().select()
+
+        # Only linear instructions have a fixed completion PC; syscall stepping may stop past the instruction.
+        expected_pc = self.pc + sum(self.insn_sizes[:self.step])
+        if not self.stops or gdb.selected_thread() != self.thread or current_arch.pc != expected_pc:
+            return False
+        event = self.stops[-1]
+        stopped_thread = getattr(event, "inferior_thread", None)
+        if stopped_thread is not None and stopped_thread != self.thread:
+            return False
+        signal = getattr(event, "stop_signal", None)
+        reason = getattr(event, "details", {}).get("reason")
+        reasons = (None, "end-stepping-range", "signal-received")
+        if self.use_bp:
+            reasons += ("breakpoint-hit",)
+        if signal not in (None, "SIGTRAP") or reason not in reasons:
+            return False
+        if reason == "signal-received" and signal != "SIGTRAP":
+            return False
+        if isinstance(event, gdb.BreakpointEvent) and not self.use_bp:
+            return False
+        return True
 
 
 class ExecSyscall(ExecAsm):
@@ -98797,40 +98864,23 @@ class ExecSyscall(ExecAsm):
     def __init__(self, nr, args, debug=False, use_bp=False):
         self.syscall_nr = nr
         self.syscall_args = args
-        # Step execution often fails due to an interrupt on ARM64
-        self.use_bp = use_bp
-        # debug print enable
-        self.debug = debug
-        # output is always stdout
-        self.stdout = 1
 
         if is_hppa32() or is_hppa64():
-            self.step = 3 # syscall, delay slot, trampoline
+            step = 3 # syscall, delay slot, trampoline
         else:
-            self.step = 1
-
-        codes = []
-
-        # to stop another thread
-        codes += [current_arch.infloop_insn]
-        if current_arch.has_delay_slot:
-            codes += [current_arch.nop_insn]
+            step = 1
 
         # syscall opcodes
         syscall_insn = current_arch.syscall_insn
         if is_s390x() and nr <= 127:
-            syscall_insn = syscall_insn[:-1] + bytes([nr])
+            syscall_insn = bytes([nr]) + syscall_insn[1:]
 
-        codes += [syscall_insn]
+        codes = [syscall_insn]
         # Stepping through a syscall instruction may continue execution to the next instruction.
         # Depending on gdb version, this occurs even on architectures without delay slots, requiring a nop.
         codes += [current_arch.nop_insn]
 
-        # list to bytes
-        if Endian.is_big_endian():
-            self.code = b"".join(code[::-1] for code in codes)
-        else:
-            self.code = b"".join(codes)
+        super().__init__(codes, step=step, use_bp=use_bp, debug=debug)
         return
 
     def get_state(self):
@@ -98865,14 +98915,10 @@ class ExecSyscall(ExecAsm):
 
     def modify_regs(self):
         # modify syscall args
-        if is_mips32():
-            syscall_parameters = current_arch.syscall_parameters_o32
-        else:
-            syscall_parameters = current_arch.syscall_parameters
-        for reg, val in zip(syscall_parameters, self.syscall_args):
+        for reg, val in zip(current_arch.syscall_parameters, self.syscall_args):
             if is_mips32() and "+" in reg:
                 reg, off = reg.split("+")
-                write_memory(get_register(reg) + int(off, 16), p32(val))
+                write_memory(get_register(reg) + int(off, 16), p32(val & 0xffff_ffff))
             else:
                 if is_sh4() and reg in ["$r0", "$r1", "$r2", "$r3", "$r4", "$r5", "$r6", "$r7"]:
                     reg = reg + "b0" # since r0-r7 cannot be changed directly, use bank 0
@@ -166772,13 +166818,16 @@ class CpuidCommand(GenericCommand, BufferingOutput):
     ]
     _note_ = "\n".join(_note_)
 
-    def execute_cpuid(self, num, subnum=0):
+    @staticmethod
+    def execute_cpuid(num, subnum=0):
         codes = [b"\x0f\xa2"] # cpuid
         if is_x86_64():
             regs = {"$rax": num, "$rcx": subnum}
         else:
             regs = {"$eax": num, "$ecx": subnum}
-        ret = ExecAsm(codes, regs=regs).exec_code()
+        ret = ExecAsm(codes, regs=regs).exec_code(check_complete=True)
+        if ret is None:
+            raise gdb.error("Failed to execute CPUID")
 
         if is_x86_64():
             eax = ret["reg"]["$rax"] & 0xffff_ffff
@@ -167685,7 +167734,7 @@ class MsrCommand(GenericCommand):
                 sym = Symbol.get_symbol_string(value)
 
             gef_print("{:30s}  {:#010x}  {:30s}  {:s}{:s}".format(
-                name, const, desc, AddressUtil.format_address(value), sym,
+                name, const, desc, AddressUtil.format_address(value, memalign_size=8), sym,
             ))
 
         info("See more info: https://elixir.bootlin.com/linux/latest/source/arch/x86/include/asm/msr-index.h")
@@ -167698,7 +167747,7 @@ class MsrCommand(GenericCommand):
             regs = {"$rcx": const}
         else:
             regs = {"$ecx": const}
-        ret = ExecAsm(codes, regs=regs).exec_code()
+        ret = ExecAsm(codes, regs=regs).exec_code(check_complete=True)
 
         if ret is None:
             return None
@@ -167718,7 +167767,7 @@ class MsrCommand(GenericCommand):
             regs = {"$rcx": const, "$rdx": value >> 32, "$rax": value & 0xffff_ffff}
         else:
             regs = {"$ecx": const, "$edx": value >> 32, "$eax": value & 0xffff_ffff}
-        ret = ExecAsm(codes, regs=regs).exec_code()
+        ret = ExecAsm(codes, regs=regs).exec_code(check_complete=True)
         return bool(ret)
 
     @Decorator.parse_args
@@ -167747,9 +167796,9 @@ class MsrCommand(GenericCommand):
                 return
             name = self.lookup_const2name(const)
             if args.quiet:
-                gef_print("{:s}".format(AddressUtil.format_address(value)))
+                gef_print("{:s}".format(AddressUtil.format_address(value, memalign_size=8)))
             else:
-                gef_print("{:s} ({:#x}): {:s}".format(name, const, AddressUtil.format_address(value)))
+                gef_print("{:s} ({:#x}): {:s}".format(name, const, AddressUtil.format_address(value, memalign_size=8)))
 
         else:
             # exec wrmsr
@@ -167786,21 +167835,50 @@ class CetCommand(GenericCommand):
 
     TRACKER_STATES = {0: "IDLE", 1: "WAIT_FOR_ENDBRANCH"}
 
-    def decode_cet_bits(self, val):
+    @staticmethod
+    def get_capabilities():
+        maximum, _, _, _ = CpuidCommand.execute_cpuid(0)
+        if maximum >= 7:
+            _, _, ecx, edx = CpuidCommand.execute_cpuid(7, 0)
+        else:
+            ecx = edx = 0
+        maximum, _, _, _ = CpuidCommand.execute_cpuid(0x8000_0000)
+        long_mode = False
+        if maximum >= 0x8000_0001:
+            _, _, _, extended_edx = CpuidCommand.execute_cpuid(0x8000_0001)
+            long_mode = bool(extended_edx & (1 << 29))
+        return {"ss": bool(ecx & (1 << 7)), "ibt": bool(edx & (1 << 20)), "long_mode": long_mode}
+
+    def decode_cet_bits(self, val, capabilities):
         if val is None:
             return None
+        if not capabilities["long_mode"]:
+            val &= 0xffff_ffff
         d = {}
         for name, bit in self.U_S_COMMON_BITS.items():
-            d[name] = (val >> bit) & 1
-        tracker = (val >> 11) & 0x1
-        d["TRACKER"] = "{:d} ({:s})".format(d["TRACKER"], self.TRACKER_STATES[tracker])
-        d["EB_LEG_BITMAP_BASE"] = AddressUtil.format_address(val & ~0xfff)
+            if bit < 2:
+                supported = capabilities["ss"]
+            else:
+                supported = capabilities["ibt"]
+            if supported:
+                d[name] = (val >> bit) & 1
+            else:
+                d[name] = "N/A (unsupported)"
+        if capabilities["ibt"]:
+            tracker = d["TRACKER"]
+            d["TRACKER"] = "{:d} ({:s})".format(tracker, self.TRACKER_STATES[tracker])
+            memalign_size = 4
+            if capabilities["long_mode"]:
+                memalign_size = 8
+            d["EB_LEG_BITMAP_BASE"] = AddressUtil.format_address(val & ~0xfff, memalign_size=memalign_size)
+        else:
+            d["EB_LEG_BITMAP_BASE"] = "N/A (unsupported)"
         return d
 
     def print_cet_bits(self, title, d):
         gef_print(titlify(title))
         for k, v in d.items():
-            if k in ["TRACKER", "EB_LEG_BITMAP_BASE"]:
+            if isinstance(v, str):
                 gef_print("{:20s} : {:s}".format(k, v))
             else:
                 gef_print("{:20s} : {:x}".format(k, v))
@@ -167813,39 +167891,79 @@ class CetCommand(GenericCommand):
     @Decorator.only_if_in_kernel
     @Decorator.only_if_kvm_disabled
     def do_invoke(self, args):
+        capabilities = self.get_capabilities()
         cr4 = get_register("cr4", use_monitor=True)
         gef_print(titlify("CET summary"))
+        gef_print("Selected CPU: GDB thread {:d}".format(Cache.cpu_context()))
+        gef_print("CPUID.7.0: CET_SS = {:d}, CET_IBT = {:d}".format(capabilities["ss"], capabilities["ibt"]))
         if cr4 is not None:
             cet_master = (cr4 >> 23) & 1
             gef_print("CR4 = {:#x} (CR4.CET = {:#x})".format(cr4, cet_master))
         else:
             gef_print("CR4 = N/A")
 
-        IA32_U_CET = MsrCommand.read_msr(0x6a0)
-        ud = self.decode_cet_bits(IA32_U_CET)
+        supported = capabilities["ss"] or capabilities["ibt"]
+        IA32_U_CET = None
+        if supported:
+            IA32_U_CET = MsrCommand.read_msr(0x6a0)
+        ud = self.decode_cet_bits(IA32_U_CET, capabilities)
         if ud is not None:
             self.print_cet_bits("IA32_U_CET ({:#x})".format(IA32_U_CET), ud)
+        elif not supported:
+            gef_print("IA32_U_CET = N/A (unsupported)")
         else:
-            gef_print("IA_32_U_CET = N/A")
+            gef_print("IA32_U_CET = N/A")
 
-        IA32_S_CET = MsrCommand.read_msr(0x6a2)
-        sd = self.decode_cet_bits(IA32_S_CET)
+        IA32_S_CET = None
+        if supported:
+            IA32_S_CET = MsrCommand.read_msr(0x6a2)
+        sd = self.decode_cet_bits(IA32_S_CET, capabilities)
         if sd is not None:
             self.print_cet_bits("IA32_S_CET ({:#x})".format(IA32_S_CET), sd)
+        elif not supported:
+            gef_print("IA32_S_CET = N/A (unsupported)")
         else:
-            gef_print("IA_32_S_CET = N/A")
+            gef_print("IA32_S_CET = N/A")
+
+        gef_print(titlify("SSP MSRs"))
+        if not capabilities["ss"]:
+            gef_print("PL0_SSP = N/A (unsupported)")
+            gef_print("PL1_SSP = N/A (unsupported)")
+            gef_print("PL2_SSP = N/A (unsupported)")
+            gef_print("PL3_SSP = N/A (unsupported)")
+            gef_print("IA32_INTERRUPT_SSP_TABLE_ADDR = N/A (unsupported)")
+            return
 
         IA32_PL0_SSP = MsrCommand.read_msr(0x6a4)
         IA32_PL1_SSP = MsrCommand.read_msr(0x6a5)
         IA32_PL2_SSP = MsrCommand.read_msr(0x6a6)
         IA32_PL3_SSP = MsrCommand.read_msr(0x6a7)
         IA32_INT_SSP_TAB = MsrCommand.read_msr(0x6a8)
-        gef_print(titlify("SSP MSRs"))
-        gef_print("PL0_SSP = {:s}".format(AddressUtil.format_address(IA32_PL0_SSP)))
-        gef_print("PL1_SSP = {:s}".format(AddressUtil.format_address(IA32_PL1_SSP)))
-        gef_print("PL2_SSP = {:s}".format(AddressUtil.format_address(IA32_PL2_SSP)))
-        gef_print("PL3_SSP = {:s}".format(AddressUtil.format_address(IA32_PL3_SSP)))
-        gef_print("IA32_INTERRUPT_SSP_TABLE_ADDR = {:s}".format(AddressUtil.format_address(IA32_INT_SSP_TAB)))
+        memalign_size = 4
+        if capabilities["long_mode"]:
+            memalign_size = 8
+
+        if IA32_PL0_SSP is None:
+            gef_print("PL0_SSP = N/A")
+        else:
+            gef_print("PL0_SSP = {:s}".format(AddressUtil.format_address(IA32_PL0_SSP, memalign_size=memalign_size)))
+        if IA32_PL1_SSP is None:
+            gef_print("PL1_SSP = N/A")
+        else:
+            gef_print("PL1_SSP = {:s}".format(AddressUtil.format_address(IA32_PL1_SSP, memalign_size=memalign_size)))
+        if IA32_PL2_SSP is None:
+            gef_print("PL2_SSP = N/A")
+        else:
+            gef_print("PL2_SSP = {:s}".format(AddressUtil.format_address(IA32_PL2_SSP, memalign_size=memalign_size)))
+        if IA32_PL3_SSP is None:
+            gef_print("PL3_SSP = N/A")
+        else:
+            gef_print("PL3_SSP = {:s}".format(AddressUtil.format_address(IA32_PL3_SSP, memalign_size=memalign_size)))
+        if IA32_INT_SSP_TAB is None:
+            gef_print("IA32_INTERRUPT_SSP_TABLE_ADDR = N/A")
+        else:
+            gef_print("IA32_INTERRUPT_SSP_TABLE_ADDR = {:s}".format(
+                AddressUtil.format_address(IA32_INT_SSP_TAB, memalign_size=memalign_size)))
         return
 
 
@@ -167867,6 +167985,7 @@ class MteTagsCommand(GenericCommand):
     @Decorator.only_if_gdb_running
     @Decorator.exclude_specific_gdb_mode(mode=("rr",))
     @Decorator.only_if_specific_arch(arch=("ARM64",))
+    @Decorator.only_if_kvm_disabled
     def do_invoke(self, args):
         auxv = Auxv.get_auxiliary_values()
         HWCAP2_MTE = 1 << 18
@@ -167880,8 +167999,11 @@ class MteTagsCommand(GenericCommand):
             address = args.address + 16 * i
             if not is_valid_addr(address):
                 break
-            ret = ExecAsm(codes, regs={"$x0": address}).exec_code()
-            tag = (ret["reg"]["$x0"] >> 56) & 0xff
+            ret = ExecAsm(codes, regs={"$x0": address}).exec_code(check_complete=True)
+            if ret is None:
+                err("Failed to read MTE tag at {:#x}".format(address))
+                return
+            tag = (ret["reg"]["$x0"] >> 56) & 0xf
             gef_print("{!s}: {:#04x} ({:#018x})".format(ProcessMap.lookup_address(address), tag, tag << 56))
         return
 
@@ -191659,7 +191781,7 @@ class Gef:
 
         # create tmp dir
         if not os.path.exists(GEF_TEMP_DIR):
-            os.mkdir(GEF_TEMP_DIR) # 0o755
+            os.makedirs(GEF_TEMP_DIR, exist_ok=True) # 0o755
             # GEF runs with root privileges, but it may attach to a normal privileges program.
             # If you want to execute a command that involves stdout redirection for that program,
             # you will need write permission to /tmp/gef.
