@@ -71326,7 +71326,7 @@ class KernelAddressHeuristicFinder:
         # v5.7 moved the list_del out of `dma_buf_release()` into `dma_buf_file_release()`,
         # but some v5.4 stable trees carry that split too, so try both anchors in order
         # instead of picking one by version.
-        if kversion and "3.17" <= kversion:
+        if kversion:
             for anchor in ("dma_buf_file_release", "dma_buf_release"):
                 addr = Ksym.get_addr(anchor)
                 if addr is None:
@@ -71346,6 +71346,11 @@ class KernelAddressHeuristicFinder:
                     g = itertools.chain(
                         KernelAddressHeuristicFinderUtil.arm32_movw_movt(res),
                         KernelAddressHeuristicFinderUtil.arm32_ldr_pc_relative(res),
+                    )
+                elif is_riscv32() or is_riscv64():
+                    g = itertools.chain(
+                        KernelAddressHeuristicFinderUtil.riscv_auipc_addi(res),
+                        KernelAddressHeuristicFinderUtil.riscv_gp_relative(res),
                     )
                 for x in g:
                     # here, x points &db_list.lock
@@ -71393,6 +71398,11 @@ class KernelAddressHeuristicFinder:
                     g = itertools.chain(
                         KernelAddressHeuristicFinderUtil.arm32_movw_movt(res),
                         KernelAddressHeuristicFinderUtil.arm32_ldr_pc_relative(res),
+                    )
+                elif is_riscv32() or is_riscv64():
+                    g = itertools.chain(
+                        KernelAddressHeuristicFinderUtil.riscv_auipc_addi(res),
+                        KernelAddressHeuristicFinderUtil.riscv_gp_relative(res),
                     )
                 direction = TlsCommand.get_direction()
                 # x64/x86:
@@ -71452,6 +71462,11 @@ class KernelAddressHeuristicFinder:
                         KernelAddressHeuristicFinderUtil.arm32_movw_movt(res),
                         KernelAddressHeuristicFinderUtil.arm32_ldr_pc_relative(res),
                     )
+                elif is_riscv32() or is_riscv64():
+                    g = itertools.chain(
+                        KernelAddressHeuristicFinderUtil.riscv_auipc_addi(res),
+                        KernelAddressHeuristicFinderUtil.riscv_gp_relative(res),
+                    )
                 # x64/x86 embeds &dmabuf_list itself as an immediate,
                 # so it works even if dmabuf_list_mutex is placed far away in .bss.
                 # ARM forms the head of the loop in `dma_buf_iter_begin()` with a pre-indexed
@@ -71478,6 +71493,11 @@ class KernelAddressHeuristicFinder:
                     g = itertools.chain(
                         KernelAddressHeuristicFinderUtil.arm32_movw_movt(res),
                         KernelAddressHeuristicFinderUtil.arm32_ldr_pc_relative(res),
+                    )
+                elif is_riscv32() or is_riscv64():
+                    g = itertools.chain(
+                        KernelAddressHeuristicFinderUtil.riscv_auipc_addi(res),
+                        KernelAddressHeuristicFinderUtil.riscv_gp_relative(res),
                     )
                 direction = TlsCommand.get_direction()
                 # x64/x86:
@@ -71875,6 +71895,11 @@ class Kernel:
     def ipcs():
         """Return the System V IPC resolver."""
         return KernelIpcs.get_instance()
+
+    @staticmethod
+    def dmabuf():
+        """Return the DMA-BUF resolver."""
+        return KernelDmabuf.get_instance()
 
     @staticmethod
     def bpf():
@@ -78498,6 +78523,338 @@ class KernelIpcs:
                     # found
                     return base + ptr, base + ptr * 2
         return None
+
+
+class KernelDmabuf:
+    """Resolve DMA-BUF layouts and read buffers and scatterlists."""
+
+    @classmethod
+    @Cache.cache_this_session(per_inferior=True, until_new_objfile=True)
+    def get_instance(cls):
+        return cls()
+
+    def __init__(self):
+        self.meta = []
+        return
+
+    @Cache.cache_this_session(cache_None=False, per_inferior=True, until_new_objfile=True)
+    def initialize(self):
+        self.meta = []
+
+        kversion = Kernel.version()
+        if kversion is None:
+            self.meta.append(("err", "Could not find kernel version"))
+            return None
+        # The list was `db_list` until v6.10 renamed it to `debugfs_list`, then renamed again to
+        # `dmabuf_list` when the iterator was exported. The latter rename is in v6.16 upstream but
+        # a tree based on v6.15 can carry it, so ask for the iterator instead of the version.
+        if Ksym.get_addr("dma_buf_iter_begin"):
+            name = "dmabuf_list"
+            self.db_list = KernelAddressHeuristicFinder.get_dmabuf_list()
+        elif "6.10" <= kversion:
+            name = "debugfs_list"
+            self.db_list = KernelAddressHeuristicFinder.get_debugfs_list()
+        else:
+            name = "db_list"
+            self.db_list = KernelAddressHeuristicFinder.get_db_list()
+        file_buffers = None
+        if self.db_list is None:
+            if not Ksym.get_addr("dma_buf_export"):
+                self.meta.append(("info", "DMA-BUF is unavailable (CONFIG_DMA_SHARED_BUFFER=n or module not loaded)"))
+                return None
+            self.meta.append(("info", "DMA-BUF global list is unavailable; showing buffers held by file descriptors"))
+            file_buffers = self.get_file_buffers()
+            if not file_buffers:
+                self.meta.append(("info", "No DMA-BUF file descriptors are present"))
+                return None
+            first_dma_buf = file_buffers[0]
+        else:
+            self.meta.append(("info", "{:s}: {:#x}".format(name, self.db_list)))
+            first_dma_buf = read_int_from_memory(self.db_list)
+            if first_dma_buf == self.db_list:
+                self.meta.append(("info", "DMA-BUF is enabled, but no buffers are present"))
+                return None
+
+        """
+        struct dma_buf {
+            size_t size;
+            struct file *file;
+            struct list_head attachments;
+            const struct dma_buf_ops *ops;
+            struct mutex lock; // ~v6.2
+            unsigned vmapping_counter;
+            struct iosys_map {
+                union {
+                    void __iomem *vaddr_iomem;
+                    void *vaddr;
+                };
+                bool is_iomem;
+            } vmap_ptr;
+            const char *exp_name;
+            const char *name;
+            spinlock_t name_lock;
+            struct module *owner;
+            struct list_head list_node;
+            void *priv; <-- struct system_heap_buffer*
+            struct dma_resv *resv;
+            wait_queue_head_t poll;
+            ...
+        }
+
+        [v6.4 x64 example]
+        0xffff8880135f8a00|+0x0000|+000: 0x0000000000001000  // size
+        0xffff8880135f8a08|+0x0008|+001: 0xffff888000f85800  ->  0x0000000000000000 // file
+        0xffff8880135f8a10|+0x0010|+002: 0xffff8880135f8a10  ->  [loop detected] // attachments
+        0xffff8880135f8a18|+0x0018|+003: 0xffff8880135f8a10  ->  [loop detected]
+        0xffff8880135f8a20|+0x0020|+004: 0xffffffff83e79d00 <system_heap_buf_ops>  ->  0x0000000000000000 // ops
+        0xffff8880135f8a28|+0x0028|+005: 0x0000000000000000  // vmapping_counter
+        0xffff8880135f8a30|+0x0030|+006: 0x0000000000000000  // vmap_ptr.vaddr_iomem
+        0xffff8880135f8a38|+0x0038|+007: 0x0000000000000000  // vmap_ptr.is_iomem
+        0xffff8880135f8a40|+0x0040|+008: 0xffffffff8482754e <linux_banner+0x6d70ae>  ->  0x6e006d6574737973 ('system'?) // exp_name
+        0xffff8880135f8a48|+0x0048|+009: 0x0000000000000000  // name
+        0xffff8880135f8a50|+0x0050|+010: 0xdead4ead00000000  // name_lock
+        0xffff8880135f8a58|+0x0058|+011: 0x00000000ffffffff
+        0xffff8880135f8a60|+0x0060|+012: 0xffffffffffffffff
+        0xffff8880135f8a68|+0x0068|+013: 0xffffffff883cc330 <__key.7>  ->  0x0000000000000000
+        0xffff8880135f8a70|+0x0070|+014: 0x0000000000000000
+        0xffff8880135f8a78|+0x0078|+015: 0x0000000000000000
+        0xffff8880135f8a80|+0x0080|+016: 0xffffffff847790c3 <linux_banner+0x628c23>  ->  '&dmabuf->name_lock'
+        0xffff8880135f8a88|+0x0088|+017: 0x0000000000000200
+        0xffff8880135f8a90|+0x0090|+018: 0x0000000000000000  // owner
+        0xffff8880135f8a98|+0x0098|+019: 0xffff8880135f8c98  ->  0xffffffff883cc360 <db_list>  ->  [loop detected] // list_node
+        0xffff8880135f8aa0|+0x00a0|+020: 0xffffffff883cc360 <db_list>  ->  0xffff8880135f8a98  ->  0xffff8880135f8c98  ->  ...
+        0xffff8880135f8aa8|+0x00a8|+021: 0xffff88800f978600  ->  ... // priv
+        0xffff8880135f8ab0|+0x00b0|+022: 0xffff8880135f8b58  ->  0x0000000000000000
+        0xffff8880135f8ab8|+0x00b8|+023: 0xdead4ead00000000
+        0xffff8880135f8ac0|+0x00c0|+024: 0x00000000ffffffff
+        0xffff8880135f8ac8|+0x00c8|+025: 0xffffffffffffffff
+        """
+        self.offset_list_node = GefUtil.offsetof("dma_buf", "list_node")
+        if self.offset_list_node is None and file_buffers is None:
+            self.offset_list_node = self.find_list_node(first_dma_buf)
+        if self.offset_list_node is None and file_buffers is None:
+            self.meta.append(("err", "Could not find dma_buf->list_node"))
+            return None
+        if self.offset_list_node is not None:
+            self.meta.append(("info", "offsetof(dma_buf, list_node): {:#x}".format(self.offset_list_node)))
+
+        # dma_buf->{size,file,priv}
+        for name, default in (("size", 0), ("file", current_arch.ptrsize),
+                              ("priv", self.offset_list_node + current_arch.ptrsize * 2 if file_buffers is None else None), ("ops", current_arch.ptrsize * 4)):
+            offset = GefUtil.offsetof("dma_buf", name)
+            offset = default if offset is None else offset
+            setattr(self, "offset_" + name, offset)
+            if offset is not None:
+                self.meta.append(("info", "offsetof(dma_buf, {:s}): {:#x}".format(name, offset)))
+
+        # dma_buf->{exp_name,name}
+        self.offset_exp_name = GefUtil.offsetof("dma_buf", "exp_name")
+        self.offset_name = GefUtil.offsetof("dma_buf", "name")
+        if self.offset_exp_name is None and file_buffers is None:
+            top = first_dma_buf - self.offset_list_node
+            for i in range(5, self.offset_list_node // current_arch.ptrsize):
+                x = read_int_from_memory(top + current_arch.ptrsize * i)
+                if not x or not is_valid_addr(x):
+                    continue
+                name = read_cstring_from_memory(x, 128, safe=True)
+                if name and re.fullmatch(r"[A-Za-z0-9_.+/-]{1,127}", name):
+                    self.offset_exp_name = current_arch.ptrsize * i
+                    break
+        if self.offset_name is None and self.offset_exp_name is not None and "5.3" <= kversion:
+            self.offset_name = self.offset_exp_name + current_arch.ptrsize
+        for name in ("exp_name", "name"):
+            offset = getattr(self, "offset_" + name)
+            if offset is not None:
+                self.meta.append(("info", "offsetof(dma_buf, {:s}): {:#x}".format(name, offset)))
+
+        if self.offset_priv is not None:
+            dma_buf = first_dma_buf - self.offset_list_node if file_buffers is None else first_dma_buf
+            size = read_int_from_memory(dma_buf + self.offset_size)
+            priv = read_int_from_memory(dma_buf + self.offset_priv)
+            system_heap = self.get_system_heap_sgl(dma_buf, size, priv)
+            if system_heap is not None:
+                self.meta.append(("info", "offsetof(system_heap_buffer, sg_table): {:#x}".format(system_heap[2])))
+        return True
+
+    def get_buffers(self):
+        objects = []
+        buffers = self.get_file_buffers() if self.db_list is None else KernelListHead(self.db_list).iter_entries()
+        for current in buffers:
+            if not is_valid_addr(current):
+                break
+
+            # calc top
+            dma_buf = current - self.offset_list_node if self.db_list is not None else current
+
+            # size, file, priv
+            size = read_int_from_memory(dma_buf + self.offset_size)
+            file = read_int_from_memory(dma_buf + self.offset_file)
+            priv = read_int_from_memory(dma_buf + self.offset_priv) if self.offset_priv is not None else None
+
+            # exp_name
+            exp_name = "<unknown>"
+            if self.offset_exp_name is not None:
+                exp_name_p = read_int_from_memory(dma_buf + self.offset_exp_name)
+                exp_name = read_cstring_from_memory(exp_name_p, safe=True) or exp_name
+            # name
+            name = "<none>"
+            if self.offset_name is not None:
+                name_p = read_int_from_memory(dma_buf + self.offset_name)
+                if name_p:
+                    name = read_cstring_from_memory(name_p, safe=True) or "<unreadable>"
+
+            # dump sgl
+            system_heap = self.get_system_heap_sgl(dma_buf, size, priv) if priv is not None else None
+            objects.append({
+                "address": dma_buf, "size": size, "exp_name": exp_name, "name": name,
+                "file": file, "priv": priv, "system_heap": system_heap,
+            })
+        return objects
+
+    def get_sgl(self, sg, nents):
+        seen = set()
+        while nents:
+            if sg in seen or not is_valid_addr(sg):
+                yield {"error": "invalid link"}
+                break
+            seen.add(sg)
+            page_link = read_int_from_memory(sg)
+
+            # check if chain
+            if page_link & 1: # SG_CHAIN
+                sg = page_link & ~3
+                continue
+
+            nents -= 1
+            # output page, phys, virt
+            page = page_link & ~3
+
+            phys = Kernel.page2phys(page)
+            virt = AddrMap.p2v(phys) if phys is not None else None
+            yield {
+                "page": page, "offset": read_int32_from_memory(sg + current_arch.ptrsize),
+                "length": read_int32_from_memory(sg + current_arch.ptrsize + 4), "phys": phys,
+                "virt": virt,
+            }
+
+            # check if end
+            if page_link & 2: # SG_END:
+                break
+
+            # calc sizeof(scatterlist) then go to next
+            """
+            struct scatterlist {
+                unsigned long page_link;
+                unsigned int offset;
+                unsigned int length;
+                dma_addr_t dma_address;
+            #ifdef CONFIG_NEED_SG_DMA_LENGTH
+                unsigned int dma_length;
+            #endif
+            #ifdef CONFIG_PCI_P2PDMA
+                unsigned int dma_flags;
+            #endif
+            };
+            """
+            stride = GefUtil.sizeof("scatterlist")
+            if stride is not None:
+                sg += stride
+            else:
+                sg += current_arch.ptrsize + 4 * 2 + current_arch.ptrsize
+                if not is_valid_addr(read_int_from_memory(sg) & ~3):
+                    sg += current_arch.ptrsize
+                if not is_valid_addr(read_int_from_memory(sg) & ~3):
+                    sg += current_arch.ptrsize
+        return
+
+    def get_file_buffers(self):
+        output = gdb.execute("ktask --print-fd --user-process-only --no-pager --quiet", to_string=True)
+        buffers = []
+        ptr = current_arch.ptrsize
+        offset = GefUtil.offsetof("file", "private_data")
+        for line in Color.remove_color(output).splitlines():
+            match = re.match(r"^\s*\d+\s+(?:True|False)\s+(0x[0-9a-f]+)\s+.*(?:dmabuf|dma_buf)", line)
+            if not match:
+                continue
+            file = int(match.group(1), 16)
+            offsets = [offset] if offset is not None else range(0, ptr * 0x40, ptr)
+            for candidate in offsets:
+                buffer = read_int_from_memory(file + candidate, safe=True)
+                if not buffer or not is_valid_addr(buffer):
+                    continue
+                if read_int_from_memory(buffer + ptr, safe=True) != file:
+                    continue
+                if not is_double_link_list(buffer + ptr * 2):
+                    continue
+                if buffer not in buffers:
+                    buffers.append(buffer)
+                break
+        return buffers
+
+    def find_list_node(self, first_dma_buf):
+        for i in range(1, 50):
+            a = read_int_from_memory(first_dma_buf - current_arch.ptrsize * (i + 4)) # size
+            b = read_int_from_memory(first_dma_buf - current_arch.ptrsize * (i + 3)) # file
+            c = read_int_from_memory(first_dma_buf - current_arch.ptrsize * (i + 2)) # attachments
+            e = read_int_from_memory(first_dma_buf - current_arch.ptrsize * (i + 0)) # ops
+
+            # size check
+            if a == 0 or (is_valid_addr(a) and AddressUtil.is_msb_on(a)):
+                continue
+            # file check
+            if not is_valid_addr(b):
+                continue
+            # attachments check
+            if not is_double_link_list(c):
+                continue
+            # ops check
+            if not is_valid_addr(e):
+                continue
+
+            return current_arch.ptrsize * (i + 4)
+        return None
+
+    def get_system_heap_sgl(self, dma_buf, size, priv):
+        """
+        struct system_heap_buffer {
+            struct dma_heap *heap;
+            struct list_head attachments;
+            struct mutex lock;
+            unsigned long len;
+            struct sg_table {
+                struct scatterlist *sgl;
+                unsigned int nents;
+                unsigned int orig_nents;
+            } sg_table;
+            int vmap_cnt;
+            void *vaddr;
+        };
+        """
+        ops = read_int_from_memory(dma_buf + self.offset_ops)
+        system_ops = Ksym.get_addr("system_heap_buf_ops")
+        if not system_ops or ops != system_ops:
+            release = Ksym.get_addr("system_heap_dma_buf_release")
+            if not release or not is_valid_addr(ops):
+                return None
+            if not any(read_int_from_memory(ops + current_arch.ptrsize * i, safe=True) == release for i in range(20)):
+                return None
+        if not is_valid_addr(priv):
+            return None
+        # system_heap_buffer->sg_table
+        offset = GefUtil.offsetof("system_heap_buffer", "sg_table")
+        if offset is None:
+            for i in range(50):
+                if read_int_from_memory(priv + current_arch.ptrsize * i, safe=True) == size:
+                    offset = current_arch.ptrsize * (i + 1)
+                    break
+        if offset is None:
+            return None
+        table = priv + offset
+        sgl = read_int_from_memory(table, safe=True)
+        nents = read_int32_from_memory(table + current_arch.ptrsize, safe=True)
+        if not sgl or not is_valid_addr(sgl) or not nents or nents > 1 << 20:
+            return None
+        return sgl, nents, offset
 
 
 class KernelBpf:
@@ -153372,271 +153729,42 @@ class KernelDmaBufCommand(GenericCommand, BufferingOutput):
     ]
     _note_ = "\n".join(_note_)
 
-    @Cache.cache_this_session(cache_None=False)
-    def initialize(self):
-        self.meta = []
-
-        kversion = Kernel.version()
-        if kversion is None:
-            self.meta.append((err, "Could not find kernel version"))
-            return None
-        # The list was `db_list` until v6.10 renamed it to `debugfs_list`, then renamed again to
-        # `dmabuf_list` when the iterator was exported. The latter rename is in v6.16 upstream but
-        # a tree based on v6.15 can carry it, so ask for the iterator instead of the version.
-        if Ksym.get_addr("dma_buf_iter_begin"):
-            name = "dmabuf_list"
-            self.db_list = KernelAddressHeuristicFinder.get_dmabuf_list()
-        elif "6.10" <= kversion:
-            name = "debugfs_list"
-            self.db_list = KernelAddressHeuristicFinder.get_debugfs_list()
-        else:
-            name = "db_list"
-            self.db_list = KernelAddressHeuristicFinder.get_db_list()
-        if self.db_list is None:
-            self.meta.append((err, "Could not find db_list (maybe DMA_SHARED_BUFFER=n)"))
-            return None
-
-        self.meta.append((self.quiet_info, "{:s}: {:#x}".format(name, self.db_list)))
-
-        first_dma_buf = read_int_from_memory(self.db_list)
-        if first_dma_buf == self.db_list:
-            self.meta.append((warn, "Nothing to dump"))
-            return None
-
-        """
-        struct dma_buf {
-            size_t size;
-            struct file *file;
-            struct list_head attachments;
-            const struct dma_buf_ops *ops;
-            struct mutex lock; // ~v6.2
-            unsigned vmapping_counter;
-            struct iosys_map {
-                union {
-                    void __iomem *vaddr_iomem;
-                    void *vaddr;
-                };
-                bool is_iomem;
-            } vmap_ptr;
-            const char *exp_name;
-            const char *name;
-            spinlock_t name_lock;
-            struct module *owner;
-            struct list_head list_node;
-            void *priv; <-- struct system_heap_buffer*
-            struct dma_resv *resv;
-            wait_queue_head_t poll;
-            ...
-        }
-
-        [v6.4 x64 example]
-        0xffff8880135f8a00|+0x0000|+000: 0x0000000000001000  // size
-        0xffff8880135f8a08|+0x0008|+001: 0xffff888000f85800  ->  0x0000000000000000 // file
-        0xffff8880135f8a10|+0x0010|+002: 0xffff8880135f8a10  ->  [loop detected] // attachments
-        0xffff8880135f8a18|+0x0018|+003: 0xffff8880135f8a10  ->  [loop detected]
-        0xffff8880135f8a20|+0x0020|+004: 0xffffffff83e79d00 <system_heap_buf_ops>  ->  0x0000000000000000 // ops
-        0xffff8880135f8a28|+0x0028|+005: 0x0000000000000000  // vmapping_counter
-        0xffff8880135f8a30|+0x0030|+006: 0x0000000000000000  // vmap_ptr.vaddr_iomem
-        0xffff8880135f8a38|+0x0038|+007: 0x0000000000000000  // vmap_ptr.is_iomem
-        0xffff8880135f8a40|+0x0040|+008: 0xffffffff8482754e <linux_banner+0x6d70ae>  ->  0x6e006d6574737973 ('system'?) // exp_name
-        0xffff8880135f8a48|+0x0048|+009: 0x0000000000000000  // name
-        0xffff8880135f8a50|+0x0050|+010: 0xdead4ead00000000  // name_lock
-        0xffff8880135f8a58|+0x0058|+011: 0x00000000ffffffff
-        0xffff8880135f8a60|+0x0060|+012: 0xffffffffffffffff
-        0xffff8880135f8a68|+0x0068|+013: 0xffffffff883cc330 <__key.7>  ->  0x0000000000000000
-        0xffff8880135f8a70|+0x0070|+014: 0x0000000000000000
-        0xffff8880135f8a78|+0x0078|+015: 0x0000000000000000
-        0xffff8880135f8a80|+0x0080|+016: 0xffffffff847790c3 <linux_banner+0x628c23>  ->  '&dmabuf->name_lock'
-        0xffff8880135f8a88|+0x0088|+017: 0x0000000000000200
-        0xffff8880135f8a90|+0x0090|+018: 0x0000000000000000  // owner
-        0xffff8880135f8a98|+0x0098|+019: 0xffff8880135f8c98  ->  0xffffffff883cc360 <db_list>  ->  [loop detected] // list_node
-        0xffff8880135f8aa0|+0x00a0|+020: 0xffffffff883cc360 <db_list>  ->  0xffff8880135f8a98  ->  0xffff8880135f8c98  ->  ...
-        0xffff8880135f8aa8|+0x00a8|+021: 0xffff88800f978600  ->  ... // priv
-        0xffff8880135f8ab0|+0x00b0|+022: 0xffff8880135f8b58  ->  0x0000000000000000
-        0xffff8880135f8ab8|+0x00b8|+023: 0xdead4ead00000000
-        0xffff8880135f8ac0|+0x00c0|+024: 0x00000000ffffffff
-        0xffff8880135f8ac8|+0x00c8|+025: 0xffffffffffffffff
-        """
-        for i in range(1, 50):
-            a = read_int_from_memory(first_dma_buf - current_arch.ptrsize * (i + 4)) # size
-            b = read_int_from_memory(first_dma_buf - current_arch.ptrsize * (i + 3)) # file
-            c = read_int_from_memory(first_dma_buf - current_arch.ptrsize * (i + 2)) # attachments
-            e = read_int_from_memory(first_dma_buf - current_arch.ptrsize * (i + 0)) # ops
-
-            # size check
-            if a == 0 or (is_valid_addr(a) and AddressUtil.is_msb_on(a)):
+    def dump_sgl(self, sg, nents):
+        for item in self.kdmabuf.get_sgl(sg, nents):
+            if "error" in item:
+                self.out.append("  scatterlist: {:s}".format(item["error"]))
                 continue
-            # file check
-            if not is_valid_addr(b):
-                continue
-            # attachments check
-            if not is_double_link_list(c):
-                continue
-            # ops check
-            if not is_valid_addr(e):
-                continue
-
-            self.offset_list_node = current_arch.ptrsize * (i + 4)
-            self.meta.append((self.quiet_info, "offsetof(dma_buf, list_node): {:#x}".format(self.offset_list_node)))
-            break
-        else:
-            self.meta.append((err, "Could not find dma_buf->list_node"))
-            return None
-
-        # dma_buf->{size,file,priv}
-        self.offset_size = 0
-        self.offset_file = current_arch.ptrsize
-        self.offset_priv = self.offset_list_node + current_arch.ptrsize * 2
-        self.meta.append((self.quiet_info, "offsetof(dma_buf, size): {:#x}".format(self.offset_size)))
-        self.meta.append((self.quiet_info, "offsetof(dma_buf, file): {:#x}".format(self.offset_file)))
-        self.meta.append((self.quiet_info, "offsetof(dma_buf, priv): {:#x}".format(self.offset_priv)))
-
-        # dma_buf->{exp_name,name}
-        for i in range(1, 50):
-            top = first_dma_buf - self.offset_list_node
-            x = read_int_from_memory(top + current_arch.ptrsize * i)
-            s = read_cstring_from_memory(x)
-            if s and len(s) >= 3:
-                self.offset_exp_name = current_arch.ptrsize * i
-                self.offset_name = current_arch.ptrsize * (i + 1)
-                self.meta.append((self.quiet_info, "offsetof(dma_buf, exp_name): {:#x}".format(self.offset_exp_name)))
-                self.meta.append((self.quiet_info, "offsetof(dma_buf, name): {:#x}".format(self.offset_name)))
-                break
-        else:
-            self.meta.append((err, "Could not find dma_buf->{exp_name,name}"))
-            return None
-
-        """
-        struct system_heap_buffer {
-            struct dma_heap *heap;
-            struct list_head attachments;
-            struct mutex lock;
-            unsigned long len;
-            struct sg_table {
-                struct scatterlist *sgl;
-                unsigned int nents;
-                unsigned int orig_nents;
-            } sg_table;
-            int vmap_cnt;
-            void *vaddr;
-        };
-        """
-        # system_heap_buffer->sg_table
-        size = read_int_from_memory(first_dma_buf - self.offset_list_node + self.offset_size)
-        priv = read_int_from_memory(first_dma_buf - self.offset_list_node + self.offset_priv)
-        for i in range(50):
-            x = read_int_from_memory(priv + current_arch.ptrsize * i)
-            if x == size:
-                self.offset_sg_table = current_arch.ptrsize * (i + 1)
-                break
-        else:
-            self.meta.append((err, "Could not find system_heap_buffer->sg_table"))
-            return None
-        self.meta.append((self.quiet_info, "offsetof(system_heap_buffer, sg_table): {:#x}".format(self.offset_sg_table)))
-        return True
-
-    def dump_sgl(self, sg):
-        while True:
-            page_link = read_int_from_memory(sg)
-
-            # check if chain
-            if page_link & 1: # SG_CHAIN
-                sg = page_link & ~3
-                continue
-
-            # output page, phys, virt
-            page = page_link & ~3
-
-            phys = None
-            phys_str = "???"
-            ret = gdb.execute("page2phys {:#x}".format(page), to_string=True)
-            r = re.search(r"Page: \S+ -> Phys: (\S+)", ret)
-            if r:
-                phys = int(r.group(1), 16)
-                phys_str = "{:#018x}".format(phys)
-
-            virt_str = "???"
-            if phys:
-                r = AddrMap.p2v(phys)
-                if r:
-                    r = [hex(x) for x in r if AddressUtil.is_msb_on(x)]
-                    virt_str = ",".join(r)
-
-            offset = read_int32_from_memory(sg + current_arch.ptrsize)
-            length = read_int32_from_memory(sg + current_arch.ptrsize + 4)
-
+            page, offset, length = item["page"], item["offset"], item["length"]
+            phys = item["phys"]
+            phys_str = "{:#018x}".format(phys) if phys is not None else "???"
+            virt_str = ",".join(hex(x) for x in item["virt"] if AddressUtil.is_msb_on(x)) if item["virt"] else "???"
             self.out.append("  page: {:#018x}  offset: {:#010x}  length: {:#010x}  phys: {:18s}  virt: {:s}".format(
                 page, offset, length, phys_str, virt_str,
             ))
-
-            # check if end
-            if page_link & 2: # SG_END:
-                break
-
-            # calc sizeof(scatterlist) then go to next
-            """
-            struct scatterlist {
-                unsigned long page_link;
-                unsigned int offset;
-                unsigned int length;
-                dma_addr_t dma_address;
-            #ifdef CONFIG_NEED_SG_DMA_LENGTH
-                unsigned int dma_length;
-            #endif
-            #ifdef CONFIG_PCI_P2PDMA
-                unsigned int dma_flags;
-            #endif
-            };
-            """
-            sg += current_arch.ptrsize + 4 * 2 + current_arch.ptrsize
-            if not is_valid_addr(read_int_from_memory(sg)):
-                sg += current_arch.ptrsize
-            if not is_valid_addr(read_int_from_memory(sg)):
-                sg += current_arch.ptrsize
         return
 
     def dump_db_list(self):
         fmt = "{:18s} {:18s} {:16s} {:16s} {:18s} {:18s}"
         legend = ["dma_buf", "size", "exp_name", "name", "file", "priv"]
         self.out.append(GefUtil.make_legend(fmt.format(*legend)))
-
-        for current in KernelListHead(self.db_list).iter_entries():
-            if not is_valid_addr(current):
-                break
-
-            # calc top
-            dma_buf = current - self.offset_list_node
-
-            # size, file, priv
-            size = read_int_from_memory(dma_buf + self.offset_size)
-            file = read_int_from_memory(dma_buf + self.offset_file)
-            priv = read_int_from_memory(dma_buf + self.offset_priv)
-
-            # exp_name
-            exp_name_p = read_int_from_memory(dma_buf + self.offset_exp_name)
-            exp_name = read_cstring_from_memory(exp_name_p)
-
-            # name
-            name_p = read_int_from_memory(dma_buf + self.offset_name)
-            if is_valid_addr(name_p):
-                name = read_cstring_from_memory(name_p)
-            else:
-                name = "<none>"
-
+        for item in self.kdmabuf.get_buffers():
             # dump
-            self.out.append("{:#018x} {:#018x} {:16s} {:16s} {:#018x} {:#018x}".format(
-                dma_buf, size, exp_name, name, file, priv,
+            priv = item["priv"]
+            self.out.append("{:#018x} {:#018x} {:16s} {:16s} {:#018x} {:18s}".format(
+                item["address"], item["size"], item["exp_name"], item["name"], item["file"],
+                "{:#018x}".format(priv) if priv is not None else "???",
             ))
 
             # dump sgl
-            sgl = read_int_from_memory(priv + self.offset_sg_table)
-            self.dump_sgl(sgl)
+            system_heap = item["system_heap"]
+            if system_heap is not None:
+                self.dump_sgl(system_heap[0], system_heap[1])
         return
 
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
-    @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware"))
-    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
+    @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
+    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64"))
     @Decorator.only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
         self.quiet_info("Wait for memory scan")
@@ -153645,17 +153773,10 @@ class KernelDmaBufCommand(GenericCommand, BufferingOutput):
         if kversion is None:
             err("Could not find Linux kernel")
             return
-        if kversion < "5.11":
-            err("Unsupported before v5.11")
-            return
-
-        if not Ksym.get_addrs("dma_heap", match="in"):
-            err("This kernel does not support DMA-BUF")
-            return
-
-        ret = self.initialize()
+        self.kdmabuf = Kernel.dmabuf()
+        ret = self.kdmabuf.initialize()
         if args.meta or not ret:
-            for func, line in self.meta:
+            for func, line in Kernel.export_meta(self, self.kdmabuf.meta):
                 func(line)
         if not ret:
             return
