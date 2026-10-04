@@ -29597,7 +29597,7 @@ class GlibcHeapCalcProtectedFdCommand(GenericCommand):
     def do_invoke(self, args):
         loc = args.location
         if args.as_base:
-            loc -= current_arch.ptrsize * 2
+            loc += current_arch.ptrsize * 2
         ptr = (loc >> 12) ^ args.fd
         gef_print("Protected fd pointer: {:#x}".format(ptr))
         return
