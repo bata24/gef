@@ -29763,6 +29763,8 @@ class GlibcHeapVisualHeapCommand(GenericCommand, BufferingOutput):
             try:
                 chunk.data = read_memory(addr, chunk.size)
             except gdb.MemoryError:
+                msg = "{} Corrupted (Memory access denied)".format(Color.colorify("[!]", "bold red"))
+                self.out.append(msg)
                 break
             self.generate_visual_chunk(chunk, i)
             addr += chunk.size
@@ -29884,6 +29886,7 @@ class GlibcHeapDumpImageCommand(GenericCommand):
             try:
                 chunk.data = read_memory(addr, chunk.size)
             except gdb.MemoryError:
+                err_msg = "{} Corrupted (Memory access denied)".format(Color.colorify("[!]", "bold red"))
                 break
 
             if chunk.is_top():
@@ -30031,16 +30034,19 @@ class GlibcHeapDumpImageCommand(GenericCommand):
 
         # make image
         image_path = self.generate_image(chunks)
-        if not image_path:
-            return
+        if image_path:
+            # show
+            cmd = self.make_command_line(image_path)
+            ret = GefUtil.os_system(cmd)
+            os.unlink(image_path)
 
-        # show
-        cmd = self.make_command_line(image_path)
-        GefUtil.os_system(cmd)
-        os.unlink(image_path)
+            if ret != 0:
+                err("Failed to convert")
+            elif args.save_as_png:
+                info("Saved as {!r}".format(image_path[:-4] + ".png"))
 
-        if args.save_as_png:
-            info("Saved as {!r}".format(image_path[:-4] + ".png"))
+        if err_msg:
+            gef_print(err_msg)
         return
 
 
