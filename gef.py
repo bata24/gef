@@ -29450,7 +29450,7 @@ class GlibcHeapFindFakeFastCommand(GenericCommand, BufferingOutput):
             unpack = u32
 
         if self.args.aligned:
-            unit = 0x10
+            unit = GlibcHeap.HeapInfo.MALLOC_ALIGNMENT()
         else:
             unit = 0x1
 
