@@ -27753,7 +27753,7 @@ class GlibcHeapChunksCommand(GenericCommand, BufferingOutput):
                         help="the address or number to interpret as an arena. (default: main_arena)")
     parser.add_argument("-b", "--nb-byte", type=AddressUtil.parse_address,
                         help="temporarily override `heap_chunks.peek_nb_byte`.")
-    parser.add_argument("-o", "--peek-offset", type=AddressUtil.parse_address, default=0,
+    parser.add_argument("-o", "--peek-offset", type=AddressUtil.parse_address,
                         help="temporarily override `heap_chunks.peek_offset`.")
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
     _syntax_ = parser.format_help()
