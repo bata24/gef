@@ -99240,7 +99240,7 @@ class GdtInfoCommand(GenericCommand, BufferingOutput):
 
         else:
             # CODE/DATA segment or SYSTEM segment (not call gate)
-            entry["g"] = (val >> 54) & 0x01
+            entry["g"] = (val >> 55) & 0x01
             grsize = {0: 1, 1: 4096}[entry["g"]]
 
             entry["limit0"] = val & 0xffff
@@ -99249,7 +99249,7 @@ class GdtInfoCommand(GenericCommand, BufferingOutput):
             entry["limit1"] = (val >> 48) & 0x0f
             entry["base2"] = (val >> 56) & 0xff
 
-            entry["limit"] = ((entry["limit1"] << 16) | entry["limit0"]) * grsize
+            entry["limit"] = (((entry["limit1"] << 16) | entry["limit0"]) + 1) * grsize - 1
             entry["base"] = (entry["base2"] << 24) | (entry["base1"] << 16) | entry["base0"]
 
             if isinstance(vals, list):
@@ -99260,13 +99260,13 @@ class GdtInfoCommand(GenericCommand, BufferingOutput):
 
             if entry["s"] == 1:
                 # CODE/DATA segment
-                entry["db"] = (val >> 53) & 0x01
-                entry["l"] = (val >> 52) & 0x01
+                entry["db"] = (val >> 54) & 0x01
+                entry["l"] = (val >> 53) & 0x01
                 dbl = (entry["db"] << 1) | entry["l"]
                 entry["dbl"] = "{:d}".format(dbl)
                 entry["dbl_s"] = ["16bit", "64bit", "32bit", "(N/A)"][dbl]
 
-                entry["avl"] = (val >> 51) & 0x01
+                entry["avl"] = (val >> 52) & 0x01
 
                 entry["e"] = (val >> 43) & 0x01
                 entry["dc"] = (val >> 42) & 0x01
@@ -99524,9 +99524,10 @@ class GdtInfoCommand(GenericCommand, BufferingOutput):
 
     def print_ldt_real(self):
         # parse real value
+        selector = None
         if is_qemu_system():
             res = gdb.execute("monitor info registers", to_string=True)
-            r = re.search(r"LDT=\S+ (\S+) (\S+)", res)
+            r = re.search(r"LDT\s*=\s*(\S+) (\S+) (\S+)", res)
         elif is_vmware():
             res = gdb.execute("monitor r ldtr", to_string=True)
             r = re.search(r"ldtr base=(\S+) limit=(\S+)", res)
@@ -99535,15 +99536,26 @@ class GdtInfoCommand(GenericCommand, BufferingOutput):
             self.err_add_out("Could not find LDTR")
             return
 
-        base = int(r.group(1), 16)
-        limit = int(r.group(2), 16)
+        try:
+            if is_qemu_system():
+                selector, base, limit = [int(r.group(i), 16) for i in range(1, 4)]
+            else:
+                base, limit = [int(r.group(i), 16) for i in range(1, 3)]
+        except ValueError:
+            self.err_add_out("Could not find LDTR")
+            return
 
         # print title
         self.out.append(titlify("LDT Entry: base:{:#x} / limit:{:#x}".format(base, limit)))
 
-        # check initialized or not
-        if (base == 0x0 and limit == 0xffff_ffff) or limit == 0x0:
-            self.err_add_out("LDT is uninitialized")
+        if (selector is not None and (selector & ~0b11) == 0) or (
+            selector is None and base == 0 and limit in (0, 0xffff, 0xffff_ffff)
+        ):
+            self.info_add_out("LDT is not active")
+            return
+
+        if not 7 <= limit <= 0xffff or (limit & 7) != 7:
+            self.err_add_out("Invalid LDT limit: {:#x}".format(limit))
             return
 
         try:
@@ -99568,12 +99580,14 @@ class GdtInfoCommand(GenericCommand, BufferingOutput):
         self.out.append("-------------------------------------------------------------------------- 4byte")
         self.out.append("|            BASE0 15:0            |             LIMIT0 15:0             |")
         self.out.append("-------------------------------------------------------------------------- 0byte")
+        self.out.append(" * Bit positions above are relative to each 32bit word")
         self.out.append(" * BASE                 : Start address")
-        self.out.append(" * LIMIT                : Segment size (4KB unit if G=1)")
+        self.out.append(" * LIMIT                : Encoded segment limit (byte units if G=0, 4KB units if G=1)")
+        self.out.append(" * Displayed LIMIT      : (encoded LIMIT + 1) * (G ? 4096 : 1) - 1")
         self.out.append(" * Flag bytes")
         self.out.append("   * G                  : Granularity flag (0:SegLimitAsByte, 1:SegLimitAs4KB)")
         self.out.append("   * D/B                : Segment flag (0:16bitSeg, 1:32bitSeg)")
-        self.out.append("   * L (if code seg)    : 64-bit code segment flag (0:32bitSeg, 1:64bitSeg)")
+        self.out.append("   * L (if code seg)    : 64-bit code segment flag (0:16/32bitSeg, 1:64bitSeg with D=0)")
         self.out.append("   * L (if data seg)    : Reserved (0)")
         self.out.append("   * AVL                : Used by system software")
         self.out.append(" * Access bytes")
@@ -99587,17 +99601,17 @@ class GdtInfoCommand(GenericCommand, BufferingOutput):
         self.out.append("     * RW (if code seg) : Read/Exec bit (0:ExecOnly, 1:Read/Exec)")
         self.out.append("     * RW (if data seg) : Read/Write bit (0:ReadOnly, 1:Read/Write)")
         self.out.append("     * AC               : Access bit (0:NotAccessed, 1:Accessed)")
-        self.out.append(titlify("legend (GDT/LDT entry for S=0, not call gate)"))
+        self.out.append(titlify("legend (GDT/LDT entry for S=0, TSS/LDT)"))
         self.out.append("                                          <---Type bytes--->")
-        self.out.append(" 31            23 22       19       15 14  12   11          7            0bit")
+        self.out.append(" 31            23 22 21 20 19       15 14  12   11          7            0bit")
         self.out.append("-------------------------------------------------------------------------- 16byte")
         self.out.append("|                             ZERO1 (x64 only)                           |")
         self.out.append("-------------------------------------------------------------------------- 12byte")
-        self.out.append("|                          BASE3 47:32 (x64 only)                        |")
+        self.out.append("|                          BASE3 63:32 (x64 only)                        |")
         self.out.append("-------------------------------------------------------------------------- 8byte")
-        self.out.append("|             |  |        |        |  |   |    |           |             |")
-        self.out.append("| BASE2 31:24 |G | ZERO0  | LIMIT1 |P |DPL|S(0)|   type    | BASE1 23:16 |")
-        self.out.append("|             |  |        | 19:16  |  |   |    |           |             |")
+        self.out.append("|             |  |  |  |A |        |  |   |    |           |             |")
+        self.out.append("| BASE2 31:24 |G |0 |0 |V | LIMIT1 |P |DPL|S(0)|   type    | BASE1 23:16 |")
+        self.out.append("|             |  |  |  |L | 19:16  |  |   |    |           |             |")
         self.out.append("-------------------------------------------------------------------------- 4byte")
         self.out.append("|            BASE0 15:0            |             LIMIT0 15:0             |")
         self.out.append("-------------------------------------------------------------------------- 0byte")
@@ -99621,7 +99635,7 @@ class GdtInfoCommand(GenericCommand, BufferingOutput):
         self.out.append("     * 1101             : Reserved             / Reserved")
         self.out.append("     * 1110             : 32bit interrupt gate / 64bit interrupt gate")
         self.out.append("     * 1111             : 32bit trap gate      / 64bit trap gate")
-        self.out.append(titlify("legend (GDT/LDT entry for S=0, call gate)"))
+        self.out.append(titlify("legend (GDT/LDT entry for S=0, 32/64bit call gate)"))
         self.out.append("                                          <---Type bytes--->")
         self.out.append(" 31                        19       15 14  12   11          7      4     0bit")
         self.out.append("-------------------------------------------------------------------------- 16byte")
@@ -99635,6 +99649,7 @@ class GdtInfoCommand(GenericCommand, BufferingOutput):
         self.out.append("-------------------------------------------------------------------------- 4byte")
         self.out.append("|       SegmentSelector 15:0       |        OffsetInSegment0 15:0        |")
         self.out.append("-------------------------------------------------------------------------- 0byte")
+        self.out.append(" * ParamCount           : Number of copied 32bit stack parameters; reserved (0) in 64bit call gates")
         return
 
     @Decorator.parse_args
@@ -168027,7 +168042,9 @@ class VBARCommand(GenericCommand, BufferingOutput):
         vbars = []
 
         # VBAR
-        vbar = get_register("$VBAR") or get_register("$VBAR_EL1")
+        vbar = get_register("$VBAR")
+        if vbar is None:
+            vbar = get_register("$VBAR_EL1")
         vbars.append(("$VBAR", vbar))
 
         # VBAR_EL2
@@ -168051,7 +168068,7 @@ class VBARCommand(GenericCommand, BufferingOutput):
 
             # Skip unavailable ELs before changing CPSR.
             if vbar is None:
-                self.err_add_out("Invalid VBAR address: None")
+                self.info_add_out("Register is unavailable (not exposed by the target)")
                 continue
 
             target_EL = {
@@ -168068,7 +168085,7 @@ class VBARCommand(GenericCommand, BufferingOutput):
                     SwitchELCommand.set_cpsr(target_CPSR)
 
                 # address check
-                if not is_valid_addr(vbar):
+                if (vbar & 0x7ff) != 0 or not is_valid_addr(vbar):
                     self.err_add_out("Invalid VBAR address: {:#x}".format(vbar))
                     continue
 
@@ -168093,6 +168110,8 @@ class VBARCommand(GenericCommand, BufferingOutput):
                         insn_str = insn.colored_text(4)
                         s = Color.colorify(s.ljust(max_width), "bold")
                         self.out.append("[{:+#06x}] {:s}: {:s}".format(ofs, s, insn_str))
+            except gdb.MemoryError:
+                self.err_add_out("Memory read error at VBAR address: {:#x}".format(vbar))
             finally:
                 if target_EL != base_EL:
                     SwitchELCommand.set_cpsr(base_CPSR)
