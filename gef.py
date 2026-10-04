@@ -67108,8 +67108,8 @@ class KernelAddressHeuristicFinder:
 
         kversion = Kernel.version()
 
-        # plan 2 (available v3.2 or later)
-        if kversion and "3.2" <= kversion:
+        # plan 2 (available v3.0 or later)
+        if kversion and "3.0" <= kversion:
             addr = Ksym.get_addr("nr_iowait_cpu")
             if addr:
                 res = gdb.execute("x/20i {:#x}".format(addr), to_string=True)
@@ -67199,15 +67199,15 @@ class KernelAddressHeuristicFinder:
         return None, None
 
     @staticmethod
-    def get_cpu_possible_mask():
+    def get_cpu_possible_mask(percpu=None):
         # plan 1 (directly)
         if KernelAddressHeuristicFinder.USE_DIRECTLY:
             x = KernelAddressHeuristicFinder.get_cpu_mask_directly("possible")
             if x:
                 return x
 
-        # plan 2 (available v3.2 or later)
-        return KernelAddressHeuristicFinder.find_cpu_mask("possible", ["init_cpu_possible"])
+        # plan 2 (available v3.0 or later)
+        return KernelAddressHeuristicFinder.find_cpu_mask("possible", ["init_cpu_possible"], percpu)
 
     @staticmethod
     def get_cpu_present_mask():
@@ -67253,7 +67253,7 @@ class KernelAddressHeuristicFinder:
 
     @staticmethod
     @Decorator.switch_to_intel_syntax
-    def find_cpu_mask(kind, anchors):
+    def find_cpu_mask(kind, anchors, percpu=None):
         """Return the address of the cpu mask bitmap of `kind` found in the code of `anchors`, or None.
 
         `init_cpu_possible()`, `init_cpu_present()` and `init_cpu_online()` are
@@ -67263,14 +67263,18 @@ class KernelAddressHeuristicFinder:
         is an int, so the helpers below skip the int-sized accesses. A candidate is verified as
         a bitmap too: the boot cpu is always cpu0, `nr_cpu_ids` is the last possible cpu + 1,
         and the other masks are subsets of the possible one."""
-        percpu = Kernel.per_cpu()
+        if percpu is None:
+            percpu = Kernel.per_cpu()
         possible = None
         if kind != "possible":
             possible = percpu.read_cpu_mask(KernelAddressHeuristicFinder.get_cpu_possible_mask())
 
         for name in anchors:
             for anchor in Ksym.get_addrs(name):
-                res = KernelAddressHeuristicFinderUtil.disassemble_until_next_symbol(anchor, 40)
+                try:
+                    res = KernelAddressHeuristicFinderUtil.disassemble_until_next_symbol(anchor, 40)
+                except gdb.error:
+                    continue
                 if is_x86_64():
                     g = KernelAddressHeuristicFinderUtil.x64_qword_ref(res)
                 elif is_x86_32():
@@ -67292,7 +67296,8 @@ class KernelAddressHeuristicFinder:
                     # cpu0 can be offline, but never absent
                     if kind != "online" and 0 not in cpus:
                         continue
-                    if kind == "possible" and percpu.is_smp and max(cpus) != percpu.nr_cpus - 1:
+                    if (kind == "possible" and percpu.is_smp and percpu.nr_cpu_ids is not None
+                            and max(cpus) != percpu.nr_cpu_ids - 1):
                         continue
                     if possible is not None and not cpus <= possible:
                         continue
@@ -73559,6 +73564,7 @@ class KernelPerCpu:
         pc = Kernel.per_cpu()
         pc.state                         # -> "smp", "up" (CONFIG_SMP=n) or "unknown"
         pc.nr_cpus                       # -> the number of cpus, 1 when not SMP, 0 when unknown
+        pc.cpu_count_source              # -> nr_cpu_ids, possible cpu mask or an estimate
         pc.get_offset(1)                 # -> __per_cpu_offset[1], or 0 when not SMP
         pc.effective_offsets             # -> the displacement of every cpu, [0] when not SMP
         pc.get_base(1) / pc.get_bases()  # -> __per_cpu_start + __per_cpu_offset[cpu]
@@ -73579,8 +73585,17 @@ class KernelPerCpu:
 
     def __init__(self):
         self.per_cpu_offset = KernelAddressHeuristicFinder.get_per_cpu_offset()
+        self.nr_cpu_ids = self.get_nr_cpu_ids()
+        self.cpu_count_source = "nr_cpu_ids" if self.nr_cpu_ids is not None else "estimated from __per_cpu_offset[]"
         self.offsets = self.get_each_cpu_offset()
         self.state = self.resolve_state()
+        if self.is_smp and self.nr_cpu_ids is None:
+            possible = self.read_cpu_mask(KernelAddressHeuristicFinder.get_cpu_possible_mask(self))
+            if possible and 0 in possible:
+                self.nr_cpu_ids = max(possible) + 1
+                self.cpu_count_source = "possible cpu mask"
+                self.offsets = self.get_each_cpu_offset()
+                self.state = self.resolve_state()
         self.start, self.end = self.resolve_static_range()
         self.unit_size = self.resolve_unit_size()
         self.symbols = None
@@ -73813,7 +73828,7 @@ class KernelPerCpu:
             return None
         bits = current_arch.ptrsize * 8
         cpus = set()
-        for i in range(align(max(self.nr_cpus, 1), bits) // bits):
+        for i in range(align(max(self.nr_cpu_ids or self.nr_cpus, 1), bits) // bits):
             word = read_int_from_memory(addr + i * current_arch.ptrsize, safe=True)
             if word is None:
                 return None
@@ -73856,15 +73871,14 @@ class KernelPerCpu:
         0xffffffff93980680|+0x0000|+000: 0xffff9724c7800000  ->  0x0000000000000000
         0xffffffff93980688|+0x0008|+001: 0xffffffff93d0d000
         0xffffffff93980690|+0x0010|+002: 0xffffffff93d0d000
-        Therefore, when the same address is repeated, it is considered to be the end.
+        If the cpu-id upper bound is unknown, repeated addresses are considered to be the end.
         """
         if self.per_cpu_offset is None:
             return []
 
-        nr_cpu_ids = self.get_nr_cpu_ids()
         cpu_offset = []
         i = 0
-        while nr_cpu_ids is None or i < nr_cpu_ids:
+        while i < (self.nr_cpu_ids or 0x1_0000):
             off = read_int_from_memory(self.per_cpu_offset + i * current_arch.ptrsize, safe=True)
             if off is None:
                 break
@@ -73875,17 +73889,18 @@ class KernelPerCpu:
             0xc6a27440|+0x0000|+000: 0x2d849000 -> inaccessible
             0xc6a27444|+0x0004|+001: 0x00000000
             """
-            if (off <= 0x10) or (off & 0xf):
-                break
-            if len(cpu_offset) >= 1 and off == cpu_offset[-1]:
-                cpu_offset.pop() # remove last one
-                break
+            if self.nr_cpu_ids is None:
+                if (off <= 0x10) or (off & 0xf):
+                    break
+                if cpu_offset and off == cpu_offset[-1]:
+                    cpu_offset.pop() # remove last one
+                    break
             cpu_offset.append(off)
             i += 1
         return cpu_offset
 
     def get_nr_cpu_ids(self):
-        """Return `nr_cpu_ids`, the number of possible cpus, or None if it is unknown.
+        """Return `nr_cpu_ids`, the upper bound of the cpu ids, or None if it is unknown.
 
         `Ksym.peek()` is used instead of a lookup because this runs while the per-cpu
         area is still being resolved, and a parse must not be triggered from here."""
@@ -183301,8 +183316,8 @@ class KernelPerCpuCommand(GenericCommand, BufferingOutput):
         "CONFIG_SMP=n has no `__per_cpu_offset` at all, and `&var` is the address as is.",
         "Whether it is CONFIG_SMP=n or just unresolved is told by the \"SMP\" of the banner.",
         "",
-        "The number of cpus is `nr_cpu_ids`, the upper bound of the cpu ids, not the number",
-        "of online cpus. Each cpu is tagged with the possible/present/online cpu masks,",
+        "The cpu-id upper bound comes from `nr_cpu_ids` or the possible cpu mask; it is",
+        "estimated from `__per_cpu_offset[]` if both are unknown. Each cpu is tagged with the masks,",
         "which are recovered from `init_cpu_*()`/`set_cpu_online()` without the symbols.",
     ]
     _note_ = "\n".join(_note_)
@@ -183352,7 +183367,10 @@ class KernelPerCpuCommand(GenericCommand, BufferingOutput):
         if pc.unit_size is not None:
             self.quiet_info_add_out("per-cpu unit size: {:#x}".format(pc.unit_size))
         if pc.state != "unknown":
-            self.quiet_info_add_out("number of cpus: {:d} (nr_cpu_ids, the upper bound of the cpu ids)".format(pc.nr_cpus))
+            source = "CONFIG_SMP=n" if pc.is_up else pc.cpu_count_source
+            if pc.is_smp and pc.nr_cpu_ids is not None and pc.nr_cpus < pc.nr_cpu_ids:
+                source = "readable entries; {:d} cpu ids from {:s}".format(pc.nr_cpu_ids, source)
+            self.quiet_info_add_out("number of cpus: {:d} ({:s}, the upper bound of the cpu ids)".format(pc.nr_cpus, source))
         for kind in ("possible", "present", "online"):
             cpus = self.cpu_masks[kind]
             self.quiet_info_add_out("{:s} cpus: {:s}".format(kind, "unknown" if cpus is None else self.format_cpus(cpus)))
