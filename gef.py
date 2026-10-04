@@ -29672,14 +29672,15 @@ class GlibcHeapVisualHeapCommand(GenericCommand, BufferingOutput):
                     else:
                         bins_info = ""
 
+                    fd = d1
                     if self.args.safe_linking_decode:
                         if chunk.address == addr and ("tcache" in bins_info or "fastbins" in bins_info):
-                            d1 = chunk.get_fwd_ptr(True)
+                            fd = chunk.get_fwd_ptr(True)
 
                     offset1 = addr - chunk.chunk_base_address
                     offset2 = addr - arena.heap_base
                     out_tmp.append("{:#x}|{:+#08x}|{:+#08x}: {:#0{:d}x} {:#0{:d}x} | {:s} | {:s}".format(
-                        addr, offset1, offset2, d1, width, d2, width, dascii, bins_info,
+                        addr, offset1, offset2, fd, width, d2, width, dascii, bins_info,
                     ).rstrip())
                     addr += current_arch.ptrsize * 2
 
@@ -165378,14 +165379,15 @@ class UclibcNgVisualHeapCommand(UclibcNgHeapDumpCommand, BufferingOutput):
                     else:
                         bins_info = ""
 
+                    fd = d1
                     if self.args.safe_linking_decode:
                         if chunk.address == addr and "fastbins" in prev_bins_info:
-                            d1 = chunk.get_fwd_ptr(True)
+                            fd = chunk.get_fwd_ptr(True)
 
                     offset1 = addr - chunk.chunk_base_address
                     offset2 = addr - malloc_state.heap_base
                     out_tmp.append("{:#x}|{:+#08x}|{:+#08x}: {:#0{:d}x} {:#0{:d}x} | {:s} | {:s}".format(
-                        addr, offset1, offset2, d1, width, d2, width, dascii, bins_info,
+                        addr, offset1, offset2, fd, width, d2, width, dascii, bins_info,
                     ).rstrip())
                     addr += current_arch.ptrsize * 2
                     prev_bins_info = bins_info
