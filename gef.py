@@ -29563,9 +29563,14 @@ class GlibcHeapExtractHeapAddrCommand(GenericCommand):
             return
 
         extracted_ptr = self.reveal(args.value)
+        note = "fd & ~0xfff"
+        # the terminal node holds protected NULL (= pos >> 12)
+        if not is_valid_addr(extracted_ptr) and is_valid_addr(args.value << 12):
+            extracted_ptr = args.value << 12
+            note = "fd << 12, terminal node"
         extracted_ptr = ProcessMap.lookup_address(extracted_ptr)
         gef_print("Protected fd pointer: {:#x}".format(args.value))
-        gef_print(" -> Extracted heap address: {!s} (=fd & ~0xfff)".format(extracted_ptr))
+        gef_print(" -> Extracted heap address: {!s} (={:s})".format(extracted_ptr, note))
         return
 
 
