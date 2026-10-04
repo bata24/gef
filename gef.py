@@ -27929,6 +27929,12 @@ class GlibcHeapParseCommand(GenericCommand, BufferingOutput):
             else:
                 fd_str = "{:<#{:d}x}".format(chunk.fd, width)
                 bk_str = "{:<#{:d}x}".format(chunk.bk, width)
+        elif chunk.chunk_base_address == arena.top:
+            chunk_freed_color = Config.get_gef_setting("theme.heap_chunk_address_freed")
+            chunk_base_addr_str = Color.colorify("{:<#{:d}x}".format(chunk.chunk_base_address, width), chunk_freed_color)
+            used_str = Color.colorify("{:{:d}s}".format("Top", width), chunk_freed_color)
+            fd_str = "{:<{:d}s}".format("-", width)
+            bk_str = "{:<{:d}s}".format("-", width)
         else:
             chunk_used_color = Config.get_gef_setting("theme.heap_chunk_address_used")
             chunk_base_addr_str = Color.colorify("{:<#{:d}x}".format(chunk.chunk_base_address, width), chunk_used_color)
