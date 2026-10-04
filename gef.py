@@ -434,6 +434,8 @@ class Cache:
                     "Pass a hashable value, e.g. tuple(x) instead of a list.".format(fname, ", ".join(bad))
                 ) from e
 
+        wrapper.cache_per_cpu = per_cpu
+        wrapper.cache_per_inferior = per_inferior
         return wrapper
 
     @staticmethod
@@ -505,6 +507,10 @@ class Cache:
         fname = f"{f.__module__}:{f.__qualname__}"
         if hasattr(f, "__self__"):
             args = (f.__self__,) + args
+        if getattr(f, "cache_per_cpu", False):
+            args = (Cache.cpu_context(), args)
+        if getattr(f, "cache_per_inferior", False):
+            args = (Cache.inferior_context(), args)
         for caches in Cache.__gef_caches__.values():
             fcache = caches.get(fname)
             if fcache is not None:
@@ -155391,7 +155397,7 @@ class KtypesLoadCommand(KtypesCommand):
 
 
 class Ksym:
-    """Resolve kernel symbols from the kallsyms table in memory or from a vmlinux file."""
+    """Resolve kernel symbols from memory, vmlinux or System.map."""
     # Thanks to https://github.com/marin-m/vmlinux-to-elf
 
     kallsyms = None
@@ -155588,7 +155594,11 @@ class Ksym:
                     "asm_exc_divide_error", # 5.8~
                     "divide_error", # 3.0 ~ 5.7
                 ]
-            elif is_arm64() or is_arm32():
+            elif is_arm32():
+                target = [
+                    "vector_swi",
+                ]
+            elif is_arm64():
                 target = [
                     "vectors", # 3.7~
                 ]
@@ -155632,6 +155642,93 @@ class Ksym:
 
             # fail, use as is
             return tmp_kallsyms
+
+    class SystemMap:
+        """Parse and relocate the symbols of a System.map file."""
+
+        @staticmethod
+        def parse(filename, quiet):
+            kallsyms = []
+            try:
+                with open(filename) as f:
+                    for number, line in enumerate(f, 1):
+                        line = line.strip()
+                        match = re.fullmatch(r"([0-9a-fA-F]+)\s+([a-zA-Z?])\s+(\S+)", line)
+                        if match and int(match[1], 16) < 1 << (current_arch.ptrsize * 8):
+                            kallsyms.append([int(match[1], 16), match[3], match[2]])
+                            continue
+                        reason = "empty line" if not line else "comment" if line.startswith("#") else "invalid line"
+                        warn("Skipping {:s}:{:d}: {:s}".format(filename, number, reason))
+            except (OSError, UnicodeError) as e:
+                err("Could not read System.map: {}".format(e))
+                return None
+            if not kallsyms:
+                err("No valid symbols in System.map: {:s}".format(filename))
+                return None
+            return Ksym.SystemMap.rebase(kallsyms, quiet)
+
+        @staticmethod
+        def rebase(kallsyms, quiet):
+            if is_x86():
+                targets = ("asm_exc_divide_error", "divide_error")
+            elif is_arm32():
+                targets = ("vector_swi",)
+            elif is_arm64():
+                targets = ("vectors",)
+            elif is_riscv32() or is_riscv64():
+                targets = ("handle_exception",)
+            else:
+                err("Unsupported architecture for System.map")
+                return None
+
+            names = (*targets, "_text", "_stext", "_end", "linux_banner")
+            symbols = {name: addr for addr, name, typ in kallsyms if name in names and typ.lower() != "a"}
+            starts = [symbols[name] for name in ("_text", "_stext") if name in symbols]
+            image_end = symbols.get("_end")
+            if not starts or image_end is None or min(starts) >= image_end:
+                err("Could not find kernel image bounds in System.map")
+                return None
+            image_start = min(starts)
+
+            anchors = []
+            try:
+                vector = KernelLayout.get_exception_vector()
+            except gdb.error:
+                vector = None
+            if vector is not None:
+                name = next((name for name in targets if name in symbols), None)
+                if name is not None:
+                    anchors.append((name, vector - symbols[name]))
+
+            # KGDB's layout resolution needs kallsyms, so it cannot be used during this parse.
+            if "linux_banner" in symbols and (is_qemu_system() or is_vmware()):
+                try:
+                    version = KernelVersion.scan_banner()
+                except gdb.error:
+                    version = None
+                if version is not None:
+                    anchors.append(("linux_banner", version.address - symbols["linux_banner"]))
+
+            if not anchors:
+                err("Could not resolve the KASLR offset for System.map")
+                return None
+            slide = anchors[0][1]
+            if slide & get_pagesize_mask_low() or any(offset != slide for name, offset in anchors):
+                err("System.map does not match the running kernel: {:s}".format(
+                    ", ".join("{:s}={:#x}".format(name, offset) for name, offset in anchors)))
+                return None
+
+            description = "KASLR offset: {:#x} (anchors: {:s})".format(slide, ", ".join(name for name, offset in anchors))
+            Ksym.quiet_info(quiet, description)
+            if len(anchors) < 2:
+                warn("{:s}; could not verify relative anchor offsets; the kernel build may differ".format(description))
+
+            rebased = []
+            for addr, name, typ in kallsyms:
+                if typ.lower() != "a" and image_start <= addr <= image_end:
+                    addr = AddressUtil.normalize_address(addr + slide)
+                rebased.append([addr, name, typ])
+            return rebased
 
     class Memory:
         """Scan the kernel image in memory, the source used when there is no vmlinux file."""
@@ -156910,15 +157007,18 @@ class Ksym:
         return None
 
     @staticmethod
-    def get_kallsyms(rescan=False, vmlinux_file=None, ignore_loaded_vmlinux=False, verbose=False, quiet=False):
+    def get_kallsyms(rescan=False, vmlinux_file=None, system_map=None, ignore_loaded_vmlinux=False, verbose=False, quiet=False):
         """Return ([[addr, name, type], ...], {name: [addr, ...]}), or None if it could not be parsed.
 
         One parse is shared by every caller. The options select the parse source, so any of
         them drops that result and parses again. The map is built here because
         Ksym.get_addr is called hundreds of times by some commands, and scanning all
         the symbols for each call is too slow."""
+        if system_map is not None and vmlinux_file:
+            err("--system-map and --vmlinux-file cannot be used together")
+            return None
         Ksym.switch_inferior()
-        if rescan or vmlinux_file or ignore_loaded_vmlinux:
+        if rescan or vmlinux_file or system_map is not None or ignore_loaded_vmlinux:
             Ksym.reset()
         if rescan:
             # the layout resolved before mark_rodata_ro() is stale (RWX) once the boot completes
@@ -156927,13 +157027,16 @@ class Ksym:
             return Ksym.kallsyms, Ksym.kallsyms_map
 
         # pick the source; a file that was specified but does not exist is an error, not a fallback
-        if not vmlinux_file:
+        if not vmlinux_file and system_map is None:
             vmlinux_file = Ksym.Vmlinux.loaded_path(ignore_loaded_vmlinux, quiet)
-        elif not os.path.exists(vmlinux_file):
+        elif vmlinux_file and not os.path.exists(vmlinux_file):
             Ksym.quiet_err(quiet, "Could not find vmlinux file")
             return None
 
-        if vmlinux_file:
+        if system_map is not None:
+            Ksym.quiet_info(quiet, "Parse from file: {!s}".format(system_map))
+            kallsyms = Ksym.SystemMap.parse(system_map, quiet)
+        elif vmlinux_file:
             Ksym.quiet_info(quiet, "Parse from file: {!s}".format(vmlinux_file))
             kallsyms = Ksym.Vmlinux.parse(vmlinux_file, quiet)
         else:
@@ -156988,9 +157091,13 @@ class KsymaddrRemoteCommand(GenericCommand, BufferingOutput):
     parser.add_argument("-e", "--exact", action="store_true", help="use exact match.")
     parser.add_argument("-r", "--rescan", action="store_true", help="do not use cache.")
     parser.add_argument("-s", "--smart", action="store_true", help="filter __pfx_*, __ksymtab_*, etc.")
-    parser.add_argument("--vmlinux-file", help="force use your vmlinux file which includes symbols.")
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument("-V", "--vmlinux-file", metavar="FILE",
+                       help="force use your vmlinux file which includes symbols.")
+    group.add_argument("-M", "--system-map", metavar="FILE",
+                       help="read and relocate symbols from a System.map file.")
     parser.add_argument("-I", "--ignore-loaded-vmlinux", action="store_true", help="force skip parsing loaded vmlinux.")
-    parser.add_argument("--print-saved-config", action="store_true", help="print saved (cached) config contents.")
+    parser.add_argument("-C", "--print-saved-config", action="store_true", help="print saved (cached) config contents.")
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
     parser.add_argument("-v", "--verbose", action="store_true", help="enable verbose mode.")
     parser.add_argument("-q", "--quiet", action="store_true", help="enable quiet mode.")
@@ -156998,6 +157105,7 @@ class KsymaddrRemoteCommand(GenericCommand, BufferingOutput):
 
     _example_ = [
         "{0:s} commit_creds prepare_kernel_cred  # OR search",
+        "{0:s} --system-map /boot/System.map commit_creds",
     ]
     _example_ = "\n".join(_example_).format(_cmdline_)
 
@@ -157007,6 +157115,9 @@ class KsymaddrRemoteCommand(GenericCommand, BufferingOutput):
         "share one cache even if the CONFIG is different. GEF checks the cached offsets",
         "against the running kernel and parses again when they do not match.",
         "To drop a cache by hand, rescan with `ks -rv` or use `gef reset-cache --hard`.",
+        "`--system-map` checks the KASLR offset against the exception entry and linux_banner.",
+        "With only one anchor, it warns that the kernel build could not be verified.",
+        "Absolute symbols and symbols linked outside the kernel image are not relocated.",
     ]
     _note_ = "\n".join(_note_)
 
@@ -157099,10 +157210,11 @@ class KsymaddrRemoteCommand(GenericCommand, BufferingOutput):
             self.print_saved_config()
             return
 
-        self.quiet_info("Wait for memory scan")
+        if args.system_map is None:
+            self.quiet_info("Wait for memory scan")
 
         ret = Ksym.get_kallsyms(
-            rescan=args.rescan, vmlinux_file=args.vmlinux_file,
+            rescan=args.rescan, vmlinux_file=args.vmlinux_file, system_map=args.system_map,
             ignore_loaded_vmlinux=args.ignore_loaded_vmlinux,
             verbose=args.verbose, quiet=args.quiet,
         )

@@ -8594,7 +8594,7 @@ Resolve kernel symbols from kallsyms table.
 ### Syntax
 
 ```text
-usage: ksymaddr-remote [-h] [-t TYPE] [-e] [-r] [-s] [--vmlinux-file VMLINUX_FILE] [-I] [--print-saved-config] [-n] [-v] [-q] [KEYWORD ...]
+usage: ksymaddr-remote [-h] [-t TYPE] [-e] [-r] [-s] [-V FILE | -M FILE] [-I] [-C] [-n] [-v] [-q] [KEYWORD ...]
 
 positional arguments:
   KEYWORD               filter by specific symbol name.
@@ -8605,11 +8605,14 @@ options:
   -e, --exact           use exact match.
   -r, --rescan          do not use cache.
   -s, --smart           filter __pfx_*, __ksymtab_*, etc.
-  --vmlinux-file VMLINUX_FILE
+  -V, --vmlinux-file FILE
                         force use your vmlinux file which includes symbols.
+  -M, --system-map FILE
+                        read and relocate symbols from a System.map file.
   -I, --ignore-loaded-vmlinux
                         force skip parsing loaded vmlinux.
-  --print-saved-config  print saved (cached) config contents.
+  -C, --print-saved-config
+                        print saved (cached) config contents.
   -n, --no-pager        do not use the pager.
   -v, --verbose         enable verbose mode.
   -q, --quiet           enable quiet mode.
@@ -8619,6 +8622,7 @@ options:
 
 ```gdb
 ksymaddr-remote commit_creds prepare_kernel_cred  # OR search
+ksymaddr-remote --system-map /boot/System.map commit_creds
 ```
 
 ### Notes
@@ -8629,6 +8633,9 @@ Each cache is used based on kernel version strings, so kernels of the same versi
 share one cache even if the CONFIG is different. GEF checks the cached offsets
 against the running kernel and parses again when they do not match.
 To drop a cache by hand, rescan with `ks -rv` or use `gef reset-cache --hard`.
+`--system-map` checks the KASLR offset against the exception entry and linux_banner.
+With only one anchor, it warns that the kernel build could not be verified.
+Absolute symbols and symbols linked outside the kernel image are not relocated.
 ```
 
 ## `ksymaddr-remote-apply`
