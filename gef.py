@@ -17571,9 +17571,15 @@ class StepiForKGDBCommand(GenericCommand):
             signal = getattr(event, "stop_signal", None)
             event_thread = getattr(event, "inferior_thread", None)
             event_type = type(event).__name__
+            stop_reason = getattr(event, "details", {}).get("reason")
             same_cpu = result_matches and (event_thread is None or self.thread_matches(event_thread, state))
             unexpected_signal = signal not in (None, "SIGTRAP")
-            normal_stop = event is None or signal == "SIGTRAP" or (signal is None and event_type in ("SignalEvent", "BreakpointEvent"))
+            normal_stop = event is None or signal == "SIGTRAP" or (
+                signal is None and (
+                    event_type in ("SignalEvent", "BreakpointEvent")
+                    or (event_type == "StopEvent" and stop_reason in (None, "end-stepping-range"))
+                )
+            )
             step_verified = step_succeeded and same_cpu and normal_stop
             transitioned = self.exception_state_changed(
                 state["pc"], state["instruction"], pc, state["cpsr"], cpsr, state["exception_registers"],
