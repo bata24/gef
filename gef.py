@@ -71892,6 +71892,11 @@ class Kernel:
         return KernelSocket.get_instance()
 
     @staticmethod
+    def skb():
+        """Return the sk_buff resolver."""
+        return KernelSkbuff.get_instance()
+
+    @staticmethod
     def ipcs():
         """Return the System V IPC resolver."""
         return KernelIpcs.get_instance()
@@ -77961,6 +77966,367 @@ class KernelSocket:
                 used.add(best[0])
                 found.append((label, best[1], best[2], best[0], "heuristic"))
         return found
+
+
+class KernelSkbuff:
+    """Resolve sk_buff layouts and read packet fields, fragments and data."""
+
+    @classmethod
+    @Cache.cache_this_session(per_inferior=True, until_new_objfile=True)
+    def get_instance(cls):
+        return cls()
+
+    @staticmethod
+    def resolve_layout(skb, check_shinfo=True):
+        """Resolve the sk_buff layout at `skb`. Returns a dict, or None.
+        The debug info is used if it matches the memory, otherwise the live layout is probed."""
+        offsets = KernelSkbuff.get_dwarf_layout()
+        dwarf_mismatch = False
+        if offsets:
+            layout = KernelSkbuff.read_layout(skb, offsets)
+            if layout:
+                layout.update(source="DWARF", candidates=1, dwarf_mismatch=False)
+                return layout
+            dwarf_mismatch = True
+        ret = KernelSkbuff.probe_layout(skb, check_shinfo)
+        if ret is None:
+            return None
+        layout, candidates = ret
+        layout.update(source="heuristic", candidates=candidates, dwarf_mismatch=dwarf_mismatch)
+        return layout
+
+    @staticmethod
+    def resolve_shared_info_layout(shinfo):
+        dwarf = KernelSkbuff.get_shared_info_dwarf_layout()
+        if dwarf is not None:
+            nr_offset, nr_size, frag_list_offset, max_frags = dwarf
+            max_frags = max_frags or 0xff
+            try:
+                nr_frags = (read_int16_from_memory(shinfo + nr_offset) if nr_size == 2
+                            else read_int8_from_memory(shinfo + nr_offset))
+                frag_list = read_int_from_memory(shinfo + frag_list_offset)
+            except gdb.MemoryError:
+                return None
+            if nr_frags <= max_frags and (frag_list == 0 or is_valid_addr(frag_list)):
+                return nr_frags, frag_list, nr_offset, max_frags, "DWARF"
+
+        # nr_frags layouts used by supported kernels:
+        #   v3.0-v3.2: u16 at +0, frag_list at +0x10
+        #   v3.3-v4.11: u8 at +0, frag_list at +0x8
+        #   v4.12-:     u8 at +2, frag_list at +0x8
+        # CONFIG_MAX_SKB_FRAGS is configurable on newer kernels; 0xff is the
+        # storage-type limit and avoids baking the default value 17 into the probe.
+        layouts = [
+            (2, 1, 8, 4, 6),
+            (0, 1, 8, 2, 4),
+            (0, 2, 16, 2, 4),
+        ]
+        kversion = Kernel.version()
+        preferred = 0 if kversion and "4.12" <= kversion else (1 if kversion and "3.3" <= kversion else 2)
+        candidates = []
+        for index, layout in enumerate(layouts):
+            result = KernelSkbuff.score_shared_info_layout(shinfo, layout, 0xff)
+            if result is None:
+                continue
+            score, nr_frags, frag_list = result
+            if index == preferred:
+                score += 1
+            candidates.append((score, -index, nr_frags, frag_list, layout[0]))
+        if not candidates:
+            return None
+        best = max(candidates)
+        return best[2], best[3], best[4], None, "live layout probe"
+
+    def get_skb(self, skb, layout=None):
+        if layout is None:
+            layout = self.resolve_layout(skb)
+        if layout is None:
+            return None
+        ptr = current_arch.ptrsize
+        # next / prev (list linkage at offset 0)
+        nxt = read_int_from_memory(skb)
+        prv = read_int_from_memory(skb + ptr)
+        len_v = data_len = None
+        if layout["len"] is not None and layout["data_len"] is not None:
+            len_v = read_int32_from_memory(skb + layout["len"])
+            data_len = read_int32_from_memory(skb + layout["data_len"])
+        truesize = read_int32_from_memory(skb + layout["truesize"]) if layout["truesize"] is not None else None
+        users = read_int32_from_memory(skb + layout["users"]) if layout["users"] is not None else None
+        return {
+            "address": skb, "layout": layout, "next": nxt, "prev": prv,
+            "len": len_v, "data_len": data_len, "truesize": truesize, "users": users,
+            "destructor": self.find_destructor(skb, layout),
+        }
+
+    def get_frags(self, shinfo, nr_frags):
+        frag_layout = self.get_frag_dwarf_layout()
+        if frag_layout is None:
+            return []
+        offset_frags, sizeof_frag, (page_offset, page_size), (offset_offset, offset_size), (size_offset, size_size) = frag_layout
+
+        def read_member(addr, size):
+            return {1: read_int8_from_memory, 2: read_int16_from_memory, 4: read_int32_from_memory,
+                    8: read_int64_from_memory}[size](addr)
+
+        fragments = []
+        for i in range(nr_frags):
+            frag = shinfo + offset_frags + sizeof_frag * i
+            try:
+                page = read_member(frag + page_offset, page_size)
+                offset = read_member(frag + offset_offset, offset_size)
+                size = read_member(frag + size_offset, size_size)
+            except gdb.MemoryError:
+                fragments.append({"index": i, "error": "unreadable"})
+                continue
+            # the lowest bit of netmem_ref marks a net_iov, which is not a struct page
+            virt = Kernel.page2virt(page) if page and not page & 1 else None
+            fragments.append({"index": i, "page": page, "offset": offset, "size": size, "virt": virt})
+        return fragments
+
+    @staticmethod
+    def get_data(layout):
+        data = layout["data_value"]
+        headlen = layout["tail_value"] - (data - layout["head_value"])
+        size = min(0x40, headlen)
+        raw = b""
+        if size:
+            try:
+                raw = read_memory(data, size)
+            except gdb.MemoryError:
+                raw = None
+        return {"address": data, "headlen": headlen, "size": size, "data": raw}
+
+    def sym_name(self, addr):
+        if not addr:
+            return ""
+        name = Ksym.get_name(addr)
+        if name:
+            return name
+        s = Symbol.get_symbol_string(addr, nosymbol_string="")
+        return s.strip().strip("<>")
+
+    @staticmethod
+    @Cache.cache_this_session(per_inferior=True, until_new_objfile=True)
+    def get_dwarf_layout():
+        """Return the member offsets of struct sk_buff from DWARF, or None."""
+        layout = {}
+        for member in ["head", "data", "tail", "end", "len", "data_len", "truesize", "users", "destructor"]:
+            try:
+                layout[member] = GefUtil.parse_and_eval_unsigned("&((struct sk_buff*)0)->{:s}".format(member))
+            except gdb.error:
+                layout[member] = None
+        if None in [layout[x] for x in ["head", "data", "tail", "end"]]:
+            return None
+        # sk_buff_data_t is an offset from head if NET_SKBUFF_DATA_USES_OFFSET, otherwise a pointer.
+        try:
+            tail_type = gdb.parse_and_eval("((struct sk_buff*)0)->tail").type.strip_typedefs()
+        except gdb.error:
+            return None
+        layout["tail_is_offset"] = tail_type.code != gdb.TYPE_CODE_PTR
+        layout["sizeof_tail"] = tail_type.sizeof
+        return layout
+
+    @staticmethod
+    def is_valid_geometry(head, data, tail, end):
+        """head <= data <= head + tail <= head + end, and skb_shared_info at head + end is readable."""
+        if not is_valid_addr(head) or not is_valid_addr(data):
+            return False
+        if not (head <= data and data - head <= tail <= end):
+            return False
+        return is_valid_addr(head + end)
+
+    @staticmethod
+    def read_layout(skb, offsets):
+        """Read the geometry at the given offsets. Returns a dict, or None if it is not valid."""
+        try:
+            head = read_int_from_memory(skb + offsets["head"])
+            data = read_int_from_memory(skb + offsets["data"])
+            if offsets["tail_is_offset"]:
+                read_data_t = read_int32_from_memory if offsets["sizeof_tail"] == 4 else read_int_from_memory
+                tail = read_data_t(skb + offsets["tail"])
+                end = read_data_t(skb + offsets["end"])
+            else:
+                tail = read_int_from_memory(skb + offsets["tail"]) - head
+                end = read_int_from_memory(skb + offsets["end"]) - head
+        except gdb.MemoryError:
+            return None
+        if not KernelSkbuff.is_valid_geometry(head, data, tail, end):
+            return None
+        layout = dict(offsets)
+        layout.update(head_value=head, data_value=data, tail_value=tail, end_value=end)
+        return layout
+
+    @staticmethod
+    def find_len(skb, headlen):
+        """Locate the adjacent (len, data_len) u32 pair where skb->len - skb->data_len == headlen.
+        Returns the offset of len, or None.
+
+        len follows `char cb[48]`, _skb_refdst, destructor and a few config-dependent pointers.
+        The fields before cb (next, prev, dev/tstamp, sk) take ptrsize * 4 + 8 bytes."""
+        ptr = current_arch.ptrsize
+        start = ptr * 4 + 8 + 0x30 + ptr
+        for off in range(start, start + ptr * 5 + 4, 4):
+            len_v = read_int32_from_memory(skb + off)
+            data_len = read_int32_from_memory(skb + off + 4)
+            if 0 < len_v < 0x1000_0000 and data_len <= len_v and (len_v - data_len) == headlen:
+                return off
+        return None
+
+    @staticmethod
+    def probe_layout(skb, check_shinfo=True):
+        """Find the head/data/tail/end cluster without DWARF. Returns (layout, the number of the best candidates) or None.
+
+        struct sk_buff (tail):  ... tail; end; head; data; truesize; users; ...
+        - 64-bit: tail/end are u32 offsets from head. `head` is 8-aligned, so depending on the
+          preceding fields a 4-byte pad may sit between `end` and `head` (e.g. v6.1), which shifts
+          the (tail, end) pair from (head-8, head-4) to (head-0xc, head-8). Try both.
+        - 32-bit: tail/end are `unsigned char*` absolute pointers at (head-8, head-4).
+        The truesize is not used, since it is an accounting value (e.g., 2 for a TCP pure ACK on v4.15~).
+        """
+        ptr = current_arch.ptrsize
+        if is_64bit():
+            te_layouts = [(-8, -4), (-0xc, -8)]
+        else:
+            te_layouts = [(-ptr * 2, -ptr)]
+        candidates = []
+        for i in range(0xc, 0x40):
+            off_head = ptr * i
+            try:
+                head = read_int_from_memory(skb + off_head)
+                data = read_int_from_memory(skb + off_head + ptr)
+            except gdb.MemoryError:
+                return None
+            if not is_valid_addr(head) or not is_valid_addr(data) or head > data:
+                continue
+            for te_tail, te_end in te_layouts:
+                offsets = {
+                    "head": off_head, "data": off_head + ptr, "tail": off_head + te_tail, "end": off_head + te_end,
+                    "tail_is_offset": is_64bit(), "sizeof_tail": 4,
+                    "truesize": off_head + ptr * 2, "users": off_head + ptr * 2 + 4, "destructor": None,
+                }
+                layout = KernelSkbuff.read_layout(skb, offsets)
+                if layout is None:
+                    continue
+                if check_shinfo:
+                    shinfo = layout["head_value"] + layout["end_value"]
+                    if KernelSkbuff.resolve_shared_info_layout(shinfo) is None:
+                        continue
+                headlen = layout["tail_value"] - (layout["data_value"] - layout["head_value"])
+                layout["len"] = KernelSkbuff.find_len(skb, headlen)
+                layout["data_len"] = None if layout["len"] is None else layout["len"] + 4
+                score = 0
+                if layout["len"] is not None:
+                    score += 2
+                users = read_int32_from_memory(skb + layout["users"])
+                if 0 < users < 0x10000:
+                    score += 1
+                candidates.append((score, layout))
+        if not candidates:
+            return None
+        best_score = max(score for score, _ in candidates)
+        best = [layout for score, layout in candidates if score == best_score]
+        return best[0], len(best)
+
+    @staticmethod
+    @Cache.cache_this_session(per_inferior=True, until_new_objfile=True)
+    def get_shared_info_dwarf_layout():
+        """Return the nr_frags/frag_list layout and array bound from DWARF."""
+        try:
+            struct_type = GefUtil.cached_lookup_type("struct skb_shared_info")
+            if struct_type is None:
+                return None
+            nr_field = GefUtil.lookup_field(struct_type, "nr_frags")
+            frag_list_field = GefUtil.lookup_field(struct_type, "frag_list")
+            if nr_field is None or frag_list_field is None:
+                return None
+            frags_field = GefUtil.lookup_field(struct_type, "frags")
+            max_frags = None
+            if frags_field is not None:
+                frags_type = frags_field.type.strip_typedefs()
+                if frags_type.code == gdb.TYPE_CODE_ARRAY:
+                    low, high = frags_type.range()
+                    max_frags = int(high - low + 1)
+            return nr_field.bitpos // 8, int(nr_field.type.sizeof), frag_list_field.bitpos // 8, max_frags
+        except (gdb.error, KeyError, TypeError):
+            return None
+
+    @staticmethod
+    @Cache.cache_this_session(per_inferior=True, until_new_objfile=True)
+    def get_frag_dwarf_layout():
+        """Return (offsetof(skb_shared_info, frags), sizeof(skb_frag_t), page, offset, size) from DWARF, or None.
+        Each of page/offset/size is (member offset, member size)."""
+
+        def member(names):
+            for name in names:
+                try:
+                    offset = GefUtil.parse_and_eval_unsigned("&((skb_frag_t*)0)->{:s}".format(name))
+                    size = GefUtil.parse_and_eval_unsigned("sizeof(((skb_frag_t*)0)->{:s})".format(name))
+                    return offset, size
+                except gdb.error:
+                    continue
+            return None
+
+        try:
+            offset_frags = GefUtil.parse_and_eval_unsigned("&((struct skb_shared_info*)0)->frags")
+            sizeof_frag = GefUtil.parse_and_eval_unsigned("sizeof(skb_frag_t)")
+        except gdb.error:
+            return None
+        # skb_frag_struct (~v5.3), bio_vec (v5.4~v6.8) and skb_frag (v6.9~, netmem_ref since v6.10)
+        page = member(["netmem", "bv_page", "page.p", "page"])
+        offset = member(["offset", "bv_offset", "page_offset"])
+        size = member(["len", "bv_len", "size"])
+        if None in [page, offset, size]:
+            return None
+        return offset_frags, sizeof_frag, page, offset, size
+
+    @staticmethod
+    def score_shared_info_layout(shinfo, layout, max_frags):
+        """Score a no-DWARF skb_shared_info layout from related live fields."""
+        nr_offset, nr_size, frag_list_offset, gso_offset, gso_segs_offset = layout
+        try:
+            if nr_size == 2:
+                nr_frags = read_int16_from_memory(shinfo + nr_offset)
+            else:
+                nr_frags = read_int8_from_memory(shinfo + nr_offset)
+            if nr_frags > max_frags:
+                return None
+            gso_size = read_int16_from_memory(shinfo + gso_offset)
+            gso_segs = read_int16_from_memory(shinfo + gso_segs_offset)
+            frag_list = read_int_from_memory(shinfo + frag_list_offset)
+        except gdb.MemoryError:
+            return None
+
+        score = 2
+        if frag_list == 0:
+            score += 2
+        elif is_valid_addr(frag_list):
+            score += 2
+            if KernelSkbuff.resolve_layout(frag_list, check_shinfo=False) is not None:
+                score += 2
+        else:
+            return None
+        # A segmented skb has a segment size; random bytes often violate this.
+        if gso_segs > 1 and gso_size == 0:
+            score -= 2
+        else:
+            score += 1
+        return score, nr_frags, frag_list
+
+    def find_destructor(self, skb, layout):
+        """With DWARF, read skb->destructor. Otherwise a function pointer before head that resolves to a *free / *destruct symbol."""
+        if layout["destructor"] is not None:
+            p = read_int_from_memory(skb + layout["destructor"])
+            if p == 0:
+                return None
+            return p, self.sym_name(p), layout["destructor"]
+        for i in range(3, layout["head"] // current_arch.ptrsize):
+            p = read_int_from_memory(skb + current_arch.ptrsize * i)
+            if not is_valid_addr(p) or not AddressUtil.is_msb_on(p):
+                continue
+            nm = self.sym_name(p)
+            if nm and re.search(r"free|destruct", nm):
+                return p, nm, current_arch.ptrsize * i
+        return None
 
 
 class KernelIpcs:
@@ -152521,11 +152887,12 @@ class KernelSocketCommand(GenericCommand, BufferingOutput):
 
     def dump_skb_data(self, skb, prefix):
         """Hexdump the first 64 bytes of the linear packet data of an skb (shares kskb's layout resolver)."""
-        layout = KernelSkbCommand.resolve_layout(skb)
+        kskb = Kernel.skb()
+        layout = kskb.resolve_layout(skb)
         if layout is None:
             self.out.append("{:s}data: ??? (the sk_buff layout could not be resolved)".format(prefix))
             return
-        for line in KernelSkbCommand.get_data_dump(layout):
+        for line in KernelSkbCommand.get_data_dump(kskb.get_data(layout)):
             self.out.append(prefix + line)
         return
 
@@ -152718,305 +153085,14 @@ class KernelSkbCommand(GenericCommand, BufferingOutput):
     ]
     _note_ = "\n".join(_note_)
 
-    def sym_name(self, addr):
-        if not addr:
-            return ""
-        name = Ksym.get_name(addr)
-        if name:
-            return name
-        s = Symbol.get_symbol_string(addr, nosymbol_string="")
-        return s.strip().strip("<>")
-
-    @staticmethod
-    @Cache.cache_this_session(per_inferior=True, until_new_objfile=True)
-    def get_dwarf_layout():
-        """Return the member offsets of struct sk_buff from DWARF, or None."""
-        layout = {}
-        for member in ["head", "data", "tail", "end", "len", "data_len", "truesize", "users", "destructor"]:
-            try:
-                layout[member] = GefUtil.parse_and_eval_unsigned("&((struct sk_buff*)0)->{:s}".format(member))
-            except gdb.error:
-                layout[member] = None
-        if None in [layout[x] for x in ["head", "data", "tail", "end"]]:
-            return None
-        # sk_buff_data_t is an offset from head if NET_SKBUFF_DATA_USES_OFFSET, otherwise a pointer.
-        try:
-            tail_type = gdb.parse_and_eval("((struct sk_buff*)0)->tail").type.strip_typedefs()
-        except gdb.error:
-            return None
-        layout["tail_is_offset"] = tail_type.code != gdb.TYPE_CODE_PTR
-        layout["sizeof_tail"] = tail_type.sizeof
-        return layout
-
-    @staticmethod
-    def is_valid_geometry(head, data, tail, end):
-        """head <= data <= head + tail <= head + end, and skb_shared_info at head + end is readable."""
-        if not is_valid_addr(head) or not is_valid_addr(data):
-            return False
-        if not (head <= data and data - head <= tail <= end):
-            return False
-        return is_valid_addr(head + end)
-
-    @staticmethod
-    def read_layout(skb, offsets):
-        """Read the geometry at the given offsets. Returns a dict, or None if it is not valid."""
-        try:
-            head = read_int_from_memory(skb + offsets["head"])
-            data = read_int_from_memory(skb + offsets["data"])
-            if offsets["tail_is_offset"]:
-                read_data_t = read_int32_from_memory if offsets["sizeof_tail"] == 4 else read_int_from_memory
-                tail = read_data_t(skb + offsets["tail"])
-                end = read_data_t(skb + offsets["end"])
-            else:
-                tail = read_int_from_memory(skb + offsets["tail"]) - head
-                end = read_int_from_memory(skb + offsets["end"]) - head
-        except gdb.MemoryError:
-            return None
-        if not KernelSkbCommand.is_valid_geometry(head, data, tail, end):
-            return None
-        layout = dict(offsets)
-        layout.update(head_value=head, data_value=data, tail_value=tail, end_value=end)
-        return layout
-
-    @staticmethod
-    def find_len(skb, headlen):
-        """Locate the adjacent (len, data_len) u32 pair where skb->len - skb->data_len == headlen.
-        Returns the offset of len, or None.
-
-        len follows `char cb[48]`, _skb_refdst, destructor and a few config-dependent pointers.
-        The fields before cb (next, prev, dev/tstamp, sk) take ptrsize * 4 + 8 bytes."""
-        ptr = current_arch.ptrsize
-        start = ptr * 4 + 8 + 0x30 + ptr
-        for off in range(start, start + ptr * 5 + 4, 4):
-            len_v = read_int32_from_memory(skb + off)
-            data_len = read_int32_from_memory(skb + off + 4)
-            if 0 < len_v < 0x1000_0000 and data_len <= len_v and (len_v - data_len) == headlen:
-                return off
-        return None
-
-    @staticmethod
-    def probe_layout(skb, check_shinfo=True):
-        """Find the head/data/tail/end cluster without DWARF. Returns (layout, the number of the best candidates) or None.
-
-        struct sk_buff (tail):  ... tail; end; head; data; truesize; users; ...
-        - 64-bit: tail/end are u32 offsets from head. `head` is 8-aligned, so depending on the
-          preceding fields a 4-byte pad may sit between `end` and `head` (e.g. v6.1), which shifts
-          the (tail, end) pair from (head-8, head-4) to (head-0xc, head-8). Try both.
-        - 32-bit: tail/end are `unsigned char*` absolute pointers at (head-8, head-4).
-        The truesize is not used, since it is an accounting value (e.g., 2 for a TCP pure ACK on v4.15~).
-        """
-        ptr = current_arch.ptrsize
-        if is_64bit():
-            te_layouts = [(-8, -4), (-0xc, -8)]
-        else:
-            te_layouts = [(-ptr * 2, -ptr)]
-        candidates = []
-        for i in range(0xc, 0x40):
-            off_head = ptr * i
-            try:
-                head = read_int_from_memory(skb + off_head)
-                data = read_int_from_memory(skb + off_head + ptr)
-            except gdb.MemoryError:
-                return None
-            if not is_valid_addr(head) or not is_valid_addr(data) or head > data:
-                continue
-            for te_tail, te_end in te_layouts:
-                offsets = {
-                    "head": off_head, "data": off_head + ptr, "tail": off_head + te_tail, "end": off_head + te_end,
-                    "tail_is_offset": is_64bit(), "sizeof_tail": 4,
-                    "truesize": off_head + ptr * 2, "users": off_head + ptr * 2 + 4, "destructor": None,
-                }
-                layout = KernelSkbCommand.read_layout(skb, offsets)
-                if layout is None:
-                    continue
-                if check_shinfo:
-                    shinfo = layout["head_value"] + layout["end_value"]
-                    if KernelSkbCommand.resolve_shared_info_layout(shinfo) is None:
-                        continue
-                headlen = layout["tail_value"] - (layout["data_value"] - layout["head_value"])
-                layout["len"] = KernelSkbCommand.find_len(skb, headlen)
-                layout["data_len"] = None if layout["len"] is None else layout["len"] + 4
-                score = 0
-                if layout["len"] is not None:
-                    score += 2
-                users = read_int32_from_memory(skb + layout["users"])
-                if 0 < users < 0x10000:
-                    score += 1
-                candidates.append((score, layout))
-        if not candidates:
-            return None
-        best_score = max(score for score, _ in candidates)
-        best = [layout for score, layout in candidates if score == best_score]
-        return best[0], len(best)
-
-    @staticmethod
-    def resolve_layout(skb, check_shinfo=True):
-        """Resolve the sk_buff layout at `skb`. Returns a dict, or None.
-        The debug info is used if it matches the memory, otherwise the live layout is probed."""
-        offsets = KernelSkbCommand.get_dwarf_layout()
-        dwarf_mismatch = False
-        if offsets:
-            layout = KernelSkbCommand.read_layout(skb, offsets)
-            if layout:
-                layout.update(source="DWARF", candidates=1, dwarf_mismatch=False)
-                return layout
-            dwarf_mismatch = True
-        ret = KernelSkbCommand.probe_layout(skb, check_shinfo)
-        if ret is None:
-            return None
-        layout, candidates = ret
-        layout.update(source="heuristic", candidates=candidates, dwarf_mismatch=dwarf_mismatch)
-        return layout
-
-    @staticmethod
-    @Cache.cache_this_session(per_inferior=True, until_new_objfile=True)
-    def get_shared_info_dwarf_layout():
-        """Return the nr_frags/frag_list layout and array bound from DWARF."""
-        try:
-            struct_type = GefUtil.cached_lookup_type("struct skb_shared_info")
-            if struct_type is None:
-                return None
-            nr_field = GefUtil.lookup_field(struct_type, "nr_frags")
-            frag_list_field = GefUtil.lookup_field(struct_type, "frag_list")
-            if nr_field is None or frag_list_field is None:
-                return None
-            frags_field = GefUtil.lookup_field(struct_type, "frags")
-            max_frags = None
-            if frags_field is not None:
-                frags_type = frags_field.type.strip_typedefs()
-                if frags_type.code == gdb.TYPE_CODE_ARRAY:
-                    low, high = frags_type.range()
-                    max_frags = int(high - low + 1)
-            return nr_field.bitpos // 8, int(nr_field.type.sizeof), frag_list_field.bitpos // 8, max_frags
-        except (gdb.error, KeyError, TypeError):
-            return None
-
-    @staticmethod
-    @Cache.cache_this_session(per_inferior=True, until_new_objfile=True)
-    def get_frag_dwarf_layout():
-        """Return (offsetof(skb_shared_info, frags), sizeof(skb_frag_t), page, offset, size) from DWARF, or None.
-        Each of page/offset/size is (member offset, member size)."""
-
-        def member(names):
-            for name in names:
-                try:
-                    offset = GefUtil.parse_and_eval_unsigned("&((skb_frag_t*)0)->{:s}".format(name))
-                    size = GefUtil.parse_and_eval_unsigned("sizeof(((skb_frag_t*)0)->{:s})".format(name))
-                    return offset, size
-                except gdb.error:
-                    continue
-            return None
-
-        try:
-            offset_frags = GefUtil.parse_and_eval_unsigned("&((struct skb_shared_info*)0)->frags")
-            sizeof_frag = GefUtil.parse_and_eval_unsigned("sizeof(skb_frag_t)")
-        except gdb.error:
-            return None
-        # skb_frag_struct (~v5.3), bio_vec (v5.4~v6.8) and skb_frag (v6.9~, netmem_ref since v6.10)
-        page = member(["netmem", "bv_page", "page.p"])
-        offset = member(["offset", "bv_offset", "page_offset"])
-        size = member(["len", "bv_len", "size"])
-        if None in [page, offset, size]:
-            return None
-        return offset_frags, sizeof_frag, page, offset, size
-
-    @staticmethod
-    def score_shared_info_layout(shinfo, layout, max_frags):
-        """Score a no-DWARF skb_shared_info layout from related live fields."""
-        nr_offset, nr_size, frag_list_offset, gso_offset, gso_segs_offset = layout
-        try:
-            if nr_size == 2:
-                nr_frags = read_int16_from_memory(shinfo + nr_offset)
-            else:
-                nr_frags = read_int8_from_memory(shinfo + nr_offset)
-            if nr_frags > max_frags:
-                return None
-            gso_size = read_int16_from_memory(shinfo + gso_offset)
-            gso_segs = read_int16_from_memory(shinfo + gso_segs_offset)
-            frag_list = read_int_from_memory(shinfo + frag_list_offset)
-        except gdb.MemoryError:
-            return None
-
-        score = 2
-        if frag_list == 0:
-            score += 2
-        elif is_valid_addr(frag_list):
-            score += 2
-            if KernelSkbCommand.resolve_layout(frag_list, check_shinfo=False) is not None:
-                score += 2
-        else:
-            return None
-        # A segmented skb has a segment size; random bytes often violate this.
-        if gso_segs > 1 and gso_size == 0:
-            score -= 2
-        else:
-            score += 1
-        return score, nr_frags, frag_list
-
-    @staticmethod
-    def resolve_shared_info_layout(shinfo):
-        dwarf = KernelSkbCommand.get_shared_info_dwarf_layout()
-        if dwarf is not None:
-            nr_offset, nr_size, frag_list_offset, max_frags = dwarf
-            max_frags = max_frags or 0xff
-            try:
-                nr_frags = (read_int16_from_memory(shinfo + nr_offset) if nr_size == 2
-                            else read_int8_from_memory(shinfo + nr_offset))
-                frag_list = read_int_from_memory(shinfo + frag_list_offset)
-            except gdb.MemoryError:
-                return None
-            if nr_frags <= max_frags and (frag_list == 0 or is_valid_addr(frag_list)):
-                return nr_frags, frag_list, nr_offset, max_frags, "DWARF"
-
-        # nr_frags layouts used by supported kernels:
-        #   v3.0-v3.2: u16 at +0, frag_list at +0x10
-        #   v3.3-v4.11: u8 at +0, frag_list at +0x8
-        #   v4.12-:     u8 at +2, frag_list at +0x8
-        # CONFIG_MAX_SKB_FRAGS is configurable on newer kernels; 0xff is the
-        # storage-type limit and avoids baking the default value 17 into the probe.
-        layouts = [
-            (2, 1, 8, 4, 6),
-            (0, 1, 8, 2, 4),
-            (0, 2, 16, 2, 4),
-        ]
-        kversion = Kernel.version()
-        preferred = 0 if kversion and "4.12" <= kversion else (1 if kversion and "3.3" <= kversion else 2)
-        candidates = []
-        for index, layout in enumerate(layouts):
-            result = KernelSkbCommand.score_shared_info_layout(shinfo, layout, 0xff)
-            if result is None:
-                continue
-            score, nr_frags, frag_list = result
-            if index == preferred:
-                score += 1
-            candidates.append((score, -index, nr_frags, frag_list, layout[0]))
-        if not candidates:
-            return None
-        best = max(candidates)
-        return best[2], best[3], best[4], None, "live layout probe"
-
     def dump_frags(self, shinfo, nr_frags):
-        frag_layout = self.get_frag_dwarf_layout()
-        if frag_layout is None:
-            return
-        offset_frags, sizeof_frag, (page_offset, page_size), (offset_offset, offset_size), (size_offset, size_size) = frag_layout
-
-        def read_member(addr, size):
-            return {1: read_int8_from_memory, 2: read_int16_from_memory, 4: read_int32_from_memory,
-                    8: read_int64_from_memory}[size](addr)
-
-        for i in range(nr_frags):
-            frag = shinfo + offset_frags + sizeof_frag * i
-            try:
-                page = read_member(frag + page_offset, page_size)
-                offset = read_member(frag + offset_offset, offset_size)
-                size = read_member(frag + size_offset, size_size)
-            except gdb.MemoryError:
+        for item in self.kskb.get_frags(shinfo, nr_frags):
+            i = item["index"]
+            if "error" in item:
                 self.out.append("    frags[{:d}]: ??? (unreadable)".format(i))
                 continue
+            page, offset, size, virt = item["page"], item["offset"], item["size"], item["virt"]
             out = "    frags[{:d}]: page: {:#x}, ".format(i, page)
-            # the lowest bit of netmem_ref marks a net_iov, which is not a struct page
-            virt = Kernel.page2virt(page) if page and not page & 1 else None
             if virt:
                 out += "(virt: {:#x}), ".format(virt)
             out += "offset: {:#x}, size: {:#x}".format(offset, size)
@@ -153026,7 +153102,7 @@ class KernelSkbCommand(GenericCommand, BufferingOutput):
     def dump_shared_info(self, head, end):
         shinfo = head + end
         self.out.append("  skb_shared_info: {:#018x}".format(shinfo))
-        layout = self.resolve_shared_info_layout(shinfo)
+        layout = self.kskb.resolve_shared_info_layout(shinfo)
         if layout is None:
             self.out.append("    nr_frags: ??? (layout could not be resolved)")
             return
@@ -153044,23 +153120,19 @@ class KernelSkbCommand(GenericCommand, BufferingOutput):
         return
 
     @staticmethod
-    def get_data_dump(layout):
+    def get_data_dump(info):
         """Return the hexdump lines of the first 64 bytes of the linear packet data (from data to head + tail)."""
-        data = layout["data_value"]
-        headlen = layout["tail_value"] - (data - layout["head_value"])
+        data, headlen, size, raw = info["address"], info["headlen"], info["size"], info["data"]
         if headlen == 0:
             return ["data: (no linear data)"]
-        size = min(0x40, headlen)
-        try:
-            raw = read_memory(data, size)
-        except gdb.MemoryError:
+        if raw is None:
             return ["data: ??? (unreadable @ {:#018x})".format(data)]
         lines = ["data (first {:#x} of {:#x} linear bytes @ {:#018x}):".format(size, headlen, data)]
         lines += hexdump(raw, 0x10, show_symbol=False, base=data, unit=1).splitlines()
         return lines
 
     def dump_skb(self, skb, layout):
-        ptr = current_arch.ptrsize
+        info = self.kskb.get_skb(skb, layout)
         head = layout["head_value"]
         data = layout["data_value"]
         tail = layout["tail_value"]
@@ -153068,8 +153140,7 @@ class KernelSkbCommand(GenericCommand, BufferingOutput):
 
         self.out.append("sk_buff: {:#018x}".format(skb))
         # next / prev (list linkage at offset 0)
-        nxt = read_int_from_memory(skb)
-        prv = read_int_from_memory(skb + ptr)
+        nxt, prv = info["next"], info["prev"]
         self.out.append("  next: {:#018x}  prev: {:#018x}".format(nxt, prv))
         self.out.append("  head: {:#018x}".format(head))
         self.out.append("  data: {:#018x}  (headroom: {:#x})".format(data, data - head))
@@ -153078,10 +153149,7 @@ class KernelSkbCommand(GenericCommand, BufferingOutput):
 
         # headlen from the buffer geometry (skb->len - skb->data_len)
         headlen = tail - (data - head)
-        len_v = data_len = None
-        if layout["len"] is not None and layout["data_len"] is not None:
-            len_v = read_int32_from_memory(skb + layout["len"])
-            data_len = read_int32_from_memory(skb + layout["data_len"])
+        len_v, data_len = info["len"], info["data_len"]
         if len_v is not None:
             self.out.append("  len: {:#x} ({:d})  data_len: {:#x}  (headlen: {:#x})".format(
                 len_v, len_v, data_len, headlen))
@@ -153090,15 +153158,15 @@ class KernelSkbCommand(GenericCommand, BufferingOutput):
         else:
             self.out.append("  headlen (tail - data): {:#x} ({:d})".format(headlen, headlen))
 
-        if layout["truesize"] is not None:
-            truesize = read_int32_from_memory(skb + layout["truesize"])
+        if info["truesize"] is not None:
+            truesize = info["truesize"]
             note = " (local TCP pure ACK)" if truesize == 2 else ""
             self.out.append("  truesize: {:#x} ({:d}){:s}".format(truesize, truesize, note))
-        if layout["users"] is not None:
-            users = read_int32_from_memory(skb + layout["users"])
+        if info["users"] is not None:
+            users = info["users"]
             self.out.append("  users: {:d}".format(users))
 
-        dtor = self.find_destructor(skb, layout)
+        dtor = info["destructor"]
         if dtor:
             p, nm, off = dtor
             if nm:
@@ -153109,25 +153177,9 @@ class KernelSkbCommand(GenericCommand, BufferingOutput):
         self.dump_shared_info(head, end)
 
         if self.args.dump:
-            for line in self.get_data_dump(layout):
+            for line in self.get_data_dump(self.kskb.get_data(layout)):
                 self.out.append("  " + line)
         return
-
-    def find_destructor(self, skb, layout):
-        """With DWARF, read skb->destructor. Otherwise a function pointer before head that resolves to a *free / *destruct symbol."""
-        if layout["destructor"] is not None:
-            p = read_int_from_memory(skb + layout["destructor"])
-            if p == 0:
-                return None
-            return p, self.sym_name(p), layout["destructor"]
-        for i in range(3, layout["head"] // current_arch.ptrsize):
-            p = read_int_from_memory(skb + current_arch.ptrsize * i)
-            if not is_valid_addr(p) or not AddressUtil.is_msb_on(p):
-                continue
-            nm = self.sym_name(p)
-            if nm and re.search(r"free|destruct", nm):
-                return p, nm, current_arch.ptrsize * i
-        return None
 
     def dump_meta(self, layout):
         source = layout["source"]
@@ -153152,7 +153204,8 @@ class KernelSkbCommand(GenericCommand, BufferingOutput):
             err("Invalid address: {:#x}".format(skb))
             return
 
-        layout = self.resolve_layout(skb)
+        self.kskb = Kernel.skb()
+        layout = self.kskb.resolve_layout(skb)
         if layout is None:
             err("Could not resolve the sk_buff layout at {:#x}".format(skb))
             return
