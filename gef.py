@@ -66368,9 +66368,12 @@ class KernelAddressHeuristicFinder:
                 return x
 
         kversion = Kernel.version()
+        candidate = None
 
         def looks_like_init_net(x):
             if not KernelAddressHeuristicFinderUtil.is_in_kernel_image(x):
+                return False
+            if candidate is not None and not x <= candidate < x + get_pagesize():
                 return False
             net_namespace_list = Ksym.get_addr("net_namespace_list")
             if net_namespace_list is None:
@@ -66401,7 +66404,10 @@ class KernelAddressHeuristicFinder:
                     g = KernelAddressHeuristicFinderUtil.riscv_auipc_addi(res)
                 for x in g:
                     if looks_like_init_net(x):
-                        return x
+                        if Ksym.get_addr("net_namespace_list") is not None:
+                            return x
+                        # Newer net_initial_ns() returns &init_net.ns; prefer a base reference.
+                        candidate = x
 
         # plan 3 (available v2.6.24 or later)
         if kversion and "2.6.24" <= kversion:
@@ -66415,7 +66421,10 @@ class KernelAddressHeuristicFinder:
                 elif is_arm64():
                     g = KernelAddressHeuristicFinderUtil.aarch64_adrp_add(res)
                 elif is_arm32():
-                    g = KernelAddressHeuristicFinderUtil.arm32_movw_movt(res)
+                    g = itertools.chain(
+                        KernelAddressHeuristicFinderUtil.arm32_movw_movt(res),
+                        KernelAddressHeuristicFinderUtil.arm32_ldr_pc_relative(res),
+                    )
                 elif is_riscv64() or is_riscv32():
                     g = KernelAddressHeuristicFinderUtil.riscv_auipc_addi(res)
                 for x in g:
@@ -66435,13 +66444,27 @@ class KernelAddressHeuristicFinder:
                 elif is_arm64():
                     g = KernelAddressHeuristicFinderUtil.aarch64_adrp_add(res)
                 elif is_arm32():
-                    g = KernelAddressHeuristicFinderUtil.arm32_movw_movt(res)
+                    g = itertools.chain(
+                        KernelAddressHeuristicFinderUtil.arm32_movw_movt(res),
+                        KernelAddressHeuristicFinderUtil.arm32_ldr_pc_relative(res),
+                    )
                 elif is_riscv64() or is_riscv32():
                     g = KernelAddressHeuristicFinderUtil.riscv_auipc_addi(res)
                 for x in g:
                     if looks_like_init_net(x):
                         return x
-        return None
+
+        # plan 5 (exported symbol, absolute or PREL32)
+        for addr in Ksym.get_addrs("__ksymtab_init_net", match="split"):
+            x = read_int_from_memory(addr, safe=True)
+            if x is not None and looks_like_init_net(x):
+                return x
+            offset = read_int32_from_memory(addr, signed=True, safe=True)
+            if offset is not None:
+                x = AddressUtil.normalize_address(addr + offset)
+                if looks_like_init_net(x):
+                    return x
+        return candidate
 
     @staticmethod
     @Decorator.switch_to_intel_syntax
@@ -151243,7 +151266,7 @@ class KernelNetDeviceCommand(GenericCommand, BufferingOutput):
     ]
     _note_ = "\n".join(_note_)
 
-    @Cache.cache_this_session(cache_None=False)
+    @Cache.cache_this_session(cache_None=False, per_inferior=True, until_new_objfile=True)
     def initialize(self):
         self.meta = []
 
@@ -151277,23 +151300,34 @@ class KernelNetDeviceCommand(GenericCommand, BufferingOutput):
         };
         """
         # net->dev_base_head, net_device->dev_list
-        found = False
-        for i in range(0x100):
-            candidate_offset = current_arch.ptrsize * i
+        offset_head = GefUtil.offsetof("net", "dev_base_head")
+        offset_name = GefUtil.offsetof("net_device", "name")
+        offset_list = GefUtil.offsetof("net_device", "dev_list")
+        distance = None
+        if offset_name is not None and offset_list is not None and offset_name <= offset_list:
+            distance = offset_list - offset_name
 
+        head_offsets = list(range(0, current_arch.ptrsize * 0x100, current_arch.ptrsize))
+        if offset_head is not None:
+            head_offsets.insert(0, offset_head)
+        name_distances = list(range(0, current_arch.ptrsize * 0x100, current_arch.ptrsize))
+        if distance is not None:
+            name_distances.insert(0, distance)
+
+        found = False
+        for candidate_offset in dict.fromkeys(head_offsets):
             addr = self.init_net + candidate_offset
             if not is_double_link_list(addr, min_len=1):
                 continue
 
-            nodes = []
-            current = read_int_from_memory(addr)
-            while current != addr:
-                nodes.append(current)
-                current = read_int_from_memory(current)
-
-            for j in range(0x100):
-                offset_dev_list = current_arch.ptrsize * j
-                names = [read_cstring_from_memory(node - offset_dev_list, 0x10) for node in nodes]
+            nodes = KernelListHead(addr).parse()
+            if not nodes:
+                continue
+            for candidate_distance in dict.fromkeys(name_distances):
+                try:
+                    names = [read_cstring_from_memory(node - candidate_distance, 0x10) for node in nodes]
+                except gdb.MemoryError:
+                    continue
                 if any(
                     not name
                     or len(name) >= 0x10
@@ -151306,7 +151340,9 @@ class KernelNetDeviceCommand(GenericCommand, BufferingOutput):
                     continue
 
                 self.offset_dev_base_head = candidate_offset
-                self.offset_dev_list = offset_dev_list
+                self.distance_dev_list_name = candidate_distance
+                self.offset_name = offset_name if candidate_distance == distance else None
+                self.offset_dev_list = offset_list if self.offset_name is not None else None
                 found = True
                 break
             if found:
@@ -151316,27 +151352,27 @@ class KernelNetDeviceCommand(GenericCommand, BufferingOutput):
             return None
 
         self.meta.append((self.quiet_info, "offsetof(net, dev_base_head): {:#x}".format(self.offset_dev_base_head)))
-        self.meta.append((self.quiet_info, "offsetof(net_device, dev_list): {:#x}".format(self.offset_dev_list)))
+        if self.offset_name is not None:
+            self.meta.append((self.quiet_info, "offsetof(net_device, name): {:#x}".format(self.offset_name)))
+            self.meta.append((self.quiet_info, "offsetof(net_device, dev_list): {:#x}".format(self.offset_dev_list)))
+        else:
+            self.meta.append((self.quiet_info, "distance(dev_list, name): {:#x}".format(self.distance_dev_list_name)))
 
         return True
 
     def dump_net(self):
         fmt = "{:18s} {:s}"
-        legend = ["net_device", "name"]
+        legend = ["net_device" if self.offset_name is not None else "&net_device.name", "name"]
         self.out.append(GefUtil.make_legend(fmt.format(*legend)))
 
         # `struct net_device` is a very complex struct, and detecting the offset of its members is very difficult.
         # My best effort is to detect only names and addresses.
 
         head = self.init_net + self.offset_dev_base_head
-        for netdev in KernelListHead(head, self.offset_dev_list).iter_entries():
-            name = read_cstring_from_memory(netdev)
+        for name_addr in KernelListHead(head, self.distance_dev_list_name).iter_entries():
+            name = read_cstring_from_memory(name_addr, 0x10)
+            netdev = name_addr - self.offset_name if self.offset_name is not None else name_addr
             self.out.append("{:#018x} {:s}".format(netdev, name))
-
-        kversion = Kernel.version()
-        if "6.8" <= kversion:
-            info("In kernel 6.8 and later, the order of the members of `struct net_device` has changed significantly")
-            info("Please note that the address detected as `net_device` is precisely the address of &net_device.name")
         return
 
     @Decorator.parse_args
