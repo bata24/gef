@@ -29367,6 +29367,9 @@ class GlibcHeapTcacheIndexHelperCommand(GenericCommand):
             self.print_tcache_info(arena, index)
 
         if args.entry_addr is not None:
+            if args.entry_addr % current_arch.ptrsize != 0:
+                err("Invalid address (entry_addr % ptrsize != 0)")
+                return
             index = (args.entry_addr - arena.addrof_tcachebins_i(0)) // current_arch.ptrsize
             self.print_tcache_info(arena, index)
         return
