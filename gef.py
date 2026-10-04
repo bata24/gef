@@ -71867,6 +71867,11 @@ class Kernel:
         return KernelMM.get_instance()
 
     @staticmethod
+    def socket():
+        """Return the socket resolver."""
+        return KernelSocket.get_instance()
+
+    @staticmethod
     def bpf():
         """Return the BPF resolver."""
         return KernelBpf.get_instance()
@@ -77286,6 +77291,646 @@ class KernelMM:
             if found:
                 return self.offset_vm_flags + current_arch.ptrsize * (i + 5)
         return None
+
+
+class KernelSocket:
+    """Resolve socket layouts and read socket fields and skb queues."""
+
+    # socket->state (socket_state)
+    SS_STATE = {0: "SS_FREE", 1: "SS_UNCONNECTED", 2: "SS_CONNECTING", 3: "SS_CONNECTED", 4: "SS_DISCONNECTING"}
+    # socket->type (SOCK_*)
+    SOCK_TYPE = {1: "SOCK_STREAM", 2: "SOCK_DGRAM", 3: "SOCK_RAW", 4: "SOCK_RDM",
+                 5: "SOCK_SEQPACKET", 6: "SOCK_DCCP", 10: "SOCK_PACKET"}
+    # TCP_* labels for sk->__sk_common.skc_state; other protocols use their own state values.
+    SK_STATE = {1: "TCP_ESTABLISHED", 2: "TCP_SYN_SENT", 3: "TCP_SYN_RECV", 4: "TCP_FIN_WAIT1",
+                5: "TCP_FIN_WAIT2", 6: "TCP_TIME_WAIT", 7: "TCP_CLOSE", 8: "TCP_CLOSE_WAIT",
+                9: "TCP_LAST_ACK", 10: "TCP_LISTEN", 11: "TCP_CLOSING", 12: "TCP_NEW_SYN_RECV"}
+    # address family (partial, only the common ones)
+    AF_FAMILY = {0: "AF_UNSPEC", 1: "AF_UNIX", 2: "AF_INET", 10: "AF_INET6", 16: "AF_NETLINK",
+                 17: "AF_PACKET", 4: "AF_IPX", 5: "AF_APPLETALK", 29: "AF_CAN", 30: "AF_TIPC",
+                 38: "AF_ALG", 39: "AF_NFC", 40: "AF_VSOCK", 41: "AF_KCM", 43: "AF_SMC",
+                 44: "AF_XDP", 45: "AF_MCTP"}
+
+    # (key, struct, member) resolved from the debug info
+    DWARF_MEMBERS = [
+        ("file.private_data", "file", "private_data"),
+        ("socket.state", "socket", "state"),
+        ("socket.type", "socket", "type"),
+        ("socket.file", "socket", "file"),
+        ("socket.sk", "socket", "sk"),
+        ("socket.ops", "socket", "ops"),
+        ("sock.skc_family", "sock", "__sk_common.skc_family"),
+        ("sock.skc_state", "sock", "__sk_common.skc_state"),
+        ("sock.skc_prot", "sock", "__sk_common.skc_prot"),
+        ("sock.sk_error_queue", "sock", "sk_error_queue"),
+        ("sock.sk_receive_queue", "sock", "sk_receive_queue"),
+        ("sock.sk_write_queue", "sock", "sk_write_queue"),
+        ("sock.sk_socket", "sock", "sk_socket"),
+        ("sock.sk_state_change", "sock", "sk_state_change"),
+        ("sock.sk_data_ready", "sock", "sk_data_ready"),
+        ("sock.sk_write_space", "sock", "sk_write_space"),
+        ("sock.sk_error_report", "sock", "sk_error_report"),
+        ("sock.sk_destruct", "sock", "sk_destruct"),
+        ("proto.name", "proto", "name"),
+    ]
+
+    PROTO_SYMBOL_RE = re.compile(r"(?:_prot|_proto|proto)$")
+
+    # sk callbacks, matched by resolved symbol name. Their relative order in struct sock is not
+    # stable (v6.10 pulled sk_data_ready out of the state_change/write_space/error_report run and
+    # moved it next to the RX path), so classify by name instead of by adjacency. Each role lists
+    # the default symbols, then keyword patterns that also catch protocol overrides.
+    CALLBACKS = [
+        ("sk_state_change", ("sock_def_wakeup",), (r"state_change",)),
+        ("sk_data_ready", ("sock_def_readable",), (r"data_ready",)),
+        ("sk_write_space", ("sock_def_write_space", "sk_stream_write_space"), (r"write_space$",)),
+        ("sk_error_report", ("sock_def_error_report",), (r"error_report",)),
+        ("sk_destruct", ("inet_sock_destruct", "unix_sock_destructor", "sock_def_destruct"),
+         (r"destruct",)),
+    ]
+
+    @classmethod
+    @Cache.cache_this_session(per_inferior=True, until_new_objfile=True)
+    def get_instance(cls):
+        return cls()
+
+    def __init__(self):
+        self.meta = []
+        return
+
+    def initialize(self):
+        self.meta = []
+        self.layout_meta = []
+        self.dwarf = self.resolve_by_dwarf()
+        self.dwarf_mismatch = set()
+        self.offset_proto_name = None
+        return True
+
+    def parse_sock(self, sk, socket, file, details):
+        # sk->sk_socket back pointer
+        offset_sk_socket = self.dwarf["sock.sk_socket"]
+        if socket and offset_sk_socket is not None:
+            if read_int_from_memory(sk + offset_sk_socket) == socket:
+                self.add_meta("offsetof(sock, sk_socket)", offset_sk_socket, "DWARF")
+            else:
+                self.warn_dwarf_mismatch("struct sock")
+
+        # protocol (resolve first, its family hint disambiguates skc_family)
+        prot, prot_sym, prot_name, offset_prot, source = self.find_skc_prot(sk)
+        prot_iname = None
+        if prot_name:
+            prot_iname, offset_name, source_name = prot_name
+        proto_hint = self.proto_hint_family(prot_iname or prot_sym) if prot is not None else None
+        if prot is not None:
+            self.add_meta("offsetof(sock, __sk_common.skc_prot)", offset_prot, source)
+            if prot_name:
+                self.add_meta("offsetof(proto, name)", offset_name, source_name)
+
+        # family / state
+        fam, off_fam, off_state, source = self.find_skc_family(sk, proto_hint)
+        state = None
+        if fam is not None:
+            self.add_meta("offsetof(sock, __sk_common.skc_family)", off_fam, source)
+            self.add_meta("offsetof(sock, __sk_common.skc_state)", off_state, source)
+            if details:
+                state = read_int8_from_memory(sk + off_state)
+
+        # socket->{type,state}
+        stype = sstate = None
+        if socket and details:
+            offset_state = self.dwarf["socket.state"]
+            offset_type = self.dwarf["socket.type"]
+            if offset_state is None or offset_type is None:
+                offset_state, offset_type = 0, 4
+            stype = read_int16_from_memory(socket + offset_type)
+            sstate = read_int32_from_memory(socket + offset_state)
+
+        # callbacks follow all queues except sk_data_ready
+        callbacks = self.find_callbacks(sk)
+        limit = [off for label, _, _, off, _ in callbacks if label not in ["sk_data_ready", "sk_destruct"]]
+        limit = min(limit) if limit else None
+
+        # queues
+        queues, size, source = self.find_queues(sk, limit)
+        for name in ("receive_queue", "write_queue", "error_queue"):
+            if name in queues:
+                self.add_meta("offsetof(sock, sk_{:s})".format(name), queues[name], source)
+        if size is not None:
+            self.add_meta("sizeof(sk_buff_head)", size, source)
+
+        for label, _, _, off, source in callbacks:
+            self.add_meta("offsetof(sock, {:s})".format(label), off, source)
+        return {
+            "sock": sk, "socket": socket, "file": file, "family": fam, "state": state,
+            "type": stype, "socket_state": sstate, "protocol": prot,
+            "protocol_symbol": prot_sym, "protocol_name": prot_iname,
+            "queues": queues, "callbacks": callbacks, "meta": self.layout_meta,
+        }
+
+    def get_socket(self, sk=None, file=None, details=True):
+        self.layout_meta = []
+        if sk is None:
+            socket, ret = self.find_socket_from_file(file)
+            if ret is None:
+                return {"socket": None, "file": file, "meta": []}
+            file, sk, ops, offsets, source = ret
+            for name, offset in zip(["file", "sk", "ops"], offsets):
+                self.add_meta("offsetof(socket, {:s})".format(name), offset, source)
+        else:
+            socket, ret = self.find_socket_from_sock(sk)
+            file = ret[0] if ret else None
+        return self.parse_sock(sk, socket, file, details)
+
+    def get_queue(self, sk, off):
+        head = sk + off
+        qlen = self.is_sk_buff_head(head)
+        skbs = []
+        if qlen:
+            for skb in KernelListHead(head, 0).iter_entries():
+                skbs.append(skb)
+                if len(skbs) >= 0x1000:
+                    break
+        return {"address": head, "qlen": qlen if qlen else 0, "skbs": skbs}
+
+    def collect_socket_files(self):
+        """Parse `ktask --print-fd` and return the socket file descriptors with their owning task."""
+        ret = gdb.execute("ktask --no-pager --user-process-only --print-fd --quiet", to_string=True)
+        ret = Color.remove_color(ret)
+        socks = []
+        pid, comm, task = None, None, None
+        task_re = re.compile(r"^(0x\w+)\s+\S+\s+[UK]T?\s+(\d+)\s+(.+?)\s+0x\w+ \[")
+        fd_re = re.compile(r"^(\d+)\s+\S+\s+(0x\w+)\s+(0x\w+)\s+(0x\w+)\s+socket:\[(\d+)\]")
+        title_re = re.compile(r"file descriptors of `(.+)`")
+        any_fd_re = re.compile(r"^\d+\s+(True|False)\s+0x")
+        any_task = any_fd = False
+        for line in ret.splitlines():
+            line = line.strip()
+            m = task_re.match(line)
+            if m:
+                task = int(m.group(1), 16)
+                pid = int(m.group(2))
+                comm = m.group(3).strip()
+                any_task = True
+                continue
+            if any_fd_re.match(line):
+                any_fd = True
+            m = title_re.search(line)
+            if m:
+                comm = m.group(1)
+                continue
+            m = fd_re.match(line)
+            if m:
+                socks.append({
+                    "pid": pid, "comm": comm, "task": task,
+                    "fd": int(m.group(1)), "file": int(m.group(2), 16),
+                    "dentry": int(m.group(3), 16), "inode": int(m.group(4), 16),
+                    "ino": int(m.group(5)),
+                })
+        for line in ret.splitlines():
+            if line.startswith("[!]"):
+                self.meta.append(("err", line[3:].lstrip()))
+                return None
+        # `ktask` disables --print-fd silently if the file layout is not resolved
+        if not socks and any_task and not any_fd:
+            self.meta.append(("err", "Could not list the file descriptors (see `ktask --print-fd --meta`)"))
+            return None
+        return socks
+
+    def add_meta(self, name, value, source):
+        self.layout_meta.append((name, value, source))
+        return
+
+    def warn_dwarf_mismatch(self, type_name):
+        if type_name in self.dwarf_mismatch:
+            return
+        self.dwarf_mismatch.add(type_name)
+        self.meta.append(("warn", "The debug info of {:s} does not match the memory; fall back to heuristic".format(type_name)))
+        return
+
+    @Cache.cache_this_session(per_inferior=True, until_new_objfile=True)
+    def resolve_by_dwarf(self):
+        layout = {}
+        for key, type_name, member in self.DWARF_MEMBERS:
+            try:
+                layout[key] = GefUtil.parse_and_eval_unsigned("&((struct {:s}*)0)->{:s}".format(type_name, member))
+            except gdb.error:
+                layout[key] = None
+        return layout
+
+    def sym_name(self, addr):
+        """Reverse-resolve an address to a kernel symbol name, or '' if unknown."""
+        if not addr:
+            return ""
+        name = Ksym.get_name(addr)
+        if name:
+            return name
+        # fall back to gdb's applied symbol table (works after `ksymaddr-remote-apply`)
+        s = Symbol.get_symbol_string(addr, nosymbol_string="")
+        return s.strip().strip("<>")
+
+    def is_sk_buff_head(self, addr):
+        """Return the qlen if `addr` is an embedded `struct sk_buff_head`, or None."""
+        try:
+            nxt = read_int_from_memory(addr)
+            prv = read_int_from_memory(addr + current_arch.ptrsize)
+            qlen = read_int32_from_memory(addr + current_arch.ptrsize * 2)
+        except gdb.MemoryError:
+            return None
+        if qlen > 0x10000:
+            return None
+        # empty queue: head points to itself
+        if nxt == addr and prv == addr:
+            return 0 if qlen == 0 else None
+        # non-empty queue: walk the circular list and confirm the count matches qlen
+        if not is_valid_addr(nxt) or not is_valid_addr(prv):
+            return None
+        count = 0
+        cur = nxt
+        seen = set()
+        while cur != addr:
+            if cur in seen or not is_valid_addr(cur) or count > 0x10000:
+                return None
+            seen.add(cur)
+            count += 1
+            cur = read_int_from_memory(cur, safe=True)
+            if cur is None:
+                return None
+        if count != qlen:
+            return None
+        return qlen
+
+    def find_socket_from_file(self, file):
+        """file->private_data points to `struct socket`. Confirm it with the socket->file back pointer."""
+        ptr = current_arch.ptrsize
+        offset = self.dwarf["file.private_data"]
+        if offset is not None:
+            socket = read_int_from_memory(file + offset)
+            ret = self.validate_socket(socket, file=file)
+            if ret:
+                self.add_meta("offsetof(file, private_data)", offset, "DWARF")
+                return socket, ret
+            self.warn_dwarf_mismatch("struct file")
+        for i in range(0x40):
+            socket = read_int_from_memory(file + ptr * i)
+            ret = self.validate_socket(socket, file=file)
+            if ret:
+                self.add_meta("offsetof(file, private_data)", ptr * i, "heuristic")
+                return socket, ret
+        return None, None
+
+    def find_socket_from_sock(self, sk):
+        """Direct mode: locate the `struct socket` that owns `sk` via the sk->sk_socket and socket->sk pointers."""
+        ptr = current_arch.ptrsize
+        offset = self.dwarf["sock.sk_socket"]
+        if offset is not None:
+            socket = read_int_from_memory(sk + offset)
+            ret = self.validate_socket(socket, sk=sk)
+            if ret:
+                self.add_meta("offsetof(sock, sk_socket)", offset, "DWARF")
+                return socket, ret
+            if socket == 0:
+                # not attached to a socket (e.g., orphaned)
+                return None, None
+            self.warn_dwarf_mismatch("struct sock")
+        # sk->sk_socket lives a few hundred bytes into struct sock.
+        for i in range(4, 0x80):
+            socket = read_int_from_memory(sk + ptr * i)
+            ret = self.validate_socket(socket, sk=sk)
+            if ret:
+                self.add_meta("offsetof(sock, sk_socket)", ptr * i, "heuristic")
+                return socket, ret
+        return None, None
+
+    def validate_socket(self, socket, file=None, sk=None):
+        """Return (file, sk, ops, (offset_file, offset_sk, offset_ops), source) if `socket` looks like a `struct socket`.
+        The socket->file back pointer must be `file`, or socket->sk must be `sk`."""
+        ptr = current_arch.ptrsize
+        if not is_valid_addr(socket) or (socket & (ptr - 1)):
+            return None
+        offset_state = self.dwarf["socket.state"]
+        offset_type = self.dwarf["socket.type"]
+        if offset_state is None or offset_type is None:
+            offset_state, offset_type = 0, 4
+        try:
+            state = read_int32_from_memory(socket + offset_state)
+            type_ = read_int16_from_memory(socket + offset_type)
+        except gdb.MemoryError:
+            return None
+        if state not in self.SS_STATE or type_ not in self.SOCK_TYPE:
+            return None
+
+        # socket->{file, sk, ops} are three consecutive pointers.
+        layouts = []
+        offsets = (self.dwarf["socket.file"], self.dwarf["socket.sk"], self.dwarf["socket.ops"])
+        if None not in offsets:
+            layouts.append((offsets, "DWARF"))
+        layouts += [((ptr * j, ptr * (j + 1), ptr * (j + 2)), "heuristic") for j in range(2, 8)]
+        for (offset_file, offset_sk, offset_ops), source in layouts:
+            try:
+                file_ = read_int_from_memory(socket + offset_file)
+                sk_ = read_int_from_memory(socket + offset_sk)
+                ops = read_int_from_memory(socket + offset_ops)
+            except gdb.MemoryError:
+                continue
+            if file is not None and file_ != file:
+                continue
+            if sk is not None and sk_ != sk:
+                continue
+            if not is_valid_addr(sk_) or (sk_ & (ptr - 1)):
+                continue
+            if not is_valid_addr(ops):
+                continue
+            if source != "DWARF" and None not in offsets:
+                self.warn_dwarf_mismatch("struct socket")
+            return file_, sk_, ops, (offset_file, offset_sk, offset_ops), source
+        return None
+
+    def is_proto_name(self, name):
+        return bool(name and 2 <= len(name) < 0x20 and re.fullmatch(r"[A-Za-z][A-Za-z0-9+/_.-]*", name))
+
+    def read_proto_name(self, prot):
+        """Return (name, offset, source) of the inline `char name[32]` of `struct proto`, or None if `prot` is not verified.
+
+        Without the debug info, it is verified by `struct list_head node` that follows the name
+        and links all registered protocols."""
+        ptr = current_arch.ptrsize
+        dwarf_offset = self.dwarf["proto.name"]
+        if dwarf_offset is not None:
+            name = read_cstring_from_memory(prot + dwarf_offset, 0x20, safe=True)
+            if self.is_proto_name(name):
+                return name, dwarf_offset, "DWARF"
+
+        if self.offset_proto_name is not None:
+            offsets = [self.offset_proto_name]
+        else:
+            offsets = range(0, ptr * 0x60, ptr)
+        for offset in offsets:
+            name = read_cstring_from_memory(prot + offset, 0x20, safe=True)
+            if not self.is_proto_name(name):
+                continue
+            node = prot + offset + 0x20
+            nxt = read_int_from_memory(node, safe=True)
+            prv = read_int_from_memory(node + ptr, safe=True)
+            if nxt is None or prv is None or nxt == node:
+                continue
+            if not is_valid_addr(nxt) or not is_valid_addr(prv):
+                continue
+            if read_int_from_memory(nxt + ptr, safe=True) != node or read_int_from_memory(prv, safe=True) != node:
+                continue
+            if dwarf_offset is not None:
+                self.warn_dwarf_mismatch("struct proto")
+            self.offset_proto_name = offset
+            return name, offset, "heuristic"
+        return None
+
+    def find_skc_prot(self, sk):
+        """skc_prot is a `struct proto*` in sock_common. Return (prot, symbol_name, name, offset, source),
+        where `name` is the return value of `read_proto_name()`.
+
+        It usually resolves to a static symbol (e.g. tcp_prot), but with CONFIG_KALLSYMS_ALL=n the
+        data symbol is missing, so fall back to the verified inline proto->name string."""
+        ptr = current_arch.ptrsize
+        offset = self.dwarf["sock.skc_prot"]
+        if offset is not None:
+            prot = read_int_from_memory(sk + offset)
+            if is_valid_addr(prot):
+                name = self.sym_name(prot)
+                ret = self.read_proto_name(prot)
+                if ret or self.PROTO_SYMBOL_RE.search(name):
+                    return prot, name or None, ret, offset, "DWARF"
+            self.warn_dwarf_mismatch("struct sock_common")
+
+        # pass 1: a resolvable symbol whose name looks like a proto (fast, needs CONFIG_KALLSYMS_ALL=y).
+        for i in range(3, 0x12):
+            prot = read_int_from_memory(sk + ptr * i)
+            if not is_valid_addr(prot) or (prot & (ptr - 1)):
+                continue
+            name = self.sym_name(prot)
+            if name and self.PROTO_SYMBOL_RE.search(name):
+                return prot, name, self.read_proto_name(prot), ptr * i, "heuristic"
+        # pass 2: a pointer to a verified `struct proto`.
+        for i in range(3, 0x12):
+            prot = read_int_from_memory(sk + ptr * i)
+            if not is_valid_addr(prot) or (prot & (ptr - 1)):
+                continue
+            if not AddressUtil.is_msb_on(prot):
+                continue
+            ret = self.read_proto_name(prot)
+            if ret:
+                return prot, self.sym_name(prot) or None, ret, ptr * i, "heuristic"
+        return None, None, None, None, None
+
+    def proto_hint_family(self, proto_name):
+        """Guess the address family from the `struct proto` symbol name."""
+        if not proto_name:
+            return None
+        n = proto_name.lower()
+        if "v6" in n or n.endswith("6_prot") or n.endswith("6_proto"):
+            return 10  # AF_INET6
+        if "unix" in n:
+            return 1   # AF_UNIX
+        if "netlink" in n:
+            return 16  # AF_NETLINK
+        if "packet" in n:
+            return 17  # AF_PACKET
+        if re.match(r"(tcp|udp|raw|ping|dccp|udplite|sctp|mptcp|inet)", n):
+            return 2   # AF_INET
+        return None
+
+    def find_skc_family(self, sk, proto_hint=None):
+        """skc_family (unsigned short) is followed by skc_state (unsigned char).
+        Return (family, offset_family, offset_state, source).
+
+        skc_family lives at offset 0x10 of sock_common (after skc_addrpair/skc_hash/skc_portpair).
+        If it does not look valid, scan and prefer the value that agrees with the protocol family
+        implied by skc_prot."""
+        offset_family = self.dwarf["sock.skc_family"]
+        offset_state = self.dwarf["sock.skc_state"]
+        if offset_family is not None and offset_state is not None:
+            fam = read_int16_from_memory(sk + offset_family)
+            if 0 < fam < 0x40: # AF_MAX
+                return fam, offset_family, offset_state, "DWARF"
+            self.warn_dwarf_mismatch("struct sock_common")
+
+        matches = []
+        for off in range(4, 0x28, 2):
+            fam = read_int16_from_memory(sk + off)
+            if fam == 0 or fam not in self.AF_FAMILY:
+                continue
+            st = read_int8_from_memory(sk + off + 2)
+            if st > 12:  # layout heuristic; protocol-specific state names are handled later
+                continue
+            matches.append((off, fam, st))
+        if not matches:
+            return None, None, None, None
+        # skc_family is at 0x10 on all supported kernels; the others are the last resort
+        matches.sort(key=lambda x: x[0] != 0x10)
+        if proto_hint is not None:
+            for off, fam, _st in matches:
+                if fam == proto_hint:
+                    return fam, off, off + 2, "heuristic"
+        off, fam, _st = matches[0]
+        return fam, off, off + 2, "heuristic"
+
+    def looks_like_backlog(self, addr):
+        """`struct { atomic_t rmem_alloc; int len; struct sk_buff *head, *tail; } sk_backlog`.
+
+        This struct always immediately follows sk_receive_queue, which is how we anchor it."""
+        try:
+            rmem = read_int32_from_memory(addr)
+            length = read_int32_from_memory(addr + 4)
+            head = read_int_from_memory(addr + 8)
+            tail = read_int_from_memory(addr + 8 + current_arch.ptrsize)
+        except gdb.MemoryError:
+            return False
+        if rmem > 0x1000_0000 or length > 0x100_0000:
+            return False
+        if head == 0 and tail == 0:
+            return True
+        if not is_valid_addr(head) or not is_valid_addr(tail):
+            return False
+        # A non-empty backlog always carries len > 0. When `addr` is really sk_error_queue, its
+        # +0x18 neighbour is sk_rx_skb_cache followed by sk_receive_queue whose next/prev point to
+        # real skbs (head != 0) while len stays 0 -- reject that.
+        if length == 0:
+            return False
+        # a queued backlog skb is a real skb, never a self-pointing list head.
+        next_head = read_int_from_memory(head, safe=True)
+        next_tail = read_int_from_memory(tail, safe=True)
+        if next_head is None or next_tail is None:
+            return False
+        if next_head == head or next_tail == tail:
+            return False
+        return True
+
+    def find_queues(self, sk, limit):
+        """Locate sk_error_queue / sk_receive_queue / sk_write_queue (the embedded sk_buff_heads).
+        Returns ({name: offset}, sizeof(struct sk_buff_head) or None, source).
+
+        [~v4.9]  sk_lock, sk_receive_queue, sk_backlog, ..., sk_write_queue, ..., sk_error_queue
+                 (sk_async_wait_queue sits before sk_write_queue on ~v3.18 with CONFIG_NET_DMA=y)
+        [v4.10~] sk_lock, sk_error_queue, [sk_rx_skb_cache,] sk_receive_queue, sk_backlog, ..., sk_write_queue
+        [v6.10~] sk_error_queue, sk_receive_queue, sk_backlog, ..., sk_lock, ..., sk_write_queue
+
+        Empty wait_queue_head list heads inside sk_lock masquerade as empty sk_buff_heads, so we
+        anchor on sk_backlog (which always immediately follows sk_receive_queue) instead of trusting
+        every self-pointing list head. `limit` is the offset of the callbacks that follow all queues, if known."""
+        names = ["error_queue", "receive_queue", "write_queue"]
+        offsets = [self.dwarf["sock.sk_" + name] for name in names]
+        if None not in offsets:
+            if all(self.is_sk_buff_head(sk + offset) is not None for offset in offsets):
+                return dict(zip(names, offsets)), None, "DWARF"
+            self.warn_dwarf_mismatch("struct sock")
+
+        ptr = current_arch.ptrsize
+        end = limit or ptr * 0x80
+        cands = [off for off in range(ptr * 8, end, ptr) if self.is_sk_buff_head(sk + off) is not None]
+        if not cands:
+            return {}, None, "heuristic"
+
+        # sizeof(struct sk_buff_head) = next + prev + qlen(4) + spinlock, which grows with the lock debugging.
+        min_size = align_to_ptrsize(ptr * 2 + 4)
+        kversion = Kernel.version()
+        max_size = 0x80
+
+        def is_followed_by_backlog(offset, size):
+            # the queue cannot contain another queue
+            if any(offset < x < offset + size for x in cands):
+                return False
+            return self.looks_like_backlog(sk + offset + size)
+
+        def find_old_layout():
+            # the lowest queue followed by sk_backlog is sk_receive_queue.
+            for receive in cands:
+                if not any(is_followed_by_backlog(receive, size) for size in range(min_size, max_size + 1, ptr)):
+                    continue
+                after = [x for x in cands if x > receive]
+                result = {"receive_queue": receive}
+                if len(after) >= 2:
+                    result["write_queue"], result["error_queue"] = after[-2:]
+                elif after:
+                    result["write_queue"] = after[0]
+                return result, None
+            return None
+
+        def find_new_layout():
+            # sk_error_queue and sk_receive_queue are adjacent and have the same size.
+            # sk_rx_skb_cache sits between them on v5.1~v5.15.
+            best = None
+            for error, receive in zip(cands, cands[1:]):
+                sizes = [receive - error, receive - error - ptr]
+                if kversion and "5.1" <= kversion < "5.16":
+                    sizes.reverse()
+                for size in sizes:
+                    if not min_size <= size <= max_size:
+                        continue
+                    if not is_followed_by_backlog(receive, size):
+                        continue
+                    # sk_error_queue itself is followed by sk_rx_skb_cache or sk_receive_queue
+                    if self.looks_like_backlog(sk + error + size):
+                        continue
+                    if best is None or size < best[2]:
+                        best = (error, receive, size)
+                    break
+            if best is None:
+                return None
+            error, receive, size = best
+            result = {"error_queue": error, "receive_queue": receive}
+            # sk_write_queue is the last queue; sk_lock sits between them on v6.10~.
+            after = [x for x in cands if x > receive]
+            if after:
+                result["write_queue"] = after[-1] if limit else after[0]
+            return result, size
+
+        if kversion and kversion < "4.10":
+            finders = [find_old_layout, find_new_layout]
+        else:
+            finders = [find_new_layout, find_old_layout]
+        for finder in finders:
+            ret = finder()
+            if ret:
+                return ret[0], ret[1], "heuristic"
+        return {}, None, "heuristic"
+
+    def find_callbacks(self, sk):
+        """Resolve the sk_* callbacks. Returns [(label, addr, name, offset, source), ...].
+        Without the debug info, scan struct sock for symbol-resolvable function pointers and classify each by name."""
+        offsets = [self.dwarf["sock." + label] for label, _, _ in self.CALLBACKS]
+        if None not in offsets:
+            found = []
+            for (label, _, _), offset in zip(self.CALLBACKS, offsets):
+                p = read_int_from_memory(sk + offset)
+                found.append((label, p, self.sym_name(p), offset, "DWARF"))
+            # sock_init_data() sets all of them, and only sk_destruct can be NULL.
+            if all(is_valid_addr(p) for label, p, _, _, _ in found if label != "sk_destruct"):
+                return found
+            self.warn_dwarf_mismatch("struct sock")
+
+        # struct sock is up to 0x230 bytes on 32-bit and 0x320 bytes on 64-bit, and grows with the lock debugging.
+        slots = []
+        for off in range(current_arch.ptrsize * 8, 0x800, current_arch.ptrsize):
+            p = read_int_from_memory(sk + off, safe=True)
+            if p is None:
+                break
+            if not is_valid_addr(p) or not AddressUtil.is_msb_on(p):
+                continue
+            nm = self.sym_name(p)
+            if nm:
+                slots.append((off, p, nm))
+
+        # the lowest match wins, since the scan may run into the next object in the slab
+        found = []
+        used = set()
+        for label, exacts, patterns in self.CALLBACKS:
+            best = None
+            for off, p, nm in slots:
+                if off not in used and (nm in exacts or any(re.search(pat, nm) for pat in patterns)):
+                    best = (off, p, nm)
+                    break
+            if best is not None:
+                used.add(best[0])
+                found.append((label, best[1], best[2], best[0], "heuristic"))
+        return found
 
 
 class KernelBpf:
@@ -150925,504 +151570,23 @@ class KernelSocketCommand(GenericCommand, BufferingOutput):
     ]
     _note_ = "\n".join(_note_)
 
-    # socket->state (socket_state)
-    SS_STATE = {0: "SS_FREE", 1: "SS_UNCONNECTED", 2: "SS_CONNECTING", 3: "SS_CONNECTED", 4: "SS_DISCONNECTING"}
-    # socket->type (SOCK_*)
-    SOCK_TYPE = {1: "SOCK_STREAM", 2: "SOCK_DGRAM", 3: "SOCK_RAW", 4: "SOCK_RDM",
-                 5: "SOCK_SEQPACKET", 6: "SOCK_DCCP", 10: "SOCK_PACKET"}
-    # TCP_* labels for sk->__sk_common.skc_state; other protocols use their own state values.
-    SK_STATE = {1: "TCP_ESTABLISHED", 2: "TCP_SYN_SENT", 3: "TCP_SYN_RECV", 4: "TCP_FIN_WAIT1",
-                5: "TCP_FIN_WAIT2", 6: "TCP_TIME_WAIT", 7: "TCP_CLOSE", 8: "TCP_CLOSE_WAIT",
-                9: "TCP_LAST_ACK", 10: "TCP_LISTEN", 11: "TCP_CLOSING", 12: "TCP_NEW_SYN_RECV"}
-    # address family (partial, only the common ones)
-    AF_FAMILY = {0: "AF_UNSPEC", 1: "AF_UNIX", 2: "AF_INET", 10: "AF_INET6", 16: "AF_NETLINK",
-                 17: "AF_PACKET", 4: "AF_IPX", 5: "AF_APPLETALK", 29: "AF_CAN", 30: "AF_TIPC",
-                 38: "AF_ALG", 39: "AF_NFC", 40: "AF_VSOCK", 41: "AF_KCM", 43: "AF_SMC",
-                 44: "AF_XDP", 45: "AF_MCTP"}
-
-    # (key, struct, member) resolved from the debug info
-    DWARF_MEMBERS = [
-        ("file.private_data", "file", "private_data"),
-        ("socket.state", "socket", "state"),
-        ("socket.type", "socket", "type"),
-        ("socket.file", "socket", "file"),
-        ("socket.sk", "socket", "sk"),
-        ("socket.ops", "socket", "ops"),
-        ("sock.skc_family", "sock", "__sk_common.skc_family"),
-        ("sock.skc_state", "sock", "__sk_common.skc_state"),
-        ("sock.skc_prot", "sock", "__sk_common.skc_prot"),
-        ("sock.sk_error_queue", "sock", "sk_error_queue"),
-        ("sock.sk_receive_queue", "sock", "sk_receive_queue"),
-        ("sock.sk_write_queue", "sock", "sk_write_queue"),
-        ("sock.sk_socket", "sock", "sk_socket"),
-        ("sock.sk_state_change", "sock", "sk_state_change"),
-        ("sock.sk_data_ready", "sock", "sk_data_ready"),
-        ("sock.sk_write_space", "sock", "sk_write_space"),
-        ("sock.sk_error_report", "sock", "sk_error_report"),
-        ("sock.sk_destruct", "sock", "sk_destruct"),
-        ("proto.name", "proto", "name"),
-    ]
-
-    PROTO_SYMBOL_RE = re.compile(r"(?:_prot|_proto|proto)$")
-
-    @Cache.cache_this_session(per_inferior=True, until_new_objfile=True)
-    def resolve_by_dwarf(self):
-        layout = {}
-        for key, type_name, member in self.DWARF_MEMBERS:
-            try:
-                layout[key] = GefUtil.parse_and_eval_unsigned("&((struct {:s}*)0)->{:s}".format(type_name, member))
-            except gdb.error:
-                layout[key] = None
-        return layout
-
     def add_meta(self, name, value, source):
-        self.meta.append("{:s}: {:#x} ({:s})".format(name, value, source))
-        return
-
-    def warn_dwarf_mismatch(self, type_name):
-        if type_name in self.dwarf_mismatch:
+        if not self.args.meta:
             return
-        self.dwarf_mismatch.add(type_name)
-        self.quiet_warn("The debug info of {:s} does not match the memory; fall back to heuristic".format(type_name))
+        values = self.meta.setdefault(name, set())
+        item = (value, source)
+        if item in values:
+            return
+        line = "{:s}: {:#x} ({:s})".format(name, value, source)
+        if values:
+            line += " [{:s}]".format(self.meta_context)
+        values.add(item)
+        self.out.append(line)
         return
-
-    def sym_name(self, addr):
-        """Reverse-resolve an address to a kernel symbol name, or '' if unknown."""
-        if not addr:
-            return ""
-        name = Ksym.get_name(addr)
-        if name:
-            return name
-        # fall back to gdb's applied symbol table (works after `ksymaddr-remote-apply`)
-        s = Symbol.get_symbol_string(addr, nosymbol_string="")
-        return s.strip().strip("<>")
-
-    def is_sk_buff_head(self, addr):
-        """Return the qlen if `addr` is an embedded `struct sk_buff_head`, or None."""
-        try:
-            nxt = read_int_from_memory(addr)
-            prv = read_int_from_memory(addr + current_arch.ptrsize)
-            qlen = read_int32_from_memory(addr + current_arch.ptrsize * 2)
-        except gdb.MemoryError:
-            return None
-        if qlen > 0x10000:
-            return None
-        # empty queue: head points to itself
-        if nxt == addr and prv == addr:
-            return 0 if qlen == 0 else None
-        # non-empty queue: walk the circular list and confirm the count matches qlen
-        if not is_valid_addr(nxt) or not is_valid_addr(prv):
-            return None
-        count = 0
-        cur = nxt
-        seen = set()
-        while cur != addr:
-            if cur in seen or not is_valid_addr(cur) or count > 0x10000:
-                return None
-            seen.add(cur)
-            count += 1
-            cur = read_int_from_memory(cur, safe=True)
-            if cur is None:
-                return None
-        if count != qlen:
-            return None
-        return qlen
-
-    def find_socket_from_file(self, file):
-        """file->private_data points to `struct socket`. Confirm it with the socket->file back pointer."""
-        ptr = current_arch.ptrsize
-        offset = self.dwarf["file.private_data"]
-        if offset is not None:
-            socket = read_int_from_memory(file + offset)
-            ret = self.validate_socket(socket, file=file)
-            if ret:
-                self.add_meta("offsetof(file, private_data)", offset, "DWARF")
-                return socket, ret
-            self.warn_dwarf_mismatch("struct file")
-        for i in range(0x40):
-            socket = read_int_from_memory(file + ptr * i)
-            ret = self.validate_socket(socket, file=file)
-            if ret:
-                self.add_meta("offsetof(file, private_data)", ptr * i, "heuristic")
-                return socket, ret
-        return None, None
-
-    def find_socket_from_sock(self, sk):
-        """Direct mode: locate the `struct socket` that owns `sk` via the sk->sk_socket and socket->sk pointers."""
-        ptr = current_arch.ptrsize
-        offset = self.dwarf["sock.sk_socket"]
-        if offset is not None:
-            socket = read_int_from_memory(sk + offset)
-            ret = self.validate_socket(socket, sk=sk)
-            if ret:
-                self.add_meta("offsetof(sock, sk_socket)", offset, "DWARF")
-                return socket, ret
-            if socket == 0:
-                # not attached to a socket (e.g., orphaned)
-                return None, None
-            self.warn_dwarf_mismatch("struct sock")
-        # sk->sk_socket lives a few hundred bytes into struct sock.
-        for i in range(4, 0x80):
-            socket = read_int_from_memory(sk + ptr * i)
-            ret = self.validate_socket(socket, sk=sk)
-            if ret:
-                self.add_meta("offsetof(sock, sk_socket)", ptr * i, "heuristic")
-                return socket, ret
-        return None, None
-
-    def validate_socket(self, socket, file=None, sk=None):
-        """Return (file, sk, ops, (offset_file, offset_sk, offset_ops), source) if `socket` looks like a `struct socket`.
-        The socket->file back pointer must be `file`, or socket->sk must be `sk`."""
-        ptr = current_arch.ptrsize
-        if not is_valid_addr(socket) or (socket & (ptr - 1)):
-            return None
-        offset_state = self.dwarf["socket.state"]
-        offset_type = self.dwarf["socket.type"]
-        if offset_state is None or offset_type is None:
-            offset_state, offset_type = 0, 4
-        try:
-            state = read_int32_from_memory(socket + offset_state)
-            type_ = read_int16_from_memory(socket + offset_type)
-        except gdb.MemoryError:
-            return None
-        if state not in self.SS_STATE or type_ not in self.SOCK_TYPE:
-            return None
-
-        # socket->{file, sk, ops} are three consecutive pointers.
-        layouts = []
-        offsets = (self.dwarf["socket.file"], self.dwarf["socket.sk"], self.dwarf["socket.ops"])
-        if None not in offsets:
-            layouts.append((offsets, "DWARF"))
-        layouts += [((ptr * j, ptr * (j + 1), ptr * (j + 2)), "heuristic") for j in range(2, 8)]
-        for (offset_file, offset_sk, offset_ops), source in layouts:
-            try:
-                file_ = read_int_from_memory(socket + offset_file)
-                sk_ = read_int_from_memory(socket + offset_sk)
-                ops = read_int_from_memory(socket + offset_ops)
-            except gdb.MemoryError:
-                continue
-            if file is not None and file_ != file:
-                continue
-            if sk is not None and sk_ != sk:
-                continue
-            if not is_valid_addr(sk_) or (sk_ & (ptr - 1)):
-                continue
-            if not is_valid_addr(ops):
-                continue
-            if source != "DWARF" and None not in offsets:
-                self.warn_dwarf_mismatch("struct socket")
-            return file_, sk_, ops, (offset_file, offset_sk, offset_ops), source
-        return None
-
-    def is_proto_name(self, name):
-        return bool(name and 2 <= len(name) < 0x20 and re.fullmatch(r"[A-Za-z][A-Za-z0-9+/_.-]*", name))
-
-    def read_proto_name(self, prot):
-        """Return (name, offset, source) of the inline `char name[32]` of `struct proto`, or None if `prot` is not verified.
-
-        Without the debug info, it is verified by `struct list_head node` that follows the name
-        and links all registered protocols."""
-        ptr = current_arch.ptrsize
-        dwarf_offset = self.dwarf["proto.name"]
-        if dwarf_offset is not None:
-            name = read_cstring_from_memory(prot + dwarf_offset, 0x20, safe=True)
-            if self.is_proto_name(name):
-                return name, dwarf_offset, "DWARF"
-
-        if self.offset_proto_name is not None:
-            offsets = [self.offset_proto_name]
-        else:
-            offsets = range(0, ptr * 0x60, ptr)
-        for offset in offsets:
-            name = read_cstring_from_memory(prot + offset, 0x20, safe=True)
-            if not self.is_proto_name(name):
-                continue
-            node = prot + offset + 0x20
-            nxt = read_int_from_memory(node, safe=True)
-            prv = read_int_from_memory(node + ptr, safe=True)
-            if nxt is None or prv is None or nxt == node:
-                continue
-            if not is_valid_addr(nxt) or not is_valid_addr(prv):
-                continue
-            if read_int_from_memory(nxt + ptr, safe=True) != node or read_int_from_memory(prv, safe=True) != node:
-                continue
-            if dwarf_offset is not None:
-                self.warn_dwarf_mismatch("struct proto")
-            self.offset_proto_name = offset
-            return name, offset, "heuristic"
-        return None
-
-    def find_skc_prot(self, sk):
-        """skc_prot is a `struct proto*` in sock_common. Return (prot, symbol_name, name, offset, source),
-        where `name` is the return value of `read_proto_name()`.
-
-        It usually resolves to a static symbol (e.g. tcp_prot), but with CONFIG_KALLSYMS_ALL=n the
-        data symbol is missing, so fall back to the verified inline proto->name string."""
-        ptr = current_arch.ptrsize
-        offset = self.dwarf["sock.skc_prot"]
-        if offset is not None:
-            prot = read_int_from_memory(sk + offset)
-            if is_valid_addr(prot):
-                name = self.sym_name(prot)
-                ret = self.read_proto_name(prot)
-                if ret or self.PROTO_SYMBOL_RE.search(name):
-                    return prot, name or None, ret, offset, "DWARF"
-            self.warn_dwarf_mismatch("struct sock_common")
-
-        # pass 1: a resolvable symbol whose name looks like a proto (fast, needs CONFIG_KALLSYMS_ALL=y).
-        for i in range(3, 0x12):
-            prot = read_int_from_memory(sk + ptr * i)
-            if not is_valid_addr(prot) or (prot & (ptr - 1)):
-                continue
-            name = self.sym_name(prot)
-            if name and self.PROTO_SYMBOL_RE.search(name):
-                return prot, name, self.read_proto_name(prot), ptr * i, "heuristic"
-        # pass 2: a pointer to a verified `struct proto`.
-        for i in range(3, 0x12):
-            prot = read_int_from_memory(sk + ptr * i)
-            if not is_valid_addr(prot) or (prot & (ptr - 1)):
-                continue
-            if not AddressUtil.is_msb_on(prot):
-                continue
-            ret = self.read_proto_name(prot)
-            if ret:
-                return prot, self.sym_name(prot) or None, ret, ptr * i, "heuristic"
-        return None, None, None, None, None
-
-    def proto_hint_family(self, proto_name):
-        """Guess the address family from the `struct proto` symbol name."""
-        if not proto_name:
-            return None
-        n = proto_name.lower()
-        if "v6" in n or n.endswith("6_prot") or n.endswith("6_proto"):
-            return 10  # AF_INET6
-        if "unix" in n:
-            return 1   # AF_UNIX
-        if "netlink" in n:
-            return 16  # AF_NETLINK
-        if "packet" in n:
-            return 17  # AF_PACKET
-        if re.match(r"(tcp|udp|raw|ping|dccp|udplite|sctp|mptcp|inet)", n):
-            return 2   # AF_INET
-        return None
-
-    def find_skc_family(self, sk, proto_hint=None):
-        """skc_family (unsigned short) is followed by skc_state (unsigned char).
-        Return (family, offset_family, offset_state, source).
-
-        skc_family lives at offset 0x10 of sock_common (after skc_addrpair/skc_hash/skc_portpair).
-        If it does not look valid, scan and prefer the value that agrees with the protocol family
-        implied by skc_prot."""
-        offset_family = self.dwarf["sock.skc_family"]
-        offset_state = self.dwarf["sock.skc_state"]
-        if offset_family is not None and offset_state is not None:
-            fam = read_int16_from_memory(sk + offset_family)
-            if 0 < fam < 0x40: # AF_MAX
-                return fam, offset_family, offset_state, "DWARF"
-            self.warn_dwarf_mismatch("struct sock_common")
-
-        matches = []
-        for off in range(4, 0x28, 2):
-            fam = read_int16_from_memory(sk + off)
-            if fam == 0 or fam not in self.AF_FAMILY:
-                continue
-            st = read_int8_from_memory(sk + off + 2)
-            if st > 12:  # layout heuristic; protocol-specific state names are handled later
-                continue
-            matches.append((off, fam, st))
-        if not matches:
-            return None, None, None, None
-        # skc_family is at 0x10 on all supported kernels; the others are the last resort
-        matches.sort(key=lambda x: x[0] != 0x10)
-        if proto_hint is not None:
-            for off, fam, _st in matches:
-                if fam == proto_hint:
-                    return fam, off, off + 2, "heuristic"
-        off, fam, _st = matches[0]
-        return fam, off, off + 2, "heuristic"
-
-    def looks_like_backlog(self, addr):
-        """`struct { atomic_t rmem_alloc; int len; struct sk_buff *head, *tail; } sk_backlog`.
-
-        This struct always immediately follows sk_receive_queue, which is how we anchor it."""
-        try:
-            rmem = read_int32_from_memory(addr)
-            length = read_int32_from_memory(addr + 4)
-            head = read_int_from_memory(addr + 8)
-            tail = read_int_from_memory(addr + 8 + current_arch.ptrsize)
-        except gdb.MemoryError:
-            return False
-        if rmem > 0x1000_0000 or length > 0x100_0000:
-            return False
-        if head == 0 and tail == 0:
-            return True
-        if not is_valid_addr(head) or not is_valid_addr(tail):
-            return False
-        # A non-empty backlog always carries len > 0. When `addr` is really sk_error_queue, its
-        # +0x18 neighbour is sk_rx_skb_cache followed by sk_receive_queue whose next/prev point to
-        # real skbs (head != 0) while len stays 0 -- reject that.
-        if length == 0:
-            return False
-        # a queued backlog skb is a real skb, never a self-pointing list head.
-        next_head = read_int_from_memory(head, safe=True)
-        next_tail = read_int_from_memory(tail, safe=True)
-        if next_head is None or next_tail is None:
-            return False
-        if next_head == head or next_tail == tail:
-            return False
-        return True
-
-    def find_queues(self, sk, limit):
-        """Locate sk_error_queue / sk_receive_queue / sk_write_queue (the embedded sk_buff_heads).
-        Returns ({name: offset}, sizeof(struct sk_buff_head) or None, source).
-
-        [~v4.9]  sk_lock, sk_receive_queue, sk_backlog, ..., sk_write_queue, ..., sk_error_queue
-                 (sk_async_wait_queue sits before sk_write_queue on ~v3.18 with CONFIG_NET_DMA=y)
-        [v4.10~] sk_lock, sk_error_queue, [sk_rx_skb_cache,] sk_receive_queue, sk_backlog, ..., sk_write_queue
-        [v6.10~] sk_error_queue, sk_receive_queue, sk_backlog, ..., sk_lock, ..., sk_write_queue
-
-        Empty wait_queue_head list heads inside sk_lock masquerade as empty sk_buff_heads, so we
-        anchor on sk_backlog (which always immediately follows sk_receive_queue) instead of trusting
-        every self-pointing list head. `limit` is the offset of the callbacks that follow all queues, if known."""
-        names = ["error_queue", "receive_queue", "write_queue"]
-        offsets = [self.dwarf["sock.sk_" + name] for name in names]
-        if None not in offsets:
-            if all(self.is_sk_buff_head(sk + offset) is not None for offset in offsets):
-                return dict(zip(names, offsets)), None, "DWARF"
-            self.warn_dwarf_mismatch("struct sock")
-
-        ptr = current_arch.ptrsize
-        end = limit or ptr * 0x80
-        cands = [off for off in range(ptr * 8, end, ptr) if self.is_sk_buff_head(sk + off) is not None]
-        if not cands:
-            return {}, None, "heuristic"
-
-        # sizeof(struct sk_buff_head) = next + prev + qlen(4) + spinlock, which grows with the lock debugging.
-        min_size = align_to_ptrsize(ptr * 2 + 4)
-        kversion = Kernel.version()
-        max_size = 0x80
-
-        def is_followed_by_backlog(offset, size):
-            # the queue cannot contain another queue
-            if any(offset < x < offset + size for x in cands):
-                return False
-            return self.looks_like_backlog(sk + offset + size)
-
-        def find_old_layout():
-            # the lowest queue followed by sk_backlog is sk_receive_queue.
-            for receive in cands:
-                if not any(is_followed_by_backlog(receive, size) for size in range(min_size, max_size + 1, ptr)):
-                    continue
-                after = [x for x in cands if x > receive]
-                result = {"receive_queue": receive}
-                if len(after) >= 2:
-                    result["write_queue"], result["error_queue"] = after[-2:]
-                elif after:
-                    result["write_queue"] = after[0]
-                return result, None
-            return None
-
-        def find_new_layout():
-            # sk_error_queue and sk_receive_queue are adjacent and have the same size.
-            # sk_rx_skb_cache sits between them on v5.1~v5.15.
-            best = None
-            for error, receive in zip(cands, cands[1:]):
-                sizes = [receive - error, receive - error - ptr]
-                if kversion and "5.1" <= kversion < "5.16":
-                    sizes.reverse()
-                for size in sizes:
-                    if not min_size <= size <= max_size:
-                        continue
-                    if not is_followed_by_backlog(receive, size):
-                        continue
-                    # sk_error_queue itself is followed by sk_rx_skb_cache or sk_receive_queue
-                    if self.looks_like_backlog(sk + error + size):
-                        continue
-                    if best is None or size < best[2]:
-                        best = (error, receive, size)
-                    break
-            if best is None:
-                return None
-            error, receive, size = best
-            result = {"error_queue": error, "receive_queue": receive}
-            # sk_write_queue is the last queue; sk_lock sits between them on v6.10~.
-            after = [x for x in cands if x > receive]
-            if after:
-                result["write_queue"] = after[-1] if limit else after[0]
-            return result, size
-
-        if kversion and kversion < "4.10":
-            finders = [find_old_layout, find_new_layout]
-        else:
-            finders = [find_new_layout, find_old_layout]
-        for finder in finders:
-            ret = finder()
-            if ret:
-                return ret[0], ret[1], "heuristic"
-        return {}, None, "heuristic"
-
-    # sk callbacks, matched by resolved symbol name. Their relative order in struct sock is not
-    # stable (v6.10 pulled sk_data_ready out of the state_change/write_space/error_report run and
-    # moved it next to the RX path), so classify by name instead of by adjacency. Each role lists
-    # the default symbols, then keyword patterns that also catch protocol overrides.
-    CALLBACKS = [
-        ("sk_state_change", ("sock_def_wakeup",), (r"state_change",)),
-        ("sk_data_ready", ("sock_def_readable",), (r"data_ready",)),
-        ("sk_write_space", ("sock_def_write_space", "sk_stream_write_space"), (r"write_space$",)),
-        ("sk_error_report", ("sock_def_error_report",), (r"error_report",)),
-        ("sk_destruct", ("inet_sock_destruct", "unix_sock_destructor", "sock_def_destruct"),
-         (r"destruct",)),
-    ]
-
-    def find_callbacks(self, sk):
-        """Resolve the sk_* callbacks. Returns [(label, addr, name, offset, source), ...].
-        Without the debug info, scan struct sock for symbol-resolvable function pointers and classify each by name."""
-        offsets = [self.dwarf["sock." + label] for label, _, _ in self.CALLBACKS]
-        if None not in offsets:
-            found = []
-            for (label, _, _), offset in zip(self.CALLBACKS, offsets):
-                p = read_int_from_memory(sk + offset)
-                found.append((label, p, self.sym_name(p), offset, "DWARF"))
-            # sock_init_data() sets all of them, and only sk_destruct can be NULL.
-            if all(is_valid_addr(p) for label, p, _, _, _ in found if label != "sk_destruct"):
-                return found
-            self.warn_dwarf_mismatch("struct sock")
-
-        # struct sock is up to 0x230 bytes on 32-bit and 0x320 bytes on 64-bit, and grows with the lock debugging.
-        slots = []
-        for off in range(current_arch.ptrsize * 8, 0x800, current_arch.ptrsize):
-            p = read_int_from_memory(sk + off, safe=True)
-            if p is None:
-                break
-            if not is_valid_addr(p) or not AddressUtil.is_msb_on(p):
-                continue
-            nm = self.sym_name(p)
-            if nm:
-                slots.append((off, p, nm))
-
-        # the lowest match wins, since the scan may run into the next object in the slab
-        found = []
-        used = set()
-        for label, exacts, patterns in self.CALLBACKS:
-            best = None
-            for off, p, nm in slots:
-                if off not in used and (nm in exacts or any(re.search(pat, nm) for pat in patterns)):
-                    best = (off, p, nm)
-                    break
-            if best is not None:
-                used.add(best[0])
-                found.append((label, best[1], best[2], best[0], "heuristic"))
-        return found
 
     def dump_queue(self, sk, name, off):
-        head = sk + off
-        qlen = self.is_sk_buff_head(head)
-        skbs = []
-        if qlen:
-            for skb in KernelListHead(head, 0).iter_entries():
-                skbs.append(skb)
-                if len(skbs) >= 0x1000:
-                    break
+        queue = self.ksocket.get_queue(sk, off)
+        head, qlen, skbs = queue["address"], queue["qlen"], queue["skbs"]
         self.out.append("     |- {:<14s} {:#018x} ({:d} skb)".format(name, head, qlen if qlen else 0))
         if self.args.list_skb and skbs:
             for idx, skb in enumerate(skbs):
@@ -151441,7 +151605,12 @@ class KernelSocketCommand(GenericCommand, BufferingOutput):
             self.out.append(prefix + line)
         return
 
-    def dump_sock(self, sk, socket, file, header):
+    def dump_sock(self, info, header):
+        for name, value, source in info["meta"]:
+            self.add_meta(name, value, source)
+        if self.args.meta:
+            return
+        sk, socket, file = info["sock"], info["socket"], info["file"]
         if header:
             self.out.append(header)
         parts = ["sock: {:#018x}".format(sk)]
@@ -151452,134 +151621,49 @@ class KernelSocketCommand(GenericCommand, BufferingOutput):
         self.out.append("  " + "  ".join(parts))
         self.out.append("  `- sock {:#018x}".format(sk))
 
-        # sk->sk_socket back pointer
-        offset_sk_socket = self.dwarf["sock.sk_socket"]
-        if socket and offset_sk_socket is not None:
-            if read_int_from_memory(sk + offset_sk_socket) == socket:
-                self.add_meta("offsetof(sock, sk_socket)", offset_sk_socket, "DWARF")
-            else:
-                self.warn_dwarf_mismatch("struct sock")
-
-        # protocol (resolve first, its family hint disambiguates skc_family)
-        prot, prot_sym, prot_name, offset_prot, source = self.find_skc_prot(sk)
-        prot_iname = None
-        if prot_name:
-            prot_iname, offset_name, source_name = prot_name
-        proto_hint = self.proto_hint_family(prot_iname or prot_sym) if prot is not None else None
-        if prot is not None:
-            self.add_meta("offsetof(sock, __sk_common.skc_prot)", offset_prot, source)
-            if prot_name:
-                self.add_meta("offsetof(proto, name)", offset_name, source_name)
-
         # family / state
-        fam, off_fam, off_state, source = self.find_skc_family(sk, proto_hint)
+        fam = info["family"]
         if fam is not None:
-            self.add_meta("offsetof(sock, __sk_common.skc_family)", off_fam, source)
-            self.add_meta("offsetof(sock, __sk_common.skc_state)", off_state, source)
-            self.out.append("     |- {:<14s} {:s}".format("family", self.AF_FAMILY.get(fam, str(fam))))
-            st = read_int8_from_memory(sk + off_state)
-            proto_name = (prot_iname or prot_sym or "").lower()
-            state = self.SK_STATE.get(st) if proto_name.startswith(("tcp", "mptcp")) else None
+            self.out.append("     |- {:<14s} {:s}".format("family", self.ksocket.AF_FAMILY.get(fam, str(fam))))
+            st = info["state"]
+            proto_name = (info["protocol_name"] or info["protocol_symbol"] or "").lower()
+            state = self.ksocket.SK_STATE.get(st) if proto_name.startswith(("tcp", "mptcp")) else None
             self.out.append("     |- {:<14s} {:s}".format("state", state or "{:#x}".format(st)))
 
         # socket->{type,state}
         if socket:
-            offset_state = self.dwarf["socket.state"]
-            offset_type = self.dwarf["socket.type"]
-            if offset_state is None or offset_type is None:
-                offset_state, offset_type = 0, 4
-            stype = read_int16_from_memory(socket + offset_type)
-            sstate = read_int32_from_memory(socket + offset_state)
-            self.out.append("     |- {:<14s} {:s}".format("type", self.SOCK_TYPE.get(stype, str(stype))))
-            self.out.append("     |- {:<14s} {:s}".format("socket_state", self.SS_STATE.get(sstate, str(sstate))))
+            stype, sstate = info["type"], info["socket_state"]
+            self.out.append("     |- {:<14s} {:s}".format("type", self.ksocket.SOCK_TYPE.get(stype, str(stype))))
+            self.out.append("     |- {:<14s} {:s}".format("socket_state", self.ksocket.SS_STATE.get(sstate, str(sstate))))
 
         # protocol
+        prot, prot_sym, prot_iname = info["protocol"], info["protocol_symbol"], info["protocol_name"]
         if prot is not None:
             if prot_iname:
                 proto_disp = prot_iname
             else:
-                proto_disp = self.PROTO_SYMBOL_RE.sub("", prot_sym).upper() or prot_sym
+                proto_disp = self.ksocket.PROTO_SYMBOL_RE.sub("", prot_sym).upper() or prot_sym
             annot = " <{:s}>".format(prot_sym) if prot_sym else ""
             self.out.append("     |- {:<14s} {:s} ({:#x}{:s})".format("protocol", proto_disp, prot, annot))
 
-        # callbacks follow all queues except sk_data_ready
-        callbacks = self.find_callbacks(sk)
-        limit = [off for label, _, _, off, _ in callbacks if label not in ["sk_data_ready", "sk_destruct"]]
-        limit = min(limit) if limit else None
-
         # queues
-        queues, size, source = self.find_queues(sk, limit)
+        queues = info["queues"]
         if not queues:
             self.out.append("     |- {:<14s} ??? (layout could not be resolved)".format("queues"))
         for name in ("receive_queue", "write_queue", "error_queue"):
             if name in queues:
-                self.add_meta("offsetof(sock, sk_{:s})".format(name), queues[name], source)
                 self.dump_queue(sk, name, queues[name])
-        if size is not None:
-            self.add_meta("sizeof(sk_buff_head)", size, source)
-
-        for label, _, _, off, source in callbacks:
-            self.add_meta("offsetof(sock, {:s})".format(label), off, source)
-
-        if self.args.meta and self.meta:
-            self.out.append("     |- meta")
-            for line in self.meta:
-                self.out.append("     |    " + line)
 
         # callbacks
-        if callbacks:
+        if info["callbacks"]:
             self.out.append("     `- callbacks")
-            for label, p, nm, _, _ in callbacks:
+            for label, p, nm, _, _ in info["callbacks"]:
                 if nm:
                     self.out.append("        {:<16s} {:#018x} <{:s}>".format(label, p, nm))
                 else:
                     self.out.append("        {:<16s} {:#018x}".format(label, p))
         self.out.append("")
         return
-
-    def collect_socket_files(self):
-        """Parse `ktask --print-fd` and return the socket file descriptors with their owning task."""
-        ret = gdb.execute("ktask --no-pager --user-process-only --print-fd --quiet", to_string=True)
-        ret = Color.remove_color(ret)
-        socks = []
-        pid, comm, task = None, None, None
-        task_re = re.compile(r"^(0x\w+)\s+\S+\s+[UK]T?\s+(\d+)\s+(.+?)\s+0x\w+ \[")
-        fd_re = re.compile(r"^(\d+)\s+\S+\s+(0x\w+)\s+(0x\w+)\s+(0x\w+)\s+socket:\[(\d+)\]")
-        title_re = re.compile(r"file descriptors of `(.+)`")
-        any_fd_re = re.compile(r"^\d+\s+(True|False)\s+0x")
-        any_task = any_fd = False
-        for line in ret.splitlines():
-            line = line.strip()
-            m = task_re.match(line)
-            if m:
-                task = int(m.group(1), 16)
-                pid = int(m.group(2))
-                comm = m.group(3).strip()
-                any_task = True
-                continue
-            if any_fd_re.match(line):
-                any_fd = True
-            m = title_re.search(line)
-            if m:
-                comm = m.group(1)
-                continue
-            m = fd_re.match(line)
-            if m:
-                socks.append({
-                    "pid": pid, "comm": comm, "task": task,
-                    "fd": int(m.group(1)), "file": int(m.group(2), 16),
-                    "dentry": int(m.group(3), 16), "inode": int(m.group(4), 16),
-                    "ino": int(m.group(5)),
-                })
-        for line in ret.splitlines():
-            if line.startswith("[!]"):
-                self.quiet_err(line[3:].lstrip())
-                return None
-        # `ktask` disables --print-fd silently if the file layout is not resolved
-        if not socks and any_task and not any_fd:
-            self.quiet_err("Could not list the file descriptors (see `ktask --print-fd --meta`)")
-            return None
-        return socks
 
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
@@ -151591,9 +151675,9 @@ class KernelSocketCommand(GenericCommand, BufferingOutput):
         if args.dump:
             args.list_skb = True  # dumping data only makes sense together with the skb listing
 
-        self.dwarf = self.resolve_by_dwarf()
-        self.dwarf_mismatch = set()
-        self.offset_proto_name = None
+        self.ksocket = Kernel.socket()
+        self.ksocket.initialize()
+        self.meta = {}
 
         # direct mode: a raw struct sock address was given.
         if args.sock is not None:
@@ -151601,16 +151685,19 @@ class KernelSocketCommand(GenericCommand, BufferingOutput):
             if not is_valid_addr(sk):
                 err("Invalid address: {:#x}".format(sk))
                 return
-            self.meta = []
-            socket, ret = self.find_socket_from_sock(sk)
-            file = ret[0] if ret else None
-            self.dump_sock(sk, socket, file, "[direct] struct sock {:#018x}".format(sk))
+            self.meta_context = "sock {:#x}".format(sk)
+            info = self.ksocket.get_socket(sk=sk, details=not args.meta)
+            self.dump_sock(info, "[direct] struct sock {:#018x}".format(sk))
+            for func, line in Kernel.export_meta(self, self.ksocket.meta):
+                func(line)
             self.print_output(check_terminal_size=True)
             return
 
         self.quiet_info("Wait for memory scan")
-        socks = self.collect_socket_files()
+        socks = self.ksocket.collect_socket_files()
         if socks is None:
+            for func, line in Kernel.export_meta(self, self.ksocket.meta):
+                func(line)
             return
         if not socks:
             self.quiet_info("Nothing to dump")
@@ -151631,19 +151718,18 @@ class KernelSocketCommand(GenericCommand, BufferingOutput):
             return
 
         for s in matched:
-            self.meta = []
-            socket, ret = self.find_socket_from_file(s["file"])
-            if socket is None:
+            self.meta_context = "pid {:d}, fd {:d}, file {:#x}".format(s["pid"] or 0, s["fd"], s["file"])
+            info = self.ksocket.get_socket(file=s["file"], details=not args.meta)
+            if info["socket"] is None:
                 self.out.append("[pid {:d}] {:s}  fd {:d}  file {:#018x}  socket: <not found>".format(
                     s["pid"] or 0, s["comm"] or "?", s["fd"], s["file"]))
                 self.out.append("")
                 continue
-            _file, sk, _ops, offsets, source = ret
-            for name, offset in zip(["file", "sk", "ops"], offsets):
-                self.add_meta("offsetof(socket, {:s})".format(name), offset, source)
             header = "[pid {:d}] {:s}  fd {:d}".format(s["pid"] or 0, s["comm"] or "?", s["fd"])
-            self.dump_sock(sk, socket, s["file"], header)
+            self.dump_sock(info, header)
 
+        for func, line in Kernel.export_meta(self, self.ksocket.meta):
+            func(line)
         self.print_output(check_terminal_size=True)
         return
 
