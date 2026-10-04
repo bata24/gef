@@ -30062,14 +30062,13 @@ class GlibcHeapSnapshotCommand(GenericCommand):
         # data
         try:
             section = ProcessMap.lookup_address(arena.heap_base).section
-            page_start = section.page_start
-            region_size = section.size
+            region_size = section.page_end - arena.heap_base
         except Exception:
             err("Failed to get memory range")
             return None
 
         try:
-            raw = read_memory(page_start, region_size)
+            raw = read_memory(arena.heap_base, region_size)
         except gdb.MemoryError:
             err("Failed to dump memory")
             return None
@@ -30384,7 +30383,7 @@ class GlibcHeapSnapshotCompareCommand(GenericCommand, BufferingOutput):
                     a2 = " " * ptrsize
 
                 # element coloring
-                is_same = (v1 is None) or (v2 is None) or v1 == v2
+                is_same = v1 == v2
                 is_line_same &= is_same
                 is_size1_e = is_size1 & (i == 1)
                 is_size2_e = is_size2 & (i == 1)
@@ -30410,7 +30409,7 @@ class GlibcHeapSnapshotCompareCommand(GenericCommand, BufferingOutput):
                     self.out.append(line.rstrip())
 
             # make line
-            addr = ProcessMap.lookup_address(info1["dump_start"] + pos)
+            addr = ProcessMap.lookup_address(info1["heap_base"] + pos)
             line = "{:s}{!s}|{:+#08x}|{:+06d}: {:s} | {:s} | {:s} | {:s} |".format(
                 " " if is_line_same else "+",
                 addr, pos, pos // double_ptrsize,
