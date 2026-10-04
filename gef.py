@@ -71872,6 +71872,11 @@ class Kernel:
         return KernelSocket.get_instance()
 
     @staticmethod
+    def ipcs():
+        """Return the System V IPC resolver."""
+        return KernelIpcs.get_instance()
+
+    @staticmethod
     def bpf():
         """Return the BPF resolver."""
         return KernelBpf.get_instance()
@@ -77931,6 +77936,568 @@ class KernelSocket:
                 used.add(best[0])
                 found.append((label, best[1], best[2], best[0], "heuristic"))
         return found
+
+
+class KernelIpcs:
+    """Resolve System V IPC layouts and read their objects."""
+
+    @classmethod
+    @Cache.cache_this_session(per_inferior=True, until_new_objfile=True)
+    def get_instance(cls):
+        return cls()
+
+    def __init__(self):
+        self.meta = []
+        self.sysvipc_disabled = False
+        self.sysvipc_uninitialized = False
+        return
+
+    @Cache.cache_this_session(cache_None=False, per_inferior=True, until_new_objfile=True)
+    @Decorator.switch_to_intel_syntax
+    def initialize(self):
+        ipc_ns_list = self.get_all_ipc_ns()
+        self.meta = []
+
+        self.sysvipc_disabled = False
+        self.sysvipc_uninitialized = False
+        if ipc_ns_list == []:
+            return None
+
+        if ipc_ns_list == [0]:
+            self.meta.append(("err", "Could not find valid ipc_ns (maybe CONFIG_SYSVIPC=n)"))
+            return None
+
+        # ipc_namespace
+        """
+        struct ipc_namespace {
+            refcount_t count; // ~5.10
+            struct ipc_ids {
+                int in_use;
+                unsigned short seq;
+                struct rw_semaphore {
+                    atomic_long_t count;
+                    atomic_long_t owner;
+                #ifdef CONFIG_RWSEM_SPIN_ON_OWNER
+                    struct optimistic_spin_queue osq;
+                #endif
+                    raw_spinlock_t wait_lock;
+                    struct list_head wait_list;
+                #ifdef CONFIG_DEBUG_RWSEMS
+                    void *magic;
+                #endif
+                #ifdef CONFIG_DEBUG_LOCK_ALLOC
+                    struct lockdep_map dep_map;
+                #endif
+                } rwsem;
+                struct idr {
+                    struct radix_tree_root { // =struct xarray
+                        spinlock_t xa_lock;
+                        gfp_t xa_flags;
+                        void __rcu *xa_head;
+                    } idr_rt;
+                    unsigned int idr_base;
+                    unsigned int idr_next;
+                } ipcs_idr;
+                int max_idx;
+                int last_idx;
+            #ifdef CONFIG_CHECKPOINT_RESTORE
+                int next_id;
+            #endif
+                struct rhashtable key_ht;
+            } ids[3];
+            ...
+        """
+        kversion = Kernel.version()
+        if "5.11" <= kversion:
+            self.offset_ids = 0
+        else:
+            self.offset_ids = current_arch.ptrsize
+        ptr = current_arch.ptrsize
+        self.tree_kind = "xarray" if "4.20" <= kversion else "radix" if "4.11" <= kversion else "idr"
+        self.offset_idr_layers = ptr * (1 if "3.16" <= kversion else 2)
+        if self.tree_kind == "idr":
+            top = GefUtil.offsetof("idr", "top")
+            layers = GefUtil.offsetof("idr", "layers")
+            if top is not None and layers is not None:
+                self.offset_idr_layers = layers - top
+        member = {"xarray": "ipcs_idr.idr_rt.xa_head", "radix": "ipcs_idr.idr_rt.rnode", "idr": "ipcs_idr.top"}[self.tree_kind]
+        offset_ids = GefUtil.offsetof("ipc_namespace", "ids")
+        if offset_ids is not None:
+            self.offset_ids = offset_ids
+        self.meta.append(("info", "offsetof(ipc_namespace, ids): {:#x}".format(self.offset_ids)))
+
+        # offsetof(ipc_ids, ipcs_idr.idr_rt.xa_head): tagged valid pointer is `xa_head`.
+        # sizeof(ids[0]): find three IDR heads and calculate the distance.
+        init_ipc_ns = ipc_ns_list[0]
+        offset_xa_head = GefUtil.offsetof("ipc_ids", member)
+        sizeof_ipc_ids = GefUtil.sizeof("ipc_ids")
+        source = "DWARF"
+        if offset_xa_head is None or sizeof_ipc_ids is None:
+            source = "heuristic"
+            offset_xa_head = sizeof_ipc_ids = None
+        candidates = {True: {}, False: {}}
+        # DEBUG_LOCK_ALLOC makes struct ipc_ids large enough that ids[2]'s
+        # xa_head can be beyond the old 120-pointer scan window.
+        for offset in range(ptr * 3, ptr * 256, ptr):
+            if offset_xa_head is not None or self.tree_kind == "idr":
+                break
+            address = init_ipc_ns + self.offset_ids + offset
+            entry = read_int_from_memory(address, safe=True)
+            if entry is None:
+                break
+            """
+            [x64 before using IPC]
+            0xffffffff8b1841f8|+0x0038|+007: 0x0080000400000000 <- xa_lock, xa_flags
+            0xffffffff8b184200|+0x0040|+008: 0x0000000000000000 <- xa_head
+            0xffffffff8b184208|+0x0048|+009: 0x0000000000000000 <- idr_base, idr_next
+            [x64 after using IPC]
+            0xffffffff8b1841f8|+0x0038|+007: 0x0080000400000000
+            0xffffffff8b184200|+0x0040|+008: 0xffff9250c7dc2002 ->  0x0000000000000001
+            0xffffffff8b184208|+0x0048|+009: 0x0000000100000000
+            [x64 after deleting IPC]
+            0xffffffff8b1841f8|+0x0038|+007: 0x0080000400000000
+            0xffffffff8b184200|+0x0040|+008: 0x0000000000000000
+            0xffffffff8b184208|+0x0048|+009: 0x0000000100000000
+
+            [x86 before using IPC]
+            0xc1b4e104|+0x0024|+009: 0x00000000 <- xa_lock
+            0xc1b4e108|+0x0028|+010: 0x00800004 <- xa_flags
+            0xc1b4e10c|+0x002c|+011: 0x00000000 <- xa_head
+            0xc1b4e110|+0x0030|+012: 0x00000000 <- idr_base
+            0xc1b4e114|+0x0034|+013: 0x00000000 <- idr_next
+            [x86 after using IPC]
+            0xc1b4e104|+0x0024|+009: 0x00000000
+            0xc1b4e108|+0x0028|+010: 0x00800004
+            0xc1b4e10c|+0x002c|+011: 0xc2c67392  ->  0x00000001
+            0xc1b4e110|+0x0030|+012: 0x00000000
+            0xc1b4e114|+0x0034|+013: 0x00000001
+            [x86 after deleting IPC]
+            0xc1b4e104|+0x0024|+009: 0x00000000
+            0xc1b4e108|+0x0028|+010: 0x00800004
+            0xc1b4e10c|+0x002c|+011: 0x00000000
+            0xc1b4e110|+0x0030|+012: 0x00000000
+            0xc1b4e114|+0x0034|+013: 0x00000001
+            """
+
+            # Read xa_flags as u32, including the UP layout with padding before xa_head.
+            flags = [read_int32_from_memory(address - delta, safe=True) for delta in (4, ptr)]
+            if self.tree_kind == "xarray":
+                markers = [f for f in flags if f is not None and (f == 4 or any(f == 4 | bits << shift for bits in (1, 3) for shift in range(23, 28)))]
+                node = KernelXArray.is_node(entry)
+                tag = 2 if node else 0
+            else:
+                markers = [f for f in flags if f and f & 0xffff == 0]
+                node = bool(entry & 1)
+                tag = 1 if node else 0
+            if not markers and not (entry == 0 and 0 in flags):
+                continue
+            # xa_head
+            if entry and (entry & 3 != tag or not self.is_ipc_pointer(entry - tag)):
+                continue
+            # idr_base, idr_next
+            cursor = read_int32_from_memory(address + ptr + (4 if self.tree_kind == "xarray" else 0), safe=True)
+            if cursor is None or cursor > 1 << 24:
+                continue
+            if self.tree_kind == "xarray" and read_int32_from_memory(address + ptr, safe=True) != 0:
+                continue
+            if node and self.tree_kind == "xarray":
+                if not KernelXArray.cache_head_offset(address, entry):
+                    continue
+            candidates[bool(markers)][offset] = entry
+
+        # The rwsem wait lists locate the three ipc_ids even when every IDR is empty.
+        wait_lists = []
+        for offset in range(8, ptr * 256, ptr):
+            if offset_xa_head is not None:
+                break
+            address = init_ipc_ns + self.offset_ids + offset
+            if read_int_from_memory(address, safe=True) == address and read_int_from_memory(address + ptr, safe=True) == address:
+                wait_lists.append(offset)
+        if offset_xa_head is None and self.tree_kind == "idr":
+            for first in wait_lists:
+                for second in wait_lists:
+                    size = second - first
+                    if size < ptr * 8 or first >= size or first + size * 2 not in wait_lists:
+                        continue
+                    # idr follows rwsem; lockdep may extend rwsem after wait_list.
+                    hint = ptr if Ksym.get_addr("idr_find_slowpath") else 0
+                    for offset in range(first + ptr * 2 + hint, size - ptr * 2, ptr):
+                        if self.validate_legacy_idr(init_ipc_ns, offset, size):
+                            offset_xa_head, sizeof_ipc_ids = offset, size
+                            break
+                    if offset_xa_head is not None:
+                        break
+                if offset_xa_head is not None:
+                    break
+
+        # ids[3] are contiguous. Requiring three equally spaced candidates avoids
+        # locking onto an unrelated zero-valued field before an empty xa_head.
+        # Prefer the IDR marker; zero flags additionally require the rwsem boundary.
+        for marked, heads in candidates.items():
+            offsets = sorted(heads)
+            offset_set = set(offsets)
+            for first_pos, first in enumerate(offsets):
+                for second in offsets[first_pos + 1:]:
+                    size = second - first
+                    if ptr * 8 <= size and first < size and first + size * 2 in offset_set:
+                        if not marked and not any(
+                            wait + ptr * 2 <= first and wait < size and
+                            wait + size in wait_lists and wait + size * 2 in wait_lists
+                            for wait in wait_lists
+                        ):
+                            continue
+                        valid = True
+                        for index in range(3):
+                            in_use = read_int32_from_memory(
+                                init_ipc_ns + self.offset_ids + size * index
+                            )
+                            if in_use > 1 << 24 or bool(in_use) != bool(heads[first + size * index]):
+                                valid = False
+                                break
+                        if not valid:
+                            continue
+                        offset_xa_head = first
+                        sizeof_ipc_ids = size
+                        break
+                if offset_xa_head is not None:
+                    break
+            if offset_xa_head is not None:
+                break
+
+        if offset_xa_head is None:
+            if all(
+                read_int_from_memory(init_ipc_ns + current_arch.ptrsize * i) == 0
+                for i in range(32)
+            ):
+                if Ksym.get_addr("sem_init"):
+                    self.sysvipc_uninitialized = True
+                    self.meta.append(("info", "SYSVIPC is enabled, but ipc_ids is not initialized"))
+                    return None
+                self.sysvipc_disabled = True
+                self.meta.append(("info", "SYSVIPC is disabled"))
+                return None
+            self.meta.append(("err", "Could not find ipc_namespace->ids[0].ipcs_idr.idr_rt.xa_head"))
+            self.meta.append(("err", "Not recognized sizeof(struct ipc_ids)"))
+            self.meta.append(("err", "SYSVIPC is enabled, but the ipc_ids layout could not be determined"))
+            return None
+        self.offset_xa_head = offset_xa_head
+        self.sizeof_ipc_ids = sizeof_ipc_ids
+        self.meta.append(("info", "offsetof(ipc_ids, {:s}): {:#x} ({:s})".format(member, self.offset_xa_head, source)))
+        self.meta.append(("info", "sizeof(struct ipc_ids): {:#x} ({:s})".format(self.sizeof_ipc_ids, source)))
+
+        # kern_ipc_perm
+        """
+        struct kern_ipc_perm {
+            spinlock_t lock;
+            bool deleted;
+            int id;
+            key_t key;
+            kuid_t uid;
+            kgid_t gid;
+            kuid_t cuid;
+            kgid_t cgid;
+            umode_t mode;
+            unsigned long seq;
+            void *security;
+            struct rhash_head khtnode;
+            struct rcu_head rcu;
+            refcount_t refcount;
+        } ____cacheline_aligned_in_smp __randomize_layout;
+        """
+        try:
+            self.offset_id = GefUtil.parse_and_eval_unsigned("&((struct kern_ipc_perm*)0).id")
+            self.offset_key = GefUtil.parse_and_eval_unsigned("&((struct kern_ipc_perm*)0).key")
+            self.offset_uid = GefUtil.parse_and_eval_unsigned("&((struct kern_ipc_perm*)0).uid")
+            self.offset_gid = GefUtil.parse_and_eval_unsigned("&((struct kern_ipc_perm*)0).gid")
+            self.offset_mode = GefUtil.parse_and_eval_unsigned("&((struct kern_ipc_perm*)0).mode")
+        except gdb.error:
+            self.offset_id = 4 if Kernel.per_cpu().is_up else 8
+            if is_x86_64() or is_x86_32():
+                addr = Ksym.get_addr("kernel_to_ipc64_perm")
+                if addr:
+                    # The key copied to ipc64_perm identifies the ticket-lock layout too.
+                    res = KernelAddressHeuristicFinderUtil.disassemble_until_next_symbol(addr, 60)
+                    match = re.search(r"mov\s+(\w+),DWORD PTR \[(?:rdi|eax)\+(0x[0-9a-f]+)\].*?mov\s+DWORD PTR \[(?:rsi|edx)\],\1\b", res, re.DOTALL)
+                    if match:
+                        self.offset_id = int(match.group(2), 16) - 4
+            self.offset_key = self.offset_id + 4
+            self.offset_uid = self.offset_key + 4
+            self.offset_gid = self.offset_uid + 4
+            self.offset_mode = self.offset_gid + 4 + 4 + 4
+
+        return True
+
+    def get_all_ipc_ns(self):
+        res = gdb.execute("ktask --print-namespace --user-process-only --no-pager --quiet", to_string=True)
+        r = re.findall(r"nsproxy->ipc_ns\s+(0x\S+)", res)
+
+        ipc_ns_list = []
+        # do not use `set()` because the order is important.
+        for x in r:
+            x = int(x, 16)
+            if x not in ipc_ns_list:
+                ipc_ns_list.append(x)
+        return ipc_ns_list
+
+    def has_objects(self, ipc_ns_list):
+        # the presence of IPC objects is live, so it must not be cached
+        return any(
+            read_int_from_memory(ipc_ns + self.offset_ids + self.sizeof_ipc_ids * i + self.offset_xa_head)
+            for ipc_ns in ipc_ns_list for i in range(3)
+        )
+
+    def get_semaphores(self, ipc_ids_ptr):
+        """
+        struct sem_array {
+            struct kern_ipc_perm sem_perm;
+            time64_t sem_ctime;
+            struct list_head pending_alter;
+            struct list_head pending_const;
+            struct list_head list_id;
+            int sem_nsems;
+            ...
+        } __randomize_layout;
+        """
+        elems = self.get_ipc_entries(ipc_ids_ptr)
+        self.sem_elems_temp = elems
+        offset_sem_nsems = self.get_offset_sem_nsems()
+        del self.sem_elems_temp
+        objects = []
+        for e in elems:
+            item = self.get_permissions(e)
+            item["nsems"] = read_int32_from_memory(e + offset_sem_nsems) if offset_sem_nsems is not None else None
+            objects.append(item)
+        return objects
+
+    def get_messages(self, ipc_ids_ptr):
+        """
+        struct msg_queue {
+            struct kern_ipc_perm q_perm;
+            time64_t q_stime;
+            time64_t q_rtime;
+            time64_t q_ctime;
+            unsigned long q_cbytes;
+            unsigned long q_qnum;
+            unsigned long q_qbytes;
+            struct pid *q_lspid;
+            struct pid *q_lrpid;
+            struct list_head q_messages; <--> msg_msg.m_list
+            struct list_head q_receivers;
+            struct list_head q_senders;
+        } __randomize_layout;
+
+        struct msg_msg {
+            struct list_head m_list;
+            long m_type;
+            size_t m_ts; /* message text size */
+            struct msg_msgseg *next;
+            void *security;
+        };
+        """
+        elems = self.get_ipc_entries(ipc_ids_ptr)
+        self.msg_elems_temp = elems
+        offsets = self.get_offsets_msg()
+        del self.msg_elems_temp
+        objects = []
+        for e in elems:
+            item = self.get_permissions(e)
+            item.update(q_cbytes=None, q_qnum=None, messages=None)
+            if offsets is not None:
+                offset_q_cbytes, offset_q_qnum, offset_q_messages = offsets
+                item.update(q_cbytes=read_int_from_memory(e + offset_q_cbytes),
+                            q_qnum=read_int_from_memory(e + offset_q_qnum), messages=e + offset_q_messages)
+            objects.append(item)
+        return objects
+
+    def get_shared_memory(self, ipc_ids_ptr):
+        """
+        struct shmid_kernel {
+            struct kern_ipc_perm shm_perm;
+            struct file *shm_file;
+            unsigned long shm_nattch;
+            unsigned long shm_segsz;
+            ...
+        } __randomize_layout;
+        """
+        elems = self.get_ipc_entries(ipc_ids_ptr)
+        self.shm_elems_temp = elems
+        offsets = self.get_offset_shm()
+        del self.shm_elems_temp
+        objects = []
+        for e in elems:
+            item = self.get_permissions(e)
+            item.update(nattch=None, segsz=None)
+            if offsets is not None:
+                offset_shm_nattch, offset_shm_segsz = offsets
+                item.update(nattch=read_int_from_memory(e + offset_shm_nattch),
+                            segsz=read_int_from_memory(e + offset_shm_segsz))
+            objects.append(item)
+        return objects
+
+    def get_message_entries(self, head):
+        current = head
+        seen = {current}
+        entries = []
+        while is_valid_addr(current):
+            current = read_int_from_memory(current)
+            if current in seen:
+                break
+            seen.add(current)
+            entries.append(current)
+        return entries
+
+    def get_permissions(self, address):
+        return {
+            "address": address,
+            "id": read_int32_from_memory(address + self.offset_id),
+            "key": read_int32_from_memory(address + self.offset_key),
+            "uid": read_int32_from_memory(address + self.offset_uid),
+            "gid": read_int32_from_memory(address + self.offset_gid),
+            "mode": read_int16_from_memory(address + self.offset_mode),
+        }
+
+    def get_ipc_entries(self, ipc_ids):
+        head = read_int_from_memory(ipc_ids + self.offset_xa_head)
+        if head and not self.is_ipc_pointer(head & ~3):
+            self.meta.append(("err", "Invalid IPC IDR head: {:#x}".format(head)))
+            return []
+        if self.tree_kind == "idr":
+            entries = self.get_legacy_entries(head)
+        elif self.tree_kind == "radix":
+            entries = KernelRadixTree(ipc_ids, self.offset_xa_head).parse()
+        else:
+            entries = KernelXArray(ipc_ids, self.offset_xa_head).parse()
+        entries = [entry for entry in entries if self.is_ipc_pointer(entry)]
+        if entries and self.offset_id in (4, 8) and read_int32_from_memory(entries[0] + 4) == 0xdead4ead:
+            # CONFIG_DEBUG_SPINLOCK adds magic, owner_cpu and owner before deleted.
+            delta = align(12, current_arch.ptrsize) + current_arch.ptrsize + 4 - self.offset_id
+            for name in ("id", "key", "uid", "gid", "mode"):
+                setattr(self, "offset_" + name, getattr(self, "offset_" + name) + delta)
+        return entries
+
+    def is_ipc_pointer(self, address):
+        if not address or not is_valid_addr(address):
+            return False
+        layout = Kernel.layout()
+        return not (layout.text_base and layout.text_end and layout.text_base <= address < layout.text_end)
+
+    def validate_legacy_idr(self, ipc_ns, offset, size):
+        for i in range(3):
+            base = ipc_ns + self.offset_ids + size * i
+            head = read_int_from_memory(base + offset, safe=True)
+            if head is None or head and not self.is_ipc_pointer(head):
+                return False
+            layers = read_int32_from_memory(base + offset + self.offset_idr_layers, safe=True)
+            in_use = read_int32_from_memory(base)
+            if layers is None or layers > 7 or bool(layers) != bool(head) or bool(in_use) != bool(head):
+                return False
+            if head:
+                try:
+                    if len(self.get_legacy_entries(head)) != in_use:
+                        return False
+                except gdb.MemoryError:
+                    return False
+        return True
+
+    def get_legacy_entries(self, head):
+        ptr = current_arch.ptrsize
+        old = not Ksym.get_addr("idr_find_slowpath") and Kernel.version() < "3.9"
+        slots = GefUtil.offsetof("idr_layer", "ary")
+        count_offset = GefUtil.offsetof("idr_layer", "count")
+        layer_offset = GefUtil.offsetof("idr_layer", "layer")
+        count = (64 if ptr == 8 else 32) if old else 256
+        reordered = "3.16" <= Kernel.version()
+        if slots is None:
+            # v3.16 moved idr_layer.layer before ary and the bitmap after it.
+            slots = ptr if old else 8 if reordered else align(4, ptr) + 32
+        if count_offset is None:
+            count_offset = slots + ptr * count
+        if layer_offset is None:
+            layer_offset = 4 if reordered else count_offset + 4
+        entries = []
+        pending = [head] if head else []
+        seen = set()
+        while pending:
+            node = pending.pop()
+            if node in seen:
+                continue
+            seen.add(node)
+            layer = read_int32_from_memory(node + layer_offset)
+            used = read_int32_from_memory(node + count_offset)
+            if layer > 6 or used > count:
+                raise gdb.MemoryError("Invalid idr_layer")
+            for i in range(count):
+                entry = read_int_from_memory(node + slots + ptr * i)
+                if entry:
+                    if not self.is_ipc_pointer(entry):
+                        raise gdb.MemoryError("Invalid IDR entry")
+                    if layer:
+                        pending.append(entry)
+                    else:
+                        entries.append(entry)
+        return entries
+
+    @Cache.cache_this_session(cache_None=False, per_inferior=True, until_new_objfile=True)
+    def get_offset_sem_nsems(self):
+        # handed over from the caller; the samples are live, so they must not become a cache key.
+        # Keep trying until one of them matches, then reuse the layout for every semaphore array.
+        offset = GefUtil.offsetof("sem_array", "sem_nsems")
+        if offset is not None:
+            return offset
+        ptr = current_arch.ptrsize
+        for sem_array in self.sem_elems_temp:
+            for base in range(align(self.offset_mode + 2, ptr), self.offset_mode + ptr * 64, ptr):
+                # search pending_alter, pending_const, list_id (two lists on older kernels)
+                for count in (3, 2):
+                    if all(is_double_link_list(sem_array + base + ptr * 2 * i) for i in range(count)):
+                        return base + ptr * 2 * count
+        return None
+
+    @Cache.cache_this_session(cache_None=False, per_inferior=True, until_new_objfile=True)
+    def get_offsets_msg(self):
+        # handed over from the caller; the samples are live, so they must not become a cache key.
+        # Keep trying until one of them matches, then reuse the layout for every message queue.
+        offsets = tuple(GefUtil.offsetof("msg_queue", member) for member in ("q_cbytes", "q_qnum", "q_messages"))
+        if None not in offsets:
+            return offsets
+        ptr = current_arch.ptrsize
+        for msg_queue in self.msg_elems_temp:
+            for base in range(align(self.offset_mode + 2, ptr), self.offset_mode + ptr * 64, ptr):
+                # search q_messages, q_receivers, q_senders
+                if all(is_double_link_list(msg_queue + base + ptr * 2 * i) for i in range(3)):
+                    pid_size = ptr * 2 if "4.17" <= Kernel.version() else 8
+                    return base - pid_size - ptr * 3, base - pid_size - ptr * 2, base
+        return None
+
+    @Cache.cache_this_session(cache_None=False, per_inferior=True, until_new_objfile=True)
+    def get_offset_shm(self):
+        # handed over from the caller; the samples are live, so they must not become a cache key.
+        # `shm_segsz` is the size requested by the user, so it is not always a multiple of the
+        # page size. Keep trying until one of them matches, then reuse it for every segment.
+        offsets = tuple(GefUtil.offsetof("shmid_kernel", member) for member in ("shm_nattch", "shm_segsz"))
+        if None not in offsets:
+            return offsets
+        ptr = current_arch.ptrsize
+        kpath = Kernel.path()
+        for kern_ipc_perm in self.shm_elems_temp:
+            for base in range(align(self.offset_mode + 2, ptr), self.offset_mode + ptr * 64, ptr):
+                # search shm_file and shm_segsz
+                file = read_int_from_memory(kern_ipc_perm + base)
+                size = read_int_from_memory(kern_ipc_perm + base + ptr * 2)
+                if not is_valid_addr(file) or not 0 < size < 1 << (ptr * 8 - 1):
+                    continue
+                try:
+                    offset_mnt = kpath.get_offset_file_mnt(file)
+                except RuntimeError:
+                    continue
+                if offset_mnt is None:
+                    continue
+                dentry = read_int_from_memory(file + kpath.get_offset_file_dentry(offset_mnt), safe=True)
+                offset_iname = kpath.get_offset_d_iname(dentry)
+                if offset_iname is not None and re.fullmatch(r"SYSV[0-9a-fA-F]{8}", read_cstring_from_memory(dentry + offset_iname, safe=True) or ""):
+                    # found
+                    return base + ptr, base + ptr * 2
+        return None
 
 
 class KernelBpf:
@@ -152463,284 +153030,18 @@ class KernelIpcsCommand(GenericCommand, BufferingOutput):
     ]
     _note_ = "\n".join(_note_)
 
-    def get_all_ipc_ns(self):
-        res = gdb.execute("ktask --print-namespace --user-process-only --no-pager --quiet", to_string=True)
-        r = re.findall(r"nsproxy->ipc_ns\s+(0x\S+)", res)
-
-        ipc_ns_list = []
-        # do not use `set()` because the order is important.
-        for x in r:
-            x = int(x, 16)
-            if x not in ipc_ns_list:
-                ipc_ns_list.append(x)
-        return ipc_ns_list
-
-    @Cache.cache_this_session(cache_None=False)
-    def initialize(self):
-        # handed over from the caller; the list is live, so it must not become a cache key
-        ipc_ns_list = self.ipc_ns_list_temp
-        self.meta = []
-
-        self.sysvipc_disabled = False
-        self.sysvipc_uninitialized = False
-        if ipc_ns_list == []:
-            return None
-
-        if ipc_ns_list == [0]:
-            self.meta.append((err, "Could not find valid ipc_ns (maybe CONFIG_SYSVIPC=n)"))
-            return None
-
-        # ipc_namespace
-        """
-        struct ipc_namespace {
-            refcount_t count; // ~5.10
-            struct ipc_ids {
-                int in_use;
-                unsigned short seq;
-                struct rw_semaphore {
-                    atomic_long_t count;
-                    atomic_long_t owner;
-                #ifdef CONFIG_RWSEM_SPIN_ON_OWNER
-                    struct optimistic_spin_queue osq;
-                #endif
-                    raw_spinlock_t wait_lock;
-                    struct list_head wait_list;
-                #ifdef CONFIG_DEBUG_RWSEMS
-                    void *magic;
-                #endif
-                #ifdef CONFIG_DEBUG_LOCK_ALLOC
-                    struct lockdep_map dep_map;
-                #endif
-                } rwsem;
-                struct idr {
-                    struct radix_tree_root { // =struct xarray
-                        spinlock_t xa_lock;
-                        gfp_t xa_flags;
-                        void __rcu *xa_head;
-                    } idr_rt;
-                    unsigned int idr_base;
-                    unsigned int idr_next;
-                } ipcs_idr;
-                int max_idx;
-                int last_idx;
-            #ifdef CONFIG_CHECKPOINT_RESTORE
-                int next_id;
-            #endif
-                struct rhashtable key_ht;
-            } ids[3];
-            ...
-        """
-        kversion = Kernel.version()
-        if "5.11" <= kversion:
-            self.offset_ids = 0
-        else:
-            self.offset_ids = current_arch.ptrsize
-        self.meta.append((self.quiet_info, "offsetof(ipc_namespace, ids): {:#x}".format(self.offset_ids)))
-
-        # offsetof(ipc_ids, ipcs_idr.idr_rt.xa_head): tagged valid pointer is `xa_head`.
-        # sizeof(ids[0]): find two `xa_head` and calculate the distance.
-        init_ipc_ns = ipc_ns_list[0]
-        candidates = {}
-        offset_xa_head = None
-        sizeof_ipc_ids = None
-        # DEBUG_LOCK_ALLOC makes struct ipc_ids large enough that ids[2]'s
-        # xa_head can be beyond the old 120-pointer scan window.
-        for i in range(6, 256):
-            base = self.offset_ids + current_arch.ptrsize * i
-            """
-            [x64 before using IPC]
-            0xffffffff8b1841f8|+0x0038|+007: 0x0080000400000000 <- xa_lock, xa_flags
-            0xffffffff8b184200|+0x0040|+008: 0x0000000000000000 <- xa_head
-            0xffffffff8b184208|+0x0048|+009: 0x0000000000000000 <- idr_base, idr_next
-            [x64 after using IPC]
-            0xffffffff8b1841f8|+0x0038|+007: 0x0080000400000000
-            0xffffffff8b184200|+0x0040|+008: 0xffff9250c7dc2002 ->  0x0000000000000001
-            0xffffffff8b184208|+0x0048|+009: 0x0000000100000000
-            [x64 after deleting IPC]
-            0xffffffff8b1841f8|+0x0038|+007: 0x0080000400000000
-            0xffffffff8b184200|+0x0040|+008: 0x0000000000000000
-            0xffffffff8b184208|+0x0048|+009: 0x0000000100000000
-
-            [x86 before using IPC]
-            0xc1b4e104|+0x0024|+009: 0x00000000 <- xa_lock
-            0xc1b4e108|+0x0028|+010: 0x00800004 <- xa_flags
-            0xc1b4e10c|+0x002c|+011: 0x00000000 <- xa_head
-            0xc1b4e110|+0x0030|+012: 0x00000000 <- idr_base
-            0xc1b4e114|+0x0034|+013: 0x00000000 <- idr_next
-            [x86 after using IPC]
-            0xc1b4e104|+0x0024|+009: 0x00000000
-            0xc1b4e108|+0x0028|+010: 0x00800004
-            0xc1b4e10c|+0x002c|+011: 0xc2c67392  ->  0x00000001
-            0xc1b4e110|+0x0030|+012: 0x00000000
-            0xc1b4e114|+0x0034|+013: 0x00000001
-            [x86 after deleting IPC]
-            0xc1b4e104|+0x0024|+009: 0x00000000
-            0xc1b4e108|+0x0028|+010: 0x00800004
-            0xc1b4e10c|+0x002c|+011: 0x00000000
-            0xc1b4e110|+0x0030|+012: 0x00000000
-            0xc1b4e114|+0x0034|+013: 0x00000001
-            """
-
-            # xa_flags is the 32-bit field immediately before xa_head. Reading
-            # a pointer-sized value on 64-bit also includes xa_lock, whose
-            # transient state must not affect matching the three ipc_ids.
-            xa_flags = read_int32_from_memory(init_ipc_ns + base - 4)
-            if xa_flags == 0:
-                continue
-
-            # xa_head
-            y = read_int_from_memory(init_ipc_ns + base)
-            if y:
-                if KernelXArray.is_node(y):
-                    if not is_valid_addr(y - 2):
-                        continue
-                elif y & 3 or not is_valid_addr(y):
-                    continue
-
-            # idr_base, idr_next
-            idr_base = read_int32_from_memory(init_ipc_ns + base + current_arch.ptrsize)
-            idr_next = read_int32_from_memory(init_ipc_ns + base + current_arch.ptrsize + 4)
-            if idr_base != 0 or idr_next > 1 << 24:
-                continue
-
-            offset = base - self.offset_ids
-            candidates.setdefault(xa_flags, {})[offset] = y
-
-        # ids[3] are contiguous. Requiring three equally spaced candidates avoids
-        # locking onto an unrelated zero-valued field before an empty xa_head.
-        for heads in candidates.values():
-            offsets = sorted(heads)
-            offset_set = set(offsets)
-            for first_pos, first in enumerate(offsets):
-                for second in offsets[first_pos + 1:]:
-                    size = second - first
-                    if current_arch.ptrsize * 8 <= size and first < size and first + size * 2 in offset_set:
-                        valid = True
-                        for index in range(3):
-                            in_use = read_int32_from_memory(
-                                init_ipc_ns + self.offset_ids + size * index
-                            )
-                            if in_use > 1 << 24 or (in_use and not heads[first + size * index]):
-                                valid = False
-                                break
-                        if not valid:
-                            continue
-                        offset_xa_head = first
-                        sizeof_ipc_ids = size
-                        for index in range(3):
-                            offset = first + size * index
-                            if KernelXArray.cache_head_offset(
-                                init_ipc_ns + self.offset_ids + offset, heads[offset]
-                            ):
-                                break
-                        break
-                if offset_xa_head is not None:
-                    break
-            if offset_xa_head is not None:
-                break
-
-        if offset_xa_head is None:
-            if all(
-                read_int_from_memory(init_ipc_ns + current_arch.ptrsize * i) == 0
-                for i in range(32)
-            ):
-                if Ksym.get_addr("sem_init"):
-                    self.sysvipc_uninitialized = True
-                    self.meta.append((self.quiet_info, "SYSVIPC is enabled, but ipc_ids is not initialized"))
-                    return None
-                self.sysvipc_disabled = True
-                self.meta.append((self.quiet_info, "SYSVIPC is disabled"))
-                return None
-            self.meta.append((self.quiet_err, "Could not find ipc_namespace->ids[0].ipcs_idr.idr_rt.xa_head"))
-            self.meta.append((self.quiet_err, "Not recognized sizeof(struct ipc_ids)"))
-            self.meta.append((self.quiet_err, "SYSVIPC is enabled, but the ipc_ids layout could not be determined"))
-            return None
-        self.offset_xa_head = offset_xa_head
-        self.sizeof_ipc_ids = sizeof_ipc_ids
-        self.meta.append((self.quiet_info, "offsetof(ipc_ids, ipcs_idr.idr_rt.xa_head): {:#x}".format(self.offset_xa_head)))
-        self.meta.append((self.quiet_info, "sizeof(struct ipc_ids): {:#x}".format(self.sizeof_ipc_ids)))
-
-        # kern_ipc_perm
-        """
-        struct kern_ipc_perm {
-            spinlock_t lock;
-            bool deleted;
-            int id;
-            key_t key;
-            kuid_t uid;
-            kgid_t gid;
-            kuid_t cuid;
-            kgid_t cgid;
-            umode_t mode;
-            unsigned long seq;
-            void *security;
-            struct rhash_head khtnode;
-            struct rcu_head rcu;
-            refcount_t refcount;
-        } ____cacheline_aligned_in_smp __randomize_layout;
-        """
-        try:
-            self.offset_id = GefUtil.parse_and_eval_unsigned("&((struct kern_ipc_perm*)0).id")
-            self.offset_key = GefUtil.parse_and_eval_unsigned("&((struct kern_ipc_perm*)0).key")
-            self.offset_uid = GefUtil.parse_and_eval_unsigned("&((struct kern_ipc_perm*)0).uid")
-            self.offset_gid = GefUtil.parse_and_eval_unsigned("&((struct kern_ipc_perm*)0).gid")
-            self.offset_mode = GefUtil.parse_and_eval_unsigned("&((struct kern_ipc_perm*)0).mode")
-        except gdb.error:
-            self.offset_id = 4 + 4
-            self.offset_key = self.offset_id + 4
-            self.offset_uid = self.offset_key + 4
-            self.offset_gid = self.offset_uid + 4
-            self.offset_mode = self.offset_gid + 4 + 4 + 4
-
-        return True
-
-    @Cache.cache_this_session(cache_None=False)
-    def get_offset_sem_nsems(self):
-        # handed over from the caller; the samples are live, so they must not become a cache key.
-        # Keep trying until one of them matches, then reuse the layout for every semaphore array.
-        for sem_array in self.sem_elems_temp:
-            for i in range(1, 64):
-                # search pending_alter, pending_const, list_id
-                base = self.offset_mode + current_arch.ptrsize * i
-                addrs = [
-                    read_int_from_memory(sem_array + base + current_arch.ptrsize * j)
-                    for j in range(6)
-                ]
-                if all(is_valid_addr(x) for x in addrs):
-                    return base + current_arch.ptrsize * 6
-        return None
-
     def dump_ipc_sem_ids(self, ipc_ids_ptr):
-        """
-        struct sem_array {
-            struct kern_ipc_perm sem_perm;
-            time64_t sem_ctime;
-            struct list_head pending_alter;
-            struct list_head pending_const;
-            struct list_head list_id;
-            int sem_nsems;
-            ...
-        } __randomize_layout;
-        """
         self.out.append(titlify("Semaphore Arrays"))
         fmt = "{:18s} {:5s} {:10s} {:4s} {:4s} {:5s} {:s}"
         legend = ["sem_array", "semid", "key", "uid", "gid", "perms", "nsems"]
         self.out.append(GefUtil.make_legend(fmt.format(*legend)))
 
-        elems = KernelXArray(ipc_ids_ptr, self.offset_xa_head).parse()
-        self.sem_elems_temp = elems
-        offset_sem_nsems = self.get_offset_sem_nsems()
-        del self.sem_elems_temp
+        for item in self.kipcs.get_semaphores(ipc_ids_ptr):
+            e, semid, key = item["address"], item["id"], item["key"]
+            uid, gid, mode = item["uid"], item["gid"], item["mode"]
 
-        for e in elems:
-            semid = read_int32_from_memory(e + self.offset_id)
-            key = read_int32_from_memory(e + self.offset_key)
-            uid = read_int32_from_memory(e + self.offset_uid)
-            gid = read_int32_from_memory(e + self.offset_gid)
-            mode = read_int16_from_memory(e + self.offset_mode)
-
-            if offset_sem_nsems is not None:
-                nsems = read_int_from_memory(e + offset_sem_nsems)
+            if item["nsems"] is not None:
+                nsems = item["nsems"]
                 self.out.append("{:#018x} {:<5d} {:#010x} {:<4d} {:<4d} {:#5o} {:d}".format(
                     e, semid, key, uid, gid, mode, nsems,
                 ))
@@ -152751,74 +153052,18 @@ class KernelIpcsCommand(GenericCommand, BufferingOutput):
 
         return
 
-    @Cache.cache_this_session(cache_None=False)
-    def get_offsets_msg(self):
-        # handed over from the caller; the samples are live, so they must not become a cache key.
-        # Keep trying until one of them matches, then reuse the layout for every message queue.
-        for msg_queue in self.msg_elems_temp:
-            for i in range(1, 64):
-                # search q_messages, q_receivers, q_senders
-                base = self.offset_mode + current_arch.ptrsize * i
-                addrs = [
-                    read_int_from_memory(msg_queue + base + current_arch.ptrsize * j)
-                    for j in range(6)
-                ]
-                if all(is_valid_addr(x) for x in addrs):
-                    x = read_int_from_memory(msg_queue + base + current_arch.ptrsize * 6)
-                    if not is_valid_addr(x):
-                        return (
-                            base - current_arch.ptrsize * 5,
-                            base - current_arch.ptrsize * 4,
-                            base,
-                        )
-        return None
-
     def dump_ipc_msg_ids(self, ipc_ids_ptr):
-        """
-        struct msg_queue {
-            struct kern_ipc_perm q_perm;
-            time64_t q_stime;
-            time64_t q_rtime;
-            time64_t q_ctime;
-            unsigned long q_cbytes;
-            unsigned long q_qnum;
-            unsigned long q_qbytes;
-            struct pid *q_lspid;
-            struct pid *q_lrpid;
-            struct list_head q_messages; <--> msg_msg.m_list
-            struct list_head q_receivers;
-            struct list_head q_senders;
-        } __randomize_layout;
-
-        struct msg_msg {
-            struct list_head m_list;
-            long m_type;
-            size_t m_ts; /* message text size */
-            struct msg_msgseg *next;
-            void *security;
-        };
-        """
         self.out.append(titlify("Message Queues"))
         fmt = "{:18s} {:5s} {:10s} {:4s} {:4s} {:5s} {:10s} {:s}"
         legend = ["msg_queue", "msqid", "key", "uid", "gid", "perms", "used-bytes", "messages"]
         self.out.append(GefUtil.make_legend(fmt.format(*legend)))
 
-        elems = KernelXArray(ipc_ids_ptr, self.offset_xa_head).parse()
-        self.msg_elems_temp = elems
-        offsets = self.get_offsets_msg()
-        del self.msg_elems_temp
+        for item in self.kipcs.get_messages(ipc_ids_ptr):
+            e, msqid, key = item["address"], item["id"], item["key"]
+            uid, gid, mode = item["uid"], item["gid"], item["mode"]
 
-        for e in elems:
-            msqid = read_int32_from_memory(e + self.offset_id)
-            key = read_int32_from_memory(e + self.offset_key)
-            uid = read_int32_from_memory(e + self.offset_uid)
-            gid = read_int32_from_memory(e + self.offset_gid)
-            mode = read_int16_from_memory(e + self.offset_mode)
-
-            if offsets is not None:
-                offset_q_cbytes, offset_q_qnum, offset_q_messages = offsets
-                q_cbytes = read_int_from_memory(e + offset_q_cbytes)
-                q_qnum = read_int_from_memory(e + offset_q_qnum)
+            if item["q_cbytes"] is not None:
+                q_cbytes, q_qnum = item["q_cbytes"], item["q_qnum"]
                 self.out.append("{:#018x} {:<5d} {:#010x} {:<4d} {:<4d} {:#5o} {:<#10x} {:<d}".format(
                     e, msqid, key, uid, gid, mode, q_cbytes, q_qnum,
                 ))
@@ -152827,67 +153072,25 @@ class KernelIpcsCommand(GenericCommand, BufferingOutput):
                     e, msqid, key, uid, gid, mode, "?", "?",
                 ))
 
-            if self.args.verbose:
-                if offsets is not None:
-                    current = e + offset_q_messages
-                    seen = {current}
-                    while is_valid_addr(current):
-                        current = read_int_from_memory(current)
-                        if current in seen:
-                            break
-                        seen.add(current)
-                        self.out.append("msg_msg: {:#x}".format(current))
-                        res = gdb.execute("dereference -n {:#x} 8".format(current), to_string=True)
-                        self.out.append(res.rstrip())
+            if self.args.verbose and item["messages"] is not None:
+                for current in self.kipcs.get_message_entries(item["messages"]):
+                    self.out.append("msg_msg: {:#x}".format(current))
+                    res = gdb.execute("dereference -n {:#x} 8".format(current), to_string=True)
+                    self.out.append(res.rstrip())
         return
 
-    @Cache.cache_this_session(cache_None=False)
-    def get_offset_shm(self):
-        # handed over from the caller; the samples are live, so they must not become a cache key.
-        # `shm_segsz` is the size requested by the user, so it is not always a multiple of the
-        # page size. Keep trying until one of them matches, then reuse it for every segment.
-        for kern_ipc_perm in self.shm_elems_temp:
-            for i in range(1, 64):
-                # search shm_file and shm_segsz
-                base = self.offset_mode + current_arch.ptrsize * i
-                x = read_int_from_memory(kern_ipc_perm + base)
-                y = read_int_from_memory(kern_ipc_perm + base + current_arch.ptrsize * 2)
-                if is_valid_addr(x) and y != 0 and y % 0x1000 == 0:
-                    # found
-                    return base + current_arch.ptrsize, base + current_arch.ptrsize * 2
-        return None
-
     def dump_ipc_shm_ids(self, ipc_ids_ptr):
-        """
-        struct shmid_kernel {
-            struct kern_ipc_perm shm_perm;
-            struct file *shm_file;
-            unsigned long shm_nattch;
-            unsigned long shm_segsz;
-            ...
-        } __randomize_layout;
-        """
         self.out.append(titlify("Shared Memory Segments"))
         fmt = "{:18s} {:5s} {:10s} {:4s} {:4s} {:5s} {:10s} {:s}"
         legend = ["shmid_kernel", "shmid", "key", "uid", "gid", "perms", "bytes", "nattch"]
         self.out.append(GefUtil.make_legend(fmt.format(*legend)))
 
-        elems = KernelXArray(ipc_ids_ptr, self.offset_xa_head).parse()
-        self.shm_elems_temp = elems
-        offsets = self.get_offset_shm()
-        del self.shm_elems_temp
+        for item in self.kipcs.get_shared_memory(ipc_ids_ptr):
+            e, shmid, key = item["address"], item["id"], item["key"]
+            uid, gid, mode = item["uid"], item["gid"], item["mode"]
 
-        for e in elems:
-            shmid = read_int32_from_memory(e + self.offset_id)
-            key = read_int32_from_memory(e + self.offset_key)
-            uid = read_int32_from_memory(e + self.offset_uid)
-            gid = read_int32_from_memory(e + self.offset_gid)
-            mode = read_int16_from_memory(e + self.offset_mode)
-
-            if offsets:
-                offset_shm_nattch, offset_shm_segsz = offsets
-                nattch = read_int_from_memory(e + offset_shm_nattch)
-                segsz = read_int_from_memory(e + offset_shm_segsz)
+            if item["segsz"] is not None:
+                nattch, segsz = item["nattch"], item["segsz"]
                 self.out.append("{:#018x} {:<5d} {:#010x} {:<4d} {:<4d} {:#5o} {:<#10x} {:<d}".format(
                     e, shmid, key, uid, gid, mode, segsz, nattch,
                 ))
@@ -152899,8 +153102,8 @@ class KernelIpcsCommand(GenericCommand, BufferingOutput):
 
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
-    @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware"))
-    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
+    @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
+    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64"))
     @Decorator.only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
         self.quiet_info("Wait for memory scan")
@@ -152909,50 +153112,41 @@ class KernelIpcsCommand(GenericCommand, BufferingOutput):
         if kversion is None:
             err("Could not find Linux kernel")
             return
-        if kversion < "4.20":
-            # xarray is introduced from 4.20
-            self.quiet_err("Unsupported before v4.20")
-            return
-
-        ipc_ns_list = self.get_all_ipc_ns()
+        self.kipcs = Kernel.ipcs()
+        ipc_ns_list = self.kipcs.get_all_ipc_ns()
         if not ipc_ns_list:
             self.quiet_info("Nothing to dump")
             return
 
-        self.ipc_ns_list_temp = ipc_ns_list
-        ret = self.initialize()
-        del self.ipc_ns_list_temp
+        ret = self.kipcs.initialize()
         if args.meta or not ret:
-            for func, line in self.meta:
+            for func, line in Kernel.export_meta(self, self.kipcs.meta):
                 func(line)
         if not ret:
-            if not self.sysvipc_disabled and not self.sysvipc_uninitialized:
+            if not self.kipcs.sysvipc_disabled and not self.kipcs.sysvipc_uninitialized:
                 self.quiet_err("Failed to initialize")
             return
 
         if args.meta:
             return
 
-        # the presence of IPC objects is live, so it must not be cached
-        ipc_objects_present = any(
-            read_int_from_memory(
-                ipc_ns + self.offset_ids + self.sizeof_ipc_ids * i + self.offset_xa_head
-            )
-            for ipc_ns in ipc_ns_list for i in range(3)
-        )
+        ipc_objects_present = self.kipcs.has_objects(ipc_ns_list)
         if not ipc_objects_present:
             self.quiet_info("SYSVIPC is enabled, but no IPC objects are present")
 
+        metadata_count = len(self.kipcs.meta)
         self.out = []
         for i, ipc_ns in enumerate(ipc_ns_list):
             if i == 0:
                 self.out.append(titlify("init_ipc_ns: {:#x}".format(ipc_ns)))
             else:
                 self.out.append(titlify("ipc_ns: {:#x}".format(ipc_ns)))
-            self.dump_ipc_sem_ids(ipc_ns + self.offset_ids + self.sizeof_ipc_ids * 0)
-            self.dump_ipc_msg_ids(ipc_ns + self.offset_ids + self.sizeof_ipc_ids * 1)
-            self.dump_ipc_shm_ids(ipc_ns + self.offset_ids + self.sizeof_ipc_ids * 2)
+            self.dump_ipc_sem_ids(ipc_ns + self.kipcs.offset_ids + self.kipcs.sizeof_ipc_ids * 0)
+            self.dump_ipc_msg_ids(ipc_ns + self.kipcs.offset_ids + self.kipcs.sizeof_ipc_ids * 1)
+            self.dump_ipc_shm_ids(ipc_ns + self.kipcs.offset_ids + self.kipcs.sizeof_ipc_ids * 2)
 
+        for func, line in Kernel.export_meta(self, self.kipcs.meta[metadata_count:]):
+            func(line)
         self.print_output(check_terminal_size=True)
         return
 
