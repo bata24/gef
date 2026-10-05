@@ -25960,13 +25960,18 @@ class UnicornEmulator:
         def skip_to(self, saved, address):
             """Restore saved registers and continue at the given address."""
             for reg, value in saved.items():
-                if self.skip_register(reg):
+                # the PC is set below
+                if self.skip_register(reg) or self.regs[reg] == self.pc_reg:
                     continue
                 try:
                     self.emu.reg_write(self.regs[reg], value)
                 except self.unicorn.UcError:
                     pass
-            self.write_pc(address)
+            # ARM: continue in the mode of the saved state, since bit 0 of the PC selects Thumb
+            if is_arm32() and "$cpsr" in saved:
+                self.emu.reg_write(self.pc_reg, self.to_emu(address) | ((saved["$cpsr"] >> 5) & 1))
+            else:
+                self.write_pc(address)
             return
 
 
@@ -26913,6 +26918,7 @@ class FutureCallsCommand(GenericCommand, BufferingOutput):
     _note_ = "\n".join([
         "This command is a best-effort concrete preview based on Unicorn emulation.",
         "Only x86, x86-64, ARM32, and ARM64 are supported.",
+        "A loop is cut only when the registers and written memory repeat; other loops run until --nb-insn.",
     ])
 
     def __init__(self):
@@ -26978,6 +26984,31 @@ class FutureCallsCommand(GenericCommand, BufferingOutput):
         self.mark_truncated(parent, reason)
         return False
 
+    def mem_write_hook(self, emu, _access, address, size, value, _user_data):
+        """Update the digest of the memory written by the emulation."""
+        try:
+            before = emu.mem_read(address, size) if size <= 8 else None
+        except Exception:
+            before = None
+        if before is None:
+            # the written bytes are unknown, so make every later state unique
+            self.mem_writes += 1
+            self.mem_digest ^= hash(("unknown", self.mem_writes))
+            return
+        for i in range(size):
+            self.mem_digest ^= hash((address + i, before[i])) ^ hash((address + i, (value >> (8 * i)) & 0xff))
+        return
+
+    def get_state(self, tracer):
+        """Return the emulation state, which repeats only when the path loops forever."""
+        regs = []
+        for uc_reg in tracer.regs.values():
+            try:
+                regs.append(tracer.emu.reg_read(uc_reg))
+            except tracer.unicorn.UcError:
+                regs.append(None)
+        return tuple(regs), self.mem_digest
+
     def walk(self, parent, tracer, start_address, depth, return_address=None):
         """Walk one concrete path and recursively collect future calls."""
         if not self.valid_target(start_address):
@@ -26985,6 +27016,7 @@ class FutureCallsCommand(GenericCommand, BufferingOutput):
             return False
         tracer.write_pc(start_address)
         seen_pcs = set()
+        seen_states = set()
         seen_edges = set()
 
         while True:
@@ -26998,10 +27030,14 @@ class FutureCallsCommand(GenericCommand, BufferingOutput):
             pc = tracer.from_emu(tracer.emu.reg_read(tracer.pc_reg))
             if return_address is not None and pc == return_address:
                 return True
+            # a finite loop changes its state, so only a repeated state means an infinite loop
             if pc in seen_pcs:
-                parent.error = "loop detected"
-                self.stop_reasons.add("loop detected")
-                return False
+                state = self.get_state(tracer)
+                if state in seen_states:
+                    parent.error = "loop detected"
+                    self.stop_reasons.add("loop detected")
+                    return False
+                seen_states.add(state)
             seen_pcs.add(pc)
 
             if pc is None or pc == 0:
@@ -27032,8 +27068,6 @@ class FutureCallsCommand(GenericCommand, BufferingOutput):
                     static_target = None
                 regs = {}
                 for reg, uc_reg in tracer.regs.items():
-                    if tracer.skip_register(reg):
-                        continue
                     try:
                         regs[reg] = tracer.emu.reg_read(uc_reg)
                     except tracer.unicorn.UcError:
@@ -27123,6 +27157,9 @@ class FutureCallsCommand(GenericCommand, BufferingOutput):
         }) as tracer:
             if tracer is None:
                 return
+            self.mem_digest = 0
+            self.mem_writes = 0
+            tracer.emu.hook_add(tracer.unicorn.UC_HOOK_MEM_WRITE, self.mem_write_hook)
             self.walk(root, tracer, start_address, self.args.depth)
 
         self.out.extend(root.lines())
