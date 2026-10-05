@@ -19055,9 +19055,14 @@ class VvarCommand(GenericCommand, BufferingOutput):
             return
 
         # dump
-        # arch/x86/include/asm/vvar.h
+        # The data is at +0x80 until Linux 6.12 (arch/x86/include/asm/vvar.h) and at +0x0 since 6.13.
+        # Before 6.13, +0x20-0x7f is unused (jiffies and vgetcpu_mode used +0x0-0x13 until 3.18).
         self.out = []
-        start = entry.page_start + 128 # DECLARE_VVAR(128, struct vdso_data, _vdso_data)
+        head = self.read(entry.page_start, 128)
+        if any(head[0x20:]):
+            start = entry.page_start # vvar_page (6.13), vdso_u_time_data (6.15~)
+        else:
+            start = entry.page_start + 128 # DECLARE_VVAR(128, struct vdso_data, _vdso_data)
         size = 0x180 # >= sizeof(struct vdso_data)
         data = self.read(start, size)
         hex_data = hexdump(data, base=start, unit=current_arch.ptrsize)
