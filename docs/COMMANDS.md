@@ -2412,6 +2412,7 @@ options:
 
 Dump each file under `/proc/PID`.
 
+- Alias: `prd`
 
 ### Syntax
 
@@ -5891,6 +5892,7 @@ edit-flags             # show the flag register
 edit-flags zero+       # set ZERO flag
 edit-flags direction-  # unset DIRECTION flag
 edit-flags sign~       # toggle SIGN flag
+edit-flags z+ c-       # a unique prefix of the flag name is also accepted
 edit-flags -v          # verbose output
 ```
 
@@ -8265,6 +8267,7 @@ options:
 
 Translate from physical address to virtual address.
 
+- Alias: `phys2virt`
 
 ### Syntax
 
@@ -8568,6 +8571,7 @@ CONFIG_SLAB_VIRTUAL=y (mitigated kernel):
 
 Translate from virtual address to physical address.
 
+- Alias: `virt2phys`
 
 ### Syntax
 

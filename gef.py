@@ -20438,6 +20438,7 @@ class ProcDumpCommand(GenericCommand, BufferingOutput):
 
     _cmdline_ = "proc-dump"
     _category_ = "02-a. Process Information - General"
+    _aliases_ = ["prd"]
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
@@ -171544,6 +171545,7 @@ class Virt2PhysCommand(GenericCommand):
 
     _cmdline_ = "v2p"
     _category_ = "06-d. Qemu-system/KGDB Cooperation - Virt/Phys/Page"
+    _aliases_ = ["virt2phys"]
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     group = parser.add_mutually_exclusive_group()
@@ -171584,6 +171586,7 @@ class Phys2VirtCommand(GenericCommand):
 
     _cmdline_ = "p2v"
     _category_ = "06-d. Qemu-system/KGDB Cooperation - Virt/Phys/Page"
+    _aliases_ = ["phys2virt"]
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     group = parser.add_mutually_exclusive_group()
