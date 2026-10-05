@@ -27242,7 +27242,8 @@ class StubBreakpoint(gdb.Breakpoint):
             gdb.execute("return")
         else:
             m += "(setting return value to {:#x})".format(self.retval)
-            gdb.execute("return (unsigned int){:#x}".format(self.retval))
+            ret_type = "unsigned long long" if current_arch.ptrsize == 8 else "unsigned int"
+            gdb.execute("return ({:s}){:#x}".format(ret_type, self.retval))
         ok(m)
         return False
 
