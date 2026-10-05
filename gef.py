@@ -14725,8 +14725,9 @@ class ProcessMap:
                 lines = fdw.readlines()
 
         # tls and $sp of each threads
+        # under qemu, they are guest addresses, not addresses of the qemu process whose maps are parsed here
         extra_info = []
-        if is_x86():
+        if is_x86() and not is_qemu():
             tls_list = []
             orig_thread = gdb.selected_thread()
             orig_frame = gdb.selected_frame()
@@ -21103,10 +21104,6 @@ class HijackFdCommand(GenericCommand):
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("old_fd", metavar="OLD_FD", type=int, help="file descriptor number to redirect.")
     parser.add_argument("new_output", metavar="NEW_OUTPUT", type=str, help="the location redirected data is stored.")
-    parser.add_argument("--fd-adjust-connect", type=int, default=0,
-                        help="slide value when `connect` syscall result and the actual opened FD differ (for old qemu-user).")
-    parser.add_argument("--fd-adjust-dup3", type=int, default=0,
-                        help="slide value when `dup3` syscall result and the actual opened FD differ (for old qemu-user).")
     parser.add_argument("-q", "--quiet", action="store_true", help="quiet execution.")
     _syntax_ = parser.format_help()
 
@@ -21115,6 +21112,11 @@ class HijackFdCommand(GenericCommand):
         "{0:s} 2 localhost:8000  # determined as the socket by the presence of `:`.",
     ]
     _example_ = "\n".join(_example_).format(_cmdline_)
+
+    _note_ = [
+        "`socketcall` is not supported; on i386 with Linux < 4.3 (or old qemu-user), the socket redirection fails with ENOSYS.",
+    ]
+    _note_ = "\n".join(_note_)
 
     def call_syscall(self, syscall_name, args):
         args = " ".join([hex(x) if x >= 0 else str(x) for x in args])
@@ -21201,7 +21203,7 @@ class HijackFdCommand(GenericCommand):
             return None
 
         self.quiet_info("Trying to connect to {:s}".format(Color.boldify(self.args.new_output)))
-        connect_result = self.call_syscall("connect", [sock_fd - self.args.fd_adjust_connect, stack_addr, 16])
+        connect_result = self.call_syscall("connect", [sock_fd, stack_addr, 16])
         write_memory(stack_addr, original_contents) # revert
 
         if AddressUtil.is_msb_on(connect_result):
@@ -21219,10 +21221,16 @@ class HijackFdCommand(GenericCommand):
         if new_fd is None:
             return
 
+        # OLD_FD was closed and got reused; dup3 rejects the same fds with EINVAL
+        if new_fd == self.args.old_fd:
+            self.quiet_info("Already opened as fd #{:d}".format(self.args.old_fd))
+            ok("Success")
+            return
+
         # call dup3
         # dup2 does not exist in aarch64. So use dup3 instead of dup2.
-        dup3_result = self.call_syscall("dup3", [new_fd - self.args.fd_adjust_dup3, self.args.old_fd, 0])
-        if dup3_result - self.args.fd_adjust_dup3 != self.args.old_fd:
+        dup3_result = self.call_syscall("dup3", [new_fd, self.args.old_fd, 0])
+        if dup3_result != self.args.old_fd:
             err("Failed to dup3 (result {:d} != fd #{:d})".format(dup3_result, self.args.old_fd))
             return
         self.quiet_info("Duplicated fd #{:d} -> #{:d}".format(new_fd, self.args.old_fd))
@@ -21243,12 +21251,6 @@ class HijackFdCommand(GenericCommand):
     @Decorator.exclude_specific_arch(arch=("CRIS",))
     @Decorator.require_arch_set
     def do_invoke(self, args):
-        # In old version of qemu, the file descriptor was sometimes shifted by a
-        # constant value on i386 (fd returned by the syscall == actual opened fd + 80).
-        # This had been hard-coded as a workaround, but the issue appears to be fixed,
-        # so it should now be specified via a command argument.
-        # Currently supported: dup3, connect
-
         self.AF_INET = 2
         self.SOCK_STREAM = 1
         self.O_APPEND = 0o2000
