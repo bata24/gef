@@ -11087,6 +11087,19 @@ class OR1K(Architecture):
             pass
         return ra
 
+    def get_pending_branch(self):
+        # Stopped at a delay slot: $ppc points to the branch which takes effect after the slot.
+        try:
+            ppc = get_register("$ppc")
+            if ppc is None or ppc + 4 != self.pc:
+                return None
+            insn = get_insn(ppc)
+        except gdb.error:
+            return None
+        if insn and (self.is_jump(insn) or self.is_call(insn)):
+            return insn
+        return None
+
     def get_tls(self):
         return get_register("$r10")
 
@@ -17124,6 +17137,16 @@ class NextiForQemuUserCommand(GenericCommand):
         if insn is None:
             return False
 
+        # native `nexti` falls through the delay slot even if the pending branch is taken
+        if is_or1k():
+            pending = current_arch.get_pending_branch()
+            if pending is not None:
+                if not current_arch.is_call(pending):
+                    target = ContextCodeCommand.get_branch_addr(pending)
+                    if target is not None:
+                        SimpleInternalTemporaryBreakpoint(loc=target, group=group)
+                return True
+
         if insn and current_arch.is_jump(insn):
             target = ContextCodeCommand.get_branch_addr(insn)
             delay_slot = current_arch.has_delay_slot
@@ -17234,6 +17257,15 @@ class StepiForQemuUserCommand(GenericCommand):
         insn = SimpleInternalTemporaryBreakpoint.get_qemu_user_step_instruction()
         if insn is None:
             return False
+
+        # native `stepi` falls through the delay slot even if the pending branch is taken
+        if is_or1k():
+            pending = current_arch.get_pending_branch()
+            if pending is not None:
+                target = ContextCodeCommand.get_branch_addr(pending)
+                if target is not None:
+                    SimpleInternalTemporaryBreakpoint(loc=target, group=group)
+                return True
 
         if insn and (current_arch.is_jump(insn) or current_arch.is_call(insn)): # si also stops at `call` target
             target = ContextCodeCommand.get_branch_addr(insn)
