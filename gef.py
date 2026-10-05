@@ -22825,18 +22825,24 @@ class SearchMangledPtrCommand(GenericCommand):
                 chunk_size = step
 
             try:
-                mem = read_memory(chunk_addr, chunk_size)
+                mems = [(chunk_addr, read_memory(chunk_addr, chunk_size))]
             except gdb.MemoryError:
-                # cannot access memory this range. It doesn't make sense to try any more
-                break
+                # part of the range may have been unmapped after the maps were read, so retry per page
+                mems = []
+                for page in range(chunk_addr, chunk_addr + chunk_size, get_pagesize()):
+                    try:
+                        mems.append((page, read_memory(page, min(get_pagesize(), chunk_addr + chunk_size - page))))
+                    except gdb.MemoryError:
+                        pass
 
-            for i, value in enumerate(slice_unpack(mem, current_arch.ptrsize)):
-                decoded = current_arch.decode_cookie(value, cookie)
-                if not is_valid_addr(decoded):
-                    continue
-                addr = chunk_addr + i * current_arch.ptrsize
-                locations.append((addr, value, decoded))
-            del mem
+            for mem_addr, mem in mems:
+                for i, value in enumerate(slice_unpack(mem, current_arch.ptrsize)):
+                    decoded = current_arch.decode_cookie(value, cookie)
+                    if not is_valid_addr(decoded):
+                        continue
+                    addr = mem_addr + i * current_arch.ptrsize
+                    locations.append((addr, value, decoded))
+            del mems
         return locations
 
     @Decorator.parse_args
