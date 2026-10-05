@@ -5729,7 +5729,8 @@ class GlibcHeap:
             showing both its summary and allocation state."""
             msg = []
             msg.append(str(self))
-            if self.is_used():
+            # top is not in any free list, so its fd/bk are just user data
+            if self.is_top() or self.is_used():
                 msg.append(self.str_as_alloced())
             else:
                 msg.append(self.str_as_freed())
