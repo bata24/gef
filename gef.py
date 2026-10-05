@@ -23305,7 +23305,14 @@ class CallSyscallCommand(GenericCommand):
             for ret_regs in current_arch.return_register:
                 gef_print("{:s} = {:#x}".format(ret_regs, ret["reg"][ret_regs]))
         else:
-            gef_print("{:s} = {:#x}".format(current_arch.return_register, ret["reg"][current_arch.return_register]))
+            regvalue = ret["reg"][current_arch.return_register]
+            line = "{:s} = {:#x}".format(current_arch.return_register, regvalue)
+            if AddressUtil.is_msb_on(regvalue):
+                val = -u2i(regvalue, current_arch.ptrsize * 8)
+                einfo = ErrnoCommand.get_errno_dict().get(val)
+                if einfo:
+                    line += " (-{:d} {:s}: {:s})".format(val, einfo[0], einfo[1])
+            gef_print(line)
         return
 
 
@@ -23358,21 +23365,30 @@ class MmapMemoryCommand(GenericCommand):
                 continue
             mmap_syscall_name = entry.name
             break
+        if mmap_syscall_name is None and is_s390x():
+            mmap_syscall_name = "mmap" # takes a pointer to the six arguments
         if mmap_syscall_name is None:
             err("Could not find the mmap syscall")
             return
 
         # location
-        if args.location and args.location % get_pagesize():
-            err("Address is not a multiple of {:#x}".format(get_pagesize()))
+        page_size = get_pagesize()
+        if args.location is not None:
+            auxval = Auxv.get_auxiliary_values()
+            if not auxval or "AT_PAGESZ" not in auxval:
+                err("Could not get the page size from auxv; omit LOCATION to let the kernel choose the address")
+                return
+            page_size = auxval["AT_PAGESZ"]
+        if args.location and args.location % page_size:
+            err("Address is not a multiple of {:#x}".format(page_size))
             return
 
         # size
-        if args.size < 0 or AddressUtil.get_vmem_end() <= args.size:
+        if args.size <= 0 or AddressUtil.get_vmem_end() <= args.size:
             err("Invalid size")
             return
-        if args.size % get_pagesize():
-            err("Size is not a multiple of {:#x}".format(get_pagesize()))
+        if args.size % page_size:
+            err("Size is not a multiple of {:#x}".format(page_size))
             return
 
         # permission
@@ -23406,10 +23422,24 @@ class MmapMemoryCommand(GenericCommand):
             flags |= 0x800 # MAP_DENYWRITE (why?)
 
         # doit
-        cmd = "call-syscall {:s} {:#x} {:#x} {:#x} {:#x} -1 0".format(
-            mmap_syscall_name, args.location or 0, args.size, perm, flags,
-        )
-        gdb.execute(cmd)
+        if is_s390x():
+            mmap_args = b"".join(p64(x) for x in [args.location or 0, args.size, perm, flags, 0xffff_ffff_ffff_ffff, 0])
+            address = current_arch.sp
+            try:
+                backup = read_memory(address, len(mmap_args))
+            except gdb.MemoryError:
+                err("Could not reserve scratch space on the inferior stack")
+                return
+            write_memory(address, mmap_args)
+            try:
+                gdb.execute("call-syscall {:s} {:#x}".format(mmap_syscall_name, address))
+            finally:
+                write_memory(address, backup)
+        else:
+            cmd = "call-syscall {:s} {:#x} {:#x} {:#x} {:#x} -1 0".format(
+                mmap_syscall_name, args.location or 0, args.size, perm, flags,
+            )
+            gdb.execute(cmd)
         Cache.reset_gef_caches()
         return
 
@@ -23461,14 +23491,19 @@ class MunmapMemoryCommand(GenericCommand):
 
         # size
         if args.size is not None:
-            if args.location % get_pagesize():
-                err("Address is not a multiple of {:#x}".format(get_pagesize()))
+            auxval = Auxv.get_auxiliary_values()
+            if not auxval or "AT_PAGESZ" not in auxval:
+                err("Could not get the page size from auxv; omit SIZE to unmap the entire map")
+                return
+            page_size = auxval["AT_PAGESZ"]
+            if args.location % page_size:
+                err("Address is not a multiple of {:#x}".format(page_size))
                 return
             if args.location < 0:
                 err("Invalid address")
                 return
-            if args.size % get_pagesize():
-                err("Size is not a multiple of {:#x}".format(get_pagesize()))
+            if args.size % page_size:
+                err("Size is not a multiple of {:#x}".format(page_size))
                 return
             if args.size < 0 or AddressUtil.get_vmem_end() <= args.size:
                 err("Invalid size")
@@ -23538,14 +23573,19 @@ class MprotectCommand(GenericCommand):
 
         # size
         if args.size is not None:
-            if args.location % get_pagesize():
-                err("Address is not a multiple of {:#x}".format(get_pagesize()))
+            auxval = Auxv.get_auxiliary_values()
+            if not auxval or "AT_PAGESZ" not in auxval:
+                err("Could not get the page size from auxv; omit `-s` to change the entire map")
+                return
+            page_size = auxval["AT_PAGESZ"]
+            if args.location % page_size:
+                err("Address is not a multiple of {:#x}".format(page_size))
                 return
             if args.location < 0:
                 err("Invalid address")
                 return
-            if args.size % get_pagesize():
-                err("Size is not a multiple of {:#x}".format(get_pagesize()))
+            if args.size % page_size:
+                err("Size is not a multiple of {:#x}".format(page_size))
                 return
             if args.size < 0 or AddressUtil.get_vmem_end() <= args.size:
                 err("Invalid size")
