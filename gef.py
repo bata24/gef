@@ -18411,6 +18411,17 @@ class SignalHandlersCommand(GenericCommand, BufferingOutput):
         return None
 
     @staticmethod
+    def get_libc():
+        """Return the libc ("glibc" or "musl") that the inferior loads, or None if it is unknown (e.g., a static binary)."""
+        for objfile in gdb.objfiles():
+            name = os.path.basename(objfile.filename or "")
+            if re.fullmatch(r"libc\.so\.6|libc-2\.\d+\.so", name):
+                return "glibc"
+            if re.fullmatch(r"(?:ld-musl|libc\.musl)-\w+\.so\.1", name):
+                return "musl"
+        return None
+
+    @staticmethod
     def get_layout():
         if is_64bit():
             return {"size": 32, "handler": 0, "flags": 8, "restorer": 16, "mask": 24}
@@ -18489,18 +18500,23 @@ class SignalHandlersCommand(GenericCommand, BufferingOutput):
                     setting = "on" if suppress_cli_notifications else "off"
                     gdb.execute("set suppress-cli-notifications {:s}".format(setting), to_string=True)
 
+        libc = self.get_libc()
+        names = {number: name for number, name in LinuxSignal.NAMES.items() if number < 32}
+        names.update(LinuxSignal.LIBC_NAMES.get(libc, {}))
+
         rows = []
         for signal_number, action in actions:
             rows.append((
-                str(signal_number), LinuxSignal.NAMES.get(signal_number, "SIG{:d}".format(signal_number)),
+                str(signal_number), names.get(signal_number, "SIG{:d}".format(signal_number)),
                 self.format_handler(action["handler"]), LinuxSignal.format_flags(action["flags"]),
-                LinuxSignal.format_mask(action["mask"]),
+                LinuxSignal.format_mask(action["mask"], names),
             ))
 
         handler_width = max(30, max(len(Color.remove_color(row[2])) for row in rows))
         fmt = "{:<3s} {:<14s} {:s}{:s} {:<42s} {:s}"
         header = fmt.format("Num", "Signal", "Handler", " " * (handler_width - len("Handler")), "Flags", "Mask")
-        self.out = [titlify("Signal dispositions"), GefUtil.make_legend(header)]
+        title = "Signal dispositions ({:s})".format(libc) if libc else "Signal dispositions"
+        self.out = [titlify(title), GefUtil.make_legend(header)]
         for number, name, handler, flags, mask in rows:
             padding = " " * (handler_width - len(Color.remove_color(handler)))
             self.out.append(fmt.format(number, name, handler, padding, flags, mask).rstrip())
