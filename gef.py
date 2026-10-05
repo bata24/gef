@@ -20054,9 +20054,10 @@ class ProcInfoCommand(GenericCommand):
         gids = re.sub(r"\s+", " : ", self.get_state_of(pid)["Gid"])
         gef_print("{:30s}  ->  {:s}".format("  RUID:EUID:SavedUID:FSUID", uids))
         gef_print("{:30s}  ->  {:s}".format("  RGID:EGID:SavedGID:FSGID", gids))
-        seccomp_n = self.get_state_of(pid)["Seccomp"]
-        seccomp_s = {"0": "Disabled", "1": "Strict", "2": "CustomFilter"}[seccomp_n]
-        gef_print("{:30s}  ->  {:s} ({:s})".format("  Seccomp Mode", seccomp_n, seccomp_s))
+        seccomp_n = self.get_state_of(pid).get("Seccomp") # Linux 3.8+ with CONFIG_SECCOMP
+        if seccomp_n is not None:
+            seccomp_s = {"0": "Disabled", "1": "Strict", "2": "CustomFilter"}[seccomp_n]
+            gef_print("{:30s}  ->  {:s} ({:s})".format("  Seccomp Mode", seccomp_n, seccomp_s))
         return
 
     def show_info_proc_extra(self):
@@ -20142,23 +20143,24 @@ class ProcInfoCommand(GenericCommand):
             m = "{:s} namespace separation".format(ns.upper())
             gef_print("{:30s}  ->  {!s}".format(m, sym1 != sym2))
 
-        gef_print(titlify("Pid Namespace Information"))
         state = self.get_state_of(pid)
-        if len(state["NSpid"].split()) > 1:
-            gef_print("{:30s}  ->  {:s}".format(
-                "Host PID  : Namespace PID", re.sub(r"\s+", " : ", state["NSpid"]),
-            ))
-            gef_print("{:30s}  ->  {:s}".format(
-                "Host PGID : Namespace PGID", re.sub(r"\s+", " : ", state["NSpgid"]),
-            ))
-            gef_print("{:30s}  ->  {:s}".format(
-                "Host SID  : Namespace SID", re.sub(r"\s+", " : ", state["NSsid"]),
-            ))
-            gef_print("{:30s}  ->  {:s}".format(
-                "Host TGID : Namespace TGID", re.sub(r"\s+", " : ", state["NStgid"]),
-            ))
-        else:
-            gef_print("{:30s}".format("No pid namespace"))
+        if "NSpid" in state: # Linux 4.1+ with CONFIG_PID_NS
+            gef_print(titlify("Pid Namespace Information"))
+            if len(state["NSpid"].split()) > 1:
+                gef_print("{:30s}  ->  {:s}".format(
+                    "Host PID  : Namespace PID", re.sub(r"\s+", " : ", state["NSpid"]),
+                ))
+                gef_print("{:30s}  ->  {:s}".format(
+                    "Host PGID : Namespace PGID", re.sub(r"\s+", " : ", state["NSpgid"]),
+                ))
+                gef_print("{:30s}  ->  {:s}".format(
+                    "Host SID  : Namespace SID", re.sub(r"\s+", " : ", state["NSsid"]),
+                ))
+                gef_print("{:30s}  ->  {:s}".format(
+                    "Host TGID : Namespace TGID", re.sub(r"\s+", " : ", state["NStgid"]),
+                ))
+            else:
+                gef_print("{:30s}".format("No pid namespace"))
 
         gef_print(titlify("User Namespace Information"))
         for u in self.get_uid_map(pid):
@@ -20294,7 +20296,10 @@ class ProcInfoCommand(GenericCommand):
         protocols = ["tcp", "udp", "tcp6", "udp6", "unix", "raw", "raw6"]
         entries = {}
         for prot in protocols:
-            lines = open(f"/proc/{pid}/net/{prot}", "r").readlines()
+            try:
+                lines = open(f"/proc/{pid}/net/{prot}", "r").readlines()
+            except (FileNotFoundError, OSError):
+                continue # e.g., ipv6.disable=1
             entries[prot] = [x.split() for x in lines[1:]]
 
         extra_info = {}
