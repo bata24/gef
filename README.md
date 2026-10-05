@@ -470,6 +470,12 @@ For a comprehensive list and additional details, see [docs/SUPPORTED-MODE.md](do
             - `sed -i -e 's/ throw *(std::bad_alloc)//g' -e 's/^void operator delete(void \*ptr)$/void operator delete(void *ptr) noexcept/' -e 's/^void operator delete\[\](void \*ptr)$/void operator delete[](void *ptr) noexcept/' new_delete.cpp`
         - Build with `make`
         - Run your test program with `LD_PRELOAD=/PATH/TO/libssmalloc.so ./a.out`.
+- `jemalloc-heap-dump`: dumps jemalloc v5.0 ~ v5.4 arenas, slabs and tcache (x64 only).
+    - ![](images/jemalloc-heap-dump.png)
+    - How to test (x64):
+        - Install `libjemalloc2` (e.g. `apt install libjemalloc2`), or get and extract the upstream source from https://github.com/jemalloc/jemalloc/releases
+        - Build with `./configure && make build_lib_shared`.
+        - Run your test program with `LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libjemalloc.so.2 ./a.out` (or `/PATH/TO/lib/libjemalloc.so.2`).
 - `optee-bget-dump`: dumps bget allocator of OPTEE-Trusted-App.
     - ![](images/optee-bget-dump.png)
 - `v8`: displays v8 (Chromium and `d8`) tagged object.

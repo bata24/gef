@@ -1772,19 +1772,15 @@ Redirect the file descriptor during execution.
 ### Syntax
 
 ```text
-usage: hijack-fd [-h] [--fd-adjust-connect FD_ADJUST_CONNECT] [--fd-adjust-dup3 FD_ADJUST_DUP3] [-q] OLD_FD NEW_OUTPUT
+usage: hijack-fd [-h] [-q] OLD_FD NEW_OUTPUT
 
 positional arguments:
-  OLD_FD                file descriptor number to redirect.
-  NEW_OUTPUT            the location redirected data is stored.
+  OLD_FD       file descriptor number to redirect.
+  NEW_OUTPUT   the location redirected data is stored.
 
 options:
-  -h, --help            show this help message and exit
-  --fd-adjust-connect FD_ADJUST_CONNECT
-                        slide value when `connect` syscall result and the actual opened FD differ (for old qemu-user).
-  --fd-adjust-dup3 FD_ADJUST_DUP3
-                        slide value when `dup3` syscall result and the actual opened FD differ (for old qemu-user).
-  -q, --quiet           quiet execution.
+  -h, --help   show this help message and exit
+  -q, --quiet  quiet execution.
 ```
 
 ### Examples
@@ -1792,6 +1788,12 @@ options:
 ```gdb
 hijack-fd 2 /tmp/gef/stderr.txt
 hijack-fd 2 localhost:8000  # determined as the socket by the presence of `:`.
+```
+
+### Notes
+
+```text
+`socketcall` is not supported; on i386 with Linux < 4.3 (or old qemu-user), the socket redirection fails with ENOSYS.
 ```
 
 ## `killthreads`
@@ -7099,6 +7101,109 @@ Simplified Hoard structure:
 * `_freeList` is used first; if it is empty, TLS-held freelist heads are searched as candidates.
 * Before allocating from the freelist, Hoard consumes unused objects from `position`.
 * `reapableObjects` is displayed as the number of unused objects left.
+```
+
+## `jemalloc-heap-dump`
+
+jemalloc (v3.0~) arena/bin/slab(run)/tcache viewer (x64 only).
+
+
+### Syntax
+
+```text
+usage: jemalloc-heap-dump [-h] [-hh] [-A ARENAS] [-V JEMALLOC_VERSION] [-i ARENA_INDEX] [-b BIN_INDEX] [-x ADDRESS] [-t] [-n] [-q] [-v] [--meta]
+
+options:
+  -h, --help            show this help message and exit
+  -hh, --help-simple    show help without ASCII diagram.
+  -A, --arenas ARENAS   the address of je_arenas (the arena pointer array; v5.x only).
+  -V, --jemalloc-version JEMALLOC_VERSION
+                        the jemalloc version (e.g. 5.3.0) if the embedded version string is not found.
+  -i, --arena-index ARENA_INDEX
+                        dump only the specified arena and the tcaches bound to it.
+  -b, --bin-index BIN_INDEX
+                        dump only the specified bin (size class index).
+  -x, --address ADDRESS
+                        show the arena, size class, slab region and state of this address.
+  -t, --tcache          also dump the tcache of each thread.
+  -n, --no-pager        do not use the pager.
+  -q, --quiet           quiet mode.
+  -v, --verbose         also dump the state of each region.
+  --meta                display offset information.
+```
+
+### Examples
+
+```gdb
+jemalloc-heap-dump                    # dump the slabs of all arenas
+jemalloc-heap-dump -t -i 0            # dump arena[0] and the tcache of each thread
+jemalloc-heap-dump -t -b 1            # dump bin[1] (size=0x10) of all arenas and tcaches
+jemalloc-heap-dump -x 0x7ffff701d008  # show which region the address belongs to
+```
+
+### Notes
+
+```text
+Simplified jemalloc (v5.x) structure:
+
++-je_arenas[]-+    +-arena_t-----------------+
+| arena[0]    |--->| ...                     |
+| arena[1]    |    | bins[36] (v5.2: bins_t) |
+| ...         |    |  bin_t                  |
++-------------+    |   slabcur               |---------------------------+
+                   |   slabs_nonfull         |--> pairing heap of slabs  |
+                   |   slabs_full            |--> list of slabs          |
+                   |  ...                    |                           |
+                   +-------------------------+                           |
+                                                                         |
+  +----------------------------------------------------------------------+
+  |
+  v
++-extent_t (v5.0~v5.2) / edata_t (v5.3~)-+       +-slab------+
+| e_bits (arena, slab, szind, nfree)     |       | region[0] |
+| e_addr                                 |------>| region[1] |
+| e_size_esn                             |       | ...       |
+| ...                                    |       +-----------+
+| slab_data.bitmap[] (bit=1 means free)  |
++----------------------------------------+
+
++-tsd (TLS)-------------------------------------+
+| tcache.bins[36] (cache_bin_t)                 |
+|  v5.0~v5.2: avail      -> objs[-ncached..-1]  |
+|  v5.3~    : stack_head -> objs[0..ncached-1]  |
++-----------------------------------------------+
+
+Simplified jemalloc (v3.x/v4.x) structure:
+
++-arena_t-------------+    +-chunk (v3.x: 4MB, v4.x: 2MB)-----------------+
+| ind                 |<---| arena_chunk_t                                |
+| ...                 |    |  arena                                       |
+| bins[]              |    |  map[] / map_bits[] (page state, bin index)  |
+|  arena_bin_t        |    |  map_misc[] (v4.x)                           |
+|   runcur            |--->|   arena_run_t (v4.x: binind, nfree, bitmap)  |
+|   runs (nonfull)    |    |  ...                                         |
++---------------------+    | run pages                                    |
+                           |  arena_run_t (v3.x: bin, nextind, nfree)     |
+                           |  bitmap (v3.x)                               |
+                           |  region[0], region[1], ...                   |
+                           +----------------------------------------------+
+
++-TLS--------------------------------------------------------+
+| tcache_tls (v3.x) / tsd.tcache (v4.x) --> tcache_t.tbins[] |
+|  v3.x~v4.0: avail[0..ncached-1]                            |
+|  v4.1~    : avail -> objs[-ncached..-1]                    |
++------------------------------------------------------------+
+
+* Objects cached in tcache are marked as used in the slab/run bitmap.
+* Full slabs/runs are not linked from the bin. GEF finds them by scanning the
+  writable memory (v5.x shows them as `unlinked`).
+* The offsets vary with the version and the build config.
+  GEF uses debug types if available, else the version string in the binary and
+  a built-in table, and derives the arena layout from memory if they disagree.
+* v5.x: if symbols are not available, GEF scans the writable memory for je_arenas.
+* v3.x/v4.x: GEF finds the chunks by scanning memory and reads their arena,
+  so je_arenas is not needed.
+* Large allocations and jemalloc v2.x or older are not supported.
 ```
 
 ## `mimalloc-heap-dump`

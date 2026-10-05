@@ -164357,6 +164357,1130 @@ class SsmallocHeapDumpCommand(GenericCommand, BufferingOutput):
         return
 
 
+class JemallocBase:
+    """Common helpers of the jemalloc heap parsers.
+    Each parser resolves the structures of its version and returns them in a common form:
+      arenas:  {arena index: arena_t address}
+      bins:    {arena index: {bin index: [record]}}, record is a dict of a slab (v5) or a run (v3/v4)
+      tcaches: [(thread number, arena index or None, bins address, [(stack, [objects])])]"""
+
+    # Small size classes of the default build (LG_QUANTUM=4, LG_PAGE=12)
+    SMALL_SIZES = [
+        0x8, 0x10, 0x20, 0x30, 0x40, 0x50, 0x60, 0x70, 0x80, 0xa0, 0xc0, 0xe0,
+        0x100, 0x140, 0x180, 0x1c0, 0x200, 0x280, 0x300, 0x380, 0x400, 0x500, 0x600, 0x700,
+        0x800, 0xa00, 0xc00, 0xe00, 0x1000, 0x1400, 0x1800, 0x1c00, 0x2000, 0x2800, 0x3000, 0x3800,
+    ]
+
+    def __init__(self, version):
+        self.version = version
+        self.messages = []
+        self.sz_index2size = None
+        self.writable_maps = None
+        self.writable_pages = None
+        self.arenas = {}
+        return
+
+    @staticmethod
+    def symbol_address(name):
+        # v3.0~v3.4 do not have the `je_` prefix
+        for sym in ("je_" + name, name):
+            try:
+                return AddressUtil.parse_address("&" + sym)
+            except gdb.error:
+                pass
+        return None
+
+    @staticmethod
+    def symbol_value(name):
+        for sym in ("je_" + name, name):
+            try:
+                value = gdb.parse_and_eval(sym)
+            except gdb.error:
+                continue
+            if value.type.strip_typedefs().code == gdb.TYPE_CODE_STRUCT: # atomic_*_t
+                value = value["repr"]
+            return int(value)
+        return None
+
+    @staticmethod
+    def read_free_regions(bitmap_addr, nregs):
+        bitmap = read_memory(bitmap_addr, ((nregs + 63) // 64) * 8)
+        return {i for i in range(nregs) if (bitmap[i >> 3] >> (i & 7)) & 1}
+
+    def read_writable_maps(self):
+        if self.writable_maps is not None:
+            return self.writable_maps
+        pagesize = get_pagesize()
+        self.writable_maps = []
+        self.writable_pages = {}
+        for m in ProcessMap.get_process_maps_exclude_special_regions():
+            if not m.is_writable() or m.path.startswith("[stack"):
+                continue
+            try:
+                data = read_memory(m.page_start, m.size)
+            except gdb.MemoryError:
+                continue
+            self.writable_maps.append((m.page_start, data))
+            for offset in range(0, len(data), pagesize):
+                self.writable_pages[m.page_start + offset] = data[offset:offset + pagesize]
+        return self.writable_maps
+
+    def read_writable_pages(self):
+        self.read_writable_maps()
+        return self.writable_pages
+
+    def word_at(self, pages, addr):
+        pagesize = get_pagesize()
+        page = pages.get(addr & ~(pagesize - 1))
+        offset = addr & (pagesize - 1)
+        if page is None or offset + 8 > len(page):
+            return None
+        return u64(page[offset:offset + 8])
+
+    def size_from_szind(self, szind):
+        if self.sz_index2size is not None:
+            size = read_int_from_memory(self.sz_index2size + current_arch.ptrsize * szind)
+            if size:
+                return size
+        if szind < len(self.SMALL_SIZES):
+            return self.SMALL_SIZES[szind]
+        return None
+
+    def get_tcaches(self):
+        arenas = {arena: index for index, arena in self.arenas.items()}
+        tcaches = []
+        orig_thread = gdb.selected_thread()
+        orig_frame = gdb.selected_frame()
+        for thread in gdb.selected_inferior().threads():
+            thread.switch()
+            tls = current_arch.get_tls()
+            section = ProcessMap.process_lookup_address(tls - 1) if tls else None
+            if section is None:
+                continue
+            # tsd (v4~) or tcache_tls (v3) is placed in the static TLS below the thread pointer.
+            start = max(section.page_start, tls - 0x10000)
+            found = self.find_tcache(start, slice_unpack(read_memory(start, tls - start), 8), arenas)
+            if found is not None:
+                bins, arena_index = found
+                cache_bins = [self.read_cache_bin(bins + self.CACHE_BIN_SIZE * i) for i in range(self.NBINS)]
+                tcaches.append((thread.num, arena_index, bins, cache_bins))
+        orig_thread.switch()
+        orig_frame.select()
+        return tcaches
+
+    def is_tbins(self, tbins):
+        # tcache_bin_t[] of v3/v4: tstats, low_water, lg_fill_div, ncached, avail
+        found = 0
+        for i in range(self.NBINS):
+            data = read_memory(tbins + 0x20 * i, 0x20)
+            ncached, avail = u32(data[0x10:0x14]), u64(data[0x18:0x20])
+            if ncached == 0 and avail == 0:
+                continue
+            if ncached > 0x2000 or avail & 0x7 or not is_valid_addr(avail):
+                return False
+            found += 1
+        return found >= 3
+
+    def find_tcache_pointer(self, start, words):
+        # tsd.tcache (v4) or tcache_tls (v3) points to tcache_t, which holds tcache_bin_t[].
+        # Search from the thread pointer, since the stack below the TLS may hold copies of it.
+        for k in range(len(words) - 1, -1, -1):
+            value = words[k]
+            if value & 0x7 or not is_valid_addr(value) or not is_valid_addr(value + self.tbins_offset):
+                continue
+            try:
+                if self.is_tbins(value + self.tbins_offset):
+                    return start + k * 8, value
+            except gdb.MemoryError:
+                continue
+        return None
+
+    def read_tbin(self, tbin, grows_down):
+        ncached = read_int32_from_memory(tbin + 0x10)
+        avail = read_int_from_memory(tbin + 0x18)
+        if ncached == 0 or ncached > 0x2000 or not is_valid_addr(avail):
+            return avail, []
+        # the first entry is returned by the next malloc
+        if grows_down: # avail points past the end
+            return avail, list(slice_unpack(read_memory(avail - ncached * 8, ncached * 8), 8))
+        return avail, list(reversed(slice_unpack(read_memory(avail, ncached * 8), 8)))
+
+    def chunk_arena(self, chunk):
+        """Return (arena_t address, arena index) that owns the chunk, or (None, None).
+        The chunk header starts with the arena pointer, and arena_t starts with `unsigned ind`."""
+        arena = read_int_from_memory(chunk, safe=True)
+        if not arena or arena & 0x7 or not is_valid_addr(arena):
+            return None, None
+        index = read_int32_from_memory(arena, safe=True)
+        if index is None or index >= 0x1000:
+            return None, None
+        return arena, index
+
+    def scan_chunks(self, chunksize):
+        for start, data in self.read_writable_maps():
+            base = (start + chunksize - 1) & ~(chunksize - 1)
+            for chunk in range(base, start + len(data), chunksize):
+                arena, index = self.chunk_arena(chunk)
+                if arena is not None:
+                    yield chunk, arena, index
+
+
+class JemallocV3(JemallocBase):
+    """jemalloc v3.x heap parser: chunk (4MB) -> page map -> run (header + bitmap + regions)."""
+
+    NBINS = 28
+    CACHE_BIN_SIZE = 0x20 # sizeof(tcache_bin_t)
+    SLAB_NAME = "run"
+    NFREE_NAME = "run.nfree"
+
+    # (nregs, reg0_offset) of the default build; bitmap_offset is 0x10 and reg_interval is reg_size.
+    BIN_INFO = [
+        (501, 88), (252, 64), (126, 64), (84, 64), (63, 64), (50, 96), (84, 128), (72, 128),
+        (63, 128), (51, 32), (63, 192), (72, 256), (63, 256), (63, 320), (63, 384), (63, 448),
+        (63, 512), (51, 128), (47, 768), (45, 640), (63, 1024), (51, 256), (42, 1024), (38, 1536),
+        (65, 2048), (52, 2048), (43, 3072), (39, 3584),
+    ]
+
+    def parse(self, _arenas=None):
+        self.tbins_offset = 0x28 # offsetof(tcache_t, tbins)
+        self.chunksize = self.symbol_value("chunksize") or 0x400000
+        self.chunk_npages = self.symbol_value("chunk_npages") or self.chunksize >> 12
+        # offsetof(arena_chunk_t, map): v3.2 replaced the dirty list with a tree and added counters.
+        self.map_offset = GefUtil.offsetof("struct arena_chunk_s", "map") or (0x28 if self.version < (3, 2) else 0x30)
+        self.runcur_offset = GefUtil.offsetof("struct arena_bin_s", "runcur") or 0x28
+
+        # arena_chunk_map_t is {rb/ql link, [prof_ctx if --enable-prof], bits}.
+        elem_size = GefUtil.sizeof("struct arena_chunk_map_s")
+        map_bias = self.symbol_value("map_bias")
+        if elem_size and map_bias:
+            self.map_layout = (elem_size, elem_size - 8, map_bias)
+        else:
+            self.map_layout = self.guess_map_layout()
+
+        self.bin_info = None
+        info = self.symbol_address("arena_bin_info")
+        size = GefUtil.sizeof("struct arena_bin_info_s")
+        nregs_off = GefUtil.offsetof("struct arena_bin_info_s", "nregs")
+        bitmap_off = GefUtil.offsetof("struct arena_bin_info_s", "bitmap_offset")
+        reg0_off = GefUtil.offsetof("struct arena_bin_info_s", "reg0_offset")
+        if None not in (info, size, nregs_off, bitmap_off, reg0_off):
+            self.bin_info = []
+            for i in range(self.NBINS):
+                base = info + size * i
+                self.bin_info.append((
+                    read_int_from_memory(base + 0x10), read_int32_from_memory(base + nregs_off),
+                    read_int32_from_memory(base + bitmap_off), read_int32_from_memory(base + reg0_off),
+                ))
+        else:
+            self.bin_info = [(self.SMALL_SIZES[i], nregs, 0x10, reg0) for i, (nregs, reg0) in enumerate(self.BIN_INFO)]
+
+        self.bins = self.collect_runs()
+        self.messages.append("found {:d} arena(s) by scanning chunks".format(len(self.arenas)))
+        return None
+
+    def calc_map_bias(self, elem_size):
+        map_bias = 0
+        for _ in range(3):
+            header_size = self.map_offset + elem_size * (self.chunk_npages - map_bias)
+            map_bias = (header_size + 0xfff) >> 12
+        return map_bias
+
+    def guess_map_layout(self):
+        # Try the layouts without and with --enable-prof and keep the one whose runs point to their arena.
+        best, best_count = None, -1
+        for elem_size in (0x18, 0x20):
+            layout = (elem_size, elem_size - 8, self.calc_map_bias(elem_size))
+            count = 0
+            for chunk, arena, _ in self.scan_chunks(self.chunksize):
+                for pageind, _ in self.run_starts(chunk, layout):
+                    bin_addr = read_int_from_memory(chunk + (pageind << 12), safe=True)
+                    count += 1 if bin_addr and 0 < bin_addr - arena < 0x4000 else -1
+                break
+            if count > best_count:
+                best, best_count = layout, count
+        return best
+
+    def run_starts(self, chunk, layout):
+        elem_size, bits_offset, map_bias = layout
+        try:
+            data = read_memory(chunk + self.map_offset, elem_size * (self.chunk_npages - map_bias))
+        except gdb.MemoryError:
+            return
+        for k in range(self.chunk_npages - map_bias):
+            bits = u64(data[elem_size * k + bits_offset:elem_size * k + bits_offset + 8])
+            # small run: allocated, not large, run page offset (bits >> LG_PAGE) is 0 at the head
+            if bits & 0x3 != 0x1 or bits >> 12 != 0:
+                continue
+            binind = (bits >> 4) & 0xff
+            if binind < self.NBINS:
+                yield k + map_bias, binind
+
+    def collect_runs(self):
+        bins = collections.defaultdict(lambda: collections.defaultdict(list))
+        for chunk, arena, index in self.scan_chunks(self.chunksize):
+            self.arenas[index] = arena
+            for pageind, binind in self.run_starts(chunk, self.map_layout):
+                run = chunk + (pageind << 12)
+                reg_size, nregs, bitmap_offset, reg0 = self.bin_info[binind]
+                bin_addr = read_int_from_memory(run) # arena_run_t.bin
+                runcur = read_int_from_memory(bin_addr + self.runcur_offset, safe=True)
+                bins[index][binind].append({
+                    "kind": "runcur" if runcur == run else "run",
+                    "header": run,
+                    "bin": bin_addr,
+                    "addr": run + reg0,
+                    "size": nregs * reg_size,
+                    "reg_size": reg_size,
+                    "nregs": nregs,
+                    "nfree": read_int32_from_memory(run + 0xc),
+                    "free": self.read_free_regions(run + bitmap_offset, nregs),
+                })
+        return bins
+
+    def find_tcache(self, start, words, arenas):
+        found = self.find_tcache_pointer(start, words)
+        if found is None:
+            return None
+        _, tcache = found
+        arena = read_int_from_memory(tcache + 0x18) # tcache_t.arena
+        return tcache + self.tbins_offset, arenas.get(arena)
+
+    def read_cache_bin(self, tbin):
+        return self.read_tbin(tbin, grows_down=False)
+
+    def offsets(self):
+        elem_size, bits_offset, map_bias = self.map_layout
+        return [
+            ("chunksize", self.chunksize),
+            ("offsetof(arena_chunk_t, map)", self.map_offset),
+            ("sizeof(arena_chunk_map_t)", elem_size),
+            ("offsetof(arena_chunk_map_t, bits)", bits_offset),
+            ("map_bias", map_bias),
+            ("offsetof(arena_bin_t, runcur)", self.runcur_offset),
+        ]
+
+
+class JemallocV4(JemallocBase):
+    """jemalloc v4.x heap parser: chunk (2MB) -> page map -> run header in map_misc -> run pages."""
+
+    NBINS = 36
+    CACHE_BIN_SIZE = 0x20 # sizeof(tcache_bin_t)
+    SLAB_NAME = "run"
+    NFREE_NAME = "run.nfree"
+
+    # nregs per bin of the default build; reg0_offset is 0 and reg_interval is reg_size.
+    NREGS = [
+        512, 256, 128, 256, 64, 256, 128, 256, 32, 128, 64, 128, 16, 64, 32, 64,
+        8, 32, 16, 32, 4, 16, 8, 16, 2, 8, 4, 8, 1, 4, 2, 4, 1, 2, 1, 2,
+    ]
+
+    # Offsets of the default build.
+    # bins/bin/runcur: in arena_t/arena_bin_t, misc/run/mapbits: the chunk layout,
+    # map_bias/map_misc_offset: runtime globals, tsd_arena: offsetof(tsd_t, arena) - offsetof(tsd_t, tcache).
+    VERSION_TABLE = {
+        (4, 0): {"bins": 0x450, "bin": 0xe0, "runcur": 0x28, "misc": 0x60, "run": 0x10, "mapbits": 0x68,
+                 "map_bias": 13, "map_misc_offset": 0x1000, "tsd_arena": 0x20},
+        (4, 1): {"bins": 0x8c0, "bin": 0x80, "runcur": 0x28, "misc": 0x58, "run": 0x10, "mapbits": 0x68,
+                 "map_bias": 12, "map_misc_offset": 0x1008, "tsd_arena": 0x20},
+        (4, 2): {"bins": 0x978, "bin": 0xa8, "runcur": 0x50, "misc": 0x60, "run": 0x18, "mapbits": 0x68,
+                 "map_bias": 13, "map_misc_offset": 0x1000, "tsd_arena": 0x28},
+        (4, 3): {"bins": 0x970, "bin": 0xa8, "runcur": 0x50, "misc": 0x60, "run": 0x18, "mapbits": 0x68,
+                 "map_bias": 13, "map_misc_offset": 0x1000, "tsd_arena": 0x28},
+        (4, 4): {"bins": 0x980, "bin": 0xa8, "runcur": 0x50, "misc": 0x60, "run": 0x18, "mapbits": 0x78,
+                 "map_bias": 13, "map_misc_offset": 0x1010, "tsd_arena": 0x28},
+        (4, 5): {"bins": 0x980, "bin": 0xa8, "runcur": 0x50, "misc": 0x60, "run": 0x18, "mapbits": 0x78,
+                 "map_bias": 13, "map_misc_offset": 0x1010, "tsd_arena": 0x28},
+    }
+
+    def parse(self, _arenas=None):
+        self.sz_index2size = self.symbol_address("index2size_tab")
+        self.tbins_offset = 0x20 if self.version < (4, 1) else 0x28 # offsetof(tcache_t, tbins)
+
+        table = self.VERSION_TABLE.get(self.version, self.VERSION_TABLE[max(self.VERSION_TABLE)])
+        self.off = {
+            "bins": GefUtil.offsetof("struct arena_s", "bins"),
+            "bin": GefUtil.sizeof("struct arena_bin_s"),
+            "runcur": GefUtil.offsetof("struct arena_bin_s", "runcur"),
+            "misc": GefUtil.sizeof("struct arena_chunk_map_misc_s"),
+            "run": GefUtil.offsetof("struct arena_chunk_map_misc_s", "run"),
+            "mapbits": GefUtil.offsetof("struct arena_chunk_s", "map_bits"),
+            "map_bias": self.symbol_value("map_bias"),
+            "map_misc_offset": self.symbol_value("map_misc_offset"),
+            "tsd_arena": None,
+        }
+        for key, value in table.items():
+            if self.off[key] is None:
+                self.off[key] = value
+        self.chunksize = self.symbol_value("chunksize") or 0x200000
+        self.chunk_npages = self.symbol_value("chunk_npages") or self.chunksize >> 12
+
+        self.bin_info = None
+        info = self.symbol_address("arena_bin_info")
+        size = GefUtil.sizeof("struct arena_bin_info_s")
+        nregs_off = GefUtil.offsetof("struct arena_bin_info_s", "nregs")
+        reg0_off = GefUtil.offsetof("struct arena_bin_info_s", "reg0_offset")
+        if None not in (info, size, nregs_off, reg0_off):
+            self.bin_info = []
+            for i in range(self.NBINS):
+                base = info + size * i
+                self.bin_info.append((
+                    read_int_from_memory(base + 0x10), read_int32_from_memory(base + nregs_off),
+                    read_int32_from_memory(base + reg0_off),
+                ))
+        else:
+            self.bin_info = [(self.SMALL_SIZES[i], self.NREGS[i], 0) for i in range(self.NBINS)]
+
+        self.bins = self.collect_runs()
+        self.messages.append("found {:d} arena(s) by scanning chunks".format(len(self.arenas)))
+        return None
+
+    def collect_runs(self):
+        map_bias = self.off["map_bias"]
+        bins = collections.defaultdict(lambda: collections.defaultdict(list))
+        for chunk, arena, index in self.scan_chunks(self.chunksize):
+            self.arenas[index] = arena
+            try:
+                mapbits = slice_unpack(read_memory(chunk + self.off["mapbits"], (self.chunk_npages - map_bias) * 8), 8)
+            except gdb.MemoryError:
+                continue
+            for k, bits in enumerate(mapbits):
+                # small run: allocated, not large, run page offset (bits >> 13) is 0 at the head
+                if bits & 0x3 != 0x1 or bits >> 13 != 0:
+                    continue
+                binind = (bits >> 5) & 0xff
+                if binind >= self.NBINS:
+                    continue
+                pageind = k + map_bias
+                # arena_run_t is embedded in arena_chunk_map_misc_t, and the regions are in the run pages.
+                misc = chunk + self.off["map_misc_offset"] + (pageind - map_bias) * self.off["misc"]
+                run = misc + self.off["run"]
+                reg_size, nregs, reg0 = self.bin_info[binind]
+                bin_addr = arena + self.off["bins"] + self.off["bin"] * binind
+                runcur = read_int_from_memory(bin_addr + self.off["runcur"], safe=True)
+                bins[index][binind].append({
+                    "kind": "runcur" if runcur == run else "run",
+                    "header": run,
+                    "bin": bin_addr,
+                    "addr": chunk + (pageind << 12) + reg0,
+                    "size": nregs * reg_size,
+                    "reg_size": reg_size,
+                    "nregs": nregs,
+                    "nfree": read_int32_from_memory(run + 0x4),
+                    "free": self.read_free_regions(run + 0x8, nregs),
+                })
+        return bins
+
+    def find_tcache(self, start, words, arenas):
+        found = self.find_tcache_pointer(start, words)
+        if found is None:
+            return None
+        slot, tcache = found # slot is tsd.tcache
+        arena = read_int_from_memory(slot + self.off["tsd_arena"], safe=True)
+        return tcache + self.tbins_offset, arenas.get(arena)
+
+    def read_cache_bin(self, tbin):
+        # v4.1~ moved avail past the end of the stack
+        return self.read_tbin(tbin, grows_down=self.version >= (4, 1))
+
+    def offsets(self):
+        return [
+            ("chunksize", self.chunksize),
+            ("offsetof(arena_t, bins)", self.off["bins"]),
+            ("sizeof(arena_bin_t)", self.off["bin"]),
+            ("offsetof(arena_bin_t, runcur)", self.off["runcur"]),
+            ("offsetof(arena_chunk_t, map_bits)", self.off["mapbits"]),
+            ("map_bias", self.off["map_bias"]),
+            ("map_misc_offset", self.off["map_misc_offset"]),
+            ("sizeof(arena_chunk_map_misc_t)", self.off["misc"]),
+            ("offsetof(arena_chunk_map_misc_t, run)", self.off["run"]),
+        ]
+
+
+class JemallocV5(JemallocBase):
+    """jemalloc v5.x heap parser: je_arenas -> arena_t -> bin_t -> slab (extent_t/edata_t)."""
+
+    NBINS = 36
+    CACHE_BIN_SIZE = 0x18 # sizeof(cache_bin_t)
+    SLAB_NAME = "slab"
+    NFREE_NAME = "e_bits.nfree"
+
+    # Offsets of the default build.
+    # bins: offsetof(arena_t, bins), bin: sizeof(bin_t), others: offsets in bin_t.
+    VERSION_TABLE = {
+        (5, 0): {"bins": 0x3fc8, "bin": 0x108, "slabcur": 0x68, "nonfull": 0x70, "full": 0x78},
+        (5, 1): {"bins": 0x3fd8, "bin": 0x108, "slabcur": 0x68, "nonfull": 0x70, "full": 0x78},
+        (5, 2): {"bins": 0x7208, "bin": 0x118, "slabcur": 0x70, "nonfull": 0x78, "full": 0x80},
+        (5, 3): {"bins": 0x13468, "bin": 0xe0, "slabcur": 0xc0, "nonfull": 0xc8, "full": 0xd8},
+        (5, 4): {"bins": 0x189c0, "bin": 0xe0, "slabcur": 0xc0, "nonfull": 0xc8, "full": 0xd8},
+    }
+
+    def parse(self, arenas_addr=None):
+        self.resolve_layout()
+        self.scanned_slabs = None
+        if arenas_addr is None:
+            arenas_addr = self.symbol_address("arenas")
+        if arenas_addr is None:
+            self.messages.append("Use heuristic search for je_arenas")
+            arenas_addr = self.find_arenas_heuristic()
+        if arenas_addr is None:
+            return "Could not find je_arenas, retry with --arenas"
+        if not is_valid_addr(arenas_addr):
+            return "Invalid je_arenas: {:#x}".format(arenas_addr)
+
+        arena0 = read_int_from_memory(arenas_addr)
+        if not self.from_types and arena0 and self.arena_index(arena0, self.off["bins"]) is None:
+            self.calibrate_bins_offset(arena0)
+        narenas = self.resolve_narenas(arenas_addr)
+        for index in range(narenas):
+            arena = read_int_from_memory(arenas_addr + current_arch.ptrsize * index)
+            if arena:
+                self.arenas[index] = arena
+        self.messages.append("je_arenas: {:#x} (narenas={:d})".format(arenas_addr, narenas))
+        self.bins = self.collect_slabs()
+        return None
+
+    def resolve_layout(self):
+        self.sz_index2size = self.symbol_address("sz_index2size_tab")
+
+        if self.version < (5, 1):
+            bin_type = "struct arena_bin_s"
+        else:
+            bin_type = "struct bin_s"
+        self.off = {
+            "bins": GefUtil.offsetof("struct arena_s", "bins") or GefUtil.offsetof("struct arena_s", "all_bins"),
+            "bin": GefUtil.sizeof(bin_type),
+            "slabcur": GefUtil.offsetof(bin_type, "slabcur"),
+            "nonfull": GefUtil.offsetof(bin_type, "slabs_nonfull"),
+            "full": GefUtil.offsetof(bin_type, "slabs_full"),
+        }
+        self.from_types = None not in self.off.values()
+        if not self.from_types:
+            table = self.VERSION_TABLE.get(self.version, self.VERSION_TABLE[max(self.VERSION_TABLE)])
+            self.off.update(table)
+
+        # v5.2 has `bins_t bins[]`, which points to bin_t; the others embed bin_t.
+        self.bins_indirect = self.version == (5, 2)
+
+        # e_bits: arena[0:12], slab[12], ..., state[S:N], szind[N:N+8], nfree[N+8:N+18]
+        if self.version < (5, 1):
+            self.state_shift, self.szind_shift = 15, 17
+        elif self.version < (5, 3):
+            self.state_shift, self.szind_shift = 16, 18
+        else:
+            self.state_shift, self.szind_shift = 17, 20
+
+        # offsetof(extent_t/edata_t, ph_link/heap_link) and (ql_link/ql_link_active)
+        self.ph_link = 0x28
+        if self.version < (5, 3):
+            self.ql_link = 0x18
+        else:
+            self.ql_link = 0x28
+        return
+
+    def resolve_narenas(self, arenas_addr):
+        narenas = self.symbol_value("narenas_total")
+        if narenas is not None:
+            return narenas
+
+        # je_arenas[MALLOCX_ARENA_LIMIT]; the oversize arena may follow many NULL slots.
+        count = 0
+        for i in range(4095):
+            value = read_int_from_memory(arenas_addr + current_arch.ptrsize * i, safe=True)
+            if value is None or value & 0x3f or (value and not is_valid_addr(value)):
+                break
+            if value:
+                count = i + 1
+        return count
+
+    def bin_address(self, arena, index, bins_off=None):
+        if bins_off is None:
+            bins_off = self.off["bins"]
+        if self.bins_indirect:
+            return read_int_from_memory(arena + bins_off + current_arch.ptrsize * index, safe=True)
+        return arena + bins_off + self.off["bin"] * index
+
+    def arena_index(self, arena, bins_off):
+        """Validate an arena_t candidate and return its index, or None.
+        bin[i].slabcur must be a slab of size class i, and all of them must agree on the arena index."""
+        index = None
+        count = 0
+        for i in range(self.NBINS):
+            bin_addr = self.bin_address(arena, i, bins_off)
+            if not bin_addr or not is_valid_addr(bin_addr + self.off["slabcur"]):
+                return None
+            slabcur = read_int_from_memory(bin_addr + self.off["slabcur"])
+            if slabcur == 0:
+                continue
+            ebits = read_int_from_memory(slabcur, safe=True)
+            if ebits is None or (ebits >> 12) & 1 == 0 or (ebits >> self.szind_shift) & 0xff != i:
+                return None
+            if index is None:
+                index = ebits & 0xfff
+            elif index != ebits & 0xfff:
+                return None
+            count += 1
+        if count < 3:
+            return None
+        return index
+
+    def find_bin0_candidates(self, pages):
+        """Return (address of bin[0], sizeof(bin_t)) pairs in order of votes.
+        Since bin[i].slabcur points to a slab of size class i, the words pointing to slabs
+        line up as `bin0 + sizeof(bin_t) * i + offsetof(bin_t, slabcur)`."""
+        hits = collections.defaultdict(list)
+        for page_addr, page in pages.items():
+            for k, value in enumerate(slice_unpack(page, 8)):
+                if value == 0 or value & 0x3f: # extent_t/edata_t is cacheline-aligned
+                    continue
+                ebits = self.word_at(pages, value)
+                if ebits is None or (ebits >> 12) & 1 == 0:
+                    continue
+                szind = (ebits >> self.szind_shift) & 0xff
+                if szind < self.NBINS:
+                    hits[ebits & 0xfff].append((page_addr + 8 * k, szind))
+
+        votes = collections.Counter()
+        for group in hits.values():
+            strides = collections.Counter({self.off["bin"]: 1})
+            for (x1, i1), (x2, i2) in itertools.combinations(group[:64], 2):
+                d, di = x2 - x1, i2 - i1
+                if di < 0:
+                    d, di = -d, -di
+                if di and d % di == 0 and 0 < d // di < 0x400 and d // di % 8 == 0:
+                    strides[d // di] += 1
+            for stride, _ in strides.most_common(3):
+                for x, i in group:
+                    votes[(x - self.off["slabcur"] - stride * i, stride)] += 1
+        return [key for key, count in votes.most_common() if count >= 3]
+
+    def bins_offset(self, pages, arena, bin0):
+        if not self.bins_indirect:
+            return bin0 - arena
+        for addr in range(arena, bin0, 8):
+            if self.word_at(pages, addr) == bin0:
+                return addr - arena
+        return None
+
+    def score_arenas_array(self, pages, base, bins_off):
+        """Return (validated arenas, terminated by NULLs), or None if inconsistent."""
+        validated = 0
+        nulls = 0
+        for i in range(0x40):
+            value = self.word_at(pages, base + 8 * i)
+            if value is None:
+                break
+            if value == 0:
+                nulls += 1
+                if nulls >= 4:
+                    return validated, True
+                continue
+            nulls = 0
+            if value & 0x3f or self.word_at(pages, value) is None:
+                break
+            index = self.arena_index(value, bins_off)
+            if index is not None and index != i:
+                return None
+            if index is not None:
+                validated += 1
+        return validated, False
+
+    def find_arenas_heuristic(self):
+        pages = self.read_writable_pages()
+        for bin0, stride in self.find_bin0_candidates(pages)[:8]:
+            self.off["bin"] = stride
+            arena_end = bin0 + stride * self.NBINS
+            refs = collections.defaultdict(list)
+            for page_addr, page in pages.items():
+                for k, value in enumerate(slice_unpack(page, 8)):
+                    slot = page_addr + 8 * k
+                    if value & 0x3f or not 0 < bin0 - value < 0x30000 or value <= slot < arena_end:
+                        continue
+                    refs[value].append(slot)
+
+            # The head of arena_t is referred to from je_arenas, tsd and tcache,
+            # while the base_t header in front of it is referred to only from b0.
+            for arena in sorted(refs, key=lambda x: len(refs[x]), reverse=True):
+                bins_off = self.bins_offset(pages, arena, bin0)
+                if bins_off is None:
+                    continue
+                index = self.arena_index(arena, bins_off)
+                if index is None:
+                    continue
+                best = None
+                for slot in refs[arena]:
+                    score = self.score_arenas_array(pages, slot - 8 * index, bins_off)
+                    if score is not None and (best is None or score > best[0]):
+                        best = (score, slot - 8 * index)
+                if best is not None:
+                    self.off["bins"] = bins_off
+                    return best[1]
+                break
+        return None
+
+    def calibrate_bins_offset(self, arena):
+        pages = self.read_writable_pages()
+        for bin0, stride in self.find_bin0_candidates(pages)[:8]:
+            if not 0 < bin0 - arena < 0x30000:
+                continue
+            self.off["bin"] = stride
+            bins_off = self.bins_offset(pages, arena, bin0)
+            if bins_off is not None and self.arena_index(arena, bins_off) is not None:
+                self.off["bins"] = bins_off
+                return True
+        return False
+
+    def scan_slabs(self):
+        """Return {extent: (arena index, szind)} of the active slabs found in memory.
+        Full slabs of automatic arenas are not linked from bin_t, so they are found only by this."""
+        if self.scanned_slabs is not None:
+            return self.scanned_slabs
+        self.scanned_slabs = {}
+        pages = self.read_writable_pages()
+        for start, data in self.read_writable_maps():
+            words = slice_unpack(data[:len(data) & ~7], 8)
+            for k in range(0, len(words) - 15, 8): # extent_t/edata_t is cacheline-aligned
+                ebits, addr, size = words[k], words[k + 1], words[k + 2] & ~(get_pagesize() - 1)
+                szind = (ebits >> self.szind_shift) & 0xff
+                state = (ebits >> self.state_shift) & ((1 << (self.szind_shift - self.state_shift)) - 1)
+                if (ebits >> 12) & 1 == 0 or state != 0 or szind >= self.NBINS: # active slab only
+                    continue
+                if addr == 0 or addr & (get_pagesize() - 1) or size == 0 or size % self.SMALL_SIZES[szind]:
+                    continue
+                nregs = size // self.SMALL_SIZES[szind]
+                if nregs > 512 or addr not in pages:
+                    continue
+                nfree = sum(bin(w).count("1") for w in words[k + 8:k + 8 + (nregs + 63) // 64])
+                if nregs % 64:
+                    nfree -= bin(words[k + 8 + nregs // 64] >> (nregs % 64)).count("1")
+                if nfree != (ebits >> (self.szind_shift + 8)) & 0x3ff:
+                    continue
+                self.scanned_slabs[start + k * 8] = (ebits & 0xfff, szind)
+        return self.scanned_slabs
+
+    def read_slab(self, kind, extent, szind, bin_addr):
+        ebits = read_int_from_memory(extent)
+        addr = read_int_from_memory(extent + 0x8)
+        size = read_int_from_memory(extent + 0x10) & ~(get_pagesize() - 1)
+        reg_size = self.size_from_szind(szind)
+        nregs = size // reg_size if reg_size else 0
+        return {
+            "kind": kind,
+            "header": extent,
+            "bin": bin_addr,
+            "addr": addr,
+            "size": size,
+            "reg_size": reg_size,
+            "nregs": nregs,
+            "nfree": (ebits >> (self.szind_shift + 8)) & 0x3ff,
+            "free": self.read_free_regions(extent + 0x40, nregs),
+        }
+
+    def heap_nodes(self, root):
+        # pairing heap: visit all nodes by following phn_next and phn_lchild
+        nodes = []
+        seen = set()
+        stack = [root]
+        while stack and len(nodes) < 0x10000:
+            node = stack.pop()
+            if node == 0 or node in seen or not is_valid_addr(node):
+                continue
+            seen.add(node)
+            nodes.append(node)
+            stack.append(read_int_from_memory(node + self.ph_link + 0x8)) # next
+            stack.append(read_int_from_memory(node + self.ph_link + 0x10)) # lchild
+        return nodes
+
+    def list_nodes(self, head):
+        nodes = []
+        current = head
+        while current and current not in nodes and is_valid_addr(current):
+            nodes.append(current)
+            current = read_int_from_memory(current + self.ql_link)
+            if current == head:
+                break
+        return nodes
+
+    def collect_slabs(self):
+        bins = collections.defaultdict(lambda: collections.defaultdict(list))
+        for index, arena in self.arenas.items():
+            for i in range(self.NBINS):
+                bin_addr = self.bin_address(arena, i)
+                if not bin_addr or not is_valid_addr(bin_addr):
+                    continue
+                slabs = []
+                slabcur = read_int_from_memory(bin_addr + self.off["slabcur"])
+                if slabcur:
+                    slabs.append(("slabcur", slabcur))
+                for slab in self.heap_nodes(read_int_from_memory(bin_addr + self.off["nonfull"])):
+                    slabs.append(("slabs_nonfull", slab))
+                for slab in self.list_nodes(read_int_from_memory(bin_addr + self.off["full"])):
+                    slabs.append(("slabs_full", slab))
+                linked = {slab for _, slab in slabs}
+                for slab, (slab_arena, szind) in sorted(self.scan_slabs().items()):
+                    if slab_arena == index and szind == i and slab not in linked:
+                        slabs.append(("unlinked", slab))
+                for kind, extent in slabs:
+                    bins[index][i].append(self.read_slab(kind, extent, i, bin_addr))
+        return bins
+
+    def is_cache_bin_array(self, words):
+        prev = None
+        for i in range(self.NBINS):
+            w0, _, w2 = words[i * 3:i * 3 + 3]
+            if self.version >= (5, 3):
+                # stack_head, tstats, low_bits_low_water/full/empty
+                full, empty = (w2 >> 16) & 0xffff, (w2 >> 32) & 0xffff
+                capacity = (empty - full) & 0xffff
+                if w0 == 0 or w0 & 7 or capacity == 0 or capacity & 7 or (empty - w0) & 0xffff > capacity:
+                    return False
+                if prev is not None and (full != prev[1] or abs(w0 - prev[0]) >= 0x10000):
+                    return False
+                prev = (w0, empty)
+            else:
+                # low_water, ncached, tstats, avail
+                ncached = w0 >> 32
+                if w2 == 0 or w2 & 7:
+                    return False
+                if prev is not None:
+                    capacity = (w2 - prev) // 8
+                    if not 0 < capacity <= 0x400 or (w2 - prev) & 7 or ncached > capacity:
+                        return False
+                elif ncached > 0x400:
+                    return False
+                prev = w2
+        return True
+
+    def find_tcache(self, start, words, arenas):
+        # tcache is embedded in tsd, so the cache_bin_t array itself is in the TLS.
+        for k in range(len(words) - self.NBINS * 3 + 1):
+            if self.is_cache_bin_array(words[k:k + self.NBINS * 3]):
+                bins = start + k * 8
+                return bins, self.tcache_arena(bins, arenas)
+        return None
+
+    def tcache_arena(self, bins, arenas):
+        """Return the index of the arena that the tcache is bound to, or None.
+        The pointer is tcache_t.arena behind bins_small[] (v5.0~v5.2) or tcache_slow_t.arena
+        (v5.3~, tcache_t.tcache_slow is in front of bins[]). Their offsets vary, so look for a known arena."""
+        if self.version >= (5, 3):
+            start, size = read_int_from_memory(bins - 8), 0x40
+        else:
+            start, size = bins + self.CACHE_BIN_SIZE * self.NBINS, 0x100
+        if not is_valid_addr(start):
+            return None
+        for value in slice_unpack(read_memory(start, size), 8):
+            if value in arenas:
+                return arenas[value]
+        return None
+
+    def read_cache_bin(self, cache_bin):
+        if self.version >= (5, 3):
+            stack_head = read_int_from_memory(cache_bin)
+            empty = read_int16_from_memory(cache_bin + 0x14)
+            ncached = ((empty - stack_head) & 0xffff) // 8
+            top = stack_head
+        else:
+            ncached = read_int32_from_memory(cache_bin + 0x4)
+            top = read_int_from_memory(cache_bin + 0x10) - ncached * 8
+        if ncached == 0:
+            return top, []
+        # the first entry is returned by the next malloc
+        return top, list(slice_unpack(read_memory(top, ncached * 8), 8))
+
+    def offsets(self):
+        return [
+            ("offsetof(arena_t, bins)", self.off["bins"]),
+            ("sizeof(bin_t)", self.off["bin"]),
+            ("offsetof(bin_t, slabcur)", self.off["slabcur"]),
+            ("offsetof(bin_t, slabs_nonfull)", self.off["nonfull"]),
+            ("offsetof(bin_t, slabs_full)", self.off["full"]),
+        ]
+
+
+@register_command
+class JemallocHeapDumpCommand(GenericCommand, BufferingOutput):
+    """jemalloc (v3.0~) arena/bin/slab(run)/tcache viewer (x64 only)."""
+
+    _cmdline_ = "jemalloc-heap-dump"
+    _category_ = "05-c. Heap - Other"
+
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("-hh", "--help-simple", action="store_true", help="show help without ASCII diagram.")
+    parser.add_argument("-A", "--arenas", type=AddressUtil.parse_address,
+                        help="the address of je_arenas (the arena pointer array; v5.x only).")
+    parser.add_argument("-V", "--jemalloc-version",
+                        help="the jemalloc version (e.g. 5.3.0) if the embedded version string is not found.")
+    parser.add_argument("-i", "--arena-index", type=int,
+                        help="dump only the specified arena and the tcaches bound to it.")
+    parser.add_argument("-b", "--bin-index", type=int, help="dump only the specified bin (size class index).")
+    parser.add_argument("-x", "--address", type=AddressUtil.parse_address,
+                        help="show the arena, size class, slab region and state of this address.")
+    parser.add_argument("-t", "--tcache", action="store_true", help="also dump the tcache of each thread.")
+    parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
+    parser.add_argument("-q", "--quiet", action="store_true", help="quiet mode.")
+    parser.add_argument("-v", "--verbose", action="store_true", help="also dump the state of each region.")
+    parser.add_argument("--meta", action="store_true", help="display offset information.")
+    _syntax_ = parser.format_help()
+
+    _example_ = [
+        "{0:s}                    # dump the slabs of all arenas",
+        "{0:s} -t -i 0            # dump arena[0] and the tcache of each thread",
+        "{0:s} -t -b 1            # dump bin[1] (size=0x10) of all arenas and tcaches",
+        "{0:s} -x 0x7ffff701d008  # show which region the address belongs to",
+    ]
+    _example_ = "\n".join(_example_).format(_cmdline_)
+
+    _note_ = [
+        "Simplified jemalloc (v5.x) structure:",
+        "",
+        "+-je_arenas[]-+    +-arena_t-----------------+",
+        "| arena[0]    |--->| ...                     |",
+        "| arena[1]    |    | bins[36] (v5.2: bins_t) |",
+        "| ...         |    |  bin_t                  |",
+        "+-------------+    |   slabcur               |---------------------------+",
+        "                   |   slabs_nonfull         |--> pairing heap of slabs  |",
+        "                   |   slabs_full            |--> list of slabs          |",
+        "                   |  ...                    |                           |",
+        "                   +-------------------------+                           |",
+        "                                                                         |",
+        "  +----------------------------------------------------------------------+",
+        "  |",
+        "  v",
+        "+-extent_t (v5.0~v5.2) / edata_t (v5.3~)-+       +-slab------+",
+        "| e_bits (arena, slab, szind, nfree)     |       | region[0] |",
+        "| e_addr                                 |------>| region[1] |",
+        "| e_size_esn                             |       | ...       |",
+        "| ...                                    |       +-----------+",
+        "| slab_data.bitmap[] (bit=1 means free)  |",
+        "+----------------------------------------+",
+        "",
+        "+-tsd (TLS)-------------------------------------+",
+        "| tcache.bins[36] (cache_bin_t)                 |",
+        "|  v5.0~v5.2: avail      -> objs[-ncached..-1]  |",
+        "|  v5.3~    : stack_head -> objs[0..ncached-1]  |",
+        "+-----------------------------------------------+",
+        "",
+        "Simplified jemalloc (v3.x/v4.x) structure:",
+        "",
+        "+-arena_t-------------+    +-chunk (v3.x: 4MB, v4.x: 2MB)-----------------+",
+        "| ind                 |<---| arena_chunk_t                                |",
+        "| ...                 |    |  arena                                       |",
+        "| bins[]              |    |  map[] / map_bits[] (page state, bin index)  |",
+        "|  arena_bin_t        |    |  map_misc[] (v4.x)                           |",
+        "|   runcur            |--->|   arena_run_t (v4.x: binind, nfree, bitmap)  |",
+        "|   runs (nonfull)    |    |  ...                                         |",
+        "+---------------------+    | run pages                                    |",
+        "                           |  arena_run_t (v3.x: bin, nextind, nfree)     |",
+        "                           |  bitmap (v3.x)                               |",
+        "                           |  region[0], region[1], ...                   |",
+        "                           +----------------------------------------------+",
+        "",
+        "+-TLS--------------------------------------------------------+",
+        "| tcache_tls (v3.x) / tsd.tcache (v4.x) --> tcache_t.tbins[] |",
+        "|  v3.x~v4.0: avail[0..ncached-1]                            |",
+        "|  v4.1~    : avail -> objs[-ncached..-1]                    |",
+        "+------------------------------------------------------------+",
+        "",
+        "* Objects cached in tcache are marked as used in the slab/run bitmap.",
+        "* Full slabs/runs are not linked from the bin. GEF finds them by scanning the",
+        "  writable memory (v5.x shows them as `unlinked`).",
+        "* The offsets vary with the version and the build config.",
+        "  GEF uses debug types if available, else the version string in the binary and",
+        "  a built-in table, and derives the arena layout from memory if they disagree.",
+        "* v5.x: if symbols are not available, GEF scans the writable memory for je_arenas.",
+        "* v3.x/v4.x: GEF finds the chunks by scanning memory and reads their arena,",
+        "  so je_arenas is not needed.",
+        "* Large allocations and jemalloc v2.x or older are not supported.",
+    ]
+    _note_ = "\n".join(_note_)
+
+    def detect_version(self):
+        if self.args.jemalloc_version:
+            m = re.match(r"(\d+)\.(\d+)", self.args.jemalloc_version)
+            if not m:
+                return None, None
+            return (int(m.group(1)), int(m.group(2))), self.args.jemalloc_version
+
+        # The libjemalloc, or the executable if jemalloc is linked statically.
+        maps = ProcessMap.get_process_maps()
+        paths = [m.path for m in maps if "jemalloc" in os.path.basename(m.path)]
+        if not paths:
+            codebase = ProcessMap.get_codebase()
+            paths = [m.path for m in maps if m.page_start == codebase]
+
+        # e.g. "5.3.0-0-g54eaed1d8b56b1aa528be3bdd1877e59c56fa90c"
+        pattern = re.compile(rb"(\d+)\.(\d+)\.(\d+)-\d+-g[0-9a-f]{40}")
+        for m in maps:
+            if m.path not in paths or m.is_writable() or not m.is_readable():
+                continue
+            try:
+                data = read_memory(m.page_start, m.size)
+            except gdb.MemoryError:
+                continue
+            found = pattern.search(data)
+            if found:
+                return (int(found.group(1)), int(found.group(2))), found.group(0).decode()
+        return None, None
+
+    def region_state(self, record, i):
+        addr = record["addr"] + record["reg_size"] * i
+        if addr in self.tcache_objs:
+            return "free (tcache of thread {:d})".format(self.tcache_objs[addr][0])
+        if i in record["free"]:
+            return "free"
+        return "used"
+
+    def dump_record(self, record):
+        chunk_size_color = Config.get_gef_setting("theme.heap_chunk_size")
+        freed_address_color = Config.get_gef_setting("theme.heap_chunk_address_freed")
+        used_address_color = Config.get_gef_setting("theme.heap_chunk_address_used")
+        corrupted_msg_color = Config.get_gef_setting("theme.heap_corrupted_msg")
+
+        msg = "    {:s} @ {:#x}: addr={!s} size={:#x} reg_size={:s} nregs={:d} nfree={:d}".format(
+            record["kind"], record["header"], ProcessMap.lookup_address(record["addr"]), record["size"],
+            Color.colorify_hex(record["reg_size"], chunk_size_color), record["nregs"], len(record["free"]),
+        )
+        if record["nfree"] != len(record["free"]):
+            msg += Color.colorify(" ({:s}={:d} does not match bitmap)".format(
+                self.heap.NFREE_NAME, record["nfree"]), corrupted_msg_color)
+        self.out.append(msg)
+
+        if self.args.verbose:
+            for i in range(record["nregs"]):
+                addr = record["addr"] + record["reg_size"] * i
+                state = self.region_state(record, i)
+                color = used_address_color if state == "used" else freed_address_color
+                self.out.append("        region[{:d}] {:s} {:s}".format(i, Color.colorify_hex(addr, color), state))
+        return
+
+    def dump_arena(self, index, arena, bins):
+        title = titlify("arena[{:d}] @ {:#x}".format(index, arena), color="bold", msg_color="bold")
+        if self.args.verbose:
+            self.out.append(title)
+        for i, records in sorted(bins.items()):
+            if self.args.bin_index is not None and i != self.args.bin_index:
+                continue
+            if not records:
+                continue
+            if title not in self.out:
+                self.out.append(title)
+            self.out.append("bin[{:d}] @ {:#x} (size={:#x}):".format(i, records[0]["bin"], self.heap.size_from_szind(i)))
+            for record in records:
+                self.dump_record(record)
+        return
+
+    def dump_tcaches(self, tcaches):
+        freed_address_color = Config.get_gef_setting("theme.heap_chunk_address_freed")
+        for thread_num, arena_index, bins, cache_bins in tcaches:
+            if self.args.arena_index is not None and arena_index != self.args.arena_index:
+                continue
+            arena_str = "?" if arena_index is None else str(arena_index)
+            title = titlify("tcache bins @ {:#x} (thread {:d}, arena[{:s}])".format(bins, thread_num, arena_str))
+            if self.args.verbose:
+                self.out.append(title)
+            for i, (top, objs) in enumerate(cache_bins):
+                if self.args.bin_index is not None and i != self.args.bin_index:
+                    continue
+                if not objs and not self.args.verbose:
+                    continue
+                if title not in self.out:
+                    self.out.append(title)
+                self.out.append("bins[{:d}] @ {:#x} (size={:#x}, ncached={:d}, stack={:#x}):".format(
+                    i, bins + self.heap.CACHE_BIN_SIZE * i, self.heap.size_from_szind(i), len(objs), top,
+                ))
+                for obj in objs:
+                    self.out.append(" -> {:s}".format(Color.colorify_hex(obj, freed_address_color)))
+        return
+
+    def locate_address(self, target):
+        for index, bins in sorted(self.heap.bins.items()):
+            for i, records in sorted(bins.items()):
+                for record in records:
+                    if not record["nregs"] or not record["addr"] <= target < record["addr"] + record["size"]:
+                        continue
+                    region = (target - record["addr"]) // record["reg_size"]
+                    region_addr = record["addr"] + record["reg_size"] * region
+                    self.out.append("address:    {:#x}".format(target))
+                    self.out.append("arena:      arena[{:d}] @ {:#x}".format(index, self.heap.arenas[index]))
+                    self.out.append("size class: bin[{:d}] (size={:#x})".format(i, record["reg_size"]))
+                    self.out.append("{:11s} {:#x}-{:#x} ({:s} @ {:#x})".format(
+                        self.heap.SLAB_NAME + ":", record["addr"], record["addr"] + record["size"],
+                        record["kind"], record["header"],
+                    ))
+                    self.out.append("region:     region[{:d}/{:d}] @ {:#x} (+{:#x})".format(
+                        region, record["nregs"], region_addr, target - region_addr,
+                    ))
+                    self.out.append("state:      {:s}".format(self.region_state(record, region)))
+                    return
+        self.out.append("{:#x} is not found in the {:s}s of any arena".format(target, self.heap.SLAB_NAME))
+        return
+
+    def initialize(self):
+        version, version_str = self.detect_version()
+        if version is None and self.args.jemalloc_version:
+            err("Invalid jemalloc version: {:s}".format(self.args.jemalloc_version))
+            return False
+        if version is None:
+            err("Could not find the jemalloc version string, retry with --jemalloc-version")
+            return False
+        if version[0] not in (3, 4, 5):
+            err("jemalloc {:s} is not supported".format(version_str))
+            return False
+        self.quiet_info("jemalloc version: {:s}".format(version_str))
+
+        self.heap = {3: JemallocV3, 4: JemallocV4, 5: JemallocV5}[version[0]](version)
+        error = self.heap.parse(self.args.arenas)
+        for msg in self.heap.messages:
+            self.quiet_info(msg)
+        if error:
+            err(error)
+            return False
+
+        if self.args.meta:
+            for name, value in self.heap.offsets():
+                self.quiet_info("{:s}: {:#x}".format(name, value))
+        return True
+
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @Decorator.only_if_specific_arch(arch=("x86_64",))
+    def do_invoke(self, args):
+        if args.bin_index is not None and not 0 <= args.bin_index < JemallocV5.NBINS:
+            err("bin index must be 0 to {:d}".format(JemallocV5.NBINS - 1))
+            return
+        if not self.initialize():
+            return
+        if args.meta:
+            return
+
+        self.out = []
+        self.tcache_objs = {}
+        tcaches = []
+        if args.tcache or args.verbose or args.address is not None:
+            tcaches = self.heap.get_tcaches()
+            for thread_num, _, _, cache_bins in tcaches:
+                for i, (_, objs) in enumerate(cache_bins):
+                    for obj in objs:
+                        self.tcache_objs[obj] = (thread_num, i)
+
+        if args.address is not None:
+            self.locate_address(args.address)
+            self.print_output()
+            return
+
+        for index, arena in sorted(self.heap.arenas.items()):
+            if args.arena_index is not None and index != args.arena_index:
+                continue
+            self.dump_arena(index, arena, self.heap.bins.get(index, {}))
+
+        if args.tcache:
+            self.dump_tcaches(tcaches)
+
+        self.print_output()
+        return
+
+
 @register_command
 class MuslHeapDumpCommand(GenericCommand, BufferingOutput):
     """musl v1.2.6 (src/malloc/mallocng) heap reusable chunks viewer (x64/x86 only)."""
