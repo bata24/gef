@@ -25434,26 +25434,26 @@ class UnicornEmulator:
                 gef_print("    --> {:#x} = brk({:#x})".format(self.current_brk, a1))
                 return True
 
-            if a1 > self.current_brk:
-                map_perm = None
-                for r in self.emu.mem_regions(): # get the permission of current brk region
-                    if r[1] + 1 == self.current_brk:
-                        map_perm = r[2]
-                        break
-                if map_perm is None:
-                    return False # something is wrong
-                try:
-                    self.emu.mem_map(self.current_brk, a1 - self.current_brk, map_perm)
-                except Exception:
-                    return False
-                for page in range(self.current_brk & self.page_mask, a1, self.page_size):
+            # brk is byte-granular, but the heap mapping is bounded by page-aligned breaks
+            old_end = (self.current_brk + self.page_size - 1) & self.page_mask
+            new_end = (a1 + self.page_size - 1) & self.page_mask
+            if new_end > old_end:
+                for page in range(old_end, new_end, self.page_size):
+                    if page in self.mapped:
+                        continue
+                    try:
+                        self.emu.mem_map(page, self.page_size, Permission.ALL)
+                    except Exception:
+                        return False
                     self.mapped.add(page)
             else:
-                try:
-                    self.emu.mem_unmap(a1, self.current_brk - a1)
-                except Exception:
-                    return False
-                for page in range(a1 & self.page_mask, self.current_brk, self.page_size):
+                for page in range(new_end, old_end, self.page_size):
+                    if page not in self.mapped:
+                        continue
+                    try:
+                        self.emu.mem_unmap(page, self.page_size)
+                    except Exception:
+                        return False
                     self.mapped.discard(page)
 
             self.emu.reg_write(self.regs[entry.ret_regs[0]], a1)
@@ -26130,10 +26130,10 @@ class UnicornEmulateScriptCommand(GenericCommand):
         content += "    return\n"
         content += "\n"
         content += "def mem_invalid_hook(emu, access, address, size, value, user_data):\n"
-        content += "    if access == unicorn.UC_MEM_WRITE_INVALID:\n"
+        content += "    if access in (unicorn.UC_MEM_WRITE_UNMAPPED, unicorn.UC_MEM_WRITE_PROT):\n"
         content += "        fmt = '  --> Invalid memory access; addr:{:#x}, size:{:#x}, value:{:#x}'\n"
         content += "        print(fmt.format(address, size, value))\n"
-        content += "    elif access == unicorn.UC_MEM_READ_INVALID:\n"
+        content += "    elif access in (unicorn.UC_MEM_READ_UNMAPPED, unicorn.UC_MEM_READ_PROT):\n"
         content += "        fmt = '  --> Invalid memory access; addr:{:#x}, size:{:#x}'\n"
         content += "        print(fmt.format(address, size))\n"
         content += "    return\n"
@@ -26266,20 +26266,22 @@ class UnicornEmulateScriptCommand(GenericCommand):
             content += "        emu.reg_write(registers['{:s}'], current_brk)\n".format(brk_entry.ret_regs[0])
             content += "        return True\n"
             content += "\n"
-            content += "    if a1 > current_brk:\n"
+            content += "    # brk is byte-granular, but the heap mapping is bounded by page-aligned breaks\n"
+            content += "    old_end = (current_brk + {0:#x}) & ~{0:#x}\n".format(get_pagesize_mask_low())
+            content += "    new_end = (a1 + {0:#x}) & ~{0:#x}\n".format(get_pagesize_mask_low())
+            content += "    if new_end > old_end:\n"
+            content += "        map_perm = unicorn.UC_PROT_READ | unicorn.UC_PROT_WRITE # for a new heap\n"
             content += "        for r in emu.mem_regions(): # get the permission of current brk region\n"
-            content += "            if r[1] + 1 == current_brk:\n"
+            content += "            if r[1] + 1 == old_end:\n"
             content += "                map_perm = r[2]\n"
             content += "                break\n"
-            content += "        else:\n"
-            content += "            return False # something is wrong\n"
             content += "        try:\n"
-            content += "            emu.mem_map(current_brk, a1 - current_brk, map_perm)\n"
+            content += "            emu.mem_map(old_end, new_end - old_end, map_perm)\n"
             content += "        except Exception:\n"
             content += "            return False\n"
-            content += "    else:\n"
+            content += "    elif new_end < old_end:\n"
             content += "        try:\n"
-            content += "            emu.mem_unmap(a1, current_brk - a1)\n"
+            content += "            emu.mem_unmap(new_end, old_end - new_end)\n"
             content += "        except Exception:\n"
             content += "            return False\n"
             content += "\n"
@@ -26682,11 +26684,10 @@ class UnicornEmulateScriptCommand(GenericCommand):
             "only_insns": args.only_insns,
             "skip_emulation": args.skip_emulation,
             "dt": dt, # datetime
-            "dloc": os.path.join(GEF_TEMP_DIR, "unicorn-emulate-" + dt), # memory dump directory
+            "dloc": tempfile.mkdtemp(dir=GEF_TEMP_DIR, prefix="unicorn-emulate-{:s}-".format(dt)), # memory dump directory
             "patch_got": args.avoid_avx_neon_opt_func,
             "emulate_mmap": args.emulate_mmap,
         }
-        os.mkdir(kwargs["dloc"])
 
         # thread locking
         sched_lock = gdb.parameter("scheduler-locking")
@@ -27031,8 +27032,7 @@ class AngrCommand(GenericCommand):
         """Dump all readable memory regions to files and yield their section info and file paths."""
         filename = Path.get_filename()
         vmmap = ProcessMap.get_process_maps_exclude_special_regions(allow_vdso=True, allow_vsyscall=True)
-        dloc = os.path.join(GEF_TEMP_DIR, "angr-" + dt)
-        os.mkdir(dloc)
+        dloc = tempfile.mkdtemp(dir=GEF_TEMP_DIR, prefix="angr-{:s}-".format(dt))
         for sect in vmmap:
             if sect.permission & Permission.READ:
                 code = read_memory(sect.page_start, sect.size)
