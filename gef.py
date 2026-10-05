@@ -18998,7 +18998,10 @@ class VdsoCommand(GenericCommand, BufferingOutput):
 
         self.out = []
         for line in result_lines:
-            if int(Color.remove_color(line.split()[0]), 16) < text_end:
+            tokens = Color.remove_color(line).split()
+            if tokens[0] == "->": # current pc marker
+                tokens = tokens[1:]
+            if int(tokens[0], 16) < text_end:
                 self.out.append(line)
             else:
                 break
