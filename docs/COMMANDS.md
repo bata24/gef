@@ -1796,7 +1796,7 @@ hijack-fd 2 localhost:8000  # determined as the socket by the presence of `:`.
 `socketcall` is not supported; on i386 with Linux < 4.3 (or old qemu-user), the socket redirection fails with ENOSYS.
 ```
 
-## `killthreads`
+## `kill-threads`
 
 Invoke pthread_exit(0) for a specific THREAD_ID.
 
@@ -1804,7 +1804,7 @@ Invoke pthread_exit(0) for a specific THREAD_ID.
 ### Syntax
 
 ```text
-usage: killthreads [-h] [-a] [-e EXCLUDE] [-c] [THREAD_ID ...]
+usage: kill-threads [-h] [-a] [-e EXCLUDE] [-c] [THREAD_ID ...]
 
 positional arguments:
   THREAD_ID             the thread id (not TID) to kill.
@@ -1820,7 +1820,7 @@ options:
 ### Examples
 
 ```gdb
-killthreads 2 3   # kill threads that `Thread Id` is 2 or 3
+kill-threads 2 3   # kill threads that `Thread Id` is 2 or 3
 ```
 
 ## `mmap`

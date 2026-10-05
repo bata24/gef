@@ -767,7 +767,7 @@ For a comprehensive list and additional details, see [docs/SUPPORTED-MODE.md](do
     - ![](images/call-syscall.png)
 - `mmap`: allocates a new memory by `call-syscall`.
 - `munmap`: unmaps a memory by `call-syscall`.
-- `killthreads`: kills specific or all threads (for `pthread`).
+- `kill-threads`: kills specific or all threads (for `pthread`).
 - `constgrep`: invokes `grep` under `/usr/include/`.
     - ![](images/constgrep.png)
 - `proc-dump`: dumps each file under `/proc/PID/`.

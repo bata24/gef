@@ -23303,7 +23303,7 @@ class EditFlagsCommand(GenericCommand):
 class KillThreadsCommand(GenericCommand):
     """Invoke pthread_exit(0) for a specific THREAD_ID."""
 
-    _cmdline_ = "killthreads"
+    _cmdline_ = "kill-threads"
     _category_ = "01-g. Debugging Support - Syscall"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
@@ -23359,17 +23359,20 @@ class KillThreadsCommand(GenericCommand):
             sched_lock = gdb.parameter("scheduler-locking")
             # change temporarily
             gdb.execute("set scheduler-locking on", to_string=True)
-            # kill
-            for th in target_threads:
-                th.switch()
-                try:
-                    gdb.execute("call pthread_exit(0)")
-                except gdb.error:
-                    pass
-            # restore
-            orig_thread.switch()
-            orig_frame.select()
-            gdb.execute("set scheduler-locking {:s}".format(sched_lock), to_string=True)
+            try:
+                # kill
+                for th in target_threads:
+                    # the thread may have exited after it was listed (e.g. non-stop mode)
+                    try:
+                        th.switch()
+                        gdb.execute("call (void)pthread_exit(0)")
+                    except (gdb.error, RuntimeError):
+                        pass
+            finally:
+                # restore
+                gdb.execute("set scheduler-locking {:s}".format(sched_lock), to_string=True)
+                orig_thread.switch()
+                orig_frame.select()
         else:
             warn('This dry run mode skips killing; add "--commit" to proceed')
         return
