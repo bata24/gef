@@ -16198,9 +16198,9 @@ class Auxv:
     # Because it may call Auxv.get_auxiliary_walk that repeats read_memory many times to find the auxv value.
     # Cache.cache_until_next is ineffective due to frequent resets (each time the `stepi` runs).
     # Fortunately, auxv rarely changes.
-    # The cache is retained until explicitly cleared.
+    # The cache is retained until explicitly cleared or a new objfile is loaded (e.g., by exec).
     @staticmethod
-    @Cache.cache_this_session(cache_None=False)
+    @Cache.cache_this_session(cache_None=False, until_new_objfile=True)
     def get_auxiliary_values(force_heuristic=False):
         """Retrieve the auxiliary values of the current execution.
         Return None if not running, or a dict() of values."""
@@ -16219,15 +16219,21 @@ class Auxv:
 
         def fast_path():
             try:
-                result = gdb.execute("info auxv", to_string=True)
+                result = gdb.execute("with print address on -- info auxv", to_string=True)
             except gdb.error:
-                return None
+                # `with` is unavailable before GDB 9.1
+                try:
+                    result = gdb.execute("info auxv", to_string=True)
+                except gdb.error:
+                    return None
             res = {}
             for line in result.splitlines():
                 tmp = line.split()
                 auxv_type = tmp[1]
                 if auxv_type in ("AT_PLATFORM", "AT_EXECFN", "AT_BASE_PLATFORM"):
                     m = re.match("^.+?(0x[0-9a-f]+)", line)
+                    if m is None: # `set print address off`
+                        return None
                     res[auxv_type] = int(m.group(1), 0)
                 else:
                     res[auxv_type] = int(tmp[-1], 0)
@@ -18175,7 +18181,7 @@ class CanaryCommand(GenericCommand):
     _syntax_ = parser.format_help()
 
     @staticmethod
-    @Cache.cache_this_session(cache_None=False)
+    @Cache.cache_this_session(cache_None=False, until_new_objfile=True)
     def gef_read_canary():
         """Read the current stack canary and return its value and location."""
         if is_in_kernel():
