@@ -59566,6 +59566,23 @@ class HeapBaseCommand(GenericCommand):
             return None
 
     @staticmethod
+    def heap_base_from_noncontiguous_main_arena():
+        # If brk fails (e.g., memory tagging on ARM64, some qemu-user runs), glibc allocates the main heap
+        # with mmap and sets NONCONTIGUOUS_BIT. Then the heap is not in `[heap]`, so use the mapping of top.
+        main_arena_addr = GlibcHeap.search_for_main_arena()
+        if main_arena_addr is None:
+            return None
+
+        main_arena = GlibcHeap.MallocStateStruct(main_arena_addr)
+        if (main_arena.flags & 2) == 0: # NONCONTIGUOUS_BIT
+            return None
+
+        sect = ProcessMap.process_lookup_address(main_arena.top)
+        if sect is None or sect.path == "[heap]":
+            return None
+        return sect.page_start
+
+    @staticmethod
     def heap_base_from_info_proc_map(force_heuristic=False):
         # For non-static binaries, this is mostly sufficient.
         if force_heuristic:
@@ -59695,6 +59712,10 @@ class HeapBaseCommand(GenericCommand):
             return heap_base
 
         heap_base = HeapBaseCommand.heap_base_from_symbol(force_heuristic)
+        if is_valid_addr(heap_base):
+            return heap_base
+
+        heap_base = HeapBaseCommand.heap_base_from_noncontiguous_main_arena()
         if is_valid_addr(heap_base):
             return heap_base
 
