@@ -22095,7 +22095,7 @@ class SearchPatternCommand(GenericCommand):
         return True
 
     def check_limit(self):
-        if self.args.limit:
+        if self.args.limit is not None:
             if self.args.limit <= self.found_count:
                 return True
         return False
@@ -22403,7 +22403,7 @@ class SearchPatternCommand(GenericCommand):
         if args.interval and args.interval <= 0:
             err("Invalid interval value")
             return
-        if args.limit and args.limit <= 0:
+        if args.limit is not None and args.limit <= 0:
             err("Invalid limit value")
             return
         if args.max_region_size and args.max_region_size < 0x1000:
@@ -190542,7 +190542,7 @@ class XRefTelescopeCommand(SearchPatternCommand, BufferingOutput):
         # Since it inherits SearchPatternCommand, set the values to be used there.
         args.aligned = False
         args.interval = False
-        args.limit = False
+        args.limit = None
         args.phys = False
         args.hex_regex = False
 
