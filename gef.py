@@ -23400,7 +23400,7 @@ class CallSyscallCommand(GenericCommand):
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "rr", "wine"))
-    @Decorator.exclude_specific_arch(arch=("CRIS",))
+    @Decorator.exclude_specific_arch(arch=("CRIS", "x86_16"))
     @Decorator.require_arch_set
     def do_invoke(self, args):
         if current_arch is None:
