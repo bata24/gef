@@ -5456,6 +5456,13 @@ class GlibcHeap:
                 return cursz
             if self.has_m_bit():
                 return cursz - 2 * self.ptrsize
+            # glibc maps arenas with PROT_MTE only when memory tagging is enabled
+            if is_arm64():
+                try:
+                    gdb.execute("memory-tag print-allocation-tag {:#x}".format(self.address), to_string=True)
+                    return cursz - 2 * self.ptrsize
+                except gdb.error:
+                    pass
             return cursz - self.ptrsize
 
         def get_prev_chunk_size(self):
