@@ -29690,6 +29690,11 @@ class GlibcHeapVisualHeapCommand(GenericCommand, BufferingOutput):
     def generate_visual_chunk(self, chunk, idx):
         """Generate a visual, colorized representation of a heap chunk's contents,
         grouping repeated rows and annotating bin info."""
+
+        def group_key(x):
+            # The decoded fd row is kept apart from the following rows.
+            return (decode_fd and x[0] == 1, x[1])
+
         unpack = u32 if current_arch.ptrsize == 4 else u64
         data = slicer(chunk.data, current_arch.ptrsize * 2)
         group_line_threshold = 8
@@ -29700,9 +29705,12 @@ class GlibcHeapVisualHeapCommand(GenericCommand, BufferingOutput):
         exceed_top = False
         has_bins_info = False
 
+        fd_bins_info = ", ".join(arena.get_bins_info(chunk.address))
+        decode_fd = self.args.safe_linking_decode and ("tcache" in fd_bins_info or "fastbins" in fd_bins_info)
+
         out_tmp = []
         # Group rows to display rows with the same value together.
-        for blk, blks in itertools.groupby(data):
+        for (_, blk), blks in itertools.groupby(enumerate(data), key=group_key):
             repeat_count = len(list(blks))
             d1, d2 = unpack(blk[:current_arch.ptrsize]), unpack(blk[current_arch.ptrsize:])
             dascii = "".join([chr(x) if 0x20 <= x < 0x7f else "." for x in blk])
@@ -165397,6 +165405,11 @@ class UclibcNgVisualHeapCommand(UclibcNgHeapDumpCommand, BufferingOutput):
         return info
 
     def generate_visual_chunk(self, malloc_state, chunk, idx):
+
+        def group_key(x):
+            # The decoded fd row is kept apart from the following rows.
+            return (decode_fd and x[0] == 1, x[1])
+
         unpack = u32 if current_arch.ptrsize == 4 else u64
         data = slicer(chunk.data, current_arch.ptrsize * 2)
         group_line_threshold = 8
@@ -165406,10 +165419,13 @@ class UclibcNgVisualHeapCommand(UclibcNgHeapDumpCommand, BufferingOutput):
         exceed_top = False
         has_bins_info = False
 
+        base_bins_info = ", ".join(self.bins_dict_for_address.get(chunk.chunk_base_address, []))
+        decode_fd = self.args.safe_linking_decode and "fastbins" in base_bins_info
+
         out_tmp = []
         # Group rows to display rows with the same value together.
         prev_bins_info = ""
-        for blk, blks in itertools.groupby(data):
+        for (_, blk), blks in itertools.groupby(enumerate(data), key=group_key):
             repeat_count = len(list(blks))
             d1, d2 = unpack(blk[:current_arch.ptrsize]), unpack(blk[current_arch.ptrsize:])
             dascii = "".join([chr(x) if 0x20 <= x < 0x7f else "." for x in blk])
