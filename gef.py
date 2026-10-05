@@ -20517,7 +20517,7 @@ class ProcDumpCommand(GenericCommand, BufferingOutput):
             "signal", "blocked", "sigignore", "sigcatch", "wchan", "nswap", "cnswap",
             "exit_signal", "processor", "rt_priority", "policy", "delayacct_blkio_ticks",
             "guest_time", "cguest_time", "start_data", "end_data", "start_brk",
-            "arg_start", "arg_end", "env_startr", "env_end", "exit_code",
+            "arg_start", "arg_end", "env_start", "env_end", "exit_code",
         ]
 
         max_width = max(len(x) for x in tag)
@@ -20532,7 +20532,7 @@ class ProcDumpCommand(GenericCommand, BufferingOutput):
                 elem_name = "???"
             elem_name = Color.boldify("{:{:d}s}".format(elem_name, max_width))
 
-            if i + 1 in [25, 26, 27, 28, 29, 30, 45, 46, 47, 48, 49, 50, 51]:
+            if i + 1 in [26, 27, 28, 29, 30, 45, 46, 47, 48, 49, 50, 51]:
                 address = int(elem)
                 sym = Symbol.get_symbol_string(address)
                 elem = "{!s}{:s}".format(ProcessMap.lookup_address(address), sym)
