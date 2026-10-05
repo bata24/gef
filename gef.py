@@ -22975,19 +22975,8 @@ class SearchCfiGadgetsCommand(GenericCommand, BufferingOutput):
                 self.out.extend([str(x) for x in Disasm.gdb_disassemble(start, nb_insn=inscount)])
         return
 
-    def exec_search(self):
-        # get map entry
-        maps = ProcessMap.get_process_maps()
-        if maps is None:
-            err("Failed to get maps")
-            return
-
+    def exec_search(self, maps):
         for entry in maps:
-            if not entry.is_executable():
-                continue
-            if entry.path in ["[vsyscall]"]:
-                continue
-
             info("Search from {:s}".format(entry.path))
             self.out.append(titlify(entry.path))
             addrs = self.find_endbr(entry.page_start, entry.page_end)
@@ -23000,12 +22989,27 @@ class SearchCfiGadgetsCommand(GenericCommand, BufferingOutput):
     @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
     @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64"))
     def do_invoke(self, args):
+        # get map entry
+        maps = ProcessMap.get_process_maps()
+        if maps is None:
+            err("Failed to get maps")
+            return
+        maps = [entry for entry in maps if entry.is_executable() and entry.path not in ["[vsyscall]"]]
+
         # get saved filename (for caching)
         filepath = Path.get_filepath()
         if filepath is None:
             output_path = ""
         else:
-            output_file = "cfi_{:s}.txt".format(os.path.basename(filepath))
+            # the output holds runtime addresses of all searched maps, so key the cache by their layout and contents
+            h = hashlib.sha256()
+            for entry in maps:
+                h.update(String.str2bytes("{:#x}-{:#x} {:s}\n".format(entry.page_start, entry.page_end, entry.path)))
+                try:
+                    h.update(read_memory(entry.page_start, entry.size))
+                except gdb.MemoryError:
+                    pass
+            output_file = "cfi_{:s}-{:s}.txt".format(os.path.basename(filepath), h.hexdigest()[-16:])
             output_path = os.path.join(GEF_TEMP_DIR, output_file)
 
         if os.path.exists(output_path) and not args.rescan:
@@ -23016,7 +23020,7 @@ class SearchCfiGadgetsCommand(GenericCommand, BufferingOutput):
         else:
             # doit
             self.out = []
-            self.exec_search()
+            self.exec_search(maps)
             # save
             if output_path:
                 with open(output_path, "w") as fdw:
@@ -31017,7 +31021,12 @@ class RpCommand(GenericCommand, BufferingOutput):
     def exec_rp(self, rp, ropN, allow_branches, path):
         """Run rp++ to search for ROP gadgets, saving output to a file and returning its path."""
         astr = "ab" if allow_branches else ""
-        output_file = "rp{:d}{:s}_{:s}.txt".format(ropN, astr, os.path.basename(path))
+        try:
+            h = hashlib.sha256(open(path, "rb").read()).hexdigest()[-16:]
+        except OSError as e:
+            err("{}".format(e))
+            return None
+        output_file = "rp{:d}{:s}_{:s}-{:s}.txt".format(ropN, astr, os.path.basename(path), h)
         output_path = os.path.join(GEF_TEMP_DIR, output_file)
         aops = "--allow-branches " if allow_branches else ""
         cmd = "{!r} --file={!r} --rop={:d} {:s}--unique > {!r}".format(rp, path, ropN, aops, output_path)
@@ -31113,6 +31122,8 @@ class RpCommand(GenericCommand, BufferingOutput):
 
         # invoke rp++
         rp_output_path = self.exec_rp(rp, args.rop_N, args.allow_branches, path)
+        if rp_output_path is None:
+            return
 
         if args.no_print:
            return
