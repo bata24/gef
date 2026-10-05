@@ -21379,8 +21379,8 @@ class XtapCommand(GenericCommand):
         msg_iovlen = read_int_from_memory(msg_addr + current_arch.ptrsize * 3)
         return self.read_iovec_array(msg_iov, msg_iovlen)
 
-    def read_mmsghdr_entries(self, mmsg_addr, vlen):
-        """Return a flat list of iovec entries across a struct mmsghdr array.
+    def read_mmsghdr(self, mmsg_addr, vlen):
+        """Return a list of (iovec entries, msg_len) tuples from a struct mmsghdr array.
 
         struct mmsghdr layout:
           struct msghdr msg_hdr     off 0
@@ -21392,63 +21392,34 @@ class XtapCommand(GenericCommand):
         """
         msghdr_size = current_arch.ptrsize * 7
         mmsghdr_stride = msghdr_size + current_arch.ptrsize  # msg_len is unsigned int but padded to ptrsize
-        entries = []
+        messages = []
         cur = mmsg_addr
         for _ in range(vlen):
-            entries += self.read_msghdr(cur)
+            msg_len = u32(read_memory(cur + msghdr_size, 4))
+            messages.append((self.read_msghdr(cur), msg_len))
             cur += mmsghdr_stride
-        return entries
-
-    def extract_entry_data(self, name, arg_regs):
-        """Read data for write-like syscalls at entry. Returns (label, bytes) or None."""
-        kind = self.syscall_spec[name][1]
-
-        if kind == "buf":
-            # buf is 2nd arg, count is 3rd arg
-            buf = get_register(arg_regs[1])
-            count = get_register(arg_regs[2])
-            if self.maxlen is not None:
-                count = min(count, self.maxlen)
-            try:
-                data = read_memory(buf, count)
-            except gdb.error:
-                return None
-            return ("buf={:#x} count={:#x}".format(buf, count), data)
-
-        if kind == "iovec":
-            # iov is 2nd arg, iovcnt is 3rd arg
-            iov = get_register(arg_regs[1])
-            iovcnt = get_register(arg_regs[2])
-            entries = self.read_iovec_array(iov, iovcnt)
-            data = self.gather_iovec_bytes(entries, self.maxlen)
-            return ("iov={:#x} iovcnt={:#x}".format(iov, iovcnt), data)
-
-        if kind == "msghdr":
-            # msg is 2nd arg
-            msg = get_register(arg_regs[1])
-            entries = self.read_msghdr(msg)
-            data = self.gather_iovec_bytes(entries, self.maxlen)
-            return ("msghdr={:#x}".format(msg), data)
-
-        if kind == "mmsghdr":
-            # msgvec is 2nd arg, vlen is 3rd arg
-            msgvec = get_register(arg_regs[1])
-            vlen = get_register(arg_regs[2])
-            entries = self.read_mmsghdr_entries(msgvec, vlen)
-            data = self.gather_iovec_bytes(entries, self.maxlen)
-            return ("mmsghdr={:#x} vlen={:#x}".format(msgvec, vlen), data)
-
-        return None
+        return messages
 
     def extract_exit_data(self, name, entry_args, retval):
-        """Read data for read-like syscalls at exit. Returns (label, bytes) or None.
-        `retval` is the number of bytes actually transferred. `entry_args` carries
-        the argument register values captured at entry.
+        """Read the transferred data at exit. Returns a list of (label, bytes).
+        `retval` is the number of bytes (messages for mmsghdr) actually transferred.
+        `entry_args` carries the argument register values captured at entry.
         """
         kind = self.syscall_spec[name][1]
 
         if retval is None or retval <= 0:
-            return ("returned {}".format(retval if retval is not None else "?"), b"")
+            return [("returned {}".format(retval if retval is not None else "?"), b"")]
+
+        if kind == "mmsghdr":
+            msgvec = entry_args[1]
+            results = []
+            for i, (entries, msg_len) in enumerate(self.read_mmsghdr(msgvec, retval)):
+                limit = msg_len
+                if self.maxlen is not None:
+                    limit = min(limit, self.maxlen)
+                data = self.gather_iovec_bytes(entries, limit)
+                results.append(("mmsghdr={:#x} msg[{:d}/{:d}] len={:#x}".format(msgvec, i, retval, msg_len), data))
+            return results
 
         limit = retval
         if self.maxlen is not None:
@@ -21459,23 +21430,23 @@ class XtapCommand(GenericCommand):
             try:
                 data = read_memory(buf, limit)
             except gdb.error:
-                return None
-            return ("buf={:#x} ret={:#x}".format(buf, retval), data)
+                return []
+            return [("buf={:#x} ret={:#x}".format(buf, retval), data)]
 
         if kind == "iovec":
             iov = entry_args[1]
             iovcnt = entry_args[2]
             entries = self.read_iovec_array(iov, iovcnt)
             data = self.gather_iovec_bytes(entries, limit)
-            return ("iov={:#x} ret={:#x}".format(iov, retval), data)
+            return [("iov={:#x} ret={:#x}".format(iov, retval), data)]
 
         if kind == "msghdr":
             msg = entry_args[1]
             entries = self.read_msghdr(msg)
             data = self.gather_iovec_bytes(entries, limit)
-            return ("msghdr={:#x} ret={:#x}".format(msg, retval), data)
+            return [("msghdr={:#x} ret={:#x}".format(msg, retval), data)]
 
-        return None
+        return []
 
     def entry_fd(self, arg_regs):
         """All hooked syscalls take fd as their first argument."""
@@ -21618,18 +21589,10 @@ class XtapCommand(GenericCommand):
         if fd not in self.target_fds:
             self.pending_by_thread.pop(tid, None)
             return
-        direction = self.syscall_spec[name][0]
-        if direction == "out":
-            # write-like: buffer is ready now, dump immediately, nothing to wait for
-            extracted = self.extract_entry_data(name, arg_regs)
-            if extracted is not None:
-                label, data = extracted
-                self.dump_transfer(name, direction, fd, label, data)
-            self.pending_by_thread.pop(tid, None)
-        else:
-            # read-like: snapshot args now (they may be clobbered by exit) and wait for the return
-            arg_values = [get_register(r) for r in arg_regs]
-            self.pending_by_thread[tid] = {"name": name, "fd": fd, "arg_values": arg_values}
+        # snapshot args now (they may be clobbered by exit) and wait for the return,
+        # since even write-like syscalls may transfer less than requested
+        arg_values = [get_register(r) for r in arg_regs]
+        self.pending_by_thread[tid] = {"name": name, "fd": fd, "arg_values": arg_values}
         return
 
     def handle_return(self, name):
@@ -21647,9 +21610,7 @@ class XtapCommand(GenericCommand):
             retval = retval - (1 << (current_arch.ptrsize * 8))
         direction = self.syscall_spec[name][0]
         fd = pending["fd"]
-        extracted = self.extract_exit_data(name, pending["arg_values"], retval)
-        if extracted is not None:
-            label, data = extracted
+        for label, data in self.extract_exit_data(name, pending["arg_values"], retval):
             self.dump_transfer(name, direction, fd, label, data)
         return
 
@@ -21661,6 +21622,7 @@ class XtapCommand(GenericCommand):
         try:
             while True:
                 gdb.execute("continue", to_string=True)
+                Cache.reset_gef_caches() # hook_stop_handler that does this is unhooked
                 if not is_alive():
                     inferior_exited = True
                     break
