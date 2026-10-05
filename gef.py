@@ -14507,6 +14507,39 @@ class Pid:
         return None
 
     @staticmethod
+    def get_qemu_thread_ids():
+        """Return the host thread IDs that the QEMU gdbstub reports (in the PID namespace of QEMU)."""
+        if is_qemu_system():
+            try:
+                res = gdb.execute("monitor info cpus", to_string=True)
+            except gdb.error:
+                return set()
+            return {int(x) for x in re.findall(r"thread_id=(\d+)", res)}
+        return {thread.ptid[1] for thread in gdb.selected_inferior().threads() if thread.ptid[1] > 0}
+
+    @staticmethod
+    def get_pid_from_thread_ids(tids, filepath):
+        """Return the PID of the only process that has all `tids` as its thread IDs, or None."""
+        candidate = []
+        for process in Pid.get_all_process():
+            if not process["filepath"].startswith(filepath):
+                continue
+            pid = process["pid"]
+            own_tids = set()
+            try:
+                for tid in os.listdir("/proc/{:d}/task".format(pid)):
+                    status = open("/proc/{:d}/task/{:s}/status".format(pid, tid)).read()
+                    m = re.search(r"^NSpid:\s+(.+)$", status, re.MULTILINE)
+                    own_tids.add(int(m.group(1).split()[-1]) if m else int(tid))
+            except (FileNotFoundError, ProcessLookupError, OSError):
+                continue
+            if tids <= own_tids:
+                candidate.append(pid)
+        if len(candidate) == 1:
+            return candidate[0]
+        return None
+
+    @staticmethod
     def get_pid_wine():
         ws_pid = Pid.get_pid_from_tcp_session(filepath="wineserver")
         if ws_pid is None:
@@ -14552,7 +14585,11 @@ class Pid:
         elif is_qemu_user() or is_qemu_system():
             pid = Pid.get_pid_from_tcp_session("qemu") # strict way
             if pid is None:
-                pid = Pid.get_pid_from_name("qemu") # ambiguous way
+                tids = Pid.get_qemu_thread_ids()
+                if tids:
+                    pid = Pid.get_pid_from_thread_ids(tids, "qemu") # strict way, even through a relay
+                else:
+                    pid = Pid.get_pid_from_name("qemu") # ambiguous way
             return pid
         elif is_wine():
             return Pid.get_pid_wine()
