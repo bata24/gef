@@ -14652,6 +14652,17 @@ class Path:
             return filepath
 
     @staticmethod
+    def get_remote_filepath():
+        """Return the path on the remote target of the file currently debugged."""
+        filepath = gdb.current_progspace().filename
+        if filepath is None:
+            return None
+        for prefix in [".gnu_debugdata for target:", "target:"]:
+            if filepath.startswith(prefix):
+                return filepath[len(prefix):]
+        return filepath
+
+    @staticmethod
     def get_filepath_from_info_proc():
         try:
             response = gdb.execute("info proc", to_string=True)
@@ -14985,10 +14996,7 @@ class ProcessMap:
             filepath = Path.get_filepath()
             if filepath:
                 return filepath
-            filepath = gdb.current_progspace().filename
-            if filepath and filepath.startswith("target:"):
-                filepath = filepath[7:]
-            return filepath
+            return Path.get_remote_filepath()
 
         def parse_region_from_link_map(link_map):
             current = link_map
@@ -19881,9 +19889,7 @@ class FilenameCommand(GenericCommand):
             return
 
         elif is_remote_debug():
-            filepath = gdb.current_progspace().filename
-            if filepath and filepath.startswith("target:"):
-                filepath = filepath[7:]
+            filepath = Path.get_remote_filepath()
             if filepath:
                 gef_print(repr(filepath))
                 return
@@ -26178,9 +26184,7 @@ class UnicornEmulateScriptCommand(GenericCommand):
 
     def get_filename(self):
         if is_remote_debug():
-            filepath = gdb.current_progspace().filename
-            if filepath.startswith("target:"):
-                filepath = filepath[7:]
+            filepath = Path.get_remote_filepath()
             filename = os.path.basename(filepath)
         else:
             filename = Path.get_filename()
@@ -179438,9 +179442,7 @@ class ExecUntilUserCodeCommand(ExecUntilCommand):
     def do_invoke(self, args):
         filepath = Path.get_filepath(append_proc_root_prefix=False)
         if not filepath and is_remote_debug():
-            filepath = gdb.current_progspace().filename
-            if filepath and filepath.startswith("target:"):
-                filepath = filepath[7:]
+            filepath = Path.get_remote_filepath()
 
         maps = ProcessMap.get_process_maps()
         self.code_addrs = [p for p in maps if p.permission.value & Permission.EXECUTE and p.path == filepath]
