@@ -5384,7 +5384,7 @@ class GlibcHeap:
             arenas.append(arena)
             arena = arena.get_next()
 
-        if arena_number >= len(arenas):
+        if arena_number < 0 or arena_number >= len(arenas):
             err("Failed to get the arena, heap commands may not work properly")
             return None
 
