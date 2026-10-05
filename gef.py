@@ -5379,11 +5379,7 @@ class GlibcHeap:
         if arena is None:
             return None
 
-        arenas = []
-        while arena:
-            arenas.append(arena)
-            arena = arena.get_next()
-
+        arenas = GlibcHeap.get_all_arenas()
         if arena_number < 0 or arena_number >= len(arenas):
             err("Failed to get the arena, heap commands may not work properly")
             return None
@@ -5398,7 +5394,7 @@ class GlibcHeap:
     def get_all_arenas():
         arenas = []
         arena = GlibcHeap.get_main_arena()
-        while arena:
+        while arena and arena.addr not in [a.addr for a in arenas]:
             arenas.append(arena)
             arena = arena.get_next()
         return arenas
@@ -27506,10 +27502,16 @@ class GlibcHeapArenasCommand(GenericCommand):
 
         # thread arena
         gef_print(titlify("thread_arena"))
+        seen = {arena.addr}
         arena = arena.get_next()
         if arena is None:
             gef_print("Not found")
         while arena:
+            if arena.addr in seen:
+                corrupted_msg_color = Config.get_gef_setting("theme.heap_corrupted_msg")
+                gef_print(Color.colorify("{:#x} [Loop detected]".format(arena.addr), corrupted_msg_color))
+                break
+            seen.add(arena.addr)
             gef_print("{}".format(arena))
             arena = arena.get_next()
         return
