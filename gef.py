@@ -18708,9 +18708,9 @@ class ArgvCommand(GenericCommand, BufferingOutput):
 
         lines = open(filename, "rb").read()
         lines = String.bytes2str(lines)
-        for i, elem in enumerate(lines.split("\0")):
-            if not elem:
-                break
+        if lines.endswith("\0"):
+            lines = lines[:-1]
+        for i, elem in enumerate(lines.split("\0") if lines else []):
             if not self.args.verbose and i >= 100:
                 self.out.append("...")
                 break
@@ -18833,9 +18833,9 @@ class EnvpCommand(GenericCommand, BufferingOutput):
 
         lines = open(filename, "rb").read()
         lines = String.bytes2str(lines)
-        for i, elem in enumerate(lines.split("\0")):
-            if not elem:
-                break
+        if lines.endswith("\0"):
+            lines = lines[:-1]
+        for i, elem in enumerate(lines.split("\0") if lines else []):
             if not self.args.verbose and i >= 100:
                 self.out.append("...")
                 break
