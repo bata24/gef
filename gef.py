@@ -19718,13 +19718,18 @@ class IouringDumpCommand(GenericCommand, BufferingOutput):
         if not pid:
             return []
         path = "/proc/{:d}/fd".format(pid)
-        fds = []
         try:
-            for fname in os.listdir(path):
-                if os.readlink(os.path.join(path, fname)) == "anon_inode:[io_uring]":
-                    fds.append(int(fname))
+            items = os.listdir(path)
         except OSError:
             return []
+        fds = []
+        for fname in items:
+            try:
+                content = os.readlink(os.path.join(path, fname))
+            except (FileNotFoundError, OSError):
+                continue # closed by another running thread
+            if content == "anon_inode:[io_uring]":
+                fds.append(int(fname))
         return sorted(fds)
 
     def dump_no_mmap(self, maps, rings, sqes, how):
@@ -20275,9 +20280,12 @@ class ProcInfoCommand(GenericCommand):
         sockets = {}
         path = "/proc/{:d}/fd".format(pid)
         for fname in os.listdir(path):
-            fullpath = os.path.join(path, fname)
-            if os.path.islink(fullpath) and os.readlink(fullpath).startswith("socket:"):
-                inode = os.readlink(fullpath).replace("socket:", "")[1:-1]
+            try:
+                content = os.readlink(os.path.join(path, fname))
+            except (FileNotFoundError, OSError):
+                continue # closed by another running thread
+            if content.startswith("socket:"):
+                inode = content.replace("socket:", "")[1:-1]
                 sockets[int(inode)] = fname
         if not sockets:
             return sockets
@@ -20351,14 +20359,16 @@ class ProcInfoCommand(GenericCommand):
 
         for fname in items:
             fullpath = os.path.join(path, fname)
-            if os.path.islink(fullpath):
+            try:
                 content = os.readlink(fullpath)
-                if content.startswith("socket:["):
-                    inode = int(content.replace("socket:", "")[1:-1])
-                    extra = extra_info.get(inode, "")
-                    gef_print("{:30s}  ->  {:s}  {:s}".format(fullpath, content, extra))
-                else:
-                    gef_print("{:30s}  ->  {:s}".format(fullpath, content))
+            except (FileNotFoundError, OSError):
+                continue # closed by another running thread
+            if content.startswith("socket:["):
+                inode = int(content.replace("socket:", "")[1:-1])
+                extra = extra_info.get(inode, "")
+                gef_print("{:30s}  ->  {:s}  {:s}".format(fullpath, content, extra))
+            else:
+                gef_print("{:30s}  ->  {:s}".format(fullpath, content))
         return
 
     @Decorator.parse_args
@@ -20400,8 +20410,11 @@ class FileDescriptorsCommand(GenericCommand):
 
         for fname in items:
             fullpath = os.path.join(path, fname)
-            if os.path.islink(fullpath):
-                gef_print("{:32s}  ->  {:s}".format(fullpath, os.readlink(fullpath)))
+            try:
+                content = os.readlink(fullpath)
+            except (FileNotFoundError, OSError):
+                continue # closed by another running thread
+            gef_print("{:32s}  ->  {:s}".format(fullpath, content))
         return
 
     @Decorator.parse_args
