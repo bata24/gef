@@ -21894,7 +21894,7 @@ class FindSyscallCommand(GenericCommand, BufferingOutput):
                     locations.append(chunk_addr - ofs + r)
 
             # normal case
-            for match in re.finditer(pattern, mem):
+            for match in re.finditer(re.escape(pattern), mem):
                 start = chunk_addr + match.start()
                 locations.append(start)
 
@@ -21963,7 +21963,10 @@ class FindSyscallCommand(GenericCommand, BufferingOutput):
             err("Unsupported arch")
             return
 
-        pattern = current_arch.syscall_insn
+        if Endian.is_big_endian():
+            pattern = current_arch.syscall_insn[::-1]
+        else:
+            pattern = current_arch.syscall_insn
         self.out = []
 
         if args.section and args.size:
