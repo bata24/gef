@@ -7490,7 +7490,7 @@ class Architecture:
     def ptrsize(self):
         return AddressUtil.get_memory_alignment()
 
-    def get_ith_parameter(self, i, in_func=True):
+    def get_ith_parameter(self, i, in_func=True, sp=None):
         if i < len(self.function_parameters):
             reg = self.function_parameters[i]
             val = get_register(reg)
@@ -7498,7 +7498,7 @@ class Architecture:
             return key, val
         else:
             i -= len(self.function_parameters)
-            sp = current_arch.sp
+            sp = current_arch.sp if sp is None else sp
             sz = current_arch.ptrsize
             loc = sp + (i * sz)
             val = read_int_from_memory(loc)
@@ -8514,10 +8514,10 @@ class X86(Architecture):
             return ret["reg"]["$eax"]
         return None
 
-    def get_ith_parameter(self, i, in_func=True):
+    def get_ith_parameter(self, i, in_func=True, sp=None):
         if in_func:
             i += 1 # Account for RA being at the top of the stack
-        sp = current_arch.sp
+        sp = current_arch.sp if sp is None else sp
         sz = current_arch.ptrsize
         loc = sp + (i * sz)
         val = read_int_from_memory(loc)
@@ -8673,7 +8673,7 @@ class X86_64(X86):
             return ret["reg"]["$rax"]
         return None
 
-    def get_ith_parameter(self, i, in_func=True):
+    def get_ith_parameter(self, i, in_func=True, sp=None):
         if i < len(self.function_parameters):
             reg = self.function_parameters[i]
             val = get_register(reg)
@@ -8683,7 +8683,7 @@ class X86_64(X86):
             i -= len(self.function_parameters)
             if in_func:
                 i += 1 # Account for RA being at the top of the stack
-            sp = current_arch.sp
+            sp = current_arch.sp if sp is None else sp
             sz = current_arch.ptrsize
             loc = sp + (i * sz)
             val = read_int_from_memory(loc)
@@ -9048,7 +9048,7 @@ class PPC(Architecture):
         # todo: bdn?z[tf]? are unsupported
         return taken, reason
 
-    def get_ith_parameter(self, i, in_func=True):
+    def get_ith_parameter(self, i, in_func=True, sp=None):
         if i < len(self.function_parameters):
             reg = self.function_parameters[i]
             val = get_register(reg)
@@ -9057,7 +9057,7 @@ class PPC(Architecture):
         else:
             i -= len(self.function_parameters)
             i += 2 # for EABI, not SysV
-            sp = current_arch.sp
+            sp = current_arch.sp if sp is None else sp
             sz = current_arch.ptrsize
             loc = sp + (i * sz)
             val = read_int_from_memory(loc)
@@ -9125,7 +9125,7 @@ class PPC64(PPC):
 
     unicorn_support = False
 
-    def get_ith_parameter(self, i, in_func=True):
+    def get_ith_parameter(self, i, in_func=True, sp=None):
         if i < len(self.function_parameters):
             reg = self.function_parameters[i]
             val = get_register(reg)
@@ -9133,7 +9133,7 @@ class PPC64(PPC):
             return key, val
         else:
             i += 4 # ???
-            sp = current_arch.sp
+            sp = current_arch.sp if sp is None else sp
             sz = current_arch.ptrsize
             loc = sp + (i * sz)
             val = read_int_from_memory(loc)
@@ -9306,7 +9306,7 @@ class SPARC(Architecture):
         # todo: f* opcode, brn?z/br[lg]e?z are unsupported
         return taken, reason
 
-    def get_ith_parameter(self, i, in_func=True):
+    def get_ith_parameter(self, i, in_func=True, sp=None):
         if i < len(self.function_parameters):
             if in_func:
                 # TODO: Leaf functions use $o0...$o5 despite in_func=True
@@ -9322,7 +9322,7 @@ class SPARC(Architecture):
             if in_func:
                 regname, base_addr = "fp", get_register("$fp")
             else:
-                regname, base_addr = "sp", current_arch.sp
+                regname, base_addr = "sp", current_arch.sp if sp is None else sp
             offset = BIAS + OUT_ARG_OVERFLOW + ((i - 6) * current_arch.ptrsize)
             val = read_int_from_memory(base_addr + offset)
             key = "[{:s} + {:#x}]".format(regname, offset)
@@ -9427,7 +9427,7 @@ class SPARC64(SPARC):
         except Exception:
             return False
 
-    def get_ith_parameter(self, i, in_func=True):
+    def get_ith_parameter(self, i, in_func=True, sp=None):
         if i < len(self.function_parameters):
             if in_func:
                 # TODO: Leaf functions use $o0...$o5 despite in_func=True
@@ -9443,7 +9443,7 @@ class SPARC64(SPARC):
             if in_func:
                 regname, base_addr = "fp", get_register("$fp")
             else:
-                regname, base_addr = "sp", current_arch.sp
+                regname, base_addr = "sp", current_arch.sp if sp is None else sp
             offset = BIAS + OUT_ARG_OVERFLOW + ((i - 6) * current_arch.ptrsize)
             val = read_int_from_memory(base_addr + offset)
             key = "[{:s} + {:#x}]".format(regname, offset)
@@ -9599,14 +9599,14 @@ class MIPS(Architecture):
             taken, reason = get_register(ops[0]) < int(ops[1], 0), "{0[0]} < {0[1]}".format(ops)
         return taken, reason
 
-    def get_ith_parameter(self, i, in_func=True):
+    def get_ith_parameter(self, i, in_func=True, sp=None):
         if i < len(self.function_parameters):
             reg = self.function_parameters[i]
             val = get_register(reg)
             key = reg
             return key, val
         else:
-            sp = current_arch.sp
+            sp = current_arch.sp if sp is None else sp
             sz = current_arch.ptrsize
             loc = sp + (i * sz)
             val = read_int_from_memory(loc)
@@ -9685,7 +9685,7 @@ class MIPS64(MIPS):
 
     unicorn_support = False
 
-    def get_ith_parameter(self, i, in_func=True):
+    def get_ith_parameter(self, i, in_func=True, sp=None):
         if i < len(self.function_parameters):
             reg = self.function_parameters[i]
             val = get_register(reg)
@@ -9693,7 +9693,7 @@ class MIPS64(MIPS):
             return key, val
         else:
             i -= len(self.function_parameters)
-            sp = current_arch.sp
+            sp = current_arch.sp if sp is None else sp
             sz = current_arch.ptrsize
             loc = sp + (i * sz)
             val = read_int_from_memory(loc)
@@ -10059,7 +10059,7 @@ class S390X(Architecture):
 
         return Architecture.flags_to_human(val, self.flags_table) + extra_msg
 
-    def get_ith_parameter(self, i, in_func=True):
+    def get_ith_parameter(self, i, in_func=True, sp=None):
         if i < len(self.function_parameters):
             reg = self.function_parameters[i]
             val = get_register(reg)
@@ -10069,7 +10069,7 @@ class S390X(Architecture):
             STACK_ARG_BASE = 0xa0
             n_reg_args = len(self.function_parameters)
             offset = STACK_ARG_BASE + ((i - n_reg_args) * current_arch.ptrsize)
-            val = read_int_from_memory(current_arch.sp + offset)
+            val = read_int_from_memory((current_arch.sp if sp is None else sp) + offset)
             key = "[sp + {:#x}]".format(offset)
             return key, val
 
@@ -10449,10 +10449,10 @@ class M68K(Architecture):
             pass
         return ra
 
-    def get_ith_parameter(self, i, in_func=True):
+    def get_ith_parameter(self, i, in_func=True, sp=None):
         if in_func:
             i += 1 # Account for RA being at the top of the stack
-        sp = current_arch.sp
+        sp = current_arch.sp if sp is None else sp
         sz = current_arch.ptrsize
         loc = sp + (i * sz)
         val = read_int_from_memory(loc)
@@ -10914,7 +10914,7 @@ class HPPA(Architecture):
             reason = ""
         return taken, reason
 
-    def get_ith_parameter(self, i, in_func=True):
+    def get_ith_parameter(self, i, in_func=True, sp=None):
         if i < len(self.function_parameters):
             reg = self.function_parameters[i]
             val = get_register(reg)
@@ -10922,7 +10922,7 @@ class HPPA(Architecture):
             return key, val
         else:
             i -= len(self.function_parameters)
-            sp = current_arch.sp
+            sp = current_arch.sp if sp is None else sp
             sz = current_arch.ptrsize
             # PA-RISC keeps the argument home locations below sp;
             # arg0..arg3 at sp-0x24..sp-0x30, then arg4 at sp-0x34 and downward.
@@ -11343,14 +11343,14 @@ class MICROBLAZE(Architecture):
             taken, reason = v0 < 0, "{:s}<0".format(ops[0])
         return taken, reason
 
-    def get_ith_parameter(self, i, in_func=True):
+    def get_ith_parameter(self, i, in_func=True, sp=None):
         if i < len(self.function_parameters):
             reg = self.function_parameters[i]
             val = get_register(reg)
             key = reg
             return key, val
         else:
-            sp = current_arch.sp
+            sp = current_arch.sp if sp is None else sp
             sz = current_arch.ptrsize
             loc = sp + ((i + 1) * sz)
             val = read_int_from_memory(loc)
@@ -18906,6 +18906,20 @@ class DumpArgsCommand(GenericCommand):
                         help="assume here is out of the function.")
     _syntax_ = parser.format_help()
 
+    @staticmethod
+    def get_entry_sp():
+        """Return the stack pointer at the function entry, recovered from the caller frame (or None)."""
+        try:
+            caller = gdb.selected_frame().older()
+            if caller is None:
+                return None
+            sp = int(caller.read_register("sp")) & AddressUtil.get_vmem_end_mask()
+        except (gdb.error, ValueError):
+            return None
+        if is_x86() or is_m68k():
+            sp -= current_arch.ptrsize # the return address pushed by the call
+        return sp
+
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.require_arch_set
@@ -18922,9 +18936,12 @@ class DumpArgsCommand(GenericCommand):
         else:
             count = len(ret.splitlines())
 
-        for i in range(count):
-            key, val = current_arch.get_ith_parameter(i, in_func=not args.out_of_function)
+        entry_sp = None if args.out_of_function else self.get_entry_sp()
+        params = [current_arch.get_ith_parameter(i, in_func=not args.out_of_function, sp=entry_sp) for i in range(count)]
+        if entry_sp is not None and entry_sp != current_arch.sp and any(key.startswith("[sp") for key, _ in params):
+            info("Stack arguments are read from the stack pointer at the function entry ({:#x})".format(entry_sp))
 
+        for key, val in params:
             width = align(len(key), 4)
             gef_print("{:>{:d}s} = {:s}".format(key, width, AddressUtil.recursive_dereference_to_string(val)))
         return
