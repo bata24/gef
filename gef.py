@@ -21744,8 +21744,10 @@ class ScanSectionCommand(GenericCommand):
                 needle_sections.append((sect.page_start, sect.page_end))
 
         for hstart, hend, hname in haystack_sections:
+            # a trailing fragment shorter than a pointer cannot hold one
+            size = (hend - hstart) // current_arch.ptrsize * current_arch.ptrsize
             try:
-                mem = read_memory(hstart, hend - hstart)
+                mem = read_memory(hstart, size)
             except gdb.MemoryError:
                 continue
 
