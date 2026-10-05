@@ -20997,10 +20997,6 @@ class SmartMemoryDumpCommand(GenericCommand):
         size_str = GefUtil.get_size_str(size)
 
         if self.args.commit:
-            # make dir
-            if not os.path.exists(os.path.dirname(filepath)):
-                os.mkdir(os.path.dirname(filepath))
-
             # read
             try:
                 data = read_memory(start, size)
@@ -21017,7 +21013,12 @@ class SmartMemoryDumpCommand(GenericCommand):
         return
 
     def smart_memory_dump(self, maps, prefix, suffix):
-        dirpath = os.path.join(GEF_TEMP_DIR, "mem-dump-" + GefUtil.now_str())
+        dt = GefUtil.now_str()
+        if self.args.commit:
+            # unique even within the same second
+            dirpath = tempfile.mkdtemp(dir=GEF_TEMP_DIR, prefix="mem-dump-{:s}-".format(dt))
+        else:
+            dirpath = os.path.join(GEF_TEMP_DIR, "mem-dump-{:s}-XXXXXXXX".format(dt))
         width = current_arch.ptrsize * 2
         total_size = 0
 
@@ -21058,6 +21059,9 @@ class SmartMemoryDumpCommand(GenericCommand):
             total_size += size
 
         info("Total size: {:s}".format(GefUtil.get_size_str(total_size)))
+
+        if self.args.commit and not os.listdir(dirpath):
+            os.rmdir(dirpath)
 
         if not self.args.commit:
             info("The directory name is replaced with the latest timestamp")
