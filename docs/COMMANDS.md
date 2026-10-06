@@ -7108,7 +7108,7 @@ Simplified Hoard structure:
 
 ## `jemalloc-heap-dump`
 
-jemalloc (v3.0~) arena/bin/slab(run)/tcache viewer (x64 only).
+jemalloc (v3.0~) arena/bin/slab(run)/tcache viewer.
 
 
 ### Syntax
@@ -7139,7 +7139,7 @@ options:
 
 ```gdb
 jemalloc-heap-dump                    # dump the slabs of all arenas
-jemalloc-heap-dump -t -i 0            # dump arena[0] and the tcache of each thread
+jemalloc-heap-dump -t -i 0            # dump arena[0] and the tcaches bound to it
 jemalloc-heap-dump -t -b 1            # dump bin[1] (size=0x10) of all arenas and tcaches
 jemalloc-heap-dump -x 0x7ffff701d008  # show which region the address belongs to
 ```
@@ -7151,7 +7151,7 @@ Simplified jemalloc (v5.x) structure:
 
 +-je_arenas[]-+    +-arena_t-----------------+
 | arena[0]    |--->| ...                     |
-| arena[1]    |    | bins[36] (v5.2: bins_t) |
+| arena[1]    |    | bins[] (v5.2: bins_t)   |
 | ...         |    |  bin_t                  |
 +-------------+    |   slabcur               |---------------------------+
                    |   slabs_nonfull         |--> pairing heap of slabs  |
@@ -7171,7 +7171,7 @@ Simplified jemalloc (v5.x) structure:
 +----------------------------------------+
 
 +-tsd (TLS)-------------------------------------+
-| tcache.bins[36] (cache_bin_t)                 |
+| tcache.bins_small[] (~v5.2) / bins[] (v5.3~)  |
 |  v5.0~v5.2: avail      -> objs[-ncached..-1]  |
 |  v5.3~    : stack_head -> objs[0..ncached-1]  |
 +-----------------------------------------------+
@@ -7201,11 +7201,13 @@ Simplified jemalloc (v3.x/v4.x) structure:
 * Full slabs/runs are not linked from the bin. GEF finds them by scanning the
   writable memory (v5.x shows them as `unlinked`).
 * The offsets vary with the version and the build config.
-  GEF uses debug types if available, else the version string in the binary and
-  a built-in table, and derives the arena layout from memory if they disagree.
+  GEF uses debug types if available, else built-in values for the version and
+  the architecture, and derives the arena layout from memory if they disagree.
 * v5.x: if symbols are not available, GEF scans the writable memory for je_arenas.
 * v3.x/v4.x: GEF finds the chunks by scanning memory and reads their arena,
   so je_arenas is not needed.
+* v3.x/v4.x: the page size of jemalloc (--with-lg-page) is assumed to be 4KB.
+  v5.x: GEF derives it from the slabs (ARM64 uses 64KB by default since v5.3.1).
 * Large allocations and jemalloc v2.x or older are not supported.
 ```
 
