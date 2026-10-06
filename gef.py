@@ -72001,8 +72001,11 @@ class KernelAddressHeuristicFinder:
                     return offset, nr_buckets, False
 
             # v4.2~: an empty hlist_head is NULL, so `cpu` and the flags anchor the position,
-            # and `all_timers` is the number of the timers linked from the buckets
-            for offset_cpu in range(ptrsize * 4, len(header) - 8, ptrsize):
+            # and `all_timers` is the number of the timers linked from the buckets.
+            # `cpu` follows 5 words, and the struct is ____cacheline_aligned (16 bytes or more).
+            if tvec_base & 0xf:
+                continue
+            for offset_cpu in range(ptrsize * 5, len(header) - 8, ptrsize):
                 if u32(header[offset_cpu:offset_cpu + 4]) != cpu:
                     continue
                 if any(x > 1 for x in header[offset_cpu + 4:offset_cpu + 6]):
