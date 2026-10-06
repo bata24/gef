@@ -80068,6 +80068,7 @@ class KernelDmabuf:
         else:
             name = "db_list"
             self.db_list = KernelAddressHeuristicFinder.get_db_list()
+        self.list_name = name
         file_buffers = None
         if self.db_list is None:
             if not Ksym.get_addr("dma_buf_export"):
@@ -80178,39 +80179,51 @@ class KernelDmabuf:
             if offset is not None:
                 self.meta.append(("info", "offsetof(dma_buf, {:s}): {:#x}".format(name, offset)))
 
+        self.sizeof_scatterlist = GefUtil.sizeof("scatterlist")
         if self.offset_priv is not None:
             dma_buf = first_dma_buf - self.offset_list_node if file_buffers is None else first_dma_buf
-            size = read_int_from_memory(dma_buf + self.offset_size)
-            priv = read_int_from_memory(dma_buf + self.offset_priv)
-            system_heap = self.get_system_heap_sgl(dma_buf, size, priv)
+            size = read_int_from_memory(dma_buf + self.offset_size, safe=True)
+            priv = read_int_from_memory(dma_buf + self.offset_priv, safe=True)
+            system_heap = self.get_system_heap_sgl(dma_buf, size, priv) if size is not None and priv is not None else None
             if system_heap is not None:
                 self.meta.append(("info", "offsetof(system_heap_buffer, sg_table): {:#x}".format(system_heap[2])))
+                if self.get_sizeof_scatterlist(system_heap[0], system_heap[1]) is not None:
+                    self.meta.append(("info", "sizeof(scatterlist): {:#x}".format(self.sizeof_scatterlist)))
         return True
 
     def get_buffers(self):
+        """Return {"buffers": [...], "incomplete": [reason, ...]}. The list is live, so it is walked on each call."""
         objects = []
-        buffers = self.get_file_buffers() if self.db_list is None else KernelListHead(self.db_list).iter_entries()
+        incomplete = []
+        if self.db_list is None:
+            incomplete.append("{:s} is unavailable, so only the buffers held by file descriptors are shown".format(self.list_name))
+            buffers = self.get_file_buffers()
+        else:
+            lh = KernelListHead(self.db_list)
+            buffers = lh.iter_entries()
         for current in buffers:
-            if not is_valid_addr(current):
-                break
-
             # calc top
             dma_buf = current - self.offset_list_node if self.db_list is not None else current
 
             # size, file, priv
-            size = read_int_from_memory(dma_buf + self.offset_size)
-            file = read_int_from_memory(dma_buf + self.offset_file)
-            priv = read_int_from_memory(dma_buf + self.offset_priv) if self.offset_priv is not None else None
+            size = read_int_from_memory(dma_buf + self.offset_size, safe=True)
+            file = read_int_from_memory(dma_buf + self.offset_file, safe=True)
+            priv = read_int_from_memory(dma_buf + self.offset_priv, safe=True) if self.offset_priv is not None else None
+            if size is None or file is None:
+                if is_valid_addr(current): # otherwise the walk stops there and tells it
+                    incomplete.append("dma_buf {:#x} is unreadable".format(dma_buf))
+                continue
 
             # exp_name
             exp_name = "<unknown>"
             if self.offset_exp_name is not None:
-                exp_name_p = read_int_from_memory(dma_buf + self.offset_exp_name)
-                exp_name = read_cstring_from_memory(exp_name_p, safe=True) or exp_name
+                exp_name_p = read_int_from_memory(dma_buf + self.offset_exp_name, safe=True)
+                if exp_name_p:
+                    exp_name = read_cstring_from_memory(exp_name_p, safe=True) or exp_name
             # name
             name = "<none>"
             if self.offset_name is not None:
-                name_p = read_int_from_memory(dma_buf + self.offset_name)
+                name_p = read_int_from_memory(dma_buf + self.offset_name, safe=True)
                 if name_p:
                     name = read_cstring_from_memory(name_p, safe=True) or "<unreadable>"
 
@@ -80220,16 +80233,39 @@ class KernelDmabuf:
                 "address": dma_buf, "size": size, "exp_name": exp_name, "name": name,
                 "file": file, "priv": priv, "system_heap": system_heap,
             })
-        return objects
+        if self.db_list is not None and lh.broken:
+            incomplete.append("{:s} is broken at {:#x} ({:s})".format(self.list_name, lh.broken_at, lh.broken_reason))
+        return {"buffers": objects, "incomplete": incomplete}
 
     def get_sgl(self, sg, nents):
+        stride = self.get_sizeof_scatterlist(sg, nents)
+        for address, page_link, error in self.walk_sgl(sg, nents, stride):
+            if error:
+                yield {"error": error}
+                break
+            offset = read_int32_from_memory(address + current_arch.ptrsize, safe=True)
+            length = read_int32_from_memory(address + current_arch.ptrsize + 4, safe=True)
+            if offset is None or length is None:
+                yield {"error": "unreadable entry {:#x}".format(address)}
+                break
+
+            # output page, phys, virt
+            page = page_link & ~3
+            phys = Kernel.page2phys(page)
+            # check the mapping instead of the MSB, since PAGE_OFFSET is 0x40000000 with VMSPLIT_1G
+            virt = [v for v, entry in AddrMap.p2v_mappings(phys) if entry.is_kernel()] if phys is not None else None
+            yield {"page": page, "offset": offset, "length": length, "phys": phys, "virt": virt}
+        return
+
+    def walk_sgl(self, sg, nents, stride):
+        """Yield (address, page_link, None) of each entry, or (address, None, error) and stop."""
         seen = set()
         while nents:
-            if sg in seen or not is_valid_addr(sg):
-                yield {"error": "invalid link"}
-                break
+            page_link = read_int_from_memory(sg, safe=True) if sg not in seen and is_valid_addr(sg) else None
+            if page_link is None:
+                yield sg, None, "invalid link {:#x}".format(sg)
+                return
             seen.add(sg)
-            page_link = read_int_from_memory(sg)
 
             # check if chain
             if page_link & 1: # SG_CHAIN
@@ -80237,46 +80273,56 @@ class KernelDmabuf:
                 continue
 
             nents -= 1
-            # output page, phys, virt
-            page = page_link & ~3
-
-            phys = Kernel.page2phys(page)
-            virt = AddrMap.p2v(phys) if phys is not None else None
-            yield {
-                "page": page, "offset": read_int32_from_memory(sg + current_arch.ptrsize),
-                "length": read_int32_from_memory(sg + current_arch.ptrsize + 4), "phys": phys,
-                "virt": virt,
-            }
+            yield sg, page_link, None
 
             # check if end
-            if page_link & 2: # SG_END:
-                break
-
-            # calc sizeof(scatterlist) then go to next
-            """
-            struct scatterlist {
-                unsigned long page_link;
-                unsigned int offset;
-                unsigned int length;
-                dma_addr_t dma_address;
-            #ifdef CONFIG_NEED_SG_DMA_LENGTH
-                unsigned int dma_length;
-            #endif
-            #ifdef CONFIG_PCI_P2PDMA
-                unsigned int dma_flags;
-            #endif
-            };
-            """
-            stride = GefUtil.sizeof("scatterlist")
-            if stride is not None:
-                sg += stride
-            else:
-                sg += current_arch.ptrsize + 4 * 2 + current_arch.ptrsize
-                if not is_valid_addr(read_int_from_memory(sg) & ~3):
-                    sg += current_arch.ptrsize
-                if not is_valid_addr(read_int_from_memory(sg) & ~3):
-                    sg += current_arch.ptrsize
+            if page_link & 2: # SG_END
+                return
+            if stride is None:
+                yield sg, None, "sizeof(scatterlist) is unknown"
+                return
+            sg += stride
         return
+
+    def get_sizeof_scatterlist(self, sg, nents):
+        """
+        struct scatterlist {
+            unsigned long page_link;
+            unsigned int offset;
+            unsigned int length;
+            dma_addr_t dma_address;
+        #ifdef CONFIG_NEED_SG_DMA_LENGTH
+            unsigned int dma_length;
+        #endif
+        #ifdef CONFIG_NEED_SG_DMA_FLAGS // v6.0~v6.4: CONFIG_PCI_P2PDMA
+            unsigned int dma_flags;
+        #endif
+        };
+        """
+        if self.sizeof_scatterlist is not None or nents < 2:
+            return self.sizeof_scatterlist
+
+        # dma_addr_t is 64-bit even on 32-bit arch if ARM_LPAE, X86_PAE, etc.,
+        # and only x86_32 aligns 64-bit integers to 4 bytes.
+        ptrsize = current_arch.ptrsize
+        candidates = set()
+        for dma_size in {ptrsize, 8}:
+            dma_align = 4 if is_x86_32() else dma_size
+            for extra in (0, 4, 8):
+                candidates.add(align(align(ptrsize + 8, dma_align) + dma_size + extra, max(ptrsize, dma_align)))
+
+        # the right size reaches SG_END exactly at the last entry, through valid entries
+        for size in sorted(candidates):
+            entries = list(self.walk_sgl(sg, nents, size))
+            if len(entries) != nents or entries[-1][2] is not None or not entries[-1][1] & 2:
+                continue
+            if not all(is_valid_addr(page_link & ~3) for _, page_link, _ in entries):
+                continue
+            if not all(read_int32_from_memory(x + ptrsize + 4, safe=True) for x, _, _ in entries):
+                continue
+            self.sizeof_scatterlist = size
+            break
+        return self.sizeof_scatterlist
 
     def get_file_buffers(self):
         output = gdb.execute("ktask --print-fd --user-process-only --no-pager --quiet", to_string=True)
@@ -80341,11 +80387,11 @@ class KernelDmabuf:
             void *vaddr;
         };
         """
-        ops = read_int_from_memory(dma_buf + self.offset_ops)
+        ops = read_int_from_memory(dma_buf + self.offset_ops, safe=True)
         system_ops = Ksym.get_addr("system_heap_buf_ops")
         if not system_ops or ops != system_ops:
             release = Ksym.get_addr("system_heap_dma_buf_release")
-            if not release or not is_valid_addr(ops):
+            if not release or not ops or not is_valid_addr(ops):
                 return None
             if not any(read_int_from_memory(ops + current_arch.ptrsize * i, safe=True) == release for i in range(20)):
                 return None
@@ -155708,7 +155754,7 @@ class KernelDmaBufCommand(GenericCommand, BufferingOutput):
             page, offset, length = item["page"], item["offset"], item["length"]
             phys = item["phys"]
             phys_str = "{:#018x}".format(phys) if phys is not None else "???"
-            virt_str = ",".join(hex(x) for x in item["virt"] if AddressUtil.is_msb_on(x)) if item["virt"] else "???"
+            virt_str = ",".join(hex(x) for x in item["virt"]) if item["virt"] else "???"
             self.out.append("  page: {:#018x}  offset: {:#010x}  length: {:#010x}  phys: {:18s}  virt: {:s}".format(
                 page, offset, length, phys_str, virt_str,
             ))
@@ -155718,7 +155764,8 @@ class KernelDmaBufCommand(GenericCommand, BufferingOutput):
         fmt = "{:18s} {:18s} {:16s} {:16s} {:18s} {:18s}"
         legend = ["dma_buf", "size", "exp_name", "name", "file", "priv"]
         self.out.append(GefUtil.make_legend(fmt.format(*legend)))
-        for item in self.kdmabuf.get_buffers():
+        result = self.kdmabuf.get_buffers()
+        for item in result["buffers"]:
             # dump
             priv = item["priv"]
             self.out.append("{:#018x} {:#018x} {:16s} {:16s} {:#018x} {:18s}".format(
@@ -155730,6 +155777,8 @@ class KernelDmaBufCommand(GenericCommand, BufferingOutput):
             system_heap = item["system_heap"]
             if system_heap is not None:
                 self.dump_sgl(system_heap[0], system_heap[1])
+        for reason in result["incomplete"]:
+            self.warn_add_out("Incomplete: {:s}".format(reason))
         return
 
     @Decorator.parse_args
@@ -173822,7 +173871,7 @@ class PageTableX64(PageTable):
                         flags.append("XD")
 
                 # calc next table (drop the flag bits)
-                if is_x86_64() and is_set_PS(entry):
+                if self.PAE and is_set_PS(entry):
                     next_level_table = entry & 0x000f_ffff_ffff_e000
                 elif is_x86_32() and is_set_PS(entry):
                     high = (entry >> 13) & 0xf
