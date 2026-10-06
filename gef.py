@@ -23911,7 +23911,7 @@ class ReadSystemRegisterForKgdbCommand(GenericCommand):
         # finally, look for possible values for given prefix
         return [s for s in regs if s and s.startswith(text.strip())]
 
-    @Cache.cache_this_session(cache_None=False)
+    @Cache.cache_this_session(cache_None=False, until_new_objfile=True)
     def get_stub_address(self, reg_name):
         if not is_alive():
             return None
@@ -24666,10 +24666,13 @@ class ReadSystemRegisterForQemuArmCommand(GenericCommand):
     }
 
     def get_coproc_info(self, target_reg_name):
-        for k, v in self.AARCH32_COPROC_REGISTERS.items():
-            for reg_name, _desc in slicer(v, 2):
-                if target_reg_name == reg_name:
-                    return k
+        target_reg_name = target_reg_name.upper()
+        # some names are also aliases of other encodings, so the encoding where the name comes first wins
+        for primary_only in [True, False]:
+            for k, v in self.AARCH32_COPROC_REGISTERS.items():
+                for reg_name, _desc in slicer(v[:2] if primary_only else v, 2):
+                    if target_reg_name == reg_name.upper():
+                        return k
         return None
 
     def get_mrc_code(self, cp_info):
@@ -24681,6 +24684,7 @@ class ReadSystemRegisterForQemuArmCommand(GenericCommand):
     def mrc_execute(self, reg_name):
         cp_info = self.get_coproc_info(reg_name)
         if cp_info is None:
+            err("Unknown register name")
             return None
         codes = [self.get_mrc_code(cp_info)]
 
@@ -24707,6 +24711,11 @@ class ReadSystemRegisterForQemuArmCommand(GenericCommand):
         reg_name = args.reg_name.upper()
         if reg_name.startswith("$"):
             reg_name = reg_name[1:]
+
+        # DBGDTRTXint is written by MCR; MRC of the same encoding reads DBGDTRRXint instead
+        if reg_name == "DBGDTRTXINT":
+            err("DBGDTRTXint is write-only")
+            return
 
         ret = self.mrc_execute(reg_name)
         if ret is not None:
