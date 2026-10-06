@@ -147592,8 +147592,11 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
             )))
 
             # offsetof(kmem_cache_cpu, partial)
-            self.kmem_cache_cpu_offset_partial = current_arch.ptrsize * 3
-            self.meta.append((self.quiet_info, "offsetof(kmem_cache_cpu, partial): {:#x}".format(self.kmem_cache_cpu_offset_partial)))
+            if kversion < "3.2":
+                self.kmem_cache_cpu_offset_partial = None
+            else:
+                self.kmem_cache_cpu_offset_partial = current_arch.ptrsize * 3
+                self.meta.append((self.quiet_info, "offsetof(kmem_cache_cpu, partial): {:#x}".format(self.kmem_cache_cpu_offset_partial)))
 
         # offsetof(page, next) / offsetof(slab, next)
         if self.slab_virtual_enabled:
@@ -147604,7 +147607,11 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
             else: # 6.12
                 self.page_offset_next = current_arch.ptrsize * 8
         else:
-            if kversion < "4.16" and is_32bit():
+            if kversion < "3.1" and is_32bit():
+                self.page_offset_next = current_arch.ptrsize * 6
+            elif kversion < "3.1":
+                self.page_offset_next = current_arch.ptrsize * 5
+            elif kversion < "4.16" and is_32bit():
                 self.page_offset_next = current_arch.ptrsize * 5
             elif kversion < "4.18":
                 self.page_offset_next = current_arch.ptrsize * 4
@@ -147625,7 +147632,11 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
             else: # 6.12
                 self.page_offset_freelist = current_arch.ptrsize * 10
         else:
-            if kversion < "4.18":
+            if kversion < "3.1" and is_32bit():
+                self.page_offset_freelist = current_arch.ptrsize * 5
+            elif kversion < "3.1":
+                self.page_offset_freelist = current_arch.ptrsize * 4
+            elif kversion < "4.18":
                 self.page_offset_freelist = current_arch.ptrsize * 2
             elif kversion < "5.17":
                 self.page_offset_freelist = current_arch.ptrsize * 4
@@ -147644,7 +147655,11 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
             else: # 6.12
                 self.page_offset_slab_cache = current_arch.ptrsize * 7
         else:
-            if kversion < "4.16" and is_32bit():
+            if kversion < "3.1" and is_32bit():
+                self.page_offset_slab_cache = current_arch.ptrsize * 3
+            elif kversion < "3.1":
+                self.page_offset_slab_cache = current_arch.ptrsize * 2
+            elif kversion < "4.16" and is_32bit():
                 self.page_offset_slab_cache = current_arch.ptrsize * 7
             elif kversion < "4.18":
                 self.page_offset_slab_cache = current_arch.ptrsize * 6
@@ -147657,7 +147672,11 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
         self.meta.append((self.quiet_info, "offsetof({:s}, slab_cache): {:#x}".format(Kernel.slab_page_str(), self.page_offset_slab_cache)))
 
         # offsetof(page, inuse_objects_frozen) / offsetof(slab, inuse_objects_frozen)
-        self.page_offset_inuse_objects_frozen = self.page_offset_freelist + current_arch.ptrsize
+        if kversion < "3.1":
+            # u16 inuse; u16 objects; (no frozen bit)
+            self.page_offset_inuse_objects_frozen = current_arch.ptrsize + 4
+        else:
+            self.page_offset_inuse_objects_frozen = self.page_offset_freelist + current_arch.ptrsize
         self.meta.append((self.quiet_info, "offsetof({:s}, inuse_objects_frozen): {:#x}".format(
             Kernel.slab_page_str(), self.page_offset_inuse_objects_frozen,
         )))
@@ -147979,6 +147998,8 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
 
     def walk_caches_partial_page(self, cpu, kmem_cache):
         kmem_cache["kmem_cache_cpu"][cpu]["partial_pages"] = []
+        if self.kmem_cache_cpu_offset_partial is None:
+            return
         seen = set()
         current_partial_page = read_int_from_memory(
             kmem_cache["kmem_cache_cpu"][cpu]["address"] + self.kmem_cache_cpu_offset_partial,
