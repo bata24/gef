@@ -83436,6 +83436,10 @@ class KernelNftables:
                 self.meta.append(("err", "Could not find init_net"))
             return None
         self.meta.append(("info", "kernel version: {!s}".format(self.kversion)))
+
+        if self.has_nf_tables() is False:
+            self.meta.append(("warn", "nf_tables is neither built in nor loaded as a module"))
+            return None
         return True
 
     def initialize_scan(self):
@@ -83455,6 +83459,19 @@ class KernelNftables:
         self.net_offset_ns_ops = None
         self.partial_reasons = set()
         return
+
+    @staticmethod
+    def has_nf_tables():
+        ret = Ksym.get_kallsyms()
+        if ret is None or not ret[0]:
+            return None
+        if Ksym.get_addrs("nf_tables_newtable", match="split"):
+            return True
+        kmod = Kernel.modules()
+        if not kmod.initialize():
+            return None
+        module_addrs = kmod.get_addrs()[0]
+        return kmod.find(module_addrs, "nf_tables") is not None
 
     def net_inum(self, net):
         value = GefUtil.typed_struct(net, "struct net")
