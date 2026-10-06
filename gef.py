@@ -22698,7 +22698,7 @@ class PtrDemangleCommand(GenericCommand):
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware"))
-    @Decorator.exclude_specific_arch(arch=("SPARC32", "XTENSA", "CRIS"))
+    @Decorator.exclude_specific_arch(arch=("XTENSA", "CRIS"))
     @Decorator.require_arch_set
     def do_invoke(self, args):
         if args.source:
@@ -22744,7 +22744,7 @@ class PtrMangleCommand(GenericCommand):
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware"))
-    @Decorator.exclude_specific_arch(arch=("SPARC32", "XTENSA", "CRIS"))
+    @Decorator.exclude_specific_arch(arch=("XTENSA", "CRIS"))
     @Decorator.require_arch_set
     def do_invoke(self, args):
         if args.source:
@@ -22849,7 +22849,7 @@ class SearchMangledPtrCommand(GenericCommand):
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
-    @Decorator.exclude_specific_arch(arch=("SPARC32", "XTENSA", "CRIS"))
+    @Decorator.exclude_specific_arch(arch=("XTENSA", "CRIS"))
     @Decorator.require_arch_set
     def do_invoke(self, args):
         # init
