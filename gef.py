@@ -63644,13 +63644,24 @@ class KernelAddressHeuristicFinderUtil:
     """A class that has utility for KernelAddressHeuristicFinder."""
 
     @staticmethod
+    def is_kernel_space(v):
+        if AddressUtil.is_msb_on(v):
+            return True
+        # VMSPLIT_1G and VMSPLIT_2G_OPT place the kernel space below the MSB
+        if not is_32bit():
+            return False
+        constants = KernelAddressHeuristicFinder.consts()
+        page_offset = constants.PAGE_OFFSET if constants else None
+        return page_offset is not None and page_offset <= v
+
+    @staticmethod
     def common_addr_gen(res, regexp, skip, skip_msb_check, read_valid):
         for line in res.splitlines():
             m = re.search(regexp, line)
             if not m:
                 continue
             v = AddressUtil.normalize_address(int(m.group(1), 16))
-            if not skip_msb_check and not AddressUtil.is_msb_on(v):
+            if not skip_msb_check and not KernelAddressHeuristicFinderUtil.is_kernel_space(v):
                 continue
             if read_valid and not is_valid_addr_addr(v): # not is_valid_addr, but is_valid_addr_addr
                 continue
