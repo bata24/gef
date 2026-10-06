@@ -73044,6 +73044,11 @@ class Kernel:
         return KernelNftables.get_instance()
 
     @staticmethod
+    def sched():
+        """Return the scheduling-field resolver."""
+        return KernelSched.get_instance()
+
+    @staticmethod
     def export_meta(command, meta, demote_err=False):
         """Convert the meta lines recorded by a kernel resolver into the (printer, line) pairs of `command`."""
         err = command.quiet_warn if demote_err else command.quiet_err
@@ -81191,6 +81196,377 @@ class KernelSeccomp:
         return KernelBpf.get_prog_offsets().get("orig_prog")
 
 
+class KernelSched:
+    """Resolve the scheduling fields of `task_struct` and classify the scheduler class.
+
+    struct task_struct {
+        ...
+        unsigned int __state; // `volatile long state` before v5.14
+        unsigned int saved_state; // v6.7~ (CONFIG_PREEMPT_RT only before)
+        void *stack;
+        ...
+        int on_cpu;   // v7.2~: u8, and moved away from on_rq
+        int on_rq;    // immediately before `prio` up to v7.1
+        int prio;
+        int static_prio;
+        int normal_prio;
+        unsigned int rt_priority;
+        const struct sched_class *sched_class; // v6.6~: moved below the scheduler entities
+        ...
+        unsigned int policy;
+        int nr_cpus_allowed;     // v3.6~
+        const cpumask_t *cpus_ptr; // v5.3~, points at the following `cpus_mask`
+        cpumask_t cpus_mask;     // `cpus_allowed` before v5.3
+        ...
+    };
+    """
+
+    CLASS_NAMES = {
+        "stop_sched_class": "stop",
+        "dl_sched_class": "DL",
+        "rt_sched_class": "RT",
+        "fair_sched_class": "CFS",
+        "ext_sched_class": "SCX",
+        "idle_sched_class": "idle",
+    }
+
+    # task state is a bitmask, so the names are combined
+    STATE_BITS = [
+        (0x0001, "TASK_INTERRUPTIBLE"),
+        (0x0002, "TASK_UNINTERRUPTIBLE"),
+        (0x0004, "__TASK_STOPPED"),
+        (0x0008, "__TASK_TRACED"),
+        (0x0010, "EXIT_DEAD"),
+        (0x0020, "EXIT_ZOMBIE"),
+        (0x0040, "TASK_PARKED"),
+        (0x0080, "TASK_DEAD"),
+        (0x0100, "TASK_WAKEKILL"),
+        (0x0200, "TASK_WAKING"),
+        (0x0400, "TASK_NOLOAD"),
+        (0x0800, "TASK_NEW"),
+        (0x1000, "TASK_RTLOCK_WAIT"),
+        (0x2000, "TASK_FREEZABLE"),
+        (0x8000, "TASK_FROZEN"),
+    ]
+
+    # the short letters mirror those shown by `ps`
+    STATE_LETTERS = [
+        (0x0002, "D"), (0x0004, "T"), (0x0008, "t"), (0x0010, "X"),
+        (0x0020, "Z"), (0x0040, "P"), (0x0080, "X"), (0x0001, "S"),
+    ]
+
+    POLICY_NAMES = {
+        0: "SCHED_NORMAL",
+        1: "SCHED_FIFO",
+        2: "SCHED_RR",
+        3: "SCHED_BATCH",
+        5: "SCHED_IDLE",
+        6: "SCHED_DEADLINE",
+        7: "SCHED_EXT",
+    }
+    SCHED_RESET_ON_FORK = 0x4000_0000
+
+    Info = collections.namedtuple("SchedInfo", [
+        "state", "state_name", "sched_class", "class_name",
+        "prio", "static_prio", "normal_prio", "rt_priority",
+        "policy", "policy_name", "on_rq", "on_cpu", "cpu",
+    ])
+
+    @classmethod
+    @Cache.cache_this_session(per_inferior=True, until_new_objfile=True)
+    def get_instance(cls):
+        return cls()
+
+    def __init__(self):
+        self.meta = []
+        self.initialized = False
+        self.task_command = None
+        self.task_addrs = ()
+        self.class_addrs = {}
+        self.offset_state = None
+        self.offset_prio = None
+        self.offset_rt_priority = None
+        self.offset_sched_class = None
+        self.offset_policy = None
+        self.offset_on_rq = None
+        self.offset_on_cpu = None
+        self.offset_cpu = None
+        return
+
+    @staticmethod
+    def offsetof(member):
+        try:
+            return GefUtil.parse_and_eval_unsigned("&((struct task_struct*)0).{:s}".format(member))
+        except gdb.error:
+            return None
+
+    def initialize(self, task_command, task_addrs):
+        if self.initialized:
+            return True
+
+        self.meta = []
+        self.task_command = task_command
+        self.task_addrs = tuple(task_addrs)
+        kversion = Kernel.version()
+
+        self.class_addrs = {}
+        for name in self.CLASS_NAMES:
+            addr = Ksym.get_addr(name)
+            if addr:
+                self.class_addrs[addr] = name
+
+        # task_struct->prio (anchors the prio/static_prio/normal_prio/rt_priority cluster)
+        self.offset_prio = self.offsetof("prio")
+        if self.offset_prio is None:
+            self.offset_prio = self.get_offset_prio()
+        if self.offset_prio is None:
+            self.meta.append(("err", "Could not find task_struct->prio"))
+            return None
+        self.offset_rt_priority = self.offset_prio + 12
+        self.meta.append(("info", "offsetof(task_struct, prio): {:#x}".format(self.offset_prio)))
+
+        # task_struct->__state / state
+        self.offset_state = self.offsetof("__state")
+        if self.offset_state is None:
+            self.offset_state = self.offsetof("state")
+        if self.offset_state is None:
+            self.offset_state = self.get_offset_state(kversion)
+        if self.offset_state is not None:
+            self.meta.append(("info", "offsetof(task_struct, state): {:#x}".format(self.offset_state)))
+        else:
+            self.meta.append(("warn", "Could not find task_struct->__state"))
+
+        # task_struct->sched_class
+        self.offset_sched_class = self.offsetof("sched_class")
+        if self.offset_sched_class is None:
+            self.offset_sched_class = self.get_offset_sched_class()
+        if self.offset_sched_class is not None:
+            self.meta.append(("info", "offsetof(task_struct, sched_class): {:#x}".format(self.offset_sched_class)))
+        elif not self.class_addrs:
+            self.meta.append(("warn", "Could not find the *_sched_class symbols (CONFIG_KALLSYMS_ALL=n?)"))
+        else:
+            self.meta.append(("warn", "Could not find task_struct->sched_class"))
+
+        # task_struct->policy
+        self.offset_policy = self.offsetof("policy")
+        if self.offset_policy is None:
+            self.offset_policy = self.get_offset_policy(kversion)
+        if self.offset_policy is not None:
+            self.meta.append(("info", "offsetof(task_struct, policy): {:#x}".format(self.offset_policy)))
+        else:
+            self.meta.append(("warn", "Could not find task_struct->policy"))
+
+        # task_struct->on_rq
+        self.offset_on_rq = self.offsetof("on_rq")
+        if self.offset_on_rq is None:
+            self.offset_on_rq = self.get_offset_on_rq(kversion)
+        if self.offset_on_rq is not None:
+            self.meta.append(("info", "offsetof(task_struct, on_rq): {:#x}".format(self.offset_on_rq)))
+
+        # the remaining fields are only read when debug information gives their offset
+        self.offset_on_cpu = self.offsetof("on_cpu")
+        # `cpu` is in task_struct for v4.9-v5.15, and in the embedded thread_info since v5.16
+        self.offset_cpu = self.offsetof("cpu")
+        if self.offset_cpu is None:
+            self.offset_cpu = self.offsetof("thread_info.cpu")
+        if self.offset_on_cpu is not None:
+            self.meta.append(("info", "offsetof(task_struct, on_cpu): {:#x}".format(self.offset_on_cpu)))
+        if self.offset_cpu is not None:
+            self.meta.append(("info", "offsetof(task_struct, cpu): {:#x}".format(self.offset_cpu)))
+
+        self.initialized = True
+        return True
+
+    def get_offset_prio(self):
+        ptrsize = current_arch.ptrsize
+        start = self.task_command.offset_stack
+        start = start if start is not None else ptrsize * 4
+        for off in range(start, start + 0x400, 4):
+            seen_default = False
+            for task in self.task_addrs:
+                prio = read_int32_from_memory(task + off, safe=True, signed=True)
+                static_prio = read_int32_from_memory(task + off + 4, safe=True, signed=True)
+                normal_prio = read_int32_from_memory(task + off + 8, safe=True, signed=True)
+                rt_priority = read_int32_from_memory(task + off + 12, safe=True)
+                if None in (prio, static_prio, normal_prio, rt_priority):
+                    break
+                # DEADLINE tasks store prio/normal_prio as -1, so the lower bound is loose
+                if not (-1 <= prio < 140 and 100 <= static_prio <= 139 and -1 <= normal_prio < 140 and 0 <= rt_priority <= 99):
+                    break
+                if static_prio == 120:
+                    seen_default = True
+            else:
+                if seen_default:
+                    return off
+        return None
+
+    def get_offset_state(self, kversion):
+        """Resolve `__state`/`state`, which is placed in front of `stack`.
+
+        On 64-bit it is 8 bytes before `stack` (`long state` before v5.14, or `__state`
+        plus the 4 padding/`saved_state` bytes after it). On 32-bit `long state` and a plain
+        v5.14+ `__state` are 4 bytes before it, while `__state`+`saved_state` (unconditional
+        since v6.7) is 8 bytes before it. An all-zero padding slot must not win, so a candidate
+        is accepted only when the sampled tasks show more than one plausible value."""
+        stack = self.task_command.offset_stack
+        if stack is None:
+            return None
+        if current_arch.ptrsize == 8:
+            candidates = [stack - 8]
+        elif kversion is not None and "6.7" <= kversion:
+            candidates = [stack - 8, stack - 4]
+        else:
+            candidates = [stack - 4, stack - 8]
+        for off in candidates:
+            if off < 0:
+                continue
+            vals = []
+            for task in self.task_addrs:
+                v = read_int32_from_memory(task + off, safe=True)
+                if v is None or not (0 <= v < 0x10000):
+                    vals = None
+                    break
+                vals.append(v)
+            if not vals or vals[0] != 0:
+                continue
+            if len(set(vals)) >= 2:
+                return off
+        return None
+
+    def get_offset_sched_class(self):
+        if not self.class_addrs:
+            return None
+        known = set(self.class_addrs)
+        ptrsize = current_arch.ptrsize
+        samples = self.task_addrs[:0x10]
+        start = align_to_ptrsize(self.offset_rt_priority + 4)
+        for off in range(start, start + 0x800, ptrsize):
+            for task in samples:
+                v = read_int_from_memory(task + off, safe=True)
+                if v not in known:
+                    break
+            else:
+                return off
+        return None
+
+    def get_offset_policy(self, kversion):
+        """Locate `policy` by cross-checking it against the scheduler class of each task.
+
+        The distance between `policy` and the following fields moves across versions and arches
+        (`max_allowed_capacity` was inserted at v6.10, and alignment differs), so `policy` is not
+        derived by arithmetic. Instead every 4-byte slot after the prio cluster is tested: an RT
+        task must hold SCHED_FIFO/SCHED_RR and a DEADLINE task SCHED_DEADLINE, which an all-zero
+        padding slot cannot satisfy. This needs the scheduler class, so it is resolved first."""
+        if self.offset_sched_class is None:
+            return None
+        allowed = {
+            "rt_sched_class": {1, 2},
+            "dl_sched_class": {6},
+            "fair_sched_class": {0, 3, 5},
+        }
+        constraints = []
+        strict_present = False
+        for task in self.task_addrs:
+            sc = read_int_from_memory(task + self.offset_sched_class, safe=True)
+            want = allowed.get(self.class_addrs.get(sc))
+            if want in ({1, 2}, {6}):
+                strict_present = True
+            constraints.append((task, want))
+        if not strict_present:
+            return None # nothing forces a non-zero policy, so a padding slot is indistinguishable
+
+        start = align_to_ptrsize(self.offset_rt_priority + 4)
+        for off in range(self.offset_rt_priority + 4, start + 0x800, 4):
+            for task, want in constraints:
+                v = read_int32_from_memory(task + off, safe=True)
+                if v is None:
+                    break
+                base = v & ~self.SCHED_RESET_ON_FORK
+                if base not in self.POLICY_NAMES:
+                    break
+                if want is not None and base not in want:
+                    break
+            else:
+                return off
+        return None
+
+    def get_offset_on_rq(self, kversion):
+        # `on_rq` is an int placed right before `prio` up to v7.1; v7.2 shrank it to u8 and moved it
+        if kversion is not None and "7.2" <= kversion:
+            return None
+        off = self.offset_prio - 4
+        if off < 0:
+            return None
+        for task in self.task_addrs:
+            v = read_int32_from_memory(task + off, safe=True)
+            if v not in (0, 1, 2):
+                return None
+        return off
+
+    def read_byte(self, addr):
+        v = read_int32_from_memory(addr, safe=True)
+        return None if v is None else v & 0xff
+
+    def state_to_str(self, v):
+        if v == 0:
+            return "TASK_RUNNING"
+        names = [name for bit, name in self.STATE_BITS if v & bit]
+        rest = v & ~sum(bit for bit, _name in self.STATE_BITS)
+        if rest:
+            names.append("{:#x}".format(rest))
+        return "|".join(names) if names else "TASK_RUNNING"
+
+    def state_to_letter(self, v):
+        if v is None:
+            return "?"
+        if v == 0:
+            return "R"
+        for bit, letter in self.STATE_LETTERS:
+            if v & bit:
+                return letter
+        return "?"
+
+    def policy_to_str(self, v):
+        base = v & ~self.SCHED_RESET_ON_FORK
+        name = self.POLICY_NAMES.get(base, "policy={:d}".format(base))
+        if v & self.SCHED_RESET_ON_FORK:
+            name += "|SCHED_RESET_ON_FORK"
+        return name
+
+    def parse(self, task):
+        state = state_name = None
+        if self.offset_state is not None:
+            state = read_int32_from_memory(task + self.offset_state, safe=True)
+            if state is not None:
+                state_name = self.state_to_str(state)
+
+        sched_class = class_name = None
+        if self.offset_sched_class is not None:
+            sched_class = read_int_from_memory(task + self.offset_sched_class, safe=True)
+            name = self.class_addrs.get(sched_class)
+            class_name = self.CLASS_NAMES.get(name) if name else None
+
+        prio = static_prio = normal_prio = rt_priority = None
+        if self.offset_prio is not None:
+            prio = read_int32_from_memory(task + self.offset_prio, safe=True, signed=True)
+            static_prio = read_int32_from_memory(task + self.offset_prio + 4, safe=True, signed=True)
+            normal_prio = read_int32_from_memory(task + self.offset_prio + 8, safe=True, signed=True)
+            rt_priority = read_int32_from_memory(task + self.offset_prio + 12, safe=True)
+
+        policy = policy_name = None
+        if self.offset_policy is not None:
+            policy = read_int32_from_memory(task + self.offset_policy, safe=True)
+            if policy is not None:
+                policy_name = self.policy_to_str(policy)
+
+        on_rq = self.read_byte(task + self.offset_on_rq) if self.offset_on_rq is not None else None
+        on_cpu = self.read_byte(task + self.offset_on_cpu) if self.offset_on_cpu is not None else None
+        cpu = read_int32_from_memory(task + self.offset_cpu, safe=True) if self.offset_cpu is not None else None
+
+        return self.Info(state, state_name, sched_class, class_name, prio, static_prio,
+                         normal_prio, rt_priority, policy, policy_name, on_rq, on_cpu, cpu)
+
+
 class KernelModule:
     """Resolve the layout of `struct module` and parse it.
     It is shared by `kmod`, `kmod-load` and the commands that look up the loaded modules.
@@ -89055,6 +89431,248 @@ class KernelKeyringCommand(GenericCommand, BufferingOutput):
                 self.append_records(self.collect_roots(roots))
                 self.out.append("")
         self.append_walk_warnings()
+        self.print_output(check_terminal_size=True)
+        return
+
+
+@register_command
+class KernelSchedCommand(GenericCommand, BufferingOutput):
+    """Dump the scheduler state of each task (cpu, state, class, priority, policy)."""
+
+    _cmdline_ = "ksched"
+    _category_ = "06-f. Qemu-system/KGDB Cooperation - Linux Task"
+
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("target", metavar="PID|TASK_ADDRESS", nargs="?",
+                        help="dump a single task in detail, selected by its pid or task_struct address.")
+    parser.add_argument("-f", "--filter", action="append", type=re.compile, default=[], help="comm string REGEXP filter.")
+    parser.add_argument("-t", "--print-thread", action="store_true", help="display by thread (LWP), not by process.")
+    parser.add_argument("-u", "--user-process-only", action="store_true", help="display user-land process (+ thread) only.")
+    parser.add_argument("--meta", action="store_true", help="display offset information.")
+    parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
+    parser.add_argument("-q", "--quiet", action="store_true", help="enable quiet mode.")
+    _syntax_ = parser.format_help()
+
+    _example_ = [
+        "{0:s}            # per-cpu current tasks and a table of every task",
+        "{0:s} 1337       # dump the scheduler state of the task whose pid is 1337",
+        "{0:s} -f bash    # filter the table by comm",
+    ]
+    _example_ = "\n".join(_example_).format(_cmdline_)
+
+    _note_ = [
+        "This command requires CONFIG_RANDSTRUCT=n unless vmlinux with debug information is loaded.",
+        "",
+        "Without debug information, `state`, the prio cluster and the scheduler class are resolved on",
+        "every supported version, `on_rq` up to v7.1, and `policy` on v5.3 or later. The scheduler class",
+        "needs the `*_sched_class` symbols (CONFIG_KALLSYMS_ALL=y). The other fields (`on_cpu`, `cpu`)",
+        "are shown only when debug information is loaded. The running cpu of each current task comes from",
+        "`kcurrent`, which reads it from the cpu context rather than from `task_struct`.",
+    ]
+    _note_ = "\n".join(_note_)
+
+    def initialize(self):
+        self.meta = []
+        task_command = KernelTaskCommand.borrow(self, print_thread=self.args.print_thread)
+        if task_command is None:
+            return None
+        self.task_command = task_command
+
+        self.ksched = Kernel.sched()
+        task_addrs = KernelTaskCommand.get_task_list(task_command.init_task, task_command.offset_tasks)
+        ret = self.ksched.initialize(task_command, task_addrs)
+        self.meta.extend(Kernel.export_meta(self, self.ksched.meta))
+        if not ret:
+            return None
+        return True
+
+    def get_current_map(self):
+        """Run `kcurrent` once, returning its "current" lines and a {task: cpu_label} map."""
+        args = self.args
+        try:
+            res = gdb.execute("kcurrent --quiet", to_string=True)
+        except gdb.error:
+            res = ""
+        self.args = args # kcurrent borrows ktask too, which overwrites self.args
+
+        lines = []
+        current_map = {}
+        for line in Color.remove_color(res).splitlines():
+            line = line.strip()
+            r = re.search(r"current \(([^)]+)\): (0x\S+) (.*)", line)
+            if r:
+                lines.append(line)
+                current_map[int(r.group(2), 16)] = r.group(1)
+                continue
+            r = re.search(r"current: (0x\S+) (.*)", line)
+            if r:
+                lines.append("current (cpu0): " + line[len("current: "):])
+                current_map[int(r.group(1), 16)] = "cpu0"
+            elif line.startswith("current ("):
+                lines.append(line) # "unavailable (...)"
+        return lines, current_map
+
+    def collect_entries(self):
+        task_command = self.task_command
+        task_addrs = KernelTaskCommand.get_task_list(task_command.init_task, task_command.offset_tasks)
+        if self.args.print_thread and self.lwp_available():
+            task_addrs = task_command.add_lwp_task(task_addrs)
+
+        entries = []
+        for task in task_addrs:
+            try:
+                pid = read_int32_from_memory(task + task_command.offset_pid)
+                comm = read_cstring_from_memory(task + task_command.offset_comm)
+                if self.args.user_process_only:
+                    mm = read_int_from_memory(task + task_command.offset_mm)
+                    if mm == 0 or pid == 0:
+                        continue
+            except gdb.MemoryError:
+                continue
+            entries.append((task, pid, comm))
+        return entries
+
+    def lwp_available(self):
+        task_command = self.task_command
+        if getattr(task_command, "offset_thread_group", None) is None:
+            return False
+        if "6.7" <= Kernel.version():
+            if getattr(task_command, "offset_signal", None) is None:
+                return False
+            if getattr(task_command, "offset_thread_head", None) is None:
+                return False
+        return True
+
+    def cpu_str(self, task, info, current_map):
+        if task in current_map:
+            label = current_map[task]
+            return label[3:] if label.startswith("cpu") else label
+        if info.cpu is not None:
+            return "{:d}".format(info.cpu)
+        if Kernel.per_cpu().is_up:
+            return "0" # CONFIG_SMP=n runs every task on cpu0
+        return "?"
+
+    def dump_table(self, entries, current_map):
+        ksched = self.ksched
+        if not self.args.quiet:
+            fmt = "{:1s} {:18s} {:>7s} {:16s} {:>5s} {:>5s} {:>4s} {:>8s} {:>5s} {:>3s}"
+            legend = ["", "task", "pid", "comm", "state", "class", "prio", "policy", "on_rq", "cpu"]
+            self.out.append(GefUtil.make_legend(fmt.format(*legend)))
+
+        for task, pid, comm in entries:
+            info = ksched.parse(task)
+            mark = "*" if task in current_map else " "
+            class_name = info.class_name or "?"
+            prio = "?" if info.prio is None else "{:d}".format(info.prio)
+            policy = "?" if info.policy_name is None else info.policy_name.replace("SCHED_", "")
+            on_rq = "?" if info.on_rq is None else "{:d}".format(info.on_rq)
+            self.out.append("{:1s} {:#018x} {:>7d} {:16s} {:>5s} {:>5s} {:>4s} {:>8s} {:>5s} {:>3s}".format(
+                mark, task, pid, comm, ksched.state_to_letter(info.state), class_name,
+                prio, policy, on_rq, self.cpu_str(task, info, current_map),
+            ))
+        return
+
+    def dump_one(self, task, pid, comm, current_map):
+        ksched = self.ksched
+        info = ksched.parse(task)
+        lines = [("task", "{:#018x}".format(task)), ("comm", comm), ("pid", "{:d}".format(pid))]
+        if info.state is not None:
+            lines.append(("state", "{:s} ({:#x})".format(info.state_name, info.state)))
+        if info.class_name is not None:
+            name = next((n for a, n in ksched.class_addrs.items() if a == info.sched_class), "")
+            lines.append(("class", "{:s} ({:s})".format(info.class_name, name)))
+        if info.prio is not None:
+            lines.append(("prio", "{:d}".format(info.prio)))
+            lines.append(("static_prio", "{:d}".format(info.static_prio)))
+            lines.append(("normal_prio", "{:d}".format(info.normal_prio)))
+            lines.append(("rt_priority", "{:d}".format(info.rt_priority)))
+        if info.policy is not None:
+            lines.append(("policy", "{:s} ({:d})".format(info.policy_name, info.policy & ~ksched.SCHED_RESET_ON_FORK)))
+        if info.on_rq is not None:
+            lines.append(("on_rq", "{:d}".format(info.on_rq)))
+        if info.on_cpu is not None:
+            lines.append(("on_cpu", "{:d}".format(info.on_cpu)))
+        cpu = self.cpu_str(task, info, current_map)
+        if cpu != "?":
+            lines.append(("cpu", cpu))
+        for name, value in lines:
+            self.out.append("{:<12s} {:s}".format(name, value))
+        return
+
+    def resolve_target(self, entries, current_map):
+        target = self.args.target
+        try:
+            addr = AddressUtil.parse_address(target)
+        except Exception:
+            addr = None
+        for task, pid, comm in entries:
+            if addr is not None and task == addr:
+                return task, pid, comm
+        try:
+            pid_want = int(target, 0)
+        except ValueError:
+            pid_want = None
+        if pid_want is not None:
+            for task, pid, comm in entries:
+                if pid == pid_want:
+                    return task, pid, comm
+        # the idle task of each secondary cpu is not linked from init_task, but kcurrent shows it
+        if addr is not None and addr in current_map:
+            task_command = self.task_command
+            pid = read_int32_from_memory(addr + task_command.offset_pid, safe=True)
+            comm = read_cstring_from_memory(addr + task_command.offset_comm)
+            if pid is not None:
+                return addr, pid, comm
+        return None
+
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
+    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64"))
+    @Decorator.only_if_in_kernel_or_kpti_disabled
+    def do_invoke(self, args):
+        self.quiet_info("Wait for memory scan")
+
+        ret = self.initialize()
+        if args.meta or not ret:
+            for func, line in self.meta:
+                func(line)
+        if not ret:
+            return
+        if args.meta:
+            return
+
+        entries = self.collect_entries()
+        if not entries:
+            self.quiet_info("Nothing to dump")
+            return
+
+        self.out = []
+        current_lines, current_map = self.get_current_map()
+
+        if args.target is not None:
+            found = self.resolve_target(entries, current_map)
+            if found is None:
+                err("No task matched `{:s}`".format(args.target))
+                return
+            self.dump_one(found[0], found[1], found[2], current_map)
+            self.print_output(check_terminal_size=True)
+            return
+
+        if current_lines and not args.quiet:
+            self.out.append("current:")
+            for line in current_lines:
+                self.out.append("  " + line)
+            self.out.append("")
+
+        selected = entries
+        if args.filter:
+            selected = [e for e in entries if any(x.search(e[2]) for x in args.filter)]
+        if not selected:
+            err("No task matched")
+            return
+        self.dump_table(selected, current_map)
         self.print_output(check_terminal_size=True)
         return
 

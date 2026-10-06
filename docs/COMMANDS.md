@@ -2100,6 +2100,7 @@ future-calls --debug                 # show Unicorn fault details
 ```text
 This command is a best-effort concrete preview based on Unicorn emulation.
 Only x86, x86-64, ARM32, and ARM64 are supported.
+A loop is cut only when the registers and written memory repeat; other loops run until --nb-insn.
 ```
 
 ## `unicorn-emulate`
@@ -9047,6 +9048,50 @@ usage: kregs [-h] [-n]
 options:
   -h, --help      show this help message and exit
   -n, --no-pager  do not use the pager.
+```
+
+## `ksched`
+
+Dump the scheduler state of each task (cpu, state, class, priority, policy).
+
+
+### Syntax
+
+```text
+usage: ksched [-h] [-f FILTER] [-t] [-u] [--meta] [-n] [-q] [PID|TASK_ADDRESS]
+
+positional arguments:
+  PID|TASK_ADDRESS      dump a single task in detail, selected by its pid or task_struct address.
+
+options:
+  -h, --help            show this help message and exit
+  -f, --filter FILTER   comm string REGEXP filter.
+  -t, --print-thread    display by thread (LWP), not by process.
+  -u, --user-process-only
+                        display user-land process (+ thread) only.
+  --meta                display offset information.
+  -n, --no-pager        do not use the pager.
+  -q, --quiet           enable quiet mode.
+```
+
+### Examples
+
+```gdb
+ksched            # per-cpu current tasks and a table of every task
+ksched 1337       # dump the scheduler state of the task whose pid is 1337
+ksched -f bash    # filter the table by comm
+```
+
+### Notes
+
+```text
+This command requires CONFIG_RANDSTRUCT=n unless vmlinux with debug information is loaded.
+
+Without debug information, `state`, the prio cluster and the scheduler class are resolved on
+every supported version, `on_rq` up to v7.1, and `policy` on v5.3 or later. The scheduler class
+needs the `*_sched_class` symbols (CONFIG_KALLSYMS_ALL=y). The other fields (`on_cpu`, `cpu`)
+are shown only when debug information is loaded. The running cpu of each current task comes from
+`kcurrent`, which reads it from the cpu context rather than from `task_struct`.
 ```
 
 ## `ksighands`

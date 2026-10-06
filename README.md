@@ -269,6 +269,8 @@ For a comprehensive list and additional details, see [docs/SUPPORTED-MODE.md](do
     - ![](images/knetdev.png)
 - `kworkqueue`: dumps workqueue items and inspect embedded work_struct objects.
     - ![](images/kworkqueue.png)
+- `ksched`: dumps the scheduler state of each task (cpu, state, class, priority, policy).
+    - ![](images/ksched.png)
 - `kwalk`: dumps the entries held by the well-known kernel data structures.
     - ![](images/kwalk.png)
 - `kobj`: identifies an arbitrary kernel address.
