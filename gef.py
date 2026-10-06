@@ -27556,6 +27556,10 @@ class CapstoneDisassembleCommand(GenericCommand):
                 err("ARGS must be KEY=VALUE style")
                 return
 
+        if args.length is not None and args.length <= 0:
+            err("--length must be greater than zero")
+            return
+
         length = args.length or Config.get_gef_setting("capstone_disassemble.nb_lines_code_default")
         location = args.location or current_arch.pc
 
