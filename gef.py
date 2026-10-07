@@ -67114,8 +67114,8 @@ class KernelAddressHeuristicFinder:
     def dereference_current_task(current_task, cpu_base=None):
         if cpu_base is not None:
             current_task = AddressUtil.normalize_address(cpu_base + current_task)
-        task = read_int_from_memory(current_task)
-        return task if is_valid_addr(task) else None
+        task = read_int_from_memory(current_task, safe=True)
+        return task if task and is_valid_addr(task) else None
 
     @staticmethod
     @cpu_context_dependent
@@ -74161,7 +74161,8 @@ class KernelXArray:
 
         array = read_int_from_memory(node + cls.offset_array)
         offset = head_address - array
-        if offset < 0 or offset >= cls.ptrsize * 10 or offset % cls.ptrsize:
+        # xa_lock grows to 72 bytes with CONFIG_LOCK_STAT, and more with CONFIG_PREEMPT_RT
+        if offset < 0 or offset >= cls.ptrsize * 32 or offset % cls.ptrsize:
             return False
 
         cls.offset_xa_head = offset
@@ -77490,6 +77491,79 @@ class KernelNamespace:
 
     @staticmethod
     @Cache.cache_this_session(cache_None=False, per_inferior=True, until_new_objfile=True)
+    def get_offset_tree_list(ns_type, init_ns):
+        """Return (offset of the list node linking every namespace of `ns_type`, offsetof(the namespace, ns.ops)).
+        The list exists since v6.18, and its head is ipc_ns_tree, uts_ns_tree and so on. The former is None
+        if `ops` is NULL, since the type is disabled (e.g., CONFIG_IPC_NS=n) and the initial one is the only one.
+
+        struct ns_common {
+            ...
+            const struct proc_ns_operations *ops;
+            unsigned int inum;
+            ...
+            struct list_head ns_list_node;          // v6.18
+            struct ns_tree_node {                   // v6.19~
+                struct rb_node ns_node;
+                struct list_head ns_list_entry;
+            } ns_unified_node, ns_tree_node, ns_owner_node;
+            ...
+        };
+        """
+        struct_name = KernelNamespace.STRUCT_NAMES[ns_type]
+        ptrsize = current_arch.ptrsize
+        offset_ops = GefUtil.offsetof(struct_name, "ns.ops")
+        if offset_ops is None:
+            offset_inum = KernelNamespace.get_offset_inum(ns_type, init_ns, None)
+            if offset_inum is None or offset_inum < ptrsize:
+                return None
+            offset_ops = offset_inum - ptrsize
+        ops = read_int_from_memory(init_ns + offset_ops, safe=True)
+        if ops is None:
+            return None
+        if ops == 0:
+            return None, offset_ops
+
+        # fast path
+        for member in ["ns.ns_tree_node.ns_list_entry", "ns.ns_list_node"]:
+            offset_list = GefUtil.offsetof(struct_name, member)
+            if offset_list is not None:
+                return offset_list, offset_ops
+
+        # slow path
+        # the list goes around the namespaces of the same type, whose `ops` are the same, and the list head
+        # in the kernel image. The lists of ns_unified_node and ns_owner_node have the other types too.
+        offset_inum = offset_ops + ptrsize
+        for offset_list in range(align(offset_inum + 4, ptrsize), offset_inum + ptrsize * 32, ptrsize):
+            lh = KernelListHead(init_ns + offset_list, offset_list)
+            entries = list(itertools.islice(lh.iter_entries(), 0x10000))
+            if lh.broken:
+                continue
+            others = [x for x in entries if read_int_from_memory(x + offset_ops, safe=True) != ops]
+            if len(others) == 1 and KernelAddressHeuristicFinderUtil.is_in_kernel_image(others[0] + offset_list):
+                return offset_list, offset_ops
+        return None
+
+    @staticmethod
+    def get_tree_namespaces(ns_type, init_ns):
+        """Return ([namespace, ...], reason) of every namespace of `ns_type` on the namespace tree (v6.18~),
+        where `reason` tells why the list is incomplete. Return None if the kernel has no namespace tree."""
+        if not Ksym.get_addr("__ns_tree_add_raw"):
+            return None
+        offsets = KernelNamespace.get_offset_tree_list(ns_type, init_ns)
+        if offsets is None:
+            return [init_ns], "is not found"
+        offset_list, offset_ops = offsets
+        if offset_list is None:
+            return [init_ns], None
+        ops = read_int_from_memory(init_ns + offset_ops, safe=True)
+        lh = KernelListHead(init_ns + offset_list, offset_list)
+        namespaces = [init_ns] + [x for x in lh.iter_entries() if read_int_from_memory(x + offset_ops, safe=True) == ops]
+        if lh.broken:
+            return namespaces, "is broken at {:#x} ({:s})".format(lh.broken_at, lh.broken_reason)
+        return namespaces, None
+
+    @staticmethod
+    @Cache.cache_this_session(cache_None=False, per_inferior=True, until_new_objfile=True)
     def get_offset_pid_ns_hierarchy(init_pid_ns, reapers):
         """Return (offsetof(pid_namespace, level), offsetof(pid_namespace, parent)).
 
@@ -79574,17 +79648,12 @@ class KernelIpcs:
         return
 
     @Cache.cache_this_session(cache_None=False, per_inferior=True, until_new_objfile=True)
-    @Decorator.switch_to_intel_syntax
-    def initialize(self):
-        ipc_ns_list = self.get_all_ipc_ns()
+    def initialize(self, init_ipc_ns):
         self.meta = []
 
         self.sysvipc_disabled = False
         self.sysvipc_uninitialized = False
-        if ipc_ns_list == []:
-            return None
-
-        if ipc_ns_list == [0]:
+        if not init_ipc_ns:
             self.meta.append(("err", "Could not find valid ipc_ns (maybe CONFIG_SYSVIPC=n)"))
             return None
 
@@ -79649,7 +79718,6 @@ class KernelIpcs:
 
         # offsetof(ipc_ids, ipcs_idr.idr_rt.xa_head): tagged valid pointer is `xa_head`.
         # sizeof(ids[0]): find three IDR heads and calculate the distance.
-        init_ipc_ns = ipc_ns_list[0]
         offset_xa_head = GefUtil.offsetof("ipc_ids", member)
         sizeof_ipc_ids = GefUtil.sizeof("ipc_ids")
         source = "DWARF"
@@ -79702,12 +79770,17 @@ class KernelIpcs:
 
             # Read xa_flags as u32, including the UP layout with padding before xa_head.
             flags = [read_int32_from_memory(address - delta, safe=True) for delta in (4, ptr)]
+            xarray_markers = [
+                f for f in flags
+                if f is not None and (f == 4 or any(f == 4 | bits << shift for bits in (1, 3) for shift in range(23, 28)))
+            ]
             if self.tree_kind == "xarray":
-                markers = [f for f in flags if f is not None and (f == 4 or any(f == 4 | bits << shift for bits in (1, 3) for shift in range(23, 28)))]
+                markers = xarray_markers
                 node = KernelXArray.is_node(entry)
                 tag = 2 if node else 0
             else:
-                markers = [f for f in flags if f and f & 0xffff == 0]
+                # ROOT_IS_IDR is a high gfp bit until v4.16, then v4.17 moves it to the low bits as the xarray does
+                markers = [f for f in flags if f and f & 0xffff == 0] + xarray_markers
                 node = bool(entry & 1)
                 tag = 1 if node else 0
             if not markers and not (entry == 0 and 0 in flags):
@@ -79806,69 +79879,56 @@ class KernelIpcs:
         self.meta.append(("info", "offsetof(ipc_ids, {:s}): {:#x} ({:s})".format(member, self.offset_xa_head, source)))
         self.meta.append(("info", "sizeof(struct ipc_ids): {:#x} ({:s})".format(self.sizeof_ipc_ids, source)))
 
-        # kern_ipc_perm
-        """
-        struct kern_ipc_perm {
-            spinlock_t lock;
-            bool deleted;
-            int id;
-            key_t key;
-            kuid_t uid;
-            kgid_t gid;
-            kuid_t cuid;
-            kgid_t cgid;
-            umode_t mode;
-            unsigned long seq;
-            void *security;
-            struct rhash_head khtnode;
-            struct rcu_head rcu;
-            refcount_t refcount;
-        } ____cacheline_aligned_in_smp __randomize_layout;
-        """
-        try:
-            self.offset_id = GefUtil.parse_and_eval_unsigned("&((struct kern_ipc_perm*)0).id")
-            self.offset_key = GefUtil.parse_and_eval_unsigned("&((struct kern_ipc_perm*)0).key")
-            self.offset_uid = GefUtil.parse_and_eval_unsigned("&((struct kern_ipc_perm*)0).uid")
-            self.offset_gid = GefUtil.parse_and_eval_unsigned("&((struct kern_ipc_perm*)0).gid")
-            self.offset_mode = GefUtil.parse_and_eval_unsigned("&((struct kern_ipc_perm*)0).mode")
-        except gdb.error:
-            self.offset_id = 4 if Kernel.per_cpu().is_up else 8
-            if is_x86_64() or is_x86_32():
-                addr = Ksym.get_addr("kernel_to_ipc64_perm")
-                if addr:
-                    # The key copied to ipc64_perm identifies the ticket-lock layout too.
-                    res = KernelAddressHeuristicFinderUtil.disassemble_until_next_symbol(addr, 60)
-                    match = re.search(r"mov\s+(\w+),DWORD PTR \[(?:rdi|eax)\+(0x[0-9a-f]+)\].*?mov\s+DWORD PTR \[(?:rsi|edx)\],\1\b", res, re.DOTALL)
-                    if match:
-                        self.offset_id = int(match.group(2), 16) - 4
-            self.offset_key = self.offset_id + 4
-            self.offset_uid = self.offset_key + 4
-            self.offset_gid = self.offset_uid + 4
-            self.offset_mode = self.offset_gid + 4 + 4 + 4
-
+        # ipc_namespace->ns.ns_tree_node (v6.18~)
+        offsets = KernelNamespace.get_offset_tree_list("ipc", init_ipc_ns) if Ksym.get_addr("__ns_tree_add_raw") else None
+        if offsets is not None and offsets[0] is not None:
+            self.meta.append(("info", "offsetof(ipc_namespace, list node of ipc_ns_tree): {:#x}".format(offsets[0])))
         return True
 
-    def get_all_ipc_ns(self):
-        res = gdb.execute("ktask --print-namespace --user-process-only --no-pager --quiet", to_string=True)
-        r = re.findall(r"nsproxy->ipc_ns\s+(0x\S+)", res)
-
-        ipc_ns_list = []
+    def get_all_ipc_ns(self, task_addrs, offset_nsproxy):
+        """Return {"namespaces": [init_ipc_ns, ...], "incomplete": [reason, ...]}.
+        `task_addrs` must start with init_task, whose nsproxy is init_nsproxy. Until v6.17, the namespaces
+        not used by any task (e.g., held only by a file descriptor or a bind mount) are not found.
+        If `offset_nsproxy` is None, init_ipc_ns is searched instead of the namespaces of the tasks."""
+        offset_ipc_ns = dict(KernelTaskCommand.get_nsproxy_members())["ipc_ns"]
+        namespaces = []
+        incomplete = []
+        if offset_nsproxy is None:
+            init_ipc_ns = KernelAddressHeuristicFinder.get_init_ipc_ns()
+            if init_ipc_ns is None:
+                return {"namespaces": [], "incomplete": ["neither task_struct->nsproxy nor init_ipc_ns is found"]}
+            namespaces.append(init_ipc_ns)
+            incomplete.append("task_struct->nsproxy is not found, so the namespaces of the tasks are not shown")
+            task_addrs = []
         # do not use `set()` because the order is important.
-        for x in r:
-            x = int(x, 16)
-            if x not in ipc_ns_list:
-                ipc_ns_list.append(x)
-        return ipc_ns_list
+        for task in task_addrs:
+            nsproxy = read_int_from_memory(task + offset_nsproxy, safe=True)
+            # the nsproxy of an exiting task is NULL
+            ipc_ns = read_int_from_memory(nsproxy + offset_ipc_ns, safe=True) if nsproxy else None
+            if ipc_ns is None and not namespaces:
+                return {"namespaces": [], "incomplete": ["init_task->nsproxy->ipc_ns is unreadable"]}
+            if ipc_ns is not None and ipc_ns not in namespaces:
+                namespaces.append(ipc_ns)
+
+        if namespaces and namespaces[0]:
+            ret = KernelNamespace.get_tree_namespaces("ipc", namespaces[0])
+            if ret is not None:
+                tree, reason = ret
+                namespaces += [x for x in tree if x not in namespaces]
+                if reason:
+                    incomplete.append("ipc_ns_tree {:s}, so some namespaces may be missing".format(reason))
+        return {"namespaces": namespaces, "incomplete": incomplete}
 
     def has_objects(self, ipc_ns_list):
         # the presence of IPC objects is live, so it must not be cached
         return any(
-            read_int_from_memory(ipc_ns + self.offset_ids + self.sizeof_ipc_ids * i + self.offset_xa_head)
+            read_int_from_memory(ipc_ns + self.offset_ids + self.sizeof_ipc_ids * i + self.offset_xa_head, safe=True) != 0
             for ipc_ns in ipc_ns_list for i in range(3)
         )
 
     def get_semaphores(self, ipc_ids_ptr):
-        """
+        """Return {"objects": [...], "incomplete": [reason, ...]}. The values not found are None.
+
         struct sem_array {
             struct kern_ipc_perm sem_perm;
             time64_t sem_ctime;
@@ -79879,19 +79939,23 @@ class KernelIpcs:
             ...
         } __randomize_layout;
         """
-        elems = self.get_ipc_entries(ipc_ids_ptr)
+        elems, incomplete = self.get_entries(ipc_ids_ptr)
         self.sem_elems_temp = elems
         offset_sem_nsems = self.get_offset_sem_nsems()
         del self.sem_elems_temp
         objects = []
         for e in elems:
             item = self.get_permissions(e)
-            item["nsems"] = read_int32_from_memory(e + offset_sem_nsems) if offset_sem_nsems is not None else None
+            if item is None:
+                incomplete.append("sem_array {:#x} is unreadable".format(e))
+                continue
+            item["nsems"] = read_int32_from_memory(e + offset_sem_nsems, safe=True) if offset_sem_nsems is not None else None
             objects.append(item)
-        return objects
+        return {"objects": objects, "incomplete": incomplete}
 
     def get_messages(self, ipc_ids_ptr):
-        """
+        """Return {"objects": [...], "incomplete": [reason, ...]}. The values not found are None.
+
         struct msg_queue {
             struct kern_ipc_perm q_perm;
             time64_t q_stime;
@@ -79915,23 +79979,27 @@ class KernelIpcs:
             void *security;
         };
         """
-        elems = self.get_ipc_entries(ipc_ids_ptr)
+        elems, incomplete = self.get_entries(ipc_ids_ptr)
         self.msg_elems_temp = elems
         offsets = self.get_offsets_msg()
         del self.msg_elems_temp
         objects = []
         for e in elems:
             item = self.get_permissions(e)
+            if item is None:
+                incomplete.append("msg_queue {:#x} is unreadable".format(e))
+                continue
             item.update(q_cbytes=None, q_qnum=None, messages=None)
             if offsets is not None:
                 offset_q_cbytes, offset_q_qnum, offset_q_messages = offsets
-                item.update(q_cbytes=read_int_from_memory(e + offset_q_cbytes),
-                            q_qnum=read_int_from_memory(e + offset_q_qnum), messages=e + offset_q_messages)
+                item.update(q_cbytes=read_int_from_memory(e + offset_q_cbytes, safe=True),
+                            q_qnum=read_int_from_memory(e + offset_q_qnum, safe=True), messages=e + offset_q_messages)
             objects.append(item)
-        return objects
+        return {"objects": objects, "incomplete": incomplete}
 
     def get_shared_memory(self, ipc_ids_ptr):
-        """
+        """Return {"objects": [...], "incomplete": [reason, ...]}. The values not found are None.
+
         struct shmid_kernel {
             struct kern_ipc_perm shm_perm;
             struct file *shm_file;
@@ -79940,44 +80008,72 @@ class KernelIpcs:
             ...
         } __randomize_layout;
         """
-        elems = self.get_ipc_entries(ipc_ids_ptr)
+        elems, incomplete = self.get_entries(ipc_ids_ptr)
         self.shm_elems_temp = elems
         offsets = self.get_offset_shm()
         del self.shm_elems_temp
         objects = []
         for e in elems:
             item = self.get_permissions(e)
+            if item is None:
+                incomplete.append("shmid_kernel {:#x} is unreadable".format(e))
+                continue
             item.update(nattch=None, segsz=None)
             if offsets is not None:
                 offset_shm_nattch, offset_shm_segsz = offsets
-                item.update(nattch=read_int_from_memory(e + offset_shm_nattch),
-                            segsz=read_int_from_memory(e + offset_shm_segsz))
+                item.update(nattch=read_int_from_memory(e + offset_shm_nattch, safe=True),
+                            segsz=read_int_from_memory(e + offset_shm_segsz, safe=True))
             objects.append(item)
-        return objects
+        return {"objects": objects, "incomplete": incomplete}
 
-    def get_message_entries(self, head):
-        current = head
-        seen = {current}
-        entries = []
-        while is_valid_addr(current):
-            current = read_int_from_memory(current)
-            if current in seen:
-                break
-            seen.add(current)
-            entries.append(current)
-        return entries
+    def get_message_entries(self, head, q_qnum=None):
+        """Return ([msg_msg, ...], [reason, ...]). The walk stops at an unreadable link or a cycle without `head`."""
+        lh = KernelListHead(head)
+        entries = list(lh.iter_entries())
+        incomplete = []
+        if lh.broken and lh.broken_reason == "unreadable" and entries and entries[-1] == lh.broken_at:
+            entries.pop() # it is not a message, but the invalid link
+            incomplete.append("the message list {:#x} has an invalid link to {:#x}".format(head, lh.broken_at))
+        elif lh.broken:
+            incomplete.append("the message list {:#x} is broken at {:#x} ({:s})".format(head, lh.broken_at, lh.broken_reason))
+        elif q_qnum is not None and len(entries) != q_qnum:
+            incomplete.append("the message list {:#x} has {:d} messages, but q_qnum is {:d}".format(head, len(entries), q_qnum))
+        return entries, incomplete
+
+    def get_entries(self, ipc_ids_ptr):
+        """Return ([entry, ...], [reason, ...]) of the IPC objects, and resolve the kern_ipc_perm layout with them."""
+        try:
+            entries = self.get_ipc_entries(ipc_ids_ptr)
+        except gdb.MemoryError:
+            return [], ["the IDR of ipc_ids {:#x} is unreadable".format(ipc_ids_ptr)]
+        self.perm_elems_temp = entries
+        offsets = self.get_offsets_perm()
+        del self.perm_elems_temp
+        self.offset_id, self.offset_key, self.offset_uid, self.offset_gid, self.offset_mode = offsets or (None,) * 5
+        incomplete = []
+        if entries and offsets is None:
+            incomplete.append("the layout of kern_ipc_perm is not determined, so id, key, uid, gid and perms are unknown")
+        return [entry for _index, entry in entries], incomplete
 
     def get_permissions(self, address):
+        """Return the members of kern_ipc_perm, where the unknown ones are None, or None if `address` is unreadable."""
+
+        def read(offset, reader=read_int32_from_memory):
+            return reader(address + offset, safe=True) if offset is not None else None
+
+        if read_int_from_memory(address, safe=True) is None:
+            return None
         return {
             "address": address,
-            "id": read_int32_from_memory(address + self.offset_id),
-            "key": read_int32_from_memory(address + self.offset_key),
-            "uid": read_int32_from_memory(address + self.offset_uid),
-            "gid": read_int32_from_memory(address + self.offset_gid),
-            "mode": read_int16_from_memory(address + self.offset_mode),
+            "id": read(self.offset_id),
+            "key": read(self.offset_key),
+            "uid": read(self.offset_uid),
+            "gid": read(self.offset_gid),
+            "mode": read(self.offset_mode, read_int16_from_memory),
         }
 
     def get_ipc_entries(self, ipc_ids):
+        """Return [(index, entry), ...] of the IPC objects in the IDR of `ipc_ids`."""
         head = read_int_from_memory(ipc_ids + self.offset_xa_head)
         if head and not self.is_ipc_pointer(head & ~3):
             self.meta.append(("err", "Invalid IPC IDR head: {:#x}".format(head)))
@@ -79985,16 +80081,10 @@ class KernelIpcs:
         if self.tree_kind == "idr":
             entries = self.get_legacy_entries(head)
         elif self.tree_kind == "radix":
-            entries = KernelRadixTree(ipc_ids, self.offset_xa_head).parse()
+            entries = KernelRadixTree(ipc_ids, self.offset_xa_head).parse_indexed()
         else:
-            entries = KernelXArray(ipc_ids, self.offset_xa_head).parse()
-        entries = [entry for entry in entries if self.is_ipc_pointer(entry)]
-        if entries and self.offset_id in (4, 8) and read_int32_from_memory(entries[0] + 4) == 0xdead4ead:
-            # CONFIG_DEBUG_SPINLOCK adds magic, owner_cpu and owner before deleted.
-            delta = align(12, current_arch.ptrsize) + current_arch.ptrsize + 4 - self.offset_id
-            for name in ("id", "key", "uid", "gid", "mode"):
-                setattr(self, "offset_" + name, getattr(self, "offset_" + name) + delta)
-        return entries
+            entries = KernelXArray(ipc_ids, self.offset_xa_head).parse_indexed()
+        return [(index, entry) for index, entry in entries if self.is_ipc_pointer(entry)]
 
     def is_ipc_pointer(self, address):
         if not address or not is_valid_addr(address):
@@ -80021,6 +80111,7 @@ class KernelIpcs:
         return True
 
     def get_legacy_entries(self, head):
+        """Return [(index, entry), ...] in the idr_layer tree of `head`."""
         ptr = current_arch.ptrsize
         old = not Ksym.get_addr("idr_find_slowpath") and Kernel.version() < "3.9"
         slots = GefUtil.offsetof("idr_layer", "ary")
@@ -80035,11 +80126,12 @@ class KernelIpcs:
             count_offset = slots + ptr * count
         if layer_offset is None:
             layer_offset = 4 if reordered else count_offset + 4
+        bits = count.bit_length() - 1
         entries = []
-        pending = [head] if head else []
+        pending = [(head, 0)] if head else []
         seen = set()
         while pending:
-            node = pending.pop()
+            node, base = pending.pop()
             if node in seen:
                 continue
             seen.add(node)
@@ -80052,11 +80144,98 @@ class KernelIpcs:
                 if entry:
                     if not self.is_ipc_pointer(entry):
                         raise gdb.MemoryError("Invalid IDR entry")
+                    index = base | i << (bits * layer)
                     if layer:
-                        pending.append(entry)
+                        pending.append((entry, index))
                     else:
-                        entries.append(entry)
+                        entries.append((index, entry))
         return entries
+
+    @Cache.cache_this_session(cache_None=False, per_inferior=True, until_new_objfile=True)
+    @Decorator.switch_to_intel_syntax
+    def get_offsets_perm(self):
+        """Return offsetof(kern_ipc_perm, id/key/uid/gid/mode), or None if the samples do not tell it.
+
+        struct kern_ipc_perm {
+            spinlock_t lock;
+            bool deleted; // int (~v3.x)
+            int id;
+            key_t key;
+            kuid_t uid;
+            kgid_t gid;
+            kuid_t cuid;
+            kgid_t cgid;
+            umode_t mode;
+            unsigned long seq;
+            void *security;
+            struct rhash_head khtnode;
+            struct rcu_head rcu;
+            refcount_t refcount;
+        } ____cacheline_aligned_in_smp __randomize_layout;
+        """
+        # handed over from the caller; the samples are live, so they must not become a cache key.
+        # Keep trying until one of them matches, then reuse the layout for every IPC object.
+        offsets = tuple(GefUtil.offsetof("kern_ipc_perm", member) for member in ("id", "key", "uid", "gid", "mode"))
+        if None not in offsets:
+            return offsets
+
+        # spinlock_t grows with CONFIG_DEBUG_SPINLOCK, CONFIG_DEBUG_LOCK_ALLOC and CONFIG_PREEMPT_RT,
+        # so the guesses are verified with the samples, and the other offsets are searched.
+        hints = []
+        addr = Ksym.get_addr("kernel_to_ipc64_perm")
+        if addr:
+            # The key copied to ipc64_perm first identifies the lock layout too.
+            res = KernelAddressHeuristicFinderUtil.disassemble_until_next_symbol(addr, 60)
+            if is_x86_64() or is_x86_32():
+                pattern = r"mov\s+(\w+),DWORD PTR \[(?:rdi|eax)\+(0x[0-9a-f]+)\].*?mov\s+DWORD PTR \[(?:rsi|edx)\],\1\b"
+            elif is_arm64():
+                pattern = r"ldr\s+(w\d+), \[x0, #(\d+)\].*?str\s+\1, \[x1\]"
+            elif is_arm32():
+                pattern = r"ldr\s+(r\d+), \[r0, #(\d+)\].*?str\s+\1, \[r1\]"
+            else:
+                pattern = r"lw\s+(\w+),\s*(\d+)\(a0\).*?sw\s+\1,\s*0\(a1\)"
+            match = re.search(pattern, res, re.DOTALL)
+            if match:
+                hints.append(int(match.group(2), 0) - 4)
+        if not any(Ksym.get_addr(name) for name in ("do_raw_spin_lock", "lock_acquire", "rt_spin_lock")):
+            hints.append(4 if Kernel.per_cpu().is_up else 8)
+
+        # The id is (seq << 15 (or 24 with ipcmni_extend)) + the IDR index, and the seq follows the mode.
+        ptr = current_arch.ptrsize
+        samples = [(index, KernelNamespace.read_object(entry, ptr * 24 + 0x30)) for index, entry in self.perm_elems_temp[:0x10]]
+
+        def check(offset_id):
+            offset_seq = align(offset_id + 26, ptr)
+            mode_found = id_found = False
+            for index, data in samples:
+                if len(data) < offset_seq + ptr:
+                    return None
+                ipc_id = u32(data[offset_id:offset_id + 4])
+                mode = u16(data[offset_id + 24:offset_id + 26])
+                seq = slice_unpack(data[offset_seq:offset_seq + ptr], ptr)[0]
+                if mode & ~0o3777:
+                    return None
+                if not any(index < 1 << shift and ipc_id == (seq << shift) + index for shift in (15, 24)):
+                    return None
+                mode_found |= mode != 0
+                id_found |= ipc_id != 0
+            return mode_found, id_found
+
+        for offset_id in hints:
+            ret = check(offset_id)
+            if ret and ret[0]:
+                return offset_id, offset_id + 4, offset_id + 8, offset_id + 12, offset_id + 24
+        # Zeros in the lock look like the first object (id 0), so such a match must be unique.
+        weak = []
+        for offset_id in range(4, ptr * 24, 4):
+            ret = check(offset_id)
+            if ret and ret[0] and ret[1]:
+                return offset_id, offset_id + 4, offset_id + 8, offset_id + 12, offset_id + 24
+            if ret and ret[0]:
+                weak.append(offset_id)
+        if len(weak) == 1:
+            return weak[0], weak[0] + 4, weak[0] + 8, weak[0] + 12, weak[0] + 24
+        return None
 
     @Cache.cache_this_session(cache_None=False, per_inferior=True, until_new_objfile=True)
     def get_offset_sem_nsems(self):
@@ -80065,6 +80244,8 @@ class KernelIpcs:
         offset = GefUtil.offsetof("sem_array", "sem_nsems")
         if offset is not None:
             return offset
+        if self.offset_mode is None:
+            return None
         ptr = current_arch.ptrsize
         for sem_array in self.sem_elems_temp:
             for base in range(align(self.offset_mode + 2, ptr), self.offset_mode + ptr * 64, ptr):
@@ -80081,6 +80262,8 @@ class KernelIpcs:
         offsets = tuple(GefUtil.offsetof("msg_queue", member) for member in ("q_cbytes", "q_qnum", "q_messages"))
         if None not in offsets:
             return offsets
+        if self.offset_mode is None:
+            return None
         ptr = current_arch.ptrsize
         for msg_queue in self.msg_elems_temp:
             for base in range(align(self.offset_mode + 2, ptr), self.offset_mode + ptr * 64, ptr):
@@ -80098,14 +80281,16 @@ class KernelIpcs:
         offsets = tuple(GefUtil.offsetof("shmid_kernel", member) for member in ("shm_nattch", "shm_segsz"))
         if None not in offsets:
             return offsets
+        if self.offset_mode is None:
+            return None
         ptr = current_arch.ptrsize
         kpath = Kernel.path()
         for kern_ipc_perm in self.shm_elems_temp:
             for base in range(align(self.offset_mode + 2, ptr), self.offset_mode + ptr * 64, ptr):
                 # search shm_file and shm_segsz
-                file = read_int_from_memory(kern_ipc_perm + base)
-                size = read_int_from_memory(kern_ipc_perm + base + ptr * 2)
-                if not is_valid_addr(file) or not 0 < size < 1 << (ptr * 8 - 1):
+                file = read_int_from_memory(kern_ipc_perm + base, safe=True)
+                size = read_int_from_memory(kern_ipc_perm + base + ptr * 2, safe=True)
+                if not file or not is_valid_addr(file) or not size or not 0 < size < 1 << (ptr * 8 - 1):
                     continue
                 try:
                     offset_mnt = kpath.get_offset_file_mnt(file)
@@ -155649,6 +155834,7 @@ class KernelIpcsCommand(GenericCommand, BufferingOutput):
 
     _note_ = [
         "This command requires CONFIG_RANDSTRUCT=n.",
+        "Until v6.17, the IPC namespaces not used by any task (e.g., held only by a file descriptor) are not shown.",
         "",
         "Simplified ipc structure:",
         "",
@@ -155674,26 +155860,31 @@ class KernelIpcsCommand(GenericCommand, BufferingOutput):
     ]
     _note_ = "\n".join(_note_)
 
+    @staticmethod
+    def format_permissions(item):
+        values = []
+        columns = [
+            ("id", "{:<5d}", 5), ("key", "{:#010x}", 10), ("uid", "{:<4d}", 4), ("gid", "{:<4d}", 4), ("mode", "{:#5o}", 5),
+        ]
+        for name, fmt, width in columns:
+            if item[name] is None:
+                values.append("{:{w}s}".format("?", w=width))
+            else:
+                values.append(fmt.format(item[name]))
+        return "{:#018x} {:s}".format(item["address"], " ".join(values))
+
     def dump_ipc_sem_ids(self, ipc_ids_ptr):
         self.out.append(titlify("Semaphore Arrays"))
         fmt = "{:18s} {:5s} {:10s} {:4s} {:4s} {:5s} {:s}"
         legend = ["sem_array", "semid", "key", "uid", "gid", "perms", "nsems"]
         self.out.append(GefUtil.make_legend(fmt.format(*legend)))
 
-        for item in self.kipcs.get_semaphores(ipc_ids_ptr):
-            e, semid, key = item["address"], item["id"], item["key"]
-            uid, gid, mode = item["uid"], item["gid"], item["mode"]
-
-            if item["nsems"] is not None:
-                nsems = item["nsems"]
-                self.out.append("{:#018x} {:<5d} {:#010x} {:<4d} {:<4d} {:#5o} {:d}".format(
-                    e, semid, key, uid, gid, mode, nsems,
-                ))
-            else:
-                self.out.append("{:#018x} {:<5d} {:#010x} {:<4d} {:<4d} {:#5o} {:s}".format(
-                    e, semid, key, uid, gid, mode, "?",
-                ))
-
+        result = self.kipcs.get_semaphores(ipc_ids_ptr)
+        for item in result["objects"]:
+            nsems = "{:d}".format(item["nsems"]) if item["nsems"] is not None else "?"
+            self.out.append("{:s} {:s}".format(self.format_permissions(item), nsems))
+        for reason in result["incomplete"]:
+            self.warn_add_out("Incomplete: {:s}".format(reason))
         return
 
     def dump_ipc_msg_ids(self, ipc_ids_ptr):
@@ -155702,25 +155893,22 @@ class KernelIpcsCommand(GenericCommand, BufferingOutput):
         legend = ["msg_queue", "msqid", "key", "uid", "gid", "perms", "used-bytes", "messages"]
         self.out.append(GefUtil.make_legend(fmt.format(*legend)))
 
-        for item in self.kipcs.get_messages(ipc_ids_ptr):
-            e, msqid, key = item["address"], item["id"], item["key"]
-            uid, gid, mode = item["uid"], item["gid"], item["mode"]
-
-            if item["q_cbytes"] is not None:
-                q_cbytes, q_qnum = item["q_cbytes"], item["q_qnum"]
-                self.out.append("{:#018x} {:<5d} {:#010x} {:<4d} {:<4d} {:#5o} {:<#10x} {:<d}".format(
-                    e, msqid, key, uid, gid, mode, q_cbytes, q_qnum,
-                ))
-            else:
-                self.out.append("{:#018x} {:<5d} {:#010x} {:<4d} {:<4d} {:#5o} {:10s} {:s}".format(
-                    e, msqid, key, uid, gid, mode, "?", "?",
-                ))
+        result = self.kipcs.get_messages(ipc_ids_ptr)
+        for item in result["objects"]:
+            q_cbytes = "{:<#10x}".format(item["q_cbytes"]) if item["q_cbytes"] is not None else "{:10s}".format("?")
+            q_qnum = "{:<d}".format(item["q_qnum"]) if item["q_qnum"] is not None else "?"
+            self.out.append("{:s} {:s} {:s}".format(self.format_permissions(item), q_cbytes, q_qnum))
 
             if self.args.verbose and item["messages"] is not None:
-                for current in self.kipcs.get_message_entries(item["messages"]):
+                messages, incomplete = self.kipcs.get_message_entries(item["messages"], item["q_qnum"])
+                for current in messages:
                     self.out.append("msg_msg: {:#x}".format(current))
                     res = gdb.execute("dereference -n {:#x} 8".format(current), to_string=True)
                     self.out.append(res.rstrip())
+                for reason in incomplete:
+                    self.warn_add_out("Incomplete: {:s}".format(reason))
+        for reason in result["incomplete"]:
+            self.warn_add_out("Incomplete: {:s}".format(reason))
         return
 
     def dump_ipc_shm_ids(self, ipc_ids_ptr):
@@ -155729,19 +155917,13 @@ class KernelIpcsCommand(GenericCommand, BufferingOutput):
         legend = ["shmid_kernel", "shmid", "key", "uid", "gid", "perms", "bytes", "nattch"]
         self.out.append(GefUtil.make_legend(fmt.format(*legend)))
 
-        for item in self.kipcs.get_shared_memory(ipc_ids_ptr):
-            e, shmid, key = item["address"], item["id"], item["key"]
-            uid, gid, mode = item["uid"], item["gid"], item["mode"]
-
-            if item["segsz"] is not None:
-                nattch, segsz = item["nattch"], item["segsz"]
-                self.out.append("{:#018x} {:<5d} {:#010x} {:<4d} {:<4d} {:#5o} {:<#10x} {:<d}".format(
-                    e, shmid, key, uid, gid, mode, segsz, nattch,
-                ))
-            else:
-                self.out.append("{:#018x} {:<5d} {:#010x} {:<4d} {:<4d} {:#5o} {:10s} {:s}".format(
-                    e, shmid, key, uid, gid, mode, "?", "?",
-                ))
+        result = self.kipcs.get_shared_memory(ipc_ids_ptr)
+        for item in result["objects"]:
+            segsz = "{:<#10x}".format(item["segsz"]) if item["segsz"] is not None else "{:10s}".format("?")
+            nattch = "{:<d}".format(item["nattch"]) if item["nattch"] is not None else "?"
+            self.out.append("{:s} {:s} {:s}".format(self.format_permissions(item), segsz, nattch))
+        for reason in result["incomplete"]:
+            self.warn_add_out("Incomplete: {:s}".format(reason))
         return
 
     @Decorator.parse_args
@@ -155757,12 +155939,32 @@ class KernelIpcsCommand(GenericCommand, BufferingOutput):
             err("Could not find Linux kernel")
             return
         self.kipcs = Kernel.ipcs()
-        ipc_ns_list = self.kipcs.get_all_ipc_ns()
+
+        # every task, including init_task whose nsproxy is init_nsproxy
+        self.meta = []
+        try:
+            task_command = KernelTaskCommand.borrow(self, print_namespace=True)
+        except gdb.MemoryError:
+            task_command = None
+        offset_nsproxy = getattr(task_command, "offset_nsproxy", None)
+        task_addrs = []
+        if task_command is not None and offset_nsproxy is not None:
+            task_addrs = KernelTaskCommand.get_task_list(task_command.init_task, task_command.offset_tasks)
+        else:
+            offset_nsproxy = None
+        result = self.kipcs.get_all_ipc_ns(task_addrs, offset_nsproxy)
+        ipc_ns_list = result["namespaces"]
         if not ipc_ns_list:
-            self.quiet_info("Nothing to dump")
+            for func, line in self.meta:
+                func(line)
+            for reason in result["incomplete"]:
+                self.quiet_err(reason)
             return
 
-        ret = self.kipcs.initialize()
+        ret = self.kipcs.initialize(ipc_ns_list[0])
+        if args.meta:
+            for func, line in self.meta:
+                func(line)
         if args.meta or not ret:
             for func, line in Kernel.export_meta(self, self.kipcs.meta):
                 func(line)
@@ -155772,6 +155974,7 @@ class KernelIpcsCommand(GenericCommand, BufferingOutput):
             return
 
         if args.meta:
+            self.quiet_info("Number of ipc_ns: {:d}".format(len(ipc_ns_list)))
             return
 
         ipc_objects_present = self.kipcs.has_objects(ipc_ns_list)
@@ -155780,14 +155983,20 @@ class KernelIpcsCommand(GenericCommand, BufferingOutput):
 
         metadata_count = len(self.kipcs.meta)
         self.out = []
-        for i, ipc_ns in enumerate(ipc_ns_list):
-            if i == 0:
+        for reason in result["incomplete"]:
+            self.warn_add_out("Incomplete: {:s}".format(reason))
+        for ipc_ns in ipc_ns_list:
+            if ipc_ns == ipc_ns_list[0]:
                 self.out.append(titlify("init_ipc_ns: {:#x}".format(ipc_ns)))
             else:
                 self.out.append(titlify("ipc_ns: {:#x}".format(ipc_ns)))
-            self.dump_ipc_sem_ids(ipc_ns + self.kipcs.offset_ids + self.kipcs.sizeof_ipc_ids * 0)
-            self.dump_ipc_msg_ids(ipc_ns + self.kipcs.offset_ids + self.kipcs.sizeof_ipc_ids * 1)
-            self.dump_ipc_shm_ids(ipc_ns + self.kipcs.offset_ids + self.kipcs.sizeof_ipc_ids * 2)
+            dumps = [self.dump_ipc_sem_ids, self.dump_ipc_msg_ids, self.dump_ipc_shm_ids]
+            for i, dump in enumerate(dumps):
+                ipc_ids_ptr = ipc_ns + self.kipcs.offset_ids + self.kipcs.sizeof_ipc_ids * i
+                try:
+                    dump(ipc_ids_ptr)
+                except gdb.MemoryError:
+                    self.warn_add_out("Incomplete: ipc_ids {:#x} is unreadable".format(ipc_ids_ptr))
 
         for func, line in Kernel.export_meta(self, self.kipcs.meta[metadata_count:]):
             func(line)
