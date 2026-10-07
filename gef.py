@@ -64718,7 +64718,11 @@ class KernelAddressHeuristicFinderUtil:
                     KernelAddressHeuristicFinderUtil.aarch64_adrp_add(res),
                 )
             elif is_arm32():
-                g = KernelAddressHeuristicFinderUtil.arm32_ldr_pc_relative(res)
+                # ARMv7 builds materialize the address with movw/movt instead of a literal pool
+                g = itertools.chain(
+                    KernelAddressHeuristicFinderUtil.arm32_movw_movt(res),
+                    KernelAddressHeuristicFinderUtil.arm32_ldr_pc_relative(res),
+                )
             else:
                 return []
             candidates += list(g)
@@ -74061,6 +74065,7 @@ class KernelXArray:
             ...                           # offsetof(idr, idr_rt.xa_head) is not found
         xa.head_offset                    # -> the found offset
         xa.parse()                        # -> [entry, entry, ...]
+        xa.parse_indexed()                # -> [(index, entry), ...]
 
     struct xarray {
         spinlock_t xa_lock;
@@ -74117,6 +74122,10 @@ class KernelXArray:
 
     def parse(self):
         """Return the list of all entries in the xarray."""
+        return [entry for _, entry in self.parse_indexed()]
+
+    def parse_indexed(self):
+        """Return the list of (index, entry) pairs in the xarray."""
         cls = type(self)
         head_offset = self.head_offset
         if head_offset is None:
@@ -74126,7 +74135,7 @@ class KernelXArray:
 
         entry = read_int_from_memory(self.address + head_offset)
         self.seen = set()
-        return self.parse_entry(entry)
+        return self.parse_entry(entry, 0)
 
     @classmethod
     def is_node(cls, entry):
@@ -74186,15 +74195,15 @@ class KernelXArray:
             return self.head_offset
         return None
 
-    def parse_entry(self, entry):
-        """Return the list of all entries under `entry` recursively."""
+    def parse_entry(self, entry, index):
+        """Return the list of (index, entry) pairs under `entry` recursively."""
         cls = type(self)
         if entry == 0:
             return []
 
         if not cls.is_node(entry):
             if entry & 3 == 0 and is_valid_addr(entry):
-                return [entry]
+                return [(index, entry)]
             return []
 
         node = entry - 2
@@ -74206,13 +74215,14 @@ class KernelXArray:
         if count == 0:
             return []
 
+        shift = read_int8_from_memory(node + cls.offset_shift)
         slots = node + cls.offset_slots
         elems = []
         for i in range(64): # 16 or 64
             child = read_int_from_memory(slots + cls.ptrsize * i)
             if child == 0:
                 continue
-            elems += self.parse_entry(child)
+            elems += self.parse_entry(child, index + (i << shift))
             count -= 1
             if count == 0:
                 break
@@ -80643,9 +80653,13 @@ class KernelBpf:
 
     def __init__(self):
         self.meta = []
-        self.prog_xarray = None
-        self.map_xarray = None
+        self.prog_idr = None
+        self.map_idr = None
+        self.offset_head = None
+        self.offset_map_type = None
         self.offset_union_array = None
+        self.offset_prog_name = None
+        self.offset_map_name = None
         self.seccomp_tools_command = None
         return
 
@@ -80663,30 +80677,34 @@ class KernelBpf:
         if not map_idr:
             return None
         self.meta.append(("info", "map_idr: {:#x}".format(map_idr)))
+        self.prog_idr = prog_idr
+        self.map_idr = map_idr
 
         # idr->idr_rt->xa_head; see KernelXArray for struct xarray and struct xa_node
-        max_sizeof_idr = min(abs(prog_idr - map_idr), current_arch.ptrsize * 20)
-        self.prog_xarray = KernelXArray(prog_idr)
-        self.map_xarray = KernelXArray(map_idr)
-        if self.prog_xarray.find_head_offset(max_sizeof_idr) is None:
-            self.meta.append(("err", "Could not find xa_head. (maybe uninitialized?)"))
-            return None
-        self.meta.append(("info", "offsetof(xarray, xa_head): {:#x}".format(self.prog_xarray.head_offset)))
+        # ~v4.19: idr->idr_rt->rnode; see KernelRadixTree for struct radix_tree_root and struct radix_tree_node
+        self.tree_kind = "xarray" if "4.20" <= Kernel.version() else "radix"
+        self.head_member = "idr_rt.xa_head" if self.tree_kind == "xarray" else "idr_rt.rnode"
+        self.max_sizeof_idr = min(abs(prog_idr - map_idr), current_arch.ptrsize * 20)
+        self.offset_map_type = self.offset_union_array = self.offset_prog_name = self.offset_map_name = None
+        self.offset_head = GefUtil.offsetof("idr", self.head_member)
+        if self.offset_head is not None:
+            self.meta.append(("info", "offsetof(idr, {:s}): {:#x}".format(self.head_member, self.offset_head)))
+        elif not self.resolve_head_offset():
+            # Both IDRs are empty unless a tagged pointer to a node is left unverified.
+            tag = 2 if self.tree_kind == "xarray" else 1
+            for idr in (prog_idr, map_idr):
+                for offset in range(0, self.max_sizeof_idr, current_arch.ptrsize):
+                    entry = read_int_from_memory(idr + offset, safe=True)
+                    if entry and entry & 3 == tag and is_valid_addr(entry - tag):
+                        self.meta.append(("err", "Could not find xa_head. (maybe uninitialized?)"))
+                        return None
 
-        # xa_node->{shift,count,slots}
-        self.meta.append(("info", "offsetof(xa_node, shift): {:#x}".format(self.prog_xarray.offset_shift)))
-        self.meta.append(("info", "offsetof(xa_node, count): {:#x}".format(self.prog_xarray.offset_count)))
-        self.meta.append(("info", "offsetof(xa_node, slots): {:#x}".format(self.prog_xarray.offset_slots)))
-
-        # parse progs, maps
-        try:
-            progs = self.prog_xarray.parse()
-            self.meta.append(("info", "Num of progs: {:d}".format(len(progs))))
-            maps = self.map_xarray.parse()
-            self.meta.append(("info", "Num of maps: {:d}".format(len(maps))))
-        except gdb.MemoryError:
-            self.meta.append(("err", "Not found"))
-            return None
+        if self.tree_kind == "xarray":
+            # xa_node->{shift,count,slots}
+            KernelXArray.initialize_layout()
+            self.meta.append(("info", "offsetof(xa_node, shift): {:#x}".format(KernelXArray.offset_shift)))
+            self.meta.append(("info", "offsetof(xa_node, count): {:#x}".format(KernelXArray.offset_count)))
+            self.meta.append(("info", "offsetof(xa_node, slots): {:#x}".format(KernelXArray.offset_slots)))
 
         """
         struct bpf_prog {
@@ -80749,89 +80767,6 @@ class KernelBpf:
                 self.meta.append(("info", "Could not find ceccomp or seccomp-tools, GEF uses `capstone-disassemble bpf_func`"))
                 self.seccomp_tools_command = None
 
-        if maps:
-            """
-            struct bpf_map {
-                u8 sha[SHA256_DIGEST_SIZE]; // v6.18~
-                u32 excl;                 // v7.2~
-                const struct bpf_map_ops *ops;
-                struct bpf_map *inner_map_meta;
-            #ifdef CONFIG_SECURITY
-                void *security;
-            #endif
-                enum bpf_map_type map_type;
-                u32 key_size;
-                u32 value_size;
-                u32 max_entries;
-                ...
-            };
-            """
-            # bpf_map->{map_type,key_size,value_size,max_entries}
-            self.offset_map_type = GefUtil.offsetof("struct bpf_map", "map_type")
-            if self.offset_map_type is None:
-                kversion = Kernel.version()
-                offset_ops = 32 if "6.18" <= kversion else 0
-                if "7.2" <= kversion:
-                    offset_ops = align_to_ptrsize(offset_ops + 4)
-                self.offset_map_type = offset_ops + current_arch.ptrsize * 2
-                cand = read_int_from_memory(maps[0] + self.offset_map_type)
-                if cand == 0 or is_valid_addr(cand):
-                    self.offset_map_type += current_arch.ptrsize
-            self.offset_key_size = self.offset_map_type + 4
-            self.offset_value_size = self.offset_key_size + 4
-            self.offset_max_entries = self.offset_value_size + 4
-            self.meta.append(("info", "offsetof(bpf_map, map_type): {:#x}".format(self.offset_map_type)))
-            self.meta.append(("info", "offsetof(bpf_map, key_size): {:#x}".format(self.offset_key_size)))
-            self.meta.append(("info", "offsetof(bpf_map, value_size): {:#x}".format(self.offset_value_size)))
-            self.meta.append(("info", "offsetof(bpf_map, max_entries): {:#x}".format(self.offset_max_entries)))
-
-            """
-            struct bpf_array {
-                struct bpf_map map;
-                u32 elem_size;
-                u32 index_mask;
-                struct bpf_array_aux *aux;
-                union {
-                    char value[0] __aligned(8);
-                    void *ptrs[0] __aligned(8);
-                    void __percpu *pptrs[0] __aligned(8);
-                };
-            };
-            """
-            # bpf_array->union_array
-            # Only an array map has the elem_size/index_mask pair, so scan every array map instead of assuming maps[0] is one.
-            # Every map type allocated by array_map_alloc() is a bpf_array, not only BPF_MAP_TYPE_ARRAY.
-            # The offset is a layout constant, so the first map that resolves it is enough.
-            self.offset_union_array = GefUtil.offsetof("struct bpf_array", "value")
-            for m in maps:
-                if self.offset_union_array is not None:
-                    break
-                if read_int32_from_memory(m + self.offset_map_type) not in self.array_map_types:
-                    continue
-                value_size = read_int32_from_memory(m + self.offset_value_size)
-                value_size_aligned_8 = align(value_size, 8)
-                max_entries = read_int32_from_memory(m + self.offset_max_entries)
-                k = 1
-                while k < max_entries:
-                    k <<= 1
-                index_mask = k - 1
-
-                sizeof_cache_line = 0x40 # ?
-                base = m + sizeof_cache_line * 3
-                for i in range(100):
-                    pos = base + current_arch.ptrsize * i
-                    x = read_int32_from_memory(pos)
-                    y = read_int32_from_memory(pos + 4)
-                    if x == value_size_aligned_8 and y == index_mask:
-                        self.offset_union_array = align((pos - m) + 4 * 2 + current_arch.ptrsize, 8)
-                        break
-                if self.offset_union_array is not None:
-                    break
-            if self.offset_union_array is None:
-                # Keep going; the array column is the only thing that cannot be shown.
-                self.meta.append(("warn", "Could not find offsetof(bpf_array, union_array)"))
-            else:
-                self.meta.append(("info", "offsetof(bpf_array, union_array): {:#x}".format(self.offset_union_array)))
         return True
 
     @staticmethod
@@ -80883,28 +80818,41 @@ class KernelBpf:
 
     def get_progs(self):
         progs = []
-        for prog in self.prog_xarray.parse():
+        for prog_id, prog in self.parse_idr(self.prog_idr):
+            expected_attach_type = None # v4.17~
+            if self.offset_expected_attach_type is not None:
+                expected_attach_type = read_int32_from_memory(prog + self.offset_expected_attach_type)
             progs.append({
                 "address": prog,
+                "id": prog_id,
                 "type": read_int32_from_memory(prog + self.offset_prog_type),
-                "expected_attach_type": read_int32_from_memory(prog + self.offset_expected_attach_type),
+                "expected_attach_type": expected_attach_type,
                 "jited_len": read_int32_from_memory(prog + self.offset_jited_len),
                 "orig_prog": read_int_from_memory(prog + self.offset_orig_prog),
-                "tag": read_int64_from_memory(prog + self.offset_tag),
+                "tag": read_memory(prog + self.offset_tag, 8).hex(), # the byte order is kept, as /proc/PID/fdinfo shows
                 "aux": read_int_from_memory(prog + self.offset_aux),
                 "bpf_func": read_int_from_memory(prog + self.offset_bpf_func),
             })
+        self.resolve_prog_name_offset(progs)
+        for prog in progs:
+            prog["name"] = self.read_name(prog["aux"], self.offset_prog_name)
         return progs
 
     def get_maps(self):
+        entries = self.parse_idr(self.map_idr)
+        self.resolve_map_layout([m for _, m in entries])
+        self.resolve_map_name_offset([m for _, m in entries])
+        self.resolve_union_array_offset([m for _, m in entries])
         maps = []
-        for m in self.map_xarray.parse():
+        for map_id, m in entries:
             map_type = read_int32_from_memory(m + self.offset_map_type)
             union_array = None
             if map_type in self.array_map_types and self.offset_union_array is not None:
                 union_array = m + self.offset_union_array
             maps.append({
                 "address": m,
+                "id": map_id,
+                "name": self.read_name(m, self.offset_map_name),
                 "type": map_type,
                 "key_size": read_int32_from_memory(m + self.offset_key_size),
                 "value_size": read_int32_from_memory(m + self.offset_value_size),
@@ -80949,6 +80897,224 @@ class KernelBpf:
             return [ret, "..."]
         except gdb.MemoryError:
             return None
+
+    def resolve_head_offset(self):
+        """Resolve offsetof(idr, idr_rt.xa_head) from either IDR. Return False if neither has a node to verify it."""
+        if self.offset_head is not None:
+            return True
+        for idr in (self.prog_idr, self.map_idr):
+            if self.tree_kind == "xarray":
+                offset = KernelXArray(idr).find_head_offset(self.max_sizeof_idr)
+                if offset is not None and not KernelXArray.is_node(read_int_from_memory(idr + offset)):
+                    offset = None
+            else:
+                offset = KernelRadixTree(idr).find_rnode_offset(self.max_sizeof_idr)
+            if offset is not None:
+                self.offset_head = offset
+                self.meta.append(("info", "offsetof(idr, {:s}): {:#x}".format(self.head_member, offset)))
+                return True
+        return False
+
+    def parse_idr(self, idr):
+        """Return [(id, entry), ...] of prog_idr or map_idr. The index in the IDR is the ID."""
+        if not self.resolve_head_offset(): # both IDRs have been empty so far
+            return []
+        if self.tree_kind == "xarray":
+            return KernelXArray(idr, self.offset_head).parse_indexed()
+        return KernelRadixTree(idr, self.offset_head).parse_indexed()
+
+    def resolve_prog_name_offset(self, progs):
+        if self.offset_prog_name is not None or not progs or Kernel.version() < "4.15":
+            return
+
+        """
+        struct bpf_prog_aux {
+            ...
+            struct bpf_prog *prog;
+            struct user_struct *user;
+            u64 load_time;
+            u32 verified_insns;                                          // v5.16~
+            int cgroup_atype;                                            // v6.0~
+            struct bpf_map *cgroup_storage[MAX_BPF_CGROUP_STORAGE_TYPE]; // v4.19~
+            char name[BPF_OBJ_NAME_LEN];
+            ...
+        };
+        """
+        offset = GefUtil.offsetof("struct bpf_prog_aux", "name")
+        if offset is None:
+            # The position of aux->prog varies widely, but it points back to bpf_prog and is followed by name soon.
+            ptrsize = current_arch.ptrsize
+            chunks = []
+            backlinks = set()
+            for prog in progs:
+                try:
+                    data = read_memory(prog["aux"], 0x800)
+                except gdb.MemoryError:
+                    continue
+                words = slice_unpack(data, ptrsize)
+                if prog["address"] in words:
+                    backlinks.add(words.index(prog["address"]) * ptrsize)
+                    chunks.append(data)
+            if len(backlinks) != 1:
+                return
+            base = backlinks.pop() + ptrsize
+            offset = self.find_name_offset(chunks, range(base, base + 0x40, 4))
+            if offset is None:
+                return
+        self.offset_prog_name = offset
+        self.meta.append(("info", "offsetof(bpf_prog_aux, name): {:#x}".format(offset)))
+        return
+
+    def resolve_map_layout(self, maps):
+        if self.offset_map_type is not None or not maps:
+            return
+
+        """
+        struct bpf_map {
+            u8 sha[SHA256_DIGEST_SIZE]; // v6.18~
+            u32 excl;                 // v7.2~
+            atomic_t refcnt;          // ~v4.14
+            const struct bpf_map_ops *ops; // v4.15~
+            struct bpf_map *inner_map_meta;
+        #ifdef CONFIG_SECURITY
+            void *security;
+        #endif
+            enum bpf_map_type map_type;
+            u32 key_size;
+            u32 value_size;
+            u32 max_entries;
+            ...
+            char name[BPF_OBJ_NAME_LEN]; // v4.15~
+            ...
+        };
+        """
+        # bpf_map->{map_type,key_size,value_size,max_entries}
+        self.offset_map_type = GefUtil.offsetof("struct bpf_map", "map_type")
+        if self.offset_map_type is None:
+            kversion = Kernel.version()
+            if kversion < "4.15" and not is_valid_addr(read_int_from_memory(maps[0])):
+                # ~v4.14 starts with refcnt and map_type (some v4.14.y backport the ops-first layout)
+                self.offset_map_type = 4
+            else:
+                # sha (v6.18~) and excl (v7.2~) are backported to some stable trees, so find ops itself
+                candidates = [0, 32, align_to_ptrsize(32 + 4)]
+                if "7.2" <= kversion:
+                    candidates = candidates[::-1]
+                elif "6.18" <= kversion:
+                    candidates = candidates[1:] + candidates[:1]
+                offset_ops = next((x for x in candidates if is_valid_addr(read_int_from_memory(maps[0] + x))), candidates[0])
+                self.offset_map_type = offset_ops + current_arch.ptrsize * 2
+                cand = read_int_from_memory(maps[0] + self.offset_map_type)
+                if cand == 0 or is_valid_addr(cand):
+                    self.offset_map_type += current_arch.ptrsize
+        self.offset_key_size = self.offset_map_type + 4
+        self.offset_value_size = self.offset_key_size + 4
+        self.offset_max_entries = self.offset_value_size + 4
+        self.meta.append(("info", "offsetof(bpf_map, map_type): {:#x}".format(self.offset_map_type)))
+        self.meta.append(("info", "offsetof(bpf_map, key_size): {:#x}".format(self.offset_key_size)))
+        self.meta.append(("info", "offsetof(bpf_map, value_size): {:#x}".format(self.offset_value_size)))
+        self.meta.append(("info", "offsetof(bpf_map, max_entries): {:#x}".format(self.offset_max_entries)))
+        return
+
+    def resolve_map_name_offset(self, maps):
+        if self.offset_map_name is not None or not maps or Kernel.version() < "4.15":
+            return
+
+        offset = GefUtil.offsetof("struct bpf_map", "name")
+        if offset is None:
+            # map->name is in the second cache line before v5.10, so search a wide area after max_entries.
+            base = self.offset_max_entries + 4
+            chunks = []
+            for m in maps:
+                try:
+                    chunks.append(read_memory(m, base + 0x180))
+                except gdb.MemoryError:
+                    continue
+            offset = self.find_name_offset(chunks, range(base, base + 0x170, 4))
+            if offset is None:
+                return
+        self.offset_map_name = offset
+        self.meta.append(("info", "offsetof(bpf_map, name): {:#x}".format(offset)))
+        return
+
+    def resolve_union_array_offset(self, maps):
+        if self.offset_union_array is not None or not maps:
+            return
+
+        """
+        struct bpf_array {
+            struct bpf_map map;
+            u32 elem_size;
+            u32 index_mask;
+            struct bpf_array_aux *aux;
+            union {
+                char value[0] __aligned(8);
+                void *ptrs[0] __aligned(8);
+                void __percpu *pptrs[0] __aligned(8);
+            };
+        };
+        """
+        # bpf_array->union_array
+        # Only an array map has the elem_size/index_mask pair, so scan every array map instead of assuming maps[0] is one.
+        # Every map type allocated by array_map_alloc() is a bpf_array, not only BPF_MAP_TYPE_ARRAY.
+        # The offset is a layout constant, so the first map that resolves it is enough.
+        self.offset_union_array = GefUtil.offsetof("struct bpf_array", "value")
+        arrays = [m for m in maps if read_int32_from_memory(m + self.offset_map_type) in self.array_map_types]
+        for m in arrays:
+            if self.offset_union_array is not None:
+                break
+            value_size = read_int32_from_memory(m + self.offset_value_size)
+            value_size_aligned_8 = align(value_size, 8)
+            max_entries = read_int32_from_memory(m + self.offset_max_entries)
+            k = 1
+            while k < max_entries:
+                k <<= 1
+            index_mask = k - 1
+
+            # bpf_array->elem_size follows bpf_map, which ends after map->name since v4.15.
+            # The size of bpf_map depends on the cache line size and the configs, so search from there.
+            if self.offset_map_name is not None:
+                base = m + align_to_ptrsize(self.offset_map_name + 16)
+            else:
+                base = m + align_to_ptrsize(self.offset_max_entries + 4)
+            data = read_memory(base, 0x400 + 4)
+            for i in range(0, 0x400, current_arch.ptrsize):
+                x, y = struct.unpack_from(Endian.endian_str() + "II", data, i)
+                if x == value_size_aligned_8 and y == index_mask:
+                    self.offset_union_array = align((base + i - m) + 4 * 2 + current_arch.ptrsize, 8)
+                    break
+        if self.offset_union_array is not None:
+            self.meta.append(("info", "offsetof(bpf_array, union_array): {:#x}".format(self.offset_union_array)))
+        elif arrays and ("warn", "Could not find offsetof(bpf_array, union_array)") not in self.meta:
+            # Keep going; the array column is the only thing that cannot be shown.
+            self.meta.append(("warn", "Could not find offsetof(bpf_array, union_array)"))
+        return
+
+    @staticmethod
+    def find_name_offset(chunks, offsets):
+        """Return the offset where every chunk holds a valid name and the names are the longest in total, or None."""
+        best = None
+        best_score = 0
+        for offset in offsets:
+            score = 0
+            for data in chunks:
+                name = data[offset:offset + 16]
+                text = name.split(b"\0")[0]
+                # bpf_obj_name_cpy() accepts only [0-9A-Za-z_.] and zero-fills the rest of BPF_OBJ_NAME_LEN.
+                if len(text) == 16 or name != text.ljust(16, b"\0") or not re.fullmatch(rb"[\w.]*", text):
+                    break
+                score += len(text)
+            else:
+                if score > best_score:
+                    best = offset
+                    best_score = score
+        return best
+
+    @staticmethod
+    def read_name(address, offset):
+        if offset is None:
+            return None
+        return String.bytes2str(read_memory(address + offset, 16).split(b"\0")[0])
 
 
 class KernelSeccomp:
@@ -100260,6 +100426,9 @@ class KernelSyscallsCommand(GenericCommand, BufferingOutput):
             insn, insn2 = self.get_insn_pair(insn.address + len(insn.opcodes))
         while insn and insn2 and insn.mnemonic in call_mnemonics:
             insn, insn2 = self.get_insn_pair(insn.address + len(insn.opcodes))
+        # CONFIG_FRAME_POINTER saves the frame pointer first (push rbp; mov rax, -ENOSYS; mov rbp, rsp; pop rbp; ret)
+        if insn and is_x86() and insn.mnemonic == "push" and insn.operands[-1] in ("rbp", "ebp"):
+            insn, insn2 = self.get_insn_pair(insn.address + len(insn.opcodes))
 
         if insn is None or insn2 is None:
             return None
@@ -100272,7 +100441,11 @@ class KernelSyscallsCommand(GenericCommand, BufferingOutput):
             else:
                 err = "0xffffffda"
             if len(insn.operands) == 2 and insn.operands[-1] == err:
-                if insn2.mnemonic == "ret":
+                while insn2 and (insn2.mnemonic in ("pop", "leave") or insn2.mnemonic == "mov" and insn2.operands[-1] in ("rsp", "esp")):
+                    insn2 = self.get_insn_pair(insn2.address + len(insn2.opcodes))[0]
+                if insn2 is None:
+                    pass
+                elif insn2.mnemonic == "ret":
                     is_valid = False
                 elif insn2.mnemonic == "jmp":
                     try:
@@ -100282,7 +100455,7 @@ class KernelSyscallsCommand(GenericCommand, BufferingOutput):
                     except (gdb.error, gdb.MemoryError, ValueError):
                         pass
         elif is_arm64():
-            if len(insn.operands) == 2 and insn.operands[-1].split("\t")[0].strip() == "#0xffffffffffffffda":
+            if len(insn.operands) == 2 and insn.operands[-1].split()[0] == "#0xffffffffffffffda":
                 is_valid = False
             elif len(insn.operands) == 3 and insn.operands[-1] == "// #-38":
                 is_valid = False
@@ -155331,22 +155504,28 @@ class KernelBpfCommand(GenericCommand, BufferingOutput):
 
     def dump_bpf_progs(self, progs):
         self.out.append(titlify("prog_idr"))
-        fmt = "{:3s} {:18s} {:23s} {:30s} {:18s} {:18s} {:18s} {:9s} {:18s}"
-        legend = ["#", "bpf_prog", "bpf_prog_type", "bpf_attach_type", "tag", "bpf_prog_aux", "bpf_func", "jited_len", "orig_prog"]
+        fmt = "{:3s} {:6s} {:18s} {:16s} {:23s} {:30s} {:16s} {:18s} {:18s} {:9s} {:18s}"
+        legend = ["#", "id", "bpf_prog", "name", "bpf_prog_type", "bpf_attach_type", "tag", "bpf_prog_aux", "bpf_func", "jited_len", "orig_prog"]
         self.out.append(GefUtil.make_legend(fmt.format(*legend)))
 
-        fmt = "{:<3d} {:#018x} {:23s} {:30s} {:#018x} {:#018x} {:#018x} {:<#9x} {:#018x}"
+        fmt = "{:<3d} {:<6d} {:#018x} {:16s} {:23s} {:30s} {:16s} {:#018x} {:#018x} {:<#9x} {:#018x}"
         for i, prog in enumerate(progs):
             bpf_type = prog["type"]
             bpf_attach_type = prog["expected_attach_type"]
             jited_len = prog["jited_len"]
             orig_prog = prog["orig_prog"]
             t1 = self.kbpf.defined_prog_types[bpf_type] if bpf_type < len(self.kbpf.defined_prog_types) else "???"
-            t2 = self.kbpf.defined_attach_types[bpf_attach_type] if bpf_attach_type < len(self.kbpf.defined_attach_types) else "???"
+            if bpf_attach_type is None:
+                t2 = "-"
+            elif bpf_attach_type < len(self.kbpf.defined_attach_types):
+                t2 = self.kbpf.defined_attach_types[bpf_attach_type]
+            else:
+                t2 = "???"
             tag = prog["tag"]
             aux = prog["aux"]
             bpf_func = prog["bpf_func"]
-            self.out.append(fmt.format(i, prog["address"], t1, t2, tag, aux, bpf_func, jited_len, orig_prog))
+            name = self.format_name(prog["name"])
+            self.out.append(fmt.format(i, prog["id"], prog["address"], name, t1, t2, tag, aux, bpf_func, jited_len, orig_prog))
 
             if self.args.verbose:
                 self.dump_bpf_progs_func(orig_prog, bpf_func, jited_len)
@@ -155355,11 +155534,11 @@ class KernelBpfCommand(GenericCommand, BufferingOutput):
 
     def dump_bpf_maps(self, maps):
         self.out.append(titlify("map_idr"))
-        fmt = "{:3s} {:18s} {:21s} {:10s} {:10s} {:10s} {:18s}"
-        legend = ["#", "bpf_map", "bpf_map_type", "key_size", "value_size", "max_ents", "array"]
+        fmt = "{:3s} {:6s} {:18s} {:16s} {:21s} {:10s} {:10s} {:10s} {:18s}"
+        legend = ["#", "id", "bpf_map", "name", "bpf_map_type", "key_size", "value_size", "max_ents", "array"]
         self.out.append(GefUtil.make_legend(fmt.format(*legend)))
 
-        fmt = "{:<3d} {:#018x} {:21s} {:#010x} {:#010x} {:#010x} {:18s}"
+        fmt = "{:<3d} {:<6d} {:#018x} {:16s} {:21s} {:#010x} {:#010x} {:#010x} {:18s}"
         for i, m in enumerate(maps):
             map_type = m["type"]
             t1 = self.kbpf.defined_map_types[map_type] if map_type < len(self.kbpf.defined_map_types) else "???"
@@ -155373,13 +155552,22 @@ class KernelBpfCommand(GenericCommand, BufferingOutput):
                 array = "???"
             else:
                 array = "{:#018x}".format(union_array)
-            self.out.append(fmt.format(i, m["address"], t1, key_size, val_size, max_ents, array).rstrip())
+            name = self.format_name(m["name"])
+            self.out.append(fmt.format(i, m["id"], m["address"], name, t1, key_size, val_size, max_ents, array).rstrip())
 
             if self.args.verbose:
                 if union_array is not None and map_type == 2: # ARRAY
-                    res = gdb.execute("dereference -n {:#x} {:#x}".format(union_array, max_ents), to_string=True)
+                    # each element occupies round_up(value_size, 8) bytes
+                    count = (align(val_size, 8) * max_ents + current_arch.ptrsize - 1) // current_arch.ptrsize
+                    res = gdb.execute("dereference -n {:#x} {:#x}".format(union_array, count), to_string=True)
                     self.out.append(res.rstrip())
         return
+
+    @staticmethod
+    def format_name(name):
+        if name is not None:
+            return name
+        return "???" if "4.15" <= Kernel.version() else "-" # BPF_OBJ_NAME_LEN is introduced from 4.15
 
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
@@ -155394,9 +155582,9 @@ class KernelBpfCommand(GenericCommand, BufferingOutput):
         if kversion is None:
             err("Could not find Linux kernel")
             return
-        if kversion < "4.20":
-            # xarray is introduced from 4.20
-            self.quiet_err("Unsupported before v4.20")
+        if kversion < "4.13":
+            # prog_idr and map_idr are introduced from 4.13
+            self.quiet_err("Unsupported before v4.13")
             return
 
         stv_bpf_ret = gdb.execute("ksyscalls -f bpf --quiet --no-pager", to_string=True)
@@ -155409,21 +155597,28 @@ class KernelBpfCommand(GenericCommand, BufferingOutput):
 
         # init
         ret = self.kbpf.initialize()
+        progs = maps = None
+        if ret:
+            try:
+                progs = self.kbpf.get_progs() if args.meta or not args.only_maps else []
+                maps = self.kbpf.get_maps() if args.meta or not args.only_progs else []
+            except gdb.MemoryError:
+                pass
         if args.meta or not ret:
-            for func, line in Kernel.export_meta(self, self.kbpf.meta):
+            meta = self.kbpf.meta[:]
+            if maps is not None:
+                meta.append(("info", "Num of progs: {:d}".format(len(progs))))
+                meta.append(("info", "Num of maps: {:d}".format(len(maps))))
+            for func, line in Kernel.export_meta(self, meta):
                 func(line)
         if not ret:
             self.quiet_err("Failed to initialize")
             return
-
-        if args.meta:
+        if maps is None:
+            self.quiet_err("Not found")
             return
 
-        try:
-            progs = self.kbpf.get_progs() if not args.only_maps else []
-            maps = self.kbpf.get_maps() if not args.only_progs else []
-        except gdb.MemoryError:
-            self.quiet_err("Not found")
+        if args.meta:
             return
 
         # dump
