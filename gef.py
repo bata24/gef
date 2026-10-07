@@ -15556,6 +15556,36 @@ class EventHandler:
         return
 
     @staticmethod
+    def gdb_exiting_handler(event):
+        """Stop QEMU children launched through a pipe before GDB waits for them."""
+        for inferior in gdb.inferiors():
+            connection = inferior.connection
+            if connection is None or connection.type not in ("remote", "extended-remote"):
+                continue
+            if not (connection.details or "").lstrip().startswith("|"):
+                continue
+            if inferior != gdb.selected_inferior():
+                gdb.execute("inferior {:d}".format(inferior.num), to_string=True)
+            Cache.reset_gef_caches(all=True)
+            if not is_qemu_system():
+                continue
+            pid = Pid.get_pid()
+            while pid and pid != os.getpid():
+                try:
+                    status = open("/proc/{:d}/status".format(pid)).read()
+                except OSError:
+                    break
+                parent = re.search(r"^PPid:\s+(\d+)$", status, re.MULTILINE)
+                pid = int(parent.group(1)) if parent else None
+            if pid != os.getpid():
+                continue
+            try:
+                gdb.execute("kill", to_string=True)
+            except gdb.error:
+                pass
+        return
+
+    @staticmethod
     def connection_removed_handler(_event):
         """GDB event handler for removed target connections."""
         Cache.reset_gef_caches(all=True)
@@ -16378,6 +16408,16 @@ class EventHooking:
     @Decorator.only_if_events_supported("exited")
     def gef_on_exit_unhook(func):
         return gdb.events.exited.disconnect(func)
+
+    @staticmethod
+    @Decorator.only_if_events_supported("gdb_exiting")
+    def gef_on_gdb_exiting_hook(func):
+        return gdb.events.gdb_exiting.connect(func)
+
+    @staticmethod
+    @Decorator.only_if_events_supported("gdb_exiting")
+    def gef_on_gdb_exiting_unhook(func):
+        return gdb.events.gdb_exiting.disconnect(func)
 
     @staticmethod
     @Decorator.only_if_events_supported("connection_removed")
@@ -194057,6 +194097,7 @@ class GefReloadCommand(GenericCommand):
         EventHooking.gef_on_free_objfile_unhook(EventHandler.del_objfile_handler)
         EventHooking.gef_on_clear_objfiles_unhook(EventHandler.del_objfile_handler)
         EventHooking.gef_on_exit_unhook(EventHandler.exit_handler)
+        EventHooking.gef_on_gdb_exiting_unhook(EventHandler.gdb_exiting_handler)
         EventHooking.gef_on_connection_removed_unhook(EventHandler.connection_removed_handler)
         EventHooking.gef_on_memchanged_unhook(EventHandler.memchanged_handler)
         EventHooking.gef_on_regchanged_unhook(EventHandler.regchanged_handler)
@@ -196129,6 +196170,7 @@ class Gef:
         EventHooking.gef_on_free_objfile_hook(EventHandler.del_objfile_handler)
         EventHooking.gef_on_clear_objfiles_hook(EventHandler.del_objfile_handler)
         EventHooking.gef_on_exit_hook(EventHandler.exit_handler)
+        EventHooking.gef_on_gdb_exiting_hook(EventHandler.gdb_exiting_handler)
         EventHooking.gef_on_connection_removed_hook(EventHandler.connection_removed_handler)
         EventHooking.gef_on_memchanged_hook(EventHandler.memchanged_handler)
         EventHooking.gef_on_regchanged_hook(EventHandler.regchanged_handler)
