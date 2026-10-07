@@ -9792,6 +9792,7 @@ options:
 
 ```text
 This command requires CONFIG_RANDSTRUCT=n.
+Until v6.17, the IPC namespaces not used by any task (e.g., held only by a file descriptor) are not shown.
 
 Simplified ipc structure:
 

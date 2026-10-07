@@ -67295,7 +67295,7 @@ class KernelAddressHeuristicFinder:
                 if not is_valid_addr(current_task_tasks):
                     return None
                 if require_init_task and klayout.rw_base and klayout.rw_size:
-                    task_list = KernelTaskCommand.get_task_list(current_task, offset_tasks)
+                    task_list = KernelTask.get_task_list(current_task, offset_tasks)
                     rw_end = klayout.rw_base + klayout.rw_size
                     has_init_task = len(task_list) > 5 and any(
                         (klayout.rw_base <= task < rw_end
@@ -67323,7 +67323,7 @@ class KernelAddressHeuristicFinder:
             offset_tasks = get_offset_tasks(current, require_init_task=True)
             if offset_tasks:
                 # `current` itself is also a task, so it is included.
-                task_list = KernelTaskCommand.get_task_list(current, offset_tasks)
+                task_list = KernelTask.get_task_list(current, offset_tasks)
                 min_distance_task = (None, 0xffff_ffff_ffff_ffff)
                 for task in task_list:
                     # Only `init_task` is statically allocated. The others are on the slab.
@@ -67673,7 +67673,7 @@ class KernelAddressHeuristicFinder:
         init_task = KernelAddressHeuristicFinder.get_init_task() if kversion and "3.8" <= kversion else None
         if init_task:
             is_in_kernel_image = KernelAddressHeuristicFinderUtil.is_in_kernel_image
-            members = dict(KernelTaskCommand.get_nsproxy_members())
+            members = dict(KernelTask.get_nsproxy_members())
             data = KernelNamespace.read_object(init_task, 0x4000)
             for x in KernelAddressHeuristicFinderUtil.filter_in_kernel_image(slice_unpack(data, current_arch.ptrsize)):
                 namespaces = [
@@ -73093,6 +73093,11 @@ class Kernel:
     def file_system():
         """Return the file system resolver."""
         return KernelFileSystem.get_instance()
+
+    @staticmethod
+    def task(init_task=None):
+        """Return the task_struct resolver."""
+        return KernelTask.get_instance(init_task)
 
     @staticmethod
     def cred():
@@ -79923,7 +79928,7 @@ class KernelIpcs:
         `task_addrs` must start with init_task, whose nsproxy is init_nsproxy. Until v6.17, the namespaces
         not used by any task (e.g., held only by a file descriptor or a bind mount) are not found.
         If `offset_nsproxy` is None, init_ipc_ns is searched instead of the namespaces of the tasks."""
-        offset_ipc_ns = dict(KernelTaskCommand.get_nsproxy_members())["ipc_ns"]
+        offset_ipc_ns = dict(KernelTask.get_nsproxy_members())["ipc_ns"]
         namespaces = []
         incomplete = []
         if offset_nsproxy is None:
@@ -86931,18 +86936,10 @@ class KernelCurrentCommand(GenericCommand):
 
     @Cache.cache_this_session(cache_None=False, per_inferior=True, until_new_objfile=True)
     def get_offset_comm(self):
-        """Resolve `offsetof(task_struct, comm)` via `ktask`.
-        `ktask` resolves `init_task` from the CPU context of the selected thread and
-        the answer differs between CPUs, so a failure is not cached."""
-
-        self.meta = []
-        KernelTaskCommand.borrow(self)
-        # the later offsets may fail even if `comm` is found
-        for _func, line in self.meta:
-            r = re.search(r"offsetof\(task_struct, comm\): (0x\S+)", line)
-            if r is not None:
-                return int(r.group(1), 16)
-        return None
+        task = Kernel.task()
+        task.initialize()
+        self.meta = Kernel.export_meta(self, task.meta)
+        return task.offset_comm
 
     def resolve_offset_comm(self):
         """Resolve `offsetof(task_struct, comm)` once per CPU context in this invocation.
@@ -87076,133 +87073,139 @@ class KernelCurrentCommand(GenericCommand):
         return
 
 
-@register_command
-class KernelTaskCommand(GenericCommand, BufferingOutput):
-    """Display process list."""
+class KernelTask:
+    """Resolve task layouts and read processes, threads and their resources."""
 
-    _cmdline_ = "ktask"
-    _category_ = "06-f. Qemu-system/KGDB Cooperation - Linux Task"
+    OPTIONS = {
+        "regs": "print_regs", "maps": "print_maps", "files": "print_fd", "sighand": "print_sighand",
+        "namespaces": "print_namespace", "threads": "print_thread", "seccomp": "print_seccomp",
+    }
+    NSPROXY_NS_TYPES = {
+        "uts_ns": "uts", "ipc_ns": "ipc", "mnt_ns": "mnt", "pid_ns_for_children": "pid",
+        "net_ns": "net", "time_ns": "time", "time_ns_for_children": "time", "cgroup_ns": "cgroup",
+    }
 
-    parser = argparse.ArgumentParser(prog=_cmdline_)
-    parser.add_argument("-hh", "--help-simple", action="store_true", help="show help without ASCII diagram.")
-    parser.add_argument("-f", "--filter", action="append", type=re.compile, default=[], help="comm string REGEXP filter.")
-    parser.add_argument("-T", "--task-filter", action="append", type=AddressUtil.parse_address, default=[], help="task address filter.")
-    parser.add_argument("-m", "--print-maps", action="store_true", help="print memory map for each user-land process.")
-    parser.add_argument("-r", "--print-regs", action="store_true", help="print general registers saved on kstack for each user-land process.")
-    parser.add_argument("-i", "--print-all-id", action="store_true", help="print suid, sgid, euid, egid, fsuid and fsgid.")
-    parser.add_argument("-t", "--print-thread", action="store_true", help="display by thread (LWP), not by process.")
-    parser.add_argument("-F", "--print-fd", action="store_true", help="print file descriptors for each user process.")
-    parser.add_argument("-s", "--print-sighand", action="store_true", help="print signal handlers for each user process.")
-    parser.add_argument("-S", "--print-seccomp", action="store_true",
-                        help="dump the seccomp filter. If the tool is available, it dumps orig_prog; otherwise, it disassembles bpf_func.")
-    parser.add_argument("-N", "--print-namespace", action="store_true", help="print namespaces for each user process.")
-    parser.add_argument("-u", "--user-process-only", action="store_true", help="display user-land process (+ thread) only.")
-    parser.add_argument("--init-task", type=AddressUtil.parse_address, help="specifies the address of init_task.")
-    parser.add_argument("--meta", action="store_true", help="display offset information.")
-    parser.add_argument("--all", action="store_true", help="enable all option.")
-    parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
-    parser.add_argument("-q", "--quiet", action="store_true", help="enable quiet mode.")
-    _syntax_ = parser.format_help()
+    @classmethod
+    @Cache.cache_this_session(per_cpu=True, per_inferior=True, until_new_objfile=True)
+    def get_instance(cls, init_task=None):
+        return cls(init_task)
 
-    _example_ = [
-        "{0:s} -T 0xffff888012345000  # task address filter",
-        "{0:s} -f bash                # comm string filter",
-        "{0:s} --all                  # it means -mritFsSN",
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    def __init__(self, init_task=None):
+        self.init_task_arg = init_task
+        self.init_task = None
+        self.meta = []
+        self.enabled = {}
+        self.disabled = {}
+        self.offset_comm = None
+        self.offset_files = None
+        self.offset_fdt = None
+        return
 
-    _note_ = [
-        "This command requires CONFIG_RANDSTRUCT=n unless vmlinux with debug information is loaded.",
-        "",
-        "Simplified task_struct structure:",
-        "",
-        "    +-init_task-+",
-        "    | list_head |---+    +-->+-kstack----------+    +--->+-vm_area_struct--+",
-        "    +-----------+   |    |   | (thread_info)   |    |    | vm_start        |",
-        "                    |    |   | STACK_END_MAGIC |    |    | vm_end          |",
-        "+-------------------+    |   | ...             |    |    | vm_next (~6.1)  |",
-        "|                        |   | ...             |    |    | ...             |",
-        "|   +-task_struct---+    |   | ...             |    |    | vm_flags        |",
-        "|   | (thread_info) |    |   | ...             |    |    | vm_file         |-----+",
-        "|   | ...           |    |   | pt_regs         |    |    | ...             |     |",
-        "|   | stack         |----+   +-----------------+    |    +-----------------+     |",
-        "|   | ...           |                               |                            |",
-        "+-->| tasks         |-->...               +---------+<------------------------+  |",
-        "    | ...           |                     |                                   |  |",
-        "    | mm            |-->+-mm_struct----+  |  +-------->+-maple_node(6.1~)--+  |  |",
-        "    | ...           |   | mmap (~6.1)  |--+  |         | ...               |  |  |",
-        "    | pid           |   | ...          |     |         | mr64|ma64|alloc   |  |  |",
-        "    | tid           |   | mm_mt (6.1~) |     |         |   ...             |  |  |",
-        "    | ...           |   |   ma_root    |-----+         |   slot[]          |--+  |",
-        "    | stack_canary  |   | ...          |               +-------------------+     |",
-        "    | ...           |   +--------------+                                         |",
-        "    | group_leader  |                                         +------------------+       +-mount----------+",
-        "    | ...           |         +-->+-cred--------------+       |                          | ...            |",
-        "    | thread_group  |-->...   |   | ...               |       |                          | mnt_parent     |-->mount",
-        "    | ...           |         |   | uid, gid          |       |                          | mnt_mountpoint |-->dentry",
-        "    | cred          |---------+   | suid, sgid        |       |                       +->| mnt (vfsmount) |",
-        "    | ...           |             | euid, egid        |       |                       |  |   mnt_root     |-->dentry",
-        "    | comm[16]      |             | fsuid, fsgid      |       |                       |  |   ...          |",
-        "    | ...           |             | ..., user_ns, ... |       |                       |  | ...            |",
-        "    | files         |--+          +-------------------+       |                       |  +----------------+",
-        "    | ...           |  |                                      |                       |",
-        "    | nsproxy       |------->+-nsproxy----------------+       |                       | +--->+-dentry-----+",
-        "    | ...           |  |     | count                  |       |                       | |    | ...        |",
-        "    | sighand       |-----+  | uts_ns, ipc_ns, mnt_ns |       |                       | |    | d_parent   |-->dentry",
-        "    | ...           |  |  |  | pid_ns_for_children    |       |                       | |    | ...        |",
-        "    | seccomp       |  |  |  | net_ns, time_ns, ...   |       |                       | |    | d_inode    |--+",
-        "    | ...           |  |  |  +------------------------+       |                       | |    | d_iname    |  |",
-        "    +---------------+  |  |                                   |                       | |    | ...        |  |",
-        "                       |  +->+-sighand_struct----+            |                       | |    +------------+  |",
-        "                       |     | ...               |            v                       | |                    |",
-        "                       |     | action[64]        |            +-->+-file-----------+  | | +------------------+",
-        "+----------------------+     +-------------------+            |   | ...            |  | | |",
-        "|                                                             |   | f_path         |  | | v",
-        "+-->+-files_struct-+  +-->+-fdtable---+  +-->+-file*[]-----+  |   |   mnt          |--+ | +->+-inode------+",
-        "    | ...          |  |   | max_fds   |  |   | [0]         |--+   |   dentry       |----+ |  | ...        |",
-        "    | fdt          |--+   | fd        |--+   | ...         |      | f_inode (3.9~) |------+  | i_ino      |",
-        "    | ...          |      | ...       |      | [max_fds-1] |      | ...            |         | ...        |",
-        "    +--------------+      +-----------+      +-------------+      +----------------+         +------------+",
-        "",
-        "This command will only track tasks that can be tracked from `init_task` or the result of `kcurrent` command.",
-        "Other tasks (such as `swapper/1` if thread 1 is running some task) will not be detected.",
-    ]
-    _note_ = "\n".join(_note_)
-
-    # the borrowers of --print-fd read these even if it is disabled
-    offset_files = None
-    offset_fdt = None
-
-    @staticmethod
-    def borrow(command, **enabled):
-        """Run `ktask`'s initialize() on behalf of another command and return its instance.
-
-        The resolved offsets are read from the returned instance, and the meta lines it recorded
-        are appended to `command.meta`. `enabled` takes the print_* flags initialize() accepts."""
-        task_command = __gef_command_instances__.get("ktask")
-        if task_command is None:
-            command.meta.append((command.quiet_err, "Could not find the `ktask` command"))
-            return None
-
-        flags = [
-            enabled.get(name, False) for name in [
-                "print_regs", "print_maps", "print_fd", "print_sighand",
-                "print_namespace", "print_thread", "print_seccomp",
-            ]
-        ]
-        saved_args = getattr(task_command, "args", None)
-        task_command.args = command.args
-        task_command.task_addrs_temp = ()
+    def initialize(self, *, regs=False, maps=False, files=False, sighand=False,
+                   namespaces=False, threads=False, seccomp=False):
+        self.meta = []
+        self.enabled = {
+            "regs": regs, "maps": maps, "files": files, "sighand": sighand,
+            "namespaces": namespaces, "threads": threads, "seccomp": seccomp,
+        }
+        self.disabled = {}
+        self.task_addrs_temp = ()
         try:
-            ret = task_command.initialize(command.args, None, *flags)
+            ret = self.resolve_layout()
         finally:
-            if hasattr(task_command, "task_addrs_temp"):
-                del task_command.task_addrs_temp
-            task_command.args = saved_args
-        command.meta.extend(task_command.export_meta(command))
-        if not ret:
+            del self.task_addrs_temp
+        return ret
+
+    def get_tasks(self, *, include_current=False, threads=False, all_ids=False,
+                  comm_filter=None, task_filter=None, user_only=False):
+        tasks = self.get_task_list(self.init_task, self.offset_tasks)
+        current = self.get_current_task_list() if include_current else {}
+        if include_current:
+            tasks = tasks[:1] + [task for task in current if task not in tasks] + tasks[1:]
+        if threads:
+            tasks = self.add_lwp_task(tasks)
+        namespace_context = self.get_namespace_context(tasks) if self.enabled.get("namespaces", False) else None
+        entries = []
+        for task in tasks:
+            info = self.get_task_info(
+                task, all_ids=all_ids, comm_filter=comm_filter, task_filter=task_filter, user_only=user_only,
+            )
+            if info is None:
+                continue
+            info["current"] = current.get(task)
+            info["namespace_context"] = namespace_context
+            entries.append(info)
+        return entries
+
+    def get_task_info(self, task, *, all_ids=False, comm_filter=None, task_filter=None, user_only=False):
+        comm = read_cstring_from_memory(task + self.offset_comm)
+        if comm_filter and not any(pattern.search(comm) for pattern in comm_filter):
             return None
-        return task_command
+        if task_filter and task not in task_filter:
+            return None
+        pid = read_int32_from_memory(task + self.offset_pid)
+        cred = read_int_from_memory(task + self.offset_cred)
+        mm = read_int_from_memory(task + self.offset_mm)
+        kstack = None if self.offset_stack is None else read_int_from_memory(task + self.offset_stack)
+        if user_only and (mm == 0 or pid == 0):
+            return None
+        kcanary = read_int_from_memory(task + self.offset_kcanary) if self.offset_kcanary else None
+        is_thread = self.enabled.get("threads", False) and read_int_from_memory(task + self.offset_group_leader) != task
+        return {
+            "task": task, "comm": comm, "pid": pid, "cred": cred, "mm": mm, "kstack": kstack,
+            "kcanary": kcanary, "is_thread": is_thread, "ids": self.kcred.get_ids(cred, 8 if all_ids else 2),
+            "seccomp_enabled": KernelSeccomp.is_enabled(task, self.offset_stack),
+        }
+
+    def get_current_task_list(self):
+        current_tasks = {}
+        if is_x86():
+            current = KernelAddressHeuristicFinder.get_current_task()
+            if not current:
+                return current_tasks
+            percpu = Kernel.per_cpu()
+            bases = percpu.offsets if percpu.per_cpu_offset is not None else None
+            for index, base in enumerate(bases or [None]):
+                task = KernelAddressHeuristicFinder.dereference_current_task(current, base)
+                if task is None:
+                    break
+                current_tasks.setdefault(task, []).append("cpu{:d}".format(index))
+        else:
+            thread = gdb.selected_thread()
+            try:
+                frame = gdb.selected_frame()
+            except gdb.error:
+                frame = None
+            try:
+                for cpu in KernelPerCpu.get_cpu_threads():
+                    cpu.switch()
+                    task = KernelAddressHeuristicFinder.get_current_task_for_current_thread()
+                    if task is not None:
+                        label = KernelPerCpu.get_cpu_label(cpu).replace("thread ", "th")
+                        current_tasks.setdefault(task, []).append(label)
+            finally:
+                thread.switch()
+                if frame is not None:
+                    frame.select()
+        return {task: labels[0] + (",.." if len(labels) > 1 else "") for task, labels in current_tasks.items()}
+
+    def get_kstack_size(self):
+        """Return the kernel stack size that `KernelTask` verified with the saved ptregs, or None.
+        `KernelTask` must be initialized beforehand."""
+        if getattr(self, "offset_stack", None) is None or self.init_task is None:
+            return None
+        if "task_addrs_temp" in self.__dict__:
+            return None
+        self.task_addrs_temp = tuple(self.get_task_list(self.init_task, self.offset_tasks))
+        try:
+            ret = self.get_offset_ptregs(self.offset_stack)
+        except (gdb.MemoryError, OverflowError):
+            ret = None
+        finally:
+            del self.task_addrs_temp
+        if ret is None:
+            return None
+        return ret[0]
 
     @staticmethod
     def get_task_list(task, offset_tasks):
@@ -87239,6 +87242,468 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
         task_list += [x for x in reversed(backward) if x not in seen]
         return [x for x in task_list if is_valid_addr(x)]
 
+    def add_lwp_task(self, task_addrs):
+        lwp_task_addrs = []
+        kversion = Kernel.version()
+
+        for task in task_addrs:
+            if kversion < "6.7":
+                # `task` itself is also a thread, so it is included.
+                head = task + self.offset_thread_group
+                lwps = KernelListHead(head, self.offset_thread_group).iter_entries(include_head=True)
+            else:
+                signal = read_int_from_memory(task + self.offset_signal)
+                head = signal + self.offset_thread_head
+                lwps = KernelListHead(head, self.offset_thread_group).iter_entries()
+            lwp_task_addrs.extend(lwps)
+        return lwp_task_addrs
+
+    def get_regs(self, kstack, offset_ptregs):
+        if is_x86_64():
+            regs_name = [
+                "r15", "r14", "r13", "r12", "rbp", "rbx", "r11", "r10",
+                "r9", "r8", "rax", "rcx", "rdx", "rsi", "rdi", "orig_rax",
+                "rip", "cs", "eflags", "rsp", "ss",
+            ]
+        elif is_x86_32():
+            regs_name = [
+                "ebx", "ecx", "edx", "esi", "edi", "ebp", "eax", "ds",
+                "es", "fs", "gs", "orig_eax", "eip", "cs", "eflags", "esp", "ss",
+            ]
+        elif is_arm64():
+            regs_name = [
+                "x0", "x1", "x2", "x3", "x4", "x5", "x6", "x7",
+                "x8", "x9", "x10", "x11", "x12", "x13", "x14", "x15",
+                "x16", "x17", "x18", "x19", "x20", "x21", "x22", "x23",
+                "x24", "x25", "x26", "x27", "x28", "x29", "x30",
+                "sp", "pc", "pstate", "orig_x0",
+            ]
+        elif is_arm32():
+            regs_name = [
+                "r0", "r1", "r2", "r3", "r4", "r5", "r6",
+                "r7", "r8", "r9", "r10", "r11", "r12",
+                "sp", "lr", "pc", "cpsr", "orig_r0",
+            ]
+        elif is_riscv32() or is_riscv64():
+            regs_name = [
+                "epc", "ra", "sp", "gp", "tp", "t0", "t1", "t2",
+                "s0", "s1", "a0", "a1", "a2", "a3", "a4", "a5",
+                "a6", "a7", "s2", "s3", "s4", "s5", "s6", "s7",
+                "s8", "s9", "s10", "s11", "t3", "t4", "t5", "t6",
+                "status", "badaddr", "cause", "orig_a0",
+            ]
+
+        ptregs_addr = kstack + offset_ptregs
+        ptregs_size = len(regs_name) * current_arch.ptrsize
+        regs_data = read_memory(ptregs_addr, ptregs_size)
+
+        # maybe kernel thread
+        if is_x86():
+            if regs_data == b"\0" * len(regs_data):
+                return None
+        elif is_arm32():
+            kernel_thread_regs = p32(0) * (len(regs_name) - 2) + p32(0x13) + p32(0)
+            if regs_data == kernel_thread_regs:
+                return None
+        elif is_arm64():
+            kernel_thread_regs = p64(0) * (len(regs_name) - 2) + p64(0x5) + p64(0)
+            if regs_data == kernel_thread_regs:
+                return None
+        elif is_riscv32() or is_riscv64():
+            # copy_thread() of a kernel thread clears all but status (and gp)
+            epc, _ra, sp = slice_unpack(regs_data[:current_arch.ptrsize * 3], current_arch.ptrsize)
+            if epc == 0 and sp == 0:
+                return None
+
+        # get regs value
+        regs_data = slice_unpack(regs_data, current_arch.ptrsize)
+        regs = {}
+        for name, value in zip(regs_name, regs_data):
+            regs[name] = value
+        return regs
+
+    @staticmethod
+    def is_user_regs(regs):
+        """Return whether `regs` looks like a context saved on the kernel entry from the user-land."""
+        if is_x86_64():
+            if regs["ss"] & 0xffff != 0x2b: # __USER_DS
+                return False
+            if regs["cs"] & 0xffff not in (0x33, 0x23): # __USER_CS, __USER32_CS
+                return False
+            return regs["eflags"] & 0x2 and regs["eflags"] >> 22 == 0
+        elif is_x86_32():
+            if regs["ss"] & 0xffff != 0x7b: # __USER_DS
+                return False
+            if regs["cs"] & 0xffff != 0x73: # __USER_CS
+                return False
+            return regs["eflags"] & 0x2 and regs["eflags"] >> 22 == 0
+        elif is_arm64():
+            pstate = regs["pstate"]
+            if pstate & 0x10:
+                # AArch32 user mode
+                if pstate & 0x1f != 0x10 or pstate >> 32:
+                    return False
+            else:
+                # AArch64 EL0t; allow only N,Z,C,V,TCO,DIT,SS,IL,SSBS,BTYPE,D,A,I,F and the bits above 32
+                if pstate & ~0x1f_f330_1fc0:
+                    return False
+            # an unused (zero-filled) area also has pstate == 0
+            if regs["sp"] == 0 or regs["pc"] == 0:
+                return False
+            return not AddressUtil.is_msb_on(regs["sp"]) and not AddressUtil.is_msb_on(regs["pc"])
+        elif is_arm32():
+            return regs["cpsr"] & 0x1f == 0x10 # USR mode
+        elif is_riscv32() or is_riscv64():
+            # SPP is clear for a trap from U-mode, and SPIE is always set there
+            if regs["status"] & 0x100 or not regs["status"] & 0x20:
+                return False
+            if regs["sp"] == 0 or regs["epc"] == 0:
+                return False
+            if is_riscv64():
+                return not AddressUtil.is_msb_on(regs["sp"]) and not AddressUtil.is_msb_on(regs["epc"])
+            return True
+        return False
+
+    def get_open_files(self, task):
+        """Return ([(fd, struct file, close-on-exec), ...], [warning, ...]) of `task`."""
+        files = read_int_from_memory(task + self.offset_files)
+        if not is_valid_addr(files):
+            return [], []
+        fdt = read_int_from_memory(files + self.offset_fdt)
+        if not is_valid_addr(fdt):
+            return [], []
+        return KernelFiles.get_open_fds(fdt)
+
+    def get_file_details(self, task):
+        entries, warnings = self.get_open_files(task)
+        files = []
+        for fd, file, cloexec in entries:
+            dentry = read_int_from_memory(file + self.offset_dentry)
+            inode = read_int_from_memory(dentry + self.offset_d_inode)
+            files.append({
+                "fd": fd, "file": file, "cloexec": cloexec, "dentry": dentry, "inode": inode,
+                "path": self.kpath.get_file_path(file),
+            })
+        return files, warnings
+
+    def get_sighands(self, task):
+        sighand = read_int_from_memory(task + self.offset_sighand)
+        actions = []
+        for index in range(64):
+            address = sighand + self.offset_action + self.sizeof_action * index
+            flags = read_int_from_memory(address + current_arch.ptrsize)
+            restorer = None
+            if self.offset_sa_restorer is not None and flags & 0x0400_0000:
+                restorer = read_int_from_memory(address + self.offset_sa_restorer)
+            actions.append({
+                "number": index + 1, "address": address, "handler": read_int_from_memory(address),
+                "flags": flags, "restorer": restorer, "mask": KernelSighand.read_sigset(address + self.offset_sa_mask),
+            })
+        return {"libc": self.get_task_libc(task), "actions": actions}
+
+    def get_task_libc(self, task):
+        """Return the libc ("glibc" or "musl") that `task` maps, or None if it is unknown (e.g., a static binary)."""
+        if self.libc_kmm is None:
+            return None
+        try:
+            names = self.libc_kmm.get_task_file_names(task)
+        except (gdb.MemoryError, OverflowError, RuntimeError):
+            return None
+        for name in names:
+            if re.fullmatch(r"libc\.so\.6|libc-2\.\d+\.so", name):
+                return "glibc"
+            if re.fullmatch(r"(?:ld-musl|libc\.musl)-\w+\.so\.1", name):
+                return "musl"
+        return None
+
+    @staticmethod
+    def get_nsproxy_members():
+        """Return [(name, offset), ...] of struct nsproxy.
+
+        struct nsproxy {
+            atomic_t count; // refcount_t (v6.1~)
+            struct uts_namespace *uts_ns;
+            struct ipc_namespace *ipc_ns;
+            struct mnt_namespace *mnt_ns;
+            struct pid_namespace *pid_ns_for_children; // pid_ns (~v3.10)
+            struct net *net_ns;
+            struct time_namespace *time_ns; // v5.6~
+            struct time_namespace *time_ns_for_children; // v5.6~
+            struct cgroup_namespace *cgroup_ns; // v4.6~
+        };
+        """
+        names = [
+            "count", "uts_ns", "ipc_ns", "mnt_ns", "pid_ns_for_children", "net_ns",
+            "time_ns", "time_ns_for_children", "cgroup_ns",
+        ]
+
+        # fast path
+        members = []
+        try:
+            gdb.parse_and_eval("(struct nsproxy*)0")
+            for name in names:
+                for field in ([name, "pid_ns"] if name == "pid_ns_for_children" else [name]):
+                    try:
+                        members.append((name, GefUtil.parse_and_eval_unsigned("&((struct nsproxy*)0).{:s}".format(field))))
+                        break
+                    except gdb.error:
+                        pass
+            if members and members[0][0] == "count":
+                return members
+        except gdb.error:
+            pass
+
+        # slow path
+        # `count` is 4 bytes, and the pointers follow it with the alignment
+        kversion = Kernel.version()
+        names = names[:6]
+        if "5.6" <= kversion:
+            names += ["time_ns", "time_ns_for_children"]
+        if "4.6" <= kversion:
+            names += ["cgroup_ns"]
+        return [(name, current_arch.ptrsize * i) for i, name in enumerate(names)]
+
+    def get_namespace_context(self, task_addrs):
+        context = {
+            "members": KernelTask.get_nsproxy_members(),
+            "init_user_ns": None, "init_nsproxy": None, "offset_inum": {},
+            "pid_hierarchy": None, "user_hierarchy": None,
+        }
+        if not task_addrs:
+            return context
+        init_cred = read_int_from_memory(task_addrs[0] + self.offset_cred)
+        init_user_ns = self.kcred.get_user_ns(init_cred)
+        init_nsproxy = read_int_from_memory(task_addrs[0] + self.offset_nsproxy)
+        context["init_user_ns"] = init_user_ns
+        context["init_nsproxy"] = init_nsproxy
+
+        # the offsets are found from the initial namespaces
+        offset_inum = context["offset_inum"]
+        for name, offset in context["members"]:
+            ns_type = self.NSPROXY_NS_TYPES.get(name)
+            if ns_type is None or ns_type in offset_inum:
+                continue
+            init_ns = read_int_from_memory(init_nsproxy + offset, safe=True)
+            offset_inum[ns_type] = KernelNamespace.get_offset_inum(ns_type, init_ns, init_user_ns)
+            if ns_type == "pid":
+                reapers = tuple(x for x in task_addrs if read_int32_from_memory(x + self.offset_pid) == 1)
+                reapers = (task_addrs[0],) + reapers[:1]
+                context["pid_hierarchy"] = KernelNamespace.get_offset_pid_ns_hierarchy(init_ns, reapers)
+        if init_user_ns is not None:
+            offset_inum["user"] = KernelNamespace.get_offset_inum("user", init_user_ns, init_user_ns)
+            user_namespaces = []
+            for task in task_addrs:
+                user_ns = self.kcred.get_user_ns(read_int_from_memory(task + self.offset_real_cred))
+                if user_ns and user_ns not in user_namespaces:
+                    user_namespaces.append(user_ns)
+            context["user_hierarchy"] = KernelNamespace.get_offset_user_ns_hierarchy(init_user_ns, tuple(user_namespaces))
+        return context
+
+    def get_namespace_info(self, ns_type, ns, context):
+        result = {"inum": None, "level": None, "parent": None, "owner": None}
+        if not ns or not is_valid_addr(ns):
+            return result
+        offset_inum = context["offset_inum"].get(ns_type)
+        if offset_inum is not None:
+            result["inum"] = read_int32_from_memory(ns + offset_inum)
+        if ns_type == "pid" and context["pid_hierarchy"] is not None:
+            offset_level, offset_parent = context["pid_hierarchy"]
+            result["level"] = read_int32_from_memory(ns + offset_level)
+            result["parent"] = read_int_from_memory(ns + offset_parent)
+        elif ns_type == "user" and context["user_hierarchy"] is not None:
+            offset_parent, offset_level, offset_owner = context["user_hierarchy"]
+            result["level"] = read_int32_from_memory(ns + offset_level)
+            result["owner"] = read_int32_from_memory(ns + offset_owner)
+            result["parent"] = read_int_from_memory(ns + offset_parent)
+        return result
+
+    def get_namespace_entries(self, task, context):
+        real_cred = read_int_from_memory(task + self.offset_real_cred)
+        user_ns = self.kcred.get_user_ns(real_cred)
+        entries = [{"name": "real_cred->user_ns", "value": user_ns, "type": "user",
+                    "is_init": None if user_ns is None else user_ns == context["init_user_ns"]}]
+        nsproxy = read_int_from_memory(task + self.offset_nsproxy)
+        for name, offset in context["members"]:
+            if name == "count":
+                value = read_int32_from_memory(nsproxy + offset)
+                is_init = None
+            else:
+                value = read_int_from_memory(nsproxy + offset)
+                is_init = value == read_int_from_memory(context["init_nsproxy"] + offset)
+            entries.append({"name": "nsproxy->" + name, "value": value,
+                            "type": self.NSPROXY_NS_TYPES.get(name), "is_init": is_init})
+        return entries
+
+    def resolve_layout(self):
+        enabled = self.enabled
+        self.init_task = None
+        self.offset_comm = None
+        kversion = Kernel.version()
+        if kversion is None:
+            self.meta.append(("err", "Could not find Linux kernel"))
+            return None
+
+        # init_task
+        if self.init_task_arg is not None:
+            init_task = self.init_task_arg
+        else:
+            init_task = KernelAddressHeuristicFinder.get_init_task()
+        self.init_task = init_task
+        if init_task is None:
+            self.meta.append(("err", "Could not find init_task"))
+            return None
+        self.meta.append(("info", "init_task: {:#x}".format(init_task)))
+
+        # task_struct->tasks
+        self.offset_tasks = self.get_offset_tasks(init_task)
+        if self.offset_tasks is None:
+            self.meta.append(("err", "Could not find task_struct->tasks"))
+            return None
+        self.meta.append(("info", "offsetof(task_struct, tasks): {:#x}".format(self.offset_tasks)))
+
+        # task addresses
+        task_addrs = KernelTask.get_task_list(init_task, self.offset_tasks)
+        if not task_addrs:
+            self.meta.append(("err", "Failed to list each tasks"))
+            return None
+        self.meta.append(("info", "Number of tasks: {:d}".format(len(task_addrs))))
+        self.task_addrs_temp = tuple(task_addrs)
+
+        # task_struct->mm
+        self.offset_mm = self.get_offset_mm(self.offset_tasks)
+        if self.offset_mm is None:
+            self.meta.append(("err", "Could not find task_struct->mm"))
+            return None
+        self.meta.append(("info", "offsetof(task_struct, mm): {:#x}".format(self.offset_mm)))
+
+        # task_struct->stack
+        self.offset_stack = self.get_offset_stack()
+        if self.offset_stack is None:
+            self.meta.append(("info", "offsetof(task_struct, stack): None"))
+        else:
+            self.meta.append(("info", "offsetof(task_struct, stack): {:#x}".format(self.offset_stack)))
+
+        # task_struct->pid
+        self.offset_pid = self.get_offset_pid()
+        if self.offset_pid is None:
+            self.meta.append(("err", "Could not find task_struct->pid"))
+            return None
+        self.meta.append(("info", "offsetof(task_struct, pid): {:#x}".format(self.offset_pid)))
+
+        # task_struct->stack_canary
+        self.offset_kcanary = self.get_offset_canary(self.offset_pid)
+        if self.offset_kcanary is None:
+            self.meta.append(("info", "offsetof(task_struct, stack_canary): None"))
+        else:
+            self.meta.append(("info", "offsetof(task_struct, stack_canary): {:#x}".format(self.offset_kcanary)))
+
+        # task_struct->comm
+        self.offset_comm = self.get_offset_comm()
+        if self.offset_comm is None:
+            self.meta.append(("err", "Could not find task_struct->comm[TASK_COMM_LEN]"))
+            return None
+        self.meta.append(("info", "offsetof(task_struct, comm): {:#x}".format(self.offset_comm)))
+
+        # task_struct->cred
+        self.offset_cred = self.get_offset_cred(self.offset_comm)
+        if self.offset_cred is None:
+            self.meta.append(("err", "Could not find task_struct->cred"))
+            return None
+        self.meta.append(("info", "offsetof(task_struct, cred): {:#x}".format(self.offset_cred)))
+
+        # task_struct->real_cred
+        self.offset_real_cred = self.get_offset_real_cred(self.offset_cred)
+        self.meta.append(("info", "offsetof(task_struct, real_cred): {:#x}".format(self.offset_real_cred)))
+
+        # struct cred
+        cred_samples = []
+        for task in task_addrs[:0x8]:
+            cred = read_int_from_memory(task + self.offset_cred, safe=True)
+            if cred is None:
+                continue
+            if is_valid_addr(cred) and cred not in cred_samples:
+                cred_samples.append(cred)
+        if not cred_samples:
+            self.meta.append(("err", "Could not find task_struct->cred"))
+            return None
+        self.kcred = Kernel.cred()
+        ret = self.kcred.initialize(cred_samples[0], tuple(cred_samples))
+        self.meta.extend(self.kcred.meta)
+        if not ret:
+            return None
+
+        # kstack_top->saved_ptregs
+        if enabled["regs"] and self.offset_stack is not None:
+            if not self.initialize_ptregs_offset():
+                self.disable_option(enabled, "regs")
+        elif enabled["regs"]:
+            self.meta.append(("warn", "Could not find saved ptregs without task_struct->stack; skipping registers"))
+
+        # vm_area_struct->vm_mm
+        # vm_area_struct->vm_flags
+        # vm_area_struct->vm_file
+        # file->f_path.mnt
+        # file->f_path.dentry
+        # dentry->d_iname
+        # dentry->d_parent
+        # dentry->d_inode
+        # inode->i_ino
+        if enabled["maps"]:
+            if not self.initialize_vma_offsets(task_addrs):
+                self.disable_option(enabled, "maps")
+
+        # task_struct->files
+        if enabled["files"] or enabled["sighand"] or enabled["namespaces"] or \
+            ("6.7" <= kversion and enabled["threads"]) or enabled["seccomp"]:
+            if not self.initialize_files_offset():
+                self.disable_option(enabled, "files", "sighand", "namespaces", "seccomp")
+                if "6.7" <= kversion:
+                    self.disable_option(enabled, "threads")
+
+        # files_struct->fdt
+        if enabled["files"]:
+            if not self.initialize_fdt_offset():
+                self.disable_option(enabled, "files")
+
+        # file->f_path.mnt
+        # file->f_path.dentry
+        # dentry->d_iname
+        # dentry->d_parent
+        # dentry->d_inode
+        # inode->i_ino
+        if enabled["files"]:
+            # the meta is already recorded if --print-maps resolved them
+            if not self.initialize_file_path_offsets(task_addrs, not enabled["maps"]):
+                self.disable_option(enabled, "files")
+
+        # cred->user_ns
+        # task_struct->nsproxy
+        if enabled["namespaces"] or ("6.7" <= kversion and enabled["threads"]) or enabled["seccomp"]:
+            if not self.initialize_nsproxy_offsets():
+                self.disable_option(enabled, "namespaces", "seccomp")
+                if "6.7" <= kversion:
+                    self.disable_option(enabled, "threads")
+
+        # task_struct->group_leader
+        # task_struct->thread_group
+        # task_struct->signal (6.7~)
+        # signal->thread_head (6.7~)
+        if enabled["threads"]:
+            if not self.initialize_thread_offsets(kversion):
+                self.disable_option(enabled, "threads")
+
+        # task_struct->sighand
+        if enabled["sighand"]:
+            if not self.initialize_sighand_offsets(task_addrs):
+                self.disable_option(enabled, "sighand")
+
+        # task_struct->seccomp
+        if enabled["seccomp"]:
+            if not self.initialize_seccomp_offsets():
+                self.disable_option(enabled, "seccomp")
+
+        return True
+
     @Cache.cache_this_session(cache_None=False, per_inferior=True, until_new_objfile=True)
     def get_offset_tasks(self, init_task):
         # fast path
@@ -87251,7 +87716,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
         # search for init_task->tasks
         for i in range(0x200):
             offset_tasks = current_arch.ptrsize * i
-            task_list = KernelTaskCommand.get_task_list(init_task, offset_tasks)
+            task_list = KernelTask.get_task_list(init_task, offset_tasks)
             if len(task_list) > 5:
                 return offset_tasks
         return None
@@ -87548,132 +88013,6 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
             return None
         return best[1:]
 
-    @staticmethod
-    def get_kstack_size():
-        """Return the kernel stack size that `ktask` verified with the saved ptregs, or None.
-        `ktask` must be initialized beforehand."""
-        task_command = __gef_command_instances__.get("ktask")
-        if getattr(task_command, "offset_stack", None) is None or getattr(task_command, "init_task", None) is None:
-            return None
-        if "task_addrs_temp" in task_command.__dict__:
-            return None
-        task_command.task_addrs_temp = tuple(KernelTaskCommand.get_task_list(task_command.init_task, task_command.offset_tasks))
-        try:
-            ret = task_command.get_offset_ptregs(task_command.offset_stack)
-        except (gdb.MemoryError, OverflowError):
-            ret = None
-        finally:
-            del task_command.task_addrs_temp
-        if ret is None:
-            return None
-        return ret[0]
-
-    @staticmethod
-    def is_user_regs(regs):
-        """Return whether `regs` looks like a context saved on the kernel entry from the user-land."""
-        if is_x86_64():
-            if regs["ss"] & 0xffff != 0x2b: # __USER_DS
-                return False
-            if regs["cs"] & 0xffff not in (0x33, 0x23): # __USER_CS, __USER32_CS
-                return False
-            return regs["eflags"] & 0x2 and regs["eflags"] >> 22 == 0
-        elif is_x86_32():
-            if regs["ss"] & 0xffff != 0x7b: # __USER_DS
-                return False
-            if regs["cs"] & 0xffff != 0x73: # __USER_CS
-                return False
-            return regs["eflags"] & 0x2 and regs["eflags"] >> 22 == 0
-        elif is_arm64():
-            pstate = regs["pstate"]
-            if pstate & 0x10:
-                # AArch32 user mode
-                if pstate & 0x1f != 0x10 or pstate >> 32:
-                    return False
-            else:
-                # AArch64 EL0t; allow only N,Z,C,V,TCO,DIT,SS,IL,SSBS,BTYPE,D,A,I,F and the bits above 32
-                if pstate & ~0x1f_f330_1fc0:
-                    return False
-            # an unused (zero-filled) area also has pstate == 0
-            if regs["sp"] == 0 or regs["pc"] == 0:
-                return False
-            return not AddressUtil.is_msb_on(regs["sp"]) and not AddressUtil.is_msb_on(regs["pc"])
-        elif is_arm32():
-            return regs["cpsr"] & 0x1f == 0x10 # USR mode
-        elif is_riscv32() or is_riscv64():
-            # SPP is clear for a trap from U-mode, and SPIE is always set there
-            if regs["status"] & 0x100 or not regs["status"] & 0x20:
-                return False
-            if regs["sp"] == 0 or regs["epc"] == 0:
-                return False
-            if is_riscv64():
-                return not AddressUtil.is_msb_on(regs["sp"]) and not AddressUtil.is_msb_on(regs["epc"])
-            return True
-        return False
-
-    def get_regs(self, kstack, offset_ptregs):
-        if is_x86_64():
-            regs_name = [
-                "r15", "r14", "r13", "r12", "rbp", "rbx", "r11", "r10",
-                "r9", "r8", "rax", "rcx", "rdx", "rsi", "rdi", "orig_rax",
-                "rip", "cs", "eflags", "rsp", "ss",
-            ]
-        elif is_x86_32():
-            regs_name = [
-                "ebx", "ecx", "edx", "esi", "edi", "ebp", "eax", "ds",
-                "es", "fs", "gs", "orig_eax", "eip", "cs", "eflags", "esp", "ss",
-            ]
-        elif is_arm64():
-            regs_name = [
-                "x0", "x1", "x2", "x3", "x4", "x5", "x6", "x7",
-                "x8", "x9", "x10", "x11", "x12", "x13", "x14", "x15",
-                "x16", "x17", "x18", "x19", "x20", "x21", "x22", "x23",
-                "x24", "x25", "x26", "x27", "x28", "x29", "x30",
-                "sp", "pc", "pstate", "orig_x0",
-            ]
-        elif is_arm32():
-            regs_name = [
-                "r0", "r1", "r2", "r3", "r4", "r5", "r6",
-                "r7", "r8", "r9", "r10", "r11", "r12",
-                "sp", "lr", "pc", "cpsr", "orig_r0",
-            ]
-        elif is_riscv32() or is_riscv64():
-            regs_name = [
-                "epc", "ra", "sp", "gp", "tp", "t0", "t1", "t2",
-                "s0", "s1", "a0", "a1", "a2", "a3", "a4", "a5",
-                "a6", "a7", "s2", "s3", "s4", "s5", "s6", "s7",
-                "s8", "s9", "s10", "s11", "t3", "t4", "t5", "t6",
-                "status", "badaddr", "cause", "orig_a0",
-            ]
-
-        ptregs_addr = kstack + offset_ptregs
-        ptregs_size = len(regs_name) * current_arch.ptrsize
-        regs_data = read_memory(ptregs_addr, ptregs_size)
-
-        # maybe kernel thread
-        if is_x86():
-            if regs_data == b"\0" * len(regs_data):
-                return None
-        elif is_arm32():
-            kernel_thread_regs = p32(0) * (len(regs_name) - 2) + p32(0x13) + p32(0)
-            if regs_data == kernel_thread_regs:
-                return None
-        elif is_arm64():
-            kernel_thread_regs = p64(0) * (len(regs_name) - 2) + p64(0x5) + p64(0)
-            if regs_data == kernel_thread_regs:
-                return None
-        elif is_riscv32() or is_riscv64():
-            # copy_thread() of a kernel thread clears all but status (and gp)
-            epc, _ra, sp = slice_unpack(regs_data[:current_arch.ptrsize * 3], current_arch.ptrsize)
-            if epc == 0 and sp == 0:
-                return None
-
-        # get regs value
-        regs_data = slice_unpack(regs_data, current_arch.ptrsize)
-        regs = {}
-        for name, value in zip(regs_name, regs_data):
-            regs[name] = value
-        return regs
-
     @Cache.cache_this_session(cache_None=False, per_inferior=True, until_new_objfile=True)
     def get_offset_pid(self):
         """
@@ -87892,7 +88231,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
             ...
         };
         """
-        task_addrs = self.task_addrs_temp
+        task_addrs = getattr(self, "task_addrs_temp", (self.init_task,))
 
         # fast path
         try:
@@ -87929,22 +88268,6 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
             offset_files = base + current_arch.ptrsize * (i + 1)
             return offset_files
         return None
-
-    def add_lwp_task(self, task_addrs):
-        lwp_task_addrs = []
-        kversion = Kernel.version()
-
-        for task in task_addrs:
-            if kversion < "6.7":
-                # `task` itself is also a thread, so it is included.
-                head = task + self.offset_thread_group
-                lwps = KernelListHead(head, self.offset_thread_group).iter_entries(include_head=True)
-            else:
-                signal = read_int_from_memory(task + self.offset_signal)
-                head = signal + self.offset_thread_head
-                lwps = KernelListHead(head, self.offset_thread_group).iter_entries()
-            lwp_task_addrs.extend(lwps)
-        return lwp_task_addrs
 
     @Cache.cache_this_session(cache_None=False, per_inferior=True, until_new_objfile=True)
     def get_offset_nsproxy(self, offset_files):
@@ -88028,50 +88351,6 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
             offset_sighand += current_arch.ptrsize * 2
         return offset_sighand
 
-    def show_init_task_recovery_hint(self, init_task):
-        if init_task is not None:
-            return
-
-        if self.init_task is not None:
-            try:
-                klayout = Kernel.layout()
-            except (gdb.error, gdb.MemoryError):
-                klayout = None
-            image_starts = [] if klayout is None else [x for x in (klayout.text_base, klayout.ro_base, klayout.rw_base) if x]
-            image_ends = [] if klayout is None else [x for x in (klayout.text_end, klayout.ro_end, klayout.rw_end) if x]
-            if image_starts and image_ends:
-                image_start = min(image_starts)
-                image_end = max(image_ends)
-                if image_start <= self.init_task < image_end:
-                    return
-                self.quiet_warn("Hint: init_task looks outside the kernel image (kbase: {:#x} - {:#x}).".format(image_start, image_end))
-
-        self.quiet_warn("Retry with: ktask --init-task <addr>")
-        return
-
-    def export_meta(self, command):
-        """Convert the recorded meta lines into the (printer, line) pairs of the calling command.
-        The pairs hold bound methods of this instance, whose `args` the caller restores before
-        the lines are printed, so they must be re-bound instead of being replayed as-is."""
-        level_map = {
-            self.quiet_info: command.quiet_info,
-            self.quiet_warn: command.quiet_warn,
-            self.quiet_err: command.quiet_err,
-        }
-        return [(level_map.get(func, func), line) for func, line in self.meta]
-
-    def disable_option(self, command_args, enabled, *options):
-        """Disable the option(s) whose necessary offsets are not found, instead of aborting whole command."""
-        for option in options:
-            if enabled.get(option, False):
-                enabled[option] = False
-                setattr(command_args, option, False)
-                if option == "print_fd" and not getattr(command_args, "meta", False):
-                    reason = next((line for func, line in reversed(self.meta) if func == self.quiet_err), "File layout unresolved")
-                    warn("Disabled --print-fd: {:s} (see `ktask --print-fd --meta`)".format(reason))
-                self.meta.append((self.quiet_warn, "Disabled --{:s}".format(option.replace("_", "-"))))
-        return
-
     def initialize_ptregs_offset(self):
         result = self.get_offset_ptregs(self.offset_stack)
         if result is None:
@@ -88079,17 +88358,16 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
         else:
             self.kstack_size, self.offset_ptregs = result
         if self.offset_ptregs is None:
-            self.meta.append((self.quiet_err, "Could not find saved ptregs"))
+            self.meta.append(("err", "Could not find saved ptregs"))
             return None
-        self.meta.append((self.quiet_info, "kstack size: {:#x}".format(self.kstack_size)))
-        self.meta.append((self.quiet_info, "offsetof(kstack_top, saved ptregs): {:#x}".format(self.offset_ptregs)))
+        self.meta.append(("info", "kstack size: {:#x}".format(self.kstack_size)))
+        self.meta.append(("info", "offsetof(kstack_top, saved ptregs): {:#x}".format(self.offset_ptregs)))
         return True
-
 
     def initialize_vma_offsets(self, task_addrs):
         self.kmm = Kernel.mm()
         ret = self.kmm.initialize(task_addrs, self.offset_mm)
-        self.meta.extend(Kernel.export_meta(self, self.kmm.meta))
+        self.meta.extend(self.kmm.meta)
         if not ret:
             return None
         self.kpath = self.kmm.kpath
@@ -88097,23 +88375,13 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
         self.offset_d_inode = self.kpath.offset_d_inode
         return True
 
-    def get_open_files(self, task):
-        """Return ([(fd, struct file, close-on-exec), ...], [warning, ...]) of `task`."""
-        files = read_int_from_memory(task + self.offset_files)
-        if not is_valid_addr(files):
-            return [], []
-        fdt = read_int_from_memory(files + self.offset_fdt)
-        if not is_valid_addr(fdt):
-            return [], []
-        return KernelFiles.get_open_fds(fdt)
-
     def initialize_file_path_offsets(self, task_addrs, echo_meta):
         # The first open files are the samples. The first VMA of a process is not always file-backed,
         # and the VMAs are unrelated to the file descriptors.
         kpath = Kernel.path()
         if kpath.initialized and kpath.offset_file_dentry is not None:
             if echo_meta:
-                self.meta.extend(Kernel.export_meta(self, kpath.meta))
+                self.meta.extend(kpath.meta)
             self.kpath = kpath
             self.offset_dentry = kpath.offset_file_dentry
             self.offset_d_inode = kpath.offset_d_inode
@@ -88127,8 +88395,8 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
                         continue
                     tried.add(file)
                     if kpath.initialize(file=file) and kpath.offset_file_dentry is not None:
-                        self.meta.extend(Kernel.export_meta(self, kpath.meta))
-                        self.meta.append((self.quiet_info, "file (sample): {:#x}".format(file)))
+                        self.meta.extend(kpath.meta)
+                        self.meta.append(("info", "file (sample): {:#x}".format(file)))
                         self.kpath = kpath
                         self.offset_dentry = kpath.offset_file_dentry
                         self.offset_d_inode = kpath.offset_d_inode
@@ -88140,76 +88408,76 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
             if len(tried) >= 0x10:
                 break
 
-        self.meta.extend(Kernel.export_meta(self, kpath.meta))
-        self.meta.append((self.quiet_err, "Could not find a valid open file"))
+        self.meta.extend(kpath.meta)
+        self.meta.append(("err", "Could not find a valid open file"))
         return None
 
     def initialize_files_offset(self):
         self.offset_files = self.get_offset_files(self.offset_comm)
         if self.offset_files is None:
-            self.meta.append((self.quiet_err, "Could not find task_struct->files"))
+            self.meta.append(("err", "Could not find task_struct->files"))
             return None
-        self.meta.append((self.quiet_info, "offsetof(task_struct, files): {:#x}".format(self.offset_files)))
+        self.meta.append(("info", "offsetof(task_struct, files): {:#x}".format(self.offset_files)))
         return True
 
     def initialize_fdt_offset(self):
         files = read_int_from_memory(self.task_addrs_temp[0] + self.offset_files)
         self.offset_fdt = KernelFiles.get_offset_fdt(files)
         if self.offset_fdt is None:
-            self.meta.append((self.quiet_err, "Could not find files_struct->fdt"))
+            self.meta.append(("err", "Could not find files_struct->fdt"))
             return None
-        self.meta.append((self.quiet_info, "offsetof(files_struct, fdt): {:#x}".format(self.offset_fdt)))
+        self.meta.append(("info", "offsetof(files_struct, fdt): {:#x}".format(self.offset_fdt)))
         return True
 
     def initialize_nsproxy_offsets(self):
         if self.kcred.offset_user_ns is None:
-            self.meta.append((self.quiet_warn, "Could not find cred->user_ns; real_cred->user_ns is shown as unknown"))
+            self.meta.append(("warn", "Could not find cred->user_ns; real_cred->user_ns is shown as unknown"))
 
         self.offset_nsproxy = self.get_offset_nsproxy(self.offset_files)
         if self.offset_nsproxy is None:
-            self.meta.append((self.quiet_err, "Could not find task_struct->nsproxy"))
+            self.meta.append(("err", "Could not find task_struct->nsproxy"))
             return None
-        self.meta.append((self.quiet_info, "offsetof(task_struct, nsproxy): {:#x}".format(self.offset_nsproxy)))
+        self.meta.append(("info", "offsetof(task_struct, nsproxy): {:#x}".format(self.offset_nsproxy)))
         return True
 
     def initialize_thread_offsets(self, kversion):
         self.offset_group_leader = self.get_offset_group_leader(self.offset_pid, self.offset_kcanary)
-        self.meta.append((self.quiet_info, "offsetof(task_struct, group_leader): {:#x}".format(self.offset_group_leader)))
+        self.meta.append(("info", "offsetof(task_struct, group_leader): {:#x}".format(self.offset_group_leader)))
 
         self.offset_thread_group = self.get_offset_thread_group(self.offset_group_leader)
         if self.offset_thread_group is None:
-            self.meta.append((self.quiet_err, "Could not find task_struct->thread_group"))
+            self.meta.append(("err", "Could not find task_struct->thread_group"))
             return None
         if "6.7" <= kversion:
-            self.meta.append((self.quiet_info, "offsetof(task_struct, thread_node): {:#x}".format(self.offset_thread_group)))
+            self.meta.append(("info", "offsetof(task_struct, thread_node): {:#x}".format(self.offset_thread_group)))
         else:
-            self.meta.append((self.quiet_info, "offsetof(task_struct, thread_group): {:#x}".format(self.offset_thread_group)))
+            self.meta.append(("info", "offsetof(task_struct, thread_group): {:#x}".format(self.offset_thread_group)))
 
         if "6.7" <= kversion:
             self.offset_signal = self.get_offset_signal(self.offset_nsproxy)
-            self.meta.append((self.quiet_info, "offsetof(task_struct, signal): {:#x}".format(self.offset_signal)))
+            self.meta.append(("info", "offsetof(task_struct, signal): {:#x}".format(self.offset_signal)))
 
             signal = read_int_from_memory(self.task_addrs_temp[0] + self.offset_signal)
             self.offset_thread_head = KernelSignal.get_offset_thread_head(signal)
             if self.offset_thread_head is None:
-                self.meta.append((self.quiet_err, "Could not find signal->thread_head"))
+                self.meta.append(("err", "Could not find signal->thread_head"))
                 return None
-            self.meta.append((self.quiet_info, "offsetof(signal, thread_head): {:#x}".format(self.offset_thread_head)))
+            self.meta.append(("info", "offsetof(signal, thread_head): {:#x}".format(self.offset_thread_head)))
         return True
 
     def initialize_sighand_offsets(self, task_addrs):
         self.offset_sighand = self.get_offset_sighand(self.offset_files)
         if self.offset_sighand is None:
-            self.meta.append((self.quiet_err, "Could not find task_struct->sighand"))
+            self.meta.append(("err", "Could not find task_struct->sighand"))
             return None
-        self.meta.append((self.quiet_info, "offsetof(task_struct, sighand): {:#x}".format(self.offset_sighand)))
+        self.meta.append(("info", "offsetof(task_struct, sighand): {:#x}".format(self.offset_sighand)))
 
         sighand = read_int_from_memory(task_addrs[1] + self.offset_sighand)
         self.offset_action = KernelSighand.get_offset_action(sighand)
         if self.offset_action is None:
-            self.meta.append((self.quiet_err, "Could not find sighand_struct->action"))
+            self.meta.append(("err", "Could not find sighand_struct->action"))
             return None
-        self.meta.append((self.quiet_info, "offsetof(sighand_struct, action): {:#x}".format(self.offset_action)))
+        self.meta.append(("info", "offsetof(sighand_struct, action): {:#x}".format(self.offset_action)))
 
         sighands = []
         for task in task_addrs:
@@ -88220,16 +88488,16 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
                 sighands.append(sample)
         self.sizeof_action = KernelSighand.get_sizeof_action(tuple(sighands), self.offset_action)
         if self.sizeof_action is None:
-            self.meta.append((self.quiet_err, "Could not find sizeof(action[0])"))
+            self.meta.append(("err", "Could not find sizeof(action[0])"))
             return None
-        self.meta.append((self.quiet_info, "sizeof(action[0]): {:#x}".format(self.sizeof_action)))
+        self.meta.append(("info", "sizeof(action[0]): {:#x}".format(self.sizeof_action)))
 
         self.offset_sa_restorer, self.offset_sa_mask = KernelSighand.get_offset_restorer_mask(self.sizeof_action)
         if self.offset_sa_restorer is None:
-            self.meta.append((self.quiet_info, "offsetof(k_sigaction, sa.sa_restorer): None"))
+            self.meta.append(("info", "offsetof(k_sigaction, sa.sa_restorer): None"))
         else:
-            self.meta.append((self.quiet_info, "offsetof(k_sigaction, sa.sa_restorer): {:#x}".format(self.offset_sa_restorer)))
-        self.meta.append((self.quiet_info, "offsetof(k_sigaction, sa.sa_mask): {:#x}".format(self.offset_sa_mask)))
+            self.meta.append(("info", "offsetof(k_sigaction, sa.sa_restorer): {:#x}".format(self.offset_sa_restorer)))
+        self.meta.append(("info", "offsetof(k_sigaction, sa.sa_mask): {:#x}".format(self.offset_sa_mask)))
         self.signame_list = KernelSighand.SIGNAL_NAMES
         self.sa_flags_extra = LinuxSignal.KERNEL_FLAGS
         if is_arm32():
@@ -88243,234 +88511,146 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
             ret = None
         if not ret:
             self.libc_kmm = None
-            self.meta.append((self.quiet_info, "The libc names of the RT signals are not shown"))
+            self.meta.append(("info", "The libc names of the RT signals are not shown"))
         return True
 
     def initialize_seccomp_offsets(self):
         self.offset_signal = self.get_offset_signal(self.offset_nsproxy)
-        self.meta.append((self.quiet_info, "offsetof(task_struct, signal): {:#x}".format(self.offset_signal)))
+        self.meta.append(("info", "offsetof(task_struct, signal): {:#x}".format(self.offset_signal)))
 
         self.kseccomp = Kernel.seccomp()
         ret = self.kseccomp.initialize(self.task_addrs_temp, self.offset_stack, self.offset_signal)
-        self.meta.extend(Kernel.export_meta(self, self.kseccomp.meta))
+        self.meta.extend(self.kseccomp.meta)
         return ret
 
-    def initialize(
-        self, command_args, init_task_arg, print_regs, print_maps, print_fd,
-        print_sighand, print_namespace, print_thread, print_seccomp,
-    ):
-        self.meta = []
-        enabled = {
-            "print_regs": print_regs,
-            "print_maps": print_maps,
-            "print_fd": print_fd,
-            "print_sighand": print_sighand,
-            "print_namespace": print_namespace,
-            "print_thread": print_thread,
-            "print_seccomp": print_seccomp,
-        }
-        self.init_task = None
-        kversion = Kernel.version()
-        if kversion is None:
-            self.meta.append((self.quiet_err, "Could not find Linux kernel"))
-            return None
+    def disable_option(self, enabled, *options):
+        for option in options:
+            if enabled.get(option, False):
+                enabled[option] = False
+                reason = next((line for level, line in reversed(self.meta) if level == "err"), "File layout unresolved")
+                self.disabled[option] = reason
+                self.meta.append(("warn", "Disabled --{:s}".format(self.OPTIONS[option].replace("_", "-"))))
+        return
 
-        # init_task
-        if init_task_arg is not None:
-            init_task = init_task_arg
-        else:
-            init_task = KernelAddressHeuristicFinder.get_init_task()
-        self.init_task = init_task
-        if init_task is None:
-            self.meta.append((self.quiet_err, "Could not find init_task"))
-            return None
-        self.meta.append((self.quiet_info, "init_task: {:#x}".format(init_task)))
 
-        # task_struct->tasks
-        self.offset_tasks = self.get_offset_tasks(init_task)
-        if self.offset_tasks is None:
-            self.meta.append((self.quiet_err, "Could not find task_struct->tasks"))
-            return None
-        self.meta.append((self.quiet_info, "offsetof(task_struct, tasks): {:#x}".format(self.offset_tasks)))
+@register_command
+class KernelTaskCommand(GenericCommand, BufferingOutput):
+    """Display process list."""
 
-        # task addresses
-        task_addrs = KernelTaskCommand.get_task_list(init_task, self.offset_tasks)
-        if not task_addrs:
-            self.meta.append((self.quiet_err, "Failed to list each tasks"))
-            return None
-        self.meta.append((self.quiet_info, "Number of tasks: {:d}".format(len(task_addrs))))
-        self.task_addrs_temp = tuple(task_addrs)
+    _cmdline_ = "ktask"
+    _category_ = "06-f. Qemu-system/KGDB Cooperation - Linux Task"
 
-        # task_struct->mm
-        self.offset_mm = self.get_offset_mm(self.offset_tasks)
-        if self.offset_mm is None:
-            self.meta.append((self.quiet_err, "Could not find task_struct->mm"))
-            return None
-        self.meta.append((self.quiet_info, "offsetof(task_struct, mm): {:#x}".format(self.offset_mm)))
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("-hh", "--help-simple", action="store_true", help="show help without ASCII diagram.")
+    parser.add_argument("-f", "--filter", action="append", type=re.compile, default=[], help="comm string REGEXP filter.")
+    parser.add_argument("-T", "--task-filter", action="append", type=AddressUtil.parse_address, default=[],
+                        help="task address filter.")
+    parser.add_argument("-m", "--print-maps", action="store_true", help="print memory map for each user-land process.")
+    parser.add_argument("-r", "--print-regs", action="store_true",
+                        help="print general registers saved on kstack for each user-land process.")
+    parser.add_argument("-i", "--print-all-id", action="store_true", help="print suid, sgid, euid, egid, fsuid and fsgid.")
+    parser.add_argument("-t", "--print-thread", action="store_true", help="display by thread (LWP), not by process.")
+    parser.add_argument("-F", "--print-fd", action="store_true", help="print file descriptors for each user process.")
+    parser.add_argument("-s", "--print-sighand", action="store_true", help="print signal handlers for each user process.")
+    parser.add_argument("-S", "--print-seccomp", action="store_true",
+                        help="dump the seccomp filter. If the tool is available, it dumps orig_prog; "
+                             "otherwise, it disassembles bpf_func.")
+    parser.add_argument("-N", "--print-namespace", action="store_true", help="print namespaces for each user process.")
+    parser.add_argument("-u", "--user-process-only", action="store_true", help="display user-land process (+ thread) only.")
+    parser.add_argument("--init-task", type=AddressUtil.parse_address, help="specifies the address of init_task.")
+    parser.add_argument("--meta", action="store_true", help="display offset information.")
+    parser.add_argument("--all", action="store_true", help="enable all option.")
+    parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
+    parser.add_argument("-q", "--quiet", action="store_true", help="enable quiet mode.")
+    _syntax_ = parser.format_help()
 
-        # task_struct->stack
-        self.offset_stack = self.get_offset_stack()
-        if self.offset_stack is None:
-            self.meta.append((self.quiet_info, "offsetof(task_struct, stack): None"))
-        else:
-            self.meta.append((self.quiet_info, "offsetof(task_struct, stack): {:#x}".format(self.offset_stack)))
+    _example_ = [
+        "{0:s} -T 0xffff888012345000  # task address filter",
+        "{0:s} -f bash                # comm string filter",
+        "{0:s} --all                  # it means -mritFsSN",
+    ]
+    _example_ = "\n".join(_example_).format(_cmdline_)
 
-        # task_struct->pid
-        self.offset_pid = self.get_offset_pid()
-        if self.offset_pid is None:
-            self.meta.append((self.quiet_err, "Could not find task_struct->pid"))
-            return None
-        self.meta.append((self.quiet_info, "offsetof(task_struct, pid): {:#x}".format(self.offset_pid)))
+    _note_ = [
+        "This command requires CONFIG_RANDSTRUCT=n unless vmlinux with debug information is loaded.",
+        "",
+        "Simplified task_struct structure:",
+        "",
+        "    +-init_task-+",
+        "    | list_head |---+    +-->+-kstack----------+    +--->+-vm_area_struct--+",
+        "    +-----------+   |    |   | (thread_info)   |    |    | vm_start        |",
+        "                    |    |   | STACK_END_MAGIC |    |    | vm_end          |",
+        "+-------------------+    |   | ...             |    |    | vm_next (~6.1)  |",
+        "|                        |   | ...             |    |    | ...             |",
+        "|   +-task_struct---+    |   | ...             |    |    | vm_flags        |",
+        "|   | (thread_info) |    |   | ...             |    |    | vm_file         |-----+",
+        "|   | ...           |    |   | pt_regs         |    |    | ...             |     |",
+        "|   | stack         |----+   +-----------------+    |    +-----------------+     |",
+        "|   | ...           |                               |                            |",
+        "+-->| tasks         |-->...               +---------+<------------------------+  |",
+        "    | ...           |                     |                                   |  |",
+        "    | mm            |-->+-mm_struct----+  |  +-------->+-maple_node(6.1~)--+  |  |",
+        "    | ...           |   | mmap (~6.1)  |--+  |         | ...               |  |  |",
+        "    | pid           |   | ...          |     |         | mr64|ma64|alloc   |  |  |",
+        "    | tid           |   | mm_mt (6.1~) |     |         |   ...             |  |  |",
+        "    | ...           |   |   ma_root    |-----+         |   slot[]          |--+  |",
+        "    | stack_canary  |   | ...          |               +-------------------+     |",
+        "    | ...           |   +--------------+                                         |",
+        "    | group_leader  |                                         +------------------+       +-mount----------+",
+        "    | ...           |         +-->+-cred--------------+       |                          | ...            |",
+        "    | thread_group  |-->...   |   | ...               |       |                          | mnt_parent     |-->mount",
+        "    | ...           |         |   | uid, gid          |       |                          | mnt_mountpoint |-->dentry",
+        "    | cred          |---------+   | suid, sgid        |       |                       +->| mnt (vfsmount) |",
+        "    | ...           |             | euid, egid        |       |                       |  |   mnt_root     |-->dentry",
+        "    | comm[16]      |             | fsuid, fsgid      |       |                       |  |   ...          |",
+        "    | ...           |             | ..., user_ns, ... |       |                       |  | ...            |",
+        "    | files         |--+          +-------------------+       |                       |  +----------------+",
+        "    | ...           |  |                                      |                       |",
+        "    | nsproxy       |------->+-nsproxy----------------+       |                       | +--->+-dentry-----+",
+        "    | ...           |  |     | count                  |       |                       | |    | ...        |",
+        "    | sighand       |-----+  | uts_ns, ipc_ns, mnt_ns |       |                       | |    | d_parent   |-->dentry",
+        "    | ...           |  |  |  | pid_ns_for_children    |       |                       | |    | ...        |",
+        "    | seccomp       |  |  |  | net_ns, time_ns, ...   |       |                       | |    | d_inode    |--+",
+        "    | ...           |  |  |  +------------------------+       |                       | |    | d_iname    |  |",
+        "    +---------------+  |  |                                   |                       | |    | ...        |  |",
+        "                       |  +->+-sighand_struct----+            |                       | |    +------------+  |",
+        "                       |     | ...               |            v                       | |                    |",
+        "                       |     | action[64]        |            +-->+-file-----------+  | | +------------------+",
+        "+----------------------+     +-------------------+            |   | ...            |  | | |",
+        "|                                                             |   | f_path         |  | | v",
+        "+-->+-files_struct-+  +-->+-fdtable---+  +-->+-file*[]-----+  |   |   mnt          |--+ | +->+-inode------+",
+        "    | ...          |  |   | max_fds   |  |   | [0]         |--+   |   dentry       |----+ |  | ...        |",
+        "    | fdt          |--+   | fd        |--+   | ...         |      | f_inode (3.9~) |------+  | i_ino      |",
+        "    | ...          |      | ...       |      | [max_fds-1] |      | ...            |         | ...        |",
+        "    +--------------+      +-----------+      +-------------+      +----------------+         +------------+",
+        "",
+        "This command will only track tasks that can be tracked from `init_task` or the result of `kcurrent` command.",
+        "Other tasks (such as `swapper/1` if thread 1 is running some task) will not be detected.",
+    ]
+    _note_ = "\n".join(_note_)
 
-        # task_struct->stack_canary
-        self.offset_kcanary = self.get_offset_canary(self.offset_pid)
-        if self.offset_kcanary is None:
-            self.meta.append((self.quiet_info, "offsetof(task_struct, stack_canary): None"))
-        else:
-            self.meta.append((self.quiet_info, "offsetof(task_struct, stack_canary): {:#x}".format(self.offset_kcanary)))
+    def show_init_task_recovery_hint(self, init_task):
+        if init_task is not None:
+            return
 
-        # task_struct->comm
-        self.offset_comm = self.get_offset_comm()
-        if self.offset_comm is None:
-            self.meta.append((self.quiet_err, "Could not find task_struct->comm[TASK_COMM_LEN]"))
-            return None
-        self.meta.append((self.quiet_info, "offsetof(task_struct, comm): {:#x}".format(self.offset_comm)))
+        if self.ktask.init_task is not None:
+            try:
+                klayout = Kernel.layout()
+            except (gdb.error, gdb.MemoryError):
+                klayout = None
+            image_starts = [] if klayout is None else [x for x in (klayout.text_base, klayout.ro_base, klayout.rw_base) if x]
+            image_ends = [] if klayout is None else [x for x in (klayout.text_end, klayout.ro_end, klayout.rw_end) if x]
+            if image_starts and image_ends:
+                image_start = min(image_starts)
+                image_end = max(image_ends)
+                if image_start <= self.ktask.init_task < image_end:
+                    return
+                self.quiet_warn("Hint: init_task looks outside the kernel image (kbase: {:#x} - {:#x}).".format(
+                    image_start, image_end,
+                ))
 
-        # task_struct->cred
-        self.offset_cred = self.get_offset_cred(self.offset_comm)
-        if self.offset_cred is None:
-            self.meta.append((self.quiet_err, "Could not find task_struct->cred"))
-            return None
-        self.meta.append((self.quiet_info, "offsetof(task_struct, cred): {:#x}".format(self.offset_cred)))
-
-        # task_struct->real_cred
-        self.offset_real_cred = self.get_offset_real_cred(self.offset_cred)
-        self.meta.append((self.quiet_info, "offsetof(task_struct, real_cred): {:#x}".format(self.offset_real_cred)))
-
-        # struct cred
-        cred_samples = []
-        for task in task_addrs[:0x8]:
-            cred = read_int_from_memory(task + self.offset_cred, safe=True)
-            if cred is None:
-                continue
-            if is_valid_addr(cred) and cred not in cred_samples:
-                cred_samples.append(cred)
-        if not cred_samples:
-            self.meta.append((self.quiet_err, "Could not find task_struct->cred"))
-            return None
-        self.kcred = Kernel.cred()
-        ret = self.kcred.initialize(cred_samples[0], tuple(cred_samples))
-        self.meta.extend(Kernel.export_meta(self, self.kcred.meta))
-        if not ret:
-            return None
-
-        # kstack_top->saved_ptregs
-        if enabled["print_regs"] and self.offset_stack is not None:
-            if not self.initialize_ptregs_offset():
-                self.disable_option(command_args, enabled, "print_regs")
-        elif enabled["print_regs"]:
-            self.meta.append((self.quiet_warn, "Could not find saved ptregs without task_struct->stack; skipping registers"))
-
-        # vm_area_struct->vm_mm
-        # vm_area_struct->vm_flags
-        # vm_area_struct->vm_file
-        # file->f_path.mnt
-        # file->f_path.dentry
-        # dentry->d_iname
-        # dentry->d_parent
-        # dentry->d_inode
-        # inode->i_ino
-        if enabled["print_maps"]:
-            if not self.initialize_vma_offsets(task_addrs):
-                self.disable_option(command_args, enabled, "print_maps")
-
-        # task_struct->files
-        if enabled["print_fd"] or enabled["print_sighand"] or enabled["print_namespace"] or \
-            ("6.7" <= kversion and enabled["print_thread"]) or enabled["print_seccomp"]:
-            if not self.initialize_files_offset():
-                self.disable_option(command_args, enabled, "print_fd", "print_sighand", "print_namespace", "print_seccomp")
-                if "6.7" <= kversion:
-                    self.disable_option(command_args, enabled, "print_thread")
-
-        # files_struct->fdt
-        if enabled["print_fd"]:
-            if not self.initialize_fdt_offset():
-                self.disable_option(command_args, enabled, "print_fd")
-
-        # file->f_path.mnt
-        # file->f_path.dentry
-        # dentry->d_iname
-        # dentry->d_parent
-        # dentry->d_inode
-        # inode->i_ino
-        if enabled["print_fd"]:
-            # the meta is already recorded if --print-maps resolved them
-            if not self.initialize_file_path_offsets(task_addrs, not enabled["print_maps"]):
-                self.disable_option(command_args, enabled, "print_fd")
-
-        # cred->user_ns
-        # task_struct->nsproxy
-        if enabled["print_namespace"] or ("6.7" <= kversion and enabled["print_thread"]) or enabled["print_seccomp"]:
-            if not self.initialize_nsproxy_offsets():
-                self.disable_option(command_args, enabled, "print_namespace", "print_seccomp")
-                if "6.7" <= kversion:
-                    self.disable_option(command_args, enabled, "print_thread")
-
-        # task_struct->group_leader
-        # task_struct->thread_group
-        # task_struct->signal (6.7~)
-        # signal->thread_head (6.7~)
-        if enabled["print_thread"]:
-            if not self.initialize_thread_offsets(kversion):
-                self.disable_option(command_args, enabled, "print_thread")
-
-        # task_struct->sighand
-        if enabled["print_sighand"]:
-            if not self.initialize_sighand_offsets(task_addrs):
-                self.disable_option(command_args, enabled, "print_sighand")
-
-        # task_struct->seccomp
-        if enabled["print_seccomp"]:
-            if not self.initialize_seccomp_offsets():
-                self.disable_option(command_args, enabled, "print_seccomp")
-
-        return True
-
-    def get_current_task_list(self):
-        args = self.args # backup
-        try:
-            res = gdb.execute("kcurrent --quiet", to_string=True)
-        except gdb.error:
-            return {}
-        # kcurrent calls ktask itself, so self.args will be overwritten. this is workaround.
-        self.args = args # revert
-
-        tmp_current_tasks = {}
-        for line in res.splitlines():
-            # the label is "cpuN", or "thread I.T" if the CPU index is unknown
-            r = re.search(r"current \(([^)]+)\): (0x\S+) .+", line.strip())
-            if r:
-                label = r.group(1).replace("thread ", "th") # the column must not contain a space
-                task = int(r.group(2), 16)
-                new_list = tmp_current_tasks.get(task, []) + [label]
-                tmp_current_tasks[task] = new_list
-                continue
-            r = re.search(r"current: (0x\S+) .+", line.strip())
-            if r:
-                label = "cpu0"
-                task = int(r.group(1), 16)
-                new_list = tmp_current_tasks.get(task, []) + [label]
-                tmp_current_tasks[task] = new_list
-                continue
-
-        current_tasks = {}
-        for k, v in tmp_current_tasks.items():
-            if len(v) > 1:
-                # It is unclear whether this case can occur.
-                current_tasks[k] = "{:s},..".format(v[0])
-            else:
-                current_tasks[k] = v[0]
-        return current_tasks
+        self.quiet_warn("Retry with: ktask --init-task <addr>")
+        return
 
     def append_task_legend(self):
         if self.args.quiet:
@@ -88489,121 +88669,19 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
         self.out.append(GefUtil.make_legend(fmt.format(*legend)))
         return
 
-    @staticmethod
-    def get_nsproxy_members():
-        """Return [(name, offset), ...] of struct nsproxy.
-
-        struct nsproxy {
-            atomic_t count; // refcount_t (v6.1~)
-            struct uts_namespace *uts_ns;
-            struct ipc_namespace *ipc_ns;
-            struct mnt_namespace *mnt_ns;
-            struct pid_namespace *pid_ns_for_children; // pid_ns (~v3.10)
-            struct net *net_ns;
-            struct time_namespace *time_ns; // v5.6~
-            struct time_namespace *time_ns_for_children; // v5.6~
-            struct cgroup_namespace *cgroup_ns; // v4.6~
-        };
-        """
-        names = [
-            "count", "uts_ns", "ipc_ns", "mnt_ns", "pid_ns_for_children", "net_ns",
-            "time_ns", "time_ns_for_children", "cgroup_ns",
-        ]
-
-        # fast path
-        members = []
-        try:
-            gdb.parse_and_eval("(struct nsproxy*)0")
-            for name in names:
-                for field in ([name, "pid_ns"] if name == "pid_ns_for_children" else [name]):
-                    try:
-                        members.append((name, GefUtil.parse_and_eval_unsigned("&((struct nsproxy*)0).{:s}".format(field))))
-                        break
-                    except gdb.error:
-                        pass
-            if members and members[0][0] == "count":
-                return members
-        except gdb.error:
-            pass
-
-        # slow path
-        # `count` is 4 bytes, and the pointers follow it with the alignment
-        kversion = Kernel.version()
-        names = names[:6]
-        if "5.6" <= kversion:
-            names += ["time_ns", "time_ns_for_children"]
-        if "4.6" <= kversion:
-            names += ["cgroup_ns"]
-        return [(name, current_arch.ptrsize * i) for i, name in enumerate(names)]
-
-    # the type of the namespace each member of nsproxy points to
-    NSPROXY_NS_TYPES = {
-        "uts_ns": "uts", "ipc_ns": "ipc", "mnt_ns": "mnt", "pid_ns_for_children": "pid",
-        "net_ns": "net", "time_ns": "time", "time_ns_for_children": "time", "cgroup_ns": "cgroup",
-    }
-
-    def get_namespace_context(self, task_addrs):
-        if not self.args.print_namespace:
-            return None
-        context = {
-            "members": KernelTaskCommand.get_nsproxy_members(),
-            "init_user_ns": None, "init_nsproxy": None, "offset_inum": {},
-            "pid_hierarchy": None, "user_hierarchy": None,
-        }
-        if not task_addrs:
-            return context
-        init_cred = read_int_from_memory(task_addrs[0] + self.offset_cred)
-        init_user_ns = self.kcred.get_user_ns(init_cred)
-        init_nsproxy = read_int_from_memory(task_addrs[0] + self.offset_nsproxy)
-        context["init_user_ns"] = init_user_ns
-        context["init_nsproxy"] = init_nsproxy
-
-        # the offsets are found from the initial namespaces
-        offset_inum = context["offset_inum"]
-        for name, offset in context["members"]:
-            ns_type = self.NSPROXY_NS_TYPES.get(name)
-            if ns_type is None or ns_type in offset_inum:
-                continue
-            init_ns = read_int_from_memory(init_nsproxy + offset, safe=True)
-            offset_inum[ns_type] = KernelNamespace.get_offset_inum(ns_type, init_ns, init_user_ns)
-            if ns_type == "pid":
-                reapers = tuple(x for x in task_addrs if read_int32_from_memory(x + self.offset_pid) == 1)
-                reapers = (task_addrs[0],) + reapers[:1]
-                context["pid_hierarchy"] = KernelNamespace.get_offset_pid_ns_hierarchy(init_ns, reapers)
-        if init_user_ns is not None:
-            offset_inum["user"] = KernelNamespace.get_offset_inum("user", init_user_ns, init_user_ns)
-            user_namespaces = []
-            for task in task_addrs:
-                user_ns = self.kcred.get_user_ns(read_int_from_memory(task + self.offset_real_cred))
-                if user_ns and user_ns not in user_namespaces:
-                    user_namespaces.append(user_ns)
-            context["user_hierarchy"] = KernelNamespace.get_offset_user_ns_hierarchy(init_user_ns, tuple(user_namespaces))
-        return context
-
     def get_namespace_detail(self, ns_type, ns, context):
-        """Return the inode number and the hierarchy of the namespace `ns` as strings."""
-        offset_inum = context["offset_inum"].get(ns_type)
-        if not ns or not is_valid_addr(ns):
-            return "-", ""
-        inum = "-"
-        if offset_inum is not None:
-            inum = "{:s}:[{:d}]".format(ns_type, read_int32_from_memory(ns + offset_inum))
+        info = self.ktask.get_namespace_info(ns_type, ns, context)
+        inum = "-" if info["inum"] is None else "{:s}:[{:d}]".format(ns_type, info["inum"])
         detail = ""
-        if ns_type == "pid" and context["pid_hierarchy"] is not None:
-            offset_level, offset_parent = context["pid_hierarchy"]
-            level = read_int32_from_memory(ns + offset_level)
-            parent = read_int_from_memory(ns + offset_parent)
-            detail = "level={:d} parent={:#x}".format(level, parent)
-        elif ns_type == "user" and context["user_hierarchy"] is not None:
-            offset_parent, offset_level, offset_owner = context["user_hierarchy"]
-            level = read_int32_from_memory(ns + offset_level)
-            owner = read_int32_from_memory(ns + offset_owner)
-            parent = read_int_from_memory(ns + offset_parent)
-            detail = "level={:d} owner={:d} parent={:#x}".format(level, owner, parent)
+        if info["level"] is not None:
+            if ns_type == "pid":
+                detail = "level={:d} parent={:#x}".format(info["level"], info["parent"])
+            else:
+                detail = "level={:d} owner={:d} parent={:#x}".format(info["level"], info["owner"], info["parent"])
         return inum, detail
 
     def dump_maps(self, task, comm_string):
-        maps = self.kmm.get_task_maps(task)
+        maps = self.ktask.kmm.get_task_maps(task)
         if not maps:
             return
         self.out.append(titlify("memory map of `{:s}`".format(comm_string)))
@@ -88614,7 +88692,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
         return
 
     def dump_regs(self, kstack, comm_string):
-        regs = self.get_regs(kstack, self.offset_ptregs)
+        regs = self.ktask.get_regs(kstack, self.ktask.offset_ptregs)
         if not regs:
             return
         self.out.append(titlify("registers of `{:s}`".format(comm_string)))
@@ -88636,36 +88714,19 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
         fmt = "{:4s} {:7s} {:18s} {:18s} {:18s} {:s}"
         legend = ["fd", "cloexec", "struct file", "struct dentry", "struct inode", "path"]
         self.out.append(GefUtil.make_legend(fmt.format(*legend)))
-
-        entries, warnings = self.get_open_files(task)
-        for fd_number, file, cloexec in entries:
-            dentry = read_int_from_memory(file + self.offset_dentry)
-            inode = read_int_from_memory(dentry + self.offset_d_inode)
-            filepath = self.kpath.get_file_path(file)
+        entries, warnings = self.ktask.get_file_details(task)
+        for entry in entries:
             self.out.append("{:<4d} {:7s} {:#018x} {:#018x} {:#018x} {:s}".format(
-                fd_number, "?" if cloexec is None else str(cloexec), file, dentry, inode, filepath,
+                entry["fd"], "?" if entry["cloexec"] is None else str(entry["cloexec"]),
+                entry["file"], entry["dentry"], entry["inode"], entry["path"],
             ))
         for warning in warnings:
             self.warn_add_out(warning)
         return
 
-    def get_task_libc(self, task):
-        """Return the libc ("glibc" or "musl") that `task` maps, or None if it is unknown (e.g., a static binary)."""
-        if self.libc_kmm is None:
-            return None
-        try:
-            names = self.libc_kmm.get_task_file_names(task)
-        except (gdb.MemoryError, OverflowError, RuntimeError):
-            return None
-        for name in names:
-            if re.fullmatch(r"libc\.so\.6|libc-2\.\d+\.so", name):
-                return "glibc"
-            if re.fullmatch(r"(?:ld-musl|libc\.musl)-\w+\.so\.1", name):
-                return "musl"
-        return None
-
     def dump_sighands(self, task, comm_string):
-        libc = self.get_task_libc(task)
+        info = self.ktask.get_sighands(task)
+        libc = info["libc"]
         libc_names = LinuxSignal.LIBC_NAMES.get(libc, {})
         if libc:
             self.out.append(titlify("sighandlers of `{:s}` ({:s})".format(comm_string, libc)))
@@ -88674,12 +88735,10 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
         fmt = "{:14s} {:11s} {:18s} {:18s} {:18s} {:42s} {:s}"
         legend = ["sig", "libc name", "sigaction", "handler", "restorer", "flags", "mask"]
         self.out.append(GefUtil.make_legend(fmt.format(*legend)))
-
-        sighand = read_int_from_memory(task + self.offset_sighand)
-        for i in range(64):
-            sigaction = sighand + self.offset_action + self.sizeof_action * i
-            signame = self.signame_list.get(i + 1, "???")
-            handler = read_int_from_memory(sigaction)
+        for action in info["actions"]:
+            number = action["number"]
+            signame = self.ktask.signame_list.get(number, "???")
+            handler = action["handler"]
             if handler == 0:
                 handler = "SIG_DFL"
             elif handler == 1:
@@ -88688,16 +88747,11 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
                 handler = "SIG_ERR"
             else:
                 handler = "{:#018x}".format(handler)
-            flags = read_int_from_memory(sigaction + current_arch.ptrsize)
-            # sa_restorer is used only with SA_RESTORER, and the libc may leave garbage there without it
-            if self.offset_sa_restorer is None or not flags & 0x0400_0000:
-                restorer = "-"
-            else:
-                restorer = "{:#018x}".format(read_int_from_memory(sigaction + self.offset_sa_restorer))
-            mask = KernelSighand.read_sigset(sigaction + self.offset_sa_mask)
+            restorer = "-" if action["restorer"] is None else "{:#018x}".format(action["restorer"])
             self.out.append("{:<2d} {:11s} {:11s} {:#018x} {:18s} {:18s} {:42s} {:s}".format(
-                i + 1, signame, libc_names.get(i + 1, "-"), sigaction, handler, restorer,
-                LinuxSignal.format_flags(flags, self.sa_flags_extra), LinuxSignal.format_mask(mask, self.signame_list, compact=True),
+                number, signame, libc_names.get(number, "-"), action["address"], handler, restorer,
+                LinuxSignal.format_flags(action["flags"], self.ktask.sa_flags_extra),
+                LinuxSignal.format_mask(action["mask"], self.ktask.signame_list, compact=True),
             ).rstrip())
         return
 
@@ -88706,50 +88760,35 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
         fmt = "{:30s} {:18s} {:8s} {:24s} {:s}"
         legend = ["name", "value", "init_ns?", "inum", "detail"]
         self.out.append(GefUtil.make_legend(fmt.format(*legend)))
-
-        init_user_ns = namespace_context["init_user_ns"]
-        init_nsproxy = namespace_context["init_nsproxy"]
-        real_cred = read_int_from_memory(task + self.offset_real_cred)
-        user_ns = self.kcred.get_user_ns(real_cred)
-        if user_ns is None:
-            self.out.append("{:30s} {:18s} {:8s}".format("real_cred->user_ns", "unknown", "-").rstrip())
-        else:
-            inum, detail = self.get_namespace_detail("user", user_ns, namespace_context)
+        for entry in self.ktask.get_namespace_entries(task, namespace_context):
+            value = entry["value"]
+            if value is None:
+                self.out.append("{:30s} {:18s} {:8s}".format(entry["name"], "unknown", "-").rstrip())
+                continue
+            is_init = "-" if entry["is_init"] is None else str(entry["is_init"])
+            inum, detail = "-", ""
+            if entry["type"] is not None:
+                inum, detail = self.get_namespace_detail(entry["type"], value, namespace_context)
             self.out.append("{:30s} {:#018x} {:8s} {:24s} {:s}".format(
-                "real_cred->user_ns", user_ns, str(user_ns == init_user_ns), inum, detail,
-            ).rstrip())
-
-        nsproxy = read_int_from_memory(task + self.offset_nsproxy)
-        for name, offset in namespace_context["members"]:
-            if name == "count":
-                value = read_int32_from_memory(nsproxy + offset)
-                is_init_ns = "-"
-                inum, detail = "-", ""
-            else:
-                value = read_int_from_memory(nsproxy + offset)
-                init_value = read_int_from_memory(init_nsproxy + offset)
-                is_init_ns = str(value == init_value)
-                inum, detail = self.get_namespace_detail(self.NSPROXY_NS_TYPES[name], value, namespace_context)
-            self.out.append("{:30s} {:#018x} {:8s} {:24s} {:s}".format(
-                "nsproxy->" + name, value, is_init_ns, inum, detail,
+                entry["name"], value, is_init, inum, detail,
             ).rstrip())
         return
 
     def dump_seccomp(self, task, comm_string):
-        if not KernelSeccomp.is_enabled(task, self.offset_stack):
+        if not KernelSeccomp.is_enabled(task, self.ktask.offset_stack):
             return False
         self.out.append(titlify("seccomp of `{:s}`".format(comm_string)))
         fmt = "{:18s} {:25s} {:12s} {:18s}"
         legend = ["&task.seccomp", "mode", "filter_count", "filter"]
         self.out.append(GefUtil.make_legend(fmt.format(*legend)))
 
-        task_info = self.kseccomp.parse_task(task)
+        task_info = self.ktask.kseccomp.parse_task(task)
         mode_str = "{:d} ({:s})".format(task_info.mode, task_info.mode_name)
         self.out.append("{:#018x} {:25s} {:<12d} {:#018x}".format(
             task_info.address, mode_str, task_info.filter_count, task_info.first_filter,
         ))
 
-        filters = iter(self.kseccomp.iter_filters(task_info))
+        filters = iter(self.ktask.kseccomp.iter_filters(task_info))
         for i in ProgressBar(range(task_info.filter_count), desc="filter", disable=self.args.quiet):
             try:
                 filter_info = next(filters)
@@ -88762,7 +88801,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
                     filter_info.prog, filter_info.bpf_func, filter_info.jited_len, filter_info.orig_prog,
                 )
             )
-            disassembly = self.kseccomp.disassemble(filter_info)
+            disassembly = self.ktask.kseccomp.disassemble(filter_info)
             if disassembly is None:
                 self.warn_add_out("Could not read seccomp filter {:#x}".format(filter_info.address))
             else:
@@ -88778,7 +88817,9 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
         if self.args.print_maps:
             additional = True
             self.dump_maps(task, comm_string)
-        if proctype == "U" and self.args.print_regs and task_info["kstack"] is not None and self.offset_ptregs is not None:
+        if proctype == "U" and self.args.print_regs and task_info["kstack"] is not None and (
+            self.ktask.offset_ptregs is not None
+        ):
             additional = True
             self.dump_regs(task_info["kstack"], comm_string)
         if proctype == "U" and self.args.print_fd:
@@ -88797,71 +88838,36 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
             self.out.append(titlify(""))
         return
 
-    def dump_task(self, task, current_tasks, namespace_context):
-        comm_string = read_cstring_from_memory(task + self.offset_comm)
-        if self.args.filter and not any(pattern.search(comm_string) for pattern in self.args.filter):
-            return
-        if self.args.task_filter and task not in self.args.task_filter:
-            return
-
-        if self.offset_stack is None:
-            kstack = None
-            kstack_str = "-"
-        else:
-            kstack = read_int_from_memory(task + self.offset_stack)
-            kstack_str = "{:#018x}".format(kstack)
-        pid = read_int32_from_memory(task + self.offset_pid)
-        cred = read_int_from_memory(task + self.offset_cred)
-        mm = read_int_from_memory(task + self.offset_mm)
-        proctype = "K" if mm == 0 or pid == 0 else "U"
-        if self.args.user_process_only and proctype == "K":
-            return
-        if self.args.print_thread and read_int_from_memory(task + self.offset_group_leader) != task:
+    def dump_task(self, info):
+        task = info["task"]
+        comm_string = info["comm"]
+        pid, cred, kstack = info["pid"], info["cred"], info["kstack"]
+        proctype = "K" if info["mm"] == 0 or pid == 0 else "U"
+        if self.args.print_thread and info["is_thread"]:
             proctype += "T"
-
-        if self.args.print_all_id:
-            ids = self.kcred.get_ids(cred)
-            ids_fmt = "{:>5d},{:>5d},{:>5d},{:>5d},{:>5d},{:>5d},{:>5d},{:>5d}"
-        else:
-            ids = self.kcred.get_ids(cred, 2)
-            ids_fmt = "{:>5d},{:>5d}"
-        ids_str = ids_fmt.format(*ids)
-
-        if self.offset_kcanary:
-            kcanary = "{:#018x}".format(read_int_from_memory(task + self.offset_kcanary))
-        else:
-            kcanary = "None"
-
-        seccomp_enabled = KernelSeccomp.is_enabled(task, self.offset_stack)
-        if seccomp_enabled is None:
-            seccomp = "Unknown"
-        elif seccomp_enabled:
-            seccomp = "Enabled"
-        else:
-            seccomp = "Disabled"
-
+        ids_fmt = "{:>5d},{:>5d},{:>5d},{:>5d},{:>5d},{:>5d},{:>5d},{:>5d}" if self.args.print_all_id else "{:>5d},{:>5d}"
+        ids_str = ids_fmt.format(*info["ids"])
+        kstack_str = "-" if kstack is None else "{:#018x}".format(kstack)
+        kcanary = "None" if info["kcanary"] is None else "{:#018x}".format(info["kcanary"])
+        seccomp_enabled = info["seccomp_enabled"]
+        seccomp = "Unknown" if seccomp_enabled is None else "Enabled" if seccomp_enabled else "Disabled"
         self.out.append("{:#018x} {:<7s} {:<3s} {:<7d} {:<16s} {:#018x} [{:s}] {:<8s} {:<18s} {:<18s}".format(
-            task, current_tasks.get(task, "-"), proctype, pid, comm_string, cred,
+            task, info["current"] or "-", proctype, pid, comm_string, cred,
             ids_str, seccomp, kstack_str, kcanary,
         ).rstrip())
-
-        if pid == 0:
-            return
-        task_info = {"task": task, "comm": comm_string, "proctype": proctype, "kstack": kstack}
-        self.dump_task_details(task_info, namespace_context)
+        if pid:
+            task_info = {"task": task, "comm": comm_string, "proctype": proctype, "kstack": kstack}
+            self.dump_task_details(task_info, info["namespace_context"])
         return
 
-    def dump(self, task_addrs):
-        current_tasks = self.get_current_task_list()
-        to_add_tasks = [task for task in current_tasks if task not in task_addrs]
-        task_addrs = task_addrs[:1] + to_add_tasks + task_addrs[1:]
-        if self.args.print_thread:
-            task_addrs = self.add_lwp_task(task_addrs)
-
+    def dump(self):
+        tasks = self.ktask.get_tasks(
+            include_current=True, threads=self.args.print_thread, all_ids=self.args.print_all_id,
+            comm_filter=self.args.filter, task_filter=self.args.task_filter, user_only=self.args.user_process_only,
+        )
         self.append_task_legend()
-        namespace_context = self.get_namespace_context(task_addrs)
-        for task in ProgressBar(task_addrs, desc="task", disable=self.args.quiet):
-            self.dump_task(task, current_tasks, namespace_context)
+        for task in ProgressBar(tasks, desc="task", disable=self.args.quiet):
+            self.dump_task(task)
         return
 
     @Decorator.parse_args
@@ -88883,14 +88889,13 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
             args.print_namespace = True
 
         # initialize
-        self.task_addrs_temp = ()
-        try:
-            ret = self.initialize(
-                args, args.init_task, args.print_regs, args.print_maps, args.print_fd,
-                args.print_sighand, args.print_namespace, args.print_thread, args.print_seccomp,
-            )
-        finally:
-            del self.task_addrs_temp
+        self.ktask = Kernel.task(args.init_task)
+        ret = self.ktask.initialize(**{name: getattr(args, option) for name, option in KernelTask.OPTIONS.items()})
+        self.meta = Kernel.export_meta(self, self.ktask.meta)
+        for name in self.ktask.disabled:
+            setattr(args, KernelTask.OPTIONS[name], False)
+        if "files" in self.ktask.disabled and not args.meta:
+            warn("Disabled --print-fd: {:s} (see `ktask --print-fd --meta`)".format(self.ktask.disabled["files"]))
 
         if args.meta or not ret:
             for func, line in self.meta:
@@ -88904,9 +88909,8 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
             return
 
         # parse
-        task_addrs = KernelTaskCommand.get_task_list(self.init_task, self.offset_tasks)
         self.out = []
-        self.dump(task_addrs)
+        self.dump()
         self.print_output(check_terminal_size=True)
         return
 
@@ -89082,7 +89086,11 @@ class KernelCredCommand(GenericCommand, BufferingOutput):
     def initialize(self, print_thread):
         self.meta = []
 
-        task_command = KernelTaskCommand.borrow(self, print_thread=print_thread)
+        task_command = Kernel.task()
+        task_ready = task_command.initialize(threads=print_thread)
+        self.meta.extend(Kernel.export_meta(self, task_command.meta))
+        if not task_ready:
+            task_command = None
         if task_command is None:
             return None
         self.task_command = task_command
@@ -89185,7 +89193,7 @@ class KernelCredCommand(GenericCommand, BufferingOutput):
 
     def collect_entries(self):
         task_command = self.task_command
-        task_addrs = KernelTaskCommand.get_task_list(task_command.init_task, task_command.offset_tasks)
+        task_addrs = KernelTask.get_task_list(task_command.init_task, task_command.offset_tasks)
         if self.args.print_thread and self.lwp_available():
             task_addrs = task_command.add_lwp_task(task_addrs)
 
@@ -89526,7 +89534,11 @@ class KernelKeyringCommand(GenericCommand, BufferingOutput):
         return True
 
     def initialize_tasks(self):
-        task_command = KernelTaskCommand.borrow(self, print_thread=True)
+        task_command = Kernel.task()
+        task_ready = task_command.initialize(threads=True)
+        self.meta.extend(Kernel.export_meta(self, task_command.meta))
+        if not task_ready:
+            task_command = None
         if task_command is None:
             return None
         self.task_command = task_command
@@ -89616,7 +89628,7 @@ class KernelKeyringCommand(GenericCommand, BufferingOutput):
 
     def collect_tasks(self):
         command = self.task_command
-        task_addrs = KernelTaskCommand.get_task_list(command.init_task, command.offset_tasks)
+        task_addrs = KernelTask.get_task_list(command.init_task, command.offset_tasks)
         if getattr(command, "offset_thread_group", None) is not None:
             if self.kversion < "6.7" or (getattr(command, "offset_signal", None) is not None and
                                          getattr(command, "offset_thread_head", None) is not None):
@@ -90013,13 +90025,17 @@ class KernelSchedCommand(GenericCommand, BufferingOutput):
 
     def initialize(self):
         self.meta = []
-        task_command = KernelTaskCommand.borrow(self, print_thread=self.args.print_thread)
+        task_command = Kernel.task()
+        task_ready = task_command.initialize(threads=self.args.print_thread)
+        self.meta.extend(Kernel.export_meta(self, task_command.meta))
+        if not task_ready:
+            task_command = None
         if task_command is None:
             return None
         self.task_command = task_command
 
         self.ksched = Kernel.sched()
-        task_addrs = KernelTaskCommand.get_task_list(task_command.init_task, task_command.offset_tasks)
+        task_addrs = KernelTask.get_task_list(task_command.init_task, task_command.offset_tasks)
         ret = self.ksched.initialize(task_command, task_addrs)
         self.meta.extend(Kernel.export_meta(self, self.ksched.meta))
         if not ret:
@@ -90028,12 +90044,10 @@ class KernelSchedCommand(GenericCommand, BufferingOutput):
 
     def get_current_map(self):
         """Run `kcurrent` once, returning its "current" lines and a {task: cpu_label} map."""
-        args = self.args
         try:
             res = gdb.execute("kcurrent --quiet", to_string=True)
         except gdb.error:
             res = ""
-        self.args = args # kcurrent borrows ktask too, which overwrites self.args
 
         lines = []
         current_map = {}
@@ -90054,7 +90068,7 @@ class KernelSchedCommand(GenericCommand, BufferingOutput):
 
     def collect_entries(self):
         task_command = self.task_command
-        task_addrs = KernelTaskCommand.get_task_list(task_command.init_task, task_command.offset_tasks)
+        task_addrs = KernelTask.get_task_list(task_command.init_task, task_command.offset_tasks)
         if self.args.print_thread and self.lwp_available():
             task_addrs = task_command.add_lwp_task(task_addrs)
 
@@ -94731,7 +94745,11 @@ class KernelPathCommand(GenericCommand, BufferingOutput):
                 return True
 
         # plan 3: the open files of the tasks
-        task_command = KernelTaskCommand.borrow(self, print_fd=True)
+        task_command = Kernel.task()
+        task_ready = task_command.initialize(files=True)
+        self.meta.extend(Kernel.export_meta(self, task_command.meta))
+        if not task_ready:
+            task_command = None
         if task_command is not None and kpath.initialized:
             self.task_command = task_command
             return True
@@ -94749,18 +94767,19 @@ class KernelPathCommand(GenericCommand, BufferingOutput):
 
         task_command = self.task_command
         if task_command is None:
-            task_command = KernelTaskCommand.borrow(self)
+            task_command = Kernel.task()
+            task_ready = task_command.initialize()
+            self.meta.extend(Kernel.export_meta(self, task_command.meta))
+            if not task_ready:
+                task_command = None
             if task_command is None:
                 return None
 
         # task_struct->fs sits just before task_struct->files, which init_task is enough to find
-        task_command.task_addrs_temp = (task_command.init_task,)
         try:
             offset_files = task_command.get_offset_files(task_command.offset_comm)
         except (gdb.MemoryError, OverflowError):
             offset_files = None
-        finally:
-            del task_command.task_addrs_temp
         if offset_files is None:
             self.meta.append((self.quiet_err, "Could not find task_struct->files"))
             return None
@@ -94782,7 +94801,7 @@ class KernelPathCommand(GenericCommand, BufferingOutput):
 
     def get_task_by_pid(self, pid):
         task_command = self.task_command
-        task_addrs = KernelTaskCommand.get_task_list(task_command.init_task, task_command.offset_tasks)
+        task_addrs = KernelTask.get_task_list(task_command.init_task, task_command.offset_tasks)
         for task in task_addrs:
             if read_int32_from_memory(task + task_command.offset_pid, safe=True) == pid:
                 return task
@@ -94844,7 +94863,7 @@ class KernelPathCommand(GenericCommand, BufferingOutput):
         kpath = self.kpath
         others = []
         task_command = self.task_command
-        for task in KernelTaskCommand.get_task_list(task_command.init_task, task_command.offset_tasks):
+        for task in KernelTask.get_task_list(task_command.init_task, task_command.offset_tasks):
             root = kpath.get_task_root(task, self.offset_fs)
             if root is None:
                 continue
@@ -95103,7 +95122,11 @@ class KernelVfsCommand(GenericCommand, BufferingOutput):
 
         fd_mode = self.args.pid is not None or self.args.fd is not None
         if fd_mode:
-            self.task_command = KernelTaskCommand.borrow(self, print_fd=True)
+            self.task_command = Kernel.task()
+            task_ready = self.task_command.initialize(files=True)
+            self.meta.extend(Kernel.export_meta(self, self.task_command.meta))
+            if not task_ready:
+                self.task_command = None
             if self.task_command is None:
                 return None
             self.kpath = Kernel.path()
@@ -95180,7 +95203,7 @@ class KernelVfsCommand(GenericCommand, BufferingOutput):
 
     def get_task_by_pid(self, pid):
         task_command = self.task_command
-        for task in KernelTaskCommand.get_task_list(task_command.init_task, task_command.offset_tasks):
+        for task in KernelTask.get_task_list(task_command.init_task, task_command.offset_tasks):
             if read_int32_from_memory(task + task_command.offset_pid) == pid:
                 return task
         return None
@@ -95485,9 +95508,11 @@ class KernelMountCommand(GenericCommand, BufferingOutput):
             return None
         self.kversion = kversion
 
-        task_command = KernelTaskCommand.borrow(
-            self, print_fd=kversion < "3.3", print_namespace=True,
-        )
+        task_command = Kernel.task()
+        task_ready = task_command.initialize(files=kversion < "3.3", namespaces=True)
+        self.meta.extend(Kernel.export_meta(self, task_command.meta))
+        if not task_ready:
+            task_command = None
         if task_command is None:
             return None
         self.task_command = task_command
@@ -95594,7 +95619,7 @@ class KernelMountCommand(GenericCommand, BufferingOutput):
         kpath = self.kpath
         task_command = self.task_command
         namespaces = collections.OrderedDict()
-        for task in KernelTaskCommand.get_task_list(task_command.init_task, task_command.offset_tasks):
+        for task in KernelTask.get_task_list(task_command.init_task, task_command.offset_tasks):
             root = kpath.get_task_root(task, self.offset_fs)
             if root is None:
                 continue
@@ -95611,7 +95636,7 @@ class KernelMountCommand(GenericCommand, BufferingOutput):
 
     def get_task_by_pid(self, pid):
         task_command = self.task_command
-        for task in KernelTaskCommand.get_task_list(task_command.init_task, task_command.offset_tasks):
+        for task in KernelTask.get_task_list(task_command.init_task, task_command.offset_tasks):
             if read_int32_from_memory(task + task_command.offset_pid) == pid:
                 return task
         return None
@@ -156026,13 +156051,17 @@ class KernelIpcsCommand(GenericCommand, BufferingOutput):
         # every task, including init_task whose nsproxy is init_nsproxy
         self.meta = []
         try:
-            task_command = KernelTaskCommand.borrow(self, print_namespace=True)
+            task_command = Kernel.task()
+            task_ready = task_command.initialize(namespaces=True)
+            self.meta.extend(Kernel.export_meta(self, task_command.meta))
+            if not task_ready:
+                task_command = None
         except gdb.MemoryError:
             task_command = None
         offset_nsproxy = getattr(task_command, "offset_nsproxy", None)
         task_addrs = []
         if task_command is not None and offset_nsproxy is not None:
-            task_addrs = KernelTaskCommand.get_task_list(task_command.init_task, task_command.offset_tasks)
+            task_addrs = KernelTask.get_task_list(task_command.init_task, task_command.offset_tasks)
         else:
             offset_nsproxy = None
         result = self.kipcs.get_all_ipc_ns(task_addrs, offset_nsproxy)
@@ -178656,7 +178685,7 @@ class KernelVMMapCommand(GenericCommand, BufferingOutput):
             kstacks.append(kstack & 0xffff)
 
         # calc kstack size
-        kstack_size = KernelTaskCommand.get_kstack_size()
+        kstack_size = Kernel.task().get_kstack_size()
         if kstack_size is None:
             kstacks = sorted(set(kstacks))
             diffs = []
@@ -189910,14 +189939,18 @@ class KernelLsmCommand(GenericCommand, BufferingOutput):
         args = self.args
         detail = bool(args.verbose or args.pid is not None or args.task_filter or args.filter)
         self.meta = []
-        task_command = KernelTaskCommand.borrow(self, print_fd=detail)
+        task_command = Kernel.task()
+        task_ready = task_command.initialize(files=detail)
+        self.meta.extend(Kernel.export_meta(self, task_command.meta))
+        if not task_ready:
+            task_command = None
         if args.meta or task_command is None:
             for func, line in self.meta:
                 func(line)
         if task_command is None:
             return
         self.task_command = task_command
-        self.task_addrs = KernelTaskCommand.get_task_list(task_command.init_task, task_command.offset_tasks)
+        self.task_addrs = KernelTask.get_task_list(task_command.init_task, task_command.offset_tasks)
         lsms = self.detect_lsms(kversion)
 
         tasks = []
@@ -190277,10 +190310,14 @@ class KernelIoUringCommand(GenericCommand, BufferingOutput):
         return ctx, "validated file member +{:#x}".format(index * current_arch.ptrsize)
 
     def get_task_command(self):
-        """Return `ktask` initialized for the fd scan, or None. It is resolved on first use,
+        """Return the task resolver initialized for the fd scan, or None. It is resolved on first use,
         so a ctx/request given by ADDRESS does not depend on the task layout."""
         if self.task_command is False:
-            self.task_command = KernelTaskCommand.borrow(self, print_fd=True)
+            self.task_command = Kernel.task()
+            task_ready = self.task_command.initialize(files=True)
+            self.meta.extend(Kernel.export_meta(self, self.task_command.meta))
+            if not task_ready:
+                self.task_command = None
             if self.task_command is not None and (self.task_command.offset_files is None or self.task_command.offset_fdt is None):
                 self.meta.append((self.quiet_err, "Could not find task_struct->files->fdt"))
                 self.task_command = None
@@ -190336,7 +190373,7 @@ class KernelIoUringCommand(GenericCommand, BufferingOutput):
         kpath = self.get_kpath()
         if command is None or kpath is None:
             return None
-        tasks = KernelTaskCommand.get_task_list(command.init_task, command.offset_tasks)
+        tasks = KernelTask.get_task_list(command.init_task, command.offset_tasks)
         rings = []
         for task in tasks:
             pid, comm = self.task_info(task)
