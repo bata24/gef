@@ -33618,13 +33618,15 @@ class KernelChecksecCommand(GenericCommand):
             return
 
         try:
-            gdb.execute("slub-dump --meta --quiet --no-pager", to_string=True)
-            command = __gef_command_instances__["slub-dump"]
-            offset = getattr(command, "kmem_cache_offset_random_seq", None)
-        except (gdb.error, KeyError):
+            slub = Kernel.slub() if Kernel.get_slab_type() == "SLUB" else None
+            if slub is not None:
+                slub.warmup_page2virt()
+            initialized = slub is not None and slub.initialize()
+            offset = slub.kmem_cache_offset_random_seq if initialized else None
+        except gdb.error:
             offset = None
-            command = None
-        if command is None or getattr(command, "kmem_cache_offset_list", None) is None:
+            initialized = False
+        if not initialized:
             gef_print("{:<40s}: {:s}".format(cfg, Color.grayify("Unknown")))
             return
         if offset is None:
@@ -33634,9 +33636,9 @@ class KernelChecksecCommand(GenericCommand):
 
         selected = []
         try:
-            for list_entry in command.parse_kmem_caches_for_initialize():
-                cache = list_entry - command.kmem_cache_offset_list
-                name_ptr = read_int_from_memory(cache + command.kmem_cache_offset_name)
+            for list_entry in slub.parse_kmem_caches_for_initialize():
+                cache = list_entry - slub.kmem_cache_offset_list
+                name_ptr = read_int_from_memory(cache + slub.kmem_cache_offset_name)
                 name = read_cstring_from_memory(name_ptr)
                 if re.match(r"^kmalloc-(?:8|16|32|64|96|128|192|256|512)$", name):
                     selected.append(cache)
@@ -73153,6 +73155,26 @@ class Kernel:
         return KernelSched.get_instance()
 
     @staticmethod
+    def slub(no_xor=False, byte_swap=None, offset_random=None, offset_node=None):
+        """Return the SLUB resolver."""
+        return KernelSlub.get_instance(no_xor, byte_swap, offset_random, offset_node)
+
+    @staticmethod
+    def slub_tiny():
+        """Return the SLUB-TINY resolver."""
+        return KernelSlubTiny.get_instance()
+
+    @staticmethod
+    def slab():
+        """Return the SLAB resolver."""
+        return KernelSlab.get_instance()
+
+    @staticmethod
+    def slob():
+        """Return the SLOB resolver."""
+        return KernelSlob.get_instance()
+
+    @staticmethod
     def export_meta(command, meta, demote_err=False):
         """Convert the meta lines recorded by a kernel resolver into the (printer, line) pairs of `command`."""
         err = command.quiet_warn if demote_err else command.quiet_err
@@ -73293,17 +73315,16 @@ class Kernel:
 
     @staticmethod
     def get_slab_caches(target_names=()):
-        """Return (allocator, [kmem_cache, ...]) parsed by the dump command of the running allocator.
-        Each kmem_cache is the dict built by `slub-dump`, `slub-tiny-dump`, `slab-dump` or `slob-dump`,
-        so its members depend on the allocator. The list is None if they cannot be parsed."""
+        """Return (allocator, [kmem_cache, ...]) parsed by the resolver of the running allocator.
+        Each kmem_cache is an allocator-specific dict. The list is None if they cannot be parsed."""
         allocator = Kernel.get_slab_type()
-        command_name = {
-            "SLUB": "slub-dump", "SLUB_TINY": "slub-tiny-dump", "SLAB": "slab-dump", "SLOB": "slob-dump",
+        resolver_factory = {
+            "SLUB": Kernel.slub, "SLUB_TINY": Kernel.slub_tiny, "SLAB": Kernel.slab, "SLOB": Kernel.slob,
         }.get(allocator)
-        if command_name is None or not (is_x86() or is_arm32() or is_arm64()):
+        if resolver_factory is None or not (is_x86() or is_arm32() or is_arm64()):
             return allocator, None
         try:
-            return allocator, __gef_command_instances__[command_name].get_kmem_caches(list(target_names))
+            return allocator, resolver_factory().get_kmem_caches(target_names)
         except gdb.error:
             return allocator, None
 
@@ -146514,271 +146535,525 @@ class ConstGrepCommand(GenericCommand):
         return
 
 
-@register_command
-class SlubDumpCommand(GenericCommand, BufferingOutput):
-    """Dump SLUB free-list reachable from slab_caches."""
+class KernelSlub:
+    """Resolve SLUB layouts and read slab caches and free lists."""
 
-    _cmdline_ = "slub-dump"
-    _category_ = "06-h. Qemu-system/KGDB Cooperation - Linux Allocator"
+    """
+    struct kmem_cache {
+        struct kmem_cache_cpu *cpu_slab;         // if kernel < 7.0; In fact, the offset value, not the pointer
+        struct lock_class_key {                            // if CONFIG_LOCKDEP=y && 6.18 <= kernel < 7.0
+            union {                                        // if CONFIG_LOCKDEP=y && 6.18 <= kernel < 7.0
+                struct hlist_node hash_entry;              // if CONFIG_LOCKDEP=y && 6.18 <= kernel < 7.0
+                struct lockdep_subclass_key {              // if CONFIG_LOCKDEP=y && 6.18 <= kernel < 7.0
+                    char __one_byte;                       // if CONFIG_LOCKDEP=y && 6.18 <= kernel < 7.0
+                } __attribute__ ((__packed__)) subkeys[8]; // if CONFIG_LOCKDEP=y && 6.18 <= kernel < 7.0
+            };                                             // if CONFIG_LOCKDEP=y && 6.18 <= kernel < 7.0
+        } lock_key;                                        // if CONFIG_LOCKDEP=y && 6.18 <= kernel < 7.0
+        struct slub_percpu_sheaves __percpu *cpu_sheaves;  // if 6.18 <= kernel
+        slab_flags_t flags;                      // unsigned int (+ padding 4 byte)
+        unsigned long min_partial;
+        unsigned int size;
+        unsigned int object_size;
+        struct reciprocal_value {                //
+            u32 m;                               //
+            u8 sh1, sh2;                         // (+ padding 2 byte)
+        } reciprocal_size;                       // if 5.9 <= kernel
+        unsigned int offset;
+        unsigned int cpu_partial;                // if CONFIG_SLUB_CPU_PARTIAL=y && kernel < 7.0
+        unsigned int cpu_partial_slabs;          // if CONFIG_SLUB_CPU_PARTIAL=y && 5.16 <= kernel < 7.0
+        unsigned int sheaf_capacity;             // if 6.18 <= kernel
+        struct kmem_cache_order_objects oo;
+        struct kmem_cache_order_objects max;     // if kernel < 5.19
+        struct kmem_cache_order_objects min;
+        gfp_t allocflags;                        // unsigned int
+        int refcount;
+        void (*ctor)(void *);
+        unsigned int inuse;
+        unsigned int align;
+        unsigned int red_left_pad;
+        const char *name;
+        struct list_head list; <-----> struct list_head <-----> struct list_head <-----> ...
+        struct kobject kobj;                     // if CONFIG_SYSFS=y
+        struct work_struct kobj_remove_work;     // if CONFIG_SYSFS=y && kernel < 5.9
+        struct memcg_cache_params memcg_params;  // if CONFIG_MEMCG=y && kernel < 5.9
+        unsigned int max_attr_size;              // if CONFIG_MEMCG=y && kernel < 5.9
+        struct kset *memcg_kset;                 // if CONFIG_MEMCG=y && CONFIG_SYSFS=y && kernel < 5.9
+        unsigned long random;                    // if CONFIG_SLAB_FREELIST_HARDENED=y
+        unsigned int remote_node_defrag_ratio;   // if CONFIG_NUMA=y
+        unsigned int *random_seq;                // if CONFIG_SLAB_FREELIST_RANDOM=y
+        struct kasan_cache {
+            int alloc_meta_offset;
+            int free_meta_offset;
+            bool is_kmalloc;
+        } kasan_info;                            // if CONFIG_KASAN=y
+        unsigned int useroffset;                 // kernel < 6.2 || (6.2 <= kernel && CONFIG_HARDENED_USERCOPY=y)
+        unsigned int usersize;                   // kernel < 6.2 || (6.2 <= kernel && CONFIG_HARDENED_USERCOPY=y)
+        struct kmem_cache_stats __percpu *cpu_stats // CONFIG_SLUB_STATS && 7.0 <= kernel
+        struct kmem_cache_node *node[MAX_NUMNODES]; // kernel < 7.1
+                                                  // includes SPINLOCK_MAGIC if CONFIG_DEBUG_SPINLOCK=y
+        struct kmem_cache_per_node_ptrs {           // 7.1 <= kernel
+            struct node_barn *barn;                 // 7.1 <= kernel
+            struct kmem_cache_node *node;           // 7.1 <= kernel
+        } per_node[MAX_NUMNODES];                   // 7.1 <= kernel
+    };
 
-    parser = argparse.ArgumentParser(prog=_cmdline_)
-    parser.add_argument("-hh", "--help-simple", action="store_true", help="show help without ASCII diagram.")
-    parser.add_argument("-hs", "--help-for-slab-virtual", action="store_true",
-                        help="show ASCII diagram for CONFIG_SLAB_VIRTUAL=y.")
-    parser.add_argument("cache_name", metavar="SLUB_CACHE_NAME", nargs="*",
-                        help="filter by specific slub cache name.")
-    parser.add_argument("-l", "--list", action="store_true", help="list all slub cache names.")
-    parser.add_argument("-L", "--list-no-sort", action="store_true", help="list all slub cache names without sort.")
-    parser.add_argument("--meta", action="store_true", help="display offset information.")
-    parser.add_argument("--cpu", type=int, help="filter by specific cpu.")
-    parser.add_argument("-R", "--reverse-walk", action="store_true", help="reverse order walk for slab_caches->list_head.")
-    parser.add_argument("-s", "--simple", action="store_true", help="skip displaying layout and freelist.")
-    parser.add_argument("-v", "--verbose", "--partial", action="store_true",
-                        help="kernel < 7.0: dump partial pages too. kernel >= 7.0: ignored.")
-    parser.add_argument("-vv", "--vverbose", "--node", action="store_true",
-                        help="kernel < 7.0: dump partial pages and node pages too. kernel >= 7.0: ignored.")
-    group = parser.add_mutually_exclusive_group(required=False)
-    group.add_argument("--only-partial", action="store_true",
-                       help="kernel < 7.0: dump only partial pages. kernel >= 7.0: ignored.")
-    group.add_argument("--only-node", action="store_true",
-                       help="kernel < 7.0: dump only node pages. kernel >= 7.0: ignored.")
-    parser.add_argument("--skip-sheaf", action="store_true", help="skip dumping cpu_sheaves / slab_sheaf path (6.18+).")
-    parser.add_argument("--hexdump-used", metavar="SIZE", type=lambda x: int(x, 16), default=0,
-                        help="hexdump `used chunks` if layout is resolved.")
-    parser.add_argument("--hexdump-freed", metavar="SIZE", type=lambda x: int(x, 16), default=0,
-                        help="hexdump `unused (freed) chunks` if layout is resolved.")
-    parser.add_argument("--telescope-used", metavar="SIZE", type=lambda x: int(x, 16), default=0,
-                        help="telescope `used chunks` if layout is resolved.")
-    parser.add_argument("--telescope-freed", metavar="SIZE", type=lambda x: int(x, 16), default=0,
-                        help="telescope `unused (freed) chunks` if layout is resolved.")
-    parser.add_argument("--slub-debug-y", action="store_true",
-                        help="assumes `CONFIG_SLUB_DEBUG=y` and dumps kmem_cache_node->full slabs.")
-    parser.add_argument("-r", "--rescan", action="store_true", help="do not use cached offset.")
-    parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
-    parser.add_argument("-q", "--quiet", action="store_true", help="enable quiet mode.")
-    parser.add_argument("--tlbflush-queue", action="store_true",
-                        help="dump `slub_tlbflush_queue` (x86-64 only && CONFIG_SLAB_VIRTUAL=y).")
-    parser.add_argument("--skip-page2virt", action="store_true",
-                        help="[FOR DEVELOPER] used internally in gef, please don't use it.")
-    parser.add_argument("--no-xor", action="store_true",
-                        help="[FOR DEVELOPER] skip xor to chunk->next when `kmem_cache.random` is falsely detected.")
-    parser.add_argument("--no-byte-swap", action="store_true", default=None,
-                        help="[FOR DEVELOPER] skip byteswap to chunk->next when `kmem_cache.random` is falsely detected.")
-    parser.add_argument("--offset-random", type=AddressUtil.parse_address,
-                        help="[FOR DEVELOPER] user-specified offsetof(kmem_cache, random) when `kmem_cache.random` is falsely detected.")
-    parser.add_argument("--offset-node", type=AddressUtil.parse_address,
-                        help="[FOR DEVELOPER] user-specified offsetof(kmem_cache, node/per_node[0].node) when node is falsely detected.")
-    _syntax_ = parser.format_help()
+    struct kmem_cache_cpu {
+        void **freelist;
+        unsigned long tid;
+        struct page *page;                       // if kernel < 5.17
+        struct page *partial;                    // if kernel < 5.17 && CONFIG_SLUB_CPU_PARTIAL=y
+        struct slab *slab;                       // if 5.17 <= kernel
+        struct slab *partial;                    // if 5.17 <= kernel && CONFIG_SLUB_CPU_PARTIAL=y
+        local_lock_t lock;                       // if 5.15 <= kernel
+        unsigned stat[NR_SLUB_STAT_ITEMS];       // if CONFIG_SLUB_STATS=y
+    };
 
-    _example_ = [
-        "{0:s} kmalloc-256             # <7.0: active pages; 7.0+: cpu sheaves and node slabs",
-        "{0:s} kmalloc-256 --cpu 1     # dump kmalloc-256 from cpu 1",
-        "{0:s} kmalloc-256 --partial   # <7.0 only: show active pages and partial pages",
-        "{0:s} kmalloc-256 --node      # <7.0 only: show active pages, partial pages and node pages",
-        "{0:s} --list                  # list slub cache names",
-        "{0:s} -vv --offset-node 0xc8  # user specified offsetof(kmem_cache, node)",
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    struct page {                                // if kernel < 4.18
+        unsigned long flags;
+        union { };                               // long
+        void *freelist;
+        unsigned inuse:16, objects:15, frozen:1;
+        atomic_t _refcount;                      // if kernel < 4.16
+        struct page *next;
+        int pages;                               // if 64bit else `short pages`
+        int pobjects;                            // if 64bit else `short pobjects`
+        struct kmem_cache *slab_cache;
+        struct mem_cgroup *mem_cgroup;           // if CONFIG_MEMCG=y
+        void *virtual;                           // if CONFIG_WANT_PAGE_VIRTUAL=y
+        void *shadow;                            // if CONFIG_KMEMCHECK=y && kernel < 4.14
+        int _last_cpuid;                         // if CONFIG_LAST_CPUPID_NOT_IN_PAGE_FLAGS=y
+    };
 
-    _note_ = [
-        "Simplified SLUB structure:",
-        "",
-        "                         +-kmem_cache----------+         +-kmem_cache--+   +-kmem_cache--+",
-        "                         | cpu_slab (~6.19)    |---+     | cpu_slab    |   | cpu_slab    |",
-        "                         | cpu_sheaves (6.18~) |---|-+   | cpu_sheaves |   | cpu_sheaves |",
-        "                         | flags               |   | |   | flags       |   | flags       |",
-        "                         | size                |   | |   | size        |   | size        |",
-        "                         | object_size         |   | |   | object_size |   | object_size |",
-        "                         | offset              |   | |   | offset      |   | offset      |",
-        "       +-slab_caches-+   | name                |   | |   | name        |   | name        |",
-        " ...<->| list_head   |<->| list_head           |<------->| list_head   |<->| list_head   |<-> ...",
-        "       +-------------+   | random              |   | |   | random      |   | random      |",
-        "                         | node[] (~7.0)       |-+ | |   | node[]      |   | node[]      |",
-        "                         | per_node[] (7.1~)   | | | |   +-------------+   +-------------+",
-        "  +----------------------|   [0].barn          | | | |",
-        "  |                      |   [0].node          |-+ | |",
-        "  |                      +---------------------+ | | |",
-        "  |                                              | | |",
-        "  |                                              | | |     [sheaf/barn (the fastest path)]",
-        "  |  +-------------------------------------------+ | |                     +-->+-slab_sheaf-+",
-        "  |  |  +------------------------------------------+ |                     |   | barn_list  |",
-        "  |  |  |                               +------------+                     |   | size       |",
-        "  |  |  |     +-__per_cpu_offset-+      |                                  |   | objects[]  |",
-        "  |  |  +-----| cpu0_offset      |------+------->+-slub_percpu_sheaves-+   |   |  ptr       |->chunk",
-        "  |  |  |     | cpu1_offset      |               | main                |---+   |  ptr       |->chunk",
-        "  |  |  |     | cpu2_offset      |               | spare               |-->... |  ...       |",
-        "  |  |  |     | ...              |               +---------------------+       +------------+",
-        "  |  |  |     +------------------+",
-        "  |  |  |                                                  [active page freelist (fast path)]",
-        "  |  |  |                                                    +-chunk---+  +-chunk---+",
-        "  |  |  |                                                    | ^       |  | ^       |",
-        "  |  |  |                                                    | |offset |  | |offset |",
-        "  |  |  |                                                    | v       |  | v       |",
-        "  |  |  |                  +-------------------------------->| next    |->| next    |->NULL",
-        "  |  |  v (~6.19)          |                                 +---------+  +---------+",
-        "  |  | +-kmem_cache_cpu-+  |",
-        "  |  | | freelist       |--+                               [active page freelist (slow path)]",
-        "  |  | | page/slab      |---->+-page/slab(active)--+         +-chunk---+  +-chunk---+",
-        "  |  | | partial        |--+  | freelist           |----+    | ^       |  | ^       |",
-        "  |  | +----------------+  |  |                    |    |    | |offset |  | |offset |",
-        "  |  |                     |  +------------------ -+    |    | v       |  | v       |",
-        "  |  |                     |                            +--->| next    |->| next    |->NULL",
-        "  |  |                     |                                 +---------+  +---------+",
-        "  |  |                     |",
-        "  |  |                     |                               [partial page freelist]",
-        "  |  |                     +->+-page/slab(partial)-+         +-chunk---+  +-chunk---+",
-        "  |  |                        | freelist           |----+    | ^       |  | ^       |",
-        "  |  |                        | next               |--+ |    | |offset |  | |offset |",
-        "  |  |                        +--------------------+  | |    | v       |  | v       |",
-        "  |  |                                                | +--->| next    |->| next    |->NULL",
-        "  |  |                          +---------------------+      +---------+  +---------+",
-        "  |  |                          |",
-        "  |  |                          v",
-        "  |  +-+                       ...",
-        "  |    |                                                    [numa node partial page freelist]",
-        "  |    v                      +-page/slab(numa-node)+         +-chunk---+  +-chunk---+",
-        "  |   +-kmem_cache_node-+     | freelist            |----+    | ^       |  | ^       |",
-        "  |   | partial         |---->| next                |--+ |    | |offset |  | |offset |",
-        "  |   | (full)          |     +---------------------+  | |    | v       |  | v       |",
-        "  +---| barn (6.18~7.0) |                              | +--->| next    |->| next    |->NULL",
-        "  |   +-----------------+  +---------------------------+      +---------+  +---------+",
-        "  |   | ...             |  |",
-        "  |   |                 |  |                                [numa node partial page freelist]",
-        "  |   +-----------------+  |  +-page/slab(numa-node)+         +-chunk---+  +-chunk---+",
-        "  |                        |  | freelist            |----+    | ^       |  | ^       |",
-        "  |                        +->| next                |--+ |    | |offset |  | |offset |",
-        "  |                           +---------------------+  | |    | v       |  | v       |",
-        "  |                                                    | +--->| next    |->| next    |->NULL",
-        "  |                        +---------------------------+      +---------+  +---------+",
-        "  +----+                   |",
-        "       |                   v",
-        "       |                  ...",
-        "       v",
-        "      +-node_barn-----+         +-slab_sheaf-+    +-slab_sheaf-+",
-        "      | sheaves_full  |<------->| barn_list  |<-->| barn_list  |<-->",
-        "      | sheaves_empty |<-->...  | ...        |    | ...        |",
-        "      +---------------+         +------------+    +------------+",
-        "",
-        "* `struct page` has been split into `struct page` and `struct slab` since kernel 5.17.",
-        "  The structure name used for SLUB has been changed to `struct slab`.",
-        "* If all chunks in certain page (or slab) are in use, they will not be displayed by this command.",
-        "  This is because they cannot be reached by parsing from `slab_caches`.",
-        "  So use `slab-contains` (if you know the address) or `kvmmap` (if you want to see all slabs even if it takes time).",
-        "* `slab_sheaf`/`barn` introduced in 6.18 is not used by default, but used by setting it when calling `kmem_cache_create`.",
-        "  `slab_sheaf.objects[]` is a stack that grows downwards and caches freed addresses.",
-        "* `kmem_cache_cpu` is removed from 7.0. active/partial slabs no longer exist.",
-        "  In kernel >= 7.0, this command dumps `cpu_sheaves` and node slabs by default.",
-        "  The top of the stack is represented by `slab_sheaf.size`.",
-        "* `--partial`, `--node`, `--only-partial`, and `--only-node` affect only kernel < 7.0.",
-        "* To see the CONFIG_SLAB_VIRTUAL ASCII diagram, execute `slub-dump --help-for-slab-virtual`.",
-    ]
-    _note_ = "\n".join(_note_)
+    struct page {                                // if 4.18 <= kernel < 5.17
+        unsigned long flags;
+        struct page *next;
+        int pages;                               // if 64bit else `short pages`
+        int pobjects;                            // if 64bit else `short pobjects`
+        struct kmem_cache *slab_cache;
+        void *freelist;
+        unsigned inuse:16, objects:15, frozen:1;
+        union {};                                // unsigned int
+        atomic_t _refcount;
+        unsigned long memcg_data;                // if CONFIG_MEMCG=y && 5.10 <= kernel
+        struct mem_cgroup *mem_cgroup;           // if CONFIG_MEMCG=y && kernel < 5.10
+        void *virtual;                           // if CONFIG_WANT_PAGE_VIRTUAL=y
+        int _last_cpuid;                         // if CONFIG_LAST_CPUPID_NOT_IN_PAGE_FLAGS=y
+    };
 
-    _note2_ = [
-        "* A mitigation called CONFIG_SLAB_VIRTUAL was proposed in September 2023 to prevent cross-cache attacks.",
-        "  This config is not merged into mainline as of May 2025, but is used in KernelCTF@Google Security Research.",
-        "* A unique feature of CONFIG_SLAB_VIRTUAL is that in addition to the existing SLUB structure,",
-        "  it also has a structure for managing released slab structures.",
-        "",
-        "Structures in `CONFIG_SLAB_VIRTUAL=y`",
-        "- v6.1-based, v6.12-based",
-        "                                 +---slab----------+    +---slab----------+   +---slab----------+",
-        "       (Temporary Lists)         | backing_folio   |    | backing_folio   |   | backing_folio   |",
-        "       +-slub_tlbflush_queue-+   | oo              |    | oo              |   | oo              |",
-        " ...<->| list_head           |<->| flush_list_elem |<-->| flush_list_elem |<->| flush_list_elem |<->...",
-        "       +---------------------+   | slab_list       |    | slab_list       |   | slab_list       |",
-        "                                 | slab_cache      |-+  | slab_cache      |   | slab_cache      |",
-        "                                 | ...             | |  | ...             |   | ...             |",
-        "                                 +-----------------+ |  +-----------------+   +-----------------+",
-        "                                                     |",
-        "                             +-----------------------+",
-        "                             |",
-        "                             v",
-        "                         +---kmem_cache-------+             +---kmem_cache-------+",
-        "                         | cpu_slab           |----+        | cpu_slab           |",
-        "                         | flags              |    |        | flags              |",
-        "                         | size               |    |        | size               |",
-        "                         | object_size        |    |        | object_size        |",
-        "                         | offset             |    |        | offset             |",
-        "                         | min                |    |        | min                |",
-        "                         | oo                 |    |        | oo                 |",
-        "                         | freed_slabs_normal |<---------+  | freed_slabs_normal |",
-        "                         | freed_slabs_min    |<------+  |  | freed_slabs_min    |",
-        "       +-slab_caches-+   | name               |    |  |  |  | name               |",
-        " ...<->| list_head   |<->| list_head          |<------|--|->| list_head          |<->...",
-        "       +-------------+   | random             |    |  |  |  | random             |",
-        "                         | node[]             |-+  |  |  |  | node[]             |",
-        "                         +--------------------+ |  |  |  |  +--------------------+",
-        "                                                |  |  |  |",
-        "    +-------------------------------------------+  |  |  |   +---slab----+   +---slab----+",
-        "    |                                              |  |  |   | ...       |   | ...       |",
-        "    |    +-----------------------------------------+  |  |   | oo        |   | oo        |",
-        "    |    |                                            |  +-->| slab_list |<->| slab_list |<->...",
-        "    |    |     +-__per_cpu_offset-+                   |      | ...       |   | ...       |",
-        "    |    +-----| ...              |                   |      +-----------+   +-----------+",
-        "    |    |     +------------------+                   |",
-        "    |    v                                            |      +---slab----+   +---slab----+",
-        "    |    +-kmem_cache_cpu-+                           |      | ...       |   | ...       |",
-        "    |    | ...            |                           |      | oo        |   | oo        |",
-        "    |    +----------------+                           +----->| slab_list |<->| slab_list |<->...",
-        "    v                                                        | ...       |   | ...       |",
-        "    +-kmem_cache_node-+                                      +-----------+   +-----------+",
-        "    | ...             |",
-        "    +-----------------+",
-        "",
-        "",
-        "- v6.6-based",
-        "                                 +-virtual_slab-+     +-virtual_slab-+   +-virtual_slab-+",
-        "       (Temporary Lists)         | ...          |     | ...          |   | ...          |",
-        "       +-slub_tlbflush_queue-+   | slab_cache   |--+  | slab_cache   |   | slab_cache   |",
-        " ...<->| list_head           |<->| slab_list    |<-|->| slab_list    |<->| slab_list    |<->...",
-        "       +---------------------+   | oo           |  |  | oo           |   | oo           |",
-        "                                 | ...          |  |  | ...          |   | ...          |",
-        "                                 +--------------+  |  +--------------+   +--------------+",
-        "                                                   |",
-        "                             +---------------------+",
-        "                             |",
-        "                             v",
-        "                         +-kmem_cache------+             +-kmem_cache------+",
-        "                         | cpu_slab        |----+        | cpu_slab        |",
-        "                         | flags           |    |        | flags           |",
-        "                         | size            |    |        | size            |",
-        "                         | object_size     |    |        | object_size     |",
-        "                         | offset          |    |        | offset          |",
-        "                         | oo              |    |        | oo              |",
-        "                         | min             |    |        | min             |",
-        "                         | freed_slabs     |<---------+  | freed_slabs     |",
-        "                         | freed_slabs_min |<------+  |  | freed_slabs_min |",
-        "                         | nr_freed_pages  |    |  |  |  | nr_freed_pages  |",
-        "       +-slab_caches-+   | name            |    |  |  |  | name            |",
-        " ...<->| list_head   |<->| list_head       |<------|--|->| list_head       |<->...",
-        "       +-------------+   | random          |    |  |  |  | random          |",
-        "                         | node[]          |-+  |  |  |  | node[]          |",
-        "                         +-----------------+ |  |  |  |  +-----------------+",
-        "                                             |  |  |  |",
-        "    +----------------------------------------+  |  |  |   +-virtual_slab-+   +-virtual_slab-+",
-        "    |                                           |  |  |   | ...          |   | ...          |",
-        "    |    +--------------------------------------+  |  +-->| slab_list    |<->| slab_list    |<->...",
-        "    |    |                                         |      | oo           |   | oo           |",
-        "    |    |     +-__per_cpu_offset-+                |      | ...          |   | ...          |",
-        "    |    +-----| ...              |                |      +--------------+   +--------------+",
-        "    |    |     +------------------+                |",
-        "    |    v                                         |      +-virtual_slab-+   +-virtual_slab-+",
-        "    |    +-kmem_cache_cpu-+                        |      | ...          |   | ...          |",
-        "    |    | ...            |                        +----->| slab_list    |<->| slab_list    |<->...",
-        "    |    +----------------+                               | oo           |   | oo           |",
-        "    v                                                     | ...          |   | ...          |",
-        "    +-kmem_cache_node-+                                   +--------------+   +--------------+",
-        "    | ...             |",
-        "    +-----------------+",
-        "",
-        "* The freed slab structure is initially connected to `slub_tlbflush_queue`.",
-        "  It is then reconnected to kmem_cache->freed_slabs_normal or freed_slabs_min or freed_slabs.",
-        "* If oo_order(virtual_slab->slab.oo) == oo_order(kmem_cache->min),",
-        "  `slub_tlbflush_worker` uses `kmem_cache->freed_slabs_min` as freelist of pages for the `kmem_cache`.",
-        "  Otherwise, it uses `kmem_cache->freed_slabs`.",
-    ]
-    _note2_ = "\n".join(_note2_)
+    struct slab {                                // if CONFIG_SLAB_VIRTUAL=n && 5.17 <= kernel < 6.2
+        unsigned long __page_flags;
+        struct slab *next;
+        int slabs;
+        struct kmem_cache *slab_cache;
+        void *freelist;
+        unsigned inuse:16, objects:15, frozen:1;
+        unsigned int __unused;
+        atomic_t __page_refcount;
+        unsigned long memcg_data;                // if CONFIG_MEMCG=y
+    };
+
+    struct slab {                                // if CONFIG_SLAB_VIRTUAL=n && 6.2 <= kernel < 6.10
+        unsigned long __page_flags;
+        struct kmem_cache *slab_cache;
+        struct slab *next;
+        int slabs;
+        void *freelist;
+        unsigned inuse:16, objects:15, frozen:1;
+        unsigned int __unused;
+        atomic_t __page_refcount;
+        unsigned long memcg_data;                // if CONFIG_MEMCG=y
+    };
+
+    struct slab {                                // if CONFIG_SLAB_VIRTUAL=n && 6.10 <= kernel
+        unsigned long __page_flags;              // if kernel < 6.18
+        memdesc_flags_t flags;                   // if 6.18 <= kernel
+        struct kmem_cache *slab_cache;
+        struct slab *next;
+        int slabs;
+        void *freelist;
+        unsigned inuse:16, objects:15, frozen:1;
+        unsigned int __page_type;
+        atomic_t __page_refcount;
+        unsigned long obj_exts;                  // if CONFIG_SLAB_OBJ_EXT=y
+    };
+
+    struct kmem_cache_node {
+        spinlock_t list_lock;
+        unsigned long nr_partial;
+        struct list_head partial;
+        atomic_long_t nr_slabs;                  // if CONFIG_SLUB_DEBUG=y
+        atomic_long_t total_objects;             // if CONFIG_SLUB_DEBUG=y
+        struct list_head full;                   // if CONFIG_SLUB_DEBUG=y
+        struct node_barn *barn;                  // 6.18 <= kernel < 7.1
+    };
+    """
+
+    """
+    struct kmem_cache {                          // if CONFIG_SLAB_VIRTUAL=y
+        ...
+        struct kmem_cache_order_objects min;     // [ANNOTATION]
+        struct kmem_cache_order_objects oo;      //    In kernel < 6.1.56, `min` and `oo` are swapped.
+        unsigned long nr_freed_pages;            // if CONFIG_SLAB_VIRTUAL=y && kernel < 6.1.56
+        struct list_head freed_slabs_normal;     // if CONFIG_SLAB_VIRTUAL=y && kernel < 6.1.56
+        struct list_head freed_slabs_min;        // if CONFIG_SLAB_VIRTUAL=y && kernel < 6.1.56
+        spinlock_t freed_slabs_lock;             // if CONFIG_SLAB_VIRTUAL=y && kernel < 6.1.56
+        struct kmem_cache_virtual {              // if CONFIG_SLAB_VIRTUAL=y && 6.1.56 <= kernel
+            spinlock_t freed_slabs_lock;         // if CONFIG_SLAB_VIRTUAL=y && 6.1.56 <= kernel
+            struct list_head freed_slabs;        // if CONFIG_SLAB_VIRTUAL=y && 6.1.56 <= kernel
+            struct list_head freed_slabs_min;    // if CONFIG_SLAB_VIRTUAL=y && 6.1.56 <= kernel
+            unsigned long nr_freed_pages;        // if CONFIG_SLAB_VIRTUAL=y && 6.1.56 <= kernel
+        } virtual;                               // if CONFIG_SLAB_VIRTUAL=y && 6.1.56 <= kernel
+        gfp_t allocflags;
+        ...
+        const char * name;
+        struct list_head list; <-----> struct list_head <-----> struct list_head <-----> ...
+        ...
+    };
+
+    struct slab {                                // if CONFIG_SLAB_VIRTUAL=y && kernel < 6.6
+        struct slab *compound_slab_head;
+        struct folio *backing_folio;
+        struct kmem_cache_order_objects oo;
+        spinlock_t slab_lists_lock;
+        struct list_head flush_list_elem;
+        unsigned long align_mask;
+        atomic_t pinstate;
+        struct slab *next;
+        int slabs;
+        struct kmem_cache *slab_cache;
+        void *freelist;
+        unsigned inuse:16, objects:15, frozen:1;
+        unsigned int __unused;
+        unsigned long memcg_data;                // if CONFIG_MEMCG=y
+    };
+
+    struct slab {                                // if CONFIG_SLAB_VIRTUAL=y && 6.6 <= kernel < 6.12
+        struct folio *backing_folio;
+        struct kmem_cache *slab_cache;
+        struct slab *next;
+        int slabs;
+        void *freelist;
+        unsigned inuse:16, objects:15, frozen:1;
+        struct kmem_cache_order_objects oo;
+        spinlock_t slab_lock;
+        unsigned long memcg_data;                // if CONFIG_MEMCG=y
+    }
+
+    struct virtual_slab {                        // if CONFIG_SLAB_VIRTUAL=y && 6.6 <= kernel < 6.12
+        struct slab slab;
+        struct virtual_slab *compound_slab_head;
+        unsigned long align_mask;
+    };
+
+    struct slab {                                // if CONFIG_SLAB_VIRTUAL=y && 6.12 <= kernel
+        struct slab *compound_slab_head;
+        struct folio *backing_folio;
+        struct kmem_cache_order_objects oo;
+        struct list_head flush_list_elem;
+        unsigned long align_mask;
+        spinlock_t slab_lock;
+        struct kmem_cache *slab_cache;
+        struct slab *next;
+        int slabs;
+        void *freelist;
+        unsigned inuse:16, objects:15, frozen:1;
+        unsigned long obj_exts                   // if CONFIG_SLAB_OBJ_EXT=y
+    };
+    """
+
+    @classmethod
+    @Cache.cache_this_session(per_inferior=True, until_new_objfile=True)
+    def get_instance(cls, no_xor=False, byte_swap=None, offset_random=None, offset_node=None):
+        return cls(no_xor, byte_swap, offset_random, offset_node)
+
+    def __init__(self, no_xor=False, byte_swap=None, offset_random=None, offset_node=None):
+        self.meta = []
+        self.no_xor = no_xor
+        self.byte_swap = byte_swap
+        self.swap = byte_swap
+        self.offset_random = offset_random
+        self.offset_node = offset_node
+        return
+
+    @Cache.cache_this_session(cache_None=False)
+    def initialize(self):
+        self.meta = []
+
+        kversion = Kernel.version()
+        if not kversion:
+            self.meta.append(("err", "Failed to resolve kernel version"))
+            return None
+
+        # resolve slab_caches
+        self.slab_caches = KernelAddressHeuristicFinder.get_slab_caches()
+        if self.slab_caches is None:
+            self.meta.append(("err", "Failed to resolve `slab_caches`"))
+            return None
+        else:
+            self.meta.append(("info", "slab_caches: {:#x}".format(self.slab_caches)))
+
+        if not self.parse_kmem_caches_for_initialize():
+            self.meta.append(("err", "No entries in `slab_caches`"))
+            return None
+
+        # resolve __per_cpu_offset
+        self.percpu = Kernel.per_cpu()
+        if self.percpu.per_cpu_offset is None:
+            self.meta.append(("info", "__per_cpu_offset: Not found"))
+            self.ncpus = 1
+        else:
+            self.meta.append(("info", "__per_cpu_offset: {:#x}".format(self.percpu.per_cpu_offset)))
+            self.ncpus = len(self.percpu.offsets)
+
+        # offsetof(kmem_cache, list)
+        self.resolve_kmem_cache_offset_list()
+        if self.kmem_cache_offset_list is None:
+            self.meta.append(("info", "offsetof(kmem_cache, list): Not found"))
+            return None
+        self.meta.append(("info", "offsetof(kmem_cache, list): {:#x}".format(self.kmem_cache_offset_list)))
+
+        # offsetof(kmem_cache, name)
+        self.kmem_cache_offset_name = self.kmem_cache_offset_list - current_arch.ptrsize
+        self.meta.append(("info", "offsetof(kmem_cache, name): {:#x}".format(self.kmem_cache_offset_name)))
+
+        # for CONFIG_SLAB_VIRTUAL
+        self.resolve_for_CONFIG_SLAB_VIRTUAL()
+
+        # offsetof(kmem_cache, cpu_slab)
+        if kversion < "7.0":
+            self.kmem_cache_offset_cpu_slab = 0
+            self.meta.append(("info", "offsetof(kmem_cache, cpu_slab): {:#x}".format(self.kmem_cache_offset_cpu_slab)))
+
+        # offsetof(kmem_cache, flags)
+        if kversion < "6.18":
+            self.kmem_cache_offset_flags = current_arch.ptrsize
+        elif kversion < "7.0":
+            CONFIG_LOCKDEP = Ksym.get_addr("fs_reclaim_acquire")
+            if CONFIG_LOCKDEP:
+                self.kmem_cache_offset_flags = current_arch.ptrsize * 4
+            else:
+                self.kmem_cache_offset_flags = current_arch.ptrsize * 2
+        else:
+            self.kmem_cache_offset_flags = current_arch.ptrsize
+        if not self.is_valid_kmem_cache_offset_flags(self.kmem_cache_offset_flags):
+            # A merge-window build keeps the previous release number, so `6.17.0-11846-g...`
+            # already has `cpu_sheaves` and the version gate above is 8 byte too low.
+            for candidate_offset in [current_arch.ptrsize * i for i in [1, 2, 4]]:
+                if self.is_valid_kmem_cache_offset_flags(candidate_offset):
+                    self.kmem_cache_offset_flags = candidate_offset
+                    break
+        self.meta.append(("info", "offsetof(kmem_cache, flags): {:#x}".format(self.kmem_cache_offset_flags)))
+
+        # offsetof(kmem_cache, cpu_sheaves)
+        if kversion < "7.0" and self.kmem_cache_offset_flags == current_arch.ptrsize:
+            # only `cpu_slab` is in front of `flags`, so there is no `cpu_sheaves`
+            self.kmem_cache_offset_cpu_sheaves = None
+        else:
+            self.kmem_cache_offset_cpu_sheaves = self.kmem_cache_offset_flags - current_arch.ptrsize
+            self.meta.append(("info", "offsetof(kmem_cache, cpu_sheaves): {:#x}".format(self.kmem_cache_offset_cpu_sheaves)))
+
+        # offsetof(kmem_cache, size)
+        self.kmem_cache_offset_size = self.kmem_cache_offset_flags + current_arch.ptrsize * 2
+        self.meta.append(("info", "offsetof(kmem_cache, size): {:#x}".format(self.kmem_cache_offset_size)))
+
+        # offsetof(kmem_cache, object_size)
+        self.kmem_cache_offset_object_size = self.kmem_cache_offset_size + 4
+        self.meta.append(("info", "offsetof(kmem_cache, object_size): {:#x}".format(self.kmem_cache_offset_object_size)))
+
+        # offsetof(kmem_cache, offset)
+        if kversion < "5.9":
+            self.kmem_cache_offset_offset = self.kmem_cache_offset_object_size + 4
+        else:
+            self.kmem_cache_offset_offset = self.kmem_cache_offset_object_size + 4 + 8
+        self.meta.append(("info", "offsetof(kmem_cache, offset): {:#x}".format(self.kmem_cache_offset_offset)))
+
+        # offsetof(kmem_cache, red_left_pad)
+        self.kmem_cache_offset_red_left_pad = self.kmem_cache_offset_name - current_arch.ptrsize
+        self.meta.append(("info", "offsetof(kmem_cache, red_left_pad): {:#x}".format(self.kmem_cache_offset_red_left_pad)))
+
+        # offsetof(kmem_cache, random)
+        self.resolve_kmem_cache_offset_random()
+        if self.kmem_cache_offset_random is None:
+            self.meta.append(("info", "offsetof(kmem_cache, random): Not found"))
+        else:
+            self.meta.append(("info", "offsetof(kmem_cache, random): {:#x}".format(self.kmem_cache_offset_random)))
+
+        # offsetof(kmem_cache, node) or offsetof(kmem_cache, per_node[0].node/barn)
+        self.resolve_kmem_cache_offset_node()
+        if self.kmem_cache_offset_random_seq is None:
+            self.meta.append(("info", "offsetof(kmem_cache, random_seq): Not found"))
+        else:
+            self.meta.append(("info", "offsetof(kmem_cache, random_seq): {:#x}".format(self.kmem_cache_offset_random_seq)))
+        if kversion < "7.1":
+            if self.kmem_cache_offset_node is None:
+                self.meta.append(("info", "offsetof(kmem_cache, node): Not found"))
+            else:
+                self.meta.append(("info", "offsetof(kmem_cache, node): {:#x}".format(self.kmem_cache_offset_node)))
+        else:
+            if self.kmem_cache_offset_node is None:
+                self.meta.append(("info", "offsetof(kmem_cache, per_node[0].node): Not found"))
+            else:
+                self.meta.append(("info", "offsetof(kmem_cache, per_node[0].node): {:#x}".format(self.kmem_cache_offset_node)))
+            if self.kmem_cache_offset_barn is None:
+                self.meta.append(("info", "offsetof(kmem_cache, per_node[0].barn): Not found"))
+            else:
+                self.meta.append(("info", "offsetof(kmem_cache, per_node[0].barn): {:#x}".format(self.kmem_cache_offset_barn)))
+
+        if kversion < "7.0":
+            # offsetof(kmem_cache_cpu, freelist)
+            self.kmem_cache_cpu_offset_freelist = 0
+            self.meta.append(("info", "offsetof(kmem_cache_cpu, freelist): {:#x}".format(self.kmem_cache_cpu_offset_freelist)))
+
+            # offsetof(kmem_cache_cpu, page or slab)
+            self.kmem_cache_cpu_offset_page = current_arch.ptrsize * 2
+            self.meta.append(("info", "offsetof(kmem_cache_cpu, {:s}): {:#x}".format(
+                Kernel.slab_page_str(), self.kmem_cache_cpu_offset_page,
+            )))
+
+            # offsetof(kmem_cache_cpu, partial)
+            if kversion < "3.2":
+                self.kmem_cache_cpu_offset_partial = None
+            else:
+                self.kmem_cache_cpu_offset_partial = current_arch.ptrsize * 3
+                self.meta.append(("info", "offsetof(kmem_cache_cpu, partial): {:#x}".format(
+                    self.kmem_cache_cpu_offset_partial,
+                )))
+
+        # offsetof(page, lru) for the following
+        if "4.18" <= kversion < "5.17" and not self.slab_virtual_enabled:
+            page_offset_union = self.resolve_page_offset_union()
+
+        # offsetof(page, next) / offsetof(slab, next)
+        if self.slab_virtual_enabled:
+            if kversion < "6.6":
+                self.page_offset_next = current_arch.ptrsize * 7
+            elif kversion < "6.12":
+                self.page_offset_next = current_arch.ptrsize * 2
+            else: # 6.12
+                self.page_offset_next = current_arch.ptrsize * 8
+        else:
+            if kversion < "3.1" and is_32bit():
+                self.page_offset_next = current_arch.ptrsize * 6
+            elif kversion < "3.1":
+                self.page_offset_next = current_arch.ptrsize * 5
+            elif kversion < "4.16" and is_32bit():
+                self.page_offset_next = current_arch.ptrsize * 5
+            elif kversion < "4.18":
+                self.page_offset_next = current_arch.ptrsize * 4
+            elif kversion < "5.17":
+                self.page_offset_next = page_offset_union
+            elif kversion < "6.2":
+                self.page_offset_next = current_arch.ptrsize
+            else:
+                self.page_offset_next = current_arch.ptrsize * 2
+        self.meta.append(("info", "offsetof({:s}, next): {:#x}".format(Kernel.slab_page_str(), self.page_offset_next)))
+
+        # offsetof(page, freelist) / offsetof(slab, freelist)
+        if self.slab_virtual_enabled:
+            if kversion < "6.6":
+                self.page_offset_freelist = current_arch.ptrsize * 10
+            elif kversion < "6.12":
+                self.page_offset_freelist = current_arch.ptrsize * 4
+            else: # 6.12
+                self.page_offset_freelist = current_arch.ptrsize * 10
+        else:
+            if kversion < "3.1" and is_32bit():
+                self.page_offset_freelist = current_arch.ptrsize * 5
+            elif kversion < "3.1":
+                self.page_offset_freelist = current_arch.ptrsize * 4
+            elif kversion < "4.18":
+                self.page_offset_freelist = current_arch.ptrsize * 2
+            elif kversion < "5.17":
+                self.page_offset_freelist = page_offset_union + current_arch.ptrsize * 3
+            elif kversion < "6.2":
+                self.page_offset_freelist = current_arch.ptrsize * 4
+            else:
+                self.page_offset_freelist = current_arch.ptrsize * 4
+        self.meta.append(("info", "offsetof({:s}, freelist): {:#x}".format(Kernel.slab_page_str(), self.page_offset_freelist)))
+
+        # offsetof(page, slab_cache) / offsetof(slab, slab_cache)
+        if self.slab_virtual_enabled:
+            if kversion < "6.6":
+                self.page_offset_slab_cache = current_arch.ptrsize * 9
+            elif kversion < "6.12":
+                self.page_offset_slab_cache = current_arch.ptrsize
+            else: # 6.12
+                self.page_offset_slab_cache = current_arch.ptrsize * 7
+        else:
+            if kversion < "3.1" and is_32bit():
+                self.page_offset_slab_cache = current_arch.ptrsize * 3
+            elif kversion < "3.1":
+                self.page_offset_slab_cache = current_arch.ptrsize * 2
+            elif kversion < "4.16" and is_32bit():
+                self.page_offset_slab_cache = current_arch.ptrsize * 7
+            elif kversion < "4.18":
+                self.page_offset_slab_cache = current_arch.ptrsize * 6
+            elif kversion < "5.17":
+                self.page_offset_slab_cache = page_offset_union + current_arch.ptrsize * 2
+            elif kversion < "6.2":
+                self.page_offset_slab_cache = current_arch.ptrsize * 3
+            else:
+                self.page_offset_slab_cache = current_arch.ptrsize
+        self.meta.append(("info", "offsetof({:s}, slab_cache): {:#x}".format(
+            Kernel.slab_page_str(), self.page_offset_slab_cache,
+        )))
+
+        # offsetof(page, inuse_objects_frozen) / offsetof(slab, inuse_objects_frozen)
+        if kversion < "3.1":
+            # u16 inuse; u16 objects; (no frozen bit)
+            self.page_offset_inuse_objects_frozen = current_arch.ptrsize + 4
+        else:
+            self.page_offset_inuse_objects_frozen = self.page_offset_freelist + current_arch.ptrsize
+        self.meta.append(("info", "offsetof({:s}, inuse_objects_frozen): {:#x}".format(
+            Kernel.slab_page_str(), self.page_offset_inuse_objects_frozen,
+        )))
+
+        # parse extra members of `struct slab` for CONFIG_SLAB_VIRTUAL=y
+        if self.slab_virtual_enabled:
+            # offsetof(slab, flush_list_elem)
+            # [ANNOTATION]
+            #   In 6.6-based implementation, the member `flush_list_elem` has been removed from `struct slab`,
+            #   however, `slub_tlbflush_queue` uses the member `slab_list` or `next` (which?) for the same purpose.
+            #   So, when CONFIG_SLAB_VIRTUAL=y and 6.6 or later, `flush_list_elem` means `next`.
+            if kversion < "6.6":
+                self.page_offset_flush_list_elem = current_arch.ptrsize * 3
+            elif kversion < "6.12":
+                self.page_offset_flush_list_elem = current_arch.ptrsize * 2
+            else: # 6.12
+                self.page_offset_flush_list_elem = current_arch.ptrsize * 3
+            self.meta.append(("info", "offsetof(slab, flush_list_elem): {:#x}".format(self.page_offset_flush_list_elem)))
+
+        # offsetof(kmem_cache_node, partial)
+        self.resolve_kmem_cache_node_offset_partial()
+        if self.kmem_cache_node_offset_partial is None:
+            self.meta.append(("info", "offsetof(kmem_cache_node, partial): Not found"))
+        else:
+            self.meta.append(("info", "offsetof(kmem_cache_node, partial): {:#x}".format(self.kmem_cache_node_offset_partial)))
+
+        # offsetof(kmem_cache_node, full)
+        if self.kmem_cache_node_offset_partial is None:
+            self.kmem_cache_node_offset_full = None
+        else:
+            self.kmem_cache_node_offset_full = self.kmem_cache_node_offset_partial + current_arch.ptrsize * 4
+
+        # for sheaves / barn
+        self.resolve_sheaves()
+
+        return True
+
+    def get_kmem_caches(self, target_names=()):
+        """Return the parsed caches, or None if initialization fails."""
+        KernelSlub.warmup_page2virt()
+        if not self.initialize():
+            return None
+        return self.walk_caches(list(target_names), list(range(self.ncpus)))[1:]
+
+    @staticmethod
+    @Cache.cache_this_session(per_inferior=True)
+    def warmup_page2virt():
+        if is_x86() or is_arm32():
+            gdb.execute("page2virt 0", to_string=True)
+        return
 
     @Cache.cache_until_next
     def parse_kmem_caches_for_initialize(self):
@@ -146897,12 +147172,12 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
                 pass
 
         # slow path
-        if self.args.no_xor:
+        if self.no_xor:
             self.kmem_cache_offset_random = None
             return
 
-        if self.args.offset_random is not None:
-            self.kmem_cache_offset_random = self.args.offset_random
+        if self.offset_random is not None:
+            self.kmem_cache_offset_random = self.offset_random
             return
 
         self.kmem_cache_offset_random = None # CONFIG_SLAB_FREELIST_HARDENED=n
@@ -147027,14 +147302,14 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
                 pass
 
         # user specified
-        if self.args.offset_node is not None:
+        if self.offset_node is not None:
             if kversion < "7.1":
-                self.kmem_cache_offset_node = self.args.offset_node
+                self.kmem_cache_offset_node = self.offset_node
                 self.kmem_cache_offset_barn = None
                 self.kmem_cache_node_step = current_arch.ptrsize
             else:
-                self.kmem_cache_offset_node = self.args.offset_node
-                self.kmem_cache_offset_barn = self.args.offset_node - current_arch.ptrsize
+                self.kmem_cache_offset_node = self.offset_node
+                self.kmem_cache_offset_barn = self.offset_node - current_arch.ptrsize
                 self.kmem_cache_node_step = current_arch.ptrsize * 2
             return
 
@@ -147222,7 +147497,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
                     continue
 
                 # found
-                self.meta.append((self.quiet_info, "offset of node is found by heuristic way1"))
+                self.meta.append(("info", "offset of node is found by heuristic way1"))
                 set_kmem_cache_offset_from_barn(candidate_offset)
                 detect_random_seq_before_node()
                 return
@@ -147254,7 +147529,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
                     # At this point, x is random_seq or node[0]
                     if not is_random_seq(x):
                         # x is not random_seq, but node[0]
-                        self.meta.append((self.quiet_info, "offset of node is found by heuristic way2-1"))
+                        self.meta.append(("info", "offset of node is found by heuristic way2-1"))
                         set_kmem_cache_offset_from_barn(offset_random_seq)
                         return
                     else:
@@ -147271,7 +147546,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
                     y = read_int_from_memory(kmem_cache_0_top + offset_node)
                     # 7.0+: cpu_stats is not a valid pointer, so this check will pass.
                     if is_valid_addr(y) and not is_random_seq(y):
-                        self.meta.append((self.quiet_info, "offset of node is found by heuristic way2-2"))
+                        self.meta.append(("info", "offset of node is found by heuristic way2-2"))
                         set_kmem_cache_offset_from_barn(offset_node)
                         return
 
@@ -147342,7 +147617,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
                         break
 
             if found:
-                self.meta.append((self.quiet_info, "offset of node is found by heuristic way3"))
+                self.meta.append(("info", "offset of node is found by heuristic way3"))
                 set_kmem_cache_offset_from_barn(node_offset)
                 detect_random_seq_before_node()
                 return
@@ -147360,7 +147635,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
                 # At this point, x is random_seq or node[0]
                 if not is_random_seq(x):
                     # x is not random_seq, but node[0]
-                    self.meta.append((self.quiet_info, "offset of node is found by heuristic way4-1"))
+                    self.meta.append(("info", "offset of node is found by heuristic way4-1"))
                     set_kmem_cache_offset_from_barn(offset_random_seq)
                     return
                 else:
@@ -147378,7 +147653,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
                 y = read_int_from_memory(kmem_cache_0_top + offset_node)
                 # 7.0+: cpu_stats is not a valid pointer, so this check will pass.
                 if is_valid_addr(y) and not is_random_seq(y):
-                    self.meta.append((self.quiet_info, "offset of node is found by heuristic way4-2"))
+                    self.meta.append(("info", "offset of node is found by heuristic way4-2"))
                     set_kmem_cache_offset_from_barn(offset_node)
                     return
 
@@ -147437,7 +147712,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
                     maxlen = len(list(itertools.combinations(kmem_caches, 2)))
                     msg = "min_diff_pairs:{:d}/{:d}, ".format(len(min_diff_pairs), maxlen)
                     msg += "min_diff:{:#x}".format(min_diff)
-                    self.meta.append((self.quiet_info, "offset of node is found by heuristic way5 ({:s})".format(msg)))
+                    self.meta.append(("info", "offset of node is found by heuristic way5 ({:s})".format(msg)))
                     set_kmem_cache_offset_from_node(offset_after_list + offset_node_from_after_list)
                     detect_random_seq_before_node()
                     return
@@ -147483,13 +147758,13 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
 
         # parse kmem_cache for CONFIG_SLAB_VIRTUAL
         if self.slab_virtual_enabled:
-            self.meta.append((self.quiet_info, "CONFIG_SLAB_VIRTUAL: detected"))
+            self.meta.append(("info", "CONFIG_SLAB_VIRTUAL: detected"))
 
             # 1. get global queue buffering freed slabs
             self.slub_tlbflush_queue = KernelAddressHeuristicFinder.get_slub_tlbflush_queue()
             if not self.slub_tlbflush_queue:
                 return False
-            self.meta.append((self.quiet_info, "slub_tlbflush_queue: {:#x}".format(self.slub_tlbflush_queue)))
+            self.meta.append(("info", "slub_tlbflush_queue: {:#x}".format(self.slub_tlbflush_queue)))
 
             # 2. parse extra members of kmem_cache
             #   - kmem_cache->nr_freed_pages (6.1-based, 6.12-based) or kmem_cache->virtual.nr_freed_pages (6.6-based)
@@ -147501,15 +147776,21 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
                 self.kmem_cache_offset_nr_freed_pages = offset_freed_slabs_normal - current_arch.ptrsize * 1
             else:
                 self.kmem_cache_offset_nr_freed_pages = offset_freed_slabs_min + current_arch.ptrsize * 2
-            self.meta.append((self.quiet_info, "offsetof(kmem_cache, nr_freed_pages): {:#x}".format(self.kmem_cache_offset_nr_freed_pages)))
+            self.meta.append(("info", "offsetof(kmem_cache, nr_freed_pages): {:#x}".format(
+                self.kmem_cache_offset_nr_freed_pages,
+            )))
 
             # offsetof(kmem_cache, freed_slabs_normal)
             self.kmem_cache_offset_freed_slabs_normal = offset_freed_slabs_normal
-            self.meta.append((self.quiet_info, "offsetof(kmem_cache, freed_slabs_normal): {:#x}".format(self.kmem_cache_offset_freed_slabs_normal)))
+            self.meta.append(("info", "offsetof(kmem_cache, freed_slabs_normal): {:#x}".format(
+                self.kmem_cache_offset_freed_slabs_normal,
+            )))
 
             # offsetof(kmem_cache, freed_slabs_min)
             self.kmem_cache_offset_freed_slabs_min = offset_freed_slabs_min
-            self.meta.append((self.quiet_info, "offsetof(kmem_cache, freed_slabs_min): {:#x}".format(self.kmem_cache_offset_freed_slabs_min)))
+            self.meta.append(("info", "offsetof(kmem_cache, freed_slabs_min): {:#x}".format(
+                self.kmem_cache_offset_freed_slabs_min,
+            )))
         return
 
     def resolve_page_offset_union(self):
@@ -147757,25 +148038,25 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
         # offsetof(slub_percpu_sheaves, main)
         self.resolve_slub_percpu_sheaves_offset_main()
         if self.slub_percpu_sheaves_offset_main is None:
-            self.meta.append((self.quiet_info, "offsetof(slub_percpu_sheaves, main): Not found"))
+            self.meta.append(("info", "offsetof(slub_percpu_sheaves, main): Not found"))
             return
-        self.meta.append((self.quiet_info, "offsetof(slub_percpu_sheaves, main): {:#x}".format(self.slub_percpu_sheaves_offset_main)))
+        self.meta.append(("info", "offsetof(slub_percpu_sheaves, main): {:#x}".format(self.slub_percpu_sheaves_offset_main)))
 
         # offsetof(kmem_cache_node, barn)
         if kversion < "7.1":
             self.resolve_kmem_cache_node_offset_barn()
             if self.kmem_cache_node_offset_barn is None:
-                self.meta.append((self.quiet_info, "offsetof(kmem_cache_node, barn): Not found"))
+                self.meta.append(("info", "offsetof(kmem_cache_node, barn): Not found"))
                 return
             else:
-                self.meta.append((self.quiet_info, "offsetof(kmem_cache_node, barn): {:#x}".format(self.kmem_cache_node_offset_barn)))
+                self.meta.append(("info", "offsetof(kmem_cache_node, barn): {:#x}".format(self.kmem_cache_node_offset_barn)))
 
         # offsetof(node_barn, sheaves_full)
         self.resolve_node_barn_offset_sheaves_full()
         if self.node_barn_offset_sheaves_full is None:
-            self.meta.append((self.quiet_info, "offsetof(node_barn, sheaves_full): Not found"))
+            self.meta.append(("info", "offsetof(node_barn, sheaves_full): Not found"))
             return
-        self.meta.append((self.quiet_info, "offsetof(node_barn, sheaves_full): {:#x}".format(self.node_barn_offset_sheaves_full)))
+        self.meta.append(("info", "offsetof(node_barn, sheaves_full): {:#x}".format(self.node_barn_offset_sheaves_full)))
 
         # offsetof(slub_percpu_sheaves, spare)
         self.slub_percpu_sheaves_offset_spare = self.slub_percpu_sheaves_offset_main + current_arch.ptrsize
@@ -147808,492 +148089,6 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
         self.sheaves_enabled = True
         return
 
-    # CONFIG_SLAB_VIRTUAL=n
-    """
-    struct kmem_cache {
-        struct kmem_cache_cpu *cpu_slab;         // if kernel < 7.0; In fact, the offset value, not the pointer
-        struct lock_class_key {                            // if CONFIG_LOCKDEP=y && 6.18 <= kernel < 7.0
-            union {                                        // if CONFIG_LOCKDEP=y && 6.18 <= kernel < 7.0
-                struct hlist_node hash_entry;              // if CONFIG_LOCKDEP=y && 6.18 <= kernel < 7.0
-                struct lockdep_subclass_key {              // if CONFIG_LOCKDEP=y && 6.18 <= kernel < 7.0
-                    char __one_byte;                       // if CONFIG_LOCKDEP=y && 6.18 <= kernel < 7.0
-                } __attribute__ ((__packed__)) subkeys[8]; // if CONFIG_LOCKDEP=y && 6.18 <= kernel < 7.0
-            };                                             // if CONFIG_LOCKDEP=y && 6.18 <= kernel < 7.0
-        } lock_key;                                        // if CONFIG_LOCKDEP=y && 6.18 <= kernel < 7.0
-        struct slub_percpu_sheaves __percpu *cpu_sheaves;  // if 6.18 <= kernel
-        slab_flags_t flags;                      // unsigned int (+ padding 4 byte)
-        unsigned long min_partial;
-        unsigned int size;
-        unsigned int object_size;
-        struct reciprocal_value {                //
-            u32 m;                               //
-            u8 sh1, sh2;                         // (+ padding 2 byte)
-        } reciprocal_size;                       // if 5.9 <= kernel
-        unsigned int offset;
-        unsigned int cpu_partial;                // if CONFIG_SLUB_CPU_PARTIAL=y && kernel < 7.0
-        unsigned int cpu_partial_slabs;          // if CONFIG_SLUB_CPU_PARTIAL=y && 5.16 <= kernel < 7.0
-        unsigned int sheaf_capacity;             // if 6.18 <= kernel
-        struct kmem_cache_order_objects oo;
-        struct kmem_cache_order_objects max;     // if kernel < 5.19
-        struct kmem_cache_order_objects min;
-        gfp_t allocflags;                        // unsigned int
-        int refcount;
-        void (*ctor)(void *);
-        unsigned int inuse;
-        unsigned int align;
-        unsigned int red_left_pad;
-        const char *name;
-        struct list_head list; <-----> struct list_head <-----> struct list_head <-----> ...
-        struct kobject kobj;                     // if CONFIG_SYSFS=y
-        struct work_struct kobj_remove_work;     // if CONFIG_SYSFS=y && kernel < 5.9
-        struct memcg_cache_params memcg_params;  // if CONFIG_MEMCG=y && kernel < 5.9
-        unsigned int max_attr_size;              // if CONFIG_MEMCG=y && kernel < 5.9
-        struct kset *memcg_kset;                 // if CONFIG_MEMCG=y && CONFIG_SYSFS=y && kernel < 5.9
-        unsigned long random;                    // if CONFIG_SLAB_FREELIST_HARDENED=y
-        unsigned int remote_node_defrag_ratio;   // if CONFIG_NUMA=y
-        unsigned int *random_seq;                // if CONFIG_SLAB_FREELIST_RANDOM=y
-        struct kasan_cache {
-            int alloc_meta_offset;
-            int free_meta_offset;
-            bool is_kmalloc;
-        } kasan_info;                            // if CONFIG_KASAN=y
-        unsigned int useroffset;                 // kernel < 6.2 || (6.2 <= kernel && CONFIG_HARDENED_USERCOPY=y)
-        unsigned int usersize;                   // kernel < 6.2 || (6.2 <= kernel && CONFIG_HARDENED_USERCOPY=y)
-        struct kmem_cache_stats __percpu *cpu_stats // CONFIG_SLUB_STATS && 7.0 <= kernel
-        struct kmem_cache_node *node[MAX_NUMNODES]; // kernel < 7.1 (<-- this includes SPINLOCK_MAGIC if CONFIG_DEBUG_SPINLOCK=y)
-        struct kmem_cache_per_node_ptrs {           // 7.1 <= kernel
-            struct node_barn *barn;                 // 7.1 <= kernel
-            struct kmem_cache_node *node;           // 7.1 <= kernel
-        } per_node[MAX_NUMNODES];                   // 7.1 <= kernel
-    };
-
-    struct kmem_cache_cpu {
-        void **freelist;
-        unsigned long tid;
-        struct page *page;                       // if kernel < 5.17
-        struct page *partial;                    // if kernel < 5.17 && CONFIG_SLUB_CPU_PARTIAL=y
-        struct slab *slab;                       // if 5.17 <= kernel
-        struct slab *partial;                    // if 5.17 <= kernel && CONFIG_SLUB_CPU_PARTIAL=y
-        local_lock_t lock;                       // if 5.15 <= kernel
-        unsigned stat[NR_SLUB_STAT_ITEMS];       // if CONFIG_SLUB_STATS=y
-    };
-
-    struct page {                                // if kernel < 4.18
-        unsigned long flags;
-        union { };                               // long
-        void *freelist;
-        unsigned inuse:16, objects:15, frozen:1;
-        atomic_t _refcount;                      // if kernel < 4.16
-        struct page *next;
-        int pages;                               // if 64bit else `short pages`
-        int pobjects;                            // if 64bit else `short pobjects`
-        struct kmem_cache *slab_cache;
-        struct mem_cgroup *mem_cgroup;           // if CONFIG_MEMCG=y
-        void *virtual;                           // if CONFIG_WANT_PAGE_VIRTUAL=y
-        void *shadow;                            // if CONFIG_KMEMCHECK=y && kernel < 4.14
-        int _last_cpuid;                         // if CONFIG_LAST_CPUPID_NOT_IN_PAGE_FLAGS=y
-    };
-
-    struct page {                                // if 4.18 <= kernel < 5.17
-        unsigned long flags;
-        struct page *next;
-        int pages;                               // if 64bit else `short pages`
-        int pobjects;                            // if 64bit else `short pobjects`
-        struct kmem_cache *slab_cache;
-        void *freelist;
-        unsigned inuse:16, objects:15, frozen:1;
-        union {};                                // unsigned int
-        atomic_t _refcount;
-        unsigned long memcg_data;                // if CONFIG_MEMCG=y && 5.10 <= kernel
-        struct mem_cgroup *mem_cgroup;           // if CONFIG_MEMCG=y && kernel < 5.10
-        void *virtual;                           // if CONFIG_WANT_PAGE_VIRTUAL=y
-        int _last_cpuid;                         // if CONFIG_LAST_CPUPID_NOT_IN_PAGE_FLAGS=y
-    };
-
-    struct slab {                                // if CONFIG_SLAB_VIRTUAL=n && 5.17 <= kernel < 6.2
-        unsigned long __page_flags;
-        struct slab *next;
-        int slabs;
-        struct kmem_cache *slab_cache;
-        void *freelist;
-        unsigned inuse:16, objects:15, frozen:1;
-        unsigned int __unused;
-        atomic_t __page_refcount;
-        unsigned long memcg_data;                // if CONFIG_MEMCG=y
-    };
-
-    struct slab {                                // if CONFIG_SLAB_VIRTUAL=n && 6.2 <= kernel < 6.10
-        unsigned long __page_flags;
-        struct kmem_cache *slab_cache;
-        struct slab *next;
-        int slabs;
-        void *freelist;
-        unsigned inuse:16, objects:15, frozen:1;
-        unsigned int __unused;
-        atomic_t __page_refcount;
-        unsigned long memcg_data;                // if CONFIG_MEMCG=y
-    };
-
-    struct slab {                                // if CONFIG_SLAB_VIRTUAL=n && 6.10 <= kernel
-        unsigned long __page_flags;              // if kernel < 6.18
-        memdesc_flags_t flags;                   // if 6.18 <= kernel
-        struct kmem_cache *slab_cache;
-        struct slab *next;
-        int slabs;
-        void *freelist;
-        unsigned inuse:16, objects:15, frozen:1;
-        unsigned int __page_type;
-        atomic_t __page_refcount;
-        unsigned long obj_exts;                  // if CONFIG_SLAB_OBJ_EXT=y
-    };
-
-    struct kmem_cache_node {
-        spinlock_t list_lock;
-        unsigned long nr_partial;
-        struct list_head partial;
-        atomic_long_t nr_slabs;                  // if CONFIG_SLUB_DEBUG=y
-        atomic_long_t total_objects;             // if CONFIG_SLUB_DEBUG=y
-        struct list_head full;                   // if CONFIG_SLUB_DEBUG=y
-        struct node_barn *barn;                  // 6.18 <= kernel < 7.1
-    };
-    """
-
-    # CONFIG_SLAB_VIRTUAL=y
-    """
-    struct kmem_cache {                          // if CONFIG_SLAB_VIRTUAL=y
-        ...
-        struct kmem_cache_order_objects min;     // [ANNOTATION]
-        struct kmem_cache_order_objects oo;      //    In kernel < 6.1.56, `min` and `oo` are swapped.
-        unsigned long nr_freed_pages;            // if CONFIG_SLAB_VIRTUAL=y && kernel < 6.1.56
-        struct list_head freed_slabs_normal;     // if CONFIG_SLAB_VIRTUAL=y && kernel < 6.1.56
-        struct list_head freed_slabs_min;        // if CONFIG_SLAB_VIRTUAL=y && kernel < 6.1.56
-        spinlock_t freed_slabs_lock;             // if CONFIG_SLAB_VIRTUAL=y && kernel < 6.1.56
-        struct kmem_cache_virtual {              // if CONFIG_SLAB_VIRTUAL=y && 6.1.56 <= kernel
-            spinlock_t freed_slabs_lock;         // if CONFIG_SLAB_VIRTUAL=y && 6.1.56 <= kernel
-            struct list_head freed_slabs;        // if CONFIG_SLAB_VIRTUAL=y && 6.1.56 <= kernel
-            struct list_head freed_slabs_min;    // if CONFIG_SLAB_VIRTUAL=y && 6.1.56 <= kernel
-            unsigned long nr_freed_pages;        // if CONFIG_SLAB_VIRTUAL=y && 6.1.56 <= kernel
-        } virtual;                               // if CONFIG_SLAB_VIRTUAL=y && 6.1.56 <= kernel
-        gfp_t allocflags;
-        ...
-        const char * name;
-        struct list_head list; <-----> struct list_head <-----> struct list_head <-----> ...
-        ...
-    };
-
-    struct slab {                                // if CONFIG_SLAB_VIRTUAL=y && kernel < 6.6
-        struct slab *compound_slab_head;
-        struct folio *backing_folio;
-        struct kmem_cache_order_objects oo;
-        spinlock_t slab_lists_lock;
-        struct list_head flush_list_elem;
-        unsigned long align_mask;
-        atomic_t pinstate;
-        struct slab *next;
-        int slabs;
-        struct kmem_cache *slab_cache;
-        void *freelist;
-        unsigned inuse:16, objects:15, frozen:1;
-        unsigned int __unused;
-        unsigned long memcg_data;                // if CONFIG_MEMCG=y
-    };
-
-    struct slab {                                // if CONFIG_SLAB_VIRTUAL=y && 6.6 <= kernel < 6.12
-        struct folio *backing_folio;
-        struct kmem_cache *slab_cache;
-        struct slab *next;
-        int slabs;
-        void *freelist;
-        unsigned inuse:16, objects:15, frozen:1;
-        struct kmem_cache_order_objects oo;
-        spinlock_t slab_lock;
-        unsigned long memcg_data;                // if CONFIG_MEMCG=y
-    }
-
-    struct virtual_slab {                        // if CONFIG_SLAB_VIRTUAL=y && 6.6 <= kernel < 6.12
-        struct slab slab;
-        struct virtual_slab *compound_slab_head;
-        unsigned long align_mask;
-    };
-
-    struct slab {                                // if CONFIG_SLAB_VIRTUAL=y && 6.12 <= kernel
-        struct slab *compound_slab_head;
-        struct folio *backing_folio;
-        struct kmem_cache_order_objects oo;
-        struct list_head flush_list_elem;
-        unsigned long align_mask;
-        spinlock_t slab_lock;
-        struct kmem_cache *slab_cache;
-        struct slab *next;
-        int slabs;
-        void *freelist;
-        unsigned inuse:16, objects:15, frozen:1;
-        unsigned long obj_exts                   // if CONFIG_SLAB_OBJ_EXT=y
-    };
-    """
-
-    @Cache.cache_this_session(cache_None=False)
-    def initialize(self):
-        self.meta = []
-
-        kversion = Kernel.version()
-        if not kversion:
-            self.meta.append((self.quiet_err, "Failed to resolve kernel version"))
-            return None
-
-        # resolve slab_caches
-        self.slab_caches = KernelAddressHeuristicFinder.get_slab_caches()
-        if self.slab_caches is None:
-            self.meta.append((self.quiet_err, "Failed to resolve `slab_caches`"))
-            return None
-        else:
-            self.meta.append((self.quiet_info, "slab_caches: {:#x}".format(self.slab_caches)))
-
-        if not self.parse_kmem_caches_for_initialize():
-            self.meta.append((self.quiet_err, "No entries in `slab_caches`"))
-            return None
-
-        # resolve __per_cpu_offset
-        self.percpu = Kernel.per_cpu()
-        if self.percpu.per_cpu_offset is None:
-            self.meta.append((self.quiet_info, "__per_cpu_offset: Not found"))
-            self.ncpus = 1
-        else:
-            self.meta.append((self.quiet_info, "__per_cpu_offset: {:#x}".format(self.percpu.per_cpu_offset)))
-            self.ncpus = len(self.percpu.offsets)
-
-        # offsetof(kmem_cache, list)
-        self.resolve_kmem_cache_offset_list()
-        if self.kmem_cache_offset_list is None:
-            self.meta.append((self.quiet_info, "offsetof(kmem_cache, list): Not found"))
-            return None
-        self.meta.append((self.quiet_info, "offsetof(kmem_cache, list): {:#x}".format(self.kmem_cache_offset_list)))
-
-        # offsetof(kmem_cache, name)
-        self.kmem_cache_offset_name = self.kmem_cache_offset_list - current_arch.ptrsize
-        self.meta.append((self.quiet_info, "offsetof(kmem_cache, name): {:#x}".format(self.kmem_cache_offset_name)))
-
-        # for CONFIG_SLAB_VIRTUAL
-        self.resolve_for_CONFIG_SLAB_VIRTUAL()
-
-        # offsetof(kmem_cache, cpu_slab)
-        if kversion < "7.0":
-            self.kmem_cache_offset_cpu_slab = 0
-            self.meta.append((self.quiet_info, "offsetof(kmem_cache, cpu_slab): {:#x}".format(self.kmem_cache_offset_cpu_slab)))
-
-        # offsetof(kmem_cache, flags)
-        if kversion < "6.18":
-            self.kmem_cache_offset_flags = current_arch.ptrsize
-        elif kversion < "7.0":
-            CONFIG_LOCKDEP = Ksym.get_addr("fs_reclaim_acquire")
-            if CONFIG_LOCKDEP:
-                self.kmem_cache_offset_flags = current_arch.ptrsize * 4
-            else:
-                self.kmem_cache_offset_flags = current_arch.ptrsize * 2
-        else:
-            self.kmem_cache_offset_flags = current_arch.ptrsize
-        if not self.is_valid_kmem_cache_offset_flags(self.kmem_cache_offset_flags):
-            # A merge-window build keeps the previous release number, so `6.17.0-11846-g...`
-            # already has `cpu_sheaves` and the version gate above is 8 byte too low.
-            for candidate_offset in [current_arch.ptrsize * i for i in [1, 2, 4]]:
-                if self.is_valid_kmem_cache_offset_flags(candidate_offset):
-                    self.kmem_cache_offset_flags = candidate_offset
-                    break
-        self.meta.append((self.quiet_info, "offsetof(kmem_cache, flags): {:#x}".format(self.kmem_cache_offset_flags)))
-
-        # offsetof(kmem_cache, cpu_sheaves)
-        if kversion < "7.0" and self.kmem_cache_offset_flags == current_arch.ptrsize:
-            # only `cpu_slab` is in front of `flags`, so there is no `cpu_sheaves`
-            self.kmem_cache_offset_cpu_sheaves = None
-        else:
-            self.kmem_cache_offset_cpu_sheaves = self.kmem_cache_offset_flags - current_arch.ptrsize
-            self.meta.append((self.quiet_info, "offsetof(kmem_cache, cpu_sheaves): {:#x}".format(self.kmem_cache_offset_cpu_sheaves)))
-
-        # offsetof(kmem_cache, size)
-        self.kmem_cache_offset_size = self.kmem_cache_offset_flags + current_arch.ptrsize * 2
-        self.meta.append((self.quiet_info, "offsetof(kmem_cache, size): {:#x}".format(self.kmem_cache_offset_size)))
-
-        # offsetof(kmem_cache, object_size)
-        self.kmem_cache_offset_object_size = self.kmem_cache_offset_size + 4
-        self.meta.append((self.quiet_info, "offsetof(kmem_cache, object_size): {:#x}".format(self.kmem_cache_offset_object_size)))
-
-        # offsetof(kmem_cache, offset)
-        if kversion < "5.9":
-            self.kmem_cache_offset_offset = self.kmem_cache_offset_object_size + 4
-        else:
-            self.kmem_cache_offset_offset = self.kmem_cache_offset_object_size + 4 + 8
-        self.meta.append((self.quiet_info, "offsetof(kmem_cache, offset): {:#x}".format(self.kmem_cache_offset_offset)))
-
-        # offsetof(kmem_cache, red_left_pad)
-        self.kmem_cache_offset_red_left_pad = self.kmem_cache_offset_name - current_arch.ptrsize
-        self.meta.append((self.quiet_info, "offsetof(kmem_cache, red_left_pad): {:#x}".format(self.kmem_cache_offset_red_left_pad)))
-
-        # offsetof(kmem_cache, random)
-        self.resolve_kmem_cache_offset_random()
-        if self.kmem_cache_offset_random is None:
-            self.meta.append((self.quiet_info, "offsetof(kmem_cache, random): Not found"))
-        else:
-            self.meta.append((self.quiet_info, "offsetof(kmem_cache, random): {:#x}".format(self.kmem_cache_offset_random)))
-
-        # offsetof(kmem_cache, node) or offsetof(kmem_cache, per_node[0].node/barn)
-        self.resolve_kmem_cache_offset_node()
-        if self.kmem_cache_offset_random_seq is None:
-            self.meta.append((self.quiet_info, "offsetof(kmem_cache, random_seq): Not found"))
-        else:
-            self.meta.append((self.quiet_info, "offsetof(kmem_cache, random_seq): {:#x}".format(self.kmem_cache_offset_random_seq)))
-        if kversion < "7.1":
-            if self.kmem_cache_offset_node is None:
-                self.meta.append((self.quiet_info, "offsetof(kmem_cache, node): Not found"))
-            else:
-                self.meta.append((self.quiet_info, "offsetof(kmem_cache, node): {:#x}".format(self.kmem_cache_offset_node)))
-        else:
-            if self.kmem_cache_offset_node is None:
-                self.meta.append((self.quiet_info, "offsetof(kmem_cache, per_node[0].node): Not found"))
-            else:
-                self.meta.append((self.quiet_info, "offsetof(kmem_cache, per_node[0].node): {:#x}".format(self.kmem_cache_offset_node)))
-            if self.kmem_cache_offset_barn is None:
-                self.meta.append((self.quiet_info, "offsetof(kmem_cache, per_node[0].barn): Not found"))
-            else:
-                self.meta.append((self.quiet_info, "offsetof(kmem_cache, per_node[0].barn): {:#x}".format(self.kmem_cache_offset_barn)))
-
-        if kversion < "7.0":
-            # offsetof(kmem_cache_cpu, freelist)
-            self.kmem_cache_cpu_offset_freelist = 0
-            self.meta.append((self.quiet_info, "offsetof(kmem_cache_cpu, freelist): {:#x}".format(self.kmem_cache_cpu_offset_freelist)))
-
-            # offsetof(kmem_cache_cpu, page or slab)
-            self.kmem_cache_cpu_offset_page = current_arch.ptrsize * 2
-            self.meta.append((self.quiet_info, "offsetof(kmem_cache_cpu, {:s}): {:#x}".format(
-                Kernel.slab_page_str(), self.kmem_cache_cpu_offset_page,
-            )))
-
-            # offsetof(kmem_cache_cpu, partial)
-            if kversion < "3.2":
-                self.kmem_cache_cpu_offset_partial = None
-            else:
-                self.kmem_cache_cpu_offset_partial = current_arch.ptrsize * 3
-                self.meta.append((self.quiet_info, "offsetof(kmem_cache_cpu, partial): {:#x}".format(self.kmem_cache_cpu_offset_partial)))
-
-        # offsetof(page, lru) for the following
-        if "4.18" <= kversion < "5.17" and not self.slab_virtual_enabled:
-            page_offset_union = self.resolve_page_offset_union()
-
-        # offsetof(page, next) / offsetof(slab, next)
-        if self.slab_virtual_enabled:
-            if kversion < "6.6":
-                self.page_offset_next = current_arch.ptrsize * 7
-            elif kversion < "6.12":
-                self.page_offset_next = current_arch.ptrsize * 2
-            else: # 6.12
-                self.page_offset_next = current_arch.ptrsize * 8
-        else:
-            if kversion < "3.1" and is_32bit():
-                self.page_offset_next = current_arch.ptrsize * 6
-            elif kversion < "3.1":
-                self.page_offset_next = current_arch.ptrsize * 5
-            elif kversion < "4.16" and is_32bit():
-                self.page_offset_next = current_arch.ptrsize * 5
-            elif kversion < "4.18":
-                self.page_offset_next = current_arch.ptrsize * 4
-            elif kversion < "5.17":
-                self.page_offset_next = page_offset_union
-            elif kversion < "6.2":
-                self.page_offset_next = current_arch.ptrsize
-            else:
-                self.page_offset_next = current_arch.ptrsize * 2
-        self.meta.append((self.quiet_info, "offsetof({:s}, next): {:#x}".format(Kernel.slab_page_str(), self.page_offset_next)))
-
-        # offsetof(page, freelist) / offsetof(slab, freelist)
-        if self.slab_virtual_enabled:
-            if kversion < "6.6":
-                self.page_offset_freelist = current_arch.ptrsize * 10
-            elif kversion < "6.12":
-                self.page_offset_freelist = current_arch.ptrsize * 4
-            else: # 6.12
-                self.page_offset_freelist = current_arch.ptrsize * 10
-        else:
-            if kversion < "3.1" and is_32bit():
-                self.page_offset_freelist = current_arch.ptrsize * 5
-            elif kversion < "3.1":
-                self.page_offset_freelist = current_arch.ptrsize * 4
-            elif kversion < "4.18":
-                self.page_offset_freelist = current_arch.ptrsize * 2
-            elif kversion < "5.17":
-                self.page_offset_freelist = page_offset_union + current_arch.ptrsize * 3
-            elif kversion < "6.2":
-                self.page_offset_freelist = current_arch.ptrsize * 4
-            else:
-                self.page_offset_freelist = current_arch.ptrsize * 4
-        self.meta.append((self.quiet_info, "offsetof({:s}, freelist): {:#x}".format(Kernel.slab_page_str(), self.page_offset_freelist)))
-
-        # offsetof(page, slab_cache) / offsetof(slab, slab_cache)
-        if self.slab_virtual_enabled:
-            if kversion < "6.6":
-                self.page_offset_slab_cache = current_arch.ptrsize * 9
-            elif kversion < "6.12":
-                self.page_offset_slab_cache = current_arch.ptrsize
-            else: # 6.12
-                self.page_offset_slab_cache = current_arch.ptrsize * 7
-        else:
-            if kversion < "3.1" and is_32bit():
-                self.page_offset_slab_cache = current_arch.ptrsize * 3
-            elif kversion < "3.1":
-                self.page_offset_slab_cache = current_arch.ptrsize * 2
-            elif kversion < "4.16" and is_32bit():
-                self.page_offset_slab_cache = current_arch.ptrsize * 7
-            elif kversion < "4.18":
-                self.page_offset_slab_cache = current_arch.ptrsize * 6
-            elif kversion < "5.17":
-                self.page_offset_slab_cache = page_offset_union + current_arch.ptrsize * 2
-            elif kversion < "6.2":
-                self.page_offset_slab_cache = current_arch.ptrsize * 3
-            else:
-                self.page_offset_slab_cache = current_arch.ptrsize
-        self.meta.append((self.quiet_info, "offsetof({:s}, slab_cache): {:#x}".format(Kernel.slab_page_str(), self.page_offset_slab_cache)))
-
-        # offsetof(page, inuse_objects_frozen) / offsetof(slab, inuse_objects_frozen)
-        if kversion < "3.1":
-            # u16 inuse; u16 objects; (no frozen bit)
-            self.page_offset_inuse_objects_frozen = current_arch.ptrsize + 4
-        else:
-            self.page_offset_inuse_objects_frozen = self.page_offset_freelist + current_arch.ptrsize
-        self.meta.append((self.quiet_info, "offsetof({:s}, inuse_objects_frozen): {:#x}".format(
-            Kernel.slab_page_str(), self.page_offset_inuse_objects_frozen,
-        )))
-
-        # parse extra members of `struct slab` for CONFIG_SLAB_VIRTUAL=y
-        if self.slab_virtual_enabled:
-            # offsetof(slab, flush_list_elem)
-            # [ANNOTATION]
-            #   In 6.6-based implementation, the member `flush_list_elem` has been removed from `struct slab`,
-            #   however, `slub_tlbflush_queue` uses the member `slab_list` or `next` (which?) for the same purpose.
-            #   So, when CONFIG_SLAB_VIRTUAL=y and 6.6 or later, `flush_list_elem` means `next`.
-            if kversion < "6.6":
-                self.page_offset_flush_list_elem = current_arch.ptrsize * 3
-            elif kversion < "6.12":
-                self.page_offset_flush_list_elem = current_arch.ptrsize * 2
-            else: # 6.12
-                self.page_offset_flush_list_elem = current_arch.ptrsize * 3
-            self.meta.append((self.quiet_info, "offsetof(slab, flush_list_elem): {:#x}".format(self.page_offset_flush_list_elem)))
-
-        # offsetof(kmem_cache_node, partial)
-        self.resolve_kmem_cache_node_offset_partial()
-        if self.kmem_cache_node_offset_partial is None:
-            self.meta.append((self.quiet_info, "offsetof(kmem_cache_node, partial): Not found"))
-        else:
-            self.meta.append((self.quiet_info, "offsetof(kmem_cache_node, partial): {:#x}".format(self.kmem_cache_node_offset_partial)))
-
-        # offsetof(kmem_cache_node, full)
-        if self.kmem_cache_node_offset_partial is None:
-            self.kmem_cache_node_offset_full = None
-        else:
-            self.kmem_cache_node_offset_full = self.kmem_cache_node_offset_partial + current_arch.ptrsize * 4
-
-        # for sheaves / barn
-        self.resolve_sheaves()
-
-        return True
-
     @staticmethod
     @Cache.cache_this_session(per_inferior=True, until_new_objfile=True)
     def get_flag_masks():
@@ -148309,7 +148104,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
 
     @staticmethod
     def get_flags_str(flags_value):
-        flags_dic = SlubDumpCommand.get_flag_masks()
+        flags_dic = KernelSlub.get_flag_masks()
         if flags_dic is None:
             return None
 
@@ -148323,10 +148118,10 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
             flags.append(hex(unparsed_flags))
         return " | ".join(flags) or "none"
 
-    def get_next_kmem_cache(self, addr, point_to_base=True):
+    def get_next_kmem_cache(self, addr, point_to_base=True, *, reverse_walk=False):
         if point_to_base:
             addr += self.kmem_cache_offset_list
-        if self.args.reverse_walk:
+        if reverse_walk:
             return read_int_from_memory(addr) - self.kmem_cache_offset_list
         else:
             return read_int_from_memory(addr + current_arch.ptrsize) - self.kmem_cache_offset_list
@@ -148346,7 +148141,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
         kmem_cache_cpu = self.percpu.addr_of(cpu_slab, cpu)
         return AddressUtil.normalize_address(kmem_cache_cpu)
 
-    def page2virt(self, page, kmem_cache, freelist_fastpath=()):
+    def page2virt(self, page, kmem_cache, freelist_fastpath=(), *, skip_page2virt=False):
         if self.slab_virtual_enabled:
             ret = gdb.execute("slab-virtual --quiet to_virt {:#x}".format(page["address"]), to_string=True)
             r = re.search(r"Virt: (\S+)", ret)
@@ -148354,7 +148149,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
                 return int(r.group(1), 16)
             return None
 
-        if not self.args.skip_page2virt:
+        if not skip_page2virt:
             r = Kernel.page2virt(page["address"])
             if r is not None:
                 return r
@@ -148520,8 +148315,8 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
                 self.swap = True
         return chunk
 
-    def walk_freelist(self, chunk, kmem_cache):
-        if self.args.simple:
+    def walk_freelist(self, chunk, kmem_cache, *, simple=False):
+        if simple:
             return [chunk]
 
         corrupted_msg_color = Config.get_gef_setting("theme.heap_corrupted_msg")
@@ -148553,7 +148348,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
             seen.add(chunk)
         return freelist
 
-    def walk_caches_active_page(self, cpu, kmem_cache):
+    def walk_caches_active_page(self, cpu, kmem_cache, *, simple=False, skip_page2virt=False):
         active_page = {}
         active_page["address"] = page = read_int_from_memory(
             kmem_cache["kmem_cache_cpu"][cpu]["address"] + self.kmem_cache_cpu_offset_page,
@@ -148564,19 +148359,19 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
             active_page["objects"] = (x >> 16) & 0x7fff
             active_page["frozen"] = (x >> 31) & 1
             active_chunk = read_int_from_memory(page + self.page_offset_freelist)
-            active_page["freelist"] = self.walk_freelist(active_chunk, kmem_cache)
+            active_page["freelist"] = self.walk_freelist(active_chunk, kmem_cache, simple=simple)
             active_page["num_pages"] = (
                 kmem_cache["size"] * active_page["objects"] + get_pagesize_mask_low()
             ) // get_pagesize()
 
             active_page["virt_addr"] = self.page2virt(
                 active_page, kmem_cache, kmem_cache["kmem_cache_cpu"][cpu]["freelist"]
-            )
+            , skip_page2virt=skip_page2virt)
 
         kmem_cache["kmem_cache_cpu"][cpu]["active_page"] = active_page
         return
 
-    def walk_caches_partial_page(self, cpu, kmem_cache):
+    def walk_caches_partial_page(self, cpu, kmem_cache, *, simple=False, skip_page2virt=False):
         kmem_cache["kmem_cache_cpu"][cpu]["partial_pages"] = []
         if self.kmem_cache_cpu_offset_partial is None:
             return
@@ -148597,11 +148392,11 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
                 break # something is wrong
             partial_page["frozen"] = (x >> 31) & 1
             partial_chunk = read_int_from_memory(current_partial_page + self.page_offset_freelist)
-            partial_page["freelist"] = self.walk_freelist(partial_chunk, kmem_cache)
+            partial_page["freelist"] = self.walk_freelist(partial_chunk, kmem_cache, simple=simple)
             partial_page["num_pages"] = (
                 kmem_cache["size"] * partial_page["objects"] + get_pagesize_mask_low()
             ) // get_pagesize()
-            partial_page["virt_addr"] = self.page2virt(partial_page, kmem_cache)
+            partial_page["virt_addr"] = self.page2virt(partial_page, kmem_cache, skip_page2virt=skip_page2virt)
             kmem_cache["kmem_cache_cpu"][cpu]["partial_pages"].append(partial_page)
             next_partial_page = read_int_from_memory(current_partial_page + self.page_offset_next)
             seen.add(current_partial_page)
@@ -148610,7 +148405,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
             current_partial_page = next_partial_page
         return
 
-    def walk_node_list(self, kmem_cache, kmem_cache_node, offset_list): # use different offsets
+    def walk_node_list(self, kmem_cache, kmem_cache_node, offset_list, *, simple=False, skip_page2virt=False):
         node_page_list = []
         node_page_head = kmem_cache_node + offset_list
         if not is_valid_addr(node_page_head):
@@ -148633,16 +148428,15 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
                 break # something is wrong
             node_page["frozen"] = (x >> 31) & 1
             node_chunk = read_int_from_memory(node_page["address"] + self.page_offset_freelist)
-            node_page["freelist"] = self.walk_freelist(node_chunk, kmem_cache)
+            node_page["freelist"] = self.walk_freelist(node_chunk, kmem_cache, simple=simple)
             node_page["num_pages"] = (
                 kmem_cache["size"] * node_page["objects"] + get_pagesize_mask_low()
             ) // get_pagesize()
-            node_page["virt_addr"] = self.page2virt(node_page, kmem_cache)
+            node_page["virt_addr"] = self.page2virt(node_page, kmem_cache, skip_page2virt=skip_page2virt)
             node_page_list.append(node_page)
             current_node_page = read_int_from_memory(node_page["address"] + self.page_offset_next)
         return node_page_list
 
-    # for sheaf / barn
     def walk_node_barn_list(self, kmem_cache, kmem_cache_node, node_index):
         if not self.sheaves_enabled:
             return
@@ -148683,14 +148477,15 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
         kmem_cache["node_barn"].append(node_barn)
         return
 
-    def walk_caches_node_page(self, kmem_cache):
+    def walk_caches_node_page(self, kmem_cache, *, simple=False, skip_page2virt=False, slub_debug_y=False):
         if not self.kmem_cache_offset_node:
             return
         if not self.kmem_cache_node_offset_partial:
             return
 
         kmem_cache["nodes_partial"] = []
-        if self.args.slub_debug_y:
+        kmem_cache["node_addresses"] = []
+        if slub_debug_y:
             kmem_cache["nodes_full"] = []
 
         kmem_cache_node_array = kmem_cache["address"] + self.kmem_cache_offset_node
@@ -148711,17 +148506,19 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
             if not is_double_link_list(node_page_head):
                 break
 
+            kmem_cache["node_addresses"].append(current_kmem_cache_node)
+
             # node list (partial)
             node_page_list_partial = self.walk_node_list(
                 kmem_cache, current_kmem_cache_node, self.kmem_cache_node_offset_partial,
-            )
+             simple=simple, skip_page2virt=skip_page2virt)
             kmem_cache["nodes_partial"].append(node_page_list_partial)
 
             # node list (full; exists when CONFIG_SLUB_DEBUG=y)
-            if self.args.slub_debug_y and self.kmem_cache_node_offset_full:
+            if slub_debug_y and self.kmem_cache_node_offset_full:
                 node_page_list_full = self.walk_node_list(
                     kmem_cache, current_kmem_cache_node, self.kmem_cache_node_offset_full,
-                )
+                 simple=simple, skip_page2virt=skip_page2virt)
                 kmem_cache["nodes_full"].append(node_page_list_full)
 
             # node barn
@@ -148732,8 +148529,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
             node_index += 1
         return
 
-    # for CONFIG_SLAB_VIRTUAL
-    def walk_slab_list(self, list_head, offset_next):
+    def walk_slab_list(self, list_head, offset_next, *, resolve_virt=False):
         slab_list = []
         current_slab = read_int_from_memory(list_head) - offset_next
         while is_valid_addr(current_slab) and current_slab + offset_next != list_head:
@@ -148741,12 +148537,13 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
             slab["address"] = current_slab
             kmem_cache = read_int_from_memory(current_slab + self.page_offset_slab_cache)
             slab["slab_cache_name"] = self.get_name(kmem_cache)
+            if resolve_virt:
+                slab["virt_addr"] = self.page2virt(slab, {})
             slab_list.append(slab)
             # next slab
             current_slab = read_int_from_memory(current_slab + offset_next) - offset_next
         return slab_list
 
-    # for sheaf / barn
     def walk_sheaf(self, addr, kmem_cache_addr):
         sheaf = {}
         sheaf["address"] = addr
@@ -148761,7 +148558,6 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
             sheaf["objects"].append(v)
         return sheaf
 
-    # for sheaf / barn
     def walk_cpu_sheaves(self, cpu, kmem_cache):
         if not self.sheaves_enabled:
             return
@@ -148790,7 +148586,6 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
         )
         return
 
-    # for sheaf / barn
     @staticmethod
     def get_sheaf_objects(kmem_cache):
         objects = []
@@ -148812,7 +148607,6 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
                                 objects += sheaf["objects"]
         return objects
 
-    # for sheaf / barn
     def get_page_sheaf_objects(self, kmem_cache, page):
         if page["virt_addr"] is None:
             return []
@@ -148826,8 +148620,11 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
             and (chunk - start_addr) % kmem_cache["size"] == 0
         ]
 
-    def walk_caches(self, target_names, cpus):
-        current_kmem_cache = self.get_next_kmem_cache(self.slab_caches, point_to_base=False)
+    def walk_caches(self, target_names, cpus, *, names_only=False, reverse_walk=False, simple=False,
+                    skip_page2virt=False, quiet=True, slub_debug_y=False, active=True, partial=True,
+                    node=True, cpu_sheaves=True):
+        self.swap = self.byte_swap
+        current_kmem_cache = self.get_next_kmem_cache(self.slab_caches, point_to_base=False, reverse_walk=reverse_walk)
         parsed_caches = [{"name": "slab_caches", "next": current_kmem_cache}]
 
         # first, parse kmem_cache
@@ -148836,17 +148633,17 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
             # parse member
             kmem_cache["name"] = self.get_name(current_kmem_cache)
             if target_names != [] and kmem_cache["name"] not in target_names:
-                current_kmem_cache = self.get_next_kmem_cache(current_kmem_cache)
+                current_kmem_cache = self.get_next_kmem_cache(current_kmem_cache, reverse_walk=reverse_walk)
                 continue
             kmem_cache["address"] = current_kmem_cache
             kmem_cache["flags"] = read_int32_from_memory(current_kmem_cache + self.kmem_cache_offset_flags)
-            kmem_cache["flags_str"] = SlubDumpCommand.get_flags_str(kmem_cache["flags"])
+            kmem_cache["flags_str"] = KernelSlub.get_flags_str(kmem_cache["flags"])
             kmem_cache["size"] = read_int32_from_memory(current_kmem_cache + self.kmem_cache_offset_size)
             kmem_cache["object_size"] = read_int32_from_memory(current_kmem_cache + self.kmem_cache_offset_object_size)
             kmem_cache["offset"] = read_int32_from_memory(current_kmem_cache + self.kmem_cache_offset_offset)
             kmem_cache["red_left_pad"] = read_int32_from_memory(current_kmem_cache + self.kmem_cache_offset_red_left_pad)
             kmem_cache["random"] = self.get_random(current_kmem_cache)
-            kmem_cache["next"] = self.get_next_kmem_cache(current_kmem_cache)
+            kmem_cache["next"] = self.get_next_kmem_cache(current_kmem_cache, reverse_walk=reverse_walk)
             # parse extra members for feat. CONFIG_SLAB_VIRTUAL
             if self.slab_virtual_enabled:
                 kmem_cache["nr_freed_pages"] = read_int_from_memory(current_kmem_cache + self.kmem_cache_offset_nr_freed_pages)
@@ -148862,17 +148659,17 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
             current_kmem_cache = kmem_cache["next"]
 
             # fast break
-            if target_names != [] and not (self.args.list or self.args.list_no_sort):
+            if target_names != [] and not names_only:
                 parsed_names = [x["name"] for x in parsed_caches]
                 if all(t in parsed_names for t in target_names):
                     break
 
-        if self.args.list or self.args.list_no_sort:
+        if names_only:
             return parsed_caches # fast return
 
         # second, parse kmem_cache_cpu
-        for kmem_cache in ProgressBar(parsed_caches[1:], disable=self.args.quiet): # parsed_caches[0] is slab_caches, so skip
-            if self.dump_target_kmem_cache_cpu:
+        for kmem_cache in ProgressBar(parsed_caches[1:], disable=quiet): # parsed_caches[0] is slab_caches, so skip
+            if Kernel.version() < "7.0":
                 # parse kmem_cache_cpu
                 kmem_cache["kmem_cache_cpu"] = {}
                 for cpu in cpus:
@@ -148881,24 +148678,296 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
                     active_chunk_fast = read_int_from_memory(
                         kmem_cache["kmem_cache_cpu"][cpu]["address"] + self.kmem_cache_cpu_offset_freelist,
                     )
-                    kmem_cache["kmem_cache_cpu"][cpu]["freelist"] = self.walk_freelist(active_chunk_fast, kmem_cache)
+                    kmem_cache["kmem_cache_cpu"][cpu]["freelist"] = self.walk_freelist(
+                        active_chunk_fast, kmem_cache, simple=simple,
+                    )
                     # parse active
-                    if self.dump_target_active:
-                        self.walk_caches_active_page(cpu, kmem_cache)
+                    if active:
+                        self.walk_caches_active_page(cpu, kmem_cache, simple=simple, skip_page2virt=skip_page2virt)
                     # parse partial
-                    if self.dump_target_partial:
-                        self.walk_caches_partial_page(cpu, kmem_cache)
+                    if partial:
+                        self.walk_caches_partial_page(cpu, kmem_cache, simple=simple, skip_page2virt=skip_page2virt)
             # parse cpu_sheaves
-            if self.dump_target_cpu_sheaves:
+            if cpu_sheaves and "6.18" <= Kernel.version():
                 # Do not use `cpus` list, use `range(self.ncpus)`.
                 # Since a node page is not dedicated to a specific CPU, chunks within the node page might
                 # reside in CPU 1's main sheaf, even if, for example, `--cpu 0` is specified.
                 for cpu in range(self.ncpus):
                     self.walk_cpu_sheaves(cpu, kmem_cache)
             # parse node
-            if self.dump_target_node:
-                self.walk_caches_node_page(kmem_cache)
+            if node:
+                self.walk_caches_node_page(kmem_cache, simple=simple, skip_page2virt=skip_page2virt, slub_debug_y=slub_debug_y)
         return parsed_caches
+
+
+@register_command
+class SlubDumpCommand(GenericCommand, BufferingOutput):
+    """Dump SLUB free-list reachable from slab_caches."""
+
+    _cmdline_ = "slub-dump"
+    _category_ = "06-h. Qemu-system/KGDB Cooperation - Linux Allocator"
+
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("-hh", "--help-simple", action="store_true", help="show help without ASCII diagram.")
+    parser.add_argument("-hs", "--help-for-slab-virtual", action="store_true",
+                        help="show ASCII diagram for CONFIG_SLAB_VIRTUAL=y.")
+    parser.add_argument("cache_name", metavar="SLUB_CACHE_NAME", nargs="*",
+                        help="filter by specific slub cache name.")
+    parser.add_argument("-l", "--list", action="store_true", help="list all slub cache names.")
+    parser.add_argument("-L", "--list-no-sort", action="store_true", help="list all slub cache names without sort.")
+    parser.add_argument("--meta", action="store_true", help="display offset information.")
+    parser.add_argument("--cpu", type=int, help="filter by specific cpu.")
+    parser.add_argument("-R", "--reverse-walk", action="store_true", help="reverse order walk for slab_caches->list_head.")
+    parser.add_argument("-s", "--simple", action="store_true", help="skip displaying layout and freelist.")
+    parser.add_argument("-v", "--verbose", "--partial", action="store_true",
+                        help="kernel < 7.0: dump partial pages too. kernel >= 7.0: ignored.")
+    parser.add_argument("-vv", "--vverbose", "--node", action="store_true",
+                        help="kernel < 7.0: dump partial pages and node pages too. kernel >= 7.0: ignored.")
+    group = parser.add_mutually_exclusive_group(required=False)
+    group.add_argument("--only-partial", action="store_true",
+                       help="kernel < 7.0: dump only partial pages. kernel >= 7.0: ignored.")
+    group.add_argument("--only-node", action="store_true",
+                       help="kernel < 7.0: dump only node pages. kernel >= 7.0: ignored.")
+    parser.add_argument("--skip-sheaf", action="store_true", help="skip dumping cpu_sheaves / slab_sheaf path (6.18+).")
+    parser.add_argument("--hexdump-used", metavar="SIZE", type=lambda x: int(x, 16), default=0,
+                        help="hexdump `used chunks` if layout is resolved.")
+    parser.add_argument("--hexdump-freed", metavar="SIZE", type=lambda x: int(x, 16), default=0,
+                        help="hexdump `unused (freed) chunks` if layout is resolved.")
+    parser.add_argument("--telescope-used", metavar="SIZE", type=lambda x: int(x, 16), default=0,
+                        help="telescope `used chunks` if layout is resolved.")
+    parser.add_argument("--telescope-freed", metavar="SIZE", type=lambda x: int(x, 16), default=0,
+                        help="telescope `unused (freed) chunks` if layout is resolved.")
+    parser.add_argument("--slub-debug-y", action="store_true",
+                        help="assumes `CONFIG_SLUB_DEBUG=y` and dumps kmem_cache_node->full slabs.")
+    parser.add_argument("-r", "--rescan", action="store_true", help="do not use cached offset.")
+    parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
+    parser.add_argument("-q", "--quiet", action="store_true", help="enable quiet mode.")
+    parser.add_argument("--tlbflush-queue", action="store_true",
+                        help="dump `slub_tlbflush_queue` (x86-64 only && CONFIG_SLAB_VIRTUAL=y).")
+    parser.add_argument("--skip-page2virt", action="store_true",
+                        help="[FOR DEVELOPER] used internally in gef, please don't use it.")
+    parser.add_argument("--no-xor", action="store_true",
+                        help="[FOR DEVELOPER] skip xor to chunk->next when `kmem_cache.random` is falsely detected.")
+    parser.add_argument("--no-byte-swap", action="store_true", default=None,
+                        help="[FOR DEVELOPER] skip byteswap to chunk->next when `kmem_cache.random` is falsely detected.")
+    parser.add_argument("--offset-random", type=AddressUtil.parse_address,
+                        help="[FOR DEVELOPER] user-specified offsetof(kmem_cache, random) when "
+                             "`kmem_cache.random` is falsely detected.")
+    parser.add_argument("--offset-node", type=AddressUtil.parse_address,
+                        help="[FOR DEVELOPER] user-specified offsetof(kmem_cache, "
+                             "node/per_node[0].node) when node is falsely detected.")
+    _syntax_ = parser.format_help()
+
+    _example_ = [
+        "{0:s} kmalloc-256             # <7.0: active pages; 7.0+: cpu sheaves and node slabs",
+        "{0:s} kmalloc-256 --cpu 1     # dump kmalloc-256 from cpu 1",
+        "{0:s} kmalloc-256 --partial   # <7.0 only: show active pages and partial pages",
+        "{0:s} kmalloc-256 --node      # <7.0 only: show active pages, partial pages and node pages",
+        "{0:s} --list                  # list slub cache names",
+        "{0:s} -vv --offset-node 0xc8  # user specified offsetof(kmem_cache, node)",
+    ]
+    _example_ = "\n".join(_example_).format(_cmdline_)
+
+    _note_ = [
+        "Simplified SLUB structure:",
+        "",
+        "                         +-kmem_cache----------+         +-kmem_cache--+   +-kmem_cache--+",
+        "                         | cpu_slab (~6.19)    |---+     | cpu_slab    |   | cpu_slab    |",
+        "                         | cpu_sheaves (6.18~) |---|-+   | cpu_sheaves |   | cpu_sheaves |",
+        "                         | flags               |   | |   | flags       |   | flags       |",
+        "                         | size                |   | |   | size        |   | size        |",
+        "                         | object_size         |   | |   | object_size |   | object_size |",
+        "                         | offset              |   | |   | offset      |   | offset      |",
+        "       +-slab_caches-+   | name                |   | |   | name        |   | name        |",
+        " ...<->| list_head   |<->| list_head           |<------->| list_head   |<->| list_head   |<-> ...",
+        "       +-------------+   | random              |   | |   | random      |   | random      |",
+        "                         | node[] (~7.0)       |-+ | |   | node[]      |   | node[]      |",
+        "                         | per_node[] (7.1~)   | | | |   +-------------+   +-------------+",
+        "  +----------------------|   [0].barn          | | | |",
+        "  |                      |   [0].node          |-+ | |",
+        "  |                      +---------------------+ | | |",
+        "  |                                              | | |",
+        "  |                                              | | |     [sheaf/barn (the fastest path)]",
+        "  |  +-------------------------------------------+ | |                     +-->+-slab_sheaf-+",
+        "  |  |  +------------------------------------------+ |                     |   | barn_list  |",
+        "  |  |  |                               +------------+                     |   | size       |",
+        "  |  |  |     +-__per_cpu_offset-+      |                                  |   | objects[]  |",
+        "  |  |  +-----| cpu0_offset      |------+------->+-slub_percpu_sheaves-+   |   |  ptr       |->chunk",
+        "  |  |  |     | cpu1_offset      |               | main                |---+   |  ptr       |->chunk",
+        "  |  |  |     | cpu2_offset      |               | spare               |-->... |  ...       |",
+        "  |  |  |     | ...              |               +---------------------+       +------------+",
+        "  |  |  |     +------------------+",
+        "  |  |  |                                                  [active page freelist (fast path)]",
+        "  |  |  |                                                    +-chunk---+  +-chunk---+",
+        "  |  |  |                                                    | ^       |  | ^       |",
+        "  |  |  |                                                    | |offset |  | |offset |",
+        "  |  |  |                                                    | v       |  | v       |",
+        "  |  |  |                  +-------------------------------->| next    |->| next    |->NULL",
+        "  |  |  v (~6.19)          |                                 +---------+  +---------+",
+        "  |  | +-kmem_cache_cpu-+  |",
+        "  |  | | freelist       |--+                               [active page freelist (slow path)]",
+        "  |  | | page/slab      |---->+-page/slab(active)--+         +-chunk---+  +-chunk---+",
+        "  |  | | partial        |--+  | freelist           |----+    | ^       |  | ^       |",
+        "  |  | +----------------+  |  |                    |    |    | |offset |  | |offset |",
+        "  |  |                     |  +------------------ -+    |    | v       |  | v       |",
+        "  |  |                     |                            +--->| next    |->| next    |->NULL",
+        "  |  |                     |                                 +---------+  +---------+",
+        "  |  |                     |",
+        "  |  |                     |                               [partial page freelist]",
+        "  |  |                     +->+-page/slab(partial)-+         +-chunk---+  +-chunk---+",
+        "  |  |                        | freelist           |----+    | ^       |  | ^       |",
+        "  |  |                        | next               |--+ |    | |offset |  | |offset |",
+        "  |  |                        +--------------------+  | |    | v       |  | v       |",
+        "  |  |                                                | +--->| next    |->| next    |->NULL",
+        "  |  |                          +---------------------+      +---------+  +---------+",
+        "  |  |                          |",
+        "  |  |                          v",
+        "  |  +-+                       ...",
+        "  |    |                                                    [numa node partial page freelist]",
+        "  |    v                      +-page/slab(numa-node)+         +-chunk---+  +-chunk---+",
+        "  |   +-kmem_cache_node-+     | freelist            |----+    | ^       |  | ^       |",
+        "  |   | partial         |---->| next                |--+ |    | |offset |  | |offset |",
+        "  |   | (full)          |     +---------------------+  | |    | v       |  | v       |",
+        "  +---| barn (6.18~7.0) |                              | +--->| next    |->| next    |->NULL",
+        "  |   +-----------------+  +---------------------------+      +---------+  +---------+",
+        "  |   | ...             |  |",
+        "  |   |                 |  |                                [numa node partial page freelist]",
+        "  |   +-----------------+  |  +-page/slab(numa-node)+         +-chunk---+  +-chunk---+",
+        "  |                        |  | freelist            |----+    | ^       |  | ^       |",
+        "  |                        +->| next                |--+ |    | |offset |  | |offset |",
+        "  |                           +---------------------+  | |    | v       |  | v       |",
+        "  |                                                    | +--->| next    |->| next    |->NULL",
+        "  |                        +---------------------------+      +---------+  +---------+",
+        "  +----+                   |",
+        "       |                   v",
+        "       |                  ...",
+        "       v",
+        "      +-node_barn-----+         +-slab_sheaf-+    +-slab_sheaf-+",
+        "      | sheaves_full  |<------->| barn_list  |<-->| barn_list  |<-->",
+        "      | sheaves_empty |<-->...  | ...        |    | ...        |",
+        "      +---------------+         +------------+    +------------+",
+        "",
+        "* `struct page` has been split into `struct page` and `struct slab` since kernel 5.17.",
+        "  The structure name used for SLUB has been changed to `struct slab`.",
+        "* If all chunks in certain page (or slab) are in use, they will not be displayed by this command.",
+        "  This is because they cannot be reached by parsing from `slab_caches`.",
+        "  So use `slab-contains` (if you know the address) or `kvmmap` (if you want to see all slabs even if it takes time).",
+        "* `slab_sheaf`/`barn` introduced in 6.18 is not used by default, "
+        "but used by setting it when calling `kmem_cache_create`.",
+        "  `slab_sheaf.objects[]` is a stack that grows downwards and caches freed addresses.",
+        "* `kmem_cache_cpu` is removed from 7.0. active/partial slabs no longer exist.",
+        "  In kernel >= 7.0, this command dumps `cpu_sheaves` and node slabs by default.",
+        "  The top of the stack is represented by `slab_sheaf.size`.",
+        "* `--partial`, `--node`, `--only-partial`, and `--only-node` affect only kernel < 7.0.",
+        "* To see the CONFIG_SLAB_VIRTUAL ASCII diagram, execute `slub-dump --help-for-slab-virtual`.",
+    ]
+    _note_ = "\n".join(_note_)
+
+    _note2_ = [
+        "* A mitigation called CONFIG_SLAB_VIRTUAL was proposed in September 2023 to prevent cross-cache attacks.",
+        "  This config is not merged into mainline as of May 2025, but is used in KernelCTF@Google Security Research.",
+        "* A unique feature of CONFIG_SLAB_VIRTUAL is that in addition to the existing SLUB structure,",
+        "  it also has a structure for managing released slab structures.",
+        "",
+        "Structures in `CONFIG_SLAB_VIRTUAL=y`",
+        "- v6.1-based, v6.12-based",
+        "                                 +---slab----------+    +---slab----------+   +---slab----------+",
+        "       (Temporary Lists)         | backing_folio   |    | backing_folio   |   | backing_folio   |",
+        "       +-slub_tlbflush_queue-+   | oo              |    | oo              |   | oo              |",
+        " ...<->| list_head           |<->| flush_list_elem |<-->| flush_list_elem |<->| flush_list_elem |<->...",
+        "       +---------------------+   | slab_list       |    | slab_list       |   | slab_list       |",
+        "                                 | slab_cache      |-+  | slab_cache      |   | slab_cache      |",
+        "                                 | ...             | |  | ...             |   | ...             |",
+        "                                 +-----------------+ |  +-----------------+   +-----------------+",
+        "                                                     |",
+        "                             +-----------------------+",
+        "                             |",
+        "                             v",
+        "                         +---kmem_cache-------+             +---kmem_cache-------+",
+        "                         | cpu_slab           |----+        | cpu_slab           |",
+        "                         | flags              |    |        | flags              |",
+        "                         | size               |    |        | size               |",
+        "                         | object_size        |    |        | object_size        |",
+        "                         | offset             |    |        | offset             |",
+        "                         | min                |    |        | min                |",
+        "                         | oo                 |    |        | oo                 |",
+        "                         | freed_slabs_normal |<---------+  | freed_slabs_normal |",
+        "                         | freed_slabs_min    |<------+  |  | freed_slabs_min    |",
+        "       +-slab_caches-+   | name               |    |  |  |  | name               |",
+        " ...<->| list_head   |<->| list_head          |<------|--|->| list_head          |<->...",
+        "       +-------------+   | random             |    |  |  |  | random             |",
+        "                         | node[]             |-+  |  |  |  | node[]             |",
+        "                         +--------------------+ |  |  |  |  +--------------------+",
+        "                                                |  |  |  |",
+        "    +-------------------------------------------+  |  |  |   +---slab----+   +---slab----+",
+        "    |                                              |  |  |   | ...       |   | ...       |",
+        "    |    +-----------------------------------------+  |  |   | oo        |   | oo        |",
+        "    |    |                                            |  +-->| slab_list |<->| slab_list |<->...",
+        "    |    |     +-__per_cpu_offset-+                   |      | ...       |   | ...       |",
+        "    |    +-----| ...              |                   |      +-----------+   +-----------+",
+        "    |    |     +------------------+                   |",
+        "    |    v                                            |      +---slab----+   +---slab----+",
+        "    |    +-kmem_cache_cpu-+                           |      | ...       |   | ...       |",
+        "    |    | ...            |                           |      | oo        |   | oo        |",
+        "    |    +----------------+                           +----->| slab_list |<->| slab_list |<->...",
+        "    v                                                        | ...       |   | ...       |",
+        "    +-kmem_cache_node-+                                      +-----------+   +-----------+",
+        "    | ...             |",
+        "    +-----------------+",
+        "",
+        "",
+        "- v6.6-based",
+        "                                 +-virtual_slab-+     +-virtual_slab-+   +-virtual_slab-+",
+        "       (Temporary Lists)         | ...          |     | ...          |   | ...          |",
+        "       +-slub_tlbflush_queue-+   | slab_cache   |--+  | slab_cache   |   | slab_cache   |",
+        " ...<->| list_head           |<->| slab_list    |<-|->| slab_list    |<->| slab_list    |<->...",
+        "       +---------------------+   | oo           |  |  | oo           |   | oo           |",
+        "                                 | ...          |  |  | ...          |   | ...          |",
+        "                                 +--------------+  |  +--------------+   +--------------+",
+        "                                                   |",
+        "                             +---------------------+",
+        "                             |",
+        "                             v",
+        "                         +-kmem_cache------+             +-kmem_cache------+",
+        "                         | cpu_slab        |----+        | cpu_slab        |",
+        "                         | flags           |    |        | flags           |",
+        "                         | size            |    |        | size            |",
+        "                         | object_size     |    |        | object_size     |",
+        "                         | offset          |    |        | offset          |",
+        "                         | oo              |    |        | oo              |",
+        "                         | min             |    |        | min             |",
+        "                         | freed_slabs     |<---------+  | freed_slabs     |",
+        "                         | freed_slabs_min |<------+  |  | freed_slabs_min |",
+        "                         | nr_freed_pages  |    |  |  |  | nr_freed_pages  |",
+        "       +-slab_caches-+   | name            |    |  |  |  | name            |",
+        " ...<->| list_head   |<->| list_head       |<------|--|->| list_head       |<->...",
+        "       +-------------+   | random          |    |  |  |  | random          |",
+        "                         | node[]          |-+  |  |  |  | node[]          |",
+        "                         +-----------------+ |  |  |  |  +-----------------+",
+        "                                             |  |  |  |",
+        "    +----------------------------------------+  |  |  |   +-virtual_slab-+   +-virtual_slab-+",
+        "    |                                           |  |  |   | ...          |   | ...          |",
+        "    |    +--------------------------------------+  |  +-->| slab_list    |<->| slab_list    |<->...",
+        "    |    |                                         |      | oo           |   | oo           |",
+        "    |    |     +-__per_cpu_offset-+                |      | ...          |   | ...          |",
+        "    |    +-----| ...              |                |      +--------------+   +--------------+",
+        "    |    |     +------------------+                |",
+        "    |    v                                         |      +-virtual_slab-+   +-virtual_slab-+",
+        "    |    +-kmem_cache_cpu-+                        |      | ...          |   | ...          |",
+        "    |    | ...            |                        +----->| slab_list    |<->| slab_list    |<->...",
+        "    |    +----------------+                               | oo           |   | oo           |",
+        "    v                                                     | ...          |   | ...          |",
+        "    +-kmem_cache_node-+                                   +--------------+   +--------------+",
+        "    | ...             |",
+        "    +-----------------+",
+        "",
+        "* The freed slab structure is initially connected to `slub_tlbflush_queue`.",
+        "  It is then reconnected to kmem_cache->freed_slabs_normal or freed_slabs_min or freed_slabs.",
+        "* If oo_order(virtual_slab->slab.oo) == oo_order(kmem_cache->min),",
+        "  `slub_tlbflush_worker` uses `kmem_cache->freed_slabs_min` as freelist of pages for the `kmem_cache`.",
+        "  Otherwise, it uses `kmem_cache->freed_slabs`.",
+    ]
+    _note2_ = "\n".join(_note2_)
 
     def dump_page_print_layout(self, tag, kmem_cache, page, freelist, freelist_fastpath, freelist_sheaf):
         used_address_color = Config.get_gef_setting("theme.heap_chunk_address_used")
@@ -149057,7 +149126,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
             return
 
         freelist = page["freelist"]
-        freelist_sheaf = self.get_page_sheaf_objects(kmem_cache, page)
+        freelist_sheaf = self.kslub.get_page_sheaf_objects(kmem_cache, page)
         if tag == "active":
             freelist_len = len({
                 x for x in freelist + freelist_fastpath + freelist_sheaf
@@ -149083,7 +149152,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
         not_mapped_virt = Config.get_gef_setting("theme.address_valid_but_none")
         slab_address_color = Config.get_gef_setting("theme.heap_slab_address")
         # dump
-        queue_addr_s = Color.colorify_hex(self.slub_tlbflush_queue, slab_address_color)
+        queue_addr_s = Color.colorify_hex(self.kslub.slub_tlbflush_queue, slab_address_color)
         self.out.append("slub_tlbflush_queue @ {:s}".format(queue_addr_s))
         for slab in parsed_slabs:
             slab_addr = slab["address"]
@@ -149092,7 +149161,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
             self.out.append("  slab: {:s}".format(slab_addr_s))
             self.out.append("    kmem_cache: {:s}".format(Color.colorify(slab["slab_cache_name"], chunk_label_color)))
             # virtual address is not mapped here
-            virt = "{:#x}".format(self.page2virt_for_slab_virtual(slab_addr))
+            virt = "{:#x}".format(slab["virt_addr"]) if slab["virt_addr"] is not None else "???"
             self.out.append("    virt: {:s}".format(Color.colorify(virt, not_mapped_virt)))
         return
 
@@ -149187,7 +149256,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
         label_inactive_color = Config.get_gef_setting("theme.heap_label_inactive")
         slab_address_color = Config.get_gef_setting("theme.heap_slab_address")
 
-        slab_caches_s = Color.colorify_hex(self.slab_caches, slab_address_color)
+        slab_caches_s = Color.colorify_hex(self.kslub.slab_caches, slab_address_color)
         self.out.append("slab_caches @ {:s}".format(slab_caches_s))
         for kmem_cache in parsed_caches[1:]:
             if target_names != [] and kmem_cache["name"] not in target_names:
@@ -149205,9 +149274,9 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
             object_size_s = Color.colorify_hex(kmem_cache["object_size"], chunk_size_color)
             self.out.append("    object size: {:s} (chunk size: {:#x})".format(object_size_s, kmem_cache["size"]))
             self.out.append("    offset (next pointer in chunk): {:#x}".format(kmem_cache["offset"]))
-            if self.kmem_cache_offset_random is not None:
+            if self.kslub.kmem_cache_offset_random is not None:
                 if self.args.no_xor is False:
-                    if self.swap is True:
+                    if self.kslub.swap is True:
                         fmt = "    random (xor key): {:#x} ^ byteswap(&chunk->next)"
                         self.out.append(fmt.format(kmem_cache["random"]))
                     else:
@@ -149216,7 +149285,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
             self.out.append("    red_left_pad: {:#x}".format(kmem_cache["red_left_pad"]))
 
             # dump freelist in kmem_cache only if CONFIG_SLAB_VIRTUAL=y
-            if self.slab_virtual_enabled:
+            if self.kslub.slab_virtual_enabled:
                 nr_freed_pages = kmem_cache["nr_freed_pages"]
                 self.out.append("    nr_freed_pages: {:#d}".format(nr_freed_pages))
 
@@ -149265,9 +149334,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
             # dump nodes
             if self.dump_target_node and "nodes_partial" in kmem_cache:
                 for node_index, node_page_list_partial in enumerate(kmem_cache["nodes_partial"]):
-                    node_addr = read_int_from_memory(
-                        kmem_cache["address"] + self.kmem_cache_offset_node + self.kmem_cache_node_step * node_index,
-                    )
+                    node_addr = kmem_cache["node_addresses"][node_index]
                     node_addr_s = Color.colorify_hex(node_addr, slab_address_color)
                     self.out.append("    kmem_cache_node[{:d}]: {:s}".format(node_index, node_addr_s))
 
@@ -149320,12 +149387,17 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
         return
 
     def slubwalk(self, target_names, cpu):
+        self.kslub = Kernel.slub(
+            no_xor=self.args.no_xor,
+            byte_swap=None if self.args.no_byte_swap is None else not self.args.no_byte_swap,
+            offset_random=self.args.offset_random, offset_node=self.args.offset_node,
+        )
         if self.args.rescan:
-            Cache.clear_cache_for(self.initialize)
+            Cache.clear_cache_for(self.kslub.initialize)
 
-        ret = self.initialize()
+        ret = self.kslub.initialize()
         if self.args.meta or not ret:
-            for func, line in self.meta:
+            for func, line in Kernel.export_meta(self, self.kslub.meta):
                 func(line)
         if not ret:
             self.quiet_err("Initialization failed")
@@ -149335,27 +149407,42 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
             return
 
         if self.args.list or self.args.list_no_sort:
-            parsed_caches = self.walk_caches(target_names, cpus=None)
-            self.dump_names(parsed_caches)
-            return
-
-        if cpu is None:
-            target_cpus = list(range(self.ncpus))
+            target_cpus = None
+        elif cpu is None:
+            target_cpus = list(range(self.kslub.ncpus))
         else:
-            if self.ncpus <= cpu:
-                self.quiet_err("CPU number is invalid (valid range: {:d}-{:d})".format(0, self.ncpus - 1))
+            if self.kslub.ncpus <= cpu:
+                self.quiet_err("CPU number is invalid (valid range: {:d}-{:d})".format(0, self.kslub.ncpus - 1))
                 return
             target_cpus = [cpu]
 
-        if self.args.tlbflush_queue:
-            if self.slab_virtual_enabled:
-                parsed_queue = self.walk_slab_list(self.slub_tlbflush_queue, self.page_offset_flush_list_elem)
+        if self.args.tlbflush_queue and not (self.args.list or self.args.list_no_sort):
+            if self.kslub.slab_virtual_enabled:
+                parsed_queue = self.kslub.walk_slab_list(
+                    self.kslub.slub_tlbflush_queue, self.kslub.page_offset_flush_list_elem, resolve_virt=True,
+                )
                 self.dump_slub_tlbflush_queue(parsed_queue)
             else:
                 self.quiet_warn("CONFIG_SLAB_VIRTUAL is disabled. option `--tlbflush-queue` is ignored")
             return
 
-        parsed_caches = self.walk_caches(target_names, target_cpus)
+        parsed_caches = self.kslub.walk_caches(
+            target_names, target_cpus,
+            names_only=self.args.list or self.args.list_no_sort,
+            reverse_walk=self.args.reverse_walk,
+            simple=self.args.simple,
+            quiet=self.args.quiet,
+            skip_page2virt=self.args.skip_page2virt,
+            slub_debug_y=self.args.slub_debug_y,
+            active=self.dump_target_active,
+            partial=self.dump_target_partial,
+            node=self.dump_target_node,
+            cpu_sheaves=self.dump_target_cpu_sheaves,
+        )
+        if self.args.list or self.args.list_no_sort:
+            self.dump_names(parsed_caches)
+            return
+
         self.dump_caches(target_names, target_cpus, parsed_caches)
         return
 
@@ -149363,17 +149450,12 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
     def warmup_page2virt(self):
         if is_x86() or is_arm32():
             args = self.args # backup
-            gdb.execute("page2virt 0", to_string=True)
+            KernelSlub.warmup_page2virt()
             # self.args will be overwritten. this is workaround.
             self.args = args # revert
         return
 
     def setup(self, args):
-        if args.no_byte_swap is None:
-            self.swap = None
-        else:
-            self.swap = not args.no_byte_swap
-
         if args.no_xor or args.no_byte_swap:
             args.rescan = True
         if args.offset_random is not None or args.offset_node is not None:
@@ -149384,6 +149466,8 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
             self.quiet_err("Failed to resolve kernel version")
 
         # dump target
+        self.dump_target_active = False
+        self.dump_target_partial = False
         if kversion < "7.0":
             self.dump_target_kmem_cache_cpu = True
             if kversion < "6.18":
@@ -149412,15 +149496,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
         return
 
     def get_kmem_caches(self, target_names):
-        """Return the parsed kmem_caches of `target_names` (all if empty) instead of dumping them,
-        with the cpu, partial and node slabs as `-vv`. Return None if the initialization fails."""
-        self.args = self.parser.parse_args(["--vverbose", "--quiet"])
-        self.warmup_page2virt()
-        self.setup(self.args)
-        self.maps = None
-        if not self.initialize():
-            return None
-        return self.walk_caches(target_names, list(range(self.ncpus)))[1:]
+        return Kernel.slub().get_kmem_caches(target_names)
 
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
@@ -149466,78 +149542,188 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
         return
 
 
-@register_command
-class SlubTinyDumpCommand(GenericCommand, BufferingOutput):
-    """Dump SLUB-TINY free-list reachable from slab_caches."""
+class KernelSlubTiny:
+    """Resolve SLUB-TINY layouts and read slab caches and free lists."""
 
-    _cmdline_ = "slub-tiny-dump"
-    _category_ = "06-h. Qemu-system/KGDB Cooperation - Linux Allocator"
+    """
+    struct kmem_cache {
+        struct kmem_cache_cpu *cpu_slab;         // if 6.18 <= kernel < 7.0; In fact, the offset value, not the pointer
+        struct lock_class_key {                            // if CONFIG_LOCKDEP=y && 6.18 <= kernel < 7.0
+            union {                                        // if CONFIG_LOCKDEP=y && 6.18 <= kernel < 7.0
+                struct hlist_node hash_entry;              // if CONFIG_LOCKDEP=y && 6.18 <= kernel < 7.0
+                struct lockdep_subclass_key {              // if CONFIG_LOCKDEP=y && 6.18 <= kernel < 7.0
+                    char __one_byte;                       // if CONFIG_LOCKDEP=y && 6.18 <= kernel < 7.0
+                } __attribute__ ((__packed__)) subkeys[8]; // if CONFIG_LOCKDEP=y && 6.18 <= kernel < 7.0
+            };                                             // if CONFIG_LOCKDEP=y && 6.18 <= kernel < 7.0
+        } lock_key;                                        // if CONFIG_LOCKDEP=y && 6.18 <= kernel < 7.0
+        struct slub_percpu_sheaves __percpu *cpu_sheaves;  // if 6.18 <= kernel
+        slab_flags_t flags;                      // unsigned int (+ padding 4 byte)
+        unsigned long min_partial;
+        unsigned int size;
+        unsigned int object_size;
+        struct reciprocal_value {                //
+            u32 m;                               //
+            u8 sh1, sh2;                         // (+ padding 2 byte)
+        } reciprocal_size;                       //
+        unsigned int offset;
+        unsigned int cpu_partial;                // if CONFIG_SLUB_CPU_PARTIAL=y && kernel < 7.0
+        unsigned int cpu_partial_slabs;          // if CONFIG_SLUB_CPU_PARTIAL=y && kernel < 7.0
+        unsigned int sheaf_capacity;             // if 6.18 <= kernel
+        struct kmem_cache_order_objects oo;
+        struct kmem_cache_order_objects min;
+        gfp_t allocflags;                        // unsigned int
+        int refcount;
+        void (*ctor)(void *);
+        unsigned int inuse;
+        unsigned int align;
+        unsigned int red_left_pad;
+        const char *name;
+        struct list_head list; <-----> struct list_head <-----> struct list_head <-----> ...
+        struct kobject {
+            const char *name;
+            struct list_head entry;
+            struct kobject *parent;
+            struct kset *kset;
+            const struct kobj_type *ktype;
+            struct kernfs_node *sd;
+            struct kref kref;
+            struct delayed_work release;         // if CONFIG_DEBUG_KOBJECT_RELEASE=y
+            unsigned int state_initialized:1;
+            unsigned int state_in_sysfs:1;
+            unsigned int state_add_uevent_sent:1;
+            unsigned int state_remove_uevent_sent:1;
+            unsigned int uevent_suppress:1;
+        } kobj;                                  // if CONFIG_SYSFS=y
+        unsigned int remote_node_defrag_ratio;   // if CONFIG_NUMA=y
+        struct kasan_cache {
+            int alloc_meta_offset;
+            int free_meta_offset;
+            bool is_kmalloc;
+        } kasan_info;                            // if CONFIG_KASAN=y
+        unsigned int useroffset;                 // if CONFIG_HARDENED_USERCOPY=y
+        unsigned int usersize;                   // if CONFIG_HARDENED_USERCOPY=y
+        struct kmem_cache_stats __percpu *cpu_stats // CONFIG_SLUB_STATS && 7.0 <= kernel
+        struct kmem_cache_node *node[MAX_NUMNODES];
+    };
 
-    parser = argparse.ArgumentParser(prog=_cmdline_)
-    parser.add_argument("-hh", "--help-simple", action="store_true", help="show help without ASCII diagram.")
-    parser.add_argument("cache_name", metavar="SLUB_CACHE_NAME", nargs="*", help="filter by specific slub cache name.")
-    parser.add_argument("-l", "--list", action="store_true", help="list all slub cache names.")
-    parser.add_argument("-L", "--list-no-sort", action="store_true", help="list all slub cache names without sort.")
-    parser.add_argument("--meta", action="store_true", help="display offset information.")
-    parser.add_argument("-R", "--reverse-walk", action="store_true", help="reverse order walk for slab_caches->list_head.")
-    parser.add_argument("-s", "--simple", action="store_true", help="skip displaying layout and freelist.")
-    parser.add_argument("--hexdump-used", metavar="SIZE", type=lambda x: int(x, 16), default=0,
-                        help="hexdump `used chunks` if layout is resolved.")
-    parser.add_argument("--hexdump-freed", metavar="SIZE", type=lambda x: int(x, 16), default=0,
-                        help="hexdump `unused (freed) chunks` if layout is resolved.")
-    parser.add_argument("--telescope-used", metavar="SIZE", type=lambda x: int(x, 16), default=0,
-                        help="telescope `used chunks` if layout is resolved.")
-    parser.add_argument("--telescope-freed", metavar="SIZE", type=lambda x: int(x, 16), default=0,
-                        help="telescope `unused (freed) chunks` if layout is resolved.")
-    parser.add_argument("-r", "--rescan", action="store_true", help="do not use cached offset.")
-    parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
-    parser.add_argument("-q", "--quiet", action="store_true", help="enable quiet mode.")
-    parser.add_argument("--skip-page2virt", action="store_true",
-                        help="[FOR DEVELOPER] used internally in gef, please don't use it.")
-    _syntax_ = parser.format_help()
+    struct slab {
+        unsigned long __page_flags;
+        struct kmem_cache *slab_cache;
+        struct slab *next;
+        int slabs;
+        void *freelist;
+        unsigned inuse:16, objects:15, frozen:1;
+        ...
+    };
 
-    _example_ = [
-        "{0:s} kmalloc-256  # dump kmalloc-256",
-        "{0:s} --list       # list slub cache names",
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    struct kmem_cache_node {
+        spinlock_t list_lock;
+        unsigned long nr_partial;
+        struct list_head partial;
+        atomic_long_t nr_slabs;                  // if CONFIG_SLUB_DEBUG=y
+        atomic_long_t total_objects;             // if CONFIG_SLUB_DEBUG=y
+        struct list_head full;                   // if CONFIG_SLUB_DEBUG=y
+    };
+    """
 
-    _note_ = [
-        "Simplified SLUB-TINY structure:",
-        "",
-        "                         +-kmem_cache----------+     +-kmem_cache--+   +-kmem_cache--+",
-        "                         | cpu_sheaves (6.18~) |     | cpu_sheaves |   | cpu_sheaves |",
-        "                         | flags               |     | flags       |   | flags       |",
-        "                         | size                |     | size        |   | size        |",
-        "                         | object_size         |     | object_size |   | object_size |",
-        "                         | offset              |     | offset      |   | offset      |",
-        "       +-slab_caches-+   | name                |     | name        |   | name        |",
-        " ...<->| list_head   |<->| list_head           |<--->| list_head   |<->| list_head   |<-> ...",
-        "       +-------------+   | node[]              |--+  | node[]      |   | node[]      |",
-        "                         +---------------------+  |  +-------------+   +-------------+",
-        "                                                  |",
-        "    +---------------------------------------------+",
-        "    |                                               [numa node partial page freelist]",
-        "    v                     +-slab-----------+          +-chunk---+  +-chunk---+",
-        "  +-kmem_cache_node-+     | freelist       |----+     | ^       |  | ^       |",
-        "  | partial         |---->| next           |--+ |     | |offset |  | |offset |",
-        "  +-----------------+     +----------------+  | |     | v       |  | v       |",
-        "  | ...             |                         | +---->| next    |->| next    |->NULL",
-        "  +-----------------+  +----------------------+       +---------+  +---------+",
-        "                       |",
-        "                       |                            [numa node partial page freelist]",
-        "                       |  +-slab-----------+          +-chunk---+  +-chunk---+",
-        "                       |  | freelist       |----+     | ^       |  | ^       |",
-        "                       +->| next           |--+ |     | |offset |  | |offset |",
-        "                          +----------------+  | |     | v       |  | v       |",
-        "                                              | +---->| next    |->| next    |->NULL",
-        "                       +----------------------+       +---------+  +---------+",
-        "                       |",
-        "                       v",
-        "                      ...",
-        "* SLUB-TINY was introduced in kernel 6.2.",
-    ]
-    _note_ = "\n".join(_note_)
+    @classmethod
+    @Cache.cache_this_session(per_inferior=True, until_new_objfile=True)
+    def get_instance(cls):
+        return cls()
+
+    def __init__(self):
+        self.meta = []
+        return
+
+    @Cache.cache_this_session(cache_None=False)
+    def initialize(self):
+        self.meta = []
+
+        kversion = Kernel.version()
+        if not kversion:
+            self.meta.append(("err", "Failed to resolve kernel version"))
+            return None
+
+        # resolve slab_caches
+        self.slab_caches = KernelAddressHeuristicFinder.get_slab_caches()
+        if self.slab_caches is None:
+            self.meta.append(("err", "Failed to resolve `slab_caches`"))
+            return None
+        else:
+            self.meta.append(("info", "slab_caches: {:#x}".format(self.slab_caches)))
+
+        # offsetof(kmem_cache, flags)
+        # `cpu_slab` and `lock_key` are inside `#ifndef CONFIG_SLUB_TINY`, and v7.0 dropped them
+        # for everyone, so only `cpu_sheaves` (v6.18~) is ever in front of `flags` here.
+        if kversion < "6.18":
+            self.kmem_cache_offset_flags = 0
+        else:
+            self.kmem_cache_offset_flags = current_arch.ptrsize
+        self.meta.append(("info", "offsetof(kmem_cache, flags): {:#x}".format(self.kmem_cache_offset_flags)))
+
+        # offsetof(kmem_cache, list)
+        self.resolve_kmem_cache_offset_list()
+        self.meta.append(("info", "offsetof(kmem_cache, list): {:#x}".format(self.kmem_cache_offset_list)))
+
+        # offsetof(kmem_cache, name)
+        self.kmem_cache_offset_name = self.kmem_cache_offset_list - current_arch.ptrsize
+        self.meta.append(("info", "offsetof(kmem_cache, name): {:#x}".format(self.kmem_cache_offset_name)))
+
+        # offsetof(kmem_cache, size)
+        self.kmem_cache_offset_size = self.kmem_cache_offset_flags + current_arch.ptrsize * 2
+        self.meta.append(("info", "offsetof(kmem_cache, size): {:#x}".format(self.kmem_cache_offset_size)))
+
+        # offsetof(kmem_cache, object_size)
+        self.kmem_cache_offset_object_size = self.kmem_cache_offset_size + 4
+        self.meta.append(("info", "offsetof(kmem_cache, object_size): {:#x}".format(self.kmem_cache_offset_object_size)))
+
+        # offsetof(kmem_cache, offset)
+        self.kmem_cache_offset_offset = self.kmem_cache_offset_object_size + 4 + 8
+        self.meta.append(("info", "offsetof(kmem_cache, offset): {:#x}".format(self.kmem_cache_offset_offset)))
+
+        # offsetof(kmem_cache, red_left_pad)
+        self.kmem_cache_offset_red_left_pad = self.kmem_cache_offset_name - current_arch.ptrsize
+        self.meta.append(("info", "offsetof(kmem_cache, red_left_pad): {:#x}".format(self.kmem_cache_offset_red_left_pad)))
+
+        # offsetof(kmem_cache, node)
+        self.resolve_kmem_cache_offset_node()
+        if self.kmem_cache_offset_node is None:
+            self.meta.append(("info", "offsetof(kmem_cache, node): Not found"))
+        else:
+            self.meta.append(("info", "offsetof(kmem_cache, node): {:#x}".format(self.kmem_cache_offset_node)))
+
+        # offsetof(slab, next)
+        self.slab_offset_next = current_arch.ptrsize * 2
+        self.meta.append(("info", "offsetof(slab, next): {:#x}".format(self.slab_offset_next)))
+
+        # offsetof(slab, freelist)
+        self.slab_offset_freelist = current_arch.ptrsize * 4
+        self.meta.append(("info", "offsetof(slab, freelist): {:#x}".format(self.slab_offset_freelist)))
+
+        # offsetof(slab, slab_cache)
+        self.slab_offset_slab_cache = current_arch.ptrsize
+        self.meta.append(("info", "offsetof(slab, slab_cache): {:#x}".format(self.slab_offset_slab_cache)))
+
+        # offsetof(slab, inuse_objects_frozen)
+        self.slab_offset_inuse_objects_frozen = self.slab_offset_freelist + current_arch.ptrsize
+        self.meta.append(("info", "offsetof(slab, inuse_objects_frozen): {:#x}".format(self.slab_offset_inuse_objects_frozen)))
+
+        # offsetof(kmem_cache_node, partial)
+        self.resolve_kmem_cache_node_offset_partial()
+        if self.kmem_cache_node_offset_partial is None:
+            self.meta.append(("info", "offsetof(kmem_cache_node, partial): Not found"))
+            return None
+        else:
+            self.meta.append(("info", "offsetof(kmem_cache_node, partial): {:#x}".format(self.kmem_cache_node_offset_partial)))
+
+        return True
+
+    def get_kmem_caches(self, target_names=()):
+        """Return the parsed caches, or None if initialization fails."""
+        KernelSlub.warmup_page2virt()
+        if not self.initialize():
+            return None
+        return self.walk_caches(list(target_names))[1:]
 
     @Cache.cache_until_next
     def parse_kmem_caches_for_initialize(self):
@@ -149662,174 +149848,10 @@ class SlubTinyDumpCommand(GenericCommand, BufferingOutput):
                 return
         return
 
-    """
-    struct kmem_cache {
-        struct kmem_cache_cpu *cpu_slab;         // if 6.18 <= kernel < 7.0; In fact, the offset value, not the pointer
-        struct lock_class_key {                            // if CONFIG_LOCKDEP=y && 6.18 <= kernel < 7.0
-            union {                                        // if CONFIG_LOCKDEP=y && 6.18 <= kernel < 7.0
-                struct hlist_node hash_entry;              // if CONFIG_LOCKDEP=y && 6.18 <= kernel < 7.0
-                struct lockdep_subclass_key {              // if CONFIG_LOCKDEP=y && 6.18 <= kernel < 7.0
-                    char __one_byte;                       // if CONFIG_LOCKDEP=y && 6.18 <= kernel < 7.0
-                } __attribute__ ((__packed__)) subkeys[8]; // if CONFIG_LOCKDEP=y && 6.18 <= kernel < 7.0
-            };                                             // if CONFIG_LOCKDEP=y && 6.18 <= kernel < 7.0
-        } lock_key;                                        // if CONFIG_LOCKDEP=y && 6.18 <= kernel < 7.0
-        struct slub_percpu_sheaves __percpu *cpu_sheaves;  // if 6.18 <= kernel
-        slab_flags_t flags;                      // unsigned int (+ padding 4 byte)
-        unsigned long min_partial;
-        unsigned int size;
-        unsigned int object_size;
-        struct reciprocal_value {                //
-            u32 m;                               //
-            u8 sh1, sh2;                         // (+ padding 2 byte)
-        } reciprocal_size;                       //
-        unsigned int offset;
-        unsigned int cpu_partial;                // if CONFIG_SLUB_CPU_PARTIAL=y && kernel < 7.0
-        unsigned int cpu_partial_slabs;          // if CONFIG_SLUB_CPU_PARTIAL=y && kernel < 7.0
-        unsigned int sheaf_capacity;             // if 6.18 <= kernel
-        struct kmem_cache_order_objects oo;
-        struct kmem_cache_order_objects min;
-        gfp_t allocflags;                        // unsigned int
-        int refcount;
-        void (*ctor)(void *);
-        unsigned int inuse;
-        unsigned int align;
-        unsigned int red_left_pad;
-        const char *name;
-        struct list_head list; <-----> struct list_head <-----> struct list_head <-----> ...
-        struct kobject {
-            const char *name;
-            struct list_head entry;
-            struct kobject *parent;
-            struct kset *kset;
-            const struct kobj_type *ktype;
-            struct kernfs_node *sd;
-            struct kref kref;
-            struct delayed_work release;         // if CONFIG_DEBUG_KOBJECT_RELEASE=y
-            unsigned int state_initialized:1;
-            unsigned int state_in_sysfs:1;
-            unsigned int state_add_uevent_sent:1;
-            unsigned int state_remove_uevent_sent:1;
-            unsigned int uevent_suppress:1;
-        } kobj;                                  // if CONFIG_SYSFS=y
-        unsigned int remote_node_defrag_ratio;   // if CONFIG_NUMA=y
-        struct kasan_cache {
-            int alloc_meta_offset;
-            int free_meta_offset;
-            bool is_kmalloc;
-        } kasan_info;                            // if CONFIG_KASAN=y
-        unsigned int useroffset;                 // if CONFIG_HARDENED_USERCOPY=y
-        unsigned int usersize;                   // if CONFIG_HARDENED_USERCOPY=y
-        struct kmem_cache_stats __percpu *cpu_stats // CONFIG_SLUB_STATS && 7.0 <= kernel
-        struct kmem_cache_node *node[MAX_NUMNODES];
-    };
-
-    struct slab {
-        unsigned long __page_flags;
-        struct kmem_cache *slab_cache;
-        struct slab *next;
-        int slabs;
-        void *freelist;
-        unsigned inuse:16, objects:15, frozen:1;
-        ...
-    };
-
-    struct kmem_cache_node {
-        spinlock_t list_lock;
-        unsigned long nr_partial;
-        struct list_head partial;
-        atomic_long_t nr_slabs;                  // if CONFIG_SLUB_DEBUG=y
-        atomic_long_t total_objects;             // if CONFIG_SLUB_DEBUG=y
-        struct list_head full;                   // if CONFIG_SLUB_DEBUG=y
-    };
-    """
-
-    @Cache.cache_this_session(cache_None=False)
-    def initialize(self):
-        self.meta = []
-
-        kversion = Kernel.version()
-        if not kversion:
-            self.meta.append((self.quiet_err, "Failed to resolve kernel version"))
-            return None
-
-        # resolve slab_caches
-        self.slab_caches = KernelAddressHeuristicFinder.get_slab_caches()
-        if self.slab_caches is None:
-            self.meta.append((self.quiet_err, "Failed to resolve `slab_caches`"))
-            return None
-        else:
-            self.meta.append((self.quiet_info, "slab_caches: {:#x}".format(self.slab_caches)))
-
-        # offsetof(kmem_cache, flags)
-        # `cpu_slab` and `lock_key` are inside `#ifndef CONFIG_SLUB_TINY`, and v7.0 dropped them
-        # for everyone, so only `cpu_sheaves` (v6.18~) is ever in front of `flags` here.
-        if kversion < "6.18":
-            self.kmem_cache_offset_flags = 0
-        else:
-            self.kmem_cache_offset_flags = current_arch.ptrsize
-        self.meta.append((self.quiet_info, "offsetof(kmem_cache, flags): {:#x}".format(self.kmem_cache_offset_flags)))
-
-        # offsetof(kmem_cache, list)
-        self.resolve_kmem_cache_offset_list()
-        self.meta.append((self.quiet_info, "offsetof(kmem_cache, list): {:#x}".format(self.kmem_cache_offset_list)))
-
-        # offsetof(kmem_cache, name)
-        self.kmem_cache_offset_name = self.kmem_cache_offset_list - current_arch.ptrsize
-        self.meta.append((self.quiet_info, "offsetof(kmem_cache, name): {:#x}".format(self.kmem_cache_offset_name)))
-
-        # offsetof(kmem_cache, size)
-        self.kmem_cache_offset_size = self.kmem_cache_offset_flags + current_arch.ptrsize * 2
-        self.meta.append((self.quiet_info, "offsetof(kmem_cache, size): {:#x}".format(self.kmem_cache_offset_size)))
-
-        # offsetof(kmem_cache, object_size)
-        self.kmem_cache_offset_object_size = self.kmem_cache_offset_size + 4
-        self.meta.append((self.quiet_info, "offsetof(kmem_cache, object_size): {:#x}".format(self.kmem_cache_offset_object_size)))
-
-        # offsetof(kmem_cache, offset)
-        self.kmem_cache_offset_offset = self.kmem_cache_offset_object_size + 4 + 8
-        self.meta.append((self.quiet_info, "offsetof(kmem_cache, offset): {:#x}".format(self.kmem_cache_offset_offset)))
-
-        # offsetof(kmem_cache, red_left_pad)
-        self.kmem_cache_offset_red_left_pad = self.kmem_cache_offset_name - current_arch.ptrsize
-        self.meta.append((self.quiet_info, "offsetof(kmem_cache, red_left_pad): {:#x}".format(self.kmem_cache_offset_red_left_pad)))
-
-        # offsetof(kmem_cache, node)
-        self.resolve_kmem_cache_offset_node()
-        if self.kmem_cache_offset_node is None:
-            self.meta.append((self.quiet_info, "offsetof(kmem_cache, node): Not found"))
-        else:
-            self.meta.append((self.quiet_info, "offsetof(kmem_cache, node): {:#x}".format(self.kmem_cache_offset_node)))
-
-        # offsetof(slab, next)
-        self.slab_offset_next = current_arch.ptrsize * 2
-        self.meta.append((self.quiet_info, "offsetof(slab, next): {:#x}".format(self.slab_offset_next)))
-
-        # offsetof(slab, freelist)
-        self.slab_offset_freelist = current_arch.ptrsize * 4
-        self.meta.append((self.quiet_info, "offsetof(slab, freelist): {:#x}".format(self.slab_offset_freelist)))
-
-        # offsetof(slab, slab_cache)
-        self.slab_offset_slab_cache = current_arch.ptrsize
-        self.meta.append((self.quiet_info, "offsetof(slab, slab_cache): {:#x}".format(self.slab_offset_slab_cache)))
-
-        # offsetof(slab, inuse_objects_frozen)
-        self.slab_offset_inuse_objects_frozen = self.slab_offset_freelist + current_arch.ptrsize
-        self.meta.append((self.quiet_info, "offsetof(slab, inuse_objects_frozen): {:#x}".format(self.slab_offset_inuse_objects_frozen)))
-
-        # offsetof(kmem_cache_node, partial)
-        self.resolve_kmem_cache_node_offset_partial()
-        if self.kmem_cache_node_offset_partial is None:
-            self.meta.append((self.quiet_info, "offsetof(kmem_cache_node, partial): Not found"))
-            return None
-        else:
-            self.meta.append((self.quiet_info, "offsetof(kmem_cache_node, partial): {:#x}".format(self.kmem_cache_node_offset_partial)))
-
-        return True
-
-    def get_next_kmem_cache(self, addr, point_to_base=True):
+    def get_next_kmem_cache(self, addr, point_to_base=True, *, reverse_walk=False):
         if point_to_base:
             addr += self.kmem_cache_offset_list
-        if self.args.reverse_walk:
+        if reverse_walk:
             return read_int_from_memory(addr) - self.kmem_cache_offset_list
         else:
             return read_int_from_memory(addr + current_arch.ptrsize) - self.kmem_cache_offset_list
@@ -149838,8 +149860,8 @@ class SlubTinyDumpCommand(GenericCommand, BufferingOutput):
         name_addr = read_int_from_memory(addr + self.kmem_cache_offset_name)
         return read_cstring_from_memory(name_addr)
 
-    def page2virt(self, page, kmem_cache):
-        if not self.args.skip_page2virt:
+    def page2virt(self, page, kmem_cache, *, skip_page2virt=False):
+        if not skip_page2virt:
             ret = gdb.execute("page2virt {:#x}".format(page["address"]), to_string=True)
             r = re.search(r"Virt: (\S+)", ret)
             if r:
@@ -149895,8 +149917,8 @@ class SlubTinyDumpCommand(GenericCommand, BufferingOutput):
         # not found
         return None
 
-    def walk_freelist(self, chunk, kmem_cache):
-        if self.args.simple:
+    def walk_freelist(self, chunk, kmem_cache, *, simple=False):
+        if simple:
             return [chunk]
 
         corrupted_msg_color = Config.get_gef_setting("theme.heap_corrupted_msg")
@@ -149926,8 +149948,9 @@ class SlubTinyDumpCommand(GenericCommand, BufferingOutput):
             seen.add(chunk)
         return freelist
 
-    def walk_caches_node_page(self, kmem_cache):
+    def walk_caches_node_page(self, kmem_cache, *, simple=False, skip_page2virt=False):
         kmem_cache["nodes"] = []
+        kmem_cache["node_addresses"] = []
         kmem_cache_node_array = kmem_cache["address"] + self.kmem_cache_offset_node
         current_kmem_cache_node_ptr = kmem_cache_node_array
         while True:
@@ -149962,21 +149985,23 @@ class SlubTinyDumpCommand(GenericCommand, BufferingOutput):
                     break # something is wrong
                 node_page["frozen"] = (x >> 31) & 1
                 node_chunk = read_int_from_memory(node_page["address"] + self.slab_offset_freelist)
-                node_page["freelist"] = self.walk_freelist(node_chunk, kmem_cache)
+                node_page["freelist"] = self.walk_freelist(node_chunk, kmem_cache, simple=simple)
                 node_page["num_pages"] = (
                     kmem_cache["size"] * node_page["objects"] + get_pagesize_mask_low()
                 ) // get_pagesize()
-                node_page["virt_addr"] = self.page2virt(node_page, kmem_cache)
+                node_page["virt_addr"] = self.page2virt(node_page, kmem_cache, skip_page2virt=skip_page2virt)
                 node_page_list.append(node_page)
                 current_node_page = read_int_from_memory(node_page["address"] + self.slab_offset_next)
+            kmem_cache["node_addresses"].append(current_kmem_cache_node)
             kmem_cache["nodes"].append(node_page_list)
 
             # goto next
             current_kmem_cache_node_ptr += current_arch.ptrsize
         return
 
-    def walk_caches(self, target_names):
-        current_kmem_cache = self.get_next_kmem_cache(self.slab_caches, point_to_base=False)
+    def walk_caches(self, target_names, *, names_only=False, reverse_walk=False, simple=False,
+                    skip_page2virt=False, quiet=True):
+        current_kmem_cache = self.get_next_kmem_cache(self.slab_caches, point_to_base=False, reverse_walk=reverse_walk)
         parsed_caches = [{"name": "slab_caches", "next": current_kmem_cache}]
 
         # first, parse kmem_cache
@@ -149985,34 +150010,108 @@ class SlubTinyDumpCommand(GenericCommand, BufferingOutput):
             # parse member
             kmem_cache["name"] = self.get_name(current_kmem_cache)
             if target_names != [] and kmem_cache["name"] not in target_names:
-                current_kmem_cache = self.get_next_kmem_cache(current_kmem_cache)
+                current_kmem_cache = self.get_next_kmem_cache(current_kmem_cache, reverse_walk=reverse_walk)
                 continue
             kmem_cache["address"] = current_kmem_cache
             kmem_cache["flags"] = read_int32_from_memory(current_kmem_cache + self.kmem_cache_offset_flags)
-            kmem_cache["flags_str"] = SlubDumpCommand.get_flags_str(kmem_cache["flags"])
+            kmem_cache["flags_str"] = KernelSlub.get_flags_str(kmem_cache["flags"])
             kmem_cache["size"] = read_int32_from_memory(current_kmem_cache + self.kmem_cache_offset_size)
             kmem_cache["object_size"] = read_int32_from_memory(current_kmem_cache + self.kmem_cache_offset_object_size)
             kmem_cache["offset"] = read_int32_from_memory(current_kmem_cache + self.kmem_cache_offset_offset)
             kmem_cache["red_left_pad"] = read_int32_from_memory(current_kmem_cache + self.kmem_cache_offset_red_left_pad)
-            kmem_cache["next"] = self.get_next_kmem_cache(current_kmem_cache)
+            kmem_cache["next"] = self.get_next_kmem_cache(current_kmem_cache, reverse_walk=reverse_walk)
             parsed_caches.append(kmem_cache)
             # goto next
             current_kmem_cache = kmem_cache["next"]
             # fast break
-            if target_names != [] and not (self.args.list or self.args.list_no_sort):
+            if target_names != [] and not names_only:
                 parsed_names = [x["name"] for x in parsed_caches]
                 if all(t in parsed_names for t in target_names):
                     break
 
-        if self.args.list or self.args.list_no_sort:
+        if names_only:
             return parsed_caches # fast return
 
         # second, parse node then update
-        for kmem_cache in ProgressBar(parsed_caches[1:], disable=self.args.quiet): # parsed_caches[0] is slab_caches, so skip
+        for kmem_cache in ProgressBar(parsed_caches[1:], disable=quiet): # parsed_caches[0] is slab_caches, so skip
             # parse node
-            self.walk_caches_node_page(kmem_cache)
+            self.walk_caches_node_page(kmem_cache, simple=simple, skip_page2virt=skip_page2virt)
 
         return parsed_caches
+
+
+@register_command
+class SlubTinyDumpCommand(GenericCommand, BufferingOutput):
+    """Dump SLUB-TINY free-list reachable from slab_caches."""
+
+    _cmdline_ = "slub-tiny-dump"
+    _category_ = "06-h. Qemu-system/KGDB Cooperation - Linux Allocator"
+
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("-hh", "--help-simple", action="store_true", help="show help without ASCII diagram.")
+    parser.add_argument("cache_name", metavar="SLUB_CACHE_NAME", nargs="*", help="filter by specific slub cache name.")
+    parser.add_argument("-l", "--list", action="store_true", help="list all slub cache names.")
+    parser.add_argument("-L", "--list-no-sort", action="store_true", help="list all slub cache names without sort.")
+    parser.add_argument("--meta", action="store_true", help="display offset information.")
+    parser.add_argument("-R", "--reverse-walk", action="store_true", help="reverse order walk for slab_caches->list_head.")
+    parser.add_argument("-s", "--simple", action="store_true", help="skip displaying layout and freelist.")
+    parser.add_argument("--hexdump-used", metavar="SIZE", type=lambda x: int(x, 16), default=0,
+                        help="hexdump `used chunks` if layout is resolved.")
+    parser.add_argument("--hexdump-freed", metavar="SIZE", type=lambda x: int(x, 16), default=0,
+                        help="hexdump `unused (freed) chunks` if layout is resolved.")
+    parser.add_argument("--telescope-used", metavar="SIZE", type=lambda x: int(x, 16), default=0,
+                        help="telescope `used chunks` if layout is resolved.")
+    parser.add_argument("--telescope-freed", metavar="SIZE", type=lambda x: int(x, 16), default=0,
+                        help="telescope `unused (freed) chunks` if layout is resolved.")
+    parser.add_argument("-r", "--rescan", action="store_true", help="do not use cached offset.")
+    parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
+    parser.add_argument("-q", "--quiet", action="store_true", help="enable quiet mode.")
+    parser.add_argument("--skip-page2virt", action="store_true",
+                        help="[FOR DEVELOPER] used internally in gef, please don't use it.")
+    _syntax_ = parser.format_help()
+
+    _example_ = [
+        "{0:s} kmalloc-256  # dump kmalloc-256",
+        "{0:s} --list       # list slub cache names",
+    ]
+    _example_ = "\n".join(_example_).format(_cmdline_)
+
+    _note_ = [
+        "Simplified SLUB-TINY structure:",
+        "",
+        "                         +-kmem_cache----------+     +-kmem_cache--+   +-kmem_cache--+",
+        "                         | cpu_sheaves (6.18~) |     | cpu_sheaves |   | cpu_sheaves |",
+        "                         | flags               |     | flags       |   | flags       |",
+        "                         | size                |     | size        |   | size        |",
+        "                         | object_size         |     | object_size |   | object_size |",
+        "                         | offset              |     | offset      |   | offset      |",
+        "       +-slab_caches-+   | name                |     | name        |   | name        |",
+        " ...<->| list_head   |<->| list_head           |<--->| list_head   |<->| list_head   |<-> ...",
+        "       +-------------+   | node[]              |--+  | node[]      |   | node[]      |",
+        "                         +---------------------+  |  +-------------+   +-------------+",
+        "                                                  |",
+        "    +---------------------------------------------+",
+        "    |                                               [numa node partial page freelist]",
+        "    v                     +-slab-----------+          +-chunk---+  +-chunk---+",
+        "  +-kmem_cache_node-+     | freelist       |----+     | ^       |  | ^       |",
+        "  | partial         |---->| next           |--+ |     | |offset |  | |offset |",
+        "  +-----------------+     +----------------+  | |     | v       |  | v       |",
+        "  | ...             |                         | +---->| next    |->| next    |->NULL",
+        "  +-----------------+  +----------------------+       +---------+  +---------+",
+        "                       |",
+        "                       |                            [numa node partial page freelist]",
+        "                       |  +-slab-----------+          +-chunk---+  +-chunk---+",
+        "                       |  | freelist       |----+     | ^       |  | ^       |",
+        "                       +->| next           |--+ |     | |offset |  | |offset |",
+        "                          +----------------+  | |     | v       |  | v       |",
+        "                                              | +---->| next    |->| next    |->NULL",
+        "                       +----------------------+       +---------+  +---------+",
+        "                       |",
+        "                       v",
+        "                      ...",
+        "* SLUB-TINY was introduced in kernel 6.2.",
+    ]
+    _note_ = "\n".join(_note_)
 
     def dump_page_print_layout(self, kmem_cache, page, freelist):
         used_address_color = Config.get_gef_setting("theme.heap_chunk_address_used")
@@ -150154,7 +150253,7 @@ class SlubTinyDumpCommand(GenericCommand, BufferingOutput):
         chunk_size_color = Config.get_gef_setting("theme.heap_chunk_size")
         label_inactive_color = Config.get_gef_setting("theme.heap_label_inactive")
 
-        self.out.append("slab_caches @ {:#x}".format(self.slab_caches))
+        self.out.append("slab_caches @ {:#x}".format(self.kslub_tiny.slab_caches))
         for kmem_cache in parsed_caches[1:]:
             if target_names != [] and kmem_cache["name"] not in target_names:
                 continue
@@ -150174,9 +150273,7 @@ class SlubTinyDumpCommand(GenericCommand, BufferingOutput):
 
             # dump nodes
             for node_index, node_page_list in enumerate(kmem_cache["nodes"]):
-                node_addr = read_int_from_memory(
-                    kmem_cache["address"] + self.kmem_cache_offset_node + current_arch.ptrsize * node_index,
-                )
+                node_addr = kmem_cache["node_addresses"][node_index]
                 self.out.append("    kmem_cache_node[{:d}]: {:#x}".format(node_index, node_addr))
                 printed_count = 0
                 for node_page in node_page_list:
@@ -150211,12 +150308,13 @@ class SlubTinyDumpCommand(GenericCommand, BufferingOutput):
         return
 
     def slub_tiny_walk(self, target_names):
+        self.kslub_tiny = Kernel.slub_tiny()
         if self.args.rescan:
-            Cache.clear_cache_for(self.initialize)
+            Cache.clear_cache_for(self.kslub_tiny.initialize)
 
-        ret = self.initialize()
+        ret = self.kslub_tiny.initialize()
         if self.args.meta or not ret:
-            for func, line in self.meta:
+            for func, line in Kernel.export_meta(self, self.kslub_tiny.meta):
                 func(line)
         if not ret:
             self.quiet_err("Initialization failed")
@@ -150225,12 +150323,18 @@ class SlubTinyDumpCommand(GenericCommand, BufferingOutput):
         if self.args.meta:
             return
 
+        parsed_caches = self.kslub_tiny.walk_caches(
+            target_names,
+            names_only=self.args.list or self.args.list_no_sort,
+            reverse_walk=self.args.reverse_walk,
+            simple=self.args.simple,
+            quiet=self.args.quiet,
+            skip_page2virt=self.args.skip_page2virt,
+        )
         if self.args.list or self.args.list_no_sort:
-            parsed_caches = self.walk_caches(target_names)
             self.dump_names(parsed_caches)
             return
 
-        parsed_caches = self.walk_caches(target_names)
         self.dump_caches(target_names, parsed_caches)
         return
 
@@ -150238,20 +150342,13 @@ class SlubTinyDumpCommand(GenericCommand, BufferingOutput):
     def warmup_page2virt(self):
         if is_x86() or is_arm32():
             args = self.args # backup
-            gdb.execute("page2virt 0", to_string=True)
+            KernelSlub.warmup_page2virt()
             # self.args will be overwritten. this is workaround.
             self.args = args # revert
         return
 
     def get_kmem_caches(self, target_names):
-        """Return the parsed kmem_caches of `target_names` (all if empty) instead of dumping them.
-        Return None if the initialization fails."""
-        self.args = self.parser.parse_args(["--quiet"])
-        self.warmup_page2virt()
-        self.maps = None
-        if not self.initialize():
-            return None
-        return self.walk_caches(target_names)[1:]
+        return Kernel.slub_tiny().get_kmem_caches(target_names)
 
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
@@ -150292,87 +150389,8 @@ class SlubTinyDumpCommand(GenericCommand, BufferingOutput):
         return
 
 
-@register_command
-class SlabDumpCommand(GenericCommand, BufferingOutput):
-    """Dump SLAB free-list reachable from slab_caches."""
-
-    _cmdline_ = "slab-dump"
-    _category_ = "06-h. Qemu-system/KGDB Cooperation - Linux Allocator"
-
-    parser = argparse.ArgumentParser(prog=_cmdline_)
-    parser.add_argument("-hh", "--help-simple", action="store_true", help="show help without ASCII diagram.")
-    parser.add_argument("cache_name", metavar="SLAB_CACHE_NAME", nargs="*", help="filter by specific slab cache name.")
-    parser.add_argument("-l", "--list", action="store_true", help="list all slab cache names.")
-    parser.add_argument("-L", "--list-no-sort", action="store_true", help="list all slab cache names without sort.")
-    parser.add_argument("--meta", action="store_true", help="display offset information.")
-    parser.add_argument("--cpu", type=int, help="filter by specific cpu.")
-    parser.add_argument("-R", "--reverse-walk", action="store_true", help="reverse order walk for slab_caches->list_head.")
-    parser.add_argument("-s", "--simple", action="store_true", help="skip displaying layout and freelist.")
-    parser.add_argument("--skip-partial", action="store_true", help="skip displaying slabs_partial.")
-    parser.add_argument("--skip-full", action="store_true", help="skip displaying slabs_full.")
-    parser.add_argument("--skip-free", action="store_true", help="skip displaying slabs_free.")
-    parser.add_argument("--hexdump-used", metavar="SIZE", type=lambda x: int(x, 16), default=0,
-                        help="hexdump `used chunks` if layout is resolved.")
-    parser.add_argument("--hexdump-freed", metavar="SIZE", type=lambda x: int(x, 16), default=0,
-                        help="hexdump `unused (freed) chunks` if layout is resolved.")
-    parser.add_argument("--telescope-used", metavar="SIZE", type=lambda x: int(x, 16), default=0,
-                        help="telescope `used chunks` if layout is resolved.")
-    parser.add_argument("--telescope-freed", metavar="SIZE", type=lambda x: int(x, 16), default=0,
-                        help="telescope `unused (freed) chunks` if layout is resolved.")
-    parser.add_argument("-r", "--rescan", action="store_true", help="do not use cached offset.")
-    parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
-    parser.add_argument("-q", "--quiet", action="store_true", help="enable quiet mode.")
-    _syntax_ = parser.format_help()
-
-    _example_ = [
-        "{0:s} kmalloc-256          # dump kmalloc-256 from all cpus",
-        "{0:s} kmalloc-256 --cpu 1  # dump kmalloc-256 from cpu 1",
-        "{0:s} --list               # list slab cache names",
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
-
-    _note_ = [
-        "Simplified SLAB structure:",
-        "\n"
-        "                         +-kmem_cache--+         +-kmem_cache--+   +-kmem_cache--+",
-        "                         | cpu_cache   |---+     | cpu_cache   |   | cpu_cache   |",
-        "                         | limit       |   |     | limit       |   | limit       |",
-        "                         | size        |   |     | size        |   | size        |",
-        "                         | flags       |   |     | flags       |   | flags       |",
-        "                         | num         |   |     | num         |   | num         |",
-        "                         | gfporder    |   |     | gfporder    |   | gfporder    |",
-        "       +-slab_caches-+   | name        |   |     | name        |   | name        |",
-        " ...<->| list_head   |<->| list_head   |<------->| list_head   |<->| list_head   |<-> ...",
-        "       +-------------+   | object_size |   |     | object_size |   | object_size |",
-        "                         | node[]      |------+  | node[]      |   | node[]      |",
-        "                         +-------------+   |  |  +-------------+   +-------------+",
-        "    +-__per_cpu_offset-+                   |  |",
-        "    | cpu0_offset      |--+----------------+  |",
-        "    | cpu1_offset      |  |                   |",
-        "    | cpu2_offset      |  |                   v                  +-page/slab-+    +-page/slab-+",
-        "    | ...              |  |       +-kmem_cache_node-+      +---->| slab_list |--->| slab_list |-->...",
-        "    +------------------+  |       | slabs_partial   |------+     | freelist  |    | freelist  |",
-        "                          |       | slabs_full      |----->...   | s_mem     |-+  | s_mem     |-+",
-        "      +-------------------+       | slabs_free      |----->...   | active    | |  | active    | |",
-        "      |                           +-----------------+            +-----------+ |  +-----------+ |",
-        "      v                                                                        |                |",
-        "    +-array_cache--------+                                         +-----------+    +-----------+",
-        "    | avail              |                                         |                |",
-        "    | limit              |                                         v                v",
-        "    | entry[]            |                                       +-chunk--+       +-chunk--+",
-        "    |   freed_chunk_ptr  |-------------------------------------->|        |       |        |",
-        "    |   freed_chunk_ptr  |----------------------------+          +-chunk--+       +-chunk--+",
-        "    |   freed_chunk_ptr  |                            |          |        |       |        |",
-        "    |   freed_chunk_ptr  |                            |          +-chunk--+       +-chunk--+",
-        "    |   freed_chunk_ptr  |                            +--------->|        |       |        |",
-        "    |   ...              |                                       +-...----+       +-...----+",
-        "    +--------------------+",
-        "* `struct page` has been split into `struct page` and `struct slab` since kernel 5.17.",
-        "  The structure name used for SLAB has been changed to `struct slab`.",
-        "* Chunks in array_cache are marked as in-use, even though they are actually reusable.",
-        "* SLAB was removed in kernel 6.8.",
-    ]
-    _note_ = "\n".join(_note_)
+class KernelSlab:
+    """Resolve SLAB layouts and read slab caches and free lists."""
 
     """
     struct kmem_cache {
@@ -150484,6 +150502,200 @@ class SlabDumpCommand(GenericCommand, BufferingOutput):
     };
     """
 
+    @classmethod
+    @Cache.cache_this_session(per_inferior=True, until_new_objfile=True)
+    def get_instance(cls):
+        return cls()
+
+    def __init__(self):
+        self.meta = []
+        return
+
+    @Cache.cache_this_session(cache_None=False)
+    def initialize(self):
+        self.meta = []
+
+        kversion = Kernel.version()
+        if not kversion:
+            self.meta.append(("err", "Failed to resolve kernel version"))
+            return None
+
+        # resolve slab_caches
+        self.slab_caches = KernelAddressHeuristicFinder.get_slab_caches()
+        if self.slab_caches is None:
+            self.meta.append(("err", "Failed to resolve `slab_caches`"))
+            return None
+        else:
+            self.meta.append(("info", "slab_caches: {:#x}".format(self.slab_caches)))
+
+        # resolve __per_cpu_offset
+        self.percpu = Kernel.per_cpu()
+        if self.percpu.per_cpu_offset is None:
+            self.meta.append(("info", "__per_cpu_offset: Not found"))
+            self.ncpus = 1
+        else:
+            self.meta.append(("info", "__per_cpu_offset: {:#x}".format(self.percpu.per_cpu_offset)))
+            self.ncpus = len(self.percpu.offsets)
+
+        # offsetof(kmem_cache, list)
+        if kversion < "3.18":
+            self.kmem_cache_offset_list = current_arch.ptrsize * 6 + 4 * 10
+        elif kversion < "6.1":
+            self.kmem_cache_offset_list = current_arch.ptrsize * 7 + 4 * 10
+        else:
+            self.kmem_cache_offset_list = current_arch.ptrsize * 4 + 4 * 12
+        self.meta.append(("info", "offsetof(kmem_cache, list): {:#x}".format(self.kmem_cache_offset_list)))
+
+        # offsetof(kmem_cache, name)
+        self.kmem_cache_offset_name = self.kmem_cache_offset_list - current_arch.ptrsize
+        self.meta.append(("info", "offsetof(kmem_cache, name): {:#x}".format(self.kmem_cache_offset_name)))
+
+        # offsetof(kmem_cache, size)
+        if "3.18" <= kversion:
+            self.kmem_cache_offset_size = current_arch.ptrsize + 4 * 3
+        else:
+            self.kmem_cache_offset_size = 4 * 3
+        self.meta.append(("info", "offsetof(kmem_cache, size): {:#x}".format(self.kmem_cache_offset_size)))
+
+        # offsetof(kmem_cache, flags)
+        self.kmem_cache_offset_flags = self.kmem_cache_offset_size + 4 * 3
+        self.meta.append(("info", "offsetof(kmem_cache, flags): {:#x}".format(self.kmem_cache_offset_flags)))
+
+        # offsetof(kmem_cache, num)
+        self.kmem_cache_offset_num = self.kmem_cache_offset_flags + 4
+        self.meta.append(("info", "offsetof(kmem_cache, num): {:#x}".format(self.kmem_cache_offset_num)))
+
+        # offsetof(kmem_cache, gfporder)
+        self.kmem_cache_offset_gfporder = self.kmem_cache_offset_num + 4
+        self.meta.append(("info", "offsetof(kmem_cache, gfporder): {:#x}".format(self.kmem_cache_offset_gfporder)))
+
+        # offsetof(kmem_cache, object_size)
+        self.kmem_cache_offset_object_size = self.kmem_cache_offset_list + current_arch.ptrsize * 2 + 4
+        self.meta.append(("info", "offsetof(kmem_cache, object_size): {:#x}".format(self.kmem_cache_offset_object_size)))
+
+        # offsetof(kmem_cache, node)
+        self.resolve_kmem_cache_offset_node()
+        if self.kmem_cache_offset_node is None:
+            self.meta.append(("info", "offsetof(kmem_cache, node): Not found"))
+            return None
+        else:
+            self.meta.append(("info", "offsetof(kmem_cache, node): {:#x}".format(self.kmem_cache_offset_node)))
+
+        # offsetof(kmem_cache, cpu_cache) / offsetof(kmem_cache, array)
+        if "3.18" <= kversion:
+            self.kmem_cache_offset_cpu_cache = 0
+            self.meta.append(("info", "offsetof(kmem_cache, cpu_cache): {:#x}".format(self.kmem_cache_offset_cpu_cache)))
+        else:
+            self.kmem_cache_offset_array = self.kmem_cache_offset_node + current_arch.ptrsize
+            self.meta.append(("info", "offsetof(kmem_cache, array): {:#x}".format(self.kmem_cache_offset_array)))
+
+        # offsetof(page, next) / offsetof(slab, next)
+        if kversion < "4.16":
+            self.page_offset_next = current_arch.ptrsize * 3 + 4 * 2
+        elif kversion < "4.18":
+            self.page_offset_next = current_arch.ptrsize * 3 + 4
+        elif kversion < "5.17":
+            self.page_offset_next = current_arch.ptrsize
+        elif kversion < "6.2":
+            self.page_offset_next = current_arch.ptrsize
+        else:
+            self.page_offset_next = current_arch.ptrsize * 2
+        self.meta.append(("info", "offsetof({:s}, next): {:#x}".format(Kernel.slab_page_str(), self.page_offset_next)))
+
+        # offsetof(page, freelist) / offsetof(slab, freelist)
+        if kversion < "4.18":
+            self.page_offset_freelist = current_arch.ptrsize * 2
+        elif kversion < "5.17":
+            self.page_offset_freelist = current_arch.ptrsize * 4
+        elif kversion < "6.2":
+            self.page_offset_freelist = current_arch.ptrsize * 4
+        else:
+            self.page_offset_freelist = current_arch.ptrsize * 4
+        self.meta.append(("info", "offsetof({:s}, freelist): {:#x}".format(Kernel.slab_page_str(), self.page_offset_freelist)))
+
+        # offsetof(page, slab_cache) / offsetof(slab, slab_cache)
+        if kversion < "4.16" and is_32bit():
+            self.page_offset_slab_cache = current_arch.ptrsize * 7
+        elif kversion < "4.18":
+            self.page_offset_slab_cache = current_arch.ptrsize * 6
+        elif kversion < "5.17":
+            self.page_offset_slab_cache = current_arch.ptrsize * 3
+        elif kversion < "6.2":
+            self.page_offset_slab_cache = current_arch.ptrsize * 3
+        else:
+            self.page_offset_slab_cache = current_arch.ptrsize
+        self.meta.append(("info", "offsetof({:s}, slab_cache): {:#x}".format(
+            Kernel.slab_page_str(), self.page_offset_slab_cache,
+        )))
+
+        # offsetof(page, s_mem) / offsetof(slab, s_mem)
+        if kversion < "4.18":
+            self.page_offset_s_mem = current_arch.ptrsize
+        elif kversion < "5.17":
+            self.page_offset_s_mem = current_arch.ptrsize * 5
+        elif kversion < "6.2":
+            self.page_offset_s_mem = 8 + current_arch.ptrsize * 5
+        else:
+            self.page_offset_s_mem = 8 + current_arch.ptrsize * 5
+        self.meta.append(("info", "offsetof({:s}, s_mem): {:#x}".format(Kernel.slab_page_str(), self.page_offset_s_mem)))
+
+        # offsetof(page, active) / offsetof(slab, active)
+        if kversion < "4.18":
+            self.page_offset_active = current_arch.ptrsize * 3
+        elif kversion < "5.17":
+            self.page_offset_active = current_arch.ptrsize * 6
+        elif kversion < "6.2":
+            self.page_offset_active = current_arch.ptrsize * 6
+        else:
+            self.page_offset_active = current_arch.ptrsize * 6
+        self.meta.append(("info", "offsetof({:s}, active): {:#x}".format(Kernel.slab_page_str(), self.page_offset_active)))
+
+        # offsetof(kmem_cache_node, slabs_partial)
+        self.resolve_kmem_cache_node_offset_slabs_partial()
+        if self.kmem_cache_node_offset_slabs_partial is None:
+            self.meta.append(("info", "offsetof(kmem_cache_node, slabs_partial): Not found"))
+            return None
+        else:
+            self.meta.append(("info", "offsetof(kmem_cache_node, slabs_partial): {:#x}".format(
+                self.kmem_cache_node_offset_slabs_partial,
+            )))
+
+        # offsetof(kmem_cache_node, slabs_full)
+        self.kmem_cache_node_offset_slabs_full = self.kmem_cache_node_offset_slabs_partial + current_arch.ptrsize * 2
+        self.meta.append(("info", "offsetof(kmem_cache_node, slabs_full): {:#x}".format(
+            self.kmem_cache_node_offset_slabs_full,
+        )))
+
+        # offsetof(kmem_cache_node, slabs_free)
+        self.kmem_cache_node_offset_slabs_free = self.kmem_cache_node_offset_slabs_full + current_arch.ptrsize * 2
+        self.meta.append(("info", "offsetof(kmem_cache_node, slabs_free): {:#x}".format(
+            self.kmem_cache_node_offset_slabs_free,
+        )))
+
+        # offsetof(array_cache, avail)
+        self.array_cache_offset_avail = 0
+        self.meta.append(("info", "offsetof(array_cache, avail): {:#x}".format(self.array_cache_offset_avail)))
+
+        # offsetof(array_cache, limit)
+        self.array_cache_offset_limit = 4
+        self.meta.append(("info", "offsetof(array_cache, limit): {:#x}".format(self.array_cache_offset_limit)))
+
+        # offsetof(array_cache, entry)
+        if "3.17" <= kversion:
+            self.array_cache_offset_entry = 4 * 4
+        else:
+            sizeof_raw_spinlock_t = self.kmem_cache_node_offset_slabs_partial
+            self.array_cache_offset_entry = 4 * 4 + sizeof_raw_spinlock_t
+        self.meta.append(("info", "offsetof(array_cache, entry): {:#x}".format(self.array_cache_offset_entry)))
+
+        return True
+
+    def get_kmem_caches(self, target_names=()):
+        """Return the parsed caches, or None if initialization fails."""
+        if not self.initialize():
+            return None
+        return self.walk_caches(list(target_names), list(range(self.ncpus)))[1:]
+
     @Cache.cache_until_next
     def parse_kmem_caches_for_initialize(self):
         # `slab_caches` is a static list head, so it should not be broken.
@@ -150537,7 +150749,9 @@ class SlabDumpCommand(GenericCommand, BufferingOutput):
     def resolve_kmem_cache_node_offset_slabs_partial(self):
         # fast path
         try:
-            self.kmem_cache_node_offset_slabs_partial = GefUtil.parse_and_eval_unsigned("&((struct kmem_cache_node*)0).slabs_partial")
+            self.kmem_cache_node_offset_slabs_partial = GefUtil.parse_and_eval_unsigned(
+                "&((struct kmem_cache_node*)0).slabs_partial",
+            )
             return
         except gdb.error:
             pass
@@ -150575,181 +150789,10 @@ class SlabDumpCommand(GenericCommand, BufferingOutput):
                 return
         return
 
-    @Cache.cache_this_session(cache_None=False)
-    def initialize(self):
-        self.meta = []
-
-        kversion = Kernel.version()
-        if not kversion:
-            self.meta.append((self.quiet_err, "Failed to resolve kernel version"))
-            return None
-
-        # resolve slab_caches
-        self.slab_caches = KernelAddressHeuristicFinder.get_slab_caches()
-        if self.slab_caches is None:
-            self.meta.append((self.quiet_err, "Failed to resolve `slab_caches`"))
-            return None
-        else:
-            self.meta.append((self.quiet_info, "slab_caches: {:#x}".format(self.slab_caches)))
-
-        # resolve __per_cpu_offset
-        self.percpu = Kernel.per_cpu()
-        if self.percpu.per_cpu_offset is None:
-            self.meta.append((self.quiet_info, "__per_cpu_offset: Not found"))
-            self.ncpus = 1
-        else:
-            self.meta.append((self.quiet_info, "__per_cpu_offset: {:#x}".format(self.percpu.per_cpu_offset)))
-            self.ncpus = len(self.percpu.offsets)
-
-        # offsetof(kmem_cache, list)
-        if kversion < "3.18":
-            self.kmem_cache_offset_list = current_arch.ptrsize * 6 + 4 * 10
-        elif kversion < "6.1":
-            self.kmem_cache_offset_list = current_arch.ptrsize * 7 + 4 * 10
-        else:
-            self.kmem_cache_offset_list = current_arch.ptrsize * 4 + 4 * 12
-        self.meta.append((self.quiet_info, "offsetof(kmem_cache, list): {:#x}".format(self.kmem_cache_offset_list)))
-
-        # offsetof(kmem_cache, name)
-        self.kmem_cache_offset_name = self.kmem_cache_offset_list - current_arch.ptrsize
-        self.meta.append((self.quiet_info, "offsetof(kmem_cache, name): {:#x}".format(self.kmem_cache_offset_name)))
-
-        # offsetof(kmem_cache, size)
-        if "3.18" <= kversion:
-            self.kmem_cache_offset_size = current_arch.ptrsize + 4 * 3
-        else:
-            self.kmem_cache_offset_size = 4 * 3
-        self.meta.append((self.quiet_info, "offsetof(kmem_cache, size): {:#x}".format(self.kmem_cache_offset_size)))
-
-        # offsetof(kmem_cache, flags)
-        self.kmem_cache_offset_flags = self.kmem_cache_offset_size + 4 * 3
-        self.meta.append((self.quiet_info, "offsetof(kmem_cache, flags): {:#x}".format(self.kmem_cache_offset_flags)))
-
-        # offsetof(kmem_cache, num)
-        self.kmem_cache_offset_num = self.kmem_cache_offset_flags + 4
-        self.meta.append((self.quiet_info, "offsetof(kmem_cache, num): {:#x}".format(self.kmem_cache_offset_num)))
-
-        # offsetof(kmem_cache, gfporder)
-        self.kmem_cache_offset_gfporder = self.kmem_cache_offset_num + 4
-        self.meta.append((self.quiet_info, "offsetof(kmem_cache, gfporder): {:#x}".format(self.kmem_cache_offset_gfporder)))
-
-        # offsetof(kmem_cache, object_size)
-        self.kmem_cache_offset_object_size = self.kmem_cache_offset_list + current_arch.ptrsize * 2 + 4
-        self.meta.append((self.quiet_info, "offsetof(kmem_cache, object_size): {:#x}".format(self.kmem_cache_offset_object_size)))
-
-        # offsetof(kmem_cache, node)
-        self.resolve_kmem_cache_offset_node()
-        if self.kmem_cache_offset_node is None:
-            self.meta.append((self.quiet_info, "offsetof(kmem_cache, node): Not found"))
-            return None
-        else:
-            self.meta.append((self.quiet_info, "offsetof(kmem_cache, node): {:#x}".format(self.kmem_cache_offset_node)))
-
-        # offsetof(kmem_cache, cpu_cache) / offsetof(kmem_cache, array)
-        if "3.18" <= kversion:
-            self.kmem_cache_offset_cpu_cache = 0
-            self.meta.append((self.quiet_info, "offsetof(kmem_cache, cpu_cache): {:#x}".format(self.kmem_cache_offset_cpu_cache)))
-        else:
-            self.kmem_cache_offset_array = self.kmem_cache_offset_node + current_arch.ptrsize
-            self.meta.append((self.quiet_info, "offsetof(kmem_cache, array): {:#x}".format(self.kmem_cache_offset_array)))
-
-        # offsetof(page, next) / offsetof(slab, next)
-        if kversion < "4.16":
-            self.page_offset_next = current_arch.ptrsize * 3 + 4 * 2
-        elif kversion < "4.18":
-            self.page_offset_next = current_arch.ptrsize * 3 + 4
-        elif kversion < "5.17":
-            self.page_offset_next = current_arch.ptrsize
-        elif kversion < "6.2":
-            self.page_offset_next = current_arch.ptrsize
-        else:
-            self.page_offset_next = current_arch.ptrsize * 2
-        self.meta.append((self.quiet_info, "offsetof({:s}, next): {:#x}".format(Kernel.slab_page_str(), self.page_offset_next)))
-
-        # offsetof(page, freelist) / offsetof(slab, freelist)
-        if kversion < "4.18":
-            self.page_offset_freelist = current_arch.ptrsize * 2
-        elif kversion < "5.17":
-            self.page_offset_freelist = current_arch.ptrsize * 4
-        elif kversion < "6.2":
-            self.page_offset_freelist = current_arch.ptrsize * 4
-        else:
-            self.page_offset_freelist = current_arch.ptrsize * 4
-        self.meta.append((self.quiet_info, "offsetof({:s}, freelist): {:#x}".format(Kernel.slab_page_str(), self.page_offset_freelist)))
-
-        # offsetof(page, slab_cache) / offsetof(slab, slab_cache)
-        if kversion < "4.16" and is_32bit():
-            self.page_offset_slab_cache = current_arch.ptrsize * 7
-        elif kversion < "4.18":
-            self.page_offset_slab_cache = current_arch.ptrsize * 6
-        elif kversion < "5.17":
-            self.page_offset_slab_cache = current_arch.ptrsize * 3
-        elif kversion < "6.2":
-            self.page_offset_slab_cache = current_arch.ptrsize * 3
-        else:
-            self.page_offset_slab_cache = current_arch.ptrsize
-        self.meta.append((self.quiet_info, "offsetof({:s}, slab_cache): {:#x}".format(Kernel.slab_page_str(), self.page_offset_slab_cache)))
-
-        # offsetof(page, s_mem) / offsetof(slab, s_mem)
-        if kversion < "4.18":
-            self.page_offset_s_mem = current_arch.ptrsize
-        elif kversion < "5.17":
-            self.page_offset_s_mem = current_arch.ptrsize * 5
-        elif kversion < "6.2":
-            self.page_offset_s_mem = 8 + current_arch.ptrsize * 5
-        else:
-            self.page_offset_s_mem = 8 + current_arch.ptrsize * 5
-        self.meta.append((self.quiet_info, "offsetof({:s}, s_mem): {:#x}".format(Kernel.slab_page_str(), self.page_offset_s_mem)))
-
-        # offsetof(page, active) / offsetof(slab, active)
-        if kversion < "4.18":
-            self.page_offset_active = current_arch.ptrsize * 3
-        elif kversion < "5.17":
-            self.page_offset_active = current_arch.ptrsize * 6
-        elif kversion < "6.2":
-            self.page_offset_active = current_arch.ptrsize * 6
-        else:
-            self.page_offset_active = current_arch.ptrsize * 6
-        self.meta.append((self.quiet_info, "offsetof({:s}, active): {:#x}".format(Kernel.slab_page_str(), self.page_offset_active)))
-
-        # offsetof(kmem_cache_node, slabs_partial)
-        self.resolve_kmem_cache_node_offset_slabs_partial()
-        if self.kmem_cache_node_offset_slabs_partial is None:
-            self.meta.append((self.quiet_info, "offsetof(kmem_cache_node, slabs_partial): Not found"))
-            return None
-        else:
-            self.meta.append((self.quiet_info, "offsetof(kmem_cache_node, slabs_partial): {:#x}".format(self.kmem_cache_node_offset_slabs_partial)))
-
-        # offsetof(kmem_cache_node, slabs_full)
-        self.kmem_cache_node_offset_slabs_full = self.kmem_cache_node_offset_slabs_partial + current_arch.ptrsize * 2
-        self.meta.append((self.quiet_info, "offsetof(kmem_cache_node, slabs_full): {:#x}".format(self.kmem_cache_node_offset_slabs_full)))
-
-        # offsetof(kmem_cache_node, slabs_free)
-        self.kmem_cache_node_offset_slabs_free = self.kmem_cache_node_offset_slabs_full + current_arch.ptrsize * 2
-        self.meta.append((self.quiet_info, "offsetof(kmem_cache_node, slabs_free): {:#x}".format(self.kmem_cache_node_offset_slabs_free)))
-
-        # offsetof(array_cache, avail)
-        self.array_cache_offset_avail = 0
-        self.meta.append((self.quiet_info, "offsetof(array_cache, avail): {:#x}".format(self.array_cache_offset_avail)))
-
-        # offsetof(array_cache, limit)
-        self.array_cache_offset_limit = 4
-        self.meta.append((self.quiet_info, "offsetof(array_cache, limit): {:#x}".format(self.array_cache_offset_limit)))
-
-        # offsetof(array_cache, entry)
-        if "3.17" <= kversion:
-            self.array_cache_offset_entry = 4 * 4
-        else:
-            sizeof_raw_spinlock_t = self.kmem_cache_node_offset_slabs_partial
-            self.array_cache_offset_entry = 4 * 4 + sizeof_raw_spinlock_t
-        self.meta.append((self.quiet_info, "offsetof(array_cache, entry): {:#x}".format(self.array_cache_offset_entry)))
-
-        return True
-
-    def get_next_kmem_cache(self, addr, point_to_base=True):
+    def get_next_kmem_cache(self, addr, point_to_base=True, *, reverse_walk=False):
         if point_to_base:
             addr += self.kmem_cache_offset_list
-        if self.args.reverse_walk:
+        if reverse_walk:
             return read_int_from_memory(addr) - self.kmem_cache_offset_list
         else:
             return read_int_from_memory(addr + current_arch.ptrsize) - self.kmem_cache_offset_list
@@ -150767,8 +150810,8 @@ class SlabDumpCommand(GenericCommand, BufferingOutput):
         else:
             return read_int_from_memory(addr + self.kmem_cache_offset_array + current_arch.ptrsize * cpu)
 
-    def walk_array_cache(self, array_cache, cpu, kmem_cache):
-        if self.args.simple:
+    def walk_array_cache(self, array_cache, cpu, kmem_cache, *, simple=False):
+        if simple:
             return []
 
         freelist = []
@@ -150779,7 +150822,7 @@ class SlabDumpCommand(GenericCommand, BufferingOutput):
             freelist.append(chunk)
         return freelist
 
-    def walk_node_list(self, node_page_head, current_node_page, kmem_cache):
+    def walk_node_list(self, node_page_head, current_node_page, kmem_cache, *, simple=False):
         kversion = Kernel.version()
         node_page_list = []
         seen = set() # avoid infinity loop
@@ -150795,7 +150838,7 @@ class SlabDumpCommand(GenericCommand, BufferingOutput):
             node_page["s_mem"] = read_int_from_memory(node_page["address"] + self.page_offset_s_mem)
             node_page["s_mem_base"] = node_page["s_mem"] & get_pagesize_mask_high()
 
-            if not self.args.simple:
+            if not simple:
                 freelist_addr = read_int_from_memory(node_page["address"] + self.page_offset_freelist)
                 if is_valid_addr(freelist_addr):
                     active = read_int32_from_memory(node_page["address"] + self.page_offset_active)
@@ -150812,9 +150855,9 @@ class SlabDumpCommand(GenericCommand, BufferingOutput):
             current_node_page = read_int_from_memory(node_page["address"] + self.page_offset_next)
         return node_page_list
 
-    def walk_caches(self, target_names, cpus):
+    def walk_caches(self, target_names, cpus, *, names_only=False, reverse_walk=False, simple=False, quiet=True):
         kversion = Kernel.version()
-        current_kmem_cache = self.get_next_kmem_cache(self.slab_caches, point_to_base=False)
+        current_kmem_cache = self.get_next_kmem_cache(self.slab_caches, point_to_base=False, reverse_walk=reverse_walk)
         parsed_caches = [{"name": "slab_caches", "next": current_kmem_cache}]
 
         # first, parse kmem_cache
@@ -150823,31 +150866,31 @@ class SlabDumpCommand(GenericCommand, BufferingOutput):
             # parse member
             kmem_cache["name"] = self.get_name(current_kmem_cache)
             if target_names != [] and kmem_cache["name"] not in target_names:
-                current_kmem_cache = self.get_next_kmem_cache(current_kmem_cache)
+                current_kmem_cache = self.get_next_kmem_cache(current_kmem_cache, reverse_walk=reverse_walk)
                 continue
             kmem_cache["address"] = current_kmem_cache
             kmem_cache["flags"] = read_int32_from_memory(current_kmem_cache + self.kmem_cache_offset_flags)
-            kmem_cache["flags_str"] = SlubDumpCommand.get_flags_str(kmem_cache["flags"])
+            kmem_cache["flags_str"] = KernelSlub.get_flags_str(kmem_cache["flags"])
             kmem_cache["size"] = read_int32_from_memory(current_kmem_cache + self.kmem_cache_offset_size)
             kmem_cache["object_size"] = read_int32_from_memory(current_kmem_cache + self.kmem_cache_offset_object_size)
             kmem_cache["objperslab"] = read_int32_from_memory(current_kmem_cache + self.kmem_cache_offset_num)
             gfporder = read_int32_from_memory(current_kmem_cache + self.kmem_cache_offset_gfporder)
             kmem_cache["pagesperslab"] = 1 << gfporder
-            kmem_cache["next"] = self.get_next_kmem_cache(current_kmem_cache)
+            kmem_cache["next"] = self.get_next_kmem_cache(current_kmem_cache, reverse_walk=reverse_walk)
             parsed_caches.append(kmem_cache)
             # goto next
             current_kmem_cache = kmem_cache["next"]
             # fast break
-            if target_names != [] and not (self.args.list or self.args.list_no_sort):
+            if target_names != [] and not names_only:
                 parsed_names = [x["name"] for x in parsed_caches]
                 if all(t in parsed_names for t in target_names):
                     break
 
-        if self.args.list or self.args.list_no_sort:
+        if names_only:
             return parsed_caches
 
         # second, parse array_cache and node
-        for kmem_cache in ProgressBar(parsed_caches[1:], disable=self.args.quiet): # parsed_caches[0] is slab_caches, so skip
+        for kmem_cache in ProgressBar(parsed_caches[1:], disable=quiet): # parsed_caches[0] is slab_caches, so skip
             # parse array_cache
             kmem_cache["array_cache"] = {}
             kmem_cache["array_cache"]["freelist_all"] = []
@@ -150858,11 +150901,12 @@ class SlabDumpCommand(GenericCommand, BufferingOutput):
                 kmem_cache["array_cache"][cpu]["address"] = array_cache = self.get_array_cache_cpu(kmem_cache["address"], cpu)
                 kmem_cache["array_cache"][cpu]["avail"] = read_int32_from_memory(array_cache + self.array_cache_offset_avail)
                 kmem_cache["array_cache"][cpu]["limit"] = read_int32_from_memory(array_cache + self.array_cache_offset_limit)
-                kmem_cache["array_cache"][cpu]["freelist"] = self.walk_array_cache(array_cache, cpu, kmem_cache)
+                kmem_cache["array_cache"][cpu]["freelist"] = self.walk_array_cache(array_cache, cpu, kmem_cache, simple=simple)
                 kmem_cache["array_cache"]["freelist_all"].extend(kmem_cache["array_cache"][cpu]["freelist"])
 
             # parse node
             kmem_cache["nodes"] = []
+            kmem_cache["node_addresses"] = []
             if "3.18" <= kversion:
                 kmem_cache_node_array = kmem_cache["address"] + self.kmem_cache_offset_node
             else:
@@ -150878,18 +150922,21 @@ class SlabDumpCommand(GenericCommand, BufferingOutput):
                 node_page_head = current_kmem_cache_node + self.kmem_cache_node_offset_slabs_partial
                 if is_valid_addr(node_page_head):
                     current_node_page = read_int_from_memory(node_page_head)
-                    slabs_list["slabs_partial"] = self.walk_node_list(node_page_head, current_node_page, kmem_cache)
+                    slabs_list["slabs_partial"] = self.walk_node_list(
+                        node_page_head, current_node_page, kmem_cache, simple=simple,
+                    )
 
                 node_page_head = current_kmem_cache_node + self.kmem_cache_node_offset_slabs_full
                 if is_valid_addr(node_page_head):
                     current_node_page = read_int_from_memory(node_page_head)
-                    slabs_list["slabs_full"] = self.walk_node_list(node_page_head, current_node_page, kmem_cache)
+                    slabs_list["slabs_full"] = self.walk_node_list(node_page_head, current_node_page, kmem_cache, simple=simple)
 
                 node_page_head = current_kmem_cache_node + self.kmem_cache_node_offset_slabs_free
                 if is_valid_addr(node_page_head):
                     current_node_page = read_int_from_memory(node_page_head)
-                    slabs_list["slabs_free"] = self.walk_node_list(node_page_head, current_node_page, kmem_cache)
+                    slabs_list["slabs_free"] = self.walk_node_list(node_page_head, current_node_page, kmem_cache, simple=simple)
 
+                kmem_cache["node_addresses"].append(current_kmem_cache_node)
                 kmem_cache["nodes"].append(slabs_list)
 
                 if kversion < "3.18":
@@ -150897,6 +150944,89 @@ class SlabDumpCommand(GenericCommand, BufferingOutput):
                     break
                 current_kmem_cache_node_ptr += current_arch.ptrsize
         return parsed_caches
+
+
+@register_command
+class SlabDumpCommand(GenericCommand, BufferingOutput):
+    """Dump SLAB free-list reachable from slab_caches."""
+
+    _cmdline_ = "slab-dump"
+    _category_ = "06-h. Qemu-system/KGDB Cooperation - Linux Allocator"
+
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("-hh", "--help-simple", action="store_true", help="show help without ASCII diagram.")
+    parser.add_argument("cache_name", metavar="SLAB_CACHE_NAME", nargs="*", help="filter by specific slab cache name.")
+    parser.add_argument("-l", "--list", action="store_true", help="list all slab cache names.")
+    parser.add_argument("-L", "--list-no-sort", action="store_true", help="list all slab cache names without sort.")
+    parser.add_argument("--meta", action="store_true", help="display offset information.")
+    parser.add_argument("--cpu", type=int, help="filter by specific cpu.")
+    parser.add_argument("-R", "--reverse-walk", action="store_true", help="reverse order walk for slab_caches->list_head.")
+    parser.add_argument("-s", "--simple", action="store_true", help="skip displaying layout and freelist.")
+    parser.add_argument("--skip-partial", action="store_true", help="skip displaying slabs_partial.")
+    parser.add_argument("--skip-full", action="store_true", help="skip displaying slabs_full.")
+    parser.add_argument("--skip-free", action="store_true", help="skip displaying slabs_free.")
+    parser.add_argument("--hexdump-used", metavar="SIZE", type=lambda x: int(x, 16), default=0,
+                        help="hexdump `used chunks` if layout is resolved.")
+    parser.add_argument("--hexdump-freed", metavar="SIZE", type=lambda x: int(x, 16), default=0,
+                        help="hexdump `unused (freed) chunks` if layout is resolved.")
+    parser.add_argument("--telescope-used", metavar="SIZE", type=lambda x: int(x, 16), default=0,
+                        help="telescope `used chunks` if layout is resolved.")
+    parser.add_argument("--telescope-freed", metavar="SIZE", type=lambda x: int(x, 16), default=0,
+                        help="telescope `unused (freed) chunks` if layout is resolved.")
+    parser.add_argument("-r", "--rescan", action="store_true", help="do not use cached offset.")
+    parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
+    parser.add_argument("-q", "--quiet", action="store_true", help="enable quiet mode.")
+    _syntax_ = parser.format_help()
+
+    _example_ = [
+        "{0:s} kmalloc-256          # dump kmalloc-256 from all cpus",
+        "{0:s} kmalloc-256 --cpu 1  # dump kmalloc-256 from cpu 1",
+        "{0:s} --list               # list slab cache names",
+    ]
+    _example_ = "\n".join(_example_).format(_cmdline_)
+
+    _note_ = [
+        "Simplified SLAB structure:",
+        "\n"
+        "                         +-kmem_cache--+         +-kmem_cache--+   +-kmem_cache--+",
+        "                         | cpu_cache   |---+     | cpu_cache   |   | cpu_cache   |",
+        "                         | limit       |   |     | limit       |   | limit       |",
+        "                         | size        |   |     | size        |   | size        |",
+        "                         | flags       |   |     | flags       |   | flags       |",
+        "                         | num         |   |     | num         |   | num         |",
+        "                         | gfporder    |   |     | gfporder    |   | gfporder    |",
+        "       +-slab_caches-+   | name        |   |     | name        |   | name        |",
+        " ...<->| list_head   |<->| list_head   |<------->| list_head   |<->| list_head   |<-> ...",
+        "       +-------------+   | object_size |   |     | object_size |   | object_size |",
+        "                         | node[]      |------+  | node[]      |   | node[]      |",
+        "                         +-------------+   |  |  +-------------+   +-------------+",
+        "    +-__per_cpu_offset-+                   |  |",
+        "    | cpu0_offset      |--+----------------+  |",
+        "    | cpu1_offset      |  |                   |",
+        "    | cpu2_offset      |  |                   v                  +-page/slab-+    +-page/slab-+",
+        "    | ...              |  |       +-kmem_cache_node-+      +---->| slab_list |--->| slab_list |-->...",
+        "    +------------------+  |       | slabs_partial   |------+     | freelist  |    | freelist  |",
+        "                          |       | slabs_full      |----->...   | s_mem     |-+  | s_mem     |-+",
+        "      +-------------------+       | slabs_free      |----->...   | active    | |  | active    | |",
+        "      |                           +-----------------+            +-----------+ |  +-----------+ |",
+        "      v                                                                        |                |",
+        "    +-array_cache--------+                                         +-----------+    +-----------+",
+        "    | avail              |                                         |                |",
+        "    | limit              |                                         v                v",
+        "    | entry[]            |                                       +-chunk--+       +-chunk--+",
+        "    |   freed_chunk_ptr  |-------------------------------------->|        |       |        |",
+        "    |   freed_chunk_ptr  |----------------------------+          +-chunk--+       +-chunk--+",
+        "    |   freed_chunk_ptr  |                            |          |        |       |        |",
+        "    |   freed_chunk_ptr  |                            |          +-chunk--+       +-chunk--+",
+        "    |   freed_chunk_ptr  |                            +--------->|        |       |        |",
+        "    |   ...              |                                       +-...----+       +-...----+",
+        "    +--------------------+",
+        "* `struct page` has been split into `struct page` and `struct slab` since kernel 5.17.",
+        "  The structure name used for SLAB has been changed to `struct slab`.",
+        "* Chunks in array_cache are marked as in-use, even though they are actually reusable.",
+        "* SLAB was removed in kernel 6.8.",
+    ]
+    _note_ = "\n".join(_note_)
 
     def dump_page(self, page, kmem_cache, tag):
         heap_page_color = Config.get_gef_setting("theme.heap_page_address")
@@ -151023,7 +151153,7 @@ class SlabDumpCommand(GenericCommand, BufferingOutput):
         chunk_size_color = Config.get_gef_setting("theme.heap_chunk_size")
         label_inactive_color = Config.get_gef_setting("theme.heap_label_inactive")
 
-        self.out.append("slab_caches @ {:#x}".format(self.slab_caches))
+        self.out.append("slab_caches @ {:#x}".format(self.kslab.slab_caches))
         for kmem_cache in parsed_caches[1:]:
             if target_names != [] and kmem_cache["name"] not in target_names:
                 continue
@@ -151050,9 +151180,7 @@ class SlabDumpCommand(GenericCommand, BufferingOutput):
                 self.out.append("      {:s}: (none)".format(Color.colorify("node pages", label_inactive_color)))
             else:
                 for node_index, slabs_list in enumerate(kmem_cache["nodes"]):
-                    node_addr = read_int_from_memory(
-                        kmem_cache["address"] + self.kmem_cache_offset_node + current_arch.ptrsize * node_index,
-                    )
+                    node_addr = kmem_cache["node_addresses"][node_index]
                     self.out.append("    kmem_cache_node[{:d}]: {:#x}".format(node_index, node_addr))
 
                     if not self.args.skip_partial and "slabs_partial" in slabs_list:
@@ -151104,12 +151232,13 @@ class SlabDumpCommand(GenericCommand, BufferingOutput):
         return
 
     def slabwalk(self, target_names, cpu):
+        self.kslab = Kernel.slab()
         if self.args.rescan:
-            Cache.clear_cache_for(self.initialize)
+            Cache.clear_cache_for(self.kslab.initialize)
 
-        ret = self.initialize()
+        ret = self.kslab.initialize()
         if self.args.meta or not ret:
-            for func, line in self.meta:
+            for func, line in Kernel.export_meta(self, self.kslab.meta):
                 func(line)
         if not ret:
             self.quiet_err("Initialization failed")
@@ -151119,30 +151248,31 @@ class SlabDumpCommand(GenericCommand, BufferingOutput):
             return
 
         if self.args.list or self.args.list_no_sort:
-            parsed_caches = self.walk_caches(target_names, cpus=None)
-            self.dump_names(parsed_caches)
-            return
-
-        if cpu is None:
-            target_cpus = list(range(self.ncpus))
+            target_cpus = None
+        elif cpu is None:
+            target_cpus = list(range(self.kslab.ncpus))
         else:
-            if self.ncpus <= cpu:
-                self.quiet_err("CPU number is invalid (valid range: {:d}-{:d})".format(0, self.ncpus - 1))
+            if self.kslab.ncpus <= cpu:
+                self.quiet_err("CPU number is invalid (valid range: {:d}-{:d})".format(0, self.kslab.ncpus - 1))
                 return
             target_cpus = [cpu]
 
-        parsed_caches = self.walk_caches(target_names, target_cpus)
+        parsed_caches = self.kslab.walk_caches(
+            target_names, target_cpus,
+            names_only=self.args.list or self.args.list_no_sort,
+            reverse_walk=self.args.reverse_walk,
+            simple=self.args.simple,
+            quiet=self.args.quiet,
+        )
+        if self.args.list or self.args.list_no_sort:
+            self.dump_names(parsed_caches)
+            return
+
         self.dump_caches(target_names, target_cpus, parsed_caches)
         return
 
     def get_kmem_caches(self, target_names):
-        """Return the parsed kmem_caches of `target_names` (all if empty) instead of dumping them.
-        Return None if the initialization fails."""
-        self.args = self.parser.parse_args(["--quiet"])
-        self.maps = None
-        if not self.initialize():
-            return None
-        return self.walk_caches(target_names, list(range(self.ncpus)))[1:]
+        return Kernel.slab().get_kmem_caches(target_names)
 
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
@@ -151173,6 +151303,255 @@ class SlabDumpCommand(GenericCommand, BufferingOutput):
         self.slabwalk(args.cache_name, args.cpu)
         self.print_output()
         return
+
+
+class KernelSlob:
+    """Resolve SLOB layouts and read slab caches and free lists."""
+
+    """
+    struct kmem_cache {
+        unsigned int object_size;
+        unsigned int size;
+        unsigned int align;
+        slab_flags_t flags;                      // unsigned int
+        unsigned int useroffset;                 // if 4.16 <= kernel
+        unsigned int usersize;                   // if 4.16 <= kernel
+        const char *name;
+        int refcount;
+        void (*ctor)(void *);
+        struct list_head list;
+    };
+
+    struct page {                                // if kernel < 4.18
+        unsigned long flags;
+        void *__unused_1;
+        void *freelist;
+        int units;
+        atomic_t refcount;                       // if kernel < 4.16
+        struct list_head lru;
+        ...
+    };
+
+    struct page {                                // if 4.18 <= kernel < 5.17
+        unsigned long flags;
+        struct list_head lru;
+        struct kmem_cache *__unused_1;
+        void *freelist;
+        void *__unused_2;
+        int units;
+        ...
+    };
+
+    struct slab {                                // if 5.17 <= kernel
+        unsigned long __page_flags;
+        struct list_head slab_list;
+        void *__unused_1;
+        void *freelist
+        long units;
+        unsigned int __unused_2;
+    };
+    """
+
+    @classmethod
+    @Cache.cache_this_session(per_inferior=True, until_new_objfile=True)
+    def get_instance(cls):
+        return cls()
+
+    def __init__(self):
+        self.meta = []
+        return
+
+    @Cache.cache_this_session(cache_None=False)
+    def initialize(self):
+        self.meta = []
+
+        kversion = Kernel.version()
+        if not kversion:
+            self.meta.append(("err", "Failed to resolve kernel version"))
+            return None
+
+        # resolve slab_caches
+        self.slab_caches = KernelAddressHeuristicFinder.get_slab_caches()
+        if self.slab_caches is None:
+            self.meta.append(("err", "Failed to resolve `slab_caches`"))
+            return None
+        else:
+            self.meta.append(("info", "slab_caches: {:#x}".format(self.slab_caches)))
+
+        # resolve global freelists
+        self.free_slob_large = Ksym.get_addr("free_slob_large")
+        if self.free_slob_large is None:
+            self.meta.append(("err", "Failed to resolve `free_slob_large`"))
+            return None
+        else:
+            self.meta.append(("info", "free_slob_large: {:#x}".format(self.free_slob_large)))
+
+        self.free_slob_medium = Ksym.get_addr("free_slob_medium")
+        if self.free_slob_medium is None:
+            self.meta.append(("err", "Failed to resolve `free_slob_medium`"))
+            return None
+        else:
+            self.meta.append(("info", "free_slob_medium: {:#x}".format(self.free_slob_medium)))
+
+        self.free_slob_small = Ksym.get_addr("free_slob_small")
+        if self.free_slob_small is None:
+            self.meta.append(("err", "Failed to resolve `free_slob_small`"))
+            return None
+        else:
+            self.meta.append(("info", "free_slob_small: {:#x}".format(self.free_slob_small)))
+
+        # offsetof(kmem_cache, list)
+        if kversion < "4.16":
+            self.kmem_cache_offset_list = current_arch.ptrsize * 3 + 4 * 4
+        else:
+            self.kmem_cache_offset_list = current_arch.ptrsize * 3 + 4 * 6
+        self.meta.append(("info", "offsetof(kmem_cache, list): {:#x}".format(self.kmem_cache_offset_list)))
+
+        # offsetof(kmem_cache, name)
+        self.kmem_cache_offset_name = self.kmem_cache_offset_list - current_arch.ptrsize * 3
+        self.meta.append(("info", "offsetof(kmem_cache, name): {:#x}".format(self.kmem_cache_offset_name)))
+
+        # offsetof(kmem_cache, object_size)
+        self.kmem_cache_offset_object_size = 0
+        self.meta.append(("info", "offsetof(kmem_cache, object_size): {:#x}".format(self.kmem_cache_offset_object_size)))
+
+        # offsetof(kmem_cache, size)
+        self.kmem_cache_offset_size = 4
+        self.meta.append(("info", "offsetof(kmem_cache, size): {:#x}".format(self.kmem_cache_offset_size)))
+
+        # offsetof(kmem_cache, flags)
+        self.kmem_cache_offset_flags = 4 * 3
+        self.meta.append(("info", "offsetof(kmem_cache, flags): {:#x}".format(self.kmem_cache_offset_flags)))
+
+        # offsetof(page, next) / offsetof(slab, next)
+        if kversion < "4.16":
+            self.page_offset_next = current_arch.ptrsize * 3 + 4 * 2
+        elif kversion < "4.18":
+            self.page_offset_next = current_arch.ptrsize * 4
+        elif kversion < "5.17":
+            self.page_offset_next = current_arch.ptrsize
+        else:
+            self.page_offset_next = current_arch.ptrsize
+        self.meta.append(("info", "offsetof({:s}, next): {:#x}".format(Kernel.slab_page_str(), self.page_offset_next)))
+
+        # offsetof(page, freelist) / offsetof(slab, freelist)
+        if kversion < "4.18":
+            self.page_offset_freelist = current_arch.ptrsize * 2
+        elif kversion < "5.17":
+            self.page_offset_freelist = current_arch.ptrsize * 4
+        else:
+            self.page_offset_freelist = current_arch.ptrsize * 4
+        self.meta.append(("info", "offsetof({:s}, freelist): {:#x}".format(Kernel.slab_page_str(), self.page_offset_freelist)))
+
+        # offsetof(page, units) / offsetof(slab, units)
+        if kversion < "4.18":
+            self.page_offset_units = current_arch.ptrsize * 3
+        elif kversion < "5.17":
+            self.page_offset_units = current_arch.ptrsize * 6
+        else:
+            self.page_offset_units = current_arch.ptrsize * 5
+        self.meta.append(("info", "offsetof({:s}, units): {:#x}".format(Kernel.slab_page_str(), self.page_offset_units)))
+
+        return True
+
+    def get_kmem_caches(self, target_names=()):
+        """Return the parsed caches, or None if initialization fails."""
+        if not self.initialize():
+            return None
+        parsed_caches, _ = self.walk_caches(list(target_names), names_only=True)
+        return parsed_caches[1:]
+
+    def get_next_kmem_cache(self, addr, point_to_base=True, *, reverse_walk=False):
+        if point_to_base:
+            addr += self.kmem_cache_offset_list
+        if reverse_walk:
+            return read_int_from_memory(addr) - self.kmem_cache_offset_list
+        else:
+            return read_int_from_memory(addr + current_arch.ptrsize) - self.kmem_cache_offset_list
+
+    def get_name(self, addr):
+        name_addr = read_int_from_memory(addr + self.kmem_cache_offset_name)
+        return read_cstring_from_memory(name_addr)
+
+    def walk_freelist(self, head, page, *, simple=False):
+        if simple:
+            return []
+
+        freelist = []
+        current = head
+        while True:
+            base = current & get_pagesize_mask_high()
+            units = read_int16_from_memory(current, signed=True)
+            if units < 0:
+                next = -units
+                units = 1
+            else:
+                next = read_int16_from_memory(current + 2, signed=True)
+            freelist.append([current, units])
+            current = base + next * 2
+            if (current & 0xfff) == 0:
+                break
+        return freelist
+
+    def walk_page_freelist(self, head, *, simple=False):
+        seen = {head}
+        page_freelist = []
+        current = read_int_from_memory(head)
+        while True:
+            seen.add(current)
+            page = {}
+            page["address"] = current - self.page_offset_next
+            page["units"] = read_int32_from_memory(page["address"] + self.page_offset_units)
+            freelist_head = read_int_from_memory(page["address"] + self.page_offset_freelist)
+            page["virt_addr"] = freelist_head & get_pagesize_mask_high()
+            page["num_pages"] = 1
+            page["freelist"] = self.walk_freelist(freelist_head, page, simple=simple)
+            page["next"] = next = read_int_from_memory(current)
+            page_freelist.append(page)
+            if next in seen:
+                break
+            current = next
+        return page_freelist
+
+    def walk_caches(self, target_names, *, names_only=False, reverse_walk=False, simple=False,
+                    large=True, medium=True, small=True):
+        current_kmem_cache = self.get_next_kmem_cache(self.slab_caches, point_to_base=False, reverse_walk=reverse_walk)
+        parsed_caches = [{"name": "slab_caches", "next": current_kmem_cache}]
+
+        while current_kmem_cache + self.kmem_cache_offset_list != self.slab_caches:
+            kmem_cache = {}
+            # parse member
+            kmem_cache["name"] = self.get_name(current_kmem_cache)
+            if target_names != [] and kmem_cache["name"] not in target_names:
+                current_kmem_cache = self.get_next_kmem_cache(current_kmem_cache, reverse_walk=reverse_walk)
+                continue
+            kmem_cache["address"] = current_kmem_cache
+            kmem_cache["flags"] = read_int32_from_memory(current_kmem_cache + self.kmem_cache_offset_flags)
+            kmem_cache["flags_str"] = KernelSlub.get_flags_str(kmem_cache["flags"])
+            kmem_cache["size"] = read_int32_from_memory(current_kmem_cache + self.kmem_cache_offset_size)
+            kmem_cache["object_size"] = read_int32_from_memory(current_kmem_cache + self.kmem_cache_offset_object_size)
+            kmem_cache["next"] = self.get_next_kmem_cache(current_kmem_cache, reverse_walk=reverse_walk)
+            parsed_caches.append(kmem_cache)
+            # goto next
+            current_kmem_cache = kmem_cache["next"]
+            # fast break
+            if target_names != [] and not names_only:
+                parsed_names = [x["name"] for x in parsed_caches]
+                if all(t in parsed_names for t in target_names):
+                    break
+
+        if names_only:
+            return parsed_caches, None
+
+        parsed_freelist = {}
+        if large:
+            parsed_freelist["large"] = self.walk_page_freelist(self.free_slob_large, simple=simple)
+        if medium:
+            parsed_freelist["medium"] = self.walk_page_freelist(self.free_slob_medium, simple=simple)
+        if small:
+            parsed_freelist["small"] = self.walk_page_freelist(self.free_slob_small, simple=simple)
+
+        return parsed_caches, parsed_freelist
 
 
 @register_command
@@ -151237,241 +151616,13 @@ class SlobDumpCommand(GenericCommand, BufferingOutput):
     ]
     _note_ = "\n".join(_note_)
 
-    """
-    struct kmem_cache {
-        unsigned int object_size;
-        unsigned int size;
-        unsigned int align;
-        slab_flags_t flags;                      // unsigned int
-        unsigned int useroffset;                 // if 4.16 <= kernel
-        unsigned int usersize;                   // if 4.16 <= kernel
-        const char *name;
-        int refcount;
-        void (*ctor)(void *);
-        struct list_head list;
-    };
-
-    struct page {                                // if kernel < 4.18
-        unsigned long flags;
-        void *__unused_1;
-        void *freelist;
-        int units;
-        atomic_t refcount;                       // if kernel < 4.16
-        struct list_head lru;
-        ...
-    };
-
-    struct page {                                // if 4.18 <= kernel < 5.17
-        unsigned long flags;
-        struct list_head lru;
-        struct kmem_cache *__unused_1;
-        void *freelist;
-        void *__unused_2;
-        int units;
-        ...
-    };
-
-    struct slab {                                // if 5.17 <= kernel
-        unsigned long __page_flags;
-        struct list_head slab_list;
-        void *__unused_1;
-        void *freelist
-        long units;
-        unsigned int __unused_2;
-    };
-    """
-
-    @Cache.cache_this_session(cache_None=False)
-    def initialize(self):
-        self.meta = []
-
-        kversion = Kernel.version()
-        if not kversion:
-            self.meta.append((self.quiet_err, "Failed to resolve kernel version"))
-            return None
-
-        # resolve slab_caches
-        self.slab_caches = KernelAddressHeuristicFinder.get_slab_caches()
-        if self.slab_caches is None:
-            self.meta.append((self.quiet_err, "Failed to resolve `slab_caches`"))
-            return None
-        else:
-            self.meta.append((self.quiet_info, "slab_caches: {:#x}".format(self.slab_caches)))
-
-        # resolve global freelists
-        self.free_slob_large = Ksym.get_addr("free_slob_large")
-        if self.free_slob_large is None:
-            self.meta.append((self.quiet_err, "Failed to resolve `free_slob_large`"))
-            return None
-        else:
-            self.meta.append((self.quiet_info, "free_slob_large: {:#x}".format(self.free_slob_large)))
-
-        self.free_slob_medium = Ksym.get_addr("free_slob_medium")
-        if self.free_slob_medium is None:
-            self.meta.append((self.quiet_err, "Failed to resolve `free_slob_medium`"))
-            return None
-        else:
-            self.meta.append((self.quiet_info, "free_slob_medium: {:#x}".format(self.free_slob_medium)))
-
-        self.free_slob_small = Ksym.get_addr("free_slob_small")
-        if self.free_slob_small is None:
-            self.meta.append((self.quiet_err, "Failed to resolve `free_slob_small`"))
-            return None
-        else:
-            self.meta.append((self.quiet_info, "free_slob_small: {:#x}".format(self.free_slob_small)))
-
-        # offsetof(kmem_cache, list)
-        if kversion < "4.16":
-            self.kmem_cache_offset_list = current_arch.ptrsize * 3 + 4 * 4
-        else:
-            self.kmem_cache_offset_list = current_arch.ptrsize * 3 + 4 * 6
-        self.meta.append((self.quiet_info, "offsetof(kmem_cache, list): {:#x}".format(self.kmem_cache_offset_list)))
-
-        # offsetof(kmem_cache, name)
-        self.kmem_cache_offset_name = self.kmem_cache_offset_list - current_arch.ptrsize * 3
-        self.meta.append((self.quiet_info, "offsetof(kmem_cache, name): {:#x}".format(self.kmem_cache_offset_name)))
-
-        # offsetof(kmem_cache, object_size)
-        self.kmem_cache_offset_object_size = 0
-        self.meta.append((self.quiet_info, "offsetof(kmem_cache, object_size): {:#x}".format(self.kmem_cache_offset_object_size)))
-
-        # offsetof(kmem_cache, size)
-        self.kmem_cache_offset_size = 4
-        self.meta.append((self.quiet_info, "offsetof(kmem_cache, size): {:#x}".format(self.kmem_cache_offset_size)))
-
-        # offsetof(kmem_cache, flags)
-        self.kmem_cache_offset_flags = 4 * 3
-        self.meta.append((self.quiet_info, "offsetof(kmem_cache, flags): {:#x}".format(self.kmem_cache_offset_flags)))
-
-        # offsetof(page, next) / offsetof(slab, next)
-        if kversion < "4.16":
-            self.page_offset_next = current_arch.ptrsize * 3 + 4 * 2
-        elif kversion < "4.18":
-            self.page_offset_next = current_arch.ptrsize * 4
-        elif kversion < "5.17":
-            self.page_offset_next = current_arch.ptrsize
-        else:
-            self.page_offset_next = current_arch.ptrsize
-        self.meta.append((self.quiet_info, "offsetof({:s}, next): {:#x}".format(Kernel.slab_page_str(), self.page_offset_next)))
-
-        # offsetof(page, freelist) / offsetof(slab, freelist)
-        if kversion < "4.18":
-            self.page_offset_freelist = current_arch.ptrsize * 2
-        elif kversion < "5.17":
-            self.page_offset_freelist = current_arch.ptrsize * 4
-        else:
-            self.page_offset_freelist = current_arch.ptrsize * 4
-        self.meta.append((self.quiet_info, "offsetof({:s}, freelist): {:#x}".format(Kernel.slab_page_str(), self.page_offset_freelist)))
-
-        # offsetof(page, units) / offsetof(slab, units)
-        if kversion < "4.18":
-            self.page_offset_units = current_arch.ptrsize * 3
-        elif kversion < "5.17":
-            self.page_offset_units = current_arch.ptrsize * 6
-        else:
-            self.page_offset_units = current_arch.ptrsize * 5
-        self.meta.append((self.quiet_info, "offsetof({:s}, units): {:#x}".format(Kernel.slab_page_str(), self.page_offset_units)))
-
-        return True
-
-    def get_next_kmem_cache(self, addr, point_to_base=True):
-        if point_to_base:
-            addr += self.kmem_cache_offset_list
-        if self.args.reverse_walk:
-            return read_int_from_memory(addr) - self.kmem_cache_offset_list
-        else:
-            return read_int_from_memory(addr + current_arch.ptrsize) - self.kmem_cache_offset_list
-
-    def get_name(self, addr):
-        name_addr = read_int_from_memory(addr + self.kmem_cache_offset_name)
-        return read_cstring_from_memory(name_addr)
-
-    def walk_freelist(self, head, page):
-        if self.args.simple:
-            return []
-
-        freelist = []
-        current = head
-        while True:
-            base = current & get_pagesize_mask_high()
-            units = read_int16_from_memory(current, signed=True)
-            if units < 0:
-                next = -units
-                units = 1
-            else:
-                next = read_int16_from_memory(current + 2, signed=True)
-            freelist.append([current, units])
-            current = base + next * 2
-            if (current & 0xfff) == 0:
-                break
-        return freelist
-
-    def walk_page_freelist(self, head):
-        seen = {head}
-        page_freelist = []
-        current = read_int_from_memory(head)
-        while True:
-            seen.add(current)
-            page = {}
-            page["address"] = current - self.page_offset_next
-            page["units"] = read_int32_from_memory(page["address"] + self.page_offset_units)
-            freelist_head = read_int_from_memory(page["address"] + self.page_offset_freelist)
-            page["virt_addr"] = freelist_head & get_pagesize_mask_high()
-            page["num_pages"] = 1
-            page["freelist"] = self.walk_freelist(freelist_head, page)
-            page["next"] = next = read_int_from_memory(current)
-            page_freelist.append(page)
-            if next in seen:
-                break
-            current = next
-        return page_freelist
-
-    def walk_caches(self, target_names):
-        current_kmem_cache = self.get_next_kmem_cache(self.slab_caches, point_to_base=False)
-        parsed_caches = [{"name": "slab_caches", "next": current_kmem_cache}]
-
-        while current_kmem_cache + self.kmem_cache_offset_list != self.slab_caches:
-            kmem_cache = {}
-            # parse member
-            kmem_cache["name"] = self.get_name(current_kmem_cache)
-            if target_names != [] and kmem_cache["name"] not in target_names:
-                current_kmem_cache = self.get_next_kmem_cache(current_kmem_cache)
-                continue
-            kmem_cache["address"] = current_kmem_cache
-            kmem_cache["flags"] = read_int32_from_memory(current_kmem_cache + self.kmem_cache_offset_flags)
-            kmem_cache["flags_str"] = SlubDumpCommand.get_flags_str(kmem_cache["flags"])
-            kmem_cache["size"] = read_int32_from_memory(current_kmem_cache + self.kmem_cache_offset_size)
-            kmem_cache["object_size"] = read_int32_from_memory(current_kmem_cache + self.kmem_cache_offset_object_size)
-            kmem_cache["next"] = self.get_next_kmem_cache(current_kmem_cache)
-            parsed_caches.append(kmem_cache)
-            # goto next
-            current_kmem_cache = kmem_cache["next"]
-            # fast break
-            if target_names != [] and not (self.args.list or self.args.list_no_sort):
-                parsed_names = [x["name"] for x in parsed_caches]
-                if all(t in parsed_names for t in target_names):
-                    break
-
-        if self.args.list or self.args.list_no_sort:
-            return parsed_caches, None
-
-        parsed_freelist = {}
-        if self.args.large:
-            parsed_freelist["large"] = self.walk_page_freelist(self.free_slob_large)
-        if self.args.medium:
-            parsed_freelist["medium"] = self.walk_page_freelist(self.free_slob_medium)
-        if self.args.small:
-            parsed_freelist["small"] = self.walk_page_freelist(self.free_slob_small)
-
-        return parsed_caches, parsed_freelist
-
     def dump_freelist(self, tag, page_freelist):
         chunk_size_color = Config.get_gef_setting("theme.heap_chunk_size")
         label_active_color = Config.get_gef_setting("theme.heap_label_active")
         heap_page_color = Config.get_gef_setting("theme.heap_page_address")
         freed_address_color = Config.get_gef_setting("theme.heap_chunk_address_freed")
 
-        self.out.append(titlify("{:s} @ {:#x}".format(tag, getattr(self, tag))))
+        self.out.append(titlify("{:s} @ {:#x}".format(tag, getattr(self.kslob, tag))))
 
         for page in page_freelist:
             self.out.append("  {:s}: {:#x}".format(Color.colorify("page", label_active_color), page["address"]))
@@ -151495,7 +151646,7 @@ class SlobDumpCommand(GenericCommand, BufferingOutput):
         chunk_size_color = Config.get_gef_setting("theme.heap_chunk_size")
 
         if self.args.verbose:
-            self.out.append(titlify("{:s} @ {:#x}".format("slab_caches", self.slab_caches)))
+            self.out.append(titlify("{:s} @ {:#x}".format("slab_caches", self.kslob.slab_caches)))
             for kmem_cache in parsed_caches[1:]:
                 if target_names != [] and kmem_cache["name"] not in target_names:
                     continue
@@ -151541,12 +151692,13 @@ class SlobDumpCommand(GenericCommand, BufferingOutput):
         return
 
     def slobwalk(self, target_names):
+        self.kslob = Kernel.slob()
         if self.args.rescan:
-            Cache.clear_cache_for(self.initialize)
+            Cache.clear_cache_for(self.kslob.initialize)
 
-        ret = self.initialize()
+        ret = self.kslob.initialize()
         if self.args.meta or not ret:
-            for func, line in self.meta:
+            for func, line in Kernel.export_meta(self, self.kslob.meta):
                 func(line)
         if not ret:
             self.quiet_err("Initialization failed")
@@ -151555,24 +151707,24 @@ class SlobDumpCommand(GenericCommand, BufferingOutput):
         if self.args.meta:
             return
 
+        parsed_caches, parsed_freelist = self.kslob.walk_caches(
+            target_names,
+            names_only=self.args.list or self.args.list_no_sort,
+            reverse_walk=self.args.reverse_walk,
+            simple=self.args.simple,
+            large=self.args.large,
+            medium=self.args.medium,
+            small=self.args.small,
+        )
         if self.args.list or self.args.list_no_sort:
-            parsed_caches, _ = self.walk_caches(target_names)
             self.dump_names(parsed_caches)
             return
 
-        parsed_caches, parsed_freelist = self.walk_caches(target_names)
         self.dump_caches(target_names, parsed_caches, parsed_freelist)
         return
 
     def get_kmem_caches(self, target_names):
-        """Return the parsed kmem_caches of `target_names` (all if empty) instead of dumping them.
-        They are only the metadata, since SLOB has no slab page owned by a kmem_cache.
-        Return None if the initialization fails."""
-        self.args = self.parser.parse_args(["--quiet"])
-        if not self.initialize():
-            return None
-        parsed_caches, _parsed_freelist = self.walk_caches(target_names)
-        return parsed_caches[1:]
+        return Kernel.slob().get_kmem_caches(target_names)
 
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
@@ -151761,7 +151913,7 @@ class SlabContainsCommand(GenericCommand):
             for page_list in kmem_cache.get("nodes_partial", []) + kmem_cache.get("nodes_full", []):
                 for page in page_list:
                     freed_addresses += page.get("freelist", [])
-            freed_addresses += SlubDumpCommand.get_sheaf_objects(kmem_cache)
+            freed_addresses += KernelSlub.get_sheaf_objects(kmem_cache)
         elif allocator == "SLUB_TINY":
             for page_list in kmem_cache["nodes"]:
                 for page in page_list:
@@ -187957,7 +188109,7 @@ class KernelRefsCommand(GenericCommand, BufferingOutput):
                 pages += page_list
             pages = [(p.get("virt_addr"), p.get("num_pages")) for p in pages]
             # v6.18~: a sheaf holds freed objects whose slab no list may reach
-            for chunk in SlubDumpCommand.get_sheaf_objects(kmem_cache):
+            for chunk in KernelSlub.get_sheaf_objects(kmem_cache):
                 if not isinstance(chunk, int) or not chunk:
                     continue
                 if any(vaddr and num_pages and vaddr <= chunk < vaddr + num_pages * get_pagesize() for vaddr, num_pages in pages):
