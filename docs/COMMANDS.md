@@ -8250,7 +8250,7 @@ options:
 # 06-d. Qemu-system/KGDB Cooperation - Virt/Phys/Page
 ## `highmem-dump`
 
-Dump HighMem mappings.
+Dump HighMem mappings made by kmap().
 
 
 ### Syntax
@@ -8264,6 +8264,13 @@ options:
   -S, --sort-by-page  sort by page address.
   -n, --no-pager      do not use the pager.
   -q, --quiet         show result only.
+```
+
+### Notes
+
+```text
+This command dumps page_address_htable, which exists only if CONFIG_HIGHMEM=y.
+It has the mappings made by kmap(), but not the ones made by kmap_atomic(), kmap_local_page() and vmap().
 ```
 
 ## `p2v`

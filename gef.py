@@ -64714,6 +64714,33 @@ class KernelAddressHeuristicFinderUtil:
         return None
 
     @staticmethod
+    @Cache.cache_until_next
+    def get_list_head_array_stride(addr, count, max_stride=0x200):
+        """Return the element size of the array at `addr` whose `count` elements start with a list_head, or None.
+
+        The lock and the padding that follow a list_head never look like a list_head, so the smallest stride
+        that makes every element a list_head is the element size. A broken list is accepted if a link
+        points back to the head or both links are unreadable, so that the caller can report it."""
+        ptrsize = current_arch.ptrsize
+
+        def is_list_head(head):
+            links = (read_int_from_memory(head, safe=True), read_int_from_memory(head + ptrsize, safe=True))
+            if links == (head, head):
+                return True
+            # the lock and the padding never hold aligned kernel pointers that are unreadable or do not point back
+            if not all(x and x % ptrsize == 0 and KernelAddressHeuristicFinderUtil.is_kernel_space(x) for x in links):
+                return False
+            back = (read_int_from_memory(links[0] + ptrsize, safe=True), read_int_from_memory(links[1], safe=True))
+            return head in back or back == (None, None)
+
+        if not is_list_head(addr):
+            return None
+        for stride in range(ptrsize * 2, max_stride + 1, ptrsize):
+            if all(is_list_head(addr + stride * i) for i in range(1, count)):
+                return stride
+        return None
+
+    @staticmethod
     def disassemble_until_next_symbol(addr, count):
         """Disassemble up to `count` instructions from `addr`, dropping what belongs to the next symbol.
 
@@ -64867,7 +64894,8 @@ class KernelConstsX86(KernelConstsBase):
 
     @property
     def CONFIG_HIGHMEM(self):
-        addr = Ksym.get_addr("nr_free_highpages")
+        # v5.11~ renamed it to __nr_free_highpages
+        addr = Ksym.get_addr("nr_free_highpages") or Ksym.get_addr("__nr_free_highpages")
         return bool(addr)
 
     @property
@@ -65998,7 +66026,8 @@ class KernelConstsArm32(KernelConstsBase):
 
     @property
     def CONFIG_HIGHMEM(self):
-        addr = Ksym.get_addr("nr_free_highpages")
+        # v5.11~ renamed it to __nr_free_highpages
+        addr = Ksym.get_addr("nr_free_highpages") or Ksym.get_addr("__nr_free_highpages")
         return bool(addr)
 
     @property
@@ -69244,15 +69273,23 @@ class KernelAddressHeuristicFinder:
 
         # plan 2 (available v2.5.41 or later)
         if kversion and "2.5.41" <= kversion:
-            addr = Ksym.get_addr("set_page_address")
-            if addr:
-                res = gdb.execute("x/40i {:#x}".format(addr), to_string=True)
+            # page_address() refers to no list_head-like object but the table. set_page_address() also refers to
+            # page_address_pool (~v3.7) or page_address_maps[] (v3.8~), and ~v3.7 refer to the table after 100+ insns.
+            for name in ("page_address", "set_page_address"):
+                addr = Ksym.get_addr(name)
+                if not addr:
+                    continue
+                res = KernelAddressHeuristicFinderUtil.disassemble_until_next_symbol(addr, 300)
                 if is_x86_32():
                     g = KernelAddressHeuristicFinderUtil.x64_lea_reg_const(res)
                 elif is_arm32():
-                    g = KernelAddressHeuristicFinderUtil.arm32_movw_movt(res)
+                    g = itertools.chain(
+                        KernelAddressHeuristicFinderUtil.arm32_movw_movt(res),
+                        KernelAddressHeuristicFinderUtil.arm32_ldr_pc_relative(res),
+                    )
                 for x in g:
-                    if is_double_link_list(x):
+                    # PA_HASH_ORDER is 7
+                    if KernelAddressHeuristicFinderUtil.get_list_head_array_stride(x, 2 ** 7):
                         return x
         return None
 
@@ -180873,7 +180910,7 @@ class PageInfoCommand(GenericCommand):
 
 @register_command
 class HighMemDumpCommand(GenericCommand, BufferingOutput):
-    """Dump HighMem mappings."""
+    """Dump HighMem mappings made by kmap()."""
 
     _cmdline_ = "highmem-dump"
     _category_ = "06-d. Qemu-system/KGDB Cooperation - Virt/Phys/Page"
@@ -180886,39 +180923,69 @@ class HighMemDumpCommand(GenericCommand, BufferingOutput):
     parser.add_argument("-q", "--quiet", action="store_true", help="show result only.")
     _syntax_ = parser.format_help()
 
+    _note_ = [
+        "This command dumps page_address_htable, which exists only if CONFIG_HIGHMEM=y.",
+        "It has the mappings made by kmap(), but not the ones made by kmap_atomic(), kmap_local_page() and vmap().",
+    ]
+    _note_ = "\n".join(_note_)
+
+    PA_HASH_ORDER = 7
+
     def dump_entry(self, page, virt):
         heap_page_address_color = Config.get_gef_setting("theme.heap_page_address")
         virt_str = Color.colorify_hex(virt, heap_page_address_color)
         self.out.append("page:{:#010x}  virt:{:s}".format(page, virt_str))
         return
 
-    def dump_slot(self, page_slot):
-        for current in KernelListHead(page_slot).iter_entries():
-            if not is_valid_addr(current):
-                break
-            try:
-                page = read_int_from_memory(current - current_arch.ptrsize * 2)
-                virt = read_int_from_memory(current - current_arch.ptrsize * 1)
-            except gdb.MemoryError:
-                self.err_add_out("Corrupted? ({:#x})".format(current))
-                break
-            self.dump_entry(page, virt)
-        return
+    def parse_slot(self, index, page_slot):
+        # struct page_address_map {
+        #     struct page *page;
+        #     void *virtual;
+        #     struct list_head list;
+        # };
+        entries = []
+        if read_int_from_memory(page_slot, safe=True) is None:
+            return entries, "slot[{:d}] @ {:#x} is unreadable".format(index, page_slot)
+        lh = KernelListHead(page_slot, current_arch.ptrsize * 2)
+        for current in lh.iter_entries():
+            page = read_int_from_memory(current, safe=True)
+            virt = read_int_from_memory(current + current_arch.ptrsize, safe=True)
+            if page is None or virt is None:
+                return entries, "slot[{:d}]: page_address_map {:#x} is unreadable".format(index, current)
+            entries.append((page, virt))
+        if lh.broken:
+            return entries, "slot[{:d}]: the list is broken at {:#x} ({:s})".format(index, lh.broken_at, lh.broken_reason)
+        return entries, None
 
-    def dump_table(self, page_address_htable):
-        PA_HASH_ORDER = 7
-        sizeof_cache_align = 0x40
-        found = False
-        for i in range(2 ** PA_HASH_ORDER):
-            page_slot = page_address_htable + sizeof_cache_align * i
-            if not is_double_link_list(page_slot, min_len=1):
-                continue
-            self.quiet_add_out(titlify("slot[{:d}] @ {:#x}".format(i, page_slot)))
-            self.dump_slot(page_slot)
-            found = True
+    def dump_table(self, page_address_htable, sizeof_page_address_slot):
+        slots = []
+        for i in range(2 ** self.PA_HASH_ORDER):
+            page_slot = page_address_htable + sizeof_page_address_slot * i
+            entries, error = self.parse_slot(i, page_slot)
+            if entries or error:
+                slots.append((i, page_slot, entries, error))
 
-        if not found:
-            self.info_add_out("No highmem entries were found.")
+        if self.args.sort_by_page or self.args.sort_by_virt:
+            entries = [entry for _i, _page_slot, slot_entries, _error in slots for entry in slot_entries]
+            if self.args.sort_by_virt:
+                entries = sorted(entries, key=lambda x: x[1])
+            else:
+                entries = sorted(entries)
+            for page, virt in entries:
+                self.dump_entry(page, virt)
+            for _i, _page_slot, _entries, error in slots:
+                if error:
+                    self.warn_add_out("Incomplete: {:s}".format(error))
+        else:
+            for i, page_slot, entries, error in slots:
+                self.quiet_add_out(titlify("slot[{:d}] @ {:#x}".format(i, page_slot)))
+                for page, virt in entries:
+                    self.dump_entry(page, virt)
+                if error:
+                    self.warn_add_out("Incomplete: {:s}".format(error))
+
+        if not slots:
+            self.info_add_out("No kmap() mappings were found (kmap_atomic() and kmap_local_page() ones are not in this table)")
         return
 
     @Decorator.parse_args
@@ -180931,17 +180998,27 @@ class HighMemDumpCommand(GenericCommand, BufferingOutput):
 
         page_address_htable = KernelAddressHeuristicFinder.get_page_address_htable()
         if page_address_htable is None:
-            err("Could not find page_address_htable")
+            consts = KernelAddressHeuristicFinder.consts()
+            if consts and Ksym.get_kallsyms() and not consts.CONFIG_HIGHMEM:
+                info("CONFIG_HIGHMEM is not set, so there is no page_address_htable")
+            else:
+                err("Could not find page_address_htable")
             return
+        self.quiet_info("page_address_htable: {:#x}".format(page_address_htable))
+
+        # it depends on CONFIG_SMP, the L1 cache line size and the lock debugging
+        sizeof_page_address_slot = GefUtil.sizeof("page_address_slot")
+        if sizeof_page_address_slot is None:
+            sizeof_page_address_slot = KernelAddressHeuristicFinderUtil.get_list_head_array_stride(
+                page_address_htable, 2 ** self.PA_HASH_ORDER,
+            )
+            if sizeof_page_address_slot is None:
+                err("Could not determine sizeof(page_address_slot)")
+                return
+        self.quiet_info("sizeof(page_address_slot): {:#x}".format(sizeof_page_address_slot))
 
         self.out = []
-        self.dump_table(page_address_htable)
-
-        if self.args.sort_by_page:
-            self.out = sorted(x for x in self.out if x.startswith("page:"))
-        elif self.args.sort_by_virt:
-            self.out = sorted([x for x in self.out if x.startswith("page:")], key=lambda x:x.split()[1])
-
+        self.dump_table(page_address_htable, sizeof_page_address_slot)
         self.print_output(check_terminal_size=True)
         return
 
