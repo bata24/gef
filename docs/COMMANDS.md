@@ -11877,7 +11877,7 @@ options:
   -h, --help            show this help message and exit
   -hh, --help-simple    show help without ASCII diagram.
   --only-used           display only used area.
-  --only-freed          display only freed area.
+  --only-freed          display only free area.
   --meta                display offset information.
   --hexdump-used SIZE   hexdump `used chunks` if layout is resolved.
   --telescope-used SIZE
@@ -11902,7 +11902,7 @@ Simplified vmalloc structure:
                                        | va_end     |
 +---------------------------------+    | ...        |
 | vmap_area_list (~v6.8)          |--->| list       |--->...
-| vmap_nodes[0].busy.head (v6.9~) |    | ...        |
+| vmap_nodes[i].busy.head (v6.9~) |    | ...        |
 +---------------------------------+    | vm         |---->+-vm_struct--+
                                        | ...        |     | ...        |
                                        +------------+     | flags      |
@@ -11915,6 +11915,9 @@ Simplified vmalloc structure:
 | free_vmap_area_list |--->| list       |--->...
 +---------------------+    | ...        |
                            +------------+
+
+`unpurged` is an area freed lazily but still linked to vmap_area_list (~v5.3).
+`free` is an unallocated range of the vmalloc space, not a history of vfree().
 ```
 
 # 06-i. Qemu-system/KGDB Cooperation - Linux Dynamic Inspection
