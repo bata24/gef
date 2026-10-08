@@ -801,15 +801,15 @@ class MemoryCache:
 class Config:
     """Manage gef configurations. Most configs are tied to specific commands.
     They are defined in the form `command_name.config_name`.
-    Internally it is stored as a triple (value, type, description)."""
+    Each setting stores its value, type, description and original value."""
 
     __gef_config__ = {} # keep gef configs
-    __gef_config_orig__ = {} # for debugging
 
     @staticmethod
     def add(name, value, description=""):
-        Config.__gef_config__[name] = [value, type(value), description]
-        Config.__gef_config_orig__[name] = [value, type(value), description] # for debugging
+        Config.__gef_config__[name] = {
+            "value": value, "type": type(value), "description": description, "original": value,
+        }
         Cache.reset_gef_caches()
         return
 
@@ -820,24 +820,36 @@ class Config:
         setting = Config.__gef_config__.get(name, None)
         if setting is None:
             return None # A valid config can never return None, but False, 0 or ""
-        return setting[0]
+        return setting["value"]
 
     @staticmethod
-    def set(name, value, _type=None, _desc=None):
+    def info(name):
+        setting = Config.__gef_config__.get(name)
+        if setting is None:
+            return None
+        return setting.copy()
+
+    @staticmethod
+    def names(prefix=""):
+        return [name for name in Config.__gef_config__ if name.startswith(prefix)]
+
+    @staticmethod
+    def set(name, value, _type=None, _desc=None, *, reset_all=False):
         """Set global gef settings.
         Raise ValueError if `name` doesn't exist and `type` and `desc` are not provided."""
-        Cache.reset_gef_caches()
-
         if name not in Config.__gef_config__:
             # create new setting
             if _type is None or _desc is None:
                 raise ValueError("Setting '{}' is undefined, need to provide type and description".format(name))
-            Config.__gef_config__[name] = [_type(value), _type, _desc]
-            return
-
-        # set existing setting
-        func = Config.__gef_config__[name][1]
-        Config.__gef_config__[name][0] = func(value)
+            value = _type(value)
+            Config.__gef_config__[name] = {
+                "value": value, "type": _type, "description": _desc, "original": value,
+            }
+        else:
+            # set existing setting
+            func = Config.__gef_config__[name]["type"]
+            Config.__gef_config__[name]["value"] = func(value)
+        Cache.reset_gef_caches(all=reset_all)
         return
 
     @staticmethod
@@ -848,8 +860,7 @@ class Config:
         # save the configuration
         for key in sorted(Config.__gef_config__):
             sect, optname = key.split(".", 1)
-            value = Config.__gef_config__.get(key, None)
-            value = value[0] if value else None
+            value = Config.__gef_config__[key]["value"]
 
             if old_sect != sect:
                 cfg.add_section(sect)
@@ -899,7 +910,7 @@ class Config:
                     continue
 
                 # restore type
-                Type = Config.__gef_config__.get(key)[1]
+                Type = Config.__gef_config__[key]["type"]
                 new_value = cfg.get(section, optname)
                 try:
                     if Type is bool:
@@ -916,7 +927,7 @@ class Config:
                     continue
 
                 # set
-                Config.__gef_config__[key][0] = new_value
+                Config.__gef_config__[key]["value"] = new_value
 
         # `Config.get` is cached, so the values read before this point
         # (e.g. while loading the commands) must be dropped, as `gef config` does.
@@ -16720,14 +16731,14 @@ class GenericCommand(gdb.Command):
             gef_print("  " + str(self._aliases_))
 
         this_command_key = self._cmdline_.replace("-", "_").replace(" ", "_").split()
-        configs = [k for k in Config.__gef_config__.keys() if k.split(".")[:-1] == this_command_key]
+        configs = [k for k in Config.names() if k.split(".")[:-1] == this_command_key]
         if configs:
             gef_print("")
             gef_print(Color.colorify("Configs:", "bold yellow"))
             max_width = max(len(x) for x in configs)
             for key in configs:
-                value, _types, desc = Config.__gef_config__[key]
-                gef_print("  {:{:d}} : {:s} [{}]".format(key, max_width, desc, value))
+                setting = Config.info(key)
+                gef_print("  {:{:d}} : {:s} [{}]".format(key, max_width, setting["description"], setting["value"]))
         return
 
     def add_setting(self, name, value, description=""):
@@ -16970,13 +16981,9 @@ class GefThemeCommand(GenericCommand, BufferingOutput):
     def show_all_config(self):
         self.out.append(titlify("settings"))
 
-        settings = []
-        for x in Config.__gef_config__:
-            if x.startswith("theme."):
-                settings.append(x.split(".", 1)[1])
-
-        for setting in sorted(settings):
-            value = Config.get("theme.{:s}".format(setting))
+        for key in sorted(Config.names("theme.")):
+            setting = key.split(".", 1)[1]
+            value = Config.get(key)
             if value:
                 value = Color.colorify(value, value)
                 self.out.append("{:40s}: {:s}".format(setting, value))
@@ -17031,7 +17038,7 @@ class GefThemeCommand(GenericCommand, BufferingOutput):
 
         # show one
         key = "theme.{:s}".format(args.key)
-        if key not in Config.__gef_config__:
+        if Config.get(key) is None:
             err("Invalid key")
             return
         if args.value == []:
@@ -194000,18 +194007,19 @@ class GefConfigCommand(GenericCommand):
     def print_setting(self, config_name, with_description=False, show_only_changes=False):
         """Print a GEF configuration setting, with optional description and original value,
         highlighting changes."""
-        res = Config.__gef_config__.get(config_name)
-        res_orig = Config.__gef_config_orig__.get(config_name)
+        setting_info = Config.info(config_name)
 
         # something is wrong
-        if not res or not res_orig:
+        if not setting_info:
             return
 
         string_color = Config.get("theme.dereference_string")
         misc_color = Config.get("theme.dereference_base_address")
 
-        value, type_, desc = res
-        value_orig, _, _ = res_orig
+        value = setting_info["value"]
+        type_ = setting_info["type"]
+        desc = setting_info["description"]
+        value_orig = setting_info["original"]
 
         setting = Color.colorify(config_name, "green")
         type_name = type_.__name__
@@ -194051,30 +194059,24 @@ class GefConfigCommand(GenericCommand):
             err("Unknown command '{:s}'".format(command_name))
             return
 
-        type_ = Config.__gef_config__.get(config_name, [None, None, None])[1]
+        setting_info = Config.info(config_name)
+        type_ = setting_info["type"] if setting_info else None
         if type_ is None:
             err("Failed to get '{:s}' config setting".format(config_name))
             return
 
         try:
             if type_ is bool:
-                if config_value.upper() in ("TRUE", "T", "1"):
-                    newval = True
-                else:
-                    newval = False
-            else:
-                newval = type_(config_value)
+                config_value = config_value.upper() in ("TRUE", "T", "1")
+            Config.set(config_name, config_value, reset_all=True)
         except Exception:
             err("{} expects type '{}'".format(config_name, type_.__name__))
             return
-
-        Config.__gef_config__[config_name][0] = newval
-        Cache.reset_gef_caches(all=True)
         return
 
     def complete(self, text, word): # noqa
         """Provide tab-completion suggestions for GEF config settings based on user input."""
-        settings = sorted(Config.__gef_config__)
+        settings = sorted(Config.names())
 
         if text.strip() in settings:
             # already matched
@@ -194096,16 +194098,16 @@ class GefConfigCommand(GenericCommand):
         # list all configs
         if (args.setting_name, args.setting_value) == (None, None):
             gef_print(titlify("GEF configuration settings"))
-            for name in sorted(Config.__gef_config__):
+            for name in sorted(Config.names()):
                 self.print_setting(name, show_only_changes=args.show_only_changes)
             return
 
         # show name-matched config(s)
         if args.setting_name and args.setting_value is None:
-            names = [x for x in Config.__gef_config__.keys() if x.startswith(args.setting_name)]
+            names = Config.names(args.setting_name)
             if not names:
                 return
-            if len(names) == 1 or (args.setting_name in Config.__gef_config__): # uniquely identified or exact match
+            if len(names) == 1 or (args.setting_name in names): # uniquely identified or exact match
                 gef_print(titlify("GEF configuration setting: {:s}".format(names[0])))
                 self.print_setting(names[0], with_description=True, show_only_changes=args.show_only_changes)
             else:
