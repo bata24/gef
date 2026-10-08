@@ -166211,6 +166211,7 @@ class JemallocBase:
     Each parser resolves the structures of its version and returns them in a common form:
       arenas:  {arena index: arena_t address}
       bins:    {arena index: {bin index: [record]}}, record is a dict of a slab (v5) or a run (v3/v4)
+      large:   {arena index: [record]}, record holds the header, address, size and size class index
       tcaches: [(thread number, arena index or None, bins address, [(stack, [objects])])]"""
 
     def __init__(self, version):
@@ -166220,6 +166221,7 @@ class JemallocBase:
         self.writable_maps = None
         self.writable_pages = None
         self.arenas = {}
+        self.large = collections.defaultdict(list)
         self.ptrsize = current_arch.ptrsize
         self.arch = next(x for x in ("x86_64", "x86_32", "ARM64", "ARM32") if ARCH_CHECKERS[x]())
         self.u64_align = 4 if self.arch == "x86_32" else 8 # alignment of uint64_t in structures
@@ -166239,6 +166241,7 @@ class JemallocBase:
             else:
                 size += max(quantum, (1 << (size.bit_length() - 1)) >> 2)
         self.nbins = len(self.small_sizes)
+        self.nclasses = self.nbins + (self.ptrsize * 8 - limit.bit_length()) * 4
         return
 
     @staticmethod
@@ -166332,7 +166335,48 @@ class JemallocBase:
                 return size
         if szind < self.nbins:
             return self.small_sizes[szind]
-        return None
+        if self.version[0] == 3:
+            return (szind - self.nbins + 1) * 0x1000
+        group, delta = divmod(szind - self.nbins, 4)
+        return (self.small_sizes[-1] // 7 * 8 << group) * (4 + delta) // 4
+
+    def large_record(self, header, addr, size, run_size=None):
+        if self.version[0] == 3:
+            szind = self.nbins + size // 0x1000 - 1
+        else:
+            base = 1 << (size.bit_length() - 1)
+            limit = self.small_sizes[-1] // 7 * 8
+            szind = self.nbins + (base.bit_length() - limit.bit_length()) * 4 + (size - base) // (base // 4)
+        return {"kind": "large", "header": header, "addr": addr, "size": size,
+                "run_size": run_size or size, "szind": szind}
+
+    def cache_bin_address(self, bins, index):
+        return bins + self.cache_bin_size * index
+
+    def read_cache_bins(self, bins):
+        count = self.symbol_value("nhbins")
+        if count is None:
+            # Uninitialized bins have no stack. v3/v4 allocate only nhbins entries.
+            count = self.nclasses
+        count = max(count, self.nbins)
+        cache_bins = []
+        for i in range(count):
+            cache_bin = self.cache_bin_address(bins, i)
+            if i >= self.nbins:
+                if self.version >= (5, 3):
+                    top = read_int_from_memory(cache_bin, safe=True)
+                    full = read_int16_from_memory(cache_bin + self.cb_low_bits + 2, safe=True)
+                    empty = read_int16_from_memory(cache_bin + self.cb_low_bits + 4, safe=True)
+                    if top is None or full is None or empty is None or not (empty - full) & 0xffff:
+                        break
+                    if (empty - top) & 0xffff > (empty - full) & 0xffff:
+                        break
+                else:
+                    top = read_int_from_memory(cache_bin + 0x10 + (self.ptrsize if self.version[0] < 5 else 0), safe=True)
+                if not top or top % self.ptrsize or not is_valid_addr(top - self.ptrsize):
+                    break
+            cache_bins.append(self.read_cache_bin(cache_bin))
+        return cache_bins
 
     def get_tcaches(self):
         arenas = {arena: index for index, arena in self.arenas.items()}
@@ -166356,7 +166400,7 @@ class JemallocBase:
             found = self.find_tcache(start, read_memory(start, end - start), arenas)
             if found is not None:
                 bins, arena_index = found
-                cache_bins = [self.read_cache_bin(bins + self.cache_bin_size * i) for i in range(self.nbins)]
+                cache_bins = self.read_cache_bins(bins)
                 tcaches.append((thread.num, arena_index, bins, cache_bins))
         orig_thread.switch()
         orig_frame.select()
@@ -166443,6 +166487,7 @@ class JemallocV3(JemallocBase):
         self.tbins_offset = align(ptr * 3 + 0x10, self.u64_align)
         self.chunksize = self.symbol_value("chunksize") or 0x400000
         self.chunk_npages = self.symbol_value("chunk_npages") or self.chunksize >> 12
+        self.nclasses = self.nbins + self.chunk_npages - 1
         # arena_chunk_t: arena, dirty link, [dirtied (~v3.1)], ndirty, [nruns_avail, nruns_adjac (v3.2~)], map[]
         self.map_offset = GefUtil.offsetof("struct arena_chunk_s", "map") or ptr * (5 if self.version < (3, 2) else 6)
         self.runcur_offset = GefUtil.offsetof("struct arena_bin_s", "runcur") or self.MUTEX_SIZE[self.arch]
@@ -166486,7 +166531,9 @@ class JemallocV3(JemallocBase):
             layout = (elem_size, elem_size - self.ptrsize, self.calc_map_bias(self.map_offset, elem_size))
             count = 0
             for chunk, arena, _ in self.scan_chunks(self.chunksize):
-                for pageind, _, _ in self.run_starts(chunk, layout):
+                for pageind, binind, _ in self.run_starts(chunk, layout):
+                    if binind is None:
+                        continue
                     bin_addr = read_int_from_memory(chunk + (pageind << 12), safe=True)
                     count += 1 if bin_addr and 0 < bin_addr - arena < 0x4000 else -1
                 break
@@ -166502,6 +166549,9 @@ class JemallocV3(JemallocBase):
             return
         mapbits = slice_unpack(data, self.ptrsize)[bits_offset // self.ptrsize::elem_size // self.ptrsize]
         for k, bits in enumerate(mapbits):
+            if bits & 0x3 == 0x3 and bits >> 12:
+                yield k + map_bias, None, bits >> 12
+                continue
             # small run: allocated, not large, run page offset (bits >> LG_PAGE) is 0 at the head
             if bits & 0x3 != 0x1 or bits >> 12 != 0:
                 continue
@@ -166519,6 +166569,10 @@ class JemallocV3(JemallocBase):
             self.arenas[index] = arena
             for pageind, binind, npages in self.run_starts(chunk, self.map_layout):
                 run = chunk + (pageind << 12)
+                if binind is None:
+                    if pageind + npages <= self.chunk_npages:
+                        self.large[index].append(self.large_record(run, run, npages << 12))
+                    continue
                 if self.bin_info:
                     reg_size, nregs, bitmap_offset, reg0 = self.bin_info[binind]
                 else:
@@ -166630,6 +166684,10 @@ class JemallocV4(JemallocBase):
 
     def collect_runs(self):
         map_bias = self.off["map_bias"]
+        large_pad = self.symbol_value("large_pad")
+        if large_pad is None:
+            cache_oblivious = self.symbol_value("config_cache_oblivious")
+            large_pad = 0 if cache_oblivious == 0 else 0x1000
         bins = collections.defaultdict(lambda: collections.defaultdict(list))
         for chunk, arena, index in self.scan_chunks(self.chunksize):
             self.arenas[index] = arena
@@ -166638,6 +166696,13 @@ class JemallocV4(JemallocBase):
             except gdb.MemoryError:
                 continue
             for k, bits in enumerate(mapbits):
+                if bits & 0x3 == 0x3 and bits >> 13:
+                    # v4 encodes page counts above bit 13 and pads cache-oblivious runs by one page.
+                    run_size = (bits >> 13) << 12
+                    addr = chunk + ((k + map_bias) << 12)
+                    if run_size > large_pad and k + map_bias + (run_size >> 12) <= self.chunk_npages:
+                        self.large[index].append(self.large_record(addr, addr, run_size - large_pad, run_size))
+                    continue
                 # small run: allocated, not large, run page offset (bits >> 13) is 0 at the head
                 if bits & 0x3 != 0x1 or bits >> 13 != 0:
                     continue
@@ -166746,6 +166811,7 @@ class JemallocV5(JemallocBase):
             self.messages.append("page size: {:#x}".format(self.page))
         self.nfree_mask = (self.page >> 2) - 1 # the width is LG_PAGE - 2
         self.bins = self.collect_slabs()
+        self.collect_large()
         return None
 
     def resolve_layout(self):
@@ -166827,6 +166893,8 @@ class JemallocV5(JemallocBase):
             if value is None or value & 0x3f or (value and not is_valid_addr(value)):
                 break
             if value:
+                if self.arena_index(value, self.off["bins"], min_count=0) not in (-1, i):
+                    break
                 count = i + 1
         return count
 
@@ -166837,7 +166905,7 @@ class JemallocV5(JemallocBase):
             return read_int_from_memory(arena + bins_off + self.ptrsize * index, safe=True)
         return arena + bins_off + self.off["bin"] * index
 
-    def arena_index(self, arena, bins_off):
+    def arena_index(self, arena, bins_off, min_count=3):
         """Validate an arena_t candidate and return its index, or None.
         bin[i].slabcur must be a slab of size class i, and all of them must agree on the arena index."""
         index = None
@@ -166846,20 +166914,23 @@ class JemallocV5(JemallocBase):
             bin_addr = self.bin_address(arena, i, bins_off)
             if not bin_addr or not is_valid_addr(bin_addr + self.off["slabcur"]):
                 return None
-            slabcur = read_int_from_memory(bin_addr + self.off["slabcur"])
-            if slabcur == 0:
-                continue
-            ebits = read_int64_from_memory(slabcur, safe=True)
-            if ebits is None or (ebits >> 12) & 1 == 0 or (ebits >> self.szind_shift) & self.szind_mask != i:
-                return None
-            if index is None:
-                index = ebits & 0xfff
-            elif index != ebits & 0xfff:
-                return None
-            count += 1
-        if count < 3:
+            for field in ("slabcur", "nonfull", "full"):
+                slab = read_int_from_memory(bin_addr + self.off[field], safe=True)
+                if slab is None:
+                    return None
+                if slab == 0:
+                    continue
+                ebits = read_int64_from_memory(slab, safe=True)
+                if ebits is None or (ebits >> 12) & 1 == 0 or (ebits >> self.szind_shift) & self.szind_mask != i:
+                    return None
+                if index is None:
+                    index = ebits & 0xfff
+                elif index != ebits & 0xfff:
+                    return None
+                count += field == "slabcur"
+        if count < min_count:
             return None
-        return index
+        return -1 if index is None else index
 
     def find_bin0_candidates(self, pages):
         """Return (address of bin[0], sizeof(bin_t)) pairs in order of votes.
@@ -166906,13 +166977,13 @@ class JemallocV5(JemallocBase):
         for i in range(0x40):
             value = self.word_at(pages, base + self.ptrsize * i)
             if value is None or (value and (value & 0x3f or self.word_at(pages, value) is None)):
-                return validated, i
+                return None
             if value == 0:
                 continue
-            index = self.arena_index(value, bins_off)
-            if index is not None and index != i:
+            index = self.arena_index(value, bins_off, min_count=0)
+            if index not in (-1, i):
                 return None
-            if index is not None:
+            if index == i:
                 validated += 1
         return validated, 0x40
 
@@ -166952,7 +167023,6 @@ class JemallocV5(JemallocBase):
                 if best is not None:
                     self.off["bins"] = bins_off
                     return best[1]
-                break
         return None
 
     def calibrate_bins_offset(self, arena):
@@ -167059,6 +167129,151 @@ class JemallocV5(JemallocBase):
                     bins[index][i].append(self.read_slab(kind, extent, i, bin_addr))
         return bins
 
+    def resolve_rtree(self):
+        # Default virtual address widths, overridden by rtree_levels when debug symbols are present.
+        self.vaddr_bits = 48 if self.ptrsize == 8 else 32
+        page_bits = self.page.bit_length() - 1
+        nsb = self.vaddr_bits - page_bits
+        height = 1 if nsb <= 10 else 2 if nsb <= 36 else 3
+        widths = [nsb // height + (1 if i >= height - nsb % height else 0) for i in range(height)]
+        self.rtree_levels = []
+        cumbits = self.ptrsize * 8 - self.vaddr_bits
+        for bits in widths:
+            cumbits += bits
+            self.rtree_levels.append((bits, cumbits))
+        levels = self.symbol_address("rtree_levels")
+        if levels is not None:
+            values = slice_unpack(read_memory(levels, height * 8), 4)
+            self.rtree_levels = list(zip(values[::2], values[1::2]))
+            self.vaddr_bits = self.ptrsize * 8 - (values[1] - values[0])
+        self.leaf_size = GefUtil.sizeof("struct rtree_leaf_elm_s") or (8 if self.ptrsize == 8 or self.version >= (5, 3) else 12)
+        self.extent_mask = ((1 << self.vaddr_bits) - 1) & ~(0x3f if self.version >= (5, 3) else 1)
+        root = self.symbol_address("extents_rtree.root") or self.symbol_address("arena_emap_global.rtree.root")
+        if root is not None:
+            return root
+
+        # Locate a leaf via a known slab and then its parent via the leaf pointer.
+        # Validate the candidate root against independent slab addresses before using it.
+        known = {r["header"]: r["addr"] for bins in self.bins.values() for records in bins.values() for r in records}
+        pages = self.read_writable_pages()
+        leaves = {}
+        leaf_bits = self.rtree_levels[-1][0]
+        for start, data in self.read_writable_maps():
+            for i, value in enumerate(slice_unpack(data, self.ptrsize)):
+                extent = value & self.extent_mask
+                if extent in known:
+                    addr = known[extent]
+                    leaf = start + i * self.ptrsize - ((addr >> page_bits) & ((1 << leaf_bits) - 1)) * self.leaf_size
+                    if self.word_at(pages, leaf) is not None:
+                        leaves[leaf] = addr
+        for level in range(len(self.rtree_levels) - 2, -1, -1):
+            parents = {}
+            bits, cumbits = self.rtree_levels[level]
+            shift = self.ptrsize * 8 - cumbits
+            for start, data in self.read_writable_maps():
+                for i, value in enumerate(slice_unpack(data, self.ptrsize)):
+                    if value not in leaves:
+                        continue
+                    addr = leaves[value]
+                    parent = start + i * self.ptrsize - ((addr >> shift) & ((1 << bits) - 1)) * self.ptrsize
+                    if level:
+                        parents[parent] = addr
+                    elif all(self.rtree_extent(parent, a) == e for e, a in known.items()):
+                        # TLS caches also contain leaf pointers, but are not sparse node arrays.
+                        try:
+                            nodes = slice_unpack(read_memory(parent, (1 << bits) * self.ptrsize), self.ptrsize)
+                        except gdb.MemoryError:
+                            continue
+                        if all(not node or node % self.ptrsize == 0 and self.word_at(pages, node) is not None
+                               for node in nodes):
+                            return parent
+            leaves = parents
+        return None
+
+    def rtree_leaf(self, root, addr):
+        pages = self.read_writable_pages()
+        node = root
+        for bits, cumbits in self.rtree_levels[:-1]:
+            index = (addr >> (self.ptrsize * 8 - cumbits)) & ((1 << bits) - 1)
+            node = self.word_at(pages, node + index * self.ptrsize)
+            if not node:
+                return None
+        return node
+
+    def rtree_extent(self, root, addr):
+        leaf = self.rtree_leaf(root, addr)
+        if leaf is None:
+            return None
+        bits, cumbits = self.rtree_levels[-1]
+        index = (addr >> (self.ptrsize * 8 - cumbits)) & ((1 << bits) - 1)
+        value = self.word_at(self.read_writable_pages(), leaf + index * self.leaf_size)
+        return value & self.extent_mask if value is not None else None
+
+    def collect_large(self):
+        root = self.resolve_rtree()
+        if root is None:
+            self.messages.append("Could not find the rtree; large allocations are unavailable")
+            return
+        self.messages.append("rtree root: {:#x}".format(root))
+        leaf_bits, cumbits = self.rtree_levels[-1]
+        shift = self.ptrsize * 8 - cumbits
+        span = 1 << (leaf_bits + shift)
+        seen = set()
+        pages = self.read_writable_pages()
+        large_pad = self.symbol_value("sz_large_pad")
+        if large_pad is None:
+            large_pad = 0 if self.symbol_value("config_cache_oblivious") == 0 else self.page
+        for start, data in self.read_writable_maps():
+            end = start + len(data)
+            addr = start & ~((1 << shift) - 1)
+            while addr < end:
+                leaf = self.rtree_leaf(root, addr)
+                stop = min(end, (addr & ~(span - 1)) + span)
+                if leaf is not None:
+                    for page in range(addr, stop, 1 << shift):
+                        index = (page >> shift) & ((1 << leaf_bits) - 1)
+                        value = self.word_at(pages, leaf + index * self.leaf_size)
+                        extent = value & self.extent_mask if value is not None else 0
+                        if not extent or extent in seen:
+                            continue
+                        seen.add(extent)
+                        ebits = self.word_at(pages, extent, 8)
+                        if ebits is None or ebits & (1 << 12) or ebits & 0xfff not in self.arenas:
+                            continue
+                        state = (ebits >> self.state_shift) & ((1 << (self.szind_shift - self.state_shift)) - 1)
+                        szind = (ebits >> self.szind_shift) & self.szind_mask
+                        if state or not self.nbins <= szind < self.nclasses:
+                            continue
+                        base = self.word_at(pages, extent + 8)
+                        run_size = self.word_at(pages, extent + self.e_size)
+                        if run_size is None:
+                            continue
+                        size = (run_size & ~(self.page - 1)) - large_pad
+                        if base is None or not base or self.rtree_extent(root, base) != extent:
+                            continue
+                        if size <= 0:
+                            continue
+                        # v5.3.1~ can disable large size classes; szind is then only an upper size bound.
+                        record = self.large_record(extent, base, size)
+                        record["szind"] = szind
+                        self.large[ebits & 0xfff].append(record)
+                addr = stop
+        return
+
+    def cache_bin_address(self, bins, index):
+        if index < self.nbins or self.version >= (5, 3):
+            return super().cache_bin_address(bins, index)
+        # v5.0~v5.2 keep the large cache bins behind the link, descriptor, arena and lg_fill_div[].
+        gap = self.ptrsize * (3 if self.version < (5, 1) else 7 if self.version < (5, 2) else 10)
+        gap = align(gap + 4 + self.nbins, self.u64_align)
+        small = "tbins_small" if self.version < (5, 1) else "bins_small"
+        large = "tbins_large" if self.version < (5, 1) else "bins_large"
+        small_off = GefUtil.offsetof("struct tcache_s", small)
+        large_off = GefUtil.offsetof("struct tcache_s", large)
+        if small_off is not None and large_off is not None:
+            gap = large_off - small_off - self.cache_bin_size * self.nbins
+        return bins + self.cache_bin_size * index + gap
+
     def is_cache_bin_array(self, data, pos):
         ptr = self.ptrsize
         unpack = u32 if is_32bit() else u64
@@ -167145,7 +167360,7 @@ class JemallocV5(JemallocBase):
 
 @register_command
 class JemallocHeapDumpCommand(GenericCommand, BufferingOutput):
-    """jemalloc (v3.0~) arena/bin/slab(run)/tcache viewer."""
+    """jemalloc (v3.0~) arena/bin/slab(run)/large/tcache viewer."""
 
     _cmdline_ = "jemalloc-heap-dump"
     _category_ = "05-c. Heap - Other"
@@ -167158,7 +167373,7 @@ class JemallocHeapDumpCommand(GenericCommand, BufferingOutput):
                         help="the jemalloc version (e.g. 5.3.0) if the embedded version string is not found.")
     parser.add_argument("-i", "--arena-index", type=int,
                         help="dump only the specified arena and the tcaches bound to it.")
-    parser.add_argument("-b", "--bin-index", type=int, help="dump only the specified bin (size class index).")
+    parser.add_argument("-b", "--bin-index", type=int, help="dump only the specified size class index (small or large).")
     parser.add_argument("-x", "--address", type=AddressUtil.parse_address,
                         help="show the arena, size class, slab region and state of this address.")
     parser.add_argument("-t", "--tcache", action="store_true", help="also dump the tcache of each thread.")
@@ -167169,7 +167384,7 @@ class JemallocHeapDumpCommand(GenericCommand, BufferingOutput):
     _syntax_ = parser.format_help()
 
     _example_ = [
-        "{0:s}                    # dump the slabs of all arenas",
+        "{0:s}                    # dump small and large allocations of all arenas",
         "{0:s} -t -i 0            # dump arena[0] and the tcaches bound to it",
         "{0:s} -t -b 1            # dump bin[1] (size=0x10) of all arenas and tcaches",
         "{0:s} -x 0x7ffff701d008  # show which region the address belongs to",
@@ -167238,7 +167453,12 @@ class JemallocHeapDumpCommand(GenericCommand, BufferingOutput):
         "  so je_arenas is not needed.",
         "* v3.x/v4.x: the page size of jemalloc (--with-lg-page) is assumed to be 4KB.",
         "  v5.x: GEF derives it from the slabs (ARM64 uses 64KB by default since v5.3.1).",
-        "* Large allocations and jemalloc v2.x or older are not supported.",
+        "* Large allocations: v3.x/v4.x read the chunk page map; v5.x reads the rtree.",
+        "  v4.x displays the run range: cache-oblivious allocation addresses are randomized within its first page.",
+        "  v4.x/v5.x assume cache-oblivious padding unless debug symbols specify otherwise.",
+        "  v5.3.1~: when large size classes are disabled, the size class index is an upper bound;",
+        "  the displayed allocation size comes from the extent itself.",
+        "* v3.x/v4.x huge allocations (outside arena chunks) and jemalloc v2.x or older are not supported.",
     ]
     _note_ = "\n".join(_note_)
 
@@ -167313,7 +167533,25 @@ class JemallocHeapDumpCommand(GenericCommand, BufferingOutput):
             self.out.append("bin[{:d}] @ {:#x} (size={:#x}):".format(i, records[0]["bin"], self.heap.size_from_szind(i)))
             for record in records:
                 self.dump_record(record)
+        for record in sorted(self.heap.large[index], key=lambda r: (r["szind"], r["addr"])):
+            if self.args.bin_index is not None and record["szind"] != self.args.bin_index:
+                continue
+            if title not in self.out:
+                self.out.append(title)
+            state = self.large_state(record)
+            color = Config.get("theme.heap_chunk_address_used" if state == "used" else "theme.heap_chunk_address_freed")
+            self.out.append("large[{:d}] @ {:#x}: {:s}={:s}-{:s} size={:s} {:s}".format(
+                record["szind"], record["header"], "run" if self.heap.version[0] == 4 else "addr",
+                Color.colorify_hex(record["addr"], color), Color.colorify_hex(record["addr"] + record["run_size"], color),
+                Color.colorify_hex(record["size"], Config.get("theme.heap_chunk_size")), state,
+            ))
         return
+
+    def large_state(self, record):
+        for addr, thread in self.tcache_objs.items():
+            if record["addr"] <= addr < record["addr"] + record["run_size"]:
+                return "free (tcache of thread {:d})".format(thread)
+        return "used"
 
     def dump_tcaches(self, tcaches):
         freed_address_color = Config.get("theme.heap_chunk_address_freed")
@@ -167332,7 +167570,7 @@ class JemallocHeapDumpCommand(GenericCommand, BufferingOutput):
                 if title not in self.out:
                     self.out.append(title)
                 self.out.append("bins[{:d}] @ {:#x} (size={:#x}, ncached={:d}, stack={:#x}):".format(
-                    i, bins + self.heap.cache_bin_size * i, self.heap.size_from_szind(i), len(objs), top,
+                    i, self.heap.cache_bin_address(bins, i), self.heap.size_from_szind(i), len(objs), top,
                 ))
                 for obj in objs:
                     self.out.append(" -> {:s}".format(Color.colorify_hex(obj, freed_address_color)))
@@ -167340,7 +167578,11 @@ class JemallocHeapDumpCommand(GenericCommand, BufferingOutput):
 
     def locate_address(self, target):
         for index, bins in sorted(self.heap.bins.items()):
+            if self.args.arena_index is not None and index != self.args.arena_index:
+                continue
             for i, records in sorted(bins.items()):
+                if self.args.bin_index is not None and i != self.args.bin_index:
+                    continue
                 for record in records:
                     if not record["nregs"] or not record["addr"] <= target < record["addr"] + record["size"]:
                         continue
@@ -167358,7 +167600,23 @@ class JemallocHeapDumpCommand(GenericCommand, BufferingOutput):
                     ))
                     self.out.append("state:      {:s}".format(self.region_state(record, region)))
                     return
-        self.out.append("{:#x} is not found in the {:s}s of any arena".format(target, self.heap.SLAB_NAME))
+        for index, records in sorted(self.heap.large.items()):
+            if self.args.arena_index is not None and index != self.args.arena_index:
+                continue
+            for record in records:
+                if self.args.bin_index is not None and record["szind"] != self.args.bin_index:
+                    continue
+                if not record["addr"] <= target < record["addr"] + record["run_size"]:
+                    continue
+                self.out.append("address:    {:#x}".format(target))
+                self.out.append("arena:      arena[{:d}] @ {:#x}".format(index, self.heap.arenas[index]))
+                self.out.append("size class: large[{:d}] (size={:#x})".format(record["szind"], record["size"]))
+                self.out.append("large:      {:#x}-{:#x} (header @ {:#x}, +{:#x})".format(
+                    record["addr"], record["addr"] + record["run_size"], record["header"], target - record["addr"],
+                ))
+                self.out.append("state:      {:s}".format(self.large_state(record)))
+                return
+        self.out.append("{:#x} is not found in any slab/run or large allocation".format(target))
         return
 
     def initialize(self):
@@ -167381,8 +167639,8 @@ class JemallocHeapDumpCommand(GenericCommand, BufferingOutput):
         if error:
             err(error)
             return False
-        if self.args.bin_index is not None and not 0 <= self.args.bin_index < self.heap.nbins:
-            err("bin index must be 0 to {:d}".format(self.heap.nbins - 1))
+        if self.args.bin_index is not None and not 0 <= self.args.bin_index < self.heap.nclasses:
+            err("size class index must be 0 to {:d}".format(self.heap.nclasses - 1))
             return False
 
         if self.args.meta:
@@ -167403,7 +167661,7 @@ class JemallocHeapDumpCommand(GenericCommand, BufferingOutput):
         self.out = []
         self.tcache_objs = {}
         tcaches = []
-        if args.tcache or args.verbose or args.address is not None:
+        if args.tcache or args.verbose or args.address is not None or any(self.heap.large.values()):
             tcaches = self.heap.get_tcaches()
             for thread_num, _, _, cache_bins in tcaches:
                 for _, objs in cache_bins:
