@@ -551,7 +551,7 @@ class MemoryCache:
     @Cache.cache_until_next
     def get_policy():
         """Return (block_size, per_cpu). block_size == 0 means the cache is disabled."""
-        if Config.get_gef_setting("gef.disable_memory_cache") is True:
+        if Config.get("gef.disable_memory_cache") is True:
             return 0, False
         if is_kgdb() or is_over_serial():
             return MemoryCache.BLOCK_SIZE_SLOW, False
@@ -807,8 +807,15 @@ class Config:
     __gef_config_orig__ = {} # for debugging
 
     @staticmethod
+    def add(name, value, description=""):
+        Config.__gef_config__[name] = [value, type(value), description]
+        Config.__gef_config_orig__[name] = [value, type(value), description] # for debugging
+        Cache.reset_gef_caches()
+        return
+
+    @staticmethod
     @Cache.cache_until_next
-    def get_gef_setting(name):
+    def get(name):
         """Read global gef settings. Return None if not found."""
         setting = Config.__gef_config__.get(name, None)
         if setting is None:
@@ -816,7 +823,7 @@ class Config:
         return setting[0]
 
     @staticmethod
-    def set_gef_setting(name, value, _type=None, _desc=None):
+    def set(name, value, _type=None, _desc=None):
         """Set global gef settings.
         Raise ValueError if `name` doesn't exist and `type` and `desc` are not provided."""
         Cache.reset_gef_caches()
@@ -831,6 +838,89 @@ class Config:
         # set existing setting
         func = Config.__gef_config__[name][1]
         Config.__gef_config__[name][0] = func(value)
+        return
+
+    @staticmethod
+    def save(filepath):
+        cfg = configparser.RawConfigParser()
+        old_sect = None
+
+        # save the configuration
+        for key in sorted(Config.__gef_config__):
+            sect, optname = key.split(".", 1)
+            value = Config.__gef_config__.get(key, None)
+            value = value[0] if value else None
+
+            if old_sect != sect:
+                cfg.add_section(sect)
+                old_sect = sect
+
+            cfg.set(sect, optname, value)
+
+        # save the aliases
+        cfg.add_section("user-defined-aliases")
+        cfg.add_section("user-defined-aliases.repeat")
+        for alias in __gef_alias_instances__.values():
+            # check pre-defined alias or not
+            if alias._command_ in __gef_command_instances__:
+                instance = __gef_command_instances__[alias._command_]
+                if alias._alias_ in instance._aliases_:
+                    continue
+
+            cfg.set("user-defined-aliases", alias._alias_, alias._command_)
+            cfg.set("user-defined-aliases.repeat", alias._alias_, str(alias._repeat_))
+
+        with open(filepath, "w") as fd:
+            cfg.write(fd)
+        return
+
+    @staticmethod
+    def load(filepath):
+        cfg = configparser.ConfigParser()
+        cfg.read(filepath)
+
+        for section in cfg.sections():
+            if section == "user-defined-aliases.repeat":
+                continue
+
+            if section == "user-defined-aliases":
+                # load the aliases
+                for key in cfg.options(section):
+                    repeat = cfg.get("user-defined-aliases.repeat", key)
+                    GefAlias(key, cfg.get("user-defined-aliases", key), force_repeat=repeat)
+                continue
+
+            # load the other options
+            for optname in cfg.options(section):
+                # warn unused setting
+                key = "{:s}.{:s}".format(section, optname)
+                if key not in Config.__gef_config__:
+                    err("Config '{:s}' is no longer in use, skipping...".format(Color.boldify(key)))
+                    continue
+
+                # restore type
+                Type = Config.__gef_config__.get(key)[1]
+                new_value = cfg.get(section, optname)
+                try:
+                    if Type is bool:
+                        if new_value == "True":
+                            new_value = True
+                        elif new_value == "False":
+                            new_value = False
+                        else:
+                            raise ValueError
+                    else:
+                        new_value = Type(new_value)
+                except ValueError:
+                    err("Config '{:s}' has bad value, skipping...".format(Color.boldify(key)))
+                    continue
+
+                # set
+                Config.__gef_config__[key][0] = new_value
+
+        # `Config.get` is cached, so the values read before this point
+        # (e.g. while loading the commands) must be dropped, as `gef config` does.
+        Cache.reset_gef_caches(all=True)
         return
 
 
@@ -859,12 +949,12 @@ def gef_print(x="", less=False, redirect=None, skip_color=False, *args, **kwargs
     if not x:
         return
 
-    always_no_pager = Config.get_gef_setting("gef.always_no_pager")
+    always_no_pager = Config.get("gef.always_no_pager")
     if always_no_pager:
         print(x, *args, **kwargs)
         return
 
-    pager_min_lines = Config.get_gef_setting("gef.pager_min_lines")
+    pager_min_lines = Config.get("gef.pager_min_lines")
     if len(x.splitlines()) < pager_min_lines:
         print(x, *args, **kwargs)
         return
@@ -888,11 +978,11 @@ def gef_print(x="", less=False, redirect=None, skip_color=False, *args, **kwargs
             os.fdopen(tmp_fd, "wb").write(String.str2bytes(x) + b"\n")
 
     # less
-    less_option = Config.get_gef_setting("gef.less_option")
+    less_option = Config.get("gef.less_option")
     GefUtil.os_system("{!r} {:s} {!r}".format(less, less_option, tmp_path))
 
     # cleanup
-    keep_pager_result = Config.get_gef_setting("gef.keep_pager_result")
+    keep_pager_result = Config.get("gef.keep_pager_result")
     if keep_pager_result:
         print("result saved at {:s}".format(tmp_path))
     else:
@@ -1398,7 +1488,7 @@ class Color:
 
     # `colorify` is one of the hottest paths, so the setting lookup is memoized here.
     # It is dropped by `Cache.reset_gef_caches`, which every write to `gef.disable_color`
-    # goes through (`Config.set_gef_setting`, `add_setting`, `gef config`, `gef restore`).
+    # goes through (`Config.set`, `add_setting`, `gef config`, `gef restore`).
     cached_disabled = None
 
     @staticmethod
@@ -1410,7 +1500,7 @@ class Color:
 
     @staticmethod
     def disable_color_uncached():
-        if Config.get_gef_setting("gef.disable_color") is True:
+        if Config.get("gef.disable_color") is True:
             return True
         if Color.NO_COLOR is None:
             if os.environ.get("NO_COLOR", None):
@@ -1481,19 +1571,19 @@ class Address:
             return value
         line_color = ""
         if self.is_in_stack_segment():
-            line_color = Config.get_gef_setting("theme.address_stack")
+            line_color = Config.get("theme.address_stack")
         elif self.is_in_heap_segment():
-            line_color = Config.get_gef_setting("theme.address_heap")
+            line_color = Config.get("theme.address_heap")
         elif self.is_in_text_segment():
-            line_color = Config.get_gef_setting("theme.address_code")
+            line_color = Config.get("theme.address_code")
         elif self.is_in_writable():
-            line_color = Config.get_gef_setting("theme.address_writable")
+            line_color = Config.get("theme.address_writable")
         elif self.is_in_readonly():
-            line_color = Config.get_gef_setting("theme.address_readonly")
+            line_color = Config.get("theme.address_readonly")
         elif self.is_valid_but_none():
-            line_color = Config.get_gef_setting("theme.address_valid_but_none")
+            line_color = Config.get("theme.address_valid_but_none")
         if self.is_rwx():
-            line_color += " " + Config.get_gef_setting("theme.address_rwx")
+            line_color += " " + Config.get("theme.address_rwx")
         return Color.colorify(value, line_color)
 
     def long_fmt(self):
@@ -1502,19 +1592,19 @@ class Address:
             return value
         line_color = ""
         if self.is_in_stack_segment():
-            line_color = Config.get_gef_setting("theme.address_stack")
+            line_color = Config.get("theme.address_stack")
         elif self.is_in_heap_segment():
-            line_color = Config.get_gef_setting("theme.address_heap")
+            line_color = Config.get("theme.address_heap")
         elif self.is_in_text_segment():
-            line_color = Config.get_gef_setting("theme.address_code")
+            line_color = Config.get("theme.address_code")
         elif self.is_in_writable():
-            line_color = Config.get_gef_setting("theme.address_writable")
+            line_color = Config.get("theme.address_writable")
         elif self.is_in_readonly():
-            line_color = Config.get_gef_setting("theme.address_readonly")
+            line_color = Config.get("theme.address_readonly")
         elif self.is_valid_but_none():
-            line_color = Config.get_gef_setting("theme.address_valid_but_none")
+            line_color = Config.get("theme.address_valid_but_none")
         if self.is_rwx():
-            line_color += " " + Config.get_gef_setting("theme.address_rwx")
+            line_color += " " + Config.get("theme.address_rwx")
         return Color.colorify(value, line_color)
 
     def is_in_readable(self): # noqa
@@ -1783,7 +1873,7 @@ class AddressUtil:
     @Cache.cache_this_session
     def get_recursive_dereference_blacklist():
         """Return the blacklist of addresses (for caching purposes after eval())."""
-        blacklist = eval(Config.get_gef_setting("dereference.blacklist"))
+        blacklist = eval(Config.get("dereference.blacklist"))
         for range_list in blacklist:
             assert isinstance(range_list, list)
             assert len(range_list) == 2
@@ -1798,7 +1888,7 @@ class AddressUtil:
         if not is_alive():
             return [addr], None
 
-        recursion = Config.get_gef_setting("dereference.max_recursion")
+        recursion = Config.get("dereference.max_recursion")
         blacklist = AddressUtil.get_recursive_dereference_blacklist()
         addr_list = []
         addr_set = set()
@@ -1845,9 +1935,9 @@ class AddressUtil:
     @Cache.cache_until_next
     def recursive_dereference_to_string(value, skip_idx=0, phys=False, quiet=False):
         """Create string from dereference array."""
-        string_color = Config.get_gef_setting("theme.dereference_string")
-        nb_max_string_length = Config.get_gef_setting("context.nb_max_string_length")
-        recursion = Config.get_gef_setting("dereference.max_recursion")
+        string_color = Config.get("theme.dereference_string")
+        nb_max_string_length = Config.get("context.nb_max_string_length")
+        recursion = Config.get("dereference.max_recursion")
 
         # dereference
         addrs, error = AddressUtil.recursive_dereference(value, phys=phys)
@@ -2570,7 +2660,7 @@ class Elf:
 
     def has_canary_heuristic(self):
         try:
-            objdump_command = GefUtil.which(Config.get_gef_setting("gef.objdump_command"))
+            objdump_command = GefUtil.which(Config.get("gef.objdump_command"))
         except FileNotFoundError:
             return None # it means unknown
 
@@ -2838,7 +2928,7 @@ class Elf:
         ]
 
         try:
-            objdump_command = GefUtil.which(Config.get_gef_setting("gef.objdump_command"))
+            objdump_command = GefUtil.which(Config.get("gef.objdump_command"))
         except FileNotFoundError:
             return None # it means unknown
 
@@ -3430,9 +3520,9 @@ class Instruction:
     def get_color(self, highlight, config_name):
         """A wrapper to easily retrieve color-related configurations."""
         if highlight:
-            return Config.get_gef_setting(config_name + "_highlight")
+            return Config.get(config_name + "_highlight")
         else:
-            return Config.get_gef_setting(config_name)
+            return Config.get(config_name)
 
     def get_string_if_valid_addr(self, operands):
         """If the last operand is an address and is valid, read and return the string."""
@@ -3603,7 +3693,7 @@ class Instruction:
                 s = self.get_string_if_valid_addr([comment])
             if s:
                 if enable_color:
-                    string_color = Config.get_gef_setting("theme.dereference_string")
+                    string_color = Config.get("theme.dereference_string")
                     if len(s) < current_arch.ptrsize:
                         comment += " ({:s}?)".format(Color.colorify(repr(s), string_color))
                     else:
@@ -3636,7 +3726,7 @@ class Instruction:
     @staticmethod
     def smartify_text(text):
         """Simplify and shorten C++ function/type names for improved readability."""
-        smart_cpp_function_name = Config.get_gef_setting("context.smart_cpp_function_name")
+        smart_cpp_function_name = Config.get("context.smart_cpp_function_name")
         if not smart_cpp_function_name:
             return text
 
@@ -4596,7 +4686,7 @@ class GlibcHeap:
         @staticmethod
         @Cache.cache_this_session(until_new_objfile=True)
         def TCACHE_FILL_COUNT():
-            v = Config.get_gef_setting("heap.tcache_max_count")
+            v = Config.get("heap.tcache_max_count")
             if v != -1:
                 return v
             if get_libc_version() < (2, 43):
@@ -5010,7 +5100,7 @@ class GlibcHeap:
 
         def __str__(self):
             """Return a formatted string representation of the arena and its key attributes."""
-            arena = Color.colorify("Arena", Config.get_gef_setting("theme.heap_arena_label"))
+            arena = Color.colorify("Arena", Config.get("theme.heap_arena_label"))
             if self.heap_base is None:
                 heap_base = "uninitialized"
             else:
@@ -5620,15 +5710,15 @@ class GlibcHeap:
             flags = []
             if self.has_p_bit():
                 flags.append(Color.colorify(
-                    "PREV_INUSE", Config.get_gef_setting("theme.heap_chunk_flag_prev_inuse"),
+                    "PREV_INUSE", Config.get("theme.heap_chunk_flag_prev_inuse"),
                 ))
             if self.has_m_bit():
                 flags.append(Color.colorify(
-                    "IS_MMAPPED", Config.get_gef_setting("theme.heap_chunk_flag_is_mmapped"),
+                    "IS_MMAPPED", Config.get("theme.heap_chunk_flag_is_mmapped"),
                 ))
             if self.has_n_bit():
                 flags.append(Color.colorify(
-                    "NON_MAIN_ARENA", Config.get_gef_setting("theme.heap_chunk_flag_non_main_arena"),
+                    "NON_MAIN_ARENA", Config.get("theme.heap_chunk_flag_non_main_arena"),
                 ))
             return "|".join(flags)
 
@@ -5643,8 +5733,8 @@ class GlibcHeap:
 
             def get_sym_chunk(addr):
                 a = ProcessMap.lookup_address(addr)
-                b1 = Color.colorify_hex(addr, Config.get_gef_setting("theme.heap_chunk_address_freed"))
-                b2 = Color.colorify_hex(addr, Config.get_gef_setting("theme.heap_chunk_address_used"))
+                b1 = Color.colorify_hex(addr, Config.get("theme.heap_chunk_address_freed"))
+                b2 = Color.colorify_hex(addr, Config.get("theme.heap_chunk_address_used"))
                 c = Symbol.get_symbol_string(addr)
                 return a, (b1, b2), c
 
@@ -5655,12 +5745,12 @@ class GlibcHeap:
                             # single link-list && 0: ok
                             continue
                         return " [{:s}]".format(Color.colorify(
-                            "Corrupted", Config.get_gef_setting("theme.heap_corrupted_msg"),
+                            "Corrupted", Config.get("theme.heap_corrupted_msg"),
                         ))
                 return ""
 
-            chunk_c = Color.colorify("Chunk", Config.get_gef_setting("theme.heap_chunk_label"))
-            size_c = Color.colorify_hex(self.get_chunk_size(), Config.get_gef_setting("theme.heap_chunk_size"))
+            chunk_c = Color.colorify("Chunk", Config.get("theme.heap_chunk_label"))
+            size_c = Color.colorify_hex(self.get_chunk_size(), Config.get("theme.heap_chunk_size"))
             base, (base_c_f, base_c_u), base_sym = get_sym_chunk(self.chunk_base_address)
             addr, (addr_c_f, addr_c_u), addr_sym = get_sym_chunk(self.address)
             flags = self.flags_as_string()
@@ -6047,7 +6137,7 @@ def get_libc_version(verbose=False, silent=False):
         return None
 
     # use manual settings
-    libc_assume_version = eval(Config.get_gef_setting("libc.assume_version"))
+    libc_assume_version = eval(Config.get("libc.assume_version"))
     if libc_assume_version != ():
         if verbose:
             info("Use libc.assume_version")
@@ -6080,9 +6170,9 @@ def titlify(text, color=None, msg_color=None, horizontal_line="-"):
     """Print a centered title."""
     cols = GefUtil.get_terminal_size()[1]
     if color is None:
-        color = Config.get_gef_setting("theme.default_title_line")
+        color = Config.get("theme.default_title_line")
     if msg_color is None:
-        msg_color = Config.get_gef_setting("theme.default_title_message")
+        msg_color = Config.get("theme.default_title_message")
 
     msg = []
     if text:
@@ -6388,7 +6478,7 @@ def hexdump(source, length=0x10, separator=".", color=True, show_symbol=True, ba
 
     def style_byte(b, color=True):
         sbyte = "{:02x}".format(b)
-        if not color or Config.get_gef_setting("highlight.regex"):
+        if not color or Config.get("highlight.regex"):
             return sbyte
         if sbyte in style:
             st = style[sbyte]
@@ -7033,7 +7123,7 @@ class Disasm:
         """Disassemble `nb_insn` instructions after `addr` and `nb_prev` before `addr`.
         Return an iterator of Instruction objects.
         Use Disasm.gdb_disassemble or Disasm.capstone_disassemble according to the settings."""
-        if Config.get_gef_setting("context_code.use_capstone"):
+        if Config.get("context_code.use_capstone"):
             get_nth_prev_address = Disasm.capstone_get_nth_previous_instruction_address
             get_insns = Disasm.capstone_disassemble
         else:
@@ -12557,7 +12647,7 @@ def read_memory(addr, length):
             pass
 
     if is_arm64() and is_qemu_system():
-        if Config.get_gef_setting("gef.read_memory_work_around_for_aarch64_secure_memory"):
+        if Config.get("gef.read_memory_work_around_for_aarch64_secure_memory"):
             if SecureMemory.get_area():
                 target_phys = AddrMap.v2p(addr, force_secure=True) # heavy
                 if target_phys is not None and SecureMemory.contains(target_phys):
@@ -12639,7 +12729,7 @@ def read_cstring_from_memory(addr, max_length=None, safe=False):
     """Return a C-string read from memory, or None on error when safe is True."""
     try:
         if max_length is None:
-            max_length = Config.get_gef_setting("context.nb_max_string_length")
+            max_length = Config.get("context.nb_max_string_length")
 
         if is_kgdb():
             # read_memory when kgdb is very slow, this is dirty hack
@@ -12738,7 +12828,7 @@ def read_physmem(paddr, size, already_physmode=False):
 
     def kgdb_use_physmap(paddr, size):
         # Use workaround value if provided. Useful if KGDB does not expose system registers.
-        physmap = Config.get_gef_setting("gef.physmap_base_for_read_physmem_kgdb_work_around")
+        physmap = Config.get("gef.physmap_base_for_read_physmem_kgdb_work_around")
         if physmap == 0:
             if is_arm64():
                 # On arm64, calculate physmap address based on PAGE_OFFSET and memstart_addr.
@@ -13441,8 +13531,8 @@ class SecureMemory:
         # By default, "context code" uses Disasm.gdb_disassemble.
         # However, due to gdb's cache, secure memory changes may not appear in disassembly.
         # Therefore, if capstone is available, change it to disassemble by capstone.
-        if Config.get_gef_setting("context_code.use_capstone") is False:
-            Config.set_gef_setting("context_code.use_capstone", True)
+        if Config.get("context_code.use_capstone") is False:
+            Config.set("context_code.use_capstone", True)
         return ret
 
 
@@ -14194,7 +14284,7 @@ def is_kgdb():
     """GDB mode determination function for KGDB."""
     # Forcing KGDB mode is useful when KGDB is being used via agent-proxy
     # and thus GDB cannot see the serial device name.
-    if Config.get_gef_setting("gef.kgdb_force") is True:
+    if Config.get("gef.kgdb_force") is True:
         return True
     if not is_alive():
         return None
@@ -14203,7 +14293,7 @@ def is_kgdb():
 
 @Cache.cache_this_session
 def kgdb_has_system_registers():
-    return Config.get_gef_setting("gef.kgdb_system_registers") is True
+    return Config.get("gef.kgdb_system_registers") is True
 
 
 @Cache.cache_this_session(cache_None=False)
@@ -14708,7 +14798,7 @@ class ProcessMap:
     def get_process_maps_linux(pid, remote=False):
         """Parse the Linux process `/proc/pid/maps` file."""
 
-        if Config.get_gef_setting("context.disable_vmmap"):
+        if Config.get("context.disable_vmmap"):
             return []
 
         # open & read maps
@@ -14792,7 +14882,7 @@ class ProcessMap:
     def get_explored_regions():
         """Return sections from auxv exploring."""
 
-        if Config.get_gef_setting("context.disable_vmmap"):
+        if Config.get("context.disable_vmmap"):
             return []
 
         if not is_alive():
@@ -15122,7 +15212,7 @@ class ProcessMap:
 
     @staticmethod
     def get_process_maps_from_info_proc():
-        if Config.get_gef_setting("context.disable_vmmap"):
+        if Config.get("context.disable_vmmap"):
             return []
 
         res = gdb.execute("info proc mappings", to_string=True)
@@ -15164,7 +15254,7 @@ class ProcessMap:
 
     @staticmethod
     def get_process_maps_heuristic():
-        if Config.get_gef_setting("context.disable_vmmap"):
+        if Config.get("context.disable_vmmap"):
             return []
 
         if ProcessMap.__gef_use_info_proc_mappings__ is None:
@@ -15194,7 +15284,7 @@ class ProcessMap:
     @Cache.cache_until_next(per_inferior=True)
     def get_process_maps(outer=False):
         """Return the mapped memory sections."""
-        if Config.get_gef_setting("context.disable_vmmap"):
+        if Config.get("context.disable_vmmap"):
             return []
 
         if is_qemu_user():
@@ -16188,7 +16278,7 @@ class Auxv:
     def get_auxiliary_walk(offset=0):
         """Find AUXV by walking stack."""
 
-        if Config.get_gef_setting("context.disable_auxv"):
+        if Config.get("context.disable_auxv"):
             return None
 
         if current_arch.sp is None:
@@ -16281,7 +16371,7 @@ class Auxv:
         """Retrieve the auxiliary values of the current execution.
         Return None if not running, or a dict() of values."""
 
-        if Config.get_gef_setting("context.disable_auxv"):
+        if Config.get("context.disable_auxv"):
             return None
 
         if not is_alive():
@@ -16654,11 +16744,7 @@ class GenericCommand(gdb.Command):
 
         # add
         key = "{:s}.{:s}".format(class_name, name)
-        Config.__gef_config__[key] = [value, type(value), description]
-        Config.__gef_config_orig__[key] = [value, type(value), description] # for debugging
-
-        # reset cache
-        Cache.reset_gef_caches()
+        Config.add(key, value, description)
         return
 
     def set_repeat_count(self, argv, from_tty):
@@ -16890,7 +16976,7 @@ class GefThemeCommand(GenericCommand, BufferingOutput):
                 settings.append(x.split(".", 1)[1])
 
         for setting in sorted(settings):
-            value = Config.get_gef_setting("theme.{:s}".format(setting))
+            value = Config.get("theme.{:s}".format(setting))
             if value:
                 value = Color.colorify(value, value)
                 self.out.append("{:40s}: {:s}".format(setting, value))
@@ -16949,7 +17035,7 @@ class GefThemeCommand(GenericCommand, BufferingOutput):
             err("Invalid key")
             return
         if args.value == []:
-            value = Config.get_gef_setting(key)
+            value = Config.get(key)
             value = Color.colorify(value, value)
             gef_print("{:40s}: {:s}".format(args.key, value))
             return
@@ -16989,7 +17075,7 @@ class HighlightCommand(GenericCommand):
         if not HighlightCommand.highlight_table:
             return text
 
-        regex = Config.get_gef_setting("highlight.regex")
+        regex = Config.get("highlight.regex")
         for match, color in HighlightCommand.highlight_table.items():
             if regex:
                 try:
@@ -17090,7 +17176,7 @@ class HighlightAddCommand(GenericCommand):
             if a not in Color.colors.keys():
                 err("Invalid color")
                 return
-        if Config.get_gef_setting("highlight.regex"):
+        if Config.get("highlight.regex"):
             try:
                 re.compile(args.match)
             except re.error as e:
@@ -17825,19 +17911,19 @@ class UpCommand(GenericCommand):
             current_frame.select()
 
         # back up
-        nb_lines_before = Config.get_gef_setting("context_trace.nb_lines_before")
-        nb_lines = Config.get_gef_setting("context_trace.nb_lines")
+        nb_lines_before = Config.get("context_trace.nb_lines_before")
+        nb_lines = Config.get("context_trace.nb_lines")
 
         # change temporarily
-        Config.set_gef_setting("context_trace.nb_lines_before", 0xff)
-        Config.set_gef_setting("context_trace.nb_lines", 0x100)
+        Config.set("context_trace.nb_lines_before", 0xff)
+        Config.set("context_trace.nb_lines", 0x100)
 
         # print
         gdb.execute("context trace -i")
 
         # restore
-        Config.set_gef_setting("context_trace.nb_lines_before", nb_lines_before)
-        Config.set_gef_setting("context_trace.nb_lines", nb_lines)
+        Config.set("context_trace.nb_lines_before", nb_lines_before)
+        Config.set("context_trace.nb_lines", nb_lines)
         return
 
     @Decorator.parse_args
@@ -17884,19 +17970,19 @@ class DownCommand(GenericCommand):
             current_frame.select()
 
         # back up
-        nb_lines_before = Config.get_gef_setting("context_trace.nb_lines_before")
-        nb_lines = Config.get_gef_setting("context_trace.nb_lines")
+        nb_lines_before = Config.get("context_trace.nb_lines_before")
+        nb_lines = Config.get("context_trace.nb_lines")
 
         # change temporarily
-        Config.set_gef_setting("context_trace.nb_lines_before", 0xff)
-        Config.set_gef_setting("context_trace.nb_lines", 0x100)
+        Config.set("context_trace.nb_lines_before", 0xff)
+        Config.set("context_trace.nb_lines", 0x100)
 
         # print
         gdb.execute("context trace -i")
 
         # restore
-        Config.set_gef_setting("context_trace.nb_lines_before", nb_lines_before)
-        Config.set_gef_setting("context_trace.nb_lines", nb_lines)
+        Config.set("context_trace.nb_lines_before", nb_lines_before)
+        Config.set("context_trace.nb_lines", nb_lines)
         return
 
     @Decorator.parse_args
@@ -18072,8 +18158,8 @@ class DisplayTypeCommand(GenericCommand, BufferingOutput):
 
         # change setting temporarily
         if args.smart:
-            old_smart_setting = Config.get_gef_setting("context.smart_cpp_function_name")
-            Config.set_gef_setting("context.smart_cpp_function_name", True)
+            old_smart_setting = Config.get("context.smart_cpp_function_name")
+            Config.set("context.smart_cpp_function_name", True)
 
         # doit
         if args.address is None:
@@ -18086,7 +18172,7 @@ class DisplayTypeCommand(GenericCommand, BufferingOutput):
 
         # revert setting
         if args.smart:
-            Config.set_gef_setting("context.smart_cpp_function_name", old_smart_setting)
+            Config.set("context.smart_cpp_function_name", old_smart_setting)
         return
 
 
@@ -19347,7 +19433,7 @@ class CppVtableCommand(GenericCommand, BufferingOutput):
         self.typeinfos = {}
         self.out = []
         try:
-            self.cppfilt = GefUtil.which(Config.get_gef_setting("gef.cppfilt_command"))
+            self.cppfilt = GefUtil.which(Config.get("gef.cppfilt_command"))
         except FileNotFoundError:
             self.cppfilt = None
 
@@ -21880,9 +21966,9 @@ class FindSyscallCommand(GenericCommand, BufferingOutput):
 
     def print_loc(self, loc):
         if is_x86():
-            show_opcodes_size = Config.get_gef_setting("context_code.show_opcodes_size_x64_x86")
+            show_opcodes_size = Config.get("context_code.show_opcodes_size_x64_x86")
         else:
-            show_opcodes_size = Config.get_gef_setting("context_code.show_opcodes_size")
+            show_opcodes_size = Config.get("context_code.show_opcodes_size")
 
         nb_lines = 1
 
@@ -22844,7 +22930,7 @@ class SearchMangledPtrCommand(GenericCommand):
         else:
             valid_msg = Color.colorify("invalid", "bold red")
 
-        base_address_color = Config.get_gef_setting("theme.dereference_base_address")
+        base_address_color = Config.get("theme.dereference_base_address")
         width = AddressUtil.get_format_address_width()
         addr = Color.colorify("{:#0{:d}x}".format(addr, width), base_address_color)
 
@@ -27600,7 +27686,7 @@ class CapstoneDisassembleCommand(GenericCommand):
             err("--length must be greater than zero")
             return
 
-        length = args.length or Config.get_gef_setting("capstone_disassemble.nb_lines_code_default")
+        length = args.length or Config.get("capstone_disassemble.nb_lines_code_default")
         location = args.location or current_arch.pc
 
         try:
@@ -27772,7 +27858,7 @@ class GlibcHeapArenasCommand(GenericCommand):
             gef_print("Not found")
         while arena:
             if arena.addr in seen:
-                corrupted_msg_color = Config.get_gef_setting("theme.heap_corrupted_msg")
+                corrupted_msg_color = Config.get("theme.heap_corrupted_msg")
                 gef_print(Color.colorify("{:#x} [Loop detected]".format(arena.addr), corrupted_msg_color))
                 break
             seen.add(arena.addr)
@@ -28004,7 +28090,7 @@ class GlibcHeapChunkCommand(GenericCommand):
             info.append("top")
 
         if info:
-            freelist_hint_color = Config.get_gef_setting("theme.heap_freelist_hint")
+            freelist_hint_color = Config.get("theme.heap_freelist_hint")
             gef_print("  Found freelist/top: {:s}".format(Color.colorify(", ".join(info), freelist_hint_color)))
         else:
             gef_print("  Found freelist/top: None")
@@ -28076,7 +28162,7 @@ class GlibcHeapChunksCommand(GenericCommand, BufferingOutput):
         elif is_64bit() and arena.last_remainder % 0x10:
             self.warn_add_out("arena.last_remainder is corrupted")
 
-        freelist_hint_color = Config.get_gef_setting("theme.heap_freelist_hint")
+        freelist_hint_color = Config.get("theme.heap_freelist_hint")
         current_chunk = GlibcHeap.GlibcChunk(arena, dump_start, from_base=True)
         pbar = ProgressBar(total=max(arena.top - dump_start, 0))
 
@@ -28149,12 +28235,12 @@ class GlibcHeapChunksCommand(GenericCommand, BufferingOutput):
         if args.nb_byte is not None:
             peek_nb = args.nb_byte
         else:
-            peek_nb = Config.get_gef_setting("heap_chunks.peek_nb_byte")
+            peek_nb = Config.get("heap_chunks.peek_nb_byte")
 
         if args.peek_offset is not None:
             peek_offset = args.peek_offset
         else:
-            peek_offset = Config.get_gef_setting("heap_chunks.peek_offset")
+            peek_offset = Config.get("heap_chunks.peek_offset")
 
         self.out = []
         self.print_heap_chunks(arena, dump_start, peek_nb, peek_offset)
@@ -28193,7 +28279,7 @@ class GlibcHeapParseCommand(GenericCommand, BufferingOutput):
         hint = ", ".join(info)
 
         if arena.is_chunk_in_freelists(chunk):
-            chunk_freed_color = Config.get_gef_setting("theme.heap_chunk_address_freed")
+            chunk_freed_color = Config.get("theme.heap_chunk_address_freed")
             chunk_base_addr_str = Color.colorify("{:<#{:d}x}".format(chunk.chunk_base_address, width), chunk_freed_color)
             used_str = Color.colorify("{:{:d}s}".format("Freed", width), chunk_freed_color)
             if arena.is_chunk_in_tcache(chunk) or arena.is_chunk_in_fastbins(chunk):
@@ -28203,13 +28289,13 @@ class GlibcHeapParseCommand(GenericCommand, BufferingOutput):
                 fd_str = "{:<#{:d}x}".format(chunk.fd, width)
                 bk_str = "{:<#{:d}x}".format(chunk.bk, width)
         elif chunk.chunk_base_address == arena.top:
-            chunk_freed_color = Config.get_gef_setting("theme.heap_chunk_address_freed")
+            chunk_freed_color = Config.get("theme.heap_chunk_address_freed")
             chunk_base_addr_str = Color.colorify("{:<#{:d}x}".format(chunk.chunk_base_address, width), chunk_freed_color)
             used_str = Color.colorify("{:{:d}s}".format("Top", width), chunk_freed_color)
             fd_str = "{:<{:d}s}".format("-", width)
             bk_str = "{:<{:d}s}".format("-", width)
         else:
-            chunk_used_color = Config.get_gef_setting("theme.heap_chunk_address_used")
+            chunk_used_color = Config.get("theme.heap_chunk_address_used")
             chunk_base_addr_str = Color.colorify("{:<#{:d}x}".format(chunk.chunk_base_address, width), chunk_used_color)
             used_str = Color.colorify("{:{:d}s}".format("Used", width), chunk_used_color)
             fd_str = "{:<{:d}s}".format("-", width)
@@ -28350,7 +28436,7 @@ class GlibcHeapBinsSimpleCommand(GenericCommand):
             except gdb.MemoryError:
                 return ""
 
-        corrupted_msg_color = Config.get_gef_setting("theme.heap_corrupted_msg")
+        corrupted_msg_color = Config.get("theme.heap_corrupted_msg")
         libc_version = get_libc_version()
 
         # iterate arena ------------------------------------------------------------------------------------------------------
@@ -28516,7 +28602,7 @@ class GlibcHeapBinsDump:
             arena.tcache_perthread_struct,
         )))
 
-        corrupted_msg_color = Config.get_gef_setting("theme.heap_corrupted_msg")
+        corrupted_msg_color = Config.get("theme.heap_corrupted_msg")
         nb_chunk = 0
         for i in range(arena.TCACHE_MAX_BINS()):
             # index filter
@@ -28593,7 +28679,7 @@ class GlibcHeapBinsDump:
         NFASTBINS = fastbin_index((MAX_FAST_SIZE + SIZE_SZ + MALLOC_ALIGN_MASK) & ~MALLOC_ALIGN_MASK) + 1
 
         self.out.append(titlify("fastbins"))
-        corrupted_msg_color = Config.get_gef_setting("theme.heap_corrupted_msg")
+        corrupted_msg_color = Config.get("theme.heap_corrupted_msg")
 
         nb_chunk = 0
         for i in range(NFASTBINS):
@@ -28683,7 +28769,7 @@ class GlibcHeapBinsDump:
         else:
             size_str = "any"
 
-        corrupted_msg_color = Config.get_gef_setting("theme.heap_corrupted_msg")
+        corrupted_msg_color = Config.get("theme.heap_corrupted_msg")
         corrupted = False
 
         # follow the link backward
@@ -29707,17 +29793,17 @@ class GlibcHeapFindFakeFastCommand(GenericCommand, BufferingOutput):
 
         color = ""
         if size_candidate & 0b100:
-            color = Config.get_gef_setting("theme.heap_chunk_flag_non_main_arena")
+            color = Config.get("theme.heap_chunk_flag_non_main_arena")
         flag += [Color.colorify("NON_MAIN_ARENA", color)]
 
         color = ""
         if size_candidate & 0b10:
-            color = Config.get_gef_setting("theme.heap_chunk_flag_is_mmapped")
+            color = Config.get("theme.heap_chunk_flag_is_mmapped")
         flag += [Color.colorify("IS_MMAPED", color)]
 
         color = ""
         if size_candidate & 0b1:
-            color = Config.get_gef_setting("theme.heap_chunk_flag_prev_inuse")
+            color = Config.get("theme.heap_chunk_flag_prev_inuse")
         flag += [Color.colorify("PREV_INUSE", color)]
 
         self.out.append("    [{:s}]".format(" ".join(flag)))
@@ -30844,8 +30930,8 @@ class RegistersCommand(GenericCommand):
 
     def get_regname_color(self, regname, regvalue):
         """Return the appropriate color for a register name based on whether its value has changed."""
-        unchanged_color = Config.get_gef_setting("theme.registers_register_name")
-        changed_color = Config.get_gef_setting("theme.registers_value_changed")
+        unchanged_color = Config.get("theme.registers_register_name")
+        changed_color = Config.get("theme.registers_value_changed")
 
         old_value = ContextRegistersCommand.old_registers.get(regname, 0)
 
@@ -30901,7 +30987,7 @@ class RegistersCommand(GenericCommand):
                 if str(reg) == "<unavailable>":
                     padreg = aliased_registers.get(regname, regname).ljust(widest, " ")
                     line = "{:s}: {:s}".format(
-                        Color.colorify(padreg, Config.get_gef_setting("theme.registers_register_name")),
+                        Color.colorify(padreg, Config.get("theme.registers_register_name")),
                         Color.colorify("<unavailable>", "yellow underline"),
                     )
                     lines.append(line)
@@ -31176,7 +31262,7 @@ class RpCommand(GenericCommand, BufferingOutput):
 
         if args.kernel:
             try:
-                nm = GefUtil.which(Config.get_gef_setting("gef.nm_command"))
+                nm = GefUtil.which(Config.get("gef.nm_command"))
                 grep = GefUtil.which("grep")
             except FileNotFoundError as e:
                 err("{}".format(e))
@@ -32436,7 +32522,7 @@ class ElfInfoCommand(GenericCommand):
         # readelf pattern
         if args.use_readelf:
             try:
-                readelf = GefUtil.which(Config.get_gef_setting("gef.readelf_command"))
+                readelf = GefUtil.which(Config.get("gef.readelf_command"))
             except FileNotFoundError:
                 err("Could not find readelf")
                 return
@@ -38114,7 +38200,7 @@ class EntryBreakCommand(GenericCommand):
             return
 
         # use symbol if loaded
-        entrypoints = Config.get_gef_setting("entry_break.entrypoint_symbols").split()
+        entrypoints = Config.get("entry_break.entrypoint_symbols").split()
         for sym in entrypoints:
             try:
                 value = AddressUtil.parse_address(sym)
@@ -38371,7 +38457,7 @@ class ContextCommand(GenericCommand):
     def is_hide():
         if ContextCommand.context_hidden:
             return True
-        enabled = Config.get_gef_setting("context.enable")
+        enabled = Config.get("context.enable")
         if not enabled:
             return True
         return False
@@ -38409,18 +38495,18 @@ class ContextCommand(GenericCommand):
     def get_redirect(section, ignore_redirect):
         if ignore_redirect:
             return None
-        redirect = Config.get_gef_setting("context_{:s}.redirect".format(section))
+        redirect = Config.get("context_{:s}.redirect".format(section))
         if redirect:
             return redirect
-        redirect = Config.get_gef_setting("context.redirect")
+        redirect = Config.get("context.redirect")
         if redirect:
             return redirect
         return None
 
     @staticmethod
     def context_title(m, redirect=None):
-        line_color = Config.get_gef_setting("theme.context_title_line")
-        msg_color = Config.get_gef_setting("theme.context_title_message")
+        line_color = Config.get("theme.context_title_line")
+        msg_color = Config.get("theme.context_title_message")
         HORIZONTAL_LINE = "-"
 
         _, tty_columns = GefUtil.get_terminal_size(redirect=redirect)
@@ -38448,7 +38534,7 @@ class ContextCommand(GenericCommand):
         return
 
     def i386_auto_switch(self):
-        if not Config.get_gef_setting("context.enable_auto_switch_for_i8086"):
+        if not Config.get("context.enable_auto_switch_for_i8086"):
             return
 
         # check whether protected mode or not.
@@ -38482,7 +38568,7 @@ class ContextCommand(GenericCommand):
         return order_info
 
     def clear_screen(self, redirect):
-        if not Config.get_gef_setting("context.clear_screen"):
+        if not Config.get("context.clear_screen"):
             return
 
         if redirect:
@@ -38527,7 +38613,7 @@ class ContextCommand(GenericCommand):
         if len(args.commands) > 0:
             current_layout = args.commands
         else:
-            current_layout = Config.get_gef_setting("context.layout").strip().split()
+            current_layout = Config.get("context.layout").strip().split()
         if not current_layout:
             return
 
@@ -38605,20 +38691,20 @@ class ContextLegendCommand(GenericCommand):
         if is_qemu_system() or is_kgdb() or is_vmware():
             return None
 
-        if Config.get_gef_setting("gef.disable_color"):
+        if Config.get("gef.disable_color"):
             return None
 
         legend = "[ Legend: {:s} ]".format(
             " | ".join([
-                Color.colorify("Modified register", Config.get_gef_setting("theme.registers_value_changed")),
-                Color.colorify("Code", Config.get_gef_setting("theme.address_code")),
-                Color.colorify("Heap", Config.get_gef_setting("theme.address_heap")),
-                Color.colorify("Stack", Config.get_gef_setting("theme.address_stack")),
-                Color.colorify("Writable", Config.get_gef_setting("theme.address_writable")),
-                Color.colorify("ReadOnly", Config.get_gef_setting("theme.address_readonly")),
-                Color.colorify("None", Config.get_gef_setting("theme.address_valid_but_none")),
-                Color.colorify("RWX", Config.get_gef_setting("theme.address_rwx")),
-                Color.colorify("String", Config.get_gef_setting("theme.dereference_string")),
+                Color.colorify("Modified register", Config.get("theme.registers_value_changed")),
+                Color.colorify("Code", Config.get("theme.address_code")),
+                Color.colorify("Heap", Config.get("theme.address_heap")),
+                Color.colorify("Stack", Config.get("theme.address_stack")),
+                Color.colorify("Writable", Config.get("theme.address_writable")),
+                Color.colorify("ReadOnly", Config.get("theme.address_readonly")),
+                Color.colorify("None", Config.get("theme.address_valid_but_none")),
+                Color.colorify("RWX", Config.get("theme.address_rwx")),
+                Color.colorify("String", Config.get("theme.dereference_string")),
             ]),
         )
         return legend
@@ -38696,7 +38782,7 @@ class ContextRegistersCommand(GenericCommand):
     RE_FINDALL_FPU = re.compile(r"(st\(\d\))")
 
     def context_regs_extra(self, redirect):
-        if not Config.get_gef_setting("context_regs.show_mmx_xmm_ymm_fpu"):
+        if not Config.get("context_regs.show_mmx_xmm_ymm_fpu"):
             return
 
         if not is_x86():
@@ -38786,7 +38872,7 @@ class ContextRegistersCommand(GenericCommand):
         return
 
     def context_regs_syscall_errno(self, redirect):
-        if not Config.get_gef_setting("context_regs.show_errno"):
+        if not Config.get("context_regs.show_errno"):
             return
 
         if is_qemu_system() or is_kgdb() or is_kdb() or is_vmware() or is_wine():
@@ -38830,7 +38916,7 @@ class ContextRegistersCommand(GenericCommand):
         else:
             all_registers = current_arch.all_registers
 
-        ignored_registers = Config.get_gef_setting("context_regs.ignore_registers").split()
+        ignored_registers = Config.get("context_regs.ignore_registers").split()
 
         # fast path
         if not ignored_registers:
@@ -38899,7 +38985,7 @@ class ContextRegistersCommand(GenericCommand):
         target_registers = self.get_target_registers()
 
         # exec registers
-        if Config.get_gef_setting("context_regs.show_registers_raw"):
+        if Config.get("context_regs.show_registers_raw"):
             opt = "-s"
         else:
             opt = ""
@@ -38973,8 +39059,8 @@ class ContextStackCommand(GenericCommand):
             err("Failed to get value of $SP", redirect=redirect)
             return
 
-        show_raw = Config.get_gef_setting("context_stack.show_stack_raw")
-        nb_lines = Config.get_gef_setting("context_stack.nb_lines")
+        show_raw = Config.get("context_stack.show_stack_raw")
+        nb_lines = Config.get("context_stack.nb_lines")
 
         if show_raw is True:
             try:
@@ -39221,16 +39307,16 @@ class ContextCodeCommand(GenericCommand):
             self.context_code_default(redirect)
             return
 
-        use_native_x_command = Config.get_gef_setting("context_code.use_native_x_command")
-        nb_insn = Config.get_gef_setting("context_code.nb_lines")
-        nb_insn_prev = Config.get_gef_setting("context_code.nb_lines_prev")
+        use_native_x_command = Config.get("context_code.use_native_x_command")
+        nb_insn = Config.get("context_code.nb_lines")
+        nb_insn_prev = Config.get("context_code.nb_lines_prev")
         if is_x86():
-            show_opcodes_size = Config.get_gef_setting("context_code.show_opcodes_size_x64_x86")
+            show_opcodes_size = Config.get("context_code.show_opcodes_size_x64_x86")
         else:
-            show_opcodes_size = Config.get_gef_setting("context_code.show_opcodes_size")
-        past_lines_color = Config.get_gef_setting("theme.context_code_past")
-        future_lines_color = Config.get_gef_setting("theme.context_code_future")
-        use_capstone = Config.get_gef_setting("context_code.use_capstone")
+            show_opcodes_size = Config.get("context_code.show_opcodes_size")
+        past_lines_color = Config.get("theme.context_code_past")
+        future_lines_color = Config.get("theme.context_code_future")
+        use_capstone = Config.get("context_code.use_capstone")
 
         pc = current_arch.pc
         bp_locations = self.get_breakpoints()
@@ -39292,7 +39378,7 @@ class ContextCodeCommand(GenericCommand):
 
                 # branch info
                 if current_arch.is_conditional_branch(insn):
-                    if Config.get_gef_setting("context_code.peek_conditional_branch") is True:
+                    if Config.get("context_code.peek_conditional_branch") is True:
                         is_taken, reason = current_arch.is_branch_taken(insn)
                         if is_taken:
                             target = ContextCodeCommand.get_branch_addr(insn)
@@ -39303,15 +39389,15 @@ class ContextCodeCommand(GenericCommand):
                             reason = "[Reason: !({:s})]".format(reason) if reason else ""
                             line += "\t" + Color.colorify("NOT taken {:s}".format(reason), "bold red")
                 elif current_arch.is_jump(insn):
-                    if Config.get_gef_setting("context_code.peek_jump") is True:
+                    if Config.get("context_code.peek_jump") is True:
                         target = ContextCodeCommand.get_branch_addr(insn)
                         delay_slot = current_arch.has_delay_slot
                 elif current_arch.is_call(insn):
-                    if Config.get_gef_setting("context_code.peek_call") is True:
+                    if Config.get("context_code.peek_call") is True:
                         target = ContextCodeCommand.get_branch_addr(insn)
                         delay_slot = current_arch.has_delay_slot
                 elif current_arch.is_ret(insn):
-                    if Config.get_gef_setting("context_code.peek_ret") is True:
+                    if Config.get("context_code.peek_ret") is True:
                         target = current_arch.get_ra(insn, frame)
                         delay_slot = current_arch.has_ret_delay_slot
 
@@ -39745,8 +39831,8 @@ class ContextArgumentsCommand(GenericCommand):
 
     def print_guessed_arguments(self, function_name, redirect):
         """When no symbol, print six arguments."""
-        arg_key_color = Config.get_gef_setting("theme.registers_register_name")
-        nb_argument = Config.get_gef_setting("context_args.nb_guessed_arguments")
+        arg_key_color = Config.get("theme.registers_register_name")
+        nb_argument = Config.get("context_args.nb_guessed_arguments")
 
         # get each values
         args = []
@@ -39935,11 +40021,11 @@ class ContextSourceCommand(GenericCommand):
         if self.args.nb_lines is not None:
             nb_lines = self.args.nb_lines
         else:
-            nb_lines = Config.get_gef_setting("context_source.nb_lines")
-        past_lines_color = Config.get_gef_setting("theme.context_code_past")
-        cur_line_color = Config.get_gef_setting("theme.source_current_line")
-        future_lines_color = Config.get_gef_setting("theme.context_code_future")
-        show_extra_info = Config.get_gef_setting("context_source.show_source_code_variable_values")
+            nb_lines = Config.get("context_source.nb_lines")
+        past_lines_color = Config.get("theme.context_code_past")
+        cur_line_color = Config.get("theme.source_current_line")
+        future_lines_color = Config.get("theme.context_code_future")
+        show_extra_info = Config.get("context_source.show_source_code_variable_values")
 
         file_base_name = os.path.basename(symtab.filename)
         bp_locations = self.get_source_breakpoints(file_base_name)
@@ -40053,7 +40139,7 @@ class ContextTraceCommand(GenericCommand):
         if self.args.nb_lines is not None:
             nb_lines = self.args.nb_lines
         else:
-            nb_lines = Config.get_gef_setting("context_trace.nb_lines")
+            nb_lines = Config.get("context_trace.nb_lines")
         if nb_lines <= 0:
             return
 
@@ -40070,7 +40156,7 @@ class ContextTraceCommand(GenericCommand):
             current_frame = current_frame.older()
             frames.append(current_frame)
 
-        nb_lines_before = Config.get_gef_setting("context_trace.nb_lines_before")
+        nb_lines_before = Config.get("context_trace.nb_lines_before")
         level = max(len(frames) - nb_lines_before - 1, 0)
         current_frame = frames[level]
 
@@ -40209,7 +40295,7 @@ class ContextThreadsCommand(GenericCommand):
         if self.args.nb_lines is not None:
             nb_lines = self.args.nb_lines
         else:
-            nb_lines = Config.get_gef_setting("context_threads.nb_lines")
+            nb_lines = Config.get("context_threads.nb_lines")
 
         # get all threads
         threads = gdb.selected_inferior().threads()
@@ -40775,7 +40861,7 @@ class HexdumpFlexibleCommand(GenericCommand, BufferingOutput):
         return out
 
     def do_dump(self, fmt, size, each_type):
-        base_address_color = Config.get_gef_setting("theme.dereference_base_address")
+        base_address_color = Config.get("theme.dereference_base_address")
 
         # parse tag
         max_tag_width = 0
@@ -42180,8 +42266,8 @@ class DereferenceCommand(GenericCommand):
         """Format and display a single dereferenced memory entry, including pointer
         chains and optional annotations such as retaddr, canary, cookie, or registers.
         """
-        base_address_color = Config.get_gef_setting("theme.dereference_base_address")
-        registers_color = Config.get_gef_setting("theme.dereference_register_value")
+        base_address_color = Config.get("theme.dereference_base_address")
+        registers_color = Config.get("theme.dereference_register_value")
         memalign = current_arch.ptrsize
         offset = idx * memalign
 
@@ -42505,7 +42591,7 @@ class DereferenceCommand(GenericCommand):
             start_address = args.location
 
         # line numbers
-        nb_lines = args.nb_lines or Config.get_gef_setting("dereference.nb_lines")
+        nb_lines = args.nb_lines or Config.get("dereference.nb_lines")
         from_idx = nb_lines * self.repeat_count
         to_idx = nb_lines * (self.repeat_count + 1)
 
@@ -42521,7 +42607,7 @@ class DereferenceCommand(GenericCommand):
         out = self.dereference_line_by_line(start_address, from_idx, to_idx, step)
 
         # Because there is a special configuration, the BufferingOutput class is not inherited
-        no_pager = args.no_pager | Config.get_gef_setting("dereference.no_pager")
+        no_pager = args.no_pager | Config.get("dereference.no_pager")
         gef_print("\n".join(out), less=not no_pager)
         return
 
@@ -42639,7 +42725,7 @@ class SmartCppFunctionNameCommand(GenericCommand):
 
     @Decorator.parse_args
     def do_invoke(self, args):
-        setting = Config.get_gef_setting("context.smart_cpp_function_name")
+        setting = Config.get("context.smart_cpp_function_name")
         gdb.execute("gef config context.smart_cpp_function_name {!s}".format(not setting), to_string=True)
         return
 
@@ -42933,19 +43019,19 @@ class VMMapCommand(GenericCommand, BufferingOutput):
         # get color
         line_color = ""
         if entry.path.startswith("[stack]"):
-            line_color = Config.get_gef_setting("theme.address_stack")
+            line_color = Config.get("theme.address_stack")
         elif entry.path.startswith("[heap]"):
-            line_color = Config.get_gef_setting("theme.address_heap")
+            line_color = Config.get("theme.address_heap")
         elif entry.permission.value & Permission.EXECUTE:
-            line_color = Config.get_gef_setting("theme.address_code")
+            line_color = Config.get("theme.address_code")
         elif entry.permission.value & Permission.WRITE:
-            line_color = Config.get_gef_setting("theme.address_writable")
+            line_color = Config.get("theme.address_writable")
         elif entry.permission.value & Permission.READ:
-            line_color = Config.get_gef_setting("theme.address_readonly")
+            line_color = Config.get("theme.address_readonly")
         elif entry.permission.value == Permission.NONE:
-            line_color = Config.get_gef_setting("theme.address_valid_but_none")
+            line_color = Config.get("theme.address_valid_but_none")
         if entry.permission.value == (Permission.READ | Permission.WRITE | Permission.EXECUTE):
-            line_color += " " + Config.get_gef_setting("theme.address_rwx")
+            line_color += " " + Config.get("theme.address_rwx")
 
         # if qemu-xxx(32bit arch) runs on x86-64 machine, memalign_size does not match
         # AddressUtil.get_memory_alignment()
@@ -42986,7 +43072,7 @@ class VMMapCommand(GenericCommand, BufferingOutput):
                     register_hints.append(regname)
             if register_hints:
                 m = "  <-  {:s}".format(", ".join(list(register_hints)))
-                registers_color = Config.get_gef_setting("theme.dereference_register_value")
+                registers_color = Config.get("theme.dereference_register_value")
                 line += Color.colorify(m, registers_color)
 
         self.out.append(line)
@@ -42995,13 +43081,13 @@ class VMMapCommand(GenericCommand, BufferingOutput):
     def show_legend(self):
         legend = "[ Legend: {:s} ]".format(
             " | ".join([
-                Color.colorify("Code", Config.get_gef_setting("theme.address_code")),
-                Color.colorify("Heap", Config.get_gef_setting("theme.address_heap")),
-                Color.colorify("Stack", Config.get_gef_setting("theme.address_stack")),
-                Color.colorify("Writable", Config.get_gef_setting("theme.address_writable")),
-                Color.colorify("ReadOnly", Config.get_gef_setting("theme.address_readonly")),
-                Color.colorify("None", Config.get_gef_setting("theme.address_valid_but_none")),
-                Color.colorify("RWX", Config.get_gef_setting("theme.address_rwx")),
+                Color.colorify("Code", Config.get("theme.address_code")),
+                Color.colorify("Heap", Config.get("theme.address_heap")),
+                Color.colorify("Stack", Config.get("theme.address_stack")),
+                Color.colorify("Writable", Config.get("theme.address_writable")),
+                Color.colorify("ReadOnly", Config.get("theme.address_readonly")),
+                Color.colorify("None", Config.get("theme.address_valid_but_none")),
+                Color.colorify("RWX", Config.get("theme.address_rwx")),
             ]),
         )
         self.out.append(legend)
@@ -43046,7 +43132,7 @@ class VMMapCommand(GenericCommand, BufferingOutput):
 
         # color legend
         self.out = []
-        if not Config.get_gef_setting("gef.disable_color"):
+        if not Config.get("gef.disable_color"):
             self.show_legend()
 
         # legend
@@ -43473,7 +43559,7 @@ class PatternCreateCommand(GenericCommand):
     @Decorator.parse_args
     def do_invoke(self, args):
         if args.size is None:
-            size = Config.get_gef_setting("pattern.length")
+            size = Config.get("pattern.length")
         else:
             size = args.size
 
@@ -43543,7 +43629,7 @@ class PatternSearchCommand(GenericCommand):
     @Decorator.only_if_gdb_running
     def do_invoke(self, args):
         if args.size is None:
-            size = Config.get_gef_setting("pattern.length") * 64
+            size = Config.get("pattern.length") * 64
         else:
             size = args.size
 
@@ -43630,7 +43716,7 @@ class SigreturnCommand(GenericCommand):
         labels = [e if isinstance(e, str) else e[2] for e in entries]
         width = max(len(x) for x in labels)
         ptrsize = current_arch.ptrsize
-        base_address_color = Config.get_gef_setting("theme.dereference_base_address")
+        base_address_color = Config.get("theme.dereference_base_address")
 
         out = []
         idx = 0
@@ -45348,7 +45434,7 @@ class DynamicCommand(GenericCommand, BufferingOutput):
         return
 
     def dump_dynamic(self, dynamic, remain_size):
-        base_address_color = Config.get_gef_setting("theme.dereference_base_address")
+        base_address_color = Config.get("theme.dereference_base_address")
 
         if dynamic is None:
             info("Could not find _DYNAMIC")
@@ -45530,7 +45616,7 @@ class DestructorDumpCommand(GenericCommand):
     _example_ = "\n".join(_example_).format(_cmdline_)
 
     def C(self, addr):
-        base_address_color = Config.get_gef_setting("theme.dereference_base_address")
+        base_address_color = Config.get("theme.dereference_base_address")
         a = Color.colorify("{:#0{:d}x}".format(
             addr, AddressUtil.get_format_address_width(),
         ), base_address_color)
@@ -46564,7 +46650,7 @@ class GotCommand(GenericCommand, BufferingOutput):
 
     def get_jmp_slots(self):
         try:
-            readelf = GefUtil.which(Config.get_gef_setting("gef.readelf_command"))
+            readelf = GefUtil.which(Config.get("gef.readelf_command"))
             cmd = [readelf, "--relocs", "--wide", self.filename]
             lines = GefUtil.gef_execute_external(cmd, as_list=True)
         except (FileNotFoundError, subprocess.CalledProcessError):
@@ -46634,7 +46720,7 @@ class GotCommand(GenericCommand, BufferingOutput):
 
     def get_jmp_slots_arch_specific(self):
         try:
-            readelf = GefUtil.which(Config.get_gef_setting("gef.readelf_command"))
+            readelf = GefUtil.which(Config.get("gef.readelf_command"))
             cmd = [readelf, "--arch-specific", "--wide", self.filename]
             lines = GefUtil.gef_execute_external(cmd, as_list=True)
         except (FileNotFoundError, subprocess.CalledProcessError):
@@ -46673,7 +46759,7 @@ class GotCommand(GenericCommand, BufferingOutput):
 
     def get_plt_addresses(self):
         try:
-            objdump = GefUtil.which(Config.get_gef_setting("gef.objdump_command"))
+            objdump = GefUtil.which(Config.get("gef.objdump_command"))
             cmd = [objdump, "-j", ".plt", "-j", ".plt.sec", "-j", ".plt.got", "-d", self.filename]
             lines = GefUtil.gef_execute_external(cmd, as_list=True)
         except (FileNotFoundError, subprocess.CalledProcessError):
@@ -46702,7 +46788,7 @@ class GotCommand(GenericCommand, BufferingOutput):
 
     def get_plt_addresses_arch_specific(self):
         try:
-            readelf = GefUtil.which(Config.get_gef_setting("gef.readelf_command"))
+            readelf = GefUtil.which(Config.get("gef.readelf_command"))
             cmd = [readelf, "--arch-specific", "--wide", self.filename]
             lines = GefUtil.gef_execute_external(cmd, as_list=True)
         except (FileNotFoundError, subprocess.CalledProcessError):
@@ -46856,18 +46942,18 @@ class GotCommand(GenericCommand, BufferingOutput):
 
             # different colors if the function has been resolved or not
             if got_value == 0:
-                got_value_color = Config.get_gef_setting("got.function_resolved") # .rela.dyn && uninitialized, etc.
+                got_value_color = Config.get("got.function_resolved") # .rela.dyn && uninitialized, etc.
             elif plt_begin <= got_value < plt_end: # Non-PIE
-                got_value_color = Config.get_gef_setting("got.function_not_resolved")
+                got_value_color = Config.get("got.function_not_resolved")
             elif plt_begin - self.base_address <= got_value < plt_end - self.base_address: # PIE
-                got_value_color = Config.get_gef_setting("got.function_not_resolved")
+                got_value_color = Config.get("got.function_not_resolved")
             else:
-                got_value_color = Config.get_gef_setting("got.function_resolved")
+                got_value_color = Config.get("got.function_resolved")
 
             # c++filt
             if self.args.cppfilt:
                 if name.startswith("_Z"):
-                    cppfilt_command = GefUtil.which(Config.get_gef_setting("gef.cppfilt_command"))
+                    cppfilt_command = GefUtil.which(Config.get("gef.cppfilt_command"))
                     res = GefUtil.gef_execute_external([cppfilt_command, name], as_list=True)
                     if len(res) == 1:
                         name = res[0]
@@ -47018,10 +47104,10 @@ class GotCommand(GenericCommand, BufferingOutput):
     @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
     def do_invoke(self, args):
         try:
-            GefUtil.which(Config.get_gef_setting("gef.objdump_command"))
-            GefUtil.which(Config.get_gef_setting("gef.readelf_command"))
+            GefUtil.which(Config.get("gef.objdump_command"))
+            GefUtil.which(Config.get("gef.readelf_command"))
             if args.cppfilt:
-                GefUtil.which(Config.get_gef_setting("gef.cppfilt_command"))
+                GefUtil.which(Config.get("gef.cppfilt_command"))
         except FileNotFoundError as e:
             self.quiet_err("{}".format(e))
             return
@@ -90792,7 +90878,7 @@ class KernelModuleCommand(GenericCommand, BufferingOutput):
             ))
 
         # embedding symbols
-        objcopy = GefUtil.which(Config.get_gef_setting("gef.objcopy_command"))
+        objcopy = GefUtil.which(Config.get("gef.objcopy_command"))
         processed_count = 0
         for cmd_string_arr_sliced in slicer(cmd_string_arr, 10000 * 2):
             subprocess.check_output([objcopy] + cmd_string_arr_sliced + [blank_elf])
@@ -101919,7 +102005,7 @@ class GdtInfoCommand(GenericCommand, BufferingOutput):
             if reglist:
                 regstr = Color.colorify(
                     " <- {:s}".format(" ,".join(reglist)),
-                    Config.get_gef_setting("theme.dereference_register_value"),
+                    Config.get("theme.dereference_register_value"),
                 )
             else:
                 regstr = ""
@@ -146265,7 +146351,7 @@ class SaveOutputCommand(GenericCommand):
             return
 
         # get settings
-        always_no_pager = Config.get_gef_setting("gef.always_no_pager")
+        always_no_pager = Config.get("gef.always_no_pager")
 
         # parse command
         cmd = ""
@@ -146281,11 +146367,11 @@ class SaveOutputCommand(GenericCommand):
 
         # do the command
         try:
-            Config.set_gef_setting("gef.always_no_pager", True) # change temporarily
+            Config.set("gef.always_no_pager", True) # change temporarily
             current_output = Color.remove_color(gdb.execute(cmd, to_string=True))
-            Config.set_gef_setting("gef.always_no_pager", always_no_pager) # revert settings
+            Config.set("gef.always_no_pager", always_no_pager) # revert settings
         except gdb.error:
-            Config.set_gef_setting("gef.always_no_pager", always_no_pager) # revert settings
+            Config.set("gef.always_no_pager", always_no_pager) # revert settings
             exc_type, exc_value, exc_traceback = sys.exc_info()
             gef_print(exc_value)
             return
@@ -146379,7 +146465,7 @@ class DiffOutputColordiffCommand(DiffOutputCommand):
         return
 
     def make_diff(self, path1, path2):
-        option = Config.get_gef_setting("diffo.colordiff_option")
+        option = Config.get("diffo.colordiff_option")
         cmd = "{:s} {:s} '{:s}' '{:s}'".format(self.colordiff, option, path1, path2)
         result = subprocess.getoutput(cmd)
         return result
@@ -148472,7 +148558,7 @@ class KernelSlub:
         if simple:
             return [chunk]
 
-        corrupted_msg_color = Config.get_gef_setting("theme.heap_corrupted_msg")
+        corrupted_msg_color = Config.get("theme.heap_corrupted_msg")
 
         freelist = [chunk]
         seen = {chunk}
@@ -149123,8 +149209,8 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
     _note2_ = "\n".join(_note2_)
 
     def dump_page_print_layout(self, tag, kmem_cache, page, freelist, freelist_fastpath, freelist_sheaf):
-        used_address_color = Config.get_gef_setting("theme.heap_chunk_address_used")
-        freed_address_color = Config.get_gef_setting("theme.heap_chunk_address_freed")
+        used_address_color = Config.get("theme.heap_chunk_address_used")
+        freed_address_color = Config.get("theme.heap_chunk_address_freed")
 
         if page["virt_addr"] is None:
             self.out.append("        layout: Failed to get the first page")
@@ -149194,7 +149280,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
         return
 
     def dump_page_print_freelist(self, tag, kmem_cache, page, freelist, freelist_fastpath):
-        freed_address_color = Config.get_gef_setting("theme.heap_chunk_address_freed")
+        freed_address_color = Config.get("theme.heap_chunk_address_freed")
 
         def print_freelist(freelist):
             for chunk_addr in freelist:
@@ -149247,10 +149333,10 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
         return
 
     def dump_page(self, page, kmem_cache, tag, freelist_fastpath=()):
-        label_active_color = Config.get_gef_setting("theme.heap_label_active")
-        label_inactive_color = Config.get_gef_setting("theme.heap_label_inactive")
-        heap_page_color = Config.get_gef_setting("theme.heap_page_address")
-        slab_address_color = Config.get_gef_setting("theme.heap_slab_address")
+        label_active_color = Config.get("theme.heap_label_active")
+        label_inactive_color = Config.get("theme.heap_label_inactive")
+        heap_page_color = Config.get("theme.heap_page_address")
+        slab_address_color = Config.get("theme.heap_slab_address")
         freelist_fastpath = list(freelist_fastpath)
 
         # page address
@@ -149301,9 +149387,9 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
 
     # for CONFIG_SLAB_VIRTUAL
     def dump_slub_tlbflush_queue(self, parsed_slabs):
-        chunk_label_color = Config.get_gef_setting("theme.heap_chunk_label")
-        not_mapped_virt = Config.get_gef_setting("theme.address_valid_but_none")
-        slab_address_color = Config.get_gef_setting("theme.heap_slab_address")
+        chunk_label_color = Config.get("theme.heap_chunk_label")
+        not_mapped_virt = Config.get("theme.address_valid_but_none")
+        slab_address_color = Config.get("theme.heap_slab_address")
         # dump
         queue_addr_s = Color.colorify_hex(self.kslub.slub_tlbflush_queue, slab_address_color)
         self.out.append("slub_tlbflush_queue @ {:s}".format(queue_addr_s))
@@ -149320,8 +149406,8 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
 
     # for sheaf / barn
     def dump_sheaf(self, sheaf, tag):
-        freed_address_color = Config.get_gef_setting("theme.heap_chunk_address_freed")
-        slab_address_color = Config.get_gef_setting("theme.heap_slab_address")
+        freed_address_color = Config.get("theme.heap_chunk_address_freed")
+        slab_address_color = Config.get("theme.heap_slab_address")
 
         sheaf_addr_s = Color.colorify_hex(sheaf["address"], slab_address_color)
         self.out.append("      {:s}: {:s}".format(tag, sheaf_addr_s))
@@ -149355,7 +149441,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
         if not node_barn.get("address"):
             return
 
-        slab_address_color = Config.get_gef_setting("theme.heap_slab_address")
+        slab_address_color = Config.get("theme.heap_slab_address")
         node_barn_addr_s = Color.colorify_hex(node_barn["address"], slab_address_color)
         self.out.append("      node_barn: {:s}".format(node_barn_addr_s))
 
@@ -149376,9 +149462,9 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
 
     # for sheaf / barn
     def dump_sheaves(self, cpu_sheaves, kmem_cache, cpu):
-        label_active_color = Config.get_gef_setting("theme.heap_label_active")
-        label_inactive_color = Config.get_gef_setting("theme.heap_label_inactive")
-        slab_address_color = Config.get_gef_setting("theme.heap_slab_address")
+        label_active_color = Config.get("theme.heap_label_active")
+        label_inactive_color = Config.get("theme.heap_label_inactive")
+        slab_address_color = Config.get("theme.heap_slab_address")
         kversion = Kernel.version()
 
         if not cpu_sheaves.get("address"):
@@ -149404,10 +149490,10 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
         return
 
     def dump_caches(self, target_names, cpus, parsed_caches):
-        chunk_label_color = Config.get_gef_setting("theme.heap_chunk_label")
-        chunk_size_color = Config.get_gef_setting("theme.heap_chunk_size")
-        label_inactive_color = Config.get_gef_setting("theme.heap_label_inactive")
-        slab_address_color = Config.get_gef_setting("theme.heap_slab_address")
+        chunk_label_color = Config.get("theme.heap_chunk_label")
+        chunk_size_color = Config.get("theme.heap_chunk_size")
+        label_inactive_color = Config.get("theme.heap_label_inactive")
+        slab_address_color = Config.get("theme.heap_slab_address")
 
         slab_caches_s = Color.colorify_hex(self.kslub.slab_caches, slab_address_color)
         self.out.append("slab_caches @ {:s}".format(slab_caches_s))
@@ -149518,7 +149604,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
         return
 
     def dump_names(self, parsed_caches):
-        slab_address_color = Config.get_gef_setting("theme.heap_slab_address")
+        slab_address_color = Config.get("theme.heap_slab_address")
         name_width = max(len(k["name"]) for k in parsed_caches[1:])
 
         if not self.args.quiet:
@@ -150074,7 +150160,7 @@ class KernelSlubTiny:
         if simple:
             return [chunk]
 
-        corrupted_msg_color = Config.get_gef_setting("theme.heap_corrupted_msg")
+        corrupted_msg_color = Config.get("theme.heap_corrupted_msg")
 
         freelist = [chunk]
         seen = {chunk}
@@ -150267,8 +150353,8 @@ class SlubTinyDumpCommand(GenericCommand, BufferingOutput):
     _note_ = "\n".join(_note_)
 
     def dump_page_print_layout(self, kmem_cache, page, freelist):
-        used_address_color = Config.get_gef_setting("theme.heap_chunk_address_used")
-        freed_address_color = Config.get_gef_setting("theme.heap_chunk_address_freed")
+        used_address_color = Config.get("theme.heap_chunk_address_used")
+        freed_address_color = Config.get("theme.heap_chunk_address_freed")
 
         if page["virt_addr"] is None:
             self.out.append("        layout: Failed to get the first page")
@@ -150326,7 +150412,7 @@ class SlubTinyDumpCommand(GenericCommand, BufferingOutput):
         return
 
     def dump_page_print_freelist(self, kmem_cache, page, freelist):
-        freed_address_color = Config.get_gef_setting("theme.heap_chunk_address_freed")
+        freed_address_color = Config.get("theme.heap_chunk_address_freed")
 
         if freelist == [] or freelist == [0]:
             self.out.append("        freelist: (none)")
@@ -150358,8 +150444,8 @@ class SlubTinyDumpCommand(GenericCommand, BufferingOutput):
         return
 
     def dump_page(self, page, kmem_cache, tag, freelist=None):
-        label_active_color = Config.get_gef_setting("theme.heap_label_active")
-        heap_page_color = Config.get_gef_setting("theme.heap_page_address")
+        label_active_color = Config.get("theme.heap_label_active")
+        heap_page_color = Config.get("theme.heap_page_address")
 
         # page address
         tag_s = Color.colorify("{:s} page".format(tag), label_active_color)
@@ -150402,9 +150488,9 @@ class SlubTinyDumpCommand(GenericCommand, BufferingOutput):
         return
 
     def dump_caches(self, target_names, parsed_caches):
-        chunk_label_color = Config.get_gef_setting("theme.heap_chunk_label")
-        chunk_size_color = Config.get_gef_setting("theme.heap_chunk_size")
-        label_inactive_color = Config.get_gef_setting("theme.heap_label_inactive")
+        chunk_label_color = Config.get("theme.heap_chunk_label")
+        chunk_size_color = Config.get("theme.heap_chunk_size")
+        label_inactive_color = Config.get("theme.heap_label_inactive")
 
         self.out.append("slab_caches @ {:#x}".format(self.kslub_tiny.slab_caches))
         for kmem_cache in parsed_caches[1:]:
@@ -151182,10 +151268,10 @@ class SlabDumpCommand(GenericCommand, BufferingOutput):
     _note_ = "\n".join(_note_)
 
     def dump_page(self, page, kmem_cache, tag):
-        heap_page_color = Config.get_gef_setting("theme.heap_page_address")
-        label_inactive_color = Config.get_gef_setting("theme.heap_label_inactive")
-        used_address_color = Config.get_gef_setting("theme.heap_chunk_address_used")
-        freed_address_color = Config.get_gef_setting("theme.heap_chunk_address_freed")
+        heap_page_color = Config.get("theme.heap_page_address")
+        label_inactive_color = Config.get("theme.heap_label_inactive")
+        used_address_color = Config.get("theme.heap_chunk_address_used")
+        freed_address_color = Config.get("theme.heap_chunk_address_freed")
 
         # page address
         tag_s = Color.colorify(tag, label_inactive_color)
@@ -151272,8 +151358,8 @@ class SlabDumpCommand(GenericCommand, BufferingOutput):
         return
 
     def dump_array_cache(self, cpu, kmem_cache):
-        label_active_color = Config.get_gef_setting("theme.heap_label_active")
-        freed_address_color = Config.get_gef_setting("theme.heap_chunk_address_freed")
+        label_active_color = Config.get("theme.heap_label_active")
+        freed_address_color = Config.get("theme.heap_chunk_address_freed")
 
         tag_s = Color.colorify("array_cache (cpu{:d})".format(cpu), label_active_color)
         if "array_cache" not in kmem_cache:
@@ -151302,9 +151388,9 @@ class SlabDumpCommand(GenericCommand, BufferingOutput):
         return
 
     def dump_caches(self, target_names, cpus, parsed_caches):
-        chunk_label_color = Config.get_gef_setting("theme.heap_chunk_label")
-        chunk_size_color = Config.get_gef_setting("theme.heap_chunk_size")
-        label_inactive_color = Config.get_gef_setting("theme.heap_label_inactive")
+        chunk_label_color = Config.get("theme.heap_chunk_label")
+        chunk_size_color = Config.get("theme.heap_chunk_size")
+        label_inactive_color = Config.get("theme.heap_label_inactive")
 
         self.out.append("slab_caches @ {:#x}".format(self.kslab.slab_caches))
         for kmem_cache in parsed_caches[1:]:
@@ -151770,10 +151856,10 @@ class SlobDumpCommand(GenericCommand, BufferingOutput):
     _note_ = "\n".join(_note_)
 
     def dump_freelist(self, tag, page_freelist):
-        chunk_size_color = Config.get_gef_setting("theme.heap_chunk_size")
-        label_active_color = Config.get_gef_setting("theme.heap_label_active")
-        heap_page_color = Config.get_gef_setting("theme.heap_page_address")
-        freed_address_color = Config.get_gef_setting("theme.heap_chunk_address_freed")
+        chunk_size_color = Config.get("theme.heap_chunk_size")
+        label_active_color = Config.get("theme.heap_label_active")
+        heap_page_color = Config.get("theme.heap_page_address")
+        freed_address_color = Config.get("theme.heap_chunk_address_freed")
 
         self.out.append(titlify("{:s} @ {:#x}".format(tag, getattr(self.kslob, tag))))
 
@@ -151795,8 +151881,8 @@ class SlobDumpCommand(GenericCommand, BufferingOutput):
         return
 
     def dump_caches(self, target_names, parsed_caches, parsed_freelist):
-        chunk_label_color = Config.get_gef_setting("theme.heap_chunk_label")
-        chunk_size_color = Config.get_gef_setting("theme.heap_chunk_size")
+        chunk_label_color = Config.get("theme.heap_chunk_label")
+        chunk_size_color = Config.get("theme.heap_chunk_size")
 
         if self.args.verbose:
             self.out.append(titlify("{:s} @ {:#x}".format("slab_caches", self.kslob.slab_caches)))
@@ -152169,8 +152255,8 @@ class SlabContainsCommand(GenericCommand):
         return obj
 
     def slab_contains(self):
-        chunk_label_color = Config.get_gef_setting("theme.heap_chunk_label")
-        chunk_size_color = Config.get_gef_setting("theme.heap_chunk_size")
+        chunk_label_color = Config.get("theme.heap_chunk_label")
+        chunk_size_color = Config.get("theme.heap_chunk_size")
 
         obj = self.get_slab_object(self.args.address)
         for page in obj["pages"]:
@@ -152198,11 +152284,11 @@ class SlabContainsCommand(GenericCommand):
         freed = self.is_freed(obj["object_base"], obj["name"])
         if freed:
             self.quiet_print("status: {:s} (found object base in freelist)".format(
-                Color.colorify("freed", Config.get_gef_setting("theme.heap_chunk_address_freed")),
+                Color.colorify("freed", Config.get("theme.heap_chunk_address_freed")),
             ))
         elif freed is not None:
             self.quiet_print("status: {:s} (not found object base in freelist)".format(
-                Color.colorify("in-use", Config.get_gef_setting("theme.heap_chunk_address_used")),
+                Color.colorify("in-use", Config.get("theme.heap_chunk_address_used")),
             ))
         return
 
@@ -152431,9 +152517,9 @@ class KobjCommand(GenericCommand):
 
     def color_state(self, state):
         if state == "freed":
-            return Color.colorify("freed", Config.get_gef_setting("theme.heap_chunk_address_freed"))
+            return Color.colorify("freed", Config.get("theme.heap_chunk_address_freed"))
         if state == "allocated":
-            return Color.colorify("allocated", Config.get_gef_setting("theme.heap_chunk_address_used"))
+            return Color.colorify("allocated", Config.get("theme.heap_chunk_address_used"))
         return state or "unknown"
 
     def report_slab(self, addr, page, slab):
@@ -152441,7 +152527,7 @@ class KobjCommand(GenericCommand):
         if page is not None:
             self.emit("Page", "{:#x}".format(page))
         self.emit("Allocator", Kernel.get_slab_type())
-        self.emit("Slab cache", Color.colorify(slab["name"], Config.get_gef_setting("theme.heap_chunk_label")))
+        self.emit("Slab cache", Color.colorify(slab["name"], Config.get("theme.heap_chunk_label")))
         if slab["object_base"] is not None:
             self.emit("Object base", "{:#x}".format(slab["object_base"]))
             self.emit("Object offset", "+{:#x}".format(addr - slab["object_base"]))
@@ -152949,8 +153035,8 @@ class KmemCacheAliasCommand(GenericCommand, BufferingOutput):
         return alias_groups
 
     def make_output_merged(self, alias_groups):
-        chunk_label_color = Config.get_gef_setting("theme.heap_chunk_label")
-        chunk_size_color = Config.get_gef_setting("theme.heap_chunk_size")
+        chunk_label_color = Config.get("theme.heap_chunk_label")
+        chunk_size_color = Config.get("theme.heap_chunk_size")
 
         # group entries by their physical sysfs node
         merged_groups = {}
@@ -154128,9 +154214,9 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
     _note_ = "\n".join(_note_)
 
     def format_entry(self, entry):
-        chunk_size_color = Config.get_gef_setting("theme.heap_chunk_size")
-        freed_address_color = Config.get_gef_setting("theme.heap_chunk_address_freed")
-        heap_page_color = Config.get_gef_setting("theme.heap_page_address")
+        chunk_size_color = Config.get("theme.heap_chunk_size")
+        freed_address_color = Config.get("theme.heap_chunk_address_freed")
+        heap_page_color = Config.get("theme.heap_page_address")
         align = AddressUtil.get_format_address_width()
         page_str = Color.colorify("{:#0{:d}x}".format(entry["page"], align), freed_address_color)
         size_str = Color.colorify("{:#08x}".format(entry["size"]), chunk_size_color)
@@ -154147,7 +154233,7 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
 
     @staticmethod
     def format_pcp_list(pcp_list):
-        color = Config.get_gef_setting("theme.heap_chunk_size")
+        color = Config.get("theme.heap_chunk_size")
         size_str = Color.colorify("{:#08x}".format(pcp_list["size"]), color)
         return "  pcp_index: {:d}, order: {:d} ({:s} bytes), mtype: {:d} (={:s})".format(
             pcp_list["index"], pcp_list["order"], size_str, pcp_list["mtype"], pcp_list["mtype_name"],
@@ -154155,7 +154241,7 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
 
     @staticmethod
     def format_free_area(free_area):
-        color = Config.get_gef_setting("theme.heap_chunk_size")
+        color = Config.get("theme.heap_chunk_size")
         return "order: {:d} ({:s} bytes)".format(free_area["order"], Color.colorify_hex(free_area["size"], color))
 
     @staticmethod
@@ -154383,8 +154469,8 @@ class BuddyContainsCommand(BuddyDumpCommand):
         return page, virt, phys, offset
 
     def print_block_info(self, head_page, head_pfn, order):
-        chunk_size_color = Config.get_gef_setting("theme.heap_chunk_size")
-        freed_address_color = Config.get_gef_setting("theme.heap_chunk_address_freed")
+        chunk_size_color = Config.get("theme.heap_chunk_size")
+        freed_address_color = Config.get("theme.heap_chunk_address_freed")
         PAGE_SIZE = KernelAddressHeuristicFinder.consts().PAGE_SIZE
         PAGE_SHIFT = KernelAddressHeuristicFinder.consts().PAGE_SHIFT
 
@@ -154407,7 +154493,7 @@ class BuddyContainsCommand(BuddyDumpCommand):
         return
 
     def parse_page(self, page, pfn, phys, virt, offset_in_page):
-        used_address_color = Config.get_gef_setting("theme.heap_chunk_address_used")
+        used_address_color = Config.get("theme.heap_chunk_address_used")
         PAGE_SIZE = KernelAddressHeuristicFinder.consts().PAGE_SIZE
 
         self.quiet_print("page: {:#x}".format(page))
@@ -154449,7 +154535,7 @@ class BuddyContainsCommand(BuddyDumpCommand):
         return
 
     def parse_free_lists(self, page):
-        used_address_color = Config.get_gef_setting("theme.heap_chunk_address_used")
+        used_address_color = Config.get("theme.heap_chunk_address_used")
         PAGE_SIZE = KernelAddressHeuristicFinder.consts().PAGE_SIZE
 
         lists = self.kbuddy.get_nodes(quiet=self.args.quiet)
@@ -155274,9 +155360,9 @@ class KernelPipeCommand(GenericCommand, BufferingOutput):
         return flags_str
 
     def dump_pipe(self, pipe_files):
-        heap_page_color = Config.get_gef_setting("theme.heap_page_address")
-        freed_address_color = Config.get_gef_setting("theme.heap_chunk_address_freed")
-        used_address_color = Config.get_gef_setting("theme.heap_chunk_address_used")
+        heap_page_color = Config.get("theme.heap_page_address")
+        freed_address_color = Config.get("theme.heap_chunk_address_freed")
+        used_address_color = Config.get("theme.heap_chunk_address_used")
 
         inodes = {}
         for file, inode in pipe_files:
@@ -157639,9 +157725,9 @@ class VmallocDumpCommand(GenericCommand, BufferingOutput):
         legend = ["#", "state", "virtual address", "size", "flags"]
         self.out.append(GefUtil.make_legend(fmt.format(*legend)))
 
-        used_address_color = Config.get_gef_setting("theme.heap_chunk_address_used")
-        freed_address_color = Config.get_gef_setting("theme.heap_chunk_address_freed")
-        chunk_size_color = Config.get_gef_setting("theme.heap_chunk_size")
+        used_address_color = Config.get("theme.heap_chunk_address_used")
+        freed_address_color = Config.get("theme.heap_chunk_address_freed")
+        chunk_size_color = Config.get("theme.heap_chunk_size")
 
         for idx, (state, va_start, va_end, va_size, flags) in enumerate(areas):
             used = state == "in-use"
@@ -158088,7 +158174,7 @@ class Ksym:
 
             # Check `nm` first for later use (in Vmlinux.parse)
             try:
-                GefUtil.which(Config.get_gef_setting("gef.nm_command"))
+                GefUtil.which(Config.get("gef.nm_command"))
             except FileNotFoundError as e:
                 Ksym.quiet_err(quiet, "{}".format(e))
                 return None
@@ -158121,7 +158207,7 @@ class Ksym:
         def parse(filename, quiet):
             # read symbols
             try:
-                nm = GefUtil.which(Config.get_gef_setting("gef.nm_command"))
+                nm = GefUtil.which(Config.get("gef.nm_command"))
             except FileNotFoundError as e:
                 Ksym.quiet_err(quiet, "{}".format(e))
                 return None
@@ -160290,9 +160376,9 @@ class TcmallocDumpCommand(GenericCommand, BufferingOutput):
         return None
 
     def dump_thread_heap_freelist_single(self, freelist, idx):
-        freed_address_color = Config.get_gef_setting("theme.heap_chunk_address_freed")
-        corrupted_msg_color = Config.get_gef_setting("theme.heap_corrupted_msg")
-        chunk_size_color = Config.get_gef_setting("theme.heap_chunk_size")
+        freed_address_color = Config.get("theme.heap_chunk_address_freed")
+        corrupted_msg_color = Config.get("theme.heap_corrupted_msg")
+        chunk_size_color = Config.get("theme.heap_chunk_size")
 
         chunk = read_int_from_memory(freelist + self.FreeList_offset_list)
         length = read_int_from_memory(freelist + self.FreeList_offset_length) & 0xffff_ffff
@@ -160368,8 +160454,8 @@ class TcmallocDumpCommand(GenericCommand, BufferingOutput):
         return
 
     def dump_central_cache_freelist_single(self, freelist, i, j):
-        freed_address_color = Config.get_gef_setting("theme.heap_chunk_address_freed")
-        corrupted_msg_color = Config.get_gef_setting("theme.heap_corrupted_msg")
+        freed_address_color = Config.get("theme.heap_chunk_address_freed")
+        corrupted_msg_color = Config.get("theme.heap_corrupted_msg")
 
         chunk = read_int_from_memory(freelist + self.TCEntry_offset_head)
 
@@ -160706,8 +160792,8 @@ class GoHeapDumpCommand(GenericCommand, BufferingOutput):
         return
 
     def dump_mspans(self, mspans):
-        chunk_size_color = Config.get_gef_setting("theme.heap_chunk_size")
-        page_address_color = Config.get_gef_setting("theme.heap_page_address")
+        chunk_size_color = Config.get("theme.heap_chunk_size")
+        page_address_color = Config.get("theme.heap_page_address")
 
         for mspan in mspans:
             # meta data
@@ -160905,9 +160991,9 @@ class TlsfHeapDumpCommand(GenericCommand, BufferingOutput):
         return Pool(pool, sig, area_head, fl_bitmap, sl_bitmap, matrix, matrix_addr)
 
     def dump_pool(self, pool):
-        freed_address_color = Config.get_gef_setting("theme.heap_chunk_address_freed")
-        corrupted_msg_color = Config.get_gef_setting("theme.heap_corrupted_msg")
-        chunk_size_color = Config.get_gef_setting("theme.heap_chunk_size")
+        freed_address_color = Config.get("theme.heap_chunk_address_freed")
+        corrupted_msg_color = Config.get("theme.heap_corrupted_msg")
+        chunk_size_color = Config.get("theme.heap_chunk_size")
 
         self.out.append("pool: {:#x}".format(pool.addr))
         self.out.append("pool->area_head: {:#x}".format(pool.area_head))
@@ -161129,8 +161215,8 @@ class HoardHeapDumpCommand(GenericCommand, BufferingOutput):
         } // total: 0x8 bytes
         """
 
-        freed_address_color = Config.get_gef_setting("theme.heap_chunk_address_freed")
-        corrupted_msg_color = Config.get_gef_setting("theme.heap_corrupted_msg")
+        freed_address_color = Config.get("theme.heap_chunk_address_freed")
+        corrupted_msg_color = Config.get("theme.heap_corrupted_msg")
 
         sz = read_int_from_memory(sb + current_arch.ptrsize * 2)
         self.out.append(titlify("superblock @{:#x} (chunk_size={:#x})".format(sb, sz)))
@@ -161838,8 +161924,8 @@ class MimallocHeapDumpCommand(GenericCommand, BufferingOutput):
         return None
 
     def dump_list(self, head, current, key0, key1, bs):
-        corrupted_msg_color = Config.get_gef_setting("theme.heap_corrupted_msg")
-        freed_address_color = Config.get_gef_setting("theme.heap_chunk_address_freed")
+        corrupted_msg_color = Config.get("theme.heap_corrupted_msg")
+        freed_address_color = Config.get("theme.heap_chunk_address_freed")
 
         def ptr_decode(addr, key0, key1):
             addr = (addr - key0) & 0xffff_ffff_ffff_ffff
@@ -162230,7 +162316,7 @@ class SnmallocHeapDumpCommand(GenericCommand, BufferingOutput):
 
     def parse_single_link_list(self, head):
         """Return the single linked list (including the head) and error message."""
-        corrupted_msg_color = Config.get_gef_setting("theme.heap_corrupted_msg")
+        corrupted_msg_color = Config.get("theme.heap_corrupted_msg")
 
         # travase next
         cur = head
@@ -162253,7 +162339,7 @@ class SnmallocHeapDumpCommand(GenericCommand, BufferingOutput):
 
     def parse_double_link_list(self, head):
         """Return the double linked list (excluding the head) and error message."""
-        corrupted_msg_color = Config.get_gef_setting("theme.heap_corrupted_msg")
+        corrupted_msg_color = Config.get("theme.heap_corrupted_msg")
 
         # travarse next
         cur = head
@@ -162297,7 +162383,7 @@ class SnmallocHeapDumpCommand(GenericCommand, BufferingOutput):
             thread_alloc,
         )))
 
-        freed_address_color = Config.get_gef_setting("theme.heap_chunk_address_freed")
+        freed_address_color = Config.get("theme.heap_chunk_address_freed")
 
         # travarse small_fast_free_lists[0-42]
         printed_flag = False
@@ -162314,7 +162400,7 @@ class SnmallocHeapDumpCommand(GenericCommand, BufferingOutput):
             # print
             self.out.append("small_fast_free_lists[{:d}, size={:s}] @ {!s}:".format(
                 i,
-                Color.colorify_hex(self.class_to_size(i), Config.get_gef_setting("theme.heap_chunk_size")),
+                Color.colorify_hex(self.class_to_size(i), Config.get("theme.heap_chunk_size")),
                 ProcessMap.lookup_address(free_list_i),
             ))
             for i, chunk in enumerate(free_list):
@@ -162370,7 +162456,7 @@ class SnmallocHeapDumpCommand(GenericCommand, BufferingOutput):
         gef>
         """
 
-        freed_address_color = Config.get_gef_setting("theme.heap_chunk_address_freed")
+        freed_address_color = Config.get("theme.heap_chunk_address_freed")
         offset_free_queue = 0x10
         offset_needed_ = 0x22
         offset_sleeping_ = 0x24
@@ -162388,7 +162474,7 @@ class SnmallocHeapDumpCommand(GenericCommand, BufferingOutput):
         if cl is None:
             cl_msg = "???"
         else:
-            cl_msg = Color.colorify_hex(self.class_to_size(cl), Config.get_gef_setting("theme.heap_chunk_size"))
+            cl_msg = Color.colorify_hex(self.class_to_size(cl), Config.get("theme.heap_chunk_size"))
         is_laden = cl is None
 
         needed_ = read_int16_from_memory(slab_meta + offset_needed_)
@@ -162458,7 +162544,7 @@ class SnmallocHeapDumpCommand(GenericCommand, BufferingOutput):
 
             self.out.append("SlabMetadataCache[{:d}, size={:s}] @ {!s}: {:#x} slab(s)".format(
                 i,
-                Color.colorify_hex(self.class_to_size(i), Config.get_gef_setting("theme.heap_chunk_size")),
+                Color.colorify_hex(self.class_to_size(i), Config.get("theme.heap_chunk_size")),
                 ProcessMap.lookup_address(entry),
                 length,
             ))
@@ -162988,19 +163074,19 @@ class CageCommand(GenericCommand, BufferingOutput):
         # get color
         line_color = ""
         if entry.path.startswith("[stack]"):
-            line_color = Config.get_gef_setting("theme.address_stack")
+            line_color = Config.get("theme.address_stack")
         elif entry.path.startswith("[heap]"):
-            line_color = Config.get_gef_setting("theme.address_heap")
+            line_color = Config.get("theme.address_heap")
         elif entry.permission.value & Permission.EXECUTE:
-            line_color = Config.get_gef_setting("theme.address_code")
+            line_color = Config.get("theme.address_code")
         elif entry.permission.value & Permission.WRITE:
-            line_color = Config.get_gef_setting("theme.address_writable")
+            line_color = Config.get("theme.address_writable")
         elif entry.permission.value & Permission.READ:
-            line_color = Config.get_gef_setting("theme.address_readonly")
+            line_color = Config.get("theme.address_readonly")
         elif entry.permission.value == Permission.NONE:
-            line_color = Config.get_gef_setting("theme.address_valid_but_none")
+            line_color = Config.get("theme.address_valid_but_none")
         if entry.permission.value == (Permission.READ | Permission.WRITE | Permission.EXECUTE):
-            line_color += " " + Config.get_gef_setting("theme.address_rwx")
+            line_color += " " + Config.get("theme.address_rwx")
 
         # make line
         lines = []
@@ -164768,7 +164854,7 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
 
     def C(self, address):
         # coloring function for heap address
-        management_color = Config.get_gef_setting("theme.heap_management_address")
+        management_color = Config.get("theme.heap_management_address")
 
         # in extent
         current = self.root.current_extent_
@@ -164787,7 +164873,7 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
 
     def P(self, address):
         # coloring function for heap page address
-        page_address_color = Config.get_gef_setting("theme.heap_page_address")
+        page_address_color = Config.get("theme.heap_page_address")
         return Color.colorify_hex(address, page_address_color)
 
     def dump_root(self, root):
@@ -164985,9 +165071,9 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
             if bucket.active_slot_spans_head in sentinel_or_0:
                 return # skip printing
 
-        chunk_size_color = Config.get_gef_setting("theme.heap_chunk_size")
-        label_active_color = Config.get_gef_setting("theme.heap_label_active")
-        label_inactive_color = Config.get_gef_setting("theme.heap_label_inactive")
+        chunk_size_color = Config.get("theme.heap_chunk_size")
+        label_active_color = Config.get("theme.heap_label_active")
+        label_inactive_color = Config.get("theme.heap_label_inactive")
 
         slot_size = Color.colorify("{:#7x}".format(bucket.slot_size), chunk_size_color)
         if idx is not None:
@@ -165052,8 +165138,8 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
         return
 
     def dump_freelist(self, head, bucket, slot_span):
-        corrupted_msg_color = Config.get_gef_setting("theme.heap_corrupted_msg")
-        freed_address_color = Config.get_gef_setting("theme.heap_chunk_address_freed")
+        corrupted_msg_color = Config.get("theme.heap_corrupted_msg")
+        freed_address_color = Config.get("theme.heap_chunk_address_freed")
 
         self.out.append("                   freelist_head:{:s} ".format(self.C(head)))
 
@@ -165376,8 +165462,8 @@ class ScallocHeapDumpCommand(GenericCommand, BufferingOutput):
         return span
 
     def dump_freelist(self, head):
-        freed_address_color = Config.get_gef_setting("theme.heap_chunk_address_freed")
-        corrupted_msg_color = Config.get_gef_setting("theme.heap_corrupted_msg")
+        freed_address_color = Config.get("theme.heap_chunk_address_freed")
+        corrupted_msg_color = Config.get("theme.heap_corrupted_msg")
 
         cur = head
         cnt = 0
@@ -165738,7 +165824,7 @@ class SsmallocHeapDumpCommand(GenericCommand, BufferingOutput):
         return gpool
 
     def parse_single_link_list(self, head, next_offset=0, decode_head=False, dchunk=None):
-        corrupted_msg_color = Config.get_gef_setting("theme.heap_corrupted_msg")
+        corrupted_msg_color = Config.get("theme.heap_corrupted_msg")
 
         cur = self.decode_aba_address(head) if decode_head else head
         seen = []
@@ -165770,7 +165856,7 @@ class SsmallocHeapDumpCommand(GenericCommand, BufferingOutput):
         return seen, None
 
     def parse_double_link_list(self, head):
-        corrupted_msg_color = Config.get_gef_setting("theme.heap_corrupted_msg")
+        corrupted_msg_color = Config.get("theme.heap_corrupted_msg")
 
         cur = head
         seen = []
@@ -165796,7 +165882,7 @@ class SsmallocHeapDumpCommand(GenericCommand, BufferingOutput):
         return seen, None
 
     def append_freelist(self, title, addr, free_list, error=None, expected_count=None):
-        freed_address_color = Config.get_gef_setting("theme.heap_chunk_address_freed")
+        freed_address_color = Config.get("theme.heap_chunk_address_freed")
 
         if not self.args.verbose:
             if free_list == [0] and error is None:
@@ -167186,10 +167272,10 @@ class JemallocHeapDumpCommand(GenericCommand, BufferingOutput):
         return "used"
 
     def dump_record(self, record):
-        chunk_size_color = Config.get_gef_setting("theme.heap_chunk_size")
-        freed_address_color = Config.get_gef_setting("theme.heap_chunk_address_freed")
-        used_address_color = Config.get_gef_setting("theme.heap_chunk_address_used")
-        corrupted_msg_color = Config.get_gef_setting("theme.heap_corrupted_msg")
+        chunk_size_color = Config.get("theme.heap_chunk_size")
+        freed_address_color = Config.get("theme.heap_chunk_address_freed")
+        used_address_color = Config.get("theme.heap_chunk_address_used")
+        corrupted_msg_color = Config.get("theme.heap_corrupted_msg")
 
         msg = "    {:s} @ {:#x}: addr={!s} size={:#x} reg_size={:s} nregs={:d} nfree={:d}".format(
             record["kind"], record["header"], ProcessMap.lookup_address(record["addr"]), record["size"],
@@ -167223,7 +167309,7 @@ class JemallocHeapDumpCommand(GenericCommand, BufferingOutput):
         return
 
     def dump_tcaches(self, tcaches):
-        freed_address_color = Config.get_gef_setting("theme.heap_chunk_address_freed")
+        freed_address_color = Config.get("theme.heap_chunk_address_freed")
         for thread_num, arena_index, bins, cache_bins in tcaches:
             if self.args.arena_index is not None and arena_index != self.args.arena_index:
                 continue
@@ -167754,8 +167840,8 @@ class MuslHeapDumpCommand(GenericCommand, BufferingOutput):
         return Group(*group.values())
 
     def dump_chunk(self, group, state):
-        chunk_used_color = Config.get_gef_setting("theme.heap_chunk_used")
-        chunk_freed_color = Config.get_gef_setting("theme.heap_chunk_freed")
+        chunk_used_color = Config.get("theme.heap_chunk_used")
+        chunk_freed_color = Config.get("theme.heap_chunk_freed")
 
         subinfo = "state:{:5s} meta:{:<#14x} reserved:{:#x}".format(state, group.meta, group.reserved)
         if state == "Used":
@@ -167807,7 +167893,7 @@ class MuslHeapDumpCommand(GenericCommand, BufferingOutput):
         self.out.append("  2. Search most right 'F' and return it")
         self.out.append("  3. If nothing is found, create new meta")
 
-        management_color = Config.get_gef_setting("theme.heap_management_address")
+        management_color = Config.get("theme.heap_management_address")
 
         # iterate __malloc_context.active
         for idx in range(48):
@@ -167932,16 +168018,16 @@ class uClibcNgHeap:
         def flags_as_string(self):
             flags = []
             if self.has_p_bit():
-                flags.append(Color.colorify("PREV_INUSE", Config.get_gef_setting("theme.heap_chunk_flag_prev_inuse")))
+                flags.append(Color.colorify("PREV_INUSE", Config.get("theme.heap_chunk_flag_prev_inuse")))
             if self.has_m_bit():
-                flags.append(Color.colorify("IS_MMAPPED", Config.get_gef_setting("theme.heap_chunk_flag_is_mmapped")))
+                flags.append(Color.colorify("IS_MMAPPED", Config.get("theme.heap_chunk_flag_is_mmapped")))
             return "|".join(flags)
 
         def to_str(self, is_fastbin=False):
-            chunk_c = Color.colorify("Chunk", Config.get_gef_setting("theme.heap_chunk_label"))
-            size_c = Color.colorify_hex(self.get_chunk_size(), Config.get_gef_setting("theme.heap_chunk_size"))
-            base_c = Color.colorify_hex(self.chunk_base_address, Config.get_gef_setting("theme.heap_chunk_address_freed"))
-            addr_c = Color.colorify_hex(self.address, Config.get_gef_setting("theme.heap_chunk_address_freed"))
+            chunk_c = Color.colorify("Chunk", Config.get("theme.heap_chunk_label"))
+            size_c = Color.colorify_hex(self.get_chunk_size(), Config.get("theme.heap_chunk_size"))
+            base_c = Color.colorify_hex(self.chunk_base_address, Config.get("theme.heap_chunk_address_freed"))
+            addr_c = Color.colorify_hex(self.address, Config.get("theme.heap_chunk_address_freed"))
             flags = self.flags_as_string()
 
             if is_fastbin:
@@ -168306,7 +168392,7 @@ class UclibcNgHeapDumpCommand(GenericCommand, BufferingOutput):
         return MallocState(*malloc_state.values())
 
     def dump_malloc_state(self, malloc_state):
-        chunk_size_color = Config.get_gef_setting("theme.heap_chunk_size")
+        chunk_size_color = Config.get("theme.heap_chunk_size")
 
         self.verbose_add_out("malloc_state: {!s}".format(ProcessMap.lookup_address(malloc_state.address)))
         max_fast_flags = "|".join(malloc_state.max_fast_flags)
@@ -168812,7 +168898,7 @@ class XStringCommand(GenericCommand, BufferingOutput):
         if args.max_length is not None:
             max_length = args.max_length
         else:
-            max_length = Config.get_gef_setting("context.nb_max_string_length")
+            max_length = Config.get("context.nb_max_string_length")
 
         self.out = []
         self.dump_string(args.address, count, max_length, args.hex, args.quiet)
@@ -170757,9 +170843,9 @@ class OpteeBgetDumpCommand(GenericCommand, BufferingOutput):
         return MallocCtx(*malloc_ctx.values())
 
     def dump_malloc_ctx(self, malloc_ctx):
-        freed_address_color = Config.get_gef_setting("theme.heap_chunk_address_freed")
-        corrupted_msg_color = Config.get_gef_setting("theme.heap_corrupted_msg")
-        chunk_size_color = Config.get_gef_setting("theme.heap_chunk_size")
+        freed_address_color = Config.get("theme.heap_chunk_address_freed")
+        corrupted_msg_color = Config.get("theme.heap_corrupted_msg")
+        chunk_size_color = Config.get("theme.heap_chunk_size")
 
         self.out.append(titlify("malloc_ctx @ {:#x}".format(malloc_ctx.addr)))
         self.out.append("prevfree: {:#x}".format(malloc_ctx.prevfree))
@@ -170806,12 +170892,12 @@ class OpteeBgetDumpCommand(GenericCommand, BufferingOutput):
         return
 
     def dump_chunk_list(self, malloc_ctx):
-        freed_address_color = Config.get_gef_setting("theme.heap_chunk_address_freed")
-        used_address_color = Config.get_gef_setting("theme.heap_chunk_address_used")
-        corrupted_msg_color = Config.get_gef_setting("theme.heap_corrupted_msg")
-        chunk_size_color = Config.get_gef_setting("theme.heap_chunk_size")
-        chunk_used_color = Config.get_gef_setting("theme.heap_chunk_used")
-        chunk_freed_color = Config.get_gef_setting("theme.heap_chunk_freed")
+        freed_address_color = Config.get("theme.heap_chunk_address_freed")
+        used_address_color = Config.get("theme.heap_chunk_address_used")
+        corrupted_msg_color = Config.get("theme.heap_corrupted_msg")
+        chunk_size_color = Config.get("theme.heap_chunk_size")
+        chunk_used_color = Config.get("theme.heap_chunk_used")
+        chunk_freed_color = Config.get("theme.heap_chunk_freed")
 
         for i in range(malloc_ctx.pool_len):
             pool = malloc_ctx.pool_list[i]
@@ -173603,31 +173689,31 @@ class PageTable(BufferingOutput):
             color = None
             if is_x86() or is_riscv32() or is_riscv64():
                 if self.flags.startswith("R-- "):
-                    color = Config.get_gef_setting("theme.address_readonly")
+                    color = Config.get("theme.address_readonly")
                 elif re.search(r"^..X ", self.flags):
-                    color = Config.get_gef_setting("theme.address_code")
+                    color = Config.get("theme.address_code")
                 elif self.flags.startswith("RW- "):
-                    color = Config.get_gef_setting("theme.address_writable")
+                    color = Config.get("theme.address_writable")
                 if self.flags.startswith("RWX "):
-                    color = Config.get_gef_setting("theme.address_rwx")
+                    color = Config.get("theme.address_rwx")
             elif is_arm32():
                 if re.search(r"PL[01]/R--", self.flags):
-                    color = Config.get_gef_setting("theme.address_readonly")
+                    color = Config.get("theme.address_readonly")
                 elif re.search(r"PL1/..X", self.flags):
-                    color = Config.get_gef_setting("theme.address_code")
+                    color = Config.get("theme.address_code")
                 elif "PL1/RW-" in self.flags:
-                    color = Config.get_gef_setting("theme.address_writable")
+                    color = Config.get("theme.address_writable")
                 if "PL1/RWX" in self.flags:
-                    color = Config.get_gef_setting("theme.address_rwx")
+                    color = Config.get("theme.address_rwx")
             elif is_arm64():
                 if re.search(r"EL[1-3]/R--", self.flags):
-                    color = Config.get_gef_setting("theme.address_readonly")
+                    color = Config.get("theme.address_readonly")
                 elif re.search(r"EL[1-3]/..X", self.flags):
-                    color = Config.get_gef_setting("theme.address_code")
+                    color = Config.get("theme.address_code")
                 elif re.search(r"EL[1-3]/RW-", self.flags):
-                    color = Config.get_gef_setting("theme.address_writable")
+                    color = Config.get("theme.address_writable")
                 if re.search(r"EL[1-3]/RWX", self.flags):
-                    color = Config.get_gef_setting("theme.address_rwx")
+                    color = Config.get("theme.address_rwx")
             return Color.colorify(text, color) if color is not None else text
 
     # Each architecture declares the mapping-list attributes preserved for `pagewalk --use-cache`. A new PageTable object is
@@ -178344,15 +178430,15 @@ class KernelVMMapCommand(GenericCommand, BufferingOutput):
 
             # coloring
             if self.perm == "r--":
-                line_color = Config.get_gef_setting("theme.address_readonly")
+                line_color = Config.get("theme.address_readonly")
             elif self.perm == "rw-":
-                line_color = Config.get_gef_setting("theme.address_writable")
+                line_color = Config.get("theme.address_writable")
             elif self.perm.endswith("x"):
-                line_color = Config.get_gef_setting("theme.address_code")
+                line_color = Config.get("theme.address_code")
             else:
                 line_color = ""
             if self.perm == "rwx":
-                line_color += " " + Config.get_gef_setting("theme.address_rwx")
+                line_color += " " + Config.get("theme.address_rwx")
             return Color.colorify(line, line_color)
 
     def page_start_align(self, x):
@@ -180978,7 +181064,7 @@ class HighMemDumpCommand(GenericCommand, BufferingOutput):
     PA_HASH_ORDER = 7
 
     def dump_entry(self, page, virt):
-        heap_page_address_color = Config.get_gef_setting("theme.heap_page_address")
+        heap_page_address_color = Config.get("theme.heap_page_address")
         virt_str = Color.colorify_hex(virt, heap_page_address_color)
         self.out.append("page:{:#010x}  virt:{:s}".format(page, virt_str))
         return
@@ -181509,7 +181595,7 @@ class QemuDeviceInfoCommand(GenericCommand, BufferingOutput):
 
         # get nm
         try:
-            nm = GefUtil.which(Config.get_gef_setting("gef.nm_command"))
+            nm = GefUtil.which(Config.get("gef.nm_command"))
         except FileNotFoundError as e:
             self.err_add_out("{}".format(e))
             return
@@ -181907,7 +181993,7 @@ class StringsContinueCommand(GenericCommand):
     _note_ = "\n".join(_note_)
 
     def dump_new_strings(self, seen, previous_registers, min_length, max_length):
-        string_color = Config.get_gef_setting("theme.dereference_string")
+        string_color = Config.get("theme.dereference_string")
         changed = []
         for regname in DereferenceCommand.get_target_registers():
             if regname in ("$pc", "$eip", "$rip", "$pswa"):
@@ -183285,7 +183371,7 @@ class KmallocRetBreakpoint(gdb.Breakpoint):
 
         task_prefix = Color.boldify("[task:{:#018x} {:16s}]".format(task_addr, task_name))
         allocated = AddressUtil.parse_address(current_arch.return_register)
-        allocated_s = Color.colorify_hex(allocated, Config.get_gef_setting("theme.heap_chunk_address_used"))
+        allocated_s = Color.colorify_hex(allocated, Config.get("theme.heap_chunk_address_used"))
 
         if self.extra:
             ret = KmallocTracerCommand.virt2name_and_size(allocated)
@@ -183298,8 +183384,8 @@ class KmallocRetBreakpoint(gdb.Breakpoint):
                 if self.option.filter and name not in self.option.filter:
                     self.enabled = False
                     return False
-                name_s = Color.colorify(name, Config.get_gef_setting("theme.heap_chunk_label"))
-                chunk_size_s = Color.colorify("{:<#6x}".format(chunk_size), Config.get_gef_setting("theme.heap_chunk_size"))
+                name_s = Color.colorify(name, Config.get("theme.heap_chunk_label"))
+                chunk_size_s = Color.colorify("{:<#6x}".format(chunk_size), Config.get("theme.heap_chunk_size"))
                 gef_print("{:s} {:40s}: {:s} (size: {:s} name: {:s})".format(
                     task_prefix, self.sym, allocated_s, chunk_size_s, name_s,
                 ))
@@ -183347,7 +183433,7 @@ class KfreeBreakpoint(gdb.Breakpoint):
             return False
 
         task_prefix = Color.boldify("[task:{:#018x} {:16s}]".format(task_addr, task_name))
-        to_free_s = Color.colorify_hex(to_free, Config.get_gef_setting("theme.heap_chunk_address_freed"))
+        to_free_s = Color.colorify_hex(to_free, Config.get("theme.heap_chunk_address_freed"))
 
         if self.extra:
             ret = KmallocTracerCommand.virt2name_and_size(to_free)
@@ -183358,8 +183444,8 @@ class KfreeBreakpoint(gdb.Breakpoint):
                     return False
                 if self.option.filter and name not in self.option.filter:
                     return False
-                name_s = Color.colorify(name, Config.get_gef_setting("theme.heap_chunk_label"))
-                chunk_size_s = Color.colorify("{:<#6x}".format(chunk_size), Config.get_gef_setting("theme.heap_chunk_size"))
+                name_s = Color.colorify(name, Config.get("theme.heap_chunk_label"))
+                chunk_size_s = Color.colorify("{:<#6x}".format(chunk_size), Config.get("theme.heap_chunk_size"))
                 gef_print("{:s} {:40s}: {:s} (size: {:s} name: {:s})".format(
                     task_prefix, self.sym, to_free_s, chunk_size_s, name_s,
                 ))
@@ -183453,7 +183539,7 @@ class AllocPagesRetBreakpoint(gdb.Breakpoint):
         if allocated_virt is None:
             allocated_virt = 0
         allocated_virt_s = Color.colorify_hex(
-            allocated_virt, Config.get_gef_setting("theme.heap_page_address"),
+            allocated_virt, Config.get("theme.heap_page_address"),
         )
         size = KernelAddressHeuristicFinder.consts().PAGE_SIZE * (2 ** self.order)
 
@@ -183503,7 +183589,7 @@ class FreePagesBreakpoint(gdb.Breakpoint):
         if to_free_virt is None:
             to_free_virt = 0
         to_free_virt_s = Color.colorify_hex(
-            to_free_virt, Config.get_gef_setting("theme.heap_page_address")
+            to_free_virt, Config.get("theme.heap_page_address")
         )
         size = KernelAddressHeuristicFinder.consts().PAGE_SIZE * (2 ** order)
 
@@ -185682,8 +185768,8 @@ class KuafWatchCommand(GenericCommand):
             theme = "theme.heap_chunk_address_freed"
         else:
             theme = "theme.heap_chunk_address_used"
-        addr_s = Color.colorify_hex(addr, Config.get_gef_setting(theme))
-        cache_s = Color.colorify(cache or "?", Config.get_gef_setting("theme.heap_chunk_label"))
+        addr_s = Color.colorify_hex(addr, Config.get(theme))
+        cache_s = Color.colorify(cache or "?", Config.get("theme.heap_chunk_label"))
         gef_print("[{:5s}] {:s}  cache={:s}".format(tag, addr_s, cache_s))
         pid_s = "?" if pid is None else "{:d}".format(pid)
         gef_print("        caller={:s}  pid={:s} cpu={:d}  api={:s}".format(caller, pid_s, cpu, api))
@@ -185748,7 +185834,7 @@ class KuafWatchCommand(GenericCommand):
 
         if args.cache is not None:
             self.cache_name = args.cache
-            info("Watching cache: {:s}".format(Color.colorify(self.cache_name, Config.get_gef_setting("theme.heap_chunk_label"))))
+            info("Watching cache: {:s}".format(Color.colorify(self.cache_name, Config.get("theme.heap_chunk_label"))))
         else:
             self.cache_name = None
             for address in args.address:
@@ -185765,8 +185851,8 @@ class KuafWatchCommand(GenericCommand):
                     self.freed_slots.add(base)
                 gef_print("[{:5s}] {:s}  cache={:s}  object_size={:#x}  state={:s}".format(
                     "WATCH",
-                    Color.colorify_hex(base, Config.get_gef_setting("theme.heap_chunk_address_used")),
-                    Color.colorify(cache, Config.get_gef_setting("theme.heap_chunk_label")),
+                    Color.colorify_hex(base, Config.get("theme.heap_chunk_address_used")),
+                    Color.colorify(cache, Config.get("theme.heap_chunk_label")),
                     object_size, state or "unknown",
                 ))
             if not self.watched:
@@ -186133,8 +186219,8 @@ class KpageWatchCommand(GenericCommand):
         caller = self.symbolize(caller_pc)
         theme = "theme.heap_chunk_address_freed" if tag == "FREE" else "theme.heap_chunk_address_used"
         target_page, virt = self.watched[pfn]
-        virt_s = "-" if virt is None else Color.colorify_hex(virt, Config.get_gef_setting("theme.heap_page_address"))
-        page_s = Color.colorify_hex(target_page, Config.get_gef_setting(theme))
+        virt_s = "-" if virt is None else Color.colorify_hex(virt, Config.get("theme.heap_page_address"))
+        page_s = Color.colorify_hex(target_page, Config.get(theme))
         detail = "pfn={:#x} page={:s} virt={:s}".format(pfn, page_s, virt_s)
         if page != target_page:
             # the event is about the block whose head is `page` (e.g. a higher order allocation)
@@ -186142,7 +186228,7 @@ class KpageWatchCommand(GenericCommand):
         if order is not None:
             detail += " order={:d}".format(order)
         if cache:
-            detail += "  cache={:s}".format(Color.colorify(cache, Config.get_gef_setting("theme.heap_chunk_label")))
+            detail += "  cache={:s}".format(Color.colorify(cache, Config.get("theme.heap_chunk_label")))
         gef_print("[{:6s}] {:s}".format(tag, detail))
         gef_print("         via {:s}  caller={:s}  comm={:s} cpu={:d}".format(api, caller, comm, cpu))
         if self.backtrace:
@@ -186288,7 +186374,7 @@ class KpageWatchCommand(GenericCommand):
             gef_print("[WATCH ] pfn={:#x} page={:#x} virt={:s} phys={:#x}".format(
                 pfn,
                 target_page,
-                "-" if virt is None else Color.colorify_hex(virt, Config.get_gef_setting("theme.heap_page_address")),
+                "-" if virt is None else Color.colorify_hex(virt, Config.get("theme.heap_page_address")),
                 pfn << self.page_shift,
             ))
         if not self.watched:
@@ -186366,7 +186452,7 @@ class KtraceBreakpoint(gdb.Breakpoint):
             return False
 
         # get args
-        arg_key_color = Config.get_gef_setting("theme.registers_register_name")
+        arg_key_color = Config.get("theme.registers_register_name")
         args = []
         nb_argument = 6 # guessed
         for i in range(nb_argument):
@@ -186426,7 +186512,7 @@ class KtraceRetBreakpoint(gdb.FinishBreakpoint):
             return False
 
         # get return value
-        arg_key_color = Config.get_gef_setting("theme.registers_register_name")
+        arg_key_color = Config.get("theme.registers_register_name")
         # self.return_value unavailable since no type information. use current_arch.return register
         reg = current_arch.return_register
         value = AddressUtil.recursive_dereference_to_string(get_register(reg))
@@ -187098,7 +187184,7 @@ class AddSymbolTemporaryCommand(GenericCommand):
     @staticmethod
     def create_blank_elf(text_base, text_end):
         try:
-            objcopy = GefUtil.which(Config.get_gef_setting("gef.objcopy_command"))
+            objcopy = GefUtil.which(Config.get("gef.objcopy_command"))
         except FileNotFoundError as e:
             err("{}".format(e))
             return None
@@ -187217,7 +187303,7 @@ class AddSymbolTemporaryCommand(GenericCommand):
     @Decorator.only_if_gdb_running
     def do_invoke(self, args):
         try:
-            objcopy = GefUtil.which(Config.get_gef_setting("gef.objcopy_command"))
+            objcopy = GefUtil.which(Config.get("gef.objcopy_command"))
         except FileNotFoundError as e:
             err("{}".format(e))
             return
@@ -187318,7 +187404,7 @@ class KsymaddrRemoteApplyCommand(GenericCommand):
         self.quiet_info("{:d} entries will be added".format(len(cmd_string_arr) // 2))
 
         # embedding symbols
-        objcopy = GefUtil.which(Config.get_gef_setting("gef.objcopy_command"))
+        objcopy = GefUtil.which(Config.get("gef.objcopy_command"))
         processed_count = 0
         for cmd_string_arr_sliced in slicer(cmd_string_arr, 10000 * 2):
             subprocess.check_output([objcopy] + cmd_string_arr_sliced + [blank_elf])
@@ -187339,7 +187425,7 @@ class KsymaddrRemoteApplyCommand(GenericCommand):
     @Decorator.only_if_in_kernel
     def do_invoke(self, args):
         try:
-            GefUtil.which(Config.get_gef_setting("gef.objcopy_command"))
+            GefUtil.which(Config.get("gef.objcopy_command"))
         except FileNotFoundError as e:
             err("{}".format(e))
             return
@@ -193718,8 +193804,8 @@ class TypesCommand(GenericCommand, BufferingOutput):
 
         # temporarily changed
         if self.args.smart:
-            old_smart_setting = Config.get_gef_setting("context.smart_cpp_function_name")
-            Config.set_gef_setting("context.smart_cpp_function_name", True)
+            old_smart_setting = Config.get("context.smart_cpp_function_name")
+            Config.set("context.smart_cpp_function_name", True)
 
         # formatting typenames
         for type_name in ProgressBar(type_names):
@@ -193735,7 +193821,7 @@ class TypesCommand(GenericCommand, BufferingOutput):
 
         # revert
         if self.args.smart:
-            Config.set_gef_setting("context.smart_cpp_function_name", old_smart_setting)
+            Config.set("context.smart_cpp_function_name", old_smart_setting)
         return
 
     @Decorator.parse_args
@@ -193921,8 +194007,8 @@ class GefConfigCommand(GenericCommand):
         if not res or not res_orig:
             return
 
-        string_color = Config.get_gef_setting("theme.dereference_string")
-        misc_color = Config.get_gef_setting("theme.dereference_base_address")
+        string_color = Config.get("theme.dereference_string")
+        misc_color = Config.get("theme.dereference_base_address")
 
         value, type_, desc = res
         value_orig, _, _ = res_orig
@@ -194046,37 +194132,7 @@ class GefSaveCommand(GenericCommand):
 
     @Decorator.parse_args
     def do_invoke(self, args):
-        cfg = configparser.RawConfigParser()
-        old_sect = None
-
-        # save the configuration
-        for key in sorted(Config.__gef_config__):
-            sect, optname = key.split(".", 1)
-            value = Config.__gef_config__.get(key, None)
-            value = value[0] if value else None
-
-            if old_sect != sect:
-                cfg.add_section(sect)
-                old_sect = sect
-
-            cfg.set(sect, optname, value)
-
-        # save the aliases
-        cfg.add_section("user-defined-aliases")
-        cfg.add_section("user-defined-aliases.repeat")
-        for alias in __gef_alias_instances__.values():
-            # check pre-defined alias or not
-            if alias._command_ in __gef_command_instances__:
-                instance = __gef_command_instances__[alias._command_]
-                if alias._alias_ in instance._aliases_:
-                    continue
-
-            cfg.set("user-defined-aliases", alias._alias_, alias._command_)
-            cfg.set("user-defined-aliases.repeat", alias._alias_, str(alias._repeat_))
-
-        with open(GEF_RC, "w") as fd:
-            cfg.write(fd)
-
+        Config.save(GEF_RC)
         self.quiet_ok("Configuration saved to '{:s}'".format(GEF_RC))
         return
 
@@ -194098,51 +194154,7 @@ class GefRestoreCommand(GenericCommand):
             self.quiet_info("Could not find {:s}, GEF uses default settings".format(GEF_RC))
             return
 
-        cfg = configparser.ConfigParser()
-        cfg.read(GEF_RC)
-
-        for section in cfg.sections():
-            if section == "user-defined-aliases.repeat":
-                continue
-
-            if section == "user-defined-aliases":
-                # load the aliases
-                for key in cfg.options(section):
-                    repeat = cfg.get("user-defined-aliases.repeat", key)
-                    GefAlias(key, cfg.get("user-defined-aliases", key), force_repeat=repeat)
-                continue
-
-            # load the other options
-            for optname in cfg.options(section):
-                # warn unused setting
-                key = "{:s}.{:s}".format(section, optname)
-                if key not in Config.__gef_config__:
-                    err("Config '{:s}' is no longer in use, skipping...".format(Color.boldify(key)))
-                    continue
-
-                # restore type
-                Type = Config.__gef_config__.get(key)[1]
-                new_value = cfg.get(section, optname)
-                try:
-                    if Type is bool:
-                        if new_value == "True":
-                            new_value = True
-                        elif new_value == "False":
-                            new_value = False
-                        else:
-                            raise ValueError
-                    else:
-                        new_value = Type(new_value)
-                except ValueError:
-                    err("Config '{:s}' has bad value, skipping...".format(Color.boldify(key)))
-                    continue
-
-                # set
-                Config.__gef_config__[key][0] = new_value
-
-        # `Config.get_gef_setting` is cached, so the values read before this point
-        # (e.g. while loading the commands) must be dropped, as `gef config` does.
-        Cache.reset_gef_caches(all=True)
+        Config.load(GEF_RC)
 
         # ensure that the temporary directory always exists
         abspath = os.path.expanduser(GEF_TEMP_DIR)
@@ -194922,7 +194934,7 @@ class GefStatusCommand(GenericCommand):
         gef_print("{:30s}  ->  {!s}".format("is_qemu_user()", is_qemu_user()))
         gef_print("{:30s}  ->  {!s}".format("is_pin()", is_pin()))
         gef_print("{:30s}  ->  {!s}".format("is_over_serial()", is_over_serial()))
-        kgdb_forced = " (forced)" if Config.get_gef_setting("gef.kgdb_force") is True else ""
+        kgdb_forced = " (forced)" if Config.get("gef.kgdb_force") is True else ""
         gef_print("{:30s}  ->  {!s}{:s}".format("is_kgdb()", is_kgdb(), kgdb_forced))
         gef_print("{:30s}  ->  {!s}".format("is_kdb()", is_kdb()))
         gef_print("{:30s}  ->  {!s}".format("is_qiling()", is_qiling()))
@@ -195156,7 +195168,7 @@ class GefVersionCommand(GenericCommand):
 
     def readelf_version(self):
         try:
-            readelf_command = GefUtil.which(Config.get_gef_setting("gef.readelf_command"))
+            readelf_command = GefUtil.which(Config.get("gef.readelf_command"))
         except FileNotFoundError:
             return "Not found"
         res = GefUtil.gef_execute_external([readelf_command, "-v"], as_list=True)
@@ -195164,7 +195176,7 @@ class GefVersionCommand(GenericCommand):
 
     def objdump_version(self):
         try:
-            objdump_command = GefUtil.which(Config.get_gef_setting("gef.objdump_command"))
+            objdump_command = GefUtil.which(Config.get("gef.objdump_command"))
         except FileNotFoundError:
             return "Not found"
         res = GefUtil.gef_execute_external([objdump_command, "-v"], as_list=True)
@@ -195327,7 +195339,7 @@ class GefTmuxSetupCommand(GenericCommand):
     @staticmethod
     def get_tty_gef_used():
         """Return a set of TTYs currently used by GEF for tmux redirection."""
-        tty_gef_used = [Config.get_gef_setting(c) for c in GefTmuxSetupCommand.get_redirect_configs()]
+        tty_gef_used = [Config.get(c) for c in GefTmuxSetupCommand.get_redirect_configs()]
         tty_gef_used = [x for x in tty_gef_used if x] # filter ""
         return set(tty_gef_used)
 
@@ -195979,7 +195991,7 @@ class GefUtil:
     @staticmethod
     def make_legend(msg):
         """Apply color settings and generate legend string."""
-        color = Config.get_gef_setting("theme.table_heading")
+        color = Config.get("theme.table_heading")
         return Color.colorify(msg.rstrip(), color)
 
     @staticmethod
@@ -196108,7 +196120,7 @@ class Gef:
     @staticmethod
     def gef_prompt(_current_prompt):
         """GEF custom prompt function."""
-        if Config.get_gef_setting("gef.readline_compat") is True:
+        if Config.get("gef.readline_compat") is True:
             return "gef> "
         if Color.disable_color():
             return "gef> "
@@ -196276,7 +196288,7 @@ class Gef:
         gdb.execute("gef restore")
 
         # follow mode
-        if Config.get_gef_setting("gef.follow_child"):
+        if Config.get("gef.follow_child"):
             gdb.execute("set follow-fork-mode child")
 
         # index file
