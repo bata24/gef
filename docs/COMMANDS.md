@@ -4254,13 +4254,13 @@ The base command to write specified values to the specified address.
 ### Syntax
 
 ```text
-usage: patch [-h] {byte,word,dword,qword,string,hex,pattern,nop,inf,trap,ret,syscall,range-replace,history,revert} ...
+usage: patch [-h] {byte,word,dword,qword,string,hex,pattern,nop,inf,trap,ret,syscall,range-replace,history,revert,undo,redo} ...
 
 options:
   -h, --help            show this help message and exit
 
 command:
-  {byte,word,dword,qword,string,hex,pattern,nop,inf,trap,ret,syscall,range-replace,history,revert}
+  {byte,word,dword,qword,string,hex,pattern,nop,inf,trap,ret,syscall,range-replace,history,revert,undo,redo}
 ```
 
 ## `patch byte`
@@ -4354,12 +4354,13 @@ Display the patch history stack.
 ### Syntax
 
 ```text
-usage: patch history [-h] [-n] [-v]
+usage: patch history [-h] [-n] [-v] [--redo]
 
 options:
   -h, --help      show this help message and exit
   -n, --no-pager  do not use the pager.
   -v, --verbose   verbose output.
+  --redo          display patches available to redo.
 ```
 
 ## `patch inf`
@@ -4370,14 +4371,15 @@ Patch the instruction(s) at the given address with an infinite loop.
 ### Syntax
 
 ```text
-usage: patch inf [-h] [--phys] [LOCATION]
+usage: patch inf [-h] [--mode {arm,thumb}] [--phys] [LOCATION]
 
 positional arguments:
-  LOCATION    the memory address to patch. (default: current_arch.pc)
+  LOCATION            the memory address to patch. (default: current_arch.pc)
 
 options:
-  -h, --help  show this help message and exit
-  --phys      treat LOCATION as a physical address (qemu-system only).
+  -h, --help          show this help message and exit
+  --mode {arm,thumb}  select the instruction mode at LOCATION (ARM32 only).
+  --phys              treat LOCATION as a physical address (qemu-system only).
 ```
 
 ### Examples
@@ -4395,16 +4397,17 @@ Patch the instruction(s) at the given address with NOP.
 ### Syntax
 
 ```text
-usage: patch nop [-h] [--phys] [-b BYTE_LENGTH | -i INST_COUNT] [LOCATION]
+usage: patch nop [-h] [--mode {arm,thumb}] [--phys] [-b BYTE_LENGTH | -i INST_COUNT] [LOCATION]
 
 positional arguments:
-  LOCATION        the memory address to patch. (default: current_arch.pc)
+  LOCATION            the memory address to patch. (default: current_arch.pc)
 
 options:
-  -h, --help      show this help message and exit
-  --phys          treat LOCATION as a physical address (qemu-system only).
-  -b BYTE_LENGTH  the patch length in bytes. (default: None)
-  -i INST_COUNT   the number of instructions to patch. (default: 1)
+  -h, --help          show this help message and exit
+  --mode {arm,thumb}  select the instruction mode at LOCATION (ARM32 only).
+  --phys              treat LOCATION as a physical address (qemu-system only).
+  -b BYTE_LENGTH      the patch length in bytes. (default: None)
+  -i INST_COUNT       the number of instructions to patch. (default: 1)
 ```
 
 ### Examples
@@ -4496,6 +4499,38 @@ options:
 patch range-replace 0x400000 0x401000 "ebfe" "9090"
 ```
 
+## `patch redo`
+
+Reapply the most recently undone patch groups.
+
+
+### Syntax
+
+```text
+usage: patch redo [-h] [--all | COUNT]
+
+positional arguments:
+  COUNT       the number of patch groups to redo. (default: 1)
+
+options:
+  -h, --help  show this help message and exit
+  --all       redo all undone patch groups.
+```
+
+### Examples
+
+```gdb
+patch redo        # redo the last undone patch command.
+patch redo 2      # redo the next two undone patch commands.
+patch redo --all  # redo all undone patch commands.
+```
+
+### Notes
+
+```text
+A new patch or a successful patch revert discards the redo history for the current target.
+```
+
 ## `patch ret`
 
 Patch the instruction(s) at the given address with return.
@@ -4504,14 +4539,19 @@ Patch the instruction(s) at the given address with return.
 ### Syntax
 
 ```text
-usage: patch ret [-h] [--phys] [LOCATION]
+usage: patch ret [-h] [--mode {arm,thumb}] [--phys] [--return-mode {leaf,windowed}] [--interworking | --no-interworking] [LOCATION]
 
 positional arguments:
-  LOCATION    the memory address to patch. (default: current_arch.pc)
+  LOCATION              the memory address to patch. (default: current_arch.pc)
 
 options:
-  -h, --help  show this help message and exit
-  --phys      treat LOCATION as a physical address (qemu-system only).
+  -h, --help            show this help message and exit
+  --mode {arm,thumb}    select the instruction mode at LOCATION (ARM32 only).
+  --phys                treat LOCATION as a physical address (qemu-system only).
+  --return-mode {leaf,windowed}
+                        select the SPARC return form: retl/nop or ret/restore.
+  --interworking        use BX LR when ARM interworking support cannot be detected.
+  --no-interworking     use MOV PC, LR for ARM CPUs without interworking support.
 ```
 
 ### Examples
@@ -4581,14 +4621,15 @@ Patch the instruction(s) at the given address with syscall instruction.
 ### Syntax
 
 ```text
-usage: patch syscall [-h] [--phys] [LOCATION]
+usage: patch syscall [-h] [--mode {arm,thumb}] [--phys] [LOCATION]
 
 positional arguments:
-  LOCATION    the memory address to patch. (default: current_arch.pc)
+  LOCATION            the memory address to patch. (default: current_arch.pc)
 
 options:
-  -h, --help  show this help message and exit
-  --phys      treat LOCATION as a physical address (qemu-system only).
+  -h, --help          show this help message and exit
+  --mode {arm,thumb}  select the instruction mode at LOCATION (ARM32 only).
+  --phys              treat LOCATION as a physical address (qemu-system only).
 ```
 
 ### Examples
@@ -4605,20 +4646,53 @@ Patch the instruction(s) at the given address with breakpoint or trap (if availa
 ### Syntax
 
 ```text
-usage: patch trap [-h] [--phys] [LOCATION]
+usage: patch trap [-h] [--mode {arm,thumb}] [--phys] [LOCATION]
 
 positional arguments:
-  LOCATION    the memory address to patch. (default: current_arch.pc)
+  LOCATION            the memory address to patch. (default: current_arch.pc)
 
 options:
-  -h, --help  show this help message and exit
-  --phys      treat LOCATION as a physical address (qemu-system only).
+  -h, --help          show this help message and exit
+  --mode {arm,thumb}  select the instruction mode at LOCATION (ARM32 only).
+  --phys              treat LOCATION as a physical address (qemu-system only).
 ```
 
 ### Examples
 
 ```gdb
 patch trap $pc
+```
+
+## `patch undo`
+
+Undo the most recent patch groups.
+
+
+### Syntax
+
+```text
+usage: patch undo [-h] [--all | COUNT]
+
+positional arguments:
+  COUNT       the number of patch groups to undo. (default: 1)
+
+options:
+  -h, --help  show this help message and exit
+  --all       undo all patch groups.
+```
+
+### Examples
+
+```gdb
+patch undo        # undo the last patch command.
+patch undo 2      # undo the last two patch commands.
+patch undo --all  # undo all patch commands.
+```
+
+### Notes
+
+```text
+A new patch or a successful patch revert discards the redo history for the current target.
 ```
 
 ## `patch word`
@@ -7109,7 +7183,7 @@ Simplified Hoard structure:
 
 ## `jemalloc-heap-dump`
 
-jemalloc (v3.0~) arena/bin/slab(run)/tcache viewer.
+jemalloc (v3.0~) arena/bin/slab(run)/large/tcache viewer.
 
 
 ### Syntax
@@ -7126,7 +7200,7 @@ options:
   -i, --arena-index ARENA_INDEX
                         dump only the specified arena and the tcaches bound to it.
   -b, --bin-index BIN_INDEX
-                        dump only the specified bin (size class index).
+                        dump only the specified size class index (small or large).
   -x, --address ADDRESS
                         show the arena, size class, slab region and state of this address.
   -t, --tcache          also dump the tcache of each thread.
@@ -7139,7 +7213,7 @@ options:
 ### Examples
 
 ```gdb
-jemalloc-heap-dump                    # dump the slabs of all arenas
+jemalloc-heap-dump                    # dump small and large allocations of all arenas
 jemalloc-heap-dump -t -i 0            # dump arena[0] and the tcaches bound to it
 jemalloc-heap-dump -t -b 1            # dump bin[1] (size=0x10) of all arenas and tcaches
 jemalloc-heap-dump -x 0x7ffff701d008  # show which region the address belongs to
@@ -7209,7 +7283,12 @@ Simplified jemalloc (v3.x/v4.x) structure:
   so je_arenas is not needed.
 * v3.x/v4.x: the page size of jemalloc (--with-lg-page) is assumed to be 4KB.
   v5.x: GEF derives it from the slabs (ARM64 uses 64KB by default since v5.3.1).
-* Large allocations and jemalloc v2.x or older are not supported.
+* Large allocations: v3.x/v4.x read the chunk page map; v5.x reads the rtree.
+  v4.x displays the run range: cache-oblivious allocation addresses are randomized within its first page.
+  v4.x/v5.x assume cache-oblivious padding unless debug symbols specify otherwise.
+  v5.3.1~: when large size classes are disabled, the size class index is an upper bound;
+  the displayed allocation size comes from the extent itself.
+* v3.x/v4.x huge allocations (outside arena chunks) and jemalloc v2.x or older are not supported.
 ```
 
 ## `mimalloc-heap-dump`

@@ -608,6 +608,8 @@ For a comprehensive list and additional details, see [docs/SUPPORTED-MODE.md](do
         - `patch history`
         - `patch revert`
         - `patch range-replace`
+        - `patch undo`
+        - `patch redo`
     - `nop` command has been integrated into `patch` as sub-command.
     - ![](images/patch.png)
 - `search-pattern`

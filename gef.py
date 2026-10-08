@@ -7974,41 +7974,55 @@ class ARM(Architecture):
     capstone_support = True
     unicorn_support = True
 
-    # http://infocenter.arm.com/help/index.jsp?topic=/com.arm.doc.dui0041c/Caccegih.html
+    def supports_interworking(self):
+        if self.is_cortex_m() or self.is_thumb():
+            return True
+        arch = get_arch().lower()
+        if arch in ("armv2", "armv2a", "armv3", "armv4"):
+            return False
+        auxv = Auxv.get_auxiliary_values()
+        if auxv and "AT_HWCAP" in auxv:
+            return bool(auxv["AT_HWCAP"] & (1 << 2)) # HWCAP_THUMB
+        if re.match(r"armv(?:4t|5t|[6-8])", arch):
+            return True
+        return None
+
+    def get_mode_insn(self, name, thumb, interworking=None):
+        if name == "ret" and not thumb:
+            if interworking is None:
+                interworking = self.supports_interworking()
+            if interworking is None:
+                return None
+            if not interworking:
+                return b"\x0e\xf0\xa0\xe1" # mov pc, lr
+        insns = {
+            "nop": (b"\x01\x10\xa0\xe1", b"\x00\xbf"),
+            "infloop": (b"\xfe\xff\xff\xea", b"\xfe\xe7"),
+            "trap": (b"\x70\x00\x20\xe1", b"\x00\xbe"),
+            "ret": (b"\x1e\xff\x2f\xe1", b"\x70\x47"),
+            "syscall": (b"\x00\x00\x00\xef", b"\x00\xdf"),
+        }
+        return insns[name][int(thumb)]
+
     @property
     def nop_insn(self):
-        if self.is_thumb():
-            return b"\x00\xbf" # nop
-        else:
-            return b"\x01\x10\xa0\xe1" # mov r1, r1
+        return self.get_mode_insn("nop", self.is_thumb())
 
     @property
     def infloop_insn(self):
-        if self.is_thumb():
-            return b"\xfe\xe7" # b #0
-        else:
-            return b"\xfe\xff\xff\xea" # b #0
+        return self.get_mode_insn("infloop", self.is_thumb())
 
     @property
     def trap_insn(self):
-        if self.is_thumb():
-            return b"\x00\xbe" # bkpt #0
-        else:
-            return b"\x70\x00\x20\xe1" # bkpt #0
+        return self.get_mode_insn("trap", self.is_thumb())
 
     @property
     def ret_insn(self):
-        if self.is_thumb():
-            return b"\xf7\x46" # mov pc, lr
-        else:
-            return b"\x0e\xf0\xa0\xe1" # mov pc, lr
+        return self.get_mode_insn("ret", self.is_thumb())
 
     @property
     def syscall_insn(self):
-        if self.is_thumb():
-            return b"\x00\xdf" # svc 0x0
-        else:
-            return b"\x00\x00\x00\xef" # svc 0x0
+        return self.get_mode_insn("syscall", self.is_thumb())
 
     @property
     def pc(self):
@@ -9597,7 +9611,7 @@ class MIPS(Architecture):
     endianness = "little / big"
     instruction_length = 4
     has_delay_slot = True
-    has_syscall_delay_slot = True
+    has_syscall_delay_slot = False
     has_ret_delay_slot = True
     stack_grow_down = True
     tls_supported = True
@@ -15634,6 +15648,9 @@ class EventHandler:
     @staticmethod
     def new_objfile_handler(_event):
         """GDB event handler for new object file cases."""
+        objfile = getattr(_event, "new_objfile", None)
+        if objfile is not None and objfile.filename == objfile.progspace.filename:
+            PatchCommand.invalidate_history(progspace=objfile.progspace)
         Cache.reset_gef_caches(new_objfile=True)
         if current_arch is None:
             set_arch()
@@ -15652,6 +15669,7 @@ class EventHandler:
     def exit_handler(_event):
         """GDB event handler for exit cases."""
         Cache.reset_gef_caches(all=True)
+        PatchCommand.invalidate_history(getattr(_event, "inferior", None))
         Kernel.version_override = None
         EventHandler.kpti_transition_active = False
         return
@@ -15689,6 +15707,7 @@ class EventHandler:
     @staticmethod
     def connection_removed_handler(_event):
         """GDB event handler for removed target connections."""
+        PatchCommand.invalidate_history(connection_num=_event.connection.num)
         Cache.reset_gef_caches(all=True)
         return
 
@@ -41161,9 +41180,13 @@ class PatchCommand(GenericCommand):
     subparsers.add_parser("range-replace")
     subparsers.add_parser("history")
     subparsers.add_parser("revert")
+    subparsers.add_parser("undo")
+    subparsers.add_parser("redo")
     _syntax_ = parser.format_help()
 
     patch_history = [] # [ [patch1a, patch1b], [patch2a], ...]
+    redo_history = []
+    history_epochs = {}
 
     def __init__(self, *args, **kwargs):
         prefix = kwargs.get("prefix", True)
@@ -41171,6 +41194,73 @@ class PatchCommand(GenericCommand):
         super().__init__(prefix=prefix, complete=complete)
         self.format = None
         return
+
+    @staticmethod
+    def history_context():
+        inferior = gdb.selected_inferior()
+        return (inferior, inferior.pid, getattr(inferior, "connection_num", None),
+                PatchCommand.history_epochs.get(inferior.num, 0))
+
+    @staticmethod
+    def get_history(redo=False):
+        context = PatchCommand.history_context()
+        history = PatchCommand.redo_history if redo else PatchCommand.patch_history
+        return [hist for hist in history if hist[0].context == context]
+
+    @staticmethod
+    def clear_redo_history():
+        context = PatchCommand.history_context()
+        PatchCommand.redo_history[:] = [hist for hist in PatchCommand.redo_history if hist[0].context != context]
+        return
+
+    @staticmethod
+    def invalidate_history(inferior=None, connection_num=None, progspace=None):
+        inferiors = [inferior] if inferior is not None else gdb.inferiors()
+        for target in inferiors:
+            if connection_num is not None and getattr(target, "connection_num", None) != connection_num:
+                continue
+            if progspace is not None and target.progspace != progspace:
+                continue
+            PatchCommand.history_epochs[target.num] = PatchCommand.history_epochs.get(target.num, 0) + 1
+        for history in (PatchCommand.patch_history, PatchCommand.redo_history):
+            history[:] = [
+                hist for hist in history
+                if hist[0].context[0].is_valid()
+                and hist[0].context[3] == PatchCommand.history_epochs.get(hist[0].context[0].num, 0)
+                and (connection_num is None or hist[0].context[2] != connection_num)
+            ]
+        return
+
+    def get_patch_insn(self, addr, name):
+        big_endian = Endian.is_big_endian()
+        mode = getattr(self.args, "mode", None)
+        if is_arm32() or is_arm32_cortex_m():
+            if mode is None:
+                if is_arm32_cortex_m() or addr & 1:
+                    mode = "thumb"
+                elif not self.args.phys and addr == (current_arch.pc & ~1):
+                    mode = "thumb" if current_arch.is_thumb() else "arm"
+                else:
+                    raise gdb.error("Cannot determine target instruction mode; specify --mode arm or --mode thumb")
+            if mode == "arm" and (is_arm32_cortex_m() or addr & 1):
+                raise gdb.error("ARM mode conflicts with the Thumb target")
+            addr &= ~1
+            interworking = getattr(self.args, "interworking", None)
+            if name == "ret" and mode == "thumb" and interworking is False:
+                raise gdb.error("--no-interworking is only supported for ARM mode returns")
+            insn = current_arch.get_mode_insn(name, mode == "thumb", interworking=interworking)
+            if insn is None and name == "ret":
+                raise gdb.error("Cannot determine ARM BX support; specify --interworking or --no-interworking")
+            elf = Elf.get_elf() if big_endian else None
+            if elf and elf.is_valid() and elf.e_flags & 0x00800000: # EF_ARM_BE8
+                big_endian = False
+        else:
+            if mode is not None:
+                raise gdb.error("--mode is only supported on ARM32")
+            insn = getattr(current_arch, name + "_insn")
+        if insn is None:
+            raise gdb.error("This command is not supported on this architecture")
+        return addr, insn[::-1] if big_endian else insn
 
     class PatchInfo:
         def __init__(self, addr, data, length=None, phys=None, tag=None):
@@ -41188,6 +41278,7 @@ class PatchCommand(GenericCommand):
                 self.length = length
 
             self.phys = phys
+            self.context = PatchCommand.history_context()
 
             # tag: A key to group multiple patches together
             if tag is None:
@@ -41215,7 +41306,7 @@ class PatchCommand(GenericCommand):
 
         @staticmethod
         def get_tag_set():
-            return {x[0].tag for x in PatchCommand.patch_history}
+            return {x[0].tag for x in PatchCommand.patch_history + PatchCommand.redo_history}
 
         def a(self):
             a = " ".join(["{:02x}".format(x) for x in self.after_data[:0x10]])
@@ -41229,13 +41320,27 @@ class PatchCommand(GenericCommand):
                 b += " ..."
             return b
 
-        def patch(self, silent=False):
+        def patch(self, silent=False, redo=False):
+            if self.length < 0:
+                raise ValueError("Patch length must not be negative")
+            if self.length == 0:
+                return
+            if self.context != PatchCommand.history_context():
+                raise gdb.error("Patch belongs to a different inferior or execution")
             target_mode = "phys" if self.phys else "virt"
             with QemuMonitor.use_mmu_mode(target_mode) as available:
                 if not available:
                     raise gdb.error("Could not select {:s} memory mode".format(target_mode))
-                self.before_data = read_memory(self.addr, self.length)
-                write_memory(self.addr, self.data)
+                if not redo:
+                    self.before_data = read_memory(self.addr, self.length)
+                write_memory(self.addr, self.after_data if redo else self.data)
+                if not redo:
+                    self.after_data = self.data
+                self.insert_history()
+                if redo:
+                    self.remove_history(redo=True)
+                else:
+                    PatchCommand.clear_redo_history()
                 self.after_data = read_memory(self.addr, self.length)
 
             # print
@@ -41245,25 +41350,34 @@ class PatchCommand(GenericCommand):
                     self.b(), self.a(),
                 ))
 
-            # history
-            self.insert_history()
             return
 
-        def insert_history(self):
-            for i in range(len(PatchCommand.patch_history)):
-                if PatchCommand.patch_history[i][0].tag == self.tag:
-                    PatchCommand.patch_history[i].append(self)
+        def insert_history(self, redo=False):
+            history = PatchCommand.redo_history if redo else PatchCommand.patch_history
+            for hist in history:
+                if hist[0].tag == self.tag and hist[0].context == self.context:
+                    if redo:
+                        hist.insert(0, self)
+                    else:
+                        hist.append(self)
                     break
             else:
-                PatchCommand.patch_history.insert(0, [self])
+                history.insert(0, [self])
             return
 
-        def revert(self, silent=False):
+        def revert(self, silent=False, undo=False):
+            if self.context != PatchCommand.history_context():
+                raise gdb.error("Patch belongs to a different inferior or execution")
             target_mode = "phys" if self.phys else "virt"
             with QemuMonitor.use_mmu_mode(target_mode) as available:
                 if not available:
                     raise gdb.error("Could not select {:s} memory mode".format(target_mode))
                 write_memory(self.addr, self.before_data)
+                self.remove_history()
+                if undo:
+                    self.insert_history(redo=True)
+                else:
+                    PatchCommand.clear_redo_history()
 
             # print
             if not silent:
@@ -41272,34 +41386,33 @@ class PatchCommand(GenericCommand):
                     self.a(), self.b(),
                 ))
 
-            # history
-            self.remove_history()
             return
 
-        def remove_history(self):
-            for i in range(len(PatchCommand.patch_history)):
-                if PatchCommand.patch_history[i][0].tag == self.tag:
-                    PatchCommand.patch_history[i].remove(self)
-                    if PatchCommand.patch_history[i] == []:
-                        PatchCommand.patch_history.pop(i)
+        def remove_history(self, redo=False):
+            history = PatchCommand.redo_history if redo else PatchCommand.patch_history
+            for i, hist in enumerate(history):
+                if hist[0].tag == self.tag and hist[0].context == self.context:
+                    hist.remove(self)
+                    if not hist:
+                        history.pop(i)
                     break
             return
 
         @staticmethod
         def revert_to_tag(tag, silent=False):
-            tags = PatchCommand.PatchInfo.get_tag_set()
-            if tag not in tags:
+            history = PatchCommand.get_history()
+            if tag not in {hist[0].tag for hist in history}:
                 err("Not found tag")
                 return None
-            while PatchCommand.patch_history:
-                hist = PatchCommand.patch_history.pop(0)
-                for patch_info in hist:
+            for hist in history:
+                hist_tag = hist[0].tag
+                for patch_info in reversed(hist[:]):
                     try:
                         patch_info.revert(silent)
                     except Exception as e:
                         err(e)
                         return
-                if tag == hist[0].tag:
+                if tag == hist_tag:
                     break
             return
 
@@ -41331,10 +41444,15 @@ class PatchCommand(GenericCommand):
         else:
             d = ">" if Endian.is_little_endian() else "<"
 
+        try:
+            values = [struct.pack(d + fcode, AddressUtil.parse_address(value) & ((1 << size * 8) - 1))
+                      for value in args.values]
+        except Exception as e:
+            err(e)
+            return
+
         tag = PatchCommand.PatchInfo.get_unique_tag()
-        for value in args.values:
-            value = AddressUtil.parse_address(value) & ((1 << size * 8) - 1)
-            vstr = struct.pack(d + fcode, value)
+        for vstr in values:
             try:
                 self.PatchInfo(addr, vstr, size, phys=args.phys, tag=tag).patch()
             except Exception as e:
@@ -41497,9 +41615,16 @@ class PatchStringCommand(PatchCommand):
                 err("Unsupported in this gdb mode.")
                 return
 
-        if args.length:
-            vstr = args.vstr * (args.length // len(args.vstr) + 1)
-            vstr = vstr[:args.length]
+        if args.length is not None:
+            if args.length < 0:
+                err("LENGTH must not be negative")
+                return
+            if args.length == 0:
+                return
+            if not args.vstr:
+                err("Cannot repeat empty input")
+                return
+            vstr = (args.vstr * ((args.length + len(args.vstr) - 1) // len(args.vstr)))[:args.length]
         else:
             vstr = args.vstr
 
@@ -41546,9 +41671,16 @@ class PatchHexCommand(PatchCommand):
                 err("Unsupported in this gdb mode.")
                 return
 
-        if args.length:
-            hstr = args.hstr * (args.length // len(args.hstr) + 1)
-            hstr = hstr[:args.length]
+        if args.length is not None:
+            if args.length < 0:
+                err("LENGTH must not be negative")
+                return
+            if args.length == 0:
+                return
+            if not args.hstr:
+                err("Cannot repeat empty input")
+                return
+            hstr = (args.hstr * ((args.length + len(args.hstr) - 1) // len(args.hstr)))[:args.length]
         else:
             hstr = args.hstr
 
@@ -41596,7 +41728,11 @@ class PatchPatternCommand(PatchCommand):
                 err("Unsupported in this gdb mode.")
                 return
 
-        pats = PatternCreateCommand.generate_cyclic_pattern(args.length, args.charset)
+        try:
+            pats = PatternCreateCommand.generate_cyclic_pattern(args.length, args.charset)
+        except ValueError as e:
+            err(e)
+            return
         if args.dry_run:
             info("Generated pattern: {}".format(pats))
             return
@@ -41617,6 +41753,8 @@ class PatchNopCommand(PatchCommand):
     _aliases_ = ["nop"]
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("--mode", choices=("arm", "thumb"),
+                        help="select the instruction mode at LOCATION (ARM32 only).")
     parser.add_argument("--phys", action="store_true",
                         help="treat LOCATION as a physical address (qemu-system only).")
     parser.add_argument("location", metavar="LOCATION", nargs="?", type=AddressUtil.parse_address,
@@ -41638,18 +41776,33 @@ class PatchNopCommand(PatchCommand):
         return
 
     def get_insns_size(self, addr, num_insts):
-        addr_after_n = Disasm.gef_instruction_n(addr, num_insts)
-        return addr_after_n.address - addr
+        if num_insts < 0:
+            raise ValueError("Instruction count must not be negative")
+        target_mode = "phys" if self.args.phys else "virt"
+        with QemuMonitor.use_mmu_mode(target_mode) as available:
+            if not available:
+                raise gdb.error("Could not select {:s} memory mode".format(target_mode))
+            arm = is_arm32() or is_arm32_cortex_m()
+            original_mode = gdb.parameter("arm force-mode") if arm else None
+            try:
+                if arm:
+                    nop = self.get_patch_insn(addr, "nop")[1]
+                    mode = "thumb" if len(nop) == 2 else "arm"
+                    gdb.execute("set arm force-mode " + mode, to_string=True)
+                location = addr & ~1 if arm else addr
+                insns = gdb.selected_frame().architecture().disassemble(location, count=num_insts) if num_insts else []
+                return sum(insn["length"] for insn in insns)
+            finally:
+                if arm:
+                    gdb.execute("set arm force-mode " + original_mode, to_string=True)
 
     def patch_nop(self, addr, num_bytes):
         if num_bytes == 0:
             info("Not patching since num_bytes == 0")
             return
 
-        if (is_arm32() or is_arm32_cortex_m()) and current_arch.is_thumb() and addr & 1:
-            addr -= 1
-
-        nop_op_len = len(current_arch.nop_insn)
+        addr, insn = self.get_patch_insn(addr, "nop")
+        nop_op_len = len(insn)
 
         if nop_op_len > num_bytes:
             err("Cannot patch instruction at {:#x} (nop_size is {:d}, insn_size is {:d})".format(
@@ -41663,11 +41816,6 @@ class PatchNopCommand(PatchCommand):
         if patch_bytes != num_bytes:
             err("Cannot patch instruction at {:#x} (nop instruction does not evenly fit in requested size)".format(addr))
             return
-
-        if Endian.is_big_endian():
-            insn = current_arch.nop_insn[::-1]
-        else:
-            insn = current_arch.nop_insn
 
         self.PatchInfo(addr, insn * count, length=patch_bytes, phys=self.args.phys).patch()
         return
@@ -41692,12 +41840,13 @@ class PatchNopCommand(PatchCommand):
             location = args.location
 
         try:
+            self.get_patch_insn(location, "nop")
             if args.byte_length is not None:
                 num_bytes = args.byte_length
             else:
                 num_bytes = self.get_insns_size(location, args.inst_count)
-        except Exception:
-            err("Failed to get patch bytes")
+        except Exception as e:
+            err("Failed to get patch bytes: {!s}".format(e))
             return
 
         try:
@@ -41715,6 +41864,8 @@ class PatchInfloopCommand(PatchCommand):
     _category_ = "03-d. Memory - Patch"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("--mode", choices=("arm", "thumb"),
+                        help="select the instruction mode at LOCATION (ARM32 only).")
     parser.add_argument("--phys", action="store_true",
                         help="treat LOCATION as a physical address (qemu-system only).")
     parser.add_argument("location", metavar="LOCATION", nargs="?", type=AddressUtil.parse_address,
@@ -41731,21 +41882,14 @@ class PatchInfloopCommand(PatchCommand):
         return
 
     def patch_infloop(self, addr):
-        if (is_arm32() or is_arm32_cortex_m()) and current_arch.is_thumb() and addr & 1:
-            addr -= 1
-
-        if Endian.is_big_endian():
-            insn = current_arch.infloop_insn[::-1]
-            if current_arch.has_delay_slot:
-                insn += current_arch.nop_insn[::-1]
-        else:
-            insn = current_arch.infloop_insn
-            if is_arc32() or is_arc64():
-                if addr % 4 == 2:
-                    insn = current_arch.infloop_insn2
-            else:
-                if current_arch.has_delay_slot:
-                    insn += current_arch.nop_insn
+        addr, insn = self.get_patch_insn(addr, "infloop")
+        if (is_arc32() or is_arc64()) and addr % 4 == 2:
+            insn = current_arch.infloop_insn2
+            if Endian.is_big_endian():
+                insn = insn[::-1]
+        elif current_arch.has_delay_slot:
+            nop = current_arch.nop_insn
+            insn += nop[::-1] if Endian.is_big_endian() else nop
 
         self.PatchInfo(addr, insn, phys=self.args.phys).patch()
         return
@@ -41784,6 +41928,8 @@ class PatchTrapCommand(PatchCommand):
     _category_ = "03-d. Memory - Patch"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("--mode", choices=("arm", "thumb"),
+                        help="select the instruction mode at LOCATION (ARM32 only).")
     parser.add_argument("--phys", action="store_true",
                         help="treat LOCATION as a physical address (qemu-system only).")
     parser.add_argument("location", metavar="LOCATION", nargs="?", type=AddressUtil.parse_address,
@@ -41800,17 +41946,10 @@ class PatchTrapCommand(PatchCommand):
         return
 
     def patch_trap(self, addr):
-        if (is_arm32() or is_arm32_cortex_m()) and current_arch.is_thumb() and addr & 1:
-            addr -= 1
-
-        if Endian.is_big_endian():
-            insn = current_arch.trap_insn[::-1]
-            if current_arch.has_delay_slot:
-                insn += current_arch.nop_insn[::-1]
-        else:
-            insn = current_arch.trap_insn
-            if current_arch.has_delay_slot:
-                insn += current_arch.nop_insn
+        addr, insn = self.get_patch_insn(addr, "trap")
+        if current_arch.has_delay_slot and not isinstance(current_arch, MIPS):
+            nop = current_arch.nop_insn
+            insn += nop[::-1] if Endian.is_big_endian() else nop
 
         self.PatchInfo(addr, insn, phys=self.args.phys).patch()
         return
@@ -41849,10 +41988,19 @@ class PatchRetCommand(PatchCommand):
     _category_ = "03-d. Memory - Patch"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("--mode", choices=("arm", "thumb"),
+                        help="select the instruction mode at LOCATION (ARM32 only).")
     parser.add_argument("--phys", action="store_true",
                         help="treat LOCATION as a physical address (qemu-system only).")
     parser.add_argument("location", metavar="LOCATION", nargs="?", type=AddressUtil.parse_address,
                         help="the memory address to patch. (default: current_arch.pc)")
+    parser.add_argument("--return-mode", choices=("leaf", "windowed"),
+                        help="select the SPARC return form: retl/nop or ret/restore.")
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument("--interworking", action="store_const", const=True, dest="interworking",
+                       help="use BX LR when ARM interworking support cannot be detected.")
+    group.add_argument("--no-interworking", action="store_const", const=False, dest="interworking",
+                       help="use MOV PC, LR for ARM CPUs without interworking support.")
     _syntax_ = parser.format_help()
 
     _example_ = [
@@ -41865,17 +42013,38 @@ class PatchRetCommand(PatchCommand):
         return
 
     def patch_ret(self, addr):
-        if (is_arm32() or is_arm32_cortex_m()) and current_arch.is_thumb() and addr & 1:
-            addr -= 1
-
-        if Endian.is_big_endian():
-            insn = current_arch.ret_insn[::-1]
-            if current_arch.has_delay_slot:
-                insn += current_arch.nop_insn[::-1]
+        if self.args.interworking is not None and not (is_arm32() or is_arm32_cortex_m()):
+            raise gdb.error("Interworking options are only supported on ARM32")
+        addr, insn = self.get_patch_insn(addr, "ret")
+        if isinstance(current_arch, SPARC):
+            return_mode = self.args.return_mode
+            if return_mode is None:
+                target_mode = "phys" if self.args.phys else "virt"
+                with QemuMonitor.use_mmu_mode(target_mode) as available:
+                    if not available:
+                        raise gdb.error("Could not select {:s} memory mode".format(target_mode))
+                    data = read_memory(addr, 8)
+                order = "big" if Endian.is_big_endian() else "little"
+                first = int.from_bytes(data[:4], order)
+                second = int.from_bytes(data[4:], order)
+                if first == 0x81c3e008 or first & 0xc1f80000 == 0x81e00000:
+                    return_mode = "leaf"
+                elif first == 0x81c7e008 and second == 0x81e80000:
+                    return_mode = "windowed"
+                else:
+                    raise gdb.error("Cannot determine SPARC return form; specify --return-mode leaf or windowed")
+            if return_mode == "leaf":
+                insn = bytes.fromhex("81c3e00801000000")
+            else:
+                insn = bytes.fromhex("81c7e00881e80000")
+            if Endian.is_little_endian():
+                insn = insn[:4][::-1] + insn[4:][::-1]
         else:
-            insn = current_arch.ret_insn
-            if current_arch.has_delay_slot:
-                insn += current_arch.nop_insn
+            if self.args.return_mode is not None:
+                raise gdb.error("--return-mode is only supported on SPARC")
+            if current_arch.has_ret_delay_slot:
+                nop = current_arch.nop_insn
+                insn += nop[::-1] if Endian.is_big_endian() else nop
 
         self.PatchInfo(addr, insn, phys=self.args.phys).patch()
         return
@@ -41885,7 +42054,7 @@ class PatchRetCommand(PatchCommand):
     @Decorator.exclude_specific_gdb_mode(mode=("rr",))
     @Decorator.require_arch_set
     def do_invoke(self, args):
-        if current_arch.ret_insn is None:
+        if not (is_arm32() or is_arm32_cortex_m()) and current_arch.ret_insn is None:
             err("This command is not supported on this architecture")
             return
 
@@ -41914,6 +42083,8 @@ class PatchSyscallCommand(PatchCommand):
     _category_ = "03-d. Memory - Patch"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("--mode", choices=("arm", "thumb"),
+                        help="select the instruction mode at LOCATION (ARM32 only).")
     parser.add_argument("--phys", action="store_true",
                         help="treat LOCATION as a physical address (qemu-system only).")
     parser.add_argument("location", metavar="LOCATION", nargs="?", type=AddressUtil.parse_address,
@@ -41930,17 +42101,10 @@ class PatchSyscallCommand(PatchCommand):
         return
 
     def patch_syscall(self, addr):
-        if (is_arm32() or is_arm32_cortex_m()) and current_arch.is_thumb() and addr & 1:
-            addr -= 1
-
-        if Endian.is_big_endian():
-            insn = current_arch.syscall_insn[::-1]
-            if current_arch.has_syscall_delay_slot:
-                insn += current_arch.nop_insn[::-1]
-        else:
-            insn = current_arch.syscall_insn
-            if current_arch.has_syscall_delay_slot:
-                insn += current_arch.nop_insn
+        addr, insn = self.get_patch_insn(addr, "syscall")
+        if current_arch.has_syscall_delay_slot:
+            nop = current_arch.nop_insn
+            insn += nop[::-1] if Endian.is_big_endian() else nop
 
         self.PatchInfo(addr, insn, phys=self.args.phys).patch()
         return
@@ -41982,6 +42146,7 @@ class PatchHistoryCommand(PatchCommand, BufferingOutput):
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
     parser.add_argument("-v", "--verbose", action="store_true", help="verbose output.")
+    parser.add_argument("--redo", action="store_true", help="display patches available to redo.")
     _syntax_ = parser.format_help()
 
     def __init__(self):
@@ -41994,10 +42159,11 @@ class PatchHistoryCommand(PatchCommand, BufferingOutput):
     def do_invoke(self, args):
         self.out = []
 
-        if PatchCommand.patch_history:
-            self.out.append(titlify("NEW"))
+        history = PatchCommand.get_history(redo=args.redo)
+        if history:
+            self.out.append(titlify("REDO" if args.redo else "NEW"))
             self.out.append("[{:s}] (current state)".format(Color.boldify("0")))
-            for i, hist in enumerate(PatchCommand.patch_history, start=1):
+            for i, hist in enumerate(history, start=1):
                 for j, patch_info in enumerate(hist):
                     if not self.args.verbose:
                         if j > 8:
@@ -42009,9 +42175,9 @@ class PatchHistoryCommand(PatchCommand, BufferingOutput):
                         patch_info.b(), patch_info.a(),
                     ))
                 self.out.append("[{:s}]".format(Color.boldify("{:d}".format(i))))
-            self.out.append(titlify("OLD"))
+            self.out.append(titlify("FUTURE" if args.redo else "OLD"))
         else:
-            self.info_add_out("Patch history stack is empty")
+            self.info_add_out("Patch redo stack is empty" if args.redo else "Patch history stack is empty")
 
         self.print_output(check_terminal_size=True)
         return
@@ -42045,30 +42211,110 @@ class PatchRevertCommand(PatchCommand):
     @Decorator.only_if_gdb_running
     @Decorator.exclude_specific_gdb_mode(mode=("rr",))
     def do_invoke(self, args):
-        if len(PatchCommand.patch_history) == 0:
+        history = PatchCommand.get_history()
+        if not history:
             info("Patch history stack is empty")
             return
 
         if args.all:
-            revert_count = len(PatchCommand.patch_history) + 1
+            revert_count = len(history) + 1
         else:
-            if not (0 <= args.target_state < len(PatchCommand.patch_history) + 1):
+            if not (0 <= args.target_state < len(history) + 1):
                 err("Invalid target index")
                 gef_print(titlify("Patch history stack"))
                 gdb.execute("patch history")
                 return
             revert_count = args.target_state
 
-        while PatchCommand.patch_history and revert_count > 0:
-            hist = PatchCommand.patch_history.pop(0)
-            for patch_info in hist:
+        for hist in history[:revert_count]:
+            for patch_info in reversed(hist[:]):
                 try:
                     patch_info.revert()
                 except Exception as e:
                     err(e)
                     return
-            revert_count -= 1
         return
+
+
+@register_command
+class PatchUndoCommand(PatchCommand):
+    """Undo the most recent patch groups."""
+
+    _cmdline_ = "patch undo"
+    _category_ = "03-d. Memory - Patch"
+
+    redo = False
+
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument("count", metavar="COUNT", nargs="?", type=int, default=1,
+                       help="the number of patch groups to undo. (default: %(default)s)")
+    group.add_argument("--all", action="store_true", help="undo all patch groups.")
+    _syntax_ = parser.format_help()
+
+    _example_ = [
+        "{0:s}        # undo the last patch command.",
+        "{0:s} 2      # undo the last two patch commands.",
+        "{0:s} --all  # undo all patch commands.",
+    ]
+    _example_ = "\n".join(_example_).format(_cmdline_)
+
+    _note_ = "A new patch or a successful patch revert discards the redo history for the current target."
+
+    def __init__(self):
+        super().__init__(prefix=False)
+        return
+
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.exclude_specific_gdb_mode(mode=("rr",))
+    def do_invoke(self, args):
+        if args.count < 1:
+            err("COUNT must be positive")
+            return
+        history = PatchCommand.get_history(redo=self.redo)
+        if not history:
+            info("Patch redo stack is empty" if self.redo else "Patch history stack is empty")
+            return
+        count = len(history) if args.all else args.count
+        if count > len(history):
+            err("COUNT exceeds the available patch groups")
+            return
+        for hist in history[:count]:
+            for patch_info in hist[:] if self.redo else reversed(hist[:]):
+                try:
+                    if self.redo:
+                        patch_info.patch(redo=True)
+                    else:
+                        patch_info.revert(undo=True)
+                except Exception as e:
+                    err(e)
+                    return
+        return
+
+
+@register_command
+class PatchRedoCommand(PatchUndoCommand):
+    """Reapply the most recently undone patch groups."""
+
+    _cmdline_ = "patch redo"
+    _category_ = "03-d. Memory - Patch"
+
+    redo = True
+
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument("count", metavar="COUNT", nargs="?", type=int, default=1,
+                       help="the number of patch groups to redo. (default: %(default)s)")
+    group.add_argument("--all", action="store_true", help="redo all undone patch groups.")
+    _syntax_ = parser.format_help()
+
+    _example_ = [
+        "{0:s}        # redo the last undone patch command.",
+        "{0:s} 2      # redo the next two undone patch commands.",
+        "{0:s} --all  # redo all undone patch commands.",
+    ]
+    _example_ = "\n".join(_example_).format(_cmdline_)
 
 
 @register_command
@@ -42101,8 +42347,18 @@ class PatchRangeReplaceCommand(PatchCommand):
         return
 
     def patch_range_replace(self):
+        if not self.args.hstr_from:
+            err("Search pattern must not be empty")
+            return
+        if self.args.range_end < self.args.range_start:
+            err("END_ADDR must not precede START_ADDR")
+            return
         try:
-            data = read_memory(self.args.range_start, self.args.range_end - self.args.range_start)
+            target_mode = "phys" if self.args.phys else "virt"
+            with QemuMonitor.use_mmu_mode(target_mode) as available:
+                if not available:
+                    raise gdb.error("Could not select {:s} memory mode".format(target_mode))
+                data = read_memory(self.args.range_start, self.args.range_end - self.args.range_start)
         except gdb.MemoryError:
             err("Memory read error")
             return
@@ -42113,7 +42369,7 @@ class PatchRangeReplaceCommand(PatchCommand):
             found_pos = data.find(self.args.hstr_from, pos)
             if found_pos == -1:
                 break
-            self.PatchInfo(self.args.range_start + found_pos, self.args.hstr_to, tag=tag).patch()
+            self.PatchInfo(self.args.range_start + found_pos, self.args.hstr_to, phys=self.args.phys, tag=tag).patch()
             pos = found_pos + len(self.args.hstr_from)
         return
 
@@ -43533,7 +43789,7 @@ class PatternCreateCommand(GenericCommand):
     def de_bruijn(alphabet, n):
         """De Bruijn sequence for alphabet and subsequences of length n (for compat. w/ pwnlib)."""
         k = len(alphabet)
-        a = [0] * k * n
+        a = [0] * (k * n + 1)
 
         def db(t, p):
             if t > n:
@@ -43561,6 +43817,13 @@ class PatternCreateCommand(GenericCommand):
             charset = String.str2bytes(charset)
 
         cycle = AddressUtil.get_memory_alignment()
+        if length < 0:
+            raise ValueError("Pattern length must not be negative")
+        if not charset or len(set(charset)) != len(charset):
+            raise ValueError("Charset must contain distinct bytes and must not be empty")
+        maximum = len(charset) ** cycle
+        if length > maximum:
+            raise ValueError("Pattern length exceeds the maximum of {:d} bytes for this charset".format(maximum))
         return bytes(itertools.islice(PatternCreateCommand.de_bruijn(charset, cycle), length))
 
     @Decorator.parse_args
@@ -43571,7 +43834,11 @@ class PatternCreateCommand(GenericCommand):
             size = args.size
 
         info("Generating a pattern of {:d} bytes".format(size))
-        pattern_str = PatternCreateCommand.generate_cyclic_pattern(size, args.charset)
+        try:
+            pattern_str = PatternCreateCommand.generate_cyclic_pattern(size, args.charset)
+        except ValueError as e:
+            err(e)
+            return
         gef_print(pattern_str)
 
         conv_var = GefUtil.gef_convenience(String.bytes2str(pattern_str))
@@ -43640,7 +43907,11 @@ class PatternSearchCommand(GenericCommand):
         else:
             size = args.size
 
-        cyclic_pattern = PatternCreateCommand.generate_cyclic_pattern(size, args.charset)
+        try:
+            cyclic_pattern = PatternCreateCommand.generate_cyclic_pattern(size, args.charset)
+        except ValueError as e:
+            err(e)
+            return
         pack = p32 if is_32bit() else p64
 
         # 1. check if it's a symbol (like "$sp")
