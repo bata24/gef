@@ -3928,13 +3928,14 @@ Display stack values for sigreturn syscall.
 ### Syntax
 
 ```text
-usage: sigreturn [-h] [-n] [LOCATION]
+usage: sigreturn [-h] [-r] [-n] [LOCATION]
 
 positional arguments:
   LOCATION        the address interpreted as the beginning of a sigframe, or the ucontext_t on architectures other than x86/arm. (default: current_arch.sp)
 
 options:
   -h, --help      show this help message and exit
+  -r, --rt        interpret the frame as a realtime (SA_SIGINFO) frame on i386/ARM32.
   -n, --no-pager  do not use the pager.
 ```
 
