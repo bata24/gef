@@ -48351,6 +48351,8 @@ class TraceMallocRetBreakpoint(gdb.Breakpoint):
 
         # get returned address
         if self.name == "posix_memalign":
+            if AddressUtil.parse_address(current_arch.return_register) & 0xffffffff:
+                return False
             allocated = read_int_from_memory(self.memptr)
         else:
             allocated = AddressUtil.parse_address(current_arch.return_register)
@@ -48841,7 +48843,7 @@ class GlibcHeapTracerCommand(GenericCommand):
                 address = AddressUtil.parse_address(name)
                 address = ProcessMap.lookup_address(address)
             except gdb.error:
-                warn("breakpoint setup failed: {:#x}".format(name))
+                warn("breakpoint setup failed: {:s}".format(name))
                 return
             bp = bp_class(name, address, self.output_filename)
             GlibcHeapTracerCommand.heap_breakpoints.append(bp)
