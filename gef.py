@@ -22803,7 +22803,9 @@ class SearchPatternCommand(GenericCommand):
                     err("Unsupported")
                     return
                 if args.section in ["binary", "bin"]:
-                    section_name = Path.get_filepath(append_proc_root_prefix=False)
+                    section_name = Path.get_binary_map_path()
+                    if section_name is None:
+                        return
                 else:
                     section_name = args.section
                 self.process_by_section(patterns, section_name)
