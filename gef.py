@@ -47061,7 +47061,7 @@ class StandardIoCommand(GenericCommand, BufferingOutput):
     def process_member(self, member_name, member_defines, struct_array):
         # member name
         if not member_name:
-            return 0
+            return
         elif member_name == "__addr__":
             member_offset = 0
             member_size = current_arch.ptrsize
@@ -47071,7 +47071,6 @@ class StandardIoCommand(GenericCommand, BufferingOutput):
             member_size = self.get_size(member_name, member_defines)
             msg = "{:+#05x} | {:16s}: ".format(member_offset, member_name)
 
-        adjust = 0
         val_width = [10, 18][is_64bit()]
         sym_width = [25, 29][is_arm32()]
 
@@ -47091,18 +47090,6 @@ class StandardIoCommand(GenericCommand, BufferingOutput):
                 msg += "{:s}{:{:d}s} ".format(address_obj.long_fmt(), sym, sym_width)
             elif member_size == 8:
                 val = read_int64_from_memory(member_addr)
-                # special case
-                if is_32bit() and member_name == "_offset":
-                    if Endian.is_big_endian():
-                        val_ = byteswap(val, 8)
-                    else:
-                        val_ = val
-                    if val_ == 0xffff_ffff_0000_0000:
-                        adjust = 4
-                        member_offset += adjust
-                        msg = "{:+#05x} | {:16s}: ".format(member_offset, member_name)
-                        member_addr += adjust
-                        val = read_int64_from_memory(member_addr)
                 val_s = "{:#018x}".format(val)
                 msg += "{:s}{:{:d}s} ".format(val_s, "", sym_width - [8, 0][is_64bit()])
             elif member_size == 4:
@@ -47121,7 +47108,7 @@ class StandardIoCommand(GenericCommand, BufferingOutput):
                 msg += "{:{:d}s}{:{:d}s} ".format("...", val_width, "", sym_width)
 
         self.out.append(msg.rstrip())
-        return adjust
+        return
 
     def stdio_dump(self, struct_io_file_array):
         self.process_member("__addr__", None, struct_io_file_array)
@@ -47152,7 +47139,7 @@ class StandardIoCommand(GenericCommand, BufferingOutput):
             [1,                    "_shortbuf"],
             [[0, 4][is_64bit()],   ""],
             [current_arch.ptrsize, "_lock"],
-            [0,                    ""], # varies depending on environment
+            [0,                    ""], # alignment padding
             [8,                    "_offset"],
             [current_arch.ptrsize, "_codecvt"],
             [current_arch.ptrsize, "_wide_data"],
@@ -47163,11 +47150,10 @@ class StandardIoCommand(GenericCommand, BufferingOutput):
             [[40, 20][is_64bit()], "_unused2"],
             [current_arch.ptrsize, "vtable"],
         ]
+        offset = self.get_offset("_offset", struct_io_file_member)
+        struct_io_file_member[23][0] = align(offset, gdb.lookup_type("long long").alignof) - offset
         for _, m in struct_io_file_member:
-            adjust = self.process_member(m, struct_io_file_member, struct_io_file_array)
-            if adjust:
-                if is_32bit() and m == "_offset":
-                    struct_io_file_member[23][0] = adjust
+            self.process_member(m, struct_io_file_member, struct_io_file_array)
 
         # vtable
         self.out.append(titlify("FILE->vtable"))
