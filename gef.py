@@ -41269,9 +41269,9 @@ class HexdumpFlexibleCommand(GenericCommand, BufferingOutput):
                 if t.startswith("-"):
                     continue
                 if t in "BHILQ":
-                    line += " {:#0{:d}x}".format(v, 2 + struct.calcsize(t) * 2)
+                    line += " {:#0{:d}x}".format(v, 2 + struct.calcsize(fmt[0] + t) * 2)
                 elif t in "bhilq":
-                    line += " {:+#0{:d}x}".format(v, 2 + struct.calcsize(t) * 2 + 1)
+                    line += " {:+#0{:d}x}".format(v, 2 + struct.calcsize(fmt[0] + t) * 2 + 1)
                 elif t in "fd":
                     line += " {:20e}".format(v)
                 else:
@@ -41298,7 +41298,7 @@ class HexdumpFlexibleCommand(GenericCommand, BufferingOutput):
             err("Format error")
             return
 
-        each_type = self.extract_each_type(args.format)
+        each_type = self.extract_each_type(fmt[1:])
 
         self.out = []
         self.do_dump(fmt, size, each_type)
