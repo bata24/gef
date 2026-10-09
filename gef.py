@@ -38432,6 +38432,7 @@ class EntryBreakCommand(GenericCommand):
 
     def __init__(self, *args, **kwargs):
         super().__init__(complete=gdb.COMPLETE_FILENAME)
+        self.new_objfile_hooked = False
         self.add_setting(
             "entrypoint_symbols",
             " ".join([
@@ -38447,10 +38448,10 @@ class EntryBreakCommand(GenericCommand):
         )
         return
 
-    @staticmethod
-    def stop_callback(_):
+    def stop_callback(self, event):
         # unhook
-        EventHooking.gef_on_new_unhook(EntryBreakCommand.stop_callback)
+        EventHooking.gef_on_new_unhook(self.stop_callback)
+        self.new_objfile_hooked = False
         ContextCommand.unhide_context()
 
         # get section
@@ -38532,11 +38533,14 @@ class EntryBreakCommand(GenericCommand):
         # At least gdb 10.1 (Ubuntu 18.04) supports gdb.events.new_objfile.
         hidden = ContextCommand.context_hidden
         ContextCommand.hide_context()
-        EventHooking.gef_on_new_hook(EntryBreakCommand.stop_callback)
+        EventHooking.gef_on_new_hook(self.stop_callback)
+        self.new_objfile_hooked = True
         try:
             gdb.execute("run {}".format(" ".join(shlex.quote(arg) for arg in argv)))
         finally:
-            EventHooking.gef_on_new_unhook(EntryBreakCommand.stop_callback)
+            if self.new_objfile_hooked:
+                EventHooking.gef_on_new_unhook(self.stop_callback)
+                self.new_objfile_hooked = False
             ContextCommand.context_hidden = hidden
         return
 
