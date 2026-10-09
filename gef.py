@@ -47293,13 +47293,21 @@ class GotCommand(GenericCommand, BufferingOutput):
 
         output = {}
         section_name = None
+        section = None
         reloc_count = 0
         for line in lines:
             # get section
             r = re.findall("'(.+?)' at offset", line)
             if r:
                 section_name = r[0]
+                section = elf.get_shdr(section_name)
+                reloc_count = 0
                 continue
+
+            if not re.match(r"\s*[0-9a-f]+\s+[0-9a-f]+\s+R_", line):
+                continue
+            reloc_index = reloc_count
+            reloc_count += 1
 
             # GOT entry pattern 1
             if "JUMP_SLOT" in line or "JMP_SLOT" in line:
@@ -47328,14 +47336,21 @@ class GotCommand(GenericCommand, BufferingOutput):
             else:
                 continue
 
-            # count up reloc_arg
+            # resolve reloc_arg
             if elf.is_static():
                 reloc_arg = None
             elif section_name not in [".rel.plt", ".rela.plt"]:
                 reloc_arg = None
+            elif elf.e_machine == Elf.EM_X86_64:
+                reloc_arg = reloc_index
+            elif section and section.sh_entsize and elf.e_machine in (
+                Elf.EM_386, Elf.EM_ARM, Elf.EM_AARCH64, Elf.EM_RISCV, Elf.EM_PPC, Elf.EM_PPC64,
+                Elf.EM_SPARC, Elf.EM_SPARC32PLUS, Elf.EM_SPARCV9, Elf.EM_S390, Elf.EM_68K,
+                Elf.EM_SH, Elf.EM_ALPHA, Elf.EM_LOONGARCH,
+            ):
+                reloc_arg = reloc_index * section.sh_entsize
             else:
-                reloc_arg = reloc_count * [1, 8][is_32bit()]
-                reloc_count += 1
+                reloc_arg = None
 
             # fix address
             if elf.is_pie():
