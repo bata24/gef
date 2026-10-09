@@ -38385,12 +38385,14 @@ class LoadBreakCommand(GenericCommand):
         before = gdb.execute("vmmap --quiet --no-pager", to_string=True)
         gdb.execute("set stop-on-solib-events 1")
 
-        gdb.execute("continue")
+        try:
+            gdb.execute("continue")
+        finally:
+            gdb.execute("set stop-on-solib-events 0")
 
         if not is_alive():
             return
 
-        gdb.execute("set stop-on-solib-events 0")
         after = gdb.execute("vmmap --quiet --no-pager", to_string=True)
 
         import difflib
