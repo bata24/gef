@@ -195094,7 +195094,11 @@ class GefConfigCommand(GenericCommand):
 
         try:
             if type_ is bool:
-                config_value = config_value.upper() in ("TRUE", "T", "1")
+                value = config_value.upper()
+                if value not in ("TRUE", "T", "1", "FALSE", "F", "0"):
+                    err("Expected a boolean value: true/t/1 or false/f/0")
+                    return
+                config_value = value in ("TRUE", "T", "1")
             Config.set(config_name, config_value, reset_all=True)
         except Exception:
             err("{} expects type '{}'".format(config_name, type_.__name__))
@@ -195135,8 +195139,9 @@ class GefConfigCommand(GenericCommand):
             if not names:
                 return
             if len(names) == 1 or (args.setting_name in names): # uniquely identified or exact match
-                gef_print(titlify("GEF configuration setting: {:s}".format(names[0])))
-                self.print_setting(names[0], with_description=True, show_only_changes=args.show_only_changes)
+                name = args.setting_name if args.setting_name in names else names[0]
+                gef_print(titlify("GEF configuration setting: {:s}".format(name)))
+                self.print_setting(name, with_description=True, show_only_changes=args.show_only_changes)
             else:
                 gef_print(titlify("GEF configuration settings matching '{:s}'".format(args.setting_name)))
                 for name in names:
