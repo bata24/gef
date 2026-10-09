@@ -146735,6 +146735,7 @@ class IsMemoryZeroCommand(GenericCommand):
         end = addr + size
         is_zero = True
         is_ff = True
+        nonzero_addr = None
         current = addr
         while current < end:
             read_size = min(end - current, page_size)
@@ -146753,6 +146754,11 @@ class IsMemoryZeroCommand(GenericCommand):
             else:
                 is_zero = False
                 is_ff = False
+            if not is_zero and nonzero_addr is None:
+                for i, d in enumerate(data):
+                    if d != 0:
+                        nonzero_addr = current + i
+                        break
             if is_zero is False and is_ff is False:
                 end = current + read_size
                 break
@@ -146767,13 +146773,10 @@ class IsMemoryZeroCommand(GenericCommand):
             return
 
         # find non-zero address
-        for i, d in enumerate(data):
-            if d != 0:
-                found_addr = ProcessMap.lookup_address(current + i)
-                break
-        else:
+        if nonzero_addr is None:
             warn("Scan failed to find non-zero byte unexpectedly")
             return
+        found_addr = ProcessMap.lookup_address(nonzero_addr)
         info("{:#x} - {:#x} is {:s}".format(start, end, Color.colorify("NON-ZERO", "bold red")))
         info("Around {!s} is NON-ZERO".format(found_addr))
         info("Length of 0x00: {:d}".format(found_addr.value - start))
@@ -146782,6 +146785,9 @@ class IsMemoryZeroCommand(GenericCommand):
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     def do_invoke(self, args):
+        if args.size < 0:
+            err("Invalid size")
+            return
         if args.phys:
             if not is_qemu_system():
                 err("Unsupported `--phys` option in this gdb mode")
