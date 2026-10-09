@@ -47010,11 +47010,16 @@ class FpChainCommand(GenericCommand):
 
         current = io_list_all
         i = 1
+        seen = set()
         while is_valid_addr(current):
             if i == 1:
                 current = read_int_from_memory(current)
             else:
                 current = read_int_from_memory(current + offset_of_chain)
+            if current in seen:
+                err("Loop detected at {:#x}".format(current))
+                break
+            seen.add(current)
             gef_print("[{:d}] -> {!s}{:s}".format(
                 i, ProcessMap.lookup_address(current), Symbol.get_symbol_string(current),
             ))
