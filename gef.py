@@ -184705,7 +184705,6 @@ class CallTraceCommand(ExecUntilCommand):
         return
 
     def call_trace(self):
-        bp_list = self.get_breakpoint_list()
         EventHooking.gef_on_stop_unhook(EventHandler.hook_stop_handler)
         self.close_stdout_stderr()
         self.err = None
@@ -184715,64 +184714,63 @@ class CallTraceCommand(ExecUntilCommand):
         pending_syscall_ret_indent = None
         print_indent = 0
         try:
-            while True:
-                printed_already = False # flag to not output the same insn twice
+            with EventHooking.temporary("stop", self.remember_stop):
+                while True:
+                    printed_already = False # flag to not output the same insn twice
 
-                # backup
-                prev_prev_addr = prev_addr
-                prev_addr = current_arch.pc
+                    # backup
+                    prev_prev_addr = prev_addr
+                    prev_addr = current_arch.pc
 
-                # execute 1 instruction
-                gdb.execute("si") # use si wrapper
-                insn = get_insn()
+                    insn = get_insn()
 
-                # print syscall ret
-                if pending_syscall_ret_indent is not None:
-                    self.print_syscall_ret(pending_syscall_ret_indent)
-                    pending_syscall_ret_indent = None
+                    # print syscall ret
+                    if pending_syscall_ret_indent is not None:
+                        self.print_syscall_ret(pending_syscall_ret_indent)
+                        pending_syscall_ret_indent = None
 
-                # print normal insn
-                if next_should_print:
-                    next_should_print = False
-                    self.print_insn(insn, print_indent)
-                    printed_already = True
+                    # print normal insn
+                    if next_should_print:
+                        next_should_print = False
+                        self.print_insn(insn, print_indent)
+                        printed_already = True
 
-                # check breakpoint
-                if current_arch.pc in bp_list:
-                    break
+                    # call or ret or syscall
+                    if current_arch.is_call(insn):
+                        if not self.args.syscall_only:
+                            if not printed_already:
+                                self.print_insn_call(insn, print_indent)
+                            next_should_print = True
+                            print_indent += 2
+                    elif current_arch.is_ret(insn):
+                        if not self.args.syscall_only:
+                            if not printed_already:
+                                self.print_insn_ret(insn, print_indent)
+                            next_should_print = True
+                            print_indent = max(print_indent - 2, 0)
+                    elif current_arch.is_syscall(insn):
+                        if not printed_already:
+                            self.print_insn_syscall(insn, print_indent)
+                        if self.args.print_args:
+                            pending_syscall_ret_indent = print_indent
 
-                # $pc is not changed
-                if prev_prev_addr == prev_addr == current_arch.pc: # for faster, repeat insn is skip
-                    # infinity self loop
-                    if current_arch.is_call(insn) or current_arch.is_jump(insn) or current_arch.is_ret(insn):
-                        self.err = "Detected infinity loop prev_addr ({:#x})".format(prev_addr)
-                        break
-                    # maybe rep prefix
-                    gdb.execute("xuntil")
-                    # recheck
-                    if prev_prev_addr == prev_addr == current_arch.pc:
-                        self.err = "Detected infinity loop prev_addr ({:#x})".format(prev_addr)
+                    if self.exec_step("si"): # use si wrapper
                         break
                     insn = get_insn()
 
-                # call or ret or syscall
-                if current_arch.is_call(insn):
-                    if not self.args.syscall_only:
-                        if not printed_already:
-                            self.print_insn_call(insn, print_indent)
-                        next_should_print = True
-                        print_indent += 2
-                elif current_arch.is_ret(insn):
-                    if not self.args.syscall_only:
-                        if not printed_already:
-                            self.print_insn_ret(insn, print_indent)
-                        next_should_print = True
-                        print_indent = max(print_indent - 2, 0)
-                elif current_arch.is_syscall(insn):
-                    if not printed_already:
-                        self.print_insn_syscall(insn, print_indent)
-                    if self.args.print_args:
-                        pending_syscall_ret_indent = print_indent
+                    # $pc is not changed
+                    if prev_prev_addr == prev_addr == current_arch.pc: # for faster, repeat insn is skip
+                        # infinity self loop
+                        if current_arch.is_call(insn) or current_arch.is_jump(insn) or current_arch.is_ret(insn):
+                            self.err = "Detected infinity loop prev_addr ({:#x})".format(prev_addr)
+                            break
+                        # maybe rep prefix
+                        if self.exec_step("xuntil"):
+                            break
+                        # recheck
+                        if prev_prev_addr == prev_addr == current_arch.pc:
+                            self.err = "Detected infinity loop prev_addr ({:#x})".format(prev_addr)
+                            break
 
         except KeyboardInterrupt:
             pass
@@ -184790,8 +184788,10 @@ class CallTraceCommand(ExecUntilCommand):
             Cache.reset_gef_caches()
             if self.err:
                 err(self.err)
-            else:
+            elif is_alive():
                 gdb.execute("context")
+            else:
+                info("Inferior exited")
         return
 
     @Decorator.parse_args
