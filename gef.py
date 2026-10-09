@@ -62104,26 +62104,29 @@ class SseCommand(GenericCommand):
         # xmm0-15
         regs = []
         for i in range(16 if is_x86_64() else 8):
-            result = gdb.execute(f"info registers $xmm{i}", to_string=True)
+            try:
+                result = gdb.execute(f"info registers $xmm{i}", to_string=True)
+            except gdb.error:
+                continue
             r = re.findall(r"uint128 = (0x[0-9a-f]+)", result)
             if r:
                 reg = int(r[0], 16)
-                regs.append(reg)
+                regs.append((i, reg))
 
         fmt = "{:7s}: {:s}"
         legend = ["Name", "128-bit hex"]
         gef_print(GefUtil.make_legend(fmt.format(*legend)))
 
         red = lambda x: Color.colorify("{:s}".format(x), "bold red")
-        for i in range(len(regs)):
+        for i, reg in regs:
             if i == 8:
                 gef_print("* xmm8-15 are introduced by AVX")
             reghex = ""
             for j in range(16):
-                c = (regs[i] >> (8 * j)) & 0xff
+                c = (reg >> (8 * j)) & 0xff
                 reghex += chr(c) if 0x20 <= c < 0x7f else "."
             regname = "$xmm{:<2d}".format(i)
-            gef_print("{:s} : {:#034x}  |  {:s}  |".format(red(regname), regs[i], reghex))
+            gef_print("{:s} : {:#034x}  |  {:s}  |".format(red(regname), reg, reghex))
         return
 
     def print_sse_other(self):
