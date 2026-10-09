@@ -39386,9 +39386,11 @@ class ContextStackCommand(GenericCommand):
         nb_lines = Config.get("context_stack.nb_lines")
 
         if show_raw is True:
+            size = 0x10 * nb_lines
+            base = current_arch.sp if current_arch.stack_grow_down else current_arch.sp - size
             try:
-                mem = read_memory(current_arch.sp, 0x10 * nb_lines)
-                gef_print(hexdump(mem, base=current_arch.sp), redirect=redirect)
+                mem = read_memory(base, size)
+                gef_print(hexdump(mem, base=base), redirect=redirect)
             except gdb.MemoryError:
                 err("Cannot read memory from $SP (corrupted stack pointer?)", redirect=redirect)
             return
