@@ -9420,9 +9420,45 @@ class SPARC(Architecture):
 
     def is_branch_taken(self, insn):
         mnemo = insn.mnemonic.split(",")[0]
-        flags = {self.flags_table[k]: k for k in self.flags_table}
-        val = get_register(self.flag_register)
-        taken, reason = False, ""
+        try:
+            if mnemo in ("brz", "brlez", "brlz", "brnz", "brgz", "brgez"):
+                reg = insn.operands[0].strip().replace("%", "$")
+                value = get_register(reg)
+                if value is None:
+                    return None, "register unavailable"
+                value &= (1 << self.bit_length) - 1
+                if value & (1 << (self.bit_length - 1)):
+                    value -= 1 << self.bit_length
+                taken = {"brz": value == 0, "brlez": value <= 0, "brlz": value < 0,
+                         "brnz": value != 0, "brgz": value > 0, "brgez": value >= 0}[mnemo]
+                return taken, "{:s} = {:d}".format(reg, value)
+            if mnemo.startswith("fb"):
+                fsr = get_register("$fsr")
+                if fsr is None:
+                    return None, "FSR unavailable"
+                fcc = next((op.strip().lstrip("%$") for op in insn.operands if "fcc" in op), "fcc0")
+                shift = {"fcc0": 10, "fcc1": 32, "fcc2": 34, "fcc3": 36}.get(fcc)
+                if shift is None:
+                    return None, "unknown FPU condition register"
+                condition = (fsr >> shift) & 3
+                suffix = mnemo[3:] if mnemo.startswith("fbp") else mnemo[2:]
+                conditions = {
+                    "u": (3,), "g": (2,), "ug": (2, 3), "l": (1,), "ul": (1, 3), "lg": (1, 2),
+                    "ne": (1, 2, 3), "e": (0,), "ue": (0, 3), "ge": (0, 2), "uge": (0, 2, 3),
+                    "le": (0, 1), "ule": (0, 1, 3), "o": (0, 1, 2),
+                }
+                if suffix not in conditions:
+                    return None, "unsupported FPU branch"
+                return condition in conditions[suffix], "{:s} = {:d}".format(fcc, condition)
+            flags = {self.flags_table[k]: k for k in self.flags_table}
+            val = get_register(self.flag_register)
+            if val is None:
+                return None, "condition register unavailable"
+            if any("xcc" in op for op in insn.operands):
+                val >>= 4
+        except (gdb.error, ValueError):
+            return None, "condition register unavailable"
+        taken, reason = None, "unsupported condition"
 
         zero = bool(val & (1 << flags["zero"]))
         negative = bool(val & (1 << flags["negative"]))
@@ -9461,7 +9497,6 @@ class SPARC(Architecture):
             taken, reason = carry, "C"
         elif mnemo in ["bcc", "bpcc"]:
             taken, reason = not carry, "!C"
-        # todo: f* opcode, brn?z/br[lg]e?z are unsupported
         return taken, reason
 
     def get_ith_parameter(self, i, in_func=True, sp=None):
@@ -38505,7 +38540,10 @@ class TakenOrNotBreakpoint(gdb.Breakpoint):
         if not current_arch.is_conditional_branch(insn):
             return False # continue
 
-        taken, _ = current_arch.is_branch_taken(insn)
+        taken, reason = current_arch.is_branch_taken(insn)
+        if taken is None:
+            warn("Could not determine branch condition: {:s}".format(reason))
+            return True
         if self.taken:
             return taken
         else:
@@ -39521,7 +39559,9 @@ class ContextCodeCommand(GenericCommand):
                 if current_arch.is_conditional_branch(insn):
                     if Config.get("context_code.peek_conditional_branch") is True:
                         is_taken, reason = current_arch.is_branch_taken(insn)
-                        if is_taken:
+                        if is_taken is None:
+                            line += "\t" + Color.colorify("UNKNOWN ({:s})".format(reason), "bold yellow")
+                        elif is_taken:
                             target = ContextCodeCommand.get_branch_addr(insn)
                             reason = "[Reason: {:s}]".format(reason) if reason else ""
                             line += "\t" + Color.colorify("TAKEN {:s}".format(reason), "bold green")
@@ -182915,7 +182955,7 @@ class ExecUntilCommand(GenericCommand):
         if (self.args.only_taken, self.args.only_not_taken) == (False, True):
             if current_arch.is_conditional_branch(insn):
                 taken, _reason = current_arch.is_branch_taken(insn)
-                return not taken
+                return taken is False
             else:
                 return False # non-conditional, so always jump
         raise ValueError("check_jump_taken: unexpected filter combination")
