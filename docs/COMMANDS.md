@@ -13388,7 +13388,7 @@ Add the command alias.
 ### Syntax
 
 ```text
-usage: aliases add [-h] [-r] ALIAS COMMAND [COMMAND ...]
+usage: aliases add [-h] [-r] ALIAS ...
 
 positional arguments:
   ALIAS         the name of new alias.
@@ -13396,7 +13396,7 @@ positional arguments:
 
 options:
   -h, --help    show this help message and exit
-  -r, --repeat  enforce repeat feature.
+  -r, --repeat  enforce repeat feature (before ALIAS).
 ```
 
 ### Examples

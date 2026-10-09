@@ -196532,9 +196532,19 @@ class GefAlias(gdb.Command):
         return
 
     def invoke(self, args, from_tty): # noqa
+        if __gef_alias_instances__.get(self._alias_) is not self:
+            err("Alias '{:s}' has been removed".format(self._alias_))
+            return
+        if getattr(self, "running", False):
+            err("Not allowed due to circular references")
+            return
         if not self._repeat_:
             self.dont_repeat()
-        gdb.execute("{} {}".format(self._command_, args), from_tty=from_tty)
+        self.running = True
+        try:
+            gdb.execute("{} {}".format(self._command_, args), from_tty=from_tty)
+        finally:
+            self.running = False
         return
 
 
@@ -196575,8 +196585,8 @@ class AliasesAddCommand(AliasesCommand):
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("alias", metavar="ALIAS", help="the name of new alias.")
-    parser.add_argument("command", metavar="COMMAND", nargs="+", help="the command of new alias.")
-    parser.add_argument("-r", "--repeat", action="store_true", help="enforce repeat feature.")
+    parser.add_argument("command", metavar="COMMAND", nargs=argparse.REMAINDER, help="the command of new alias.")
+    parser.add_argument("-r", "--repeat", action="store_true", help="enforce repeat feature (before ALIAS).")
     _syntax_ = parser.format_help()
 
     _example_ = [
@@ -196590,10 +196600,37 @@ class AliasesAddCommand(AliasesCommand):
 
     @Decorator.parse_args
     def do_invoke(self, args):
+        if not args.command:
+            self.usage()
+            return
         if args.alias in __gef_command_instances__:
             err("Not allowed due to circular references")
             return
-        command = " ".join(args.command)
+        lexer = shlex.shlex(self.command_args, posix=True)
+        lexer.whitespace_split = True
+        lexer.commenters = ""
+        count = len(gdb.string_to_argv(self.command_args)) - len(args.command)
+        while count:
+            next(lexer)
+            count -= 1
+        command = self.command_args[lexer.instream.tell():].strip()
+        if len(args.command) == 1:
+            command = args.command[0]
+        if not command.strip():
+            self.usage()
+            return
+        seen = {args.alias}
+        target = command
+        names = sorted(set(__gef_alias_instances__) | seen, key=len, reverse=True)
+        while target:
+            name = next((name for name in names if target == name or target.startswith(name + " ")), None)
+            if name is None:
+                break
+            if name in seen:
+                err("Not allowed due to circular references")
+                return
+            seen.add(name)
+            target = __gef_alias_instances__[name]._command_
         GefAlias(args.alias, command, force_repeat=args.repeat)
         gef_print("{:s} = {:s}".format(args.alias, command))
         return
@@ -196642,7 +196679,7 @@ class AliasesListCommand(AliasesCommand, BufferingOutput):
 
     @Decorator.parse_args
     def do_invoke(self, args):
-        width = max(len(x) for x in __gef_alias_instances__.keys())
+        width = max((len(x) for x in __gef_alias_instances__.keys()), default=0)
 
         self.out = []
         self.out.append(titlify("Pre-defined aliases"))
