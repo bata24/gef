@@ -40884,7 +40884,7 @@ class MemoryWatchCommand(GenericCommand):
     parser.add_argument("address", metavar="ADDRESS", type=AddressUtil.parse_address,
                         help="the memory address to register for display in `context memory`.")
     parser.add_argument("count", metavar="COUNT", nargs="?", type=AddressUtil.parse_address, default=0x10,
-                        help="the count of displayed units. (default: %(default)s)")
+                        help="the number of pointers, or bytes for byte/word/dword/qword. (default: %(default)s)")
     parser.add_argument("unit", nargs="?", default="pointers",
                         choices=["byte", "word", "dword", "qword", "pointers"],
                         help="the size of unit. (default: %(default)s)")

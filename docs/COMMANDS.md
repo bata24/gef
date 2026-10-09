@@ -1709,7 +1709,7 @@ usage: memory watch [-h] ADDRESS [COUNT] [{byte,word,dword,qword,pointers}]
 
 positional arguments:
   ADDRESS               the memory address to register for display in `context memory`.
-  COUNT                 the count of displayed units. (default: 16)
+  COUNT                 the number of pointers, or bytes for byte/word/dword/qword. (default: 16)
   {byte,word,dword,qword,pointers}
                         the size of unit. (default: pointers)
 
