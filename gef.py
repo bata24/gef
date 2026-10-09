@@ -31281,7 +31281,7 @@ class RegistersCommand(GenericCommand):
 
         if self.args.simple:
             one_width = widest + 5 + current_arch.ptrsize * 2
-            nb = GefUtil.get_terminal_size()[1] // one_width
+            nb = max(1, GefUtil.get_terminal_size()[1] // one_width)
             lines = ["".join(r) for r in slicer(lines, nb)]
 
         if flag_line:
