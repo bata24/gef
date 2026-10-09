@@ -147198,6 +147198,9 @@ class DiffOutputCommand(GenericCommand):
         for path in GefUtil.walk(dloc):
             if not path.endswith(".txt"):
                 continue
+            if not os.path.isfile(path[:-4] + ".cmd"):
+                warn("Missing command file for {:s}; use `diffo clear --all` to remove it".format(path))
+                continue
             saved_files.append(path)
 
         return sorted(saved_files, key=lambda x:os.path.getmtime(x[:-4] + ".cmd"))
@@ -147237,9 +147240,9 @@ class DiffOutputColordiffCommand(DiffOutputCommand):
 
     def make_diff(self, path1, path2):
         option = Config.get("diffo.colordiff_option")
-        cmd = "{:s} {:s} '{:s}' '{:s}'".format(self.colordiff, option, path1, path2)
-        result = subprocess.getoutput(cmd)
-        return result
+        cmd = [self.colordiff] + shlex.split(option) + ["--", path1, path2]
+        result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True)
+        return result.stdout.rstrip("\n")
 
     @Decorator.parse_args
     def do_invoke(self, args):
@@ -147301,9 +147304,9 @@ class DiffOutputGitDiffCommand(DiffOutputCommand):
         return
 
     def make_diff(self, path1, path2):
-        cmd = "{:s} diff --color=always '{:s}' '{:s}'".format(self.git, path1, path2)
-        result = subprocess.getoutput(cmd)
-        return result
+        cmd = [self.git, "diff", "--no-index", "--color=always", "--", path1, path2]
+        result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True)
+        return result.stdout.rstrip("\n")
 
     @Decorator.parse_args
     def do_invoke(self, args):
@@ -147389,9 +147392,10 @@ class DiffOutputClearCommand(DiffOutputCommand):
     @Decorator.parse_args
     def do_invoke(self, args):
         if args.all:
-            for path in self.get_saved_files():
-                os.unlink(path)
-                os.unlink(path[:-4] + ".cmd")
+            dloc = os.path.join(GEF_TEMP_DIR, "diff")
+            for path in GefUtil.walk(dloc):
+                if path.endswith((".txt", ".cmd")):
+                    os.unlink(path)
         elif args.n:
             for i, path in enumerate(self.get_saved_files()):
                 if i in args.n:
