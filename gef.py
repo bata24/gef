@@ -63527,7 +63527,7 @@ class ConvertCommand(GenericCommand, BufferingOutput):
             self.out.append("pack64:         {!s}".format(p64(value & 0xffff_ffff_ffff_ffff)))
             low = value & 0xffff_ffff_ffff_ffff
             high = (value >> 64) & 0xffff_ffff_ffff_ffff
-            val128 = p64(low) + p64(high)
+            val128 = p64(low) + p64(high) if Endian.is_little_endian() else p64(high) + p64(low)
             self.out.append("pack128:        {!s}".format(val128))
         except ValueError:
             pass
@@ -63543,7 +63543,7 @@ class ConvertCommand(GenericCommand, BufferingOutput):
             self.out.append("pack64-hex:     {!s}".format(p64(value & 0xffff_ffff_ffff_ffff).hex()))
             low = value & 0xffff_ffff_ffff_ffff
             high = (value >> 64) & 0xffff_ffff_ffff_ffff
-            val128 = p64(low) + p64(high)
+            val128 = p64(low) + p64(high) if Endian.is_little_endian() else p64(high) + p64(low)
             self.out.append("pack128-hex:    {!s}".format(val128.hex()))
         except ValueError:
             pass
@@ -63557,9 +63557,8 @@ class ConvertCommand(GenericCommand, BufferingOutput):
             self.out.append("unpack16:       {:#06x}".format(u16(value[:2])))
             self.out.append("unpack32:       {:#010x}".format(u32(value[:4])))
             self.out.append("unpack64:       {:#018x}".format(u64(value[:8])))
-            low, high = value[:8], value[8:16]
-            self.out.append("unpack128:      {:#034x}".format((u64(high) << 64) | u64(low)))
-        except binascii.Error:
+            self.out.append("unpack128:      {:#034x}".format(u128(value[:16])))
+        except (binascii.Error, ValueError):
             pass
         return
 
@@ -63571,7 +63570,7 @@ class ConvertCommand(GenericCommand, BufferingOutput):
             self.out.append("tohex:          {!s}".format(hexed))
             hexed_null = b"00".join(slicer(hexed, 2)) + b"00"
             self.out.append("tohex w/NULL:   {!s}".format(hexed_null))
-        except binascii.Error:
+        except (binascii.Error, ValueError):
             pass
         return
 
@@ -63636,7 +63635,7 @@ class ConvertCommand(GenericCommand, BufferingOutput):
             self.out.append("oct:            {:#o}".format(value))
             self.out.append("bin:            {:#b}".format(value))
             out = ""
-            x = value
+            x = abs(value)
             while x:
                 if x & 1:
                     out = "1" + out
@@ -63645,7 +63644,7 @@ class ConvertCommand(GenericCommand, BufferingOutput):
                 if (len(out) + 1) % 5 == 0:
                     out = "_" + out
                 x >>= 1
-            splitted_value = "0b" + out.lstrip("_")
+            splitted_value = ("-0b" if value < 0 else "0b") + (out.lstrip("_") or "0")
             self.out.append("bin w/sep:      {:s}".format(splitted_value))
         except ValueError:
             pass
