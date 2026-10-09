@@ -35975,6 +35975,11 @@ class DwarfExceptionHandler:
                         "augmentation_string", '"{:s}"'.format(augmentation),
                     ))
 
+                    if augmentation == "eh":
+                        new_pos, adjust = self.read_nbyte(data, pos, self.ptr_size)
+                        entries.append(self.DataEntry(pos, data[pos:new_pos], "eh_data", adjust))
+                        pos = new_pos
+
                     # parse ptr_size, segment_size
                     segment_size = 0
                     if version >= 4:
@@ -35996,12 +36001,6 @@ class DwarfExceptionHandler:
                         pos, data[pos:new_pos], "data_alignment_factor", data_alignment_factor,
                     ))
                     pos = new_pos
-
-                    # parse augmentation data
-                    if augmentation == "eh":
-                        new_pos, adjust = self.read_nbyte(data, pos, self.ptr_size)
-                        entries.append(self.DataEntry(pos, data[pos:new_pos], "eh_data", adjust))
-                        pos = new_pos
 
                     if version == 1:
                         new_pos, return_address_register = self.read_1ubyte(data, pos)
@@ -36603,6 +36602,8 @@ class DwarfExceptionHandler:
                 augmentation = data[augmentation_start:pos].decode("ascii", errors="replace")
                 pos += 1
 
+                if augmentation == "eh":
+                    pos = self.read_nbyte(data, pos, self.ptr_size)[0]
                 address_size = self.ptr_size
                 if version >= 4:
                     pos, address_size = self.read_1ubyte(data, pos)
@@ -36612,8 +36613,6 @@ class DwarfExceptionHandler:
 
                 pos, code_align = self.get_uleb128(data, pos)
                 pos, data_align = self.get_sleb128(data, pos)
-                if augmentation == "eh":
-                    pos = self.read_nbyte(data, pos, self.ptr_size)[0]
                 if version == 1:
                     pos, return_register = self.read_1ubyte(data, pos)
                 else:
@@ -36790,7 +36789,9 @@ class DwarfExceptionHandler:
                 state["cfa"] = ("register", reg, offset)
             elif opcode == self.DW_CFA_def_cfa_register:
                 pos, reg = self.get_uleb128(data, pos)
-                if state["cfa"] is None or state["cfa"][0] != "register":
+                if state["cfa"] is None:
+                    state["cfa"] = ("register", reg, 0)
+                elif state["cfa"][0] != "register":
                     raise ValueError("DW_CFA_def_cfa_register without a register CFA")
                 state["cfa"] = ("register", reg, state["cfa"][2])
             elif opcode in (self.DW_CFA_def_cfa_offset, self.DW_CFA_def_cfa_offset_sf):
@@ -36823,7 +36824,7 @@ class DwarfExceptionHandler:
                     state["ra_state"] = not state["ra_state"]
                 else:
                     for reg in range(16, 32):
-                        registers[reg] = ("register", reg - 16)
+                        registers[reg] = ("offset", (reg - 16) * self.ptr_size)
             else:
                 raise ValueError("unsupported CFA opcode {:#x} at .eh_frame+{:#x}".format(
                     opcode, opcode_pos,
@@ -37706,7 +37707,8 @@ class DwarfExceptionHandler:
                     lsda_pos_padding = 0
 
                 entries.append(self.SeparatorEntry(pos, "LSDA Table[{:4d}]".format(lsda_table_cnt)))
-                lpstart = self.lsda_info[sec_off + pos]
+                function_start = self.lsda_info[sec_off + pos]
+                lpstart = function_start
 
                 # parse lpstart_encoding
                 new_pos, lpstart_encoding = self.read_1ubyte(data, pos)
@@ -37725,7 +37727,12 @@ class DwarfExceptionHandler:
                         pos, data[pos:new_pos],
                         "landing_pad_start", lpstart,
                     ))
-                    lpstart -= self.load_base
+                    lpstart = self.encoded_offset(
+                        lpstart_encoding, lpstart, sec_off + pos,
+                        func_off=function_start,
+                    )
+                    if lpstart is None or lpstart_encoding & self.DW_EH_PE_indirect:
+                        raise ValueError("unsupported landing pad base encoding")
                     pos = new_pos
 
                 # parse ttype_encoding
