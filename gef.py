@@ -38306,20 +38306,30 @@ class MainBreakCommand(GenericCommand):
                 if codebase is None:
                     return None
                 entry += codebase
-            EntryBreakBreakpoint("*{:#x}".format(entry))
+            bp = EntryBreakBreakpoint("*{:#x}".format(entry))
+            hidden = ContextCommand.context_hidden
             ContextCommand.hide_context()
-            gdb.execute("continue") # do not use c wrapper
-            ContextCommand.unhide_context()
+            try:
+                gdb.execute("continue") # do not use c wrapper
+            finally:
+                ContextCommand.context_hidden = hidden
+                if bp.is_valid():
+                    bp.delete()
             libc_start_main = self.get_libc_start_main()
 
-        if libc_start_main == 0:
+        if libc_start_main is None or libc_start_main == 0:
             # something is wrong
             return None
 
-        EntryBreakBreakpoint("*{:#x}".format(libc_start_main))
+        bp = EntryBreakBreakpoint("*{:#x}".format(libc_start_main))
+        hidden = ContextCommand.context_hidden
         ContextCommand.hide_context()
-        gdb.execute("continue") # do not use c wrapper
-        ContextCommand.unhide_context()
+        try:
+            gdb.execute("continue") # do not use c wrapper
+        finally:
+            ContextCommand.context_hidden = hidden
+            if bp.is_valid():
+                bp.delete()
 
         # get first arg when break at __libc_start_main
         _, val = current_arch.get_ith_parameter(0)
@@ -38338,15 +38348,18 @@ class MainBreakCommand(GenericCommand):
             err("Failed to set a breakpoint to main")
             return
 
-        EntryBreakBreakpoint("*{:#x}".format(main_address))
+        bp = EntryBreakBreakpoint("*{:#x}".format(main_address))
+        hidden = ContextCommand.context_hidden
         ContextCommand.hide_context()
         try:
             gdb.execute("continue") # do not use c wrapper
         except gdb.error as e:
             err(str(e))
-            ContextCommand.unhide_context()
             return
-        ContextCommand.unhide_context()
+        finally:
+            ContextCommand.context_hidden = hidden
+            if bp.is_valid():
+                bp.delete()
         gdb.execute("context")
         return
 
