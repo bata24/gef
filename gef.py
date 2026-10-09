@@ -45774,23 +45774,13 @@ class LinkMapCommand(GenericCommand, BufferingOutput):
 
         # slow path
         dynamic = DynamicCommand.get_dynamic(filename_or_addr, silent)
-        DT_TABLE = DynamicCommand.get_DT_TABLE()
         if dynamic is None:
             return None
 
-        current = dynamic.value
-        while True:
-            tag = read_int_from_memory(current)
-            current += current_arch.ptrsize
-            val = ProcessMap.lookup_address(read_int_from_memory(current))
-            current += current_arch.ptrsize
-            if tag not in DT_TABLE or DT_TABLE[tag] == "DT_NULL":
-                if not silent:
-                    info("Could not find link_map")
-                return None
-            if DT_TABLE[tag] == "DT_DEBUG":
-                dt_debug = val
-                val_addr = ProcessMap.lookup_address(current - current_arch.ptrsize)
+        for addr, tag, val in DynamicCommand.iter_dynamic(dynamic):
+            if tag == 21: # DT_DEBUG
+                dt_debug = ProcessMap.lookup_address(val)
+                val_addr = ProcessMap.lookup_address(addr + current_arch.ptrsize)
                 val_addr_offset = val_addr.value - dynamic.value
                 if not silent:
                     info("_DYNAMIC+{:#x}(=DT_DEBUG): {!s} -> {!s}".format(
@@ -45804,8 +45794,10 @@ class LinkMapCommand(GenericCommand, BufferingOutput):
                     info("DT_DEBUG+{:#x}: {!s} -> {!s}".format(
                         current_arch.ptrsize, link_map_ptr, link_map,
                     ))
-                break
-        return link_map
+                return link_map
+        if not silent:
+            info("Could not find link_map")
+        return None
 
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
