@@ -40288,25 +40288,34 @@ class ContextSourceCommand(GenericCommand):
         ContextSourceCommand.cached_source = (fpath, mtime, lines)
         return lines
 
-    def get_source_breakpoints(self, file_base_name):
+    def get_source_breakpoints(self):
         breakpoints = gdb.breakpoints()
         if not breakpoints:
             return []
-        bp_locations = []
+        bp_locations = set()
         for b in breakpoints:
             if hasattr(b, "locations") and b.locations:
                 for bl in b.locations:
-                    if bl and bl.source:
-                        bp_locations.append("{:s}:{:d}".format(bl.source[0], bl.source[1]))
+                    if bl and bl.address is not None:
+                        sal = gdb.find_pc_line(bl.address)
+                        if sal.symtab and sal.line:
+                            bp_locations.add((os.path.realpath(sal.symtab.fullname()), sal.line))
             else: # for old gdb
-                bp_locations.append(b.location)
+                if not b.location:
+                    continue
+                try:
+                    _, locations = gdb.decode_line(b.location)
+                except gdb.error:
+                    continue
+                for sal in locations or []:
+                    if sal.symtab and sal.line:
+                        bp_locations.add((os.path.realpath(sal.symtab.fullname()), sal.line))
         return bp_locations
 
     def line_has_breakpoint(self, file_name, line_number, bp_locations):
         if not bp_locations:
             return False
-        filename_line = "{}:{}".format(file_name, line_number)
-        return any(filename_line in loc for loc in bp_locations)
+        return (os.path.realpath(file_name), line_number) in bp_locations
 
     def get_pc_context_info(self, pc, line):
         try:
@@ -40377,8 +40386,7 @@ class ContextSourceCommand(GenericCommand):
         future_lines_color = Config.get("theme.context_code_future")
         show_extra_info = Config.get("context_source.show_source_code_variable_values")
 
-        file_base_name = os.path.basename(symtab.filename)
-        bp_locations = self.get_source_breakpoints(file_base_name)
+        bp_locations = self.get_source_breakpoints()
 
         for i in range(line_num - nb_lines + 1, line_num + nb_lines):
             if i < 0:
@@ -40387,7 +40395,7 @@ class ContextSourceCommand(GenericCommand):
             if len(lines) <= i:
                 break
 
-            if self.line_has_breakpoint(file_base_name, i + 1, bp_locations):
+            if self.line_has_breakpoint(fpath, i + 1, bp_locations):
                 bp_prefix = Color.redify("*")
             else:
                 bp_prefix = " "
