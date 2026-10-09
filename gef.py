@@ -49024,7 +49024,7 @@ class SyscallSearchCommand(GenericCommand, BufferingOutput):
             if target_arch.upper() in ["X86_64", "X86-64", "X64"]:
                 target_arch = "X86"
                 target_mode = "64"
-            if target_arch.upper() in ["X86_32", "X86-32", "X86"]:
+            elif target_arch.upper() in ["X86_32", "X86-32", "X86"]:
                 target_arch = "X86"
                 target_mode = "32"
             if target_arch.upper() in ["MIPS32"]:
