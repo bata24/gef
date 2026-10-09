@@ -31643,42 +31643,26 @@ class AssembleCommand(GenericCommand):
                 self.usage()
                 return
 
-        insns = " ".join(args.instruction)
-        insns = [x.strip() for x in insns.split(";") if x is not None and x.strip() != ""]
-
-        info("Assembling {:d} instruction{:s} for {:s} ({:s} endian)".format(
-            len(insns), "s" if len(insns) > 1 else "", arch_mode_s, endian_s,
-        ))
-
-        if args.as_shellcode:
-            gef_print('sc = ""')
-
-        raw = b""
-        for insn in insns:
-            res = UnicornKeystoneCapstone.keystone_assemble(insn, arch, mode, raw=True)
-            if not res:
-                gef_print("(Invalid)")
-                continue
-
-            if args.overwrite_location is not None:
-                raw += res
-                continue
-
-            s = binascii.hexlify(res)
-            if args.hex:
-                res = String.bytes2str(s)
-            else:
-                res = b"\\x" + b"\\x".join([s[i:i + 2] for i in range(0, len(s), 2)])
-                res = res.decode("utf-8")
-
-            if args.as_shellcode:
-                res = 'sc += "{:s}"'.format(res)
-
-            gef_print("{:60s} # {:s}".format(res, insn))
+        insns = " ".join(args.instruction).strip()
+        location = args.overwrite_location if args.overwrite_location is not None else 0x1000
+        info("Assembling for {:s} ({:s} endian)".format(arch_mode_s, endian_s))
+        raw = UnicornKeystoneCapstone.keystone_assemble(insns, arch, mode, addr=location, raw=True)
+        if not raw:
+            gef_print("(Invalid)")
+            return
 
         if args.overwrite_location is not None:
-            hex_code = binascii.hexlify(raw).decode()
-            gdb.execute("patch hex {:#x} {:s}".format(args.overwrite_location, hex_code))
+            gdb.execute("patch hex {:#x} {:s}".format(location, raw.hex()))
+            return
+
+        if args.hex:
+            res = raw.hex()
+        else:
+            res = "".join("\\x{:02x}".format(byte) for byte in raw)
+        if args.as_shellcode:
+            gef_print('sc = ""')
+            res = 'sc += "{:s}"'.format(res)
+        gef_print("{:60s} # {:s}".format(res, insns))
         return
 
 
