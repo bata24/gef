@@ -31817,8 +31817,10 @@ class AsmListCommand(GenericCommand):
     cache = None
 
     def listup_x86(self, arch, mode):
-        if self.cache:
-            return self.cache
+        if self.cache is None:
+            self.cache = {}
+        if (arch, mode) in self.cache:
+            return self.cache[arch, mode]
 
         DISP64 = "1122334455667788"
         DISP32 = "11223344"
@@ -31905,8 +31907,22 @@ class AsmListCommand(GenericCommand):
                     return None
                 open(x86data_js, "wb").write(x86)
 
-            x86 = x86.split(b"// ${JSON:BEGIN}")[1].split(b"// ${JSON:END}")[0]
-            return json.loads(x86)
+            try:
+                x86 = x86.split(b"// ${JSON:BEGIN}", 1)[1].split(b"// ${JSON:END}", 1)
+                if len(x86) != 2:
+                    raise ValueError("Missing JSON end marker")
+                x86 = json.loads(x86[0])
+                if not isinstance(x86, dict) or not isinstance(x86.get("instructions"), list):
+                    raise ValueError("Missing instruction list")
+                for insn in x86["instructions"]:
+                    if not isinstance(insn, list) or len(insn) < 5:
+                        raise ValueError("Invalid instruction entry")
+                    if not isinstance(insn[3], str) or not insn[3].strip() or not isinstance(insn[4], str):
+                        raise ValueError("Invalid opcode or attributes")
+                return x86
+            except (IndexError, ValueError, UnicodeDecodeError) as e:
+                err("Invalid instruction data: {!s}".format(e))
+                return None
 
         # load capstone
         capstone = sys.modules["capstone"]
@@ -31917,7 +31933,13 @@ class AsmListCommand(GenericCommand):
             return None
 
         # default instruction set
-        x86 = load_x86_json()
+        try:
+            x86 = load_x86_json()
+        except OSError as e:
+            err("Failed to load instruction data: {!s}".format(e))
+            return None
+        if x86 is None:
+            return None
         # manually added
         x86_insns = x86["instructions"]
         # [opcode_str, unused, unused, opcodes, attr]
@@ -31950,15 +31972,19 @@ class AsmListCommand(GenericCommand):
                 continue
 
             # e.g., "FF /2" -> ["FF10", "FF5011", ...]
-            bytecodes = get_typical_bytecodes(opcodes)
+            try:
+                bytecodes = get_typical_bytecodes(opcodes)
+                bytecodes = [(hex_code, bytes.fromhex(hex_code)) for hex_code in bytecodes]
+            except ValueError:
+                err("Invalid opcode data: {:s}".format(opcodes))
+                return None
 
             # check it is valid or not
-            for hex_code in bytecodes:
+            for hex_code, code in bytecodes:
                 # dup check
                 if hex_code in seen_patterns:
                     continue
                 # disasm
-                code = bytes.fromhex(hex_code)
                 try:
                     asm = cs.disasm(code, 0).__next__()
                 except StopIteration:
@@ -31968,7 +31994,7 @@ class AsmListCommand(GenericCommand):
                 valid_patterns.append([hex_code, opstr, opcodes, attr])
                 seen_patterns.add(hex_code)
 
-        self.cache = valid_patterns
+        self.cache[arch, mode] = valid_patterns
         return valid_patterns
 
     @Decorator.parse_args
