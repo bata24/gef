@@ -45549,6 +45549,7 @@ class Ret2dlHintCommand(GenericCommand):
     _syntax_ = parser.format_help()
 
     @Decorator.parse_args
+    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64"))
     def do_invoke(self, args):
         s = ""
         s += "  +-.got/.got.plt @ itself---------+\n"
