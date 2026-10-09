@@ -2732,10 +2732,14 @@ class Elf:
 
         # check
         for tag, value in slicer(data, 2):
+            if tag == 0: # DT_NULL
+                break
             if tag == 0x18: # DT_BIND_NOW
                 return True
-            if tag == 0x1e: # DT_FLAGS
-                return bool(value & 0x08) # DF_BIND_NOW
+            if tag == 0x1e and value & 0x08: # DT_FLAGS, DF_BIND_NOW
+                return True
+            if tag == 0x6fff_fffb and value & 0x01: # DT_FLAGS_1, DF_1_NOW
+                return True
         return False
 
     def vaddr_to_offset(self, vaddr):
@@ -2971,7 +2975,8 @@ class Elf:
             line = proc.stdout.readline().strip()
             if not line:
                 continue
-            if line.split()[-1] in pac_ops:
+            insn = re.match(rb"\s*[0-9a-f]+:\s+(?:[0-9a-f]{2,8}\s+)+([a-z][a-z0-9]*)\b", line)
+            if insn and insn.group(1) in pac_ops:
                 proc.kill()
                 return True
         proc.kill()
@@ -2992,9 +2997,28 @@ class Elf:
                             return True
                     elif kw in table:
                         return True
-            return False
+            return None if dynstr is None and strtab is None else False
 
         dynstr = self.read_shdr(".dynstr")
+        if dynstr is None:
+            strtab_addr = self.get_dynamic_value(0x5) # DT_STRTAB
+            strtab_size = self.get_dynamic_value(0xa) # DT_STRSZ
+            if strtab_addr is not None and strtab_size is not None:
+                if self.filename:
+                    offset = self.vaddr_to_offset(strtab_addr)
+                    if offset is not None:
+                        with open(self.filename, "rb") as fd:
+                            fd.seek(offset)
+                            dynstr = fd.read(strtab_size)
+                        if len(dynstr) != strtab_size:
+                            dynstr = None
+                elif self.addr is not None:
+                    if self.is_pie() and self.vaddr_to_offset(strtab_addr) is not None:
+                        strtab_addr += self.addr
+                    try:
+                        dynstr = read_memory(strtab_addr, strtab_size)
+                    except gdb.MemoryError:
+                        pass
         if dynstr:
             dynstr = dynstr.split(b"\0")
         strtab = self.read_shdr(".strtab")
@@ -3013,7 +3037,7 @@ class Elf:
         sec["Debuginfo"] = self.has_debuginfo()
 
         # Canary
-        if self.is_static() and self.is_stripped():
+        if self.is_static() and self.is_stripped() and dynstr is None and strtab is None:
             sec["Canary"] = self.has_canary_heuristic()
         else:
             keywords = [
@@ -3063,7 +3087,7 @@ class Elf:
             b"__syslog_chk",
             b"__vsyslog_chk",
         ]
-        if self.is_static() and self.is_stripped():
+        if self.is_static() and self.is_stripped() and dynstr is None and strtab is None:
             sec["Fortify"] = None # it means unknown
         else:
             sec["Fortify"] = exists_sym(dynstr, strtab, fortify_keywords)
@@ -3109,13 +3133,13 @@ class Elf:
         sec["RUNPATH"] = self.get_runpath()
 
         # Clang CFI (detected only when `-fno-sanitize-trap=all`)
-        if self.is_static() and self.is_stripped():
+        if self.is_static() and self.is_stripped() and dynstr is None and strtab is None:
             sec["Clang CFI"] = None
         else:
             sec["Clang CFI"] = exists_sym(dynstr, strtab, [b"__ubsan_handle_cfi_"], prefix=True)
 
         # Clang SafeStack
-        if self.is_static() and self.is_stripped():
+        if self.is_static() and self.is_stripped() and dynstr is None and strtab is None:
             sec["Clang SafeStack"] = None
         else:
             sec["Clang SafeStack"] = exists_sym(dynstr, strtab, [b"__safestack_init"])
@@ -32755,7 +32779,7 @@ class ChecksecCommand(GenericCommand):
         super().__init__(complete=gdb.COMPLETE_FILENAME)
         return
 
-    def check_CET_SHSTK(self, sec):
+    def check_CET_SHSTK(self, sec, runtime=True):
         # Intel CET SHSTK flags via Ehdr
         if "CET SHSTK flag" not in sec:
             # ELF is not x86_64
@@ -32766,7 +32790,7 @@ class ChecksecCommand(GenericCommand):
             gef_print("{:<40s}: {:s}".format("CET SHSTK feature flag (via Ehdr)", Color.colorify("Not found", "bold red")))
 
         # gdb mode check
-        if not is_x86():
+        if not runtime or not is_x86():
             return
         if not is_alive():
             return
@@ -32824,7 +32848,7 @@ class ChecksecCommand(GenericCommand):
                 gef_print("{:<40s}: {:s}".format("CET SHSTK Lock status (via procfs)", msg))
         return
 
-    def check_CET_IBT(self, sec):
+    def check_CET_IBT(self, sec, runtime=True):
         # Intel CET IBT flags via Ehdr
         if "CET IBT flag" not in sec:
             # ELF is not x86_64
@@ -32835,7 +32859,7 @@ class ChecksecCommand(GenericCommand):
             gef_print("{:<40s}: {:s}".format("CET IBT feature flag (via Ehdr)", Color.colorify("Not found", "bold red")))
 
         # gdb mode check
-        if not is_x86():
+        if not runtime or not is_x86():
             return
         if not is_alive():
             return
@@ -32863,7 +32887,7 @@ class ChecksecCommand(GenericCommand):
             gef_print("{:<40s}: {:s}".format("CET IBT status", msg))
         return
 
-    def check_PAC(self, sec):
+    def check_PAC(self, sec, runtime=True):
         # PAC opcode
         if "PAC" not in sec:
             # ELF is not ARM64
@@ -32876,7 +32900,7 @@ class ChecksecCommand(GenericCommand):
             gef_print("{:<40s}: {:s}".format("PAC opcode", Color.colorify("Not found", "bold red")))
 
         # gdb mode check
-        if not is_arm64():
+        if not runtime or not is_arm64():
             return
         if not is_alive():
             return
@@ -32911,9 +32935,9 @@ class ChecksecCommand(GenericCommand):
             gef_print("{:<40s}: {:s}".format("PAC", msg))
         return
 
-    def check_MTE(self, sec):
+    def check_MTE(self, sec, runtime=True):
         # gdb mode check
-        if not is_arm64():
+        if not runtime or not is_arm64():
             return
         if not is_alive():
             return
@@ -32978,10 +33002,10 @@ class ChecksecCommand(GenericCommand):
             gef_print("{:<40s}: {:s}".format("MTE ELF policy", msg))
         return
 
-    def check_GCS(self, sec):
+    def check_GCS(self, sec, runtime=True):
         if "AArch64 GCS flag" not in sec:
             return
-        if not is_arm64():
+        if not runtime or not is_arm64():
             return
         if not is_alive():
             return
@@ -33072,7 +33096,7 @@ class ChecksecCommand(GenericCommand):
             msg = Color.grayify("Unknown")
         return msg
 
-    def print_security_properties(self, filename):
+    def print_security_properties(self, filename, runtime=True):
         elf = Elf.get_elf(filename)
         if elf is None or not elf.is_valid():
             err("checksec is failed")
@@ -33087,7 +33111,7 @@ class ChecksecCommand(GenericCommand):
 
         # Canary
         msg = self.get_colored_msg(sec["Canary"])
-        if sec["Canary"] is True and is_alive():
+        if sec["Canary"] is True and runtime and is_alive():
             res = CanaryCommand.gef_read_canary()
             if not res:
                 msg += " (Could not get the canary value)"
@@ -33153,14 +33177,14 @@ class ChecksecCommand(GenericCommand):
             gef_print("{:<40s}: {:s}".format("Debuginfo", Color.colorify("No debuginfo", "bold green")))
 
         # Intel CET
-        self.check_CET_SHSTK(sec)
-        self.check_CET_IBT(sec)
+        self.check_CET_SHSTK(sec, runtime=runtime)
+        self.check_CET_IBT(sec, runtime=runtime)
 
         # ARM64 PAC/MTE
         self.check_AARCH64_ELF(sec)
-        self.check_PAC(sec)
-        self.check_MTE(sec)
-        self.check_GCS(sec)
+        self.check_PAC(sec, runtime=runtime)
+        self.check_MTE(sec, runtime=runtime)
+        self.check_GCS(sec, runtime=runtime)
 
         # RPATH
         if sec["RPATH"]:
@@ -33193,11 +33217,13 @@ class ChecksecCommand(GenericCommand):
 
         if sec["Text Relocations"]:
             gef_print("{:<40s}: {:s}".format("Text relocations", Color.colorify("Found", "bold red")))
-        self.check_runtime_wx()
+        if runtime:
+            self.check_runtime_wx()
 
         # ASLR
         self.check_system_ASLR()
-        self.check_gdb_ASLR()
+        if runtime:
+            self.check_gdb_ASLR()
         return
 
     @Decorator.parse_args
@@ -33254,7 +33280,15 @@ class ChecksecCommand(GenericCommand):
             err("File name could not be determined")
             return
 
-        self.print_security_properties(local_filepath)
+        runtime = args.file is None
+        if args.file:
+            if args.remote:
+                runtime = remote_filepath == Path.get_remote_filepath()
+            else:
+                current_filepath = Path.get_filepath()
+                if current_filepath and os.path.isfile(current_filepath) and os.path.isfile(local_filepath):
+                    runtime = os.path.samefile(local_filepath, current_filepath)
+        self.print_security_properties(local_filepath, runtime=runtime)
 
         if tmp_filepath and os.path.exists(tmp_filepath):
             os.unlink(tmp_filepath)
