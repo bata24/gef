@@ -35440,8 +35440,16 @@ class ExploitableCommand(GenericCommand):
             return "exploitable", "$pc is in a non-executable mapping (corrupted control flow)."
 
         if signame == "SIGILL":
-            self.details.append("=> SIGILL: illegal instruction executed.")
-            return "exploitable", "Illegal instruction executed (SIGILL)."
+            try:
+                code = int(gdb.parse_and_eval("$_siginfo.si_code"))
+                self.details.append("SIGILL si_code = {:d}".format(code))
+            except gdb.error:
+                pass
+            if insn is not None and insn.mnemonic.lower() in ("ud2", "ud2a", "ud1", "ud0"):
+                self.details.append("=> explicit undefined-instruction trap (possibly compiler-generated).")
+                return "probably_not", "Explicit instruction trap; check assertions or unreachable code."
+            self.details.append("=> invalid instruction, unsupported CPU extension, or corrupted instruction stream.")
+            return "unknown", "SIGILL alone cannot distinguish CPU/emulator incompatibility from corruption."
 
         if signame == "SIGSEGV" and fault is not None and fault == pc:
             self.details.append("=> fault address equals $pc: bad instruction fetch (controlled execution).")
