@@ -41427,23 +41427,11 @@ class LoadFileMmapCommand(GenericCommand):
     @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware"))
     @Decorator.require_arch_set
     def do_invoke(self, args):
-        if not os.path.exists(args.file_path):
-            err("Could not find {:s}".format(args.file_path))
+        data_size = LoadFileCommand.get_load_size(args)
+        if data_size is None:
             return
-
-        if args.load_size is None:
-            data_size = os.path.getsize(args.file_path)
-            if data_size == 0:
-                err("Unsupported zero size mapping")
-                return
-        elif args.load_size < 0:
-            err("Invalid LOAD_SIZE")
-            return
-        else:
-            data_size = args.load_size
-
-        if args.file_offset < 0:
-            err("Invalid FILE_OFFSET")
+        if data_size == 0:
+            err("Unsupported zero size mapping")
             return
 
         # +-mmap_start--+               ^             ^
@@ -41473,24 +41461,12 @@ class LoadFileMmapCommand(GenericCommand):
         output_line = res.splitlines()[-1]
         ret = int(output_line.split()[2], 0)
 
-        if AddressUtil.is_msb_on(ret):
-            err("Failed to mmap")
+        ret = AddressUtil.normalize_address(ret)
+        if ret != mmap_start:
+            err("Failed to mmap at {:#x} (returned {:#x})".format(mmap_start, ret))
             return
 
-        # read file and write to memory
-        with open(args.file_path, "rb") as fd:
-            if args.file_offset > 0:
-                fd.seek(args.file_offset, 0)
-
-            pos = data_start
-            remain_size = data_size
-            while remain_size > 0:
-                data = fd.read(min(0x1000, remain_size))
-                if len(data) == 0:
-                    break
-                write_memory(pos, data)
-                pos += len(data)
-                remain_size -= len(data)
+        LoadFileCommand.load_file(args, data_size)
         return
 
 
