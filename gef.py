@@ -60466,7 +60466,7 @@ class SyscallArgsCommand(GenericCommand):
         # hppa specific. hppa syscall instruction has a delay slot and _NR may be set there.
         if is_hppa32() or is_hppa64():
             next_insn = Disasm.gef_instruction_n(current_arch.pc, 1)
-            if next_insn.mnemonic == "ldi" and next_insn.operands[1] == "r20":
+            if next_insn and next_insn.mnemonic == "ldi" and next_insn.operands[1] == "r20":
                 nr = int(next_insn.operands[0], 16)
             else:
                 # already set
@@ -60476,7 +60476,7 @@ class SyscallArgsCommand(GenericCommand):
         elif is_s390x():
             insn = get_insn()
             r = re.search(syscall_register[0], str(insn))
-            nr = int(r.group(1), 0)
+            nr = int(r.group(1), 0) if r else 0
             if nr == 0:
                 syscall_register = syscall_register[1] # use $r1
                 nr = get_register(syscall_register)
@@ -60494,7 +60494,8 @@ class SyscallArgsCommand(GenericCommand):
         for reg in registers:
             if "+" in reg: # `$sp + 0x10`
                 reg_n, off_n = reg.split("+")
-                values.append(read_int_from_memory(get_register(reg_n) + int(off_n, 0)))
+                base = get_register(reg_n)
+                values.append(read_int_from_memory(base + int(off_n, 0), safe=True) if base is not None else None)
             elif is_x86_16() and ":" in reg: # $ds:$dx
                 seg, reg = reg.split(":")
                 values.append(current_arch.real2phys(seg, reg))
@@ -60545,6 +60546,8 @@ class SyscallArgsCommand(GenericCommand):
             line = "    {:<20} {:<20} ".format(name, register)
             if value is not None:
                 line += AddressUtil.recursive_dereference_to_string(value)
+            else:
+                line += "<unavailable>"
             gef_print(line)
         return
 
@@ -60557,6 +60560,10 @@ class SyscallArgsCommand(GenericCommand):
             syscall_register, nr = "-", args.nr
         else:
             syscall_register, nr = SyscallArgsCommand.get_nr()
+
+        if nr is None:
+            err("Could not read the syscall number; specify SYSCALL_NUM")
+            return
 
         syscall_table = Syscall.get_syscall_table()
         if syscall_table and nr not in syscall_table.nr_table:
