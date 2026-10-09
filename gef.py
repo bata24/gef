@@ -151586,67 +151586,6 @@ class KernelSlab:
             self.kmem_cache_offset_array = self.kmem_cache_offset_node + current_arch.ptrsize
             self.meta.append(("info", "offsetof(kmem_cache, array): {:#x}".format(self.kmem_cache_offset_array)))
 
-        # offsetof(page, next) / offsetof(slab, next)
-        if kversion < "4.16":
-            self.page_offset_next = current_arch.ptrsize * 3 + 4 * 2
-        elif kversion < "4.18":
-            self.page_offset_next = current_arch.ptrsize * 3 + 4
-        elif kversion < "5.17":
-            self.page_offset_next = current_arch.ptrsize
-        elif kversion < "6.2":
-            self.page_offset_next = current_arch.ptrsize
-        else:
-            self.page_offset_next = current_arch.ptrsize * 2
-        self.meta.append(("info", "offsetof({:s}, next): {:#x}".format(Kernel.slab_page_str(), self.page_offset_next)))
-
-        # offsetof(page, freelist) / offsetof(slab, freelist)
-        if kversion < "4.18":
-            self.page_offset_freelist = current_arch.ptrsize * 2
-        elif kversion < "5.17":
-            self.page_offset_freelist = current_arch.ptrsize * 4
-        elif kversion < "6.2":
-            self.page_offset_freelist = current_arch.ptrsize * 4
-        else:
-            self.page_offset_freelist = current_arch.ptrsize * 4
-        self.meta.append(("info", "offsetof({:s}, freelist): {:#x}".format(Kernel.slab_page_str(), self.page_offset_freelist)))
-
-        # offsetof(page, slab_cache) / offsetof(slab, slab_cache)
-        if kversion < "4.16" and is_32bit():
-            self.page_offset_slab_cache = current_arch.ptrsize * 7
-        elif kversion < "4.18":
-            self.page_offset_slab_cache = current_arch.ptrsize * 6
-        elif kversion < "5.17":
-            self.page_offset_slab_cache = current_arch.ptrsize * 3
-        elif kversion < "6.2":
-            self.page_offset_slab_cache = current_arch.ptrsize * 3
-        else:
-            self.page_offset_slab_cache = current_arch.ptrsize
-        self.meta.append(("info", "offsetof({:s}, slab_cache): {:#x}".format(
-            Kernel.slab_page_str(), self.page_offset_slab_cache,
-        )))
-
-        # offsetof(page, s_mem) / offsetof(slab, s_mem)
-        if kversion < "4.18":
-            self.page_offset_s_mem = current_arch.ptrsize
-        elif kversion < "5.17":
-            self.page_offset_s_mem = current_arch.ptrsize * 5
-        elif kversion < "6.2":
-            self.page_offset_s_mem = 8 + current_arch.ptrsize * 5
-        else:
-            self.page_offset_s_mem = 8 + current_arch.ptrsize * 5
-        self.meta.append(("info", "offsetof({:s}, s_mem): {:#x}".format(Kernel.slab_page_str(), self.page_offset_s_mem)))
-
-        # offsetof(page, active) / offsetof(slab, active)
-        if kversion < "4.18":
-            self.page_offset_active = current_arch.ptrsize * 3
-        elif kversion < "5.17":
-            self.page_offset_active = current_arch.ptrsize * 6
-        elif kversion < "6.2":
-            self.page_offset_active = current_arch.ptrsize * 6
-        else:
-            self.page_offset_active = current_arch.ptrsize * 6
-        self.meta.append(("info", "offsetof({:s}, active): {:#x}".format(Kernel.slab_page_str(), self.page_offset_active)))
-
         # offsetof(kmem_cache_node, slabs_partial)
         self.resolve_kmem_cache_node_offset_slabs_partial()
         if self.kmem_cache_node_offset_slabs_partial is None:
@@ -151668,6 +151607,71 @@ class KernelSlab:
         self.meta.append(("info", "offsetof(kmem_cache_node, slabs_free): {:#x}".format(
             self.kmem_cache_node_offset_slabs_free,
         )))
+
+        page_offset_union = current_arch.ptrsize
+        if "4.18" <= kversion < "5.17":
+            page_offset_union = GefUtil.resolve_page_slab_list_offset(self.iter_slab_pages_for_initialize())
+
+        # offsetof(page, next) / offsetof(slab, next)
+        if kversion < "4.16":
+            self.page_offset_next = current_arch.ptrsize * 3 + 4 * 2
+        elif kversion < "4.18":
+            self.page_offset_next = current_arch.ptrsize * 3 + 4
+        elif kversion < "5.17":
+            self.page_offset_next = page_offset_union
+        elif kversion < "6.2":
+            self.page_offset_next = current_arch.ptrsize
+        else:
+            self.page_offset_next = current_arch.ptrsize * 2
+        self.meta.append(("info", "offsetof({:s}, next): {:#x}".format(Kernel.slab_page_str(), self.page_offset_next)))
+
+        # offsetof(page, freelist) / offsetof(slab, freelist)
+        if kversion < "4.18":
+            self.page_offset_freelist = current_arch.ptrsize * 2
+        elif kversion < "5.17":
+            self.page_offset_freelist = page_offset_union + current_arch.ptrsize * 3
+        elif kversion < "6.2":
+            self.page_offset_freelist = current_arch.ptrsize * 4
+        else:
+            self.page_offset_freelist = current_arch.ptrsize * 4
+        self.meta.append(("info", "offsetof({:s}, freelist): {:#x}".format(Kernel.slab_page_str(), self.page_offset_freelist)))
+
+        # offsetof(page, slab_cache) / offsetof(slab, slab_cache)
+        if kversion < "4.16" and is_32bit():
+            self.page_offset_slab_cache = current_arch.ptrsize * 7
+        elif kversion < "4.18":
+            self.page_offset_slab_cache = current_arch.ptrsize * 6
+        elif kversion < "5.17":
+            self.page_offset_slab_cache = page_offset_union + current_arch.ptrsize * 2
+        elif kversion < "6.2":
+            self.page_offset_slab_cache = current_arch.ptrsize * 3
+        else:
+            self.page_offset_slab_cache = current_arch.ptrsize
+        self.meta.append(("info", "offsetof({:s}, slab_cache): {:#x}".format(
+            Kernel.slab_page_str(), self.page_offset_slab_cache,
+        )))
+
+        # offsetof(page, s_mem) / offsetof(slab, s_mem)
+        if kversion < "4.18":
+            self.page_offset_s_mem = current_arch.ptrsize
+        elif kversion < "5.17":
+            self.page_offset_s_mem = page_offset_union + current_arch.ptrsize * 4
+        elif kversion < "6.2":
+            self.page_offset_s_mem = 8 + current_arch.ptrsize * 5
+        else:
+            self.page_offset_s_mem = 8 + current_arch.ptrsize * 5
+        self.meta.append(("info", "offsetof({:s}, s_mem): {:#x}".format(Kernel.slab_page_str(), self.page_offset_s_mem)))
+
+        # offsetof(page, active) / offsetof(slab, active)
+        if kversion < "4.18":
+            self.page_offset_active = current_arch.ptrsize * 3
+        elif kversion < "5.17":
+            self.page_offset_active = page_offset_union + align(current_arch.ptrsize * 5, page_offset_union)
+        elif kversion < "6.2":
+            self.page_offset_active = current_arch.ptrsize * 6
+        else:
+            self.page_offset_active = current_arch.ptrsize * 6
+        self.meta.append(("info", "offsetof({:s}, active): {:#x}".format(Kernel.slab_page_str(), self.page_offset_active)))
 
         # offsetof(array_cache, avail)
         self.array_cache_offset_avail = 0
@@ -151697,6 +151701,16 @@ class KernelSlab:
     def parse_kmem_caches_for_initialize(self):
         # `slab_caches` is a static list head, so it should not be broken.
         return KernelListHead(self.slab_caches).parse() or []
+
+    def iter_slab_pages_for_initialize(self):
+        for entry in self.parse_kmem_caches_for_initialize():
+            cache = entry - self.kmem_cache_offset_list
+            node = read_int_from_memory(cache + self.kmem_cache_offset_node, safe=True)
+            if not node:
+                continue
+            for offset in (self.kmem_cache_node_offset_slabs_partial, self.kmem_cache_node_offset_slabs_full,
+                           self.kmem_cache_node_offset_slabs_free):
+                yield from KernelListHead(node + offset).iter_entries()
 
     def resolve_kmem_cache_offset_node(self):
         # fast path
@@ -152420,13 +152434,19 @@ class KernelSlob:
         self.kmem_cache_offset_flags = 4 * 3
         self.meta.append(("info", "offsetof(kmem_cache, flags): {:#x}".format(self.kmem_cache_offset_flags)))
 
+        page_offset_union = current_arch.ptrsize
+        if "4.18" <= kversion < "5.17":
+            entries = (entry for head in (self.free_slob_large, self.free_slob_medium, self.free_slob_small)
+                       for entry in KernelListHead(head).iter_entries())
+            page_offset_union = GefUtil.resolve_page_slab_list_offset(entries)
+
         # offsetof(page, next) / offsetof(slab, next)
         if kversion < "4.16":
             self.page_offset_next = current_arch.ptrsize * 3 + 4 * 2
         elif kversion < "4.18":
             self.page_offset_next = current_arch.ptrsize * 4
         elif kversion < "5.17":
-            self.page_offset_next = current_arch.ptrsize
+            self.page_offset_next = page_offset_union
         else:
             self.page_offset_next = current_arch.ptrsize
         self.meta.append(("info", "offsetof({:s}, next): {:#x}".format(Kernel.slab_page_str(), self.page_offset_next)))
@@ -152435,7 +152455,7 @@ class KernelSlob:
         if kversion < "4.18":
             self.page_offset_freelist = current_arch.ptrsize * 2
         elif kversion < "5.17":
-            self.page_offset_freelist = current_arch.ptrsize * 4
+            self.page_offset_freelist = page_offset_union + current_arch.ptrsize * 3
         else:
             self.page_offset_freelist = current_arch.ptrsize * 4
         self.meta.append(("info", "offsetof({:s}, freelist): {:#x}".format(Kernel.slab_page_str(), self.page_offset_freelist)))
@@ -152444,7 +152464,7 @@ class KernelSlob:
         if kversion < "4.18":
             self.page_offset_units = current_arch.ptrsize * 3
         elif kversion < "5.17":
-            self.page_offset_units = current_arch.ptrsize * 6
+            self.page_offset_units = page_offset_union + align(current_arch.ptrsize * 5, page_offset_union)
         else:
             self.page_offset_units = current_arch.ptrsize * 5
         self.meta.append(("info", "offsetof({:s}, units): {:#x}".format(Kernel.slab_page_str(), self.page_offset_units)))
@@ -152494,7 +152514,7 @@ class KernelSlob:
         seen = {head}
         page_freelist = []
         current = read_int_from_memory(head)
-        while True:
+        while current not in seen:
             seen.add(current)
             page = {}
             page["address"] = current - self.page_offset_next
@@ -152505,8 +152525,6 @@ class KernelSlob:
             page["freelist"] = self.walk_freelist(freelist_head, page, simple=simple)
             page["next"] = next = read_int_from_memory(current)
             page_freelist.append(page)
-            if next in seen:
-                break
             current = next
         return page_freelist
 
@@ -196808,6 +196826,26 @@ class GefUtil:
             return GefUtil.parse_and_eval_unsigned("&(({:s} *)0)->{:s}".format(type_name, member))
         except gdb.error:
             return None
+
+    @staticmethod
+    def resolve_page_slab_list_offset(entries):
+        """Resolve the first union of struct page for SLAB/SLOB on v4.18~v5.16."""
+        offset = GefUtil.offsetof("page", "slab_list")
+        if offset is not None:
+            return offset
+        if current_arch.ptrsize == 8 or is_x86_32():
+            return current_arch.ptrsize
+
+        # A 64-bit dma_addr_t can align the union to 8; stable backports can restore alignment to 4.
+        # Listed pages have PG_slab set. Padding before an aligned union is zeroed by memmap initialization.
+        for entry in entries:
+            flags = [read_int_from_memory(entry - offset, safe=True) for offset in (4, 8)]
+            if None in flags:
+                continue
+            candidates = [offset for offset, value in zip((4, 8), flags) if PageInfoCommand.has_flag(value, "PG_slab")]
+            if len(candidates) == 1:
+                return candidates[0]
+        return current_arch.ptrsize
 
     @staticmethod
     @Cache.cache_this_session(per_inferior=True, until_new_objfile=True)
