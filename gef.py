@@ -45050,9 +45050,17 @@ class JmpbufCommand(GenericCommand):
             layout["name"] = "RISC-V"
             ptrsize = 8 if arch == "riscv64" else 4
             layout["regs"] = seq(["pc"] + ["s{:d}".format(i) for i in range(12)] + ["sp"], 0, ptrsize)
-            layout["regs"] += seq(["fs{:d}".format(i) for i in range(12)], ptrsize * 14, 8, "raw")
-            layout["mask_was_saved"] = ptrsize * 14 + 96
-            layout["saved_mask"] = ptrsize * 14 + 96 + ptrsize
+            elf = Elf.get_elf()
+            if elf is None or not elf.is_valid() or elf.e_machine != Elf.EM_RISCV:
+                raise ValueError("Could not determine the RISC-V floating-point ABI from ELF")
+            float_abi = elf.e_flags & 6
+            if float_abi not in (0, 4):
+                raise ValueError("Unsupported RISC-V glibc floating-point ABI")
+            fp_size = 96 if float_abi == 4 else 0
+            if fp_size:
+                layout["regs"] += seq(["fs{:d}".format(i) for i in range(12)], ptrsize * 14, 8, "raw")
+            layout["mask_was_saved"] = ptrsize * 14 + fp_size
+            layout["saved_mask"] = ptrsize * 14 + fp_size + ptrsize
 
         elif arch in ("mips", "mipsn32", "mips64"):
             layout["generic_signo"] = False
@@ -45190,6 +45198,10 @@ class JmpbufCommand(GenericCommand):
 
         else:
             return None
+        layout["sigmask_size"] = 16 if arch in ("mips", "mipsn32", "mips64") else 8
+        layout["sigmask_word"] = 8 if arch in (
+            "x64", "aarch64", "riscv64", "mips64", "ppc64", "s390x", "loongarch64", "sparc64", "alpha", "arc64",
+        ) else 4
         return layout
 
     @Decorator.parse_args
@@ -45201,12 +45213,17 @@ class JmpbufCommand(GenericCommand):
         "CSKY",
     ))
     def do_invoke(self, args):
-        layout = self.get_layout()
+        try:
+            layout = self.get_layout()
+        except ValueError as exception:
+            err(exception)
+            return
         base = args.location
         regs = layout["regs"]
 
         try:
-            size = max([layout["mask_was_saved"] + 4, layout["saved_mask"] + 8] + [offset + size for _, offset, size, _ in regs])
+            size = max([layout["mask_was_saved"] + 4, layout["saved_mask"] + layout["sigmask_size"]]
+                       + [offset + size for _, offset, size, _ in regs])
             data = read_memory(base, size)
         except gdb.MemoryError:
             err("Failed to read memory")
@@ -45245,7 +45262,9 @@ class JmpbufCommand(GenericCommand):
         mask_was_saved = UcontextCommand.unpack(data, layout["mask_was_saved"], 4)
         entries.append((layout["mask_was_saved"], "__mask_was_saved", "{:#x}".format(mask_was_saved)))
         if mask_was_saved:
-            value_s = UcontextCommand.format_sigmask(data, layout["saved_mask"], layout["generic_signo"])
+            value_s = UcontextCommand.format_sigmask(
+                data, layout["saved_mask"], layout["generic_signo"], layout["sigmask_size"], layout["sigmask_word"],
+            )
             entries.append((layout["saved_mask"], "__saved_mask", value_s))
 
         out = [titlify("jmp_buf @ {:#x} ({:s})".format(base, layout["name"]))]
