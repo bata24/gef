@@ -5251,6 +5251,12 @@ command:
   {memory,value}
 ```
 
+### Notes
+
+```text
+Uses one space between letters and three spaces between words.
+```
+
 ## `morse-decode memory`
 
 Decode morse code from memory values.
@@ -5273,6 +5279,12 @@ options:
 
 ```gdb
 morse-decode memory $rsp 0x20
+```
+
+### Notes
+
+```text
+Uses one space between letters and three spaces between words.
 ```
 
 ## `morse-decode value`
@@ -5298,6 +5310,12 @@ options:
 morse-decode value -- ".- -... -.-. -.."
 ```
 
+### Notes
+
+```text
+Uses one space between letters and three spaces between words.
+```
+
 ## `morse-encode`
 
 The base command to encode morse code.
@@ -5313,6 +5331,12 @@ options:
 
 command:
   {memory,value}
+```
+
+### Notes
+
+```text
+Uses one space between letters and three spaces between words.
 ```
 
 ## `morse-encode memory`
@@ -5339,6 +5363,12 @@ options:
 morse-encode memory $rsp 0x20
 ```
 
+### Notes
+
+```text
+Uses one space between letters and three spaces between words.
+```
+
 ## `morse-encode value`
 
 Encode morse code from specified values.
@@ -5360,6 +5390,12 @@ options:
 
 ```gdb
 morse-encode value AAAA
+```
+
+### Notes
+
+```text
+Uses one space between letters and three spaces between words.
 ```
 
 ## `seq-length`

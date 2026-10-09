@@ -6411,29 +6411,27 @@ class String:
 
     @staticmethod
     def morse_decode(a):
-        """Decode a bytes or string sequence from Morse code to text."""
+        """Decode Morse code with one space between letters and three between words."""
         if isinstance(a, str):
             a = String.str2bytes(a)
 
-        decoded = b""
-        for elem in a.split():
-            decoded += String.MORSE_CODE_DICT.get(elem, elem)
-        return decoded
+        words = []
+        for word in a.split(b"   "):
+            words.append(b"".join(String.MORSE_CODE_DICT.get(elem, elem) for elem in word.split()))
+        return b" ".join(words)
 
     @staticmethod
     def morse_encode(a):
-        """Encode a bytes or string sequence from text to Morse code."""
+        """Encode Morse code with one space between letters and three between words."""
         if isinstance(a, str):
             a = String.str2bytes(a)
 
         MORSE_CODE_REVERSE_DICT = {v: k for k, v in String.MORSE_CODE_DICT.items()}
 
-        encoded = b""
-        for elem in a:
-            elem = bytes([elem])
-            encoded += MORSE_CODE_REVERSE_DICT.get(elem.upper(), elem)
-            encoded += b" "
-        return encoded[:-1]
+        words = []
+        for word in a.split(b" "):
+            words.append(b" ".join(MORSE_CODE_REVERSE_DICT.get(bytes([elem]).upper(), bytes([elem])) for elem in word))
+        return b"   ".join(words)
 
     @staticmethod
     def is_hex(pattern):
@@ -146247,6 +146245,11 @@ class MorseDecodeCommand(GenericCommand):
     subparsers.add_parser("value")
     _syntax_ = parser.format_help()
 
+    _note_ = [
+        "Uses one space between letters and three spaces between words.",
+    ]
+    _note_ = "\n".join(_note_)
+
     def __init__(self, *args, **kwargs):
         prefix = kwargs.get("prefix", True)
         complete = kwargs.get("complete", gdb.COMPLETE_NONE)
@@ -146341,6 +146344,11 @@ class MorseEncodeCommand(GenericCommand):
     subparsers.add_parser("memory")
     subparsers.add_parser("value")
     _syntax_ = parser.format_help()
+
+    _note_ = [
+        "Uses one space between letters and three spaces between words.",
+    ]
+    _note_ = "\n".join(_note_)
 
     def __init__(self, *args, **kwargs):
         prefix = kwargs.get("prefix", True)
