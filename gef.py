@@ -171834,19 +171834,27 @@ class OpteeShmListCommand(GenericCommand, BufferingOutput):
     _category_ = "06-j. Qemu-system/KGDB Cooperation - TrustZone"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("--phys-bits", type=int, choices=(32, 64),
+                        help="paddr_t width (default: debug type, otherwise core pointer width).")
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
     _syntax_ = parser.format_help()
 
-    def find_reg_shm_list(self, data, virt_start):
+    def find_reg_shm_list(self, data, virt_start, phys_size=None):
+
+        if phys_size is None:
+            try:
+                phys_size = gdb.lookup_type("paddr_t").sizeof
+            except gdb.error:
+                phys_size = current_arch.ptrsize
 
         def is_valid_rw_addr(addr):
             return virt_start <= addr < virt_start + len(data)
 
-        def read_int_from_memory(addr):
-            if not is_valid_rw_addr(addr):
+        def read_int_from_memory(addr, size=current_arch.ptrsize):
+            index = addr - virt_start
+            if index < 0 or index + size > len(data):
                 return None
-            index = (addr - virt_start) // current_arch.ptrsize
-            return data_list[index]
+            return {4: u32, 8: u64}[size](data[index:index + size])
 
         def is_slist_head(addr, head_next, offset):
             current = head_next
@@ -171897,10 +171905,10 @@ class OpteeShmListCommand(GenericCommand, BufferingOutput):
         offsetof_size = offsetof_ops + current_arch.ptrsize
         offsetof_refc = offsetof_size + current_arch.ptrsize * 2
         offsetof_next = offsetof_refc + current_arch.ptrsize
-        offsetof_cookie = offsetof_next + 8 # with pad
+        offsetof_cookie = align(offsetof_next + current_arch.ptrsize, 8)
         offsetof_mm = offsetof_cookie + 8
-        offsetof_page_offset = offsetof_mm + current_arch.ptrsize
-        offsetof_pages = offsetof_page_offset + current_arch.ptrsize + 4 + 4 # 4, 4 = map_count, bool*3
+        offsetof_page_offset = align(offsetof_mm + current_arch.ptrsize, phys_size)
+        offsetof_pages = align(offsetof_page_offset + phys_size + 4 + 3, phys_size)
 
         candidate_head = []
         data_list = slice_unpack(data, current_arch.ptrsize)
@@ -171924,12 +171932,15 @@ class OpteeShmListCommand(GenericCommand, BufferingOutput):
                     break
                 ops = read_int_from_memory(current + offsetof_ops)
                 size = read_int_from_memory(current + offsetof_size)
-                refc = read_int_from_memory(current + offsetof_refc)
+                refc = read_int_from_memory(current + offsetof_refc, 4)
                 next_ = read_int_from_memory(current + offsetof_next)
-                cookie = read_int_from_memory(current + offsetof_cookie)
+                cookie = read_int_from_memory(current + offsetof_cookie, 8)
                 mm = read_int_from_memory(current + offsetof_mm)
-                page_offset = read_int_from_memory(current + offsetof_page_offset)
+                page_offset = read_int_from_memory(current + offsetof_page_offset, phys_size)
                 seen.add(current)
+                if None in (ops, size, refc, next_, cookie, mm, page_offset):
+                    found = False
+                    break
 
                 # check ops
                 if is_valid_rw_addr(ops): # r-x
@@ -171940,7 +171951,7 @@ class OpteeShmListCommand(GenericCommand, BufferingOutput):
                     found = False
                     break
                 # check size + page_offset
-                if (size + page_offset) % get_pagesize():
+                if not size or page_offset >= 0x1000 or (size + page_offset) % 0x1000:
                     found = False
                     break
                 # check refc
@@ -171950,20 +171961,19 @@ class OpteeShmListCommand(GenericCommand, BufferingOutput):
                 if refc == 0 or refc >= 0x100:
                     found = False
                     break
-                # check cookie
-                if is_64bit():
-                    if cookie & 0xffff_0000_0000_0000 != 0xffff_0000_0000_0000:
-                        found = False
-                        break
                 # check mm
                 if mm and not is_valid_rw_addr(mm): # mm == 0 is ok
                     found = False
                     break
                 # check pages
                 pages = []
-                for j in range((size + page_offset) // get_pagesize()):
-                    p = read_int_from_memory(current + offsetof_pages + current_arch.ptrsize * j)
-                    if p & get_pagesize_mask_low():
+                num_pages = (size + page_offset) // 0x1000
+                if current + offsetof_pages + phys_size * num_pages > virt_start + len(data):
+                    found = False
+                    break
+                for j in range(num_pages):
+                    p = read_int_from_memory(current + offsetof_pages + phys_size * j, phys_size)
+                    if p is None or p & 0xfff:
                         found = False
                         break
                     pages.append(p)
@@ -172004,13 +172014,13 @@ class OpteeShmListCommand(GenericCommand, BufferingOutput):
                 pages_str = []
                 if pages:
                     start = end = pages[0]
-                    for addr in pages[1:]:
-                        if addr == end + get_pagesize():
-                            end = addr
+                    for page in pages[1:]:
+                        if page == end + 0x1000:
+                            end = page
                         else:
-                            pages_str.append("{:#x}-{:#x}".format(start, end + get_pagesize()))
-                            start = end = addr
-                    pages_str.append("{:#x}-{:#x}".format(start, end + get_pagesize()))
+                            pages_str.append("{:#x}-{:#x}".format(start, end + 0x1000))
+                            start = end = page
+                    pages_str.append("{:#x}-{:#x}".format(start, end + 0x1000))
 
                 self.out.append(
                     "{:#010x}    {:#010x}  {:#010x}  {:#010x}  {:#018x}  {:#010x}  {:#010x}   {:s}".format(
@@ -172036,7 +172046,8 @@ class OpteeShmListCommand(GenericCommand, BufferingOutput):
             err("Memory read error ({:s})".format(SecureMemory.PRIVILEGE_HINT))
             return
 
-        parsed_list_heads = self.find_reg_shm_list(data, entry.vstart)
+        phys_size = args.phys_bits // 8 if args.phys_bits else None
+        parsed_list_heads = self.find_reg_shm_list(data, entry.vstart, phys_size)
         if not parsed_list_heads:
             err("Could not find reg_shm_list")
             return

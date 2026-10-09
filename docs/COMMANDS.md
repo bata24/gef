@@ -12406,11 +12406,12 @@ List dynamic shared-memory buffers currently registered in OP-TEE (for OP-TEE v4
 ### Syntax
 
 ```text
-usage: optee-shm-list [-h] [-n]
+usage: optee-shm-list [-h] [--phys-bits {32,64}] [-n]
 
 options:
-  -h, --help      show this help message and exit
-  -n, --no-pager  do not use the pager.
+  -h, --help           show this help message and exit
+  --phys-bits {32,64}  paddr_t width (default: debug type, otherwise core pointer width).
+  -n, --no-pager       do not use the pager.
 ```
 
 ## `optee-smc-service-dump`
