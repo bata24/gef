@@ -48796,7 +48796,7 @@ class TraceFreeRetBreakpoint(gdb.FinishBreakpoint):
         self.enabled = False
         return False
 
-    def out_of_scope(self):
+    def out_of_scope(self): # noqa: V105
         self.enabled = False
         return
 
@@ -64613,11 +64613,6 @@ class KernelAddressHeuristicFinderUtil:
     @staticmethod
     def x64_x86_cmp_const(res, reg=r"\w+", skip=0, skip_msb_check=False, read_valid=False):
         regexp = r"cmp\s+" + reg + r"\s*,\s*(0x\w+)"
-        return KernelAddressHeuristicFinderUtil.common_addr_gen(res, regexp, skip, skip_msb_check, read_valid)
-
-    @staticmethod
-    def x64_x86_imul_const(res, skip=0, skip_msb_check=False, read_valid=False):
-        regexp = r"imul\s+\w+\s*,\s*\w+\s*,\s*(0x\w+)"
         return KernelAddressHeuristicFinderUtil.common_addr_gen(res, regexp, skip, skip_msb_check, read_valid)
 
     @staticmethod
