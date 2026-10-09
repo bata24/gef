@@ -39481,14 +39481,16 @@ class ContextCodeCommand(GenericCommand):
         if is_x86():
             if " PTR [" in ops or " ptr [" in ops:
                 addr = ContextCodeCommand.RE_SUB_BRANCH_ADDR3.sub(r"\2", ops)
-                for gr in current_arch.general_registers:
-                    addr = addr.replace(gr.replace("$", ""), gr)
+                addr = re.sub(r"\b([a-z][a-z0-9]*)\b", r"$\1", addr)
+                addr = addr.replace("$eiz", "0").replace("$riz", "0")
                 if is_x86_64():
-                    addr = addr.replace("$rip", "$rip+{:#x}".format(len(insn.opcodes)))
+                    addr = re.sub(r"\$(rip|eip)\b", r"($\1+{:#x})".format(len(insn.opcodes)), addr)
                 try:
                     ptr = GefUtil.parse_and_eval_unsigned(addr)
                 except gdb.error:
                     return None
+                if is_x86_64() and re.search(r"\$e(?:ax|bx|cx|dx|si|di|sp|bp|ip)\b|\$r\d+d\b", addr):
+                    ptr &= 0xffffffff
                 value = read_int_from_memory(ptr, safe=True)
                 if value is None:
                     return "*{:#x}".format(ptr) if to_str else None
@@ -39502,6 +39504,8 @@ class ContextCodeCommand(GenericCommand):
                 ofs = ContextCodeCommand.RE_SUB_BRANCH_ADDR4.sub(r"\2", ops)
                 ofs = GefUtil.parse_and_eval_unsigned(ofs)
                 fs = current_arch.get_fs()
+                if fs is None:
+                    return None
                 value = read_int_from_memory(fs + ofs, safe=True)
                 if value is None:
                     return "*{:#x}".format(fs + ofs) if to_str else None
@@ -39515,6 +39519,8 @@ class ContextCodeCommand(GenericCommand):
                 ofs = ContextCodeCommand.RE_SUB_BRANCH_ADDR5.sub(r"\2", ops)
                 ofs = GefUtil.parse_and_eval_unsigned(ofs)
                 gs = current_arch.get_gs()
+                if gs is None:
+                    return None
                 value = read_int_from_memory(gs + ofs, safe=True)
                 if value is None:
                     return "*{:#x}".format(gs + ofs) if to_str else None
@@ -39644,6 +39650,9 @@ class ContextCodeCommand(GenericCommand):
         use_capstone = Config.get("context_code.use_capstone")
 
         pc = current_arch.pc
+        disasm_pc = pc
+        if is_arm32() or is_arm32_cortex_m():
+            pc &= ~1
         bp_locations = self.get_breakpoints()
 
         try:
@@ -39666,7 +39675,9 @@ class ContextCodeCommand(GenericCommand):
             ContextCommand.execute_command("x/16i {:#x}".format(current_arch.pc), redirect)
             return
 
-        for insn in Disasm.gef_disassemble(pc, nb_insn, nb_prev=nb_insn_prev):
+        for insn in Disasm.gef_disassemble(disasm_pc, nb_insn, nb_prev=nb_insn_prev):
+            if is_arm32() or is_arm32_cortex_m():
+                insn.address &= ~1
             line = ""
             is_taken = False
             target = None
