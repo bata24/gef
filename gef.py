@@ -146925,6 +146925,9 @@ class SequenceLengthCommand(GenericCommand):
                 err("Unsupported `--phys` option in this gdb mode")
                 return
 
+        if args.unit <= 0:
+            err("Invalid unit size")
+            return
         if args.unit >= 0x100_000:
             err("Too large unit size")
             return
