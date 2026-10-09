@@ -101,6 +101,7 @@ import json
 import math
 import os
 import re
+import shlex
 import struct
 import subprocess
 import sys
@@ -38388,7 +38389,7 @@ class EntryBreakCommand(GenericCommand):
             # symbol found
             info("Breaking at {:#x} ({:s})".format(value, sym))
             EntryBreakBreakpoint(sym)
-            gdb.execute("run {:s}".format(" ".join(argv)))
+            gdb.execute("run {:s}".format(" ".join(shlex.quote(arg) for arg in argv)))
             return
 
         # no symbols. use elf entry point
@@ -38397,7 +38398,7 @@ class EntryBreakCommand(GenericCommand):
             entry = elf.e_entry
             info("Breaking at entry-point: {:#x}".format(entry))
             EntryBreakBreakpoint("*{:#x}".format(entry))
-            gdb.execute("run {}".format(" ".join(argv)))
+            gdb.execute("run {}".format(" ".join(shlex.quote(arg) for arg in argv)))
             return
 
         # PIE
@@ -38406,9 +38407,14 @@ class EntryBreakCommand(GenericCommand):
         # So use gef_on_new_hook (use gdb.events.new_objfile internally),
         # instead of `set stop-on-solib-events 1` because shared object are never loaded.
         # At least gdb 10.1 (Ubuntu 18.04) supports gdb.events.new_objfile.
+        hidden = ContextCommand.context_hidden
         ContextCommand.hide_context()
         EventHooking.gef_on_new_hook(EntryBreakCommand.stop_callback)
-        gdb.execute("run {}".format(" ".join(argv)))
+        try:
+            gdb.execute("run {}".format(" ".join(shlex.quote(arg) for arg in argv)))
+        finally:
+            EventHooking.gef_on_new_unhook(EntryBreakCommand.stop_callback)
+            ContextCommand.context_hidden = hidden
         return
 
 
