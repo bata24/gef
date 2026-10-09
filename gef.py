@@ -31352,27 +31352,31 @@ class RopperCommand(GenericCommand):
         return
 
     # Need not @Decorator.parse_args because argparse can't stop interpreting options for ropper.
-    @Decorator.only_if_gdb_running
     @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware"))
     @ModuleLoader.load_ropper
-    @Decorator.require_arch_set
     def do_invoke(self, argv):
         if "-h" in argv or "--help" in argv:
             self.print_help()
             return
 
-        if "--file" not in argv:
+        filepath = None
+        for i, arg in enumerate(argv):
+            if arg in ("-f", "--file"):
+                if i + 1 >= len(argv):
+                    self.print_help()
+                    return
+                filepath = argv[i + 1]
+            elif arg.startswith("--file="):
+                filepath = arg.split("=", 1)[1]
+            elif arg.startswith("-f") and len(arg) > 2:
+                filepath = arg[2:]
+
+        if filepath is None:
             filepath = Path.get_filepath()
             if filepath is None:
                 err("Missing info about file. Please set: `file /path/to/target_binary`")
                 return
             argv.extend(["--file", filepath])
-        else:
-            try:
-                filepath = argv[argv.index("--file") + 1]
-            except IndexError:
-                self.print_help()
-                return
 
         if not os.path.isfile(filepath):
             err("Invalid filepath")
@@ -31381,6 +31385,8 @@ class RopperCommand(GenericCommand):
         # ropper set up own autocompleter after which gdb/gef autocomplete don't work
         # due to fork/waitpid, child will be broken but parent will not change
         gef_print(titlify(filepath))
+        sys.stdout.flush()
+        sys.stderr.flush()
         pid = os.fork()
         if pid == 0:
             # Reorder GdbRemoveReadlineFinder in child processes so readline can be loaded.
@@ -31398,6 +31404,8 @@ class RopperCommand(GenericCommand):
                 ropper.start(argv)
             except (Exception, SystemExit):
                 pass
+            sys.stdout.flush()
+            sys.stderr.flush()
             os._exit(0)
         else:
             os.waitpid(pid, 0)
