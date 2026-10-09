@@ -147123,7 +147123,7 @@ class SaveOutputCommand(GenericCommand):
 
     # Need not @Decorator.parse_args because argparse can't stop interpreting options for user specified command.
     def do_invoke(self, argv):
-        if len(argv) == 1 and argv[0] == "-h":
+        if not argv or argv in (["-h"], ["--help"]):
             self.usage()
             return
 
@@ -147131,13 +147131,7 @@ class SaveOutputCommand(GenericCommand):
         always_no_pager = Config.get("gef.always_no_pager")
 
         # parse command
-        cmd = ""
-        for c in argv:
-            if "\\" in c or " " in c:
-                cmd += " " + repr(c)
-            else:
-                cmd += " " + c
-        cmd = cmd.strip()
+        cmd = (argv[0] if len(argv) == 1 else self.command_args).strip()
         if not cmd:
             self.usage()
             return
