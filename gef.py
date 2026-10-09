@@ -14987,16 +14987,20 @@ class ProcessMap:
             orig_thread = gdb.selected_thread()
             orig_frame = gdb.selected_frame()
             if orig_thread: # orig_thread may be None if under winedbg
-                for thread in gdb.selected_inferior().threads():
-                    thread.switch() # change thread
-                    tls = None
-                    if is_x86_64():
-                        tls = get_register("$fs_base") # note: for speed up
-                    if is_x86_32() or tls is None:
-                        tls = current_arch.get_tls()
-                    tls_list.append([thread.num, tls, current_arch.sp])
-                orig_thread.switch() # revert thread
-                orig_frame.select()
+                try:
+                    for thread in gdb.selected_inferior().threads():
+                        if not thread.is_stopped():
+                            continue
+                        thread.switch() # change thread
+                        tls = None
+                        if is_x86_64():
+                            tls = get_register("$fs_base") # note: for speed up
+                        if is_x86_32() or tls is None:
+                            tls = current_arch.get_tls()
+                        tls_list.append([thread.num, tls, current_arch.sp])
+                finally:
+                    orig_thread.switch() # revert thread
+                    orig_frame.select()
                 extra_info = sorted(tls_list)
 
                 # When using gdbserver, thread.num may start from 2 even though there is no thread.
@@ -15560,7 +15564,7 @@ class ProcessMap:
                 continue
             seen.add(line)
 
-            blobs = [x.strip() for x in line.split(" ")]
+            blobs = line.split(None, 6)
             addr_start = int(blobs[0], 16)
             addr_end = int(blobs[2], 16)
             if len(blobs) > 4:
@@ -43559,10 +43563,12 @@ class VMMapCommand(GenericCommand, BufferingOutput):
                 line += Color.colorify(" {:+#x}".format(print_offset), line_color)
 
         # register info
-        if not self.args.quiet:
+        if not self.args.quiet and current_arch is not None:
             register_hints = []
             for regname in current_arch.all_registers:
                 regvalue = get_register(regname)
+                if regvalue is None:
+                    continue
                 if entry.page_start <= regvalue < entry.page_end:
                     register_hints.append(regname)
             if register_hints:
