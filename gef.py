@@ -47614,8 +47614,8 @@ class GotCommand(GenericCommand, BufferingOutput):
             # read the address of the function
             got_value = read_int_from_memory(got_address, safe=True)
             if got_value is None:
-                self.quiet_err("Memory read error")
-                return
+                self.quiet_err("Cannot read GOT entry at {:#x}".format(got_address))
+                continue
 
             # resolve got value's symbol
             if got_value == 0:
