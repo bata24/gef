@@ -15527,8 +15527,9 @@ class EventHandler:
     continue_hooks_enabled = True
 
     @staticmethod
-    def continue_handler(_event):
+    def continue_handler(event):
         """GDB event handler for new object continue cases."""
+        ExecAsm.clear_queued_signal(event)
         return
 
     @staticmethod
@@ -15566,6 +15567,11 @@ class EventHandler:
     def hook_stop_handler(event):
         """GDB event handler for stop cases."""
         Cache.reset_gef_caches()
+        thread = getattr(event, "inferior_thread", None) or gdb.selected_thread()
+        if isinstance(event, gdb.SignalEvent):
+            ExecAsm.queued_signals[thread] = event.stop_signal
+        else:
+            ExecAsm.queued_signals.pop(thread, None)
 
         # There appears to be a bug on some architectures (e.g., i386) where temporary breakpoints
         # are not deleted even after being hit. The conditions under which this occurs are unknown,
@@ -15672,6 +15678,7 @@ class EventHandler:
         PatchCommand.invalidate_history(getattr(_event, "inferior", None))
         Kernel.version_override = None
         EventHandler.kpti_transition_active = False
+        ExecAsm.queued_signals = {thread: sig for thread, sig in ExecAsm.queued_signals.items() if thread.is_valid()}
         return
 
     @staticmethod
@@ -101401,13 +101408,18 @@ class ExecAsm:
     """Execute embedded asm. e.g., ExecAsm(asm_op_list).exec_code().
     WARNING: Disable `-enable-kvm` option for qemu-system; If set, this code will crash the guest OS."""
 
-    # `info program` no longer reports the stop signal re-queued after the internal stepi
-    queued_signal = None
+    # `info program` only describes the last stop in all-stop mode.
+    queued_signals = {}
 
     @staticmethod
-    def clear_queued_signal(_event):
-        ExecAsm.queued_signal = None
-        EventHooking.gef_on_continue_unhook(ExecAsm.clear_queued_signal)
+    def clear_queued_signal(event):
+        thread = getattr(event, "inferior_thread", None) or gdb.selected_thread()
+        if event is None or gdb.parameter("non-stop") or gdb.parameter("scheduler-locking") == "on":
+            ExecAsm.queued_signals.pop(thread, None)
+        else:
+            for stopped in list(ExecAsm.queued_signals):
+                if not stopped.is_valid() or stopped.inferior == gdb.selected_inferior():
+                    ExecAsm.queued_signals.pop(stopped, None)
         return
 
     def __init__(self, target_codes, regs=None, step=None, use_bp=False, debug=False):
@@ -101457,6 +101469,11 @@ class ExecAsm:
         d["reg"] = {}
         for reg in current_arch.all_registers:
             d["reg"][reg] = get_register(reg)
+        if is_x86_32() or is_x86_64():
+            reg = "$orig_rax" if is_x86_64() else "$orig_eax"
+            value = get_register(reg)
+            if value is not None:
+                d["reg"][reg] = value
         return d
 
     def revert_state(self, d):
@@ -101465,7 +101482,6 @@ class ExecAsm:
 
         # reg
         for reg, v in d["reg"].items():
-            gdb.newest_frame().select()
             if get_register(reg) == v:
                 continue
             if (is_hppa32() or is_hppa64()) and reg == "$pc":
@@ -101479,56 +101495,47 @@ class ExecAsm:
                     pass
                 else:
                     info("set {:s} = {:#x} is failed".format(reg, v))
-        gdb.newest_frame().select()
         return
 
     @staticmethod
     def get_stop_signal():
-        if ExecAsm.queued_signal:
-            if ExecAsm.queued_signal[0].is_valid():
-                return ExecAsm.queued_signal
-            return None
-
         try:
             res = gdb.execute("info program", to_string=True)
         except gdb.error:
             return None
         r = re.search(r"It stopped with signal (\w+),", res)
-        if not r:
+        thread = gdb.selected_thread()
+        signal = ExecAsm.queued_signals.get(thread)
+        if signal is None and r:
+            stopped = re.search(r"Last stopped for thread (?:(\d+)\.)?(\d+) ", res)
+            if stopped:
+                if (int(stopped.group(1) or 1), int(stopped.group(2))) == (thread.inferior.num, thread.num):
+                    signal = r.group(1)
+            else:
+                stopped = re.search(r"Program stopped at (0x[0-9a-f]+)\.", res)
+                if stopped and int(stopped.group(1), 16) == get_register("$pc"):
+                    signal = r.group(1)
+        if signal is None:
             return None
-        signal = r.group(1)
 
         # signals not passed to the program are never delivered
         line = gdb.execute("info signals {:s}".format(signal), to_string=True).splitlines()[1]
         if line.split()[3] != "Yes":
             return None
-
-        # GDB 14 or later shows the last stopped thread in all-stop mode
-        r = re.search(r"Last stopped for thread (?:(\d+)\.)?(\d+) ", res)
-        if not r:
-            # older GDB shows only the stop address, so accept the selected thread if it matches
-            r = re.search(r"Program stopped at (0x[0-9a-f]+)\.", res)
-            if r and int(r.group(1), 16) == get_register("$pc"):
-                return gdb.selected_thread(), signal
-            return None
-        inf_num, num = int(r.group(1) or 1), int(r.group(2))
-        for inf in gdb.inferiors():
-            if inf.num != inf_num:
-                continue
-            for thread in inf.threads():
-                if thread.num == num:
-                    return thread, signal
-        return None
+        return thread, signal
 
     @staticmethod
     def queue_signal(thread, signal):
         current = gdb.selected_thread()
         thread.switch()
-        gdb.execute("queue-signal {:s}".format(signal), to_string=True)
-        current.switch()
+        try:
+            gdb.execute("queue-signal {:s}".format(signal), to_string=True)
+        finally:
+            current.switch()
         return
 
     def close_stdout(self):
+        EventHooking.gef_on_stop_unhook(EventHandler.hook_stop_handler)
         if self.debug:
             return
 
@@ -101537,13 +101544,12 @@ class ExecAsm:
         f = open("/dev/null", "w")
         os.dup2(f.fileno(), self.stdout)
         f.close()
-        EventHooking.gef_on_stop_unhook(EventHandler.hook_stop_handler)
         return
 
     def revert_stdout(self):
+        EventHooking.gef_on_stop_hook(EventHandler.hook_stop_handler)
         if self.debug:
             return
-        EventHooking.gef_on_stop_hook(EventHandler.hook_stop_handler)
         gdb.flush() # discard the buffered stop messages while executing
         os.dup2(self.stdout_bak, self.stdout)
         os.close(self.stdout_bak)
@@ -101608,27 +101614,28 @@ class ExecAsm:
         return
 
     def exec_code(self, check_complete=False):
+        if not gdb.selected_thread().is_stopped():
+            raise gdb.error("Cannot execute instructions in a running thread")
+
         # backup
         d = self.get_state()
         self.thread = gdb.selected_thread()
         self.stops.clear()
         stop_signal = self.get_stop_signal()
 
-        # modify code, regs
-        self.modify_regs()
-        self.modify_code(d["pc"])
-
         # do not deliver the pending stop signal or let other threads pass it while executing
-        if stop_signal:
-            self.queue_signal(stop_signal[0], "0")
-            scheduler_locking = gdb.parameter("scheduler-locking")
-            gdb.execute("set scheduler-locking on", to_string=True)
+        scheduler_locking = gdb.parameter("scheduler-locking")
+        gdb.execute("set scheduler-locking on", to_string=True)
 
         # exec
         stop_handler = self.stops.append
         self.close_stdout()
         EventHooking.gef_on_stop_hook(stop_handler)
         try:
+            self.modify_regs()
+            self.modify_code(d["pc"])
+            if stop_signal:
+                self.queue_signal(stop_signal[0], "0")
             if self.debug:
                 gdb.execute("context")
             if self.use_bp:
@@ -101655,12 +101662,10 @@ class ExecAsm:
             if check_complete and gdb.selected_thread() != self.thread:
                 self.thread.switch()
             self.revert_stdout()
+            gdb.execute("set scheduler-locking {:s}".format(scheduler_locking), to_string=True)
             if stop_signal:
-                gdb.execute("set scheduler-locking {:s}".format(scheduler_locking), to_string=True)
                 self.queue_signal(*stop_signal)
-                if ExecAsm.queued_signal is None:
-                    EventHooking.gef_on_continue_hook(ExecAsm.clear_queued_signal)
-                ExecAsm.queued_signal = stop_signal
+                ExecAsm.queued_signals[stop_signal[0]] = stop_signal[1]
             self.revert_state(d)
 
         return ret
@@ -196827,6 +196832,8 @@ class Gef:
         gdb.execute("save gdb-index {:s}".format(GEF_TEMP_DIR)) # don't use {!r}
 
         # gdb events configuration
+        gdb.execute("define hookpost-queue-signal\n"
+                    "python __import__({!r}).ExecAsm.clear_queued_signal(None)\nend".format(__name__))
         EventHooking.gef_on_continue_hook(EventHandler.continue_handler)
         if hasattr(gdb.events, "selected_context"):
             EventHooking.gef_on_selected_context_hook(EventHandler.selected_context_handler)
