@@ -72396,9 +72396,9 @@ class KernelAddressHeuristicFinder:
         def busy_head(node, min_len):
             # `struct vmap_node` starts with `pool[MAX_VA_SIZE_PAGES]`, then `pool_lock` and
             # `skip_populate`, then `busy.root` and `busy.head`. The gap before `busy` depends
-            # on `sizeof(spinlock_t)`, which grows with the lock debug options.
+            # on `sizeof(spinlock_t)`, which grows with the lock debug options (0x90 on PREEMPT_RT with LOCK_STAT).
             base = node + current_arch.ptrsize * 3 * 256
-            for i in range(16):
+            for i in range(32):
                 head = base + current_arch.ptrsize * i
                 if is_double_link_list(head, min_len=min_len):
                     return head
@@ -72439,10 +72439,17 @@ class KernelAddressHeuristicFinder:
                     KernelAddressHeuristicFinderUtil.x64_x86_mov_reg_const(res, read_valid=True),
                 )
             elif is_x86_32():
-                # Static vmap_nodes[]: find_vmap_area reads busy.root.rb_node directly.
-                direct_heads = (
-                    root + current_arch.ptrsize
-                    for root in KernelAddressHeuristicFinderUtil.x64_x86_dword_ptr_src(res, read_valid=True)
+                # Static vmap_nodes[]: find_vmap_area reads busy.root.rb_node directly,
+                # or via the node base made by `lea` (e.g., `lea edi,[eax-0x3d88b8c0]` for `single`).
+                direct_heads = itertools.chain(
+                    (
+                        root + current_arch.ptrsize
+                        for root in KernelAddressHeuristicFinderUtil.x64_x86_dword_ptr_src(res, read_valid=True)
+                    ),
+                    filter(None, (
+                        busy_head(node, 5)
+                        for node in KernelAddressHeuristicFinderUtil.x64_lea_reg_const(res, read_valid=True)
+                    )),
                 )
                 g = itertools.chain(
                     KernelAddressHeuristicFinderUtil.x86_dword_ptr_ds(res, read_valid=True),
@@ -72486,8 +72493,8 @@ class KernelAddressHeuristicFinder:
         # different sections, which puts the latter out of reach of a forward scan.
         for name in ("insert_vmap_area_augment", "free_vmap_area"):
             for addr in Ksym.get_addrs(name, match="split"):
-                # ARM keeps the constant in a literal pool and reads it ~210 instructions in
-                res = KernelAddressHeuristicFinderUtil.disassemble_until_next_symbol(addr, 500)
+                # ARM keeps the constant in a literal pool and reads it ~210 instructions in (~600 with KASAN)
+                res = KernelAddressHeuristicFinderUtil.disassemble_until_next_symbol(addr, 1000)
                 if is_x86_64() or is_x86_32():
                     g = KernelAddressHeuristicFinderUtil.x64_x86_any_const(res)
                 elif is_arm64():
@@ -72619,10 +72626,12 @@ class KernelAddressHeuristicFinder:
                         v = int(re.search(r"0x\w+", src).group(0), 16)
                     elif mnemonic == "movt" and dst in regs and re.search(r"0x\w+", src):
                         v = (regs[dst] & 0xffff) | (int(re.search(r"0x\w+", src).group(0), 16) << 16)
-                    elif mnemonic == "add" and re.fullmatch(r"(\w+),\s*#(\w+)", src):
+                    elif mnemonic in ("add", "sub") and re.fullmatch(r"(\w+),\s*#(\w+)", src):
+                        # ARM32 may derive the head from a neighbor (e.g., `sub r2, r2, #16` from `vmap_lazy_nr`)
                         base, imm = re.fullmatch(r"(\w+),\s*#(\w+)", src).groups()
                         if base in regs:
-                            v = AddressUtil.normalize_address(regs[base] + int(imm, 0))
+                            imm = int(imm, 0) if mnemonic == "add" else -int(imm, 0)
+                            v = AddressUtil.normalize_address(regs[base] + imm)
                     elif mnemonic == "ldr" and re.match(r"\[pc,\s*#(\d+)\]", src):
                         pc = int(re.match(r"\s*(?:=>)?\s*(0x[0-9a-f]+)", line).group(1), 16)
                         v = read_int_from_memory(pc + 8 + int(re.match(r"\[pc,\s*#(\d+)\]", src).group(1)), safe=True)
@@ -72630,6 +72639,43 @@ class KernelAddressHeuristicFinder:
                         regs[dst] = v
                     elif mnemonic in ("stxr", "stlxr", "strex", "stlex") or not non_writer.match(mnemonic):
                         regs.pop(dst, None)
+        return None
+
+    @staticmethod
+    @Decorator.switch_to_intel_syntax
+    def get_purge_vmap_area_list():
+        # plan 1 (directly)
+        if KernelAddressHeuristicFinder.USE_DIRECTLY:
+            x = Ksym.get_addr("purge_vmap_area_list")
+            if x:
+                return x
+
+        kversion = Kernel.version()
+        if kversion is None or not "5.11" <= kversion < "6.9":
+            return None
+
+        # plan 2 (available v5.11~v6.8)
+        # free_vmap_area_noflush() adds an area to the list, and __purge_vmap_area_lazy() detaches it.
+        # The latter also hands the areas to free_vmap_area_list, the only other list_head they touch.
+        free_vmap_area_list = KernelAddressHeuristicFinder.get_free_vmap_area_list()
+        for name in ("free_vmap_area_noflush", "__purge_vmap_area_lazy"):
+            for addr in Ksym.get_addrs(name, match="split"):
+                res = KernelAddressHeuristicFinderUtil.disassemble_until_next_symbol(addr, 300)
+                if is_x86_64() or is_x86_32():
+                    g = KernelAddressHeuristicFinderUtil.x64_x86_any_const(res)
+                elif is_arm64():
+                    g = itertools.chain(
+                        KernelAddressHeuristicFinderUtil.aarch64_adrp_add(res),
+                        KernelAddressHeuristicFinderUtil.aarch64_adrp_add_add(res),
+                    )
+                elif is_arm32():
+                    g = itertools.chain(
+                        KernelAddressHeuristicFinderUtil.arm32_movw_movt(res),
+                        KernelAddressHeuristicFinderUtil.arm32_ldr_pc_relative(res),
+                    )
+                for x in g:
+                    if x != free_vmap_area_list and is_double_link_list(x):
+                        return x
         return None
 
     @staticmethod
@@ -158238,8 +158284,11 @@ class VmallocDumpCommand(GenericCommand, BufferingOutput):
         "+---------------------+    | ...        |",
         "                           +------------+",
         "",
-        "`unpurged` is an area freed lazily but still linked to vmap_area_list (~v5.3).",
+        "`unpurged` is an area freed lazily but not purged yet. It is still linked to vmap_area_list (~v5.3),",
+        "or linked to vmap_purge_list (v5.4~v5.10), purge_vmap_area_list (v5.11~v6.8) or vmap_nodes[i].lazy.head (v6.9~).",
+        "`pooled` is a purged area kept in vmap_nodes[i].pool[] for reuse (v6.9~).",
         "`free` is an unallocated range of the vmalloc space, not a history of vfree().",
+        "--hexdump-used and --telescope-used skip VM_IOREMAP areas, since reading device registers may have side effects.",
     ]
     _note_ = "\n".join(_note_)
 
@@ -158323,13 +158372,15 @@ class VmallocDumpCommand(GenericCommand, BufferingOutput):
         # vmap_area->flags (~v5.3)
         self.offset_va_flags = self.offset_list - current_arch.ptrsize * 4
 
-        # vmap_area->purge_list (~v5.3)
+        # vmap_area->purge_list (~v5.10)
         self.offset_purge_list = self.offset_list + current_arch.ptrsize * 2
 
         # vm_struct->flags
         self.offset_flags = current_arch.ptrsize * 3
 
         self.vmap_area_lists = []
+        self.lazy_lists = []
+        self.vmap_nodes = []
         self.sizeof_vmap_node = None
         if kversion is None:
             pass
@@ -158337,13 +158388,18 @@ class VmallocDumpCommand(GenericCommand, BufferingOutput):
             x = KernelAddressHeuristicFinder.get_vmap_area_list()
             if x:
                 self.vmap_area_lists.append(("vmap_area_list", x))
+            if "5.11" <= kversion:
+                x = KernelAddressHeuristicFinder.get_purge_vmap_area_list()
+                if x:
+                    self.lazy_lists.append(("purge_vmap_area_list", x))
         else:
             x = KernelAddressHeuristicFinder.get_vmap_nodes_busy_head()
             if x:
                 self.vmap_area_lists = self.get_vmap_nodes_busy_heads(x)
+                self.lazy_lists = self.get_vmap_nodes_lazy_heads(x)
 
-        # v4.7~v5.3 keep lazily freed areas in vmap_area_list until purged
-        if kversion and "4.7" <= kversion < "5.4":
+        # v4.7~v5.10 link lazily freed areas to vmap_purge_list, and ~v5.3 keep them in vmap_area_list too
+        if kversion and "4.7" <= kversion < "5.11":
             self.vmap_purge_list = KernelAddressHeuristicFinder.get_vmap_purge_list()
         else:
             self.vmap_purge_list = None
@@ -158360,19 +158416,20 @@ class VmallocDumpCommand(GenericCommand, BufferingOutput):
     def get_vmap_nodes_busy_heads(self, head):
         heads = [("vmap_nodes[0].busy.head", head)]
 
-        # 32-bit kernels have only one node
-        if is_32bit():
-            return heads
-
         # vmap_nodes[0] starts at the pool array, and `busy` is behind `pool_lock` (see get_vmap_nodes_busy_head)
         ptrsize = current_arch.ptrsize
-        for i in range(16):
+        for i in range(32):
             node = head - ptrsize * (3 * 256 + i)
             if self.is_vmap_node(node, None):
                 break
         else:
             return heads
         busy_offset = head - node
+        self.vmap_nodes = [node]
+
+        # 32-bit kernels have only one node
+        if is_32bit():
+            return heads
 
         # sizeof(struct vmap_node) depends on spinlock_t and work_struct, so find vmap_nodes[1]
         start = node + busy_offset + ptrsize * 2
@@ -158396,7 +158453,38 @@ class VmallocDumpCommand(GenericCommand, BufferingOutput):
             node_i = node + self.sizeof_vmap_node * i
             if not self.is_vmap_node(node_i, busy_offset):
                 break
+            self.vmap_nodes.append(node_i)
             heads.append(("vmap_nodes[{:d}].busy.head".format(i), node_i + busy_offset))
+        return heads
+
+    def get_vmap_nodes_lazy_heads(self, head):
+        if not self.vmap_nodes:
+            return []
+
+        # `lazy` follows `busy` (struct rb_list { root; head; lock; }). The gap between pool[] and `busy.head` tells
+        # sizeof(spinlock_t) only up to ptrsize, so try both. The wrong one is `lazy.root` or `lazy.head.prev`.
+        ptrsize = current_arch.ptrsize
+        busy_offset = head - self.vmap_nodes[0]
+        gap = busy_offset - ptrsize * (3 * 256 + 1)
+        for lazy_offset in (busy_offset + ptrsize * 2 + gap, busy_offset + ptrsize * 3 + gap):
+            if is_double_link_list(self.vmap_nodes[0] + lazy_offset):
+                break
+        else:
+            return []
+        return [("vmap_nodes[{:d}].lazy.head".format(i), node + lazy_offset) for i, node in enumerate(self.vmap_nodes)]
+
+    def get_vmap_nodes_pool_heads(self):
+        heads = []
+        ptrsize = current_arch.ptrsize
+        for i, node in enumerate(self.vmap_nodes):
+            try:
+                data = slice_unpack(read_memory(node, ptrsize * 3 * 256), ptrsize)
+            except gdb.MemoryError:
+                continue
+            for j in range(256):
+                head = node + ptrsize * 3 * j
+                if data[j * 3] != head:
+                    heads.append(("vmap_nodes[{:d}].pool[{:d}].head".format(i, j), head))
         return heads
 
     def is_vmap_node(self, node, busy_offset):
@@ -158439,11 +158527,19 @@ class VmallocDumpCommand(GenericCommand, BufferingOutput):
         if self.sizeof_vmap_node:
             self.quiet_info("sizeof(vmap_node): {:#x}".format(self.sizeof_vmap_node))
 
-        if kversion and "4.7" <= kversion < "5.4":
+        if kversion and "4.7" <= kversion < "5.11":
             if self.vmap_purge_list:
                 self.quiet_info("vmap_purge_list: {:#x}".format(self.vmap_purge_list))
             else:
                 self.quiet_err("Could not find vmap_purge_list")
+
+        if kversion and "5.11" <= kversion:
+            if self.lazy_lists:
+                for name, head in self.lazy_lists:
+                    self.quiet_info("{:s}: {:#x}".format(name, head))
+            else:
+                name = "purge_vmap_area_list" if kversion < "6.9" else "vmap_nodes[0].lazy.head"
+                self.quiet_err("Could not find {:s}".format(name))
 
         if kversion and "5.2" <= kversion:
             if self.free_vmap_area_list:
@@ -158455,6 +158551,7 @@ class VmallocDumpCommand(GenericCommand, BufferingOutput):
         self.quiet_info("offsetof(vmap_area, vm): {:#x}".format(self.offset_vm))
         if kversion and kversion < "5.4":
             self.quiet_info("offsetof(vmap_area, flags): {:#x}".format(self.offset_va_flags))
+        if kversion and kversion < "5.11":
             self.quiet_info("offsetof(vmap_area, purge_list): {:#x}".format(self.offset_purge_list))
         self.quiet_info("offsetof(vm_struct, flags): {:#x}".format(self.offset_flags))
         return
@@ -158475,20 +158572,26 @@ class VmallocDumpCommand(GenericCommand, BufferingOutput):
             return unpurged, "unreadable at {:#x}".format(vmap_area if unpurged else self.vmap_purge_list)
         return unpurged, None
 
-    def parse_vmap_area_list(self, head, used, unpurged=()):
+    def parse_vmap_area_list(self, head, state, unpurged=()):
+        lh = KernelListHead(head, self.offset_list)
+        areas, error = self.parse_vmap_areas(lh.iter_entries(), state, unpurged)
+        if lh.broken:
+            return areas, "{:s} at {:#x}".format(lh.broken_reason, lh.broken_at)
+        return areas, error
+
+    def parse_vmap_areas(self, vmap_areas, state, unpurged=()):
         kversion = Kernel.version()
 
         areas = []
-        lh = KernelListHead(head, self.offset_list)
-        for vmap_area in lh.iter_entries():
+        for vmap_area in vmap_areas:
             va_start = read_int_from_memory(vmap_area, safe=True)
             va_end = read_int_from_memory(vmap_area + current_arch.ptrsize, safe=True)
             if va_start is None or va_end is None:
                 return areas, "unreadable at {:#x}".format(vmap_area)
             va_size = va_end - va_start
 
-            if not used:
-                areas.append(["free", va_start, va_end, va_size, None])
+            if state != "in-use":
+                areas.append([state, va_start, va_end, va_size, None])
                 continue
 
             vm = read_int_from_memory(vmap_area + self.offset_vm, safe=True)
@@ -158508,9 +158611,6 @@ class VmallocDumpCommand(GenericCommand, BufferingOutput):
             else:
                 flags = 0
             areas.append(["in-use", va_start, va_end, va_size, flags])
-
-        if lh.broken:
-            return areas, "{:s} at {:#x}".format(lh.broken_reason, lh.broken_at)
         return areas, None
 
     def dump_areas(self, areas):
@@ -158537,7 +158637,9 @@ class VmallocDumpCommand(GenericCommand, BufferingOutput):
             ))
 
             # dump chunks
-            if self.args.hexdump_used and used:
+            # VM_IOREMAP maps device registers, whose reads may have side effects (QEMU dies reading the ARM GIC)
+            dumpable = used and not (flags or 0) & 0x1
+            if self.args.hexdump_used and dumpable:
                 try:
                     peeked_data = read_memory(va_start, self.args.hexdump_used)
                     h = hexdump(peeked_data, 0x10, base=va_start, unit=current_arch.ptrsize)
@@ -158545,7 +158647,7 @@ class VmallocDumpCommand(GenericCommand, BufferingOutput):
                 except Exception:
                     pass
 
-            if self.args.telescope_used and used:
+            if self.args.telescope_used and dumpable:
                 n = self.args.telescope_used // current_arch.ptrsize
                 for i in range(n):
                     try:
@@ -158583,26 +158685,42 @@ class VmallocDumpCommand(GenericCommand, BufferingOutput):
 
         # parse used list
         if not args.only_freed:
-            if self.vmap_area_lists:
-                unpurged, error = self.parse_vmap_purge_list()
-                if error:
-                    errors.append("vmap_purge_list: the walk stopped ({:s})".format(error))
-                elif kversion and "4.7" <= kversion < "5.4" and not self.vmap_purge_list:
-                    errors.append("Could not find vmap_purge_list; lazily freed areas may be shown as in-use")
-                for name, head in self.vmap_area_lists:
-                    parsed, error = self.parse_vmap_area_list(head, used=True, unpurged=unpurged)
-                    areas += parsed
-                    if error:
-                        errors.append("{:s}: the walk stopped ({:s})".format(name, error))
-            else:
+            unpurged, error = self.parse_vmap_purge_list()
+            if error:
+                errors.append("vmap_purge_list: the walk stopped ({:s})".format(error))
+            elif kversion and "4.7" <= kversion < "5.4" and not self.vmap_purge_list:
+                errors.append("Could not find vmap_purge_list; lazily freed areas may be shown as in-use")
+            elif kversion and "5.4" <= kversion < "5.11" and not self.vmap_purge_list:
+                errors.append("Could not find vmap_purge_list; lazily freed areas are not shown")
+            elif kversion and "5.11" <= kversion and not self.lazy_lists:
+                name = "purge_vmap_area_list" if kversion < "6.9" else "vmap_nodes[0].lazy.head"
+                errors.append("Could not find {:s}; lazily freed areas are not shown".format(name))
+
+            if not self.vmap_area_lists:
                 name = "vmap_area_list" if kversion and kversion < "6.9" else "vmap_nodes[0].busy.head"
                 errors.append("Could not find {:s}".format(name))
+
+            # v5.4~v5.10 link lazily freed areas only to vmap_purge_list
+            if kversion and "5.4" <= kversion < "5.11":
+                parsed, error = self.parse_vmap_areas(unpurged, "unpurged")
+                areas += parsed
+                if error:
+                    errors.append("vmap_purge_list: the walk stopped ({:s})".format(error))
+
+            lists = [(name, head, "in-use") for name, head in self.vmap_area_lists]
+            lists += [(name, head, "unpurged") for name, head in self.lazy_lists]
+            lists += [(name, head, "pooled") for name, head in self.get_vmap_nodes_pool_heads()]
+            for name, head, state in lists:
+                parsed, error = self.parse_vmap_area_list(head, state, unpurged)
+                areas += parsed
+                if error:
+                    errors.append("{:s}: the walk stopped ({:s})".format(name, error))
 
         # parse free list
         if not args.only_used:
             if kversion and "5.2" <= kversion:
                 if self.free_vmap_area_list:
-                    parsed, error = self.parse_vmap_area_list(self.free_vmap_area_list, used=False)
+                    parsed, error = self.parse_vmap_area_list(self.free_vmap_area_list, "free")
                     areas += parsed
                     if error:
                         errors.append("free_vmap_area_list: the walk stopped ({:s})".format(error))

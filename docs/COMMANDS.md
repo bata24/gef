@@ -12041,8 +12041,11 @@ Simplified vmalloc structure:
 +---------------------+    | ...        |
                            +------------+
 
-`unpurged` is an area freed lazily but still linked to vmap_area_list (~v5.3).
+`unpurged` is an area freed lazily but not purged yet. It is still linked to vmap_area_list (~v5.3),
+or linked to vmap_purge_list (v5.4~v5.10), purge_vmap_area_list (v5.11~v6.8) or vmap_nodes[i].lazy.head (v6.9~).
+`pooled` is a purged area kept in vmap_nodes[i].pool[] for reuse (v6.9~).
 `free` is an unallocated range of the vmalloc space, not a history of vfree().
+--hexdump-used and --telescope-used skip VM_IOREMAP areas, since reading device registers may have side effects.
 ```
 
 # 06-i. Qemu-system/KGDB Cooperation - Linux Dynamic Inspection
