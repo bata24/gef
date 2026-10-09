@@ -183763,12 +183763,15 @@ class XUntilCommand(GenericCommand):
             stop_addr = args.address
         # `until` command has a bug(?) because sometimes fail,
         # so we should use `tbreak` and `continue` instead of `until`.
-        SimpleInternalTemporaryBreakpoint(loc=stop_addr)
-
-        if args.from_wrapper:
-            gdb.execute("continue") # do not use c wrapper because cycle reference
-        else:
-            gdb.execute("c")
+        bp = SimpleInternalTemporaryBreakpoint(loc=stop_addr)
+        try:
+            if args.from_wrapper:
+                gdb.execute("continue") # do not use c wrapper because cycle reference
+            else:
+                gdb.execute("c")
+        finally:
+            if bp.is_valid():
+                bp.delete()
         return
 
 
