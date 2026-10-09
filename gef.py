@@ -43354,9 +43354,14 @@ class ExtraAddCommand(ExtraCommand):
         super().__init__(prefix=False)
         return
 
-    @Decorator.parse_args
-    def do_invoke(self, args):
-        ContextExtraCommand.context_extra_commands.append(" ".join(args.cmd))
+    def do_invoke(self, argv):
+        if not argv or argv in (["-h"], ["--help"]):
+            self.usage()
+            return
+        command = self.command_args.strip()
+        if len(argv) == 1:
+            command = argv[0]
+        ContextExtraCommand.context_extra_commands.append(command)
         return
 
 
@@ -43402,7 +43407,7 @@ class ExtraRemoveCommand(ExtraCommand):
 
     @Decorator.parse_args
     def do_invoke(self, args):
-        if args.index < len(ContextExtraCommand.context_extra_commands):
+        if 0 <= args.index < len(ContextExtraCommand.context_extra_commands):
             ContextExtraCommand.context_extra_commands.pop(args.index)
         else:
             err("Out of index")
