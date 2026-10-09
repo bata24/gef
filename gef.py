@@ -492,10 +492,11 @@ class Cache:
             Ksym.reset()
 
         # gdb cache
-        try:
-            gdb.execute("maintenance flush dcache", to_string=True)
-        except Exception:
-            pass
+        if not new_objfile:
+            try:
+                gdb.execute("maintenance flush dcache", to_string=True)
+            except Exception:
+                pass
         return
 
     @staticmethod
@@ -34700,29 +34701,13 @@ class KernelChecksecCommand(GenericCommand):
             gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Enabled", "bold red"), additional))
             return
 
-        # __start_BTF is not present in runtime kallsyms when CONFIG_KALLSYMS_ALL=n.
-        kernel_img = Ksym.kernel_img
-        endian = Endian.endian_str()
-        header_fmt = endian + "HBBIIIII"
-        header_size = struct.calcsize(header_fmt)
-        magic = struct.pack(endian + "H", 0xeb9f)
-        pos = kernel_img.find(magic)
-        while 0 <= pos <= len(kernel_img) - header_size:
-            _, version, _, header_len, type_off, type_len, str_off, str_len = struct.unpack_from(header_fmt, kernel_img, pos)
-            payload_end = header_len + max(type_off + type_len, str_off + str_len)
-            str_start = pos + header_len + str_off
-            # The BTF of BPF programs embedded in the kernel (e.g. bpf_preload) does not have task_struct.
-            if (version == 1 and header_len >= header_size and type_len and str_len
-                    and type_off + type_len <= str_off and payload_end <= len(kernel_img) - pos
-                    and kernel_img[str_start:str_start + 1] == b"\0"
-                    and b"\0task_struct\0" in kernel_img[str_start:str_start + str_len]):
-                btf_addr = Ksym.ro_base + pos
-                additional = "inferred: BTF header: Found at {:#x} (__start_BTF hidden)".format(btf_addr)
-                gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Enabled", "bold red"), additional))
-                return
-            pos = kernel_img.find(magic, pos + 1)
+        btf_range = KtypesCommand.get_btf_addr()
+        if btf_range is not None:
+            additional = "inferred: BTF header: Found at {:#x} (__start_BTF hidden)".format(btf_range[0])
+            gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Enabled", "bold red"), additional))
+            return
 
-        if kernel_img:
+        if Ksym.kernel_img:
             additional = "inferred: BTF header: Not found"
             gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Disabled", "bold green"), additional))
             return
@@ -158863,50 +158848,60 @@ class KtypesCommand(GenericCommand, BufferingOutput):
     def check_command(self):
         try:
             GefUtil.which("bpftool")
-            if is_x86():
-                GefUtil.which("gcc")
-            elif is_arm64():
-                GefUtil.which("aarch64-linux-gnu-gcc")
-            elif is_arm32():
-                GefUtil.which("arm-linux-gnueabihf-gcc")
-            elif is_riscv64():
-                GefUtil.which("riscv64-linux-gnu-gcc")
-            elif is_riscv32():
-                try:
-                    GefUtil.which("riscv32-linux-gnu-gcc")
-                except FileNotFoundError:
-                    GefUtil.which("riscv64-linux-gnu-gcc")
         except FileNotFoundError as e:
             err("{}".format(e))
             return False
         return True
 
-    def get_base_name(self):
-        Ksym.switch_inferior()
-        if Ksym.kernel_version is None:
-            Ksym.get_kallsyms()
-            if Ksym.kernel_version is None:
-                err("Could not find kernel version")
-                return None
+    def get_base_name(self, content):
+        abi = "{}-{}-{}-{}".format(current_arch.arch, current_arch.mode, current_arch.ptrsize, Endian.endian_str())
+        h = hashlib.sha256(abi.encode() + content).hexdigest()
+        return os.path.join(GEF_TEMP_DIR, "ktypes-" + h)
 
-        h = hashlib.sha256(String.str2bytes(Ksym.version_string)).hexdigest()[-16:]
-        major, minor, patch = Ksym.kernel_version
-        base_name = os.path.join(GEF_TEMP_DIR, "ktypes-{:d}.{:d}.{:d}-{:s}".format(major, minor, patch, h))
-        return base_name
-
-    def get_btf_addr(self):
+    @staticmethod
+    def get_btf_addr():
         start = Ksym.get_addr("__start_BTF")
-        if start is None:
-            return None
         end = Ksym.get_addr("__stop_BTF")
-        return start, end - start
+        if start is not None or end is not None:
+            if start is None or end is None or end <= start:
+                return None
+            return start, end - start
+
+        kernel_img = Ksym.kernel_img
+        endian = Endian.endian_str()
+        header_fmt = endian + "HBBIIIII"
+        header_size = struct.calcsize(header_fmt)
+        magic = struct.pack(endian + "H", 0xeb9f)
+        pos = kernel_img.find(magic)
+        while 0 <= pos <= len(kernel_img) - header_size:
+            header = struct.unpack_from(header_fmt, kernel_img, pos)
+            version = header[1]
+            header_len, type_off, type_len, str_off, str_len = header[3:]
+            payload_end = header_len + max(type_off + type_len, str_off + str_len)
+            str_start = pos + header_len + str_off
+            # The BTF of BPF programs embedded in the kernel (e.g. bpf_preload) does not have task_struct.
+            if (version == 1 and header_len >= header_size and type_len and str_len
+                    and type_off + type_len <= str_off and payload_end <= len(kernel_img) - pos
+                    and kernel_img[str_start:str_start + 1] == b"\0"
+                    and b"\0task_struct\0" in kernel_img[str_start:str_start + str_len]):
+                return Ksym.ro_base + pos, payload_end
+            pos = kernel_img.find(magic, pos + 1)
+
+        return None
 
     def build_header_file(self):
-        base_path = self.get_base_name()
-        if base_path is None:
+        addr_size = self.get_btf_addr()
+        if addr_size is None:
+            warn("Could not find a valid BTF range; this kernel may be CONFIG_DEBUG_INFO_BTF=n")
             return None
 
-        raw_path = base_path + ".raw"
+        try:
+            content = bytes(read_memory(*addr_size))
+        except gdb.MemoryError:
+            err("Memory read error")
+            return None
+
+        base_path = self.get_base_name(content)
         header_path = base_path + ".h"
 
         # use cache
@@ -158914,24 +158909,23 @@ class KtypesCommand(GenericCommand, BufferingOutput):
             if os.path.exists(header_path) and os.path.getsize(header_path) > 0:
                 return header_path
 
-        # get address of /sys/kernel/btf/vmlinux
-        addr_size = self.get_btf_addr()
-        if addr_size is None:
-            err("Could not find /sys/kernel/btf/vmlinux")
-            return None
-
-        # read /sys/kernel/btf/vmlinux
-        try:
-            content = read_memory(*addr_size)
-        except gdb.MemoryError:
-            err("Memory read error")
-            return None
-
-        # save it
-        open(raw_path, "wb").write(content)
-
-        # raw -> vmlinux.h
-        GefUtil.os_system("{!r} btf dump file {!r} format c > {!r}".format(GefUtil.which("bpftool"), raw_path, header_path))
+        with tempfile.TemporaryDirectory(dir=GEF_TEMP_DIR) as directory:
+            raw_path = os.path.join(directory, "vmlinux.btf")
+            temp_header = os.path.join(directory, "vmlinux.h")
+            with open(raw_path, "wb") as file:
+                file.write(content)
+            cmd = [GefUtil.which("bpftool"), "btf", "dump", "file", raw_path, "format", "c"]
+            try:
+                header = GefUtil.gef_execute_external(cmd)
+            except subprocess.CalledProcessError as e:
+                err("Failed to convert BTF: {:s}".format(String.bytes2str(e.output).strip()))
+                return None
+            if not re.search(r"^(struct|union|enum|typedef)\s", header, re.MULTILINE):
+                err("BTF contains no type declarations")
+                return None
+            with open(temp_header, "w") as file:
+                file.write(header)
+            os.replace(temp_header, header_path)
         return header_path
 
     @Decorator.parse_args
@@ -158944,7 +158938,6 @@ class KtypesCommand(GenericCommand, BufferingOutput):
 
         header_path = self.build_header_file()
         if header_path is None:
-            warn("This kernel may be CONFIG_DEBUG_INFO_BTF=n")
             return
 
         content = open(header_path, "r").read()
@@ -158967,48 +158960,62 @@ class KtypesLoadCommand(KtypesCommand):
     parser.add_argument("-r", "--rescan", action="store_true", help="do not use cache.")
     _syntax_ = parser.format_help()
 
+    def get_compiler(self):
+        try:
+            if is_x86_64():
+                return GefUtil.which("gcc"), []
+            if is_x86_32():
+                return GefUtil.which("gcc"), ["-m32"]
+            if is_arm64():
+                return GefUtil.which("aarch64-linux-gnu-gcc"), []
+            if is_arm32():
+                return GefUtil.which("arm-linux-gnueabihf-gcc"), []
+            if is_riscv64():
+                return GefUtil.which("riscv64-linux-gnu-gcc"), []
+            if is_riscv32():
+                try:
+                    return GefUtil.which("riscv32-linux-gnu-gcc"), []
+                except FileNotFoundError:
+                    return GefUtil.which("riscv64-linux-gnu-gcc"), ["-march=rv32imac", "-mabi=ilp32"]
+        except FileNotFoundError as e:
+            err("{}".format(e))
+        return None
+
+    def check_command(self):
+        return super().check_command() and self.get_compiler() is not None
+
     def build_obj_file(self, header_path):
-        source_path = header_path[:-2] + ".c"
-        obj_path = source_path[:-2]
+        compiler = self.get_compiler()
+        if compiler is None:
+            return None
+        gcc, opt = compiler
+        with open(header_path, "rb") as file:
+            content = file.read()
+        options = [gcc] + opt + ["-std=c11", "-g", "-O0", "-fno-eliminate-unused-debug-types", "-w", "-c"]
+        h = hashlib.sha256(content + repr(options).encode()).hexdigest()
+        obj_path = header_path[:-2] + "-" + h + ".o"
 
         # use cache
         if not self.args.rescan:
             if os.path.exists(obj_path) and os.path.getsize(obj_path) > 0:
                 return obj_path
 
-        # copy vmlinux.h to vmlinux.c
-        open(source_path, "wb").write(open(header_path, "rb").read())
-
-        try:
-            if is_x86_64():
-                gcc, opt = GefUtil.which("gcc"), ""
-            elif is_x86_32():
-                gcc, opt = GefUtil.which("gcc"), "-m32"
-            elif is_arm64():
-                gcc, opt = GefUtil.which("aarch64-linux-gnu-gcc"), ""
-            elif is_arm32():
-                gcc, opt = GefUtil.which("arm-linux-gnueabihf-gcc"), ""
-            elif is_riscv64():
-                gcc, opt = GefUtil.which("riscv64-linux-gnu-gcc"), ""
-            elif is_riscv32():
-                try:
-                    gcc, opt = GefUtil.which("riscv32-linux-gnu-gcc"), ""
-                except FileNotFoundError:
-                    gcc, opt = GefUtil.which("riscv64-linux-gnu-gcc"), "-march=rv32imac -mabi=ilp32"
-        except FileNotFoundError as e:
-            err("{}".format(e))
-            return None
-
-        # build with debug types
-        cmd = "{!r} {:s} -std=c11 -g -O0 -fno-eliminate-unused-debug-types -w -c {!r} -o {!r}".format(
-            gcc, opt, source_path, obj_path,
-        )
-        info(cmd)
-        GefUtil.os_system(cmd)
-
-        if not os.path.exists(obj_path):
-            return None
-
+        with tempfile.TemporaryDirectory(dir=GEF_TEMP_DIR) as directory:
+            source_path = os.path.join(directory, "vmlinux.c")
+            temp_obj = os.path.join(directory, "vmlinux.o")
+            with open(source_path, "wb") as file:
+                file.write(content)
+            cmd = options + [source_path, "-o", temp_obj]
+            info(" ".join(shlex.quote(arg) for arg in cmd))
+            result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True)
+            if result.returncode != 0:
+                err("Failed to compile kernel types: {:s}".format(result.stdout.strip()))
+                return None
+            elf = Elf.get_elf(temp_obj)
+            if elf is None or not elf.has_debuginfo():
+                err("Compiled object contains no debug information")
+                return None
+            os.replace(temp_obj, obj_path)
         return obj_path
 
     @Decorator.parse_args
@@ -159021,7 +159028,6 @@ class KtypesLoadCommand(KtypesCommand):
 
         header_path = self.build_header_file()
         if header_path is None:
-            warn("This kernel may be CONFIG_DEBUG_INFO_BTF=n")
             return
 
         obj_path = self.build_obj_file(header_path)
@@ -159030,7 +159036,7 @@ class KtypesLoadCommand(KtypesCommand):
             return
 
         info(obj_path)
-        gdb.execute("file {:s}".format(obj_path), to_string=True)
+        gdb.execute("file {!r}".format(obj_path), to_string=True)
         info("Kernel types are loaded successfully")
         return
 
