@@ -14780,6 +14780,25 @@ class Path:
         return filepath
 
     @staticmethod
+    def get_binary_map_path():
+        maps = ProcessMap.get_process_maps() or []
+        entry = (Auxv.get_auxiliary_values() or {}).get("AT_ENTRY")
+        if entry is not None:
+            for section in maps:
+                if section.page_start <= entry < section.page_end and section.path:
+                    if not section.path.startswith("[") or section.path == "[code]":
+                        return section.path
+
+        paths = [Path.get_remote_filepath(), Path.get_filepath(append_proc_root_prefix=False)]
+        if is_qemu_user():
+            paths.append("[code]")
+        for path in paths:
+            if path and any(section.path == path for section in maps):
+                return path
+        err("Could not determine the executable memory map")
+        return None
+
+    @staticmethod
     def get_filepath_from_info_proc():
         try:
             response = gdb.execute("info proc", to_string=True)
