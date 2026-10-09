@@ -40518,82 +40518,87 @@ class ContextTraceCommand(GenericCommand):
         level = max(len(frames) - nb_lines_before - 1, 0)
         current_frame = frames[level]
 
-        while current_frame and nb_lines:
-            current_frame.select()
-            if not current_frame.is_valid():
-                break
+        try:
+            while current_frame and nb_lines:
+                current_frame.select()
+                if not current_frame.is_valid():
+                    break
 
-            # address and symbol
-            pc = current_frame.pc()
-            if is_x86_16():
-                pc = current_arch.real2phys("$cs", pc)
-            sym = Symbol.get_symbol_string(pc, nosymbol_string=" <NO_SYMBOL>")
+                # address and symbol
+                pc = current_frame.pc()
+                if is_x86_16():
+                    pc = current_arch.real2phys("$cs", pc)
+                sym = Symbol.get_symbol_string(pc, nosymbol_string=" <NO_SYMBOL>")
 
-            # frame name
-            """
-            Frame names (=current_frmae.name()) and symbols (=Symbol.get_symbol_string(current_frame.pc()))
-            usually match, but sometimes they don't. This is an example.
+                # frame name
+                """
+                Frame names (=current_frmae.name()) and symbols (=Symbol.get_symbol_string(current_frame.pc()))
+                usually match, but sometimes they don't. This is an example.
 
-            gef> bt
-            #0  __futex_abstimed_wait_common64
-            #1  __futex_abstimed_wait_common
-            #2  __GI___futex_abstimed_wait_cancelable64
-            #3  0x00007f0635e93f1b in __pthread_cond_wait_common
-            #4  ___pthread_cond_timedwait64
+                gef> bt
+                #0  __futex_abstimed_wait_common64
+                #1  __futex_abstimed_wait_common
+                #2  __GI___futex_abstimed_wait_cancelable64
+                #3  0x00007f0635e93f1b in __pthread_cond_wait_common
+                #4  ___pthread_cond_timedwait64
 
-            gef> context trace
-            [#0] 0x7f0635e9119d <__futex_abstimed_wait_cancelable64+0xed>
-            [#1] 0x7f0635e9119d <__futex_abstimed_wait_cancelable64+0xed>
-            [#2] 0x7f0635e9119d <__futex_abstimed_wait_cancelable64+0xed>
-            [#3] 0x7f0635e93f1b <pthread_cond_timedwait+0x23b>
-            [#4] 0x7f0635e93f1b <pthread_cond_timedwait+0x23b>
+                gef> context trace
+                [#0] 0x7f0635e9119d <__futex_abstimed_wait_cancelable64+0xed>
+                [#1] 0x7f0635e9119d <__futex_abstimed_wait_cancelable64+0xed>
+                [#2] 0x7f0635e9119d <__futex_abstimed_wait_cancelable64+0xed>
+                [#3] 0x7f0635e93f1b <pthread_cond_timedwait+0x23b>
+                [#4] 0x7f0635e93f1b <pthread_cond_timedwait+0x23b>
 
-            This likely occurs when each symbol exists but is inlined into a single function by optimization.
-            Therefore, the frame name is also displayed if it differs.
-            """
-            try:
-                ret = Symbol.gdb_get_location(pc)
-                if ret is None:
+                This likely occurs when each symbol exists but is inlined into a single function by optimization.
+                Therefore, the frame name is also displayed if it differs.
+                """
+                try:
+                    ret = Symbol.gdb_get_location(pc)
+                    if ret is None:
+                        frame_name = None
+                    elif ret[0] == current_frame.name():
+                        frame_name = None
+                    else:
+                        frame_name = Instruction.smartify_text(current_frame.name())
+                except (ValueError, gdb.error):
                     frame_name = None
-                elif ret[0] == current_frame.name():
-                    frame_name = None
+
+                # current index coloring
+                if current_frame == orig_frame:
+                    idx = Color.colorify("#{:d}".format(level), "bold green")
+                    current_frame_symbol = "*"
                 else:
-                    frame_name = Instruction.smartify_text(current_frame.name())
-            except (ValueError, gdb.error):
-                frame_name = None
+                    idx = Color.colorify("#{:d}".format(level), "bold magenta")
+                    current_frame_symbol = " "
 
-            # current index coloring
-            if current_frame == orig_frame:
-                idx = Color.colorify("#{:d}".format(level), "bold green")
-                current_frame_symbol = "*"
-            else:
-                idx = Color.colorify("#{:d}".format(level), "bold magenta")
-                current_frame_symbol = " "
+                # print
+                if frame_name:
+                    frame_name = Color.colorify(frame_name, "bold yellow")
+                    gef_print("[{:s}{:s}] {!s}{:s} (frame name: {:s})".format(
+                        current_frame_symbol, idx, ProcessMap.lookup_address(pc), sym, frame_name,
+                    ), redirect=redirect)
+                else:
+                    gef_print("[{:s}{:s}] {!s}{:s}".format(
+                        current_frame_symbol, idx, ProcessMap.lookup_address(pc), sym,
+                    ), redirect=redirect)
 
-            # print
-            if frame_name:
-                frame_name = Color.colorify(frame_name, "bold yellow")
-                gef_print("[{:s}{:s}] {!s}{:s} (frame name: {:s})".format(
-                    current_frame_symbol, idx, ProcessMap.lookup_address(pc), sym, frame_name,
-                ), redirect=redirect)
-            else:
-                gef_print("[{:s}{:s}] {!s}{:s}".format(
-                    current_frame_symbol, idx, ProcessMap.lookup_address(pc), sym,
-                ), redirect=redirect)
+                # go next frame
+                try:
+                    current_frame = current_frame.older()
+                except gdb.error:
+                    break
+                level += 1
+                nb_lines -= 1
 
-            # go next frame
+            if nb_lines == 0:
+                if current_frame:
+                    gef_print("[...]", redirect=redirect)
+
+        finally:
             try:
-                current_frame = current_frame.older()
+                orig_frame.select()
             except gdb.error:
-                break
-            level += 1
-            nb_lines -= 1
-
-        if nb_lines == 0:
-            if current_frame:
-                gef_print("[...]", redirect=redirect)
-
-        orig_frame.select()
+                pass
         return
 
     @Decorator.parse_args
