@@ -145853,6 +145853,8 @@ class BaseNCodec:
         while value:
             value, digit = divmod(value, len(charset))
             result = charset[digit] + result
+        if len(charset) == 58:
+            result = charset[0] * (len(data) - len(data.lstrip(b"\0"))) + result
         return result.encode("latin-1")
 
     @staticmethod
@@ -145864,12 +145866,16 @@ class BaseNCodec:
         if len(charset) == 10:
             return BaseNCodec.int_to_bytes(int(text))
         value = 0
-        for char in text.replace("\r\n", "").replace("\n", ""):
+        text = text.replace("\r\n", "").replace("\n", "")
+        for char in text:
             try:
                 digit = charset.index(char)
             except ValueError as exc:
                 raise ValueError("Invalid base character {!r}".format(char)) from exc
             value = value * len(charset) + digit
+        if len(charset) == 58:
+            zeros = len(text) - len(text.lstrip(charset[0]))
+            return b"\0" * zeros + (BaseNCodec.int_to_bytes(value) if value else b"")
         return BaseNCodec.int_to_bytes(value)
 
     @staticmethod
@@ -145955,17 +145961,16 @@ class BaseNCodec:
         check_xor, check_sum, check_rot = values
         for value in data:
             check_xor ^= value
-            check_sum += value + 1
-            check_rot <<= 1
-            if check_rot & 0x80000000:
-                check_rot += 1
-            check_rot += value
+            check_sum = (check_sum + value + 1) & 0xffffffff
+            check_rot = ((check_rot << 1 | check_rot >> 31) + value) & 0xffffffff
         return check_xor, check_sum, check_rot
 
     @staticmethod
     def encode85(data, name):
         if not data:
             return b""
+        if name == "base85-zeromq" and len(data) % 4:
+            raise ValueError("Incorrect Z85 length")
         charset = BaseNCodec.BASE85[name]
         xbtoa = name == "base85-xbtoa"
         checks = (0, 0, 0)
@@ -145974,7 +145979,7 @@ class BaseNCodec:
         for pos in range(0, len(data), 4):
             block = data[pos:pos + 4]
             if xbtoa:
-                checks = BaseNCodec.update_xbtoa(checks, block)
+                checks = BaseNCodec.update_xbtoa(checks, block.ljust(4, b"\0"))
             if len(block) == 4 and block == b"\0\0\0\0" and charset.endswith("stu"):
                 result += "z"
                 continue
@@ -146005,6 +146010,8 @@ class BaseNCodec:
     def decode85(text, name):
         if not text:
             return b""
+        if name == "base85-zeromq" and len(text) % 5:
+            raise ValueError("Incorrect Z85 length")
         charset = BaseNCodec.BASE85[name]
         xbtoa = name == "base85-xbtoa"
         expected = None
@@ -146018,7 +146025,7 @@ class BaseNCodec:
             if not re.match(r"^xbtoa\s+[bB]egin\n", text) or match is None:
                 raise ValueError("Bad or missing xbtoa parameters")
             expected = match.groups()
-            text = "".join(text.split("\n")[1:-1]).replace(" ", "")
+            text = "".join(text[:match.start()].split("\n")[1:]).replace(" ", "")
         result = bytearray()
         padding = 0
         pos = 0
@@ -146039,16 +146046,22 @@ class BaseNCodec:
                     values.append(charset.index(char))
                 except ValueError as exc:
                     raise ValueError("Invalid base85 character {!r}".format(char)) from exc
-            values.extend([255] * padding)
+            if len(block) == 1 or xbtoa and padding:
+                raise ValueError("Incorrect base85 length")
+            values.extend([84] * padding)
             value = sum(digit * 85 ** power for power, digit in enumerate(reversed(values)))
-            result.extend((value & 0xffffffff).to_bytes(4, "big"))
+            if value > 0xffffffff:
+                raise ValueError("Base85 value exceeds 32 bits")
+            result.extend(value.to_bytes(4, "big"))
             pos += 5
         if padding:
             del result[-padding:]
         if xbtoa:
             data_len = int(expected[0])
-            del result[data_len:]
+            if len(result) != align(data_len, 4):
+                raise ValueError("Incorrect xbtoa length")
             checks = BaseNCodec.update_xbtoa((0, 0, 0), result)
+            del result[data_len:]
             actual = (str(len(result)), format(len(result), "x")) + tuple(format(value, "x") for value in checks)
             if tuple(value.lower() for value in expected) != actual:
                 raise ValueError("An xbtoa check value does not match")
@@ -146103,7 +146116,7 @@ class BaseNCodec:
             pending = -1
         if pending >= 0:
             result.append((value | pending << bit_count) & 255)
-        return bytes(result).rstrip(b"\0")
+        return bytes(result)
 
     @staticmethod
     def encode100(data):
@@ -146173,8 +146186,7 @@ class BaseNCodec:
             else:
                 chunks.append(value)
         bits = "".join(format(value, "07b") for value in chunks)
-        result = bytes(int(bits[pos:pos + 8].ljust(8, "0"), 2) for pos in range(0, len(bits), 8))
-        return result.rstrip(b"\0")
+        return bytes(int(bits[pos:pos + 8], 2) for pos in range(0, len(bits) - 7, 8))
 
     @staticmethod
     def encode(data, name):
@@ -146342,7 +146354,7 @@ class BaseNDecodeValueCommand(BaseNDecodeCommand):
         else:
             try:
                 value = codecs.escape_decode(args.value)[0]
-            except binascii.Error:
+            except (binascii.Error, ValueError):
                 err('Could not decode "\\xXX" encoded string')
                 return
 
@@ -146482,7 +146494,7 @@ class BaseNEncodeValueCommand(BaseNEncodeCommand):
         else:
             try:
                 value = codecs.escape_decode(args.value)[0]
-            except binascii.Error:
+            except (binascii.Error, ValueError):
                 err('Could not decode "\\xXX" encoded string')
                 return
 
