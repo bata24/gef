@@ -32114,14 +32114,21 @@ class ProcessSearchCommand(GenericCommand, BufferingOutput):
     @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware"))
     @Decorator.require_arch_set
     def do_invoke(self, args):
-        if args.pattern:
-            pattern = re.compile(args.pattern)
-        else:
-            pattern = re.compile("^.*$")
+        if args.attach is not None:
+            if args.attach <= 0:
+                err("Invalid PID")
+                return
+            gdb.execute("attach {:d}".format(args.attach))
+            return
+
+        try:
+            pattern = re.compile(args.pattern or "^.*$")
+        except re.error as e:
+            err("Invalid regex: {!s}".format(e))
+            return
 
         self.out = []
         for process in self.get_processes():
-            pid = int(process["pid"])
             command = process["command"]
             process["user"] = process["user"].ljust(8)
 
@@ -32163,12 +32170,6 @@ class ProcessSearchCommand(GenericCommand, BufferingOutput):
                 ]
                 if any(command.startswith(x) for x in skip_list):
                     continue
-
-            if args.attach:
-                if args.attach == pid:
-                    ok("Attaching to process='{:s}' pid={:d}".format(process["command"], pid))
-                    gdb.execute("attach {:d}".format(pid))
-                    return
 
             line = [process[i] for i in ("pid", "user", "cpu", "mem", "tty", "command")]
             self.out.append("\t".join(line))
