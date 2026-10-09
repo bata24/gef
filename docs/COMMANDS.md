@@ -12302,13 +12302,15 @@ Dump bget allocator of OPTEE-Trusted-App.
 ### Syntax
 
 ```text
-usage: optee-bget-dump [-h] [-hh] [-m OFFSET_malloc_ctx] [-n] [-v]
+usage: optee-bget-dump [-h] [-hh] [-m OFFSET_malloc_ctx] [--ta-bits {32,64}] [--ta-base TA_BASE] [-n] [-v]
 
 options:
   -h, --help            show this help message and exit
   -hh, --help-simple    show help without ASCII diagram.
   -m, --malloc_ctx OFFSET_malloc_ctx
                         The offset of `malloc_ctx` at OPTEE-TA.
+  --ta-bits {32,64}     TA ABI width (required when the TA ABI cannot be read from user execution state).
+  --ta-base TA_BASE     select the executable user mapping starting at this address.
   -n, --no-pager        do not use the pager.
   -v, --verbose         verbose output.
 ```
@@ -12322,6 +12324,10 @@ optee-bget-dump 0x2a408
 ### Notes
 
 ```text
+TA ABI is independent of the TEE core ABI. Use --ta-bits 32 for an AArch32 TA on an AArch64 core.
+Without --ta-bits, the ABI is taken from the current user execution state; core stops require it explicitly.
+Use --ta-base to select a mapping when ldelf is absent or more than two executable mappings are present.
+
 Simplified heap structure:
 
 +-malloc_ctx-------------------+         +-freed chunk------------+
