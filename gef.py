@@ -195436,7 +195436,7 @@ class GefArchListCommand(GenericCommand, BufferingOutput):
         queue = Architecture.__subclasses__()
         while queue:
             cls = queue.pop(0)
-            self.dump_arch_info(cls())
+            self.dump_arch_info(cls)
             queue = cls.__subclasses__() + queue
         return
 
