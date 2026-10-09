@@ -63400,11 +63400,12 @@ class U2dCommand(GenericCommand):
     @Decorator.parse_args
     def do_invoke(self, args):
         try:
-            if "." in args.value:
+            try:
+                n = int(args.value, 0)
+            except ValueError:
                 n = float(args.value)
                 self.convert_from_float(n)
             else:
-                n = int(args.value, 0)
                 self.convert_from_int(n)
         except Exception:
             self.usage()
