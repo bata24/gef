@@ -147428,6 +147428,9 @@ class IiCommand(GenericCommand):
         return
 
     def ii(self, addr, N):
+        if N <= 0:
+            err("Invalid instruction count")
+            return
         try:
             res = read_memory(addr, N)
         except gdb.MemoryError:
@@ -147440,26 +147443,16 @@ class IiCommand(GenericCommand):
 
         # get instruction size
         try:
-            res = gdb.execute("x/{:d}i {:#x}".format(N + 1, addr), to_string=True)
+            insns = gdb.selected_frame().architecture().disassemble(addr, count=N)
+            res = gdb.execute("x/{:d}i {:#x}".format(N, addr), to_string=True)
         except gdb.MemoryError:
             err("Memory read error")
             return
-        addrs = []
-        for line in res.splitlines():
-            # [x64]
-            # "=> 0x55555555aac0:      endbr64"
-            # "   0x55555555aac4:      xor    ebp,ebp"
-            # [arm]
-            # "=> 0x10340 <_start>:    mov.w   r11, #0"
-            # "   0x10344 <_start+4>:  mov.w   lr, #0"
-            r = re.search("^(?:=>|  ) (0x[0-9a-f]+)", line)
-            if r:
-                addrs.append(int(r.group(1), 16))
-        insn_sizes = [(x, y - x) for x, y in zip(addrs[:-1], addrs[1:])]
+        insn_sizes = [(insn["addr"], insn["length"]) for insn in insns]
         max_insn_width = max([x[1] for x in insn_sizes], default=0) * 2
 
         # print
-        for i, line in enumerate(res.splitlines()[:-1]):
+        for i, line in enumerate(res.splitlines()):
             addr, size = insn_sizes[i]
             bytecode = read_memory(addr, size)
             bytecode_hex = "{:{:d}s}".format(bytecode.hex(), max_insn_width)
@@ -147498,7 +147491,15 @@ class IiCommand(GenericCommand):
         else:
             location = args.location
 
-        self.ii(location, args.length)
+        if (is_arm32() or is_arm32_cortex_m()) and location & 1:
+            original_mode = gdb.parameter("arm force-mode")
+            try:
+                gdb.execute("set arm force-mode thumb", to_string=True)
+                self.ii(location & ~1, args.length)
+            finally:
+                gdb.execute("set arm force-mode " + original_mode, to_string=True)
+        else:
+            self.ii(location, args.length)
         return
 
 
