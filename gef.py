@@ -48597,6 +48597,14 @@ class TraceFreeBreakpoint(gdb.Breakpoint):
         self.output_filename = output_filename
         return
 
+    def check_nested(self, to_free):
+        tid = Pid.get_tid()
+        for bp in gdb.breakpoints():
+            if isinstance(bp, TraceFreeRetBreakpoint) and bp.enabled:
+                if bp.tid == tid and bp.to_free == to_free.value:
+                    return True
+        return False
+
     def search_allocated_index(self, addr):
         if addr.value == 0:
             return None
@@ -48708,12 +48716,15 @@ class TraceFreeBreakpoint(gdb.Breakpoint):
     def stop(self):
         Cache.reset_gef_caches()
 
-        # count up action index
-        GlibcHeapTracerCommand.heap_action_index += 1
-
         # get the address to free
         _, to_free = current_arch.get_ith_parameter(0)
         to_free = ProcessMap.lookup_address(to_free)
+
+        if self.check_nested(to_free):
+            return False
+
+        # count up action index
+        GlibcHeapTracerCommand.heap_action_index += 1
 
         # show information
         self.show_information(to_free)
@@ -48732,10 +48743,32 @@ class TraceFreeBreakpoint(gdb.Breakpoint):
         if ret:
             return True # break
 
+        TraceFreeRetBreakpoint(to_free)
+
         # update list
         self.update_list(to_free)
 
         return False
+
+
+class TraceFreeRetBreakpoint(gdb.FinishBreakpoint):
+    """Track the lifetime of a free() call."""
+
+    def __init__(self, to_free):
+        super().__init__(gdb.newest_frame(), internal=True)
+        self.silent = True
+        self.tid = Pid.get_tid()
+        self.to_free = to_free.value
+        GlibcHeapTracerCommand.clear_disabled_breakpoints()
+        return
+
+    def stop(self):
+        self.enabled = False
+        return False
+
+    def out_of_scope(self):
+        self.enabled = False
+        return
 
 
 @register_command
@@ -48768,6 +48801,7 @@ class GlibcHeapTracerCommand(GenericCommand):
         names = [
             "TraceMallocRetBreakpoint",
             "TraceReallocRetBreakpoint",
+            "TraceFreeRetBreakpoint",
         ]
 
         for bp in gdb.breakpoints():
