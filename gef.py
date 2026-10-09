@@ -9117,7 +9117,7 @@ class PPC(Architecture):
         return Architecture.flags_to_human(val, self.flags_table)
 
     def is_syscall(self, insn):
-        return insn.mnemonic in ["sc"]
+        return insn.mnemonic in ["sc", "scv"]
 
     def is_call(self, insn):
         conditions = [
@@ -39123,7 +39123,7 @@ class ContextRegistersCommand(GenericCommand):
             return
 
         regvalue = get_register(current_arch.return_register)
-        if not AddressUtil.is_msb_on(regvalue):
+        if regvalue is None:
             return
 
         try:
@@ -39135,14 +39135,33 @@ class ContextRegistersCommand(GenericCommand):
         if not current_arch.is_syscall(insn_prev):
             return
 
-        val = u2i(regvalue, current_arch.ptrsize * 8)
-        val = -val
+        if is_mips32() or is_mips64() or is_mipsn32() or is_alpha():
+            failed = get_register("$a3")
+            val = regvalue
+        elif is_nios2():
+            failed = get_register("$r7")
+            val = regvalue
+        elif (is_ppc32() or is_ppc64()) and insn_prev.mnemonic != "scv":
+            flags = get_register("$cr")
+            failed = flags is not None and flags & (1 << 28)
+            val = regvalue
+        elif is_sparc32() or is_sparc32plus() or is_sparc64():
+            flags = get_register(current_arch.flag_register)
+            mask = (1 << 32) | (1 << 36) if is_sparc64() else 1 << 20
+            failed = flags is not None and flags & mask
+            val = regvalue
+        else:
+            val = -u2i(regvalue, current_arch.ptrsize * 8)
+            failed = 0 < val <= 4095
+        if not failed:
+            return
 
         einfo = ErrnoCommand.get_errno_dict().get(val)
         if not einfo:
             return
 
-        line = "{:s}: -{:d} {:s} ({:s})".format(current_arch.return_register, val, einfo[0], einfo[1])
+        value = u2i(regvalue, current_arch.ptrsize * 8)
+        line = "{:s}: {:d} {:s} ({:s})".format(current_arch.return_register, value, einfo[0], einfo[1])
         gef_print(line, redirect=redirect)
         return
 
