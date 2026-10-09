@@ -188478,105 +188478,184 @@ class UefiOvmfInfoCommand(GenericCommand):
     _category_ = "06-k. Qemu-system/KGDB Cooperation - Other"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("--start", type=AddressUtil.parse_address, help="physical search range start (inclusive).")
+    parser.add_argument("--end", type=AddressUtil.parse_address, help="physical search range end (exclusive).")
+    parser.add_argument("--pei-bits", type=int, choices=(32, 64), help="override PEI table pointer width.")
+    parser.add_argument("--dxe-bits", type=int, choices=(32, 64), help="override DXE table pointer width.")
     _syntax_ = parser.format_help()
 
     def check_crc32(self, addr):
-        size = u32(read_physmem(addr + 0xc, 0x4))
-        if size <= 0 or size > 0x1000:
+        header = read_physmem(addr, 0x18)
+        if header is None or len(header) != 0x18:
             return False
-        crc = u64(read_physmem(addr + 0x10, 0x8))
-        if crc == 0:
+        size = u32(header[0xc:0x10])
+        if not 0x18 <= size <= 0x1000 or u32(header[0x14:0x18]) != 0:
             return False
-        data = read_physmem(addr, 0x10)
-        data += p64(0x0) # crc is zero when calculate
-        data += read_physmem(addr + 0x18, size - 0x18)
-        calculated_crc = binascii.crc32(data)
+        data = read_physmem(addr, size)
+        if data is None or len(data) != size:
+            return False
+        crc = u32(header[0x10:0x14])
+        calculated_crc = binascii.crc32(data[:0x10] + p32(0) + data[0x14:])
         return calculated_crc == crc
 
-    def read_structure(self, addr, structure):
-        d = {}
-        d["__addr"] = addr
+    def read_structure(self, addr, structure, ptrsize=8, limit=None):
+        d = {"__addr": addr}
+        offset = 0
         for size, name in structure:
-            unpack = u32 if size == 4 else u64
-            d[name] = unpack(read_physmem(addr, size))
-            addr += size
+            size = ptrsize if size == "ptr" else size
+            offset = align(offset, size)
+            if limit is not None and offset + size > limit:
+                break
+            data = read_physmem(addr + offset, size)
+            if data is None or len(data) != size:
+                raise gdb.MemoryError("Cannot read UEFI field at {:#x}".format(addr + offset))
+            d[name] = int.from_bytes(data, "little")
+            offset += size
         return d
 
-    def search_mem_backward_iter(self, keyword):
-        # search backward for keyword from higher address (0x800_0000), it is more likely
-        START_ADDR = 0x800_0000
-        END_ADDR = 0x700_0000
-        current = START_ADDR - get_pagesize()
-        data = read_physmem(current, get_pagesize())
-        end = len(data)
-
-        while True:
-            pos = data.rfind(keyword, 0, end)
-            if pos == -1:
-                current -= get_pagesize()
-                if current < END_ADDR:
-                    return None
-
-                if len(data) > len(keyword):
-                    size_of_cut = len(data) - len(keyword)
-                    data = read_physmem(current, get_pagesize()) + data[:len(keyword)]
-                    end += get_pagesize() - size_of_cut
-                else:
-                    data = read_physmem(current, get_pagesize()) + data
-                    end += get_pagesize()
+    def get_search_ranges(self):
+        try:
+            output = gdb.execute("monitor info mtree -f", to_string=True)
+        except gdb.error:
+            output = ""
+        ranges = []
+        for view in re.split(r"(?m)^FlatView", output):
+            if 'AS "memory"' not in view:
                 continue
-            yield current + pos
-            end = pos
+            for start, end in re.findall(r"(?m)^\s*([0-9a-f]+)-([0-9a-f]+) \([^)]*, ram\):", view):
+                ranges.append((int(start, 16), int(end, 16) + 1))
+        if self.args.start is not None and self.args.end is not None:
+            return [(self.args.start, self.args.end)]
+        return sorted({(max(start, self.args.start or 0), min(end, self.args.end or end))
+                       for start, end in ranges if end > (self.args.start or 0)
+                       and (self.args.end is None or start < self.args.end)})
+
+    def search_mem_backward_iter(self, keyword):
+        if self.table_candidates is None:
+            self.table_candidates = {}
+            self.memory_scan = self.scan_memory_iter()
+        yield from self.table_candidates.get(keyword, [])
+        for candidates in self.memory_scan:
+            for key, addresses in candidates.items():
+                self.table_candidates.setdefault(key, []).extend(addresses)
+            yield from candidates.get(keyword, [])
+
+    def scan_memory_iter(self):
+        keywords = (b"PEI SERV", b"BOOTSERV", b"DXE_SERV", b"IBI SYST", b"RUNTSERV", b"mmap")
+        ranges = self.get_search_ranges()
+        if not ranges:
+            warn("Could not determine RAM ranges; specify --start and --end")
+        for start, end in sorted(ranges, reverse=True):
+            tail = b""
+            while end > start:
+                current = max(start, end - 0x100000)
+                try:
+                    data = read_physmem(current, end - current)
+                except (gdb.MemoryError, ValueError, OverflowError):
+                    data = None
+                if data is None or len(data) != end - current:
+                    warn("Could not read physical range {:#x}-{:#x}".format(current, end))
+                    tail = b""
+                    end = current
+                    continue
+                block = data + tail
+                candidates = {}
+                for key in keywords:
+                    pos = len(block)
+                    while True:
+                        pos = block.rfind(key, 0, pos)
+                        if pos < 0:
+                            break
+                        if pos < len(data):
+                            candidates.setdefault(key, []).append(current + pos)
+                tail = data[:7]
+                end = current
+                yield candidates
+
+    def read_table(self, keyword, structure, min_fields):
+        phase = "pei" if keyword == b"PEI SERV" else "dxe"
+        bits = getattr(self.args, phase + "_bits")
+        for addr in self.search_mem_backward_iter(keyword):
+            try:
+                header = self.read_structure(addr, structure[:5])
+                size = header["Hdr.HeaderSize"]
+                if not 0x18 <= size <= 0x1000 or header["Hdr.Reserved"] or not header["Hdr.Revision"]:
+                    continue
+                if phase == "pei":
+                    if header["Hdr.CRC32"] != 0 and not self.check_crc32(addr):
+                        continue
+                elif not self.check_crc32(addr):
+                    continue
+                widths = []
+                for width in (4, 8):
+                    offset = 0
+                    offsets = []
+                    for field_size in (field[0] for field in structure):
+                        field_size = width if field_size == "ptr" else field_size
+                        offset = align(offset, field_size) + field_size
+                        offsets.append(offset)
+                    if offsets[4 + min_fields] <= size <= offsets[-1] and size % width == 0:
+                        widths.append(width)
+                if bits is not None:
+                    ptrsize = bits // 8
+                elif len(widths) == 1:
+                    ptrsize = widths[0]
+                else:
+                    warn("Cannot determine {:s} table width at {:#x}; specify --{:s}-bits".format(
+                        phase.upper(), addr, phase))
+                    continue
+                result = self.read_structure(addr, structure, ptrsize, size)
+                result["__ptrsize"] = ptrsize
+                return result
+            except (gdb.MemoryError, ValueError, OverflowError):
+                continue
+        return None
 
     def read_gPs(self):
-        for _addr in self.search_mem_backward_iter(b"PEI SERV"): # EFI_TABLE_HEADER.Signature
-            addr = _addr
-            break
-        else:
-            return None
         structure = [
             [8, "Hdr.Signature"],
             [4, "Hdr.Revision"],
             [4, "Hdr.HeaderSize"],
             [4, "Hdr.CRC32"],
             [4, "Hdr.Reserved"],
-            [8, "InstallPpi"],
-            [8, "ReInstallPpi"],
-            [8, "LocatePpi"],
-            [8, "NotifyPpi"],
-            [8, "GetBootMode"],
-            [8, "SetBootMode"],
-            [8, "GetHobList"],
-            [8, "CreateHob"],
-            [8, "FfsFindNextVolume"],
-            [8, "FfsFindNextFile"],
-            [8, "FfsFindSectionData"],
-            [8, "InstallPeiMemory"],
-            [8, "AllocatePages"],
-            [8, "AllocatePool"],
-            [8, "CopyMem"],
-            [8, "SetMem"],
-            [8, "ReportStatusCode"],
-            [8, "ResetSystem"],
-            [8, "CpuIo"],
-            [8, "PciCfg"],
-            [8, "FfsFindFileByName"],
-            [8, "FfsGetFileInfo"],
-            [8, "FfsGetVolumeInfo"],
-            [8, "RegisterForShadow"],
-            [8, "FindSectionData3"],
-            [8, "FfsGetFileInfo2"],
-            [8, "ResetSystem2"],
-            [8, "FreePages"],
+            ["ptr", "InstallPpi"],
+            ["ptr", "ReInstallPpi"],
+            ["ptr", "LocatePpi"],
+            ["ptr", "NotifyPpi"],
+            ["ptr", "GetBootMode"],
+            ["ptr", "SetBootMode"],
+            ["ptr", "GetHobList"],
+            ["ptr", "CreateHob"],
+            ["ptr", "FfsFindNextVolume"],
+            ["ptr", "FfsFindNextFile"],
+            ["ptr", "FfsFindSectionData"],
+            ["ptr", "InstallPeiMemory"],
+            ["ptr", "AllocatePages"],
+            ["ptr", "AllocatePool"],
+            ["ptr", "CopyMem"],
+            ["ptr", "SetMem"],
+            ["ptr", "ReportStatusCode"],
+            ["ptr", "ResetSystem"],
+            ["ptr", "CpuIo"],
+            ["ptr", "PciCfg"],
+            ["ptr", "FfsFindFileByName"],
+            ["ptr", "FfsGetFileInfo"],
+            ["ptr", "FfsGetVolumeInfo"],
+            ["ptr", "RegisterForShadow"],
+            ["ptr", "FindSectionData3"],
+            ["ptr", "FfsGetFileInfo2"],
+            ["ptr", "ResetSystem2"],
+            ["ptr", "FreePages"],
         ]
-        return self.read_structure(addr, structure)
+        return self.read_table(b"PEI SERV", structure, 20)
 
     def dump_gPs(self):
         self.gPs = self.read_gPs()
         if self.gPs is None:
             err("Could not find gPs")
             return
-        info("gPs: {:#x}".format(self.gPs["__addr"]))
+        info("gPs: {:#x} ({:d}-bit)".format(
+            self.gPs["__addr"], self.gPs["__ptrsize"] * 8))
         for k, v in self.gPs.items():
             if k.startswith("__"):
                 continue
@@ -188587,70 +188666,66 @@ class UefiOvmfInfoCommand(GenericCommand):
         return
 
     def read_mBootServices(self):
-        for addr in self.search_mem_backward_iter(b"BOOTSERV"): # EFI_TABLE_HEADER.Signature
-            if self.check_crc32(addr):
-                break
-        else:
-            return None
         structure = [
             [8, "Hdr.Signature"],
             [4, "Hdr.Revision"],
             [4, "Hdr.HeaderSize"],
             [4, "Hdr.CRC32"],
             [4, "Hdr.Reserved"],
-            [8, "RaiseTPL"],
-            [8, "RestoreTPL"],
-            [8, "AllocatePages"],
-            [8, "FreePages"],
-            [8, "GetMemoryMap"],
-            [8, "AllocatePool"],
-            [8, "FreePool"],
-            [8, "CreateEvent"],
-            [8, "SetTimer"],
-            [8, "WaitForEvent"],
-            [8, "SignalEvent"],
-            [8, "CloseEvent"],
-            [8, "CheckEvent"],
-            [8, "InstallProtocolInterface"],
-            [8, "ReinstallProtocolInterface"],
-            [8, "UninstallProtocolInterface"],
-            [8, "HandleProtocol"],
-            [8, "Reserved"],
-            [8, "RegisterProtocolNotify"],
-            [8, "LocateHandle"],
-            [8, "LocateDevicePath"],
-            [8, "InstallConfigurationTable"],
-            [8, "LoadImage"],
-            [8, "StartImage"],
-            [8, "Exit"],
-            [8, "UnloadImage"],
-            [8, "ExitBootServices"],
-            [8, "GetNextMonotonicCount"],
-            [8, "Stall"],
-            [8, "SetWatchdogTimer"],
-            [8, "ConnectController"],
-            [8, "DisconnectController"],
-            [8, "OpenProtocol"],
-            [8, "CloseProtocol"],
-            [8, "OpenProtocolInformation"],
-            [8, "ProtocolsPerHandle"],
-            [8, "LocateHandleBuffer"],
-            [8, "LocateProtocol"],
-            [8, "InstallMultipleProtocolInterfaces"],
-            [8, "UninstallMultipleProtocolInterfaces"],
-            [8, "CalculateCrc32"],
-            [8, "CopyMem"],
-            [8, "SetMem"],
-            [8, "CreateEventEx"],
+            ["ptr", "RaiseTPL"],
+            ["ptr", "RestoreTPL"],
+            ["ptr", "AllocatePages"],
+            ["ptr", "FreePages"],
+            ["ptr", "GetMemoryMap"],
+            ["ptr", "AllocatePool"],
+            ["ptr", "FreePool"],
+            ["ptr", "CreateEvent"],
+            ["ptr", "SetTimer"],
+            ["ptr", "WaitForEvent"],
+            ["ptr", "SignalEvent"],
+            ["ptr", "CloseEvent"],
+            ["ptr", "CheckEvent"],
+            ["ptr", "InstallProtocolInterface"],
+            ["ptr", "ReinstallProtocolInterface"],
+            ["ptr", "UninstallProtocolInterface"],
+            ["ptr", "HandleProtocol"],
+            ["ptr", "Reserved"],
+            ["ptr", "RegisterProtocolNotify"],
+            ["ptr", "LocateHandle"],
+            ["ptr", "LocateDevicePath"],
+            ["ptr", "InstallConfigurationTable"],
+            ["ptr", "LoadImage"],
+            ["ptr", "StartImage"],
+            ["ptr", "Exit"],
+            ["ptr", "UnloadImage"],
+            ["ptr", "ExitBootServices"],
+            ["ptr", "GetNextMonotonicCount"],
+            ["ptr", "Stall"],
+            ["ptr", "SetWatchdogTimer"],
+            ["ptr", "ConnectController"],
+            ["ptr", "DisconnectController"],
+            ["ptr", "OpenProtocol"],
+            ["ptr", "CloseProtocol"],
+            ["ptr", "OpenProtocolInformation"],
+            ["ptr", "ProtocolsPerHandle"],
+            ["ptr", "LocateHandleBuffer"],
+            ["ptr", "LocateProtocol"],
+            ["ptr", "InstallMultipleProtocolInterfaces"],
+            ["ptr", "UninstallMultipleProtocolInterfaces"],
+            ["ptr", "CalculateCrc32"],
+            ["ptr", "CopyMem"],
+            ["ptr", "SetMem"],
+            ["ptr", "CreateEventEx"],
         ]
-        return self.read_structure(addr, structure)
+        return self.read_table(b"BOOTSERV", structure, 30)
 
     def dump_mBootServices(self):
         self.mBootServices = self.read_mBootServices()
         if self.mBootServices is None:
             err("Could not find mBootServices")
             return
-        info("mBootServices: {:#x}".format(self.mBootServices["__addr"]))
+        info("mBootServices: {:#x} ({:d}-bit)".format(
+            self.mBootServices["__addr"], self.mBootServices["__ptrsize"] * 8))
         for k, v in self.mBootServices.items():
             if k.startswith("__"):
                 continue
@@ -188661,44 +188736,40 @@ class UefiOvmfInfoCommand(GenericCommand):
         return
 
     def read_mDxeServices(self):
-        for addr in self.search_mem_backward_iter(b"DXE_SERV"): # EFI_TABLE_HEADER.Signature
-            if self.check_crc32(addr):
-                break
-        else:
-            return None
         structure = [
             [8, "Hdr.Signature"],
             [4, "Hdr.Revision"],
             [4, "Hdr.HeaderSize"],
             [4, "Hdr.CRC32"],
             [4, "Hdr.Reserved"],
-            [8, "AddMemorySpace"],
-            [8, "AllocateMemorySpace"],
-            [8, "FreeMemorySpace"],
-            [8, "RemoveMemorySpace"],
-            [8, "GetMemorySpaceDescriptor"],
-            [8, "SetMemorySpaceAttributes"],
-            [8, "GetMemorySpaceMap"],
-            [8, "AddIoSpace"],
-            [8, "AllocateIoSpace"],
-            [8, "FreeIoSpace"],
-            [8, "RemoveIoSpace"],
-            [8, "GetIoSpaceDescriptor"],
-            [8, "GetIoSpaceMap"],
-            [8, "Dispatch"],
-            [8, "Schedule"],
-            [8, "Trust"],
-            [8, "ProcessFirmwareVolume"],
-            [8, "SetMemorySpaceCapabilities"],
+            ["ptr", "AddMemorySpace"],
+            ["ptr", "AllocateMemorySpace"],
+            ["ptr", "FreeMemorySpace"],
+            ["ptr", "RemoveMemorySpace"],
+            ["ptr", "GetMemorySpaceDescriptor"],
+            ["ptr", "SetMemorySpaceAttributes"],
+            ["ptr", "GetMemorySpaceMap"],
+            ["ptr", "AddIoSpace"],
+            ["ptr", "AllocateIoSpace"],
+            ["ptr", "FreeIoSpace"],
+            ["ptr", "RemoveIoSpace"],
+            ["ptr", "GetIoSpaceDescriptor"],
+            ["ptr", "GetIoSpaceMap"],
+            ["ptr", "Dispatch"],
+            ["ptr", "Schedule"],
+            ["ptr", "Trust"],
+            ["ptr", "ProcessFirmwareVolume"],
+            ["ptr", "SetMemorySpaceCapabilities"],
         ]
-        return self.read_structure(addr, structure)
+        return self.read_table(b"DXE_SERV", structure, 17)
 
     def dump_mDxeServices(self):
         self.mDxeServices = self.read_mDxeServices()
         if self.mDxeServices is None:
             err("Could not find mDxeServices")
             return
-        info("mDxeServices: {:#x}".format(self.mDxeServices["__addr"]))
+        info("mDxeServices: {:#x} ({:d}-bit)".format(
+            self.mDxeServices["__addr"], self.mDxeServices["__ptrsize"] * 8))
         for k, v in self.mDxeServices.items():
             if k.startswith("__"):
                 continue
@@ -188709,38 +188780,34 @@ class UefiOvmfInfoCommand(GenericCommand):
         return
 
     def read_mEfiSystemTable(self):
-        for addr in self.search_mem_backward_iter(b"IBI SYST"): # EFI_TABLE_HEADER.Signature
-            if self.check_crc32(addr):
-                break
-        else:
-            return None
         structure = [
             [8, "Hdr.Signature"],
             [4, "Hdr.Revision"],
             [4, "Hdr.HeaderSize"],
             [4, "Hdr.CRC32"],
             [4, "Hdr.Reserved"],
-            [8, "FirmwareVendor"],
-            [8, "FirmwareRevision"],
-            [8, "ConsoleInHandle"],
-            [8, "ConIn"],
-            [8, "ConsoleOutHandle"],
-            [8, "ConOut"],
-            [8, "StandardErrorHandle"],
-            [8, "StdErr"],
-            [8, "RuntimeServices"],
-            [8, "BootServices"],
-            [8, "NumberOfConfigurationTableEntries"],
-            [8, "ConfigurationTable"],
+            ["ptr", "FirmwareVendor"],
+            [4, "FirmwareRevision"],
+            ["ptr", "ConsoleInHandle"],
+            ["ptr", "ConIn"],
+            ["ptr", "ConsoleOutHandle"],
+            ["ptr", "ConOut"],
+            ["ptr", "StandardErrorHandle"],
+            ["ptr", "StdErr"],
+            ["ptr", "RuntimeServices"],
+            ["ptr", "BootServices"],
+            ["ptr", "NumberOfConfigurationTableEntries"],
+            ["ptr", "ConfigurationTable"],
         ]
-        return self.read_structure(addr, structure)
+        return self.read_table(b"IBI SYST", structure, 12)
 
     def dump_mEfiSystemTable(self):
         self.mEfiSystemTable = self.read_mEfiSystemTable()
         if self.mEfiSystemTable is None:
             err("Could not find *gDxeCoreST(=mEfiSystemTable)")
             return
-        info("*gDxeCoreST(=mEfiSystemTable): {:#x}".format(self.mEfiSystemTable["__addr"]))
+        info("*gDxeCoreST(=mEfiSystemTable): {:#x} ({:d}-bit)".format(
+            self.mEfiSystemTable["__addr"], self.mEfiSystemTable["__ptrsize"] * 8))
         for k, v in self.mEfiSystemTable.items():
             if k.startswith("__"):
                 continue
@@ -188751,40 +188818,36 @@ class UefiOvmfInfoCommand(GenericCommand):
         return
 
     def read_mEfiRuntimeServicesTable(self):
-        for addr in self.search_mem_backward_iter(b"RUNTSERV"): # EFI_TABLE_HEADER.Signature
-            if self.check_crc32(addr):
-                break
-        else:
-            return None
         structure = [
             [8, "Hdr.Signature"],
             [4, "Hdr.Revision"],
             [4, "Hdr.HeaderSize"],
             [4, "Hdr.CRC32"],
             [4, "Hdr.Reserved"],
-            [8, "GetTime"],
-            [8, "SetTime"],
-            [8, "GetWakeupTime"],
-            [8, "SetWakeupTime"],
-            [8, "SetVirtualAddressMap"],
-            [8, "ConvertPointer"],
-            [8, "GetVariable"],
-            [8, "GetNextVariableName"],
-            [8, "SetVariable"],
-            [8, "GetNextHighMonotonicCount"],
-            [8, "ResetSystem"],
-            [8, "UpdateCapsule"],
-            [8, "QueryCapsuleCapabilities"],
-            [8, "QueryVariableInfo"],
+            ["ptr", "GetTime"],
+            ["ptr", "SetTime"],
+            ["ptr", "GetWakeupTime"],
+            ["ptr", "SetWakeupTime"],
+            ["ptr", "SetVirtualAddressMap"],
+            ["ptr", "ConvertPointer"],
+            ["ptr", "GetVariable"],
+            ["ptr", "GetNextVariableName"],
+            ["ptr", "SetVariable"],
+            ["ptr", "GetNextHighMonotonicCount"],
+            ["ptr", "ResetSystem"],
+            ["ptr", "UpdateCapsule"],
+            ["ptr", "QueryCapsuleCapabilities"],
+            ["ptr", "QueryVariableInfo"],
         ]
-        return self.read_structure(addr, structure)
+        return self.read_table(b"RUNTSERV", structure, 11)
 
     def dump_mEfiRuntimeServicesTable(self):
         self.mEfiRuntimeServicesTable = self.read_mEfiRuntimeServicesTable()
         if self.mEfiRuntimeServicesTable is None:
             err("Could not find *gDxeCoreRT(=mEfiRuntimeServicesTable)")
             return
-        info("*gDxeCoreRT(=mEfiRuntimeServicesTable): {:#x}".format(self.mEfiRuntimeServicesTable["__addr"]))
+        info("*gDxeCoreRT(=mEfiRuntimeServicesTable): {:#x} ({:d}-bit)".format(
+            self.mEfiRuntimeServicesTable["__addr"], self.mEfiRuntimeServicesTable["__ptrsize"] * 8))
         for k, v in self.mEfiRuntimeServicesTable.items():
             if k.startswith("__"):
                 continue
@@ -188795,47 +188858,75 @@ class UefiOvmfInfoCommand(GenericCommand):
         return
 
     def read_gMemoryMap(self):
-        # gMemoryMap is just around mDxeServices
         if not self.mDxeServices:
             return None
-        base = self.mDxeServices["__addr"] & ~0xf
-
-        for diff in range(-0x1000, 0x1000, 8):
-            addr = base + diff
+        ptrsize = self.mDxeServices["__ptrsize"]
+        structure = [
+            ["ptr", "ForwardLink"],
+            ["ptr", "BackLink"],
+        ]
+        checked = set()
+        for signature_addr in self.search_mem_backward_iter(b"mmap"):
+            if signature_addr % ptrsize:
+                continue
             try:
-                a = u64(read_physmem(addr, 8))
-                b = u64(read_physmem(a + 8, 8))
-                asig = u64(read_physmem(a - 8, 8))
-                c = u64(read_physmem(addr + 8, 8))
-                d = u64(read_physmem(c, 8))
-                csig = u64(read_physmem(c - 8, 8))
-                if addr == b == d and asig == csig == u32(b"mmap"):
-                    break
+                addr = signature_addr + ptrsize
+                seen = set()
+                while addr not in seen and len(seen) < 0x10000:
+                    seen.add(addr)
+                    entry = self.read_Entry(addr)
+                    if entry["Signature"] != u32(b"mmap"):
+                        break
+                    addr = entry["Link.BackLink"]
+                else:
+                    continue
+                if addr in checked:
+                    continue
+                checked.add(addr)
+                head = self.read_structure(addr, structure, ptrsize)
+                first = self.read_Entry(head["ForwardLink"])
+                last = self.read_Entry(head["BackLink"])
+                if first["Signature"] != u32(b"mmap") or last["Signature"] != u32(b"mmap"):
+                    continue
+                if first["Link.BackLink"] != addr or last["Link.ForwardLink"] != addr:
+                    continue
+                current = head["ForwardLink"]
+                previous = addr
+                ranges = []
+                seen = set()
+                while current != addr and current not in seen and len(seen) < 0x10000:
+                    seen.add(current)
+                    entry = self.read_Entry(current)
+                    if (entry["Signature"] != u32(b"mmap") or entry["Link.BackLink"] != previous
+                            or entry["End"] < entry["Start"]):
+                        break
+                    if any(start <= entry["End"] and entry["Start"] <= end for start, end in ranges):
+                        break
+                    ranges.append((entry["Start"], entry["End"]))
+                    previous = current
+                    current = entry["Link.ForwardLink"]
+                if current == addr and previous == head["BackLink"]:
+                    return head
             except (gdb.MemoryError, ValueError, OverflowError):
                 pass
-        else:
-            return None
-
-        structure = [
-            [8, "ForwardLink"],
-            [8, "BackLink"],
-        ]
-        return self.read_structure(addr, structure)
+        return None
 
     def read_Entry(self, addr):
+        ptrsize = self.mDxeServices["__ptrsize"]
+        if addr < ptrsize or addr % ptrsize:
+            raise ValueError("Invalid UEFI memory map link: {:#x}".format(addr))
         structure = [
-            [8, "Signature"],
-            [8, "Link.ForwardLink"],
-            [8, "Link.BackLink"],
-            [4, "FromPages"], # with pad
+            ["ptr", "Signature"],
+            ["ptr", "Link.ForwardLink"],
+            ["ptr", "Link.BackLink"],
+            [1, "FromPages"],
             [4, "Type"],
             [8, "Start"],
             [8, "End"],
             [8, "VirtualStart"],
             [8, "Attribute"],
         ]
-        offset_of_link = 8
-        return self.read_structure(addr - offset_of_link, structure)
+        return self.read_structure(addr - ptrsize, structure, ptrsize)
 
     def dump_memory_map(self):
         self.gMemoryMap = self.read_gMemoryMap()
@@ -188860,7 +188951,7 @@ class UefiOvmfInfoCommand(GenericCommand):
             "EfiMemoryMappedIOPortSpace",
             "EfiPalCode",
             "EfiPersistentMemory",
-            "EfiMaxMemoryType",
+            "EfiUnacceptedMemoryType",
         ]
 
         att_list = {
@@ -188877,6 +188968,7 @@ class UefiOvmfInfoCommand(GenericCommand):
             0x2_0000: "RO",
             0x4_0000: "SPM",
             0x8_0000: "CPU_CRYPTO",
+            0x4000_0000_0000_0000: "ISA_VALID",
             0x8000_0000_0000_0000: "RUNTIME"
         }
 
@@ -188885,6 +188977,9 @@ class UefiOvmfInfoCommand(GenericCommand):
             for k, v in att_list.items():
                 if k & att:
                     s.append(v)
+            unknown = att & ~sum(att_list)
+            if unknown:
+                s.append("UNKNOWN({:#x})".format(unknown))
             return ",".join(s)
 
         fmt = "{:21s} {:10s} {:10s} {:30s} {:s}"
@@ -188893,29 +188988,46 @@ class UefiOvmfInfoCommand(GenericCommand):
 
         current = self.gMemoryMap["ForwardLink"]
         entries = []
+        seen = set()
+        previous = self.gMemoryMap["__addr"]
         while current != self.gMemoryMap["__addr"]:
-            entry = self.read_Entry(current)
+            if current in seen or len(seen) >= 0x10000:
+                err("UEFI memory map cycle or entry limit reached at {:#x}".format(current))
+                break
+            seen.add(current)
+            try:
+                entry = self.read_Entry(current)
+            except (gdb.MemoryError, ValueError, OverflowError) as error:
+                err("Cannot read UEFI memory map entry at {:#x}: {}".format(current, error))
+                break
+            if entry["Signature"] != u32(b"mmap"):
+                err("Signature does not match. Corrupted?")
+                break
+            if entry["Link.BackLink"] != previous or entry["End"] < entry["Start"]:
+                err("Invalid UEFI memory map entry at {:#x}".format(current))
+                break
 
             paddr_s = entry["Start"]
             paddr_e = entry["End"] + 1
             vaddr = entry["VirtualStart"]
             size = paddr_e - paddr_s
             typ = entry["Type"]
-            memtype = type_names[entry["Type"]]
+            memtype = type_names[typ] if typ < len(type_names) else "Unknown({:#x})".format(typ)
             att = entry["Attribute"]
             att_s = att2str(att)
             entry_text = "{:#010x}-{:#010x} {:#010x} {:#010x} {:#x}:{:26s} {:#x}:[{:s}]".format(
                 paddr_s, paddr_e, vaddr, size, typ, memtype, att, att_s,
             )
-            entries.append(entry_text)
+            entries.append((paddr_s, entry_text))
 
-            if entry["Signature"] != u32(b"mmap"):
-                err("Signature does not match. Corrupted?")
-                break
+            previous = current
             current = entry["Link.ForwardLink"]
+        else:
+            if previous != self.gMemoryMap["BackLink"]:
+                err("UEFI memory map head has an invalid back link")
 
-        for entry_text in sorted(set(entries)):
-            gef_print(entry_text)
+        for row in sorted(set(entries)):
+            gef_print(row[1])
 
         gef_print("Legend for attribute")
         gef_print("UC: It supports being configured as Un-Cacheable")
@@ -188931,6 +189043,7 @@ class UefiOvmfInfoCommand(GenericCommand):
         gef_print("RO: It supports being configured as Read-Only")
         gef_print("SP: Specific-Purpose memory")
         gef_print("CPU_CRYPTO: Encrypted and protected by CPU function")
+        gef_print("ISA_VALID: It includes ISA-specific memory attributes")
         gef_print("RUNTIME: It will be mapped by OS when SetVirtualAddressMap() is called")
         return
 
@@ -188939,6 +189052,13 @@ class UefiOvmfInfoCommand(GenericCommand):
     @Decorator.only_if_specific_gdb_mode(mode=("qemu-system",))
     @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64"))
     def do_invoke(self, args):
+        self.args = args
+        self.table_candidates = None
+        if (args.start is not None and not 0 <= args.start < 1 << 64
+                or args.end is not None and not 0 < args.end <= 1 << 64
+                or args.start is not None and args.end is not None and args.start >= args.end):
+            err("Invalid physical search range")
+            return
         gef_print(titlify("SEC (Security) phase variables"))
         gef_print("Unimplemented")
         gef_print(titlify("PEI (Pre EFI Initialization) phase variables"))

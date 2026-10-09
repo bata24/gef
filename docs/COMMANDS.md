@@ -12687,10 +12687,14 @@ Print UEFI OVMF info.
 ### Syntax
 
 ```text
-usage: uefi-ovmf-info [-h]
+usage: uefi-ovmf-info [-h] [--start START] [--end END] [--pei-bits {32,64}] [--dxe-bits {32,64}]
 
 options:
-  -h, --help  show this help message and exit
+  -h, --help          show this help message and exit
+  --start START       physical search range start (inclusive).
+  --end END           physical search range end (exclusive).
+  --pei-bits {32,64}  override PEI table pointer width.
+  --dxe-bits {32,64}  override DXE table pointer width.
 ```
 
 # 06-l. Qemu-system/KGDB Cooperation - SMM
