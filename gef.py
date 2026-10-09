@@ -196430,10 +196430,13 @@ class GefUtil:
     def show_last_exception():
         """Display the last Python exception."""
 
-        def _show_code_line(fname, idx):
+        def show_code_line(fname, idx):
             fname = os.path.expanduser(os.path.expandvars(fname))
-            with open(fname, "r") as f:
-                data = f.read().splitlines()
+            try:
+                with open(fname, "r") as f:
+                    data = f.read().splitlines()
+            except (OSError, UnicodeError):
+                return ""
             return data[idx - 1] if 0 < idx <= len(data) else ""
 
         gef_print("")
@@ -196448,7 +196451,7 @@ class GefUtil:
             filename, lineno, method, code = fs
 
             if not code or not code.strip():
-                code = _show_code_line(filename, lineno)
+                code = show_code_line(filename, lineno)
 
             filename_c = Color.yellowify(filename)
             method_c = Color.greenify(method)
