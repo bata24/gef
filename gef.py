@@ -170813,14 +170813,17 @@ class BreakSecureMemAddrCommand(GenericCommand):
 class OpteeThreadEnterUserModeBreakpoint(gdb.Breakpoint):
     """Create a breakpoint to thread_enter_user_mode."""
 
-    def __init__(self, vaddr, ta_offset, verbose):
+    def __init__(self, vaddr, ta_offset, verbose, ta_base=None, persistent=False):
         super().__init__("*{:#x}".format(vaddr), type=gdb.BP_BREAKPOINT, internal=True)
         self.ta_offset = ta_offset
         self.verbose = verbose
+        self.ta_base = ta_base
+        self.persistent = persistent
+        self.misses = 0
         return
 
     @staticmethod
-    def get_ta_loaded_address(verbose=False):
+    def get_ta_loaded_address(verbose=False, ta_base=None):
         Cache.reset_gef_caches()
         if is_arm32():
             command = "pagewalk -S --quiet --no-pager --disable-color"
@@ -170832,27 +170835,38 @@ class OpteeThreadEnterUserModeBreakpoint(gdb.Breakpoint):
         if verbose:
             gef_print(AddrMap.run_pagewalk(command))
         maps = AddrMap.get_maps(command=command)
-        maps = [entry for entry in maps if entry.is_userland() and entry.is_executable()]
+        maps = [entry for entry in maps if re.search(r"(?:PL0|EL0)/R[W-]X", entry.flags)]
         maps = sorted({(entry.vstart, entry.vend): entry for entry in maps}.values(),
                       key=lambda entry: entry.vstart)
+        if ta_base is not None:
+            return next((entry for entry in maps if entry.vstart == ta_base), None)
         return maps[1] if len(maps) == 2 else None
 
     def stop(self):
-        ta_address = self.get_ta_loaded_address(self.verbose)
+        ta_address = self.get_ta_loaded_address(self.verbose, self.ta_base)
         if ta_address is None:
-            info("Could not find TA address, so continue (this is 1st stop?)")
-            return False
+            self.misses += 1
+            if self.misses < 2:
+                info("Waiting for TA mappings after ldelf")
+                return False
+            err("Could not select TA; retry with --ta-base (see help optee-break-ta)")
+            self.enabled = False
+            return True
 
+        self.misses = 0
         ta_vstart, ta_vend = ta_address.vstart, ta_address.vend
         info("TA address: {:#x}".format(ta_vstart))
 
         ta_vsize = ta_vend - ta_vstart
-        if self.ta_offset >= ta_vsize:
+        if not 0 <= self.ta_offset < ta_vsize:
             err("TA offset {:#x} is greater than the size of TA R-X area ({:#x})".format(self.ta_offset, ta_vsize))
             self.enabled = False
-            return False
+            return True
 
         gdb.execute("tbreak *{:#x}".format(ta_vstart + self.ta_offset))
+        if not self.persistent:
+            self.enabled = False
+            gdb.post_event(self.delete)
         return False
 
 
@@ -170868,6 +170882,9 @@ class OpteeBreakTaAddrCommand(GenericCommand):
     group.add_argument("ta_offset", metavar="TA_OFFSET", nargs="?", type=AddressUtil.parse_address,
                         help="The breakpoint target offset of OPTEE-TA.")
     group.add_argument("-f", "--ta-file", help="parse the TA file (or ELF file) and stop at the entry point.")
+    parser.add_argument("--ta-base", type=AddressUtil.parse_address,
+                        help="select the executable user mapping starting at this address.")
+    parser.add_argument("--persistent", action="store_true", help="arm a new temporary breakpoint on every TA entry.")
     parser.add_argument("-v", "--verbose", action="store_true", help="show memory map if stopped at __thread_enter_user_mode.")
     _syntax_ = parser.format_help()
 
@@ -170889,6 +170906,11 @@ class OpteeBreakTaAddrCommand(GenericCommand):
         "This __thread_enter_user_mode in TEE OS is written directly in assembly.",
         "Because of this, it is immune to compiler optimizations. By searching memory for the fixed byte sequence",
         "of this assembly routine, we can reliably locate its offset and set your breakpoint there.",
+        "",
+        "By default, exactly two executable user mappings are required; the higher one is selected as the TA.",
+        "Use --ta-base when ldelf is absent or shared libraries add mappings. Offsets are relative to this mapping.",
+        "After two unsuccessful selections, execution stops and the internal breakpoint is disabled.",
+        "The internal breakpoint is deleted after arming the target once; --persistent keeps tracking TA entries.",
     ]
     _note_ = "\n".join(_note_)
 
@@ -171009,12 +171031,17 @@ class OpteeBreakTaAddrCommand(GenericCommand):
 
         if ta_offset is None:
             return
+        if ta_offset < 0:
+            err("TA offset must be non-negative")
+            return
 
         info("__thread_enter_user_mode @ OPTEE-OS: {:#x}".format(thread_enter_user_mode_virt))
         info("Breakpoint target offset of TA: {:#x}".format(ta_offset))
 
-        OpteeThreadEnterUserModeBreakpoint(thread_enter_user_mode_virt, ta_offset, args.verbose)
-        info("Temporarily breakpoint at {:#x}".format(thread_enter_user_mode_virt))
+        OpteeThreadEnterUserModeBreakpoint(
+            thread_enter_user_mode_virt, ta_offset, args.verbose, args.ta_base, args.persistent,
+        )
+        info("Internal breakpoint at {:#x}".format(thread_enter_user_mode_virt))
         return
 
 

@@ -12356,7 +12356,7 @@ Set a breakpoint to OPTEE-TA.
 ### Syntax
 
 ```text
-usage: optee-break-ta [-h] [-v] (-f TA_FILE | TA_OFFSET)
+usage: optee-break-ta [-h] [--ta-base TA_BASE] [--persistent] [-v] (-f TA_FILE | TA_OFFSET)
 
 positional arguments:
   TA_OFFSET             The breakpoint target offset of OPTEE-TA.
@@ -12365,6 +12365,8 @@ options:
   -h, --help            show this help message and exit
   -f, --ta-file TA_FILE
                         parse the TA file (or ELF file) and stop at the entry point.
+  --ta-base TA_BASE     select the executable user mapping starting at this address.
+  --persistent          arm a new temporary breakpoint on every TA entry.
   -v, --verbose         show memory map if stopped at __thread_enter_user_mode.
 ```
 
@@ -12389,6 +12391,11 @@ Now, thread_enter_user_mode calls __thread_enter_user_mode.
 This __thread_enter_user_mode in TEE OS is written directly in assembly.
 Because of this, it is immune to compiler optimizations. By searching memory for the fixed byte sequence
 of this assembly routine, we can reliably locate its offset and set your breakpoint there.
+
+By default, exactly two executable user mappings are required; the higher one is selected as the TA.
+Use --ta-base when ldelf is absent or shared libraries add mappings. Offsets are relative to this mapping.
+After two unsuccessful selections, execution stops and the internal breakpoint is disabled.
+The internal breakpoint is deleted after arming the target once; --persistent keeps tracking TA entries.
 ```
 
 ## `optee-shm-list`
