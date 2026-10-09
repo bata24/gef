@@ -64066,7 +64066,7 @@ class CppMangleCommand(GenericCommand):
     def is_identifier(self, token):
         if token in ("const", "volatile", "operator", "decltype") or token in self.BUILTINS or token in self.INTEGER_WORDS:
             return False
-        return token == "(anonymous namespace)" or re.fullmatch(r"[A-Za-z_]\w*", token or "") is not None
+        return token == "(anonymous namespace)" or (token or "").isidentifier()
 
     def parse_qualified_name(self):
         if self.peek() == "::":
@@ -64106,7 +64106,7 @@ class CppMangleCommand(GenericCommand):
             raise ValueError("Unexpected token `{:s}`".format(token))
         while (self.peek() or "").startswith("[abi:"):
             tag = self.pop()[5:-1]
-            comp["tags"] += "B{:d}{:s}".format(len(tag), tag)
+            comp["tags"] += "B{:d}{:s}".format(len(tag.encode("utf-8")), tag)
         if self.peek() == "<":
             comp["args"] = self.parse_template_args()
         return comp
@@ -64301,7 +64301,7 @@ class CppMangleCommand(GenericCommand):
             return "cv" + encode_type(comp["type"])
         if kind == "anon":
             return "12_GLOBAL__N_1"
-        return "{:d}{:s}{:s}".format(len(comp["name"]), comp["name"], comp["tags"])
+        return "{:d}{:s}{:s}".format(len(comp["name"].encode("utf-8")), comp["name"], comp["tags"])
 
     def template_args(self, args, encode_type):
         out = ""
