@@ -171345,13 +171345,21 @@ class OpteeTaDumpMemoryCommand(OpteeTaDumpCommand):
         super().__init__(prefix=False)
         return
 
-    def find_list_head(self, data, virt_start):
+    def find_list_head(self, data, virt_start, maps=None):
+
+        if maps is None:
+            maps = AddrMap.get_maps(scope="optee")
+
+        def is_valid_ops(addr):
+            return addr % current_arch.ptrsize == 0 and any(
+                entry.is_readable() and entry.contains_virtual(addr) for entry in maps
+            )
 
         def is_valid_rw_addr(addr):
             return virt_start <= addr < virt_start + len(data)
 
         def read_int_from_memory(addr):
-            if not is_valid_rw_addr(addr):
+            if addr % current_arch.ptrsize or not virt_start <= addr <= virt_start + len(data) - current_arch.ptrsize:
                 return None
             index = (addr - virt_start) // current_arch.ptrsize
             return data_list[index]
@@ -171359,7 +171367,11 @@ class OpteeTaDumpMemoryCommand(OpteeTaDumpCommand):
         def is_tailq_head(addr, head_next, head_prev, offset):
             current = head_next
             prev = addr
-            while True:
+            seen = set()
+            while current and current not in seen:
+                seen.add(current)
+                if current < virt_start or current + current_arch.ptrsize * 5 + 24 > virt_start + len(data):
+                    return False
                 current_next = read_int_from_memory(current + offset)
                 if current_next is None:
                     return False
@@ -171449,6 +171461,8 @@ class OpteeTaDumpMemoryCommand(OpteeTaDumpCommand):
                 continue
 
             j = (next_value - virt_start) // current_arch.ptrsize
+            if j < 0 or j + (6 if is_64bit() else 8) >= len(data_list):
+                continue
 
             if not self.args.for_old_version:
                 # check flags
@@ -171469,10 +171483,10 @@ class OpteeTaDumpMemoryCommand(OpteeTaDumpCommand):
 
                 # check ops
                 if is_64bit():
-                    if not is_valid_rw_addr(data_list[j + 5]):
+                    if not is_valid_ops(data_list[j + 5]):
                         continue
                 else:
-                    if not is_valid_rw_addr(data_list[j + 7]):
+                    if not is_valid_ops(data_list[j + 7]):
                         continue
             else:
                 # check uuid
@@ -171489,10 +171503,10 @@ class OpteeTaDumpMemoryCommand(OpteeTaDumpCommand):
 
                 # check ops
                 if is_64bit():
-                    if not is_valid_rw_addr(data_list[j + 2]):
+                    if not is_valid_ops(data_list[j + 2]):
                         continue
                 else:
-                    if not is_valid_rw_addr(data_list[j + 4]):
+                    if not is_valid_ops(data_list[j + 4]):
                         continue
 
                 # check flags
@@ -171664,17 +171678,21 @@ class OpteeTaDumpDirectoryCommand(OpteeTaDumpCommand):
 
         d = {}
         with open(file_path, "rb") as f:
+            file_size = os.fstat(f.fileno()).st_size
             f.seek(first_offset)
 
+            def read(size):
+                if size > file_size - f.tell():
+                    raise ValueError("Truncated TA header")
+                data = f.read(size)
+                if len(data) != size:
+                    raise ValueError("Truncated TA header")
+                return data
+
             # struct shdr
-            magic = u32(f.read(4))
+            magic, img_type, img_size, algo, hash_size, sig_size = struct.unpack("<IIIIHH", read(20))
             if magic != 0x4F545348:
-                return None
-            img_type = u32(f.read(4))
-            img_size = u32(f.read(4))
-            algo = u32(f.read(4))
-            hash_size = u16(f.read(2))
-            sig_size = u16(f.read(2))
+                raise ValueError("Invalid TA magic")
             d.update({
                 "magic": magic,
                 "img_type": (img_type, IMG_TYPE.get(img_type, "Unknown")),
@@ -171683,27 +171701,21 @@ class OpteeTaDumpDirectoryCommand(OpteeTaDumpCommand):
                 "hash_size": hash_size,
                 "sig_size": sig_size,
             })
-            f.seek(hash_size + sig_size, 1)
+            read(hash_size + sig_size)
 
             # sub header
-            if img_type == 0:
-                pass
-
-            elif img_type == 1:
+            if img_type in (1, 2):
                 # struct shdr_bootstrap_ta
-                raw_uuid = f.read(16)
-                ta_ver = u32(f.read(4))
+                raw_uuid = read(16)
+                ta_ver = struct.unpack("<I", read(4))[0]
                 d["bootstrap_uuid"] = str(uuid.UUID(bytes=raw_uuid))
                 d["bootstrap_version"] = ta_ver
 
-            elif img_type == 2:
+            if img_type == 2:
                 # struct shdr_encrypted_ta
-                enc_algo = u32(f.read(4))
-                flags = u32(f.read(4))
-                iv_sz = u16(f.read(2))
-                tag_sz = u16(f.read(2))
-                iv = f.read(iv_sz)
-                tag = f.read(tag_sz)
+                enc_algo, flags, iv_sz, tag_sz = struct.unpack("<IIHH", read(12))
+                iv = read(iv_sz)
+                tag = read(tag_sz)
                 d.update({
                     "enc_algo": (enc_algo, ALGOS.get(enc_algo, f"unknown-{enc_algo:#x}")),
                     "enc_flags": flags,
@@ -171715,14 +171727,12 @@ class OpteeTaDumpDirectoryCommand(OpteeTaDumpCommand):
 
             elif img_type == 3:
                 # struct shdr_subkey
-                raw_uuid = f.read(16)
-                name_sz = u32(f.read(4))
-                subk_version = u32(f.read(4))
-                max_depth = u32(f.read(4))
-                sk_algo = u32(f.read(4))
-                attr_cnt = u32(f.read(4))
+                raw_uuid = read(16)
+                name_sz, subk_version, max_depth, sk_algo, attr_cnt = struct.unpack("<IIIII", read(20))
+                if img_size < 36 + attr_cnt * 12:
+                    raise ValueError("Invalid subkey size")
                 f.seek(img_size - len(raw_uuid) - 4 * 5, 1)
-                name = f.read(name_sz).decode(errors="ignore") if name_sz else ""
+                name = read(name_sz).decode(errors="ignore") if name_sz else ""
                 d.update({
                     "subkey_uuid": str(uuid.UUID(bytes=raw_uuid)),
                     "subkey_name_size": name_sz,
@@ -171733,21 +171743,34 @@ class OpteeTaDumpDirectoryCommand(OpteeTaDumpCommand):
                     "next_name": name.rstrip("\0"),
                 })
 
+            elif img_type not in (0, 1):
+                raise ValueError("Unknown TA image type")
+
+            if img_type != 3:
+                f.seek(img_size, 1)
             processed_size = f.tell()
+            if processed_size > file_size:
+                raise ValueError("Truncated TA payload")
 
         TAInfo = collections.namedtuple("TAInfo", d.keys())
         return TAInfo(*d.values()), processed_size
 
     def get_ta_info(self, file_path):
         filesize = os.path.getsize(file_path)
+        if not filesize:
+            raise ValueError("Empty TA file")
         processed_size = 0
         ta_list = []
         while processed_size < filesize:
             ret = self.get_ta_info_single(file_path, processed_size)
-            if ret is None:
-                break
             ta_info, processed_size = ret
             ta_list.append(ta_info)
+            if ta_info.img_type[0] != 3:
+                if processed_size != filesize:
+                    raise ValueError("Unexpected data after TA payload")
+                break
+        if ta_list[-1].img_type[0] == 3:
+            raise ValueError("Missing TA after subkey")
         return ta_list
 
     def dump_directory(self):
@@ -171757,7 +171780,7 @@ class OpteeTaDumpDirectoryCommand(OpteeTaDumpCommand):
 
         for filepath in GefUtil.walk(self.args.host_dir):
             filename = os.path.basename(filepath)
-            r = re.match(
+            r = re.fullmatch(
                 r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.ta",
                 filename,
             )
@@ -171769,9 +171792,10 @@ class OpteeTaDumpDirectoryCommand(OpteeTaDumpCommand):
             hint = self.uuid_hint.get(uuid, "???")
 
             # other info
-            ta_list = self.get_ta_info(filepath)
-            if not ta_list:
-                self.out.append("{:39s}  {:11s}  {:8s}  {:s}".format(filename, "???", "???", hint))
+            try:
+                ta_list = self.get_ta_info(filepath)
+            except (OSError, ValueError) as error:
+                self.out.append(fmt.format(filename, "Invalid", "???", str(error)))
                 continue
 
             # dump
