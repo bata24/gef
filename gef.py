@@ -40145,13 +40145,20 @@ class ContextArgumentsCommand(GenericCommand):
                 return None
 
         # get each values
+        integer_types = (gdb.TYPE_CODE_INT, gdb.TYPE_CODE_BOOL, gdb.TYPE_CODE_ENUM,
+                         gdb.TYPE_CODE_PTR, gdb.TYPE_CODE_REF)
+        types = [f.type.strip_typedefs() for f in iterator]
+        return_type = block.function.type.target().strip_typedefs()
+        can_read = return_type.code in integer_types + (gdb.TYPE_CODE_VOID, gdb.TYPE_CODE_FLT)
+        can_read = can_read and all(t.code in integer_types and t.sizeof <= current_arch.ptrsize for t in types)
         args = []
         for i, f in enumerate(iterator):
             # value
-            value = current_arch.get_ith_parameter(i, in_func=False)[1]
-            if value is None:
-                break
-            value = AddressUtil.recursive_dereference_to_string(value)
+            value = "<unavailable: unsupported argument ABI>"
+            if can_read:
+                raw_value = current_arch.get_ith_parameter(i, in_func=False)[1]
+                if raw_value is not None:
+                    value = AddressUtil.recursive_dereference_to_string(raw_value)
 
             # name
             name = f.name or "var_{:d}".format(i)
@@ -40159,7 +40166,7 @@ class ContextArgumentsCommand(GenericCommand):
             # type name
             typ = get_type_name(f.type)
             if typ is None:
-                typ = {1: "BYTE", 2: "WORD", 4: "DWORD", 8: "QWORD"}[f.type.sizeof]
+                typ = str(f.type)
 
             # ok
             args.append("{:s} {:s} = {:s}".format(typ, name, value))
