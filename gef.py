@@ -6573,7 +6573,8 @@ def hexdump(source, length=0x10, separator=".", color=True, show_symbol=True, ba
 
         hexa = [style_byte(b, color=color) for b in chunk]
         if unit > 1:
-            hexa = ["0x" + "".join(x[::-1]) for x in slicer(hexa, unit)]
+            step = -1 if Endian.is_little_endian() else 1
+            hexa = ["0x" + "".join(x[::step]) for x in slicer(hexa, unit)]
         if unit == 1:
             hexa[min(len(hexa), WIDTH // 2) - 1] += " " # double the blank at the 8th byte
         hexa = " ".join(hexa)
@@ -40855,7 +40856,7 @@ class HexdumpCommand(GenericCommand, BufferingOutput):
     parser.add_argument("location", metavar="LOCATION", type=AddressUtil.parse_address,
                         help="the memory address to dump.")
     parser.add_argument("count", metavar="COUNT", nargs="?", type=AddressUtil.parse_address, default=0x100,
-                        help="the count of displayed units. (default: %(default)s)")
+                        help="the number of bytes to dump, regardless of the display unit. (default: %(default)s)")
     parser.add_argument("--phys", action="store_true",
                         help="treat LOCATION as a physical address (qemu-system only).")
     parser.add_argument("-r", "--reverse", action="store_true", help="display in reverse order line by line.")

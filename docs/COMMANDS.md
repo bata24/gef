@@ -3789,7 +3789,7 @@ positional arguments:
   {byte,word,dword,qword}
                         dump mode. It also works if you specify the first character. (default: byte)
   LOCATION              the memory address to dump.
-  COUNT                 the count of displayed units. (default: 256)
+  COUNT                 the number of bytes to dump, regardless of the display unit. (default: 256)
 
 options:
   -h, --help            show this help message and exit
