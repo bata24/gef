@@ -44192,6 +44192,8 @@ class PatternSearchCommand(GenericCommand):
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("-c", "--charset", help="the charset of pattern. (default: abc..z)")
+    parser.add_argument("-w", "--width", type=int, choices=(1, 2, 4, 8),
+                        help="the integer search width in bytes. (default: target pointer size)")
     parser.add_argument("pattern", metavar="PATTERN", help="the pattern to offset search.")
     parser.add_argument("size", metavar="SIZE", type=AddressUtil.parse_address, nargs="?",
                         help="the size of pattern. (default: 0x10000)")
@@ -44248,12 +44250,16 @@ class PatternSearchCommand(GenericCommand):
         except ValueError as e:
             err(e)
             return
-        pack = p32 if is_32bit() else p64
+        width = args.width or current_arch.ptrsize
+        mask = (1 << (width * 8)) - 1
+
+        def pack(value):
+            return (value & mask).to_bytes(width, "little")
 
         # 1. check if it's a symbol (like "$sp")
         try:
             address = AddressUtil.parse_address(args.pattern)
-            value = read_int_from_memory(address)
+            value = int.from_bytes(read_memory(address, width), "little")
             self.search("As symbol (with dereference)", cyclic_pattern, pack(value))
         except gdb.error:
             pass
