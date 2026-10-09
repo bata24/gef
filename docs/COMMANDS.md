@@ -5158,7 +5158,7 @@ Calculate and check hash from constant inputs.
 ### Syntax
 
 ```text
-usage: hash test [-h] [-f REGEX] [-l LENGTH_FILTER] [-s] [-t | -T] [--size SIZE] [--no-cffi] [-n]
+usage: hash test [-h] [-f REGEX] [-l LENGTH_FILTER] [-s] [--extended | -t | -T] [--size SIZE] [--no-cffi] [-n]
 
 options:
   -h, --help            show this help message and exit
@@ -5166,6 +5166,7 @@ options:
   -l, --length-filter LENGTH_FILTER
                         filter by hash byte length.
   -s, --smart           show only failed.
+  --extended            also check split input, repeated digests and independent instances.
   -t, --time            measure the time taken to compute the hash using large bytes of data.
   -T, --time-with-sort  measure and sort the time taken to compute the hash using large bytes of data.
   --size SIZE           the data size of 'AAAA...' to measure the time taken to compute the hash.

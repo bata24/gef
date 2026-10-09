@@ -104789,7 +104789,8 @@ class Hash:
                 raise TypeError("custom must be bytes-like")
 
             self.suffix = 0x04  # cSHAKE domain separation suffix
-            self.output_bits = digest_bits
+            self.output_bits = digest_bits if digest_bits is not None else self.digest_size * 8
+            self.element_remaining = 0
 
             if digest_bits is not None:
                 self.digest_size = digest_bits // 8
@@ -104810,7 +104811,8 @@ class Hash:
             return
 
         def copy(self):
-            other = self.__class__(b"", self.custom)
+            other = self.__class__(b"", self.custom, self.output_bits)
+            other.element_remaining = self.element_remaining
             other.rate = self.rate
             other.suffix = self.suffix
             other.output_bits = self.output_bits
@@ -104827,10 +104829,29 @@ class Hash:
             data = bytes(data)
 
             # TupleHash input is a tuple of strings: update(data) == append one element
-            self.absorb(self.encode_string(data))
+            self.begin_element(len(data))
+            self.update_element(data)
+            return self
+
+        def begin_element(self, size):
+            if self.finalized or self.element_remaining:
+                raise ValueError("cannot start an element in the current state")
+            if size < 0:
+                raise ValueError("element size must be non-negative")
+            self.absorb(self.left_encode(size * 8))
+            self.element_remaining = size
+            return self
+
+        def update_element(self, data):
+            if self.finalized or len(data) > self.element_remaining:
+                raise ValueError("invalid element data length")
+            self.absorb(data)
+            self.element_remaining -= len(data)
             return self
 
         def digest(self):
+            if self.element_remaining:
+                raise ValueError("incomplete element")
             c = self.copy()
             c.finalize()
             out = c.squeeze(self.digest_size)
@@ -115057,6 +115078,7 @@ class Hash:
             if not isinstance(data, (bytes, bytearray, memoryview)):
                 raise TypeError("data must be bytes-like")
             self.hash = 0xaaaa_aaaa
+            self.length = 0
             if data:
                 self.update(data)
             return
@@ -115064,12 +115086,13 @@ class Hash:
         def update(self, data):
             if not isinstance(data, (bytes, bytearray, memoryview)):
                 raise TypeError("data must be bytes-like")
-            for i, c in enumerate(bytes(data)):
+            for i, c in enumerate(bytes(data), self.length):
                 if (i & 1) == 0:
                     self.hash ^= (self.hash << 7) ^ (c * (self.hash >> 3))
                 else:
                     self.hash ^= ~((self.hash << 11) + (c ^ (self.hash >> 5)))
                 self.hash &= 0xffff_ffff
+            self.length += len(data)
             return self
 
         def digest(self):
@@ -128993,17 +129016,15 @@ class Hash:
                 curve_b = to_limbs(self.curve.b, nlimbs)
                 gx = to_limbs(self.curve.g[0], nlimbs)
                 gy = to_limbs(self.curve.g[1], nlimbs)
-                qx = ffi.new("uint64_t[]", nlimbs)
-                qy = ffi.new("uint64_t[]", nlimbs)
             except Exception:
                 self.USE_CFFI = False
                 return
 
             # add to cache
             cffi_obj = collections.namedtuple("CFFI",
-                "ffi lib nlimbs counter_limbs checksum_limbs curve_a curve_b gx gy qx qy")(
+                "ffi lib nlimbs counter_limbs checksum_limbs curve_a curve_b gx gy")(
                 ffi, lib, nlimbs, counter_limbs, checksum_limbs,
-                curve_a, curve_b, gx, gy, qx, qy,
+                curve_a, curve_b, gx, gy,
             )
             self.cffi = base_class.cffi_cache[key] = cffi_obj
             self.USE_CFFI = True
@@ -129020,6 +129041,8 @@ class Hash:
             self.curve = self.ECOHCurve(*self.curve_const)
             self.init_cffi_backend()
             if self.USE_CFFI:
+                self.cffi_qx = self.cffi.ffi.new("uint64_t[]", self.cffi.nlimbs)
+                self.cffi_qy = self.cffi.ffi.new("uint64_t[]", self.cffi.nlimbs)
                 self.cffi_qinf = self.cffi.ffi.new("int *", 1)
                 self.cffi_qinf[0] = 1
                 self.cffi_checksum = self.cffi.ffi.new("uint64_t[]", self.cffi.checksum_limbs)
@@ -129038,6 +129061,8 @@ class Hash:
             other.USE_CFFI = self.USE_CFFI
             if other.USE_CFFI:
                 other.cffi = self.cffi
+                other.cffi_qx = other.cffi.ffi.new("uint64_t[]", list(self.cffi_qx))
+                other.cffi_qy = other.cffi.ffi.new("uint64_t[]", list(self.cffi_qy))
                 other.cffi_qinf = other.cffi.ffi.new("int *", self.cffi_qinf[0])
                 other.cffi_checksum = other.cffi.ffi.new("uint64_t[]", list(self.cffi_checksum))
                 other.cffi_counter = other.cffi.ffi.new("uint64_t[]", list(self.cffi_counter))
@@ -129057,7 +129082,7 @@ class Hash:
                     del self.buf[:full_len]
                     block_buf = self.cffi.ffi.new("uint8_t[]", blocks)
                     self.cffi.lib.process_blocks_state(
-                        self.cffi.qx, self.cffi.qy, self.cffi_qinf, self.cffi_checksum, self.cffi_counter,
+                        self.cffi_qx, self.cffi_qy, self.cffi_qinf, self.cffi_checksum, self.cffi_counter,
                         block_buf, full_len // self.block_size, self.cffi.curve_a, self.cffi.curve_b,
                     )
                     self.counter += full_len // self.block_size
@@ -129101,7 +129126,7 @@ class Hash:
                 tail_bytes = bytes(self.buf)
                 tail = self.cffi.ffi.new("uint8_t[]", tail_bytes or b"\x00")
                 self.cffi.lib.finalize_hash_state(
-                    self.cffi.qx, self.cffi.qy, self.cffi_qinf, self.cffi_checksum, self.cffi_counter,
+                    self.cffi_qx, self.cffi_qy, self.cffi_qinf, self.cffi_checksum, self.cffi_counter,
                     tail, len(tail_bytes), msg_len_bits, self.cffi.curve_a, self.cffi.curve_b, self.cffi.gx, self.cffi.gy,
                 )
                 self.buf = bytearray()
@@ -129109,7 +129134,7 @@ class Hash:
                 if self.cffi_qinf[0]:
                     self.q = None
                 else:
-                    self.q = (limbs_to_int(self.cffi.qx, self.cffi.nlimbs), limbs_to_int(self.cffi.qy, self.cffi.nlimbs))
+                    self.q = (limbs_to_int(self.cffi_qx, self.cffi.nlimbs), limbs_to_int(self.cffi_qy, self.cffi.nlimbs))
                 return
 
             # --- pure Python ---
@@ -142721,7 +142746,7 @@ class HashCommand(GenericCommand):
 
     def should_be_displayed(self, hname, hfunc):
         if self.args.smart >= 2:
-            if hname not in ["MD5", "SHA1", "SHA256"]:
+            if hname not in ["MD5", "SHA1", "SHA-256"]:
                 return False
 
         if self.args.length_filter is not None:
@@ -142787,6 +142812,14 @@ class HashMemoryCommand(HashCommand, BufferingOutput):
         # it is not practical to store the entire data in memory.
         # It is preferable to calculate it in blocks.
 
+        if end_address < start_address:
+            err("Size must be >= 0")
+            return False
+        update = hfunc.update
+        if isinstance(hfunc, Hash.TupleHashBase):
+            hfunc.begin_element(end_address - start_address)
+            update = hfunc.update_element
+
         step = 0x400 * get_pagesize()
         if is_qemu_system():
             step = get_pagesize()
@@ -142799,7 +142832,7 @@ class HashMemoryCommand(HashCommand, BufferingOutput):
                 err("Memory read error")
                 return False
             try:
-                hfunc.update(mem)
+                update(mem)
             except ValueError:
                 return None
             del mem
@@ -142836,6 +142869,9 @@ class HashMemoryCommand(HashCommand, BufferingOutput):
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     def do_invoke(self, args):
+        if args.size < 0:
+            err("Size must be >= 0")
+            return
         self.out = []
         self.out.append("Address: {:#x}".format(args.location))
         self.out.append("Size: {:#x}".format(args.size))
@@ -142875,15 +142911,23 @@ class HashFileCommand(HashCommand, BufferingOutput):
         # it is not practical to store the entire data in memory.
         # It is preferable to calculate it in blocks.
 
+        if start_pos < 0 or end_pos < start_pos:
+            err("Start position and size must be >= 0")
+            return False
         step = 0x400 * get_pagesize()
 
-        with open(self.args.filename, "rb") as f:
+        with open(filename, "rb") as f:
+            end_pos = min(end_pos, os.fstat(f.fileno()).st_size)
+            update = hfunc.update
+            if isinstance(hfunc, Hash.TupleHashBase):
+                hfunc.begin_element(max(0, end_pos - start_pos))
+                update = hfunc.update_element
             f.seek(start_pos)
             for chunk_pos in range(start_pos, end_pos, step):
                 chunk_size = min(end_pos - chunk_pos, step)
                 data = f.read(chunk_size)
                 try:
-                    hfunc.update(data)
+                    update(data)
                 except ValueError:
                     return None
                 del data
@@ -142919,6 +142963,9 @@ class HashFileCommand(HashCommand, BufferingOutput):
 
     @Decorator.parse_args
     def do_invoke(self, args):
+        if args.start < 0 or (args.size is not None and args.size < 0):
+            err("Start position and size must be >= 0")
+            return
         self.out = []
         if not os.path.exists(args.filename):
             err("File not found")
@@ -142927,7 +142974,7 @@ class HashFileCommand(HashCommand, BufferingOutput):
         self.out.append("FileSize: {:#x}".format(os.path.getsize(args.filename)))
 
         if args.size is None:
-            end_pos = args.start + os.path.getsize(args.filename)
+            end_pos = max(args.start, os.path.getsize(args.filename))
         else:
             end_pos = args.start + args.size
 
@@ -142999,7 +143046,7 @@ class HashValueCommand(HashCommand, BufferingOutput):
         else:
             try:
                 value = codecs.escape_decode(args.value)[0]
-            except binascii.Error:
+            except (binascii.Error, ValueError):
                 err('Could not decode "\\xXX" encoded string')
                 return
 
@@ -143072,6 +143119,8 @@ class HashTestCommand(HashCommand, BufferingOutput):
                         help="filter by hash byte length.")
     parser.add_argument("-s", "--smart", action="store_true", help="show only failed.")
     group = parser.add_mutually_exclusive_group(required=False)
+    group.add_argument("--extended", action="store_true",
+                        help="also check split input, repeated digests and independent instances.")
     group.add_argument("-t", "--time", action="store_true",
                         help="measure the time taken to compute the hash using large bytes of data.")
     group.add_argument("-T", "--time-with-sort", action="store_true",
@@ -144246,11 +144295,14 @@ class HashTestCommand(HashCommand, BufferingOutput):
             "fb26873649b20d04274ebc569a8b6a06a5d80fcae6025b9631ecb25bc5f22a7c",
     }
 
-    def hash_check_one(self, hname, h):
+    def hash_check_one(self, hname, h, expected=None, label=None):
         bit = len(h) * 4
         byte = bit // 8
 
-        expected = self.test_vectors.get(hname, None)
+        if expected is None:
+            expected = self.test_vectors.get(hname, None)
+        if label is not None:
+            hname = "{:s} ({:s})".format(hname, label)
         if expected is None:
             self.err_add_out("{:26s}:[{:4d}b/{:3d}B] {:s}".format(hname, bit, byte, "Not found"))
             return
@@ -144277,6 +144329,46 @@ class HashTestCommand(HashCommand, BufferingOutput):
             hfunc.update(value)
             h = hfunc.hexdigest()
             self.hash_check_one(hname, h)
+        return
+
+    def hash_test_extended(self):
+        tail = b"\x00\xffabc"
+        sources = [self.get_valid_hash_funcs() for i in range(5)]
+        self.out.append(titlify("Hash state tests"))
+        for elems in zip(*sources):
+            if isinstance(elems[0], str):
+                self.out.append(titlify(elems[0]))
+                continue
+            hname, hfunc = elems[0]
+            if not self.should_be_displayed(hname, hfunc):
+                continue
+            split, other, expected, other_expected = [elem[1] for elem in elems[1:]]
+            size = max(129, min(getattr(hfunc, "block_size", 128), 4096) + 1)
+            value = bytes(pos % 256 for pos in range(size))
+            expected.update(value)
+            expected.update(tail)
+            expected_digest = expected.hexdigest()
+            other_expected.update(tail)
+            other_expected.update(value)
+            other_digest = other_expected.hexdigest()
+
+            hfunc.update(value)
+            digest = hfunc.hexdigest()
+            self.hash_check_one(hname, hfunc.hexdigest(), digest, "repeat digest")
+            update = split.update
+            if isinstance(split, Hash.TupleHashBase):
+                split.begin_element(len(value))
+                update = split.update_element
+            update(value[:17])
+            other.update(tail)
+            for pos in range(17, len(value), 17):
+                update(value[pos:pos + 17])
+            self.hash_check_one(hname, split.hexdigest(), digest, "split input")
+            self.hash_check_one(hname, hfunc.hexdigest(), digest, "independent state")
+            hfunc.update(tail)
+            other.update(value)
+            self.hash_check_one(hname, hfunc.hexdigest(), expected_digest, "update after digest")
+            self.hash_check_one(hname, other.hexdigest(), other_digest, "interleaved updates")
         return
 
     def hash_test_time(self):
@@ -144377,11 +144469,15 @@ class HashTestCommand(HashCommand, BufferingOutput):
                     self.hash_test_time()
                 else:
                     self.hash_test()
+                    if args.extended:
+                        self.hash_test_extended()
         else:
             if args.time or args.time_with_sort:
                 self.hash_test_time()
             else:
                 self.hash_test()
+                if args.extended:
+                    self.hash_test_extended()
         self.print_output(check_terminal_size=True)
         return
 
@@ -145629,6 +145725,9 @@ class Crc32revCommand(GenericCommand):
             poly = self.args.poly & 0xffff_ffff
         if self.args.poly_reflected:
             poly = self.reflect32(poly)
+        if not (poly & 1):
+            err("Polynomial must have a nonzero constant term for reverse calculation")
+            return False
         rpoly = self.reflect32(poly)
         if self.args.init_value is not None:
             init_value = self.args.init_value & 0xffff_ffff
@@ -145867,6 +145966,10 @@ class Crc32revCommand(GenericCommand):
             return
         if args.suffix and args.suffix_hex:
             err("duplicate suffix")
+            return
+
+        if not args.prefix.isascii() or not args.suffix.isascii():
+            err("prefix and suffix must be ASCII; use --prefix-hex or --suffix-hex for binary data")
             return
 
         if args.prefix_hex:
