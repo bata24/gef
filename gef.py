@@ -39082,7 +39082,7 @@ class ContextRegistersCommand(GenericCommand):
     RE_SUB_OPERAND2 = re.compile(r"\[.*?\]")
     RE_FINDALL_SSE = re.compile(r"(xmm\d+)")
     RE_FINDALL_AVX = re.compile(r"(ymm\d+)")
-    RE_FINDALL_MMX = re.compile(r"([^xy]mm\d+)")
+    RE_FINDALL_MMX = re.compile(r"\b(mm\d+)\b")
     RE_FINDALL_FPU = re.compile(r"(st\(\d\))")
 
     def context_regs_extra(self, redirect):
@@ -61873,13 +61873,19 @@ class MmxCommand(GenericCommand):
 
         for i in range(8):
             regname = "$st{:d}".format(i)
-            result = gdb.execute(f"info registers $st{i}", to_string=True)
+            try:
+                result = gdb.execute(f"info registers $st{i}", to_string=True)
+            except gdb.error:
+                regs.append(None)
+                continue
             r = re.findall(r"\(raw (0x[0-9a-f]+)\)", result)
-            if r:
-                reg = int(r[0], 16) & 0xffff_ffff_ffff_ffff
-                regs.append(reg)
+            reg = int(r[0], 16) & 0xffff_ffff_ffff_ffff if r else None
+            regs.append(reg)
 
         fstat = get_register("$fstat")
+        if fstat is None:
+            err("Could not read x87 status register")
+            return
         top_of_stack = (fstat >> 11) & 0b111
         regs = regs[-top_of_stack:] + regs[:-top_of_stack] # need rotate. because mmx0 != st(0)
 
@@ -61888,13 +61894,15 @@ class MmxCommand(GenericCommand):
         gef_print(GefUtil.make_legend(fmt.format(*legend)))
 
         red = lambda x: Color.colorify("{:s}".format(x), "bold red")
-        for i in range(len(regs)):
+        for i, reg in enumerate(regs):
+            if reg is None:
+                continue
             regname = "$mm{:d}".format(i)
             reghex = ""
             for j in range(8):
-                c = (regs[i] >> (8 * j)) & 0xff
+                c = (reg >> (8 * j)) & 0xff
                 reghex += chr(c) if 0x20 <= c < 0x7f else "."
-            gef_print("{:s} : {:#018x}  |  {:s}  |".format(red(regname), regs[i], reghex))
+            gef_print("{:s} : {:#018x}  |  {:s}  |".format(red(regname), reg, reghex))
         return
 
     @Decorator.parse_args
