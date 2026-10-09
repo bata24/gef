@@ -44645,6 +44645,10 @@ class UcontextCommand(GenericCommand):
 
         else:
             return None
+        layout["sigmask_size"] = 16 if arch in ("mips", "mipsn32", "mips64") else 8
+        layout["sigmask_word"] = 8 if arch in (
+            "x64", "aarch64", "riscv64", "mips64", "ppc64", "s390x", "loongarch64", "sparc64", "alpha", "arc64",
+        ) else 4
         return layout
 
     @staticmethod
@@ -44671,16 +44675,16 @@ class UcontextCommand(GenericCommand):
         return AddressUtil.recursive_dereference_to_string(value)
 
     @classmethod
-    def format_sigmask(cls, data, offset, generic_signo):
-        ptrsize = current_arch.ptrsize
+    def format_sigmask(cls, data, offset, generic_signo, size=8, word_size=None):
+        ptrsize = word_size or current_arch.ptrsize
         mask = 0
-        for i in range(8 // ptrsize):
+        for i in range(size // ptrsize):
             mask |= cls.unpack(data, offset + i * ptrsize, ptrsize) << (i * ptrsize * 8)
         if generic_signo:
             names = LinuxSignal.format_mask(mask)
         else:
-            names = ",".join("SIG{:d}".format(i) for i in range(1, 65) if mask & (1 << (i - 1))) or "-"
-        return "{:#018x} [{:s}]".format(mask, names)
+            names = ",".join("SIG{:d}".format(i) for i in range(1, size * 8 + 1) if mask & (1 << (i - 1))) or "-"
+        return "{:#0{:d}x} [{:s}]".format(mask, size * 2 + 2, names)
 
     @classmethod
     def format_ss_flags(cls, flags):
@@ -44700,7 +44704,7 @@ class UcontextCommand(GenericCommand):
             else:
                 kind = "int"
             fields.append((off, size, "uc." + name, kind))
-        fields.append((layout["sigmask"], 8, "uc.uc_sigmask", "sigmask"))
+        fields.append((layout["sigmask"], layout["sigmask_size"], "uc.uc_sigmask", "sigmask"))
         mcontext = layout["mcontext"]
         for name, off, size, kind in layout["regs"]:
             fields.append((mcontext + off, size, "uc.uc_mcontext." + name, kind))
@@ -44725,7 +44729,7 @@ class UcontextCommand(GenericCommand):
                 out.append(titlify("mcontext_t @ {:#x} ({:s})".format(base, layout["name"])))
             else:
                 ptrsize = current_arch.ptrsize
-                header = layout["header"] + [("uc_sigmask", layout["sigmask"], 8)]
+                header = layout["header"] + [("uc_sigmask", layout["sigmask"], layout["sigmask_size"])]
                 if layout["mcontext_ptr"] is not None:
                     header.append(("uc_regs", layout["mcontext_ptr"], ptrsize))
                 data = read_memory(base, max(offset + size for _, offset, size in header))
@@ -44734,7 +44738,9 @@ class UcontextCommand(GenericCommand):
                 width = max(len(name) for name, _, _ in header)
                 for name, offset, size in sorted(header, key=lambda x: x[1]):
                     if name == "uc_sigmask":
-                        value_s = self.format_sigmask(data, offset, layout["generic_signo"])
+                        value_s = self.format_sigmask(
+                            data, offset, layout["generic_signo"], layout["sigmask_size"], layout["sigmask_word"],
+                        )
                     elif name.endswith("ss_flags"):
                         value_s = self.format_ss_flags(self.unpack(data, offset, size))
                     elif name in ("uc_link", "uc_stack.ss_sp", "uc_regs"):
