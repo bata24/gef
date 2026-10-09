@@ -38600,6 +38600,8 @@ class RegisterDumpBreakBreakpoint(gdb.Breakpoint):
                 v = get_register(r)
             except gdb.error:
                 continue
+            if v is None:
+                continue
             out.append("{:s}={:#x}".format(r, v))
 
         colored_addr = Color.colorify_hex(self.loc, "bold yellow")
