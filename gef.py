@@ -145227,6 +145227,9 @@ class CrcMemoryCommand(CrcCommand):
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     def do_invoke(self, args):
+        if args.size < 0:
+            err("Invalid size")
+            return
         self.out = []
         self.out.append("Address: {:#x}".format(args.location))
         self.out.append("Size: {:#x}".format(args.size))
@@ -145285,8 +145288,10 @@ class CrcFileCommand(CrcCommand):
         return cfunc.finalhex()
 
     @Decorator.parse_args
-    @Decorator.only_if_gdb_running
     def do_invoke(self, args):
+        if args.start < 0 or args.size is not None and args.size < 0:
+            err("Invalid range")
+            return
         self.out = []
         if not os.path.exists(args.filename):
             err("File not found")
@@ -145345,7 +145350,7 @@ class CrcValueCommand(CrcCommand):
         else:
             try:
                 value = codecs.escape_decode(args.value)[0]
-            except binascii.Error:
+            except (binascii.Error, ValueError):
                 err('Could not decode "\\xXX" encoded string')
                 return
 
