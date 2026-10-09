@@ -44554,9 +44554,12 @@ class SigreturnCommand(GenericCommand):
         width = max(len(x) for x in labels)
         out = [titlify("rt_sigframe.uc @ {:#x} ({:s})".format(base, layout["name"]))]
         for (offset, size, _, kind), label in zip(fields, labels):
-            value = UcontextCommand.unpack(data, offset, size)
+            if kind != "sigmask":
+                value = UcontextCommand.unpack(data, offset, size)
             if kind == "sigmask":
-                value_s = UcontextCommand.format_sigmask(data, offset, layout["generic_signo"])
+                value_s = UcontextCommand.format_sigmask(
+                    data, offset, layout["generic_signo"], layout["sigmask_size"], layout["sigmask_word"],
+                )
             elif kind == "ss_flags":
                 value_s = UcontextCommand.format_ss_flags(value)
             elif kind == "ptr":
