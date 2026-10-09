@@ -62938,6 +62938,9 @@ class ErrnoCommand(GenericCommand, BufferingOutput):
                 135 : ["EHWPOISON",       "Memory page has hardware error"],
             }
 
+        if is_ppc32() or is_ppc64():
+            ERRNO_DICT[58] = ["EDEADLOCK", "File locking deadlock error"]
+
         return ERRNO_BASE_DICT | ERRNO_DICT
 
     @Decorator.parse_args
