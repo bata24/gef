@@ -44004,6 +44004,12 @@ class XorMemoryDisplayCommand(GenericCommand, BufferingOutput):
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     def do_invoke(self, args):
+        if args.size <= 0:
+            err("Invalid size")
+            return
+        if not args.key:
+            err("Empty key")
+            return
         self.out = []
 
         start_addr = args.location
@@ -44020,7 +44026,7 @@ class XorMemoryDisplayCommand(GenericCommand, BufferingOutput):
         self.out.append(hexdump(block, base=start_addr))
 
         self.out.append(titlify("XOR-ed block"))
-        xored_block = xor(block, args.key)
+        xored_block = xor(block, args.key[:len(block)])
         self.out.append(hexdump(xored_block, base=start_addr))
 
         self.print_output(check_terminal_size=True)
@@ -44055,6 +44061,12 @@ class XorMemoryPatchCommand(GenericCommand):
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     def do_invoke(self, args):
+        if args.size <= 0:
+            err("Invalid size")
+            return
+        if not args.key:
+            err("Empty key")
+            return
         start_addr = args.location
         end_addr = args.location + args.size
         try:
@@ -44063,7 +44075,7 @@ class XorMemoryPatchCommand(GenericCommand):
             err("Failed to read memory")
             return
         info("Patching XOR-ing {:#x}-{:#x} with '{:s}'".format(start_addr, end_addr, repr(args.key)))
-        xored_block = xor(block, args.key)
+        xored_block = xor(block, args.key[:len(block)])
         gdb.execute("patch hex {:#x} {:s}".format(start_addr, xored_block.hex()))
         return
 
