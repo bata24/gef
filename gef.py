@@ -16712,6 +16712,7 @@ class GenericCommand(gdb.Command):
             # Another inferior or target may be selected since the architecture was resolved.
             if current_arch is not None and current_arch_context != get_arch_context():
                 set_arch()
+            self.command_args = args
             argv = gdb.string_to_argv(args)
             if self._repeat_:
                 self.set_repeat_count(argv, from_tty)
