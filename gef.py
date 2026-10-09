@@ -101460,7 +101460,7 @@ class StringsCommand(GenericCommand, BufferingOutput):
                 continue
 
             # search for the pointer for recursive
-            aligned_data = data[current_arch.ptrsize - location % current_arch.ptrsize:]
+            aligned_data = data[(-location) % current_arch.ptrsize:]
             if len(aligned_data) % current_arch.ptrsize:
                 aligned_data = aligned_data[:-(len(aligned_data) % current_arch.ptrsize)]
             for addr in slice_unpack(aligned_data, current_arch.ptrsize):
