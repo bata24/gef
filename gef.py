@@ -39865,26 +39865,31 @@ class ContextMemoryAccessCommand(GenericCommand):
                 if "<<" in code[-1]:
                     code = code[:-2] + ["(" + code[-2] + code[-1] + ")"]
                 code = "+".join(code)
-                # $pc points next next instruction
-                code_orig, code = code, code.replace("$pc", "$pc+{:#x}".format(codesize * 2))
+                if current_arch.is_thumb():
+                    pc_base = "(($pc+4)&~3)"
+                else:
+                    pc_base = "($pc+8)"
+                code_orig, code = code, code.replace("$pc", pc_base)
 
             elif is_arm64():
                 # add "$" to resiter
                 code = code.replace(" ", "")
                 code = code.replace("#", "")
-                code = code.replace("lsl", "<<").replace("sxtw", "<<").replace("uxtw", "<<")
                 code = code.replace("xzr", " 0 ") # $xzr is always 0x0
                 code = code.replace("wzr", " 0 ") # $wzr is always 0x0
-                code = code.replace("wsp", " ($sp&0xffff) ") # $wsp is a half of $sp
+                code = code.replace("wsp", " ($sp&0xffffffff) ")
                 code = code.split(",")
                 code = ["$" + x if x.isalpha() or self.RE_MATCH_REG3.match(x) else x for x in code]
-                if "<<" == code[-1]:
-                    code[-1] += "0"
-                if "<<" in code[-1]:
-                    code = code[:-2] + ["(" + code[-2] + code[-1] + ")"]
+                extend = re.fullmatch(r"(lsl|sxtw|uxtw|sxtx|uxtx)(\d*)", code[-1].lstrip("$"))
+                if extend:
+                    cast = {"lsl": "long long", "sxtw": "int", "uxtw": "unsigned int",
+                            "sxtx": "long long", "uxtx": "unsigned long long"}[extend.group(1)]
+                    shift = int(extend.group(2) or "0")
+                    offset = "((long long)({:s}){:s}<<{:d})".format(cast, code[-2], shift)
+                    code = code[:-2] + [offset]
                 code = "+".join(code)
-                # $pc points next next instruction
-                code_orig, code = code, code.replace("$pc", "$pc+{:#x}".format(codesize * 2))
+                code = re.sub(r"\$w(\d+)\b", r"($x\1&0xffffffff)", code)
+                code_orig = code
 
             # print
             try:
