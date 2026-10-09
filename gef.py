@@ -61788,7 +61788,7 @@ class SeccompCommand(GenericCommand):
     def get_ceccomp_command(self):
         try:
             comm = GefUtil.which("ceccomp")
-            return [f"{comm!r} trace --quiet ", f"{comm!r} probe --quiet "]
+            return [f"{shlex.quote(comm)} trace --quiet ", f"{shlex.quote(comm)} probe --quiet "]
         except FileNotFoundError:
             err("Missing `ceccomp`, install from https://github.com/dbgbgtf1/Ceccomp")
             return None
@@ -61796,7 +61796,7 @@ class SeccompCommand(GenericCommand):
     def get_seccomp_tools_command(self):
         try:
             comm = GefUtil.which("seccomp-tools")
-            return [f"{comm!r} dump "]
+            return [f"{shlex.quote(comm)} dump "]
         except FileNotFoundError:
             err("Missing `seccomp-tools`, install with: `gem install seccomp-tools`")
             return None
@@ -61804,11 +61804,11 @@ class SeccompCommand(GenericCommand):
     def get_either_command(self):
         try:
             comm = GefUtil.which("ceccomp")
-            return [f"{comm!r} trace --quiet ", f"{comm!r} probe --quiet "]
+            return [f"{shlex.quote(comm)} trace --quiet ", f"{shlex.quote(comm)} probe --quiet "]
         except FileNotFoundError:
             try:
                 comm = GefUtil.which("seccomp-tools")
-                return [f"{comm!r} dump "]
+                return [f"{shlex.quote(comm)} dump "]
             except FileNotFoundError:
                 err("Missing both `ceccomp` and `seccomp-tools`")
                 err("install with `gem install seccomp-tools` or build `ceccomp`")
@@ -61833,7 +61833,7 @@ class SeccompCommand(GenericCommand):
             return
 
         for comm in commands:
-            comm += f"{path!r}"
+            comm += shlex.quote(path)
             gef_print(titlify(comm))
             GefUtil.os_system(comm)
         return
