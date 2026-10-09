@@ -61681,7 +61681,8 @@ class OneGadgetCommand(GenericCommand):
                 if m:
                     ret = self.parse_exp(m.group(1))
                     if ret is None:
-                        continue
+                        valid = False
+                        break
                     addr = ProcessMap.lookup_address(ret)
                     if not addr.valid or not addr.section.is_writable():
                         valid &= False
@@ -61749,7 +61750,8 @@ class OneGadgetCommand(GenericCommand):
             err("Could not find the libc")
             return
 
-        gef_print(titlify("{!r} {!r} -l 1".format(one_gadget_command, libc.path)))
+        command = "{:s} {:s} -l 1".format(shlex.quote(one_gadget_command), shlex.quote(libc.path))
+        gef_print(titlify(command))
 
         if args.apply_smart_filter:
             condition = Color.boldify("`... is a valid ...`")
@@ -61759,7 +61761,7 @@ class OneGadgetCommand(GenericCommand):
             res = self.get_filtered_result(one_gadget_command, libc.path)
             gef_print(res)
         else:
-            GefUtil.os_system("{!r} {!r} -l 1".format(one_gadget_command, libc.path))
+            GefUtil.os_system(command)
         return
 
 
