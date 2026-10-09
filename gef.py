@@ -82157,6 +82157,8 @@ class KernelBpf:
         # The offset is a layout constant, so the first map that resolves it is enough.
         self.offset_union_array = GefUtil.offsetof("struct bpf_array", "value")
         arrays = [m for m in maps if read_int32_from_memory(m + self.offset_map_type) in self.array_map_types]
+        if self.offset_union_array is None and arrays:
+            self.offset_union_array = self.get_legacy_array_offset(arrays)
         for m in arrays:
             if self.offset_union_array is not None:
                 break
@@ -82186,6 +82188,42 @@ class KernelBpf:
             # Keep going; the array column is the only thing that cannot be shown.
             self.meta.append(("warn", "Could not find offsetof(bpf_array, union_array)"))
         return
+
+    @Decorator.switch_to_intel_syntax
+    def get_legacy_array_offset(self, arrays):
+        if self.offset_map_type != 4 or not "4.13" <= Kernel.version() < "4.14.14":
+            return None
+        address = Ksym.get_addr("array_map_lookup_elem")
+        if address is None:
+            return None
+        try:
+            res = KernelAddressHeuristicFinderUtil.disassemble_until_next_symbol(address, 40)
+        except gdb.error:
+            return None
+        if is_x86():
+            candidates = itertools.chain(
+                KernelAddressHeuristicFinderUtil.x64_lea_reg_const(res, skip_msb_check=True),
+                KernelAddressHeuristicFinderUtil.x64_x86_add_reg_const(res, skip_msb_check=True),
+            )
+        elif is_arm32() or is_arm64():
+            candidates = (int(x, 0) for x in re.findall(
+                r"\badds?(?:eq|ne|cs|hs|cc|lo|mi|pl|vs|vc|hi|ls|ge|lt|gt|le|al)?(?:\.w)?"
+                r"\s+\w+,\s*(?:\w+,\s*)?#(0x[\da-f]+|\d+)", res,
+            ))
+        else:
+            return None
+
+        # array_map_lookup_elem() adds offsetof(bpf_array, value), independent of work_struct's size.
+        for offset in candidates:
+            if offset <= self.offset_max_entries or offset > 0x400 or offset % 8:
+                continue
+            for elem_offset in (offset - 12, offset - 16):
+                if elem_offset % current_arch.ptrsize or align(elem_offset + 9, 8) != offset:
+                    continue
+                if all(read_int32_from_memory(m + elem_offset) ==
+                       align(read_int32_from_memory(m + self.offset_value_size), 8) for m in arrays):
+                    return offset
+        return None
 
     @staticmethod
     def find_name_offset(chunks, offsets):
