@@ -40705,63 +40705,63 @@ class ContextThreadsCommand(GenericCommand):
             # gdb.selected_frame() may error for unknown reasons (often during kernel startup).
             selected_frame = None
 
-        # walk threads
-        lines = []
-        for thread in threads:
-            # selected, tid
-            tid = str(thread.ptid[1] or thread.ptid[2] or "???")
-            if thread == selected_thread:
-                line = "[*{:s}] ".format(
-                    Color.colorify("Thread Id:{:d}, tid:{:s}".format(thread.num, tid), "bold green"),
-                )
-            else:
-                line = "[ {:s}] ".format(
-                    Color.colorify("Thread Id:{:d}, tid:{:s}".format(thread.num, tid), "bold magenta"),
-                )
+        try:
+            # walk threads
+            lines = []
+            for thread in threads:
+                # selected, tid
+                tid = str(thread.ptid[1] or thread.ptid[2] or "???")
+                if thread == selected_thread:
+                    line = "[*{:s}] ".format(
+                        Color.colorify("Thread Id:{:d}, tid:{:s}".format(thread.num, tid), "bold green"),
+                    )
+                else:
+                    line = "[ {:s}] ".format(
+                        Color.colorify("Thread Id:{:d}, tid:{:s}".format(thread.num, tid), "bold magenta"),
+                    )
 
-            # name
-            if thread.name:
-                line += 'Name: "{:s}", '.format(thread.name)
+                # name
+                if thread.name:
+                    line += 'Name: "{:s}", '.format(thread.name)
 
-            # status
-            if thread.is_running():
-                line += Color.colorify("running", "bold green")
-            elif thread.is_exited():
-                line += Color.colorify("exited", "bold yellow")
-            elif thread.is_stopped():
-                line += Color.colorify("stopped", "bold red")
-                # switch test
-                try:
-                    thread.switch()
-                except Exception:
-                    line += " - Failed to switch to this thread"
-                    gef_print(line, redirect=redirect)
-                    continue
-                # get pc
-                try:
-                    frame = gdb.selected_frame()
-                    pc = frame.pc()
-                except gdb.error:
-                    # gdb.selected_frame() may error for unknown reasons (often during kernel startup).
-                    # if failed, print thread information without frame (but with $pc).
-                    pc = get_register("$pc")
-                # make reason
-                sym = Symbol.get_symbol_string(pc, nosymbol_string=" <NO_SYMBOL>")
-                line += " at {!s}{:s}".format(ProcessMap.lookup_address(pc), sym)
-                line += ", reason: {:s}".format(Color.colorify(self.reason(), "bold magenta"))
+                # status
+                if thread.is_running():
+                    line += Color.colorify("running", "bold green")
+                elif thread.is_exited():
+                    line += Color.colorify("exited", "bold yellow")
+                elif thread.is_stopped():
+                    line += Color.colorify("stopped", "bold red")
+                    # switch test
+                    try:
+                        thread.switch()
+                    except Exception:
+                        line += " - Failed to switch to this thread"
+                        gef_print(line, redirect=redirect)
+                        continue
+                    # get pc
+                    try:
+                        frame = gdb.selected_frame()
+                        pc = frame.pc()
+                    except gdb.error:
+                        # gdb.selected_frame() may error for unknown reasons (often during kernel startup).
+                        # if failed, print thread information without frame (but with $pc).
+                        pc = get_register("$pc")
+                    # make reason
+                    sym = Symbol.get_symbol_string(pc, nosymbol_string=" <NO_SYMBOL>")
+                    line += " at {!s}{:s}".format(ProcessMap.lookup_address(pc), sym)
+                    line += ", reason: {:s}".format(Color.colorify(self.reason(), "bold magenta"))
 
-            lines.append([thread.num, line])
+                lines.append([thread.num, line])
 
-        # print
-        for _, line in sorted(lines):
-            gef_print(line, redirect=redirect)
+            # print
+            for _, line in sorted(lines):
+                gef_print(line, redirect=redirect)
 
-        # revert
-        selected_thread.switch()
-        if selected_frame is not None:
+        finally:
             try:
-                selected_frame.select()
-                # A gdb.error will occur if the user patches a range that includes the ret instruction.
+                selected_thread.switch()
+                if selected_frame is not None:
+                    selected_frame.select()
             except gdb.error:
                 pass
         return
