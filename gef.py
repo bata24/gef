@@ -75147,6 +75147,7 @@ class KernelXArray:
     """
 
     ptrsize = None
+    kpath = None
     offset_xa_head = None
     offset_shift = 0
     offset_count = 2
@@ -75227,9 +75228,15 @@ class KernelXArray:
         if self.head_offset is not None:
             return self.head_offset
 
-        # The shared offset may come from another target or config, so reuse it
-        # only if the head there links back, or if nothing here can be verified.
+        # The cached offset may be stale after reconnecting to another kernel, where a different
+        # config (e.g. CONFIG_LOCK_STAT) can move xa_head; drop it when the target changes.
         cls = type(self)
+        kpath = Kernel.path()
+        if cls.kpath is not kpath:
+            cls.kpath = kpath
+            cls.offset_xa_head = None
+        # The offset may still come from an earlier walk on this target, so reuse it
+        # only if the head there still links back to a node here.
         cached = cls.offset_xa_head
         if cached is not None:
             entry = read_int_from_memory(self.address + cached, safe=True)
@@ -75245,9 +75252,8 @@ class KernelXArray:
                 self.head_offset = offset
                 return self.head_offset
 
-        if cached is not None and cached < max_offset:
-            self.head_offset = cls.offset_xa_head = cached
-            return self.head_offset
+        # An empty tree or one holding a single entry directly in xa_head has no node to
+        # verify, so the offset cannot be found. Do not adopt an unverified cached value.
         return None
 
     def parse_entry(self, entry, index):
@@ -75613,10 +75619,10 @@ class KernelMapleTree:
     MAPLE_ARANGE_64 = 3
 
     ptrsize = None
-    num_alloc_slots = None
+    num_node_slots = None
     num_range64_slots = None
     num_arange64_slots = None
-    offset_alloc_slot = None
+    offset_node_slot = None
     offset_range64_slot = None
     offset_arange64_slot = None
 
@@ -75640,18 +75646,15 @@ class KernelMapleTree:
 
         cls.ptrsize = current_arch.ptrsize
         if is_64bit():
-            num_node_slots = 31
+            cls.num_node_slots = 31
             cls.num_range64_slots = 16
             cls.num_arange64_slots = 10
-            cls.num_alloc_slots = num_node_slots - 1
-            # maple_alloc: total (unsigned long), node_count and request_count.
-            cls.offset_alloc_slot = cls.ptrsize * 2
         else:
-            num_node_slots = 63
+            cls.num_node_slots = 63
             cls.num_range64_slots = 32
             cls.num_arange64_slots = 21
-            cls.num_alloc_slots = num_node_slots - 2
-            cls.offset_alloc_slot = cls.ptrsize * 3
+        # maple_node (dense): slot[MAPLE_NODE_SLOTS] directly follows parent.
+        cls.offset_node_slot = cls.ptrsize
         # maple_{a,}range_64: parent is followed by pivot[NR_SLOTS - 1], then slot[].
         cls.offset_range64_slot = cls.ptrsize * cls.num_range64_slots
         cls.offset_arange64_slot = cls.ptrsize * cls.num_arange64_slots
@@ -75667,6 +75670,13 @@ class KernelMapleTree:
         if not self.read_root():
             return
         self.seen = set()
+        if self.ma_root == 0:
+            return
+        if not type(self).is_node(self.ma_root):
+            # a tree holding a single entry at index 0 keeps it directly in ma_root
+            if is_valid_addr(self.ma_root):
+                yield self.ma_root
+            return
         yield from self.parse_node(self.ma_root, 1)
         return
 
@@ -75692,7 +75702,7 @@ class KernelMapleTree:
         cls = type(self)
         for offset in range(0, max_offset, cls.ptrsize):
             entry = read_int_from_memory(self.address + offset)
-            if cls.is_root(entry):
+            if cls.is_root(entry, self.address + offset):
                 self.root_offset = offset
                 return self.root_offset
         return None
@@ -75716,11 +75726,25 @@ class KernelMapleTree:
         return True
 
     @classmethod
-    def is_root(cls, entry):
-        """Return True if `entry` looks like ma_root, which points to the root maple_node."""
+    def is_root(cls, entry, address):
+        """Return True if `entry` read from `address` looks like ma_root, which points to the root maple_node."""
         # ma_root holds a maple_enode, whose lower 8-bits keep the node type.
-        # 0x0e: maple_leaf_64 (= a small tree), 0x1e: maple_arange_64 (e.g., mm_struct.mm_mt)
-        return is_valid_addr(entry) and (entry & 0xff) in [0x1e, 0x0e]
+        # 0x0e: maple_leaf_64 (= a small tree), 0x1e: maple_arange_64 (e.g., mm_struct.mm_mt),
+        # 0x16: maple_range_64 (a tree without MT_FLAGS_ALLOC_RANGE, e.g., execmem busy_areas)
+        if (entry & 0xff) not in [0x1e, 0x16, 0x0e] or not is_valid_addr(entry):
+            return False
+        # The parent of the root node points back to the maple_tree with MA_ROOT_PARENT.
+        parent = read_int_from_memory(entry & ~cls.MAPLE_NODE_POINTER_MASK, safe=True)
+        if parent is None or parent & 1 == 0:
+            return False
+        offset = address - (parent & ~1)
+        return 0 <= offset < cls.ptrsize * 32 and offset % cls.ptrsize == 0
+
+    @classmethod
+    def is_node(cls, entry):
+        """Return True if `entry` is a maple_enode, not a single entry stored directly in ma_root."""
+        # a maple_enode keeps xa_is_internal (lower 2 bits == 2); a value or a direct pointer does not
+        return (entry & 3) == 2 and entry > 0x1000
 
     def get_next(self, _=None):
         """Return the next leaf entry, or None if all entries are consumed."""
@@ -75743,7 +75767,7 @@ class KernelMapleTree:
         node_type = (entry >> cls.MAPLE_NODE_TYPE_SHIFT) & cls.MAPLE_NODE_TYPE_MASK
 
         if node_type == cls.MAPLE_DENSE:
-            slot_top, num_slots, is_leaf = pointer + cls.offset_alloc_slot, cls.num_alloc_slots, True
+            slot_top, num_slots, is_leaf = pointer + cls.offset_node_slot, cls.num_node_slots, True
         elif node_type == cls.MAPLE_LEAF_64:
             slot_top, num_slots, is_leaf = pointer + cls.offset_range64_slot, cls.num_range64_slots, True
         elif node_type == cls.MAPLE_RANGE_64:
@@ -157642,7 +157666,7 @@ class KernelIrqCommand(GenericCommand, BufferingOutput):
 
         if kversion < "4.20":
             tree = KernelRadixTree(root, GefUtil.offsetof("radix_tree_root", "rnode"))
-            if tree.find_rnode_offset(ptrsize * 10) is None:
+            if tree.find_rnode_offset(ptrsize * 0x20) is None:
                 self.meta.append((self.quiet_err, "Could not find radix_tree_root->rnode. (maybe uninitialized?)"))
                 return None
             self.meta.append((self.quiet_info, "offsetof(radix_tree_root, rnode): {:#x}".format(tree.rnode_offset)))
@@ -157650,14 +157674,14 @@ class KernelIrqCommand(GenericCommand, BufferingOutput):
 
         if kversion < "6.5":
             tree = KernelXArray(root, GefUtil.offsetof("xarray", "xa_head"))
-            if tree.find_head_offset(ptrsize * 10) is None:
+            if tree.find_head_offset(ptrsize * 0x20) is None:
                 self.meta.append((self.quiet_err, "Could not find xa_head. (maybe uninitialized?)"))
                 return None
             self.meta.append((self.quiet_info, "offsetof(xarray, xa_head): {:#x}".format(tree.head_offset)))
             return {"kind": "xarray", "root": root, "head_offset": tree.head_offset}
 
         tree = KernelMapleTree(root, GefUtil.offsetof("maple_tree", "ma_root"))
-        if tree.find_root_offset(ptrsize * 0x10) is None:
+        if tree.find_root_offset(ptrsize * 0x20) is None:
             self.meta.append((self.quiet_err, "Could not find offsetof(maple_tree, ma_root)"))
             return None
         self.meta.append((self.quiet_info, "offsetof(maple_tree, ma_root): {:#x}".format(tree.root_offset)))
@@ -188969,7 +188993,7 @@ class KernelWalkRadixTreeCommand(KernelWalkCommand):
     parser.add_argument("-o", "--rnode-offset", type=AddressUtil.parse_address,
                         help="offsetof(the struct, rnode). it is searched if not given.")
     parser.add_argument("-m", "--max-offset", type=AddressUtil.parse_address,
-                        help="the search range of offsetof(the struct, rnode). (default: ptrsize*10)")
+                        help="the search range of offsetof(the struct, rnode). (default: ptrsize*0x20)")
     KernelWalkCommand.add_common_arguments(parser)
     _syntax_ = parser.format_help()
 
@@ -189007,7 +189031,7 @@ class KernelWalkRadixTreeCommand(KernelWalkCommand):
             err("Invalid address")
             return
 
-        max_offset = args.max_offset or current_arch.ptrsize * 10
+        max_offset = args.max_offset or current_arch.ptrsize * 0x20
         rt = KernelRadixTree(args.address, args.rnode_offset)
         try:
             if rt.find_rnode_offset(max_offset) is None:
@@ -189046,7 +189070,7 @@ class KernelWalkXArrayCommand(KernelWalkCommand):
     parser.add_argument("-o", "--head-offset", type=AddressUtil.parse_address,
                         help="offsetof(the struct, xa_head). it is searched if not given.")
     parser.add_argument("-m", "--max-offset", type=AddressUtil.parse_address,
-                        help="the search range of offsetof(the struct, xa_head). (default: ptrsize*10)")
+                        help="the search range of offsetof(the struct, xa_head). (default: ptrsize*0x20)")
     KernelWalkCommand.add_common_arguments(parser)
     _syntax_ = parser.format_help()
 
@@ -189059,6 +189083,8 @@ class KernelWalkXArrayCommand(KernelWalkCommand):
     _note_ = [
         "The xarray is introduced at v4.20, so use `kwalk radix` for v4.19 and earlier.",
         "struct idr starts with a struct radix_tree_root (or xarray), so pass its address as is.",
+        "An empty tree or one holding a single entry stored directly in xa_head cannot be",
+        "auto-detected, because no internal node proves the offset; pass `--head-offset` for it.",
     ]
     _note_ = "\n".join(_note_)
 
@@ -189083,11 +189109,12 @@ class KernelWalkXArrayCommand(KernelWalkCommand):
             err("Invalid address")
             return
 
-        max_offset = args.max_offset or current_arch.ptrsize * 10
+        max_offset = args.max_offset or current_arch.ptrsize * 0x20
         xa = KernelXArray(args.address, args.head_offset)
         try:
             if xa.find_head_offset(max_offset) is None:
-                err("Could not find xa_head. (maybe uninitialized?)")
+                err("Could not find xa_head. Pass --head-offset (required for an empty or single-entry tree) "
+                    "or a larger --max-offset.")
                 return
             entries = xa.parse()
         except gdb.MemoryError:
@@ -189127,6 +189154,8 @@ class KernelWalkMapleTreeCommand(KernelWalkCommand):
 
     _note_ = [
         "The maple_tree is introduced at v6.1 for mm_struct.mm_mt, and v6.5 for sparse_irqs.",
+        "A tree holding a single entry stored directly in ma_root cannot be auto-detected;",
+        "pass `--root-offset` for it. With the offset given, the single entry is shown correctly.",
     ]
     _note_ = "\n".join(_note_)
 
@@ -189155,7 +189184,7 @@ class KernelWalkMapleTreeCommand(KernelWalkCommand):
         mt = KernelMapleTree(args.address, args.root_offset)
         try:
             if mt.find_root_offset(max_offset) is None:
-                err("Could not find ma_root. (maybe uninitialized?)")
+                err("Could not find ma_root. Pass --root-offset (required for an empty or single-entry tree).")
                 return
             entries = mt.parse()
         except gdb.MemoryError:

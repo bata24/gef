@@ -11147,6 +11147,8 @@ kwalk maple -o 0x48 0xffff972801b78a00  # skip searching offsetof(the struct, ma
 
 ```text
 The maple_tree is introduced at v6.1 for mm_struct.mm_mt, and v6.5 for sparse_irqs.
+A tree holding a single entry stored directly in ma_root cannot be auto-detected;
+pass `--root-offset` for it. With the offset given, the single entry is shown correctly.
 ```
 
 ## `kwalk radix`
@@ -11168,7 +11170,7 @@ options:
   -o, --rnode-offset RNODE_OFFSET
                         offsetof(the struct, rnode). it is searched if not given.
   -m, --max-offset MAX_OFFSET
-                        the search range of offsetof(the struct, rnode). (default: ptrsize*10)
+                        the search range of offsetof(the struct, rnode). (default: ptrsize*0x20)
   -C, --container-of CONTAINER_OF
                         also displays each entry minus this offset, like container_of().
   -n, --no-pager        do not use the pager.
@@ -11246,7 +11248,7 @@ options:
   -o, --head-offset HEAD_OFFSET
                         offsetof(the struct, xa_head). it is searched if not given.
   -m, --max-offset MAX_OFFSET
-                        the search range of offsetof(the struct, xa_head). (default: ptrsize*10)
+                        the search range of offsetof(the struct, xa_head). (default: ptrsize*0x20)
   -C, --container-of CONTAINER_OF
                         also displays each entry minus this offset, like container_of().
   -n, --no-pager        do not use the pager.
@@ -11265,6 +11267,8 @@ kwalk xarray -o 8 0xffffffff82640e60   # skip searching offsetof(the struct, xa_
 ```text
 The xarray is introduced at v4.20, so use `kwalk radix` for v4.19 and earlier.
 struct idr starts with a struct radix_tree_root (or xarray), so pass its address as is.
+An empty tree or one holding a single entry stored directly in xa_head cannot be
+auto-detected, because no internal node proves the offset; pass `--head-offset` for it.
 ```
 
 ## `kworkqueue`
