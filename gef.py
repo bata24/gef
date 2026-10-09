@@ -47959,6 +47959,28 @@ class FormatStringBreakpoint(gdb.Breakpoint):
         self.enabled = True
         return
 
+    def read_format_string(self, addr):
+        if "wprintf" not in self.func_name and "wscanf" not in self.func_name:
+            return read_cstring_from_memory(addr) or ""
+
+        width = GefUtil.type_size("wchar_t") or 4
+        max_length = Config.get("context.nb_max_string_length")
+        data = bytearray()
+        suffix = ""
+        for index in range(max_length + 1):
+            try:
+                char = read_memory(addr + index * width, width)
+            except gdb.MemoryError:
+                break
+            if not any(char):
+                break
+            if index == max_length:
+                suffix = "[...]"
+                break
+            data.extend(char)
+        encoding = "utf-{:d}{:s}".format(width * 8, "le" if Endian.is_little_endian() else "be")
+        return data.decode(encoding, errors="backslashreplace") + suffix
+
     def stop(self):
         Cache.reset_gef_caches()
         msg = []
@@ -47971,7 +47993,7 @@ class FormatStringBreakpoint(gdb.Breakpoint):
         if addr.section.permission.value & Permission.WRITE:
             msg.append(Color.colorify("Format string helper", "bold yellow"))
 
-            content = read_cstring_from_memory(addr.value) or ""
+            content = self.read_format_string(addr.value)
             msg.append("Possible insecure format string: {:s}('{:s}'  ->  {:#x}: '{:s}')".format(
                 self.func_name, ptr, addr.value, content,
             ))
@@ -48081,8 +48103,27 @@ class FormatStringSearchCommand(GenericCommand):
         "xasprintf": 0,       # char* xasprintf(const char *fmt, ...);
         "xvasprintf": 0,      # char* xvasprintf(const char *fmt, va_list ap);
     }
+    dangerous_functions.update({
+        prefix + name: num_arg
+        for name, num_arg in dangerous_functions.items() if name.endswith("scanf")
+        for prefix in ("__isoc99_", "__isoc23_")
+    })
 
     breakpoints = []
+
+    def get_function_addresses(self):
+        functions = {name: set() for name in self.dangerous_functions}
+        symbols = gdb.execute("maintenance print msymbols", to_string=True)
+        pattern = r"^\[\s*\d+\] [Tt] (0x[0-9a-f]+) (\w+) section "
+        for address, name in re.findall(pattern, symbols, re.MULTILINE):
+            if name in functions:
+                functions[name].add(int(address, 16))
+        for name, addresses in functions.items():
+            try:
+                addresses.add(AddressUtil.parse_address(name))
+            except gdb.error:
+                pass
+        return functions
 
     def remove_breakpoints(self):
         bp_count = 0
@@ -48106,21 +48147,25 @@ class FormatStringSearchCommand(GenericCommand):
             return
 
         bp_count = 0
-        for func_name, num_arg in self.dangerous_functions.items():
-            try:
-                func_address = AddressUtil.parse_address(func_name)
-            except gdb.error:
-                continue
-            if args.verbose:
-                # The reason for the `end=""` is that when you set a breakpoint,
-                # gdb automatically outputs the following message:
-                # printf: Breakpoint 1 at 0x7ffff7c63f90: file ./stdio-common/printf.c, line 28.
-                gef_print(func_name + ": ", end="")
-            bp = FormatStringBreakpoint(func_address, func_name, num_arg, verbose=args.verbose)
-            FormatStringSearchCommand.breakpoints.append(bp)
-            bp_count += 1
+        addresses = set()
+        functions = self.get_function_addresses()
+        for func_name, func_addresses in functions.items():
+            num_arg = self.dangerous_functions[func_name]
+            for func_address in sorted(func_addresses):
+                if func_address in addresses:
+                    continue
+                if args.verbose:
+                    # The reason for the `end=""` is that when you set a breakpoint,
+                    # gdb automatically outputs the following message:
+                    # printf: Breakpoint 1 at 0x7ffff7c63f90: file ./stdio-common/printf.c, line 28.
+                    gef_print(func_name + ": ", end="")
+                bp = FormatStringBreakpoint(func_address, func_name, num_arg, verbose=args.verbose)
+                FormatStringSearchCommand.breakpoints.append(bp)
+                addresses.add(func_address)
+                bp_count += 1
 
-        ok("Enabled {:d}/{:d} FormatStringBreakpoint".format(bp_count, len(self.dangerous_functions)))
+        total = sum(max(1, len(values)) for values in functions.values())
+        ok("Enabled {:d}/{:d} FormatStringBreakpoint".format(bp_count, total))
         return
 
 
