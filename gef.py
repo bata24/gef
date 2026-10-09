@@ -188,7 +188,7 @@ GEF_FILEPATH                = os.path.expanduser(http_get.__code__.co_filename) 
                             # note: __file__ will no longer be available from gdb 15
 
 
-def get_current_arch(): # noqa
+def get_current_arch():
     global current_arch
     return current_arch
 
@@ -327,9 +327,9 @@ class DisplayHook:
         return repr(o)
 
     @staticmethod
-    def displayhook(o): # noqa
+    def displayhook(o):
         """An alternative to the default display function."""
-        builtins._ = o # noqa
+        builtins._ = o
 
         if o is None:
             return
@@ -339,15 +339,15 @@ class DisplayHook:
         return
 
 
-def hexon(): # noqa
+def hexon():
     """Replace the print function that is implicitly called when running "python-interactive 1" etc."""
-    sys.displayhook = DisplayHook.displayhook # noqa
+    sys.displayhook = DisplayHook.displayhook
     return
 
 
-def hexoff(): # noqa
+def hexoff(): # noqa: V103
     """Revert the print function that is implicitly called when running "python-interactive 1" etc."""
-    sys.displayhook = sys.__displayhook__ # noqa
+    sys.displayhook = sys.__displayhook__
     return
 
 
@@ -518,7 +518,7 @@ class Cache:
                 return fcache.get(args)
         return None
 
-    @staticmethod # noqa
+    @staticmethod
     def clear_cache_for(f):
         """Clear the cache of specified function."""
 
@@ -856,7 +856,7 @@ class Config:
     @staticmethod
     def save(filepath):
         cfg = configparser.RawConfigParser()
-        cfg.optionxform = str # noqa
+        cfg.optionxform = str # noqa: V101
         old_sect = None
 
         # save the configuration
@@ -890,7 +890,7 @@ class Config:
     @staticmethod
     def load(filepath):
         cfg = configparser.RawConfigParser()
-        cfg.optionxform = str # noqa
+        cfg.optionxform = str # noqa: V101
         cfg.read(filepath)
 
         for section in cfg.sections():
@@ -1621,7 +1621,7 @@ class Address:
             line_color += " " + Config.get("theme.address_rwx")
         return Color.colorify(value, line_color)
 
-    def is_in_readable(self): # noqa
+    def is_in_readable(self): # noqa: V105
         if self.section is None:
             return False
         r = hasattr(self.section, "is_readable") and self.section.is_readable()
@@ -2507,7 +2507,7 @@ class Elf:
         # off 0x7
         self.e_osabi, self.e_abiversion = struct.unpack("{}BB".format(endian), self.read(2))
         # off 0x9
-        self.e_pad = self.read(7) # noqa
+        self.e_pad = self.read(7) # noqa: V101
         # off 0x10
         self.e_type, self.e_machine, self.e_version = struct.unpack("{}HHI".format(endian), self.read(8))
         # off 0x18
@@ -2943,13 +2943,13 @@ class Elf:
 
         return merge_ranges(direct), merge_ranges(overlaps)
 
-    def has_rpath(self): # noqa
+    def has_rpath(self): # noqa: V105
         return self.get_rpath() is not None
 
     def get_rpath(self):
         return self.get_dynamic_string(0xf) # DT_RPATH
 
-    def has_runpath(self): # noqa
+    def has_runpath(self): # noqa: V105
         return self.get_runpath() is not None
 
     def get_runpath(self):
@@ -4220,7 +4220,7 @@ class GlibcHeap:
             else:
                 return None
 
-        @property # noqa
+        @property # noqa: V106
         def tcache_count(self):
             if get_libc_version() >= (2, 26):
                 return self.get_size_t(self.addrof_tcache_count)
@@ -5452,7 +5452,7 @@ class GlibcHeap:
                     bins_dict_for_base_address[base_address] = new_list
             return addr_lists, bins_dict_for_address, bins_dict_for_base_address
 
-        def reset_cache(self): # noqa
+        def reset_cache(self): # noqa: V105
             Cache.clear_cache_for(self.get_freelist_cache)
             return
 
@@ -6122,14 +6122,14 @@ class GlibcHeap:
         return table
 
     # for convenience
-    H = HeapInfo # noqa
-    M = MallocPar # noqa
-    A = GlibcArena # noqa
-    C = GlibcChunk # noqa
+    H = HeapInfo
+    M = MallocPar
+    A = GlibcArena
+    C = GlibcChunk
 
 
 # for convenience
-GH = GlibcHeap # noqa
+GH = GlibcHeap # noqa: V107
 
 
 @Cache.cache_this_session(until_new_objfile=True)
@@ -6352,7 +6352,7 @@ class String:
             return "".join(chr(xx) for xx in x)
         raise TypeError("bytes2str: expected bytes or str, but {!s}".format(type(x)))
 
-    @staticmethod # noqa
+    @staticmethod # noqa: V105
     def bits2bytes(a, endian="big"):
         """Helper function for bits -> bytes."""
         if isinstance(a, str):
@@ -6389,7 +6389,7 @@ class String:
                 out.append(s)
         return bytes(out)
 
-    @staticmethod # noqa
+    @staticmethod # noqa: V105
     def bytes2bits(a, endian="big"):
         """Helper function for bytes -> bits."""
         if isinstance(a, str):
@@ -7104,7 +7104,7 @@ class Disasm:
         )
         try:
             cs = capstone.Cs(arch, mode)
-            cs.detail = True # noqa
+            cs.detail = True
         except capstone.CsError:
             err("CsError")
             return
@@ -14134,7 +14134,7 @@ class Decorator:
 
         return wrap
 
-    @staticmethod # noqa
+    @staticmethod # noqa: V105
     def perf(f):
         """Decorator wrapper to measure performance."""
 
@@ -14153,7 +14153,7 @@ class Decorator:
 
         return wrapper
 
-    @staticmethod # noqa
+    @staticmethod # noqa: V105
     def cperf(f):
         """Decorator wrapper to measure performance."""
 
@@ -16887,7 +16887,7 @@ class GenericCommand(gdb.Command):
             super().__init__(self._cmdline_, command_type, complete_type, prefix)
         return
 
-    def invoke(self, args, from_tty): # noqa
+    def invoke(self, args, from_tty): # noqa: V105
         try:
             # Another inferior or target may be selected since the architecture was resolved.
             if current_arch is not None and current_arch_context != get_arch_context():
@@ -18390,7 +18390,7 @@ class RelativeVirtualAddressFunction(gdb.Function):
         super().__init__("gef_rva")
         return
 
-    def invoke(self, offset): # noqa
+    def invoke(self, offset): # noqa: V105
         codebase = ProcessMap.get_codebase() if is_alive() else 0
         if codebase is None:
             raise gdb.GdbError("Could not find the codebase")
@@ -24257,7 +24257,7 @@ class ReadSystemRegisterForKgdbCommand(GenericCommand):
         regs = [r.lower() for r in ReadSystemRegisterForKgdbCommand.get_supported_regs()]
         return reg_name.lstrip("$").lower() in regs
 
-    def complete(self, text, word): # noqa
+    def complete(self, text, word):
         regs = ReadSystemRegisterForKgdbCommand.get_supported_regs()
         if text.strip() in regs:
             # already matched
@@ -31768,7 +31768,7 @@ class DisassembleCommand(GenericCommand):
         except capstone.CsError:
             err("CsError")
             return
-        cs.detail = True # noqa
+        cs.detail = True
 
         for insn in cs.disasm(insns, 0x0):
             b = binascii.hexlify(insn.bytes).decode("utf-8")
@@ -38790,7 +38790,7 @@ class ContextCommand(GenericCommand):
         EventHooking.gef_on_continue_hook(ContextExtraCommand.empty_extra_messages)
         return
 
-    def complete(self, text, word): # noqa
+    def complete(self, text, word):
         if text == "":
             # no prefix
             return [s for s in self.commands if ((word is None) or (s and word in s))]
@@ -41018,7 +41018,7 @@ class HexdumpCommand(GenericCommand, BufferingOutput):
         super().__init__(complete="use_user_complete")
         return
 
-    def complete(self, text, word): # noqa
+    def complete(self, text, word):
         if text.strip() in self.modes:
             # already matched
             return []
@@ -43209,7 +43209,7 @@ class ASLRCommand(GenericCommand):
         super().__init__(complete="use_user_complete")
         return
 
-    def complete(self, text, word): # noqa
+    def complete(self, text, word):
         if text.strip() in self.modes:
             # already matched
             return []
@@ -43261,7 +43261,7 @@ class FollowCommand(GenericCommand):
         super().__init__(complete="use_user_complete")
         return
 
-    def complete(self, text, word): # noqa
+    def complete(self, text, word):
         if text.strip() in self.modes:
             # already matched
             return []
@@ -45306,7 +45306,7 @@ class SropHintCommand(GenericCommand):
         super().__init__(complete="use_user_complete")
         return
 
-    def complete(self, text, word): # noqa
+    def complete(self, text, word):
         if text.strip() in self.architectures:
             # already matched
             return []
@@ -65714,7 +65714,7 @@ class KernelConstsBase:
             return None
         return AddressUtil.normalize_address(phys_kbase - (linear_candidates[0] - page_offset))
 
-    def test(self): # noqa
+    def test(self): # noqa: V105
         if is_32bit():
             target = ["PAGE_OFFSET", "PAGE_OFFSET_END", "VMALLOC_START", "VMALLOC_END"]
         else:
@@ -66017,7 +66017,7 @@ class KernelConstsX86(KernelConstsBase):
     def MODULES_END(self):
         return self.VMALLOC_END
 
-    @property # noqa
+    @property # noqa: V106
     def MODULES_LEN(self):
         # Note: the kernel itself defines it in this (reversed) order for x86_32.
         # See arch/x86/include/asm/pgtable_32_areas.h
@@ -66315,7 +66315,7 @@ class KernelConstsX64(KernelConstsBase):
             return 0xffff_ffff_8000_0000
         return None
 
-    @property # noqa
+    @property
     def START_KERNEL_map(self):
         return self.__START_KERNEL_map
 
@@ -66345,7 +66345,7 @@ class KernelConstsX64(KernelConstsBase):
             return 0xffff_8880_0000_0000
         return None
 
-    @property # noqa
+    @property
     def __PAGE_OFFSET_BASE_L5(self):
         if "4.17" <= self.kversion < "4.19":
             return 0xff10_0000_0000_0000
@@ -66507,7 +66507,7 @@ class KernelConstsX64(KernelConstsBase):
             return 0xffff_c900_0000_0000
         return None
 
-    @property # noqa
+    @property
     def __VMALLOC_BASE_L5(self):
         if "4.17" <= self.kversion:
             return 0xffa0_0000_0000_0000
@@ -66601,7 +66601,7 @@ class KernelConstsX64(KernelConstsBase):
             return 0xffff_ea00_0000_0000
         return None
 
-    @property # noqa
+    @property
     def __VMEMMAP_BASE_L5(self):
         if "4.17" <= self.kversion:
             return 0xffd4_0000_0000_0000
@@ -66736,7 +66736,7 @@ class KernelConstsX64(KernelConstsBase):
                 return 0xffff_ffff_fe00_0000
         return None
 
-    @property # noqa
+    @property # noqa: V106
     def MODULES_LEN(self):
         if "3.0" <= self.kversion:
             return self.MODULES_END - self.MODULES_VADDR
@@ -66797,7 +66797,7 @@ class KernelConstsX64(KernelConstsBase):
             return AddressUtil.normalize_address(espfix_base_addr)
         return None
 
-    @property # noqa
+    @property # noqa: V106
     def ESPFIX_END(self):
         if "3.0" <= self.kversion:
             return self.ESPFIX_BASE_ADDR + 0x0000_0080_0000_0000
@@ -66822,14 +66822,14 @@ class KernelConstsX64(KernelConstsBase):
             return self.CPU_ENTRY_AREA_BASE + 0x0000_0080_0000_0000
         return None
 
-    @property # noqa
+    @property
     def EFI_VA_START(self):
         if "3.19" <= self.kversion:
             efi_va_start = -4 * (1 << 30)
             return AddressUtil.normalize_address(efi_va_start)
         return None
 
-    @property # noqa
+    @property
     def EFI_VA_END(self):
         if "3.19" <= self.kversion:
             efi_va_end = -68 * (1 << 30)
@@ -67595,7 +67595,7 @@ class KernelConstsArm64(KernelConstsBase):
             return self.PAGE_OFFSET + 2 ** (self.VA_BITS - 1) # no need to align
         return None
 
-    @property # noqa
+    @property # noqa: V106
     def KIMAGE_VADDR(self):
         if "4.6" <= self.kversion:
             return self.MODULES_END
@@ -67704,7 +67704,7 @@ class KernelConstsArm64(KernelConstsBase):
             return self.PCI_IO_START + self.PCI_IO_SIZE
         return None
 
-    @property # noqa
+    @property
     def FIXADDR_TOP(self):
         if "3.15" <= self.kversion < "4.0":
             return self.MODULES_VADDR - self.SZ_2M - self.PAGE_SIZE
@@ -67776,7 +67776,7 @@ class KernelConstsArm64(KernelConstsBase):
             return None
         return self.FIXADDR_TOP - self.FIXADDR_SIZE
 
-    @property # noqa
+    @property # noqa: V106
     def EARLYCON_IOBASE(self):
         if "3.7" <= self.kversion < "3.15":
             return self.MODULES_VADDR - self.SZ_4M
@@ -75255,7 +75255,7 @@ class KernelRadixTree:
         """Return the list of all leaf entries in the radix_tree."""
         return list(self.iter_entries())
 
-    def parse_indexed(self): # noqa
+    def parse_indexed(self):
         """Return the list of (index, entry) pairs in the radix_tree."""
         return list(self.iter_indexed_entries())
 
@@ -75891,7 +75891,7 @@ class KernelPerCpu:
             return None
         return AddressUtil.normalize_address(self.start + offset)
 
-    def get_bases(self): # noqa
+    def get_bases(self): # noqa: V105
         """Return the base address of every cpu's unit, or [] if `__per_cpu_start` is unknown."""
         if self.start is None:
             return []
@@ -90392,7 +90392,7 @@ class KernelKeyringCommand(GenericCommand, BufferingOutput):
 
     def initialize_key_layout(self, sample_key=None):
         self.sample_key = sample_key
-        self.key_type_keyring = Ksym.get_addr("key_type_keyring") # noqa
+        self.key_type_keyring = Ksym.get_addr("key_type_keyring") # noqa: V101
         self.offset_type = self.find_type_offset(sample_key)
         if self.offset_type is None:
             self.meta.append((self.quiet_err, "Could not find key->type"))
@@ -94070,7 +94070,7 @@ class KernelOperationsCommand(GenericCommand, BufferingOutput):
         super().__init__(complete="use_user_complete")
         return
 
-    def complete(self, text, word): # noqa
+    def complete(self, text, word):
         if text.strip() in self.types:
             # already matched
             return []
@@ -140860,7 +140860,7 @@ class Hash:
                 v = ((v >> n) | (v << (8 - n))) & 0xff
             return v
 
-        def discosum_hexdigest(self): # noqa
+        def discosum_hexdigest(self): # noqa: V105
             return "".join(f"{word:016x}" for word in struct.unpack("<4Q", self.digest()))
 
         def hash(self, data, seed=0):
@@ -165035,7 +165035,7 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
         super().__init__(complete="use_user_complete")
         return
 
-    def complete(self, text, word): # noqa
+    def complete(self, text, word):
         if text.strip() in self.modes:
             # already matched
             return []
@@ -168514,7 +168514,7 @@ class MuslHeapDumpCommand(GenericCommand, BufferingOutput):
         super().__init__(complete="use_user_complete")
         return
 
-    def complete(self, text, word): # noqa
+    def complete(self, text, word):
         if text.strip() in self.modes:
             # already matched
             return []
@@ -170299,7 +170299,7 @@ class WSecureMemAddrCommand(GenericCommand):
         super().__init__(complete="use_user_complete")
         return
 
-    def complete(self, text, word): # noqa
+    def complete(self, text, word):
         if text.strip() in self.modes:
             # already matched
             return []
@@ -174425,7 +174425,7 @@ class AddrMap:
             maps = AddrMap.get_maps(**kwargs)
         return next((entry for entry in maps if entry.contains_virtual(address)), None)
 
-    @staticmethod # noqa
+    @staticmethod # noqa: V105
     def find_physical(address, maps=None, **kwargs):
         """Return the first mapping that contains a physical address, or None."""
         if maps is None:
@@ -187561,7 +187561,7 @@ class KtraceRetBreakpoint(gdb.FinishBreakpoint):
         gef_print(")")
         return False
 
-    def out_of_scope(self): # noqa
+    def out_of_scope(self): # noqa: V105
         if self.enabled:
             self.enabled = False
 
@@ -195105,7 +195105,7 @@ class GefConfigCommand(GenericCommand):
             return
         return
 
-    def complete(self, text, word): # noqa
+    def complete(self, text, word):
         """Provide tab-completion suggestions for GEF config settings based on user input."""
         settings = sorted(Config.names())
 
@@ -196531,7 +196531,7 @@ class GefAlias(gdb.Command):
         __gef_alias_instances__[alias] = self
         return
 
-    def invoke(self, args, from_tty): # noqa
+    def invoke(self, args, from_tty): # noqa: V105
         if __gef_alias_instances__.get(self._alias_) is not self:
             err("Alias '{:s}' has been removed".format(self._alias_))
             return
@@ -196607,8 +196607,8 @@ class AliasesAddCommand(AliasesCommand):
             err("Not allowed due to circular references")
             return
         lexer = shlex.shlex(self.command_args, posix=True)
-        lexer.whitespace_split = True
-        lexer.commenters = ""
+        lexer.whitespace_split = True # noqa: V101
+        lexer.commenters = "" # noqa: V101
         count = len(gdb.string_to_argv(self.command_args)) - len(args.command)
         while count:
             next(lexer)
@@ -196731,7 +196731,7 @@ class GefUtil:
         except (gdb.error, TypeError):
             return None
 
-    @staticmethod # noqa
+    @staticmethod # noqa: V105
     @Cache.cache_this_session(per_inferior=True, until_new_objfile=True)
     def member_type_code(type_name, member):
         """Return a named field's GDB type code, or None if unavailable."""
@@ -197340,7 +197340,7 @@ class Gef:
         Gef.fix_venv()
 
         # setup prompt
-        gdb.prompt_hook = Gef.gef_prompt # noqa
+        gdb.prompt_hook = Gef.gef_prompt # noqa: V101
 
         # common config
         gdb.execute("set confirm off")
