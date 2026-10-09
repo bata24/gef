@@ -61250,8 +61250,10 @@ class KernelMagicCommand(GenericCommand):
         if not self.args.filter:
             return True
 
+        if isinstance(sym, str):
+            sym = [sym]
         for filt in self.args.filter:
-            if filt in sym:
+            if any(filt in name for name in sym):
                 return True
         return False
 
