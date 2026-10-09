@@ -777,7 +777,7 @@ exec-until syscall                              # execute until syscall instruct
 exec-until ret                                  # execute until ret instruction
 exec-until all-branch                           # execute until call/jmp/ret instruction
 exec-until indirect-branch                      # execute until indirect branch instruction (x64/x86 only)
-exec-until memaccess                            # execute until '[' is included by the instruction
+exec-until memaccess                            # execute until memory access instruction
 exec-until keyword "call +r[ab]x"               # execute until specified keyword (regex)
 exec-until cond "$rax==0xdead && $rbx==0xcafe"  # execute until specified condition is filled
 exec-until user-code                            # execute until user code
@@ -972,6 +972,14 @@ options:
   -N, --skip-lib        use `ni` instead of `si` if instruction is `call xxx@plt`.
   -e, --exclude EXCLUDE
                         the address to exclude from breakpoints.
+```
+
+### Notes
+
+```text
+Classifies potential data accesses, including implicit stack accesses on x86.
+Uses instruction families on x86, ARM, ARM64, RISC-V, MIPS, PPC, SPARC, LoongArch, and OpenRISC.
+Other architectures use explicit bracketed memory operands.
 ```
 
 ## `exec-until region-change`

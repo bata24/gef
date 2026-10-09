@@ -183841,7 +183841,7 @@ class ExecUntilCommand(GenericCommand):
         "{0:s} ret                                  # execute until ret instruction",
         "{0:s} all-branch                           # execute until call/jmp/ret instruction",
         "{0:s} indirect-branch                      # execute until indirect branch instruction (x64/x86 only)",
-        "{0:s} memaccess                            # execute until '[' is included by the instruction",
+        "{0:s} memaccess                            # execute until memory access instruction",
         '{0:s} keyword "call +r[ab]x"               # execute until specified keyword (regex)',
         '{0:s} cond "$rax==0xdead && $rbx==0xcafe"  # execute until specified condition is filled',
         "{0:s} user-code                            # execute until user code",
@@ -183904,84 +183904,79 @@ class ExecUntilCommand(GenericCommand):
                 return False # non-conditional, so always jump
         raise ValueError("check_jump_taken: unexpected filter combination")
 
-    def get_breakpoint_list(self):
-        lines = gdb.execute("info breakpoints", to_string=True).splitlines()
-        if lines[0] == "No breakpoints or watchpoints.":
-            return []
-        if lines[0] == "No breakpoints, watchpoints, tracepoints, or catchpoints.": # gdb 15.x ~
-            return []
+    def remember_stop(self, event):
+        self.stop_event = event
+        return
 
-        enable_idx = lines[0].index("Enb")
-        addr_idx = lines[0].index("Address")
-
-        bp_list = []
-        for line in lines[1:]:
-            try:
-                if line[0] == "\t":
-                    continue
-                enable = line[enable_idx]
-                addr = int(line[addr_idx:].split()[0], 16)
-                if enable == "y":
-                    bp_list.append(addr)
-            except Exception:
-                pass
-        # breakpoint with condition is unsupported
-        return bp_list
+    def exec_step(self, command):
+        self.stop_event = None
+        gdb.execute(command)
+        if not is_alive():
+            return True
+        if isinstance(self.stop_event, gdb.SignalEvent):
+            return True
+        reason = getattr(self.stop_event, "details", {}).get("reason")
+        if reason in ("end-stepping-range", "function-finished"):
+            return False
+        if isinstance(self.stop_event, gdb.BreakpointEvent):
+            return any(not isinstance(bp, (SimpleInternalTemporaryBreakpoint, SecondBreakpoint))
+                       for bp in self.stop_event.breakpoints)
+        return reason is not None
 
     def exec_next(self):
-        bp_list = self.get_breakpoint_list()
         EventHooking.gef_on_stop_unhook(EventHandler.hook_stop_handler)
         self.close_stdout_stderr()
         self.err = None
 
         prev_addr = -1
         try:
-            count = 0
-            while True:
-                # progress
-                if not self.args.print_insn and count % 100 == 0:
-                    self.force_write_stdout([b"\r|", b"\r/", b"\r-", b"\r\\"][count // 100 % 4])
+            with EventHooking.temporary("stop", self.remember_stop):
+                count = 0
+                while True:
+                    # progress
+                    if not self.args.print_insn and count % 100 == 0:
+                        self.force_write_stdout([b"\r|", b"\r/", b"\r-", b"\r\\"][count // 100 % 4])
 
-                # backup
-                prev_prev_addr = prev_addr
-                prev_addr = current_arch.pc
+                    # backup
+                    prev_prev_addr = prev_addr
+                    prev_addr = current_arch.pc
 
-                # execute 1 instruction
-                insn = get_insn()
-                if self.args.use_ni or (self.args.skip_lib and "@plt>" in str(insn)):
-                    gdb.execute("ni") # use ni wrapper
-                else:
-                    gdb.execute("si") # use si wrapper
+                    # execute 1 instruction
+                    insn = get_insn()
+                    if self.args.use_ni or (self.args.skip_lib and "@plt>" in str(insn)):
+                        stopped = self.exec_step("ni") # use ni wrapper
+                    else:
+                        stopped = self.exec_step("si") # use si wrapper
 
-                # check breakpoint
-                insn = get_insn()
-                if current_arch.pc in bp_list:
-                    break
-
-                # $pc is not changed
-                if prev_prev_addr == prev_addr == current_arch.pc: # for faster, repeat insn is skip
-                    # infinity self loop
-                    if current_arch.is_call(insn) or current_arch.is_jump(insn) or current_arch.is_ret(insn):
-                        self.err = "Detected infinity loop prev_addr ({:#x})".format(prev_addr)
-                        break
-                    # maybe rep prefix
-                    gdb.execute("xuntil")
-                    # recheck
-                    if prev_prev_addr == prev_addr == current_arch.pc:
-                        self.err = "Detected infinity loop prev_addr ({:#x})".format(prev_addr)
+                    if stopped:
                         break
                     insn = get_insn()
 
-                if self.args.print_insn:
-                    self.force_write_stdout((str(insn) + "\n").encode())
+                    # $pc is not changed
+                    if prev_prev_addr == prev_addr == current_arch.pc: # for faster, repeat insn is skip
+                        # infinity self loop
+                        if current_arch.is_call(insn) or current_arch.is_jump(insn) or current_arch.is_ret(insn):
+                            self.err = "Detected infinity loop prev_addr ({:#x})".format(prev_addr)
+                            break
+                        # maybe rep prefix
+                        if self.exec_step("xuntil"):
+                            break
+                        # recheck
+                        if prev_prev_addr == prev_addr == current_arch.pc:
+                            self.err = "Detected infinity loop prev_addr ({:#x})".format(prev_addr)
+                            break
+                        insn = get_insn()
 
-                # found and break
-                if self.is_target_insn(insn) and current_arch.pc not in self.args.exclude:
-                    if not self.args.print_insn:
-                        self.force_write_stdout(b"\r \r")
-                    break
+                    if self.args.print_insn:
+                        self.force_write_stdout((str(insn) + "\n").encode())
 
-                count += 1
+                    # found and break
+                    if self.is_target_insn(insn) and (self.err or current_arch.pc not in self.args.exclude):
+                        if not self.args.print_insn:
+                            self.force_write_stdout(b"\r \r")
+                        break
+
+                    count += 1
 
         except KeyboardInterrupt:
             pass
@@ -183999,8 +183994,10 @@ class ExecUntilCommand(GenericCommand):
             Cache.reset_gef_caches()
             if self.err:
                 err(self.err)
-            else:
+            elif is_alive():
                 gdb.execute("context")
+            else:
+                info("Inferior exited")
         return
 
     @Decorator.parse_args
@@ -184110,11 +184107,11 @@ class ExecUntilIndirectBranchCommand(ExecUntilCommand):
 
     def is_target_insn(self, insn):
         if current_arch.is_call(insn) or self.check_jump_taken(insn):
-            if "[" in str(insn):
+            operands = insn.split_last_operands(insn.operands)[0]
+            operand = re.sub(r"<[^>]*>", "", ",".join(operands)).strip()
+            if "[" in operand or operand.startswith("*"):
                 return True
-            for reg in current_arch.general_registers:
-                if reg.replace("$", "") in str(insn):
-                    return True
+            return operand.lstrip("%") in [reg.lstrip("$") for reg in current_arch.general_registers]
         return False
 
     @Decorator.parse_args
@@ -184268,12 +184265,53 @@ class ExecUntilMemaccessCommand(ExecUntilCommand):
     _syntax_ = parser.format_help()
     _example_ = None
 
+    _note_ = [
+        "Classifies potential data accesses, including implicit stack accesses on x86.",
+        "Uses instruction families on x86, ARM, ARM64, RISC-V, MIPS, PPC, SPARC, LoongArch, and OpenRISC.",
+        "Other architectures use explicit bracketed memory operands.",
+    ]
+    _note_ = "\n".join(_note_)
+
     def __init__(self):
         super().__init__(prefix=False)
         return
 
     def is_target_insn(self, insn):
-        return "[" in str(insn)
+        operands = insn.split_last_operands(insn.operands)[0]
+        operand = re.sub(r"<[^>]*>", "", ",".join(operands))
+        mnemo = insn.mnemonic.lower()
+        if is_x86():
+            if mnemo in ("lock", "rep", "repe", "repz", "repne", "repnz"):
+                if not operand.strip():
+                    return False
+                mnemo = operand.split()[0]
+            if mnemo in ("lea", "leaw", "leal", "leaq") or mnemo.startswith("nop"):
+                return False
+            if mnemo.startswith(("push", "pop", "call", "ret", "iret", "enter", "leave", "xlat")):
+                return True
+            if re.fullmatch(r"(?:movs|cmps|scas|lods|stos|ins|outs)[bwlqd]?", mnemo) \
+                    and not re.search(r"\b[xyz]mm\d+\b", operand):
+                return True
+            return "[" in operand or "(" in operand or bool(re.search(r"\b(?:[cdefgs]s):", operand))
+        if is_arm32() or is_arm32_cortex_m():
+            return mnemo.startswith(("ldr", "str", "ldm", "stm", "ldrex", "strex", "push", "pop",
+                                     "vld", "vst", "vpush", "vpop", "swp", "tbb", "tbh"))
+        if is_arm64():
+            return mnemo.startswith(("ld", "st", "cas", "swp"))
+        if current_arch.arch == "RISCV":
+            return bool(re.fullmatch(r"(?:c\.)?(?:f?[ls][bdhwq](?:u|sp)?|(?:amo\w+|lr|sc)\.[wd](?:\.\w+)?)"
+                                     r"|v[ls](?:e\d|[su]x|se|[ls]eg|[1248]r|m).*", mnemo))
+        if current_arch.arch == "MIPS":
+            return bool(re.fullmatch(r"[ls][bdhw](?:u|l|r)?|ll[d]?|sc[d]?|[ls][dw]c[123]|[ls][dw]xc1|u[ls][hw]",
+                                     mnemo))
+        if is_or1k():
+            return bool(re.fullmatch(r"l\.(?:l[bhw][sz]|s[bhw]|lwa|swa)", mnemo))
+        if current_arch.arch == "SPARC":
+            return mnemo != "stbar" and mnemo.startswith(("ld", "st", "cas", "swap"))
+        if current_arch.arch in ("PPC", "LOONGARCH"):
+            return mnemo != "lwsync" and mnemo.startswith(("ld", "st", "lb", "lh", "lw", "lq", "lf", "lv", "lx", "fld", "fst",
+                                     "vld", "vst", "xvld", "xvst", "ll.", "sc.", "am", "cas", "swap"))
+        return "[" in operand
 
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
@@ -184361,8 +184399,9 @@ class ExecUntilCondCommand(ExecUntilCommand):
     def is_target_insn(self, insn):
         try:
             v = gdb.parse_and_eval(self.condition)
-        except gdb.error:
-            return False
+        except gdb.error as e:
+            self.err = "Could not evaluate condition: {}".format(e)
+            return True
         if v not in [0x0, 0x1]:
             self.err = "condition result should be True or False"
             return True
@@ -184373,7 +184412,7 @@ class ExecUntilCondCommand(ExecUntilCommand):
     @Decorator.require_arch_set
     def do_invoke(self, args):
         condition = args.condition
-        if re.search(r"[^><!=]=[^=]", condition):
+        if re.search(r"(?<![><!=])=(?!=)", condition):
             err("Should not use `=` since it will be replace register/memory value, try use `==`")
             return
 
@@ -184384,7 +184423,7 @@ class ExecUntilCondCommand(ExecUntilCommand):
             if hasattr(current_arch, "general_registers"):
                 regs = current_arch.general_registers
             else:
-                regs = current_arch.all_registers
+                regs = list(current_arch.all_registers)
                 if hasattr(current_arch, "flag_register"):
                     if current_arch.flag_register in regs:
                         regs.remove(current_arch.flag_register)
@@ -184395,6 +184434,11 @@ class ExecUntilCondCommand(ExecUntilCommand):
 
         info("Condition: {:s}".format(condition))
         self.condition = condition
+        self.err = None
+        self.is_target_insn(None)
+        if self.err:
+            err(self.err)
+            return
         self.exec_next()
         return
 
@@ -184480,13 +184524,10 @@ class ExecUntilLibcCodeCommand(ExecUntilCommand):
     @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
     @Decorator.require_arch_set
     def do_invoke(self, args):
-        libc_targets = ("libc-2.", "libc.so.6", "libuClibc-")
-        libc = ProcessMap.process_lookup_path(libc_targets)
-        if libc is None:
-            err("Could not find the libc")
-            return
         maps = ProcessMap.get_process_maps()
-        self.libc_addrs = [p for p in maps if p.permission.value & Permission.EXECUTE and p.path == libc.path]
+        libc_pattern = r"libc-2\.\d+\.so|libc\.so(?:\.6)?|libuClibc-.*\.so|(?:ld-musl|libc\.musl)-[\w-]+\.so\.1"
+        self.libc_addrs = [p for p in maps if p.permission.value & Permission.EXECUTE
+                           and re.fullmatch(libc_pattern, os.path.basename(p.path))]
         if not self.libc_addrs:
             err("Could not find libc address")
             return
