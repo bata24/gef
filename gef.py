@@ -15668,7 +15668,67 @@ class ProcessMap:
 class EventHandler:
     """A collection of handler functions that are called when the specified events occur."""
 
-    continue_hooks_enabled = True
+    __gef_check_once__ = True # the flag to process only once at startup
+    __gef_check_disabled_bp__ = False # the flag to remove unnecessary breakpoints
+    continue_hooks_enabled = False
+    kpti_transition_active = False
+    qemu_pipe_pids = {}
+
+    @staticmethod
+    def get_handlers():
+        handlers = [
+            ("stop", EventHandler.hook_stop_handler),
+            ("new_objfile", EventHandler.new_objfile_handler),
+            ("free_objfile", EventHandler.del_objfile_handler),
+            ("clear_objfiles", EventHandler.del_objfile_handler),
+            ("exited", EventHandler.exit_handler),
+            ("gdb_exiting", EventHandler.gdb_exiting_handler),
+            ("connection_removed", EventHandler.connection_removed_handler),
+            ("memory_changed", EventHandler.state_changed_handler),
+            ("register_changed", EventHandler.state_changed_handler),
+        ]
+        if hasattr(gdb.events, "selected_context"):
+            handlers.extend([
+                ("selected_context", EventHandler.selected_context_handler),
+                ("new_thread", EventHandler.new_thread_handler),
+            ])
+        return handlers
+
+    @staticmethod
+    def connect():
+        EventHandler.set_continue_hooks(True)
+        for name, handler in EventHandler.get_handlers():
+            registry = getattr(gdb.events, name, None)
+            if registry is not None:
+                registry.connect(handler)
+        if hasattr(gdb.events, "selected_context"):
+            EventHandler.update_continue_hooks()
+        return
+
+    @staticmethod
+    def disconnect():
+        EventHandler.set_continue_hooks(False)
+        for name, handler in EventHandler.get_handlers():
+            registry = getattr(gdb.events, name, None)
+            if registry is not None:
+                registry.disconnect(handler)
+        return
+
+    @staticmethod
+    def set_continue_hooks(enabled):
+        if enabled == EventHandler.continue_hooks_enabled:
+            return
+
+        handlers = (
+            ContextRegistersCommand.update_registers,
+            ContextExtraCommand.empty_extra_messages,
+            EventHandler.continue_handler,
+        )
+        hook = EventHooking.gef_on_continue_hook if enabled else EventHooking.gef_on_continue_unhook
+        for handler in handlers:
+            hook(handler)
+        EventHandler.continue_hooks_enabled = enabled
+        return
 
     @staticmethod
     def continue_handler(event):
@@ -15688,25 +15748,7 @@ class EventHandler:
 
     @staticmethod
     def update_continue_hooks():
-        enabled = gdb.selected_thread() is not None
-        if enabled == EventHandler.continue_hooks_enabled:
-            return
-
-        handlers = (
-            EventHandler.continue_handler,
-            ContextRegistersCommand.update_registers,
-            ContextExtraCommand.empty_extra_messages,
-        )
-        hook = EventHooking.gef_on_continue_hook if enabled else EventHooking.gef_on_continue_unhook
-        for handler in handlers:
-            hook(handler)
-        EventHandler.continue_hooks_enabled = enabled
-        return
-
-    __gef_check_once__ = True # the flag to process only once at startup
-    __gef_check_disabled_bp__ = False # the flag to remove unnecessary breakpoints
-    kpti_transition_active = False
-    qemu_pipe_pids = {}
+        return EventHandler.set_continue_hooks(gdb.selected_thread() is not None)
 
     @staticmethod
     def track_qemu_pipe():
@@ -15798,8 +15840,7 @@ class EventHandler:
                                 "nexti-for-qemu-user\nelse\n"
                                 "nexti-for-qemu-user $arg0\nend\nend")
 
-        # disable for cortex-m
-        if EventHandler.__gef_check_once__:
+            # disable for cortex-m
             if is_arm32_cortex_m():
                 gdb.execute("gef config context.disable_vmmap True")
                 gdb.execute("gef config context.disable_auxv True")
@@ -15892,14 +15933,8 @@ class EventHandler:
         return
 
     @staticmethod
-    def memchanged_handler(_event):
-        """GDB event handler for mem changes cases."""
-        Cache.reset_gef_caches()
-        return
-
-    @staticmethod
-    def regchanged_handler(_event):
-        """GDB event handler for reg changes cases."""
+    def state_changed_handler(_event):
+        """Invalidate caches after memory or register changes."""
         Cache.reset_gef_caches()
         return
 
@@ -16660,6 +16695,32 @@ class EventHooking:
     """A collection of utility functions that hook up specified events."""
 
     @staticmethod
+    @contextlib.contextmanager
+    def temporary(event_name, callback, once=False):
+        registry = getattr(gdb.events, event_name, None)
+        if registry is None:
+            warn("GDB events cannot be set: {:s}".format(event_name))
+            yield
+            return
+
+        connected = True
+
+        def dispatch(event):
+            nonlocal connected
+            if once:
+                registry.disconnect(dispatch)
+                connected = False
+            callback(event)
+
+        registry.connect(dispatch)
+        try:
+            yield
+        finally:
+            if connected:
+                registry.disconnect(dispatch)
+        return
+
+    @staticmethod
     @Decorator.only_if_events_supported("cont")
     def gef_on_continue_hook(func):
         return gdb.events.cont.connect(func)
@@ -16668,26 +16729,6 @@ class EventHooking:
     @Decorator.only_if_events_supported("cont")
     def gef_on_continue_unhook(func):
         return gdb.events.cont.disconnect(func)
-
-    @staticmethod
-    @Decorator.only_if_events_supported("selected_context")
-    def gef_on_selected_context_hook(func):
-        return gdb.events.selected_context.connect(func)
-
-    @staticmethod
-    @Decorator.only_if_events_supported("selected_context")
-    def gef_on_selected_context_unhook(func):
-        return gdb.events.selected_context.disconnect(func)
-
-    @staticmethod
-    @Decorator.only_if_events_supported("new_thread")
-    def gef_on_new_thread_hook(func):
-        return gdb.events.new_thread.connect(func)
-
-    @staticmethod
-    @Decorator.only_if_events_supported("new_thread")
-    def gef_on_new_thread_unhook(func):
-        return gdb.events.new_thread.disconnect(func)
 
     @staticmethod
     @Decorator.only_if_events_supported("stop")
@@ -16708,76 +16749,6 @@ class EventHooking:
     @Decorator.only_if_events_supported("exited")
     def gef_on_exit_unhook(func):
         return gdb.events.exited.disconnect(func)
-
-    @staticmethod
-    @Decorator.only_if_events_supported("gdb_exiting")
-    def gef_on_gdb_exiting_hook(func):
-        return gdb.events.gdb_exiting.connect(func)
-
-    @staticmethod
-    @Decorator.only_if_events_supported("gdb_exiting")
-    def gef_on_gdb_exiting_unhook(func):
-        return gdb.events.gdb_exiting.disconnect(func)
-
-    @staticmethod
-    @Decorator.only_if_events_supported("connection_removed")
-    def gef_on_connection_removed_hook(func):
-        return gdb.events.connection_removed.connect(func)
-
-    @staticmethod
-    @Decorator.only_if_events_supported("connection_removed")
-    def gef_on_connection_removed_unhook(func):
-        return gdb.events.connection_removed.disconnect(func)
-
-    @staticmethod
-    @Decorator.only_if_events_supported("new_objfile")
-    def gef_on_new_hook(func):
-        return gdb.events.new_objfile.connect(func)
-
-    @staticmethod
-    @Decorator.only_if_events_supported("new_objfile")
-    def gef_on_new_unhook(func):
-        return gdb.events.new_objfile.disconnect(func)
-
-    @staticmethod
-    @Decorator.only_if_events_supported("free_objfile")
-    def gef_on_free_objfile_hook(func):
-        return gdb.events.free_objfile.connect(func)
-
-    @staticmethod
-    @Decorator.only_if_events_supported("free_objfile")
-    def gef_on_free_objfile_unhook(func):
-        return gdb.events.free_objfile.disconnect(func)
-
-    @staticmethod
-    @Decorator.only_if_events_supported("clear_objfiles")
-    def gef_on_clear_objfiles_hook(func):
-        return gdb.events.clear_objfiles.connect(func)
-
-    @staticmethod
-    @Decorator.only_if_events_supported("clear_objfiles")
-    def gef_on_clear_objfiles_unhook(func):
-        return gdb.events.clear_objfiles.disconnect(func)
-
-    @staticmethod
-    @Decorator.only_if_events_supported("memory_changed")
-    def gef_on_memchanged_hook(func):
-        return gdb.events.memory_changed.connect(func)
-
-    @staticmethod
-    @Decorator.only_if_events_supported("memory_changed")
-    def gef_on_memchanged_unhook(func):
-        return gdb.events.memory_changed.disconnect(func)
-
-    @staticmethod
-    @Decorator.only_if_events_supported("register_changed")
-    def gef_on_regchanged_hook(func):
-        return gdb.events.register_changed.connect(func)
-
-    @staticmethod
-    @Decorator.only_if_events_supported("register_changed")
-    def gef_on_regchanged_unhook(func):
-        return gdb.events.register_changed.disconnect(func)
 
 
 #
@@ -38432,7 +38403,6 @@ class EntryBreakCommand(GenericCommand):
 
     def __init__(self, *args, **kwargs):
         super().__init__(complete=gdb.COMPLETE_FILENAME)
-        self.new_objfile_hooked = False
         self.add_setting(
             "entrypoint_symbols",
             " ".join([
@@ -38448,10 +38418,8 @@ class EntryBreakCommand(GenericCommand):
         )
         return
 
-    def stop_callback(self, event):
-        # unhook
-        EventHooking.gef_on_new_unhook(self.stop_callback)
-        self.new_objfile_hooked = False
+    @staticmethod
+    def stop_callback(event):
         ContextCommand.unhide_context()
 
         # get section
@@ -38528,19 +38496,15 @@ class EntryBreakCommand(GenericCommand):
         # PIE
         warn("PIC binary detected, retrieving text base address")
         # Some ELF does not use ld. (e.g., ELF built by zig)
-        # So use gef_on_new_hook (use gdb.events.new_objfile internally),
-        # instead of `set stop-on-solib-events 1` because shared object are never loaded.
+        # Use gdb.events.new_objfile instead of `set stop-on-solib-events 1`
+        # because shared objects are never loaded.
         # At least gdb 10.1 (Ubuntu 18.04) supports gdb.events.new_objfile.
         hidden = ContextCommand.context_hidden
         ContextCommand.hide_context()
-        EventHooking.gef_on_new_hook(self.stop_callback)
-        self.new_objfile_hooked = True
         try:
-            gdb.execute("run {}".format(" ".join(shlex.quote(arg) for arg in argv)))
+            with EventHooking.temporary("new_objfile", EntryBreakCommand.stop_callback, once=True):
+                gdb.execute("run {}".format(" ".join(shlex.quote(arg) for arg in argv)))
         finally:
-            if self.new_objfile_hooked:
-                EventHooking.gef_on_new_unhook(self.stop_callback)
-                self.new_objfile_hooked = False
             ContextCommand.context_hidden = hidden
         return
 
@@ -38790,8 +38754,6 @@ class ContextCommand(GenericCommand):
         self.add_setting("disable_vmmap", False, "Disable memory map generation to speed up (e.g., for firmware debugging)")
         self.add_setting("disable_auxv", False, "Disable scanning auxv from memory to speed up (e.g., for firmware debugging)")
         self.add_setting("redirect", "", "Default target tty name to redirect `context` to")
-        EventHooking.gef_on_continue_hook(ContextRegistersCommand.update_registers)
-        EventHooking.gef_on_continue_hook(ContextExtraCommand.empty_extra_messages)
         return
 
     def complete(self, text, word):
@@ -102051,37 +102013,35 @@ class ExecAsm:
         gdb.execute("set scheduler-locking on", to_string=True)
 
         # exec
-        stop_handler = self.stops.append
         self.close_stdout()
-        EventHooking.gef_on_stop_hook(stop_handler)
         try:
-            self.modify_regs()
-            self.modify_code(d["pc"])
-            if stop_signal:
-                self.queue_signal(stop_signal[0], "0")
-            if self.debug:
-                gdb.execute("context")
-            if self.use_bp:
-                self.execute_with_bp()
-            else:
-                try:
-                    gdb.execute("stepi {:d}".format(self.step), to_string=True)
-                except gdb.MemoryError:
-                    if check_complete:
-                        return None
-            if self.debug:
-                gdb.execute("context")
+            with EventHooking.temporary("stop", self.stops.append):
+                self.modify_regs()
+                self.modify_code(d["pc"])
+                if stop_signal:
+                    self.queue_signal(stop_signal[0], "0")
+                if self.debug:
+                    gdb.execute("context")
+                if self.use_bp:
+                    self.execute_with_bp()
+                else:
+                    try:
+                        gdb.execute("stepi {:d}".format(self.step), to_string=True)
+                    except gdb.MemoryError:
+                        if check_complete:
+                            return None
+                if self.debug:
+                    gdb.execute("context")
 
-            # get result
-            if check_complete and not self.is_complete():
-                return None
-            ret = self.get_state()
+                # get result
+                if check_complete and not self.is_complete():
+                    return None
+                ret = self.get_state()
         except gdb.error:
             if not check_complete:
                 raise
             return None
         finally:
-            EventHooking.gef_on_stop_unhook(stop_handler)
             if check_complete and gdb.selected_thread() != self.thread:
                 self.thread.switch()
             self.revert_stdout()
@@ -183088,25 +183048,25 @@ class StringsContinueCommand(GenericCommand):
         except gdb.error:
             pass
         EventHooking.gef_on_stop_unhook(EventHandler.hook_stop_handler)
-        EventHooking.gef_on_stop_hook(remember_stop)
         info("Single-stepping for register strings. Stop with a breakpoint or Ctrl+C.")
 
         stopped = False
         inferior_exited = False
         execution_error = None
         try:
-            self.dump_new_strings(seen, previous_registers, args.min_length, args.max_length)
-            while is_alive():
-                stop_event = None
-                gdb.execute("stepi", to_string=True)
-                if not is_alive():
-                    inferior_exited = True
-                    break
-
+            with EventHooking.temporary("stop", remember_stop):
                 self.dump_new_strings(seen, previous_registers, args.min_length, args.max_length)
-                if isinstance(stop_event, (gdb.BreakpointEvent, gdb.SignalEvent)):
-                    stopped = True
-                    break
+                while is_alive():
+                    stop_event = None
+                    gdb.execute("stepi", to_string=True)
+                    if not is_alive():
+                        inferior_exited = True
+                        break
+
+                    self.dump_new_strings(seen, previous_registers, args.min_length, args.max_length)
+                    if isinstance(stop_event, (gdb.BreakpointEvent, gdb.SignalEvent)):
+                        stopped = True
+                        break
         except KeyboardInterrupt:
             stopped = True
         except gdb.error as e:
@@ -183115,7 +183075,6 @@ class StringsContinueCommand(GenericCommand):
             else:
                 inferior_exited = True
         finally:
-            EventHooking.gef_on_stop_unhook(remember_stop)
             EventHooking.gef_on_stop_hook(EventHandler.hook_stop_handler)
             if suppress_cli_notifications is not None:
                 setting = "on" if suppress_cli_notifications else "off"
@@ -195245,21 +195204,7 @@ class GefReloadCommand(GenericCommand):
             err("Reload aborted")
             return
 
-        if EventHandler.continue_hooks_enabled:
-            EventHooking.gef_on_continue_unhook(EventHandler.continue_handler)
-            EventHooking.gef_on_continue_unhook(ContextRegistersCommand.update_registers)
-            EventHooking.gef_on_continue_unhook(ContextExtraCommand.empty_extra_messages)
-        EventHooking.gef_on_selected_context_unhook(EventHandler.selected_context_handler)
-        EventHooking.gef_on_new_thread_unhook(EventHandler.new_thread_handler)
-        EventHooking.gef_on_stop_unhook(EventHandler.hook_stop_handler)
-        EventHooking.gef_on_new_unhook(EventHandler.new_objfile_handler)
-        EventHooking.gef_on_free_objfile_unhook(EventHandler.del_objfile_handler)
-        EventHooking.gef_on_clear_objfiles_unhook(EventHandler.del_objfile_handler)
-        EventHooking.gef_on_exit_unhook(EventHandler.exit_handler)
-        EventHooking.gef_on_gdb_exiting_unhook(EventHandler.gdb_exiting_handler)
-        EventHooking.gef_on_connection_removed_unhook(EventHandler.connection_removed_handler)
-        EventHooking.gef_on_memchanged_unhook(EventHandler.memchanged_handler)
-        EventHooking.gef_on_regchanged_unhook(EventHandler.regchanged_handler)
+        EventHandler.disconnect()
         Cache.reset_gef_caches(all=True)
 
         info("Reload {:s}".format(GEF_FILEPATH))
@@ -197390,20 +197335,7 @@ class Gef:
         # gdb events configuration
         gdb.execute("define hookpost-queue-signal\n"
                     "python __import__({!r}).ExecAsm.clear_queued_signal(None)\nend".format(__name__))
-        EventHooking.gef_on_continue_hook(EventHandler.continue_handler)
-        if hasattr(gdb.events, "selected_context"):
-            EventHooking.gef_on_selected_context_hook(EventHandler.selected_context_handler)
-            EventHooking.gef_on_new_thread_hook(EventHandler.new_thread_handler)
-            EventHandler.update_continue_hooks()
-        EventHooking.gef_on_stop_hook(EventHandler.hook_stop_handler)
-        EventHooking.gef_on_new_hook(EventHandler.new_objfile_handler)
-        EventHooking.gef_on_free_objfile_hook(EventHandler.del_objfile_handler)
-        EventHooking.gef_on_clear_objfiles_hook(EventHandler.del_objfile_handler)
-        EventHooking.gef_on_exit_hook(EventHandler.exit_handler)
-        EventHooking.gef_on_gdb_exiting_hook(EventHandler.gdb_exiting_handler)
-        EventHooking.gef_on_connection_removed_hook(EventHandler.connection_removed_handler)
-        EventHooking.gef_on_memchanged_hook(EventHandler.memchanged_handler)
-        EventHooking.gef_on_regchanged_hook(EventHandler.regchanged_handler)
+        EventHandler.connect()
 
         if gdb.current_progspace().filename is not None:
             # if here, we are sourcing gef from a gdb session already attached
