@@ -62185,17 +62185,11 @@ class AvxCommand(GenericCommand):
         regs = []
         for i in range(16 if is_x86_64() else 8):
             try:
-                result = gdb.execute(f"info registers $ymm{i}", to_string=True)
+                values = gdb.parse_and_eval("$ymm{:d}".format(i))["v4_int64"]
+                reg = sum((int(values[j]) & 0xffff_ffff_ffff_ffff) << (64 * j) for j in range(4))
             except gdb.error:
                 continue
-            result = result.replace("\n", "")
-            r = re.findall(r"v2_int128 = \{"
-                           r".*?\[0x0\] = (0x[0-9a-f]+),"
-                           r".*?\[0x1\] = (0x[0-9a-f]+)"
-                           r".*?\}", result)
-            if r:
-                reg = (int(r[0][1], 16) << 128) + int(r[0][0], 16)
-                regs.append(reg)
+            regs.append((i, reg))
         if regs:
             gef_print(titlify("AVX Register"))
 
@@ -62204,13 +62198,13 @@ class AvxCommand(GenericCommand):
             gef_print(GefUtil.make_legend(fmt.format(*legend)))
 
             red = lambda x: Color.colorify("{:s}".format(x), "bold red")
-            for i in range(len(regs)):
+            for i, reg in regs:
                 regname = "$ymm{:<2d}".format(i)
                 reghex = ""
                 for j in range(32):
-                    c = (regs[i] >> (8 * j)) & 0xff
+                    c = (reg >> (8 * j)) & 0xff
                     reghex += chr(c) if 0x20 <= c < 0x7f else "."
-                gef_print("{:s} : {:#066x}  |  {:s}  |".format(red(regname), regs[i], reghex))
+                gef_print("{:s} : {:#066x}  |  {:s}  |".format(red(regname), reg, reghex))
         else:
             err("Could not find avx registers")
         return
