@@ -8592,7 +8592,14 @@ class X86(Architecture):
     def get_tls(self):
         if is_in_kernel():
             return None
-        return self.get_gs()
+        tls = self.get_gs()
+        if tls is not None:
+            return tls
+        if is_rr() or is_kvm_enabled() or is_qiling():
+            return None
+        codes = [b"\x65\xa1\x00\x00\x00\x00"] # mov eax, dword ptr gs:[0x0]
+        ret = ExecAsm(codes).exec_code(check_complete=True)
+        return ret["reg"]["$eax"] if ret is not None else None
 
     def get_canary_offset(self):
         return 0x14
@@ -8622,11 +8629,6 @@ class X86(Architecture):
             ret = libc.ptrace(PTRACE_ARCH_PRCTL, lwpid, value, ARCH_GET_FS)
             if ret == 0: # success
                 return value.contents.value or 0
-        # slow path
-        if not is_kvm_enabled() and not is_qiling():
-            codes = [b"\x64\xa1\x00\x00\x00\x00"] # mov eax, dword ptr fs:[0x0]
-            ret = ExecAsm(codes).exec_code()
-            return ret["reg"]["$eax"]
         return None
 
     def get_gs(self):
@@ -8648,11 +8650,6 @@ class X86(Architecture):
             ret = libc.ptrace(PTRACE_ARCH_PRCTL, lwpid, value, ARCH_GET_GS)
             if ret == 0: # success
                 return value.contents.value or 0
-        # slow path
-        if not is_kvm_enabled() and not is_qiling():
-            codes = [b"\x65\xa1\x00\x00\x00\x00"] # mov eax, dword ptr gs:[0x0]
-            ret = ExecAsm(codes).exec_code()
-            return ret["reg"]["$eax"]
         return None
 
     def get_ith_parameter(self, i, in_func=True, sp=None):
@@ -8751,7 +8748,14 @@ class X86_64(X86):
     def get_tls(self):
         if is_in_kernel():
             return None
-        return self.get_fs()
+        tls = self.get_fs()
+        if tls is not None:
+            return tls
+        if is_rr() or is_kvm_enabled() or is_qiling():
+            return None
+        codes = [b"\x64\x48\xa1\x00\x00\x00\x00\x00\x00\x00\x00"] # movabs rax, qword ptr fs:[0x0]
+        ret = ExecAsm(codes).exec_code(check_complete=True)
+        return ret["reg"]["$rax"] if ret is not None else None
 
     def get_canary_offset(self):
         return 0x28
@@ -8781,11 +8785,6 @@ class X86_64(X86):
             ret = libc.ptrace(PTRACE_ARCH_PRCTL, lwpid, value, ARCH_GET_FS)
             if ret == 0: # success
                 return value.contents.value or 0
-        # slow path
-        if not is_kvm_enabled() and not is_qiling():
-            codes = [b"\x64\x48\xa1\x00\x00\x00\x00\x00\x00\x00\x00"] # movabs rax, qword ptr fs:[0x0]
-            ret = ExecAsm(codes).exec_code()
-            return ret["reg"]["$rax"]
         return None
 
     def get_gs(self):
@@ -8807,11 +8806,6 @@ class X86_64(X86):
             ret = libc.ptrace(PTRACE_ARCH_PRCTL, lwpid, value, ARCH_GET_GS)
             if ret == 0: # success
                 return value.contents.value or 0
-        # slow path
-        if not is_kvm_enabled() and not is_qiling():
-            codes = [b"\x65\x48\xa1\x00\x00\x00\x00\x00\x00\x00\x00"] # movabs rax, qword ptr gs:[0x0]
-            ret = ExecAsm(codes).exec_code()
-            return ret["reg"]["$rax"]
         return None
 
     def get_ith_parameter(self, i, in_func=True, sp=None):
@@ -101994,20 +101988,27 @@ class TlsCommand(GenericCommand, BufferingOutput):
             err("No thread is detected")
             return
 
-        for thread in threads:
-            msg = "Thread Id:{:d}".format(thread.num)
-            try:
-                thread.switch()
-            except gdb.error:
-                msg += " - Failed to switch to this thread"
+        try:
+            for thread in threads:
+                msg = "Thread Id:{:d}".format(thread.num)
+                try:
+                    thread.switch()
+                except gdb.error:
+                    msg += " - Failed to switch to this thread"
+                    gef_print(msg)
+                    continue
+                try:
+                    tls = current_arch.get_tls()
+                except Exception:
+                    tls = None
+                if tls is None:
+                    msg += " - Failed to get TLS address"
+                else:
+                    msg += " - {:#x}".format(tls)
                 gef_print(msg)
-                continue
-            tls = current_arch.get_tls()
-            msg += " - {:#x}".format(tls)
-            gef_print(msg)
-
-        orig_thread.switch() # revert
-        orig_frame.select()
+        finally:
+            orig_thread.switch() # revert
+            orig_frame.select()
         return
 
     def get_varnames(self):
@@ -102102,6 +102103,8 @@ class FsbaseCommand(GenericCommand):
         fsbase = current_arch.get_fs()
         if fsbase is not None:
             gef_print("$fs_base: {:#x}".format(fsbase))
+        else:
+            err("Failed to get FS base address from this target")
         return
 
 
@@ -102124,6 +102127,8 @@ class GsbaseCommand(GenericCommand):
         gsbase = current_arch.get_gs()
         if gsbase is not None:
             gef_print("$gs_base: {:#x}".format(gsbase))
+        else:
+            err("Failed to get GS base address from this target")
         return
 
 
