@@ -41346,39 +41346,43 @@ class LoadFileCommand(GenericCommand):
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     def do_invoke(self, args):
-        if not os.path.exists(args.file_path):
+        data_size = self.get_load_size(args)
+        if data_size is None:
+            return
+        self.load_file(args, data_size)
+        return
+
+    @staticmethod
+    def get_load_size(args):
+        if not os.path.isfile(args.file_path):
             err("Could not find {:s}".format(args.file_path))
-            return
-
-        if args.load_size is None:
-            data_size = os.path.getsize(args.file_path)
-            if data_size == 0:
-                err("Unsupported zero size mapping")
-                return
-        elif args.load_size < 0:
-            err("Invalid LOAD_SIZE")
-            return
-        else:
-            data_size = args.load_size
-
+            return None
         if args.file_offset < 0:
             err("Invalid FILE_OFFSET")
-            return
+            return None
+        if args.load_size is not None and args.load_size < 0:
+            err("Invalid LOAD_SIZE")
+            return None
+        if args.load_size is not None:
+            return args.load_size
+        return max(0, os.path.getsize(args.file_path) - args.file_offset)
 
-        # read file and write to memory
-        with open(args.file_path, "rb") as fd:
-            if args.file_offset > 0:
-                fd.seek(args.file_offset, 0)
-
-            pos = args.location
-            remain_size = data_size
-            while remain_size > 0:
-                data = fd.read(min(0x1000, remain_size))
-                if len(data) == 0:
-                    break
-                write_memory(pos, data)
-                pos += len(data)
-                remain_size -= len(data)
+    @staticmethod
+    def load_file(args, data_size):
+        written = 0
+        try:
+            with open(args.file_path, "rb") as fd:
+                fd.seek(args.file_offset)
+                while written < data_size:
+                    data = fd.read(min(0x1000, data_size - written))
+                    if not data:
+                        warn("EOF after {:d} of {:d} bytes".format(written, data_size))
+                        break
+                    write_memory(args.location + written, data)
+                    written += len(data)
+        except (OSError, gdb.error) as exception:
+            err("Load failed at {:#x}: {!s}".format(args.location + written, exception))
+        info("Loaded {:d} of {:d} bytes at {:#x}".format(written, data_size, args.location))
         return
 
 
