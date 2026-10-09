@@ -43547,7 +43547,7 @@ class CommentRemoveCommand(CommentCommand):
         if args.index is None:
             del ContextCodeCommand.context_comments[args.location]
         else:
-            if args.index >= len(ContextCodeCommand.context_comments[args.location]):
+            if not 0 <= args.index < len(ContextCodeCommand.context_comments[args.location]):
                 err("Out of index")
                 return
             ContextCodeCommand.context_comments[args.location].pop(args.index)
