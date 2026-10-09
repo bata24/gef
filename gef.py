@@ -32585,25 +32585,22 @@ class ElfInfoCommand(GenericCommand):
             filename = "{:#x}".format(elf.addr)
 
         magic_hex = " ".join(slicer(struct.pack(">I", elf.e_magic).hex(), 2))
-        if Endian.is_big_endian():
-            magic_str = repr(p32(elf.e_magic).decode())
-        else:
-            magic_str = repr(p32(elf.e_magic).decode()[::-1])
+        magic_str = repr(struct.pack(">I", elf.e_magic).decode())
         data = [
             ("Magic", "{:s} ({:s})".format(magic_hex, magic_str)),
-            ("Class", "{:#x} - {:s}".format(elf.e_class, self.classes[elf.e_class])),
-            ("Endianness", "{:#x} - {:s}".format(elf.e_endianness, self.endianness[elf.e_endianness])),
-            ("ELF Version", "{:#x} - {:s}".format(elf.e_eiversion, self.versions[elf.e_eiversion])),
-            ("OS ABI", "{:#x} - {:s}".format(elf.e_osabi, self.osabis[elf.e_osabi])),
+            ("Class", "{:#x} - {:s}".format(elf.e_class, self.classes.get(elf.e_class, "Unknown"))),
+            ("Endianness", "{:#x} - {:s}".format(elf.e_endianness, self.endianness.get(elf.e_endianness, "Unknown"))),
+            ("ELF Version", "{:#x} - {:s}".format(elf.e_eiversion, self.versions.get(elf.e_eiversion, "Unknown"))),
+            ("OS ABI", "{:#x} - {:s}".format(elf.e_osabi, self.osabis.get(elf.e_osabi, "Unknown"))),
             ("ABI Version", "{:#x}".format(elf.e_abiversion)),
-            ("Type", "{:#x} - {:s}".format(elf.e_type, self.types[elf.e_type])),
+            ("Type", "{:#x} - {:s}".format(elf.e_type, self.types.get(elf.e_type, "Unknown"))),
             ("Machine", "{:#x} - {:s}".format(elf.e_machine, self.machines.get(elf.e_machine, "Unknown"))),
-            ("Version", "{:#x} - {:s}".format(elf.e_version, self.versions[elf.e_version])),
-            ("Entry point", "{:s}".format(AddressUtil.format_address(elf.e_entry))),
-            ("Program Header Table", "{:s}".format(AddressUtil.format_address(elf.e_phoff))),
+            ("Version", "{:#x} - {:s}".format(elf.e_version, self.versions.get(elf.e_version, "Unknown"))),
+            ("Entry point", "{:s}".format(AddressUtil.format_address(elf.e_entry, memalign_size=elf.get_bits() // 8))),
+            ("Program Header Table", "{:s}".format(AddressUtil.format_address(elf.e_phoff, memalign_size=elf.get_bits() // 8))),
             ("Program Header Entry Size", "{0:d} ({0:#x})".format(elf.e_phentsize)),
             ("Number of Program Headers", "{:d}".format(elf.e_phnum)),
-            ("Section Header Table", "{:s}".format(AddressUtil.format_address(elf.e_shoff))),
+            ("Section Header Table", "{:s}".format(AddressUtil.format_address(elf.e_shoff, memalign_size=elf.get_bits() // 8))),
             ("Section Header Entry Size", "{0:d} ({0:#x})".format(elf.e_shentsize)),
             ("Number of Section Headers", "{:d}".format(elf.e_shnum)),
             ("ELF Header Size", "{0:d} ({0:#x})".format(elf.e_ehsize)),
