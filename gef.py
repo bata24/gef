@@ -2514,6 +2514,19 @@ class Elf:
         self.e_flags, self.e_ehsize, self.e_phentsize, self.e_phnum = struct.unpack("{}IHHH".format(endian), self.read(10))
         self.e_shentsize, self.e_shnum, self.e_shstrndx = struct.unpack("{}HHH".format(endian), self.read(6))
 
+        if self.e_shoff and (self.e_shnum == 0 or self.e_shstrndx == 0xffff or self.e_phnum == 0xffff):
+            try:
+                shdr = Elf.Shdr(self, self.e_shoff, resolve_name=False)
+            except gdb.MemoryError:
+                shdr = None
+            if shdr is not None:
+                if self.e_shnum == 0:
+                    self.e_shnum = shdr.sh_size
+                if self.e_shstrndx == 0xffff:
+                    self.e_shstrndx = shdr.sh_link
+                if self.e_phnum == 0xffff:
+                    self.e_phnum = shdr.sh_info
+
         # phdr
         self.phdrs = []
         for i in range(self.e_phnum):
@@ -2767,7 +2780,9 @@ class Elf:
             data = self.read_phdr(Elf.Phdr.PT_DYNAMIC)
         if data is None:
             return None
-        return slice_unpack(data, self.get_bits() // 8)
+        endian = "<" if self.e_endianness == Elf.LITTLE_ENDIAN else ">"
+        size = self.get_bits() // 8
+        return struct.unpack("{}{}{}".format(endian, len(data) // size, "Q" if size == 8 else "I"), data)
 
     def get_dynamic_value(self, tag_type):
         data = self.get_dynamic_data()
@@ -3425,7 +3440,7 @@ class Elf:
         sh_addralign         = None
         sh_entsize           = None
 
-        def __init__(self, elf, off):
+        def __init__(self, elf, off, resolve_name=True):
             if elf is None:
                 return None
             elf.seek(off)
@@ -3440,6 +3455,12 @@ class Elf:
                 self.sh_addr, self.sh_offset = struct.unpack("{}II".format(endian), elf.read(8))
                 self.sh_size, self.sh_link, self.sh_info = struct.unpack("{}III".format(endian), elf.read(12))
                 self.sh_addralign, self.sh_entsize = struct.unpack("{}II".format(endian), elf.read(8))
+
+            if not resolve_name:
+                return
+            if self.sh_name == 0 or elf.e_shstrndx == 0:
+                self.sh_name = ""
+                return
 
             # name
             stroff = elf.e_shoff + elf.e_shentsize * elf.e_shstrndx
