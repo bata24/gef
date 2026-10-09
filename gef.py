@@ -195979,10 +195979,8 @@ class GefStatusCommand(GenericCommand):
         gef_print(titlify("GDB/ELF settings"))
         show_arch = gdb.execute("show architecture", to_string=True).rstrip()
         gef_print("{:30s}  ->  {:s}".format("show architecture", show_arch))
-        if is_64bit():
-            bit_str = "64-bit"
-        else:
-            bit_str = "32-bit"
+        bits = current_arch.bit_length if current_arch else AddressUtil.ptr_width() * 8
+        bit_str = "{:d}-bit".format(bits)
         if Endian.is_big_endian():
             endian_str = "big"
         else:
