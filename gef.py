@@ -47951,11 +47951,12 @@ class GotAllCommand(GenericCommand, BufferingOutput):
     @Decorator.only_if_gdb_running
     @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
     def do_invoke(self, args):
-        verbose = ["", "-v"][args.verbose]
-        remote = ["", "-r"][args.remote]
-        exact = ["", "--exact"][args.exact]
-        cppfilt = ["", "--cppfilt"][args.cppfilt]
-        extra_args = "{:s} {:s} {:s} {:s} {:s}".format(verbose, remote, cppfilt, exact, " ".join(args.filter))
+        extra_args = []
+        for enabled, option in [(args.verbose, "-v"), (args.remote, "-r"),
+                                (args.cppfilt, "--cppfilt"), (args.exact, "--exact")]:
+            if enabled:
+                extra_args.append(option)
+        extra_args += ["--"] + args.filter
 
         self.out = []
         processed = set()
@@ -47969,11 +47970,16 @@ class GotAllCommand(GenericCommand, BufferingOutput):
 
             if not is_valid_addr(m.page_start):
                 continue
-            x = read_memory(m.page_start, 4)
+            try:
+                x = read_memory(m.page_start, 4)
+            except gdb.MemoryError:
+                continue
             if x != b"\x7fELF":
                 continue
 
-            ret = gdb.execute("got -f {!r} -n {:s}".format(m.path, extra_args), to_string=True)
+            argv = ["-f", m.path, "-n"] + extra_args
+            command_args = " ".join('"' + arg.replace("\\", "\\\\").replace('"', '\\"') + '"' for arg in argv)
+            ret = gdb.execute("got " + command_args, to_string=True)
             self.out.extend(ret.splitlines())
             self.out.append("")
             processed.add(m.path)
