@@ -7008,14 +7008,15 @@ class Disasm:
         return None
 
     @staticmethod
-    def gdb_get_nth_previous_instruction_address(addr, n):
+    def gdb_get_nth_previous_instruction_address(addr, n, **kwargs):
         """Return the address (Integer) of the `n`-th instruction before `addr`."""
         if addr is None:
             return None
 
         # fixed-length ABI
-        if current_arch.instruction_length:
-            return max(0, addr - n * current_arch.instruction_length)
+        instruction_length = kwargs.get("instruction_length", current_arch.instruction_length)
+        if instruction_length:
+            return max(0, addr - n * instruction_length)
 
         # variable-length ABI
         cur_insn_addr = get_insn(addr).address
@@ -22167,6 +22168,21 @@ class FindSyscallCommand(GenericCommand, BufferingOutput):
         return
 
     def print_loc(self, loc):
+        if not is_arm32():
+            self.print_loc_by_mode(loc)
+            return
+        mode = self.syscall_mode
+        if loc % (2 if mode == "thumb" else 4):
+            return
+        original_mode = gdb.parameter("arm force-mode")
+        try:
+            gdb.execute("set arm force-mode " + mode, to_string=True)
+            self.print_loc_by_mode(loc)
+        finally:
+            gdb.execute("set arm force-mode " + original_mode, to_string=True)
+        return
+
+    def print_loc_by_mode(self, loc):
         if is_x86():
             show_opcodes_size = Config.get("context_code.show_opcodes_size_x64_x86")
         else:
@@ -22176,8 +22192,11 @@ class FindSyscallCommand(GenericCommand, BufferingOutput):
 
         # fix loc and nb_lines
         if self.args.nb_insns_before > 0:
-             a = Disasm.gdb_get_nth_previous_instruction_address(loc, self.args.nb_insns_before)
-             if a is not None:
+            kwargs = {}
+            if is_arm32():
+                kwargs["instruction_length"] = None if self.syscall_mode == "thumb" else 4
+            a = Disasm.gdb_get_nth_previous_instruction_address(loc, self.args.nb_insns_before, **kwargs)
+            if a is not None:
                 loc = a
                 nb_lines += self.args.nb_insns_before
 
@@ -22218,9 +22237,8 @@ class FindSyscallCommand(GenericCommand, BufferingOutput):
             if old_mem and mem:
                 ofs = len(pattern) - 1
                 tmp = old_mem[-ofs:] + mem[:ofs]
-                r = tmp.find(pattern)
-                if r >= 0:
-                    locations.append(chunk_addr - ofs + r)
+                for match in re.finditer(re.escape(pattern), tmp):
+                    locations.append(chunk_addr - ofs + match.start())
 
             # normal case
             for match in re.finditer(re.escape(pattern), mem):
@@ -22292,42 +22310,49 @@ class FindSyscallCommand(GenericCommand, BufferingOutput):
             err("Unsupported arch")
             return
 
-        if Endian.is_big_endian():
-            pattern = current_arch.syscall_insn[::-1]
-        else:
-            pattern = current_arch.syscall_insn
+        patterns = [(current_arch.syscall_insn, None)]
+        if is_arm32():
+            patterns = [
+                (current_arch.get_mode_insn("syscall", False), "arm"),
+                (current_arch.get_mode_insn("syscall", True), "thumb"),
+            ]
         self.out = []
+        for pattern, mode in patterns:
+            self.syscall_mode = mode
+            if Endian.is_big_endian():
+                pattern = pattern[::-1]
+            if args.section and args.size:
+                # the case `find-syscall 0x400000 0x4000`
+                try:
+                    start = int(args.section, 16)
+                    end = start + int(args.size, 16)
+                except ValueError:
+                    self.usage()
+                    return
+                self.process_by_address(pattern, start, end)
 
-        if args.section and args.size:
-            # the case `find-syscall 0x400000 0x4000`
-            try:
-                start = int(args.section, 16)
-                end = start + int(args.size, 16)
-            except ValueError:
-                self.usage()
-                return
-            self.process_by_address(pattern, start, end)
+            elif args.section and re.match(r"(0x)?[0-9a-fA-F]+-(0x)?[0-9a-fA-F]+", args.section):
+                # the case `find-syscall 0x400000-0x404000` etc.
+                try:
+                    start, end = AddressUtil.parse_string_range(args.section)
+                except ValueError:
+                    self.usage()
+                    return
+                self.process_by_address(pattern, start, end)
 
-        elif args.section and re.match(r"(0x)?[0-9a-fA-F]+-(0x)?[0-9a-fA-F]+", args.section):
-            # the case `find-syscall 0x400000-0x404000` etc.
-            try:
-                start, end = AddressUtil.parse_string_range(args.section)
-            except ValueError:
-                self.usage()
-                return
-            self.process_by_address(pattern, start, end)
+            elif args.section:
+                # search from specific section
+                if args.section in ["binary", "bin"]:
+                    section_name = Path.get_binary_map_path()
+                    if section_name is None:
+                        return
+                else:
+                    section_name = args.section
+                self.process_by_section(pattern, section_name)
 
-        elif args.section:
-            # search from specific section
-            if args.section in ["binary", "bin"]:
-                section_name = Path.get_filepath(append_proc_root_prefix=False)
             else:
-                section_name = args.section
-            self.process_by_section(pattern, section_name)
-
-        else:
-            # search whole memory
-            self.process_by_section(pattern)
+                # search whole memory
+                self.process_by_section(pattern)
 
         self.print_output(check_terminal_size=True)
         return
