@@ -174780,7 +174780,7 @@ class AddrMap:
 
         # QEMU can translate the active address space without a full page-table walk.
         # Secure-world translations and explicitly supplied maps must use their selected tables.
-        if maps is None and not force_secure:
+        if maps is None and force_secure is None:
             try:
                 ret = gdb.execute("monitor gva2gpa {:#x}".format(address), to_string=True)
                 match = re.search(r"gpa: (0x\S+)", ret)
@@ -175104,13 +175104,36 @@ class PageTable(BufferingOutput):
         self.physical_mode_context = None
         self.physical = False
         cached = PageTable.mapping_cache.get(type(self), {})
+        self.mapping_sources = cached.get("sources", {}).copy()
         for field in self.mapping_cache_fields:
             setattr(self, field, cached.get(field))
         return
 
     def save_mapping_cache(self):
         PageTable.mapping_cache[type(self)] = {field: getattr(self, field) for field in self.mapping_cache_fields}
+        PageTable.mapping_cache[type(self)]["sources"] = self.mapping_sources.copy()
         return
+
+    def use_cached_mapping(self, field, **registers):
+        inferior = gdb.selected_inferior()
+        options = {
+            name: getattr(self.args, name) for name in (
+                "simple", "no_merge", "include_esp_fixup_stacks", "user_pt", "ept", "ept_levels", "force_prefix_s",
+            ) if hasattr(self.args, name)
+        }
+        source = "inferior={:d}, pid={:d}, connection={}, CPU(thread)={}, {}, options={!r}".format(
+            inferior.num, inferior.pid, inferior.connection_num, Cache.cpu_context(),
+            ", ".join("{}={:#x}".format(name, value) if isinstance(value, int) else "{}={}".format(name, value)
+                      for name, value in registers.items()), options,
+        )
+        if not self.args.use_cache or not getattr(self, field):
+            self.mapping_sources[field] = source
+            return False
+        cached_source = self.mapping_sources.get(field)
+        self.info_add_out("Cached {:s}: {:s}".format(field, cached_source or "Unknown source"))
+        if source != cached_source:
+            self.warn_add_out("Cached mappings differ from the current context: {:s}".format(source))
+        return True
 
     def prepare_pagewalk(self, args):
         self.args = args
@@ -175330,6 +175353,26 @@ class PageTableRiscv(PageTable):
 
     mapping_cache_fields = ("mappings",)
 
+    def is_invalid_entry(self, entry, level, addr, va, bit_shift):
+        if (entry & 1) == 0:
+            return True
+        leaf = (entry & 0b1010) != 0
+        if (entry & 0b110) == 0b100:
+            reason = "W=1 with R=0"
+        elif not leaf and (entry & 0xd0):
+            reason = "Reserved U/A/D bits in a non-leaf entry"
+        elif not leaf and level == 1:
+            reason = "Non-leaf entry at the last level"
+        elif leaf and ((entry >> 10) & ((1 << (bit_shift - 12)) - 1)):
+            reason = "Misaligned superpage"
+        else:
+            return False
+        if self.args.print_each_level and not self.is_not_trace_target(va, va + (1 << bit_shift)):
+            line = "{:#018x}: {:#018x} (virt:{:#018x},type:INVALID) {:s}".format(addr, entry, va, reason)
+            if not self.is_not_filter_target(line):
+                self.out.append(line)
+        return True
+
     def format_flags(self, flag_info):
         flag_info_key = tuple(flag_info)
         x = self.flags_strings_cache.get(flag_info_key, None)
@@ -175393,6 +175436,9 @@ class PageTableRiscv(PageTable):
                 new_va = va_base + (sign_ext | (i << bit_shift))
                 new_va_end = new_va + (1 << bit_shift)
 
+                if self.is_invalid_entry(entry, 5, table_base + i * self.bits["ENTRY_SIZE"], new_va, bit_shift):
+                    continue
+
                 # calc ppn
                 ppn = (entry >> 10) & 0xfff_ffff_ffff # 44 bit
 
@@ -175443,7 +175489,7 @@ class PageTableRiscv(PageTable):
 
         self.quiet_info_add_out("Number of entries: {:d}".format(COUNT))
         self.quiet_info_add_out("L5 Entry (256TB): {:d}".format(len(L5E)))
-        self.quiet_info_add_out("Invalid entries: {:d}".format(COUNT - len(L5E)))
+        self.quiet_info_add_out("Invalid entries: {:d}".format(COUNT - len(L5E) - len(PTE)))
         self.TABLES = L5E
         self.PTE += PTE
         return
@@ -175476,6 +175522,9 @@ class PageTableRiscv(PageTable):
                     sign_ext = 0xffff_0000_0000_0000 if ((i >> (self.bits["L4_BITS"] - 1)) & 1) else 0
                     new_va = va_base + (sign_ext | (i << bit_shift))
                     new_va_end = new_va + (1 << bit_shift)
+
+                if self.is_invalid_entry(entry, 4, table_base + i * self.bits["ENTRY_SIZE"], new_va, bit_shift):
+                    continue
 
                 # calc ppn
                 ppn = (entry >> 10) & 0xfff_ffff_ffff # 44 bit
@@ -175527,7 +175576,7 @@ class PageTableRiscv(PageTable):
 
         self.quiet_info_add_out("Number of entries: {:d}".format(COUNT))
         self.quiet_info_add_out("L4 Entry (512GB): {:d}".format(len(L4E)))
-        self.quiet_info_add_out("Invalid entries: {:d}".format(COUNT - len(L4E)))
+        self.quiet_info_add_out("Invalid entries: {:d}".format(COUNT - len(L4E) - len(PTE)))
         self.TABLES = L4E
         self.PTE += PTE
         return
@@ -175559,6 +175608,9 @@ class PageTableRiscv(PageTable):
                     sign_ext = 0xffff_ff80_0000_0000 if ((i >> (self.bits["L3_BITS"] - 1)) & 1) else 0
                     new_va = va_base + (sign_ext | (i << bit_shift))
                     new_va_end = new_va + (1 << bit_shift)
+
+                if self.is_invalid_entry(entry, 3, table_base + i * self.bits["ENTRY_SIZE"], new_va, bit_shift):
+                    continue
 
                 # calc ppn
                 ppn = (entry >> 10) & 0xfff_ffff_ffff # 44 bit
@@ -175610,7 +175662,7 @@ class PageTableRiscv(PageTable):
 
         self.quiet_info_add_out("Number of entries: {:d}".format(COUNT))
         self.quiet_info_add_out("L3 Entry (1GB): {:d}".format(len(L3E)))
-        self.quiet_info_add_out("Invalid entries: {:d}".format(COUNT - len(L3E)))
+        self.quiet_info_add_out("Invalid entries: {:d}".format(COUNT - len(L3E) - len(PTE)))
         self.TABLES = L3E
         self.PTE += PTE
         return
@@ -175636,6 +175688,9 @@ class PageTableRiscv(PageTable):
                 # calc virtual address
                 new_va = va_base + (i << bit_shift)
                 new_va_end = new_va + (1 << bit_shift)
+
+                if self.is_invalid_entry(entry, 2, table_base + i * self.bits["ENTRY_SIZE"], new_va, bit_shift):
+                    continue
 
                 # calc ppn
                 if is_riscv64():
@@ -175690,7 +175745,7 @@ class PageTableRiscv(PageTable):
 
         self.quiet_info_add_out("Number of entries: {:d}".format(COUNT))
         self.quiet_info_add_out("L2 Entry ({:d}MB): {:d}".format(1 << (bit_shift - 20), len(L2E)))
-        self.quiet_info_add_out("Invalid entries: {:d}".format(COUNT - len(L2E)))
+        self.quiet_info_add_out("Invalid entries: {:d}".format(COUNT - len(L2E) - len(PTE)))
         self.TABLES = L2E
         self.PTE += PTE
         return
@@ -175712,6 +175767,9 @@ class PageTableRiscv(PageTable):
                 # calc virtual address
                 new_va = va_base + (i << bit_shift)
                 new_va_end = new_va + (1 << bit_shift)
+
+                if self.is_invalid_entry(entry, 1, table_base + i * self.bits["ENTRY_SIZE"], new_va, bit_shift):
+                    continue
 
                 # calc ppn
                 if is_riscv64():
@@ -175803,15 +175861,17 @@ class PageTableRiscv(PageTable):
         if is_riscv64():
             if mode == 0:
                 self.err_add_out("RV64 bare page table is unsupported")
+                return
             elif mode == 11: # Sv64 is unsuppported
                 self.err_add_out("RV64 Sv64 page table is unsupported")
+                return
             elif mode == 10: # Sv57
                 self.quiet_info_add_out("RV64 Sv57 page table")
                 self.bits = {
                     "ENTRY_SIZE": 8,
                     "L5_BITS": 9, "L4_BITS": 9, "L3_BITS": 9, "L2_BITS": 9, "L1_BITS": 9, "OFFSET": 12,
                 }
-                if not self.args.use_cache or not self.mappings:
+                if not self.use_cached_mapping("mappings", satp=satp, sstatus=sstatus):
                     self.mappings = None
                     self.pagewalk_L5()
                     self.pagewalk_L4()
@@ -175825,7 +175885,7 @@ class PageTableRiscv(PageTable):
                     "ENTRY_SIZE": 8,
                     "L4_BITS": 9, "L3_BITS": 9, "L2_BITS": 9, "L1_BITS": 9, "OFFSET": 12,
                 }
-                if not self.args.use_cache or not self.mappings:
+                if not self.use_cached_mapping("mappings", satp=satp, sstatus=sstatus):
                     self.mappings = None
                     self.pagewalk_L4()
                     self.pagewalk_L3()
@@ -175838,7 +175898,7 @@ class PageTableRiscv(PageTable):
                     "ENTRY_SIZE": 8,
                     "L3_BITS": 9, "L2_BITS": 9, "L1_BITS": 9, "OFFSET": 12,
                 }
-                if not self.args.use_cache or not self.mappings:
+                if not self.use_cached_mapping("mappings", satp=satp, sstatus=sstatus):
                     self.mappings = None
                     self.pagewalk_L3()
                     self.pagewalk_L2()
@@ -175846,16 +175906,18 @@ class PageTableRiscv(PageTable):
                     self.merge_mappings()
             else:
                 self.err_add_out("RV64 unknown mode")
+                return
         else:
             if mode == 0:
                 self.err_add_out("RV32 bare page table is unsupported")
+                return
             elif mode == 1: # Sv32
                 self.quiet_info_add_out("RV32 Sv32 page table")
                 self.bits = {
                     "ENTRY_SIZE": 4,
                     "L2_BITS": 10, "L1_BITS": 10, "OFFSET": 12,
                 }
-                if not self.args.use_cache or not self.mappings:
+                if not self.use_cached_mapping("mappings", satp=satp, sstatus=sstatus):
                     self.mappings = None
                     self.pagewalk_L2()
                     self.pagewalk_L1()
@@ -175913,6 +175975,21 @@ class PageTableX64(PageTable):
         self.flags_strings_cache[flag_info_key] = flag_string
         return flag_string
 
+    def is_present_entry(self, entry):
+        if self.args.ept:
+            return (entry & 0b111) != 0 and (entry & 0b11) != 0b10
+        return (entry & 1) != 0
+
+    def is_espfix_table(self, va_base, entries):
+        if self.args.include_esp_fixup_stacks or self.args.ept or not is_x86_64():
+            return False
+        if not 0xffff_ff00_0000_0000 <= va_base < 0xffff_ff80_0000_0000:
+            return False
+        if len({entry & ~0b111 for entry in entries}) != 1:
+            return False
+        self.quiet_info_add_out("Skipping espfix aliases at {:#x}; use --include-esp-fixup-stacks to include".format(va_base))
+        return True
+
     def pagewalk_PML5T(self):
         self.quiet_add_out(titlify("PML5E: Page Map Level 5 Entry"))
         PML5E = []
@@ -175930,11 +176007,11 @@ class PageTableX64(PageTable):
             COUNT += len(entries)
             for i, entry in enumerate(entries):
                 # present flag
-                if (entry & 1) == 0:
+                if not self.is_present_entry(entry):
                     continue
 
                 # calc virtual address
-                sign_ext = 0xfe00_0000_0000_0000 if ((i >> (self.bits["PML5T_BITS"] - 1)) & 1) else 0
+                sign_ext = 0xfe00_0000_0000_0000 if not self.args.ept and (i >> 8) & 1 else 0
                 new_va = va_base + (sign_ext | (i << bit_shift))
                 new_va_end = new_va + (1 << bit_shift)
 
@@ -176003,7 +176080,7 @@ class PageTableX64(PageTable):
             COUNT += len(entries)
             for i, entry in enumerate(entries):
                 # present flag
-                if (entry & 1) == 0:
+                if not self.is_present_entry(entry):
                     continue
 
                 # calc virtual address
@@ -176011,7 +176088,7 @@ class PageTableX64(PageTable):
                     new_va = va_base + (i << bit_shift)
                     new_va_end = new_va + (1 << bit_shift)
                 else:
-                    sign_ext = 0xffff_0000_0000_0000 if ((i >> (self.bits["PML4T_BITS"] - 1)) & 1) else 0
+                    sign_ext = 0xffff_0000_0000_0000 if not self.args.ept and (i >> 8) & 1 else 0
                     new_va = va_base + (sign_ext | (i << bit_shift))
                     new_va_end = new_va + (1 << bit_shift)
 
@@ -176084,7 +176161,7 @@ class PageTableX64(PageTable):
             COUNT += len(entries)
             for i, entry in enumerate(entries):
                 # present flag
-                if (entry & 1) == 0:
+                if not self.is_present_entry(entry):
                     continue
 
                 # calc virtual address
@@ -176093,7 +176170,7 @@ class PageTableX64(PageTable):
 
                 # calc flags
                 flags = parent_flags.copy()
-                if is_x86_64():
+                if self.args.ept or is_x86_64():
                     if self.args.ept:
                         if ((entry >> 0) & 1) == 0:
                             flags.append("NO_R")
@@ -176122,7 +176199,7 @@ class PageTableX64(PageTable):
                     pass
 
                 # calc next table (drop the flag bits)
-                if is_x86_64() and is_set_PS(entry):
+                if (self.args.ept or is_x86_64()) and is_set_PS(entry):
                     next_level_table = entry & 0x000f_ffff_ffff_e000
                 else:
                     next_level_table = entry & 0x000f_ffff_ffff_f000
@@ -176180,13 +176257,12 @@ class PageTableX64(PageTable):
             entries = slice_unpack(entries, self.bits["ENTRY_SIZE"])
             COUNT += len(entries)
 
-            if not self.args.include_esp_fixup_stacks:
-                if len({e & ~0b111 for e in entries}) == 1:
-                    continue
+            if self.is_espfix_table(va_base, entries):
+                continue
 
             for i, entry in enumerate(entries):
                 # present flag
-                if (entry & 1) == 0:
+                if not self.is_present_entry(entry):
                     continue
 
                 # calc virtual address
@@ -176281,13 +176357,12 @@ class PageTableX64(PageTable):
             entries = slice_unpack(entries, self.bits["ENTRY_SIZE"])
             COUNT += len(entries)
 
-            if not self.args.include_esp_fixup_stacks:
-                if len({e & ~0b111 for e in entries}) == 1:
-                    continue
+            if self.is_espfix_table(va_base, entries):
+                continue
 
             for i, entry in enumerate(entries):
                 # present flag
-                if (entry & 1) == 0:
+                if not self.is_present_entry(entry):
                     continue
 
                 # calc virtual address
@@ -176377,7 +176452,9 @@ class PageTableX64(PageTable):
                 self.err_add_out("Failed to resolve cr3")
             return
 
-        if self.args.user_specified_cr4 is not None:
+        if self.args.ept:
+            cr4 = 0
+        elif self.args.user_specified_cr4 is not None:
             cr4 = self.args.user_specified_cr4
         else:
             cr4 = get_register("cr4", use_monitor=True, use_mbed_exec=True)
@@ -176386,10 +176463,13 @@ class PageTableX64(PageTable):
                 self.err_add_out("Failed to resolve cr4")
             return
 
-        if is_x86_64() and self.args.user_pt:
+        if is_x86_64() and self.args.user_pt and not self.args.ept:
             cr3 += get_pagesize()
         self.quiet_info_add_out("cr3: {:#018x}".format(cr3))
-        self.quiet_info_add_out("cr4: {:#018x}".format(cr4))
+        if self.args.ept:
+            self.quiet_info_add_out("EPT walk length: {:d}".format(self.args.ept_levels))
+        else:
+            self.quiet_info_add_out("cr4: {:#018x}".format(cr4))
 
         # virtual address base
         va_base = 0
@@ -176412,8 +176492,8 @@ class PageTableX64(PageTable):
         self.PTE = []
         self.TABLES = [(va_base, pagewalk_base, flags)]
         self.flags_strings_cache = {}
-        if is_x86_64():
-            if (cr4 >> 12) & 1: # PML5T check
+        if self.args.ept or is_x86_64():
+            if (self.args.ept and self.args.ept_levels == 5) or (not self.args.ept and (cr4 >> 12) & 1): # PML5T check
                 # 64bit 5-level(4KB): 9,9,9,9,9,12
                 # 64bit 5-level(2MB): 9,9,9,9,0,21
                 # 64bit 5-level(1GB): 9,9,9,0,0,30
@@ -176423,7 +176503,7 @@ class PageTableX64(PageTable):
                     "PML5T_BITS": 9, "PML4T_BITS": 9, "PDPT_BITS": 9, "PDT_BITS": 9, "PT_BITS": 9, "OFFSET": 12,
                 }
                 self.PAE = True
-                if not self.args.use_cache or not self.mappings:
+                if not self.use_cached_mapping("mappings", cr3=cr3, cr4=cr4):
                     self.mappings = None
                     self.pagewalk_PML5T()
                     self.pagewalk_PML4T()
@@ -176441,7 +176521,7 @@ class PageTableX64(PageTable):
                     "PML4T_BITS": 9, "PDPT_BITS": 9, "PDT_BITS": 9, "PT_BITS": 9, "OFFSET": 12,
                 }
                 self.PAE = True
-                if not self.args.use_cache or not self.mappings:
+                if not self.use_cached_mapping("mappings", cr3=cr3, cr4=cr4):
                     self.mappings = None
                     self.pagewalk_PML4T()
                     self.pagewalk_PDPT()
@@ -176458,7 +176538,7 @@ class PageTableX64(PageTable):
                     "PDPT_BITS": 2, "PDT_BITS": 9, "PT_BITS": 9, "OFFSET": 12,
                 }
                 self.PAE = True
-                if not self.args.use_cache or not self.mappings:
+                if not self.use_cached_mapping("mappings", cr3=cr3, cr4=cr4):
                     self.mappings = None
                     self.pagewalk_PDPT()
                     self.pagewalk_PDT()
@@ -176473,7 +176553,7 @@ class PageTableX64(PageTable):
                     "PDT_BITS": 10, "PT_BITS": 10, "OFFSET": 12,
                 }
                 self.PAE = False
-                if not self.args.use_cache or not self.mappings:
+                if not self.use_cached_mapping("mappings", cr3=cr3, cr4=cr4):
                     self.mappings = None
                     self.pagewalk_PDT()
                     self.pagewalk_PT()
@@ -176492,6 +176572,13 @@ class PageTableArm32(PageTable):
     """Dump pagetable for ARM Cortex-A. PL2 pagewalk is unsupported."""
 
     mapping_cache_fields = ("ttbr0_mappings", "ttbr1_mappings")
+
+    def get_system_register(self, name):
+        aliases = {"SCTLR": "SCTLR_EL1", "TTBCR": "TCR_EL1", "ID_MMFR0": "ID_MMFR0_EL1"}
+        value = get_register("${}{}".format(name, self.suffix))
+        if value is None and name in aliases:
+            value = get_register("${}{}".format(aliases[name], self.suffix))
+        return value
 
     def format_flags_short(self, flag_info):
         return self.__format_flags_short(flag_info, self.PXN)
@@ -176731,7 +176818,7 @@ class PageTableArm32(PageTable):
         self.flags_strings_cache[flag_info_key] = flag_string
         return flag_string
 
-    def do_pagewalk_short(self, table_base, va_base=0):
+    def do_pagewalk_short(self, table_base, range_start=0):
         self.mappings = []
 
         def has_next_level(entry):
@@ -176764,8 +176851,11 @@ class PageTableArm32(PageTable):
                 continue
 
             # calc virtual address
-            new_va = va_base + (i << 20)
+            new_va = i << 20
             new_va_end = new_va + (1 << 20)
+
+            if new_va_end <= range_start:
+                continue
 
             # calc flags
             flags = []
@@ -176845,10 +176935,22 @@ class PageTableArm32(PageTable):
             elif is_super_section(entry):
                 virt_addr = new_va
                 phys_addr = next_level_table
-                page_size = 16 * 1024 * 1024
+                group_start = i & ~15
+                repeated = all(value == entry for value in entries[group_start:group_start + 16])
+                page_size = (16 if repeated else 1) * 1024 * 1024
                 page_count = 1
-                SUPER_SECTION.append(PageTable.Entry(virt_addr, phys_addr, page_size, page_count, self.format_flags_short(flags)))
+                if repeated:
+                    virt_addr &= ~0xff_ffff
+                else:
+                    phys_addr += virt_addr & 0xff_ffff
+                if not repeated or i == group_start:
+                    SUPER_SECTION.append(PageTable.Entry(
+                        virt_addr, phys_addr, page_size, page_count, self.format_flags_short(flags),
+                    ))
                 entry_type = "SUPER_SECTION"
+
+            if is_super_section(entry):
+                new_va, new_va_end = virt_addr, virt_addr + page_size
 
             # dump
             if self.args.print_each_level:
@@ -176869,7 +176971,9 @@ class PageTableArm32(PageTable):
         self.quiet_info_add_out("Level 1 Entry: {:d}".format(len(LEVEL1)))
         self.quiet_info_add_out("PT Entry (supersection; 16MB): {:d}".format(len(SUPER_SECTION)))
         self.quiet_info_add_out("PT Entry (section; 1MB): {:d}".format(len(SECTION)))
-        self.quiet_info_add_out("Invalid entries: {:d}".format(COUNT - len(LEVEL1) - len(SUPER_SECTION) - len(SECTION)))
+        self.quiet_info_add_out("Invalid entries: {:d}".format(
+            COUNT - len(LEVEL1) - sum(entry.total_size >> 20 for entry in SUPER_SECTION) - len(SECTION),
+        ))
         self.mappings += SECTION + SUPER_SECTION
 
         # 2nd level parse
@@ -176936,15 +177040,26 @@ class PageTableArm32(PageTable):
 
                 # make entry
                 if is_large_page(entry):
-                    page_size = 64 * 1024
+                    group_start = i & ~15
+                    repeated = all(value == entry for value in entries[group_start:group_start + 16])
+                    page_size = (64 if repeated else 4) * 1024
                     page_count = 1
-                    LARGE.append(PageTable.Entry(virt_addr, phys_addr, page_size, page_count, self.format_flags_short(flags)))
+                    if repeated:
+                        virt_addr &= ~0xffff
+                    else:
+                        phys_addr += virt_addr & 0xffff
+                    if not repeated or i == group_start:
+                        LARGE.append(PageTable.Entry(
+                            virt_addr, phys_addr, page_size, page_count, self.format_flags_short(flags),
+                        ))
                     entry_type = "LARGE"
                 elif is_small_page(entry):
                     page_size = 4 * 1024
                     page_count = 1
                     SMALL.append(PageTable.Entry(virt_addr, phys_addr, page_size, page_count, self.format_flags_short(flags)))
                     entry_type = "SMALL"
+
+                virt_addr_end = virt_addr + page_size
 
                 # dump
                 if self.args.print_each_level:
@@ -176964,7 +177079,9 @@ class PageTableArm32(PageTable):
         self.quiet_info_add_out("Number of entries: {:d}".format(COUNT))
         self.quiet_info_add_out("PT Entry (large; 64KB): {:d}".format(len(LARGE)))
         self.quiet_info_add_out("PT Entry (small; 4KB): {:d}".format(len(SMALL)))
-        self.quiet_info_add_out("Invalid entries: {:d}".format(COUNT - len(LARGE) - len(SMALL)))
+        self.quiet_info_add_out("Invalid entries: {:d}".format(
+            COUNT - sum(entry.total_size >> 12 for entry in LARGE) - len(SMALL),
+        ))
         self.mappings += LARGE + SMALL
 
         self.quiet_add_out(titlify("Total"))
@@ -177237,7 +177354,7 @@ class PageTableArm32(PageTable):
             self.err_add_out("Could not find $TTBR0_EL1{}".format(self.suffix))
             return
 
-        TTBCR = get_register("$TTBCR{}".format(self.suffix))
+        TTBCR = self.get_system_register("TTBCR")
         if TTBCR is None:
             TTBCR = get_register("$TTBCR", use_mbed_exec=True)
         if TTBCR is None:
@@ -177251,7 +177368,13 @@ class PageTableArm32(PageTable):
         self.quiet_info_add_out("$TTBR0_EL1{}: {:#x}".format(self.suffix, TTBR0_EL1))
         self.quiet_info_add_out("$TTBCR{}: {:#x}".format(self.suffix, TTBCR))
         self.quiet_info_add_out("PL0 base: {:#x}".format(pl0_base))
-        if not self.args.use_cache or not self.ttbr0_mappings:
+        if TTBCR & (1 << 4):
+            self.quiet_info_add_out("PD0: 1 (TTBR0 is not used)")
+            self.ttbr0_mappings = []
+        elif not self.use_cached_mapping(
+            "ttbr0_mappings", TTBR0_EL1=TTBR0_EL1, TTBCR=TTBCR, suffix=self.suffix,
+            SCTLR=self.get_system_register("SCTLR"),
+        ):
             self.flags_strings_cache = {}
             self.do_pagewalk_short(pl0_base)
             self.flags_strings_cache = None
@@ -177269,30 +177392,23 @@ class PageTableArm32(PageTable):
             self.err_add_out("Could not find $TTBR1_EL1{}".format(self.suffix))
             return
 
-        if self.suffix:
-            # The reason is unclear, but the vabase of PL1 appears to be 0x0 when TTBR1_EL1_S is used.
-            pl1_vabase = 0
-        else:
-            pl1_vabase = {
-                0: None,
-                1: 0x8000_0000,
-                2: 0x4000_0000,
-                3: 0x2000_0000,
-                4: 0x1000_0000,
-                5: 0x0800_0000,
-                6: 0x0400_0000,
-                7: 0x0200_0000,
-            }[self.N]
+        pl1_vabase = (1 << (32 - self.N)) if self.N else None
         # Whenever TTBCR.N is nonzero, the size of the translation table addressed by TTBR1 is 16KB (N=0).
         x1 = 14
         pl1_base = ((TTBR1_EL1 & 0xffff_ffff) >> x1) << x1
         self.N = 0
-        if pl1_vabase is not None:
+        if pl1_vabase is not None and TTBCR & (1 << 5):
+            self.quiet_info_add_out("PD1: 1 (TTBR1 is not used)")
+            self.ttbr1_mappings = []
+        elif pl1_vabase is not None:
             self.quiet_info_add_out("$TTBR1_EL1{}: {:#x}".format(self.suffix, TTBR1_EL1))
             self.quiet_info_add_out("$TTBCR{}: {:#x}".format(self.suffix, TTBCR))
             self.quiet_info_add_out("PL1 base: {:#x}".format(pl1_base))
             self.quiet_info_add_out("PL1 va_base: {:#x}".format(pl1_vabase))
-            if not self.args.use_cache or not self.ttbr1_mappings:
+            if not self.use_cached_mapping(
+                "ttbr1_mappings", TTBR1_EL1=TTBR1_EL1, TTBCR=TTBCR, suffix=self.suffix,
+                SCTLR=self.get_system_register("SCTLR"),
+            ):
                 self.flags_strings_cache = {}
                 self.do_pagewalk_short(pl1_base, pl1_vabase)
                 self.flags_strings_cache = None
@@ -177313,7 +177429,7 @@ class PageTableArm32(PageTable):
             self.err_add_out("Could not find $TTBR0_EL1{}".format(self.suffix))
             return
 
-        TTBCR = get_register("$TTBCR{}".format(self.suffix))
+        TTBCR = self.get_system_register("TTBCR")
         if TTBCR is None:
             TTBCR = get_register("$TTBCR", use_mbed_exec=True)
         if TTBCR is None:
@@ -177340,7 +177456,10 @@ class PageTableArm32(PageTable):
             # TTBCR.EPD0 disables the walk with TTBR0 (e.g., CONFIG_CPU_TTBR0_PAN=y while in the kernel)
             self.quiet_info_add_out("EPD0: 1 (TTBR0 is not used)")
             self.ttbr0_mappings = []
-        elif not self.args.use_cache or not self.ttbr0_mappings:
+        elif not self.use_cached_mapping(
+            "ttbr0_mappings", TTBR0_EL1=TTBR0_EL1, TTBCR=TTBCR, suffix=self.suffix,
+            SCTLR=self.get_system_register("SCTLR"),
+        ):
             self.flags_strings_cache = {}
             self.do_pagewalk_long(pl0_base)
             self.flags_strings_cache = None
@@ -177376,7 +177495,10 @@ class PageTableArm32(PageTable):
             self.quiet_info_add_out("PL1 base: {:#x}".format(pl1_base))
             self.quiet_info_add_out("PL1 table va_base: {:#x}".format(pl1_table_vabase))
             self.quiet_info_add_out("PL1 range start: {:#x}".format(pl1_range_start))
-            if not self.args.use_cache or not self.ttbr1_mappings:
+            if not self.use_cached_mapping(
+                "ttbr1_mappings", TTBR1_EL1=TTBR1_EL1, TTBCR=TTBCR, suffix=self.suffix,
+                SCTLR=self.get_system_register("SCTLR"),
+            ):
                 self.flags_strings_cache = {}
                 self.do_pagewalk_long(pl1_base, pl1_table_vabase)
                 self.flags_strings_cache = None
@@ -177443,7 +177565,7 @@ class PageTableArm32(PageTable):
             self.suffix = ""
 
         # check XP, AFE # codespell:ignore
-        SCTLR = get_register("$SCTLR{}".format(self.suffix))
+        SCTLR = self.get_system_register("SCTLR")
         if SCTLR is not None:
             self.XP = ((SCTLR >> 23) & 0x1) == 1
             self.AFE = ((SCTLR >> 29) & 0x1) == 1 # codespell:ignore
@@ -177458,14 +177580,14 @@ class PageTableArm32(PageTable):
             self.quiet_info_add_out("Secure world: {}".format(self.SECURE))
 
         # check enabled LPAE
-        TTBCR = get_register("$TTBCR{}".format(self.suffix))
+        TTBCR = self.get_system_register("TTBCR")
         if TTBCR is not None:
             self.LPAE = ((TTBCR >> 31) & 0x1) == 1
         else:
             self.LPAE = False
 
         # check PXN supported
-        ID_MMFR0 = get_register("$ID_MMFR0{}".format(self.suffix))
+        ID_MMFR0 = self.get_system_register("ID_MMFR0")
         if ID_MMFR0 is not None:
             self.PXN = ((ID_MMFR0 >> 2) & 0x1) == 1
         else:
@@ -177601,8 +177723,8 @@ class PageTableArm64(PageTable):
                 for entry_info in self.el2_mappings:
                     va = entry_info.vaddr
                     entry = entry_info.paddr
-                    sz = entry_info.page_size
-                    pa = entry & 0x0000_ffff_ffff_f000
+                    sz = entry_info.total_size
+                    pa = entry
                     if va <= addr < va + sz:
                         offset = addr - va
                         return pa + offset, sz - offset
@@ -177613,8 +177735,10 @@ class PageTableArm64(PageTable):
             out = b""
             while size > 0:
                 paddr, available_sz = search_pa(addr)
-                out += self.read_memory(paddr, min([size, available_sz]))
-                size -= min(size, available_sz)
+                chunk_size = min(size, available_sz)
+                out += self.read_memory(paddr, chunk_size)
+                addr += chunk_size
+                size -= chunk_size
             return out
 
         # direct physmem read
@@ -178796,7 +178920,7 @@ class PageTableArm64(PageTable):
         return
 
     def switch_el(self):
-        self.SAVED_CPSR = 0
+        self.SAVED_CPSR = None
         CPSR = get_register("$cpsr") & 0xffff_ffff
         CurrentEL = int((CPSR >> 2) & 0b11)
         # change EL
@@ -178823,7 +178947,7 @@ class PageTableArm64(PageTable):
         return True
 
     def revert_el(self):
-        if self.SAVED_CPSR:
+        if self.SAVED_CPSR is not None:
             gdb.parse_and_eval("$cpsr = {:#x}".format(self.SAVED_CPSR))
             SavedEL = (self.SAVED_CPSR >> 2) & 0b11
             self.quiet_info_add_out("Moving back to EL{:d}".format(SavedEL))
@@ -178874,9 +178998,9 @@ class PageTableArm64(PageTable):
                         return -1
         return 0
 
-    def get_translation_base_addr(self, PS, TTBR):
-        if PS == 0b110:
-            if self.FEAT_LPA:
+    def get_translation_base_addr(self, PS, TTBR, granule_bits):
+        if PS == 0b110 and self.get_pa_size_for_ps(PS, granule_bits) > 48:
+            if (granule_bits == 16 and self.FEAT_LPA) or (granule_bits in (12, 14) and self.FEAT_LPA2):
                 high = TTBR & 0xffff_ffff_ffc0
                 low = (TTBR >> 2) & 0b1111
                 return high | (low << 48)
@@ -178910,7 +179034,7 @@ class PageTableArm64(PageTable):
         intermediate_pa_size = self.get_pa_size_for_ps(IPS, granule_bits)
         start_level = self.get_start_level(T0SZ, granule_bits)
 
-        translation_base_addr = self.get_translation_base_addr(IPS, TTBR0_EL1)
+        translation_base_addr = self.get_translation_base_addr(IPS, TTBR0_EL1, granule_bits)
         if translation_base_addr is None:
             return
 
@@ -178921,7 +179045,11 @@ class PageTableArm64(PageTable):
         self.quiet_info_add_out("EL1 User Page Size: {:d}KB (per page)".format(page_size))
 
         self.parse_bit_range(granule_bits, region_bits)
-        if not self.args.use_cache or not self.ttbr0el1_mappings:
+        if not self.use_cached_mapping(
+            "ttbr0el1_mappings", TTBR0_EL1=TTBR0_EL1, TCR_EL1=TCR_EL1,
+            SCTLR=get_register("$SCTLR_EL1"), HCR_EL2=get_register("$HCR_EL2"),
+            VTTBR_EL2=get_register("$VTTBR_EL2"), VTCR_EL2=get_register("$VTCR_EL2"),
+        ):
             self.flags_strings_cache = {}
             self.do_pagewalk(translation_base_addr, granule_bits, region_start, region_bits, start_level, is_2VAranges=True)
             self.flags_strings_cache = None
@@ -178955,7 +179083,7 @@ class PageTableArm64(PageTable):
         intermediate_pa_size = self.get_pa_size_for_ps(IPS, granule_bits)
         start_level = self.get_start_level(T1SZ, granule_bits)
 
-        translation_base_addr = self.get_translation_base_addr(IPS, TTBR1_EL1)
+        translation_base_addr = self.get_translation_base_addr(IPS, TTBR1_EL1, granule_bits)
         if translation_base_addr is None:
             return
 
@@ -178966,7 +179094,11 @@ class PageTableArm64(PageTable):
         self.quiet_info_add_out("EL1 Kernel Page Size: {:d}KB (per page)".format(page_size))
 
         self.parse_bit_range(granule_bits, region_bits)
-        if not self.args.use_cache or not self.ttbr1el1_mappings:
+        if not self.use_cached_mapping(
+            "ttbr1el1_mappings", TTBR1_EL1=TTBR1_EL1, TCR_EL1=TCR_EL1,
+            SCTLR=get_register("$SCTLR_EL1"), HCR_EL2=get_register("$HCR_EL2"),
+            VTTBR_EL2=get_register("$VTTBR_EL2"), VTCR_EL2=get_register("$VTCR_EL2"),
+        ):
             self.flags_strings_cache = {}
             self.do_pagewalk(translation_base_addr, granule_bits, region_start, region_bits, start_level, is_2VAranges=True)
             self.flags_strings_cache = None
@@ -179063,7 +179195,7 @@ class PageTableArm64(PageTable):
                     self.err_add_out("Unsupported stage2 start level")
                 return
 
-        translation_base_addr = self.get_translation_base_addr(PS, VTTBR_EL2)
+        translation_base_addr = self.get_translation_base_addr(PS, VTTBR_EL2, granule_bits)
         if translation_base_addr is None:
             return
 
@@ -179076,7 +179208,10 @@ class PageTableArm64(PageTable):
             self.quiet_info_add_out("EL2 Page Size: {:d}KB (per page)".format(page_size))
 
         self.parse_bit_range(granule_bits, region_bits)
-        if not self.args.use_cache or not self.vttbrel2_mappings:
+        if self.silent or not self.use_cached_mapping(
+            "vttbrel2_mappings", VTTBR_EL2=VTTBR_EL2, VTCR_EL2=VTCR_EL2,
+            SCTLR=get_register("$SCTLR_EL2"), HCR_EL2=get_register("$HCR_EL2"),
+        ):
             self.flags_strings_cache = {}
             self.do_pagewalk(translation_base_addr, granule_bits, region_start, region_bits, stage2_start_level, is_stage2=True)
             self.flags_strings_cache = None
@@ -179116,7 +179251,7 @@ class PageTableArm64(PageTable):
         pa_size = self.get_pa_size_for_ps(PS, granule_bits)
         start_level = self.get_start_level(T0SZ, granule_bits)
 
-        translation_base_addr = self.get_translation_base_addr(PS, TTBR0_EL2)
+        translation_base_addr = self.get_translation_base_addr(PS, TTBR0_EL2, granule_bits)
         if translation_base_addr is None:
             return
 
@@ -179134,7 +179269,11 @@ class PageTableArm64(PageTable):
             self.quiet_info_add_out("EL2 Page Size: {:d}KB (per page)".format(page_size))
 
         self.parse_bit_range(granule_bits, region_bits)
-        if not self.args.use_cache or not self.ttbr0el2_mappings:
+        if not self.use_cached_mapping(
+            "ttbr0el2_mappings", TTBR0_EL2=TTBR0_EL2, TCR_EL2=TCR_EL2,
+            SCTLR=get_register("$SCTLR_EL2"), HCR_EL2=get_register("$HCR_EL2"),
+            VTTBR_EL2=get_register("$VTTBR_EL2"), VTCR_EL2=get_register("$VTCR_EL2"),
+        ):
             self.flags_strings_cache = {}
             self.do_pagewalk(translation_base_addr, granule_bits, region_start, region_bits, start_level, is_2VAranges=self.EL2_M20)
             self.flags_strings_cache = None
@@ -179168,7 +179307,7 @@ class PageTableArm64(PageTable):
         intermediate_pa_size = self.get_pa_size_for_ps(IPS, granule_bits)
         start_level = self.get_start_level(T1SZ, granule_bits)
 
-        translation_base_addr = self.get_translation_base_addr(IPS, TTBR1_EL2)
+        translation_base_addr = self.get_translation_base_addr(IPS, TTBR1_EL2, granule_bits)
         if translation_base_addr is None:
             return
 
@@ -179179,7 +179318,11 @@ class PageTableArm64(PageTable):
         self.quiet_info_add_out("EL2 Kernel Page Size: {:d}KB (per page)".format(page_size))
 
         self.parse_bit_range(granule_bits, region_bits)
-        if not self.args.use_cache or not self.ttbr1el2_mappings:
+        if not self.use_cached_mapping(
+            "ttbr1el2_mappings", TTBR1_EL2=TTBR1_EL2, TCR_EL2=TCR_EL2,
+            SCTLR=get_register("$SCTLR_EL2"), HCR_EL2=get_register("$HCR_EL2"),
+            VTTBR_EL2=get_register("$VTTBR_EL2"), VTCR_EL2=get_register("$VTCR_EL2"),
+        ):
             self.flags_strings_cache = {}
             self.do_pagewalk(translation_base_addr, granule_bits, region_start, region_bits, start_level, is_2VAranges=self.EL2_M20)
             self.flags_strings_cache = None
@@ -179213,7 +179356,7 @@ class PageTableArm64(PageTable):
         pa_size = self.get_pa_size_for_ps(PS, granule_bits)
         start_level = self.get_start_level(T0SZ, granule_bits)
 
-        translation_base_addr = self.get_translation_base_addr(PS, TTBR0_EL3)
+        translation_base_addr = self.get_translation_base_addr(PS, TTBR0_EL3, granule_bits)
         if translation_base_addr is None:
             return
 
@@ -179224,7 +179367,11 @@ class PageTableArm64(PageTable):
         self.quiet_info_add_out("EL3 Page Size: {:d}KB (per page)".format(page_size))
 
         self.parse_bit_range(granule_bits, region_bits)
-        if not self.args.use_cache or not self.ttbr0el3_mappings:
+        if not self.use_cached_mapping(
+            "ttbr0el3_mappings", TTBR0_EL3=TTBR0_EL3, TCR_EL3=TCR_EL3,
+            SCTLR=get_register("$SCTLR_EL3"), HCR_EL2=get_register("$HCR_EL2"),
+            VTTBR_EL2=get_register("$VTTBR_EL2"), VTCR_EL2=get_register("$VTCR_EL2"),
+        ):
             self.flags_strings_cache = {}
             self.do_pagewalk(translation_base_addr, granule_bits, region_start, region_bits, start_level)
             self.flags_strings_cache = None
@@ -179366,10 +179513,12 @@ class PageTableArm64(PageTable):
         if self.args.target_el == 2 and self.EL2_VM:
             self.quiet_info_add_out("EL2(as stage1) translation is unused")
         if self.args.target_el == 3 and self.EL3_M:
-            if not self.switch_el():
-                return
-            self.pagewalk_TTBR0_EL3()
-            self.revert_el()
+            try:
+                if not self.switch_el():
+                    return
+                self.pagewalk_TTBR0_EL3()
+            finally:
+                self.revert_el()
         if self.args.target_el == 3 and not self.EL3_M:
             self.quiet_info_add_out("EL3 translation is unused")
         self.save_mapping_cache()
@@ -179557,6 +179706,8 @@ class PagewalkX64Command(PagewalkCommand):
     parser.add_argument("--cr4", dest="user_specified_cr4", type=AddressUtil.parse_address,
                         help="use specified value as cr4.")
     parser.add_argument("--ept", action="store_true", help="parse cr3 as EPT (Extended Page Table).")
+    parser.add_argument("--ept-levels", type=int, choices=(4, 5), default=4,
+                        help="EPT walk length, independent of CR4.LA57 (default: 4).")
     parser.add_argument("-D", "--disable-color", action="store_true", help="disable RWX colored output")
     parser.add_argument("-c", "--use-cache", action="store_true", help="use previous result.")
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
@@ -179575,7 +179726,7 @@ class PagewalkX64Command(PagewalkCommand):
 
         if not is_x86_64() or not is_in_kernel():
             args.user_pt = False
-        if args.ept and not args.user_specified_cr3:
+        if args.ept and args.user_specified_cr3 is None:
             err("Unsupported --ept option without --cr3 option")
             return
 

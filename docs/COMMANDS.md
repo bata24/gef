@@ -7954,7 +7954,7 @@ Dump page tables for x86/64.
 ### Syntax
 
 ```text
-usage: pagewalk x64 [-h] [-L] [-N] [-P] [-Q] [-f REGEX] [-v VADDR] [-p PADDR] [-t VADDR] [-i] [-U] [--cr3 USER_SPECIFIED_CR3] [--cr4 USER_SPECIFIED_CR4] [--ept] [-D] [-c] [-n] [-q]
+usage: pagewalk x64 [-h] [-L] [-N] [-P] [-Q] [-f REGEX] [-v VADDR] [-p PADDR] [-t VADDR] [-i] [-U] [--cr3 USER_SPECIFIED_CR3] [--cr4 USER_SPECIFIED_CR4] [--ept] [--ept-levels {4,5}] [-D] [-c] [-n] [-q]
 
 options:
   -h, --help            show this help message and exit
@@ -7975,6 +7975,7 @@ options:
   --cr4 USER_SPECIFIED_CR4
                         use specified value as cr4.
   --ept                 parse cr3 as EPT (Extended Page Table).
+  --ept-levels {4,5}    EPT walk length, independent of CR4.LA57 (default: 4).
   -D, --disable-color   disable RWX colored output
   -c, --use-cache       use previous result.
   -n, --no-pager        do not use the pager.
