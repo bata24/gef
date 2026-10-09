@@ -45320,22 +45320,51 @@ class SropHintCommand(GenericCommand):
 
     def build_hint(self, mode):
         nr, reg, insn = self.TRIGGERS[mode]
+        if mode in ("sparc64", "hppa", "m68k"):
+            return "# rt_sigreturn frame generation is unsupported for {:s}; ucontext_t is not a sigframe.\n".format(mode)
         endian = ">" if mode in self.BIG_ENDIAN else "<"
+        detected = next((key for key, checker in UcontextCommand.ARCH_DETECT if checker()), None)
+        if mode == detected:
+            endian = "<" if Endian.is_little_endian() else ">"
         layout = UcontextCommand.get_layout(mode)
         fields = UcontextCommand.frame_fields(layout)
+        uc_offset = {
+            "riscv32": 128, "riscv64": 128, "loongarch64": 128,
+            "mips": 152, "mipsn32": 152, "mips64": 152,
+            "sh4": 128, "alpha": 128, "ppc64": 0, "s390x": 296,
+        }[mode]
+        if uc_offset:
+            fields.insert(0, (0, uc_offset, "frame prefix (siginfo/padding)", "padding"))
+        fields = [(off + (0 if kind == "padding" else uc_offset), size, label, kind)
+                  for off, size, label, kind in fields]
+        end = max(off + size for off, size, label, kind in fields)
+        if mode in ("riscv32", "riscv64"):
+            end = uc_offset + layout["mcontext"] + (128 if mode == "riscv32" else 256) + 528
+        elif mode == "ppc64":
+            end = 1696
+        elif mode == "s390x":
+            end = uc_offset + 512
+        elif mode == "loongarch64":
+            end = (end + 15) & ~15
+            end += 16
+        fields.append((end, 0, "end", "padding"))
         pack = {1: "B", 2: "H", 4: "I", 8: "Q"}
-
-        s = "# set {:s} = {:d} (rt_sigreturn), point sp at this frame (= &ucontext), then `{:s}`\n".format(
-            reg, nr, insn)
+        s = "# set {:s} = {:d} (rt_sigreturn), sp = &exp, then `{:s}`\n".format(reg, nr, insn)
+        s += "# ucontext is at &exp + {:d}; align the frame to 16 bytes\n".format(uc_offset)
         s += "# byte order is '{:s}'; flip it for the opposite endianness\n".format(endian)
         pos = 0
         op = "exp  ="
-        for offset, size, label, _ in fields:
+        for offset, size, label, kind in fields:
             if offset > pos:
-                s += '{:s} struct.pack("{:s}B", 0x0)*{:d}    # padding\n'.format(op, endian, offset - pos)
+                s += '{:s} b"\\x00" * {:d}    # padding / FP state\n'.format(op, offset - pos)
                 op = "exp +="
-            s += '{:s} struct.pack("{:s}{:s}", 0x0)    # rt_sigframe.{:s}\n'.format(op, endian, pack[size], label)
-            op = "exp +="
+            if size:
+                if size in pack and kind != "sigmask":
+                    s += '{:s} struct.pack("{:s}{:s}", 0x0)    # rt_sigframe.{:s}\n'.format(
+                        op, endian, pack[size], label)
+                else:
+                    s += '{:s} b"\\x00" * {:d}    # rt_sigframe.{:s}\n'.format(op, size, label)
+                op = "exp +="
             pos = offset + size
         return s
 
