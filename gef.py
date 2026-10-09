@@ -15562,6 +15562,33 @@ class EventHandler:
     __gef_check_once__ = True # the flag to process only once at startup
     __gef_check_disabled_bp__ = False # the flag to remove unnecessary breakpoints
     kpti_transition_active = False
+    qemu_pipe_pids = {}
+
+    @staticmethod
+    def track_qemu_pipe():
+        inferior = gdb.selected_inferior()
+        connection = getattr(inferior, "connection", None)
+        if connection is None or connection.type not in ("remote", "extended-remote"):
+            return
+        if connection.num in EventHandler.qemu_pipe_pids:
+            return
+        if not (connection.details or "").lstrip().startswith("|") or not is_qemu_system():
+            return
+        qemu_pid = pid = Pid.get_pid()
+        while pid and pid != os.getpid():
+            try:
+                status = open("/proc/{:d}/status".format(pid)).read()
+            except OSError:
+                return
+            parent = re.search(r"^PPid:\s+(\d+)$", status, re.MULTILINE)
+            pid = int(parent.group(1)) if parent else None
+        if pid == os.getpid():
+            try:
+                started = open("/proc/{:d}/stat".format(qemu_pid)).read().rsplit(")", 1)[1].split()[19]
+            except OSError:
+                return
+            EventHandler.qemu_pipe_pids[connection.num] = (qemu_pid, started)
+        return
 
     @staticmethod
     def hook_stop_handler(event):
@@ -15572,6 +15599,7 @@ class EventHandler:
             ExecAsm.queued_signals[thread] = event.stop_signal
         else:
             ExecAsm.queued_signals.pop(thread, None)
+        EventHandler.track_qemu_pipe()
 
         # There appears to be a bug on some architectures (e.g., i386) where temporary breakpoints
         # are not deleted even after being hit. The conditions under which this occurs are unknown,
@@ -15693,17 +15721,8 @@ class EventHandler:
             if inferior != gdb.selected_inferior():
                 gdb.execute("inferior {:d}".format(inferior.num), to_string=True)
             Cache.reset_gef_caches(all=True)
-            if not is_qemu_system():
-                continue
-            pid = Pid.get_pid()
-            while pid and pid != os.getpid():
-                try:
-                    status = open("/proc/{:d}/status".format(pid)).read()
-                except OSError:
-                    break
-                parent = re.search(r"^PPid:\s+(\d+)$", status, re.MULTILINE)
-                pid = int(parent.group(1)) if parent else None
-            if pid != os.getpid():
+            EventHandler.track_qemu_pipe()
+            if connection.num not in EventHandler.qemu_pipe_pids:
                 continue
             try:
                 gdb.execute("kill", to_string=True)
@@ -15714,6 +15733,16 @@ class EventHandler:
     @staticmethod
     def connection_removed_handler(_event):
         """GDB event handler for removed target connections."""
+        child = EventHandler.qemu_pipe_pids.pop(_event.connection.num, None)
+        if child is not None:
+            import signal
+            pid, started = child
+            try:
+                current = open("/proc/{:d}/stat".format(pid)).read().rsplit(")", 1)[1].split()[19]
+                if current == started:
+                    os.kill(pid, signal.SIGKILL)
+            except (FileNotFoundError, ProcessLookupError):
+                pass
         PatchCommand.invalidate_history(connection_num=_event.connection.num)
         Cache.reset_gef_caches(all=True)
         return
@@ -196859,6 +196888,7 @@ class Gef:
 
         # If GEF is loaded after gdb is connected
         if is_alive():
+            EventHandler.track_qemu_pipe()
             if current_arch is None:
                 set_arch()
         return
