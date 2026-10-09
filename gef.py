@@ -146985,17 +146985,7 @@ class MultiLineCommand(GenericCommand):
         return
 
     def do_command(self, commands):
-        if commands == []:
-            return True
-
-        # make comnand string
-        cmd = ""
-        for c in commands:
-            if "\\" in c or " " in c:
-                cmd += " " + repr(c)
-            else:
-                cmd += " " + c
-        cmd = cmd.strip()
+        cmd = commands.strip()
 
         # blank command, so skip
         if cmd.replace(" ", "") == "":
@@ -147035,30 +147025,32 @@ class MultiLineCommand(GenericCommand):
 
     # Need not @Decorator.parse_args because argparse can't stop interpreting options for user specified command.
     def do_invoke(self, argv):
-        if len(argv) == 1 and argv[0] == "-h":
+        if not argv or argv in (["-h"], ["--help"]):
             self.usage()
             return
 
         commands = []
-        for arg in argv:
-            if arg.endswith(";"):
-                commands.append(arg.rstrip(";").lstrip(";"))
-                if self.do_command(commands) is False:
-                    break
-                commands = []
-            elif arg.startswith(";"):
-                if self.do_command(commands) is False:
-                    break
-                commands = []
-                commands.append(arg.lstrip(";"))
-            elif arg == ";":
-                if self.do_command(commands) is False:
-                    break
-                commands = []
-            else:
-                commands.append(arg)
-        else:
-            self.do_command(commands)
+        command_args = argv[0] if len(argv) == 1 else self.command_args
+        start = 0
+        quote = None
+        escaped = False
+        for index, char in enumerate(command_args):
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif quote:
+                if char == quote:
+                    quote = None
+            elif char in "\"'":
+                quote = char
+            elif char == ";":
+                commands.append(command_args[start:index])
+                start = index + 1
+        commands.append(command_args[start:])
+        for command in commands:
+            if self.do_command(command) is False:
+                break
         return
 
 
