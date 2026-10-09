@@ -45866,7 +45866,26 @@ class DynamicCommand(GenericCommand, BufferingOutput):
         super().__init__(complete=gdb.COMPLETE_FILENAME)
         return
 
-    def dump_dynamic(self, dynamic, remain_size):
+    @staticmethod
+    def iter_dynamic(dynamic, size=None, raw=False):
+        current = dynamic.value
+        end = dynamic.section.page_end if dynamic.section else AddressUtil.get_vmem_end()
+        if size is not None:
+            end = min(AddressUtil.get_vmem_end(), current + size)
+        while current + current_arch.ptrsize * 2 <= end:
+            try:
+                tag = read_int_from_memory(current)
+                val = read_int_from_memory(current + current_arch.ptrsize)
+            except gdb.MemoryError:
+                err("Memory read error at {:#x}".format(current))
+                break
+            yield current, tag, val
+            if tag == 0 and not raw: # DT_NULL
+                break
+            current += current_arch.ptrsize * 2
+        return
+
+    def dump_dynamic(self, dynamic, remain_size, raw=None):
         base_address_color = Config.get("theme.dereference_base_address")
 
         if dynamic is None:
@@ -45881,23 +45900,9 @@ class DynamicCommand(GenericCommand, BufferingOutput):
 
         DT_TABLE = DynamicCommand.get_DT_TABLE()
 
-        current = dynamic.value
-        while True:
-            try:
-                addr = current
-                tag = read_int_from_memory(current)
-                current += current_arch.ptrsize
-                val = read_int_from_memory(current)
-                current += current_arch.ptrsize
-            except gdb.MemoryError:
-                break
-
-            if remain_size is None:
-                if tag not in DT_TABLE:
-                    break
-            else:
-                remain_size -= current_arch.ptrsize * 2
-
+        if raw is None:
+            raw = remain_size is not None
+        for addr, tag, val in self.iter_dynamic(dynamic, remain_size, raw):
             val = ProcessMap.lookup_address(val)
             tag_description = DT_TABLE.get(tag, "Unknown")
             colored_addr = Color.colorify("{:#0{:d}x}".format(addr, width), base_address_color)
@@ -45905,8 +45910,6 @@ class DynamicCommand(GenericCommand, BufferingOutput):
                 colored_addr, tag, width, val, tag_description,
             ))
 
-            if remain_size is not None and remain_size <= 0:
-                break
         return
 
     @staticmethod
@@ -46016,7 +46019,7 @@ class DynamicCommand(GenericCommand, BufferingOutput):
 
         self.out = []
         try:
-            self.dump_dynamic(dynamic, dynamic_size)
+            self.dump_dynamic(dynamic, dynamic_size, raw=args.dynamic_size is not None)
         except Exception:
             err("Failed to parse _DYNAMIC")
             return
