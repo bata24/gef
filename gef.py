@@ -1938,7 +1938,7 @@ class AddressUtil:
             # goto next
             if phys and len(addr_list) == 1:
                 mem = read_physmem(addr, current_arch.ptrsize)
-                unpack = u32 if current_arch.ptrsize == 4 else u64
+                unpack = {2:u16, 4:u32, 8:u64}[current_arch.ptrsize]
                 addr = unpack(mem)
             else:
                 addr = read_int_from_memory(addr, safe=True)
@@ -42997,7 +42997,7 @@ class DereferenceCommand(GenericCommand):
 
         # read memory function
         if args.phys:
-            unpack = u32 if is_32bit() else u64
+            unpack = {2:u16, 4:u32, 8:u64}[current_arch.ptrsize]
             self.read_int_from_memory = lambda x: unpack(read_physmem(x, current_arch.ptrsize))
         else:
             self.read_int_from_memory = read_int_from_memory
