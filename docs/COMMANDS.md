@@ -7007,7 +7007,7 @@ Print v8 tagged object, or load more commands from internet.
 ### Syntax
 
 ```text
-usage: v8 [-h] (-l | -L | ADDRESS)
+usage: v8 [-h] [--revision REVISION] (-l | -L | ADDRESS)
 
 positional arguments:
   ADDRESS               target map address.
@@ -7017,6 +7017,7 @@ options:
   -l, --load-v8-gdbinit
                         load gdbinit for v8 from internet.
   -L, --list-command    show newly added commands from v8 gdbinit.
+  --revision REVISION   V8 revision or tag for the external gdbinit.
 ```
 
 ## `v8-dump-space`

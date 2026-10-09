@@ -163801,7 +163801,7 @@ class CageCommand(GenericCommand, BufferingOutput):
             pass
         return None
 
-    @Cache.cache_until_next
+    @Cache.cache_until_next(per_inferior=True)
     def get_isolate(self, force_heuristic=False):
         sym = "&'v8::internal::g_current_isolate_'.isolate_data_"
         addr = self.get_sym_value(sym, force_heuristic)
@@ -163831,7 +163831,7 @@ class CageCommand(GenericCommand, BufferingOutput):
             return x
         return None
 
-    @Cache.cache_until_next
+    @Cache.cache_until_next(per_inferior=True)
     def get_cage_base(self, force_heuristic=False):
         sym = "'v8::internal::g_current_isolate_'.isolate_data_.cage_base_"
         addr = self.get_sym_addr(sym, force_heuristic)
@@ -163843,7 +163843,7 @@ class CageCommand(GenericCommand, BufferingOutput):
             return read_int_from_memory(addr)
         return None
 
-    @Cache.cache_until_next
+    @Cache.cache_until_next(per_inferior=True)
     def get_table_candidates(self):
         isolate = self.get_isolate(force_heuristic=True)
         if not isolate:
@@ -163967,7 +163967,7 @@ class CageCommand(GenericCommand, BufferingOutput):
             return candidates_z_ffffff
         return candidates_z_fff
 
-    @Cache.cache_until_next
+    @Cache.cache_until_next(per_inferior=True)
     def get_external_pointer_table_base(self, force_heuristic=False):
         sym = "'v8::internal::g_current_isolate_'.isolate_data_.external_pointer_table_.base_"
         addr = self.get_sym_addr(sym, force_heuristic)
@@ -163979,7 +163979,7 @@ class CageCommand(GenericCommand, BufferingOutput):
             return candidates[1]
         return None
 
-    @Cache.cache_until_next
+    @Cache.cache_until_next(per_inferior=True)
     def get_external_pointer_table_size(self, force_heuristic=False):
         sym = "'v8::internal::g_current_isolate_'.isolate_data_.external_pointer_table_.kReservationSize"
         value = self.get_sym_value(sym, force_heuristic)
@@ -163987,7 +163987,7 @@ class CageCommand(GenericCommand, BufferingOutput):
             return value
         return 0x400_0000 # hard-coded
 
-    @Cache.cache_until_next
+    @Cache.cache_until_next(per_inferior=True)
     def get_shared_external_pointer_table_base(self, force_heuristic=False):
         sym = "'v8::internal::g_current_isolate_'.isolate_data_.shared_external_pointer_table_.base_"
         addr = self.get_sym_addr(sym, force_heuristic)
@@ -163995,7 +163995,7 @@ class CageCommand(GenericCommand, BufferingOutput):
             return addr
         return None
 
-    @Cache.cache_until_next
+    @Cache.cache_until_next(per_inferior=True)
     def get_shared_external_pointer_table_size(self, force_heuristic=False):
         sym = "'v8::internal::g_current_isolate_'.isolate_data_.shared_external_pointer_table_.kReservationSize"
         value = self.get_sym_value(sym, force_heuristic)
@@ -164003,7 +164003,7 @@ class CageCommand(GenericCommand, BufferingOutput):
             return value
         return 0x400_0000 # hard-coded
 
-    @Cache.cache_until_next
+    @Cache.cache_until_next(per_inferior=True)
     def get_cpp_heap_pointer_table_base(self, force_heuristic=False):
         sym = "'v8::internal::g_current_isolate_'.isolate_data_.cpp_heap_pointer_table_.base_"
         addr = self.get_sym_addr(sym, force_heuristic)
@@ -164015,7 +164015,7 @@ class CageCommand(GenericCommand, BufferingOutput):
             return candidates[2]
         return None
 
-    @Cache.cache_until_next
+    @Cache.cache_until_next(per_inferior=True)
     def get_cpp_heap_pointer_table_size(self, force_heuristic=False):
         sym = "'v8::internal::g_current_isolate_'.isolate_data_.cpp_heap_pointer_table_.kReservationSize"
         value = self.get_sym_value(sym, force_heuristic)
@@ -164023,7 +164023,7 @@ class CageCommand(GenericCommand, BufferingOutput):
             return value
         return 0x400_0000 # hard-coded
 
-    @Cache.cache_until_next
+    @Cache.cache_until_next(per_inferior=True)
     def get_trusted_pointer_table_base(self, force_heuristic=False):
         sym = "'v8::internal::g_current_isolate_'.isolate_data_.trusted_pointer_table_.base_"
         addr = self.get_sym_addr(sym, force_heuristic)
@@ -164035,7 +164035,7 @@ class CageCommand(GenericCommand, BufferingOutput):
             return candidates[3]
         return None
 
-    @Cache.cache_until_next
+    @Cache.cache_until_next(per_inferior=True)
     def get_trusted_pointer_table_size(self, force_heuristic=False):
         sym = "'v8::internal::g_current_isolate_'.isolate_data_.trusted_pointer_table_.kReservationSize"
         value = self.get_sym_value(sym, force_heuristic)
@@ -164043,7 +164043,7 @@ class CageCommand(GenericCommand, BufferingOutput):
             return value
         return 0x400_0000 # hard-coded
 
-    @Cache.cache_until_next
+    @Cache.cache_until_next(per_inferior=True)
     def get_shared_trusted_pointer_table_base(self, force_heuristic=False):
         sym = "'v8::internal::g_current_isolate_'.isolate_data_.shared_trusted_pointer_table_.base_"
         addr = self.get_sym_addr(sym, force_heuristic)
@@ -164051,7 +164051,7 @@ class CageCommand(GenericCommand, BufferingOutput):
             return addr
         return None
 
-    @Cache.cache_until_next
+    @Cache.cache_until_next(per_inferior=True)
     def get_shared_trusted_pointer_table_size(self, force_heuristic=False):
         sym = "'v8::internal::g_current_isolate_'.isolate_data_.shared_trusted_pointer_table_.kReservationSize"
         value = self.get_sym_value(sym, force_heuristic)
@@ -164059,7 +164059,7 @@ class CageCommand(GenericCommand, BufferingOutput):
             return value
         return 0x400_0000 # hard-coded
 
-    @Cache.cache_until_next
+    @Cache.cache_until_next(per_inferior=True)
     def get_code_pointer_table_base(self, force_heuristic=False):
         sym = "'v8::internal::g_current_isolate_'.isolate_data_.code_pointer_table_base_address_"
         addr = self.get_sym_addr(sym, force_heuristic)
@@ -164071,11 +164071,11 @@ class CageCommand(GenericCommand, BufferingOutput):
             return candidates[4]
         return None
 
-    @Cache.cache_until_next
+    @Cache.cache_until_next(per_inferior=True)
     def get_code_pointer_table_size(self, force_heuristic=False):
         return 0x400_0000 # hard-coded
 
-    @Cache.cache_until_next
+    @Cache.cache_until_next(per_inferior=True)
     def get_js_dispatch_table_base(self, force_heuristic=False):
         sym = "'v8::internal::g_current_isolate_'.isolate_data_.js_dispatch_table_base_"
         addr = self.get_sym_addr(sym, force_heuristic)
@@ -164087,11 +164087,11 @@ class CageCommand(GenericCommand, BufferingOutput):
             return candidates[5]
         return None
 
-    @Cache.cache_until_next
+    @Cache.cache_until_next(per_inferior=True)
     def get_js_dispatch_table_size(self, force_heuristic=False):
         return 0x400_0000 # hard-coded
 
-    @Cache.cache_until_next
+    @Cache.cache_until_next(per_inferior=True)
     def get_code_range_base(self, force_heuristic=False):
         sym = "'v8::internal::g_current_isolate_'->heap_.code_range_.base_"
         addr = self.get_sym_addr(sym, force_heuristic)
@@ -164118,7 +164118,7 @@ class CageCommand(GenericCommand, BufferingOutput):
                 return m.page_start
         return None
 
-    @Cache.cache_until_next
+    @Cache.cache_until_next(per_inferior=True)
     def get_code_range_size(self, force_heuristic=False):
         sym = "'v8::internal::g_current_isolate_'->heap_.code_range_.size_"
         value = self.get_sym_value(sym, force_heuristic)
@@ -164126,7 +164126,7 @@ class CageCommand(GenericCommand, BufferingOutput):
             return value
         return 0x2000_0000 # hard-coded
 
-    @Cache.cache_until_next
+    @Cache.cache_until_next(per_inferior=True)
     def get_cage_rw_space_candidates(self):
         maps = ProcessMap.get_process_maps()
         if not maps:
@@ -164140,7 +164140,7 @@ class CageCommand(GenericCommand, BufferingOutput):
             candidates.append(m)
         return candidates
 
-    @Cache.cache_until_next
+    @Cache.cache_until_next(per_inferior=True)
     def get_new_space_start(self, force_heuristic=False):
         sym = "'v8::internal::g_current_isolate_'.isolate_data_.new_allocation_info_.start_"
         addr = self.get_sym_addr(sym, force_heuristic)
@@ -164152,7 +164152,7 @@ class CageCommand(GenericCommand, BufferingOutput):
             return candidates[1].page_start
         return None
 
-    @Cache.cache_until_next
+    @Cache.cache_until_next(per_inferior=True)
     def get_new_space_limit(self, force_heuristic=False):
         sym = "'v8::internal::g_current_isolate_'.isolate_data_.new_allocation_info_.limit_"
         addr = self.get_sym_addr(sym, force_heuristic)
@@ -164164,7 +164164,7 @@ class CageCommand(GenericCommand, BufferingOutput):
             return candidates[1].page_end
         return None
 
-    @Cache.cache_until_next
+    @Cache.cache_until_next(per_inferior=True)
     def get_old_space_start(self, force_heuristic=False):
         sym = "'v8::internal::g_current_isolate_'.isolate_data_.old_allocation_info_.start_"
         addr = self.get_sym_addr(sym, force_heuristic)
@@ -164176,7 +164176,7 @@ class CageCommand(GenericCommand, BufferingOutput):
             return candidates[0].page_start
         return None
 
-    @Cache.cache_until_next
+    @Cache.cache_until_next(per_inferior=True)
     def get_old_space_limit(self, force_heuristic=False):
         sym = "'v8::internal::g_current_isolate_'.isolate_data_.old_allocation_info_.limit_"
         addr = self.get_sym_addr(sym, force_heuristic)
@@ -164188,7 +164188,44 @@ class CageCommand(GenericCommand, BufferingOutput):
             return candidates[0].page_end
         return None
 
+    def get_detection_details(self, name):
+        root = "'v8::internal::g_current_isolate_'"
+        data = root + ".isolate_data_."
+        fields = {
+            "external_pointer_table": "external_pointer_table_.base_",
+            "shared_external_pointer_table": "shared_external_pointer_table_.base_",
+            "cpp_heap_pointer_table": "cpp_heap_pointer_table_.base_",
+            "trusted_pointer_table": "trusted_pointer_table_.base_",
+            "shared_trusted_pointer_table": "shared_trusted_pointer_table_.base_",
+            "code_pointer_table": "code_pointer_table_base_address_",
+            "js_dispatch_table": "js_dispatch_table_base_",
+            "new_space": "new_allocation_info_.start_",
+            "old_space": "old_allocation_info_.start_",
+            "cage": "cage_base_",
+        }
+        if name in fields:
+            sym = data + fields[name]
+        elif name == "code_range":
+            sym = root + "->heap_.code_range_.base_"
+        else:
+            return "heuristic (mapping permissions, alignment or address proximity)"
+        base = self.get_sym_addr(sym, self.args.force_heuristic)
+        source = "symbol" if base else "heuristic"
+        if name.endswith("pointer_table") and name != "code_pointer_table":
+            sym = data + name + "_.kReservationSize"
+            size = self.get_sym_value(sym, self.args.force_heuristic)
+            return "base={:s}, size={:s}".format(source, "symbol" if size else "fixed 64 MiB")
+        if name in ("code_pointer_table", "js_dispatch_table"):
+            return "base={:s}, size=fixed 64 MiB".format(source)
+        if name == "cage":
+            return "base={:s}, window=fixed 1 TiB (sandbox reservation unverified)".format(source)
+        return "base={:s}, bounds may use mapping heuristics".format(source)
+
     def dump_entry(self, entry, path):
+        if path and path not in self.detection_details:
+            name = path[4:-1]
+            self.detection_details[path] = self.get_detection_details(name)
+
         # get color
         line_color = ""
         if entry.path.startswith("[stack]"):
@@ -164354,6 +164391,7 @@ class CageCommand(GenericCommand, BufferingOutput):
             args.verbose = True
 
         self.out = []
+        self.detection_details = {}
         trusted_space_high = None
         # To find the trusted_space from the trusted_pointer_table, traverse it in reverse order
         for entry in maps[::-1]:
@@ -164421,6 +164459,18 @@ class CageCommand(GenericCommand, BufferingOutput):
         # Order the results in ascending order
         self.out = self.out[::-1]
 
+        inferior = gdb.selected_inferior()
+        info("V8 target: inferior {:d}, pid {:d}; cache is limited to this target session".format(
+            inferior.num, inferior.pid,
+        ))
+        tagged_size = self.get_sym_value("'v8::internal::kTaggedSize'")
+        sandbox_size = self.get_sym_value("'v8::internal::kSandboxSize'")
+        info("Tagged size: {:s}; sandbox size: {:s}".format(
+            str(tagged_size) if tagged_size is not None else "unknown (decoder requires 4)",
+            hex(sandbox_size) if sandbox_size is not None else "unknown",
+        ))
+        for path, details in self.detection_details.items():
+            info("{:s}: {:s}".format(path[4:-1], details))
         self.print_output(check_terminal_size=True)
         return
 
@@ -164470,45 +164520,52 @@ class V8ListMapsCommand(GenericCommand, BufferingOutput):
     _note_ = "\n".join(_note_)
 
     @staticmethod
-    def redirect_stdout(output_path):
+    def stdout_syscall(name, args):
         syscall_table = Syscall.get_syscall_table()
+        ret = ExecSyscall(syscall_table.name_table[name].nr, args).exec_code()
+        value = u2i(ret["reg"][current_arch.return_register])
+        if value < 0:
+            raise gdb.error("V8 stdout {:s} failed: {:d}".format(name, value))
+        return value
 
-        # dup
-        ret = ExecSyscall(syscall_table.name_table["dup"].nr, [1]).exec_code()
-        stdout_oldfd = ret["reg"][current_arch.return_register]
-
-        # open
-        p = PatchCommand.PatchInfo(current_arch.sp, output_path.encode() + b"\0")
-        p.patch(silent=True)
-        flags = 0o100 | 0o1 | 0o1000 # O_CREAT | O_WRONLY | O_TRUNC
-        ret = ExecSyscall(syscall_table.name_table["open"].nr, [current_arch.sp, flags, 0o666]).exec_code()
-        file_fd = ret["reg"][current_arch.return_register]
-        PatchCommand.PatchInfo.revert_to_tag(p.tag, silent=True)
-
-        if u2i(file_fd) < 0:
-            # fail, revert dup
-            ExecSyscall(syscall_table.name_table["dup2"].nr, [stdout_oldfd, 1]).exec_code()
-            return None
-
-        # dup2
-        ExecSyscall(syscall_table.name_table["dup2"].nr, [file_fd, 1]).exec_code()
-
-        # close
-        ExecSyscall(syscall_table.name_table["close"].nr, [file_fd]).exec_code()
+    @staticmethod
+    def redirect_stdout(output_path):
+        gdb.execute("call (void) fflush(0)", to_string=True)
+        stdout_oldfd = V8ListMapsCommand.stdout_syscall("dup", [1])
+        file_fd = None
+        redirected = False
+        try:
+            p = PatchCommand.PatchInfo(current_arch.sp, output_path.encode() + b"\0")
+            p.patch(silent=True)
+            try:
+                flags = 0o100 | 0o1 | 0o1000 # O_CREAT | O_WRONLY | O_TRUNC
+                file_fd = V8ListMapsCommand.stdout_syscall("open", [current_arch.sp, flags, 0o600])
+            finally:
+                p.revert(silent=True)
+            V8ListMapsCommand.stdout_syscall("dup2", [file_fd, 1])
+            redirected = True
+        finally:
+            try:
+                if file_fd is not None:
+                    V8ListMapsCommand.stdout_syscall("close", [file_fd])
+            except BaseException:
+                if redirected:
+                    V8ListMapsCommand.revert_stdout(stdout_oldfd)
+                    stdout_oldfd = None
+                raise
+            finally:
+                if not redirected and stdout_oldfd is not None:
+                    V8ListMapsCommand.stdout_syscall("close", [stdout_oldfd])
         return stdout_oldfd
 
     @staticmethod
     def revert_stdout(stdout_oldfd):
         if stdout_oldfd is None:
             return
-
-        syscall_table = Syscall.get_syscall_table()
-
-        # dup2
-        ExecSyscall(syscall_table.name_table["dup2"].nr, [stdout_oldfd, 1]).exec_code()
-
-        # close
-        ExecSyscall(syscall_table.name_table["close"].nr, [stdout_oldfd]).exec_code()
+        try:
+            V8ListMapsCommand.stdout_syscall("dup2", [stdout_oldfd, 1])
+        finally:
+            V8ListMapsCommand.stdout_syscall("close", [stdout_oldfd])
         return
 
     @staticmethod
@@ -164565,23 +164622,16 @@ class V8ListMapsCommand(GenericCommand, BufferingOutput):
         return heap_contents
 
     def do_list_maps(self, region, cage_base):
-        # old_space+0x10 has heap_object
-        ofs = read_int32_from_memory(region + 0x10)
+        area_start = V8Command.get_object_start(region)
+        ofs = read_int32_from_memory(area_start)
         map1 = cage_base + ofs
-        if not is_valid_addr(map1):
+        if not ofs & 1 or not is_valid_addr(map1):
             err("Memory access error")
             return
 
         # get heap contents
         heap_contents = self.get_heap_contents(map1)
         if heap_contents is None:
-            return
-
-        # get reference index (from glibc heap)
-        try:
-            sidx = eidx = heap_contents.index(map1)
-        except ValueError:
-            err("Could not find wanted maps")
             return
 
         """
@@ -164595,26 +164645,32 @@ class V8ListMapsCommand(GenericCommand, BufferingOutput):
         0x5555558591b0|+0x0038|+007: 0x000011b7000014fd  ->  0xac4b000002000004
         """
 
-        # glibc heap contains a array of addresses of v8 heap objects
-        # find the top of the array
+        # glibc heap contains an array of addresses of v8 heap objects
         cage_mask = cage_base & 0xffff_ffff_0000_0000
-        while sidx >= 0:
-            v = heap_contents[sidx]
-            if v & 1 == 0:
+        best_start = best_end = eidx = 0
+        while True:
+            try:
+                sidx = eidx = heap_contents.index(map1, eidx)
+            except ValueError:
                 break
-            if cage_mask != (v & 0xffff_ffff_0000_0000):
-                break
-            sidx -= 1
-        sidx += 1
+            while sidx > 0:
+                v = heap_contents[sidx - 1]
+                if v & 1 == 0 or cage_mask != (v & 0xffff_ffff_0000_0000):
+                    break
+                sidx -= 1
+            while eidx < len(heap_contents):
+                v = heap_contents[eidx]
+                if v & 1 == 0 or cage_mask != (v & 0xffff_ffff_0000_0000):
+                    break
+                eidx += 1
+            if eidx - sidx > best_end - best_start:
+                best_start, best_end = sidx, eidx
+        if best_start == best_end:
+            err("Could not find wanted maps")
+            return
 
-        # find the tail of the array
-        while eidx < len(heap_contents):
-            v = heap_contents[eidx]
-            if v & 1 == 0:
-                break
-            if cage_mask != (v & 0xffff_ffff_0000_0000):
-                break
-            eidx += 1
+        meta_map = cage_base + read_int32_from_memory(map1 - 1) - 1
+        map_type = read_int16_from_memory(meta_map + 8)
 
         # dump
         try:
@@ -164623,25 +164679,45 @@ class V8ListMapsCommand(GenericCommand, BufferingOutput):
             # Therefore, GEF temporarily redirect stdout to collect the results.
             stdout_oldfd = None
             stdout_oldfd = V8ListMapsCommand.redirect_stdout(self.output_path)
-            if stdout_oldfd is None:
-                raise RuntimeError("Failed to redirect: {:s}".format(self.output_path))
-            for idx in ProgressBar(range(sidx, eidx)):
+            count = 0
+            seen = set()
+            for idx in ProgressBar(range(best_start, best_end)):
                 v = heap_contents[idx]
-                gdb.execute("v8 {:#x}".format(v), to_string=True)
+                if v in seen:
+                    continue
+                seen.add(v)
+                map_raw = read_int32_from_memory(v - 1, safe=True)
+                if map_raw is None or not map_raw & 1:
+                    continue
+                type_addr = cage_base + map_raw - 1 + 8
+                if read_int16_from_memory(type_addr, safe=True) != map_type:
+                    continue
+                V8Command.print_object(v)
+                count += 1
         finally:
             V8ListMapsCommand.revert_stdout(stdout_oldfd)
-        return
+        return count > 0
 
     def list_maps(self, region, cage_base):
-        self.output_path = os.path.join(GEF_TEMP_DIR, "v8-list-maps-{:#x}.txt".format(cage_base))
-
-        # not found a cache file
-        if self.args.rescan or not os.path.exists(self.output_path):
-            self.do_list_maps(region, cage_base)
+        cache = V8Command.get_cache()["maps"]
+        key = (region, cage_base)
+        if self.args.rescan:
+            cache.pop(key, None)
+        if key not in cache:
+            with tempfile.NamedTemporaryFile(prefix="v8-list-maps-", dir=GEF_TEMP_DIR) as output:
+                self.output_path = output.name
+                if not self.do_list_maps(region, cage_base):
+                    return
+                output.seek(0)
+                content = output.read().decode(errors="replace")
+                if not content:
+                    err("V8 map scan produced no output")
+                    return
+                cache[key] = content
         else:
-            info("Use cache")
+            info("Use current inferior map cache")
 
-        res = open(self.output_path).read()
+        res = cache[key]
         for line in res.splitlines():
             line = re.sub(r"^(0x[0-9a-f]+)", lambda x:Color.blueify(x.group(1)), line)
             self.out.append(line)
@@ -164663,7 +164739,11 @@ class V8ListMapsCommand(GenericCommand, BufferingOutput):
             return
 
         self.out = []
-        self.list_maps(old_space_region, cage_base)
+        try:
+            self.list_maps(old_space_region, cage_base)
+        except (gdb.error, OSError) as e:
+            err("V8 map scan failed: {!s}".format(e))
+            return
         self.print_output(check_terminal_size=True)
         return
 
@@ -164741,65 +164821,25 @@ class V8DumpSpaceCommand(GenericCommand, BufferingOutput):
             return False
         return True
 
-    instance_type_dic = {}
-
-    def load_instance_type_dict(self):
-        lines = open(self.instace_type_cache_path).read().splitlines()
-        for line in lines:
-            instance_type, type_name = line.split("=")
-            self.instance_type_dic[int(instance_type)] = type_name
-        return
-
-    def append_instance_type_dict(self, instance_type, type_name):
-        self.instance_type_dic[instance_type] = type_name
-
-        with open(self.instace_type_cache_path, "a") as f:
-            f.write("{:d}={:s}\n".format(instance_type, type_name))
-        return
-
     def get_instance_name(self, map_addr):
-        # load from cache file
-        if not self.instance_type_dic:
-            if os.path.exists(self.instace_type_cache_path):
-                self.load_instance_type_dict()
-
-        # fast path: load from cache
+        instance_type_dic = V8Command.get_cache()["instance_types"]
         instance_type = read_int16_from_memory((map_addr & ~1) + 8)
-        if instance_type in self.instance_type_dic:
-            return self.instance_type_dic[instance_type]
+        if instance_type in instance_type_dic:
+            return instance_type_dic[instance_type]
 
-        # slow path
-        try:
-            stdout_oldfd = None
-            stdout_oldfd = V8ListMapsCommand.redirect_stdout(self.output_path)
-            if stdout_oldfd is None:
-                raise RuntimeError("Failed to redirect: {:s}".format(self.output_path))
-            gdb.execute("v8 {:#x}".format(map_addr | 1), to_string=True)
-        finally:
-            V8ListMapsCommand.revert_stdout(stdout_oldfd)
-
-        map_content = open(self.output_path).read()
-        if V8Command.is_chromium():
-            # 0x06c300000475 <MetaMap (0x06c30000002d <null>)>
-            r = re.search(r"<MetaMap ", map_content)
-            if r:
-                type_name = "MAP_TYPE"
-                self.append_instance_type_dict(instance_type, type_name)
-                return type_name
-
-            # 0x06c30000049d <Map[28](ODDBALL_TYPE)>
-            r = re.search(r"\(([A-Z_]+?)\)>$", map_content)
-            if r:
-                type_name = r.group(1)
-                self.append_instance_type_dict(instance_type, type_name)
-                return type_name
+        map_content = V8Command.capture_object(map_addr | 1, self.output_path)
+        r = re.search(r"- type: ([A-Z0-9_]+)", map_content)
+        if r:
+            type_name = r.group(1)
+        elif re.search(r"<MetaMap ", map_content):
+            type_name = "MAP_TYPE"
         else:
-            r = re.search(r"- type: (.+)", map_content) # for d8
-            if r:
-                type_name = r.group(1)
-                self.append_instance_type_dict(instance_type, type_name)
-                return type_name
-        return "???"
+            r = re.search(r"\(([A-Z0-9_]+_TYPE)\)>$", map_content, re.MULTILINE)
+            if not r:
+                return "???"
+            type_name = r.group(1)
+        instance_type_dic[instance_type] = type_name
+        return type_name
 
     def get_object_size(self, addr, map_addr, cage_base, area_end):
         """get header size and variable size"""
@@ -164831,8 +164871,8 @@ class V8DumpSpaceCommand(GenericCommand, BufferingOutput):
             length >>= 1
             return 12, length * 4
         elif instance_name == "BIG_INT_BASE_TYPE":
-            length = read_int32_from_memory(addr + 4)
-            return 8, length * 4
+            length = (read_int32_from_memory(addr + 4) >> 1) & 0x3fff_ffff
+            return 8, length * current_arch.ptrsize
         elif instance_name == "BYTECODE_ARRAY_TYPE":
             length = read_int32_from_memory(addr + 8)
             length >>= 1
@@ -164852,9 +164892,18 @@ class V8DumpSpaceCommand(GenericCommand, BufferingOutput):
         elif instance_name == "COVERAGE_INFO_TYPE":
             length = read_int16_from_memory(addr + 4)
             return 8, length * 4 * 4
-        elif instance_name == "DESCRIPTOR_ARRAY_TYPE":
+        elif instance_name in ("DESCRIPTOR_ARRAY_TYPE", "STRONG_DESCRIPTOR_ARRAY_TYPE"):
             length = read_int16_from_memory(addr + 4)
-            return 0x14, length * 4 * 3
+            for offset in (12, 16):
+                enum_cache = read_int32_from_memory(addr + offset)
+                if not self.is_map(enum_cache, cage_base):
+                    continue
+                enum_addr = cage_base + enum_cache - 1
+                enum_map = cage_base + read_int32_from_memory(enum_addr) - 1
+                if self.get_instance_name(enum_map) == "ENUM_CACHE_TYPE":
+                    return offset + 4, length * 4 * 3
+            self.warn_add_out("Could not determine DescriptorArray header at {:#x}".format(addr))
+            return 0, 0
         elif instance_name == "DOUBLE_STRING_CACHE_TYPE":
             length = read_int32_from_memory(addr + 4)
             return 8, length * 12
@@ -164884,10 +164933,28 @@ class V8DumpSpaceCommand(GenericCommand, BufferingOutput):
             length >>= 1
             return 8, length * 8
         elif instance_name == "FREE_SPACE_TYPE":
-            length = read_int32_from_memory(addr + 4)
-            length >>= 1
-            length -= 2 # size of the free space including the header
-            return 8, length * 4
+            size_raw = read_int32_from_memory(addr + 4)
+            if size_raw & 1:
+                raise gdb.error("Invalid FreeSpace size at {:#x}".format(addr))
+            size = size_raw >> 1
+            if size == 0:
+                return 8, -8
+            cache = V8Command.get_cache()
+            unit = cache.get("free_space_unit")
+            if unit is None:
+                content = V8Command.capture_object(addr | 1, self.output_path)
+                match = re.search(r"free space, size (\d+)", content)
+                if not match:
+                    raise gdb.error("Could not determine FreeSpace size unit from V8 diagnostics")
+                byte_size = int(match.group(1))
+                if byte_size == size:
+                    unit = 1
+                elif byte_size == size * 4:
+                    unit = 4
+                else:
+                    raise gdb.error("Unexpected FreeSpace size encoding")
+                cache["free_space_unit"] = unit
+            return 8, size * unit - 8
         elif instance_name == "GLOBAL_DICTIONARY_TYPE":
             length = read_int32_from_memory(addr + 4)
             length >>= 1
@@ -165016,8 +165083,6 @@ class V8DumpSpaceCommand(GenericCommand, BufferingOutput):
             pass # TODO
         elif instance_name == "SMALL_ORDERED_NAME_DICTIONARY_TYPE":
             pass # TODO
-        elif instance_name == "STRONG_DESCRIPTOR_ARRAY_TYPE":
-            pass # TODO
         elif instance_name == "SWISS_NAME_DICTIONARY_TYPE":
             length = read_int32_from_memory(addr + 8)
             data_table_len = length * 2 * 4
@@ -165067,11 +165132,7 @@ class V8DumpSpaceCommand(GenericCommand, BufferingOutput):
         return 0, 0
 
     def walk_space(self, start, limit, cage_base):
-        v = read_int32_from_memory(start)
-        if v & 1:
-            addr = start
-        else:
-            addr = start + 0x10
+        addr = V8Command.get_object_start(start)
 
         pbar = ProgressBar(total=limit - start)
 
@@ -165095,7 +165156,12 @@ class V8DumpSpaceCommand(GenericCommand, BufferingOutput):
 
             # check if it is a map
             if not self.is_map(map_raw, cage_base):
-                self.warn_add_out("Could not find map")
+                if addr % 0x40000 == 0:
+                    object_start = V8Command.get_object_start(addr)
+                    if addr < object_start < limit:
+                        addr = object_start
+                        continue
+                self.warn_add_out("Could not find map at {:#x}".format(addr))
                 return
             map_addr = cage_base + map_raw - 1 # untag
 
@@ -165118,24 +165184,11 @@ class V8DumpSpaceCommand(GenericCommand, BufferingOutput):
 
             # dump details
             if (self.args.verbose and "STRING" in instance_name) or self.args.vverbose:
-                try:
-                    stdout_oldfd = None
-                    stdout_oldfd = V8ListMapsCommand.redirect_stdout(self.output_path)
-                    if stdout_oldfd is None:
-                        raise RuntimeError("Failed to redirect: {:s}".format(self.output_path))
-                    gdb.execute("v8 {:#x}".format(addr | 1), to_string=True)
-                finally:
-                    V8ListMapsCommand.revert_stdout(stdout_oldfd)
-                content = open(self.output_path).read()
+                content = V8Command.capture_object(addr | 1, self.output_path)
                 if not content:
                     self.warn_add_out("No content; Something is wrong")
                     return
                 self.out.extend(content.splitlines()[:20])
-
-            # check if last
-            if instance_name == "FREE_SPACE_TYPE":
-                self.info_add_out("End of objects")
-                return
 
             # goto next
             if header_size == 0:
@@ -165144,6 +165197,12 @@ class V8DumpSpaceCommand(GenericCommand, BufferingOutput):
                 total_size = header_size
             else:
                 total_size = header_size + variable_size
+            if variable_size is not None and variable_size < 0:
+                self.warn_add_out("Invalid object size at {:#x}".format(addr))
+                return
+            if total_size <= 0 or total_size % 4 or total_size > limit - addr:
+                self.warn_add_out("Invalid object size at {:#x}: {:#x}".format(addr, total_size))
+                return
             addr += total_size
 
             pbar.update(total_size)
@@ -165168,16 +165227,18 @@ class V8DumpSpaceCommand(GenericCommand, BufferingOutput):
             return
         info("The cage base: {:#x}".format(cage_base))
 
-        self.output_path = os.path.join(GEF_TEMP_DIR, "v8-dump-space-{:#x}.txt".format(cage_base))
-        self.instace_type_cache_path = os.path.join(GEF_TEMP_DIR, "v8-dump-space-instance-type.txt")
-
         target_regions = self.get_target_regions()
         if not target_regions:
             err("Cannot determine target space address range")
             return
 
         self.out = []
-        self.walk_spaces(target_regions, cage_base)
+        try:
+            with tempfile.NamedTemporaryFile(prefix="v8-dump-space-", dir=GEF_TEMP_DIR) as output:
+                self.output_path = output.name
+                self.walk_spaces(target_regions, cage_base)
+        except (gdb.error, OSError) as e:
+            self.err_add_out("V8 space scan failed: {!s}".format(e))
         self.print_output(check_terminal_size=True)
         return
 
@@ -165197,24 +165258,93 @@ class V8Command(GenericCommand):
                        help="load gdbinit for v8 from internet.")
     group.add_argument("-L", "--list-command", action="store_true",
                        help="show newly added commands from v8 gdbinit.")
+    parser.add_argument("--revision", default="main", help="V8 revision or tag for the external gdbinit.")
     _syntax_ = parser.format_help()
 
-    def get_gdbinit(self):
-        gdbinit_filename = os.path.join(GEF_TEMP_DIR, "gdbinit-v8")
+    loaded_gdbinit = set()
+
+    def load_gdbinit(self, revision):
+        filename = self.get_gdbinit(revision)
+        if filename in self.loaded_gdbinit:
+            return filename
+        lines = []
+        for line in open(filename).read().splitlines():
+            if line.startswith("alias "):
+                name = line.split()[1]
+                try:
+                    gdb.execute("help " + name, to_string=True)
+                except gdb.error:
+                    pass
+                else:
+                    continue
+            lines.append(line)
+        with tempfile.NamedTemporaryFile(mode="w", prefix="v8-gdbinit-", dir=GEF_TEMP_DIR) as output:
+            output.write("\n".join(lines) + "\n")
+            output.flush()
+            gdb.execute("source " + output.name, to_string=True)
+        self.loaded_gdbinit.add(filename)
+        return filename
+
+    def get_gdbinit(self, revision):
+        if not re.fullmatch(r"[A-Za-z0-9_./-]+", revision) or ".." in revision:
+            raise gdb.error("Invalid V8 revision")
+        cache_key = hashlib.sha256(revision.encode()).hexdigest()[:16]
+        gdbinit_filename = os.path.join(GEF_TEMP_DIR, "gdbinit-v8-" + cache_key)
         if not os.path.exists(gdbinit_filename):
-            # https://chromium.googlesource.com/v8/v8/+/refs/heads/main/tools/gdbinit
-            url = "https://chromium.googlesource.com/v8/v8/+/refs/heads/main/tools/gdbinit?format=TEXT"
+            url = "https://chromium.googlesource.com/v8/v8/+/{:s}/tools/gdbinit?format=TEXT".format(revision)
             gdbinit_data = http_get(url)
+            if gdbinit_data is None:
+                raise gdb.error("Could not download V8 gdbinit for revision {:s}".format(revision))
             import base64
             gdbinit_data = base64.b64decode(gdbinit_data)
             open(gdbinit_filename, "wb").write(gdbinit_data)
             info("Download gdbinit from internet")
         else:
             info("Reuse gdbinit cached previously")
+        info("V8 gdbinit revision: {:s}; target compatibility is not verified".format(revision))
         return gdbinit_filename
 
     @staticmethod
-    @Cache.cache_this_session(cache_None=False)
+    @Cache.cache_this_session(per_inferior=True, until_new_objfile=True)
+    def get_cache():
+        return {"maps": {}, "instance_types": {}}
+
+    @staticmethod
+    def get_object_start(start):
+        if read_int32_from_memory(start) & 1:
+            return start
+        if read_int_from_memory(start + 8) == start:
+            area_start = read_int_from_memory(start + 0x20)
+            area_end = read_int_from_memory(start + 0x28)
+            if start < area_start < area_end <= start + 0x40000:
+                return area_start
+        if read_int32_from_memory(start + 12) == 0xbeadbeef:
+            area_start = read_int_from_memory(start + 0x58)
+            area_end = read_int_from_memory(start + 0x48)
+            if start < area_start < area_end <= start + 0x40000:
+                return area_start
+        return start + 0x10
+
+    @staticmethod
+    def capture_object(address, output_path):
+        stdout_oldfd = None
+        try:
+            stdout_oldfd = V8ListMapsCommand.redirect_stdout(output_path)
+            V8Command.print_object(address)
+        finally:
+            V8ListMapsCommand.revert_stdout(stdout_oldfd)
+        return open(output_path).read()
+
+    @staticmethod
+    def print_object(address):
+        gdb.execute("call (void) _v8_internal_Print_Object((void*)({:#x}))".format(address), to_string=True)
+        if V8Command.is_chromium():
+            gdb.execute("call (void) putchar(0x0a)", to_string=True)
+        gdb.execute("call (void) fflush(0)", to_string=True)
+        return
+
+    @staticmethod
+    @Cache.cache_this_session(cache_None=False, per_inferior=True, until_new_objfile=True)
     def is_chromium():
         if not is_alive():
             return None
@@ -165229,17 +165359,19 @@ class V8Command(GenericCommand):
     @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
     def do_invoke(self, args):
         if args.load_v8_gdbinit:
-            gdbinit_filename = self.get_gdbinit()
             try:
-                gdb.execute("source {:s}".format(gdbinit_filename))
+                self.load_gdbinit(args.revision)
                 info("Successfully loaded")
-            except gdb.error:
-                err("Failed to load")
+            except (gdb.error, OSError) as e:
+                err("Failed to load V8 gdbinit: {!s}".format(e))
             return
 
         if args.list_command:
-            gdb.execute("v8 -l", to_string=True)
-            gdbinit_filename = self.get_gdbinit()
+            try:
+                gdbinit_filename = self.load_gdbinit(args.revision)
+            except (gdb.error, OSError) as e:
+                err("Failed to load V8 gdbinit: {!s}".format(e))
+                return
             data = open(gdbinit_filename).read()
             for line in data.splitlines():
                 line = line.strip()
@@ -165253,20 +165385,11 @@ class V8Command(GenericCommand):
                     gdb.execute("help {:s}".format(comm))
             return
 
-        if args.address:
+        if args.address is not None:
             try:
-                # Since this command is used so often, it can be implemented without loading from internet.
-                cmd = "call (void) _v8_internal_Print_Object((void*)({:#x}))".format(args.address)
-                gdb.execute(cmd)
-                # When attached to chromium and run, the newline is not generated,
-                # so it is not displayed immediately due to buffering. As a workaround, run putchar('\n') and fflush(0).
-                if V8Command.is_chromium():
-                    cmd = "call (void) putchar(0x0a)"
-                    gdb.execute(cmd)
-                    cmd = "call (void) fflush(0)"
-                    gdb.execute(cmd)
-            except gdb.error:
-                pass
+                self.print_object(args.address)
+            except gdb.error as e:
+                err("V8 object print failed: {!s}".format(e))
         return
 
 
