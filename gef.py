@@ -195677,7 +195677,22 @@ class GefAvailableCommandListCommand(GenericCommand, BufferingOutput):
             "ModuleLoader.load_binwalk": "binwalk",
             "ModuleLoader.load_angr": "angr",
         }
+        conditions = {
+            "Decorator.only_if_gdb_running": (is_alive, True, "No debugging session active"),
+            "Decorator.only_if_gdb_target_local": (is_remote_debug, False, "Unsupported remote session"),
+            "Decorator.only_if_in_kernel": (is_in_kernel, True, "Run in kernel context"),
+            "Decorator.only_if_kvm_disabled": (is_kvm_enabled, False, "Disable KVM"),
+            "Decorator.only_if_smp_disabled": (is_smp_enabled, False, "Disable SMP"),
+        }
         for name, args in decorators:
+            if name in conditions:
+                checker, expected, reason = conditions[name]
+                try:
+                    if bool(checker()) != expected:
+                        return reason
+                except Exception:
+                    return "Could not evaluate {:s}".format(name)
+                continue
             if name == "Decorator.require_arch_set" and current_arch is None:
                 return "current_arch is None"
             if name == "Decorator.only_if_specific_arch" and not self.check_checkers(args, ARCH_CHECKERS):
@@ -195688,6 +195703,15 @@ class GefAvailableCommandListCommand(GenericCommand, BufferingOutput):
                 return "Unsupported gdb mode"
             if name == "Decorator.exclude_specific_gdb_mode" and self.check_checkers(args, GDB_MODE_CHECKERS):
                 return "Unsupported gdb mode"
+            if name == "Decorator.only_if_events_supported":
+                if not args or not hasattr(gdb.events, args[0]):
+                    return "Unsupported GDB event"
+                continue
+            if name.startswith(("Decorator.only_if_", "Decorator.require_", "Decorator.exclude_")):
+                if name not in ("Decorator.require_arch_set", "Decorator.only_if_specific_arch",
+                                "Decorator.exclude_specific_arch", "Decorator.only_if_specific_gdb_mode",
+                                "Decorator.exclude_specific_gdb_mode"):
+                    return "Not evaluated: {:s}".format(name)
             if name in packages:
                 import_name = "keystone" if packages[name] == "keystone-engine" else packages[name]
                 if not self.check_load_package(import_name):
@@ -195695,11 +195719,15 @@ class GefAvailableCommandListCommand(GenericCommand, BufferingOutput):
         return None
 
     def add_out(self, cmdline, avail, msg=""):
-        if self.args.only_available and not avail:
+        if self.args.only_available and avail is not True:
             return
-        if self.args.only_unavailable and avail:
+        if self.args.only_unavailable and avail is not False:
             return
-        if avail:
+        if avail is None:
+            self.out.append("{:<34s}: {:s} ({:s})".format(
+                cmdline, Color.colorify("Not evaluated", "bold yellow"), msg,
+            ))
+        elif avail:
             self.out.append("{:<34s}: {:s}".format(
                 cmdline, Color.colorify("Available", "bold green"),
             ))
@@ -195712,7 +195740,10 @@ class GefAvailableCommandListCommand(GenericCommand, BufferingOutput):
     def listup_avail_comms(self):
         for cmdline, instance in __gef_command_instances__.items():
             reason = self.get_unavailable_reason(self.get_decorators(instance.do_invoke))
-            self.add_out(cmdline, reason is None, reason or "")
+            available = reason is None
+            if reason and reason.startswith(("Not evaluated:", "Could not evaluate ")):
+                available = None
+            self.add_out(cmdline, available, reason or "")
         return
 
     @Decorator.parse_args
