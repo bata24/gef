@@ -38113,7 +38113,7 @@ class UnwindInfoCommand(GenericCommand):
         mapped_path = section.path.replace(" (deleted)", "")
         if mapped_path.startswith("target:"):
             mapped_path = mapped_path[len("target:"):]
-        candidates = [mapped_path]
+        candidates = []
 
         try:
             solib_path = gdb.solib_name(pc)
@@ -38131,10 +38131,14 @@ class UnwindInfoCommand(GenericCommand):
         main_path = Path.get_filepath()
         if main_path and os.path.basename(main_path) == mapped_name:
             candidates.append(main_path)
-        if not is_remote_debug() and mapped_path.startswith("/"):
+        remote = is_remote_debug()
+        if not remote and mapped_path.startswith("/"):
             proc_path = Path.append_proc_root(mapped_path)
             if proc_path:
                 candidates.append(proc_path)
+        candidates.append(mapped_path)
+        maps = [item for item in ProcessMap.get_process_maps() if item.path == section.path] or [section]
+        mapped_base = min(item.page_start - item.offset for item in maps)
 
         elf = None
         seen = set()
@@ -38143,14 +38147,23 @@ class UnwindInfoCommand(GenericCommand):
                 continue
             seen.add(filepath)
             candidate = Elf.get_elf(filepath)
-            if candidate and candidate.is_valid() and candidate.get_shdr(".eh_frame"):
-                elf = candidate
-                break
-
-        maps = [item for item in ProcessMap.get_process_maps() if item.path == section.path]
-        if not maps:
-            maps = [section]
-        mapped_base = min(item.page_start - item.offset for item in maps)
+            if not candidate or not candidate.is_valid() or not candidate.get_shdr(".eh_frame"):
+                continue
+            if remote:
+                loads = [phdr for phdr in candidate.phdrs if phdr.p_type == Elf.Phdr.PT_LOAD]
+                if not loads:
+                    continue
+                linked_base = min(phdr.p_vaddr - phdr.p_offset for phdr in loads)
+                note = candidate.get_shdr(".note.gnu.build-id")
+                check_section = note or candidate.get_shdr(".eh_frame")
+                try:
+                    actual = read_memory(mapped_base + check_section.sh_addr - linked_base, check_section.sh_size)
+                except gdb.error:
+                    continue
+                if actual != candidate.read_shdr(".note.gnu.build-id" if note else ".eh_frame"):
+                    continue
+            elf = candidate
+            break
 
         if elf is None:
             candidate = Elf.get_elf(mapped_base)
