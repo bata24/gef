@@ -1711,6 +1711,12 @@ class AddressUtil:
     def get_memory_alignment(in_bits=False):
         """Try to determine the size of a pointer on this system."""
         if is_x86_16():
+            if in_bits and is_qemu_system():
+                segments = QemuMonitor.get_x86_segments()
+                if segments.get("protected") or any(
+                        segment[1] > 0xffff0 or segment[2] & (1 << 22)
+                        for name, segment in segments.items() if name in ("CS", "SS", "DS", "ES", "FS", "GS")):
+                    return 32
             if current_arch.A20:
                 return 2 if not in_bits else 21
             else:
@@ -1789,20 +1795,17 @@ class AddressUtil:
         elif memalign_size == 2:
             return addr & 0xffff
         elif memalign_size == 2.5:
-            if current_arch.A20:
-                return addr & 0x1f_ffff
-            else:
-                return addr & 0x0f_ffff
+            return addr & AddressUtil.get_vmem_end_mask()
 
         raise EnvironmentError("GEF is running under an unsupported mode")
 
     @staticmethod
-    @Cache.cache_until_next
+    @Cache.cache_until_next(per_cpu=True, per_inferior=True)
     def get_vmem_end():
         return 1 << AddressUtil.get_memory_alignment(in_bits=True)
 
     @staticmethod
-    @Cache.cache_until_next
+    @Cache.cache_until_next(per_cpu=True, per_inferior=True)
     def get_vmem_end_mask():
         return AddressUtil.get_vmem_end() - 1
 
@@ -8957,14 +8960,31 @@ class X86_16(Architecture):
     A20 = True
 
     def real2phys(self, seg, reg):
+        segments = QemuMonitor.get_x86_segments() if is_qemu_system() else {}
         if isinstance(seg, str):
             segval = get_register(seg) & 0xffff
         else:
             segval = seg
+        protected = segments.get("protected", False)
+        segment = segments.get(seg.lstrip("$").upper()) if isinstance(seg, str) else None
         if isinstance(reg, str):
-            regval = get_register(reg) & 0xffff
+            if reg == "$sp" and segment and segment[2] & (1 << 22):
+                regval = get_register("$esp")
+            else:
+                regval = get_register(reg) & 0xffff
         else:
             regval = reg
+        if segment is not None:
+            mask = 0xffffffff if protected or self.A20 else 0xfffff
+            return (segment[1] + regval) & mask
+        if protected:
+            table = segments.get("LDT" if segval & 4 else "GDT")
+            offset = segval & ~7
+            if table is None or offset + 7 > table[1]:
+                raise gdb.error("Cannot resolve segment selector {:#x}".format(segval))
+            descriptor = u64(read_memory(table[0] + offset, 8))
+            base = ((descriptor >> 16) & 0xffffff) | ((descriptor >> 32) & 0xff000000)
+            return (base + regval) & 0xffffffff
         if self.A20:
             return ((segval << 4) + regval) & 0x1f_ffff
         else:
@@ -13081,6 +13101,30 @@ def is_double_link_list(addr, min_len=0):
 
 class QemuMonitor:
     """A collection of utility functions that are related to qemu-monitor."""
+
+    @staticmethod
+    @Cache.cache_until_next(per_cpu=True, per_inferior=True)
+    def get_x86_segments():
+        try:
+            res = gdb.execute("monitor info registers", to_string=True)
+        except gdb.error:
+            return {}
+        segments = {}
+        for name, selector, base, flags in re.findall(
+                r"^(CS|SS|DS|ES|FS|GS)\s*=\s*([0-9a-f]+)\s+([0-9a-f]+)\s+[0-9a-f]+\s+([0-9a-f]+)",
+                res, re.I | re.M):
+            segments[name.upper()] = (int(selector, 16), int(base, 16), int(flags, 16))
+        gdt = re.search(r"^GDT\s*=\s*([0-9a-f]+)\s+([0-9a-f]+)", res, re.I | re.M)
+        if gdt:
+            segments["GDT"] = (int(gdt.group(1), 16), int(gdt.group(2), 16))
+        ldt = re.search(r"^LDT\s*=\s*[0-9a-f]+\s+([0-9a-f]+)\s+([0-9a-f]+)", res, re.I | re.M)
+        if ldt:
+            segments["LDT"] = (int(ldt.group(1), 16), int(ldt.group(2), 16))
+        cr0 = re.search(r"\bCR0=([0-9a-f]+)", res, re.I)
+        flags = re.search(r"\bEFL=([0-9a-f]+)", res, re.I)
+        vm86 = flags is not None and int(flags.group(1), 16) & (1 << 17)
+        segments["protected"] = bool(cr0 and int(cr0.group(1), 16) & 1 and not vm86)
+        return segments
 
     @staticmethod
     @Cache.cache_this_session
@@ -31052,7 +31096,7 @@ class RegistersCommand(GenericCommand):
         for regname, (seg, reg) in current_arch.seg_extended_registers.items():
             segval = get_register(seg) & 0xffff
             regval = get_register(reg) & 0xffff
-            value = current_arch.real2phys(segval, regval)
+            value = current_arch.real2phys(seg, reg)
 
             # colorling
             color = self.get_regname_color(regname, value)
@@ -38642,15 +38686,9 @@ class ContextCommand(GenericCommand):
         if not Config.get("context.enable_auto_switch_for_i8086"):
             return
 
-        # check whether protected mode or not.
-        # even if `CR0.PE=1`, it will not switch until `ljmp`.
-        # so it is better to judge whether `$cs=0x8` or not.
-        # https://wiki.osdev.org/Protected_Mode
-        cs = get_register("$cs")
-        if cs is None or cs == 8:
-            set_arch("x86")
-        else:
-            set_arch("i8086")
+        cs = QemuMonitor.get_x86_segments().get("CS")
+        if cs:
+            set_arch("x86" if cs[2] & (1 << 22) else "i8086")
         return
 
     @Cache.cache_this_session
@@ -38873,9 +38911,7 @@ class ContextRegistersCommand(GenericCommand):
 
         if is_x86_16():
             for regname, (seg, reg) in current_arch.seg_extended_registers.items():
-                segval = get_register(seg) & 0xffff
-                regval = get_register(reg) & 0xffff
-                value = current_arch.real2phys(segval, regval)
+                value = current_arch.real2phys(seg, reg)
                 ContextRegistersCommand.old_registers[regname] = value
         return
 
