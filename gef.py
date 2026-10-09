@@ -22114,16 +22114,16 @@ class ScanSectionCommand(GenericCommand):
         if haystack == "any":
             haystack = None
         elif haystack in ["binary", "bin"]:
-            haystack = Path.get_filepath(append_proc_root_prefix=False)
-            if is_qemu_user() and haystack is None:
-                haystack = "[code]"
+            haystack = Path.get_binary_map_path()
+            if haystack is None:
+                return
 
         if needle == "any":
             needle = None
         elif needle in ["binary", "bin"]:
-            needle = Path.get_filepath(append_proc_root_prefix=False)
-            if is_qemu_user() and needle is None:
-                needle = "[code]"
+            needle = Path.get_binary_map_path()
+            if needle is None:
+                return
 
         self.scan(haystack, needle)
         return
