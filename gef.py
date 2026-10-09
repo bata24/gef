@@ -46617,14 +46617,19 @@ class DestructorDumpCommand(GenericCommand):
             next = ProcessMap.lookup_address(read_int_from_memory(current + ptrsize * 3))
             return func, obj, link_map, next
 
+        seen = set()
         while current:
+            if current in seen:
+                err("Loop detected at {:#x}".format(current))
+                break
+            seen.add(current)
             try:
                 func, obj, link_map, next = read_fns(current)
             except gdb.MemoryError:
                 err("Memory read error at {:#x}".format(current))
                 break
 
-            decoded_fn = current_arch.decode_cookie(func.value, cookie)
+            decoded_fn = func.value if cookie is None else current_arch.decode_cookie(func.value, cookie)
             decoded_fn = ProcessMap.lookup_address(decoded_fn)
             sym = Symbol.get_symbol_string(decoded_fn.value)
 
@@ -46634,7 +46639,7 @@ class DestructorDumpCommand(GenericCommand):
                 valid_msg = Color.colorify("invalid", "bold red")
 
             gef_print("    -> func:     {:s}: {!s} (={!s}{:s}) [{:s}]".format(
-                self.C(current), func, decoded_fn, sym, valid_msg,
+                self.C(current), func, decoded_fn, sym, "not decoded" if cookie is None else valid_msg,
             ))
             gef_print("       obj:      {:s}: {!s}".format(
                 self.C(current + ptrsize * 1), obj,
@@ -46666,16 +46671,6 @@ class DestructorDumpCommand(GenericCommand):
 
         ptrsize = current_arch.ptrsize
 
-        try:
-            next = ProcessMap.lookup_address(read_int_from_memory(current))
-            idx = ProcessMap.lookup_address(read_int_from_memory(current + ptrsize))
-        except gdb.MemoryError:
-            err("Memory read error at {:#x}".format(current))
-            return
-        current += ptrsize * 2
-        gef_print("    -> next:     {:s}: {!s}".format(self.C(head.value + ptrsize * 0), next))
-        gef_print("       idx:      {:s}: {!s}".format(self.C(head.value + ptrsize * 1), idx))
-
         def read_fns(addr):
             flavor = ProcessMap.lookup_address(read_int_from_memory(addr))
             fn = ProcessMap.lookup_address(read_int_from_memory(addr + ptrsize * 1))
@@ -46685,30 +46680,51 @@ class DestructorDumpCommand(GenericCommand):
 
         fns_size = ptrsize * 4 # flavor, fn, arg, dso_handle
 
-        for i in range(idx.value, -1, -1):
-            addr = AddressUtil.normalize_address(current + fns_size * i)
-            try:
-                flavor, fn, arg, dso_handle = read_fns(addr)
-            except gdb.MemoryError:
-                err("Memory read error at {:#x}".format(addr))
+        seen = set()
+        while current:
+            if current in seen:
+                err("Loop detected at {:#x}".format(current))
                 break
-            if fn.value == 0:
-                continue
-            decoded_fn = current_arch.decode_cookie(fn.value, cookie)
-            decoded_fn = ProcessMap.lookup_address(decoded_fn)
-            sym = Symbol.get_symbol_string(decoded_fn.value)
+            seen.add(current)
+            try:
+                next = ProcessMap.lookup_address(read_int_from_memory(current))
+                idx = ProcessMap.lookup_address(read_int_from_memory(current + ptrsize))
+            except gdb.MemoryError:
+                err("Memory read error at {:#x}".format(current))
+                break
+            gef_print("    -> next:     {:s}: {!s}".format(self.C(current), next))
+            gef_print("       idx:      {:s}: {!s}".format(self.C(current + ptrsize), idx))
+            if idx.value > 32:
+                err("Invalid exit function count: {:d}".format(idx.value))
+                break
 
-            if is_valid_addr(decoded_fn.value):
-                valid_msg = Color.colorify("valid", "bold green")
-            else:
-                valid_msg = Color.colorify("invalid", "bold red")
+            for i in range(idx.value - 1, -1, -1):
+                addr = AddressUtil.normalize_address(current + ptrsize * 2 + fns_size * i)
+                try:
+                    flavor, fn, arg, dso_handle = read_fns(addr)
+                except gdb.MemoryError:
+                    err("Memory read error at {:#x}".format(addr))
+                    break
+                if fn.value == 0:
+                    continue
+                decoded_fn = fn.value if cookie is None else current_arch.decode_cookie(fn.value, cookie)
+                decoded_fn = ProcessMap.lookup_address(decoded_fn)
+                sym = Symbol.get_symbol_string(decoded_fn.value)
 
-            fns = "       fns[{:#x}]: {:s}:".format(i, self.C(addr))
-            width = len(fns) - 9
-            gef_print("{} flavor:     {!s}".format(fns, flavor))
-            gef_print("{} func:       {!s} (={!s}{:s}) [{:s}]".format(" " * width, fn, decoded_fn, sym, valid_msg))
-            gef_print("{} arg:        {!s}".format(" " * width, arg))
-            gef_print("{} dso_handle: {!s}".format(" " * width, dso_handle))
+                if cookie is None:
+                    valid_msg = "not decoded"
+                elif is_valid_addr(decoded_fn.value):
+                    valid_msg = Color.colorify("valid", "bold green")
+                else:
+                    valid_msg = Color.colorify("invalid", "bold red")
+
+                fns = "       fns[{:#x}]: {:s}:".format(i, self.C(addr))
+                width = len(fns) - 9
+                gef_print("{} flavor:     {!s}".format(fns, flavor))
+                gef_print("{} func:       {!s} (={!s}{:s}) [{:s}]".format(" " * width, fn, decoded_fn, sym, valid_msg))
+                gef_print("{} arg:        {!s}".format(" " * width, arg))
+                gef_print("{} dso_handle: {!s}".format(" " * width, dso_handle))
+            current = next.value
         return
 
     def yield_link_map(self, codebase):
@@ -46716,7 +46732,12 @@ class DestructorDumpCommand(GenericCommand):
         if link_map is None:
             return
         current = link_map.value
+        seen = set()
         while current:
+            if current in seen:
+                err("Loop detected at {:#x}".format(current))
+                break
+            seen.add(current)
             dic = {}
             dic["load_address"] = read_int_from_memory(current)
             name_ptr = read_int_from_memory(current + current_arch.ptrsize * 1)
@@ -46735,8 +46756,6 @@ class DestructorDumpCommand(GenericCommand):
         if not codebase:
             return None
 
-        DT_TABLE = DynamicCommand.get_DT_TABLE()
-
         if self.elf.has_dynamic():
             # Parse all loaded libraries.
             for link_map in self.yield_link_map(codebase):
@@ -46747,17 +46766,13 @@ class DestructorDumpCommand(GenericCommand):
 
                 # search for .fini
                 fini = None
-                current = dynamic.value
-                while True:
-                    tag = read_int_from_memory(current)
+                for entry in DynamicCommand.iter_dynamic(dynamic):
+                    tag, val = entry[1:]
                     if tag == 13: # DT_FINI
-                        fini = read_int_from_memory(current + current_arch.ptrsize)
+                        fini = val
                         if fini < link_map.load_address:
                             fini += link_map.load_address
                         break
-                    if tag not in DT_TABLE:
-                        break
-                    current += current_arch.ptrsize * 2
 
                 if fini is None:
                     continue
@@ -46788,8 +46803,6 @@ class DestructorDumpCommand(GenericCommand):
         if not codebase:
             return None
 
-        DT_TABLE = DynamicCommand.get_DT_TABLE()
-
         if self.elf.has_dynamic():
             # Parse all loaded libraries.
             for link_map in self.yield_link_map(codebase):
@@ -46801,20 +46814,16 @@ class DestructorDumpCommand(GenericCommand):
                 # search for .fini_array, fini_array_sz
                 fini_array = None
                 fini_array_sz = None
-                current = dynamic.value
-                while True:
-                    tag = read_int_from_memory(current)
+                for entry in DynamicCommand.iter_dynamic(dynamic):
+                    tag, val = entry[1:]
                     if tag == 26: # DT_FINI_ARRAY
-                        fini_array = read_int_from_memory(current + current_arch.ptrsize)
+                        fini_array = val
                         if fini_array < link_map.load_address:
                             fini_array += link_map.load_address
                     if tag == 28: # DT_FINI_ARRAY_SZ
-                        fini_array_sz = read_int_from_memory(current + current_arch.ptrsize)
+                        fini_array_sz = val
                     if fini_array is not None and fini_array_sz is not None:
                         break
-                    if tag not in DT_TABLE:
-                        break
-                    current += current_arch.ptrsize * 2
 
                 if fini_array is None or fini_array_sz is None:
                     continue
