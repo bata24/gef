@@ -60851,6 +60851,7 @@ class HeapBaseCommand(GenericCommand):
         if args.reset:
             if hasattr(HeapBaseCommand, "heap_base_user_specific"):
                 delattr(HeapBaseCommand, "heap_base_user_specific")
+            Cache.reset_gef_caches(all=True)
 
         # auto estimation
         heap_base = HeapBaseCommand.heap_base()
