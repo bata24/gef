@@ -8150,6 +8150,7 @@ read-system-register-for-qemu-arm TTBR0
 
 ```text
 Attempting to read a non-existing register raises an undefined exception.
+Context-dependent EL0 timer aliases CNTHPS_*, CNTHV_* and CNTHVS_* are not accepted.
 ```
 
 ## `switch-el`

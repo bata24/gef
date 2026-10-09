@@ -24359,6 +24359,7 @@ class ReadSystemRegisterForQemuArmCommand(GenericCommand):
 
     _note_ = [
         "Attempting to read a non-existing register raises an undefined exception.",
+        "Context-dependent EL0 timer aliases CNTHPS_*, CNTHV_* and CNTHVS_* are not accepted.",
     ]
     _note_ = "\n".join(_note_)
 
@@ -24718,18 +24719,11 @@ class ReadSystemRegisterForQemuArmCommand(GenericCommand):
         # Generic timer registers.
         ("p15", "c14", 0, "c0", 0): ("CNTFRQ", "Counter-timer Frequency register"),
         ("p15", "c14", 0, "c1", 0): ("CNTKCTL", "Counter-timer Kernel Control register"),
-        ("p15", "c14", 0, "c2", 0): ("CNTP_TVAL", "Counter-timer Physical Timer TimerValue register",
-                                     "CNTHP_TVAL", "Counter-timer Hyp Physical Timer TimerValue register",
-                                     "CNTHPS_TVAL", "Counter-timer Secure Physical Timer TimerValue Register (EL2)"),
-        ("p15", "c14", 0, "c2", 1): ("CNTP_CTL", "Counter-timer Physical Timer Control register",
-                                     "CNTHP_CTL", "Counter-timer Hyp Physical Timer Control register",
-                                     "CNTHPS_CTL", "Counter-timer Secure Physical Timer Control Register (EL2)"),
-        ("p15", "c14", 0, "c3", 0): ("CNTV_TVAL", "Counter-timer Virtual Timer TimerValue register",
-                                     "CNTHV_TVAL", "Counter-timer Virtual Timer TimerValue register (EL2)",
-                                     "CNTHVS_TVAL", "Counter-timer Secure Virtual Timer TimerValue Register (EL2)"),
-        ("p15", "c14", 0, "c3", 1): ("CNTV_CTL", "Counter-timer Virtual Timer Control register",
-                                     "CNTHV_CTL", "Counter-timer Virtual Timer Control register (EL2)",
-                                     "CNTHVS_CTL", "Counter-timer Secure Virtual Timer Control Register (EL2)"),
+        # EL0 aliases require an AArch64 VHE host; their encoding reads CNTP/CNTV in other contexts.
+        ("p15", "c14", 0, "c2", 0): ("CNTP_TVAL", "Counter-timer Physical Timer TimerValue register"),
+        ("p15", "c14", 0, "c2", 1): ("CNTP_CTL", "Counter-timer Physical Timer Control register"),
+        ("p15", "c14", 0, "c3", 0): ("CNTV_TVAL", "Counter-timer Virtual Timer TimerValue register"),
+        ("p15", "c14", 0, "c3", 1): ("CNTV_CTL", "Counter-timer Virtual Timer Control register"),
         ("p15", "c14", 4, "c1", 0): ("CNTHCTL", "Counter-timer Hyp Control register"),
         ("p15", "c14", 4, "c2", 0): ("CNTHP_TVAL", "Counter-timer Hyp Physical Timer TimerValue register"),
         ("p15", "c14", 4, "c2", 1): ("CNTHP_CTL", "Counter-timer Hyp Physical Timer Control register"),
