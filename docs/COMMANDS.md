@@ -7327,7 +7327,9 @@ Simplified jemalloc (v3.x/v4.x) structure:
 * v5.x: if symbols are not available, GEF scans the writable memory for je_arenas.
 * v3.x/v4.x: GEF finds the chunks by scanning memory and reads their arena,
   so je_arenas is not needed.
-* v3.x/v4.x: the page size of jemalloc (--with-lg-page) is assumed to be 4KB.
+* The page size of jemalloc (--with-lg-page) may differ from that of the system.
+  v3.x/v4.x: GEF uses chunk_npages if debug symbols are available,
+  else derives it from the runs in the chunk page map.
   v5.x: GEF derives it from the slabs (ARM64 uses 64KB by default since v5.3.1).
 * Large allocations: v3.x/v4.x read the chunk page map; v5.x reads the rtree.
   v4.x displays the run range: cache-oblivious allocation addresses are randomized within its first page.

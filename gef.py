@@ -167535,10 +167535,27 @@ class JemallocBase:
             return int(value)
         return None
 
-    @staticmethod
-    def read_free_regions(bitmap_addr, nregs):
-        bitmap = read_memory(bitmap_addr, ((nregs + 63) // 64) * 8)
-        return {i for i in range(nregs) if (bitmap[i >> 3] >> (i & 7)) & 1}
+    def free_regions(self, bitmap, nregs):
+        # bitmap_t is unsigned long, so the bits are numbered within each word of the target endianness.
+        bits = self.ptrsize * 8
+        words = slice_unpack(bitmap[:(nregs + bits - 1) // bits * self.ptrsize], self.ptrsize)
+        return {i for i in range(min(nregs, len(words) * bits)) if (words[i // bits] >> (i % bits)) & 1}
+
+    def read_free_regions(self, bitmap_addr, nregs):
+        return self.free_regions(read_memory(bitmap_addr, ((nregs + 63) // 64) * 8), nregs)
+
+    def bitmap_groups(self, nbits, tree=True):
+        """Return the number of bitmap_t in a bitmap of nbits.
+        The tree bitmap has the groups of each level up to the level of one group."""
+        group_bits = self.ptrsize * 8
+        groups = (nbits + group_bits - 1) // group_bits
+        if not tree:
+            return groups
+        ngroups = 1
+        while groups > 1:
+            ngroups += groups
+            groups = (groups + group_bits - 1) // group_bits
+        return ngroups
 
     def read_writable_maps(self):
         if self.writable_maps is not None:
@@ -167589,12 +167606,24 @@ class JemallocBase:
             bin_info.append((read_int_from_memory(base + offsets[0]),) + tuple(read_int32_from_memory(base + x) for x in offsets[1:]))
         return bin_info
 
+    @staticmethod
+    def page_candidates():
+        # LG_PAGE of the build (--with-lg-page) is not smaller than the page size of the system
+        return [1 << x for x in range(max(get_pagesize(), 0x1000).bit_length() - 1, 17)]
+
+    def set_page(self, page):
+        # v3/v4 only: the chunk and the small size classes depend on the page size
+        self.page = page
+        self.chunk_npages = self.chunksize // page
+        self.set_size_classes(self.SMALL_LIMIT // 0x1000 * page)
+        return
+
     def calc_map_bias(self, map_offset, map_elem_size):
         # The chunk header holds the page map of the pages except itself (see arena_boot()).
         map_bias = 0
         for _ in range(3):
             header_size = map_offset + map_elem_size * (self.chunk_npages - map_bias)
-            map_bias = (header_size + 0xfff) >> 12
+            map_bias = (header_size + self.page - 1) // self.page
         return map_bias
 
     def size_from_szind(self, szind):
@@ -167605,13 +167634,13 @@ class JemallocBase:
         if szind < self.nbins:
             return self.small_sizes[szind]
         if self.version[0] == 3:
-            return (szind - self.nbins + 1) * 0x1000
+            return (szind - self.nbins + 1) * self.page
         group, delta = divmod(szind - self.nbins, 4)
         return (self.small_sizes[-1] // 7 * 8 << group) * (4 + delta) // 4
 
     def large_record(self, header, addr, size, run_size=None):
         if self.version[0] == 3:
-            szind = self.nbins + size // 0x1000 - 1
+            szind = self.nbins + size // self.page - 1
         else:
             base = 1 << (size.bit_length() - 1)
             limit = self.small_sizes[-1] // 7 * 8
@@ -167652,27 +167681,29 @@ class JemallocBase:
         tcaches = []
         orig_thread = gdb.selected_thread()
         orig_frame = gdb.selected_frame()
-        for thread in gdb.selected_inferior().threads():
-            thread.switch()
-            tls = current_arch.get_tls()
-            if not tls:
-                continue
-            # tsd (v4~) or tcache_tls (v3) is placed in the static TLS,
-            # which is below the thread pointer on x86 and above it on ARM.
-            section = ProcessMap.process_lookup_address(tls - 1 if is_x86() else tls)
-            if section is None:
-                continue
-            if is_x86():
-                start, end = max(section.page_start, tls - 0x10000), tls
-            else:
-                start, end = tls, min(section.page_end, tls + 0x10000)
-            found = self.find_tcache(start, read_memory(start, end - start), arenas)
-            if found is not None:
-                bins, arena_index = found
-                cache_bins = self.read_cache_bins(bins)
-                tcaches.append((thread.num, arena_index, bins, cache_bins))
-        orig_thread.switch()
-        orig_frame.select()
+        try:
+            for thread in gdb.selected_inferior().threads():
+                thread.switch()
+                tls = current_arch.get_tls()
+                if not tls:
+                    continue
+                # tsd (v4~) or tcache_tls (v3) is placed in the static TLS,
+                # which is below the thread pointer on x86 and above it on ARM.
+                section = ProcessMap.process_lookup_address(tls - 1 if is_x86() else tls)
+                if section is None:
+                    continue
+                if is_x86():
+                    start, end = max(section.page_start, tls - 0x10000), tls
+                else:
+                    start, end = tls, min(section.page_end, tls + 0x10000)
+                found = self.find_tcache(start, read_memory(start, end - start), arenas)
+                if found is not None:
+                    bins, arena_index = found
+                    cache_bins = self.read_cache_bins(bins)
+                    tcaches.append((thread.num, arena_index, bins, cache_bins))
+        finally:
+            orig_thread.switch()
+            orig_frame.select()
         return tcaches
 
     def is_tbins(self, tbins):
@@ -167741,9 +167772,10 @@ class JemallocBase:
 class JemallocV3(JemallocBase):
     """jemalloc v3.x heap parser: chunk (4MB) -> page map -> run (header + bitmap + regions)."""
 
-    SMALL_LIMIT = 0x1000 # small size classes are smaller than a page (LG_PAGE=12)
+    SMALL_LIMIT = 0x1000 # small size classes are smaller than a page; updated after the page size is known
     SLAB_NAME = "run"
     NFREE_NAME = "run.nfree"
+    RUN_MAXREGS = 0x800 # 1 << LG_RUN_MAXREGS
 
     # sizeof(pthread_mutex_t), which is offsetof(arena_bin_t, runcur)
     MUTEX_SIZE = {"x86_64": 0x28, "x86_32": 0x18, "ARM64": 0x30, "ARM32": 0x18}
@@ -167755,8 +167787,6 @@ class JemallocV3(JemallocBase):
         self.tcache_arena_offset = ptr * 2 + 8
         self.tbins_offset = align(ptr * 3 + 0x10, self.u64_align)
         self.chunksize = self.symbol_value("chunksize") or 0x400000
-        self.chunk_npages = self.symbol_value("chunk_npages") or self.chunksize >> 12
-        self.nclasses = self.nbins + self.chunk_npages - 1
         # arena_chunk_t: arena, dirty link, [dirtied (~v3.1)], ndirty, [nruns_avail, nruns_adjac (v3.2~)], map[]
         self.map_offset = GefUtil.offsetof("struct arena_chunk_s", "map") or ptr * (5 if self.version < (3, 2) else 6)
         self.runcur_offset = GefUtil.offsetof("struct arena_bin_s", "runcur") or self.MUTEX_SIZE[self.arch]
@@ -167764,10 +167794,15 @@ class JemallocV3(JemallocBase):
         # arena_chunk_map_t is {rb/ql link, [prof_ctx if --enable-prof], bits}.
         elem_size = GefUtil.sizeof("struct arena_chunk_map_s")
         map_bias = self.symbol_value("map_bias")
-        if elem_size and map_bias:
+        npages = self.symbol_value("chunk_npages")
+        if elem_size and map_bias and npages:
+            self.set_page(self.chunksize // npages)
             self.map_layout = (elem_size, elem_size - ptr, map_bias)
         else:
             self.map_layout = self.guess_map_layout()
+        self.nclasses = self.nbins + self.chunk_npages - 1
+        if self.page != 0x1000:
+            self.messages.append("page size: {:#x}".format(self.page))
 
         # (reg_interval, nregs, bitmap_offset, reg0_offset) per bin, or computed from the run size if unknown
         self.bin_info = self.read_bin_info(("nregs", "bitmap_offset", "reg0_offset"))
@@ -167780,35 +167815,33 @@ class JemallocV3(JemallocBase):
         The run starts with arena_run_t and the bitmap, and the regions are placed at the end of the run."""
         reg_size = self.small_sizes[binind]
         bitmap_offset = self.ptrsize + 8 # sizeof(arena_run_t): bin, nextind, nfree
-        group_bits = self.ptrsize * 8
-        nregs = (run_size - bitmap_offset) // reg_size
+        nregs = min((run_size - bitmap_offset) // reg_size, self.RUN_MAXREGS)
         while nregs > 0:
-            # the bitmap has the groups of each level up to the level of one group
-            ngroups, groups = 1, (nregs + group_bits - 1) // group_bits
-            while groups > 1:
-                ngroups += groups
-                groups = (groups + group_bits - 1) // group_bits
-            if bitmap_offset + ngroups * self.ptrsize <= run_size - nregs * reg_size:
+            if bitmap_offset + self.bitmap_groups(nregs) * self.ptrsize <= run_size - nregs * reg_size:
                 break
             nregs -= 1
         return reg_size, nregs, bitmap_offset, run_size - nregs * reg_size
 
     def guess_map_layout(self):
-        # Try the layouts without and with --enable-prof and keep the one whose runs point to their arena.
-        best, best_count = None, -1
-        for elem_size in (self.ptrsize * 3, self.ptrsize * 4):
-            layout = (elem_size, elem_size - self.ptrsize, self.calc_map_bias(self.map_offset, elem_size))
-            count = 0
-            for chunk, arena, _ in self.scan_chunks(self.chunksize):
-                for pageind, binind, _ in self.run_starts(chunk, layout):
-                    if binind is None:
-                        continue
-                    bin_addr = read_int_from_memory(chunk + (pageind << 12), safe=True)
-                    count += 1 if bin_addr and 0 < bin_addr - arena < 0x4000 else -1
-                break
-            if count > best_count:
-                best, best_count = layout, count
-        return best
+        # Try the page sizes and the layouts without and with --enable-prof,
+        # and keep the one whose runs point to their arena.
+        best, best_count = None, None
+        for page in self.page_candidates():
+            self.set_page(page)
+            for elem_size in (self.ptrsize * 3, self.ptrsize * 4):
+                layout = (elem_size, elem_size - self.ptrsize, self.calc_map_bias(self.map_offset, elem_size))
+                count = 0
+                for chunk, arena, _ in self.scan_chunks(self.chunksize):
+                    for pageind, binind, _ in self.run_starts(chunk, layout):
+                        if binind is None:
+                            continue
+                        bin_addr = read_int_from_memory(chunk + pageind * page, safe=True)
+                        count += 1 if bin_addr and 0 < bin_addr - arena < 0x4000 else -1
+                    break
+                if best_count is None or count > best_count:
+                    best, best_count = (page, layout), count
+        self.set_page(best[0])
+        return best[1]
 
     def run_starts(self, chunk, layout):
         elem_size, bits_offset, map_bias = layout
@@ -167817,18 +167850,19 @@ class JemallocV3(JemallocBase):
         except gdb.MemoryError:
             return
         mapbits = slice_unpack(data, self.ptrsize)[bits_offset // self.ptrsize::elem_size // self.ptrsize]
+        shift = self.page.bit_length() - 1 # LG_PAGE
         for k, bits in enumerate(mapbits):
-            if bits & 0x3 == 0x3 and bits >> 12:
-                yield k + map_bias, None, bits >> 12
+            if bits & 0x3 == 0x3 and bits >> shift:
+                yield k + map_bias, None, bits >> shift
                 continue
             # small run: allocated, not large, run page offset (bits >> LG_PAGE) is 0 at the head
-            if bits & 0x3 != 0x1 or bits >> 12 != 0:
+            if bits & 0x3 != 0x1 or bits >> shift != 0:
                 continue
             binind = (bits >> 4) & 0xff
             if binind >= self.nbins:
                 continue
             npages = 1
-            while k + npages < len(mapbits) and mapbits[k + npages] & 0x3 == 0x1 and mapbits[k + npages] >> 12 == npages:
+            while k + npages < len(mapbits) and mapbits[k + npages] & 0x3 == 0x1 and mapbits[k + npages] >> shift == npages:
                 npages += 1
             yield k + map_bias, binind, npages
 
@@ -167837,15 +167871,15 @@ class JemallocV3(JemallocBase):
         for chunk, arena, index in self.scan_chunks(self.chunksize):
             self.arenas[index] = arena
             for pageind, binind, npages in self.run_starts(chunk, self.map_layout):
-                run = chunk + (pageind << 12)
+                run = chunk + pageind * self.page
                 if binind is None:
                     if pageind + npages <= self.chunk_npages:
-                        self.large[index].append(self.large_record(run, run, npages << 12))
+                        self.large[index].append(self.large_record(run, run, npages * self.page))
                     continue
                 if self.bin_info:
                     reg_size, nregs, bitmap_offset, reg0 = self.bin_info[binind]
                 else:
-                    reg_size, nregs, bitmap_offset, reg0 = self.run_info(binind, npages << 12)
+                    reg_size, nregs, bitmap_offset, reg0 = self.run_info(binind, npages * self.page)
                 bin_addr = read_int_from_memory(run) # arena_run_t.bin
                 runcur = read_int_from_memory(bin_addr + self.runcur_offset, safe=True)
                 bins[index][binind].append({
@@ -167888,7 +167922,7 @@ class JemallocV3(JemallocBase):
 class JemallocV4(JemallocBase):
     """jemalloc v4.x heap parser: chunk (2MB) -> page map -> run header in map_misc -> run pages."""
 
-    SMALL_LIMIT = 0x4000 # small size classes are smaller than 4 pages (LG_PAGE=12)
+    SMALL_LIMIT = 0x4000 # small size classes are smaller than 4 pages; updated after the page size is known
     SLAB_NAME = "run"
     NFREE_NAME = "run.nfree"
 
@@ -167930,58 +167964,104 @@ class JemallocV4(JemallocBase):
         }
         table = dict(zip(("bins", "bin", "runcur"), self.table_entry(self.ARENA_TABLE[self.arch])))
         table.update(zip(("misc", "run", "mapbits", "tsd_arena"), self.table_entry(self.CHUNK_TABLE[ptr])))
+        # the table holds sizeof(arena_chunk_map_misc_t) for 4KB pages
+        self.misc_4k = None if self.off["misc"] is not None else table["misc"]
         for key, value in table.items():
             if self.off[key] is None:
                 self.off[key] = value
         self.chunksize = self.symbol_value("chunksize") or 0x200000
-        self.chunk_npages = self.symbol_value("chunk_npages") or self.chunksize >> 12
-
-        # the page map is map_bits[] and map_misc[]
-        map_bias = self.symbol_value("map_bias") or self.calc_map_bias(self.off["mapbits"], ptr + self.off["misc"])
-        self.off["map_bias"] = map_bias
-        self.off["map_misc_offset"] = self.symbol_value("map_misc_offset") or self.off["mapbits"] + ptr * (self.chunk_npages - map_bias)
+        npages = self.symbol_value("chunk_npages")
+        if npages:
+            self.set_page(self.chunksize // npages)
+        else:
+            self.guess_page()
+        if self.page != 0x1000:
+            self.messages.append("page size: {:#x}".format(self.page))
 
         # (reg_interval, nregs, reg0_offset) per bin.
         # The default build has no redzone, and the run size is the smallest multiple of the page and reg_size.
         self.bin_info = self.read_bin_info(("nregs", "reg0_offset"))
         if self.bin_info is None:
-            self.bin_info = [(x, 0x1000 // math.gcd(0x1000, x), 0) for x in self.small_sizes]
+            self.bin_info = [(x, self.page // math.gcd(self.page, x), 0) for x in self.small_sizes]
 
         self.bins = self.collect_runs()
         self.messages.append("found {:d} arena(s) by scanning chunks".format(len(self.arenas)))
         return None
 
-    def collect_runs(self):
+    def set_page(self, page):
+        super().set_page(page)
+        ptr = self.ptrsize
+        if self.misc_4k is not None:
+            # arena_run_t in arena_chunk_map_misc_t has the bitmap of RUN_MAXREGS (page / 8) bits
+            self.off["misc"] = self.misc_4k + (self.run_bitmap_groups(page) - self.run_bitmap_groups(0x1000)) * ptr
+        # the page map is map_bits[] and map_misc[]
+        map_bias = self.symbol_value("map_bias") or self.calc_map_bias(self.off["mapbits"], ptr + self.off["misc"])
+        self.off["map_bias"] = map_bias
+        map_misc_offset = self.symbol_value("map_misc_offset")
+        self.off["map_misc_offset"] = map_misc_offset or self.off["mapbits"] + ptr * (self.chunk_npages - map_bias)
+        return
+
+    def run_bitmap_groups(self, page):
+        # BITMAP_GROUPS_MAX; v4.1~ use the tree only if a linear search needs more than 8 groups
+        nbits = page // 8
+        return self.bitmap_groups(nbits, tree=self.version < (4, 1) or nbits > self.ptrsize * 8 * 8)
+
+    def guess_page(self):
+        # Try the page sizes and keep the one whose run headers in map_misc[] have the bin index of the page map.
+        best, best_count = None, None
+        for page in self.page_candidates():
+            self.set_page(page)
+            count = 0
+            for chunk, _, _ in self.scan_chunks(self.chunksize):
+                for pageind, binind, _ in self.run_starts(chunk):
+                    if binind is not None:
+                        count += 1 if read_int32_from_memory(self.run_header(chunk, pageind), safe=True) == binind else -1
+                break
+            if best_count is None or count > best_count:
+                best, best_count = page, count
+        self.set_page(best)
+        return
+
+    def run_starts(self, chunk):
         map_bias = self.off["map_bias"]
+        try:
+            data = read_memory(chunk + self.off["mapbits"], (self.chunk_npages - map_bias) * self.ptrsize)
+        except gdb.MemoryError:
+            return
+        mapbits = slice_unpack(data, self.ptrsize)
+        for k, bits in enumerate(mapbits):
+            if bits & 0x3 == 0x3 and bits >> 13:
+                # v4 encodes page counts above bit 13
+                yield k + map_bias, None, bits >> 13
+                continue
+            # small run: allocated, not large, run page offset (bits >> 13) is 0 at the head
+            if bits & 0x3 != 0x1 or bits >> 13 != 0:
+                continue
+            binind = (bits >> 5) & 0xff
+            if binind < self.nbins:
+                yield k + map_bias, binind, None
+
+    def run_header(self, chunk, pageind):
+        # arena_run_t is embedded in arena_chunk_map_misc_t, and the regions are in the run pages.
+        return chunk + self.off["map_misc_offset"] + (pageind - self.off["map_bias"]) * self.off["misc"] + self.off["run"]
+
+    def collect_runs(self):
         large_pad = self.symbol_value("large_pad")
         if large_pad is None:
             cache_oblivious = self.symbol_value("config_cache_oblivious")
-            large_pad = 0 if cache_oblivious == 0 else 0x1000
+            large_pad = 0 if cache_oblivious == 0 else self.page
         bins = collections.defaultdict(lambda: collections.defaultdict(list))
         for chunk, arena, index in self.scan_chunks(self.chunksize):
             self.arenas[index] = arena
-            try:
-                mapbits = slice_unpack(read_memory(chunk + self.off["mapbits"], (self.chunk_npages - map_bias) * self.ptrsize), self.ptrsize)
-            except gdb.MemoryError:
-                continue
-            for k, bits in enumerate(mapbits):
-                if bits & 0x3 == 0x3 and bits >> 13:
-                    # v4 encodes page counts above bit 13 and pads cache-oblivious runs by one page.
-                    run_size = (bits >> 13) << 12
-                    addr = chunk + ((k + map_bias) << 12)
-                    if run_size > large_pad and k + map_bias + (run_size >> 12) <= self.chunk_npages:
+            for pageind, binind, npages in self.run_starts(chunk):
+                addr = chunk + pageind * self.page
+                if binind is None:
+                    # cache-oblivious runs are padded by one page
+                    run_size = npages * self.page
+                    if run_size > large_pad and pageind + npages <= self.chunk_npages:
                         self.large[index].append(self.large_record(addr, addr, run_size - large_pad, run_size))
                     continue
-                # small run: allocated, not large, run page offset (bits >> 13) is 0 at the head
-                if bits & 0x3 != 0x1 or bits >> 13 != 0:
-                    continue
-                binind = (bits >> 5) & 0xff
-                if binind >= self.nbins:
-                    continue
-                pageind = k + map_bias
-                # arena_run_t is embedded in arena_chunk_map_misc_t, and the regions are in the run pages.
-                misc = chunk + self.off["map_misc_offset"] + (pageind - map_bias) * self.off["misc"]
-                run = misc + self.off["run"]
+                run = self.run_header(chunk, pageind)
                 reg_size, nregs, reg0 = self.bin_info[binind]
                 bin_addr = arena + self.off["bins"] + self.off["bin"] * binind
                 runcur = read_int_from_memory(bin_addr + self.off["runcur"], safe=True)
@@ -167989,7 +168069,7 @@ class JemallocV4(JemallocBase):
                     "kind": "runcur" if runcur == run else "run",
                     "header": run,
                     "bin": bin_addr,
-                    "addr": chunk + (pageind << 12) + reg0,
+                    "addr": addr + reg0,
                     "size": nregs * reg_size,
                     "reg_size": reg_size,
                     "nregs": nregs,
@@ -168327,8 +168407,8 @@ class JemallocV5(JemallocBase):
                 nregs = size // self.small_sizes[szind]
                 if nregs > self.page // 8 or addr not in pages:
                     continue
-                bitmap = int.from_bytes(data[pos + self.slab_bitmap:pos + self.slab_bitmap + (nregs + 7) // 8], "little")
-                if bin(bitmap & ((1 << nregs) - 1)).count("1") != (ebits >> self.nfree_shift) & self.nfree_mask:
+                free = self.free_regions(data[pos + self.slab_bitmap:pos + self.slab_bitmap + (nregs + 63) // 64 * 8], nregs)
+                if len(free) != (ebits >> self.nfree_shift) & self.nfree_mask:
                     continue
                 slabs[(ebits & 0xfff, szind)].append(start + pos)
         return slabs
@@ -168720,7 +168800,9 @@ class JemallocHeapDumpCommand(GenericCommand, BufferingOutput):
         "* v5.x: if symbols are not available, GEF scans the writable memory for je_arenas.",
         "* v3.x/v4.x: GEF finds the chunks by scanning memory and reads their arena,",
         "  so je_arenas is not needed.",
-        "* v3.x/v4.x: the page size of jemalloc (--with-lg-page) is assumed to be 4KB.",
+        "* The page size of jemalloc (--with-lg-page) may differ from that of the system.",
+        "  v3.x/v4.x: GEF uses chunk_npages if debug symbols are available,",
+        "  else derives it from the runs in the chunk page map.",
         "  v5.x: GEF derives it from the slabs (ARM64 uses 64KB by default since v5.3.1).",
         "* Large allocations: v3.x/v4.x read the chunk page map; v5.x reads the rtree.",
         "  v4.x displays the run range: cache-oblivious allocation addresses are randomized within its first page.",
