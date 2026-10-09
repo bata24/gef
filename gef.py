@@ -855,6 +855,7 @@ class Config:
     @staticmethod
     def save(filepath):
         cfg = configparser.RawConfigParser()
+        cfg.optionxform = str # noqa
         old_sect = None
 
         # save the configuration
@@ -887,7 +888,8 @@ class Config:
 
     @staticmethod
     def load(filepath):
-        cfg = configparser.ConfigParser()
+        cfg = configparser.RawConfigParser()
+        cfg.optionxform = str # noqa
         cfg.read(filepath)
 
         for section in cfg.sections():
@@ -897,14 +899,14 @@ class Config:
             if section == "user-defined-aliases":
                 # load the aliases
                 for key in cfg.options(section):
-                    repeat = cfg.get("user-defined-aliases.repeat", key)
+                    repeat = cfg.getboolean("user-defined-aliases.repeat", key)
                     GefAlias(key, cfg.get("user-defined-aliases", key), force_repeat=repeat)
                 continue
 
             # load the other options
             for optname in cfg.options(section):
                 # warn unused setting
-                key = "{:s}.{:s}".format(section, optname)
+                key = "{:s}.{:s}".format(section, optname.lower())
                 if key not in Config.__gef_config__:
                     err("Config '{:s}' is no longer in use, skipping...".format(Color.boldify(key)))
                     continue
