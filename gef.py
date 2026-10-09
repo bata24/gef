@@ -103622,16 +103622,40 @@ class MemorySwapCommand(GenericCommand):
             return
 
         tag = PatchCommand.PatchInfo.get_unique_tag()
-        try:
-            PatchCommand.PatchInfo(addr1, data2, length=size, phys=phys1, tag=tag).patch()
-        except (gdb.MemoryError, ValueError, OverflowError):
-            err("Write error {:#x}".format(addr1))
-            return
-        try:
-            PatchCommand.PatchInfo(addr2, data1, length=size, phys=phys2, tag=tag).patch()
-        except (gdb.MemoryError, ValueError, OverflowError):
-            err("Write error {:#x}".format(addr2))
-            return
+        patches = []
+        redo_history = PatchCommand.redo_history[:]
+        for phys, addr, data in ((phys1, addr1, data2), (phys2, addr2, data1)):
+            patch = PatchCommand.PatchInfo(addr, data, length=size, phys=phys, tag=tag)
+            patches.append(patch)
+            try:
+                patch.patch()
+            except Exception as error:
+                err("Write error {:#x}: {}".format(addr, error))
+                restored = True
+                for patch in reversed(patches):
+                    if not hasattr(patch, "before_data"):
+                        continue
+                    patch.after_data = patch.data
+                    if not any(patch in history for history in PatchCommand.get_history()):
+                        patch.insert_history()
+                    try:
+                        target_mode = "phys" if patch.phys else "virt"
+                        with QemuMonitor.use_mmu_mode(target_mode) as available:
+                            if not available:
+                                raise gdb.error("Could not select {:s} memory mode".format(target_mode))
+                            patch.after_data = read_memory(patch.addr, patch.length)
+                            if patch.after_data != patch.before_data:
+                                write_memory(patch.addr, patch.before_data)
+                        patch.remove_history()
+                    except Exception as error:
+                        restored = False
+                        err("Restore failed at {:#x}: {}; use patch revert to retry".format(patch.addr, error))
+                if restored:
+                    PatchCommand.redo_history[:] = redo_history
+                    info("Original memory restored")
+                else:
+                    PatchCommand.clear_redo_history()
+                return
         return
 
     @Decorator.parse_args
