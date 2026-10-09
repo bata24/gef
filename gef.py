@@ -147538,7 +147538,7 @@ class ConstGrepCommand(GenericCommand):
     @Decorator.parse_args
     def do_invoke(self, args):
         srcdir = "/usr/include"
-        pattern = re.compile(r"^#define\s+\S*" + args.pattern)
+        pattern = re.compile(r"^\s*#\s*define\s+\S*" + args.pattern)
         for path in GefUtil.walk(srcdir):
             content = self.read_normalize(path)
             if content is None:
