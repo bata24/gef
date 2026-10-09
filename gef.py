@@ -41168,7 +41168,7 @@ class XxdCommand(HexdumpCommand):
             flags.append("--full")
         if args.symbol:
             flags.append("--symbol")
-        if args.symbol:
+        if args.no_pager:
             flags.append("--no-pager")
 
         if args.reverse:
