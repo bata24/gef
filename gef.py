@@ -65957,39 +65957,24 @@ class KernelConstsX86(KernelConstsBase):
             return 1024
 
     @property
-    def CPU_ENTRY_AREA_SIZE(self):
-        if "4.14" <= self.kversion:
-            if hasattr(self, "cached_CPU_ENTRY_AREA_SIZE"):
-                return self.cached_CPU_ENTRY_AREA_SIZE
-
-            cpu_entry_area_size = KernelAddressHeuristicFinder.get_sizeof_cpu_entry_area()
-            if cpu_entry_area_size:
-                self.cached_CPU_ENTRY_AREA_SIZE = cpu_entry_area_size
-            return cpu_entry_area_size
-        return None
-
-    @property
-    def CPU_ENTRY_AREA_PAGES(self):
-        if "4.14" <= self.kversion:
-            if self.CPU_ENTRY_AREA_SIZE is None:
-                return None
-            return self.CPU_ENTRY_AREA_SIZE // self.PAGE_SIZE
-        return None
-
-    @property
     def CPU_ENTRY_AREA_BASE(self):
-        if "4.14" <= self.kversion:
-            if self.FIXADDR_TOT_START is None or self.CPU_ENTRY_AREA_PAGES is None:
-                return None
-            return (self.FIXADDR_TOT_START - self.PAGE_SIZE * (self.CPU_ENTRY_AREA_PAGES + 1)) & self.PMD_MASK
+        if "4.14.10" <= self.kversion:
+            if not hasattr(self, "cached_CPU_ENTRY_AREA_BASE"):
+                base = KernelAddressHeuristicFinder.get_cpu_entry_area_base()
+                if base is not None:
+                    self.cached_CPU_ENTRY_AREA_BASE = base
+                return base
+            return self.cached_CPU_ENTRY_AREA_BASE
         return None
 
     @property
     def CPU_ENTRY_AREA_END(self):
-        if "4.14" <= self.kversion:
+        if "4.14.10" <= self.kversion:
             if self.CPU_ENTRY_AREA_BASE is None:
                 return None
-            return self.CPU_ENTRY_AREA_BASE + self.CPU_ENTRY_AREA_SIZE
+            if "4.14.10" <= self.kversion < "4.14.18" or "4.15" <= self.kversion < "4.15.2":
+                return self.FIXADDR_START
+            return self.FIXADDR_TOT_START
         return None
 
     @property
@@ -66014,11 +65999,11 @@ class KernelConstsX86(KernelConstsBase):
             if self.FIXADDR_BOOT_START is None:
                 return None
             return (self.FIXADDR_BOOT_START - self.PAGE_SIZE * (self.LAST_PKMAP + 1)) & self.PMD_MASK
-        elif "3.19" <= self.kversion < "4.14":
+        elif "3.19" <= self.kversion < "4.14.10":
             if self.FIXADDR_START is None:
                 return None
             return (self.FIXADDR_START - self.PAGE_SIZE * (self.LAST_PKMAP + 1)) & self.PMD_MASK
-        elif "4.14" <= self.kversion < "4.19":
+        elif "4.14.10" <= self.kversion < "4.19":
             if self.CPU_ENTRY_AREA_BASE is None:
                 return None
             return (self.CPU_ENTRY_AREA_BASE - self.PAGE_SIZE) & self.PMD_MASK
@@ -66030,12 +66015,12 @@ class KernelConstsX86(KernelConstsBase):
 
     @property
     def VMALLOC_END(self):
-        if "3.0" <= self.kversion < "4.14":
+        if "3.0" <= self.kversion < "4.14.10":
             if self.CONFIG_HIGHMEM:
                 base = self.PKMAP_BASE
             else:
                 base = self.FIXADDR_START
-        elif "4.14" <= self.kversion < "4.19":
+        elif "4.14.10" <= self.kversion < "4.19":
             if self.CONFIG_HIGHMEM:
                 base = self.PKMAP_BASE
             else:
@@ -70015,9 +70000,9 @@ class KernelAddressHeuristicFinder:
             if kversion and "2.6.27" <= kversion:
                 for addr in Ksym.get_addrs("__native_set_fixmap", match="split"):
                     res = KernelAddressHeuristicFinderUtil.disassemble_until_next_symbol(addr, 20)
-                    g = KernelAddressHeuristicFinderUtil.x64_x86_cmp_const(res, skip_msb_check=True)
-                    for x in g:
-                        return x
+                    m = re.search(r"\bcmp\s+\w+,\s*(0x\w+)\s*\n[^\n]*\b(jae|jbe|ja|jb)\b", res)
+                    if m:
+                        return int(m.group(1), 16) + int(m.group(2) in ("ja", "jbe"))
 
         # plan 2 (available v3.19 ~)
         if is_arm64():
@@ -70034,18 +70019,33 @@ class KernelAddressHeuristicFinder:
 
     @staticmethod
     @Decorator.switch_to_intel_syntax
-    def get_sizeof_cpu_entry_area():
+    def get_cpu_entry_area_base():
         if not is_x86_32():
             return None
 
         kversion = Kernel.version()
-        if kversion and "4.14" <= kversion:
+        if kversion and "4.14.10" <= kversion:
             addr = Ksym.get_addr("get_cpu_entry_area")
             if addr:
-                res = gdb.execute("x/10i {:#x}".format(addr), to_string=True)
-                g = KernelAddressHeuristicFinderUtil.x64_x86_imul_const(res, skip_msb_check=True)
-                for x in g:
-                    return x
+                res = KernelAddressHeuristicFinderUtil.disassemble_until_next_symbol(addr, 40)
+                for load in re.finditer(r"\bmov\s+(\w+),\s*(?:DWORD PTR )?ds:(0x\w+)", res):
+                    reg = load.group(1)
+                    code = res[load.end():]
+                    patterns = (
+                        r"\blea\s+(\w+),\s*\[" + reg + r"-(0x\w+)\]",
+                        r"\bsub\s+(" + reg + r"),\s*(0x\w+)",
+                    )
+                    for pattern in patterns:
+                        offset = re.search(pattern, code)
+                        if not offset:
+                            continue
+                        mask = re.search(r"\band\s+" + offset.group(1) + r",\s*(0xff[ce]00000)\b",
+                                         code[offset.end():])
+                        if not mask:
+                            continue
+                        top = read_int32_from_memory(int(load.group(2), 16), safe=True)
+                        if top is not None:
+                            return (top - int(offset.group(2), 16)) & int(mask.group(1), 16)
         return None
 
     @staticmethod
