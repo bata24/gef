@@ -162490,7 +162490,7 @@ class HoardHeapDumpCommand(GenericCommand, BufferingOutput):
 
 @register_command
 class MimallocHeapDumpCommand(GenericCommand, BufferingOutput):
-    """mimalloc heap free-list viewer (x64 only)."""
+    """mimalloc heap free-list viewer."""
 
     _cmdline_ = "mimalloc-heap-dump"
     _category_ = "05-c. Heap - Other"
@@ -162498,7 +162498,8 @@ class MimallocHeapDumpCommand(GenericCommand, BufferingOutput):
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("-hh", "--help-simple", action="store_true", help="show help without ASCII diagram.")
     parser.add_argument("-m", "--mi-heap-main", type=AddressUtil.parse_address,
-                        help="the address of _mi_heap_main (v2.x) / heap_main (v3.x).")
+                        help="address of a mi_heap_t (default: resolve the main heap).")
+    parser.add_argument("-f", "--force-heuristic", action="store_true", help="use heuristic detection.")
     parser.add_argument("-D", "--dump-chunk", action="store_true", help="dump each chunks.")
     parser.add_argument("--meta", action="store_true", help="display offset information.")
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
@@ -162510,18 +162511,19 @@ class MimallocHeapDumpCommand(GenericCommand, BufferingOutput):
         "+-mi_heap_t(_mi_heap_main / heap_main)-+",
         "| ...                                  |",
         "| next                                 |----> mi_heap_t --> ...",
-        "| pages_free_direct[130] (v2.x/v3.0.x) |------+",
-        "| theap / theaps (v3.1.x~)             |---+  |",
+        "| pages_free_direct[] (v2.x/v3.0/v3.1) |------+",
+        "| pages[]                              |------+",
+        "| theap / theaps (v3.2.x~)             |---+  |",
         "+--------------------------------------+   |  |",
         "                                           |  |",
         "  +----------------------------------------+  |",
         "  |                                           |",
         "  v                                           |",
-        "+-mi_theap_t(v3.1.x~)------------------+      |",
+        "+-mi_theap_t(v3.2.x~)------------------+      |",
         "| heap                                 |      |",
         "| ...                                  |      |",
         "| tnext / hnext                        |      |",
-        "| pages_free_direct[130]               |------+",
+        "| pages_free_direct[]                  |------+",
         "| pages[]                              |      |",
         "+--------------------------------------+      |",
         "                                              |",
@@ -162545,14 +162547,14 @@ class MimallocHeapDumpCommand(GenericCommand, BufferingOutput):
         "",
         "* In mimalloc, the member offsets of important structures vary depending on the version.",
         "* You should be able to check the version with a command like `strings libmimalloc.so | grep git`.",
-        "* If you cannot determine it, please choose an option that can successfully decode it.",
         "",
-        "* For `_mi_heap_main` (v2.x) or `heap_main` (v3.x), GEF tries to resolve the address from symbol.",
+        "* GEF resolves `_mi_heap_main`, `heap_main`, or `mi_process_heap_main` from symbols when available.",
         "* If symbols are not available, GEF scans the TLS area for automatic detection.",
+        "* Use -m with stripped binaries when automatic TLS detection is unavailable.",
+        "* All size-class queues, including huge and full pages, are visited once per page owner.",
+        "* --meta reports whether the layout comes from debug information or memory heuristics.",
     ]
     _note_ = "\n".join(_note_)
-
-    MI_PAGES_DIRECT = 130
 
     def read_page_field(self, addr, size):
         if not is_valid_addr(addr):
@@ -162594,15 +162596,16 @@ class MimallocHeapDumpCommand(GenericCommand, BufferingOutput):
             return False
         return True
 
-    def find_page_owner_offset(self, mi_page, page_owner):
+    def find_page_owner_offsets(self, mi_page, page_owner):
         ptr = current_arch.ptrsize
+        offsets = []
         for offset in range(ptr * 2, 0x100, ptr):
             if not is_valid_addr(mi_page + offset):
                 continue
             value = read_int_from_memory(mi_page + offset)
             if self.owner_matches(value, page_owner):
-                return offset
-        return None
+                offsets.append(offset)
+        return offsets
 
     def find_page_heap_offset(self, mi_page, heap, owner_offset):
         ptr = current_arch.ptrsize
@@ -162622,12 +162625,20 @@ class MimallocHeapDumpCommand(GenericCommand, BufferingOutput):
             return True
         return False
 
-    def read_page_counts(self, mi_page, free_offset, local_free_offset):
+    def read_page_counts(self, mi_page, free_offset, local_free_offset, legacy=False):
         ptr = current_arch.ptrsize
+
+        if not legacy and local_free_offset == free_offset + ptr + 8:
+            used_offset = free_offset + ptr + (ptr - 2 if Endian.is_big_endian() else 0)
+            used = read_int16_from_memory(mi_page + used_offset)
+            capacity = read_int16_from_memory(mi_page + local_free_offset + ptr * 3)
+            block_size = read_int_from_memory(mi_page + local_free_offset + ptr)
+            if self.is_plausible_counts(used, capacity) and self.is_plausible_block_size(block_size):
+                return used_offset, 2, local_free_offset + ptr * 3, 2
 
         # v2.0.x: free, keys[2], used(uint32_t), xblock_size(uint32_t), local_free
         # Do this before the v3/v2.1.2-style check to avoid interpreting keys as counts.
-        if local_free_offset - free_offset >= ptr * 3:
+        if legacy or local_free_offset - free_offset >= ptr * 3:
             used_offset = local_free_offset - 8
             capacity_offset = free_offset - 6
             block_size_offset = used_offset + 4
@@ -162707,57 +162718,26 @@ class MimallocHeapDumpCommand(GenericCommand, BufferingOutput):
 
         return None
 
-    def ranges_overlap(self, start1, end1, start2, end2):
-        if start1 >= end2:
-            return False
-        if start2 >= end1:
-            return False
-        return True
-
-    def guess_keys_offsets(self, mi_page, free_offset, local_free_offset, used_offset, used_size,
-                           block_size_offset, block_size_size, page_start_offset, owner_offset):
+    def guess_keys_offsets(self, free_offset, local_free_offset, used_offset, used_size, page_start_offset, owner_offset):
         ptr = current_arch.ptrsize
-
-        blocked_ranges = [
-            (free_offset, free_offset + ptr),
-            (local_free_offset, local_free_offset + ptr),
-            (used_offset, used_offset + used_size),
-            (block_size_offset, block_size_offset + block_size_size),
-        ]
-        if page_start_offset is not None:
-            blocked_ranges.append((page_start_offset, page_start_offset + ptr))
-
-        if page_start_offset is not None:
-            search_start = page_start_offset + ptr
+        if used_size == 4:
+            if local_free_offset - free_offset == ptr * 3 + 8:
+                offset = free_offset + ptr
+            elif owner_offset == local_free_offset + ptr * 4:
+                offset = local_free_offset + ptr
+            else:
+                return None, None
+        elif page_start_offset is not None:
+            offset = page_start_offset + ptr
+            tail = 0 if self.uses_theap else ptr
+            if not self.uses_theap and used_offset == free_offset + ptr:
+                offset += ptr
+                tail = 0
+            if owner_offset != offset + ptr * 2 + tail:
+                return None, None
         else:
-            search_start = free_offset + ptr
-
-        if search_start + ptr >= owner_offset:
             return None, None
-
-        for offset in range(search_start, owner_offset - ptr + 1, ptr):
-            pair_start = offset
-            pair_end = offset + ptr * 2
-            blocked = False
-            for start, end in blocked_ranges:
-                if self.ranges_overlap(pair_start, pair_end, start, end):
-                    blocked = True
-                    break
-            if blocked:
-                continue
-            if not is_valid_addr(mi_page + offset):
-                continue
-            if not is_valid_addr(mi_page + offset + ptr):
-                continue
-            key0 = read_int_from_memory(mi_page + offset)
-            key1 = read_int_from_memory(mi_page + offset + ptr)
-            if (key0 & ~0xffff) == 0:
-                continue
-            if is_valid_addr(key0) and is_valid_addr(key1):
-                continue
-            return offset, offset + ptr
-
-        return None, None
+        return offset, offset + ptr
 
     def find_page_next_prev_offsets(self, mi_page, owner_offset, heap_offset):
         ptr = current_arch.ptrsize
@@ -162776,7 +162756,7 @@ class MimallocHeapDumpCommand(GenericCommand, BufferingOutput):
             return next_offset, prev_offset
         return None, None
 
-    def derive_page_layout(self, mi_page, page_owner, heap, owner_offset, free_offset, local_free_offset):
+    def derive_page_layout(self, mi_page, page_owner, heap, owner_offset, free_offset, local_free_offset, legacy=False):
         if local_free_offset <= free_offset:
             return None
         if not self.is_pointer_field(mi_page, free_offset):
@@ -162784,24 +162764,70 @@ class MimallocHeapDumpCommand(GenericCommand, BufferingOutput):
         if not self.is_pointer_field(mi_page, local_free_offset):
             return None
 
-        counts = self.read_page_counts(mi_page, free_offset, local_free_offset)
+        counts = self.read_page_counts(mi_page, free_offset, local_free_offset, legacy)
         if counts is None:
             return None
         used_offset, used_size, capacity_offset, capacity_size = counts
+        if self.uses_theap and self.offset_pages_free_direct == 0 and \
+                capacity_offset != local_free_offset + current_arch.ptrsize * 3:
+            return None
+        capacity = self.read_page_field(mi_page + capacity_offset, capacity_size)
+        reserved = read_int16_from_memory(mi_page + capacity_offset + capacity_size)
+        if reserved < capacity:
+            return None
 
-        block = self.find_block_size_offsets(
-            mi_page, free_offset, local_free_offset, owner_offset, used_offset, used_size,
-        )
+        if capacity_offset == local_free_offset + current_arch.ptrsize * 3:
+            if owner_offset != capacity_offset + 8 + current_arch.ptrsize:
+                return None
+            block = local_free_offset + current_arch.ptrsize, current_arch.ptrsize, None
+        else:
+            block = self.find_block_size_offsets(
+                mi_page, free_offset, local_free_offset, owner_offset, used_offset, used_size,
+            )
         if block is None:
             return None
         block_size_offset, block_size_size, page_start_offset = block
+        if used_size == 4:
+            owners = (local_free_offset + current_arch.ptrsize * 2,)
+            if local_free_offset - free_offset == current_arch.ptrsize + 8:
+                owners += (local_free_offset + current_arch.ptrsize * 4,)
+            if owner_offset not in owners:
+                return None
+        elif page_start_offset is not None:
+            tail = current_arch.ptrsize if self.uses_theap else current_arch.ptrsize * 2
+            if owner_offset not in (page_start_offset + tail, page_start_offset + tail + current_arch.ptrsize * 2):
+                return None
+        page_start = None
+        if page_start_offset is not None:
+            page_start = read_int_from_memory(mi_page + page_start_offset)
+        elif capacity_offset == local_free_offset + current_arch.ptrsize * 3:
+            page_start = mi_page + read_int_from_memory(mi_page + local_free_offset + current_arch.ptrsize * 2)
+        if page_start is not None:
+            block_size = self.read_page_field(mi_page + block_size_offset, block_size_size)
+            if not is_valid_addr(page_start):
+                return None
+            for offset in (free_offset, local_free_offset):
+                value = read_int_from_memory(mi_page + offset)
+                if value and not page_start <= value < page_start + capacity * block_size:
+                    return None
 
         keys0_offset, keys1_offset = self.guess_keys_offsets(
-            mi_page, free_offset, local_free_offset, used_offset, used_size,
-            block_size_offset, block_size_size, page_start_offset, owner_offset,
+            free_offset, local_free_offset, used_offset, used_size, page_start_offset, owner_offset,
         )
         heap_offset = self.find_page_heap_offset(mi_page, heap, owner_offset)
+        if heap_offset is None and page_owner != heap and \
+                read_int_from_memory(mi_page + owner_offset + current_arch.ptrsize, safe=True) == 0:
+            heap_offset = owner_offset + current_arch.ptrsize
         next_offset, prev_offset = self.find_page_next_prev_offsets(mi_page, owner_offset, heap_offset)
+        if capacity_offset == local_free_offset + current_arch.ptrsize * 3 and prev_offset is not None:
+            keys0_offset = keys1_offset = None
+            keys_offset = prev_offset + (current_arch.ptrsize * 4 if current_arch.ptrsize == 8 else 24)
+            key0 = read_int_from_memory(mi_page + keys_offset, safe=True)
+            key1 = read_int_from_memory(mi_page + keys_offset + current_arch.ptrsize, safe=True)
+            if key0 is not None and key0 > 0xffff and mi_page + keys_offset + current_arch.ptrsize <= page_start:
+                keys0_offset = keys_offset
+                if key1 and mi_page + keys_offset + current_arch.ptrsize * 2 <= page_start:
+                    keys1_offset = keys_offset + current_arch.ptrsize
 
         return {
             "owner_offset": owner_offset,
@@ -162835,154 +162861,211 @@ class MimallocHeapDumpCommand(GenericCommand, BufferingOutput):
         score -= layout["local_free_offset"] // (current_arch.ptrsize * 4)
         return score
 
-    def infer_page_layout(self, mi_page, page_owner, heap):
+    def infer_page_layout(self, mi_page, page_owner, heap, legacy=False, sliced=False):
         if mi_page is None or not is_valid_addr(mi_page):
             return None
 
         ptr = current_arch.ptrsize
-        owner_offset = self.find_page_owner_offset(mi_page, page_owner)
-        if owner_offset is None:
-            return None
-
         best_layout = None
         best_score = -0x10_0000
-        for free_offset in range(ptr, owner_offset, ptr):
-            if not self.is_pointer_field(mi_page, free_offset):
-                continue
-            for local_free_offset in range(free_offset + ptr, owner_offset, ptr):
-                if not self.is_pointer_field(mi_page, local_free_offset):
+        for owner_offset in self.find_page_owner_offsets(mi_page, page_owner):
+            free_offsets = range(ptr, owner_offset, ptr)
+            if legacy or sliced:
+                free_offsets = (16,)
+            for free_offset in free_offsets:
+                if not self.is_pointer_field(mi_page, free_offset):
                     continue
-                layout = self.derive_page_layout(mi_page, page_owner, heap, owner_offset, free_offset, local_free_offset)
-                if layout is None:
-                    continue
-                score = self.score_page_layout(layout)
-                if score > best_score:
-                    best_layout = layout
-                    best_score = score
-
+                for local_free_offset in range(free_offset + ptr, owner_offset, ptr):
+                    if not self.is_pointer_field(mi_page, local_free_offset):
+                        continue
+                    layout = self.derive_page_layout(
+                        mi_page, page_owner, heap, owner_offset, free_offset, local_free_offset, legacy,
+                    )
+                    if layout is None:
+                        continue
+                    score = self.score_page_layout(layout)
+                    if score > best_score:
+                        best_layout = layout
+                        best_score = score
         return best_layout
 
-    def score_page_pointer(self, mi_page, page_owner, heap):
-        if mi_page is None or mi_page == 0:
-            return -2, False
-        if not is_valid_addr(mi_page):
-            return -4, False
+    def get_owner_layout(self, type_name):
+        direct = GefUtil.lookup_field(type_name, "pages_free_direct")
+        queues = GefUtil.lookup_field(type_name, "pages")
+        if direct is None or queues is None:
+            return None
+        direct_type = direct.type.strip_typedefs()
+        queues_type = queues.type.strip_typedefs()
+        if direct_type.code != gdb.TYPE_CODE_ARRAY or queues_type.code != gdb.TYPE_CODE_ARRAY:
+            return None
+        queue_size = int(queues_type.target().sizeof)
+        queue_first = GefUtil.member_offset("mi_page_queue_t", "first")
+        queue_last = GefUtil.member_offset("mi_page_queue_t", "last")
+        if queue_first is None or queue_last is None:
+            return None
+        return {
+            "direct_offset": GefUtil.member_offset(type_name, "pages_free_direct"),
+            "direct_count": int(direct_type.sizeof) // current_arch.ptrsize,
+            "pages_offset": GefUtil.member_offset(type_name, "pages"),
+            "queue_count": int(queues_type.sizeof) // queue_size,
+            "queue_size": queue_size,
+            "queue_first": queue_first,
+            "queue_last": queue_last,
+        }
 
-        layout = self.infer_page_layout(mi_page, page_owner, heap)
-        if layout is not None:
-            return 32, True
+    def get_page_layout(self):
+        layout = {}
+        for name, members in (
+            ("owner", ("theap", "xheap", "heap")),
+            ("heap", ("xheap", "heap")),
+            ("free", ("free",)), ("local_free", ("local_free",)),
+            ("used", ("used", "xused")), ("capacity", ("capacity",)),
+            ("block_size", ("block_size", "xblock_size")),
+            ("page_start", ("page_start",)), ("next", ("next",)), ("prev", ("prev",)),
+        ):
+            layout[name + "_offset"] = None
+            for member in members:
+                offset = GefUtil.member_offset("mi_page_t", member)
+                if offset is not None:
+                    layout[name + "_offset"] = offset
+                    if name in ("used", "capacity", "block_size"):
+                        layout[name + "_size"] = GefUtil.member_type_size("mi_page_t", member)
+                        if member == "xused":
+                            if Endian.is_big_endian():
+                                layout[name + "_offset"] += layout[name + "_size"] - 2
+                            layout[name + "_size"] = 2
+                    break
+        keys = GefUtil.lookup_field("mi_page_t", "keys")
+        layout["keys0_offset"] = GefUtil.member_offset("mi_page_t", "keys")
+        layout["keys1_offset"] = None
+        if keys is not None and int(keys.type.sizeof) >= current_arch.ptrsize * 2:
+            layout["keys1_offset"] = layout["keys0_offset"] + current_arch.ptrsize
+        required = ("owner", "free", "local_free", "used", "capacity", "block_size", "next", "prev")
+        if any(layout[name + "_offset"] is None for name in required):
+            return None
+        return layout
 
-        first_word = read_int_from_memory(mi_page)
-        if first_word == 0:
-            return 1, False
-
-        return -2, False
-
-    @Cache.cache_this_session(cache_None=False)
-    def search_pages_free_direct(self, owner, heap=None):
-        if heap is None:
-            heap = owner
-
+    def search_page_queues(self, owner):
         ptr = current_arch.ptrsize
-        max_scan = 0x3000
-        best_offset = None
-        best_score = -0x100000
-        best_page_count = 0
-
-        for offset_base in range(0, max_scan, ptr):
-            if not is_valid_addr(owner + offset_base):
-                continue
-
-            score = 0
-            page_count = 0
-            readable_count = 0
-            for i in range(self.MI_PAGES_DIRECT):
-                addr = owner + offset_base + ptr * i
-                if not is_valid_addr(addr):
-                    score -= 8
+        sizes = [1] + list(range(1, 9))
+        for shift in range(1, 17):
+            sizes.extend(n << shift for n in (5, 6, 7, 8))
+        values = []
+        for offset in range(0, 0x3000, ptr):
+            value = read_int_from_memory(owner + offset, safe=True)
+            if value is None:
+                break
+            values.append(value)
+        for width, block_offset in ((3, 2), (4, 3), (5, 3)):
+            for first in range(block_offset, len(values) - 74 * width):
+                if any(values[first + i * width] != size * ptr for i, size in enumerate(sizes)):
                     continue
+                base = first - block_offset
+                if values[first + 74 * width] != values[first + 73 * width] + ptr:
+                    continue
+                return {
+                    "pages_offset": base * ptr, "queue_count": 75, "queue_size": width * ptr,
+                    "queue_first": 0, "queue_last": ptr,
+                }
+        return None
 
-                readable_count += 1
-                value = read_int_from_memory(addr)
-                entry_score, is_page = self.score_page_pointer(value, owner, heap)
-                score += entry_score
-                if is_page:
-                    page_count += 1
-
-            if readable_count < self.MI_PAGES_DIRECT // 2:
-                continue
-            if page_count == 0:
-                continue
-            if score > best_score:
-                best_score = score
-                best_offset = offset_base
-                best_page_count = page_count
-
-        if best_offset is None:
+    def get_owner_layout_heuristic(self, owner, heap):
+        layout = self.search_page_queues(owner)
+        if layout is None:
             return None
-        if best_page_count == 0:
-            return None
-        if best_score < 0:
-            return None
-        return best_offset
-
-    def find_theap_heap_offset(self, theap, heap):
         ptr = current_arch.ptrsize
-        for offset in range(0, ptr * 16, ptr):
-            if not is_valid_addr(theap + offset):
+        candidates = [(layout["pages_offset"] - count * ptr, count) for count in (129, 129 + 8 // ptr)]
+        candidates.extend((0, count) for count in (129, 129 + 8 // ptr))
+        for offset, count in candidates:
+            if offset < 0:
                 continue
-            value = read_int_from_memory(theap + offset)
-            if value == heap:
-                return offset
+            sentinel = read_int_from_memory(owner + offset, safe=True)
+            if not sentinel or not is_valid_addr(sentinel):
+                continue
+            if offset and read_int_from_memory(owner + offset - ptr, safe=True) == sentinel:
+                continue
+            flags = read_int_from_memory(sentinel, safe=True)
+            if flags is None or flags & ~7:
+                continue
+            if any(read_int_from_memory(sentinel + i * ptr, safe=True) != 0 for i in range(1, 4)):
+                continue
+            if any(not is_valid_addr(read_int_from_memory(owner + offset + i * ptr, safe=True))
+                   for i in range(count)):
+                continue
+            if offset == 0:
+                following = read_int_from_memory(owner + count * ptr, safe=True)
+                if following == sentinel or self.infer_page_layout(following, owner, heap) is not None:
+                    continue
+            layout.update(direct_offset=offset, direct_count=count)
+            return layout
         return None
 
     def is_theap_of_heap(self, theap, heap):
         if not is_valid_addr(theap):
             return False
-        heap_offset = self.find_theap_heap_offset(theap, heap)
-        if heap_offset is None:
-            return False
-        ret = self.search_pages_free_direct(theap, heap)
-        if ret is None:
-            return False
-        return True
+        value = read_int_from_memory(theap + self.offset_theap_heap, safe=True)
+        return value is not None and self.owner_matches(value, heap)
 
-    @Cache.cache_this_session(cache_None=False)
     def search_theap_fields(self, heap):
-        found = []
-        for i in range(64):
-            field_offset = current_arch.ptrsize * i
-            if not is_valid_addr(heap + field_offset):
+        for field_offset in range(0, 64 * current_arch.ptrsize, current_arch.ptrsize):
+            theap = read_int_from_memory(heap + field_offset, safe=True)
+            if not theap or not is_valid_addr(theap):
                 continue
-            theap = read_int_from_memory(heap + field_offset)
-            if not is_valid_addr(theap):
+            layout = self.get_owner_layout_heuristic(theap, heap)
+            if layout is None:
                 continue
-            ret = self.search_pages_free_direct(theap, heap)
-            if ret is None:
-                continue
-            heap_offset = self.find_theap_heap_offset(theap, heap)
-            if heap_offset is None:
-                continue
-            found.append((field_offset, theap, ret, heap_offset))
-        if not found:
-            return None
-        return found
+            for offset in range(0, layout["pages_offset"], current_arch.ptrsize):
+                if read_int_from_memory(theap + offset, safe=True) == heap:
+                    return field_offset, theap, offset, layout
+        return None
+
+    def get_theap_hnext_offset(self, theap, layout):
+        ptr = current_arch.ptrsize
+        if layout["direct_offset"] == 0:
+            return layout["pages_offset"] - ptr * 2
+        for distance in (4, 8):
+            hnext = layout["direct_offset"] - distance * ptr
+            for offset, reverse in ((hnext - ptr * 2, hnext - ptr), (hnext - ptr, hnext - ptr * 2),
+                                    (hnext, hnext + ptr), (hnext + ptr, hnext)):
+                linked = read_int_from_memory(theap + offset, safe=True)
+                if not linked or not is_valid_addr(linked):
+                    continue
+                if read_int_from_memory(linked + reverse, safe=True) != theap:
+                    continue
+                owner_offset = 0 if offset < hnext else self.offset_theap_heap
+                if read_int_from_memory(linked + owner_offset, safe=True) == \
+                        read_int_from_memory(theap + owner_offset, safe=True):
+                    return hnext
+        return layout["direct_offset"] - ptr * 4
+
+    def get_page_list(self, owner):
+        pages = []
+        for i in range(self.pages_queue_count):
+            queue = owner + self.offset_pages + i * self.sizeof_page_queue
+            for offset in (self.offset_queue_first, self.offset_queue_last):
+                page = read_int_from_memory(queue + offset, safe=True)
+                if page and page not in pages:
+                    pages.append(page)
+        for i in range(self.pages_direct_count):
+            page = read_int_from_memory(owner + self.offset_pages_free_direct + current_arch.ptrsize * i, safe=True)
+            if page and page not in pages:
+                pages.append(page)
+        return pages
 
     def first_page_from_owner(self, owner, heap):
-        for i in range(self.MI_PAGES_DIRECT):
-            addr = owner + self.offset_pages_free_direct + current_arch.ptrsize * i
-            if not is_valid_addr(addr):
-                continue
-            mi_page = read_int_from_memory(addr)
+        for mi_page in self.get_page_list(owner):
             if not is_valid_addr(mi_page):
                 continue
-            layout = self.infer_page_layout(mi_page, owner, heap)
+            legacy = not self.uses_theap and self.offset_pages_free_direct <= current_arch.ptrsize
+            sliced = not self.uses_theap and self.sizeof_page_queue == current_arch.ptrsize * 3
+            layout = self.infer_page_layout(mi_page, owner, heap, legacy, sliced)
             if layout is not None:
                 return mi_page, layout
         return None, None
 
     def setup_page_offsets(self, mi_page, page_owner, heap, layout):
         self.offset_page_owner = layout["owner_offset"]
+        self.offset_page_heap = layout["heap_offset"]
         self.offset_free = layout["free_offset"]
         self.offset_local_free = layout["local_free_offset"]
         self.offset_used = layout["used_offset"]
@@ -163002,7 +163085,7 @@ class MimallocHeapDumpCommand(GenericCommand, BufferingOutput):
         self.meta.append((self.quiet_info, "offsetof(mi_page_t, local_free): {:#x}".format(self.offset_local_free)))
         self.meta.append((self.quiet_info, "offsetof(mi_page_t, used): {:#x}".format(self.offset_used)))
         self.meta.append((self.quiet_info, "offsetof(mi_page_t, capacity): {:#x}".format(self.offset_capacity)))
-        if self.offset_block_size_size == 4:
+        if self.offset_block_size_size == 4 and self.offset_used_size == 4:
             self.meta.append((self.quiet_info, "offsetof(mi_page_t, xblock_size): {:#x}".format(self.offset_block_size)))
         else:
             self.meta.append((self.quiet_info, "offsetof(mi_page_t, block_size): {:#x}".format(self.offset_block_size)))
@@ -163015,7 +163098,8 @@ class MimallocHeapDumpCommand(GenericCommand, BufferingOutput):
             self.meta.append((self.quiet_info, "offsetof(mi_page_t, keys1): Not found"))
         else:
             self.meta.append((self.quiet_info, "offsetof(mi_page_t, keys0): {:#x}".format(self.offset_keys0)))
-            self.meta.append((self.quiet_info, "offsetof(mi_page_t, keys1): {:#x}".format(self.offset_keys1)))
+            if self.offset_keys1 is not None:
+                self.meta.append((self.quiet_info, "offsetof(mi_page_t, keys1): {:#x}".format(self.offset_keys1)))
         if self.offset_page_next is None:
             self.meta.append((self.quiet_info, "offsetof(mi_page_t, next): Not found"))
             self.meta.append((self.quiet_info, "offsetof(mi_page_t, prev): Not found"))
@@ -163025,16 +163109,26 @@ class MimallocHeapDumpCommand(GenericCommand, BufferingOutput):
         return True
 
     def infer_old_heap_next_offset(self):
-        base = self.offset_pages_free_direct + current_arch.ptrsize * self.MI_PAGES_DIRECT + 75 * current_arch.ptrsize * 3
+        base = self.offset_pages + self.pages_queue_count * self.sizeof_page_queue
 
-        # v2.0.x: thread_delayed_free, thread_id, cookie, keys, random, page counters, next
-        # v2.1.x: thread_delayed_free, thread_id, arena_id(+padding), cookie, keys, random, page counters, next
-        arena_or_cookie_offset = base + current_arch.ptrsize * 2
-        if is_valid_addr(self.heap_main_for_offsets + arena_or_cookie_offset):
-            arena_or_cookie = read_int_from_memory(self.heap_main_for_offsets + arena_or_cookie_offset)
-            if arena_or_cookie <= 0xffff:
-                return base + 0xd0
-        return base + 0xc8
+        ptr = current_arch.ptrsize
+        # ChaCha state is 132 bytes, or 136 bytes with the weak-seed flag.
+        for random_size in (136, 132):
+            random_size = (random_size + ptr - 1) // ptr * ptr
+            for words in (9, 8):
+                offset = base + random_size + words * ptr
+                retired_min = read_int_from_memory(self.heap_main_for_offsets + offset - ptr * 2, safe=True)
+                retired_max = read_int_from_memory(self.heap_main_for_offsets + offset - ptr, safe=True)
+                linked = read_int_from_memory(self.heap_main_for_offsets + offset, safe=True)
+                if retired_min is None or retired_max is None:
+                    continue
+                if not ((retired_min == self.pages_queue_count - 1 and retired_max == 0) or
+                        0 < retired_min <= retired_max < self.pages_queue_count - 1):
+                    continue
+                if linked == 0 or (is_valid_addr(linked) and read_int_from_memory(linked, safe=True) ==
+                                   read_int_from_memory(self.heap_main_for_offsets)):
+                    return offset
+        return -1
 
     def setup_heap_next_offset(self):
         if self.uses_theap:
@@ -163044,8 +163138,8 @@ class MimallocHeapDumpCommand(GenericCommand, BufferingOutput):
 
         if self.offset_pages_free_direct <= current_arch.ptrsize:
             self.offset_heap_next = self.infer_old_heap_next_offset()
-        elif self.offset_free == current_arch.ptrsize:
-            self.offset_heap_next = self.offset_pages_free_direct - current_arch.ptrsize * 3
+        elif self.sizeof_page_queue == current_arch.ptrsize * 4:
+            self.offset_heap_next = ((136 + current_arch.ptrsize - 1) // current_arch.ptrsize + 9) * current_arch.ptrsize
         else:
             self.offset_heap_next = self.offset_pages_free_direct - current_arch.ptrsize * 2
 
@@ -163057,74 +163151,111 @@ class MimallocHeapDumpCommand(GenericCommand, BufferingOutput):
 
     def initialize(self, heap_main):
         self.meta = []
-
         self.meta.append((self.quiet_info, "mi_heap_t: {:#x}".format(heap_main)))
+        if not is_valid_addr(heap_main):
+            self.meta.append((err, "Invalid mi_heap_t address"))
+            return None
         self.heap_main_for_offsets = heap_main
         self.uses_theap = False
-        self.offset_heap_theap = None
+        self.has_debug_layout = False
         self.offset_heap_theaps = None
-        self.offset_theap_tnext = None
         self.offset_theap_hnext = None
         self.offset_theap_heap = None
+        page_owner = heap_main
+        owner_layout = None
+        page_layout = None
 
-        ret = self.search_pages_free_direct(heap_main, heap_main)
-        if ret is not None:
-            page_owner = heap_main
-            self.offset_pages_free_direct = ret
-            self.meta.append((self.quiet_info, "offsetof(mi_heap_t, pages_free_direct): {:#x}".format(self.offset_pages_free_direct)))
-        else:
-            found = self.search_theap_fields(heap_main)
-            if found is None:
-                self.meta.append((err, "Not found valid mi_heap_t or mi_theap_t"))
-                return None
+        if not self.args.force_heuristic:
+            page_layout = self.get_page_layout()
+            owner_layout = self.get_owner_layout("mi_heap_t")
+            if owner_layout is None:
+                owner_layout = self.get_owner_layout("mi_theap_t")
+                self.offset_heap_theaps = GefUtil.member_offset("mi_heap_t", "theaps")
+                self.offset_theap_heap = GefUtil.member_offset("mi_theap_t", "heap")
+                self.offset_theap_hnext = GefUtil.member_offset("mi_theap_t", "hnext")
+                if owner_layout is not None and None not in (
+                    self.offset_heap_theaps, self.offset_theap_heap, self.offset_theap_hnext,
+                ):
+                    self.uses_theap = True
+                    page_owner = read_int_from_memory(heap_main + self.offset_heap_theaps, safe=True)
+                else:
+                    owner_layout = None
+            self.offset_heap_next = GefUtil.member_offset("mi_heap_t", "next")
+            self.has_debug_layout = owner_layout is not None and page_layout is not None and \
+                self.offset_heap_next is not None
 
-            self.uses_theap = True
-            self.offset_heap_theap = found[0][0]
-            page_owner = found[0][1]
-            self.offset_pages_free_direct = found[0][2]
-            self.offset_theap_heap = found[0][3]
-            self.meta.append((self.quiet_info, "offsetof(mi_heap_t, theap/theaps): {:#x}".format(self.offset_heap_theap)))
-            self.meta.append((self.quiet_info, "mi_theap_t: {:#x}".format(page_owner)))
-            self.meta.append((self.quiet_info, "offsetof(mi_theap_t, heap): {:#x}".format(self.offset_theap_heap)))
-            self.meta.append((self.quiet_info, "offsetof(mi_theap_t, pages_free_direct): {:#x}".format(self.offset_pages_free_direct)))
+        if not self.has_debug_layout:
+            self.uses_theap = False
+            owner_layout = self.get_owner_layout_heuristic(heap_main, heap_main)
+            if owner_layout is None:
+                found = self.search_theap_fields(heap_main)
+                layout_heap = heap_main
+                seen = {layout_heap}
+                while found is None and len(seen) < 64:
+                    next_heap = read_int_from_memory(layout_heap + current_arch.ptrsize * 2, safe=True)
+                    if not next_heap or next_heap in seen:
+                        break
+                    if read_int_from_memory(next_heap + current_arch.ptrsize * 3, safe=True) != layout_heap:
+                        break
+                    seen.add(next_heap)
+                    layout_heap = next_heap
+                    found = self.search_theap_fields(layout_heap)
+                if found is None:
+                    self.meta.append((err, "Not found valid mi_heap_t or mi_theap_t page queues"))
+                    return None
+                self.uses_theap = True
+                self.offset_heap_theaps, page_owner, self.offset_theap_heap, owner_layout = found
+                self.offset_theap_hnext = self.get_theap_hnext_offset(page_owner, owner_layout)
+                page_owner = read_int_from_memory(heap_main + self.offset_heap_theaps, safe=True)
 
-            for field_offset, _theap, _ret, _heap_offset in found:
-                if field_offset > self.offset_heap_theap:
-                    self.offset_heap_theaps = field_offset
-                    break
-            if self.offset_heap_theaps is None:
-                self.offset_heap_theaps = self.offset_heap_theap
+        self.offset_pages_free_direct = owner_layout["direct_offset"]
+        self.pages_direct_count = owner_layout["direct_count"]
+        self.offset_pages = owner_layout["pages_offset"]
+        self.pages_queue_count = owner_layout["queue_count"]
+        self.sizeof_page_queue = owner_layout["queue_size"]
+        self.offset_queue_first = owner_layout["queue_first"]
+        self.offset_queue_last = owner_layout["queue_last"]
+        source = "debug information" if self.has_debug_layout else "memory heuristic (validated page queues)"
+        self.meta.append((self.quiet_info, "Layout source: " + source))
+        owner_type = "mi_theap_t" if self.uses_theap else "mi_heap_t"
+        self.meta.append((self.quiet_info, "offsetof({:s}, pages_free_direct): {:#x}, count={:d}".format(
+            owner_type, self.offset_pages_free_direct, self.pages_direct_count,
+        )))
+        self.meta.append((self.quiet_info, "offsetof({:s}, pages): {:#x}, count={:d}, queue_size={:#x}".format(
+            owner_type, self.offset_pages, self.pages_queue_count, self.sizeof_page_queue,
+        )))
+        if self.uses_theap:
             self.meta.append((self.quiet_info, "offsetof(mi_heap_t, theaps): {:#x}".format(self.offset_heap_theaps)))
-
-            self.offset_theap_tnext = self.offset_pages_free_direct - current_arch.ptrsize * 10
-            self.offset_theap_hnext = self.offset_pages_free_direct - current_arch.ptrsize * 8
-            if self.offset_theap_tnext >= 0:
-                self.meta.append((self.quiet_info, "offsetof(mi_theap_t, tnext): {:#x}".format(self.offset_theap_tnext)))
-            if self.offset_theap_hnext >= 0:
-                self.meta.append((self.quiet_info, "offsetof(mi_theap_t, hnext): {:#x}".format(self.offset_theap_hnext)))
-
-        mi_page, layout = self.first_page_from_owner(page_owner, heap_main)
-        if mi_page is None or layout is None:
-            self.meta.append((err, "Not found initialized mi_page_t"))
-            return None
-
-        if not self.setup_page_offsets(mi_page, page_owner, heap_main, layout):
-            return None
-
-        if not self.setup_heap_next_offset():
-            return None
+            for name, offset in (("heap", self.offset_theap_heap), ("hnext", self.offset_theap_hnext)):
+                self.meta.append((self.quiet_info, "offsetof(mi_theap_t, {:s}): {:#x}".format(name, offset)))
+        if self.has_debug_layout:
+            self.setup_page_offsets(None, page_owner, heap_main, page_layout)
+            self.meta.append((self.quiet_info, "offsetof(mi_heap_t, next): {:#x}".format(self.offset_heap_next)))
+        else:
+            mi_page, page_layout = self.first_page_from_owner(page_owner, heap_main) if page_owner else (None, None)
+            self.page_layout_ready = page_layout is not None
+            if page_layout is not None:
+                self.setup_page_offsets(mi_page, page_owner, heap_main, page_layout)
+            elif page_owner and any(read_int_from_memory(page_owner + self.offset_pages + i * self.sizeof_page_queue +
+                                                        self.offset_queue_first, safe=True) != 0
+                                    for i in range(self.pages_queue_count)):
+                self.meta.append((err, "Not found initialized mi_page_t layout"))
+                return None
+            if not self.setup_heap_next_offset():
+                return None
+        self.page_layout_ready = self.has_debug_layout or page_layout is not None
         return True
 
     def get_mi_heap_main(self):
-        try:
-            return AddressUtil.parse_address("&heap_main") # v3.0.x~
-        except gdb.error:
+        for name in ("heap_main", "_mi_heap_main", "mi_process_heap_main"):
             try:
-                return AddressUtil.parse_address("&_mi_heap_main")
+                return AddressUtil.parse_address("&" + name)
             except gdb.error:
                 pass
 
         tls = current_arch.get_tls()
+        if tls is None:
+            return None
         for i in range(1, 10):
             offset = current_arch.ptrsize * i
             if not is_valid_addr(tls - offset):
@@ -163144,15 +163275,17 @@ class MimallocHeapDumpCommand(GenericCommand, BufferingOutput):
             return mi_heap_main
         return None
 
-    def dump_list(self, head, current, key0, key1, bs):
+    def dump_list(self, head, current, key0, key1, bs, capacity):
         corrupted_msg_color = Config.get("theme.heap_corrupted_msg")
         freed_address_color = Config.get("theme.heap_chunk_address_freed")
 
         def ptr_decode(addr, key0, key1):
-            addr = (addr - key0) & 0xffff_ffff_ffff_ffff
-            shift = key0 & 0x3f
-            return ror(addr, shift) ^ key1
+            bits = current_arch.ptrsize * 8
+            addr = (addr - key0) & ((1 << bits) - 1)
+            shift = key0 & (bits - 1)
+            return ror(addr, shift, bits) ^ key1
 
+        encoded = None
         seen = set()
         while True:
             # loop check
@@ -163176,13 +163309,18 @@ class MimallocHeapDumpCommand(GenericCommand, BufferingOutput):
             # dump
             if self.args.dump_chunk:
                 data = read_memory(current, bs)
-                out = hexdump(data, show_symbol=False, base=current, unit=8)
+                out = hexdump(data, show_symbol=False, base=current, unit=current_arch.ptrsize)
                 self.out.append(out)
 
             # get next
-            current = read_int_from_memory(current)
-            if key0 is not None and key1 is not None:
-                current = ptr_decode(current, key0, key1)
+            next_block = read_int_from_memory(current)
+            if encoded is None:
+                plain = next_block == 0 or next_block == head or \
+                    (is_valid_addr(next_block) and abs(next_block - current) < bs * capacity and
+                     (next_block - current) % bs == 0)
+                encoded = key0 is not None and key1 is not None and \
+                    not plain
+            current = ptr_decode(next_block, key0, key1) if encoded else next_block
         return
 
     def dump_page(self, mi_page):
@@ -163190,11 +163328,13 @@ class MimallocHeapDumpCommand(GenericCommand, BufferingOutput):
         cap = self.read_page_field(mi_page + self.offset_capacity, self.offset_capacity_size)
         used = self.read_page_field(mi_page + self.offset_used, self.offset_used_size)
         if self.offset_keys0 is not None:
-            key0 = read_int64_from_memory(mi_page + self.offset_keys0)
+            key0 = read_int_from_memory(mi_page + self.offset_keys0)
         else:
             key0 = None
         if self.offset_keys1 is not None:
-            key1 = read_int64_from_memory(mi_page + self.offset_keys1)
+            key1 = read_int_from_memory(mi_page + self.offset_keys1)
+        elif key0 is not None:
+            key1 = ror(key0, 13, current_arch.ptrsize * 8)
         else:
             key1 = None
 
@@ -163222,13 +163362,13 @@ class MimallocHeapDumpCommand(GenericCommand, BufferingOutput):
         freelist_addr = mi_page + self.offset_free
         self.out.append("freelist @{:#x}:".format(freelist_addr))
         current = read_int_from_memory(freelist_addr)
-        self.dump_list(mi_page, current, key0, key1, bs)
+        self.dump_list(mi_page, current, key0, key1, bs, cap)
 
         # local freelist
         local_freelist_addr = mi_page + self.offset_local_free
         self.out.append("local_freelist @{:#x}:".format(local_freelist_addr))
         current = read_int_from_memory(local_freelist_addr)
-        self.dump_list(mi_page, current, key0, key1, bs)
+        self.dump_list(mi_page, current, key0, key1, bs, cap)
         return
 
     def read_page_link(self, mi_page, offset):
@@ -163241,10 +163381,15 @@ class MimallocHeapDumpCommand(GenericCommand, BufferingOutput):
     def is_page_of_owner(self, mi_page, page_owner, heap):
         if mi_page == 0 or not is_valid_addr(mi_page):
             return False
-        layout = self.infer_page_layout(mi_page, page_owner, heap)
-        if layout is None:
+        value = read_int_from_memory(mi_page + self.offset_page_owner, safe=True)
+        if value is None or not self.owner_matches(value, page_owner):
             return False
-        return True
+        if self.offset_page_heap is not None:
+            value = read_int_from_memory(mi_page + self.offset_page_heap, safe=True)
+            if value is None or (value != 0 and not self.owner_matches(value, heap)):
+                return False
+        capacity = self.read_page_field(mi_page + self.offset_capacity, self.offset_capacity_size)
+        return capacity is not None and capacity > 0
 
     def find_page_chain_head(self, mi_page, page_owner, heap):
         current = mi_page
@@ -163265,12 +163410,14 @@ class MimallocHeapDumpCommand(GenericCommand, BufferingOutput):
         current = self.find_page_chain_head(mi_page, page_owner, heap)
         chain_seen = set()
         while True:
-            if current == 0 or not is_valid_addr(current):
+            if current == 0:
                 break
             if current in chain_seen:
+                self.out.append("Page chain loop @{:#x}".format(current))
                 break
             chain_seen.add(current)
             if not self.is_page_of_owner(current, page_owner, heap):
+                self.out.append("Invalid mi_page_t @{:#x}".format(current))
                 break
             if current not in seen:
                 self.dump_page(current)
@@ -163282,17 +163429,24 @@ class MimallocHeapDumpCommand(GenericCommand, BufferingOutput):
         return
 
     def dump_page_owner(self, page_owner, heap):
+        if not self.page_layout_ready:
+            mi_page, layout = self.first_page_from_owner(page_owner, heap)
+            if layout is not None:
+                self.setup_page_offsets(mi_page, page_owner, heap, layout)
+                self.page_layout_ready = True
+            else:
+                occupied = any(read_int_from_memory(page_owner + self.offset_pages + i * self.sizeof_page_queue +
+                                                   self.offset_queue_first, safe=True) != 0
+                               for i in range(self.pages_queue_count))
+                self.out.append("Could not decode mi_page_t layout" if occupied else "No pages")
+                return None
         seen = set()
-        for i in range(self.MI_PAGES_DIRECT):
-            addr = page_owner + self.offset_pages_free_direct + current_arch.ptrsize * i
-            if not is_valid_addr(addr):
-                continue
-            mi_page = read_int_from_memory(addr)
-            if not is_valid_addr(mi_page):
-                continue
-            if not self.is_page_of_owner(mi_page, page_owner, heap):
+        for mi_page in self.get_page_list(page_owner):
+            if mi_page in seen or not self.is_page_of_owner(mi_page, page_owner, heap):
                 continue
             self.dump_page_chain(mi_page, page_owner, heap, seen)
+        if not seen:
+            self.out.append("No pages")
         return None
 
     def dump_heap(self, mi_heap):
@@ -163301,41 +163455,31 @@ class MimallocHeapDumpCommand(GenericCommand, BufferingOutput):
             return None
 
         seen = set()
-        field_offsets = []
-        if self.offset_heap_theaps is not None:
-            field_offsets.append(self.offset_heap_theaps)
-        if self.offset_heap_theap is not None and self.offset_heap_theap not in field_offsets:
-            field_offsets.append(self.offset_heap_theap)
+        theap = read_int_from_memory(mi_heap + self.offset_heap_theaps, safe=True)
+        while is_valid_addr(theap) and theap not in seen:
+            if not self.is_theap_of_heap(theap, mi_heap):
+                break
+            self.out.append("mi_theap_t: {:#x}".format(theap))
+            self.dump_page_owner(theap, mi_heap)
+            seen.add(theap)
+            if not is_valid_addr(theap + self.offset_theap_hnext):
+                break
+            theap = read_int_from_memory(theap + self.offset_theap_hnext)
 
-        for field_offset in field_offsets:
-            if not is_valid_addr(mi_heap + field_offset):
-                continue
-            theap = read_int_from_memory(mi_heap + field_offset)
-            while is_valid_addr(theap) and theap not in seen:
-                if not self.is_theap_of_heap(theap, mi_heap):
-                    break
-                self.out.append("mi_theap_t: {:#x}".format(theap))
-                self.dump_page_owner(theap, mi_heap)
-                seen.add(theap)
-                if self.offset_theap_hnext is None:
-                    break
-                if not is_valid_addr(theap + self.offset_theap_hnext):
-                    break
-                theap = read_int_from_memory(theap + self.offset_theap_hnext)
-
+        if not seen:
+            self.out.append("No pages")
         return None
 
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
-    @Decorator.only_if_specific_arch(arch=("x86_64",))
     def do_invoke(self, args):
         if args.mi_heap_main:
             mi_heap_main = args.mi_heap_main
         else:
             mi_heap_main = self.get_mi_heap_main()
             if mi_heap_main is None:
-                err("Could not find _mi_heap_main and mi_heap")
+                err("Could not find mi_heap_t; specify its address with -m")
                 return
 
         ret = self.initialize(mi_heap_main)

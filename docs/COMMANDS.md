@@ -7344,19 +7344,21 @@ Simplified jemalloc (v3.x/v4.x) structure:
 
 ## `mimalloc-heap-dump`
 
-mimalloc heap free-list viewer (x64 only).
+mimalloc heap free-list viewer.
 
 
 ### Syntax
 
 ```text
-usage: mimalloc-heap-dump [-h] [-hh] [-m MI_HEAP_MAIN] [-D] [--meta] [-n]
+usage: mimalloc-heap-dump [-h] [-hh] [-m MI_HEAP_MAIN] [-f] [-D] [--meta] [-n]
 
 options:
   -h, --help            show this help message and exit
   -hh, --help-simple    show help without ASCII diagram.
   -m, --mi-heap-main MI_HEAP_MAIN
-                        the address of _mi_heap_main (v2.x) / heap_main (v3.x).
+                        address of a mi_heap_t (default: resolve the main heap).
+  -f, --force-heuristic
+                        use heuristic detection.
   -D, --dump-chunk      dump each chunks.
   --meta                display offset information.
   -n, --no-pager        do not use the pager.
@@ -7370,18 +7372,19 @@ Simplified mimalloc structure:
 +-mi_heap_t(_mi_heap_main / heap_main)-+
 | ...                                  |
 | next                                 |----> mi_heap_t --> ...
-| pages_free_direct[130] (v2.x/v3.0.x) |------+
-| theap / theaps (v3.1.x~)             |---+  |
+| pages_free_direct[] (v2.x/v3.0/v3.1) |------+
+| pages[]                              |------+
+| theap / theaps (v3.2.x~)             |---+  |
 +--------------------------------------+   |  |
                                            |  |
   +----------------------------------------+  |
   |                                           |
   v                                           |
-+-mi_theap_t(v3.1.x~)------------------+      |
++-mi_theap_t(v3.2.x~)------------------+      |
 | heap                                 |      |
 | ...                                  |      |
 | tnext / hnext                        |      |
-| pages_free_direct[130]               |------+
+| pages_free_direct[]                  |------+
 | pages[]                              |      |
 +--------------------------------------+      |
                                               |
@@ -7405,10 +7408,12 @@ Simplified mimalloc structure:
 
 * In mimalloc, the member offsets of important structures vary depending on the version.
 * You should be able to check the version with a command like `strings libmimalloc.so | grep git`.
-* If you cannot determine it, please choose an option that can successfully decode it.
 
-* For `_mi_heap_main` (v2.x) or `heap_main` (v3.x), GEF tries to resolve the address from symbol.
+* GEF resolves `_mi_heap_main`, `heap_main`, or `mi_process_heap_main` from symbols when available.
 * If symbols are not available, GEF scans the TLS area for automatic detection.
+* Use -m with stripped binaries when automatic TLS detection is unavailable.
+* All size-class queues, including huge and full pages, are visited once per page owner.
+* --meta reports whether the layout comes from debug information or memory heuristics.
 ```
 
 ## `musl-heap-dump`
