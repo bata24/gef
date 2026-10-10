@@ -7654,22 +7654,22 @@ Simplified SSMalloc structure:
 * Allocation from a `dchunk_t` pops `free_head` first; if it is empty, allocation advances `free_mem`.
 ```
 
-## `tcmalloc-dump`
+## `tcmalloc-heap-dump`
 
-tcmalloc (google-perftools/gperftools) free-list viewer (x64 only).
+tcmalloc (google-perftools/gperftools) free-list viewer.
 
 
 ### Syntax
 
 ```text
-usage: tcmalloc-dump [-h] [-hh] [-c] [-f] [-n] [-q]
+usage: tcmalloc-heap-dump [-h] [-hh] [-c] [-f] [-n] [-q]
 
 options:
   -h, --help            show this help message and exit
   -hh, --help-simple    show help without ASCII diagram.
   -c, --central         show central cache instead of thread caches.
   -f, --force-heuristic
-                        use heuristic detection.
+                        use heuristic address detection.
   -n, --no-pager        do not use the pager.
   -q, --quiet           quiet mode.
 ```
@@ -7677,13 +7677,18 @@ options:
 ### Examples
 
 ```gdb
-tcmalloc-dump            # print freelist of thread cache for all thread
-tcmalloc-dump --central  # print freelist of central cache
+tcmalloc-heap-dump            # print freelist of thread cache for all thread
+tcmalloc-heap-dump --central  # print freelist of central cache
 ```
 
 ### Notes
 
 ```text
+Debug types are optional; without them, known gperftools layouts are validated against target memory.
+Without symbols, SizeMap and cache addresses are detected from writable memory and TLS.
+Google's separate google/tcmalloc allocator is not supported.
+--central shows transfer-cache chains, not all free objects in spans.
+
 Simplified tcmalloc/gperftools heap structure:
 
 Static Area (Central Cache)
@@ -7691,7 +7696,7 @@ Static Area (Central Cache)
 | Static::sizemap_             |
 |  class_to_size_[class]       |
 +------------------------------+
-| Static::central_cache_[128]  |
+| Static::central_cache_[N]    |
 |  CentralFreeList[class]      |
 |   empty_ / nonempty_         |
 |   tc_slots_[slot].head       |---> free obj -> free obj -> NULL
@@ -7702,10 +7707,10 @@ Static Area (Central Cache)
 
 Thread cache list
 +----------------------------+  +-->+-ThreadCache---------+       +-ThreadCache---------+
-| ThreadCache::thread_heaps_ |--+   | list_[128]          |    +->| list_[128]          |    +-> ...
+| ThreadCache::thread_heaps_ |--+   | list_[N]            |    +->| list_[N]            |    +-> ...
 +----------------------------+      |  FreeList::list_    |--+ |  |  FreeList::list_    |--+ |
                                     |  FreeList::length_  |  | |  |  FreeList::length_  |  | |
-                                    |  FreeList::size_    |  | |  |  FreeList::size_    |  | |
+                                    |  SizeMap[class]     |  | |  |  SizeMap[class ]    |  | |
                                     | next_               |----+  | next_               |----+
                                     | prev_               |  |    | prev_               |  |
                                     +---------------------+  |    +---------------------+  |
