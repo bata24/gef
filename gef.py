@@ -18340,20 +18340,23 @@ class DisplayTypeCommand(GenericCommand, BufferingOutput):
         # change setting temporarily
         if args.smart:
             old_smart_setting = Config.get("context.smart_cpp_function_name")
-            Config.set("context.smart_cpp_function_name", True)
 
-        # doit
-        if args.address is None:
-            ret = self.dump_type(tp, args.type)
-        else:
-            ret = self.apply_type(tp, args.address)
+        try:
+            if args.smart:
+                Config.set("context.smart_cpp_function_name", True)
 
-        if ret:
-            self.print_output(check_terminal_size=True)
+            # doit
+            if args.address is None:
+                ret = self.dump_type(tp, args.type)
+            else:
+                ret = self.apply_type(tp, args.address)
 
-        # revert setting
-        if args.smart:
-            Config.set("context.smart_cpp_function_name", old_smart_setting)
+            if ret:
+                self.print_output(check_terminal_size=True)
+        finally:
+            # revert setting
+            if args.smart:
+                Config.set("context.smart_cpp_function_name", old_smart_setting)
         return
 
 
@@ -196203,23 +196206,26 @@ class TypesCommand(GenericCommand, BufferingOutput):
         # temporarily changed
         if self.args.smart:
             old_smart_setting = Config.get("context.smart_cpp_function_name")
-            Config.set("context.smart_cpp_function_name", True)
 
-        # formatting typenames
-        for type_name in ProgressBar(type_names):
-            if self.args.verbose:
-                ret = gdb.execute("dt -n {!r}".format(type_name), to_string=True)
-                if not ret or (" is not struct or union" in ret) or ("Could not find " in ret):
+        try:
+            if self.args.smart:
+                Config.set("context.smart_cpp_function_name", True)
+
+            # formatting typenames
+            for type_name in ProgressBar(type_names):
+                if self.args.verbose:
+                    ret = gdb.execute("dt -n {!r}".format(type_name), to_string=True)
+                    if not ret or (" is not struct or union" in ret) or ("Could not find " in ret):
+                        self.out.append(Instruction.smartify_text(type_name))
+                        self.out.append("")
+                        continue
+                    self.out.append(ret)
+                else:
                     self.out.append(Instruction.smartify_text(type_name))
-                    self.out.append("")
-                    continue
-                self.out.append(ret)
-            else:
-                self.out.append(Instruction.smartify_text(type_name))
-
-        # revert
-        if self.args.smart:
-            Config.set("context.smart_cpp_function_name", old_smart_setting)
+        finally:
+            # revert
+            if self.args.smart:
+                Config.set("context.smart_cpp_function_name", old_smart_setting)
         return
 
     @Decorator.parse_args
