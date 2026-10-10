@@ -14240,7 +14240,7 @@ def get_register(regname, use_mbed_exec=False, use_monitor=False):
         if r:
             return int(r.group(1), 16)
 
-    if use_monitor and is_vmware() and is_x86_64():
+    if use_monitor and is_vmware() and is_x86():
         regname = regname.lstrip("$")
         try:
             res = gdb.execute("monitor r {:s}".format(regname), to_string=True)
@@ -102686,7 +102686,7 @@ class GdtInfoCommand(GenericCommand, BufferingOutput):
                 0b1101: ["Reserved", "Reserved"],
                 0b1110: ["32bit interrupt gate", "64bit interrupt gate"],
                 0b1111: ["32bit trap gate", "64bit trap gate"],
-            }[entry["type_bytes"]][is_x86_64()])
+            }[entry["type_bytes"]][GefUtil.get_x86_descriptor_mode() == "long"])
 
         if entry["s"] == 0 and entry["type_bytes"] == 0b1100:
             # SYSTEM segment (call gate)
@@ -102811,6 +102811,7 @@ class GdtInfoCommand(GenericCommand, BufferingOutput):
 
     def print_entries(self, entries, segm_desc=None, skip_null=False):
         regs = self.get_segreg_list()
+        long_mode = GefUtil.get_x86_descriptor_mode() == "long"
 
         # print legend
         fmt = "{:2s} {:20s} {:18s} {:18s} {:10s} {:1s} {:8s} {:3s} {:1s} {:3s} {:12s} {:s}"
@@ -102843,7 +102844,7 @@ class GdtInfoCommand(GenericCommand, BufferingOutput):
                 if not segname.endswith("-part2"):
                     segname += "-part2"
 
-            elif entry.s == 0 and entry.type_bytes != 0 and (is_x86_64() or is_emulated32()):
+            elif entry.s == 0 and entry.type_bytes in (2, 9, 11, 12) and long_mode and i + 1 < len(entries):
                 # upper half of 64bit SYSTEM entries
                 estr = self.entry2str(entries[i], value_only=True)
                 concat_prev = True
@@ -102874,7 +102875,7 @@ class GdtInfoCommand(GenericCommand, BufferingOutput):
 
     def print_gdt_example(self):
         # print title
-        if is_x86_64() or is_emulated32():
+        if GefUtil.get_x86_descriptor_mode() == "long":
             self.out.append(titlify("GDT Entry (x64 sample)"))
             segm_desc = self.SEGMENT_DESCRIPTION_64
         else:
@@ -102885,7 +102886,7 @@ class GdtInfoCommand(GenericCommand, BufferingOutput):
         self.info_add_out("*** This is an {:s} ***".format(Color.boldify("EXAMPLE")))
 
         # print entry
-        if is_x86_64() or is_emulated32():
+        if GefUtil.get_x86_descriptor_mode() == "long":
             entries = [
                 0x0000_0000_0000_0000,
                 0x00cf_9b00_0000_ffff,
@@ -102940,10 +102941,6 @@ class GdtInfoCommand(GenericCommand, BufferingOutput):
                 0xc400_8970_6000_206b,
             ]
 
-        if is_x86_64():
-            segm_desc = self.SEGMENT_DESCRIPTION_64
-        else:
-            segm_desc = self.SEGMENT_DESCRIPTION_32
         self.print_entries(entries, segm_desc)
         return
 
@@ -102972,13 +102969,13 @@ class GdtInfoCommand(GenericCommand, BufferingOutput):
             return
 
         try:
-            gdt_data = read_memory(base, limit + 1)
+            gdt_data = GefUtil.read_x86_descriptor_table(base, limit + 1)
         except gdb.MemoryError:
             self.err_add_out("Memory read error")
             return
         entries = slice_unpack(gdt_data, 8)
 
-        if is_x86_64():
+        if GefUtil.get_x86_descriptor_mode() == "long":
             segm_desc = self.SEGMENT_DESCRIPTION_64
         else:
             segm_desc = self.SEGMENT_DESCRIPTION_32
@@ -103022,7 +103019,7 @@ class GdtInfoCommand(GenericCommand, BufferingOutput):
             return
 
         try:
-            ldt_data = read_memory(base, limit + 1)
+            ldt_data = GefUtil.read_x86_descriptor_table(base, limit + 1)
         except gdb.MemoryError:
             self.err_add_out("Memory read error")
             return
@@ -103190,28 +103187,43 @@ class IdtInfoCommand(GenericCommand, BufferingOutput):
     }
 
     @staticmethod
-    def idt_unpack(val):
+    def idt_unpack(val, entry_size=None):
+        if entry_size is None:
+            entry_size = IdtInfoCommand.get_entry_size()
         idt = {}
         idt["value"] = val
 
         idt["offset"] = val & 0xffff
-        idt["offset"] = idt["offset"] | ((val >> 32) & (0xffff_0000))
-        idt["offset"] = ((val >> 32) & (0xffff_ffff_0000_0000)) | idt["offset"]
         idt["segment"] = (val >> 16) & 0xffff
-        idt["ist"] = (val >> 32) & 0b111 # codespell:ignore
-        idt["gate_type"] = (val >> 40) & (0b1111)
-        idt["dpl"] = (val >> 45) & (0b11)
-        idt["present"] = (val >> 47) & (0b1)
+        idt["ist"] = (val >> 32) & 0b111 if entry_size == 16 else 0 # codespell:ignore
+        idt["gate_type"] = (val >> 40) & 0b1111 if entry_size != 4 else None
+        idt["dpl"] = (val >> 45) & 0b11 if entry_size != 4 else None
+        idt["present"] = (val >> 47) & 1 if entry_size != 4 else None
+
+        if entry_size == 16 or idt["gate_type"] in (14, 15):
+            idt["offset"] |= (val >> 32) & 0xffff_0000
+        if entry_size == 16:
+            idt["offset"] |= (val >> 32) & 0xffff_ffff_0000_0000
+        elif idt["gate_type"] == 5:
+            idt["offset"] = 0
 
         Idt = collections.namedtuple("Idt", idt.keys())
         return Idt(*idt.values())
 
     @staticmethod
-    def idtval2str(value):
-        val_width = current_arch.ptrsize * 4 + 2
-        ofs_width = current_arch.ptrsize * 2 + 2
+    def get_entry_size():
+        return {"real": 4, "protected": 8, "long": 16}[GefUtil.get_x86_descriptor_mode()]
 
-        idt = IdtInfoCommand.idt_unpack(value)
+    @staticmethod
+    def idtval2str(value, entry_size=None):
+        if entry_size is None:
+            entry_size = IdtInfoCommand.get_entry_size()
+        val_width = entry_size * 2 + 2
+        ofs_width = entry_size + 2
+
+        idt = IdtInfoCommand.idt_unpack(value, entry_size)
+        if entry_size == 4:
+            return "{:#010x} {:#06x}:{:#06x}".format(idt.value, idt.segment, idt.offset)
         if idt.present == 0:
             return "(none)"
 
@@ -103225,9 +103237,13 @@ class IdtInfoCommand(GenericCommand, BufferingOutput):
         return out
 
     @staticmethod
-    def idtval2str_legend():
-        val_width = current_arch.ptrsize * 4 + 2
-        ofs_width = current_arch.ptrsize * 2 + 2
+    def idtval2str_legend(entry_size=None):
+        if entry_size is None:
+            entry_size = IdtInfoCommand.get_entry_size()
+        if entry_size == 4:
+            return "{:3s} {:36s} {:10s} {:6s}:{:6s}".format("#", "name", "value", "segm", "offset")
+        val_width = entry_size * 2 + 2
+        ofs_width = entry_size + 2
         return "{:3s} {:36s} {:{:d}s} {:3s} {:3s} {:3s} {:3s} {:6s}:{:{:d}s}".format(
             "#", "name", "value", val_width, "typ",
             "ist", "dpl", "p", "segm", "offset", ofs_width, # codespell:ignore
@@ -103235,7 +103251,7 @@ class IdtInfoCommand(GenericCommand, BufferingOutput):
 
     def print_idt_example(self):
         # print title
-        if is_x86_64() or is_emulated32():
+        if GefUtil.get_x86_descriptor_mode() == "long":
             self.out.append(titlify("IDT Entry (x64 sample)"))
         else:
             self.out.append(titlify("IDT Entry (x86 sample)"))
@@ -103245,7 +103261,7 @@ class IdtInfoCommand(GenericCommand, BufferingOutput):
         self.out.append(GefUtil.make_legend(self.idtval2str_legend()))
 
         # print entry
-        if is_x86_64() or is_emulated32():
+        if GefUtil.get_x86_descriptor_mode() == "long":
             entries = [
                 # idx, value
                 [0,    0x00_0000_0000_ffff_ffff_8160_8e00_0010_0c30],
@@ -103323,12 +103339,13 @@ class IdtInfoCommand(GenericCommand, BufferingOutput):
 
         base = int(r.group(1), 16)
         limit = int(r.group(2), 16)
+        entry_size = self.get_entry_size()
 
         # print title
         self.out.append(titlify("IDT Entry: base:{:#x} / limit:{:#x}".format(base, limit)))
 
         # print legend
-        self.out.append(GefUtil.make_legend(self.idtval2str_legend()))
+        self.out.append(GefUtil.make_legend(self.idtval2str_legend(entry_size)))
 
         # check initialized or not
         if (base == 0x0 and limit == 0xffff) or limit == 0x0:
@@ -103336,38 +103353,56 @@ class IdtInfoCommand(GenericCommand, BufferingOutput):
             return
 
         try:
-            idt_data = read_memory(base, min(limit + 1, current_arch.ptrsize * 2 * 256))
+            size = min(limit + 1, entry_size * 256)
+            idt_data = GefUtil.read_x86_descriptor_table(base, size - size % entry_size)
         except gdb.MemoryError:
             self.err_add_out("Memory read error")
             return
-        entries = slice_unpack(idt_data, current_arch.ptrsize * 2)
+        entries = slice_unpack(idt_data, entry_size)
 
         # print entry
         for i, b in enumerate(entries):
             int_name = self.INTERRUPT_DESCRIPTION.get(i, "User defined Interrupt {:#x}".format(i))
-            valstr = self.idtval2str(b)
-            sym = Symbol.get_symbol_string(self.idt_unpack(b).offset, nosymbol_string=" <NO_SYMBOL>")
+            valstr = self.idtval2str(b, entry_size)
+            idt = self.idt_unpack(b, entry_size)
+            address = (idt.segment << 4) + idt.offset if entry_size == 4 else idt.offset
+            sym = ""
+            if entry_size == 4 or (idt.present and idt.gate_type != 5):
+                sym = Symbol.get_symbol_string(address, nosymbol_string=" <NO_SYMBOL>")
             self.out.append("{:<3d} {:36s} {:s}{:s}".format(i, int_name, valstr, sym))
         return
 
     def print_idt_entry_legend(self):
+        entry_size = self.get_entry_size()
+        if entry_size == 4:
+            self.out.append(titlify("legend (Real-mode interrupt vector)"))
+            self.out.append("| Segment 31:16 | Offset 15:0 | 4byte")
+            self.out.append(" * handler address : (segment << 4) + offset")
+            return
         self.out.append(titlify("legend (Normal IDT entry)"))
         self.out.append(" 31                                 15  14    13  12     8       3     0bit")
+        if entry_size == 16:
+            self.out.append("------------------------------------------------------------------------")
+            self.out.append("|                              RESERVED                                | 12byte")
+            self.out.append("------------------------------------------------------------------------")
+            self.out.append("|                            OFFSET2 63:32                             | 8byte")
         self.out.append("------------------------------------------------------------------------")
-        self.out.append("|                              RESERVED                                | 12byte")
-        self.out.append("------------------------------------------------------------------------")
-        self.out.append("|                            OFFSET2 63:32                             | 8byte")
-        self.out.append("------------------------------------------------------------------------")
-        self.out.append("|         OFFSET1 31:16            | P | DPL | 0 | Type | 00000 | IST  | 4byte") # codespell:ignore
+        if entry_size == 16:
+            self.out.append("|         OFFSET1 31:16            | P | DPL | 0 | Type | 00000 | IST  | 4byte") # codespell:ignore
+        else:
+            self.out.append("|         OFFSET1 31:16            | P | DPL | 0 | Type |   RESERVED   | 4byte")
         self.out.append("------------------------------------------------------------------------")
         self.out.append("|         Segment Selector         |           OFFSET0 15:0            | 0byte")
         self.out.append("------------------------------------------------------------------------")
         self.out.append(" * segment selector : Segment selector for destination code segment")
         self.out.append(" * offset           : Offset to handler procedure entry point")
-        self.out.append(" * ist              : Interrupt stack table") # codespell:ignore
+        if entry_size == 16:
+            self.out.append(" * ist              : Interrupt stack table") # codespell:ignore
         self.out.append(" * type             : One of following")
-        self.out.append("                        0x5: Task gate")
-        self.out.append("                        0xC: Call gate")
+        if entry_size == 8:
+            self.out.append("                        0x5: Task gate (segment selects a TSS; no handler offset)")
+            self.out.append("                        0x6: 16-bit interrupt gate")
+            self.out.append("                        0x7: 16-bit trap gate")
         self.out.append("                        0xE: 32/64-bit interrupt gate")
         self.out.append("                        0xF: 32/64-bit trap gate")
         self.out.append(" * dpl              : Descriptor privilege level")
@@ -197572,6 +197607,27 @@ class AliasesListCommand(AliasesCommand, BufferingOutput):
 
 class GefUtil:
     """A collection of utility functions that are related to GEF basic features."""
+
+    @staticmethod
+    @Cache.cache_until_next(per_cpu=True, per_inferior=True)
+    def get_x86_descriptor_mode():
+        """Return the CPU mode that determines GDT/IDT formats."""
+        if is_qemu_system() or is_vmware():
+            cr0 = get_register("cr0", use_monitor=True)
+            if cr0 is None:
+                raise gdb.error("Could not read CR0")
+            if not cr0 & 1:
+                return "real"
+            efer = get_register("efer", use_monitor=True)
+            return "long" if efer is not None and efer & (1 << 10) else "protected"
+        return "long" if is_x86_64() or is_emulated32() else "protected"
+
+    @staticmethod
+    def read_x86_descriptor_table(base, size):
+        """Read a CPU table whose linear address may exceed the current code's address size."""
+        if GefUtil.get_x86_descriptor_mode() == "long" and base + size > AddressUtil.get_vmem_end():
+            return gdb.selected_inferior().read_memory(base, size).tobytes()
+        return read_memory(base, size)
 
     @staticmethod
     def parse_and_eval_unsigned(expression):
