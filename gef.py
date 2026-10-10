@@ -195310,8 +195310,8 @@ class BytearrayCommand(GenericCommand):
         for b in args.badchars:
             b = b.lower().replace("-", "..")
 
-            if not re.match(r"[0-9a-f]+", b):
-                err("{:s} is not valid hex (not match `[0-9a-f]+`)".format(b))
+            if not re.fullmatch(r"[0-9a-f]+(?:\.\.[0-9a-f]+)*", b):
+                err("{:s} is not valid hex (expected hex bytes or ranges)".format(b))
                 return
 
             if (len(b) % 2) != 0:
