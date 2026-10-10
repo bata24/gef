@@ -7485,7 +7485,7 @@ Simplified musl mallocng structure:
 
 ## `scalloc-heap-dump`
 
-scalloc heap free-list viewer (x64 only).
+scalloc heap free-list viewer.
 
 
 ### Syntax
@@ -7543,7 +7543,10 @@ Simplified scalloc structure:
 * `size_class_` is converted to object size and capacity by fixed tables.
 * `local_free_list_.list_` points to the local free-list.
 * `local_free_list_.bump_pointer_` points to the next unused object area (top).
-* `remote_free_list_.top_` is a tagged pointer and is decoded before dumping.
+* `remote_free_list_.top_` is a tagged 64-bit value with a 48-bit pointer and a 16-bit tag.
+* Pointers must fit in 48 bits (with bit 47 sign-extended on 64-bit targets).
+* Upstream scalloc targets x86-64; other architectures require a compatible allocator port.
+* Layouts use debug types when available, otherwise the upstream field order and target pointer size.
 ```
 
 ## `snmalloc-heap-dump`

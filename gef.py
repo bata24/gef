@@ -166735,7 +166735,7 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
 
 @register_command
 class ScallocHeapDumpCommand(GenericCommand, BufferingOutput):
-    """scalloc heap free-list viewer (x64 only)."""
+    """scalloc heap free-list viewer."""
 
     _cmdline_ = "scalloc-heap-dump"
     _category_ = "05-c. Heap - Other"
@@ -166787,9 +166787,33 @@ class ScallocHeapDumpCommand(GenericCommand, BufferingOutput):
         "* `size_class_` is converted to object size and capacity by fixed tables.",
         "* `local_free_list_.list_` points to the local free-list.",
         "* `local_free_list_.bump_pointer_` points to the next unused object area (top).",
-        "* `remote_free_list_.top_` is a tagged pointer and is decoded before dumping.",
+        "* `remote_free_list_.top_` is a tagged 64-bit value with a 48-bit pointer and a 16-bit tag.",
+        "* Pointers must fit in 48 bits (with bit 47 sign-extended on 64-bit targets).",
+        "* Upstream scalloc targets x86-64; other architectures require a compatible allocator port.",
+        "* Layouts use debug types when available, otherwise the upstream field order and target pointer size.",
     ]
     _note_ = "\n".join(_note_)
+
+    def initialize(self):
+        ptr = current_arch.ptrsize
+        self.arena_offsets = {}
+        for member, offset in (("name_", 0), ("start_", ptr), ("end_", ptr * 2),
+                               ("len_", ptr * 3), ("current_", 0x40)):
+            actual = GefUtil.member_offset("scalloc::Arena", member)
+            self.arena_offsets[member] = offset if actual is None else actual
+
+        self.span_offsets = {}
+        for member, offset in (("span_link_", 0), ("owner_", ptr * 2), ("epoch_", ptr * 2 + 8),
+                               ("size_class_", ptr * 2 + 12), ("local_free_list_", ptr * 2 + 24),
+                               ("remote_free_list_", ptr * 4 + 32)):
+            actual = GefUtil.member_offset("scalloc::Span", member)
+            self.span_offsets[member] = offset if actual is None else actual
+
+        self.freelist_offsets = {}
+        for member, offset in (("list_", 0), ("bump_pointer_", ptr), ("len_", ptr * 2), ("increment_", ptr * 2 + 4)):
+            actual = GefUtil.member_offset("scalloc::IncrementalFreeList", member)
+            self.freelist_offsets[member] = offset if actual is None else actual
+        return
 
     def class_to_objects(self, cl):
         # number of objects in each span
@@ -166799,7 +166823,7 @@ class ScallocHeapDumpCommand(GenericCommand, BufferingOutput):
             0x7f, 0x40, 0x40, 0x40, 0x20, 0x20, 0x10, 0x10,
             0x10, 0x8, 0x4, 0x2, 0x1,
         ]
-        assert cl < len(class_to_objects_list)
+        assert 0 <= cl < len(class_to_objects_list)
         return class_to_objects_list[cl]
 
     def class_to_size(self, cl):
@@ -166809,7 +166833,7 @@ class ScallocHeapDumpCommand(GenericCommand, BufferingOutput):
             0x100, 0x200, 0x400, 0x800, 0x1000, 0x2000, 0x4000, 0x8000,
             0x10000, 0x20000, 0x40000, 0x80000, 0x100000,
         ]
-        assert cl < len(class_to_size_list)
+        assert 0 <= cl < len(class_to_size_list)
         return class_to_size_list[cl]
 
     def read_arena(self, addr, arena_name):
@@ -166829,53 +166853,45 @@ class ScallocHeapDumpCommand(GenericCommand, BufferingOutput):
         dic = {}
         dic["addr"] = addr
         dic["name"] = arena_name
-        dic["name_"] = read_cstring_from_memory(read_int_from_memory(addr))
-        dic["start"] = read_int_from_memory(addr + current_arch.ptrsize * 1)
-        dic["end"] = read_int_from_memory(addr + current_arch.ptrsize * 2)
-        dic["len"] = read_int_from_memory(addr + current_arch.ptrsize * 3)
-        dic["current"] = read_int_from_memory(addr + 0x40)
+        dic["name_"] = read_cstring_from_memory(read_int_from_memory(addr + self.arena_offsets["name_"]))
+        dic["start"] = read_int_from_memory(addr + self.arena_offsets["start_"])
+        dic["end"] = read_int_from_memory(addr + self.arena_offsets["end_"])
+        dic["len"] = read_int_from_memory(addr + self.arena_offsets["len_"])
+        dic["current"] = read_int_from_memory(addr + self.arena_offsets["current_"])
         Arena = collections.namedtuple("Arena", dic.keys())
         arena = Arena(*dic.values())
         return arena
 
     def get_object_space_heuristic(self):
+        ptr = current_arch.ptrsize
+        offsets = {name: offset // ptr for name, offset in self.arena_offsets.items()}
         maps = ProcessMap.get_process_maps()
         for m in maps:
-            if m.path != "":
+            if not m.is_readable() or not m.is_writable():
                 continue
             if m.size > 0x100_0000: # heuristic
                 continue
-            for addr in range(m.page_start, m.page_end, current_arch.ptrsize):
-                v = read_int_from_memory(addr)
-                if v == 0 or not is_valid_addr(v):
+            try:
+                values = slice_unpack(read_memory(m.page_start, m.size), ptr)
+            except gdb.MemoryError:
+                continue
+            for i in range(len(values) - max(offsets.values())):
+                start = values[i + offsets["start_"]]
+                end = values[i + offsets["end_"]]
+                len_ = values[i + offsets["len_"]]
+                current = values[i + offsets["current_"]]
+                if not start or end <= start or end - start != len_:
                     continue
-                if read_cstring_from_memory(v) != "object":
+                if not start <= current <= end or (current - start) % 0x20_0000:
                     continue
-                start = read_int_from_memory(addr + current_arch.ptrsize)
-                if not is_valid_addr(start):
+                v = values[i + offsets["name_"]]
+                if not v or not is_valid_addr(v):
                     continue
-                end = read_int_from_memory(addr + current_arch.ptrsize * 2)
-                if not is_valid_addr(end - 1):
+                if read_cstring_from_memory(v, max_length=7, safe=True) != "object":
                     continue
-                len_ = read_int_from_memory(addr + current_arch.ptrsize * 3)
-                if end - start != len_:
+                if not is_valid_addr(start) or not is_valid_addr(end - 1):
                     continue
-                pad1 = read_int_from_memory(addr + current_arch.ptrsize * 4)
-                if pad1 != 0:
-                    continue
-                pad2 = read_int_from_memory(addr + current_arch.ptrsize * 5)
-                if pad2 != 0:
-                    continue
-                pad3 = read_int_from_memory(addr + current_arch.ptrsize * 6)
-                if pad3 != 0:
-                    continue
-                pad4 = read_int_from_memory(addr + current_arch.ptrsize * 7)
-                if pad4 != 0:
-                    continue
-                current = read_int_from_memory(addr + current_arch.ptrsize * 8)
-                if not is_valid_addr(current):
-                    continue
-                return addr
+                return m.page_start + i * ptr
         return None
 
     def get_object_space(self):
@@ -166901,9 +166917,10 @@ class ScallocHeapDumpCommand(GenericCommand, BufferingOutput):
 
     def decode_top(self, raw):
         kValueBits = 48
-        kValueMask= (1 << kValueBits) - 1
-        kExtendMask = 0xffff_ffff_ffff_ffff
-        return (raw & kValueMask) | (((raw >> (kValueBits - 1)) & 0x1) * kExtendMask)
+        kValueMask = (1 << kValueBits) - 1
+        kPointerMask = (1 << (current_arch.ptrsize * 8)) - 1
+        kExtendMask = kPointerMask & ~kValueMask
+        return ((raw & kValueMask) | (((raw >> (kValueBits - 1)) & 0x1) * kExtendMask)) & kPointerMask
 
     def read_span(self, addr):
         """
@@ -166928,22 +166945,24 @@ class ScallocHeapDumpCommand(GenericCommand, BufferingOutput):
             } remote_free_list_;
         }
         """
+        link = addr + self.span_offsets["span_link_"]
+        local = addr + self.span_offsets["local_free_list_"]
         dic = {}
         dic["addr"] = addr
-        dic["next"] = read_int_from_memory(addr + current_arch.ptrsize * 0)
-        dic["prev"] = read_int_from_memory(addr + current_arch.ptrsize * 1)
-        dic["owner"] = read_int_from_memory(addr + current_arch.ptrsize * 2)
-        dic["epoch"] = read_int32_from_memory(addr + current_arch.ptrsize * 3)
-        dic["size_class"] = read_int32_from_memory(addr + current_arch.ptrsize * 3 + 4)
+        dic["next"] = read_int_from_memory(link)
+        dic["prev"] = read_int_from_memory(link + current_arch.ptrsize)
+        dic["owner"] = read_int64_from_memory(addr + self.span_offsets["owner_"])
+        dic["epoch"] = read_int32_from_memory(addr + self.span_offsets["epoch_"])
+        dic["size_class"] = read_int32_from_memory(addr + self.span_offsets["size_class_"], signed=True)
         dic["object_num"] = self.class_to_objects(dic["size_class"]) # number of objects in each span
         dic["object_size"] = self.class_to_size(dic["size_class"])
-        dic["freelist"] = read_int_from_memory(addr + current_arch.ptrsize * 5)
-        dic["freelist_addr"] = addr + current_arch.ptrsize * 5
-        dic["bump_pointer"] = read_int_from_memory(addr + current_arch.ptrsize * 6) # top pointer in glibc
-        dic["freelist_len"] = read_int32_from_memory(addr + current_arch.ptrsize * 7)
-        dic["freelist_increment"] = read_int32_from_memory(addr + current_arch.ptrsize * 7 + 4) # = object_size
-        dic["top"] = read_int_from_memory(addr + current_arch.ptrsize * 8) # encoded remote freelist
-        dic["top_addr"] = addr + current_arch.ptrsize * 8
+        dic["freelist_addr"] = local + self.freelist_offsets["list_"]
+        dic["freelist"] = read_int_from_memory(dic["freelist_addr"])
+        dic["bump_pointer"] = read_int_from_memory(local + self.freelist_offsets["bump_pointer_"])
+        dic["freelist_len"] = read_int32_from_memory(local + self.freelist_offsets["len_"])
+        dic["freelist_increment"] = read_int32_from_memory(local + self.freelist_offsets["increment_"])
+        dic["top_addr"] = addr + self.span_offsets["remote_free_list_"]
+        dic["top"] = read_int64_from_memory(dic["top_addr"])
         dic["top_decoded"] = self.decode_top(dic["top"])
         Span = collections.namedtuple("Span", dic.keys())
         span = Span(*dic.values())
@@ -166967,15 +166986,24 @@ class ScallocHeapDumpCommand(GenericCommand, BufferingOutput):
                 self.out.append(" -> {:s}".format(Color.colorify_hex(cur, freed_address_color)))
             if cur == 0:
                 break
-            cur = read_int_from_memory(cur)
+            try:
+                cur = read_int_from_memory(cur)
+            except gdb.MemoryError:
+                self.out.append(" -> {:s}".format(Color.colorify("corrupted: invalid address", corrupted_msg_color)))
+                break
             cnt += 1
         return cnt
 
     def dump_spans(self, arena):
         self.out.append(titlify("Arena ({:s}) @{:#x}".format(arena.name, arena.addr)))
         current = arena.start
+        span = None
         while current < arena.current:
-            span = self.read_span(current)
+            try:
+                span = self.read_span(current)
+            except (gdb.MemoryError, AssertionError):
+                self.err_add_out("Corrupted span at {:#x}".format(current))
+                break
             if span.object_size != 0:
                 self.out.append(titlify("Span @{:#x} (size: {:#x}, capacity: {:#x}, available: {:#x})".format(
                     span.addr, span.object_size, span.object_num, span.freelist_len,
@@ -166994,8 +167022,8 @@ class ScallocHeapDumpCommand(GenericCommand, BufferingOutput):
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
-    @Decorator.only_if_specific_arch(arch=("x86_64",))
     def do_invoke(self, args):
+        self.initialize()
         object_space = self.get_object_space()
         if object_space is None:
             err("Could not find object_space")
