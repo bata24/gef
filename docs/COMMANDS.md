@@ -7102,7 +7102,7 @@ Also, since it uses V8 commands internally, `_v8_internal_Print_Object` must be 
 # 05-c. Heap - Other
 ## `go-heap-dump`
 
-go language v1.24.4 mheap dumper (x64 only).
+Go mheap dumper.
 
 
 ### Syntax
@@ -7163,7 +7163,10 @@ Simplified Go heap structure:
 
 * `allspans` is used as the entry point for this command.
 * `spanClass >> 1` is used as the size class, and the size class is converted to chunk size.
-* `allocBits` is used to distinguish allocated/free objects in a span.
+* `freeindex` and `allocBits` distinguish allocated/free objects in an in-use span.
+* Large objects use `elemsize`; non-heap spans are shown only with `--verbose`, without object data.
+* Without debug types, the command assumes the Go 1.22.2 layout for the target pointer size.
+* If the runtime.mheap_ symbol is stripped, specify its address with `--mheap`.
 * `arenas`, `central`, and walking from `mspan.next` are currently unsupported.
 ```
 

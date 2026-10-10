@@ -16499,6 +16499,8 @@ def set_arch(arch_str=None):
         ambiguous_machines = [Elf.EM_MIPS, Elf.EM_RISCV, Elf.EM_PARISC]
         if elf and elf.is_valid() and elf.e_machine in arches and elf.e_machine not in ambiguous_machines:
             key = elf.e_machine
+        elif elf and elf.is_valid() and elf.e_machine == Elf.EM_MIPS and elf.e_class == Elf.ELF_64_BITS:
+            key = "MIPS64"
         else:
             # Fall back when there is no usable ELF, or e_machine cannot determine the ABI.
             key = get_arch().upper()
@@ -161694,7 +161696,7 @@ class TcmallocDumpCommand(GenericCommand, BufferingOutput):
 
 @register_command
 class GoHeapDumpCommand(GenericCommand, BufferingOutput):
-    """go language v1.24.4 mheap dumper (x64 only)."""
+    """Go mheap dumper."""
 
     _cmdline_ = "go-heap-dump"
     _category_ = "05-c. Heap - Other"
@@ -161751,7 +161753,10 @@ class GoHeapDumpCommand(GenericCommand, BufferingOutput):
         "",
         "* `allspans` is used as the entry point for this command.",
         "* `spanClass >> 1` is used as the size class, and the size class is converted to chunk size.",
-        "* `allocBits` is used to distinguish allocated/free objects in a span.",
+        "* `freeindex` and `allocBits` distinguish allocated/free objects in an in-use span.",
+        "* Large objects use `elemsize`; non-heap spans are shown only with `--verbose`, without object data.",
+        "* Without debug types, the command assumes the Go 1.22.2 layout for the target pointer size.",
+        "* If the runtime.mheap_ symbol is stripped, specify its address with `--mheap`.",
         "* `arenas`, `central`, and walking from `mspan.next` are currently unsupported.",
     ]
     _note_ = "\n".join(_note_)
@@ -161776,10 +161781,11 @@ class GoHeapDumpCommand(GenericCommand, BufferingOutput):
         0x6000, 0x6a80, 0x7000, 0x8000,
     ]
 
-    @Cache.cache_this_session(cache_None=False)
+    @Cache.cache_this_session(cache_None=False, per_inferior=True, until_new_objfile=True)
     def initialize(self):
         self.PageShift = 13
         self.PageSize = 1 << self.PageShift
+        ptrsize = current_arch.ptrsize
 
         # assume 1.22.2 (Ubuntu 24.04)
         """
@@ -161795,8 +161801,7 @@ class GoHeapDumpCommand(GenericCommand, BufferingOutput):
         } // total: 0x16ab8 bytes
         """
 
-        self.offset_allspans = GefUtil.member_offset("runtime.mheap", "allspans") or 0x10148
-        self.sizeof_mheap = GefUtil.type_size("runtime.mheap") or 0x16ab8
+        self.offset_allspans = GefUtil.member_offset("runtime.mheap", "allspans") or (0xb4 if ptrsize == 4 else 0x10148)
 
         """
         struct runtime.mspan {
@@ -161817,49 +161822,47 @@ class GoHeapDumpCommand(GenericCommand, BufferingOutput):
         } // total: 0xa0 bytes
         """
         self.offset_next = GefUtil.member_offset("runtime.mspan", "next") or 0x0
-        self.offset_prev = GefUtil.member_offset("runtime.mspan", "prev") or 0x8
-        self.offset_startAddr = GefUtil.member_offset("runtime.mspan", "startAddr") or 0x18
-        self.offset_npages = GefUtil.member_offset("runtime.mspan", "npages") or 0x20
-        self.offset_nelems = GefUtil.member_offset("runtime.mspan", "nelems") or 0x32
-        self.offset_allocBits = GefUtil.member_offset("runtime.mspan", "allocBits") or 0x40
-        self.offset_spanclass = GefUtil.member_offset("runtime.mspan", "spanclass") or 0x62
+        self.offset_prev = GefUtil.member_offset("runtime.mspan", "prev") or ptrsize
+        self.offset_startAddr = GefUtil.member_offset("runtime.mspan", "startAddr") or ptrsize * 3
+        self.offset_npages = GefUtil.member_offset("runtime.mspan", "npages") or ptrsize * 4
+        self.offset_freeindex = GefUtil.member_offset("runtime.mspan", "freeindex") or ptrsize * 6
+        self.offset_nelems = GefUtil.member_offset("runtime.mspan", "nelems") or ptrsize * 6 + 2
+        self.offset_allocBits = GefUtil.member_offset("runtime.mspan", "allocBits") or ptrsize * 6 + 0x10
+        self.offset_spanclass = GefUtil.member_offset("runtime.mspan", "spanclass") or ptrsize * 9 + 0x1a
+        self.offset_state = GefUtil.member_offset("runtime.mspan", "state") or ptrsize * 9 + 0x1b
+        self.offset_elemsize = GefUtil.member_offset("runtime.mspan", "elemsize") or ptrsize * 9 + 0x20
 
         return True
 
     def get_mheap_(self):
-        # use symbol
         try:
             return AddressUtil.parse_address("&'runtime.mheap_'")
         except gdb.error:
-            pass
-
-        # use heuristic search (TODO: Check if it is always correct)
-        elf = Elf.get_elf()
-        if elf is None or not elf.is_valid():
             return None
-
-        bss = elf.get_shdr(".bss")
-        mheap = bss.sh_addr + bss.sh_size - self.sizeof_mheap
-        if is_valid_addr(mheap):
-            return mheap
-        return None
 
     def parse_mheap(self, mheap):
         self.out.append(titlify("runtime.mheap_ @ {:#x}".format(mheap)))
 
-        current = read_int_from_memory(mheap + self.offset_allspans)
+        allspans = mheap + self.offset_allspans
+        current = read_int_from_memory(allspans)
+        length = read_int_from_memory(allspans + current_arch.ptrsize)
+        capacity = read_int_from_memory(allspans + current_arch.ptrsize * 2)
+        if length > capacity or (length and not current):
+            self.out.append("Invalid allspans slice")
+            return []
+
         mspans = []
-        while True:
-            mspan_addr = read_int_from_memory(current, safe=True)
+        for i in range(length):
+            mspan_addr = read_int_from_memory(current + i * current_arch.ptrsize, safe=True)
             if mspan_addr is None:
                 self.out.append("Memory read error")
-                return []
-            if not mspan_addr:
                 break
+            if not mspan_addr:
+                self.out.append("Invalid mspan pointer in allspans[{:d}]".format(i))
+                continue
             mspan = self.parse_mspan(mspan_addr)
             if mspan:
                 mspans.append(mspan)
-            current += current_arch.ptrsize
 
         mspans = sorted(mspans, key=lambda m: (m.chunk_size, m.address))
         return mspans
@@ -161873,28 +161876,42 @@ class GoHeapDumpCommand(GenericCommand, BufferingOutput):
         if not self.args.verbose and start_addr == 0:
             return None
 
-        # spanclass = (sizeclass << 1) | (noscan bit)
-        spanclass = read_int8_from_memory(mspan + self.offset_spanclass) >> 1
-        chunk_size = self.class_to_size_dic[spanclass]
-        if not self.args.verbose and chunk_size == 0:
+        state = read_int8_from_memory(mspan + self.offset_state)
+        if not self.args.verbose and state != 1:
             return None
+
+        chunk_size = 0
+        nelems = 0
+        allocBits_array = []
+        if state == 1:
+            # spanclass = (sizeclass << 1) | (noscan bit)
+            spanclass = read_int8_from_memory(mspan + self.offset_spanclass) >> 1
+            if spanclass >= len(self.class_to_size_dic):
+                self.out.append("Invalid spanclass in mspan @ {:#x}".format(mspan))
+                return None
+            chunk_size = self.class_to_size_dic[spanclass]
+            if spanclass == 0:
+                chunk_size = read_int_from_memory(mspan + self.offset_elemsize)
+            nelems = read_int16_from_memory(mspan + self.offset_nelems)
+            freeindex = read_int16_from_memory(mspan + self.offset_freeindex)
+            if freeindex > nelems:
+                self.out.append("Invalid freeindex in mspan @ {:#x}".format(mspan))
+                return None
+            if nelems:
+                allocBits_addr = read_int_from_memory(mspan + self.offset_allocBits)
+                allocBits_data = read_memory(allocBits_addr, (nelems + 7) // 8)
+                allocBits_array = [int(i < freeindex or (allocBits_data[i // 8] >> (i % 8)) & 1)
+                                   for i in range(nelems)]
 
         next_ = read_int_from_memory(mspan + self.offset_next)
         prev_ = read_int_from_memory(mspan + self.offset_prev)
         npages = read_int_from_memory(mspan + self.offset_npages)
         end_addr = start_addr + npages * self.PageSize
 
-        aligned_nelems = nelems = read_int_from_memory(mspan + self.offset_nelems) & 0xffff
-        while aligned_nelems % 8:
-            aligned_nelems += 1
-        allocBits_addr = read_int_from_memory(mspan + self.offset_allocBits)
-        allocBits_data = read_memory(allocBits_addr, aligned_nelems)
-        allocBits_array = [((b >> i) & 1) for b in allocBits_data for i in range(8)]
-
         Mspan = collections.namedtuple("Mspan", [
-            "address", "next", "prev", "start_addr", "end_addr", "npages", "chunk_size", "nelems", "alloc_bits",
+            "address", "next", "prev", "start_addr", "end_addr", "npages", "chunk_size", "nelems", "alloc_bits", "state",
         ])
-        mspan = Mspan(mspan, next_, prev_, start_addr, end_addr, npages, chunk_size, nelems, allocBits_array[:nelems])
+        mspan = Mspan(mspan, next_, prev_, start_addr, end_addr, npages, chunk_size, nelems, allocBits_array, state)
         return mspan
 
     def dump_mspan_data(self, mspan):
@@ -161902,8 +161919,12 @@ class GoHeapDumpCommand(GenericCommand, BufferingOutput):
             # `--verbose` does not filter out the span of chunk_size == 0
             return
         chunk_data = read_memory(mspan.start_addr, mspan.end_addr - mspan.start_addr)
-        chunk_hexdump = hexdump(chunk_data, base=mspan.start_addr, color=False, unit=8)
+        ptrsize = current_arch.ptrsize
+        chunk_hexdump = hexdump(chunk_data, base=mspan.start_addr, color=False, show_symbol=False, unit=ptrsize)
         lines = chunk_hexdump.splitlines()
+        column_start = AddressUtil.get_format_address_width() + 5
+        word_width = ptrsize * 2 + 2
+        words_per_line = 0x10 // ptrsize
 
         color_dic = {
             # (b, idx % 2): color name
@@ -161914,32 +161935,15 @@ class GoHeapDumpCommand(GenericCommand, BufferingOutput):
         }
 
         # coloring
-        for i in range(len(lines)):
-            line = lines[i]
-
-            offset1 = i * 0x10
-            idx1 = offset1 // mspan.chunk_size
-            if idx1 >= mspan.nelems:
-                color1 = ""
-            else:
-                b1 = mspan.alloc_bits[idx1]
-                color1 = color_dic[b1, idx1 % 2]
-
-            offset2 = i * 0x10 + 8
-            idx2 = offset2 // mspan.chunk_size
-            if idx2 >= mspan.nelems:
-                color2 = ""
-            else:
-                b2 = mspan.alloc_bits[idx2]
-                color2 = color_dic[b2, idx2 % 2]
-
-            lines[i] = "{:s}{:s}{:s}{:s}{:s}".format(
-                line[:19],
-                Color.colorify(line[19:37], color1),
-                line[37:38],
-                Color.colorify(line[38:56], color2),
-                line[56:],
-            )
+        for i, line in enumerate(lines):
+            words = []
+            for j in range(words_per_line):
+                idx = (i * 0x10 + j * ptrsize) // mspan.chunk_size
+                color = color_dic[mspan.alloc_bits[idx], idx % 2] if idx < mspan.nelems else ""
+                start = column_start + j * (word_width + 1)
+                words.append(Color.colorify(line[start:start + word_width], color))
+            end = column_start + words_per_line * (word_width + 1) - 1
+            lines[i] = line[:column_start] + " ".join(words) + line[end:]
 
         self.out.extend(lines)
         return
@@ -161955,11 +161959,12 @@ class GoHeapDumpCommand(GenericCommand, BufferingOutput):
             range_addr_str += "-"
             range_addr_str += Color.colorify_hex(mspan.end_addr, page_address_color)
             range_size = mspan.end_addr - mspan.start_addr
-            msg = "mspan @ {!s} [{:s} sz={:#x} chunk_size={:s} next={!s}, prev:{!s}]".format(
+            msg = "mspan @ {!s} [{:s} sz={:#x} chunk_size={:s} next={!s}, prev:{!s} state={:d}]".format(
                 ProcessMap.lookup_address(mspan.address),
                 range_addr_str, range_size, chunk_size_str,
                 ProcessMap.lookup_address(mspan.next),
                 ProcessMap.lookup_address(mspan.prev),
+                mspan.state,
             )
             self.out.append(msg)
             if self.args.dump:
@@ -161969,7 +161974,8 @@ class GoHeapDumpCommand(GenericCommand, BufferingOutput):
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
-    @Decorator.only_if_specific_arch(arch=("x86_64",))
+    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64", "MIPS32", "MIPS64",
+                                          "PPC64", "RISCV64", "S390X", "LOONGARCH64"))
     def do_invoke(self, args):
         self.out = []
         if not self.initialize():
@@ -161982,7 +161988,7 @@ class GoHeapDumpCommand(GenericCommand, BufferingOutput):
         else:
             mheap = self.get_mheap_()
             if mheap is None:
-                err("Could not find runtime.mheap_")
+                err("Could not find runtime.mheap_; specify its address with --mheap")
                 return
             mspans = self.parse_mheap(mheap)
 
