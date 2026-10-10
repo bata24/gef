@@ -169044,7 +169044,7 @@ class JemallocHeapDumpCommand(GenericCommand, BufferingOutput):
 
 @register_command
 class MuslHeapDumpCommand(GenericCommand, BufferingOutput):
-    """musl v1.2.6 (src/malloc/mallocng) heap reusable chunks viewer (x64/x86 only)."""
+    """musl mallocng heap reusable chunks viewer."""
 
     # See https://h-noson.hatenablog.jp/entry/2021/05/03/161933#-177pts-mooosl
     _cmdline_ = "musl-heap-dump"
@@ -169054,12 +169054,18 @@ class MuslHeapDumpCommand(GenericCommand, BufferingOutput):
     modes = ["ctx", "unused"]
     parser.add_argument("command", choices=modes, nargs="?", default="unused",
                         help="dump mode (default: %(default)s).")
-    parser.add_argument("-i", "--active-idx", type=int, help="the active index of dump target.")
+    parser.add_argument("--malloc-context", type=AddressUtil.parse_address,
+                        help="use a specific mallocng context address.")
+    parser.add_argument("-i", "--active-idx", type=int, choices=range(48), help="the active index of dump target.")
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
     parser.add_argument("-v", "--verbose", action="store_true", help="also dump an empty active index.")
     _syntax_ = parser.format_help()
 
     _note_ = [
+        "Supports musl mallocng (1.2.1 and later), not the legacy malloc implementation.",
+        "Without the __malloc_context symbol, specify --malloc-context; x86 also has heuristic detection.",
+        "Only groups on active[48] are listed; individually mapped large allocations are not enumerated.",
+        "",
         "Simplified musl mallocng structure:",
         "",
         "+-malloc_context------+",
@@ -169115,6 +169121,9 @@ class MuslHeapDumpCommand(GenericCommand, BufferingOutput):
         return [s for s in self.modes if s and s.startswith(text.strip())]
 
     def get_malloc_context_heuristic(self):
+        if not is_x86():
+            err("Specify --malloc-context when the __malloc_context symbol is unavailable on this architecture")
+            return None
         try:
             # search for malloc
             malloc = AddressUtil.parse_address("malloc")
@@ -169132,14 +169141,15 @@ class MuslHeapDumpCommand(GenericCommand, BufferingOutput):
             [pattern 3]
                0xf7f78bf0 <malloc>: jmp    0xf7f8bc3c
             """
+            libc_malloc_impl = malloc
             res = gdb.execute("x/10i {:#x}".format(malloc), to_string=True)
             for line in res.splitlines():
-                m = re.search(r"jmp\s*(0x\w+)", line)
+                m = re.search(r"(?:jmp|call)\s*(0x\w+)", line)
                 if not m:
                     continue
-                __libc_malloc_impl = int(m.group(1), 16)
+                libc_malloc_impl = int(m.group(1), 16)
                 break
-            self.info_add_out("__libc_malloc_impl: {:#x}".format(__libc_malloc_impl))
+            self.info_add_out("__libc_malloc_impl: {:#x}".format(libc_malloc_impl))
 
             # search for __malloc_alloc_meta
             """
@@ -169162,14 +169172,14 @@ class MuslHeapDumpCommand(GenericCommand, BufferingOutput):
                0xf7f8bca0:  call   0xf7f8b3d2
                0xf7f8bca5:  call   0xf7f8b439
             """
-            __malloc_alloc_meta_candidate = []
-            res = gdb.execute("x/100i {:#x}".format(__libc_malloc_impl), to_string=True)
+            malloc_alloc_meta_candidate = []
+            res = gdb.execute("x/256i {:#x}".format(libc_malloc_impl), to_string=True)
             for line in res.splitlines():
                 m = re.search(r"call\s*(0x\w+)", line)
                 if not m:
                     continue
                 addr = int(m.group(1), 16)
-                __malloc_alloc_meta_candidate.append(addr)
+                malloc_alloc_meta_candidate.append(addr)
 
             # search for __malloc_context
             """
@@ -169202,48 +169212,63 @@ class MuslHeapDumpCommand(GenericCommand, BufferingOutput):
                0xf7f8b448:  sub    esp,0x1c
                0xf7f8b44b:  cmp    DWORD PTR [ebx+0x708],0x0
             """
-            for cand in __malloc_alloc_meta_candidate:
+            for cand in malloc_alloc_meta_candidate:
                 self.info_add_out("alloc_meta (candidate): {:#x}".format(cand))
                 res = gdb.execute("x/10i {:#x}".format(cand), to_string=True)
+                pic_bases = {}
                 for line in res.splitlines():
+                    m = re.search(r"^\s*(0x\w+).*:\s*add\s+(e[abcd]x),(0x\w+)", line)
+                    if m:
+                        pic_bases[m.group(2)] = int(m.group(1), 16) + int(m.group(3), 16)
                     if is_x86_64():
                         m = re.search(r"DWORD PTR \[rip\+0x\w+\].*#\s*(0x\w+)", line)
                         if not m:
                             continue
-                        __malloc_context_init_done = int(m.group(1), 16)
+                        malloc_context_init_done = int(m.group(1), 16)
                     else:
-                        m = re.search(r"DWORD PTR \[e[abcd]x\+(0x\w+)\]", line)
-                        if not m:
-                            continue
-                        __malloc_context_init_done_offset = int(m.group(1), 16)
-                        maps = ProcessMap.get_process_maps()
-                        rw_maps = [p for p in maps if p.permission.value == Permission.READ | Permission.WRITE]
-                        rw_maps = [p for p in rw_maps if "libc.so" in p.path]
-                        libc_bss_base = rw_maps[0].page_start
-                        __malloc_context_init_done = libc_bss_base + __malloc_context_init_done_offset
+                        m = re.search(r"DWORD PTR \[(e[abcd]x)([+-])(0x\w+)\]", line)
+                        if m and m.group(1) in pic_bases:
+                            displacement = int(m.group(3), 16) * (1 if m.group(2) == "+" else -1)
+                            malloc_context_init_done = pic_bases[m.group(1)] + displacement
+                        else:
+                            m = re.search(r"DWORD PTR (?:ds:|\[)(0x\w+)", line)
+                            if not m:
+                                continue
+                            malloc_context_init_done = int(m.group(1), 16)
                     # check
-                    value = read_int32_from_memory(__malloc_context_init_done)
-                    if value not in [0, 1]: # init_done is 1 or 0
+                    value = read_int32_from_memory(malloc_context_init_done, safe=True)
+                    if value != 1:
                         continue
                     # found
-                    self.info_add_out("__malloc_context.init_done: {:#x}".format(__malloc_context_init_done))
-                    __malloc_context = __malloc_context_init_done - current_arch.ptrsize
-                    x = read_int_from_memory(__malloc_context)
-                    if x == get_pagesize():
-                        __malloc_context -= current_arch.ptrsize
-                    self.info_add_out("__malloc_context: {:#x}".format(__malloc_context))
-                    return __malloc_context
+                    self.info_add_out("__malloc_context.init_done: {:#x}".format(malloc_context_init_done))
+                    malloc_context = malloc_context_init_done - 8
+                    init_offset = GefUtil.member_offset("struct malloc_context", "init_done")
+                    if init_offset is not None:
+                        malloc_context = malloc_context_init_done - init_offset
+                    elif read_int_from_memory(malloc_context_init_done - current_arch.ptrsize) == get_pagesize():
+                        malloc_context -= current_arch.ptrsize
+                    area = read_int_from_memory(malloc_context_init_done + 8 + 5 * current_arch.ptrsize, safe=True)
+                    if not area or read_int64_from_memory(area, safe=True) != read_int64_from_memory(malloc_context, safe=True):
+                        continue
+                    self.info_add_out("__malloc_context: {:#x}".format(malloc_context))
+                    return malloc_context
+            err("Could not find &__malloc_context; specify --malloc-context")
             return None
         except Exception:
-            err("Could not find &__malloc_context")
+            err("Could not find &__malloc_context; specify --malloc-context")
             return None
 
     def get_malloc_context(self):
-        try:
-            return AddressUtil.parse_address("&__malloc_context")
-        except gdb.error:
-            self.info_add_out("Could not find the symbol, GEF will use heuristic search")
-            return self.get_malloc_context_heuristic()
+        if self.args.malloc_context is not None:
+            return self.args.malloc_context
+        symbols = ("__malloc_context", "_malloc_context") if is_sh4() else ("__malloc_context",)
+        for symbol in symbols:
+            try:
+                return AddressUtil.parse_address("&" + symbol)
+            except gdb.error:
+                continue
+        self.info_add_out("Could not find the symbol, GEF will use heuristic search")
+        return self.get_malloc_context_heuristic()
 
     def class_to_size(self, cl):
         class_to_size_list = [
@@ -169259,7 +169284,8 @@ class MuslHeapDumpCommand(GenericCommand, BufferingOutput):
             2340, 2730, 3276, 4095,
             4680, 5460, 6552, 8191,
         ]
-        assert cl < len(class_to_size_list)
+        if not 0 <= cl < len(class_to_size_list):
+            raise ValueError("Invalid mallocng size class: {:d}".format(cl))
         return class_to_size_list[cl] * 0x10
 
     def read_ctx(self):
@@ -169293,13 +169319,11 @@ class MuslHeapDumpCommand(GenericCommand, BufferingOutput):
         };
         """
         ctx["secret"] = read_int64_from_memory(current)
-        current += 8
-        x = read_int_from_memory(current)
-        if x == get_pagesize():
-            ctx["pagesize"] = x
-            current += ptrsize
-        else:
-            ctx["pagesize"] = None
+        init_offset = GefUtil.member_offset("struct malloc_context", "init_done")
+        if init_offset is None:
+            init_offset = 8
+        ctx["pagesize"] = read_int_from_memory(current + 8) if init_offset > 8 else None
+        current += init_offset
 
         ctx["init_done"] = read_int32_from_memory(current)
         current += 4
@@ -169334,7 +169358,8 @@ class MuslHeapDumpCommand(GenericCommand, BufferingOutput):
         ctx["bounces"] = read_memory(current, 32)
         current += 32
         ctx["seq"] = ord(read_memory(current, 1))
-        current += ptrsize # with padding
+        brk_offset = GefUtil.member_offset("struct malloc_context", "brk")
+        current = ctx["addr"] + brk_offset if brk_offset is not None else current + (2 if is_m68k() else ptrsize)
         ctx["brk"] = read_int_from_memory(current)
         current += ptrsize
 
@@ -169396,10 +169421,17 @@ class MuslHeapDumpCommand(GenericCommand, BufferingOutput):
         meta["freed_mask"] = read_int32_from_memory(current)
         current += 4
         x = read_int_from_memory(current)
-        meta["last_idx"] = x & 0b11111
-        meta["freeable"] = (x >> 5) & 0b1
-        meta["sizeclass"] = (x >> 6) & 0b111111
-        meta["maplen"] = (x >> 12)
+        if Endian.is_big_endian():
+            bits = ptrsize * 8
+            meta["last_idx"] = x >> (bits - 5)
+            meta["freeable"] = (x >> (bits - 6)) & 1
+            meta["sizeclass"] = (x >> (bits - 12)) & 63
+            meta["maplen"] = x & ((1 << (bits - 12)) - 1)
+        else:
+            meta["last_idx"] = x & 31
+            meta["freeable"] = (x >> 5) & 1
+            meta["sizeclass"] = (x >> 6) & 63
+            meta["maplen"] = x >> 12
         current += ptrsize
 
         Meta = collections.namedtuple("Meta", meta.keys())
@@ -169421,43 +169453,30 @@ class MuslHeapDumpCommand(GenericCommand, BufferingOutput):
             freed_mask >>= 1
         return text
 
+    def get_stride(self, meta):
+        if meta.last_idx == 0 and meta.maplen:
+            return meta.maplen * 4096 - 16
+        return self.class_to_size(meta.sizeclass)
+
     def read_group(self, meta, offset):
-        ptrsize = current_arch.ptrsize
+        stride = self.get_stride(meta)
         group = {}
-        group["addr"] = current = meta.mem + offset
-        group["data"] = read_memory(group["addr"], self.class_to_size(meta.sizeclass))
-        """
-        from source code:
-        struct group {
-            struct meta *meta;
-            unsigned char active_idx:5;
-            char pad[UNIT - sizeof(struct meta *) - 1]; // UNIT = 16
-            unsigned char storage[];
-        };
-
-        however, the actual usage is as follows. (x64)
-        struct group {
-            struct meta *meta;
-            unsigned int slot_offset32;
-            unsigned char is_slot_offset32;
-            unsigned char slot_index:5;
-            unsigned char reserved:3;
-            unsigned short slot_offset16;
-        };
-        """
-        group["meta"] = read_int_from_memory(current)
-        current += ptrsize
-        x = read_int32_from_memory(current)
-        current += 4 if is_x86_64() else 8
-        y = read_int32_from_memory(current)
-        group["reserved"] = (x >> 13) & 0b111
-        group["slot_idx"] = (y >> 8) & 0b11111
-        if y & 0xff:
-            group["slot_offset"] = x
+        group["addr"] = meta.mem + 16 + offset
+        group["data"] = read_memory(group["addr"], stride)
+        group["meta"] = read_int_from_memory(meta.mem)
+        current = group["addr"]
+        if read_int8_from_memory(current - 3) >> 5 == 7:
+            current += 16 * read_int16_from_memory(current - 2)
+        if current >= group["addr"] + stride - 4:
+            raise ValueError("Slot header offset exceeds the slot")
+        header = read_int8_from_memory(current - 3)
+        group["user_addr"] = current
+        group["reserved"] = header >> 5
+        group["slot_idx"] = header & 31
+        if read_int8_from_memory(current - 4):
+            group["slot_offset"] = read_int32_from_memory(current - 8)
         else:
-            group["slot_offset"] = (y >> 16) & 0xffff
-        current += ptrsize
-
+            group["slot_offset"] = read_int16_from_memory(current - 2)
         Group = collections.namedtuple("Group", group.keys())
         return Group(*group.values())
 
@@ -169467,7 +169486,9 @@ class MuslHeapDumpCommand(GenericCommand, BufferingOutput):
 
         subinfo = "state:{:5s} meta:{:<#14x} reserved:{:#x}".format(state, group.meta, group.reserved)
         if state == "Used":
-            subinfo += " slot_idx:{:<#3x} slot_offset:{:#x}".format(group.slot_idx, group.slot_offset)
+            subinfo += " slot_idx:{:<#3x} slot_offset:{:#x} user:{:#x}".format(
+                group.slot_idx, group.slot_offset, group.user_addr,
+            )
 
         data = slicer(group.data, current_arch.ptrsize * 2)
         addr = group.addr
@@ -169476,7 +169497,6 @@ class MuslHeapDumpCommand(GenericCommand, BufferingOutput):
         # create dump text
         unpack = u32 if current_arch.ptrsize == 4 else u64
         width = current_arch.ptrsize * 2 + 2
-        done = False
         for blk, blks in itertools.groupby(data):
             repeat_count = len(list(blks))
             d1, d2 = unpack(blk[:current_arch.ptrsize]), unpack(blk[current_arch.ptrsize:])
@@ -169502,11 +169522,6 @@ class MuslHeapDumpCommand(GenericCommand, BufferingOutput):
                 addr += current_arch.ptrsize * 2 * repeat_count
                 if subinfo:
                     subinfo = ""
-            if done:
-                break
-
-        # print
-        dump = dump.rstrip()
         return
 
     def dump_meta(self, ctx):
@@ -169529,8 +169544,16 @@ class MuslHeapDumpCommand(GenericCommand, BufferingOutput):
 
             # iterate list of meta
             seen = set()
-            while current not in seen:
-                meta = self.read_meta(current)
+            while current and current not in seen:
+                try:
+                    meta = self.read_meta(current)
+                except gdb.MemoryError:
+                    self.out.append("Unreadable meta @ {:#x}".format(current))
+                    break
+                invalid_mask = (meta.avail_mask | meta.freed_mask) >> (meta.last_idx + 1)
+                if meta.sizeclass != idx or not meta.mem or invalid_mask or meta.avail_mask & meta.freed_mask:
+                    self.out.append("Invalid meta @ {:#x}".format(current))
+                    break
                 self.out.append("meta @ {:s}".format(Color.colorify_hex(meta.addr, management_color)))
                 text = "  "
                 colored_prev = Color.colorify_hex(meta.prev, management_color)
@@ -169551,24 +169574,38 @@ class MuslHeapDumpCommand(GenericCommand, BufferingOutput):
                 if state != "F" or self.args.verbose:
                     dic = {"A": "Avail", "F": "Freed", "U": "Used"}
                     for i in range(meta.last_idx + 1):
-                        offset = self.class_to_size(idx) * i
-                        group = self.read_group(meta, offset)
+                        offset = self.get_stride(meta) * i
+                        try:
+                            group = self.read_group(meta, offset)
+                        except (gdb.MemoryError, ValueError) as error:
+                            self.out.append("Invalid slot[{:d}]: {!s}".format(i, error))
+                            break
                         self.dump_chunk(group, dic[state[-i - 1]])
                     self.out.append("")
 
                 seen.add(current)
                 current = meta.next
+            if not current:
+                self.out.append("Broken meta list: NULL link")
+            elif current in seen and current != ctx.active[idx]:
+                self.out.append("Meta list loop @ {:#x}".format(current))
         return
 
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
-    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64"))
     def do_invoke(self, args):
         self.out = []
 
-        ctx = self.read_ctx()
+        try:
+            ctx = self.read_ctx()
+        except gdb.MemoryError:
+            err("Could not read the mallocng context")
+            return
         if ctx is None:
+            return
+        if ctx.init_done not in (0, 1):
+            err("Invalid mallocng context")
             return
         if args.command == "ctx":
             self.dump_ctx(ctx)

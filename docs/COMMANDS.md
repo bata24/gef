@@ -7413,20 +7413,22 @@ Simplified mimalloc structure:
 
 ## `musl-heap-dump`
 
-musl v1.2.6 (src/malloc/mallocng) heap reusable chunks viewer (x64/x86 only).
+musl mallocng heap reusable chunks viewer.
 
 
 ### Syntax
 
 ```text
-usage: musl-heap-dump [-h] [-i ACTIVE_IDX] [-n] [-v] [{ctx,unused}]
+usage: musl-heap-dump [-h] [--malloc-context MALLOC_CONTEXT] [-i {0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47}] [-n] [-v] [{ctx,unused}]
 
 positional arguments:
   {ctx,unused}          dump mode (default: unused).
 
 options:
   -h, --help            show this help message and exit
-  -i, --active-idx ACTIVE_IDX
+  --malloc-context MALLOC_CONTEXT
+                        use a specific mallocng context address.
+  -i, --active-idx {0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47}
                         the active index of dump target.
   -n, --no-pager        do not use the pager.
   -v, --verbose         also dump an empty active index.
@@ -7435,6 +7437,10 @@ options:
 ### Notes
 
 ```text
+Supports musl mallocng (1.2.1 and later), not the legacy malloc implementation.
+Without the __malloc_context symbol, specify --malloc-context; x86 also has heuristic detection.
+Only groups on active[48] are listed; individually mapped large allocations are not enumerated.
+
 Simplified musl mallocng structure:
 
 +-malloc_context------+
