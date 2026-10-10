@@ -170735,12 +170735,14 @@ class XStringCommand(GenericCommand, BufferingOutput):
     parser.add_argument("address", metavar="ADDRESS", type=AddressUtil.parse_address, help="dump target address.")
     parser.add_argument("-l", "--max-length", type=AddressUtil.parse_address,
                         help="maximum number of characters to display. 0 means unlimited.")
+    parser.add_argument("-r", "--max-read", type=AddressUtil.parse_address, default=0,
+                        help="maximum bytes to inspect per string. 0 means unlimited. (default: %(default)s)")
     parser.add_argument("-H", "--hex", action="store_true", help="show in hex style.")
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
     parser.add_argument("-q", "--quiet", action="store_true", help="quiet mode.")
     _syntax_ = parser.format_help()
 
-    def dump_string(self, address, count, max_length, tohex, quiet):
+    def dump_string(self, address, count, max_length, tohex, quiet, max_read=0):
         for _ in range(count):
             if not is_valid_addr(address):
                 err("Memory read error at {:#x}".format(address))
@@ -170750,17 +170752,31 @@ class XStringCommand(GenericCommand, BufferingOutput):
             current = address
             size = get_pagesize() - (address & get_pagesize_mask_low())
             s = bytearray()
+            pos = -1
+            read_limit_reached = False
             while True:
+                if max_read and len(s) >= max_read:
+                    read_limit_reached = True
+                    break
+
                 # check accessibility
                 if not is_valid_addr(current):
                     break
 
                 # read string
+                if max_read:
+                    size = min(size, max_read - len(s))
                 start = len(s)
-                s += read_memory(current, size)
+                try:
+                    data = read_memory(current, size)
+                except gdb.MemoryError:
+                    break
+                s += data
                 pos = s.find(b"\0", start)
                 if pos != -1:
                     s = s[:pos]
+                    break
+                if len(data) < size:
                     break
 
                 # not found 0x0, read more
@@ -170769,28 +170785,32 @@ class XStringCommand(GenericCommand, BufferingOutput):
 
             # cut off
             s = bytes(s)
-            if max_length and len(s) >= max_length:
-                cs = s[:max_length] + b"..."
-            else:
-                cs = s
+            cs = s[:max_length] if max_length else s
+            if len(cs) < len(s) or pos == -1:
+                cs += b"..."
 
             if tohex:
                 cs = cs.hex()
             else:
                 cs = repr(cs)
 
+            suffix = ""
+            if read_limit_reached:
+                suffix = " [read limit reached]"
+            elif pos == -1:
+                suffix = " [unterminated]"
+
             if quiet:
-                self.out.append("{:s}".format(cs))
+                self.out.append("{:s}{:s}".format(cs, suffix))
             else:
-                self.out.append("{!s}: {:s} ({:#x} bytes)".format(
-                    ProcessMap.lookup_address(address), cs, len(s),
+                self.out.append("{!s}: {:s} ({:#x}{:s} bytes){:s}".format(
+                    ProcessMap.lookup_address(address), cs, len(s), "+" if pos == -1 else "", suffix,
                 ))
 
             # go to next address
             if pos == -1:
-                address += 1
-            else:
-                address += pos + 1
+                break
+            address += pos + 1
         return
 
     @Decorator.parse_args
@@ -170815,8 +170835,15 @@ class XStringCommand(GenericCommand, BufferingOutput):
         else:
             max_length = Config.get("context.nb_max_string_length")
 
+        if max_length < 0:
+            err("--max-length must be >= 0")
+            return
+        if args.max_read < 0:
+            err("--max-read must be >= 0")
+            return
+
         self.out = []
-        self.dump_string(args.address, count, max_length, args.hex, args.quiet)
+        self.dump_string(args.address, count, max_length, args.hex, args.quiet, args.max_read)
         self.print_output(check_terminal_size=True)
         return
 

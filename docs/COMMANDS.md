@@ -4005,7 +4005,7 @@ Dump string like x/s command, but with hex-string style.
 ### Syntax
 
 ```text
-usage: xs [-h] [-l MAX_LENGTH] [-H] [-n] [-q] [COUNT] ADDRESS
+usage: xs [-h] [-l MAX_LENGTH] [-r MAX_READ] [-H] [-n] [-q] [COUNT] ADDRESS
 
 positional arguments:
   COUNT                 repeat count for displaying.
@@ -4015,6 +4015,8 @@ options:
   -h, --help            show this help message and exit
   -l, --max-length MAX_LENGTH
                         maximum number of characters to display. 0 means unlimited.
+  -r, --max-read MAX_READ
+                        maximum bytes to inspect per string. 0 means unlimited. (default: 0)
   -H, --hex             show in hex style.
   -n, --no-pager        do not use the pager.
   -q, --quiet           quiet mode.
