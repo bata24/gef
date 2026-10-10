@@ -538,7 +538,8 @@ class MemoryCache:
     1.2x-9.2x faster. A local inferior is much cheaper (1.41us vs 1.47us), so the gain
     is small there, but reading a whole block does not cost more either.
     Note: this reads more bytes than requested, so it may touch the neighbor registers
-    of a memory mapped device. Use `gef config gef.disable_memory_cache True` in that case."""
+    of a memory mapped device. read_raw() refuses the pages of the devices that QEMU cannot read
+    (see QemuMonitor.check_gic_address()). Use `gef config gef.disable_memory_cache True` for the others."""
 
     BLOCK_SIZE = 0x1000
     BLOCK_SIZE_SLOW = 0x40 # over a serial line, a large block costs more than it saves
@@ -599,6 +600,8 @@ class MemoryCache:
         end = AddressUtil.get_vmem_end()
         if not 0 <= addr < end or not 0 <= length <= end - addr:
             raise gdb.MemoryError("Memory read outside address space: {:#x}+{:#x}".format(addr, length))
+        if QemuMonitor.check_gic_address(addr, length, physical=MemoryCache.default_namespace == "physical"):
+            raise gdb.MemoryError("Refused to read a device that QEMU cannot read: {:#x}+{:#x}".format(addr, length))
         try:
             return gdb.selected_inferior().read_memory(addr, length).tobytes()
         except gdb.MemoryError as e:
@@ -13001,6 +13004,10 @@ def read_physmem(paddr, size, already_physmode=False):
     if size == 0:
         return b""
 
+    # every fallback below (e.g., `monitor xp`) also crashes QEMU on these devices
+    if QemuMonitor.check_gic_address(paddr, size, physical=True):
+        return None
+
     if already_physmode:
         try:
             return MemoryCache.read_raw(paddr, size)
@@ -13077,10 +13084,6 @@ def is_valid_addr(addr):
 
     if AddressUtil.get_vmem_end() <= addr:
         return False
-
-    if is_qemu_system():
-        if QemuMonitor.check_gic_address(addr):
-            return False
 
     try:
         MemoryCache.read_raw(addr, 1)
@@ -13182,9 +13185,15 @@ class QemuMonitor:
         return segments
 
     @staticmethod
-    @Cache.cache_this_session
+    @Cache.cache_this_session(cache_None=False)
     def get_gic_addrs():
-        """Return physical addresses of ARM GIC(General Interrupt Controller)."""
+        """Return physical addresses of ARM GIC(General Interrupt Controller) and the devices like it.
+        QEMU crashes when the gdb stub reads the GICv2 of a multi-core machine or the Cortex-A9 global timer
+        (they need the current CPU), and reading the GIC CPU interface may acknowledge an interrupt."""
+        # memory may be read before the architecture is known; do not cache that answer
+        if not is_alive() or current_arch is None:
+            return None
+
         if not is_qemu_system():
             return []
 
@@ -13201,40 +13210,39 @@ class QemuMonitor:
             # gef> monitor info mtree -f # these are physical addresses
             #   0000000008000000-0000000008000fff (prio 0, i/o): gic_dist
             #   0000000008010000-0000000008011fff (prio 0, i/o): gic_cpu
+            #   000000001e000200-000000001e00021f (prio 0, i/o): a9gtimer shared
             if not line.startswith("  "):
                 continue
-            m = re.search(r"  ([0-9a-f]+)-([0-9a-f]+).*i/o\): gic_(dist|cpu)", line)
+            m = re.search(r"  ([0-9a-f]+)-([0-9a-f]+).*i/o\): (gic_(dist|cpu|viface|vcpu)|a9gtimer)", line)
             if not m:
                 continue
-            paddr = int(m.group(1), 16)
-            pend = int(m.group(2), 16)
-            # fix size
-            size = pend - paddr
-            if (size & 0xfff) == 0xfff:
-                size += 1
-            gic_list.append([paddr, paddr + size])
+            # the end is inclusive
+            gic_list.append([int(m.group(1), 16), int(m.group(2), 16) + 1])
         return gic_list
 
     @staticmethod
-    @Cache.cache_until_next
-    def check_gic_address(vaddr):
-        gic_addrs = QemuMonitor.get_gic_addrs()
-        if not gic_addrs:
+    def check_gic_address(addr, length=1, physical=False):
+        """Return True if [addr, addr + length) shares a 4KB page with get_gic_addrs().
+        A page is checked as a whole, because MemoryCache reads the other registers of the page too."""
+        if not QemuMonitor.get_gic_addrs():
             return False
+        return any(QemuMonitor.is_gic_page(page, physical) for page in range(addr & ~0xfff, addr + length, 0x1000))
 
-        try:
-            ret = gdb.execute("monitor gva2gpa {:#x}".format(vaddr), to_string=True)
-        except gdb.error:
-            return False
-        r = re.search(r"gpa: (0x\S+)", ret)
-        if not r:
-            return False
-        paddr = int(r.group(1), 16)
-
-        for s, e in gic_addrs:
-            if s <= paddr < e:
-                return True
-        return False
+    @staticmethod
+    @Cache.cache_this_session
+    def is_gic_page(page, physical):
+        # These devices are mapped at boot and kept mapped, so the answer is kept for the session.
+        paddr = page
+        if not physical:
+            try:
+                ret = gdb.execute("monitor gva2gpa {:#x}".format(page), to_string=True)
+            except gdb.error:
+                return False
+            r = re.search(r"gpa: (0x\S+)", ret)
+            if not r:
+                return False
+            paddr = int(r.group(1), 16) & ~0xfff
+        return any(s < paddr + 0x1000 and paddr < e for s, e in QemuMonitor.get_gic_addrs())
 
     @staticmethod
     def get_current_mmu_mode():
