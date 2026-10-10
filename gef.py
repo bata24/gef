@@ -195937,6 +195937,12 @@ class BincompareCommand(GenericCommand, BufferingOutput):
         return
 
     def compare(self, from1data, from2data, size):
+        if len(from1data) < size or len(from2data) < size:
+            self.err_add_out("Insufficient data: requested {:#x} bytes, file has {:#x}, memory has {:#x}".format(
+                size, len(from1data), len(from2data),
+            ))
+            return
+
         diff_found = False
         asterisk = False
 
@@ -195963,8 +195969,8 @@ class BincompareCommand(GenericCommand, BufferingOutput):
 
         for pos in range(0, size, 16):
             # determining continuity
-            f1_bin = from1data[pos : pos + 16]
-            f2_bin = from2data[pos : pos + 16]
+            f1_bin = from1data[pos : min(pos + 16, size)]
+            f2_bin = from2data[pos : min(pos + 16, size)]
             if not self.args.full:
                 if f1_bin == f2_bin:
                     if asterisk is False:
