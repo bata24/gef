@@ -169876,12 +169876,11 @@ class uClibcNgHeap:
             return self.get_chunk_size()
 
         # if freed functions
-        def get_fwd_ptr(self, sll):
+        def get_fwd_ptr(self, safe_linking=False):
             value = read_int_from_memory(self.address, safe=True)
             if value is None:
                 return None
-            # Not a single-linked-list (sll) or no Safe-Linking support yet
-            if not sll:
+            if not safe_linking:
                 return value
             # Unmask ("reveal") the Safe-Linking pointer
             return value ^ (self.address >> 12)
@@ -169916,7 +169915,7 @@ class uClibcNgHeap:
                 flags.append(Color.colorify("IS_MMAPPED", Config.get("theme.heap_chunk_flag_is_mmapped")))
             return "|".join(flags)
 
-        def to_str(self, is_fastbin=False):
+        def to_str(self, is_fastbin=False, safe_linking=False):
             chunk_c = Color.colorify("Chunk", Config.get("theme.heap_chunk_label"))
             size_c = Color.colorify_hex(self.get_chunk_size(), Config.get("theme.heap_chunk_size"))
             base_c = Color.colorify_hex(self.chunk_base_address, Config.get("theme.heap_chunk_address_freed"))
@@ -169924,9 +169923,9 @@ class uClibcNgHeap:
             flags = self.flags_as_string()
 
             if is_fastbin:
-                decoded_fd = ProcessMap.lookup_address(self.get_fwd_ptr(sll=True))
-                fd = self.get_fwd_ptr(sll=False)
-                msg = "{:s}(base={:s}, addr={:s}, size={:s}, flags={:s}, fd={:#x}(={!s})".format(
+                decoded_fd = ProcessMap.lookup_address(self.get_fwd_ptr(safe_linking))
+                fd = self.get_fwd_ptr()
+                msg = "{:s}(base={:s}, addr={:s}, size={:s}, flags={:s}, fd={:#x}(={!s}))".format(
                     chunk_c, base_c, addr_c, size_c, flags, fd, decoded_fd,
                 )
             else:
@@ -169950,6 +169949,8 @@ class UclibcNgHeapDumpCommand(GenericCommand, BufferingOutput):
                         help="use specific address for malloc_context.")
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
     parser.add_argument("-v", "--verbose", action="store_true", help="also dump an empty active index.")
+    parser.add_argument("-s", "--safe-linking-decode", action="store_true",
+                        help="decode Safe-Linking fastbin links during traversal and display (default: plain links).")
     _syntax_ = parser.format_help()
 
     _note_ = [
@@ -169957,11 +169958,14 @@ class UclibcNgHeapDumpCommand(GenericCommand, BufferingOutput):
         "- No tcache. There are fastbins, an unsorted bin, small bins, and large bins.",
         "- No thread arena. Therefore, chunks do not have the NON_MAIN_ARENA flag.",
         "The structure of malloc-standard has remained largely unchanged from version 1.0 to the latest.",
-        "As a result, it should be usable with any version.",
+        "Only libc/stdlib/malloc-standard is supported, not malloc or malloc-simple.",
+        "Links are plain by default. Use -s for builds with Safe-Linking, including uClibc-ng 1.0.54 and 1.0.58.",
         "Since the final version of uclibc (not uclibc-ng) uses the same structure,",
         "this command should also be usable with uclibc.",
     ]
     _note_ = "\n".join(_note_)
+
+    UNSORTED_BIN = 1
 
     fast_size_table = [
         # 64bit  32bit
@@ -170123,7 +170127,7 @@ class UclibcNgHeapDumpCommand(GenericCommand, BufferingOutput):
                         regname = m.group(2)
                         continue
                 else:
-                    m = re.search(r"DWORD PTR \[(\S+)\+(0x\S+)\]", line)
+                    m = re.search(r"(?:DWORD PTR |lea\s+\w+,\s*)\[(\w+)\+(0x\w+)\]", line)
                     if m and m.group(1) == regname:
                         malloc_state = base + int(m.group(2), 16)
                         if is_valid_addr(malloc_state):
@@ -170310,8 +170314,10 @@ class UclibcNgHeapDumpCommand(GenericCommand, BufferingOutput):
                 while is_valid_addr(n) and n not in seen:
                     seen.add(n)
                     chunk = uClibcNgHeap.uClibcChunk(n, from_base=True)
-                    self.out.append(" -> {}".format(chunk.to_str(is_fastbin=True)))
-                    n = chunk.get_fwd_ptr(True)
+                    self.out.append(" -> {}".format(
+                        chunk.to_str(is_fastbin=True, safe_linking=self.args.safe_linking_decode),
+                    ))
+                    n = chunk.get_fwd_ptr(self.args.safe_linking_decode)
 
         self.verbose_add_out("top:                 {!s}".format(ProcessMap.lookup_address(malloc_state.top)))
         self.verbose_add_out("last_remainder:      {!s}".format(ProcessMap.lookup_address(malloc_state.last_remainder)))
@@ -170325,7 +170331,7 @@ class UclibcNgHeapDumpCommand(GenericCommand, BufferingOutput):
                 else:
                     colored_size = Color.colorify(size, chunk_size_color)
                 self.out.append("{:s}[idx={:d}, size={:s}, @{!s}]: fd={!s}, bk={!s}".format(
-                    ["small_bins", "unsorted_bin"][i == 1],
+                    ["small_bins", "unsorted_bin"][i == self.UNSORTED_BIN],
                     i, colored_size,
                     ProcessMap.lookup_address(addr),
                     ProcessMap.lookup_address(n),
@@ -170389,7 +170395,11 @@ class UclibcNgHeapDumpCommand(GenericCommand, BufferingOutput):
     def do_invoke(self, args):
         self.out = []
 
-        malloc_state = self.read_malloc_state(args.malloc_state)
+        try:
+            malloc_state = self.read_malloc_state(args.malloc_state)
+        except gdb.MemoryError:
+            err("Could not read malloc_state")
+            return
         if malloc_state is None:
             err("Could not find malloc_state")
             return
@@ -170417,7 +170427,7 @@ class UclibcNgVisualHeapCommand(UclibcNgHeapDumpCommand, BufferingOutput):
     parser.add_argument("-d", "--dark-color", action="store_true",
                         help="use the dark color if chunk is allocated.")
     parser.add_argument("-s", "--safe-linking-decode", action="store_true",
-                        help="decode safe-linking encoded pointer if tcache or fastbins.")
+                        help="decode Safe-Linking fastbin links during traversal and display (default: plain links).")
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
     _syntax_ = parser.format_help()
 
@@ -170452,7 +170462,7 @@ class UclibcNgVisualHeapCommand(UclibcNgHeapDumpCommand, BufferingOutput):
                 seen_addresses.add(n)
                 try:
                     chunk = uClibcNgHeap.uClibcChunk(n, from_base=True)
-                    n = chunk.get_fwd_ptr(True)
+                    n = chunk.get_fwd_ptr(self.args.safe_linking_decode)
                 except gdb.MemoryError:
                     break
             self.bins_info["fastbins"][i] = seen
@@ -170493,13 +170503,14 @@ class UclibcNgVisualHeapCommand(UclibcNgHeapDumpCommand, BufferingOutput):
             for address in fastbin_list:
                 pos = position_table[address]
                 sz = self.fast_size_table[fastbin_idx][is_32bit()]
-                m = "fastbins[idx={:d},sz={:#x}][{:s}/{:d}]".format(fastbin_idx, sz, pos, len(fastbin_list))
+                sz = "{:#x}".format(sz) if isinstance(sz, int) else str(sz)
+                m = "fastbins[idx={:d},sz={:s}][{:s}/{:d}]".format(fastbin_idx, sz, pos, len(fastbin_list))
                 self.bins_dict_for_address[address] = self.bins_dict_for_address.get(address, []) + [m]
         for smallbin_idx, smallbin_list in self.bins_info["small_bins"].items():
             position_table = GefUtil.make_position_table(smallbin_list)
             for address in smallbin_list:
                 pos = position_table[address]
-                if smallbin_idx == 0:
+                if smallbin_idx == self.UNSORTED_BIN:
                     m = "unsortedbins[{:s}/{:d}]".format(pos, len(smallbin_list))
                 else:
                     size = self.size_table[smallbin_idx][is_32bit()]
@@ -170525,7 +170536,7 @@ class UclibcNgVisualHeapCommand(UclibcNgHeapDumpCommand, BufferingOutput):
         return
 
     def get_bins_info(self, malloc_state, address):
-        info = self.bins_dict_for_address.get(address, [])
+        info = list(self.bins_dict_for_address.get(address, []))
         if address == malloc_state.top:
             info.append("top")
         return info
@@ -170537,12 +170548,12 @@ class UclibcNgVisualHeapCommand(UclibcNgHeapDumpCommand, BufferingOutput):
             return (decode_fd and x[0] == 1, x[1])
 
         unpack = u32 if current_arch.ptrsize == 4 else u64
-        data = slicer(chunk.data, current_arch.ptrsize * 2)
+        display_end = max(malloc_state.top + current_arch.ptrsize * 4 - chunk.chunk_base_address, 0)
+        data = slicer(chunk.data[:display_end], current_arch.ptrsize * 2)
         group_line_threshold = 8
 
         addr = chunk.chunk_base_address
         width = current_arch.ptrsize * 2 + 2
-        exceed_top = False
         has_bins_info = False
 
         base_bins_info = ", ".join(self.bins_dict_for_address.get(chunk.chunk_base_address, []))
@@ -170550,11 +170561,18 @@ class UclibcNgVisualHeapCommand(UclibcNgHeapDumpCommand, BufferingOutput):
 
         out_tmp = []
         # Group rows to display rows with the same value together.
-        prev_bins_info = ""
         for (_, blk), blks in itertools.groupby(enumerate(data), key=group_key):
             repeat_count = len(list(blks))
-            d1, d2 = unpack(blk[:current_arch.ptrsize]), unpack(blk[current_arch.ptrsize:])
             dascii = "".join([chr(x) if 0x20 <= x < 0x7f else "." for x in blk])
+            if len(blk) < current_arch.ptrsize * 2:
+                offset1 = addr - chunk.chunk_base_address
+                offset2 = addr - malloc_state.heap_base
+                raw = " ".join("{:02x}".format(x) for x in blk)
+                out_tmp.append("{:#x}|{:+#08x}|{:+#08x}: {:s} | {:s} |".format(
+                    addr, offset1, offset2, raw, dascii,
+                ))
+                break
+            d1, d2 = unpack(blk[:current_arch.ptrsize]), unpack(blk[current_arch.ptrsize:])
 
             if self.args.full or repeat_count < group_line_threshold:
                 # non-collapsed line
@@ -170567,9 +170585,8 @@ class UclibcNgVisualHeapCommand(UclibcNgHeapDumpCommand, BufferingOutput):
                         bins_info = ""
 
                     fd = d1
-                    if self.args.safe_linking_decode:
-                        if chunk.address == addr and "fastbins" in prev_bins_info:
-                            fd = chunk.get_fwd_ptr(True)
+                    if decode_fd and chunk.address == addr:
+                        fd ^= addr >> 12
 
                     offset1 = addr - chunk.chunk_base_address
                     offset2 = addr - malloc_state.heap_base
@@ -170577,11 +170594,6 @@ class UclibcNgVisualHeapCommand(UclibcNgHeapDumpCommand, BufferingOutput):
                         addr, offset1, offset2, fd, width, d2, width, dascii, bins_info,
                     ).rstrip())
                     addr += current_arch.ptrsize * 2
-                    prev_bins_info = bins_info
-
-                    if addr > malloc_state.top + current_arch.ptrsize * 4:
-                        exceed_top = True
-                        break
             else:
                 # collapsed line
                 bins_info = self.get_bins_info(malloc_state, addr)
@@ -170601,11 +170613,6 @@ class UclibcNgVisualHeapCommand(UclibcNgHeapDumpCommand, BufferingOutput):
                     repeat_count - 1, (repeat_count - 1) * current_arch.ptrsize * 2,
                 ))
 
-            prev_bins_info = bins_info
-
-            if exceed_top:
-                break
-
         # coloring
         if self.args.dark_color and not has_bins_info:
             color_func = self.dark_colors[idx % len(self.dark_colors)]
@@ -170614,7 +170621,7 @@ class UclibcNgVisualHeapCommand(UclibcNgHeapDumpCommand, BufferingOutput):
         self.out.append("\n".join(map(color_func, out_tmp)))
 
         # corrupted case
-        if exceed_top:
+        if len(chunk.data) > display_end:
             self.out.append(Color.boldify("..."))
         return
 
@@ -170628,7 +170635,11 @@ class UclibcNgVisualHeapCommand(UclibcNgHeapDumpCommand, BufferingOutput):
             # This is fast, but does not return an accurate list in some cases.
             # For example, sparc64 may not include the heap area.
             # So it detects the end of the page from malloc_state.top.
-            end = malloc_state.top + uClibcNgHeap.uClibcChunk(malloc_state.top, from_base=True).size
+            try:
+                end = malloc_state.top + uClibcNgHeap.uClibcChunk(malloc_state.top, from_base=True).size
+            except gdb.MemoryError:
+                self.out.append("Unreadable top chunk @ {:#x}".format(malloc_state.top))
+                return
 
         pbar = ProgressBar(total=end - dump_start)
 
@@ -170636,36 +170647,40 @@ class UclibcNgVisualHeapCommand(UclibcNgHeapDumpCommand, BufferingOutput):
         i = 0
 
         while addr < end:
-            chunk = uClibcNgHeap.uClibcChunk(addr + current_arch.ptrsize * 2)
-            # corrupt check
-            if chunk.size == 0:
-                msg = "{} Corrupted (chunk.size == 0)".format(Color.colorify("[!]", "bold red"))
-                self.out.append(msg)
-                chunk.data = read_memory(addr, max(malloc_state.top - addr + 0x10, 0))
-                self.generate_visual_chunk(malloc_state, chunk, i)
-                break
-            elif addr != malloc_state.top and addr + chunk.size > malloc_state.top:
-                msg = "{} Corrupted (addr + chunk.size > malloc_state.top)".format(Color.colorify("[!]", "bold red"))
-                self.out.append(msg)
-                chunk.data = read_memory(addr, max(malloc_state.top - addr + 0x10, 0))
-                self.generate_visual_chunk(malloc_state, chunk, i)
-                break
-            elif addr + chunk.size > end:
-                msg = "{} Corrupted (addr + chunk.size > sect.page_end)".format(Color.colorify("[!]", "bold red"))
-                self.out.append(msg)
-                chunk.data = read_memory(addr, max(malloc_state.top - addr + 0x10, 0))
-                self.generate_visual_chunk(malloc_state, chunk, i)
-                break
-            # maybe not corrupted
+            chunk = uClibcNgHeap.uClibcChunk(addr, from_base=True)
+            msg = None
+            size = 0
             try:
-                chunk.data = read_memory(addr, chunk.size)
-            except gdb.MemoryError:
-                break
-            self.generate_visual_chunk(malloc_state, chunk, i)
-            addr += chunk.size
-            i += 1
+                if end - addr < current_arch.ptrsize * 2:
+                    msg = "incomplete chunk header"
+                else:
+                    size = chunk.size
+                    if size < current_arch.ptrsize * 4 or size % (current_arch.ptrsize * 2):
+                        msg = "invalid chunk size"
+                    elif addr != malloc_state.top and addr + size > malloc_state.top:
+                        msg = "addr + chunk.size > malloc_state.top"
+                    elif addr + size > end:
+                        msg = "addr + chunk.size > sect.page_end"
 
-            pbar.update(chunk.size)
+                if msg:
+                    self.out.append("{} Corrupted ({})".format(Color.colorify("[!]", "bold red"), msg))
+                    readable_end = min(end, malloc_state.top + current_arch.ptrsize * 4)
+                    if sect is None:
+                        readable_end = min(readable_end, (addr & get_pagesize_mask_high()) + get_pagesize())
+                    chunk.data = read_memory(addr, max(readable_end - addr, 0))
+                else:
+                    read_size = min(size, current_arch.ptrsize * 4) if addr == malloc_state.top else size
+                    chunk.data = read_memory(addr, read_size)
+            except gdb.MemoryError:
+                self.out.append("Unreadable chunk @ {:#x}".format(addr))
+                break
+
+            self.generate_visual_chunk(malloc_state, chunk, i)
+            if msg or addr == malloc_state.top:
+                break
+            addr += size
+            i += 1
+            pbar.update(size)
 
             if max_count and max_count <= i:
                 break
@@ -170678,10 +170693,14 @@ class UclibcNgVisualHeapCommand(UclibcNgHeapDumpCommand, BufferingOutput):
     @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
     @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64"))
     def do_invoke(self, args):
-        malloc_state = self.read_malloc_state(args.malloc_state)
+        try:
+            malloc_state = self.read_malloc_state(args.malloc_state)
+        except gdb.MemoryError:
+            err("Could not read malloc_state")
+            return
         if malloc_state is None:
-           err("Could not find malloc_state")
-           return
+            err("Could not find malloc_state")
+            return
 
         if malloc_state.heap_base is None or not is_valid_addr(malloc_state.heap_base):
             err("Could not find the heap base")

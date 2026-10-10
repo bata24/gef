@@ -7783,7 +7783,7 @@ uclibc-ng (libc/stdlib/malloc-standard) heap reusable chunks viewer (x64/x86 onl
 ### Syntax
 
 ```text
-usage: uclibc-ng-heap-dump [-h] [--malloc_state MALLOC_STATE] [-n] [-v]
+usage: uclibc-ng-heap-dump [-h] [--malloc_state MALLOC_STATE] [-n] [-v] [-s]
 
 options:
   -h, --help            show this help message and exit
@@ -7791,6 +7791,8 @@ options:
                         use specific address for malloc_context.
   -n, --no-pager        do not use the pager.
   -v, --verbose         also dump an empty active index.
+  -s, --safe-linking-decode
+                        decode Safe-Linking fastbin links during traversal and display (default: plain links).
 ```
 
 ### Notes
@@ -7800,7 +7802,8 @@ The main structural differences between uclibc-ng (malloc-standard) and glibc ar
 - No tcache. There are fastbins, an unsorted bin, small bins, and large bins.
 - No thread arena. Therefore, chunks do not have the NON_MAIN_ARENA flag.
 The structure of malloc-standard has remained largely unchanged from version 1.0 to the latest.
-As a result, it should be usable with any version.
+Only libc/stdlib/malloc-standard is supported, not malloc or malloc-simple.
+Links are plain by default. Use -s for builds with Safe-Linking, including uClibc-ng 1.0.54 and 1.0.58.
 Since the final version of uclibc (not uclibc-ng) uses the same structure,
 this command should also be usable with uclibc.
 ```
@@ -7826,7 +7829,7 @@ options:
   -f, --full            display the same line without omitting.
   -d, --dark-color      use the dark color if chunk is allocated.
   -s, --safe-linking-decode
-                        decode safe-linking encoded pointer if tcache or fastbins.
+                        decode Safe-Linking fastbin links during traversal and display (default: plain links).
   -n, --no-pager        do not use the pager.
 ```
 
@@ -7837,7 +7840,8 @@ The main structural differences between uclibc-ng (malloc-standard) and glibc ar
 - No tcache. There are fastbins, an unsorted bin, small bins, and large bins.
 - No thread arena. Therefore, chunks do not have the NON_MAIN_ARENA flag.
 The structure of malloc-standard has remained largely unchanged from version 1.0 to the latest.
-As a result, it should be usable with any version.
+Only libc/stdlib/malloc-standard is supported, not malloc or malloc-simple.
+Links are plain by default. Use -s for builds with Safe-Linking, including uClibc-ng 1.0.54 and 1.0.58.
 Since the final version of uclibc (not uclibc-ng) uses the same structure,
 this command should also be usable with uclibc.
 ```
