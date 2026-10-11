@@ -4516,11 +4516,12 @@ class GlibcHeap:
         threads = gdb.selected_inferior().threads()
         main_thread = [th for th in threads if th.num == 1][0]
         main_thread.switch()
-
-        tls = current_arch.get_tls()
-        if tls is None:
+        try:
+            tls = current_arch.get_tls()
+        finally:
             orig_thread.switch() # revert thread
             orig_frame.select()
+        if tls is None:
             return None
 
         direction = TlsCommand.get_direction()
@@ -4554,8 +4555,6 @@ class GlibcHeap:
                 if not is_valid_addr(next_addr):
                     break
                 if candidate_arena_addr == next_addr:
-                    orig_thread.switch() # revert thread
-                    orig_frame.select()
                     return addr
                 if next_addr in seen_arena:
                     # broken `next` chain, give up this candidate
@@ -4564,8 +4563,6 @@ class GlibcHeap:
                 next_addr = to_unsigned_long(GlibcHeap.MallocStateStruct(next_addr).next)
 
         # not found
-        orig_thread.switch() # revert thread
-        orig_frame.select()
         return None
 
     @staticmethod
@@ -4661,15 +4658,18 @@ class GlibcHeap:
             tls_list = []
             if not threads:
                 return None
-            for thread in threads:
-                try:
-                    thread.switch()
-                except gdb.error:
-                    continue
-                tls = current_arch.get_tls()
-                tls_list.append(tls)
-            orig_thread.switch() # revert thread
-            orig_frame.select()
+            try:
+                for thread in threads:
+                    try:
+                        thread.switch()
+                    except gdb.error:
+                        continue
+                    tls = current_arch.get_tls()
+                    if tls is not None:
+                        tls_list.append(tls)
+            finally:
+                orig_thread.switch() # revert thread
+                orig_frame.select()
             return tls_list
 
         def get_suitable_tls_addr(arena_addr):
@@ -4863,19 +4863,21 @@ class GlibcHeap:
                 if not orig_thread: # orig_thread may be None if under winedbg
                     return None
                 tcache = None
-                for thread in gdb.selected_inferior().threads():
-                    thread.switch() # change thread
-                    try:
-                        tcache_candidate = AddressUtil.parse_address("(void*) tcache")
-                        if tcache_candidate <= self.heap_base:
-                            continue
-                        if tcache is None or tcache > tcache_candidate:
-                            tcache = tcache_candidate
-                    except gdb.error:
-                        tcache_candidate = None
-                        break
-                orig_thread.switch() # revert thread
-                orig_frame.select()
+                try:
+                    for thread in gdb.selected_inferior().threads():
+                        thread.switch() # change thread
+                        try:
+                            tcache_candidate = AddressUtil.parse_address("(void*) tcache")
+                            if tcache_candidate <= self.heap_base:
+                                continue
+                            if tcache is None or tcache > tcache_candidate:
+                                tcache = tcache_candidate
+                        except gdb.error:
+                            tcache_candidate = None
+                            break
+                finally:
+                    orig_thread.switch() # revert thread
+                    orig_frame.select()
                 return tcache
 
             def tcache_from_heuristic_offset():
@@ -46411,9 +46413,11 @@ class DestructorDumpCommand(GenericCommand):
         threads = gdb.selected_inferior().threads()
         main_thread = [th for th in threads if th.num == 1][0]
         main_thread.switch() # switch temporarily
-        main_tls = current_arch.get_tls()
-        orig_thread.switch() # revert thread
-        orig_frame.select()
+        try:
+            main_tls = current_arch.get_tls()
+        finally:
+            orig_thread.switch() # revert thread
+            orig_frame.select()
 
         # tls_dotr_list of current thread
         tls_dtor_list = main_thread_tls_dtor_list - main_tls + current_arch.get_tls()
@@ -162778,21 +162782,25 @@ class HoardHeapDumpCommand(GenericCommand, BufferingOutput):
         direction = TlsCommand.get_direction()
 
         head_candidates = []
-        for thread in threads:
-            try:
-                thread.switch()
-            except gdb.error:
-                continue
-            tls = current_arch.get_tls()
-
-            for i in range(1, 0x20):
-                head_candidate_addr = tls + current_arch.ptrsize * i * direction
-                head_candidate = read_int_from_memory(head_candidate_addr)
-                if not is_single_link_list(head_candidate):
+        try:
+            for thread in threads:
+                try:
+                    thread.switch()
+                except gdb.error:
                     continue
-                head_candidates.append(head_candidate)
-        orig_thread.switch() # revert thread
-        orig_frame.select()
+                tls = current_arch.get_tls()
+                if tls is None:
+                    continue
+
+                for i in range(1, 0x20):
+                    head_candidate_addr = tls + current_arch.ptrsize * i * direction
+                    head_candidate = read_int_from_memory(head_candidate_addr)
+                    if not is_single_link_list(head_candidate):
+                        continue
+                    head_candidates.append(head_candidate)
+        finally:
+            orig_thread.switch() # revert thread
+            orig_frame.select()
         return head_candidates
 
     def get_freelist_start(self, sb):
@@ -163982,6 +163990,8 @@ class SnmallocHeapDumpCommand(GenericCommand, BufferingOutput):
               0x7ffff7f3f788|+0x0008|+001: 0x00007ffff7f40120
         """
         tls = current_arch.get_tls()
+        if tls is None:
+            return None
         for i in range(1, 16):
             addr = tls - (current_arch.ptrsize * i)
             val = read_int_from_memory(addr)
@@ -164000,13 +164010,15 @@ class SnmallocHeapDumpCommand(GenericCommand, BufferingOutput):
             orig_thread = gdb.selected_thread()
             orig_frame = gdb.selected_frame()
             thread_allocs = []
-            for thread in gdb.selected_inferior().threads():
-                thread.switch() # change thread
-                thread_alloc = self.get_current_thread_alloc()
-                if thread_alloc:
-                    thread_allocs.append((thread.num, thread_alloc))
-            orig_thread.switch() # revert thread
-            orig_frame.select()
+            try:
+                for thread in gdb.selected_inferior().threads():
+                    thread.switch() # change thread
+                    thread_alloc = self.get_current_thread_alloc()
+                    if thread_alloc:
+                        thread_allocs.append((thread.num, thread_alloc))
+            finally:
+                orig_thread.switch() # revert thread
+                orig_frame.select()
             return thread_allocs
         else:
             thread_alloc = self.get_current_thread_alloc()
@@ -167638,6 +167650,8 @@ class SsmallocHeapDumpCommand(GenericCommand, BufferingOutput):
 
     def get_current_local_heap_heuristic(self):
         tls = current_arch.get_tls()
+        if tls is None:
+            return None
         for i in range(-0x40, 0x41):
             addr = tls + (current_arch.ptrsize * i)
             val = read_int_from_memory(addr, safe=True)
@@ -167667,13 +167681,15 @@ class SsmallocHeapDumpCommand(GenericCommand, BufferingOutput):
             orig_thread = gdb.selected_thread()
             orig_frame = gdb.selected_frame()
             local_heaps = []
-            for thread in gdb.selected_inferior().threads():
-                thread.switch()
-                local_heap = self.get_current_local_heap()
-                if local_heap:
-                    local_heaps.append((thread.num, local_heap))
-            orig_thread.switch()
-            orig_frame.select()
+            try:
+                for thread in gdb.selected_inferior().threads():
+                    thread.switch()
+                    local_heap = self.get_current_local_heap()
+                    if local_heap:
+                        local_heaps.append((thread.num, local_heap))
+            finally:
+                orig_thread.switch()
+                orig_frame.select()
             return local_heaps
 
         local_heap = self.get_current_local_heap()
