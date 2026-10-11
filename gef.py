@@ -10537,7 +10537,7 @@ class M68K(Architecture):
             "seq", "sf", "sne", "st", "ueq", "uge", "ugt", "ule", "ult", "un",
         ]
         for cc in conditions:
-            if insn.mnemonic in [f"fb{cc}w", f"fb{cc}l"]:
+            if insn.mnemonic in [f"fb{cc}", f"fb{cc}w", f"fb{cc}l"]:
                 return True
         return False
 
@@ -184811,13 +184811,17 @@ class StringsContinueCommand(GenericCommand):
                 self.dump_new_strings(seen, previous_registers, args.min_length, args.max_length)
                 while is_alive():
                     stop_event = None
-                    gdb.execute("stepi", to_string=True)
+                    if ExecUntilCommand.requires_continue(get_insn()):
+                        gdb.execute("xuntil", to_string=True)
+                    else:
+                        gdb.execute("stepi", to_string=True)
                     if not is_alive():
                         inferior_exited = True
                         break
 
                     self.dump_new_strings(seen, previous_registers, args.min_length, args.max_length)
-                    if isinstance(stop_event, (gdb.BreakpointEvent, gdb.SignalEvent)):
+                    if isinstance(stop_event, gdb.SignalEvent) or (isinstance(stop_event, gdb.BreakpointEvent) and any(
+                            not isinstance(bp, SimpleInternalTemporaryBreakpoint) for bp in stop_event.breakpoints)):
                         stopped = True
                         break
         except KeyboardInterrupt:
@@ -184908,7 +184912,14 @@ class XSkipCommand(GenericCommand):
         pc = current_arch.pc
         for _ in range(args.count):
             pc = Disasm.gef_instruction_n(pc, 1).address
-        gdb.execute("set $pc = {:#x}".format(pc))
+        if is_hppa32() or is_hppa64():
+            gdb.execute("set $pcoqh = {:#x}".format(pc))
+            gdb.execute("set $pcoqt = {:#x}".format(Disasm.gef_instruction_n(pc, 1).address))
+        elif is_sparc32() or is_sparc32plus() or is_sparc64():
+            gdb.execute("set $pc = {:#x}".format(pc))
+            gdb.execute("set $npc = {:#x}".format(Disasm.gef_instruction_n(pc, 1).address))
+        else:
+            gdb.execute("set $pc = {:#x}".format(pc))
         gdb.execute("context")
         return
 
@@ -185014,7 +185025,39 @@ class ExecUntilCommand(GenericCommand):
         self.stop_event = event
         return
 
-    def exec_step(self, command):
+    @staticmethod
+    def is_caught_syscall():
+        caught = []
+        for line in gdb.execute("info breakpoints", to_string=True).splitlines():
+            m = re.match(r"\d+\s+catchpoint\s+\S+\s+y\s+syscalls? \"(.+)\"", line)
+            if m:
+                caught += [x.strip() for x in m.group(1).split(",")]
+        if not caught:
+            return False
+        _reg, nr = SyscallArgsCommand.get_nr()
+        names = ["<any syscall>", str(nr)]
+        syscall_table = Syscall.get_syscall_table()
+        if syscall_table and nr in syscall_table.nr_table:
+            names.append(syscall_table.nr_table[nr].name)
+        return any(name in caught for name in names)
+
+    @staticmethod
+    def requires_continue(insn):
+        # A single-step never stops at syscall entry, and some hypervisors drop x86 watchpoint hits during it.
+        if is_qemu_system() or is_kgdb() or is_vmware():
+            return False
+        if current_arch.is_syscall(insn):
+            return not current_arch.has_syscall_delay_slot and ExecUntilCommand.is_caught_syscall()
+        if not is_x86() or insn.is_branch:
+            return False
+        watchpoint_types = (gdb.BP_HARDWARE_WATCHPOINT, gdb.BP_READ_WATCHPOINT, gdb.BP_ACCESS_WATCHPOINT)
+        if not any(bp.enabled and bp.type in watchpoint_types for bp in gdb.breakpoints()):
+            return False
+        return ExecUntilMemaccessCommand.is_memory_access(insn)
+
+    def exec_step(self, command, insn=None):
+        if insn and command in ("si", "ni") and self.requires_continue(insn):
+            command = "xuntil"
         self.stop_event = None
         gdb.execute(command)
         if not is_alive():
@@ -185050,9 +185093,9 @@ class ExecUntilCommand(GenericCommand):
                     # execute 1 instruction
                     insn = get_insn()
                     if self.args.use_ni or (self.args.skip_lib and "@plt>" in str(insn)):
-                        stopped = self.exec_step("ni") # use ni wrapper
+                        stopped = self.exec_step("ni", insn) # use ni wrapper
                     else:
-                        stopped = self.exec_step("si") # use si wrapper
+                        stopped = self.exec_step("si", insn) # use si wrapper
 
                     if stopped:
                         break
@@ -185372,9 +185415,9 @@ class ExecUntilMemaccessCommand(ExecUntilCommand):
     _example_ = None
 
     _note_ = [
-        "Classifies potential data accesses, including implicit stack accesses on x86.",
-        "Uses instruction families on x86, ARM, ARM64, RISC-V, MIPS, PPC, SPARC, LoongArch, and OpenRISC.",
-        "Other architectures use explicit bracketed memory operands.",
+        "Classifies potential data accesses by instruction family for each architecture.",
+        "Implicit stack accesses (e.g., push, pop, call, and ret on x86) are included.",
+        "Address computations (e.g., lea on x86) and register-indirect branches are excluded.",
     ]
     _note_ = "\n".join(_note_)
 
@@ -185382,7 +185425,8 @@ class ExecUntilMemaccessCommand(ExecUntilCommand):
         super().__init__(prefix=False)
         return
 
-    def is_target_insn(self, insn):
+    @staticmethod
+    def is_memory_access(insn):
         operands = insn.split_last_operands(insn.operands)[0]
         operand = re.sub(r"<[^>]*>", "", ",".join(operands))
         mnemo = insn.mnemonic.lower()
@@ -185417,7 +185461,47 @@ class ExecUntilMemaccessCommand(ExecUntilCommand):
         if current_arch.arch in ("PPC", "LOONGARCH"):
             return mnemo != "lwsync" and mnemo.startswith(("ld", "st", "lb", "lh", "lw", "lq", "lf", "lv", "lx", "fld", "fst",
                                      "vld", "vst", "xvld", "xvst", "ll.", "sc.", "am", "cas", "swap"))
+        if is_s390x():
+            if re.fullmatch(r"(?:l(?:g|gf|lgf|h|gh|lh|lgh)?|st[gh]?|c(?:g|gf|h|gh|l|lg|lgf|lh|lgh)?|pfd|ex)rl"
+                            r"|(?:mv|cl)cl[eu]?|mvst|clst|srstu?|cksm|cuse", mnemo):
+                return True
+            if re.fullmatch(r"la[ey]?|laey|lcbb|ecag|nop|s[lr][al][gk]?|s[lr]d[al]|rllg?|v(?:es(?:l|ra|rl)|erll|lgv|lvg)[bhfg]?"
+                            r"|b(?!i).*|cl?g?[ri]b\w*", mnemo):
+                return False
+            return "(" in operand
+        if is_sh4():
+            return mnemo not in ("jmp", "jsr", "mova") and (mnemo.startswith("mov.") or "@" in operand)
+        if is_m68k():
+            if mnemo.startswith(("pea", "link", "unlk", "rt")) or current_arch.is_call(insn):
+                return True
+            if mnemo.startswith("lea") or current_arch.is_jump(insn):
+                return False
+            return "@" in operand or bool(re.search(r"(?:^|,)\s*0x[0-9a-f]+\s*(?:,|$)", operand))
+        if is_alpha():
+            return bool(re.fullmatch(r"ld(?:[bw]u|[lq](?:_[lu])?|[fgst])|st(?:[bwlq]|[lq]_[cu]|[fgst])", mnemo))
+        if current_arch.arch == "HPPA":
+            return bool(re.fullmatch(r"f?(?:ld|st)(?:[bhwd]|c[wd]|d?by)[asxm]{0,2}", mnemo.split(",")[0]))
+        if is_nios2():
+            return mnemo.startswith(("ld", "st", "push.n", "pop.n"))
+        if is_microblaze():
+            return bool(re.fullmatch(r"(?:l(?:bu|hu|w|l)|s[bhwl])(?:i|r|x|ea)?", mnemo))
+        if is_xtensa():
+            return bool(re.fullmatch(r"(?:l(?:8ui|16[su]i|32(?:i|r|ai|e|ex)|d(?:inc|dec))|s(?:8i|16i|32(?:i|ri|c1i|e|ex|nb)))"
+                                     r"(?:\.n)?|[ls]s[ix]u?", mnemo))
+        if is_cris():
+            return mnemo in ("push", "pop") or "[" in operand
+        if current_arch.arch == "ARC":
+            return bool(re.fullmatch(r"(?:ld|st)(?:[bhwdl]|dl)?(?:_s)?|(?:push|pop)l?_s|enter_s|leave_s|ex"
+                                     r"|(?:llock|scond)[dl]?|prefetchw?", mnemo.split(".")[0]))
+        if is_csky():
+            if mnemo in ("jmpi", "jsri", "nie", "nir"):
+                return True
+            return mnemo != "stop" and not mnemo.startswith("fsto") and mnemo.startswith(
+                ("ld", "st", "lrw", "lrs", "srs", "push", "pop", "ipush", "ipop", "fld", "fst", "vld", "vst"))
         return "[" in operand
+
+    def is_target_insn(self, insn):
+        return self.is_memory_access(insn)
 
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
@@ -185860,7 +185944,7 @@ class CallTraceCommand(ExecUntilCommand):
                         if self.args.print_args:
                             pending_syscall_ret_indent = print_indent
 
-                    if self.exec_step("si"): # use si wrapper
+                    if self.exec_step("si", insn): # use si wrapper
                         break
                     insn = get_insn()
 

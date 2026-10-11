@@ -977,9 +977,9 @@ options:
 ### Notes
 
 ```text
-Classifies potential data accesses, including implicit stack accesses on x86.
-Uses instruction families on x86, ARM, ARM64, RISC-V, MIPS, PPC, SPARC, LoongArch, and OpenRISC.
-Other architectures use explicit bracketed memory operands.
+Classifies potential data accesses by instruction family for each architecture.
+Implicit stack accesses (e.g., push, pop, call, and ret on x86) are included.
+Address computations (e.g., lea on x86) and register-indirect branches are excluded.
 ```
 
 ## `exec-until region-change`

@@ -700,7 +700,7 @@ For a comprehensive list and additional details, see [docs/SUPPORTED-MODE.md](do
         - ret
         - indirect-branch (x64/x86 only)
         - all-branch (call || jmp || ret)
-        - memory-access (detect just `[...]`)
+        - memory-access
         - specified-keyword-regex
         - specified-condition (expressions using register or memory values)
         - user-code
