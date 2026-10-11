@@ -8062,15 +8062,16 @@ Print GDT/LDT entries. If user-land, show sample entries.
 ### Syntax
 
 ```text
-usage: gdtinfo [-h] [--only-gdt] [--only-ldt] [-q] [-v] [-n]
+usage: gdtinfo [-h] [--only-gdt] [--only-ldt] [--ldt-base ADDRESS] [-q] [-v] [-n]
 
 options:
-  -h, --help      show this help message and exit
-  --only-gdt      show only GDT entries (qemu-system only).
-  --only-ldt      show only LDT entries (qemu-system only).
-  -q, --quiet     enable quiet mode.
-  -v, --verbose   also display bit information of gdt entries.
-  -n, --no-pager  do not use the pager.
+  -h, --help          show this help message and exit
+  --only-gdt          show only GDT entries (qemu-system only).
+  --only-ldt          show only LDT entries (qemu-system only).
+  --ldt-base ADDRESS  supply a known full cached LDT base instead of inferring it from the GDT.
+  -q, --quiet         enable quiet mode.
+  -v, --verbose       also display bit information of gdt entries.
+  -n, --no-pager      do not use the pager.
 ```
 
 ### Notes
@@ -8080,6 +8081,9 @@ This command is intended to dump the GDTR and LDTR when working with qemu-system
 When you're debugging a normal userland app you can't read the GDTR or LDTR,
 so this is just to show you an example of what information is stored there.
 However, the segment registers show the correct (real) values.
+In long-mode compatibility code, QEMU may print only the low 32 bits of the cached LDT base.
+The full LDT base is inferred from a matching GDT descriptor; it may differ from the CPU's cached value.
+Use --ldt-base with a known full address to override this inference.
 ```
 
 ## `idtinfo`

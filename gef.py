@@ -13177,14 +13177,55 @@ class QemuMonitor:
         gdt = re.search(r"^GDT\s*=\s*([0-9a-f]+)\s+([0-9a-f]+)", res, re.I | re.M)
         if gdt:
             segments["GDT"] = (int(gdt.group(1), 16), int(gdt.group(2), 16))
-        ldt = re.search(r"^LDT\s*=\s*[0-9a-f]+\s+([0-9a-f]+)\s+([0-9a-f]+)", res, re.I | re.M)
-        if ldt:
-            segments["LDT"] = (int(ldt.group(1), 16), int(ldt.group(2), 16))
+        ldt = QemuMonitor.parse_x86_ldt(res)
+        if ldt and not ldt["base_truncated"]:
+            segments["LDT"] = (ldt["base"], ldt["limit"])
         cr0 = re.search(r"\bCR0=([0-9a-f]+)", res, re.I)
         flags = re.search(r"\bEFL=([0-9a-f]+)", res, re.I)
         vm86 = flags is not None and int(flags.group(1), 16) & (1 << 17)
         segments["protected"] = bool(cr0 and int(cr0.group(1), 16) & 1 and not vm86)
         return segments
+
+    @staticmethod
+    def parse_x86_ldt(registers):
+        match = re.search(
+            r"^LDT\s*=\s*([0-9a-f]+)\s+([0-9a-f]+)\s+([0-9a-f]+)\s+([0-9a-f]+)",
+            registers, re.I | re.M,
+        )
+        if not match:
+            return None
+        selector, base, limit, flags = [int(value, 16) for value in match.groups()]
+        efer = re.search(r"\bEFER=([0-9a-f]+)", registers, re.I)
+        truncated = bool(selector & ~3 and efer and int(efer.group(1), 16) & (1 << 10)
+                         and len(match.group(2)) <= 8)
+        return {"selector": selector, "base": base, "limit": limit, "flags": flags, "base_truncated": truncated}
+
+    @staticmethod
+    def infer_x86_ldt_base(registers, ldtr):
+        gdt = re.search(r"^GDT\s*=\s*([0-9a-f]+)\s+([0-9a-f]+)", registers, re.I | re.M)
+        offset = ldtr["selector"] & ~7
+        if not gdt or ldtr["selector"] & 4 or offset == 0:
+            return None
+        base, limit = [int(value, 16) for value in gdt.groups()]
+        if limit > 0xffff or offset + 15 > limit:
+            return None
+        try:
+            data = GefUtil.read_x86_descriptor_table(base + offset, 16)
+        except gdb.error:
+            return None
+        if len(data) != 16:
+            return None
+        descriptor = int.from_bytes(data, "little")
+        flags = (descriptor >> 32) & 0x00ffff00
+        if (flags >> 8) & 0x1f != 2 or not flags & (1 << 15) or descriptor >> 96:
+            return None
+        limit = (descriptor & 0xffff) | ((descriptor >> 32) & 0xf0000)
+        if flags & (1 << 23):
+            limit = (limit << 12) | 0xfff
+        base = ((descriptor >> 16) & 0xffffff) | ((descriptor >> 32) & 0xff000000)
+        if base != ldtr["base"] or limit != ldtr["limit"] or flags != ldtr["flags"]:
+            return None
+        return base | (((descriptor >> 64) & 0xffffffff) << 32)
 
     @staticmethod
     @Cache.cache_this_session(cache_None=False)
@@ -72402,9 +72443,9 @@ class KernelAddressHeuristicFinder:
         if is_x86():
             if is_qemu_system():
                 res = gdb.execute("monitor info registers", to_string=True)
-                ldtr = re.search(r"LDT\s*=\s*(\w+) (\w+) (\w+) (\w+)", res)
-                _seg, base, _limit, _attr = [int(ldtr.group(i), 16) for i in range(1, 5)]
-                return base
+                ldtr = QemuMonitor.parse_x86_ldt(res)
+                if ldtr and not ldtr["base_truncated"]:
+                    return ldtr["base"]
             elif is_vmware():
                 # `monitor r ldtr` is buggy
                 return None
@@ -102899,6 +102940,8 @@ class GdtInfoCommand(GenericCommand, BufferingOutput):
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("--only-gdt", action="store_true", help="show only GDT entries (qemu-system only).")
     parser.add_argument("--only-ldt", action="store_true", help="show only LDT entries (qemu-system only).")
+    parser.add_argument("--ldt-base", type=AddressUtil.parse_address, metavar="ADDRESS",
+                        help="supply a known full cached LDT base instead of inferring it from the GDT.")
     parser.add_argument("-q", "--quiet", action="store_true", help="enable quiet mode.")
     parser.add_argument("-v", "--verbose", action="store_true", help="also display bit information of gdt entries.")
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
@@ -102909,6 +102952,9 @@ class GdtInfoCommand(GenericCommand, BufferingOutput):
         "When you're debugging a normal userland app you can't read the GDTR or LDTR,",
         "so this is just to show you an example of what information is stored there.",
         "However, the segment registers show the correct (real) values.",
+        "In long-mode compatibility code, QEMU may print only the low 32 bits of the cached LDT base.",
+        "The full LDT base is inferred from a matching GDT descriptor; it may differ from the CPU's cached value.",
+        "Use --ldt-base with a known full address to override this inference.",
     ]
     _note_ = "\n".join(_note_)
 
@@ -103319,27 +103365,47 @@ class GdtInfoCommand(GenericCommand, BufferingOutput):
         self.print_entries(entries, segm_desc)
         return
 
-    def print_ldt_real(self):
+    def print_ldt_real(self, base_override=None):
         # parse real value
         selector = None
+        truncated = False
         if is_qemu_system():
             res = gdb.execute("monitor info registers", to_string=True)
-            r = re.search(r"LDT\s*=\s*(\S+) (\S+) (\S+)", res)
+            ldtr = QemuMonitor.parse_x86_ldt(res)
+            if not ldtr:
+                self.err_add_out("Could not find LDTR")
+                return
+            selector, base, limit = [ldtr[name] for name in ("selector", "base", "limit")]
+            truncated = ldtr["base_truncated"]
         elif is_vmware():
             res = gdb.execute("monitor r ldtr", to_string=True)
             r = re.search(r"ldtr base=(\S+) limit=(\S+)", res)
-
-        if not r:
-            self.err_add_out("Could not find LDTR")
-            return
-
-        try:
-            if is_qemu_system():
-                selector, base, limit = [int(r.group(i), 16) for i in range(1, 4)]
-            else:
+            if not r:
+                self.err_add_out("Could not find LDTR")
+                return
+            try:
                 base, limit = [int(r.group(i), 16) for i in range(1, 3)]
-        except ValueError:
-            self.err_add_out("Could not find LDTR")
+            except ValueError:
+                self.err_add_out("Could not find LDTR")
+                return
+
+        if truncated:
+            if base_override is None:
+                inferred_base = QemuMonitor.infer_x86_ldt_base(res, ldtr)
+                if inferred_base is None:
+                    self.out.append(titlify("LDT Entry: base:unknown (low32:{:#x}) / limit:{:#x}".format(base, limit)))
+                    self.err_add_out("GDT LDT descriptor unavailable or mismatched; use --ldt-base with its full address")
+                    return
+                base = inferred_base
+                self.warn_add_out("LDT base inferred from the current GDT descriptor; cached upper 32 bits may differ")
+            else:
+                if not 0 <= base_override < (1 << 64) or base_override & 0xffffffff != base:
+                    self.err_add_out("--ldt-base must be a 64-bit address matching the reported low 32 bits")
+                    return
+                base = base_override
+                self.info_add_out("LDT base supplied by --ldt-base; only its low 32 bits could be verified")
+        elif base_override is not None and base_override != base:
+            self.err_add_out("--ldt-base does not match the cached LDT base")
             return
 
         # print title
@@ -103462,7 +103528,7 @@ class GdtInfoCommand(GenericCommand, BufferingOutput):
             if not args.only_ldt:
                 self.print_gdt_real()
             if not args.only_gdt:
-                self.print_ldt_real()
+                self.print_ldt_real(args.ldt_base)
         else:
             self.print_gdt_example()
 
@@ -175638,8 +175704,11 @@ class QemuRegistersCommand(GenericCommand, BufferingOutput):
 
         # LDTR
         self.out.append(titlify("LDTR (Local Descriptor Table Register)"))
-        ldtr = re.search(r"LDT\s*=\s*(\S+) (\S+) (\S+) (\S+)", res)
-        seg, base, limit, attr = [int(ldtr.group(i), 16) for i in range(1, 5)]
+        ldtr = QemuMonitor.parse_x86_ldt(res)
+        if ldtr is None:
+            self.err_add_out("Could not find LDTR")
+            return
+        seg, base, limit, attr = [ldtr[name] for name in ("selector", "base", "limit", "flags")]
         self.out.append("{:s} = {:s}".format(red("LDTR"), yellow("{:#x}".format(seg))))
         self.out.append("seg: {:s}: segment selector for LDT (Local Descriptor Table)".format(
             Color.boldify("{:#x} (rpl:{:d},ti:{:d},index:{:d})".format(
@@ -175647,7 +175716,7 @@ class QemuRegistersCommand(GenericCommand, BufferingOutput):
             ),
         ))
         self.out.append("  base : {:s}: starting address of LDT".format(
-            Color.colorify_hex(base, "bold"),
+            "unknown (low32:{:#x})".format(base) if ldtr["base_truncated"] else Color.colorify_hex(base, "bold"),
         ))
         self.out.append("  limit: {:s}: segment limit".format(
             Color.colorify_hex(limit, "bold"),
@@ -175667,6 +175736,9 @@ class QemuRegistersCommand(GenericCommand, BufferingOutput):
             self.out.append(line.rstrip())
 
         if is_x86():
+            ldtr = QemuMonitor.parse_x86_ldt(res)
+            if ldtr and ldtr["base_truncated"]:
+                self.warn_add_out("QEMU truncated the cached LDT base to 32 bits")
             if not self.args.verbose:
                 self.info_add_out("use `-v` for print Additional info")
             else:
