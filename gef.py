@@ -195383,6 +195383,9 @@ class StackFrameCommand(GenericCommand):
         saved_ip = frame.older().pc()
         stack_hi = int(frame.older().read_register("sp"))
         stack_lo = int(frame.read_register("sp"))
+        if is_sparc64():
+            stack_hi += 0x7ff
+            stack_lo += 0x7ff
         results = []
 
         if current_arch.stack_grow_down:
