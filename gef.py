@@ -196368,6 +196368,23 @@ class VisualDumpCommand(GenericCommand):
         else:
             size = args.size
 
+        if size <= 0:
+            err("SIZE must be positive")
+            return
+        if args.width is not None and args.width <= 0:
+            err("--width must be positive")
+            return
+        if args.auto_width_inclement:
+            if args.auto_inclement_begin_width <= 0:
+                err("--auto-inclement-begin-width must be positive")
+                return
+            if args.auto_inclement_end_width is not None and args.auto_inclement_end_width <= 0:
+                err("--auto-inclement-end-width must be positive")
+                return
+            if args.auto_inclement_step_width <= 0:
+                err("--auto-inclement-step-width must be positive")
+                return
+
         try:
             data = read_memory(args.location, size)
         except (gdb.MemoryError, MemoryError, TypeError):
