@@ -68235,11 +68235,13 @@ class KernelAddressHeuristicFinder:
             # For example, `task_struct.scx.tasks_node` (v6.12 or later) also links every task
             # and its head `scx_tasks` is in the kernel .data section, but it is located
             # before `tasks`, so it is found first.
+            # init_task also points to itself through real_parent, parent and group_leader.
             try:
                 data = read_memory(task, get_pagesize())
             except gdb.MemoryError:
                 return False
-            return b"swapper/0\0" in data or b"swapper\0" in data
+            return (b"swapper/0\0" in data or b"swapper\0" in data) \
+                and slice_unpack(data, current_arch.ptrsize).count(task) >= 3
 
         # plan 2 (available v3.4 or later)
         if kversion and "3.4" <= kversion:
