@@ -5692,7 +5692,7 @@ freq-analysis $rax 0x1000 -e 00 -e 01   # exclude some characters
 
 ## `peek-pageflags`
 
-Read the page flags of a page frame (needs root).
+Read the local host's page flags of a page frame (needs root).
 
 - Alias: `ppfl`
 
@@ -5713,6 +5713,15 @@ options:
 
 ```gdb
 peek-pageflags 0x6b2ae3
+```
+
+### Notes
+
+```text
+PFNs always refer to the local host, including during remote debugging.
+Reads /proc/kpagecount and /proc/kpageflags on the machine running GDB.
+The mapping count can be an average for pages in a large allocation, depending on the kernel configuration.
+Bit 23 is BALLOON before Linux 5.1 and OFFLINE since Linux 5.1.
 ```
 
 ## `peek-pageframe`
@@ -5745,6 +5754,15 @@ options:
 ```gdb
 peek-pageframe 0x555555555060                       # read pagemap of single address
 peek-pageframe -f 0x7ffffffdd000 -t 0x7ffffffff000  # read pagemap of an address range
+```
+
+### Notes
+
+```text
+Reads the local host's /proc/PID/pagemap; qemu-user is not supported.
+Range flags: P=present, S=swapped, F=file/shared-anon, D=soft-dirty, E=exclusive, U=uffd-wp.
+Unknown or unavailable flags are shown as '?' (or 'unknown' for a single address).
+On Linux 3.11-4.1, bits 55-60 are decoded only when the entry identifies the format.
 ```
 
 ## `sixel-memory`

@@ -71994,6 +71994,8 @@ class KernelAddressHeuristicFinder:
                         KernelAddressHeuristicFinderUtil.arm32_movw_movt_ldr(res),
                         KernelAddressHeuristicFinderUtil.arm32_ldr_pc_relative_ldr(res),
                     )
+                else:
+                    return None
                 for x in g:
                     v = read_int32_from_memory(x)
                     if is_valid_addr(v):
@@ -72033,6 +72035,8 @@ class KernelAddressHeuristicFinder:
                         KernelAddressHeuristicFinderUtil.arm32_movw_movt_ldr(res, skip=1),
                         KernelAddressHeuristicFinderUtil.arm32_ldr_pc_relative_ldr(res, skip=1),
                     )
+                else:
+                    return None
                 for x in g:
                     v = read_int32_from_memory(x)
                     if v == 0:
@@ -72121,6 +72125,8 @@ class KernelAddressHeuristicFinder:
                         KernelAddressHeuristicFinderUtil.arm32_movw_movt(res),
                         KernelAddressHeuristicFinderUtil.arm32_ldr_pc_relative_ldr(res),
                     )
+                else:
+                    return None
                 for x in g:
                     v = read_int32_from_memory(x)
                     if v and (v & 0xfff) == 0:
@@ -72140,6 +72146,8 @@ class KernelAddressHeuristicFinder:
                 elif is_arm32():
                     # TODO
                     g = []
+                else:
+                    return None
                 for x in g:
                     v = read_int32_from_memory(x)
                     if v and (v & 0xfff) == 0:
@@ -194761,6 +194769,20 @@ class PeekPageFrameCommand(GenericCommand, BufferingOutput):
 
     ENTRY_SIZE = 8
 
+    _note_ = "\n".join([
+        "Reads the local host's /proc/PID/pagemap; qemu-user is not supported.",
+        "Range flags: P=present, S=swapped, F=file/shared-anon, D=soft-dirty, E=exclusive, U=uffd-wp.",
+        "Unknown or unavailable flags are shown as '?' (or 'unknown' for a single address).",
+        "On Linux 3.11-4.1, bits 55-60 are decoded only when the entry identifies the format.",
+    ])
+
+    def initialize(self):
+        self.page_size = os.sysconf("SC_PAGE_SIZE")
+        match = re.match(r"(\d+)\.(\d+)", os.uname().release)
+        self.host_version = tuple(map(int, match.groups())) if match else None
+        self.pfn_zero_warned = False
+        return True
+
     def get_bit(self, x, bit):
         return (x >> bit) & 1
 
@@ -194778,14 +194800,17 @@ class PeekPageFrameCommand(GenericCommand, BufferingOutput):
         return
 
     def read_pagemap_with_virt_address(self, address, pid):
-        page_size = get_pagesize()
+        page_size = self.page_size
         file_offset = (address // page_size) * self.ENTRY_SIZE
         path = "/proc/{:d}/pagemap".format(pid)
+        if address < 0 or file_offset > (1 << 63) - self.ENTRY_SIZE:
+            err("Address is outside the pagemap file offset range")
+            return None
 
         try:
             with open(path, "rb") as file:
                 file.seek(file_offset)
-                return file.read(8)
+                return file.read(self.ENTRY_SIZE)
         except FileNotFoundError:
             err("Opening {:s} failed! Could not find file".format(path))
         except OSError as e:
@@ -194805,18 +194830,40 @@ class PeekPageFrameCommand(GenericCommand, BufferingOutput):
             return None
 
         entry = struct.unpack("Q", entry_bytes)[0]
-        pfn = self.get_pfn(entry)
+        payload = self.get_pfn(entry)
+        present = self.get_bit(entry, 63)
+        swapped = self.get_bit(entry, 62)
+        version = self.host_version
+        status = (entry >> 55) & 0x3f
+        page_shift = None
+        soft_dirty = exclusive = uffd_wp = None
+        if version is not None:
+            if version < (3, 11):
+                page_shift = status or None
+            elif version < (4, 2):
+                if status == self.page_size.bit_length() - 1:
+                    page_shift = status
+                elif status in (0, 1) and entry:
+                    soft_dirty = status
+            else:
+                soft_dirty = self.get_bit(entry, 55)
+                exclusive = self.get_bit(entry, 56)
+                if version >= (5, 14) or self.get_bit(entry, 57):
+                    uffd_wp = self.get_bit(entry, 57)
 
         data = {
             "address": address,
-            "pfn": pfn,
+            "pfn": payload if present else None,
+            "swap_type": payload & 0x1f if swapped else None,
+            "swap_offset": payload >> 5 if swapped else None,
             "entry": entry,
-            "present": self.get_bit(entry, 63),
-            "swapped": self.get_bit(entry, 62),
-            "file_mapped": self.get_bit(entry, 61),
-            "uffd_wp": self.get_bit(entry, 57),
-            "exclusive": self.get_bit(entry, 56),
-            "soft_dirty": self.get_bit(entry, 55),
+            "present": present,
+            "swapped": swapped,
+            "file_mapped": self.get_bit(entry, 61) if version is not None and version >= (3, 5) else None,
+            "page_shift": page_shift,
+            "uffd_wp": uffd_wp,
+            "exclusive": exclusive,
+            "soft_dirty": soft_dirty,
         }
         return data
 
@@ -194827,17 +194874,12 @@ class PeekPageFrameCommand(GenericCommand, BufferingOutput):
 
         present = data["present"]
         swapped = data["swapped"]
-        file_mapped = data["file_mapped"]
-        uffd_wp = data["uffd_wp"]
-        exclusive = data["exclusive"]
-        soft_dirty = data["soft_dirty"]
-
         if self.args.ignore_non_present and not present:
             self.out.append("Non-present page is ignored")
             return
 
         pfn = data["pfn"]
-        if pfn == 0 and present:
+        if pfn == 0 and present and self.host_version is not None and self.host_version >= (4, 2):
             # Show the warning message only once
             if not getattr(self, "pfn_zero_warned", False):
                 self.append_pfn_zero_warn()
@@ -194848,17 +194890,24 @@ class PeekPageFrameCommand(GenericCommand, BufferingOutput):
 
         self.out.append("present:            {:s}".format(green_yes if present else red_no))
         self.out.append("swapped:            {:s}".format(green_yes if swapped else red_no))
-        self.out.append("file-mapped:        {:s}".format(green_yes if file_mapped else red_no))
-        self.out.append("soft-dirty:         {:s}".format(green_yes if soft_dirty else red_no))
-        self.out.append("exclusively-mapped: {:s}".format(green_yes if exclusive else red_no))
-        self.out.append("uffd-wp:            {:s}".format(green_yes if uffd_wp else red_no))
+        for label, key in (("file-mapped", "file_mapped"), ("soft-dirty", "soft_dirty"),
+                           ("exclusively-mapped", "exclusive"), ("uffd-wp", "uffd_wp")):
+            value = data[key]
+            text = "unknown" if value is None else green_yes if value else red_no
+            self.out.append("{:<20s}{:s}".format(label + ":", text))
+
+        if data["page_shift"] is not None:
+            self.out.append("page-shift:         {:d}".format(data["page_shift"]))
 
         if present:
             self.out.append(Color.boldify("PFN:                {:#x}").format(pfn))
+        elif swapped:
+            self.out.append("swap type:          {:d}".format(data["swap_type"]))
+            self.out.append("swap offset:        {:#x}".format(data["swap_offset"]))
         return
 
     def handle_address_range(self, from_addr, to_addr, pid):
-        page_size = get_pagesize()
+        page_size = self.page_size
         start_page = from_addr // page_size
         end_page = to_addr // page_size
 
@@ -194867,37 +194916,37 @@ class PeekPageFrameCommand(GenericCommand, BufferingOutput):
             data = self.get_pagemap_entry(address, pid)
 
             if data is None:
-                continue
+                return
 
             if self.args.ignore_non_present and not data["present"]:
                 continue
 
             pfn = data["pfn"]
-            if pfn == 0 and data["present"]:
+            if pfn == 0 and data["present"] and self.host_version is not None and self.host_version >= (4, 2):
                 # Show the warning message only once
                 if not getattr(self, "pfn_zero_warned", False):
                     self.append_pfn_zero_warn()
                     self.pfn_zero_warned = True
 
-            flags = []
-            flags.append("P" if data["present"] else "-")
-            flags.append("S" if data["swapped"] else "-")
-            flags.append("F" if data["file_mapped"] else "-")
-            flags.append("D" if data["soft_dirty"] else "-")
-            flags.append("E" if data["exclusive"] else "-")
-            flags.append("U" if data["uffd_wp"] else "-")
-            flags_str = "".join(flags)
+            flags_str = "".join("?" if data[key] is None else flag if data[key] else "-" for key, flag in (
+                ("present", "P"), ("swapped", "S"), ("file_mapped", "F"),
+                ("soft_dirty", "D"), ("exclusive", "E"), ("uffd_wp", "U"),
+            ))
 
-            if data["pfn"] != 0:
-                pfn_str = "{:#x}".format(data["pfn"])
+            if data["present"]:
+                pfn_str = "{:#x}".format(pfn)
+            elif data["swapped"]:
+                pfn_str = "swap={:d}:{:#x}".format(data["swap_type"], data["swap_offset"])
             else:
-                pfn_str = "0x0"
-            self.out.append("{:#018x} {:>8} {:s}".format(data["address"], pfn_str, flags_str))
+                pfn_str = "-"
+            shift_str = "" if data["page_shift"] is None else " page-shift={:d}".format(data["page_shift"])
+            self.out.append("{:#018x} {:>8} {:s}{:s}".format(data["address"], pfn_str, flags_str, shift_str))
         return
 
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
-    @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "qemu-user", "kgdb", "vmware", "wine", "pin"))
+    @Decorator.only_if_gdb_target_local
     def do_invoke(self, args):
         pid = Pid.get_pid()
         if pid is None:
@@ -194905,9 +194954,16 @@ class PeekPageFrameCommand(GenericCommand, BufferingOutput):
             return
 
         self.out = []
+        self.initialize()
         if args.address is not None:
+            if args.address < 0:
+                err("Address must not be negative")
+                return
             self.handle_address(args.address, pid)
         elif args.from_addr is not None and args.to_addr is not None:
+            if args.from_addr < 0 or args.to_addr < args.from_addr:
+                err("Address range must be non-negative and ordered")
+                return
             self.handle_address_range(args.from_addr, args.to_addr, pid)
         else:
             err("You must provide either a single address or both --from-addr and --to-addr")
@@ -194919,7 +194975,7 @@ class PeekPageFrameCommand(GenericCommand, BufferingOutput):
 
 @register_command
 class PeekPageFlagsCommand(GenericCommand, BufferingOutput):
-    """Read the page flags of a page frame (needs root)."""
+    """Read the local host's page flags of a page frame (needs root)."""
 
     _cmdline_ = "peek-pageflags"
     _category_ = "03-g. Memory - Investigation"
@@ -194935,6 +194991,13 @@ class PeekPageFlagsCommand(GenericCommand, BufferingOutput):
         "{0:s} 0x6b2ae3",
     ]
     _example_ = "\n".join(_example_).format(_cmdline_)
+
+    _note_ = "\n".join([
+        "PFNs always refer to the local host, including during remote debugging.",
+        "Reads /proc/kpagecount and /proc/kpageflags on the machine running GDB.",
+        "The mapping count can be an average for pages in a large allocation, depending on the kernel configuration.",
+        "Bit 23 is BALLOON before Linux 5.1 and OFFLINE since Linux 5.1.",
+    ])
 
     class KPageFlags:
         FLAGS = {
@@ -194969,14 +195032,28 @@ class PeekPageFlagsCommand(GenericCommand, BufferingOutput):
 
         def __init__(self, value):
             self.value = value
+            match = re.match(r"(\d+)\.(\d+)", os.uname().release)
+            self.host_version = tuple(map(int, match.groups())) if match else None
 
         def get_flag(self):
             return self.value
 
         def get_set_flags(self):
-            return [flag for flag, bit in self.FLAGS.items() if self.value & bit]
+            flags = [flag for flag, bit in self.FLAGS.items() if self.value & bit]
+            if "OFFLINE" in flags:
+                if self.host_version is None:
+                    flags[flags.index("OFFLINE")] = "BALLOON/OFFLINE (unknown host kernel version)"
+                elif self.host_version < (5, 1):
+                    flags[flags.index("OFFLINE")] = "BALLOON"
+            unknown = self.value & ~sum(self.FLAGS.values())
+            if unknown:
+                flags.append("UNKNOWN({:#x})".format(unknown))
+            return flags
 
     def read_file(self, path, pfn):
+        if pfn < 0 or pfn > ((1 << 63) - 8) // 8:
+            err("PFN is outside the page information file offset range")
+            return None
         try:
             with open(path, "rb") as f:
                 f.seek(pfn * 8)
@@ -194984,14 +195061,14 @@ class PeekPageFlagsCommand(GenericCommand, BufferingOutput):
                 if len(data) == 8:
                     return struct.unpack("Q", data)[0]
                 else:
-                    raise ValueError("Could not read kpagecount for PFN {:#x}".format(pfn))
+                    err("Could not read {:s} for PFN {:#x}".format(path, pfn))
         except FileNotFoundError:
             err("Could not open {:s}".format(path))
         except PermissionError:
             err("No permissions to read {:s}".format(path))
             err("Only the owner of {:s} (root) is able to read it, rerun gdb with proper permissions".format(path))
-        except Exception as e:
-            err("Error reading kpagecount: {}".format(e))
+        except OSError as e:
+            err("Error reading {:s}: {}".format(path, e))
         return None
 
     def read_kpagecount(self, pfn):
@@ -195009,6 +195086,11 @@ class PeekPageFlagsCommand(GenericCommand, BufferingOutput):
         if args.pfn is None:
             err("You must provide a PFN")
             return
+
+        host = os.uname()
+        info("Reading PFN {:#x} on local host {:s} (Linux {:s})".format(args.pfn, host.nodename, host.release))
+        if is_remote_debug():
+            warn("PFNs refer to the local host; remote target page frames are not read")
 
         count = self.read_kpagecount(args.pfn)
         if count is None:
