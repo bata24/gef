@@ -14624,7 +14624,7 @@ def is_in_secure():
     # In environments without a secure world:
     # Older qemu versions did not have the SCR register. (return None)
     # Newer qemu versions always return 0.
-    if not scr:
+    if scr is None:
         return False
     return (scr & 0b1) == 0
 
@@ -74704,10 +74704,14 @@ class KernelLayout:
                 (("$SCTLR", "$SCTLR_EL1"), ("$VBAR", "$VBAR_EL1")),
                 (("$SCTLR_S", "$SCTLR_EL1_S"), ("$VBAR_S", "$VBAR_EL1_S")),
             ]:
-                sctlr = get_register(sctlr_regs[0]) or get_register(sctlr_regs[1]) or 0
-                vbar = get_register(vbar_regs[0]) or get_register(vbar_regs[1]) or 0
+                sctlr = get_register(sctlr_regs[0])
+                if sctlr is None:
+                    sctlr = get_register(sctlr_regs[1])
+                vbar = get_register(vbar_regs[0])
+                if vbar is None:
+                    vbar = get_register(vbar_regs[1])
                 # SCTLR.V overrides VBAR and selects the high-vector page.
-                vector_bases.append(0xffff_0000 if sctlr & (1 << 13) else vbar)
+                vector_bases.append(0xffff_0000 if (sctlr or 0) & (1 << 13) else (vbar or 0))
             for vector_base in dict.fromkeys(vector_bases):
                 try:
                     data = read_memory(vector_base + get_pagesize(), 0x10)
@@ -74719,7 +74723,9 @@ class KernelLayout:
 
         elif is_arm64():
             # `VBAR` register has interrupt vector address
-            vbar = get_register("$VBAR") or get_register("$VBAR_EL1")
+            vbar = get_register("$VBAR")
+            if vbar is None:
+                vbar = get_register("$VBAR_EL1")
             if is_valid_addr(vbar):
                 return vbar
 
@@ -174880,20 +174886,30 @@ class VBARCommand(GenericCommand, BufferingOutput):
         vbars = []
 
         # VBAR
-        sctlr = get_register("$SCTLR") or get_register("$SCTLR_EL1")
-        if (sctlr >> 13) & 1:
+        sctlr = get_register("$SCTLR")
+        if sctlr is None:
+            sctlr = get_register("$SCTLR_EL1")
+        if sctlr is None:
+            vbars.append(("$VBAR", None))
+        elif (sctlr >> 13) & 1:
             vbars.append(("$VBAR ($SCTLR.V==1)", 0xffff_0000)) # default
         else:
-            vbar = get_register("$VBAR") or get_register("$VBAR_EL1")
+            vbar = get_register("$VBAR")
+            if vbar is None:
+                vbar = get_register("$VBAR_EL1")
             vbars.append(("$VBAR ($SCTLR.V==0)", vbar))
 
         # VBAR_S
-        sctlr_s = get_register("$SCTLR_S") or get_register("$SCTLR_EL1_S")
+        sctlr_s = get_register("$SCTLR_S")
+        if sctlr_s is None:
+            sctlr_s = get_register("$SCTLR_EL1_S")
         if sctlr_s is not None:
             if (sctlr_s >> 13) & 1:
                 vbars.append(("$VBAR_S ($SCTLR_S.V==1)", 0xffff_0000)) # default
             else:
-                vbar = get_register("$VBAR_S") or get_register("$VBAR_EL1_S")
+                vbar = get_register("$VBAR_S")
+                if vbar is None:
+                    vbar = get_register("$VBAR_EL1_S")
                 vbars.append(("$VBAR_S ($SCTLR_S.V==0)", vbar))
         return vbars
 
