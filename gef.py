@@ -66841,16 +66841,7 @@ class KernelConstsX64(KernelConstsBase):
 
     @property
     def __end_of_permanent_fixed_addresses(self):
-        end = self.__end_of_fixed_addresses
-        if end is None:
-            return None
-        if "3.0" <= self.kversion < "3.10":
-            # (FIX_TBOOT_BASE), FIX_BTMAP_BEGIN ~ FIX_BTMAP_END
-            return end - int(self.CONFIG_INTEL_TXT) - 256
-        elif "3.10" <= self.kversion:
-            # (FIX_TBOOT_BASE), FIX_BTMAP_BEGIN ~ FIX_BTMAP_END
-            return end - int(self.CONFIG_INTEL_TXT) - 512
-        return None
+        return KernelAddressHeuristicFinder.get_end_of_permanent_fixed_addresses()
 
     @property
     def __end_of_fixed_addresses(self):
@@ -70181,15 +70172,21 @@ class KernelAddressHeuristicFinder:
         return None
 
     @staticmethod
+    @Cache.cache_this_session(cache_None=False, per_inferior=True, until_new_objfile=True)
     @Decorator.switch_to_intel_syntax
     def get_end_of_permanent_fixed_addresses():
-        if not is_x86_32():
+        if not is_x86():
             return None
+
+        # plan 1 (from type information)
+        end = GefUtil.enum_value("enum fixed_addresses", "__end_of_permanent_fixed_addresses")
+        if end is not None:
+            return end
 
         kversion = Kernel.version()
 
-        # plan 1 (available v2.6.30 ~)
-        if kversion and "2.6.30" <= kversion:
+        # plan 2 (available v2.6.30 ~)
+        if is_x86_32() and kversion and "2.6.30" <= kversion:
             for addr in Ksym.get_addrs("__virt_addr_valid", match="split"):
                 res = KernelAddressHeuristicFinderUtil.disassemble_until_next_symbol(addr, 30)
                 # `x >= FIXADDR_START` loads `__FIXADDR_TOP` and subtracts `FIXADDR_SIZE` from it
@@ -70201,6 +70198,38 @@ class KernelAddressHeuristicFinder:
                     size = int(m.group(1), 16)
                     if top and size and (top | size) % get_pagesize() == 0:
                         return size // get_pagesize()
+
+        # plan 3 (available v4.14.10 ~, needs CONFIG_PTDUMP_CORE)
+        if is_x86_64():
+            top = KernelAddressHeuristicFinder.consts().FIXADDR_TOP
+            klayout = Kernel.layout(use_iomem=False)
+            if top and klayout.ro_base and klayout.ro_size and klayout.rw_base and klayout.rw_size:
+                if is_valid_addr(klayout.ro_base) and is_valid_addr(klayout.rw_base):
+                    try:
+                        ro_data = read_memory(klayout.ro_base, klayout.ro_size)
+                        rw_data = read_memory(klayout.rw_base, min(klayout.rw_size, 0x100_0000))
+                    except gdb.MemoryError:
+                        return None
+                    pos = -1
+                    while True:
+                        pos = ro_data.find(b"Fixmap Area\x00", pos + 1)
+                        if pos == -1:
+                            break
+                        name_ptr = p64(klayout.ro_base + pos)
+                        pos2 = -1
+                        while True:
+                            pos2 = rw_data.find(name_ptr, pos2 + 1)
+                            if pos2 == -1:
+                                break
+                            if pos2 % 8 or not 8 <= pos2 <= len(rw_data) - 32:
+                                continue
+                            # address_markers[] ends with {FIXADDR_START, "Fixmap Area", 0} and {-1, NULL, 0}
+                            start, name, max_lines, end_start, end_name = slice_unpack(rw_data[pos2 - 8:pos2 + 32], 8)
+                            if max_lines != 0 or end_start != 0xffff_ffff_ffff_ffff or end_name != 0:
+                                continue
+                            size = top - start
+                            if 0 < size and size % get_pagesize() == 0:
+                                return size // get_pagesize()
         return None
 
     @staticmethod
@@ -181679,22 +181708,24 @@ class KernelVMMapCommand(GenericCommand, BufferingOutput):
                 mem_section = KernelAddressHeuristicFinder.consts().mem_section
                 NR_MEM_SECTIONS = KernelAddressHeuristicFinder.consts().NR_MEM_SECTIONS
                 sizeof_mem_section = KernelAddressHeuristicFinder.consts().sizeof_mem_section
+                SECTION_HAS_MEM_MAP = KernelAddressHeuristicFinder.consts().SECTION_HAS_MEM_MAP
+                SECTION_MAP_MASK = KernelAddressHeuristicFinder.consts().SECTION_MAP_MASK
+                PFN_SECTION_SHIFT = KernelAddressHeuristicFinder.consts().PFN_SECTION_SHIFT
+                sizeof_struct_page = KernelAddressHeuristicFinder.consts().sizeof_struct_page
+                if sizeof_struct_page is None:
+                    self.quiet_warn("Could not find sizeof(struct page)")
+                    return
+                section_map_size = sizeof_struct_page << PFN_SECTION_SHIFT
                 # parse mem_section
                 for i in range(NR_MEM_SECTIONS):
-                    section_mem_map = read_int_from_memory(mem_section + sizeof_mem_section * i)
-                    section_mem_map &= get_pagesize_mask_high()
-                    if not is_valid_addr(section_mem_map):
+                    section_mem_map = read_int_from_memory(mem_section + sizeof_mem_section * i, safe=True)
+                    if section_mem_map is None or not section_mem_map & SECTION_HAS_MEM_MAP:
                         continue
-                    # already there
-                    if section_mem_map in self.regions:
-                        self.regions[section_mem_map].add_description("section_mem_map(=page[])")
+                    # section_mem_map is biased by the first pfn of the section
+                    page_array = AddressUtil.normalize_address((section_mem_map & SECTION_MAP_MASK) + section_map_size * i)
+                    if not is_valid_addr(page_array):
                         continue
-                    # require division
-                    for _key, r in sorted(self.regions.items()):
-                        if r.addr_start <= section_mem_map < r.addr_end:
-                            size = r.addr_end - section_mem_map
-                            self.insert_region(section_mem_map, size, "section_mem_map(=page[])")
-                            break
+                    self.insert_region(page_array, section_map_size, "section_mem_map(=page[])")
         return
 
     def resolve_ldt(self):
@@ -181771,6 +181802,8 @@ class KernelVMMapCommand(GenericCommand, BufferingOutput):
         FIXADDR_TOP = KernelAddressHeuristicFinder.consts().FIXADDR_TOP
         if FIXADDR_START and FIXADDR_TOP:
             self.insert_region_range(FIXADDR_START, FIXADDR_TOP, "fixmap")
+        elif is_x86_64():
+            self.quiet_warn("Could not determine the permanent fixmap boundary; load matching kernel debug information")
         return
 
     def resolve_vsyscall(self):
@@ -182185,6 +182218,13 @@ class KernelVMMapCommand(GenericCommand, BufferingOutput):
         if not maps:
             return
 
+        if "FlatView" in res:
+            views = [view for view in re.split(r"(?m)^FlatView", res) if 'AS "memory"' in view]
+            if not views:
+                self.quiet_warn("Could not find the physical memory address space")
+                return
+            res = "\n".join(views)
+
         for line in res.splitlines():
             if not line.startswith("  "):
                 continue
@@ -182194,24 +182234,26 @@ class KernelVMMapCommand(GenericCommand, BufferingOutput):
                 continue
 
             paddr = int(m.group(1), 16)
-            if paddr % 0x1000:
-                continue
-
-            pend = int(m.group(2), 16)
-            if (pend & 0xfff) == 0xfff:
-                pend += 1
-            if pend % 0x1000:
-                continue
-
-            size = pend - paddr
-            if size % 0x1000 or size == 0:
+            pend = int(m.group(2), 16) + 1
+            if pend <= paddr:
                 continue
 
             device_name = "device ({:s})".format(m.group(3))
 
-            vaddrs = AddrMap.p2v(paddr, maps=maps)
-            for vaddr in vaddrs:
-                self.insert_region(vaddr, size, device_name)
+            # each mapping may cover only a part of the device
+            entries = [e for e in maps if e.pstart is not None and e.pstart < pend and paddr < e.pend]
+            ranges = []
+            for entry in sorted(entries, key=lambda e: e.vstart):
+                start = max(paddr, entry.pstart)
+                end = min(pend, entry.pend)
+                vstart = entry.p2v(start)
+                vend = vstart + end - start
+                if ranges and ranges[-1][1] == vstart:
+                    ranges[-1] = (ranges[-1][0], vend)
+                else:
+                    ranges.append((vstart, vend))
+            for start, end in ranges:
+                self.insert_region_range(start, end, device_name)
         return
 
     def detect_zero_page(self):
