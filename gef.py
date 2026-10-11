@@ -4242,17 +4242,16 @@ class GlibcHeap:
     @Cache.cache_until_next
     def search_for_mp_():
         """search for mp_ from main_arena, then return addr."""
-        main_arena_ptr = GlibcHeap.search_for_main_arena_from_tls()
-        if main_arena_ptr is None:
+        main_arena = GlibcHeap.search_for_main_arena_from_tls()
+        if main_arena is None:
             return None
-        main_arena = read_int_from_memory(main_arena_ptr)
 
         heap_base = HeapBaseCommand.heap_base()
         if heap_base is None:
             return None
 
         offsetof_sbrk_base = GlibcHeap.MallocPar(0).addrof_sbrk_base
-        current = main_arena - GlibcHeap.MallocPar(0).sizeof
+        current = main_arena - GlibcHeap.MallocPar(0).sizeof + offsetof_sbrk_base
         for _ in range(0, 500):
             x = read_int_from_memory(current, safe=True)
             if x is None:
@@ -4440,8 +4439,8 @@ class GlibcHeap:
 
     @staticmethod
     @Cache.cache_until_next
-    def search_for_main_arena_from_tls():
-        """search for main arena from TLS, then return &addr."""
+    def search_for_thread_arena_from_tls():
+        """search for thread_arena from TLS, then return (tls, &thread_arena, [thread_arena, *next_arenas])."""
 
         """
         [x64]
@@ -4513,56 +4512,75 @@ class GlibcHeap:
 
         orig_thread = gdb.selected_thread()
         orig_frame = gdb.selected_frame()
-        threads = gdb.selected_inferior().threads()
-        main_thread = [th for th in threads if th.num == 1][0]
-        main_thread.switch()
-        try:
-            tls = current_arch.get_tls()
-        finally:
-            orig_thread.switch() # revert thread
-            orig_frame.select()
-        if tls is None:
-            return None
-
+        threads = sorted(gdb.selected_inferior().threads(), key=lambda th: th.num)
         direction = TlsCommand.get_direction()
 
-        for i in range(1, 500):
-            addr = tls + (current_arch.ptrsize * i) * direction
-
-            if is_m68k():
-                addr += 2
-
-            if not is_valid_addr(addr):
-                break
-
-            candidate_arena_addr = read_int_from_memory(addr)
-            if not is_valid_addr(candidate_arena_addr):
+        # The main thread may have exited, so try each thread in order.
+        for thread in threads:
+            thread.switch()
+            try:
+                tls = current_arch.get_tls()
+            finally:
+                orig_thread.switch() # revert thread
+                orig_frame.select()
+            if tls is None:
                 continue
 
-            candidate_arena = GlibcHeap.MallocStateStruct(candidate_arena_addr)
-            if candidate_arena.system_mem < get_pagesize():
-                continue
-            # Statically built binaries have an unaligned system_mem,
-            # so alignment should not be used to determine the validity of system_mem.
+            for i in range(1, 500):
+                addr = tls + (current_arch.ptrsize * i) * direction
 
-            top = candidate_arena.top
-            if not is_valid_addr(top):
-                continue
+                if is_m68k():
+                    addr += 2
 
-            next_addr = to_unsigned_long(candidate_arena.next)
-            seen_arena = set()
-            while True:
-                if not is_valid_addr(next_addr):
+                if not is_valid_addr(addr):
                     break
-                if candidate_arena_addr == next_addr:
-                    return addr
-                if next_addr in seen_arena:
-                    # broken `next` chain, give up this candidate
-                    break
-                seen_arena.add(next_addr)
-                next_addr = to_unsigned_long(GlibcHeap.MallocStateStruct(next_addr).next)
+
+                candidate_arena_addr = read_int_from_memory(addr)
+                if not is_valid_addr(candidate_arena_addr):
+                    continue
+
+                candidate_arena = GlibcHeap.MallocStateStruct(candidate_arena_addr)
+                arena_size = candidate_arena.sizeof
+                if not is_valid_addr(candidate_arena_addr + arena_size - 1):
+                    continue
+                if candidate_arena.system_mem < get_pagesize():
+                    continue
+                # Statically built binaries have an unaligned system_mem,
+                # so alignment should not be used to determine the validity of system_mem.
+
+                top = candidate_arena.top
+                if not is_valid_addr(top):
+                    continue
+
+                next_addr = to_unsigned_long(candidate_arena.next)
+                seen_arena = []
+                while True:
+                    if not is_valid_addr(next_addr) or not is_valid_addr(next_addr + arena_size - 1):
+                        break
+                    if candidate_arena_addr == next_addr:
+                        return tls, addr, [candidate_arena_addr] + seen_arena
+                    if next_addr in seen_arena:
+                        # broken `next` chain, give up this candidate
+                        break
+                    seen_arena.append(next_addr)
+                    next_addr = to_unsigned_long(GlibcHeap.MallocStateStruct(next_addr).next)
 
         # not found
+        return None
+
+    @staticmethod
+    @Cache.cache_until_next
+    def search_for_main_arena_from_tls():
+        """search for main arena from TLS, then return addr."""
+        ret = GlibcHeap.search_for_thread_arena_from_tls()
+        if ret is None:
+            return None
+
+        # A non-main arena is placed right after the heap_info that points back to it.
+        for arena in ret[2]:
+            heap_info = GlibcHeap.HeapInfo(arena & get_pagesize_mask_high())
+            if to_unsigned_long(heap_info.ar_ptr) != arena:
+                return arena
         return None
 
     @staticmethod
@@ -4604,9 +4622,9 @@ class GlibcHeap:
                 pass
 
         # plan 3 (from TLS)
-        ptr = GlibcHeap.search_for_main_arena_from_tls()
-        if ptr:
-            return read_int_from_memory(ptr)
+        main_arena = GlibcHeap.search_for_main_arena_from_tls()
+        if main_arena:
+            return main_arena
 
         raise OSError("Cannot find main_arena for {}".format(current_arch.arch))
 
@@ -15014,24 +15032,28 @@ class ProcessMap:
 
     @staticmethod
     @Cache.cache_until_next
-    def get_process_maps_linux(pid, remote=False):
-        """Parse the Linux process `/proc/pid/maps` file."""
+    def get_process_maps_linux(pid, remote=False, tid=None):
+        """Parse the Linux process `/proc/pid/maps` (or `/proc/pid/task/tid/maps`) file."""
 
         if Config.get("context.disable_vmmap"):
             return []
 
         # open & read maps
-        proc_map_file = "/proc/{:d}/maps".format(pid)
+        if tid is None:
+            proc_map_file = "/proc/{:d}/maps".format(pid)
+        else:
+            proc_map_file = "/proc/{:d}/task/{:d}/maps".format(pid, tid)
         if remote:
             data = Path.read_remote_file(proc_map_file, as_byte=False)
             if not data:
                 return []
             lines = data.splitlines()
         else:
-            if not os.path.exists(proc_map_file):
-                return []
-            with open(proc_map_file, "r") as fdw:
-                lines = fdw.readlines()
+            try:
+                with open(proc_map_file, "r") as fdw:
+                    lines = fdw.readlines()
+            except OSError:
+                return [] # the process is already gone, or it is not ours
 
         # tls and $sp of each threads
         # under qemu, they are guest addresses, not addresses of the qemu process whose maps are parsed here
@@ -15540,7 +15562,11 @@ class ProcessMap:
         elif is_remote_debug():
             remote_pid = Pid.get_pid(remote=True)
             if remote_pid:
-                return ProcessMap.get_process_maps_linux(remote_pid, remote=True)
+                r = ProcessMap.get_process_maps_linux(remote_pid, remote=True)
+                if r:
+                    return r
+                # the maps of the thread group leader is empty after it exits
+                return ProcessMap.get_process_maps_linux(remote_pid, remote=True, tid=gdb.selected_thread().ptid[1])
 
         elif is_rr():
             return ProcessMap.get_process_maps_from_info_proc()
@@ -15549,6 +15575,10 @@ class ProcessMap:
             pid = Pid.get_pid()
             if pid:
                 r = ProcessMap.get_process_maps_linux(pid)
+                if r:
+                    return r
+                # the maps of the thread group leader is empty after it exits
+                r = ProcessMap.get_process_maps_linux(pid, tid=gdb.selected_thread().ptid[1])
                 if r:
                     return r
 
@@ -46478,10 +46508,11 @@ class DestructorDumpCommand(GenericCommand):
         # Statically linked binaries cannot resolve the address of thread-local storage variables.
         # Therefore, identify it from the output of the msymbols command and the offset of thread_arena.
 
-        # thread_arena address of main thread
-        main_thread_main_arena = GlibcHeap.search_for_main_arena_from_tls()
-        if main_thread_main_arena is None:
+        # TLS address and thread_arena address of a thread
+        ret = GlibcHeap.search_for_thread_arena_from_tls()
+        if ret is None:
             return None
+        thread_tls, thread_arena = ret[:2]
 
         # thread_arena offset from .tbss
         ret = gdb.execute("maintenance print msymbols", to_string=True)
@@ -46497,23 +46528,11 @@ class DestructorDumpCommand(GenericCommand):
         tls_dtor_list_offset = int(m.group(1), 16)
 
         # tls_dtor_list offset from TLS
-        main_thread_tbss_base = main_thread_main_arena - thread_arena_offset
-        main_thread_tls_dtor_list = main_thread_tbss_base + tls_dtor_list_offset
-
-        # TLS address of main thread
-        orig_thread = gdb.selected_thread()
-        orig_frame = gdb.selected_frame()
-        threads = gdb.selected_inferior().threads()
-        main_thread = [th for th in threads if th.num == 1][0]
-        main_thread.switch() # switch temporarily
-        try:
-            main_tls = current_arch.get_tls()
-        finally:
-            orig_thread.switch() # revert thread
-            orig_frame.select()
+        thread_tbss_base = thread_arena - thread_arena_offset
+        thread_tls_dtor_list = thread_tbss_base + tls_dtor_list_offset
 
         # tls_dotr_list of current thread
-        tls_dtor_list = main_thread_tls_dtor_list - main_tls + current_arch.get_tls()
+        tls_dtor_list = thread_tls_dtor_list - thread_tls + current_arch.get_tls()
         return tls_dtor_list
 
     def get_dtor_list_from_linkmap_relative(self, codebase):
