@@ -8928,7 +8928,7 @@ Each cache is used based on kernel version strings, so kernels of the same versi
 share one cache even if the CONFIG is different. GEF checks the cached offsets
 against the running kernel and parses again when they do not match.
 To drop a cache by hand, rescan with `ks -rv` or use `gef reset-cache --hard`.
-`--system-map` checks the KASLR offset against the exception entry and linux_banner.
+`--system-map` and `--vmlinux-file` check the KASLR offset against the exception entry and linux_banner.
 With only one anchor, it warns that the kernel build could not be verified.
 Absolute symbols and symbols linked outside the kernel image are not relocated.
 ```
@@ -9008,7 +9008,7 @@ usage: vmlinux-to-elf-apply [-h] [-r]
 
 options:
   -h, --help    show this help message and exit
-  -r, --rescan  force applying again. (default: reuse vmlinux-to-elf-dump-memory.elf if exists)
+  -r, --rescan  regenerate the ELF instead of reusing a matching symbol cache.
 ```
 
 # 06-f. Qemu-system/KGDB Cooperation - Linux Task

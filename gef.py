@@ -159682,28 +159682,17 @@ class Ksym:
                 Ksym.quiet_err(quiet, "{}".format(e))
                 return None
 
-            # check vmlinux
-            for inf in gdb.inferiors():
-                if not hasattr(inf, "progspace"):
-                    continue
-                if not hasattr(inf.progspace, "filename"):
-                    continue
-
-                filename = str(inf.progspace.filename)
-                if not os.path.exists(filename):
-                    continue
-
-                # Currently, the filename in vmlinux is hard-coded
-                if "vmlinux" not in os.path.basename(filename).lower():
-                    continue
-
-                # it has symbol?
-                try:
-                    elf = Elf(filename)
-                    if elf.get_shdr(".symtab"):
-                        return filename
-                except Exception:
-                    continue
+            inferior = gdb.selected_inferior()
+            filename = getattr(getattr(inferior, "progspace", None), "filename", None)
+            if not filename or not os.path.isfile(filename):
+                return None
+            if "vmlinux" not in os.path.basename(filename).lower():
+                return None
+            try:
+                if Elf(filename).get_shdr(".symtab"):
+                    return filename
+            except (OSError, ValueError, struct.error):
+                pass
             return None
 
         @staticmethod
@@ -159714,62 +159703,63 @@ class Ksym:
             except FileNotFoundError as e:
                 Ksym.quiet_err(quiet, "{}".format(e))
                 return None
-            result = GefUtil.gef_execute_external([nm, filename], as_list=True)
+            try:
+                elf = Elf(filename)
+                result = GefUtil.gef_execute_external([nm, filename], as_list=True)
+            except (OSError, ValueError, struct.error, subprocess.CalledProcessError) as e:
+                err("Could not read vmlinux: {}".format(e))
+                return None
+            machines = {
+                "X86": Elf.EM_X86_64 if current_arch.ptrsize == 8 else Elf.EM_386,
+                "ARM": Elf.EM_ARM, "ARM64": Elf.EM_AARCH64, "RISCV": Elf.EM_RISCV,
+            }
+            endian = Elf.BIG_ENDIAN if Endian.is_big_endian() else Elf.LITTLE_ENDIAN
+            if (elf.e_machine != machines.get(current_arch.arch)
+                    or elf.get_bits() != current_arch.ptrsize * 8 or elf.e_endianness != endian):
+                err("vmlinux architecture does not match the running kernel")
+                return None
 
-            # distinctive addresses to use for rebasing
-            if is_x86():
-                target = [
-                    "asm_exc_divide_error", # 5.8~
-                    "divide_error", # 3.0 ~ 5.7
-                ]
-            elif is_arm32():
-                target = [
-                    "vector_swi",
-                ]
-            elif is_arm64():
-                target = [
-                    "vectors", # 3.7~
-                ]
-            elif is_riscv64() or is_riscv32():
-                target = [
-                    "handle_exception", # 4.19~
-                ]
-            else:
-                raise NotImplementedError("Unsupported architecture")
-
-            # parse symbol
-            tmp_kallsyms = []
-            target_found = {}
+            kallsyms = []
             for line in result:
                 try:
                     addr, typ, name = line.split()
                     addr = int(addr, 16)
-                    typ = typ.strip()
-                    name = name.strip()
                 except ValueError:
                     continue
-                tmp_kallsyms.append([addr, name, typ])
-
-                if name in target:
-                    target_found["handler"] = addr
-
-            # rebase
-            if target_found:
-                vector = KernelLayout.get_exception_vector()
-                if vector:
-                    diff = vector - target_found["handler"]
-                    if diff & get_pagesize_mask_low() == 0:
-                        kallsyms = []
-                        for addr, name, typ in tmp_kallsyms:
-                            # don't rebase per-cpu offset
-                            if addr >= 0x4000_0000:
-                                # This value is the lowest boundary between ARM32 kernel and userland.
-                                addr += diff
-                            kallsyms.append([addr, name, typ])
-                        return kallsyms
-
-            # fail, use as is
-            return tmp_kallsyms
+                if len(typ) == 1 and 0 <= addr < 1 << (current_arch.ptrsize * 8):
+                    kallsyms.append([addr, name, typ])
+            banner = next((addr for addr, name, typ in kallsyms if name == "linux_banner"), None)
+            expected = None
+            banner_address = None
+            if banner is not None:
+                expected = elf.read_cstring_from_vaddr(banner)
+                if expected is None:
+                    err("Could not read linux_banner from vmlinux")
+                    return None
+                expected = expected.encode() + b"\0"
+                if is_kgdb():
+                    candidate = Symbol.get_address("&linux_banner")
+                    if candidate is None:
+                        candidate = banner
+                    try:
+                        if read_memory(candidate, len(expected)) == expected:
+                            banner_address = candidate
+                    except gdb.error:
+                        pass
+            rebased = Ksym.SystemMap.rebase(kallsyms, quiet, source="vmlinux", banner_address=banner_address)
+            if rebased is None:
+                return None
+            if expected is not None:
+                runtime_banner = next(addr for addr, name, typ in rebased if name == "linux_banner")
+                try:
+                    actual = read_memory(runtime_banner, len(expected))
+                except gdb.error:
+                    err("Could not verify linux_banner from vmlinux")
+                    return None
+                if actual != expected:
+                    err("vmlinux does not match the running kernel: linux_banner differs")
+                    return None
+            return rebased
 
     class SystemMap:
         """Parse and relocate the symbols of a System.map file."""
@@ -159796,7 +159786,7 @@ class Ksym:
             return Ksym.SystemMap.rebase(kallsyms, quiet)
 
         @staticmethod
-        def rebase(kallsyms, quiet):
+        def rebase(kallsyms, quiet, source="System.map", banner_address=None):
             if is_x86():
                 targets = ("asm_exc_divide_error", "divide_error")
             elif is_arm32():
@@ -159806,15 +159796,16 @@ class Ksym:
             elif is_riscv32() or is_riscv64():
                 targets = ("handle_exception",)
             else:
-                err("Unsupported architecture for System.map")
+                err("Unsupported architecture for {:s}".format(source))
                 return None
 
             names = (*targets, "_text", "_stext", "_end", "linux_banner")
-            symbols = {name: addr for addr, name, typ in kallsyms if name in names and typ.lower() != "a"}
+            symbols = {name: addr for addr, name, typ in kallsyms
+                       if name in names and (typ.lower() != "a" or name == "_end")}
             starts = [symbols[name] for name in ("_text", "_stext") if name in symbols]
             image_end = symbols.get("_end")
             if not starts or image_end is None or min(starts) >= image_end:
-                err("Could not find kernel image bounds in System.map")
+                err("Could not find kernel image bounds in {:s}".format(source))
                 return None
             image_start = min(starts)
 
@@ -159828,8 +159819,11 @@ class Ksym:
                 if name is not None:
                     anchors.append((name, vector - symbols[name]))
 
+            if banner_address is not None and "linux_banner" in symbols:
+                anchors.append(("linux_banner", banner_address - symbols["linux_banner"]))
+
             # KGDB's layout resolution needs kallsyms, so it cannot be used during this parse.
-            if "linux_banner" in symbols and (is_qemu_system() or is_vmware()):
+            if banner_address is None and "linux_banner" in symbols and (is_qemu_system() or is_vmware()):
                 try:
                     version = KernelVersion.scan_banner()
                 except gdb.error:
@@ -159838,12 +159832,12 @@ class Ksym:
                     anchors.append(("linux_banner", version.address - symbols["linux_banner"]))
 
             if not anchors:
-                err("Could not resolve the KASLR offset for System.map")
+                err("Could not resolve the KASLR offset for {:s}".format(source))
                 return None
             slide = anchors[0][1]
             if slide & get_pagesize_mask_low() or any(offset != slide for name, offset in anchors):
-                err("System.map does not match the running kernel: {:s}".format(
-                    ", ".join("{:s}={:#x}".format(name, offset) for name, offset in anchors)))
+                err("{:s} does not match the running kernel: {:s}".format(
+                    source, ", ".join("{:s}={:#x}".format(name, offset) for name, offset in anchors)))
                 return None
 
             description = "KASLR offset: {:#x} (anchors: {:s})".format(slide, ", ".join(name for name, offset in anchors))
@@ -161134,6 +161128,29 @@ class Ksym:
         return end - first_func
 
     @staticmethod
+    def get_text_base():
+        starts = [Ksym.get_addr(name) for name in ("_text", "_stext")]
+        return min((addr for addr in starts if addr is not None), default=None)
+
+    @staticmethod
+    def symbol_cache_key():
+        ret = Ksym.get_kallsyms()
+        if ret is None:
+            return None
+        base = Ksym.get_text_base()
+        if base is None:
+            err("Failed to get kernel base (_text/_stext)")
+            return None
+        base &= get_pagesize_mask_high()
+        digest = hashlib.sha256()
+        digest.update("{}:{}:{}".format(current_arch.arch, current_arch.ptrsize, Endian.is_big_endian()).encode())
+        for addr, name, typ in ret[0]:
+            if addr >= base and (typ or "").lower() != "a":
+                addr -= base
+            digest.update("{:x} {} {}\n".format(addr, typ, name).encode())
+        return digest.hexdigest()
+
+    @staticmethod
     def get_kallsyms(rescan=False, vmlinux_file=None, system_map=None, ignore_loaded_vmlinux=False, verbose=False, quiet=False):
         """Return ([[addr, name, type], ...], {name: [addr, ...]}), or None if it could not be parsed.
 
@@ -161242,7 +161259,7 @@ class KsymaddrRemoteCommand(GenericCommand, BufferingOutput):
         "share one cache even if the CONFIG is different. GEF checks the cached offsets",
         "against the running kernel and parses again when they do not match.",
         "To drop a cache by hand, rescan with `ks -rv` or use `gef reset-cache --hard`.",
-        "`--system-map` checks the KASLR offset against the exception entry and linux_banner.",
+        "`--system-map` and `--vmlinux-file` check the KASLR offset against the exception entry and linux_banner.",
         "With only one anchor, it warns that the kernel build could not be verified.",
         "Absolute symbols and symbols linked outside the kernel image are not relocated.",
     ]
@@ -161363,7 +161380,7 @@ class VmlinuxToElfApplyCommand(GenericCommand):
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("-r", "--rescan", action="store_true",
-                        help="force applying again. (default: reuse vmlinux-to-elf-dump-memory.elf if exists)")
+                        help="regenerate the ELF instead of reusing a matching symbol cache.")
     _syntax_ = parser.format_help()
 
     @staticmethod
@@ -161375,17 +161392,6 @@ class VmlinuxToElfApplyCommand(GenericCommand):
         except FileNotFoundError as e:
             err("{}".format(e))
             return None
-
-        # resolve kversion for saved file name
-        kversion = Kernel.version()
-        h = hashlib.sha256(String.str2bytes(kversion.version_string)).hexdigest()[-16:]
-        dumped_mem_file = os.path.join(GEF_TEMP_DIR, "dump-memory-{:s}.raw".format(h))
-        symboled_vmlinux_file = os.path.join(GEF_TEMP_DIR, "dump-memory-{:s}.elf".format(h))
-
-        # check if it can be reused
-        if (not rescan) and os.path.exists(symboled_vmlinux_file) and os.path.getsize(symboled_vmlinux_file) > 0:
-            info("A previously used file found, will be reused")
-            return symboled_vmlinux_file
 
         # resolve text_base, ro_base
         klayout = Kernel.layout()
@@ -161404,31 +161410,16 @@ class VmlinuxToElfApplyCommand(GenericCommand):
         else:
             fixed_ro_base_size = klayout.ro_size
 
-        # delete old file
-        if os.path.exists(dumped_mem_file):
-            gef_print("Delete old {:s}".format(dumped_mem_file))
-            os.unlink(dumped_mem_file)
-        if os.path.exists(symboled_vmlinux_file):
-            gef_print("Delete old {:s}".format(symboled_vmlinux_file))
-            os.unlink(symboled_vmlinux_file)
-
-        # delete files related to old file
-        for f in os.listdir(GEF_TEMP_DIR):
-            if os.path.basename(dumped_mem_file) in f:
-                remove_file = os.path.join(GEF_TEMP_DIR, f)
-                gef_print("Delete old {:s}".format(remove_file))
-                os.unlink(remove_file)
-            if os.path.basename(symboled_vmlinux_file) in f:
-                remove_file = os.path.join(GEF_TEMP_DIR, f)
-                gef_print("Delete old {:s}".format(remove_file))
-                os.unlink(remove_file)
+        fd, dumped_mem_file = GefUtil.mkstemp(prefix="dump-memory-", suffix=".raw")
+        os.close(fd)
 
         # dump text
         start = klayout.text_base
         end = start + klayout.text_size
         gef_print("Dumping .text area:   {:#x} - {:#x}".format(start, end))
         try:
-            gdb.execute("dump memory {} {:#x} {:#x}".format(dumped_mem_file, start, end), to_string=True)
+            with open(dumped_mem_file, "wb") as output:
+                output.write(read_memory(start, end - start))
         except gdb.MemoryError:
             err("Memory read error. Make sure the context is in supervisor mode / Ring-0")
             return None
@@ -161438,24 +161429,43 @@ class VmlinuxToElfApplyCommand(GenericCommand):
         unmapped_size = klayout.ro_base - text_end
         if unmapped_size:
             gef_print("Non-mapping area:     {:#x} - {:#x} (ZERO fill)".format(text_end, klayout.ro_base))
-            open(dumped_mem_file, "a").write("\0" * unmapped_size)
+            with open(dumped_mem_file, "ab") as output:
+                output.write(b"\0" * unmapped_size)
 
         # dump rodata
         start = klayout.ro_base
         end = start + fixed_ro_base_size
         gef_print("Dumping .rodata area: {:#x} - {:#x}".format(start, end))
         try:
-            gdb.execute("append memory {} {:#x} {:#x}".format(dumped_mem_file, start, end), to_string=True)
+            with open(dumped_mem_file, "ab") as output:
+                output.write(read_memory(start, end - start))
         except gdb.MemoryError:
             err("Memory read error. Make sure the context is in supervisor mode / Ring-0")
             return None
 
+        with open(dumped_mem_file, "rb") as source:
+            digest = hashlib.sha256(source.read())
+        digest.update("{:x}".format(klayout.text_base).encode())
+        h = digest.hexdigest()
+        saved_mem_file = os.path.join(GEF_TEMP_DIR, "dump-memory-{:s}.raw".format(h))
+        symboled_vmlinux_file = os.path.join(GEF_TEMP_DIR, "dump-memory-{:s}.elf".format(h))
+        os.replace(dumped_mem_file, saved_mem_file)
+        dumped_mem_file = saved_mem_file
         gef_print("Dumped to {:s}".format(dumped_mem_file))
+        if not rescan and os.path.exists(symboled_vmlinux_file) and os.path.getsize(symboled_vmlinux_file) > 0:
+            info("A previously used file found, will be reused")
+            return symboled_vmlinux_file
+        if os.path.exists(symboled_vmlinux_file):
+            os.unlink(symboled_vmlinux_file)
 
         # apply vmlinux-to-elf
         cmd = "{!r} {!r} {!r} --base-address={:#x}".format(vmlinux2elf, dumped_mem_file, symboled_vmlinux_file, klayout.text_base)
         warn("Execute `{:s}`".format(cmd))
-        GefUtil.os_system(cmd)
+        if GefUtil.os_system(cmd):
+            if os.path.exists(symboled_vmlinux_file):
+                os.unlink(symboled_vmlinux_file)
+            err("vmlinux-to-elf failed")
+            return None
 
         # Error
         if not os.path.exists(symboled_vmlinux_file) or os.path.getsize(symboled_vmlinux_file) == 0:
@@ -190246,27 +190256,30 @@ class AddSymbolTemporaryCommand(GenericCommand):
             os.fdopen(fd, "wb").write(blank_elf_skelton)
             elf = Elf.get_elf(blank_elf)
 
+        new_size = text_end - text_base
+        if not 0 <= text_base < 1 << elf.get_bits() or not 0 < new_size < 1 << elf.get_bits():
+            err("The symbol range does not fit the host ELF")
+            os.unlink(blank_elf)
+            return None
+
         # fix .text base address
         GefUtil.os_system("{!r} --change-section-address .text={:#x} {!r} 2>/dev/null".format(
             objcopy, text_base, blank_elf,
         ))
 
-        # fix .text section size (objcopy doesn't support it, so fix it manually)
-        data = open(blank_elf, "rb").read()
-        new_size = text_end - text_base
-        if elf.e_class == Elf.ELF_64_BITS: # host is 64bit
-            seq_to_find = p64(text_base)
-            target_offset = data.rfind(seq_to_find) + 0x10
-            seq_to_write = p64(new_size)
-        else:
-            if text_base > 0xffff_ffff:
-                err("Unsupported adding 64 bit guest symbols when you use 32 bit host")
-                return None
-            seq_to_find = p32(text_base)
-            target_offset = data.rfind(seq_to_find) + 0x8
-            seq_to_write = p32(new_size)
-        data = data[:target_offset] + seq_to_write + data[target_offset + len(seq_to_write):]
-        open(blank_elf, "wb").write(data)
+        # objcopy may move the section table, so read it again after changing the address.
+        elf = Elf(blank_elf)
+        text = elf.get_shdr(".text")
+        if text is None or text.sh_addr != text_base:
+            err("Failed to set the .text address")
+            os.unlink(blank_elf)
+            return None
+        index = elf.shdrs.index(text)
+        offset = elf.e_shoff + index * elf.e_shentsize + (0x20 if elf.get_bits() == 64 else 0x14)
+        endian = "<" if elf.e_endianness == Elf.LITTLE_ENDIAN else ">"
+        with open(blank_elf, "r+b") as output:
+            output.seek(offset)
+            output.write(struct.pack(endian + ("Q" if elf.get_bits() == 64 else "I"), new_size))
         return blank_elf
 
     @Decorator.parse_args
@@ -190280,15 +190293,15 @@ class AddSymbolTemporaryCommand(GenericCommand):
 
         # check address validity
         max_address = AddressUtil.get_vmem_end_mask()
-        if args.function_start > max_address:
+        if not 0 <= args.function_start <= max_address:
             self.quiet_err("The function start address must be {:#x} or less".format(max_address))
             return
         if args.function_end is not None:
-            if args.function_end > max_address:
+            if not 0 <= args.function_end <= max_address:
                 self.quiet_err("The function end address must be {:#x} or less".format(max_address))
                 return
-            if args.function_start > args.function_end:
-                self.quiet_err("The function start address must be equal or less than the function end address")
+            if args.function_start >= args.function_end:
+                self.quiet_err("The function start address must be less than the function end address")
                 return
 
         # make blank ELF
@@ -190332,16 +190345,16 @@ class KsymaddrRemoteApplyCommand(GenericCommand):
 
     def create_symboled_elf(self, sym_elf_path):
         # get .kernel range
-        text_base = Ksym.get_addr("_stext")
+        text_base = Ksym.get_text_base()
         if text_base is None:
-            err("Failed to get kernel base (_stext)")
+            err("Failed to get kernel base (_text/_stext)")
             return False
         ret = Ksym.get_kallsyms()
         if ret is None:
             err("Failed to parse kallsyms")
             return False
         kallsyms, _kallsyms_map = ret
-        text_end = kallsyms[-1][0]
+        text_end = max(addr for addr, name, typ in kallsyms if addr >= text_base and (typ or "").lower() != "a") + 1
 
         # make blank ELF
         text_base &= get_pagesize_mask_high()
@@ -190353,6 +190366,10 @@ class KsymaddrRemoteApplyCommand(GenericCommand):
         # parse kernel symbol
         cmd_string_arr = []
         for addr, func_name, typ in kallsyms:
+            if (typ or "").lower() == "a":
+                cmd_string_arr.extend(["--add-symbol", "{:s}={:#x},{:s}".format(
+                    func_name, addr, "local" if typ == "a" else "global")])
+                continue
             if addr < text_base:
                 # lower address is percpu-relative. It is meaningless to import the address, so it is skipped.
                 continue
@@ -190402,9 +190419,11 @@ class KsymaddrRemoteApplyCommand(GenericCommand):
 
         self.quiet_info("Wait for memory scan")
 
-        # resolve kversion for saved file name
-        kversion = Kernel.version()
-        h = hashlib.sha256(String.str2bytes(kversion.version_string)).hexdigest()[-16:]
+        if Ksym.get_kallsyms(rescan=args.rescan) is None:
+            return
+        h = Ksym.symbol_cache_key()
+        if h is None:
+            return
         sym_elf_path = os.path.join(GEF_TEMP_DIR, "ks-apply-{:s}.elf".format(h))
         if (not args.rescan) and os.path.exists(sym_elf_path) and os.path.getsize(sym_elf_path) > 0:
             self.quiet_info("A previously used file found, will be reused")
@@ -190416,8 +190435,8 @@ class KsymaddrRemoteApplyCommand(GenericCommand):
                 return
 
         # add symbol to gdb
-        text_base = Ksym.get_addr("_stext") & get_pagesize_mask_high()
-        cmd = "add-symbol-file {:s} {:#x}".format(sym_elf_path, text_base)
+        text_base = Ksym.get_text_base() & get_pagesize_mask_high()
+        cmd = "add-symbol-file {!r} {:#x}".format(sym_elf_path, text_base)
         self.quiet_warn("Execute `{:s}`".format(cmd))
         gdb.execute(cmd)
         return
