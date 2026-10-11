@@ -196060,18 +196060,26 @@ class SixelMemoryCommand(GenericCommand):
 
         MAX_FILE_SIZE = get_pagesize() * 4096 # 16MB
         png_data = bytearray()
+        chunk_pos = 8
         while len(png_data) < MAX_FILE_SIZE:
-            start = max(0, len(png_data) - 3)
             try:
                 png_data += read_memory(pos, read_size)
             except (gdb.MemoryError, MemoryError):
                 return None
-            marker_pos = png_data.find(b"IEND", start)
-            if marker_pos != -1:
-                image_data_size = marker_pos + 4
-                return image_data_size + 4 # crc
+            if len(png_data) >= 8 and png_data[:8] != b"\x89PNG\r\n\x1a\n":
+                return None
+            while chunk_pos + 8 <= len(png_data):
+                length = struct.unpack(">I", png_data[chunk_pos:chunk_pos + 4])[0]
+                chunk_end = chunk_pos + length + 12 # length, type, data, crc
+                if chunk_end > MAX_FILE_SIZE:
+                    return None
+                if chunk_end > len(png_data):
+                    break
+                if png_data[chunk_pos + 4:chunk_pos + 8] == b"IEND":
+                    return chunk_end if length == 0 else None
+                chunk_pos = chunk_end
             pos += read_size
-            read_size = get_pagesize()
+            read_size = min(get_pagesize(), MAX_FILE_SIZE - len(png_data))
         return None
 
     def decode_barcode(self, path):
