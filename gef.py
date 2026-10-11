@@ -13569,8 +13569,9 @@ class SecureMemory:
             err("Could not find qemu-system pid")
             return None
 
-        if size > sm.sm_size:
-            size = sm.sm_size
+        if offset < 0 or size < 0 or offset + size > sm.sm_size:
+            err("Read range is outside secure memory")
+            return None
 
         if verbose:
             info("Target offset: {:#x}".format(offset))
@@ -13662,8 +13663,9 @@ class SecureMemory:
         if qemu_system_pid is None:
             return None
 
-        if len(data) > sm.sm_size:
-            data = data[:sm.sm_size]
+        if offset < 0 or offset + len(data) > sm.sm_size:
+            err("Write range is outside secure memory")
+            return None
 
         if verbose:
             info("Target offset: {:#x}".format(offset))
@@ -171263,6 +171265,9 @@ class XphysAddrCommand(GenericCommand):
 
     @staticmethod
     def print_fmt_i(target, data, count):
+        if count <= 0 or not data:
+            return ""
+
         kwargs = {}
         kwargs["code"] = data.hex()
         if is_x86_32():
@@ -171284,6 +171289,8 @@ class XphysAddrCommand(GenericCommand):
         out = []
         try:
             for insn in Disasm.capstone_disassemble(target, count, **kwargs):
+                if not insn.opcodes:
+                    break
                 msg = "    {:s}".format(insn.colored_text(12, highlight=False))
                 out.append(msg)
         except gdb.error:
@@ -171322,8 +171329,7 @@ class XphysAddrCommand(GenericCommand):
 
         if dump_type == "i":
             if is_x86():
-                # The length is unknown, so it is read in 10-byte chunks.
-                dump_size = dump_count * 10
+                dump_size = dump_count * 15
                 return dump_size, target
 
             if target & 1: # fix thumb2
@@ -171337,6 +171343,25 @@ class XphysAddrCommand(GenericCommand):
             return dump_size, target
 
         return None
+
+    @staticmethod
+    def read_instruction_memory(target, size):
+        if size == 0:
+            return b""
+
+        data = bytearray()
+        while len(data) < size:
+            address = target + len(data)
+            read_size = min(size - len(data), get_pagesize() - (address & get_pagesize_mask_low()))
+            while read_size:
+                chunk = read_physmem(address, read_size)
+                if chunk:
+                    break
+                read_size //= 2
+            if not read_size:
+                break
+            data += chunk
+        return bytes(data) if data else None
 
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
@@ -171357,7 +171382,10 @@ class XphysAddrCommand(GenericCommand):
         dump_size, target = ret
 
         # read
-        data = read_physmem(target, dump_size)
+        if dump_type == "i":
+            data = XphysAddrCommand.read_instruction_memory(target, dump_size)
+        else:
+            data = read_physmem(target, dump_size)
         if data is None:
             err("Memory read error")
             return
@@ -171487,6 +171515,8 @@ class XSecureMemAddrCommand(GenericCommand):
         dump_size, target_offset = ret
 
         # read
+        if dump_type == "i":
+            dump_size = min(dump_size, sm.sm_size - target_offset)
         data = SecureMemory.read(target_offset, dump_size, args.verbose)
         if data is None:
             err("Memory read error ({:s})".format(SecureMemory.PRIVILEGE_HINT))
@@ -171662,7 +171692,7 @@ class BreakSecureMemAddrCommand(GenericCommand):
         current_el = int((cpsr >> 2) & 0b11)
         if target_el == current_el:
             info("Current EL{:d} == Target EL{:d}".format(current_el, target_el))
-            return 0
+            return cpsr
 
         # change EL
         try:
@@ -171673,11 +171703,11 @@ class BreakSecureMemAddrCommand(GenericCommand):
             info("Moving to EL{:d}".format(target_el))
         except gdb.error:
             err("Maybe unsupported to change to EL{:d}".format(target_el))
-            return 0
+            return None
         return saved_cpsr
 
     def aarch64_revert_el(self, saved_cpsr):
-        if saved_cpsr == 0:
+        if saved_cpsr is None:
             return
         gdb.parse_and_eval("$cpsr = {:#x}".format(saved_cpsr))
         saved_el = (saved_cpsr >> 2) & 0b11
@@ -171696,13 +171726,16 @@ class BreakSecureMemAddrCommand(GenericCommand):
             maps = self.aarch64_get_maps_el3()
             if maps:
                 virt_addrs = AddrMap.p2v(args.location, maps=maps)
-                # change to EL3 and set bp
-                saved_cpsr = self.aarch64_switch_el(target_el=3)
-                for virt_addr in virt_addrs:
-                    gdb.execute("break *{:#x}".format(virt_addr))
-                self.aarch64_revert_el(saved_cpsr)
                 # found any, fast return
                 if virt_addrs:
+                    saved_cpsr = self.aarch64_switch_el(target_el=3)
+                    if saved_cpsr is None:
+                        return
+                    try:
+                        for virt_addr in virt_addrs:
+                            gdb.execute("break *{:#x}".format(virt_addr))
+                    finally:
+                        self.aarch64_revert_el(saved_cpsr)
                     return
 
         maps = AddrMap.get_maps(force_secure=True, verbose=args.verbose)
