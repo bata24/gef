@@ -45251,6 +45251,8 @@ class SropHintCommand(GenericCommand):
     parser.add_argument("arch", nargs="?", default=None, choices=architectures,
                         metavar="{" + ",".join(a for a in architectures if a) + "}",
                         help="the target architecture.")
+    parser.add_argument("--abi", choices=("linux", "linux-compat", "qemu-user"),
+                        help="the signal frame ABI for SPARC64, m68k or PA-RISC32. (default: detect QEMU-user, else Linux)")
     _syntax_ = parser.format_help()
 
     # rt_sigreturn trigger per architecture: (syscall number, register holding it, trap instruction)
@@ -45280,25 +45282,44 @@ class SropHintCommand(GenericCommand):
         # finally, look for possible values for given prefix
         return [s for s in self.architectures if s and s.startswith(text.strip())]
 
-    def build_hint(self, mode):
+    def build_hint(self, mode, abi=None):
         nr, reg, insn = self.TRIGGERS[mode]
-        if mode in ("sparc64", "hppa", "m68k"):
-            return "# rt_sigreturn frame generation is unsupported for {:s}; ucontext_t is not a sigframe.\n".format(mode)
         endian = ">" if mode in self.BIG_ENDIAN else "<"
         detected = next((key for key, checker in UcontextCommand.ARCH_DETECT if checker()), None)
         if mode == detected:
             endian = "<" if Endian.is_little_endian() else ">"
-        layout = UcontextCommand.get_layout(mode)
-        fields = UcontextCommand.frame_fields(layout)
+        if abi is None and mode in ("sparc64", "m68k", "hppa"):
+            abi = "qemu-user" if mode == detected and is_qemu_user() else "linux"
+        values = {}
         uc_offset = {
             "riscv32": 128, "riscv64": 128, "loongarch64": 128,
             "mips": 152, "mipsn32": 152, "mips64": 152,
             "sh4": 128, "alpha": 128, "ppc64": 0, "s390x": 296,
+            "m68k": 144 if abi == "qemu-user" else 152, "hppa": 136, "sparc64": None,
         }[mode]
-        if uc_offset:
-            fields.insert(0, (0, uc_offset, "frame prefix (siginfo/padding)", "padding"))
-        fields = [(off + (0 if kind == "padding" else uc_offset), size, label, kind)
-                  for off, size, label, kind in fields]
+        if mode == "sparc64":
+            fields = [(0, 192, "ss (register window / argument area)", "padding"), (192, 128, "info", "padding")]
+            names = ["g{:d}".format(i) for i in range(8)] + ["o{:d}".format(i) for i in range(8)]
+            fields += [(320 + i * 8, 8, "regs." + name, None) for i, name in enumerate(names)]
+            fields += [(448, 8, "regs.tstate", None), (456, 8, "regs.tpc", None), (464, 8, "regs.tnpc", None)]
+            fields += [(472, 4, "regs.y", None), (476, 4, "regs.magic", None), (480, 8, "fpu_save", None)]
+            fields += [(488, 8, "stack.ss_sp", None), (496, 4, "stack.ss_flags", None)]
+            fields += [(504, 8, "stack.ss_size", None), (512, 8, "mask", "sigmask"), (520, 8, "rwin_save", None)]
+            values = {"regs.o6": 0xdeadf001, "regs.tpc": 0xdeadbeec, "regs.tnpc": 0xdeadbef0, "stack.ss_flags": 2}
+        else:
+            layout = UcontextCommand.get_layout(mode)
+            fields = [(off + uc_offset, size, label, kind)
+                      for off, size, label, kind in UcontextCommand.frame_fields(layout)]
+            if mode == "m68k":
+                prefix = [(i * 4, 4, name, None) for i, name in enumerate(("pretcode", "sig", "pinfo", "puc"))]
+                if abi != "qemu-user":
+                    prefix.append((16, 8, "retcode", "padding"))
+                fields = prefix + [(uc_offset - 128, 128, "info", "padding")] + fields
+                values = {"uc.uc_mcontext.version": 2, "uc.uc_stack.ss_flags": 2}
+            elif uc_offset:
+                fields.insert(0, (0, uc_offset, "frame prefix (siginfo/padding)", "padding"))
+            if mode == "hppa":
+                values = {"uc.uc_mcontext.r0": 0x4000f, "uc.uc_stack.ss_flags": 2}
         end = max(off + size for off, size, label, kind in fields)
         if mode in ("riscv32", "riscv64"):
             end = uc_offset + layout["mcontext"] + (128 if mode == "riscv32" else 256) + 528
@@ -45309,10 +45330,31 @@ class SropHintCommand(GenericCommand):
         elif mode == "loongarch64":
             end = (end + 15) & ~15
             end += 16
+        elif mode == "hppa":
+            end = {"linux": 768, "linux-compat": 832, "qemu-user": 640}[abi]
         fields.append((end, 0, "end", "padding"))
         pack = {1: "B", 2: "H", 4: "I", 8: "Q"}
-        s = "# set {:s} = {:d} (rt_sigreturn), sp = &exp, then `{:s}`\n".format(reg, nr, insn)
-        s += "# ucontext is at &exp + {:d}; align the frame to 16 bytes\n".format(uc_offset)
+        sp = "&exp"
+        if mode == "sparc64":
+            sp = "&exp - 0x7ff"
+        elif mode == "m68k":
+            sp = "&exp + 4"
+        elif mode == "hppa":
+            sp = "&exp + {:d}".format(end)
+            insn += "; nop"
+        s = "# set {:s} = {:d} (rt_sigreturn), sp = {:s}, then `{:s}`\n".format(reg, nr, sp, insn)
+        if uc_offset is None:
+            s += "# align &exp to 16 bytes; regs.o6 is the biased SP; regs.tnpc is regs.tpc + 4\n"
+            s += "# restored locals/ins come from the register window at regs.o6 + 0x7ff\n"
+        else:
+            s += "# ucontext is at &exp + {:d}; align the frame to {:d} bytes\n".format(
+                uc_offset, (128 if abi == "linux" else 64) if mode == "hppa" else 16)
+        if mode in ("m68k", "hppa"):
+            s += "# signal frame ABI: {:s}; use --abi to select Linux, Linux compat or QEMU-user\n".format(abi)
+        if mode == "hppa":
+            s += "# set r25 = 1 (syscall path); iaoq0/iaoq1 are PC|3 and (PC+4)|3; r30 is the restored SP\n"
+            s += "# linux is a 32-bit kernel; linux-compat is a 32-bit process on a 64-bit kernel\n"
+            s += "# Linux requires the tramp[2] frame layout; legacy tramp[9] kernels are unsupported\n"
         s += "# byte order is '{:s}'; flip it for the opposite endianness\n".format(endian)
         pos = 0
         op = "exp  ="
@@ -45322,8 +45364,8 @@ class SropHintCommand(GenericCommand):
                 op = "exp +="
             if size:
                 if size in pack and kind != "sigmask":
-                    s += '{:s} struct.pack("{:s}{:s}", 0x0)    # rt_sigframe.{:s}\n'.format(
-                        op, endian, pack[size], label)
+                    s += '{:s} struct.pack("{:s}{:s}", {:#x})    # rt_sigframe.{:s}\n'.format(
+                        op, endian, pack[size], values.get(label, 0), label)
                 else:
                     s += '{:s} b"\\x00" * {:d}    # rt_sigframe.{:s}\n'.format(op, size, label)
                 op = "exp +="
@@ -45349,12 +45391,18 @@ class SropHintCommand(GenericCommand):
         else:
             mode = args.arch
 
-        if mode in self.TRIGGERS:
-            gef_print(self.build_hint(mode).rstrip())
-            return
+        if args.abi is not None:
+            if mode not in ("sparc64", "m68k", "hppa"):
+                err("--abi is only supported for SPARC64, m68k and PA-RISC")
+                return
+            if args.abi == "linux-compat" and mode != "hppa":
+                err("--abi linux-compat is only supported for PA-RISC")
+                return
 
         s = ""
-        if mode == "x64":
+        if mode in self.TRIGGERS:
+            s = self.build_hint(mode, args.abi)
+        elif mode == "x64":
             s += 'exp  = struct.pack("<Q", syscall)    # rax = 15 (rt_sigreturn) # rt_sigframe.pretcode\n'
             s += 'exp += struct.pack("<Q", 0x0)        # rt_sigframe.uc.uc_flags\n'
             s += 'exp += struct.pack("<Q", 0x0)        # rt_sigframe.uc.uc_link\n'
@@ -45496,7 +45544,11 @@ class SropHintCommand(GenericCommand):
             s += 'exp += struct.pack("<Q", 0xdeadface) # rt_sigframe.uc.uc_mcontext.sp\n'
             s += 'exp += struct.pack("<Q", 0xdeadbeef) # rt_sigframe.uc.uc_mcontext.pc\n'
             s += 'exp += struct.pack("<Q", 0x00)       # rt_sigframe.uc.uc_mcontext.pstate\n'
-        gef_print(s.rstrip())
+        lines = [line.partition("#") for line in s.rstrip().splitlines()]
+        width = max(len(code.rstrip()) for code, sep, comment in lines)
+        gef_print("\n".join("{:<{:d}s}  #{:s}".format(code.rstrip(), width, comment)
+                            if code.strip() and sep else code + sep + comment
+                            for code, sep, comment in lines))
         return
 
 

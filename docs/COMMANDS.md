@@ -13214,7 +13214,7 @@ Hint for sigreturn oriented programming.
 ### Syntax
 
 ```text
-usage: srop-hint [-h] [{x86,x64,arm,aarch64,riscv32,riscv64,mips,mipsn32,mips64,ppc64,s390x,loongarch64,sparc64,sh4,m68k,alpha,hppa}]
+usage: srop-hint [-h] [--abi {linux,linux-compat,qemu-user}] [{x86,x64,arm,aarch64,riscv32,riscv64,mips,mipsn32,mips64,ppc64,s390x,loongarch64,sparc64,sh4,m68k,alpha,hppa}]
 
 positional arguments:
   {x86,x64,arm,aarch64,riscv32,riscv64,mips,mipsn32,mips64,ppc64,s390x,loongarch64,sparc64,sh4,m68k,alpha,hppa}
@@ -13222,6 +13222,8 @@ positional arguments:
 
 options:
   -h, --help            show this help message and exit
+  --abi {linux,linux-compat,qemu-user}
+                        the signal frame ABI for SPARC64, m68k or PA-RISC32. (default: detect QEMU-user, else Linux)
 ```
 
 # 07-e. Misc - Calculation
