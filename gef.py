@@ -22616,10 +22616,10 @@ class SearchPatternCommand(GenericCommand):
         for section in maps_generator:
             # user or kernel memory address filter
             if self.args.user_only:
-                if AddressUtil.is_msb_on(section.page_start):
+                if KernelAddressHeuristicFinderUtil.is_kernel_space(section.page_start):
                     continue
             if self.args.kernel_only:
-                if not AddressUtil.is_msb_on(section.page_start):
+                if not KernelAddressHeuristicFinderUtil.is_kernel_space(section.page_start):
                     continue
 
             # too big
@@ -64586,8 +64586,8 @@ class KernelAddressHeuristicFinderUtil:
         if not is_32bit():
             return False
         constants = KernelAddressHeuristicFinder.consts()
-        page_offset = constants.PAGE_OFFSET if constants else None
-        return page_offset is not None and page_offset <= v
+        task_size = constants.TASK_SIZE if constants else None
+        return task_size is not None and task_size <= v
 
     @staticmethod
     def common_addr_gen(res, regexp, skip, skip_msb_check, read_valid):
@@ -64812,7 +64812,7 @@ class KernelAddressHeuristicFinderUtil:
             KernelAddressHeuristicFinderUtil.drop_clobbered_regs(line, bases)
             if w is None:
                 continue
-            if not skip_msb_check and not AddressUtil.is_msb_on(w):
+            if not skip_msb_check and not KernelAddressHeuristicFinderUtil.is_kernel_space(w):
                 continue
             if read_valid and not is_valid_addr_addr(w):
                 continue
@@ -64842,7 +64842,7 @@ class KernelAddressHeuristicFinderUtil:
             KernelAddressHeuristicFinderUtil.drop_clobbered_regs(line, bases)
             if w is None:
                 continue
-            if not skip_msb_check and not AddressUtil.is_msb_on(w):
+            if not skip_msb_check and not KernelAddressHeuristicFinderUtil.is_kernel_space(w):
                 continue
             if read_valid and not is_valid_addr_addr(w):
                 continue
@@ -64873,7 +64873,7 @@ class KernelAddressHeuristicFinderUtil:
             KernelAddressHeuristicFinderUtil.drop_clobbered_regs(line, bases)
             if w is None:
                 continue
-            if not skip_msb_check and not AddressUtil.is_msb_on(w):
+            if not skip_msb_check and not KernelAddressHeuristicFinderUtil.is_kernel_space(w):
                 continue
             if read_valid and not is_valid_addr_addr(w):
                 continue
@@ -64902,7 +64902,7 @@ class KernelAddressHeuristicFinderUtil:
             KernelAddressHeuristicFinderUtil.drop_clobbered_regs(line, bases)
             if w is None:
                 continue
-            if not skip_msb_check and not AddressUtil.is_msb_on(w):
+            if not skip_msb_check and not KernelAddressHeuristicFinderUtil.is_kernel_space(w):
                 continue
             if read_valid and not is_valid_addr_addr(w):
                 continue
@@ -64935,7 +64935,7 @@ class KernelAddressHeuristicFinderUtil:
             KernelAddressHeuristicFinderUtil.drop_clobbered_regs(line, bases)
             if w is None:
                 continue
-            if not skip_msb_check and not AddressUtil.is_msb_on(w):
+            if not skip_msb_check and not KernelAddressHeuristicFinderUtil.is_kernel_space(w):
                 continue
             if read_valid and not is_valid_addr_addr(w):
                 continue
@@ -64963,7 +64963,7 @@ class KernelAddressHeuristicFinderUtil:
                 v = int(m.group(3), 16)
                 if srcreg in add1time:
                     w = AddressUtil.normalize_address(add1time[srcreg] + v)
-                    if skip_msb_check or AddressUtil.is_msb_on(w):
+                    if skip_msb_check or KernelAddressHeuristicFinderUtil.is_kernel_space(w):
                         if not read_valid or is_valid_addr_addr(w):
                             if skip <= 0:
                                 yield w
@@ -65004,7 +65004,7 @@ class KernelAddressHeuristicFinderUtil:
             KernelAddressHeuristicFinderUtil.drop_clobbered_regs(line, bases, add1time)
             if w is None:
                 continue
-            if not skip_msb_check and not AddressUtil.is_msb_on(w):
+            if not skip_msb_check and not KernelAddressHeuristicFinderUtil.is_kernel_space(w):
                 continue
             if read_valid and not is_valid_addr_addr(w):
                 continue
@@ -65061,7 +65061,7 @@ class KernelAddressHeuristicFinderUtil:
                     bases.pop("x" + m.group(2), None)
             for w in found:
                 w = AddressUtil.normalize_address(w)
-                if not skip_msb_check and not AddressUtil.is_msb_on(w):
+                if not skip_msb_check and not KernelAddressHeuristicFinderUtil.is_kernel_space(w):
                     continue
                 if read_valid and not is_valid_addr_addr(w):
                     continue
@@ -65096,7 +65096,7 @@ class KernelAddressHeuristicFinderUtil:
             KernelAddressHeuristicFinderUtil.drop_clobbered_regs(line, bases)
             if w is None:
                 continue
-            if not skip_msb_check and not AddressUtil.is_msb_on(w):
+            if not skip_msb_check and not KernelAddressHeuristicFinderUtil.is_kernel_space(w):
                 continue
             if read_valid and not is_valid_addr_addr(w):
                 continue
@@ -65147,7 +65147,7 @@ class KernelAddressHeuristicFinderUtil:
             KernelAddressHeuristicFinderUtil.drop_clobbered_regs(line, bases, add1time)
             if w is None:
                 continue
-            if not skip_msb_check and not AddressUtil.is_msb_on(w):
+            if not skip_msb_check and not KernelAddressHeuristicFinderUtil.is_kernel_space(w):
                 continue
             if read_valid and not is_valid_addr_addr(w):
                 continue
@@ -65191,7 +65191,7 @@ class KernelAddressHeuristicFinderUtil:
             KernelAddressHeuristicFinderUtil.drop_clobbered_regs(line, bases, add1time)
             if w is None:
                 continue
-            if not skip_msb_check and not AddressUtil.is_msb_on(w):
+            if not skip_msb_check and not KernelAddressHeuristicFinderUtil.is_kernel_space(w):
                 continue
             if read_valid and not is_valid_addr_addr(w):
                 continue
@@ -65229,7 +65229,7 @@ class KernelAddressHeuristicFinderUtil:
             KernelAddressHeuristicFinderUtil.drop_clobbered_regs(line, bases, add1time)
             if w is None:
                 continue
-            if not skip_msb_check and not AddressUtil.is_msb_on(w):
+            if not skip_msb_check and not KernelAddressHeuristicFinderUtil.is_kernel_space(w):
                 continue
             if read_valid and not is_valid_addr_addr(w):
                 continue
@@ -65392,7 +65392,7 @@ class KernelAddressHeuristicFinderUtil:
                     bases.pop(m.group(1), None)
             for w in found:
                 w = AddressUtil.normalize_address(w)
-                if not skip_msb_check and not AddressUtil.is_msb_on(w):
+                if not skip_msb_check and not KernelAddressHeuristicFinderUtil.is_kernel_space(w):
                     continue
                 if read_valid and not is_valid_addr_addr(w):
                     continue
@@ -65447,7 +65447,7 @@ class KernelAddressHeuristicFinderUtil:
                 bases.pop(ops[0], None)
             if w is None:
                 continue
-            if not skip_msb_check and not AddressUtil.is_msb_on(w):
+            if not skip_msb_check and not KernelAddressHeuristicFinderUtil.is_kernel_space(w):
                 continue
             if read_valid and not is_valid_addr_addr(w):
                 continue
@@ -65477,7 +65477,7 @@ class KernelAddressHeuristicFinderUtil:
                 gp = get_register("$gp")
             except gdb.error:
                 return
-        if not gp or not AddressUtil.is_msb_on(gp):
+        if not gp or not KernelAddressHeuristicFinderUtil.is_kernel_space(gp):
             return
         for line in res.splitlines():
             m = re.search(r"\baddi\s+\w+,\s*gp,\s*(-?\d+)$", line) or re.search(r"\b(?:lw|ld)\s+\w+,\s*(-?\d+)\(gp\)", line)
@@ -65506,6 +65506,11 @@ class KernelAddressHeuristicFinderUtil:
                 continue
             if entry.vstart != end or entry.vsize > max(klayout.text_size, (end - klayout.text_base) * 2):
                 break
+            if entry.vstart < klayout.rw_end < entry.vend:
+                # The RW area ending inside a region is not detected from the mapping but refined from the iomem
+                # resource tree or kallsyms, so it is the exact end. The rest of the region is not a part of the
+                # image, e.g. the brk area of x86, which is freed after boot and reused by the heap.
+                return klayout.text_base, klayout.rw_end
             end = entry.vend
         return klayout.text_base, max(end, klayout.rw_end)
 
@@ -65836,6 +65841,10 @@ class KernelConstsX86(KernelConstsBase):
         return self.__PAGE_OFFSET
 
     @property
+    def TASK_SIZE(self):
+        return self.PAGE_OFFSET
+
+    @property
     def PAGE_OFFSET_END(self):
         return self.high_memory
 
@@ -65858,6 +65867,10 @@ class KernelConstsX86(KernelConstsBase):
 
     @property
     def __end_of_permanent_fixed_addresses(self):
+        # FIX_BTMAP_END may be rounded up to a page table boundary, so the subtraction below is not always exact
+        end = KernelAddressHeuristicFinder.get_end_of_permanent_fixed_addresses()
+        if end is not None:
+            return end
         end = self.__end_of_fixed_addresses
         if end is None:
             return None
@@ -66921,6 +66934,13 @@ class KernelConstsArm32(KernelConstsBase):
     @property
     def PAGE_OFFSET(self):
         return self.CONFIG_PAGE_OFFSET
+
+    @property
+    def TASK_SIZE(self):
+        # the modules are placed between TASK_SIZE and PAGE_OFFSET
+        if self.PAGE_OFFSET is None:
+            return None
+        return self.PAGE_OFFSET - self.SZ_16M
 
     @property
     def PAGE_OFFSET_END(self):
@@ -68313,7 +68333,7 @@ class KernelAddressHeuristicFinder:
                 if p and is_valid_addr(p):
                     cpu_base = read_int_from_memory(p)
                     current = KernelAddressHeuristicFinder.dereference_current_task(current_task, cpu_base)
-                elif AddressUtil.is_msb_on(current_task) and is_valid_addr(current_task):
+                elif KernelAddressHeuristicFinderUtil.is_kernel_space(current_task) and is_valid_addr(current_task):
                     current = KernelAddressHeuristicFinder.dereference_current_task(current_task)
 
         init_task = get_init_task_from_current(current)
@@ -70036,6 +70056,29 @@ class KernelAddressHeuristicFinder:
                         if x <= 1:
                             continue
                         return x
+        return None
+
+    @staticmethod
+    @Decorator.switch_to_intel_syntax
+    def get_end_of_permanent_fixed_addresses():
+        if not is_x86_32():
+            return None
+
+        kversion = Kernel.version()
+
+        # plan 1 (available v2.6.30 ~)
+        if kversion and "2.6.30" <= kversion:
+            for addr in Ksym.get_addrs("__virt_addr_valid", match="split"):
+                res = KernelAddressHeuristicFinderUtil.disassemble_until_next_symbol(addr, 30)
+                # `x >= FIXADDR_START` loads `__FIXADDR_TOP` and subtracts `FIXADDR_SIZE` from it
+                for load in re.finditer(r"\bmov\s+(\w+),\s*(?:DWORD PTR )?ds:(0x\w+)", res):
+                    m = re.search(r"\bsub\s+" + load.group(1) + r",\s*(0x\w+)", res[load.end():])
+                    if not m:
+                        continue
+                    top = read_int32_from_memory(int(load.group(2), 16), safe=True)
+                    size = int(m.group(1), 16)
+                    if top and size and (top | size) % get_pagesize() == 0:
+                        return size // get_pagesize()
         return None
 
     @staticmethod
@@ -74394,7 +74437,7 @@ class Kernel:
             r = re.search(r"Virt: (\S+)", line)
             if r:
                 virt = int(r.group(1), 16)
-                if AddressUtil.is_msb_on(virt):
+                if KernelAddressHeuristicFinderUtil.is_kernel_space(virt):
                     return virt
         return None
 
@@ -80163,7 +80206,7 @@ class KernelSocket:
             prot = read_int_from_memory(sk + ptr * i)
             if not is_valid_addr(prot) or (prot & (ptr - 1)):
                 continue
-            if not AddressUtil.is_msb_on(prot):
+            if not KernelAddressHeuristicFinderUtil.is_kernel_space(prot):
                 continue
             ret = self.read_proto_name(prot)
             if ret:
@@ -80362,7 +80405,7 @@ class KernelSocket:
             p = read_int_from_memory(sk + off, safe=True)
             if p is None:
                 break
-            if not is_valid_addr(p) or not AddressUtil.is_msb_on(p):
+            if not is_valid_addr(p) or not KernelAddressHeuristicFinderUtil.is_kernel_space(p):
                 continue
             nm = self.sym_name(p)
             if nm:
@@ -80736,7 +80779,7 @@ class KernelSkbuff:
             return p, self.sym_name(p), layout["destructor"]
         for i in range(3, layout["head"] // current_arch.ptrsize):
             p = read_int_from_memory(skb + current_arch.ptrsize * i)
-            if not is_valid_addr(p) or not AddressUtil.is_msb_on(p):
+            if not is_valid_addr(p) or not KernelAddressHeuristicFinderUtil.is_kernel_space(p):
                 continue
             nm = self.sym_name(p)
             if nm and re.search(r"free|destruct", nm):
@@ -81737,7 +81780,7 @@ class KernelDmabuf:
             e = read_int_from_memory(first_dma_buf - current_arch.ptrsize * (i + 0)) # ops
 
             # size check
-            if a == 0 or (is_valid_addr(a) and AddressUtil.is_msb_on(a)):
+            if a == 0 or (is_valid_addr(a) and KernelAddressHeuristicFinderUtil.is_kernel_space(a)):
                 continue
             # file check
             if not is_valid_addr(b):
@@ -84305,7 +84348,7 @@ class KernelModule:
                 offset = i * current_arch.ptrsize
                 # TODO: Find a way to distinguish attrs.attr.{key,skey} from pointers
                 #   Maybe we could skip the initial fields by using bin_attribute.size?
-                if not AddressUtil.is_msb_on(word):
+                if not KernelAddressHeuristicFinderUtil.is_kernel_space(word):
                     continue
                 if offset not in offset_map:
                     offset_map[offset] = {}
@@ -85404,7 +85447,7 @@ class KernelNftables:
             offsets = range(0, self.MEMBER_SCAN * 2, ptrsize)
         for offset in offsets:
             ops = read_int_from_memory(net + offset, safe=True)
-            if not ops or not AddressUtil.is_msb_on(ops) or ops % ptrsize:
+            if not ops or not KernelAddressHeuristicFinderUtil.is_kernel_space(ops) or ops % ptrsize:
                 continue
             if self.name_at(ops, 0, 8) != "net":
                 continue
@@ -85565,7 +85608,7 @@ class KernelNftables:
                 return None
             if nhooks is None or not (1 <= nhooks <= 16):
                 return None
-            if owner and (not AddressUtil.is_msb_on(owner) or owner % current_arch.ptrsize):
+            if owner and (not KernelAddressHeuristicFinderUtil.is_kernel_space(owner) or owner % current_arch.ptrsize):
                 return None
             if not self.list_head_plausible(tables_head):
                 return None
@@ -85754,7 +85797,7 @@ class KernelNftables:
         return candidates
 
     def net_generic_candidate_info(self, gen):
-        if not gen or not AddressUtil.is_msb_on(gen) or read_int_from_memory(gen, safe=True) is None:
+        if not gen or not KernelAddressHeuristicFinderUtil.is_kernel_space(gen) or read_int_from_memory(gen, safe=True) is None:
             return None
         length = read_int32_from_memory(gen, safe=True)
         if not length or not (4 <= length <= 256):
@@ -86237,7 +86280,8 @@ class KernelNftables:
         for offset in range(min_offset, stop, current_arch.ptrsize):
             pointer = read_int_from_memory(base + offset, safe=True)
             # names are kmalloc()ed; odd values are rhashtable nulls markers (e.g. nft_chain.rhlhead)
-            if not pointer or not AddressUtil.is_msb_on(pointer) or pointer & 1 or pointer == exclude:
+            if (not pointer or not KernelAddressHeuristicFinderUtil.is_kernel_space(pointer)
+                    or pointer & 1 or pointer == exclude):
                 continue
             name = read_cstring_from_memory(pointer, 0x100, safe=True)
             if self.looks_name(name):
@@ -86463,7 +86507,7 @@ class KernelNftables:
 
     def is_heap_ptr(self, pointer):
         # Check the address before probing readability.
-        if not pointer or not AddressUtil.is_msb_on(pointer) or pointer % current_arch.ptrsize:
+        if not pointer or not KernelAddressHeuristicFinderUtil.is_kernel_space(pointer) or pointer % current_arch.ptrsize:
             return False
         return read_int_from_memory(pointer, safe=True) is not None
 
@@ -86471,7 +86515,7 @@ class KernelNftables:
     def name_at(base, offset_name, maxlen=0x100):
         # a char * member; only a kernel pointer can be a name
         pointer = read_int_from_memory(base + offset_name, safe=True)
-        if not pointer or not AddressUtil.is_msb_on(pointer):
+        if not pointer or not KernelAddressHeuristicFinderUtil.is_kernel_space(pointer):
             return None
         return read_cstring_from_memory(pointer, maxlen, safe=True)
 
@@ -86700,7 +86744,7 @@ class KernelNftablesRule:
         return None
 
     def valid_blob(self, blob):
-        if not blob or not AddressUtil.is_msb_on(blob) or blob % current_arch.ptrsize:
+        if not blob or not KernelAddressHeuristicFinderUtil.is_kernel_space(blob) or blob % current_arch.ptrsize:
             return False
         size = self.blob_size(blob)
         if size is None:
@@ -86885,7 +86929,7 @@ class KernelNftablesRule:
             type_offsets, name_offsets = range(0, 0x100, ptrsize), range(ptrsize * 2, 0x40, ptrsize)
         for offset in type_offsets:
             expr_type = read_int_from_memory(ops + offset, safe=True)
-            if not expr_type or not AddressUtil.is_msb_on(expr_type):
+            if not expr_type or not KernelAddressHeuristicFinderUtil.is_kernel_space(expr_type):
                 continue
             for name_offset in name_offsets:
                 name = self.knft.name_at(expr_type, name_offset, 24)
@@ -87280,7 +87324,7 @@ class KernelNftablesSet:
         }
 
     def set_ops_backend(self, ops):
-        if not ops or not AddressUtil.is_msb_on(ops):
+        if not ops or not KernelAddressHeuristicFinderUtil.is_kernel_space(ops):
             return None, None
 
         offset_walk = GefUtil.offsetof("struct nft_set_ops", "walk")
@@ -87300,13 +87344,14 @@ class KernelNftablesSet:
         return None, None
 
     def set_ops_plausible(self, ops):
-        if not ops or not AddressUtil.is_msb_on(ops) or ops % current_arch.ptrsize:
+        if not ops or not KernelAddressHeuristicFinderUtil.is_kernel_space(ops) or ops % current_arch.ptrsize:
             return False
         callbacks = 0
         nearby_callbacks = 0
         for offset in range(0, 0x60, current_arch.ptrsize):
             function = read_int_from_memory(ops + offset, safe=True)
-            if function and AddressUtil.is_msb_on(function) and read_int_from_memory(function, safe=True) is not None:
+            if (function and KernelAddressHeuristicFinderUtil.is_kernel_space(function)
+                    and read_int_from_memory(function, safe=True) is not None):
                 callbacks += 1
                 if abs(function - ops) < 0x4000000:
                     nearby_callbacks += 1
@@ -87389,7 +87434,7 @@ class KernelNftablesSet:
             table = read_int_from_memory(private, safe=True)
         else:
             table = read_int_from_memory(private + offset_table, safe=True)
-        if not table or not AddressUtil.is_msb_on(table):
+        if not table or not KernelAddressHeuristicFinderUtil.is_kernel_space(table):
             return [], "broken"
         table_value = GefUtil.typed_struct(table, "struct bucket_table")
         size = GefUtil.field_int(table_value, "size")
@@ -87434,7 +87479,7 @@ class KernelNftablesSet:
                     if nulls and current not in ((index << 1) | 1, 1, head | 1):
                         return elements, "broken"
                     break
-                if current in seen or not AddressUtil.is_msb_on(current):
+                if current in seen or not KernelAddressHeuristicFinderUtil.is_kernel_space(current):
                     return elements, "broken"
                 seen.add(current)
                 elements.append(current - offset_node)
@@ -87467,7 +87512,7 @@ class KernelNftablesSet:
         stack = [(root, 0)]
         while stack and len(nodes) < self.MAX_SET_SCAN:
             node, parent = stack.pop()
-            if node in seen or not AddressUtil.is_msb_on(node) or node % current_arch.ptrsize:
+            if node in seen or not KernelAddressHeuristicFinderUtil.is_kernel_space(node) or node % current_arch.ptrsize:
                 return nodes, "broken"
             parent_color = read_int_from_memory(node + offset_parent, safe=True)
             right = read_int_from_memory(node + offset_right, safe=True)
@@ -87495,7 +87540,7 @@ class KernelNftablesSet:
             return typed
 
         match = read_int_from_memory(private, safe=True)
-        if not match or not AddressUtil.is_msb_on(match):
+        if not match or not KernelAddressHeuristicFinderUtil.is_kernel_space(match):
             return [], "broken"
         count_values = [(read_int32_from_memory(match, safe=True), 4), (read_int8_from_memory(match, safe=True), 1)]
         best = ([], "broken")
@@ -93939,7 +93984,7 @@ class KernelCharacterDevicesCommand(GenericCommand, BufferingOutput):
         if not ops:
             return False
         if not is_valid_addr(ops):
-            return None if AddressUtil.is_msb_on(ops) else False
+            return None if KernelAddressHeuristicFinderUtil.is_kernel_space(ops) else False
         try:
             members = [read_int_from_memory(ops + current_arch.ptrsize * i) for i in range(20)]
         except gdb.MemoryError:
@@ -93950,7 +93995,7 @@ class KernelCharacterDevicesCommand(GenericCommand, BufferingOutput):
         for x in members:
             if not x or is_valid_addr(x):
                 continue
-            if not AddressUtil.is_msb_on(x):
+            if not KernelAddressHeuristicFinderUtil.is_kernel_space(x):
                 return False
             unknown = True
         return None if unknown else True
@@ -158246,7 +158291,7 @@ class KernelIrqCommand(GenericCommand, BufferingOutput):
         except gdb.MemoryError:
             return None
         handler = slice_unpack(data[:current_arch.ptrsize], current_arch.ptrsize)[0]
-        if not AddressUtil.is_msb_on(handler) or not is_valid_addr(handler):
+        if not KernelAddressHeuristicFinderUtil.is_kernel_space(handler) or not is_valid_addr(handler):
             return None
         # irqaction.irq follows handler and a few pointers in every version
         return irq in slice_unpack(data[current_arch.ptrsize:], 4)
@@ -191736,7 +191781,7 @@ class KernelLsmCommand(GenericCommand, BufferingOutput):
         for x in g:
             if x is None or x % current_arch.ptrsize:
                 continue
-            if not AddressUtil.is_msb_on(x) or self.is_kernel_text(x):
+            if not KernelAddressHeuristicFinderUtil.is_kernel_space(x) or self.is_kernel_text(x):
                 continue
             if x not in refs:
                 refs.append(x)
@@ -195278,6 +195323,18 @@ class StackRecoverCommand(GenericCommand, BufferingOutput):
 
     X86_CALL_LENGTHS = [5, 6, 2, 3, 7, 4, 8, 9]
 
+    def get_thread_size(self):
+        if self.in_kernel:
+            # the size verified with the saved ptregs of the user-land tasks
+            task = Kernel.task()
+            if task.initialize():
+                thread_size = task.get_kstack_size()
+                if thread_size:
+                    return thread_size
+        thread_size = 0x4000 if current_arch.ptrsize == 8 else 0x2000
+        self.warn_add_out("THREAD_SIZE is unknown, so {:#x} is assumed (use --length to change it)".format(thread_size))
+        return thread_size
+
     def get_scan_slots(self, start):
         ptrsize = current_arch.ptrsize
         start &= ~(ptrsize - 1)
@@ -195293,7 +195350,7 @@ class StackRecoverCommand(GenericCommand, BufferingOutput):
                     size = start - section.page_start
             else:
                 # kernel stack is aligned to THREAD_SIZE
-                thread_size = 0x4000 if ptrsize == 8 else 0x2000
+                thread_size = self.get_thread_size()
                 if current_arch.stack_grow_down:
                     size = align(start + 1, thread_size) - start
                 else:
@@ -195725,6 +195782,7 @@ class StackRecoverCommand(GenericCommand, BufferingOutput):
         self.func_cache = {}
         self.match_cache = {}
         self.stub_cache = {}
+        self.out = []
 
         slots = self.get_scan_slots(start)
         if not slots:
@@ -195741,7 +195799,6 @@ class StackRecoverCommand(GenericCommand, BufferingOutput):
         self.resolve_fp_links(frames)
         chain = self.select_chain(frames)
 
-        self.out = []
         self.info_add_out("Scanned {:#x}-{:#x} ({:d} slots), {:d} candidates after call instructions".format(
             self.stack_lo, self.stack_hi, len(slots), len(candidates),
         ))
