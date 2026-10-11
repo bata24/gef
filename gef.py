@@ -196740,6 +196740,7 @@ class SymbolsCommand(GenericCommand, BufferingOutput):
         SYMBOL_INFO_LINE_PATTERN = re.compile(r"^(\[ ?\d+\]) (.) (0x[0-9a-f]+) (.*)")
         SYMBOL_FILE_PATTERN = re.compile(r"^Object file (/.*):$")
         build_id_dict = self.get_build_ids()
+        types = [t.lower() for t in self.args.type]
 
         for line in ProgressBar(ret.splitlines(), disable=self.args.quiet):
             line = line.strip()
@@ -196768,8 +196769,8 @@ class SymbolsCommand(GenericCommand, BufferingOutput):
             if r:
                 # type filtering
                 typ = r.group(2)
-                if self.args.type:
-                    if typ.lower() not in self.args.type:
+                if types:
+                    if typ.lower() not in types:
                         continue
 
                 # invalid address filtering
