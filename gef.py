@@ -13522,7 +13522,9 @@ class SystemManagementMemory:
     @staticmethod
     def read_smram(base, size, in_smm=False, return_stats=False):
         """Read SMRAM through the current CPU's SMM address space when possible."""
-        stats = {"smm_chunks": 0, "fallback_chunks": 0}
+        stats = {"smm_chunks": 0, "fallback_chunks": 0, "read_bytes": 0, "unreadable_ranges": []}
+        if size == 0:
+            return (b"", stats) if return_stats else b""
         result = SystemManagementMemory.read_smram_backing(base, size)
 
         if result is None:
@@ -13531,22 +13533,27 @@ class SystemManagementMemory:
             except Exception:
                 result = None
 
-        if not in_smm:
-            return (result, stats) if return_stats else result
-
-        if result is None or len(result) != size:
-            result = b"\xff" * size
-        data = bytearray(result)
-        chunks = SystemManagementMemory.read_smram_current_address_space(base, size)
+        fallback_size = min(len(result), size) if result is not None else 0
+        data = bytearray(size)
+        if fallback_size:
+            data[:fallback_size] = result[:fallback_size]
+        chunks = SystemManagementMemory.read_smram_current_address_space(base, size) if in_smm else []
+        end = fallback_size
         for offset, chunk in chunks:
             data[offset:offset + len(chunk)] = chunk
+            if end < offset:
+                stats["unreadable_ranges"].append((base + end, base + offset))
+            end = max(end, offset + len(chunk))
+
+        if end < size:
+            stats["unreadable_ranges"].append((base + end, base + size))
 
         stats["smm_chunks"] = len(chunks)
-        total_chunks = 0
-        if size:
-            total_chunks = align((base & 0xfff) + size, 0x1000) // 0x1000
-        stats["fallback_chunks"] = total_chunks - stats["smm_chunks"]
-        result = bytes(data)
+        if in_smm and fallback_size:
+            total_chunks = align((base & 0xfff) + fallback_size, 0x1000) // 0x1000
+            stats["fallback_chunks"] = total_chunks - sum(offset < fallback_size for offset, chunk in chunks)
+        stats["read_bytes"] = size - sum(end - start for start, end in stats["unreadable_ranges"])
+        result = None if stats["unreadable_ranges"] else bytes(data)
         return (result, stats) if return_stats else result
 
 
@@ -175876,11 +175883,17 @@ class SmmStatusCommand(GenericCommand, BufferingOutput):
             title = "SMRAM preview at the current PC"
         preview_size = min(0x100, base + size - preview)
         self.out.append(titlify(title))
-        data = SystemManagementMemory.read_smram(preview, preview_size, in_smm=status["state"] is True)
-        if data:
+        data, stats = SystemManagementMemory.read_smram(
+            preview, preview_size, in_smm=status["state"] is True, return_stats=True,
+        )
+        if data is not None:
             self.out.append(hexdump(data, base=preview, show_symbol=False))
         else:
-            self.warn_add_out("Could not read SMRAM at {:#x}".format(preview))
+            self.warn_add_out("Could not read all of SMRAM at {:#x} ({:#x}/{:#x} bytes); preview skipped".format(
+                preview, stats["read_bytes"], preview_size,
+            ))
+            for start, end in stats["unreadable_ranges"]:
+                self.warn_add_out("Unreadable SMRAM range: [{:#x}-{:#x})".format(start, end))
         return
 
     @Decorator.parse_args
@@ -175937,8 +175950,9 @@ class SmmDumpCommand(GenericCommand):
 
         data, stats = SystemManagementMemory.read_smram(base, size, in_smm=in_smm, return_stats=True)
         if data is None or len(data) != size:
-            actual = 0 if data is None else len(data)
-            err("Could not read all of SMRAM ({:#x}/{:#x} bytes)".format(actual, size))
+            err("Could not read all of SMRAM ({:#x}/{:#x} bytes)".format(stats["read_bytes"], size))
+            for start, end in stats["unreadable_ranges"]:
+                warn("Unreadable SMRAM range: [{:#x}-{:#x})".format(start, end))
             return
 
         if stats["fallback_chunks"]:
@@ -181325,6 +181339,9 @@ class SwitchELCommand(GenericCommand):
     def switch_el(self, target_el):
         # current EL
         CPSR = get_register("$cpsr") & 0xffff_ffff
+        if CPSR & 0x10:
+            err("switch-el requires AArch64 execution state")
+            return
         CurrentEL = (CPSR >> 2) & 0b11
 
         # check argv
@@ -181343,10 +181360,26 @@ class SwitchELCommand(GenericCommand):
 
         # change CPSR
         if target_el != CurrentEL:
+            if target_el >= 2:
+                features = get_register("$ID_AA64PFR0_EL1")
+                if features is None:
+                    register = {2: "$HCR_EL2", 3: "$SCR_EL3"}[target_el]
+                    if get_register(register) is None:
+                        err("EL{:d} is unavailable; could not read {:s}".format(target_el, register))
+                        return
+                elif (features >> (target_el * 4)) & 0xf not in (1, 2):
+                    err("EL{:d} is not implemented on this CPU".format(target_el))
+                    return
             CPSR = CPSR & ~(0b11 << 2) # clear EL
             CPSR |= target_el << 2 # set desired EL
+            if target_el == 0:
+                CPSR &= ~1 # EL0 only supports SP_EL0
             self.set_cpsr(CPSR)
-            info("Moving to EL{:d}".format(target_el))
+            actual_cpsr = int(gdb.parse_and_eval("$cpsr")) & 0xffff_ffff
+            if actual_cpsr & 0x1f == CPSR & 0x1f:
+                info("Moving to EL{:d}".format(target_el))
+            else:
+                err("Could not switch to EL{:d}; $cpsr = {:#x}".format(target_el, actual_cpsr))
         else:
             info("Already at EL{:d}".format(target_el))
 
