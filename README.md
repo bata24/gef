@@ -300,6 +300,8 @@ For a comprehensive list and additional details, see [docs/SUPPORTED-MODE.md](do
     - ![](images/krefs.png)
 - `kdiff`: compares kernel information (function pointers, etc.) at two points in time.
     - ![](images/kdiff.png)
+- `ktrace`: traces arguments and returns of the specified kernel functions.
+    - ![](images/ktrace.png)
 - `thunk-tracer`: collects and displays the thunk function addresses that are called automatically (x64/x86 only).
     - If this address comes from RW area, this is useful for getting RIP.
     - ![](images/thunk-tracer.png)
@@ -307,14 +309,12 @@ For a comprehensive list and additional details, see [docs/SUPPORTED-MODE.md](do
     - ![](images/usermodehelper-tracer.png)
 - `kmalloc-tracer`: collects and displays information when `kmalloc`/`kfree`.
     - ![](images/kmalloc-tracer.png)
-- `kuaf-watch`: tracks the alloc/free/reuse lifecycle of a slab object (or an entire cache) for UAF analysis.
-    - ![](images/kuaf-watch.png)
 - `kmalloc-allocated-by`: calls a predefined set of system calls and prints structures allocated by `kmalloc` or freed by `kfree`.
     - ![](images/kmalloc-allocated-by.png)
+- `kuaf-watch`: tracks the alloc/free/reuse lifecycle of a slab object (or an entire cache) for UAF analysis.
+    - ![](images/kuaf-watch.png)
 - `kpage-watch`: tracks the alloc/free/slab lifecycle of a physical page (PFN) for cross-cache analysis.
     - ![](images/kpage-watch.png)
-- `ktrace`: traces kernel functions and arguments.
-    - ![](images/ktrace.png)
 - `xsm`: dumps secure memory when gdb is in normal world.
     - Supported on ARM64 and ARM.
     - ![](images/xsm.png)

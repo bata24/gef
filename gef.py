@@ -74122,6 +74122,57 @@ class Kernel:
     version_override = None
 
     @staticmethod
+    def get_ith_parameter(i, asmlinkage=False):
+        if is_x86_32() and not asmlinkage:
+            if i < 3:
+                key = ["$eax", "$edx", "$ecx"][i]
+                value = get_register(key)
+            else:
+                offset = current_arch.ptrsize * (i - 2)
+                key, value = "[sp + {:#x}]".format(offset), read_int_from_memory(current_arch.sp + offset)
+        else:
+            key, value = current_arch.get_ith_parameter(i)
+        if value is None:
+            raise gdb.error("Argument {:d} ({:s}) is unavailable".format(i, key))
+        return key, value
+
+    @staticmethod
+    def get_return_address():
+        """Read the return address at a normal function entry."""
+        if is_x86():
+            return read_int_from_memory(current_arch.sp)
+        if is_arm64():
+            return get_register("$x30")
+        if is_arm32():
+            lr = get_register("$lr")
+            return lr & ~1 if lr is not None else None
+        return None
+
+    @staticmethod
+    def get_call_context(task_addr, at_return=False):
+        thread = gdb.selected_thread()
+        connection = getattr(thread.inferior, "connection_num", None) or thread.inferior.num
+        identity = ("task", connection, task_addr) if task_addr else ("thread", thread.inferior.num, thread.ptid)
+        sp = current_arch.sp
+        if at_return and is_x86():
+            sp -= current_arch.ptrsize
+        return identity, sp
+
+    @staticmethod
+    def get_interrupt_context():
+        thread = gdb.selected_thread()
+        if is_x86():
+            reg, mask = "$eflags", 0x200
+        elif is_arm32():
+            reg, mask = "$cpsr", 0x1df
+        elif is_arm64():
+            reg, mask = "$cpsr", 0x3cf
+        else:
+            return thread.inferior.num, thread.ptid, None
+        state = get_register(reg)
+        return thread.inferior.num, thread.ptid, state & mask if state is not None else None
+
+    @staticmethod
     def version():
         """Return the version of the running kernel, or the one specified by `kversion VERSION`."""
         if Kernel.version_override is not None:
@@ -185884,13 +185935,15 @@ class CallTraceCommand(ExecUntilCommand):
 class CallUsermodehelperSetupBreakpoint(gdb.Breakpoint):
     """Create a breakpoint to print argv information at call_usermodehelper_setup."""
 
-    def __init__(self, loc):
+    def __init__(self, loc, owner=None):
         super().__init__("*{:#x}".format(loc), gdb.BP_BREAKPOINT, internal=False)
+        self.owner = owner
         return
 
     def stop(self):
-        ptr1, addr1 = current_arch.get_ith_parameter(0)
-        ptr2, addr2 = current_arch.get_ith_parameter(1)
+        Cache.reset_gef_caches()
+        ptr1, addr1 = Kernel.get_ith_parameter(0)
+        ptr2, addr2 = Kernel.get_ith_parameter(1)
         argv_addr = addr2
         path = read_cstring_from_memory(addr1)
         argv = []
@@ -185916,6 +185969,12 @@ class UsermodehelperTracerCommand(GenericCommand):
     parser = argparse.ArgumentParser(prog=_cmdline_)
     _syntax_ = parser.format_help()
 
+    _note_ = [
+        "Linux 6.14 removed automatic binfmt module loading for unrecognized executable formats.",
+        "Executing a file containing four 0xff bytes no longer triggers a usermode helper via that path.",
+    ]
+    _note_ = "\n".join(_note_)
+
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware"))
@@ -185927,34 +185986,48 @@ class UsermodehelperTracerCommand(GenericCommand):
         if addr is None:
             err("Could not find call_usermodehelper_setup")
             return
-        CallUsermodehelperSetupBreakpoint(addr)
-        info("Setup is complete. Try `continue`")
+        try:
+            CallUsermodehelperSetupBreakpoint(addr, self)
+            info("Setup is complete. continuing...")
+            gdb.execute("continue")
+            info("usermodehelper-tracer is complete, cleaning up...")
+        finally:
+            GefUtil.delete_breakpoints(self)
         return
 
 
 class ThunkBreakpoint(gdb.Breakpoint):
     """Create a breakpoint to print caller address for thunk function."""
 
-    def __init__(self, loc, sym, reg, maps):
+    def __init__(self, loc, sym, reg, owner=None):
         super().__init__("*{:#x}".format(loc), gdb.BP_BREAKPOINT, internal=False)
         self.loc = loc
         self.sym = sym
         self.reg = reg
-        self.maps = maps
+        self.owner = owner
         self.seen = set()
         return
 
     def search_perm(self, target):
-        entry = AddrMap.find_virtual(target, maps=self.maps)
+        entry = AddrMap.find_virtual(target, maps=AddrMap.get_maps(scope="kernel"))
         return str(entry.permission) if entry else "?"
 
     def stop(self):
+        Cache.reset_gef_caches()
         try:
-            return_address = gdb.selected_frame().older().pc()
-            caller_address = Disasm.gdb_get_nth_previous_instruction_address(return_address, 1)
             target_address = get_register(self.reg)
-        except gdb.error:
+            if target_address is None:
+                raise gdb.error("Register {:s} is unavailable".format(self.reg))
+        except gdb.error as e:
+            warn("Indirect target is unavailable: {:s}".format(str(e)))
             return False # continue
+        caller_address = None
+        try:
+            return_address = Kernel.get_return_address()
+            if return_address is not None:
+                caller_address = Disasm.gdb_get_nth_previous_instruction_address(return_address, 1)
+        except gdb.error:
+            pass
 
         # duplicate, check
         if (caller_address, target_address) in self.seen:
@@ -185963,7 +186036,7 @@ class ThunkBreakpoint(gdb.Breakpoint):
             self.seen.add((caller_address, target_address))
 
         # get caller address, symbol
-        caller_symbol = Symbol.get_symbol_string(caller_address, nosymbol_string=" <NO_SYMBOL>")
+        caller_symbol = Symbol.get_symbol_string(caller_address, nosymbol_string=" <NO_SYMBOL>") if caller_address else ""
 
         # get callee address, symbol
         target_symbol = Symbol.get_symbol_string(target_address, nosymbol_string=" <NO_SYMBOL>")
@@ -186016,19 +186089,30 @@ class ThunkTracerCommand(GenericCommand):
     @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64"))
     @Decorator.only_if_in_kernel
     def do_invoke(self, args):
-        info("Wait for memory scan")
-        maps = AddrMap.get_maps(scope="kernel")
         info("Resolving thunk function addresses")
-        for reg in current_arch.general_registers:
-            if reg in ["$esp", "$rsp", "$eip", "$rip"]:
-                continue
-            sym = "__x86_indirect_thunk_{}".format(reg.replace("$", ""))
-            addr = Ksym.get_addr(sym)
-            if addr is None:
-                continue
-            gef_print(sym + ": ", end="")
-            ThunkBreakpoint(addr, sym, reg, maps)
-        info("Setup is complete, try `continue`")
+        missing = []
+        try:
+            for reg in current_arch.general_registers:
+                if reg in ["$esp", "$rsp", "$eip", "$rip"]:
+                    continue
+                sym = "__x86_indirect_thunk_{}".format(reg.replace("$", ""))
+                addr = Ksym.get_addr(sym)
+                if addr is None:
+                    missing.append(sym)
+                    continue
+                gef_print(sym + ": ", end="")
+                ThunkBreakpoint(addr, sym, reg, owner=self)
+            if missing:
+                warn("Unresolved hooks: {:s}".format(", ".join(missing)))
+            if not GefUtil.get_owned_breakpoints(self):
+                warn("No thunk hooks resolved; nothing will be observed")
+                return
+            info("Only resolved thunks are observed; caller addresses may be unknown")
+            info("Setup is complete. continuing...")
+            gdb.execute("continue")
+            info("thunk-tracer is complete, cleaning up...")
+        finally:
+            GefUtil.delete_breakpoints(self)
         return
 
 
@@ -186045,10 +186129,17 @@ class KmallocBreakpoint(gdb.Breakpoint):
         return
 
     def check_nested(self, task_addr):
-        for bp in gdb.breakpoints():
+        if not task_addr:
+            return False
+        interrupt_context = Kernel.get_interrupt_context()
+        if interrupt_context[-1] is None:
+            return False
+        for bp in gdb.breakpoints() or ():
             try:
                 if bp.__class__.__name__ in ["KmallocRetBreakpoint"]:
-                    if bp.enabled and bp.task_addr == task_addr:
+                    if (bp.enabled and bp.option is self.option
+                            and bp.task_addr == task_addr
+                            and bp.interrupt_context == interrupt_context):
                         return True
             except Exception:
                 pass
@@ -186103,7 +186194,9 @@ class KmallocRetBreakpoint(gdb.Breakpoint):
         self.task_addr = task_addr
         self.option = option
         self.extra = extra
-        KmallocTracerCommand.clear_disabled_breakpoints("KmallocRetBreakpoint")
+        self.call_context = Kernel.get_call_context(task_addr)
+        self.interrupt_context = Kernel.get_interrupt_context()
+        KmallocTracerCommand.clear_disabled_breakpoints("KmallocRetBreakpoint", owner=self.option)
         return
 
     def stop(self):
@@ -186111,7 +186204,7 @@ class KmallocRetBreakpoint(gdb.Breakpoint):
 
         # check if another thread is detected
         task_addr, task_name = KmallocTracerCommand.get_task()
-        if self.task_addr != task_addr:
+        if self.call_context != Kernel.get_call_context(task_addr, at_return=True):
             return False
 
         task_prefix = Color.boldify("[task:{:#018x} {:16s}]".format(task_addr, task_name))
@@ -186219,10 +186312,17 @@ class AllocPagesBreakpoint(gdb.Breakpoint):
         return
 
     def check_nested(self, task_addr):
-        for bp in gdb.breakpoints():
+        if not task_addr:
+            return False
+        interrupt_context = Kernel.get_interrupt_context()
+        if interrupt_context[-1] is None:
+            return False
+        for bp in gdb.breakpoints() or ():
             try:
                 if bp.__class__.__name__ in ["AllocPagesRetBreakpoint"]:
-                    if bp.enabled and bp.task_addr == task_addr:
+                    if (bp.enabled and bp.option is self.option
+                            and bp.task_addr == task_addr
+                            and bp.interrupt_context == interrupt_context):
                         return True
             except Exception:
                 pass
@@ -186264,7 +186364,9 @@ class AllocPagesRetBreakpoint(gdb.Breakpoint):
         self.task_addr = task_addr
         self.option = option
         self.extra = extra
-        KmallocTracerCommand.clear_disabled_breakpoints("AllocPagesRetBreakpoint")
+        self.call_context = Kernel.get_call_context(task_addr)
+        self.interrupt_context = Kernel.get_interrupt_context()
+        KmallocTracerCommand.clear_disabled_breakpoints("AllocPagesRetBreakpoint", owner=self.option)
         return
 
     def stop(self):
@@ -186272,7 +186374,7 @@ class AllocPagesRetBreakpoint(gdb.Breakpoint):
 
         # check if another thread is detected
         task_addr, task_name = KmallocTracerCommand.get_task()
-        if self.task_addr != task_addr:
+        if self.call_context != Kernel.get_call_context(task_addr, at_return=True):
             return False
 
         task_prefix = Color.boldify("[task:{:#018x} {:16s}]".format(task_addr, task_name))
@@ -186394,8 +186496,9 @@ class KmallocTracerCommand(GenericCommand):
         return option_info
 
     @staticmethod
-    def clear_disabled_breakpoints(name, force=False):
-        for bp in gdb.breakpoints():
+    def clear_disabled_breakpoints(name, force=False, owner=None):
+        breakpoints = GefUtil.get_owned_breakpoints(owner) if owner is not None else gdb.breakpoints() or ()
+        for bp in breakpoints:
             try:
                 if bp.__class__.__name__ != name:
                     continue
@@ -186448,23 +186551,11 @@ class KmallocTracerCommand(GenericCommand):
 
     @staticmethod
     def get_ith_parameter(i):
-        # The x86_32 kernel is built with -mregparm=3: the first three arguments are in registers.
-        if is_x86_32():
-            if i < 3:
-                return get_register(["$eax", "$edx", "$ecx"][i])
-            return read_int_from_memory(current_arch.sp + current_arch.ptrsize * (i - 2))
-        return current_arch.get_ith_parameter(i)[1]
+        return Kernel.get_ith_parameter(i)[1]
 
     @staticmethod
     def get_return_address():
-        # Valid only at a function entry. Unwinding with gdb.Frame.older() fails without symbols (e.g. arm64).
-        if is_x86():
-            return read_int_from_memory(current_arch.sp)
-        if is_arm64():
-            return get_register("$x30")
-        if is_arm32():
-            return get_register("$lr") & ~1
-        return None
+        return Kernel.get_return_address()
 
     @staticmethod
     def virt2name_and_size(vaddr):
@@ -186758,18 +186849,25 @@ class KmallocTracerCommand(GenericCommand):
         kmalloc_syms, kfree_syms = KmallocTracerCommand.get_kmalloc_kfree_syms()
 
         breakpoints = []
+        missing = []
         for sym, index_of_size_arg in kmalloc_syms:
             func_addr = Ksym.get_addr(sym)
             if func_addr:
                 gef_print(sym + ": ", end="")
                 bp = KmallocBreakpoint(func_addr, sym, index_of_size_arg, option_info, extra_info)
                 breakpoints.append(bp)
+            else:
+                missing.append(sym)
         for sym, index_of_addr_arg in kfree_syms:
             func_addr = Ksym.get_addr(sym)
             if func_addr:
                 gef_print(sym + ": ", end="")
                 bp = KfreeBreakpoint(func_addr, sym, index_of_addr_arg, option_info, extra_info)
                 breakpoints.append(bp)
+            else:
+                missing.append(sym)
+        if missing:
+            warn("Unresolved hooks: {:s}".format(", ".join(missing)))
         return breakpoints
 
     @staticmethod
@@ -186815,18 +186913,25 @@ class KmallocTracerCommand(GenericCommand):
         ]
 
         breakpoints = []
+        missing = []
         for sym, index_of_order_arg in alloc_pages_sym:
             func_addr = Ksym.get_addr(sym)
             if func_addr:
                 gef_print(sym + ": ", end="")
                 bp = AllocPagesBreakpoint(func_addr, sym, index_of_order_arg, option_info, extra_info)
                 breakpoints.append(bp)
+            else:
+                missing.append(sym)
         for sym, index_of_addr_arg, index_of_order_arg in free_pages_sym:
             func_addr = Ksym.get_addr(sym)
             if func_addr:
                 gef_print(sym + ": ", end="")
                 bp = FreePagesBreakpoint(func_addr, sym, index_of_addr_arg, index_of_order_arg, option_info, extra_info)
                 breakpoints.append(bp)
+            else:
+                missing.append(sym)
+        if missing:
+            warn("Unresolved hooks: {:s}".format(", ".join(missing)))
         return breakpoints
 
     @Decorator.parse_args
@@ -186866,24 +186971,26 @@ class KmallocTracerCommand(GenericCommand):
         # create option_info
         option_info = KmallocTracerCommand.create_option_info(args)
 
-        # set breakpoints
-        breakpoints = KmallocTracerCommand.set_bp_to_kmalloc_kfree(option_info, self.extra_info)
-        if args.enable_page_allocator_trace:
-            breakpoints += KmallocTracerCommand.set_bp_to_alloc_free_pages(option_info, self.extra_info)
-        for bp in breakpoints:
-            bp.enabled = True
+        info("Only resolved hooks are observed; nested wrappers sharing task/CPU/interrupt state are folded")
+        info("Unknown tasks use CPU/thread and stack identity; non-local exits may leave returns unobserved")
+        try:
+            # set breakpoints
+            breakpoints = KmallocTracerCommand.set_bp_to_kmalloc_kfree(option_info, self.extra_info)
+            if args.enable_page_allocator_trace:
+                breakpoints += KmallocTracerCommand.set_bp_to_alloc_free_pages(option_info, self.extra_info)
+            if not breakpoints:
+                warn("No allocator hooks resolved; nothing will be observed")
+                return
+            for bp in breakpoints:
+                bp.enabled = True
 
-        # doit
-        info("Setup is complete. continuing...")
-        gdb.execute("continue")
+            # doit
+            info("Setup is complete. continuing...")
+            gdb.execute("continue")
 
-        # clean up
-        info("kmalloc-tracer is complete, cleaning up...")
-        for bp in breakpoints:
-            bp.delete()
-        KmallocTracerCommand.clear_disabled_breakpoints("KmallocRetBreakpoint", force=True)
-        if args.enable_page_allocator_trace:
-            KmallocTracerCommand.clear_disabled_breakpoints("AllocPagesRetBreakpoint", force=True)
+        finally:
+            info("kmalloc-tracer is complete, cleaning up...")
+            GefUtil.delete_breakpoints(option_info, report_pending=True)
         return
 
 
@@ -188406,8 +188513,7 @@ class KuafWatchAllocBreakpoint(gdb.Breakpoint):
 
     def stop(self):
         Cache.reset_gef_caches()
-        # Only capture the caller here; resolving the task/cache is deferred to the return
-        # handler so non-matching allocations stay cheap.
+        # Capture the caller and execution context before the function can schedule.
         try:
             ret_addr = KmallocTracerCommand.get_return_address()
         except gdb.error:
@@ -188424,11 +188530,16 @@ class KuafWatchAllocRetBreakpoint(gdb.Breakpoint):
         self.sym = sym
         self.caller_pc = caller_pc
         self.watcher = watcher
-        KmallocTracerCommand.clear_disabled_breakpoints("KuafWatchAllocRetBreakpoint")
+        task_addr, task_name = KmallocTracerCommand.get_task()
+        self.call_context = Kernel.get_call_context(task_addr)
+        KmallocTracerCommand.clear_disabled_breakpoints("KuafWatchAllocRetBreakpoint", owner=self.watcher)
         return
 
     def stop(self):
         Cache.reset_gef_caches()
+        task_addr, task_name = KmallocTracerCommand.get_task()
+        if self.call_context != Kernel.get_call_context(task_addr, at_return=True):
+            return False
         allocated = AddressUtil.parse_address(current_arch.return_register)
         self.enabled = False
         return self.watcher.handle_alloc(allocated, self.sym, self.caller_pc)
@@ -188533,7 +188644,7 @@ class KuafWatchCommand(GenericCommand):
         return
 
     def get_task_info(self):
-        cpu = gdb.selected_thread().num - 1
+        cpu = KernelPerCpu.get_cpu_index(gdb.selected_thread())
         task_addr, comm = KmallocTracerCommand.get_task()
         pid = None
         if task_addr and self.offset_pid is not None:
@@ -188580,7 +188691,9 @@ class KuafWatchCommand(GenericCommand):
         cache_s = Color.colorify(cache or "?", Config.get("theme.heap_chunk_label"))
         gef_print("[{:5s}] {:s}  cache={:s}".format(tag, addr_s, cache_s))
         pid_s = "?" if pid is None else "{:d}".format(pid)
-        gef_print("        caller={:s}  pid={:s} cpu={:d}  api={:s}".format(caller, pid_s, cpu, api))
+        gef_print("        caller={:s}  pid={:s} cpu={:s}  api={:s}".format(
+            caller, pid_s, "?" if cpu is None else str(cpu), api,
+        ))
         if self.backtrace:
             KmallocTracerCommand.print_backtrace(True)
         return
@@ -188667,37 +188780,40 @@ class KuafWatchCommand(GenericCommand):
                 err("No slab object to watch")
                 return
 
-        # set breakpoints (reuse kmalloc-tracer's allocator symbol tables)
-        kmalloc_syms, kfree_syms = KmallocTracerCommand.get_kmalloc_kfree_syms()
-        # Dedicated caches (task_struct, cred, filp, ...) - the usual UAF targets - are
-        # released with kmem_cache_free, not kfree, so track it as well (ptr is arg 1).
-        kfree_syms = kfree_syms + [["kmem_cache_free", 1]]
-        breakpoints = []
-        for sym, _index_of_size_arg in kmalloc_syms:
-            func_addr = Ksym.get_addr(sym)
+        try:
+            # set breakpoints (reuse kmalloc-tracer's allocator symbol tables)
+            kmalloc_syms, kfree_syms = KmallocTracerCommand.get_kmalloc_kfree_syms()
+            # Dedicated caches (task_struct, cred, filp, ...) - the usual UAF targets - are
+            # released with kmem_cache_free, not kfree, so track it as well (ptr is arg 1).
+            kfree_syms = kfree_syms + [["kmem_cache_free", 1]]
+            breakpoints = []
+            for sym, _index_of_size_arg in kmalloc_syms:
+                func_addr = Ksym.get_addr(sym)
+                if func_addr:
+                    gef_print(sym + ": ", end="")
+                    breakpoints.append(KuafWatchAllocBreakpoint(func_addr, sym, self))
+            for sym, index_of_addr_arg in kfree_syms:
+                func_addr = Ksym.get_addr(sym)
+                if func_addr:
+                    gef_print(sym + ": ", end="")
+                    breakpoints.append(KuafWatchFreeBreakpoint(func_addr, sym, index_of_addr_arg, self))
+            bulk_free_sym = "kmem_cache_free_bulk"
+            func_addr = Ksym.get_addr(bulk_free_sym)
             if func_addr:
-                gef_print(sym + ": ", end="")
-                breakpoints.append(KuafWatchAllocBreakpoint(func_addr, sym, self))
-        for sym, index_of_addr_arg in kfree_syms:
-            func_addr = Ksym.get_addr(sym)
-            if func_addr:
-                gef_print(sym + ": ", end="")
-                breakpoints.append(KuafWatchFreeBreakpoint(func_addr, sym, index_of_addr_arg, self))
-        bulk_free_sym = "kmem_cache_free_bulk"
-        func_addr = Ksym.get_addr(bulk_free_sym)
-        if func_addr:
-            gef_print(bulk_free_sym + ": ", end="")
-            breakpoints.append(KuafWatchBulkFreeBreakpoint(func_addr, bulk_free_sym, self))
-        for bp in breakpoints:
-            bp.enabled = True
+                gef_print(bulk_free_sym + ": ", end="")
+                breakpoints.append(KuafWatchBulkFreeBreakpoint(func_addr, bulk_free_sym, self))
+            if not breakpoints:
+                warn("No allocator hooks resolved; nothing will be observed")
+                return
+            for bp in breakpoints:
+                bp.enabled = True
 
-        info("Setup is complete. continuing...")
-        gdb.execute("continue")
+            info("Setup is complete. continuing...")
+            gdb.execute("continue")
 
-        info("kuaf-watch is complete, cleaning up...")
-        for bp in breakpoints:
-            bp.delete()
-        KmallocTracerCommand.clear_disabled_breakpoints("KuafWatchAllocRetBreakpoint", force=True)
+        finally:
+            info("kuaf-watch is complete, cleaning up...")
+            GefUtil.delete_breakpoints(self, report_pending=True)
         return
 
 
@@ -188713,11 +188829,18 @@ class KpageWatchAllocBreakpoint(gdb.Breakpoint):
         return
 
     def check_nested(self, task_addr):
-        for bp in gdb.breakpoints():
+        if not task_addr:
+            return False
+        interrupt_context = Kernel.get_interrupt_context()
+        if interrupt_context[-1] is None:
+            return False
+        for bp in gdb.breakpoints() or ():
             try:
                 # the bulk allocator falls back to this one; its return records the page instead
                 if bp.__class__.__name__ in ("KpageWatchAllocRetBreakpoint", "KpageWatchAllocBulkRetBreakpoint"):
-                    if bp.enabled and bp.task_addr == task_addr:
+                    if (bp.enabled and bp.watcher is self.watcher
+                            and bp.task_addr == task_addr
+                            and bp.interrupt_context == interrupt_context):
                         return True
             except Exception:
                 pass
@@ -188744,13 +188867,15 @@ class KpageWatchAllocRetBreakpoint(gdb.Breakpoint):
         self.caller_pc = caller_pc
         self.task_addr = task_addr
         self.watcher = watcher
-        KmallocTracerCommand.clear_disabled_breakpoints("KpageWatchAllocRetBreakpoint")
+        self.call_context = Kernel.get_call_context(task_addr)
+        self.interrupt_context = Kernel.get_interrupt_context()
+        KmallocTracerCommand.clear_disabled_breakpoints("KpageWatchAllocRetBreakpoint", owner=self.watcher)
         return
 
     def stop(self):
         Cache.reset_gef_caches()
         task_addr, task_name = KmallocTracerCommand.get_task()
-        if self.task_addr != task_addr:
+        if self.call_context != Kernel.get_call_context(task_addr, at_return=True):
             return False
         self.enabled = False
         page = AddressUtil.parse_address(current_arch.return_register)
@@ -188795,13 +188920,15 @@ class KpageWatchAllocBulkRetBreakpoint(gdb.Breakpoint):
         self.caller_pc = caller_pc
         self.task_addr = task_addr
         self.watcher = watcher
-        KmallocTracerCommand.clear_disabled_breakpoints("KpageWatchAllocBulkRetBreakpoint")
+        self.call_context = Kernel.get_call_context(task_addr)
+        self.interrupt_context = Kernel.get_interrupt_context()
+        KmallocTracerCommand.clear_disabled_breakpoints("KpageWatchAllocBulkRetBreakpoint", owner=self.watcher)
         return
 
     def stop(self):
         Cache.reset_gef_caches()
         task_addr, task_name = KmallocTracerCommand.get_task()
-        if self.task_addr != task_addr:
+        if self.call_context != Kernel.get_call_context(task_addr, at_return=True):
             return False
         self.enabled = False
         stop = False
@@ -188884,10 +189011,17 @@ class KpageWatchSlabBreakpoint(gdb.Breakpoint):
         return
 
     def check_nested(self, task_addr):
-        for bp in gdb.breakpoints():
+        if not task_addr:
+            return False
+        interrupt_context = Kernel.get_interrupt_context()
+        if interrupt_context[-1] is None:
+            return False
+        for bp in gdb.breakpoints() or ():
             try:
                 if bp.__class__.__name__ == "KpageWatchSlabRetBreakpoint":
-                    if bp.enabled and bp.task_addr == task_addr:
+                    if (bp.enabled and bp.watcher is self.watcher
+                            and bp.task_addr == task_addr
+                            and bp.interrupt_context == interrupt_context):
                         return True
             except Exception:
                 pass
@@ -188915,13 +189049,15 @@ class KpageWatchSlabRetBreakpoint(gdb.Breakpoint):
         self.caller_pc = caller_pc
         self.task_addr = task_addr
         self.watcher = watcher
-        KmallocTracerCommand.clear_disabled_breakpoints("KpageWatchSlabRetBreakpoint")
+        self.call_context = Kernel.get_call_context(task_addr)
+        self.interrupt_context = Kernel.get_interrupt_context()
+        KmallocTracerCommand.clear_disabled_breakpoints("KpageWatchSlabRetBreakpoint", owner=self.watcher)
         return
 
     def stop(self):
         Cache.reset_gef_caches()
         task_addr, task_name = KmallocTracerCommand.get_task()
-        if self.task_addr != task_addr:
+        if self.call_context != Kernel.get_call_context(task_addr, at_return=True):
             return False
         self.enabled = False
         page = self.watcher.slab_page(AddressUtil.parse_address(current_arch.return_register), self.page_kind)
@@ -189001,8 +189137,6 @@ class KpageWatchCommand(GenericCommand):
     def get_task_info(self):
         thread = gdb.selected_thread()
         cpu = KernelPerCpu.get_cpu_index(thread)
-        if cpu is None:
-            cpu = thread.num - 1
         task_addr, comm = KmallocTracerCommand.get_task()
         return task_addr, comm, cpu
 
@@ -189132,7 +189266,9 @@ class KpageWatchCommand(GenericCommand):
         if cache:
             detail += "  cache={:s}".format(Color.colorify(cache, Config.get("theme.heap_chunk_label")))
         gef_print("[{:6s}] {:s}".format(tag, detail))
-        gef_print("         via {:s}  caller={:s}  comm={:s} cpu={:d}".format(api, caller, comm, cpu))
+        gef_print("         via {:s}  caller={:s}  comm={:s} cpu={:s}".format(
+            api, caller, comm, "?" if cpu is None else str(cpu),
+        ))
         if self.backtrace:
             KmallocTracerCommand.print_backtrace(True)
         return
@@ -189354,6 +189490,9 @@ class KpageWatchCommand(GenericCommand):
             if func_addr:
                 gef_print(batch_sym + ": ", end="")
                 breakpoints.append(KpageWatchBatchFreeBreakpoint(func_addr, batch_sym, batch_mode, self))
+            if not breakpoints:
+                warn("No page hooks resolved; nothing will be observed")
+                return
             for bp in breakpoints:
                 bp.enabled = True
 
@@ -189361,35 +189500,26 @@ class KpageWatchCommand(GenericCommand):
             gdb.execute("continue")
             info("kpage-watch is complete, cleaning up...")
         finally:
-            for bp in breakpoints:
-                if bp.is_valid():
-                    bp.delete()
-            KmallocTracerCommand.clear_disabled_breakpoints("KpageWatchAllocRetBreakpoint", force=True)
-            KmallocTracerCommand.clear_disabled_breakpoints("KpageWatchAllocBulkRetBreakpoint", force=True)
-            KmallocTracerCommand.clear_disabled_breakpoints("KpageWatchSlabRetBreakpoint", force=True)
+            GefUtil.delete_breakpoints(self, report_pending=True)
         return
 
 
 class KtraceBreakpoint(gdb.Breakpoint):
     """Create a breakpoint to print information for kernel functions."""
 
-    def __init__(self, loc, sym, task_name_filter, task_addr_filter):
-        super().__init__("*{:#x}".format(loc), gdb.BP_BREAKPOINT, internal=True)
+    def __init__(self, loc, sym, owner, asmlinkage=False):
+        super().__init__("*{:#x}".format(loc), gdb.BP_BREAKPOINT, internal=False)
         self.loc = loc
         self.sym = sym
-        self.task_name_filter = task_name_filter
-        self.task_addr_filter = task_addr_filter
+        self.owner = owner
+        self.asmlinkage = asmlinkage
         return
 
     def stop(self):
         Cache.reset_gef_caches()
+        KmallocTracerCommand.clear_disabled_breakpoints("KtraceRetBreakpoint", owner=self.owner)
 
-        # check task
         task_addr, task_name = KmallocTracerCommand.get_task()
-        if self.task_name_filter and task_name not in self.task_name_filter:
-            return False
-        if self.task_addr_filter and task_addr not in self.task_addr_filter:
-            return False
 
         # get args
         arg_key_color = Config.get("theme.registers_register_name")
@@ -189397,131 +189527,86 @@ class KtraceBreakpoint(gdb.Breakpoint):
         nb_argument = 6 # guessed
         for i in range(nb_argument):
             try:
-                key, value = current_arch.get_ith_parameter(i, in_func=True)
+                key, value = Kernel.get_ith_parameter(i, asmlinkage=self.asmlinkage)
                 value = AddressUtil.recursive_dereference_to_string(value)
-            except Exception:
+            except gdb.error:
+                args.append("    arg{:d} = <unavailable>".format(i))
                 break
             args.append("    {} = {}".format(Color.colorify(key, arg_key_color), value))
 
-        # random id to distinguish between nested functions
-        import random
-        random_id = random.randint(1, 0xffff_ffff)
-
-        # print
-        task_prefix = Color.boldify("[task:{:#018x} {:16s}]".format(task_addr, task_name))
-        gef_print("{:s} {:#x} <{:s}> ( // enter // random_id:{:#x}".format(
-            task_prefix, self.loc, self.sym, random_id,
+        call_id = next(self.owner.call_ids)
+        task_prefix = Color.boldify("[task:{:#018x} {:16s}]".format(task_addr, task_name or "?"))
+        gef_print("{:s} {:#x} <{:s}> ( // enter // call_id:{:#x}".format(
+            task_prefix, self.loc, self.sym, call_id,
         ))
         for arg in args:
             gef_print(arg)
         gef_print(")")
 
-        # set bp for return value
         try:
-            KtraceRetBreakpoint(self.loc, self.sym, self.task_name_filter, self.task_addr_filter, random_id)
-        except gdb.error:
-            # The case is following (why?):
-            #   Warning:
-            #   Cannot insert breakpoint -440.
-            #   Cannot access memory at address 0x0
-            pass
+            ret_addr = Kernel.get_return_address()
+            if ret_addr is None:
+                raise gdb.error("Return address unavailable")
+            KtraceRetBreakpoint(ret_addr, self.loc, self.sym, task_addr, call_id, self.owner)
+        except gdb.error as e:
+            warn("call_id:{:#x}: return is not observed: {:s}".format(call_id, str(e)))
         return False
 
 
-class KtraceRetBreakpoint(gdb.FinishBreakpoint):
+class KtraceRetBreakpoint(gdb.Breakpoint):
     """Create a breakpoint to print information for kernel functions."""
 
-    def __init__(self, loc, sym, task_name_filter, task_addr_filter, random_id):
-        super().__init__(gdb.newest_frame(), internal=True)
+    def __init__(self, ret_addr, loc, sym, task_addr, call_id, owner):
+        self.owner = owner
+        self.call_context = Kernel.get_call_context(task_addr)
+        super().__init__("*{:#x}".format(ret_addr), gdb.BP_BREAKPOINT, internal=True)
         self.loc = loc
         self.sym = sym
-        self.task_name_filter = task_name_filter
-        self.task_addr_filter = task_addr_filter
-        self.random_id = random_id
-        KernelTraceCommand.finish_breakpoints.append(self)
+        self.call_id = call_id
         return
 
     def stop(self):
         Cache.reset_gef_caches()
-
-        # check task
         task_addr, task_name = KmallocTracerCommand.get_task()
-        if self.task_name_filter and task_name not in self.task_name_filter:
+        if self.call_context != Kernel.get_call_context(task_addr, at_return=True):
             return False
-        if self.task_addr_filter and task_addr not in self.task_addr_filter:
-            return False
+        self.enabled = False
 
-        # get return value
         arg_key_color = Config.get("theme.registers_register_name")
-        # self.return_value unavailable since no type information. use current_arch.return register
         reg = current_arch.return_register
         value = AddressUtil.recursive_dereference_to_string(get_register(reg))
         msg = "    {} = {}".format(Color.colorify(reg, arg_key_color), value)
 
-        # print
-        task_prefix = Color.boldify("[task:{:#018x} {:16s}]".format(task_addr, task_name))
-        gef_print("{:s} {:#x} <{:s}> ( // return // random_id:{:#x}".format(
-            task_prefix, self.loc, self.sym, self.random_id,
+        task_prefix = Color.boldify("[task:{:#018x} {:16s}]".format(task_addr, task_name or "?"))
+        gef_print("{:s} {:#x} <{:s}> ( // return // call_id:{:#x}".format(
+            task_prefix, self.loc, self.sym, self.call_id,
         ))
         gef_print(msg)
         gef_print(")")
         return False
 
-    def out_of_scope(self): # noqa: V105
-        if self.enabled:
-            self.enabled = False
-
-        # print
-        task_addr, task_name = KmallocTracerCommand.get_task()
-        task_prefix = Color.boldify("[task:{:#018x} {:16s}]".format(task_addr, task_name))
-        warn("{:s} {:#x} <{:s}> (random_id{:#x}) has been disabled due to out of scope".format(
-            task_prefix, self.loc, self.sym, self.random_id,
-        ))
-        return
-
 
 @register_command
 class KernelTraceCommand(GenericCommand):
-    """Trace kernel functions and arguments."""
+    """Trace arguments and returns of the specified kernel functions."""
 
     _cmdline_ = "ktrace"
     _category_ = "06-i. Qemu-system/KGDB Cooperation - Linux Dynamic Inspection"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
-    parser.add_argument("--task-name", action="append", default=[],
-                        help="task name (from `ktask`) for filtering.")
-    parser.add_argument("--task-addr", action="append", type=AddressUtil.parse_address, default=[],
-                        help="task address for filtering.")
-    parser.add_argument("-f", "--filter", action="append", type=re.compile, default=[],
-                        help="function include filter (REGEXP).")
-    parser.add_argument("-e", "--exclude", action="append", type=re.compile, default=[],
-                        help="function exclude filter (REGEXP).")
-    parser.add_argument("-c", "--commit", action="store_true", help="actually perform ktrace.")
-    parser.add_argument("-q", "--quiet", action="store_true", help="skip the progress bar and displaying function name.")
+    parser.add_argument("function", metavar="FUNCTION", nargs="+", help="exact kernel function names.")
+    parser.add_argument("--asmlinkage", action="store_true", help="use the i386 stack ABI for selected functions.")
     _syntax_ = parser.format_help()
 
+    _example_ = "{0:s} commit_creds prepare_kernel_cred".format(_cmdline_)
+
     _note_ = [
-        "If you set breakpoints in some commonly called functions, it became too slow to be useful.",
-        "Use filtering options to reduce the number of functions targeted by breakpoints as much as possible.",
+        "All definitions of each exact function name are included; duplicate addresses are skipped.",
+        "Arguments are six guessed machine words; function prototypes and pt_regs syscall arguments are not decoded.",
+        "Tracing continues until interrupted or stopped by another breakpoint; tracing breakpoints are then removed.",
+        "Tail calls and non-local exits may have no observed return.",
     ]
     _note_ = "\n".join(_note_)
-
-    finish_breakpoints = []
-
-    def is_valid_addr(self, addr):
-        page_start = addr & get_pagesize_mask_low()
-
-        if page_start in self.addr_range_ok_cache:
-            return True
-        if page_start in self.addr_range_ng_cache:
-            return False
-
-        if is_valid_addr(addr):
-            self.addr_range_ok_cache.append(page_start)
-            return True
-        else:
-            self.addr_range_ng_cache.append(page_start)
-            return False
 
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
@@ -189530,80 +189615,34 @@ class KernelTraceCommand(GenericCommand):
     @Decorator.only_if_in_kernel
     @Decorator.only_if_kvm_disabled
     def do_invoke(self, args):
-        info("Wait for memory scan")
-
-        # check if text base is available
-        text_base = Ksym.get_addr("_stext")
-        if text_base is None:
-            err("Failed to get kernel base (_stext)")
+        ret = Ksym.get_kallsyms()
+        if ret is None:
+            err("Could not resolve kernel symbols")
             return
-
-        self.addr_range_ok_cache = []
-        self.addr_range_ng_cache = []
-
-        # list target functions
-        target_functions = []
-        kallsyms, _kallsyms_map = Ksym.get_kallsyms() or ([], {})
-        text_symbols = [entry for entry in kallsyms if entry[2].lower() == "t"]
-        for func_addr, func_name, _typ in ProgressBar(text_symbols, disable=args.quiet):
-
-            # user specified filtering
-            if args.filter and not any(filt.search(func_name) for filt in args.filter):
-                continue
-            if args.exclude and any(filt.search(func_name) for filt in args.exclude):
-                continue
-
-            # lower address is percpu-relative.
-            if func_addr < text_base:
-                continue
-
-            # The function with `init` attribute may no longer exist.
-            if not self.is_valid_addr(func_addr):
-                continue
-
-            target_functions.append([func_addr, func_name])
-
-        # check num of breakpoints
-        info("Num of breakpoint targets: {:d}".format(len(target_functions)))
-        if len(target_functions) > 1000:
-            err("Too many breakpoints cause this to not work properly (>1000)")
-            return
-
-        if len(target_functions) > 100:
-            warn("Too many breakpoints may cause this to not work properly (>100)")
-
-        # debug print
-        if not args.quiet:
-            for func_addr, func_name in target_functions:
-                info("{:#x} {:s}".format(func_addr, func_name))
-
-        # not commit
-        if not args.commit:
-            warn('This dry run mode skips executing; add "--commit" to proceed')
-            return
-
-        # set break points
-        info("Set breakpoints in all functions that match the specified criteria")
-        breakpoints = []
-        for func_addr, func_name in target_functions:
-            bp = KtraceBreakpoint(func_addr, func_name, args.task_name, args.task_addr)
-            breakpoints.append(bp)
-
-        # Locking a thread can have disadvantages: such as making it impossible to enter commands
-        # from the guest's terminal. Therefore, we decided not to disable it.
-
-        # doit
-        info("Setup is complete (set {:d} breakpoints). continuing...".format(len(breakpoints)))
-        gdb.execute("continue")
-
-        # clean up
-        info("ktrace is complete, cleaning up...")
-        for bp in breakpoints:
-            bp.delete()
-        while KernelTraceCommand.finish_breakpoints:
-            bp = KernelTraceCommand.finish_breakpoints.pop()
-            if bp.is_valid():
-                bp.delete()
+        requested = set(args.function)
+        functions = collections.defaultdict(list)
+        for addr, name, typ in ret[0]:
+            if name in requested and typ.lower() in ("t", "w"):
+                functions[name].append(addr)
+        targets = {}
+        for name in dict.fromkeys(args.function):
+            if not functions[name]:
+                err("Could not find kernel function: {:s}".format(name))
+                return
+            for addr in functions[name]:
+                targets.setdefault(addr, name)
+        self.call_ids = itertools.count(1)
+        if is_x86_32():
+            info("Argument ABI: {:s}".format("asmlinkage (stack)" if args.asmlinkage else "regparm=3"))
+        try:
+            for addr, name in targets.items():
+                gef_print(name + ": ", end="")
+                KtraceBreakpoint(addr, name, self, args.asmlinkage)
+            info("Setup is complete (set {:d} breakpoints). continuing...".format(len(targets)))
+            gdb.execute("continue")
+            info("ktrace is complete, cleaning up...")
+        finally:
+            GefUtil.delete_breakpoints(self, report_pending=True)
         return
 
 
@@ -198846,6 +198885,25 @@ class AliasesListCommand(AliasesCommand, BufferingOutput):
 
 class GefUtil:
     """A collection of utility functions that are related to GEF basic features."""
+
+    @staticmethod
+    def get_owned_breakpoints(owner):
+        if owner is None:
+            return []
+        return [bp for bp in gdb.breakpoints() or ()
+                if any(getattr(bp, name, None) is owner for name in ("owner", "option", "watcher"))]
+
+    @staticmethod
+    def delete_breakpoints(owner, report_pending=False):
+        breakpoints = GefUtil.get_owned_breakpoints(owner)
+        if report_pending:
+            pending = sum(bp.enabled for bp in breakpoints if hasattr(bp, "call_context"))
+            if pending:
+                warn("Returns not observed before cleanup: {:d}".format(pending))
+        for bp in breakpoints:
+            if bp.is_valid():
+                bp.delete()
+        return
 
     @staticmethod
     @Cache.cache_until_next(per_cpu=True, per_inferior=True)

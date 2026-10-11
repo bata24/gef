@@ -12231,32 +12231,35 @@ This command requires CONFIG_RANDSTRUCT=n.
 
 ## `ktrace`
 
-Trace kernel functions and arguments.
+Trace arguments and returns of the specified kernel functions.
 
 
 ### Syntax
 
 ```text
-usage: ktrace [-h] [--task-name TASK_NAME] [--task-addr TASK_ADDR] [-f FILTER] [-e EXCLUDE] [-c] [-q]
+usage: ktrace [-h] [--asmlinkage] FUNCTION [FUNCTION ...]
+
+positional arguments:
+  FUNCTION      exact kernel function names.
 
 options:
-  -h, --help            show this help message and exit
-  --task-name TASK_NAME
-                        task name (from `ktask`) for filtering.
-  --task-addr TASK_ADDR
-                        task address for filtering.
-  -f, --filter FILTER   function include filter (REGEXP).
-  -e, --exclude EXCLUDE
-                        function exclude filter (REGEXP).
-  -c, --commit          actually perform ktrace.
-  -q, --quiet           skip the progress bar and displaying function name.
+  -h, --help    show this help message and exit
+  --asmlinkage  use the i386 stack ABI for selected functions.
+```
+
+### Examples
+
+```gdb
+ktrace commit_creds prepare_kernel_cred
 ```
 
 ### Notes
 
 ```text
-If you set breakpoints in some commonly called functions, it became too slow to be useful.
-Use filtering options to reduce the number of functions targeted by breakpoints as much as possible.
+All definitions of each exact function name are included; duplicate addresses are skipped.
+Arguments are six guessed machine words; function prototypes and pt_regs syscall arguments are not decoded.
+Tracing continues until interrupted or stopped by another breakpoint; tracing breakpoints are then removed.
+Tail calls and non-local exits may have no observed return.
 ```
 
 ## `kuaf-watch`
@@ -12324,6 +12327,13 @@ usage: usermodehelper-tracer [-h]
 
 options:
   -h, --help  show this help message and exit
+```
+
+### Notes
+
+```text
+Linux 6.14 removed automatic binfmt module loading for unrecognized executable formats.
+Executing a file containing four 0xff bytes no longer triggers a usermode helper via that path.
 ```
 
 # 06-j. Qemu-system/KGDB Cooperation - TrustZone
