@@ -82918,27 +82918,27 @@ class KernelSched:
 
     # task state is a bitmask, so the names are combined
     STATE_BITS = [
-        (0x0001, "TASK_INTERRUPTIBLE"),
-        (0x0002, "TASK_UNINTERRUPTIBLE"),
-        (0x0004, "__TASK_STOPPED"),
-        (0x0008, "__TASK_TRACED"),
-        (0x0010, "EXIT_DEAD"),
-        (0x0020, "EXIT_ZOMBIE"),
-        (0x0040, "TASK_PARKED"),
-        (0x0080, "TASK_DEAD"),
-        (0x0100, "TASK_WAKEKILL"),
-        (0x0200, "TASK_WAKING"),
-        (0x0400, "TASK_NOLOAD"),
-        (0x0800, "TASK_NEW"),
-        (0x1000, "TASK_RTLOCK_WAIT"),
-        (0x2000, "TASK_FREEZABLE"),
-        (0x8000, "TASK_FROZEN"),
+        (0x0001, "TASK_INTERRUPTIBLE", "3.0"),
+        (0x0002, "TASK_UNINTERRUPTIBLE", "3.0"),
+        (0x0004, "__TASK_STOPPED", "3.0"),
+        (0x0008, "__TASK_TRACED", "3.0"),
+        (0x0010, "EXIT_DEAD", "3.0"),
+        (0x0020, "EXIT_ZOMBIE", "3.0"),
+        (0x0040, "TASK_PARKED", "3.8.9"),
+        (0x0080, "TASK_DEAD", "3.0"),
+        (0x0100, "TASK_WAKEKILL", "3.0"),
+        (0x0200, "TASK_WAKING", "3.0"),
+        (0x0400, "TASK_NOLOAD", "4.2"),
+        (0x0800, "TASK_NEW", "4.8"),
+        (0x1000, "TASK_RTLOCK_WAIT", "5.15"),
+        (0x2000, "TASK_FREEZABLE", "6.1"),
+        (0x8000, "TASK_FROZEN", "6.1"),
     ]
 
     # the short letters mirror those shown by `ps`
     STATE_LETTERS = [
-        (0x0002, "D"), (0x0004, "T"), (0x0008, "t"), (0x0010, "X"),
-        (0x0020, "Z"), (0x0040, "P"), (0x0080, "X"), (0x0001, "S"),
+        ("TASK_UNINTERRUPTIBLE", "D"), ("__TASK_STOPPED", "T"), ("__TASK_TRACED", "t"), ("EXIT_DEAD", "X"),
+        ("EXIT_ZOMBIE", "Z"), ("TASK_PARKED", "P"), ("TASK_DEAD", "X"), ("TASK_INTERRUPTIBLE", "S"),
     ]
 
     POLICY_NAMES = {
@@ -82969,6 +82969,7 @@ class KernelSched:
         self.task_command = None
         self.task_addrs = ()
         self.class_addrs = {}
+        self.state_bits = self.get_state_bits(None)
         self.offset_state = None
         self.offset_prio = None
         self.offset_rt_priority = None
@@ -82994,6 +82995,9 @@ class KernelSched:
         self.task_command = task_command
         self.task_addrs = tuple(task_addrs)
         kversion = Kernel.version()
+        self.state_bits = self.get_state_bits(kversion)
+        if kversion is None:
+            self.meta.append(("warn", "Unknown kernel version; only common task state bits are decoded"))
 
         self.class_addrs = {}
         for name in self.CLASS_NAMES:
@@ -83062,6 +83066,19 @@ class KernelSched:
 
         self.initialized = True
         return True
+
+    @classmethod
+    def get_state_bits(cls, kversion):
+        if kversion is None:
+            return {name: bit for bit, name, since in cls.STATE_BITS[:4]}
+        bits = {name: bit for bit, name, since in cls.STATE_BITS if since <= kversion}
+        if kversion < "3.15":
+            bits.update(EXIT_DEAD=0x0020, EXIT_ZOMBIE=0x0010)
+        if kversion < "4.14":
+            bits.update(TASK_DEAD=0x0040, TASK_WAKEKILL=0x0080, TASK_WAKING=0x0100)
+            if "TASK_PARKED" in bits:
+                bits["TASK_PARKED"] = 0x0200
+        return bits
 
     def get_offset_prio(self):
         ptrsize = current_arch.ptrsize
@@ -83196,8 +83213,8 @@ class KernelSched:
     def state_to_str(self, v):
         if v == 0:
             return "TASK_RUNNING"
-        names = [name for bit, name in self.STATE_BITS if v & bit]
-        rest = v & ~sum(bit for bit, _name in self.STATE_BITS)
+        names = [name for name, bit in self.state_bits.items() if v & bit]
+        rest = v & ~sum(self.state_bits.values())
         if rest:
             names.append("{:#x}".format(rest))
         return "|".join(names) if names else "TASK_RUNNING"
@@ -83207,8 +83224,8 @@ class KernelSched:
             return "?"
         if v == 0:
             return "R"
-        for bit, letter in self.STATE_LETTERS:
-            if v & bit:
+        for name, letter in self.STATE_LETTERS:
+            if v & self.state_bits.get(name, 0):
                 return letter
         return "?"
 
