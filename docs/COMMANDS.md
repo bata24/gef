@@ -8497,6 +8497,8 @@ command:
 ### Notes
 
 ```text
+These conversions do not verify RAM presence or the memory hotplug state.
+
 Simplified page structure:
 
 [x86_64 / CONFIG_SPARSEMEM_VMEMMAP]
@@ -8553,7 +8555,7 @@ mem_map--------------->+-struct page[]--------------+
                        +----------------------------+
 
 
-[x86_32 or arm32 / CONFIG_SPARSEMEM]
+[x86_32 / arm32 / arm64 / CONFIG_SPARSEMEM]
 * This pattern uses `mem_section[]`, i.e. multiple section-specific mem_maps.
 * `section_id` can be obtained from `page->flags`.
 * `section_mem_map` is encoded and used to locate the page descriptor array.
@@ -8573,7 +8575,7 @@ mem_map--------------->+-struct page[]--------------+
                                     |  flags                       |
                                     +------------------------------+
 
-* CONFIG_SPARSEMEM_EXTREME is currently unsupported by this command.
+* CONFIG_SPARSEMEM_EXTREME is supported on arm64.
 ```
 
 ## `page from_phys`

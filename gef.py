@@ -67599,6 +67599,10 @@ class KernelConstsArm64(KernelConstsBase):
         if size:
             self.cached_sizeof_struct_page = size
             return size
+        layout = KernelAddressHeuristicFinder.get_arm64_sparsemem()
+        if layout:
+            self.cached_sizeof_struct_page = layout["sizeof_struct_page"]
+            return self.cached_sizeof_struct_page
         if Kernel.get_slab_type() not in ("SLAB", "SLOB"):
             return 0x40
         pair = Kernel.get_page_virt_pair()
@@ -70169,6 +70173,98 @@ class KernelAddressHeuristicFinder:
                         if top is not None:
                             return (top - int(offset.group(2), 16)) & int(mask.group(1), 16)
         return None
+
+    @staticmethod
+    @Cache.cache_this_session(cache_None=False, per_inferior=True, until_new_objfile=True)
+    def get_arm64_sparsemem():
+        configs = __gef_command_instances__["kconfig"].get_configs()
+        if configs and configs.get("CONFIG_SPARSEMEM_VMEMMAP") == "y":
+            return None
+        pair = Kernel.get_page_virt_pair()
+        if not pair:
+            return None
+        page, virt = pair
+        phys = AddrMap.v2p(virt)
+        flags = read_int_from_memory(page, safe=True)
+        if phys is None or flags is None:
+            return None
+        consts = KernelAddressHeuristicFinder.consts()
+        pfn = phys >> consts.PAGE_SHIFT
+        sizeof_page = GefUtil.sizeof("page")
+        page_sizes = [sizeof_page] if sizeof_page else range(32, 257, current_arch.ptrsize)
+        sizeof_section = GefUtil.sizeof("mem_section")
+        section_sizes = [sizeof_section] if sizeof_section else [16, 32]
+        if not sizeof_section and configs:
+            section_sizes = [32 if configs.get("CONFIG_PAGE_EXTENSION") == "y" else 16]
+        candidates = []
+        section_strides = set()
+        section_pgshifts = set()
+        if KernelAddressHeuristicFinder.USE_DIRECTLY:
+            addr = Ksym.get_addr("mem_section")
+            if addr:
+                candidates.append(addr)
+        for name in ("__get_free_pages", "free_pages", "__free_pages"):
+            addr = Ksym.get_addr(name)
+            if not addr:
+                continue
+            code = KernelAddressHeuristicFinderUtil.disassemble_until_next_symbol(addr, 100)
+            if name == "__get_free_pages":
+                shifts = [int(shift) for shift in re.findall(r"(?:ubfx|lsr)\s+x\d+,\s*x\d+,\s*#(\d+)", code)]
+                shifts = [shift for shift in shifts if 32 <= shift < 64]
+                if shifts:
+                    section_pgshifts.add(min(shifts))
+            candidates.extend(KernelAddressHeuristicFinderUtil.aarch64_adrp_ldr(code, allow_add=True))
+            candidates.extend(KernelAddressHeuristicFinderUtil.aarch64_adrp_add(code))
+            for shift in re.findall(r"add\s+x\d+,\s*x\d+,\s*x\d+,\s*lsl\s*#(4|5)\b", code):
+                section_strides.add(1 << int(shift))
+        if not sizeof_section and not configs and section_strides:
+            section_sizes = sorted(section_strides)
+        layouts = []
+        for section_bits in (27, 29, 30):
+            section_id = phys >> section_bits
+            section_shift = section_bits - consts.PAGE_SHIFT
+            map_mask = AddressUtil.normalize_address(-1 << min(section_shift, consts.PAGE_SHIFT))
+            pa_bits = (configs or {}).get("CONFIG_ARM64_PA_BITS")
+            shifts = ([64 - (int(pa_bits) - section_bits)] if pa_bits else
+                      [shift for shift in range(1, 64) if section_id and flags >> shift == section_id])
+            if len(shifts) != 1 or flags >> shifts[0] != section_id:
+                continue
+            section_pgshift = shifts[0]
+            if section_pgshifts and section_pgshift not in section_pgshifts:
+                continue
+            for addr in dict.fromkeys(candidates):
+                for extreme in ((configs.get("CONFIG_SPARSEMEM_EXTREME") == "y",) if configs else (False, True)):
+                    tables = [addr, read_int_from_memory(addr, safe=True)] if extreme else [addr]
+                    for table in tables:
+                        if not table:
+                            continue
+                        for size in section_sizes:
+                            per_root = consts.PAGE_SIZE // size if extreme else 1
+                            if extreme:
+                                root = read_int_from_memory(
+                                    table + section_id // per_root * current_arch.ptrsize, safe=True,
+                                )
+                                if not root:
+                                    continue
+                                section = root + section_id % per_root * size
+                            else:
+                                section = table + section_id * size
+                            encoded = read_int_from_memory(section, safe=True)
+                            if encoded is None or not encoded & 2:
+                                continue
+                            biased_map = encoded & map_mask
+                            for page_size in page_sizes:
+                                if AddressUtil.normalize_address(biased_map + pfn * page_size) != page:
+                                    continue
+                                layouts.append({
+                                    "mem_section": table, "sizeof_mem_section": size, "sections_per_root": per_root,
+                                    "sizeof_struct_page": page_size, "SECTIONS_PGSHIFT": section_pgshift,
+                                    "SECTIONS_MASK": (1 << (64 - section_pgshift)) - 1, "SECTION_MAP_MASK": map_mask,
+                                    "SECTION_HAS_MEM_MAP": 2, "PFN_SECTION_SHIFT": section_shift,
+                                    "NR_MEM_SECTIONS": 1 << (64 - section_pgshift), "mode": "SPARSEMEM",
+                                })
+        unique = [layout for index, layout in enumerate(layouts) if layout not in layouts[:index]]
+        return unique[0] if len(unique) == 1 else None
 
     @staticmethod
     @Decorator.switch_to_intel_syntax
@@ -155005,6 +155101,9 @@ class KernelBuddy:
         per_cpu_pageset = read_int_from_memory(self.nodes[0] + self.offset_per_cpu_pageset)
         per_cpu_pageset = self.percpu.addr_of(per_cpu_pageset, 0)
         self.resolve_per_cpu_pages_offset_lists(per_cpu_pageset)
+        if self.offset_lists is None:
+            self.meta.append(("err", "Failed to resolve per_cpu_pages lists"))
+            return None
         self.meta.append(("info", "offsetof(per_cpu_pages, lists): {:#x}".format(self.offset_lists)))
 
         # NR_PCP_LISTS
@@ -155017,6 +155116,9 @@ class KernelBuddy:
 
         # zone->free_area
         self.resolve_zone_offset_free_area()
+        if self.offset_free_area is None:
+            self.meta.append(("err", "Failed to resolve zone free_area"))
+            return None
         self.meta.append(("info", "offsetof(zone, free_area): {:#x}".format(self.offset_free_area)))
 
         # MIGRATE_TYPES
@@ -155325,7 +155427,7 @@ class KernelBuddy:
             pass
 
         # slow path
-        if "3.12" <= kversion:
+        if "3.12" <= kversion < "3.13" or "3.14" <= kversion:
             current = self.nodes[0]
             while current < self.nodes[0] + self.offset_name:
                 val = read_int_from_memory(current)
@@ -155392,10 +155494,14 @@ class KernelBuddy:
             pass
 
         # slow path
-        current = align_to_ptrsize(per_cpu_pageset + 4 * 3) # count, high, batch
-        while not is_double_link_list(current): # search for list_head
-            current += current_arch.ptrsize
-        self.offset_lists = current - per_cpu_pageset
+        self.offset_lists = None
+        if per_cpu_pageset is None or not is_valid_addr(per_cpu_pageset):
+            return
+        start = align_to_ptrsize(per_cpu_pageset + 4 * 3) # count, high, batch
+        for current in range(start, per_cpu_pageset + 0x100, current_arch.ptrsize):
+            if is_double_link_list(current):
+                self.offset_lists = current - per_cpu_pageset
+                break
         return
 
     def resolve_NR_PCP_LISTS(self, per_cpu_pageset):
@@ -155421,7 +155527,9 @@ class KernelBuddy:
 
         # slow path
         current = per_cpu_pageset + self.offset_lists
-        while is_double_link_list(current): # search for not list_head
+        while current < per_cpu_pageset + self.offset_lists + 32 * current_arch.ptrsize * 2:
+            if not is_double_link_list(current):
+                break
             current += current_arch.ptrsize * 2
         self.NR_PCP_LISTS = ((current - per_cpu_pageset) - self.offset_lists) // (current_arch.ptrsize * 2)
         return
@@ -155463,16 +155571,15 @@ class KernelBuddy:
 
         # slow path
         kversion = Kernel.version()
-        if "3.12" <= kversion:
+        if "3.12" <= kversion < "3.13" or "3.14" <= kversion:
             current = self.nodes[0] + self.offset_name + current_arch.ptrsize
         else:
             current = self.nodes[0]
-        while True:
-            # search for list_head
-            if is_double_link_list(current):
+        self.offset_free_area = None
+        for address in range(current, self.nodes[0] + self.sizeof_zone, current_arch.ptrsize):
+            if is_double_link_list(address):
+                self.offset_free_area = address - self.nodes[0]
                 break
-            current += current_arch.ptrsize
-        self.offset_free_area = current - self.nodes[0]
         return
 
     def resolve_MIGRATE_TYPES(self):
@@ -155900,8 +156007,8 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
         if kversion is None:
             self.quiet_err("Could not find Linux kernel")
             return
-        if kversion < "3.1":
-            self.quiet_err("Unsupported before v3.1")
+        if kversion < "3.0":
+            self.quiet_err("Unsupported before v3.0")
             return
 
         # parse args
@@ -156166,8 +156273,8 @@ class BuddyContainsCommand(BuddyDumpCommand):
     @Decorator.only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
         kversion = Kernel.version()
-        if kversion < "3.1":
-            self.quiet_err("Unsupported before v3.1")
+        if kversion < "3.0":
+            self.quiet_err("Unsupported before v3.0")
             return
 
         # parse args
@@ -182137,6 +182244,8 @@ class PageCommand(GenericCommand):
     _syntax_ = parser.format_help()
 
     _note_ = [
+        "These conversions do not verify RAM presence or the memory hotplug state.",
+        "",
         "Simplified page structure:",
         "",
         "[x86_64 / CONFIG_SPARSEMEM_VMEMMAP]",
@@ -182193,7 +182302,7 @@ class PageCommand(GenericCommand):
         "                       +----------------------------+",
         "",
         "",
-        "[x86_32 or arm32 / CONFIG_SPARSEMEM]",
+        "[x86_32 / arm32 / arm64 / CONFIG_SPARSEMEM]",
         "* This pattern uses `mem_section[]`, i.e. multiple section-specific mem_maps.",
         "* `section_id` can be obtained from `page->flags`.",
         "* `section_mem_map` is encoded and used to locate the page descriptor array.",
@@ -182213,7 +182322,7 @@ class PageCommand(GenericCommand):
         "                                    |  flags                       |",
         "                                    +------------------------------+",
         "",
-        "* CONFIG_SPARSEMEM_EXTREME is currently unsupported by this command.",
+        "* CONFIG_SPARSEMEM_EXTREME is supported on arm64.",
     ]
     _note_ = "\n".join(_note_)
 
@@ -182233,6 +182342,21 @@ class PageCommand(GenericCommand):
             return None
 
         PageCommand.PAGE_SHIFT = KernelAddressHeuristicFinder.consts().PAGE_SHIFT
+        PageCommand.mode = "VMEMMAP"
+        PageCommand.sections_per_root = 1
+        PageCommand.NR_MEM_SECTIONS = None
+
+        if is_arm64():
+            configs = __gef_command_instances__["kconfig"].get_configs()
+            if not configs or configs.get("CONFIG_SPARSEMEM_VMEMMAP") != "y":
+                layout = KernelAddressHeuristicFinder.get_arm64_sparsemem()
+                if layout:
+                    for name, value in layout.items():
+                        setattr(PageCommand, name, value)
+                    return True
+                if configs and configs.get("CONFIG_SPARSEMEM") == "y":
+                    err("Could not resolve the sparse memory page arrays")
+                    return None
 
         if is_x86_64():
             PageCommand.VMEMMAP_START = KernelAddressHeuristicFinder.get_VMEMMAP_START()
@@ -182323,6 +182447,26 @@ class PageCommand(GenericCommand):
 
         return True
 
+    def get_section_mem_map(self, section_id):
+        limit = self.NR_MEM_SECTIONS
+        if limit is None:
+            limit = KernelAddressHeuristicFinder.consts().NR_MEM_SECTIONS
+        if section_id < 0 or limit is None or section_id >= limit:
+            return None
+        if self.sections_per_root > 1:
+            root = read_int_from_memory(
+                self.mem_section + section_id // self.sections_per_root * current_arch.ptrsize, safe=True,
+            )
+            if not root:
+                return None
+            section = root + section_id % self.sections_per_root * self.sizeof_mem_section
+        else:
+            section = self.mem_section + section_id * self.sizeof_mem_section
+        encoded = read_int_from_memory(section, safe=True)
+        if encoded is None or not encoded & self.SECTION_HAS_MEM_MAP:
+            return None
+        return encoded & self.SECTION_MAP_MASK
+
     def page2phys(self, page):
         if not is_valid_addr(page):
             err("Memory read error")
@@ -182346,28 +182490,13 @@ class PageCommand(GenericCommand):
                 pfn = (delta // self.sizeof_struct_page)
 
             elif self.mode == "SPARSEMEM":
-                flags = read_int_from_memory(page)
-                section_id = (flags >> self.SECTIONS_PGSHIFT) & self.SECTIONS_MASK
-
-                mem_section_i = self.mem_section + self.sizeof_mem_section * section_id
-                if not is_valid_addr(mem_section_i):
-                    return None
-
-                section_mem_map_i = read_int_from_memory(mem_section_i)
-                if (section_mem_map_i & self.SECTION_HAS_MEM_MAP) == 0:
-                    return None
-
-                biased_map = section_mem_map_i & self.SECTION_MAP_MASK
-                delta = page - biased_map
-                if delta < 0:
-                    return None
-                if delta % self.sizeof_struct_page != 0:
-                    return None
-                pfn = delta // self.sizeof_struct_page
+                return self.sparse_page2phys(page)
             else:
                 return None
 
         elif is_arm64():
+            if self.mode == "SPARSEMEM":
+                return self.sparse_page2phys(page)
             delta = page - self.VMEMMAP_START
             if delta < 0:
                 return None
@@ -182386,24 +182515,7 @@ class PageCommand(GenericCommand):
                 pfn = (delta // self.sizeof_struct_page) + self.PHYS_PFN_OFFSET
 
             elif self.mode == "SPARSEMEM":
-                flags = read_int_from_memory(page)
-                section_id = (flags >> self.SECTIONS_PGSHIFT) & self.SECTIONS_MASK
-
-                mem_section_i = self.mem_section + self.sizeof_mem_section * section_id
-                if not is_valid_addr(mem_section_i):
-                    return None
-
-                section_mem_map_i = read_int_from_memory(mem_section_i)
-                if (section_mem_map_i & self.SECTION_HAS_MEM_MAP) == 0:
-                    return None
-
-                biased_map = section_mem_map_i & self.SECTION_MAP_MASK
-                delta = page - biased_map
-                if delta < 0:
-                    return None
-                if delta % self.sizeof_struct_page != 0:
-                    return None
-                pfn = delta // self.sizeof_struct_page
+                return self.sparse_page2phys(page)
             else:
                 return None
 
@@ -182411,6 +182523,20 @@ class PageCommand(GenericCommand):
             return None
 
         if pfn < 0:
+            return None
+        return pfn << self.PAGE_SHIFT
+
+    def sparse_page2phys(self, page):
+        flags = read_int_from_memory(page, safe=True)
+        if flags is None:
+            return None
+        section_id = (flags >> self.SECTIONS_PGSHIFT) & self.SECTIONS_MASK
+        biased_map = self.get_section_mem_map(section_id)
+        if biased_map is None:
+            return None
+        delta = AddressUtil.normalize_address(page - biased_map)
+        pfn, remainder = divmod(delta, self.sizeof_struct_page)
+        if remainder or pfn >> self.PFN_SECTION_SHIFT != section_id:
             return None
         return pfn << self.PAGE_SHIFT
 
@@ -182432,25 +182558,24 @@ class PageCommand(GenericCommand):
                 page = self.mem_map + (pfn * self.sizeof_struct_page)
 
             elif self.mode == "SPARSEMEM":
-                section_id = pfn >> self.PFN_SECTION_SHIFT
-                mem_section_i = self.mem_section + self.sizeof_mem_section * section_id
-                if not is_valid_addr(mem_section_i):
+                biased_map = self.get_section_mem_map(pfn >> self.PFN_SECTION_SHIFT)
+                if biased_map is None:
                     return None
-
-                section_mem_map_i = read_int_from_memory(mem_section_i)
-                if (section_mem_map_i & self.SECTION_HAS_MEM_MAP) == 0:
-                    return None
-
-                biased_map = section_mem_map_i & self.SECTION_MAP_MASK
-                page = biased_map + (pfn * self.sizeof_struct_page)
+                page = AddressUtil.normalize_address(biased_map + pfn * self.sizeof_struct_page)
             else:
                 return None
 
         elif is_arm64():
-            memstart_pfn = self.memstart_addr >> self.PAGE_SHIFT
-            if pfn < memstart_pfn:
-                return None
-            page = self.VMEMMAP_START + ((pfn - memstart_pfn) * self.sizeof_struct_page)
+            if self.mode == "SPARSEMEM":
+                biased_map = self.get_section_mem_map(pfn >> self.PFN_SECTION_SHIFT)
+                if biased_map is None:
+                    return None
+                page = AddressUtil.normalize_address(biased_map + pfn * self.sizeof_struct_page)
+            else:
+                memstart_pfn = self.memstart_addr >> self.PAGE_SHIFT
+                if pfn < memstart_pfn:
+                    return None
+                page = self.VMEMMAP_START + ((pfn - memstart_pfn) * self.sizeof_struct_page)
 
         elif is_arm32():
             if self.mode == "FLATMEM":
@@ -182459,17 +182584,10 @@ class PageCommand(GenericCommand):
                 page = self.mem_map + ((pfn - self.PHYS_PFN_OFFSET) * self.sizeof_struct_page)
 
             elif self.mode == "SPARSEMEM":
-                section_id = pfn >> self.PFN_SECTION_SHIFT
-                mem_section_i = self.mem_section + self.sizeof_mem_section * section_id
-                if not is_valid_addr(mem_section_i):
+                biased_map = self.get_section_mem_map(pfn >> self.PFN_SECTION_SHIFT)
+                if biased_map is None:
                     return None
-
-                section_mem_map_i = read_int_from_memory(mem_section_i)
-                if (section_mem_map_i & self.SECTION_HAS_MEM_MAP) == 0:
-                    return None
-
-                biased_map = section_mem_map_i & self.SECTION_MAP_MASK
-                page = biased_map + (pfn * self.sizeof_struct_page)
+                page = AddressUtil.normalize_address(biased_map + pfn * self.sizeof_struct_page)
             else:
                 return None
 
@@ -182523,17 +182641,11 @@ class PageToVirtCommand(PageCommand, BufferingOutput):
         if args.rescan:
             Cache.clear_cache_for(self.initialize)
 
-        if is_arm64():
-            kversion = Kernel.version()
-            if kversion < "4.7":
-                err("Unsupported before v4.7")
-                return
-
         if not self.initialize():
             err("Failed to initialize")
             return
 
-        self.out = []
+        self.out = ["Page descriptor validity (RAM holes and hotplug state) is not verified."]
 
         paddr = self.page2phys(args.page)
         if paddr is None:
@@ -182580,22 +182692,16 @@ class PageFromVirtCommand(PageCommand, BufferingOutput):
         if args.rescan:
             Cache.clear_cache_for(self.initialize)
 
-        if is_arm64():
-            kversion = Kernel.version()
-            if kversion < "4.7":
-                err("Unsupported before v4.7")
-                return
-
         if not self.initialize():
             err("Failed to initialize")
             return
 
-        self.out = []
+        self.out = ["Page descriptor validity (RAM holes and hotplug state) is not verified."]
 
         vaddr = args.virt
-        if vaddr & 0xfff:
+        if vaddr & ((1 << self.PAGE_SHIFT) - 1):
             warn("The address must be page aligned, round down and then calculate")
-            vaddr &= get_pagesize_mask_high()
+            vaddr &= -(1 << self.PAGE_SHIFT)
 
         paddr = AddrMap.v2p(vaddr)
         if paddr is None:
@@ -182640,17 +182746,11 @@ class PageToPhysCommand(PageCommand, BufferingOutput):
         if args.rescan:
             Cache.clear_cache_for(self.initialize)
 
-        if is_arm64():
-            kversion = Kernel.version()
-            if kversion < "4.7":
-                err("Unsupported before v4.7")
-                return
-
         if not self.initialize():
             err("Failed to initialize")
             return
 
-        self.out = []
+        self.out = ["Page descriptor validity (RAM holes and hotplug state) is not verified."]
 
         paddr = self.page2phys(args.page)
         if paddr is None:
@@ -182691,22 +182791,16 @@ class PhysToPageCommand(PageCommand, BufferingOutput):
         if args.rescan:
             Cache.clear_cache_for(self.initialize)
 
-        if is_arm64():
-            kversion = Kernel.version()
-            if kversion < "4.7":
-                err("Unsupported before v4.7")
-                return
-
         if not self.initialize():
             err("Failed to initialize")
             return
 
-        self.out = []
+        self.out = ["Page descriptor validity (RAM holes and hotplug state) is not verified."]
 
         paddr = args.phys
-        if paddr & 0xfff:
+        if paddr & ((1 << self.PAGE_SHIFT) - 1):
             warn("The address must be page aligned, round down and then calculate")
-            paddr &= get_pagesize_mask_high()
+            paddr &= -(1 << self.PAGE_SHIFT)
 
         page = self.phys2page(paddr)
         if page is None:
@@ -199227,6 +199321,7 @@ class GefUtil:
         configs = __gef_command_instances__["kconfig"].get_configs()
         if configs:
             return 1 << int(configs.get("CONFIG_NODES_SHIFT", "0"))
+        warn("Node array length is unknown; scanning stops at the first invalid pointer")
         return None
 
     @staticmethod
