@@ -155597,41 +155597,25 @@ class KernelBuddy:
 
             if kversion < "5.14":
                 raise ValueError("Unsupported kernel version for pcp lists: {!s}".format(kversion))
-            elif "5.14" <= kversion < "6.0":
-                # indices 12..14 are "base=4 + migratetype"
-                base = PAGE_ALLOC_COSTLY_ORDER + 1
-                mtype = i - self.MIGRATE_PCPTYPES * base # 0,1,2
-                if 0 <= mtype < self.MIGRATE_PCPTYPES:
-                    mtype_str = self.migrate_types[mtype]
-                else:
-                    mtype_str = "THP_UNKNOWN"
-                order = self.get_pageblock_order()
-            elif ("6.0" <= kversion < "6.1") or ("6.2" <= kversion < "6.6.37") or ("6.7" <= kversion < "6.9"):
-                # 1 slot
-                mtype = i - NR_LOWORDER_PCP_LISTS
-                if i == NR_LOWORDER_PCP_LISTS:
-                    mtype_str = "THP"
-                else:
-                    mtype_str = "THP_UNKNOWN"
-                order = self.get_pageblock_order()
-            elif ("6.1" <= kversion < "6.2") or ("6.6.37" <= kversion < "6.7") or ("6.9" <= kversion < "6.10"):
-                # 2 slots
-                thp_i = i - NR_LOWORDER_PCP_LISTS
-                mtype = thp_i
-                if 0 <= thp_i < 2:
-                    mtype_str = "THP_MOVABLE" if thp_i == 1 else "THP_OTHER"
-                else:
-                    mtype_str = "THP_UNKNOWN"
-                order = self.get_pageblock_order()
-            else: # 6.10~
-                # 2 slots
-                thp_i = i - NR_LOWORDER_PCP_LISTS
-                mtype = thp_i
-                if 0 <= thp_i < 2:
-                    mtype_str = "THP_MOVABLE" if thp_i == 1 else "THP_OTHER"
-                else:
-                    mtype_str = "THP_UNKNOWN"
 
+            thp_i = i - NR_LOWORDER_PCP_LISTS
+            nr_thp_lists = self.NR_PCP_LISTS - NR_LOWORDER_PCP_LISTS
+            mtype = thp_i
+            if nr_thp_lists == self.MIGRATE_PCPTYPES:
+                # 1 slot per migratetype (5.14~5.19)
+                mtype_str = self.migrate_types[mtype]
+            elif nr_thp_lists == 1:
+                # 1 slot (6.0~6.9)
+                mtype_str = "THP"
+            elif nr_thp_lists == 2:
+                # 2 slots (6.10~, and backported to 6.1.97~, 6.6.37~, 6.9.8~)
+                mtype_str = "THP_MOVABLE" if thp_i == 1 else "THP_OTHER"
+            else:
+                mtype_str = "THP_UNKNOWN"
+
+            if kversion < "6.10":
+                order = self.get_pageblock_order()
+            else:
                 HPAGE_PMD_SHIFT = KernelAddressHeuristicFinder.consts().PMD_SHIFT
                 PAGE_SHIFT = KernelAddressHeuristicFinder.consts().PAGE_SHIFT
                 HPAGE_PMD_ORDER = HPAGE_PMD_SHIFT - PAGE_SHIFT
