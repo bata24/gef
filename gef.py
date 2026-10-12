@@ -157577,12 +157577,16 @@ class KernelBuddy:
 
     def walk_node(self, node, options):
         zones = []
+        offset_spanned_pages = GefUtil.offsetof("struct zone", "spanned_pages")
         for index in ProgressBar(range(self.MAX_NR_ZONES), desc="zone", disable=options["quiet"]):
             zone = node + self.sizeof_zone * index
             name = read_cstring_from_memory(read_int_from_memory(zone + self.offset_name))
             if options["zone_filter"] and name not in options["zone_filter"]:
                 continue
             record = {"index": index, "address": zone, "name": name}
+            zones.append(record)
+            if offset_spanned_pages is not None and read_int_from_memory(zone + offset_spanned_pages, safe=True) == 0:
+                continue
             if not options["skip_pcp"]:
                 record["per_cpu_pageset"] = self.walk_pcp(zone, name == "HighMem", options)
             if not options["only_pcp"]:
@@ -157592,7 +157596,6 @@ class KernelBuddy:
                         continue
                     free_area = zone + self.offset_free_area + self.sizeof_free_area * order
                     record["free_area"].append(self.walk_free_area(free_area, order, name == "HighMem", options))
-            zones.append(record)
         return zones
 
     def walk_pcp(self, zone, is_highmem, options):
@@ -157626,10 +157629,12 @@ class KernelBuddy:
 
     def walk_list(self, head, size, is_highmem, count, cpu_num=None):
         entries = []
-        if not is_valid_addr(read_int_from_memory(head)):
-            return entries
         page_list = KernelListHead(head, self.offset_lru)
         for page in page_list.iter_entries():
+            link = page + self.offset_lru
+            if link == 0 or read_int_from_memory(link, safe=True) is None:
+                self.list_scan_incomplete = True
+                break
             entries.append({"page": page, "size": size, "is_highmem": is_highmem, "cpu_num": cpu_num})
             if count and len(entries) >= count:
                 entries.append(None)
@@ -158210,10 +158215,11 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
             virt = addresses["virt"]
             if first:
                 phys = addresses["phys"]
-                if phys is not None:
+                if phys is not None and not self.kbuddy.list_scan_incomplete:
                     self.out.append("    used:{:{:d}s}  size:{:#08x}".format("", align, phys))
                 first = False
-            elif isinstance(virt, int) and isinstance(prev_virt, int) and prev_virt + prev_size != virt:
+            elif (not self.kbuddy.list_scan_incomplete and isinstance(virt, int) and isinstance(prev_virt, int)
+                  and prev_virt + prev_size != virt):
                 self.out.append("    used:{:{:d}s}  size:{:#08x}".format("", align, virt - (prev_virt + prev_size)))
             self.out.append(self.format_entry(entry))
             prev_virt, prev_size = virt, entry["size"]
@@ -158320,6 +158326,8 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
             self.make_output_for_sort(node_entries)
         else:
             self.make_output(node_entries)
+        if self.kbuddy.list_scan_incomplete:
+            self.warn_add_out("Allocator list scan was incomplete due to unreadable or cyclic list data.")
         self.print_output(check_terminal_size=True)
         return
 
