@@ -4115,7 +4115,7 @@ class GlibcHeap:
             if get_libc_version() >= (2, 15):
                 return None
             else:
-                return self.addrof_max_n_mmaps + self.int_t.sizeof
+                return self.addrof_no_dyn_threshold + self.int_t.sizeof
 
         @property
         def addrof_mmapped_mem(self):
@@ -4133,7 +4133,7 @@ class GlibcHeap:
             if get_libc_version() >= (2, 24):
                 return None
             else:
-                return self.addrof_mmapped_mem + self.size_t.sizeof
+                return self.addrof_max_mmapped_mem + self.size_t.sizeof
 
         @property
         def addrof_sbrk_base(self):
