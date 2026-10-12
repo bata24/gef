@@ -166433,6 +166433,8 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
     _cmdline_ = "partition-alloc-dump"
     _category_ = "05-b. Heap - Chromium/V8"
 
+    max_chain_length = 0x10000
+
     parser = argparse.ArgumentParser(prog=_cmdline_)
     modes = ["fast_malloc", "array_buffer", "buffer", "fm", "ab", "b"]
     parser.add_argument("target_buffer_root", choices=modes,
@@ -166453,7 +166455,9 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
     _example_ = "\n".join(_example_).format(_cmdline_)
 
     _note_ = [
-        "Chromium mainline is too fast to develop. So if parse is failed, you need fix this gef.py.",
+        "Version numbers do not identify the build layout; the fixed layout is checked against the heap.",
+        "Requires 4 KiB system pages, 2 MiB super pages, 32-byte metadata entries and inline metadata.",
+        "Settings must occupy 0x40 or 0x80 bytes; separated metadata is not supported.",
         "",
         "Simplified partition alloc structure:",
         "",
@@ -166498,7 +166502,7 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
         "",
         "`extent`, `slot_span` and `slot` are in super_page.",
         "",
-        "     [~v144.x]                    [v145.x~; PA_CONFIG(MOVE_METADATA_OUT_OF_GIGACAGE)=y]",
+        "     [supported inline layout]    [unsupported: PA_CONFIG(MOVE_METADATA_OUT_OF_GIGACAGE)=y]",
         "     +-super_page-(2MB)-----+      +-super_page(for meta)-+ +-super_page(for chunk)+",
         "4KB  | Guard Page           |      | Guard Page           | | Guard Page           |",
         "     +----------------------+      +----------------------+ +----------------------+",
@@ -166544,6 +166548,45 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
 
         # finally, look for possible values for given prefix
         return [s for s in self.modes if s and s.startswith(text.strip())]
+
+    def initialize(self):
+        auxv = Auxv.get_auxiliary_values()
+        page_size = auxv.get("AT_PAGESZ") if auxv else None
+        self.out.append("PartitionAlloc version: unknown (build layout is checked, not inferred from a version).")
+        self.out.append("Layout source: memory heuristic; fixed root/bucket/slot-span fields.")
+        self.out.append("Supported layout: inline metadata, system page=0x1000, super page=0x200000, metadata entry=0x20.")
+        self.out.append("Supported Settings size: 0x40/0x80; separated metadata is not supported.")
+        if page_size is None:
+            self.err_add_out("Cannot verify the target system page size: AT_PAGESZ is unavailable.")
+            return False
+        self.out.append("Target system page size: {:#x}".format(page_size))
+        if page_size != 0x1000:
+            self.err_add_out("Unsupported system page size; this fixed layout requires 4 KiB pages.")
+            return False
+
+        for type_name in ("partition_alloc::PartitionRoot::Settings", "base::PartitionRoot::Settings"):
+            if GefUtil.lookup_field(type_name, "metadata_offset_") is not None:
+                self.err_add_out("Unsupported separated metadata: MOVE_METADATA_OUT_OF_GIGACAGE is enabled.")
+                return False
+        return True
+
+    def validate_root(self, root):
+        if not root.buckets_ or root.sentinel_bucket_.slot_size != 0 or \
+                root.sentinel_bucket_.num_system_pages_per_slot_span != 0:
+            raise gdb.error("Unsupported or corrupted root: invalid sentinel bucket")
+        if root.global_empty_slot_span_ring_size_ > len(root.global_empty_slot_span_ring_) or \
+                root.global_empty_slot_span_ring_index_ >= root.global_empty_slot_span_ring_size_:
+            raise gdb.error("Unsupported or corrupted root: invalid empty slot-span ring")
+        for head in (root.first_extent_, root.current_extent_):
+            if not head:
+                continue
+            extent, _ = self.read_extent(head)
+            if extent.root != root.addr or extent.number_of_consecutive_super_pages == 0:
+                raise gdb.error("Unsupported or corrupted extent @{:#x}: root or page count mismatch".format(head))
+            if head == root.current_extent_ and root.next_partition_page_ and \
+                    not extent.super_page_base <= root.next_partition_page_ <= extent.super_page_end:
+                raise gdb.error("Unsupported or corrupted extent @{:#x}: metadata/data placement mismatch".format(head))
+        return
 
     @Cache.cache_this_session
     def get_roots_heuristic(self):
@@ -166816,57 +166859,44 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
             else:
                 current += 0xc0 # sizeof(struct Settings) is 3 cache lines
 
-        def get_metadata_offset(root_addr, current_addr):
-            """
-            # v145.x~ has PA_CONFIG(MOVE_METADATA_OUT_OF_GIGACAGE)
-            0x599a3e48af40|+0x0000|+000: settings (=&root)        : 0x0000000000010000
-            0x599a3e48af48|+0x0008|+001:                          : 0x0000000000000004
-            0x599a3e48af50|+0x0010|+002:                          : 0x0000000000000002
-            0x599a3e48af58|+0x0018|+003:                          : 0x000009f400000000
-            0x599a3e48af60|+0x0020|+004:                          : 0xfffffffc00000000
-            0x599a3e48af68|+0x0028|+005:                          : 0x0000599a3e1dc018
-            0x599a3e48af70|+0x0030|+006:                          : 0x000009f400000000
-            0x599a3e48af78|+0x0038|+007:                          : 0xfffffffc00000000
-            0x599a3e48af80|+0x0040|+008:                          : 0x0000000000000000
-            0x599a3e48af88|+0x0048|+009:                          : 0x0000000000000000
-            0x599a3e48af90|+0x0050|+010:                          : 0xaaaaaaaaaa000000
-            0x599a3e48af98|+0x0058|+011:                          : 0x00000000000f0000
-            0x599a3e48afa0|+0x0060|+012:                          : 0x0000000000000000
-            0x599a3e48afa8|+0x0068|+013:                          : 0x0000000000000000
-            0x599a3e48afb0|+0x0070|+014:                          : 0x0000000000000000
-            0x599a3e48afb8|+0x0078|+015:                          : 0x0000000000000000
-            0x599a3e48afc0|+0x0080|+016:                          : 0x00000000ffffffff
-            0x599a3e48afc8|+0x0088|+017:                          : 0x0000000000000004
-            0x599a3e48afd0|+0x0090|+018: settings.metadata_offset_: 0x00002e37f278b000 <-- here
-            0x599a3e48afd8|+0x0098|+019:                          : 0x0000000000000100
-            0x599a3e48afe0|+0x00a0|+020:                          : 0x0000000000000000
-            0x599a3e48afe8|+0x00a8|+021:                          : 0x0000000000000000
-            0x599a3e48aff0|+0x00b0|+022:                          : 0x0000000000000000
-            0x599a3e48aff8|+0x00b8|+023:                          : 0x0000000000000000
-            0x599a3e48b000|+0x00c0|+024: lock_                    : 0x0000000000000000
-            0x599a3e48b008|+0x00c8|+025: buckets[0]               : 0x0000382bf298b920
-            0x599a3e48b010|+0x00d0|+026: buckets[0]               : 0x0000000000000000
-            0x599a3e48b018|+0x00d8|+027: buckets[0]               : 0x0000000000000000
-            0x599a3e48b020|+0x00e0|+028: buckets[0]               : 0x0000000400000010
-            0x599a3e48b028|+0x00e8|+029: buckets[0]               : 0x0000004000000000
-            0x599a3e48b030|+0x00f0|+030: buckets[0]               : 0x0000000000000000
-            """
-            if current_addr - root_addr != 0xc0:
-                return get_pagesize()
-            data = read_memory(root_addr + 0x80, 0x40)
-            for x in slice_unpack(data, current_arch.ptrsize):
-                if x & 0xfff:
-                    continue
-                if x == 0:
-                    continue
-                if (root_addr & 0x0000_ffff_ff00_0000) == (x & 0x0000_ffff_ff00_0000):
-                    continue
-                if (x & 0xffff_ffff) == 0:
-                    continue
-                return x
-            return get_pagesize()
-
-        root["metadata_offset_"] = get_metadata_offset(root["addr"], current)
+        """
+        Observed layout with PA_CONFIG(MOVE_METADATA_OUT_OF_GIGACAGE) enabled.
+        Reference only; parsing this layout is currently rejected below.
+        0x599a3e48af40|+0x0000|+000: settings (=&root)        : 0x0000000000010000
+        0x599a3e48af48|+0x0008|+001:                          : 0x0000000000000004
+        0x599a3e48af50|+0x0010|+002:                          : 0x0000000000000002
+        0x599a3e48af58|+0x0018|+003:                          : 0x000009f400000000
+        0x599a3e48af60|+0x0020|+004:                          : 0xfffffffc00000000
+        0x599a3e48af68|+0x0028|+005:                          : 0x0000599a3e1dc018
+        0x599a3e48af70|+0x0030|+006:                          : 0x000009f400000000
+        0x599a3e48af78|+0x0038|+007:                          : 0xfffffffc00000000
+        0x599a3e48af80|+0x0040|+008:                          : 0x0000000000000000
+        0x599a3e48af88|+0x0048|+009:                          : 0x0000000000000000
+        0x599a3e48af90|+0x0050|+010:                          : 0xaaaaaaaaaa000000
+        0x599a3e48af98|+0x0058|+011:                          : 0x00000000000f0000
+        0x599a3e48afa0|+0x0060|+012:                          : 0x0000000000000000
+        0x599a3e48afa8|+0x0068|+013:                          : 0x0000000000000000
+        0x599a3e48afb0|+0x0070|+014:                          : 0x0000000000000000
+        0x599a3e48afb8|+0x0078|+015:                          : 0x0000000000000000
+        0x599a3e48afc0|+0x0080|+016:                          : 0x00000000ffffffff
+        0x599a3e48afc8|+0x0088|+017:                          : 0x0000000000000004
+        0x599a3e48afd0|+0x0090|+018: settings.metadata_offset_: 0x00002e37f278b000 <-- here
+        0x599a3e48afd8|+0x0098|+019:                          : 0x0000000000000100
+        0x599a3e48afe0|+0x00a0|+020:                          : 0x0000000000000000
+        0x599a3e48afe8|+0x00a8|+021:                          : 0x0000000000000000
+        0x599a3e48aff0|+0x00b0|+022:                          : 0x0000000000000000
+        0x599a3e48aff8|+0x00b8|+023:                          : 0x0000000000000000
+        0x599a3e48b000|+0x00c0|+024: lock_                    : 0x0000000000000000
+        0x599a3e48b008|+0x00c8|+025: buckets[0]               : 0x0000382bf298b920
+        0x599a3e48b010|+0x00d0|+026: buckets[0]               : 0x0000000000000000
+        0x599a3e48b018|+0x00d8|+027: buckets[0]               : 0x0000000000000000
+        0x599a3e48b020|+0x00e0|+028: buckets[0]               : 0x0000000400000010
+        0x599a3e48b028|+0x00e8|+029: buckets[0]               : 0x0000004000000000
+        0x599a3e48b030|+0x00f0|+030: buckets[0]               : 0x0000000000000000
+        """
+        if current - root["addr"] == 0xc0:
+            raise gdb.error("Unsupported Settings layout: possible separated metadata; offset cannot be verified")
+        root["metadata_offset_"] = get_pagesize()
 
         root["lock_"] = read_int64_from_memory(current)
         current += 8
@@ -166883,11 +166913,17 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
                 current += ptrsize
 
         root["buckets_"] = []
-        while True:
+        for _ in range(1024):
             if read_int_from_memory(current) == 1: # search for `bool initialized`
                 break
             bucket, current = self.read_bucket(current)
+            if bucket.can_store_raw_size not in (0, 1):
+                raise gdb.error("Unsupported or corrupted bucket layout @{:#x}".format(bucket.addr))
             root["buckets_"].append(bucket)
+        else:
+            raise gdb.error("Unsupported or corrupted root: initialized flag not found within 1024 buckets")
+        if not root["buckets_"]:
+            raise gdb.error("Unsupported or corrupted root: no sentinel bucket")
 
         root["sentinel_bucket_"] = root["buckets_"].pop()
 
@@ -166905,10 +166941,10 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
         current += ptrsize
         root["max_size_of_allocated_bytes_"] = read_int_from_memory(current)
         current += ptrsize
-        root["syscall_count_"] = read_int_from_memory(current)
-        current += ptrsize
-        root["syscall_total_time_ns_"] = read_int_from_memory(current)
-        current += ptrsize
+        root["syscall_count_"] = read_int64_from_memory(current)
+        current += 8
+        root["syscall_total_time_ns_"] = read_int64_from_memory(current)
+        current += 8
         root["total_size_of_brp_quarantined_bytes"] = read_int_from_memory(current)
         current += ptrsize
         root["total_count_of_brp_quarantined_slots_"] = read_int_from_memory(current)
@@ -166917,7 +166953,7 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
         current += ptrsize
         root["cumulative_count_of_brp_quarantined_slots_"] = read_int_from_memory(current)
         current += ptrsize
-        root["empty_slot_spans_dirty_bytes_"] = read_int32_from_memory(current)
+        root["empty_slot_spans_dirty_bytes_"] = read_int_from_memory(current)
         current += ptrsize # with pad
         root["max_empty_slot_spans_dirty_bytes_shift_"] = read_int32_from_memory(current)
         current += ptrsize # with pad
@@ -166936,12 +166972,14 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
 
         root["global_empty_slot_span_ring_"] = []
         inv = root["addr"] ^ AddressUtil.get_vmem_end_mask()
-        while True:
+        for _ in range(1025):
             if read_int_from_memory(current + ptrsize) == inv: # search for `inverted_self_`
                 break
             x = read_int_from_memory(current)
             current += ptrsize
             root["global_empty_slot_span_ring_"].append(x)
+        else:
+            raise gdb.error("Unsupported or corrupted root: inverted_self not found within 1024 ring entries")
         root["global_empty_slot_span_ring_index_"] = read_int16_from_memory(current)
         current += 2
         root["global_empty_slot_span_ring_size_"] = read_int16_from_memory(current)
@@ -166952,7 +166990,7 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
         current += ptrsize
         root["thread_cache_construction_lock_"] = read_int64_from_memory(current)
         current += 8
-        root["scheduler_loop_quarantine_branch_capacity_in_bytes_"] = read_int32_from_memory(current)
+        root["scheduler_loop_quarantine_branch_capacity_in_bytes_"] = read_int_from_memory(current)
         current += ptrsize # with pad
         root["scheduler_loop_quarantine_root_"] = read_int_from_memory(current)
         current += ptrsize
@@ -167017,7 +167055,9 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
         ptrsize = current_arch.ptrsize
         extent = {}
         extent["addr"] = current = addr
-        extent["super_page_base"] = current - 0x1000
+        extent["super_page_base"] = current - get_pagesize()
+        if extent["super_page_base"] & 0x1f_ffff:
+            raise gdb.error("Unsupported or corrupted metadata placement @{:#x}: expected inline extent".format(addr))
         """
         https://source.chromium.org/chromium/chromium/src/+/main:base/allocator/partition_allocator/  \
         src/partition_alloc/partition_superpage_extent_entry.h
@@ -167131,9 +167171,18 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
         management_color = Config.get("theme.heap_management_address")
 
         # in extent
-        current = self.root.current_extent_
+        current = self.root.first_extent_
+        seen = set()
         while current:
-            extent, _ = self.read_extent(current)
+            if current in seen:
+                return "{:#x} (extent loop at {:#x})".format(address, current)
+            if len(seen) >= self.max_chain_length:
+                return "{:#x} (extent traversal limit at {:#x})".format(address, current)
+            seen.add(current)
+            try:
+                extent, _ = self.read_extent(current)
+            except gdb.error:
+                return "{:#x} (unreadable extent at {:#x})".format(address, current)
             if extent.super_page_base <= address < extent.super_page_end:
                 return Color.colorify_hex(address, management_color)
             current = extent.next
@@ -167278,7 +167327,15 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
     def dump_extent_list(self, head):
         try:
             current = head
+            seen = set()
             while current:
+                if current in seen:
+                    self.err_add_out("Extent chain loop at {:#x}".format(current))
+                    break
+                if len(seen) >= self.max_chain_length:
+                    self.err_add_out("Extent traversal limit reached at {:#x}".format(current))
+                    break
+                seen.add(current)
                 extent, _ = self.read_extent(current)
                 self.out.append("    -> extent @{:s}".format(
                     self.C(extent.addr),
@@ -167302,14 +167359,22 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
                     self.C(extent.next),
                 ))
                 current = extent.next
-        except Exception:
-            self.err_add_out("Corrupted?")
+        except gdb.error as e:
+            self.err_add_out("Corrupted extent at {:#x}: {!s}".format(current, e))
         return
 
     def dump_direct_map_list(self, head, root):
         try:
             current = head
+            seen = set()
             while current:
+                if current in seen:
+                    self.err_add_out("Direct-map chain loop at {:#x}".format(current))
+                    break
+                if len(seen) >= self.max_chain_length:
+                    self.err_add_out("Direct-map traversal limit reached at {:#x}".format(current))
+                    break
+                seen.add(current)
                 direct_map, _ = self.read_direct_map(current)
                 self.out.append("    -> direct_map @{:s}: ".format(
                     self.C(direct_map.addr),
@@ -167332,8 +167397,8 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
                 bucket, _ = self.read_bucket(direct_map.bucket)
                 self.dump_bucket(bucket, root)
                 current = direct_map.next_extent
-        except Exception:
-            self.err_add_out("Corrupted?")
+        except gdb.error as e:
+            self.err_add_out("Corrupted direct map at {:#x}: {!s}".format(current, e))
         return
 
     def dump_bucket(self, bucket, root, idx=None):
@@ -167379,6 +167444,7 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
                 # print sentinel (verbose)
                 colored_key = Color.colorify(key, label_inactive_color)
                 self.out.append("        {:s}:{:s} (=sentinel_pages)".format(colored_key, self.C(head)))
+                continue
             else:
                 # default
                 colored_key = Color.colorify(key, label_active_color)
@@ -167388,11 +167454,19 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
 
     def dump_slot_span(self, head, bucket):
         current = head
+        seen = set()
         while current:
+            if current in seen:
+                self.err_add_out("Slot-span chain loop at {:#x}".format(current))
+                break
+            if len(seen) >= self.max_chain_length:
+                self.err_add_out("Slot-span traversal limit reached at {:#x}".format(current))
+                break
+            seen.add(current)
             try:
                 slot_span, _ = self.read_slot_span(current)
-            except Exception:
-                self.err_add_out("Corrupted?")
+            except gdb.error as e:
+                self.err_add_out("Corrupted slot span at {:#x}: {!s}".format(current, e))
                 break
             self.out.append("            -> slot_span @{:s} (#{:3d} of super_page @{:s})".format(
                 self.C(slot_span.addr), slot_span.partition_page_index, self.P(slot_span.super_page_addr),
@@ -167420,6 +167494,9 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
         slot_size = bucket.slot_size
         page_start = slot_span.partition_page_start
         page_end = page_start + bucket.num_system_pages_per_slot_span * get_pagesize()
+        if head and slot_size == 0:
+            self.err_add_out("Corrupted freelist at {:#x}: zero slot size".format(head))
+            return
 
         text = ""
         cnt = 0
@@ -167485,6 +167562,9 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
             Cache.clear_cache_for(self.get_roots_heuristic)
 
         self.out = []
+        if not self.initialize():
+            self.print_output()
+            return
         roots = self.get_roots(args.force_heuristic)
 
         for r in roots:
@@ -167505,11 +167585,9 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
 
             try:
                 root, _ = self.read_root(r.address, r.name)
-            except Exception:
-                mem_value = read_int_from_memory(r.address)
-                err("Parse error {:s}: @ {:#x} -> {:#x}".format(r.name, r.address, mem_value))
-                exc_type, exc_value, exc_traceback = sys.exc_info()
-                gef_print(exc_value)
+                self.validate_root(root)
+            except gdb.error as e:
+                self.err_add_out("Parse error {:s} @{:#x}: {!s}".format(r.name, r.address, e))
                 continue
 
             self.root = root # for coloring

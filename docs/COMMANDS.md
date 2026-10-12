@@ -6944,7 +6944,9 @@ partition-alloc-dump ab            # same above
 ### Notes
 
 ```text
-Chromium mainline is too fast to develop. So if parse is failed, you need fix this gef.py.
+Version numbers do not identify the build layout; the fixed layout is checked against the heap.
+Requires 4 KiB system pages, 2 MiB super pages, 32-byte metadata entries and inline metadata.
+Settings must occupy 0x40 or 0x80 bytes; separated metadata is not supported.
 
 Simplified partition alloc structure:
 
@@ -6989,7 +6991,7 @@ Simplified partition alloc structure:
 
 `extent`, `slot_span` and `slot` are in super_page.
 
-     [~v144.x]                    [v145.x~; PA_CONFIG(MOVE_METADATA_OUT_OF_GIGACAGE)=y]
+     [supported inline layout]    [unsupported: PA_CONFIG(MOVE_METADATA_OUT_OF_GIGACAGE)=y]
      +-super_page-(2MB)-----+      +-super_page(for meta)-+ +-super_page(for chunk)+
 4KB  | Guard Page           |      | Guard Page           | | Guard Page           |
      +----------------------+      +----------------------+ +----------------------+
