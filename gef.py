@@ -18549,7 +18549,7 @@ class PrintFormatCommand(GenericCommand):
         else:
             end_addr = self.args.location + self.args.length * unit_size
 
-        bit_format = {8: "<B", 16: "<H", 32: "<I", 64: "<Q"}[self.args.bitlen]
+        bit_format = Endian.endian_str() + {8: "B", 16: "H", 32: "I", 64: "Q"}[self.args.bitlen]
         data = []
         for address in range(self.args.location, end_addr, unit_size):
             try:
@@ -18597,7 +18597,11 @@ class PrintFormatCommand(GenericCommand):
             out = "var buf = [\n{:s}\n];".format(sdata)
         elif self.args.format == "asm":
             asm_type = {8: "db", 16: "dw", 32: "dd", 64: "dq"}
-            out = "buf {:s}\n{:s}".format(asm_type[self.args.bitlen], sdata)
+            sdata = "\n".join(
+                "    {:s} {:s}".format(asm_type[self.args.bitlen], line.strip().rstrip(","))
+                for line in sdata.splitlines()
+            )
+            out = "buf:\n{:s}".format(sdata)
         elif self.args.format in ["hex", "hexn", "hexs", "hexsn"]:
             out = sdata
         return out
