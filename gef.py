@@ -7129,9 +7129,9 @@ class Disasm:
 
         capstone = sys.modules["capstone"]
         arch, mode = UnicornKeystoneCapstone.get_capstone_arch(
-            arch=kwargs.get("arch", None),
-            mode=kwargs.get("mode", None),
-            endian=kwargs.get("endian", None),
+            arch=kwargs.get("arch", current_arch.arch),
+            mode=kwargs.get("mode", current_arch.mode),
+            endian=kwargs.get("endian", Endian.is_big_endian()),
         )
         try:
             cs = capstone.Cs(arch, mode)
@@ -7166,15 +7166,20 @@ class Disasm:
         dont_read = "code" in kwargs
 
         # A loop to read the required memory until the specified length is reached
-        while True:
+        while nb_insn > 0:
             if not dont_read and len(code_remain) < get_pagesize():
                 # not enough code to disassemble, so read the memory to pool
                 try:
                     read_data = read_memory(read_addr, read_size)
                 except gdb.MemoryError:
                     err("Memory read error at {:#x}-{:#x}".format(read_addr, read_addr + read_size))
-                    return
-                code_remain += read_data
+                    if not code_remain:
+                        return
+                    dont_read = True
+                else:
+                    code_remain += read_data
+                    read_addr += read_size # 1st loop is the offset size. 2nd~ loops are the page size.
+                    read_size = get_pagesize()
 
             # cs.disasm will terminate disassembling if an invalid instruction is detected.
             # This is a loop to display "(bad)" and increment PC and reinterpret code.
@@ -7194,11 +7199,19 @@ class Disasm:
                 if used_bytes > 0:
                     break
 
-                # failure (maybe the code is invalid)
-                yield Instruction(location, "(bad)", "", code_remain[:arch_inst_length])
-                nb_insn -= 1
-                if nb_insn == 0:
+                if not dont_read and len(code_remain) < get_pagesize():
+                    break
+                if not code_remain:
                     return
+
+                # failure (maybe the code is invalid)
+                if skip:
+                    skip -= 1
+                else:
+                    yield Instruction(location, "(bad)", "", code_remain[:arch_inst_length])
+                    nb_insn -= 1
+                    if nb_insn == 0:
+                        return
                 location += arch_inst_length
                 code_remain = code_remain[arch_inst_length:]
 
@@ -7206,9 +7219,6 @@ class Disasm:
             code_remain = code_remain[used_bytes:] # There may be instructions placed across page boundaries.
             location += used_bytes
             used_bytes = 0
-
-            read_addr += read_size # 1st loop is the offset size. 2nd~ loops are the page size.
-            read_size = get_pagesize()
         return
 
     @staticmethod
@@ -28097,6 +28107,11 @@ class CapstoneDisassembleCommand(GenericCommand):
         for arg in args.args:
             if "=" in arg:
                 key, value = arg.split("=", 1)
+                if key == "endian":
+                    if value not in ("0", "1"):
+                        err("endian must be 0 or 1")
+                        return
+                    value = value == "1"
                 kwargs[key] = value
             else:
                 err("ARGS must be KEY=VALUE style")
