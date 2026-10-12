@@ -64860,7 +64860,7 @@ class KernelAddressHeuristicFinderUtil:
 
     @staticmethod
     def x86_dword_ptr_fs(res, skip=0, skip_msb_check=False, read_valid=False):
-        regexp = r"DWORD PTR fs:\s*(0x\w+)"
+        regexp = r"(?:DWORD PTR |mov\s+eax,\s*)fs:\s*(0x\w+)"
         return KernelAddressHeuristicFinderUtil.common_addr_gen(res, regexp, skip, skip_msb_check, read_valid)
 
     @staticmethod
@@ -68205,7 +68205,12 @@ class KernelAddressHeuristicFinder:
 
         # plan 3 (available v2.5.33 or later)
         if kversion and "2.5.33" <= kversion:
-            for addr in Ksym.get_addrs("setup_arg_pages", match="split"):
+            anchors = ["setup_arg_pages"]
+            if is_x86_32():
+                # gettid reads current without the stack canary load of setup_arg_pages on UP builds.
+                anchors = ["__ia32_sys_gettid", "sys_gettid"] + anchors
+            addrs = itertools.chain.from_iterable(Ksym.get_addrs(name, match="split") for name in anchors)
+            for addr in addrs:
                 res = KernelAddressHeuristicFinderUtil.disassemble_until_next_symbol(addr, 20)
                 if is_x86_64():
                     g = itertools.chain(
@@ -88508,7 +88513,7 @@ class KernelCurrentCommand(GenericCommand):
             r = re.search(r"current \({:s}\): (0x\S+) (.*)".format(re.escape(label)), res)
             if r:
                 return r
-        return None
+        return re.search(r"current: (0x\S+) (.*)", res)
 
     def get_unavailable_reason(self):
         if is_arm32():
