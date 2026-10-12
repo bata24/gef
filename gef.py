@@ -21790,7 +21790,7 @@ class XtapCommand(GenericCommand):
         "  write-like: write, sendto, sendmsg, sendmmsg, pwrite64, pwritev, pwritev2, writev",
         "",
         "- Relies on `catch syscall`.",
-        "- Auto-continues; stops on a user breakpoint or Ctrl+C.",
+        "- Auto-continues; stops on a user breakpoint, signal, or Ctrl+C.",
         "- qemu-user is unsupported: its gdbstub does not update the return-value register",
         "  at syscall-return, so read-like sizes are wrong. Use a native target.",
     ]
@@ -22035,17 +22035,33 @@ class XtapCommand(GenericCommand):
             return None
         return entry.name
 
+    def remember_stop(self, event):
+        self.stop_event = event
+        return
+
     def identify_stop(self):
         """Determine if the current stop is one of our tapped syscalls."""
+        event = self.stop_event
+        if event is None or isinstance(event, gdb.SignalEvent):
+            return None
+        if isinstance(event, gdb.BreakpointEvent):
+            numbers = [bp.number for bp in event.breakpoints]
+        else:
+            res = gdb.execute("info program", to_string=True)
+            numbers = [int(num) for num in re.findall(r"It stopped at breakpoint (\d+)\.", res)]
+        if not numbers or any(num not in self.catch_numbers for num in numbers):
+            return None
+
         try:
             tid = gdb.selected_thread().num
         except Exception:
             tid = 0
 
+        reason = getattr(event, "details", {}).get("reason")
         pending_name = self.in_syscall_by_thread.get(tid, None)
-        if pending_name is not None:
-            # this stop is the return matching the previous entry on this thread
+        if reason == "syscall-return" or (reason != "syscall-entry" and pending_name is not None):
             self.in_syscall_by_thread[tid] = None
+            pending_name = pending_name or self.current_syscall_name()
             if pending_name not in self.hooked_set:
                 return None
             return pending_name, False
@@ -22099,22 +22115,24 @@ class XtapCommand(GenericCommand):
         EventHooking.gef_on_stop_unhook(EventHandler.hook_stop_handler)
         self.close_stdout_stderr()
         try:
-            while True:
-                gdb.execute("continue", to_string=True)
-                Cache.reset_gef_caches() # hook_stop_handler that does this is unhooked
-                if not is_alive():
-                    inferior_exited = True
-                    break
-                hit = self.identify_stop()
-                if hit is None:
-                    # stopped for some other reason (user breakpoint, signal, etc.)
-                    bp_was_hit = True
-                    break
-                name, is_entry = hit
-                if is_entry:
-                    self.handle_entry(name)
-                else:
-                    self.handle_return(name)
+            with EventHooking.temporary("stop", self.remember_stop):
+                while True:
+                    self.stop_event = None
+                    gdb.execute("continue", to_string=True)
+                    Cache.reset_gef_caches() # hook_stop_handler that does this is unhooked
+                    if not is_alive():
+                        inferior_exited = True
+                        break
+                    hit = self.identify_stop()
+                    if hit is None:
+                        # stopped for some other reason (user breakpoint, signal, etc.)
+                        bp_was_hit = True
+                        break
+                    name, is_entry = hit
+                    if is_entry:
+                        self.handle_entry(name)
+                    else:
+                        self.handle_return(name)
         except KeyboardInterrupt:
             bp_was_hit = True
         except gdb.error as e:

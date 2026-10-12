@@ -2018,7 +2018,7 @@ Hooked syscalls:
   write-like: write, sendto, sendmsg, sendmmsg, pwrite64, pwritev, pwritev2, writev
 
 - Relies on `catch syscall`.
-- Auto-continues; stops on a user breakpoint or Ctrl+C.
+- Auto-continues; stops on a user breakpoint, signal, or Ctrl+C.
 - qemu-user is unsupported: its gdbstub does not update the return-value register
   at syscall-return, so read-like sizes are wrong. Use a native target.
 ```
