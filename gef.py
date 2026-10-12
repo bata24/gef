@@ -81013,14 +81013,12 @@ class KernelMM:
 
         names = []
         vm_files = set()
-        current, get_next_vma_area_struct = self.get_vm_area_struct(mm)
-        while current:
+        for current in self.iter_vmas(mm):
             vm_file = read_int_from_memory(current + self.offset_vm_file)
             if vm_file and vm_file not in vm_files:
                 vm_files.add(vm_file)
                 dentry = read_int_from_memory(vm_file + self.kpath.offset_file_dentry)
                 names.append(self.kpath.get_dentry_name(dentry))
-            current = get_next_vma_area_struct(current)
         return names
 
     def get_task_maps(self, task):
@@ -81030,15 +81028,13 @@ class KernelMM:
             return []
 
         vm_areas = []
-        current, get_next_vma_area_struct = self.get_vm_area_struct(mm)
-        while current:
+        for current in self.iter_vmas(mm):
             vm_start = read_int_from_memory(current + self.offset_vm_start)
             vm_end = read_int_from_memory(current + self.offset_vm_end)
             vm_flags = read_int_from_memory(current + self.offset_vm_flags)
             vm_file = read_int_from_memory(current + self.offset_vm_file)
             filepath = self.kpath.get_file_path(vm_file)
             vm_areas.append(self.VmArea(vm_start, vm_end, str(Permission(value=vm_flags)), filepath))
-            current = get_next_vma_area_struct(current)
         return vm_areas
 
     def find_file_vma(self):
@@ -81048,13 +81044,27 @@ class KernelMM:
             mm = read_int_from_memory(task + self.offset_task_mm, safe=True)
             if not mm:
                 continue
-            vma, get_next_vma_area_struct = self.get_vm_area_struct(mm)
-            while vma:
+            for vma in self.iter_vmas(mm):
                 vm_file = read_int_from_memory(vma + self.offset_vm_file, safe=True)
                 if vm_file and is_valid_addr(vm_file) and vm_file & (current_arch.ptrsize - 1) == 0:
                     return vma, vm_file
-                vma = get_next_vma_area_struct(vma)
         return None, None
+
+    def iter_vmas(self, mm, max_vmas=0x100000):
+        """Iterate VMAs, warning if a cycle or the traversal limit leaves the result incomplete."""
+        current, get_next_vma_area_struct = self.get_vm_area_struct(mm)
+        seen = set()
+        while current:
+            if current in seen:
+                warn("VMA traversal of mm {:#x} is incomplete: cycle at {:#x}".format(mm, current))
+                return
+            if len(seen) >= max_vmas:
+                warn("VMA traversal of mm {:#x} is incomplete: limit reached at {:#x}".format(mm, current))
+                return
+            seen.add(current)
+            yield current
+            current = get_next_vma_area_struct(current)
+        return
 
     @staticmethod
     @Cache.cache_this_session(per_inferior=True, until_new_objfile=True)
@@ -91409,8 +91419,11 @@ class KernelTask:
         self.offset_signal = self.get_offset_signal(self.offset_nsproxy)
         self.meta.append(("info", "offsetof(task_struct, signal): {:#x}".format(self.offset_signal)))
 
+        task_addrs = self.task_addrs_temp
+        if self.enabled["threads"]:
+            task_addrs = self.add_lwp_task(task_addrs)
         self.kseccomp = Kernel.seccomp()
-        ret = self.kseccomp.initialize(self.task_addrs_temp, self.offset_stack, self.offset_signal)
+        ret = self.kseccomp.initialize(task_addrs, self.offset_stack, self.offset_signal)
         self.meta.extend(self.kseccomp.meta)
         return ret
 
@@ -91717,27 +91730,27 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
     def dump_task_details(self, task_info, namespace_context):
         task = task_info["task"]
         comm_string = task_info["comm"]
-        proctype = task_info["proctype"]
+        is_user = task_info["mm"] != 0 and task_info["pid"] != 0
         additional = False
 
         if self.args.print_maps:
             additional = True
             self.dump_maps(task, comm_string)
-        if proctype == "U" and self.args.print_regs and task_info["kstack"] is not None and (
+        if is_user and self.args.print_regs and task_info["kstack"] is not None and (
             self.ktask.offset_ptregs is not None
         ):
             additional = True
             self.dump_regs(task_info["kstack"], comm_string)
-        if proctype == "U" and self.args.print_fd:
+        if is_user and self.args.print_fd:
             additional = True
             self.dump_files(task, comm_string)
-        if proctype == "U" and self.args.print_sighand:
+        if is_user and self.args.print_sighand:
             additional = True
             self.dump_sighands(task, comm_string)
-        if proctype == "U" and self.args.print_namespace:
+        if is_user and self.args.print_namespace:
             additional = True
             self.dump_namespace(task, comm_string, namespace_context)
-        if proctype == "U" and self.args.print_seccomp:
+        if is_user and self.args.print_seccomp:
             additional = self.dump_seccomp(task, comm_string) or additional
 
         if additional:
@@ -91779,8 +91792,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
             ids_str, seccomp, kstack_str, kcanary,
         ).rstrip())
         if pid:
-            task_info = {"task": task, "comm": comm_string, "proctype": proctype, "kstack": kstack}
-            self.dump_task_details(task_info, info["namespace_context"])
+            self.dump_task_details(info, info["namespace_context"])
         return
 
     def dump(self):
