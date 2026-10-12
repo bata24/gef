@@ -70216,7 +70216,7 @@ class KernelAddressHeuristicFinder:
                         ro_data = read_memory(klayout.ro_base, klayout.ro_size)
                         rw_data = read_memory(klayout.rw_base, min(klayout.rw_size, 0x100_0000))
                     except gdb.MemoryError:
-                        return None
+                        ro_data = rw_data = b""
                     pos = -1
                     while True:
                         pos = ro_data.find(b"Fixmap Area\x00", pos + 1)
@@ -70237,6 +70237,37 @@ class KernelAddressHeuristicFinder:
                             size = top - start
                             if 0 < size and size % get_pagesize() == 0:
                                 return size // get_pagesize()
+
+            # plan 4 (from the last permanent fixmap users)
+            setters = {addr for name in ("native_set_fixmap", "__native_set_fixmap", "__set_fixmap")
+                       for addr in Ksym.get_addrs(name, match="split")}
+            if not setters:
+                return None
+            for name in ("ghes_ioremap_pfn_nmi", "text_poke"):
+                if name == "text_poke" and Ksym.get_addrs("ghes_init", match="split"):
+                    return None
+                indices = set()
+                for addr in Ksym.get_addrs(name, match="split"):
+                    try:
+                        res = KernelAddressHeuristicFinderUtil.disassemble_until_next_symbol(addr, 300)
+                    except gdb.error:
+                        continue
+                    index = None
+                    for line in res.splitlines():
+                        load = re.search(r"\bmov\s+edi,\s*(0x\w+)\b", line)
+                        call = re.search(r"\b(?:call|jmp)\s+(0x\w+)\b", line)
+                        if load:
+                            index = int(load.group(1), 16)
+                        elif call:
+                            if index is not None and int(call.group(1), 16) in setters:
+                                indices.add(index)
+                            index = None
+                        elif re.search(r"\b(?:call|j\w+|ret)\b|\b\w+\s+(?:rdi|edi|di|dil)\b", line):
+                            index = None
+                if name == "ghes_ioremap_pfn_nmi" and len(indices) == 1:
+                    return indices.pop() + 1
+                if name == "text_poke" and len(indices) == 2 and max(indices) - min(indices) == 1:
+                    return max(indices) + 1 + bool(Ksym.get_addrs("vrtc_set_mmss", match="split"))
         return None
 
     @staticmethod
