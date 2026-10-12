@@ -166835,31 +166835,32 @@ class SnmallocHeapDumpCommand(GenericCommand, BufferingOutput):
         """Return the double linked list (excluding the head) and error message."""
         corrupted_msg_color = Config.get("theme.heap_corrupted_msg")
 
-        # travarse next
-        cur = head
         seen = []
         seen_addresses = set()
-        while True:
-            if not is_valid_addr(cur):
-                seen.append(cur)
-                return seen, Color.colorify("(corrupted)", corrupted_msg_color)
+        cur = read_int_from_memory(head, safe=True)
+        tail = read_int_from_memory(head + current_arch.ptrsize, safe=True)
+        if cur is None or tail is None:
+            return seen, Color.colorify("(corrupted @ {:#x})".format(head), corrupted_msg_color)
+
+        prev = head
+        while cur != head:
+            if not cur or not is_valid_addr(cur):
+                return seen, Color.colorify("(corrupted @ {:#x})".format(cur), corrupted_msg_color)
             if cur in seen_addresses:
-                break
+                return seen, Color.colorify("(loop detected @ {:#x})".format(cur), corrupted_msg_color)
+            next_cur = read_int_from_memory(cur, safe=True)
+            p = read_int_from_memory(cur + current_arch.ptrsize, safe=True)
+            if next_cur is None or p is None:
+                return seen, Color.colorify("(corrupted @ {:#x})".format(cur), corrupted_msg_color)
             seen.append(cur)
             seen_addresses.add(cur)
-            cur = read_int_from_memory(cur)
+            if p != prev:
+                return seen, Color.colorify("(corrupted: invalid prev @ {:#x})".format(cur), corrupted_msg_color)
+            prev = cur
+            cur = next_cur
 
-        if cur != seen[0]:
-            return seen, Color.colorify("(loop detected)", corrupted_msg_color)
-
-        # check prev
-        for i, x in enumerate(seen):
-            p = read_int_from_memory(x + current_arch.ptrsize)
-            if p != seen[i - 1]:
-                return seen, Color.colorify("(corrupted)", corrupted_msg_color)
-
-        if head in seen:
-            seen = [x for x in seen if x != head]
+        if tail != prev:
+            return seen, Color.colorify("(corrupted: invalid prev @ {:#x})".format(head), corrupted_msg_color)
         return seen, None
 
     def dump_small_fast(self, thread_alloc):
@@ -167045,7 +167046,13 @@ class SnmallocHeapDumpCommand(GenericCommand, BufferingOutput):
 
             # travarse SlabMetadataCache[i].available
             for slab_meta in slab_meta_list:
-                self.dump_slab_meta(slab_meta, cl=i)
+                try:
+                    self.dump_slab_meta(slab_meta, cl=i)
+                except gdb.MemoryError:
+                    self.err_add_out("Cannot read slab metadata @ {:#x}".format(slab_meta))
+                    break
+            if error:
+                self.err_add_out(error)
 
             printed_flag = True
 
@@ -167067,9 +167074,16 @@ class SnmallocHeapDumpCommand(GenericCommand, BufferingOutput):
 
         printed_flag = False
         for slab_meta in slab_meta_list:
-            printed_flag |= self.dump_slab_meta(slab_meta, cl=None)
+            try:
+                printed_flag |= self.dump_slab_meta(slab_meta, cl=None)
+            except gdb.MemoryError:
+                self.err_add_out("Cannot read slab metadata @ {:#x}".format(slab_meta))
+                printed_flag = True
+                break
+        if error:
+            self.err_add_out(error)
 
-        if printed_flag is False:
+        if printed_flag is False and error is None:
             self.out.append("Nothing to dump")
         return
 
