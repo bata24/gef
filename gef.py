@@ -164842,6 +164842,8 @@ class CageCommand(GenericCommand, BufferingOutput):
             return addr
 
         tls = current_arch.get_tls()
+        if tls is None:
+            return None
         for i in range(256 * 4): # heuristic; d8: 256, chromium: 1024
             x = read_int_from_memory(tls - current_arch.ptrsize * i, safe=True)
             if x is None:
@@ -164972,33 +164974,32 @@ class CageCommand(GenericCommand, BufferingOutput):
         gef>
         """
 
-        # In d8 it is aligned to 0x100_0000 bytes.
-        candidates_z_ffffff = []
-        # In chromium it is aligned to 0x1000 bytes.
-        candidates_z_fff = []
+        # Require reservation starts and a matching IsolateData table layout.
+        candidates = {}
+        for offset in range(0, 256 * current_arch.ptrsize, current_arch.ptrsize):
+            value = read_int_from_memory(isolate + offset, safe=True)
+            if not value or value & 0xfff:
+                continue
+            section = ProcessMap.lookup_address(value).section
+            if section and section.page_start == value and section.permission.value == Permission.READ:
+                if section.size <= 0x10000 and (not section.path or section.path.startswith("[anon:v8")):
+                    candidates[offset] = value
 
-        for i in range(256):
-            addr = isolate + current_arch.ptrsize * i
-            value = read_int_from_memory(addr, safe=True)
-            if value is None:
-                return []
-            if value & 0xfff:
-                continue
-            if not is_valid_addr(value):
-                continue
-            pm = ProcessMap.lookup_address(value)
-            try:
-                if pm.section.permission.value != Permission.READ:
+        layouts = []
+        # external, cpp heap, trusted, code, JS dispatch (V8 12, 13 and 14).
+        for offsets in ((0, None, 0x20, None, None), (0, 0x18, 0x30, None, None),
+                        (0, 0x38, 0x70, 0xb0, 0xc0)):
+            for offset in candidates:
+                fields = [candidates.get(offset + field) if field is not None else None for field in offsets]
+                if any(fields[i] is None for i, field in enumerate(offsets) if field is not None):
                     continue
-            except Exception:
-                continue
-            if value & 0xff_ffff == 0:
-                candidates_z_ffffff.append(value)
-            candidates_z_fff.append(value)
-
-        if len(candidates_z_ffffff) >= 6:
-            return candidates_z_ffffff
-        return candidates_z_fff
+                trusted_base = read_int_from_memory(isolate + offset + offsets[2] - 8, safe=True)
+                if not trusted_base or trusted_base & 0xffff_ffff or not is_valid_addr(trusted_base):
+                    continue
+                if len({value for value in fields if value}) != sum(field is not None for field in offsets):
+                    continue
+                layouts.append([read_int_from_memory(isolate), *fields, trusted_base])
+        return layouts[0] if len(layouts) == 1 else []
 
     @Cache.cache_until_next(per_inferior=True)
     def get_external_pointer_table_base(self, force_heuristic=False):
@@ -165160,68 +165161,93 @@ class CageCommand(GenericCommand, BufferingOutput):
         return 0x2000_0000 # hard-coded
 
     @Cache.cache_until_next(per_inferior=True)
-    def get_cage_rw_space_candidates(self):
-        maps = ProcessMap.get_process_maps()
-        if not maps:
+    def get_page_metadata(self, page):
+        """Read validated x64 page metadata; unknown layouts remain unclassified.
+
+        V8 12: chunk + 0x08 -> inline metadata; area start/end +0x20/+0x28,
+               heap +0x18, owner +0x48.
+        V8 13/14: chunk + 0x08 contains a metadata table index (sandbox),
+                  metadata area start/end +0x48/+0x38, heap +0x40, owner +0x50.
+        V8 13 uses a global pointer table; V8 14 stores 16-byte entries in
+        IsolateGroup. Locate the latter by checking its entries against pages,
+        rather than assuming a fixed IsolateGroup field offset.
+        """
+        raw = read_int_from_memory(page + 8, safe=True)
+        if raw is None:
             return None
-        candidates = []
-        for m in maps:
-            if m.permission.value != Permission.READ | Permission.WRITE:
-                continue
-            if not self.is_cage(m):
-                continue
-            candidates.append(m)
-        return candidates
+        if raw == page:
+            metadata = page
+            start_offset, end_offset, heap_offset, owner_offset = 0x20, 0x28, 0x18, 0x48
+        else:
+            start_offset, end_offset, heap_offset, owner_offset = 0x48, 0x38, 0x40, 0x50
+            metadata = raw
+            index = raw & 0xffff_ffff
+            if index < 0x7fff and raw >> 32 in (0, 0xbeadbeef):
+                table = self.get_sym_value("&'v8::internal::MemoryChunk::metadata_pointer_table_'")
+                if table:
+                    metadata = read_int_from_memory(table + index * 8, safe=True)
+                else:
+                    group = self.get_sym_addr("'v8::internal::IsolateGroup::default_isolate_group_'")
+                    if not group:
+                        return None
+                    table = getattr(self, "metadata_pointer_table", None)
+                    if table is None:
+                        section = ProcessMap.lookup_address(group + index * 16).section
+                        if not section or not section.is_readable():
+                            return None
+                        size = min(0x10000, section.page_end - group - index * 16)
+                        try:
+                            data = read_memory(group + index * 16, size)
+                        except gdb.error:
+                            return None
+                        matches = []
+                        for offset in range(0, len(data) - 7, 8):
+                            value = int.from_bytes(data[offset:offset + 8], "little")
+                            if not value or value & 7:
+                                continue
+                            region = ProcessMap.lookup_address(value).section
+                            if not region or not region.is_readable() or value + 0x58 > region.page_end:
+                                continue
+                            start = read_int_from_memory(value + start_offset, safe=True)
+                            end = read_int_from_memory(value + end_offset, safe=True)
+                            if start and end and page < start < end <= page + 0x40000:
+                                matches.append(group + offset)
+                        if len(matches) != 1:
+                            return None
+                        table = self.metadata_pointer_table = matches[0]
+                    metadata = read_int_from_memory(table + index * 16, safe=True)
+            if not metadata or metadata & 7:
+                return None
+        start = read_int_from_memory(metadata + start_offset, safe=True)
+        end = read_int_from_memory(metadata + end_offset, safe=True)
+        heap = read_int_from_memory(metadata + heap_offset, safe=True)
+        owner = read_int_from_memory(metadata + owner_offset, safe=True)
+        if not start or not end or not heap or not owner or owner & 7:
+            return None
+        if not page < start < end <= page + 0x40000:
+            return None
+        if read_int_from_memory(owner + 8, safe=True) != heap:
+            return None
+        return {"start": start, "end": end, "owner": owner}
 
     @Cache.cache_until_next(per_inferior=True)
-    def get_new_space_start(self, force_heuristic=False):
-        sym = "'v8::internal::g_current_isolate_'.isolate_data_.new_allocation_info_.start_"
-        addr = self.get_sym_addr(sym, force_heuristic)
-        if addr:
-            return addr
-
-        candidates = self.get_cage_rw_space_candidates()
-        if candidates and len(candidates) > 1:
-            return candidates[1].page_start
-        return None
-
-    @Cache.cache_until_next(per_inferior=True)
-    def get_new_space_limit(self, force_heuristic=False):
-        sym = "'v8::internal::g_current_isolate_'.isolate_data_.new_allocation_info_.limit_"
-        addr = self.get_sym_addr(sym, force_heuristic)
-        if addr:
-            return addr
-
-        candidates = self.get_cage_rw_space_candidates()
-        if candidates and len(candidates) > 1:
-            return candidates[1].page_end
-        return None
-
-    @Cache.cache_until_next(per_inferior=True)
-    def get_old_space_start(self, force_heuristic=False):
-        sym = "'v8::internal::g_current_isolate_'.isolate_data_.old_allocation_info_.start_"
-        addr = self.get_sym_addr(sym, force_heuristic)
-        if addr:
-            return addr
-
-        candidates = self.get_cage_rw_space_candidates()
-        if candidates and len(candidates) > 0:
-            return candidates[0].page_start
-        return None
-
-    @Cache.cache_until_next(per_inferior=True)
-    def get_old_space_limit(self, force_heuristic=False):
-        sym = "'v8::internal::g_current_isolate_'.isolate_data_.old_allocation_info_.limit_"
-        addr = self.get_sym_addr(sym, force_heuristic)
-        if addr:
-            return addr
-
-        candidates = self.get_cage_rw_space_candidates()
-        if candidates and len(candidates) > 0:
-            return candidates[0].page_end
+    def get_owner_space(self, owner):
+        # StickySpace can mix generations in one page; do not call it old_space.
+        vtable = read_int_from_memory(owner, safe=True)
+        if not vtable:
+            return None
+        symbol = gdb.execute("info symbol {:#x}".format(vtable), to_string=True).split(" + ")[0]
+        identity = read_int32_from_memory(owner + 0x10, safe=True)
+        if identity == 1 and symbol in ("vtable for v8::internal::SemiSpace",
+                                        "vtable for v8::internal::PagedSpaceForNewSpace"):
+            return "new_space"
+        if identity == 2 and symbol == "vtable for v8::internal::OldSpace":
+            return "old_space"
         return None
 
     def get_detection_details(self, name):
+        if name in ("new_space", "old_space"):
+            return "validated page metadata and owner space (256 KiB pages)"
         root = "'v8::internal::g_current_isolate_'"
         data = root + ".isolate_data_."
         fields = {
@@ -165232,8 +165258,6 @@ class CageCommand(GenericCommand, BufferingOutput):
             "shared_trusted_pointer_table": "shared_trusted_pointer_table_.base_",
             "code_pointer_table": "code_pointer_table_base_address_",
             "js_dispatch_table": "js_dispatch_table_base_",
-            "new_space": "new_allocation_info_.start_",
-            "old_space": "old_allocation_info_.start_",
             "cage": "cage_base_",
         }
         if name in fields:
@@ -165244,6 +165268,8 @@ class CageCommand(GenericCommand, BufferingOutput):
             return "heuristic (mapping permissions, alignment or address proximity)"
         base = self.get_sym_addr(sym, self.args.force_heuristic)
         source = "symbol" if base else "heuristic"
+        if not base and (name.endswith("pointer_table") or name == "js_dispatch_table"):
+            source += " (validated IsolateData layout)"
         if name.endswith("pointer_table") and name != "code_pointer_table":
             sym = data + name + "_.kReservationSize"
             size = self.get_sym_value(sym, self.args.force_heuristic)
@@ -165251,7 +165277,8 @@ class CageCommand(GenericCommand, BufferingOutput):
         if name in ("code_pointer_table", "js_dispatch_table"):
             return "base={:s}, size=fixed 64 MiB".format(source)
         if name == "cage":
-            return "base={:s}, window=fixed 1 TiB (sandbox reservation unverified)".format(source)
+            return ("base={:s}, window=fixed 1 TiB (sandbox reservation unverified); "
+                    "page generation unknown unless metadata and owner are verified").format(source)
         return "base={:s}, bounds may use mapping heuristics".format(source)
 
     def dump_entry(self, entry, path):
@@ -165368,20 +165395,6 @@ class CageCommand(GenericCommand, BufferingOutput):
             return area_start <= entry.page_start < area_end
         return False
 
-    def is_new_space(self, entry):
-        area_start = self.get_new_space_start(self.args.force_heuristic)
-        area_end = self.get_new_space_limit(self.args.force_heuristic)
-        if area_start is None or area_end is None:
-            return False
-        return entry.page_start <= area_start < area_end <= entry.page_end
-
-    def is_old_space(self, entry):
-        area_start = self.get_old_space_start(self.args.force_heuristic)
-        area_end = self.get_old_space_limit(self.args.force_heuristic)
-        if area_start is None or area_end is None:
-            return False
-        return entry.page_start <= area_start < area_end <= entry.page_end
-
     def is_ro_space(self, entry):
         if self.is_cage(entry):
             return entry.permission.value == Permission.READ
@@ -165425,8 +165438,13 @@ class CageCommand(GenericCommand, BufferingOutput):
 
         self.out = []
         self.detection_details = {}
-        trusted_space_high = None
-        # To find the trusted_space from the trusted_pointer_table, traverse it in reverse order
+        self.metadata_pointer_table = None
+        candidates = self.get_table_candidates()
+        sym = "'v8::internal::g_current_isolate_'.isolate_data_.trusted_cage_base_"
+        trusted_space_high = self.get_sym_addr(sym, args.force_heuristic)
+        if trusted_space_high is None and candidates:
+            trusted_space_high = candidates[6]
+        # Traverse in reverse order; the output is reversed below.
         for entry in maps[::-1]:
             # location filtering
             if args.location is not None:
@@ -165462,8 +165480,6 @@ class CageCommand(GenericCommand, BufferingOutput):
             elif self.is_cpp_heap_pointer_table(entry):
                 self.dump_entry(entry, "[v8:cpp_heap_pointer_table]")
             elif self.is_trusted_pointer_table(entry):
-                value = read_int_from_memory(entry.page_start)
-                trusted_space_high = value & 0x0000_ffff_0000_0000
                 self.dump_entry(entry, "[v8:trusted_pointer_table]")
             elif self.is_shared_trusted_pointer_table(entry):
                 self.dump_entry(entry, "[v8:shared_trusted_pointer_table]")
@@ -165473,16 +165489,26 @@ class CageCommand(GenericCommand, BufferingOutput):
                 self.dump_entry(entry, "[v8:js_dispatch_table]")
             elif self.is_code_range(entry):
                 self.dump_entry(entry, "[v8:code_range]")
-            elif self.is_new_space(entry):
-                self.dump_entry(entry, "[v8:new_space]")
-            elif self.is_old_space(entry):
-                self.dump_entry(entry, "[v8:old_space]")
             elif self.is_ro_space(entry):
                 self.dump_entry(entry, "[v8:ro_space]")
             elif self.is_array_buffer(entry):
                 self.dump_entry(entry, "[v8:ArrayBuffer]")
             elif self.is_cage(entry):
-                self.dump_entry(entry, "[v8:cage]")
+                base = self.get_cage_base(args.force_heuristic)
+                if entry.permission.value == Permission.READ | Permission.WRITE and entry.page_start < base + 0x100000000:
+                    # OS mappings can contain pages from several V8 spaces.
+                    for page in reversed(range(entry.page_start & ~0x3ffff, entry.page_end, 0x40000)):
+                        start = max(page, entry.page_start)
+                        end = min(entry.page_end, page + 0x40000)
+                        if args.location is not None and not start <= args.location < end:
+                            continue
+                        metadata = self.get_page_metadata(start) if start % 0x40000 == 0 else None
+                        space = self.get_owner_space(metadata["owner"]) if metadata else None
+                        section = Section(page_start=start, page_end=end, permission=entry.permission,
+                                          offset=entry.offset + start - entry.page_start, path=entry.path, inode=entry.inode)
+                        self.dump_entry(section, "[v8:{:s}]".format(space or "cage"))
+                else:
+                    self.dump_entry(entry, "[v8:cage]")
             elif self.is_trusted_space(entry, trusted_space_high):
                 self.dump_entry(entry, "[v8:trusted_space]")
             else:
@@ -165896,6 +165922,12 @@ class V8DumpSpaceCommand(GenericCommand, BufferingOutput):
 
         # instance_size == 0
         instance_name = self.get_instance_name(map_addr)
+        if instance_name in ("FEEDBACK_METADATA_TYPE", "FEEDBACK_VECTOR_TYPE"):
+            cache = V8Command.get_cache()
+            if "version_major" not in cache:
+                address = CageCommand().get_sym_value("&'v8::internal::Version::major_'")
+                cache["version_major"] = read_int32_from_memory(address, safe=True) if address else None
+            major = cache["version_major"]
 
         # Object sizes are manually specified by referencing src/objects.h etc.
         # TODO: inline property <-> external property
@@ -165951,12 +165983,19 @@ class V8DumpSpaceCommand(GenericCommand, BufferingOutput):
             length1 = read_int32_from_memory(addr + 4)
             if length1 != 0:
                 length1 = (length1 - 1) // 6 + 1 # 5-bit encode
-            length2 = read_int32_from_memory(addr + 8)
+            if "feedback_metadata_has_counts" not in cache:
+                sym = "&'v8::internal::FeedbackMetadata::GetCreateClosureParameterCount(int) const'"
+                cache["feedback_metadata_has_counts"] = bool(CageCommand().get_sym_value(sym)) or major != 12
+            length2 = read_int32_from_memory(addr + 8) if cache["feedback_metadata_has_counts"] else 0
             length = align(length1 * 4 + length2 * 2, 4)
             return 12, length
         elif instance_name == "FEEDBACK_VECTOR_TYPE":
             length = read_int32_from_memory(addr + 4)
-            return 0x1c, length * 4
+            if "feedback_vector_header" not in cache:
+                header = CageCommand().get_sym_value("'v8::internal::FeedbackVector::kHeaderSize'")
+                # V8 12/13 retain maybe_optimized_code; V8 14 leaptiering removes it.
+                cache["feedback_vector_header"] = header or (0x20 if major in (12, 13) else 0x1c)
+            return cache["feedback_vector_header"], length * 4
         elif instance_name == "FIXED_ARRAY_TYPE":
             length = read_int32_from_memory(addr + 4)
             length >>= 1
@@ -166107,7 +166146,9 @@ class V8DumpSpaceCommand(GenericCommand, BufferingOutput):
         elif instance_name == "SIMPLE_NAME_DICTIONARY_TYPE":
             pass # TODO
         elif instance_name == "SIMPLE_NUMBER_DICTIONARY_TYPE":
-            pass # TODO
+            length = read_int32_from_memory(addr + 4)
+            length >>= 1
+            return 8, length * 4
         elif instance_name == "SLOPPY_ARGUMENTS_ELEMENTS_TYPE":
             pass # TODO
         elif instance_name == "SMALL_ORDERED_HASH_MAP_TYPE":
@@ -166166,6 +166207,12 @@ class V8DumpSpaceCommand(GenericCommand, BufferingOutput):
 
     def walk_space(self, start, limit, cage_base):
         addr = V8Command.get_object_start(start)
+        if start % 0x40000 == 0:
+            cage = getattr(self, "cage", None) or CageCommand()
+            metadata = cage.get_page_metadata(start)
+            if metadata:
+                addr = metadata["start"]
+                limit = min(limit, metadata["end"])
 
         pbar = ProgressBar(total=limit - start)
 
@@ -166189,6 +166236,9 @@ class V8DumpSpaceCommand(GenericCommand, BufferingOutput):
 
             # check if it is a map
             if not self.is_map(map_raw, cage_base):
+                if count == 0 and map_raw == 0 and not any(read_memory(addr, limit - addr)):
+                    self.info_add_out("Empty allocation area")
+                    return
                 if addr % 0x40000 == 0:
                     object_start = V8Command.get_object_start(addr)
                     if addr < object_start < limit:
@@ -166244,6 +166294,7 @@ class V8DumpSpaceCommand(GenericCommand, BufferingOutput):
         return
 
     def walk_spaces(self, target_regions, cage_base):
+        self.cage = CageCommand()
         for start, limit, perm, path in ProgressBar(target_regions):
             self.out.append(titlify("{:#x}-{:#x} {:s} {:s}".format(start, limit, perm, path)))
             self.walk_space(start, limit, cage_base)
