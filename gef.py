@@ -72521,7 +72521,7 @@ class KernelAddressHeuristicFinder:
                     g = KernelAddressHeuristicFinderUtil.aarch64_adrp_ldr(res)
                 elif is_arm32():
                     g = itertools.chain(
-                        KernelAddressHeuristicFinderUtil.arm32_movw_movt(res),
+                        KernelAddressHeuristicFinderUtil.arm32_movw_movt_ldr(res),
                         KernelAddressHeuristicFinderUtil.arm32_ldr_pc_relative_ldr(res),
                     )
                 elif is_riscv64() or is_riscv32():
@@ -88211,6 +88211,7 @@ class KernelAddressHeuristicSelftestCommand(GenericCommand, BufferingOutput):
             "get_per_cpu_offset": "__per_cpu_offset",
             "get_PAGE_OFFSET_base": "page_offset_base",
             "get_current_clocksource": "curr_clocksource",
+            "get_log_buffer": "log_buf",
             "get_vmap_nodes_busy_head": "vmap_nodes",
         }
         return exceptions.get(finder_name, finder_name[len("get_"):])
@@ -88279,15 +88280,22 @@ class KernelAddressHeuristicSelftestCommand(GenericCommand, BufferingOutput):
                     continue
 
                 finder_args = ()
-                if name == "get_current_clocksource":
+                if name in ("get_current_clocksource", "get_log_buffer"):
                     try:
-                        current_clocksource = read_int_from_memory(symbol_address)
+                        if name == "get_current_clocksource":
+                            current_clocksource = read_int_from_memory(symbol_address)
+                            finder_args = ((current_clocksource,),)
+                        else:
+                            length_address = Ksym.get_addr("log_buf_len")
+                            if length_address is None:
+                                direct_results[name] = (None, None, False, ())
+                                continue
+                            finder_args = (read_int32_from_memory(length_address),)
                     except (gdb.MemoryError, MemoryError) as exception:
                         message = "{:s}: {:s}".format(type(exception).__name__, str(exception))
                         direct_results[name] = (None, message, True, ())
                         errors.append("{:s} direct: {:s}".format(name, message))
                         continue
-                    finder_args = ((current_clocksource,),)
 
                 value, error = self.invoke_finder(finder, finder_args)
                 direct_results[name] = (value, error, True, finder_args)
