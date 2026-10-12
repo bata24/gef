@@ -70309,8 +70309,9 @@ class KernelAddressHeuristicFinder:
             if not setters:
                 return None
             for name in ("ghes_ioremap_pfn_nmi", "text_poke"):
-                if name == "text_poke" and Ksym.get_addrs("ghes_init", match="split"):
-                    return None
+                if name == "text_poke":
+                    if not kversion or kversion < "4.14.9" or Ksym.get_addrs("ghes_init", match="split"):
+                        return None
                 indices = set()
                 for addr in Ksym.get_addrs(name, match="split"):
                     try:
@@ -149948,13 +149949,21 @@ class KernelSlub:
         };
         """
         # offsetof(slab_sheaf, barn_list)
-        self.slab_sheaf_offset_barn_list = 0
+        self.slab_sheaf_offset_barn_list = GefUtil.offsetof("slab_sheaf", "barn_list")
+        if self.slab_sheaf_offset_barn_list is None:
+            self.slab_sheaf_offset_barn_list = 0
         # offsetof(slab_sheaf, kmem_cache)
-        self.slab_sheaf_offset_kmem_cache = self.slab_sheaf_offset_barn_list + current_arch.ptrsize * 2
+        self.slab_sheaf_offset_kmem_cache = GefUtil.offsetof("slab_sheaf", "cache")
+        if self.slab_sheaf_offset_kmem_cache is None:
+            self.slab_sheaf_offset_kmem_cache = self.slab_sheaf_offset_barn_list + current_arch.ptrsize * 2
         # offsetof(slab_sheaf, size)
-        self.slab_sheaf_offset_size = self.slab_sheaf_offset_kmem_cache + current_arch.ptrsize
+        self.slab_sheaf_offset_size = GefUtil.offsetof("slab_sheaf", "size")
+        if self.slab_sheaf_offset_size is None:
+            self.slab_sheaf_offset_size = self.slab_sheaf_offset_kmem_cache + current_arch.ptrsize
         # offsetof(slab_sheaf, objects)
-        self.slab_sheaf_offset_objects = self.slab_sheaf_offset_size + current_arch.ptrsize
+        self.slab_sheaf_offset_objects = GefUtil.offsetof("slab_sheaf", "objects")
+        if self.slab_sheaf_offset_objects is None:
+            self.slab_sheaf_offset_objects = align_to_ptrsize(self.slab_sheaf_offset_size + 8)
 
         # offsetof(node_barn, sheaves_empty)
         self.node_barn_offset_sheaves_empty = self.node_barn_offset_sheaves_full + current_arch.ptrsize * 2
@@ -152582,14 +152591,14 @@ class KernelSlab:
         )))
 
         # offsetof(page, s_mem) / offsetof(slab, s_mem)
-        if kversion < "4.18":
-            self.page_offset_s_mem = current_arch.ptrsize
-        elif kversion < "5.17":
-            self.page_offset_s_mem = page_offset_union + current_arch.ptrsize * 4
-        elif kversion < "6.2":
-            self.page_offset_s_mem = 8 + current_arch.ptrsize * 5
-        else:
-            self.page_offset_s_mem = 8 + current_arch.ptrsize * 5
+        self.page_offset_s_mem = GefUtil.offsetof(Kernel.slab_page_str(), "s_mem")
+        if self.page_offset_s_mem is None:
+            if kversion < "4.18":
+                self.page_offset_s_mem = current_arch.ptrsize
+            elif kversion < "5.17":
+                self.page_offset_s_mem = page_offset_union + current_arch.ptrsize * 4
+            else:
+                self.page_offset_s_mem = current_arch.ptrsize * 5
         self.meta.append(("info", "offsetof({:s}, s_mem): {:#x}".format(Kernel.slab_page_str(), self.page_offset_s_mem)))
 
         # offsetof(page, active) / offsetof(slab, active)
@@ -154496,20 +154505,15 @@ class KobjCommand(GenericCommand):
     def get_merged_aliases(self, name):
         """Return the caches merged into the same physical cache as `name` (excluding itself),
         [] when verified not merged, or None when merge status could not be determined."""
-        out = self.run("kmem-cache-alias --merged-only --no-pager {:s}".format(name))
-        if not out:
+        groups = __gef_command_instances__["kmem-cache-alias"].get_alias_groups()
+        if groups is None:
             return None
-        names = []
-        for line in out.splitlines():
-            if not any(c in line for c in "└├"):
-                continue
-            for c in "└├─│":
-                line = line.replace(c, " ")
-            toks = line.split()
-            if not toks or toks[0].startswith(":"):
-                continue
-            names.append(toks[0])
-        return sorted({n for n in names if n != name})
+        matches = [entry for entry in groups.values() if entry["slab_cache_name"] == name]
+        if not matches or any(entry["unresolved"] for entry in matches):
+            return None
+        if len({entry["kmem_cache"] for entry in matches}) != 1:
+            return None
+        return sorted({entry["name"] for entry in matches if entry["alias"] != "-" and entry["name"] != name})
 
     def report_page_alloc(self, addr):
         pi = self.run("pageinfo {:#x}".format(addr))
@@ -154842,6 +154846,16 @@ class KmemCacheAliasCommand(GenericCommand, BufferingOutput):
             return None
 
         return True
+
+    def get_alias_groups(self):
+        self.args = self.parser.parse_args(["--quiet"])
+        kversion = Kernel.version()
+        if kversion is None or kversion < "3.14":
+            return None
+        self.allocator = Kernel.get_slab_type()
+        if self.allocator != "SLUB" or not self.initialize():
+            return None
+        return self.parse_kmem_cache_alias()
 
     def parse_kmem_cache_alias(self):
         # get children_root
@@ -179626,7 +179640,7 @@ class PageTableArm64(PageTable):
             return read_memory(addr, size)
 
         # translate via EL2 mappings
-        if self.EL2_VM and self.args.target_el == 1 and self.el2_mappings:
+        if self.EL2_VM and self.args.target_el == 1 and self.el2_mappings is not None:
 
             def search_pa(addr):
                 for entry_info in self.el2_mappings:
@@ -179652,6 +179666,36 @@ class PageTableArm64(PageTable):
 
         # direct physmem read
         return self.read_memory(addr, size)
+
+    def translate_stage2_mappings(self, mappings):
+        import bisect
+
+        stage2 = sorted(self.el2_mappings or [])
+        starts = [entry.vaddr for entry in stage2]
+        translated = []
+        for entry in mappings:
+            end = entry.paddr + entry.total_size
+            index = max(0, bisect.bisect_right(starts, entry.paddr) - 1)
+            while index < len(stage2) and stage2[index].vaddr < end:
+                next_entry = stage2[index]
+                index += 1
+                start = max(entry.paddr, next_entry.vaddr)
+                size = min(end, next_entry.vaddr + next_entry.total_size) - start
+                if size <= 0:
+                    continue
+                flags = entry.flags.split()
+                for el in ("EL0", "EL1"):
+                    prefix = el + "/"
+                    permissions = next((flag[len(prefix):] for flag in next_entry.flags.split()
+                                        if flag.startswith(prefix)), "---")
+                    flags = [prefix + "".join(a if a == b else "-" for a, b in zip(flag[len(prefix):], permissions))
+                             if flag.startswith(prefix) else flag for flag in flags]
+                page_size = min(entry.page_size, next_entry.page_size)
+                translated.append(PageTable.Entry(
+                    entry.vaddr + start - entry.paddr, next_entry.paddr + start - next_entry.vaddr,
+                    page_size, size // page_size, " ".join(flags),
+                ))
+        return translated
 
     def format_flags_stage2(self, flag_info):
         flag_info_key = tuple(flag_info)
@@ -180821,6 +180865,9 @@ class PageTableArm64(PageTable):
             if not self.silent:
                 self.quiet_info_add_out("LEVEL 3 is skipped")
 
+        if not is_stage2 and self.EL2_VM and self.args.target_el == 1:
+            self.mappings = self.translate_stage2_mappings(self.mappings)
+
         # finalize
         if not self.silent:
             self.quiet_add_out(titlify("Total"))
@@ -181398,10 +181445,12 @@ class PageTableArm64(PageTable):
                 # el2_mapping is needed because read_mem() uses PA, but not IPA
                 self.silent = True
                 self.pagewalk_VTTBR_EL2()
-                if self.mappings:
-                    self.el2_mappings = self.mappings.copy()
-                    self.mappings = None
                 self.silent = False
+                if not self.mappings:
+                    self.err_add_out("Could not resolve the stage2 mappings")
+                    return
+                self.el2_mappings = self.mappings.copy()
+                self.mappings = None
             if self.args.only_TTBR0_EL1:
                 self.pagewalk_TTBR0_EL1()
             elif self.args.only_TTBR1_EL1:
@@ -192325,6 +192374,7 @@ class KernelRefsCommand(GenericCommand, BufferingOutput):
         "- Only pointer-size-aligned raw pointers are found; encoded, tagged, XORed, mangled, or unaligned pointers are missed.",
         "- `-c` scans the slab pages reachable from the per-cpu and per-node lists and the sheaves.",
         "  SLUB links no full slab without CONFIG_SLUB_DEBUG, and SLOB has no slab page owned by a cache.",
+        "- Overlapping virtual ranges are scanned once. Physical aliases are reported at each virtual address.",
         "- The slab cache of a hit is resolved on x86 and ARM only.",
         "- Use `kobj ADDRESS` to identify the referenced object.",
     ]
@@ -192425,17 +192475,14 @@ class KernelRefsCommand(GenericCommand, BufferingOutput):
         return [(obj["object_base"], obj["chunk_size"], "object:{:s}".format(obj["name"]))]
 
     def collect_physmap_ranges(self):
-        """Return every writable kernel mapping outside the kernel image."""
+        """Return every writable kernel mapping."""
         klayout = Kernel.layout()
         if not klayout.maps:
             self.err_add_out("Could not resolve the kernel memory map")
             return []
-        image = KernelAddressHeuristicFinderUtil.get_kernel_image_range()
         ranges = []
         for entry in klayout.maps:
             if not entry.is_writable():
-                continue
-            if image and image[0] <= entry.vstart < image[1]:
                 continue
             ranges.append((entry.vstart, entry.vsize, "mapped"))
         return ranges
@@ -192476,7 +192523,26 @@ class KernelRefsCommand(GenericCommand, BufferingOutput):
         if args.physmap:
             ranges += self.collect_physmap_ranges()
 
-        return ranges
+        unique_ranges = []
+        for start, size, label in ranges:
+            fragments = [(start, start + size)]
+            for previous_range in unique_ranges:
+                previous = previous_range[0]
+                previous_end = previous + previous_range[1]
+                remaining = []
+                for first, last in fragments:
+                    if last <= previous or previous_end <= first:
+                        remaining.append((first, last))
+                    else:
+                        if first < previous:
+                            remaining.append((first, previous))
+                        if previous_end < last:
+                            remaining.append((previous_end, last))
+                fragments = remaining
+                if not fragments:
+                    break
+            unique_ranges.extend((first, last - first, label) for first, last in fragments)
+        return unique_ranges
 
     def scan_block(self, addr, data, label):
         """Yield the pointers inside `data` that hit the target."""

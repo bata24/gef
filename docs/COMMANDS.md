@@ -10703,6 +10703,7 @@ krefs -t 0x100 0xffff888012345600               # also catch the interior pointe
 - Only pointer-size-aligned raw pointers are found; encoded, tagged, XORed, mangled, or unaligned pointers are missed.
 - `-c` scans the slab pages reachable from the per-cpu and per-node lists and the sheaves.
   SLUB links no full slab without CONFIG_SLUB_DEBUG, and SLOB has no slab page owned by a cache.
+- Overlapping virtual ranges are scanned once. Physical aliases are reported at each virtual address.
 - The slab cache of a hit is resolved on x86 and ARM only.
 - Use `kobj ADDRESS` to identify the referenced object.
 ```
