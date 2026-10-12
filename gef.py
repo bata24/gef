@@ -161493,21 +161493,42 @@ class Ksym:
         if ret is None:
             return None
 
-        kallsyms, _kallsyms_map = ret
+        kallsyms, kallsyms_map = ret
         if Ksym.address_index is None:
-            # kallsyms is normally address ordered, but sorting also covers absolute
-            # per-CPU entries on configurations where the encoded table is not.
-            Ksym.address_index = sorted((symbol[0], i) for i, symbol in enumerate(kallsyms))
+            ranges = []
+            starts = [addr for name in ("_text", "_stext") for addr in kallsyms_map.get(name, [])]
+            if starts:
+                start = min(starts)
+                end = min((addr for addr in kallsyms_map.get("_end", []) if addr > start), default=None)
+                if end is None:
+                    end = max((addr for addr, name, typ in kallsyms
+                               if addr >= start and (typ or "").lower() != "a"), default=start) + 1
+                ranges.append((start, end))
+
+            start = next(iter(kallsyms_map.get("__per_cpu_start", [])), None)
+            end = next(iter(kallsyms_map.get("__per_cpu_end", [])), None)
+            percpu = start is not None and end is not None and start < end
+            absolute_percpu = percpu and all((typ or "").lower() == "a" for addr, name, typ in kallsyms
+                                             if start <= addr < end)
+            if percpu:
+                ranges.insert(0, (start, end))
+
+            entries = []
+            for i, (symbol_addr, name, typ) in enumerate(kallsyms):
+                if ((typ or "").lower() == "a" and name != "_end"
+                        and not (absolute_percpu and start <= symbol_addr < end)):
+                    continue
+                limit = next((high for low, high in ranges if low <= symbol_addr < high), symbol_addr + 1)
+                entries.append((symbol_addr, i, limit))
+            Ksym.address_index = sorted(entries)
 
         import bisect
         i = bisect.bisect_right(Ksym.address_index, (addr, len(kallsyms))) - 1
         if i < 0:
             return None
 
-        symbol_addr, symbol_index = Ksym.address_index[i]
-        # The last core-kernel symbol has no following range. Reject a later address
-        # so module and direct-map pointers are not mislabeled as that final symbol.
-        if i + 1 == len(Ksym.address_index) and addr != symbol_addr:
+        symbol_addr, symbol_index, limit = Ksym.address_index[i]
+        if addr >= limit:
             return None
         return kallsyms[symbol_index][1], addr - symbol_addr
 
