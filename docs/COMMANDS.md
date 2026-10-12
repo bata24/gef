@@ -7629,7 +7629,7 @@ SSMalloc heap free-list viewer (x64 only).
 ### Syntax
 
 ```text
-usage: ssmalloc-heap-dump [-h] [-hh] [--local_heap LOCAL_HEAP] [--global_pool GLOBAL_POOL] [-a] [-g] [-n] [-v]
+usage: ssmalloc-heap-dump [-h] [-hh] [--local_heap LOCAL_HEAP] [--global_pool GLOBAL_POOL] [-a] [-g] [--global-only] [-n] [-v]
 
 options:
   -h, --help            show this help message and exit
@@ -7640,6 +7640,7 @@ options:
                         use specific address for global_pool.
   -a, --all             dump all local_heap.
   -g, --global          dump global_pool queues.
+  --global-only         dump only global_pool queues without inspecting TLS.
   -n, --no-pager        do not use the pager.
   -v, --verbose         display also empty freelists.
 ```

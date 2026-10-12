@@ -167837,6 +167837,7 @@ class SsmallocHeapDumpCommand(GenericCommand, BufferingOutput):
     parser.add_argument("-a", "--all", action="store_true", help="dump all local_heap.")
     parser.add_argument("-g", "--global", dest="global_pool_queue", action="store_true",
                         help="dump global_pool queues.")
+    parser.add_argument("--global-only", action="store_true", help="dump only global_pool queues without inspecting TLS.")
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
     parser.add_argument("-v", "--verbose", action="store_true", help="display also empty freelists.")
     _syntax_ = parser.format_help()
@@ -167944,7 +167945,99 @@ class SsmallocHeapDumpCommand(GenericCommand, BufferingOutput):
         2: "FULL",
     }
 
-    @Cache.cache_this_session(cache_None=False)
+    def initialize(self, global_only=False):
+        for name, value in vars(type(self)).items():
+            if name.startswith(("offset_", "sizeof_")) or name in ("DEFAULT_BLOCK_CLASS", "MAX_CORE_ID", "BLOCK_BUF_CNT"):
+                setattr(self, name, value)
+
+        structures = {"gpool": "gpool_s"} if global_only else {
+            "dchunk": "dchunk_s", "lheap": "lheap_s", "obj_buf": "obj_buf_s",
+        }
+        sizes = {"sizeof_queue": "Queue"} if global_only else {
+            "sizeof_linked_list": "LinkedList", "sizeof_queue": "FastQueue",
+            "sizeof_obj_buf": "obj_buf_t", "sizeof_dchunk": "dchunk_t",
+        }
+        arrays = [("MAX_CORE_ID", "gpool_s", "free_dc_head", "sizeof_queue" if global_only else None)]
+        if global_only:
+            arrays += [
+                ("MAX_CORE_ID", "gpool_s", "free_lh_head", "sizeof_queue"),
+                ("MAX_CORE_ID", "gpool_s", "released_dc_head", "sizeof_queue"),
+            ]
+        else:
+            arrays += [
+                ("DEFAULT_BLOCK_CLASS", "lheap_s", "foreground", None),
+                ("DEFAULT_BLOCK_CLASS", "lheap_s", "background", "sizeof_linked_list"),
+                ("DEFAULT_BLOCK_CLASS", "lheap_s", "need_gc", "sizeof_queue"),
+                ("BLOCK_BUF_CNT", "lheap_s", "block_bufs", "sizeof_obj_buf"),
+            ]
+
+        sources = []
+        for prefix, type_name in structures.items():
+            if GefUtil.cached_lookup_type("struct " + type_name) is None:
+                sources.append(prefix + "=default")
+                continue
+            sources.append(prefix + "=DWARF")
+            for name in vars(type(self)):
+                if not name.startswith("offset_" + prefix + "_"):
+                    continue
+                member = name[len("offset_" + prefix + "_"):]
+                if prefix == "dchunk" and member in ("next", "prev"):
+                    member = "active_link." + member
+                offset = GefUtil.offsetof(type_name, member)
+                if offset is None:
+                    self.err_add_out("Unsupported SSMalloc layout: {:s}.{:s}".format(type_name, member))
+                    return False
+                setattr(self, name, offset)
+
+        for name, type_name in sizes.items():
+            size = GefUtil.type_size(type_name)
+            if size:
+                setattr(self, name, size)
+            sources.append("{:s}={:s}".format(type_name, "DWARF" if size else "default"))
+        resolved = {}
+        for name, type_name, member, stride in arrays:
+            field = GefUtil.lookup_field("struct " + type_name, member)
+            if field is None:
+                continue
+            array_type = field.type.strip_typedefs()
+            if array_type.code != gdb.TYPE_CODE_ARRAY:
+                self.err_add_out("Unsupported SSMalloc array: {:s}.{:s}".format(type_name, member))
+                return False
+            first, last = array_type.range()
+            if first != 0 or last < first:
+                self.err_add_out("Unsupported SSMalloc array bounds: {:s}.{:s}".format(type_name, member))
+                return False
+            if name in resolved and resolved[name] != last + 1:
+                self.err_add_out("Inconsistent SSMalloc array lengths: {:s}.{:s}".format(type_name, member))
+                return False
+            resolved[name] = last + 1
+            if stride:
+                resolved[stride] = array_type.target().sizeof
+        for name, value in resolved.items():
+            setattr(self, name, value)
+        for name in dict.fromkeys(array[0] for array in arrays):
+            sources.append("{:s}={:s}".format(name, "DWARF" if name in resolved else "default"))
+
+        self.CHUNK_SIZE = self.CHUNK_DATA_SIZE + self.sizeof_dchunk
+        self.MAX_FREE_CHUNK = (4 * 0x100000) // self.CHUNK_SIZE
+        self.out.append(titlify("SSMalloc configuration ({:s})".format("global" if global_only else "local")))
+        self.out.append("layout: " + ", ".join(sources))
+        self.out.append("MAX_CORE_ID: {:d}, queue size: {:#x}".format(self.MAX_CORE_ID, self.sizeof_queue))
+        if not global_only:
+            self.out.append("DEFAULT_BLOCK_CLASS: {:d}, BLOCK_BUF_CNT: {:d}, dchunk size: {:#x}, chunk size: {:#x}".format(
+                self.DEFAULT_BLOCK_CLASS, self.BLOCK_BUF_CNT, self.sizeof_dchunk, self.CHUNK_SIZE,
+            ))
+            self.out.append("Assumes PAGE_SIZE=0x1000, CHUNK_DATA_SIZE=0x10000, MAX_FREE_SIZE=0x400000, DUMMY_CLASS=101.")
+        self.out.append("Assumes SSMalloc x86_64 queues with ABA_ADDR_BIT=48.")
+        if any(source.endswith("=default") for source in sources):
+            self.out.append("Default layout requires the original build: 8 cores, 100 classes, 16 buffers, glibc mutex=0x28.")
+        if self.args.verbose:
+            for name in vars(type(self)):
+                if any(name.startswith("offset_" + prefix + "_") for prefix in structures):
+                    self.out.append("{:s}: {:#x}".format(name, getattr(self, name)))
+        return True
+
+    @Cache.cache_this_session(per_inferior=True, until_new_objfile=True, cache_None=False)
     def build_class_to_size_list(self):
         try:
             cls2size = AddressUtil.parse_address("&cls2size")
@@ -168483,23 +168576,28 @@ class SsmallocHeapDumpCommand(GenericCommand, BufferingOutput):
     def do_invoke(self, args):
         self.out = []
 
-        local_heap_list = self.get_local_heap_list(args.all)
-        if not local_heap_list:
-            self.quiet_err("Could not find local_heap")
-            return
+        if not args.global_only and self.initialize():
+            try:
+                local_heap_list = self.get_local_heap_list(args.all)
+                if not local_heap_list:
+                    self.err_add_out("Could not find local_heap")
+                for thread_num, local_heap in local_heap_list or []:
+                    if not self.is_lheap_candidate(local_heap):
+                        self.err_add_out("Invalid local_heap: {:#x}".format(local_heap))
+                        continue
+                    self.dump_lheap(local_heap, thread_num)
+            except gdb.error as exception:
+                self.err_add_out("Could not read local_heap: {!s}".format(exception))
 
-        for thread_num, local_heap in local_heap_list:
-            if not self.is_lheap_candidate(local_heap):
-                self.quiet_err("Invalid local_heap: {:#x}".format(local_heap))
-                continue
-            self.dump_lheap(local_heap, thread_num)
-
-        if args.global_pool_queue:
+        if (args.global_pool_queue or args.global_only) and self.initialize(global_only=True):
             global_pool = self.get_global_pool()
             if global_pool is None:
-                self.quiet_err("Could not find global_pool")
+                self.err_add_out("Could not find global_pool")
             else:
-                self.dump_global_pool(global_pool)
+                try:
+                    self.dump_global_pool(global_pool)
+                except gdb.error as exception:
+                    self.err_add_out("Could not read global_pool: {!s}".format(exception))
 
         self.print_output()
         return
