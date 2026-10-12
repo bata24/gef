@@ -6945,8 +6945,8 @@ partition-alloc-dump ab            # same above
 
 ```text
 Version numbers do not identify the build layout; the fixed layout is checked against the heap.
-Requires 4 KiB system pages, 2 MiB super pages, 32-byte metadata entries and inline metadata.
-Settings must occupy 0x40 or 0x80 bytes; separated metadata is not supported.
+Requires 4 KiB system pages, 2 MiB super pages and 32-byte metadata entries.
+Settings must occupy 0x40, 0x80 or 0xc0 bytes; metadata placement is checked against the extents.
 
 Simplified partition alloc structure:
 
@@ -6991,7 +6991,7 @@ Simplified partition alloc structure:
 
 `extent`, `slot_span` and `slot` are in super_page.
 
-     [supported inline layout]    [unsupported: PA_CONFIG(MOVE_METADATA_OUT_OF_GIGACAGE)=y]
+     [inline layout]              [PA_CONFIG(MOVE_METADATA_OUT_OF_GIGACAGE)=y]
      +-super_page-(2MB)-----+      +-super_page(for meta)-+ +-super_page(for chunk)+
 4KB  | Guard Page           |      | Guard Page           | | Guard Page           |
      +----------------------+      +----------------------+ +----------------------+

@@ -166785,8 +166785,8 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
 
     _note_ = [
         "Version numbers do not identify the build layout; the fixed layout is checked against the heap.",
-        "Requires 4 KiB system pages, 2 MiB super pages, 32-byte metadata entries and inline metadata.",
-        "Settings must occupy 0x40 or 0x80 bytes; separated metadata is not supported.",
+        "Requires 4 KiB system pages, 2 MiB super pages and 32-byte metadata entries.",
+        "Settings must occupy 0x40, 0x80 or 0xc0 bytes; metadata placement is checked against the extents.",
         "",
         "Simplified partition alloc structure:",
         "",
@@ -166831,7 +166831,7 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
         "",
         "`extent`, `slot_span` and `slot` are in super_page.",
         "",
-        "     [supported inline layout]    [unsupported: PA_CONFIG(MOVE_METADATA_OUT_OF_GIGACAGE)=y]",
+        "     [inline layout]              [PA_CONFIG(MOVE_METADATA_OUT_OF_GIGACAGE)=y]",
         "     +-super_page-(2MB)-----+      +-super_page(for meta)-+ +-super_page(for chunk)+",
         "4KB  | Guard Page           |      | Guard Page           | | Guard Page           |",
         "     +----------------------+      +----------------------+ +----------------------+",
@@ -166880,11 +166880,13 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
 
     def initialize(self):
         auxv = Auxv.get_auxiliary_values()
-        page_size = auxv.get("AT_PAGESZ") if auxv else None
+        page_size = None
+        if auxv:
+            page_size = auxv.get("AT_PAGESZ")
         self.out.append("PartitionAlloc version: unknown (build layout is checked, not inferred from a version).")
         self.out.append("Layout source: memory heuristic; fixed root/bucket/slot-span fields.")
-        self.out.append("Supported layout: inline metadata, system page=0x1000, super page=0x200000, metadata entry=0x20.")
-        self.out.append("Supported Settings size: 0x40/0x80; separated metadata is not supported.")
+        self.out.append("Supported layout: system page=0x1000, super page=0x200000, metadata entry=0x20.")
+        self.out.append("Supported Settings size: 0x40/0x80/0xc0; inline or verified separated metadata.")
         if page_size is None:
             self.err_add_out("Cannot verify the target system page size: AT_PAGESZ is unavailable.")
             return False
@@ -166893,10 +166895,6 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
             self.err_add_out("Unsupported system page size; this fixed layout requires 4 KiB pages.")
             return False
 
-        for type_name in ("partition_alloc::PartitionRoot::Settings", "base::PartitionRoot::Settings"):
-            if GefUtil.lookup_field(type_name, "metadata_offset_") is not None:
-                self.err_add_out("Unsupported separated metadata: MOVE_METADATA_OUT_OF_GIGACAGE is enabled.")
-                return False
         return True
 
     def validate_root(self, root):
@@ -167178,19 +167176,15 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
             internal::GlobalSchedulerLoopQuarantineBranch scheduler_loop_quarantine_for_advanced_memory_safety_checks_;
         };
         """
-        x = read_int_from_memory(current + 0x40 + 8) # sizeof(struct Settings) + sizeof(lock_)
-        if is_valid_addr(x): # buckets[0]->active_slot_spans_head
-            current += 0x40 # sizeof(struct Settings) is 1 cache line
+        for settings_size in (0x40, 0x80, 0xc0):
+            if is_valid_addr(read_int_from_memory(current + settings_size + 8)):
+                break
         else:
-            x = read_int_from_memory(current + 0x80 + 8) # sizeof(struct Settings) + sizeof(lock_)
-            if is_valid_addr(x): # buckets[0]->active_slot_spans_head
-                current += 0x80 # sizeof(struct Settings) is 2 cache lines
-            else:
-                current += 0xc0 # sizeof(struct Settings) is 3 cache lines
+            raise gdb.error("Unsupported Settings layout: first bucket not found")
+        current += settings_size
 
         """
         Observed layout with PA_CONFIG(MOVE_METADATA_OUT_OF_GIGACAGE) enabled.
-        Reference only; parsing this layout is currently rejected below.
         0x599a3e48af40|+0x0000|+000: settings (=&root)        : 0x0000000000010000
         0x599a3e48af48|+0x0008|+001:                          : 0x0000000000000004
         0x599a3e48af50|+0x0010|+002:                          : 0x0000000000000002
@@ -167223,9 +167217,16 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
         0x599a3e48b028|+0x00e8|+029: buckets[0]               : 0x0000004000000000
         0x599a3e48b030|+0x00f0|+030: buckets[0]               : 0x0000000000000000
         """
-        if current - root["addr"] == 0xc0:
-            raise gdb.error("Unsupported Settings layout: possible separated metadata; offset cannot be verified")
         root["metadata_offset_"] = get_pagesize()
+        if settings_size == 0xc0:
+            root["metadata_offset_"] = read_int_from_memory(root["addr"] + 0x90)
+        for type_name in ("partition_alloc::PartitionRoot::Settings", "base::PartitionRoot::Settings"):
+            field = GefUtil.lookup_field(type_name, "metadata_offset_")
+            if field is not None:
+                root["metadata_offset_"] = read_int_from_memory(root["addr"] + field.bitpos // 8)
+                break
+        if not root["metadata_offset_"] or root["metadata_offset_"] & get_pagesize_mask_low():
+            raise gdb.error("Unsupported or corrupted metadata offset")
 
         root["lock_"] = read_int64_from_memory(current)
         current += 8
@@ -167242,6 +167243,10 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
                 current += ptrsize
 
         root["buckets_"] = []
+        self.bucket_slot_size_width = 4
+        if is_64bit() and read_int32_from_memory(current + 3 * ptrsize + 4) == 0 and \
+                read_int64_from_memory(current + 5 * ptrsize) > 1:
+            self.bucket_slot_size_width = ptrsize
         for _ in range(1024):
             if read_int_from_memory(current) == 1: # search for `bool initialized`
                 break
@@ -167345,7 +167350,7 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
             SlotSpanMetadata* active_slot_spans_head;
             SlotSpanMetadata* empty_slot_spans_head;
             SlotSpanMetadata* decommitted_slot_spans_head;
-            uint32_t slot_size;
+            size_t slot_size; // uint32_t in older builds
             uint32_t num_system_pages_per_slot_span : 8;
             uint32_t num_full_slot_spans : 24;
             uint64_t slot_size_reciprocal;
@@ -167358,12 +167363,17 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
         current += ptrsize
         bucket["decommitted_slot_spans_head"] = read_int_from_memory(current)
         current += ptrsize
-        bucket["slot_size"] = read_int32_from_memory(current)
-        current += 4
+        if self.bucket_slot_size_width == 8:
+            bucket["slot_size"] = read_int64_from_memory(current)
+        else:
+            bucket["slot_size"] = read_int32_from_memory(current)
+        current += self.bucket_slot_size_width
         x = read_int32_from_memory(current)
         bucket["num_system_pages_per_slot_span"] = x & 0xff
         bucket["num_full_slot_spans"] = (x >> 8) & 0xff_ffff
         current += 4
+        if self.bucket_slot_size_width == 8:
+            current += 4 # pad
 
         # for 32bit, there is 2 patterns because aligned or packed
         if is_32bit() and self.align_pad:
@@ -167384,9 +167394,9 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
         ptrsize = current_arch.ptrsize
         extent = {}
         extent["addr"] = current = addr
-        extent["super_page_base"] = current - get_pagesize()
+        extent["super_page_base"] = AddressUtil.normalize_address(current - self.root.metadata_offset_)
         if extent["super_page_base"] & 0x1f_ffff:
-            raise gdb.error("Unsupported or corrupted metadata placement @{:#x}: expected inline extent".format(addr))
+            raise gdb.error("Unsupported or corrupted metadata placement @{:#x}: unaligned super page".format(addr))
         """
         https://source.chromium.org/chromium/chromium/src/+/main:base/allocator/partition_allocator/  \
         src/partition_alloc/partition_superpage_extent_entry.h
@@ -167914,12 +167924,12 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
 
             try:
                 root, _ = self.read_root(r.address, r.name)
+                self.root = root
                 self.validate_root(root)
             except gdb.error as e:
                 self.err_add_out("Parse error {:s} @{:#x}: {!s}".format(r.name, r.address, e))
                 continue
 
-            self.root = root # for coloring
             self.dump_root(root)
 
         self.print_output()
