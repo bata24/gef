@@ -86036,7 +86036,6 @@ class KernelSysctl:
     # The representation of ctl_table.data is decided by proc_handler, not by maxlen.
     # A string, or (element size (0: pointer size, None: maxlen), signed, unit).
     HANDLER_TYPES = {
-        "addrconf_sysctl_stable_secret": "string",
         "cdrom_sysctl_info": "string",
         "devkmsg_sysctl_set_loglvl": "string",
         "numa_zonelist_order_handler": "string",
@@ -86068,6 +86067,7 @@ class KernelSysctl:
         "proc_dointvec_ms_jiffies_minmax": (4, True, "jiffies"),
         "proc_doulongvec_ms_jiffies_minmax": (0, False, "jiffies"),
         # custom handlers passing a temporary table of another type, or wrapping a custom handler
+        "addrconf_sysctl_stable_secret": None,
         "ipv4_ping_group_range": (4, False, ""),
         "proc_cap_handler": None,
         "proc_watchdog_common": (4, True, ""),
