@@ -13462,7 +13462,7 @@ usage: qemu-system-memory-region-dump [-h] [-s] [--meta] [-n] [-q]
 
 options:
   -h, --help      show this help message and exit
-  -s, --smart     show only entries where read or write is not the default.
+  -s, --smart     show unique ops with read/write callbacks, including attribute-aware callbacks.
   --meta          display offset information.
   -n, --no-pager  do not use the pager.
   -q, --quiet     enable quiet mode.
