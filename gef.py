@@ -18185,16 +18185,17 @@ class UpCommand(GenericCommand):
         nb_lines_before = Config.get("context_trace.nb_lines_before")
         nb_lines = Config.get("context_trace.nb_lines")
 
-        # change temporarily
-        Config.set("context_trace.nb_lines_before", 0xff)
-        Config.set("context_trace.nb_lines", 0x100)
+        try:
+            # change temporarily
+            Config.set("context_trace.nb_lines_before", 0xff)
+            Config.set("context_trace.nb_lines", 0x100)
 
-        # print
-        gdb.execute("context trace -i")
-
-        # restore
-        Config.set("context_trace.nb_lines_before", nb_lines_before)
-        Config.set("context_trace.nb_lines", nb_lines)
+            # print
+            gdb.execute("context trace -i")
+        finally:
+            # restore
+            Config.set("context_trace.nb_lines_before", nb_lines_before)
+            Config.set("context_trace.nb_lines", nb_lines)
         return
 
     @Decorator.parse_args
@@ -18244,16 +18245,17 @@ class DownCommand(GenericCommand):
         nb_lines_before = Config.get("context_trace.nb_lines_before")
         nb_lines = Config.get("context_trace.nb_lines")
 
-        # change temporarily
-        Config.set("context_trace.nb_lines_before", 0xff)
-        Config.set("context_trace.nb_lines", 0x100)
+        try:
+            # change temporarily
+            Config.set("context_trace.nb_lines_before", 0xff)
+            Config.set("context_trace.nb_lines", 0x100)
 
-        # print
-        gdb.execute("context trace -i")
-
-        # restore
-        Config.set("context_trace.nb_lines_before", nb_lines_before)
-        Config.set("context_trace.nb_lines", nb_lines)
+            # print
+            gdb.execute("context trace -i")
+        finally:
+            # restore
+            Config.set("context_trace.nb_lines_before", nb_lines_before)
+            Config.set("context_trace.nb_lines", nb_lines)
         return
 
     @Decorator.parse_args
