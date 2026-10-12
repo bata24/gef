@@ -84502,6 +84502,8 @@ class KernelSched:
         self.state_bits = self.get_state_bits(None)
         self.offset_state = None
         self.offset_prio = None
+        self.offset_static_prio = None
+        self.offset_normal_prio = None
         self.offset_rt_priority = None
         self.offset_sched_class = None
         self.offset_policy = None
@@ -84535,15 +84537,19 @@ class KernelSched:
             if addr:
                 self.class_addrs[addr] = name
 
-        # task_struct->prio (anchors the prio/static_prio/normal_prio/rt_priority cluster)
-        self.offset_prio = self.offsetof("prio")
-        if self.offset_prio is None:
-            self.offset_prio = self.get_offset_prio()
-        if self.offset_prio is None:
-            self.meta.append(("err", "Could not find task_struct->prio"))
-            return None
-        self.offset_rt_priority = self.offset_prio + 12
-        self.meta.append(("info", "offsetof(task_struct, prio): {:#x}".format(self.offset_prio)))
+        # task_struct->prio / static_prio / normal_prio / rt_priority
+        members = ("prio", "static_prio", "normal_prio", "rt_priority")
+        offsets = [self.offsetof(member) for member in members]
+        if all(offset is None for offset in offsets):
+            offset_prio = self.get_offset_prio()
+            if offset_prio is not None:
+                offsets = [offset_prio + 4 * i for i in range(len(members))]
+        for member, offset in zip(members, offsets):
+            if offset is None:
+                self.meta.append(("err", "Could not find task_struct->{:s}".format(member)))
+                return None
+            self.meta.append(("info", "offsetof(task_struct, {:s}): {:#x}".format(member, offset)))
+        self.offset_prio, self.offset_static_prio, self.offset_normal_prio, self.offset_rt_priority = offsets
 
         # task_struct->__state / state
         self.offset_state = self.offsetof("__state")
@@ -84790,9 +84796,9 @@ class KernelSched:
         prio = static_prio = normal_prio = rt_priority = None
         if self.offset_prio is not None:
             prio = read_int32_from_memory(task + self.offset_prio, safe=True, signed=True)
-            static_prio = read_int32_from_memory(task + self.offset_prio + 4, safe=True, signed=True)
-            normal_prio = read_int32_from_memory(task + self.offset_prio + 8, safe=True, signed=True)
-            rt_priority = read_int32_from_memory(task + self.offset_prio + 12, safe=True)
+            static_prio = read_int32_from_memory(task + self.offset_static_prio, safe=True, signed=True)
+            normal_prio = read_int32_from_memory(task + self.offset_normal_prio, safe=True, signed=True)
+            rt_priority = read_int32_from_memory(task + self.offset_rt_priority, safe=True)
 
         policy = policy_name = None
         if self.offset_policy is not None:
@@ -93155,11 +93161,10 @@ class KernelSchedCommand(GenericCommand, BufferingOutput):
         if info.class_name is not None:
             name = next((n for a, n in ksched.class_addrs.items() if a == info.sched_class), "")
             lines.append(("class", "{:s} ({:s})".format(info.class_name, name)))
-        if info.prio is not None:
-            lines.append(("prio", "{:d}".format(info.prio)))
-            lines.append(("static_prio", "{:d}".format(info.static_prio)))
-            lines.append(("normal_prio", "{:d}".format(info.normal_prio)))
-            lines.append(("rt_priority", "{:d}".format(info.rt_priority)))
+        for name in ("prio", "static_prio", "normal_prio", "rt_priority"):
+            value = getattr(info, name)
+            if value is not None:
+                lines.append((name, "{:d}".format(value)))
         if info.policy is not None:
             lines.append(("policy", "{:s} ({:d})".format(info.policy_name, info.policy & ~ksched.SCHED_RESET_ON_FORK)))
         if info.on_rq is not None:
