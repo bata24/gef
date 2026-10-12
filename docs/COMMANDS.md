@@ -1843,7 +1843,7 @@ usage: mmap [-h] [LOCATION] [SIZE] [PERMISSION]
 
 positional arguments:
   LOCATION    the address to allocate. (default: None)
-  SIZE        the size to allocate. (default: 4096)
+  SIZE        the size to allocate. (default: one target page)
   PERMISSION  the permission to allocate. `_` is interpreted as `-`. (default: rwx)
 
 options:

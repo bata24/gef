@@ -23994,8 +23994,8 @@ class MmapMemoryCommand(GenericCommand):
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("location", metavar="LOCATION", nargs="?", type=AddressUtil.parse_address, default=None,
                         help="the address to allocate. (default: %(default)s)")
-    parser.add_argument("size", metavar="SIZE", nargs="?", type=AddressUtil.parse_address, default=get_pagesize(),
-                        help="the size to allocate. (default: %(default)s)")
+    parser.add_argument("size", metavar="SIZE", nargs="?", type=AddressUtil.parse_address, default=None,
+                        help="the size to allocate. (default: one target page)")
     parser.add_argument("permission", metavar="PERMISSION", nargs="?", default="rwx",
                         help="the permission to allocate. `_` is interpreted as `-`. (default: %(default)s)")
     _syntax_ = parser.format_help()
@@ -24052,6 +24052,8 @@ class MmapMemoryCommand(GenericCommand):
             return
 
         # size
+        if args.size is None:
+            args.size = page_size
         if args.size <= 0 or AddressUtil.get_vmem_end() <= args.size:
             err("Invalid size")
             return
