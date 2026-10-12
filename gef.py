@@ -41597,7 +41597,7 @@ class ContextExtraCommand(GenericCommand):
                 info(text, redirect=redirect)
 
         for command in self.context_extra_commands:
-            gef_print(titlify(command), redirect)
+            gef_print(titlify(command), redirect=redirect)
             try:
                 ContextCommand.execute_command(command, redirect)
             except Exception as e:
