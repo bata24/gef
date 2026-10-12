@@ -78334,6 +78334,14 @@ class KernelPath:
         self.meta.append(("info", "offsetof(dentry, d_parent): {:#x}".format(self.offset_d_parent)))
 
         inode = read_int_from_memory(dentry + self.offset_d_inode)
+        seen = {dentry}
+        while inode == 0:
+            parent = read_int_from_memory(dentry + self.offset_d_parent, safe=True)
+            if not parent or parent in seen or not self.is_dentry(parent):
+                break
+            seen.add(parent)
+            dentry = parent
+            inode = read_int_from_memory(dentry + self.offset_d_inode)
         if not is_valid_addr(inode) or inode & (current_arch.ptrsize - 1):
             self.meta.append(("err", "Could not find a valid inode"))
             return None
@@ -78682,7 +78690,7 @@ class KernelPath:
 
     @Cache.cache_this_session(cache_None=False)
     def get_offset_i_sb(self, inode):
-        """Resolve inode->i_sb from debug information or the adjacent i_mapping member."""
+        """Resolve inode->i_sb from debug information or the target inode layout."""
         try:
             return GefUtil.parse_and_eval_unsigned("&((struct inode*)0).i_sb")
         except gdb.error:
@@ -78691,8 +78699,11 @@ class KernelPath:
         if not is_valid_addr(inode) or inode & (current_arch.ptrsize - 1):
             return None
 
-        # i_mapping immediately follows i_sb and points to inode->i_data. This relation is
-        # stable from Linux 3.x through 7.2 and is independent of the filesystem type.
+        kversion = Kernel.version()
+        if kversion is not None and kversion < "3.1":
+            return align(12, current_arch.ptrsize) + current_arch.ptrsize
+
+        # Since v3.1, i_mapping immediately follows i_sb and points to inode->i_data.
         first_pointer = 2 + 2 + 4 + 4 + 4
         for offset in range(first_pointer, 0x100, current_arch.ptrsize):
             mapping = read_int_from_memory(inode + offset)
