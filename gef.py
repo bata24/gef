@@ -80451,14 +80451,22 @@ class KernelCred:
             return None
         if ngroups > 0x10000:
             return None
-        if "4.9" <= Kernel.version():
-            available = ngroups
-        else:
-            available = min(ngroups, 32) # NGROUPS_SMALL; the rest is in blocks[]
+        inline = "4.9" <= Kernel.version()
+        if ngroups and not inline:
+            groups_per_block = KernelAddressHeuristicFinder.consts().PAGE_SIZE // 4
         gids = []
         try:
-            for i in range(min(available, max_display)):
-                gids.append(read_int32_from_memory(group_info + offset_gid + 4 * i))
+            for i in range(min(ngroups, max_display)):
+                if inline:
+                    addr = group_info + offset_gid + 4 * i
+                else:
+                    block_index, gid_index = divmod(i, groups_per_block)
+                    if gid_index == 0:
+                        block = read_int_from_memory(group_info + offset_gid + current_arch.ptrsize * block_index)
+                        if not block:
+                            return None
+                    addr = block + 4 * gid_index
+                gids.append(read_int32_from_memory(addr))
         except gdb.MemoryError:
             return None
         out = "ngroups: {:d}".format(ngroups)
@@ -80471,11 +80479,11 @@ class KernelCred:
     @staticmethod
     @Cache.cache_this_session(per_inferior=True, until_new_objfile=True)
     def get_group_info_layout():
-        """Return (offsetof(group_info, ngroups), offsetof(group_info, gid)), where gid is small_block for ~v4.8."""
+        """Return offsets of ngroups and gid (blocks for ~v4.8) in group_info."""
         if "4.9" <= Kernel.version():
             member, offset_gid = "gid", 4 * 2 # usage, ngroups
         else:
-            member, offset_gid = "small_block", 4 * 3 # usage, ngroups, nblocks
+            member, offset_gid = "blocks", align_to_ptrsize(4 * 3 + 4 * 32) # header, small_block
         offset_ngroups = GefUtil.offsetof("group_info", "ngroups")
         offset_gid_debug = GefUtil.offsetof("group_info", member)
         if offset_ngroups is None or offset_gid_debug is None:
