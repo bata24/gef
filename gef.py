@@ -21597,19 +21597,33 @@ class HijackFdCommand(GenericCommand):
         self.quiet_info("Original contents: {!s} @ {:#x}".format(original_contents, stack_addr))
         self.quiet_info("Overwrite data: {!s}".format(data))
 
-        # overwrite it
+        written = False
         try:
-            write_memory(stack_addr, data)
-        except Exception:
-            err("Failed to write stack")
-            return None, None
+            # overwrite it
+            try:
+                write_memory(stack_addr, data)
+            except Exception:
+                err("Failed to write stack")
+                return None, None
 
-        # read again and check
-        if read_memory(stack_addr, len(data)) != data:
-            err("Failed to write stack")
-            return None, None
+            # read again and check
+            if read_memory(stack_addr, len(data)) != data:
+                err("Failed to write stack")
+                return None, None
+            written = True
+        finally:
+            if not written:
+                write_memory(stack_addr, original_contents)
 
         return stack_addr, original_contents
+
+    def close_fd(self, fd):
+        close_result = self.call_syscall("close", [fd])
+        if AddressUtil.is_msb_on(close_result):
+            err("Failed to close fd #{:d}".format(fd))
+            return False
+        self.quiet_info("Closed extra fd #{:d}".format(fd))
+        return True
 
     def get_fd_from_file_open(self):
         # call open
@@ -21617,21 +21631,30 @@ class HijackFdCommand(GenericCommand):
         if stack_addr is None:
             return None
 
-        self.quiet_info("Trying to open {:s}".format(Color.boldify(self.args.new_output)))
+        open_fd = None
+        success = False
+        try:
+            try:
+                self.quiet_info("Trying to open {:s}".format(Color.boldify(self.args.new_output)))
 
-        AT_FDCWD = -100
-        flags = self.O_APPEND | self.O_CREAT | self.O_RDWR
-        mode = 0o666
-        # open does not exist in aarch64. So use openat instead of open.
-        open_fd = self.call_syscall("openat", [AT_FDCWD, stack_addr, flags, mode])
-        write_memory(stack_addr, original_contents) # revert
+                AT_FDCWD = -100
+                flags = self.O_APPEND | self.O_CREAT | self.O_RDWR
+                mode = 0o666
+                # open does not exist in aarch64. So use openat instead of open.
+                open_fd = self.call_syscall("openat", [AT_FDCWD, stack_addr, flags, mode])
+            finally:
+                write_memory(stack_addr, original_contents) # revert
 
-        if AddressUtil.is_msb_on(open_fd):
-            err("Failed to open {:s}".format(self.args.new_output))
-            return None
+            if AddressUtil.is_msb_on(open_fd):
+                err("Failed to open {:s}".format(self.args.new_output))
+                return None
 
-        self.quiet_info("Opened {:s} with 0o666 as fd #{:d}".format(Color.boldify(self.args.new_output), open_fd))
-        return open_fd
+            self.quiet_info("Opened {:s} with 0o666 as fd #{:d}".format(Color.boldify(self.args.new_output), open_fd))
+            success = True
+            return open_fd
+        finally:
+            if not success and open_fd is not None and not AddressUtil.is_msb_on(open_fd):
+                self.close_fd(open_fd)
 
     def get_fd_from_connect_server(self):
         import socket
@@ -21643,24 +21666,32 @@ class HijackFdCommand(GenericCommand):
         if AddressUtil.is_msb_on(sock_fd):
             err("Failed to create socket")
             return None
-        self.quiet_info("Created socket fd #{:d}".format(sock_fd))
+        success = False
+        try:
+            self.quiet_info("Created socket fd #{:d}".format(sock_fd))
 
-        # call connect (Also supports big endian)
-        sockaddr_in = p16(self.AF_INET) + struct.pack("<H", socket.htons(port)) + socket.inet_aton(address)
-        stack_addr, original_contents = self.write_stack(sockaddr_in)
-        if stack_addr is None:
-            return None
+            # call connect (Also supports big endian)
+            sockaddr_in = p16(self.AF_INET) + struct.pack("<H", socket.htons(port)) + socket.inet_aton(address)
+            stack_addr, original_contents = self.write_stack(sockaddr_in)
+            if stack_addr is None:
+                return None
 
-        self.quiet_info("Trying to connect to {:s}".format(Color.boldify(self.args.new_output)))
-        connect_result = self.call_syscall("connect", [sock_fd, stack_addr, 16])
-        write_memory(stack_addr, original_contents) # revert
+            try:
+                self.quiet_info("Trying to connect to {:s}".format(Color.boldify(self.args.new_output)))
+                connect_result = self.call_syscall("connect", [sock_fd, stack_addr, 16])
+            finally:
+                write_memory(stack_addr, original_contents) # revert
 
-        if AddressUtil.is_msb_on(connect_result):
-            err("Failed to connect to {:s}:{:d}".format(address, port))
-            return
+            if AddressUtil.is_msb_on(connect_result):
+                err("Failed to connect to {:s}:{:d}".format(address, port))
+                return None
 
-        self.quiet_info("Connected to {:s} as fd #{:d}".format(Color.boldify(self.args.new_output), sock_fd))
-        return sock_fd
+            self.quiet_info("Connected to {:s} as fd #{:d}".format(Color.boldify(self.args.new_output), sock_fd))
+            success = True
+            return sock_fd
+        finally:
+            if not success:
+                self.close_fd(sock_fd)
 
     def hijack_fd(self):
         if ":" in self.args.new_output:
@@ -21676,20 +21707,19 @@ class HijackFdCommand(GenericCommand):
             ok("Success")
             return
 
-        # call dup3
-        # dup2 does not exist in aarch64. So use dup3 instead of dup2.
-        dup3_result = self.call_syscall("dup3", [new_fd, self.args.old_fd, 0])
-        if dup3_result != self.args.old_fd:
-            err("Failed to dup3 (result {:d} != fd #{:d})".format(dup3_result, self.args.old_fd))
-            return
-        self.quiet_info("Duplicated fd #{:d} -> #{:d}".format(new_fd, self.args.old_fd))
+        try:
+            # call dup3
+            # dup2 does not exist in aarch64. So use dup3 instead of dup2.
+            dup3_result = self.call_syscall("dup3", [new_fd, self.args.old_fd, 0])
+            if dup3_result != self.args.old_fd:
+                err("Failed to dup3 (result {:d} != fd #{:d})".format(dup3_result, self.args.old_fd))
+                return
+            self.quiet_info("Duplicated fd #{:d} -> #{:d}".format(new_fd, self.args.old_fd))
+        finally:
+            closed = self.close_fd(new_fd)
 
-        # call close
-        close_result = self.call_syscall("close", [new_fd])
-        if AddressUtil.is_msb_on(close_result):
-            err("Failed to close fd #{:d}".format(new_fd))
+        if not closed:
             return
-        self.quiet_info("Closed extra fd #{:d}".format(new_fd))
 
         ok("Success")
         return
