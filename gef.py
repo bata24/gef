@@ -33355,7 +33355,9 @@ class ElfInfoCommand(GenericCommand):
             self.out.append(fmt.format(*args))
 
             if self.args.verbose:
-                if s.sh_size > 0x1000: # heuristic value
+                if s.sh_type == Elf.Shdr.SHT_NOBITS:
+                    self.out.append("Skip because this section has no file content (NOBITS)")
+                elif s.sh_size > 0x1000: # heuristic value
                     self.out.append("Skip because too large ({:#x} > 0x1000)".format(s.sh_size))
                 elif elf.filename is None:
                     self.out.append("Skip because it is parsed from memory")
