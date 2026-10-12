@@ -164316,6 +164316,21 @@ class SnmallocHeapDumpCommand(GenericCommand, BufferingOutput):
             pass
 
         # slow path
+        tls = current_arch.get_tls()
+        if tls is None:
+            return None
+        offset = self.get_thread_alloc_tls_offset()
+        if offset is None:
+            return None
+        val = read_int_from_memory(tls + offset, safe=True)
+        if not val or val & get_pagesize_mask_low():
+            return None
+        if not is_valid_addr(val) or not is_single_link_list(val):
+            return None
+        return val
+
+    @Cache.cache_until_next(per_inferior=True)
+    def get_thread_alloc_tls_offset(self):
         """
         gef> tls
         ------------------------ TLS-0x80 -----------------------
@@ -164329,19 +164344,28 @@ class SnmallocHeapDumpCommand(GenericCommand, BufferingOutput):
               0x7ffff7f3f780|+0x0000|+000: 0x00007ffff7f3f780
               0x7ffff7f3f788|+0x0008|+001: 0x00007ffff7f40120
         """
-        tls = current_arch.get_tls()
-        if tls is None:
-            return None
-        for i in range(1, 16):
-            addr = tls - (current_arch.ptrsize * i)
-            val = read_int_from_memory(addr)
-            if not is_valid_addr(val):
-                continue
-            if val & 0xf_ffff:
-                continue
-            if not is_single_link_list(val):
-                continue
-            return val
+        orig_thread = gdb.selected_thread()
+        orig_frame = gdb.selected_frame()
+        try:
+            for thread in gdb.selected_inferior().threads():
+                try:
+                    thread.switch()
+                except gdb.error:
+                    continue
+                tls = current_arch.get_tls()
+                if tls is None:
+                    continue
+                for i in range(1, 16):
+                    offset = -(current_arch.ptrsize * i)
+                    val = read_int_from_memory(tls + offset, safe=True)
+                    if not val or val & 0xf_ffff:
+                        continue
+                    if not is_valid_addr(val) or not is_single_link_list(val):
+                        continue
+                    return offset
+        finally:
+            orig_thread.switch()
+            orig_frame.select()
         return None
 
     def get_thread_alloc_list(self, all_thread=False):
@@ -164404,11 +164428,18 @@ class SnmallocHeapDumpCommand(GenericCommand, BufferingOutput):
             self.offset_alloc_classes = AddressUtil.parse_address("&((('snmalloc::Alloc'*)0)->alloc_classes)")
         except gdb.error:
             self.offset_alloc_classes = 0x1b80 # hardcoded value
+            thread_alloc = self.get_current_thread_alloc()
+            if thread_alloc:
+                for offset in (0x1b80, 0x1b78):
+                    if all(is_double_link_list(thread_alloc + offset + 0x18 * i)
+                           for i in range(self.NUM_SMALL_SIZECLASSES)):
+                        self.offset_alloc_classes = offset
+                        break
 
         try:
             self.offset_laden = AddressUtil.parse_address("&((('snmalloc::Alloc'*)0)->laden)")
         except gdb.error:
-            self.offset_laden = 0x1f88 # hardcoded value
+            self.offset_laden = self.offset_alloc_classes + 0x18 * self.NUM_SMALL_SIZECLASSES
 
         try:
             self.offset_remote_alloc = AddressUtil.parse_address("&((('snmalloc::Alloc'*)0)->remote_alloc)")
