@@ -40595,6 +40595,21 @@ class ContextMemoryAccessCommand(GenericCommand):
     RE_MATCH_REG2 = re.compile(r"r\d+")
     RE_MATCH_REG3 = re.compile(r"[xw]\d+")
 
+    def get_x86_memory_expression(self, code, codesize):
+        code = code.replace("+", " + ")
+        code = code.replace("-", " - ")
+        code = code.replace("*", " * ")
+        code = code.replace("eiz", " 0 ")
+        code = code.split()
+        code = ["$" + x if x.isalpha() or self.RE_MATCH_REG1.match(x) else x for x in code]
+        code = "".join(code)
+        code_orig = code
+        if is_x86_64():
+            code = re.sub(r"\$(?:rip|eip)\b", "{:#x}".format(current_arch.pc + codesize), code)
+            if re.search(r"\$e(?:ax|bx|cx|dx|si|di|sp|bp|ip)\b|\$r\d+d\b", code_orig):
+                code = "({:s})&0xffffffff".format(code)
+        return code_orig, code
+
     def context_memory_access1(self, redirect):
         if not (is_x86() or is_arm32() or is_arm32_cortex_m() or is_arm64()):
             return
@@ -40623,16 +40638,7 @@ class ContextMemoryAccessCommand(GenericCommand):
             code = code[1:-1] # skip "[" and "]"
 
             if is_x86():
-                # add "$" to resiter
-                code = code.replace("+", " + ")
-                code = code.replace("-", " - ")
-                code = code.replace("*", " * ")
-                code = code.replace("eiz", " 0 ") # $eiz is always 0x0
-                code = code.split()
-                code = ["$" + x if x.isalpha() or self.RE_MATCH_REG1.match(x) else x for x in code]
-                code = "".join(code)
-                # $rip/$eip points next instruction
-                code_orig, code = code, code.replace("$rip", "$rip+{:#x}".format(codesize))
+                code_orig, code = self.get_x86_memory_expression(code, codesize)
 
             elif is_arm32() or is_arm32_cortex_m():
                 # add "$" to resiter
@@ -40671,13 +40677,14 @@ class ContextMemoryAccessCommand(GenericCommand):
                 code_orig = code
 
             # print
+            code_eval = code
             try:
                 code = code.replace("$", "(long)$")
                 addr = AddressUtil.parse_address(code)
             except gdb.error:
                 # some binary fails to resolve "(long)"
                 try:
-                    addr = AddressUtil.parse_address(code_orig)
+                    addr = AddressUtil.parse_address(code_eval)
                 except gdb.error:
                     return
             ContextCommand.context_title("memory access: {:s} = {:#x}".format(code_orig, addr), redirect)
@@ -40686,7 +40693,6 @@ class ContextMemoryAccessCommand(GenericCommand):
         return
 
     RE_FINDALL_SEG2 = re.compile(r"((fs|gs):\[?([^,\]]+)\]?)")
-    RE_MATCH_REG4 = re.compile(r"r\d+d?")
 
     def context_memory_access2(self, redirect):
         if not is_x86():
@@ -40719,15 +40725,7 @@ class ContextMemoryAccessCommand(GenericCommand):
                 fsgs_val = current_arch.get_gs()
             if fsgs_val is None:
                 return
-            offset = offset.replace("+", " + ")
-            offset = offset.replace("-", " - ")
-            offset = offset.replace("*", " * ")
-            offset = offset.replace("eiz", " 0 ") # $eiz is always 0x0
-            offset = offset.split()
-            offset = ["$" + x if x.isalpha() or self.RE_MATCH_REG4.match(x) else x for x in offset]
-            offset = "".join(offset)
-            # $rip/$eip points next instruction
-            offset = offset.replace("$rip", "$rip+{:#x}".format(codesize))
+            code_orig, offset = self.get_x86_memory_expression(offset, codesize)
             offset = AddressUtil.parse_address(offset)
             addr = AddressUtil.normalize_address(fsgs_val + offset)
             ContextCommand.context_title("memory access: {:s} = {:#x}".format(code, addr), redirect)
@@ -40736,7 +40734,6 @@ class ContextMemoryAccessCommand(GenericCommand):
         return
 
     RE_FINDALL_SEG3 = re.compile(r"((es|ds|ss|cs):\[?([^,\]]+)\]?)")
-    RE_MATCH_REG5 = re.compile(r"r\d+d?")
 
     def context_memory_access3(self, redirect):
         if not is_x86():
@@ -40757,13 +40754,8 @@ class ContextMemoryAccessCommand(GenericCommand):
         r = self.RE_FINDALL_SEG3.findall(str(insn))
         for rr in r:
             code, addr = rr[0], rr[2]
-            addr = addr.replace("+", " + ")
-            addr = addr.replace("-", " - ")
-            addr = addr.replace("*", " * ")
-            addr = addr.replace("eiz", " 0 ") # $eiz is always 0x0
-            addr = addr.split()
-            addr = ["$" + x if x.isalpha() or self.RE_MATCH_REG5.match(x) else x for x in addr]
-            addr = AddressUtil.parse_address("".join(addr))
+            code_orig, addr = self.get_x86_memory_expression(addr, insn_here.size)
+            addr = AddressUtil.parse_address(addr)
             ContextCommand.context_title("memory access: {:s} = {:#x}".format(code, addr), redirect)
             self.is_context_title_written = True
             ContextCommand.execute_command("dereference {:#x} 4 --no-pager".format(addr), redirect)
