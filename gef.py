@@ -65525,7 +65525,8 @@ class KernelAddressHeuristicFinderUtil:
                 yield w
 
     @staticmethod
-    def riscv_auipc_gen(res, use_addi, use_mem, skip, skip_msb_check, read_valid, word_only=False, follow_addi=False):
+    def riscv_auipc_gen(res, use_addi, use_mem, skip, skip_msb_check, read_valid,
+                        word_only=False, follow_addi=False, load_mnemonic=None):
         """Yield the addresses built from `auipc rd, hi20` and the following `lo12(rd)`.
 
         GDB does not annotate the pc-relative result for RISC-V, so it is computed here.
@@ -65533,7 +65534,8 @@ class KernelAddressHeuristicFinderUtil:
         displacement of a load/store such as `ld rX, lo12(rd)` or `sd rX, lo12(rd)`.
         `word_only` limits the latter to the accesses as wide as a pointer.
         `follow_addi` keeps the result of `addi` as a base, for a member accessed at an offset
-        from the address of the whole object (e.g. `addi s4, s4, lo12` then `ld s2, 176(s4)`)."""
+        from the address of the whole object (e.g. `addi s4, s4, lo12` then `ld s2, 176(s4)`).
+        `load_mnemonic` selects a load width and also includes gp-relative loads."""
         bases = {}
         for line in res.splitlines():
             m = re.match(r"\s*(?:=>\s*)?(0x[0-9a-f]+)(?:\s+<[^>]*>)?:\s*(\S+)\s*(.*)", line)
@@ -65553,10 +65555,13 @@ class KernelAddressHeuristicFinderUtil:
                     w = AddressUtil.normalize_address(bases[ops[1]] + int(ops[2], 0))
                 if follow_addi:
                     bases[ops[0]] = bases[ops[1]] + int(ops[2], 0)
-            elif use_mem and (not word_only or mnemonic in (("ld", "sd") if is_64bit() else ("lw", "sw"))):
+            elif use_mem and (not word_only or mnemonic in (("ld", "sd") if is_64bit() else ("lw", "sw"))) \
+                    and (load_mnemonic is None or mnemonic == load_mnemonic):
                 mm = re.fullmatch(r"(-?\d+)\((\w+)\)", ops[-1])
                 if mm and mm.group(2) in bases:
                     w = AddressUtil.normalize_address(bases[mm.group(2)] + int(mm.group(1)))
+                elif mm and mm.group(2) == "gp" and load_mnemonic is not None:
+                    w = next(KernelAddressHeuristicFinderUtil.riscv_gp_relative(line), None)
             # a store, a branch and a fence write no register; anything else overwrites the first operand
             if mnemonic in ("jal", "jalr", "call", "tail"):
                 if follow_addi:
@@ -65587,6 +65592,12 @@ class KernelAddressHeuristicFinderUtil:
     def riscv_auipc_use(res, skip=0, skip_msb_check=False, read_valid=False):
         # `addi` or a pointer-sized load/store, in order. An int (`lw` on RV64) is skipped.
         return KernelAddressHeuristicFinderUtil.riscv_auipc_gen(res, True, True, skip, skip_msb_check, read_valid, word_only=True)
+
+    @staticmethod
+    def riscv_load(res, mnemonic="lw", skip=0):
+        return KernelAddressHeuristicFinderUtil.riscv_auipc_gen(
+            res, False, True, skip, False, False, follow_addi=True, load_mnemonic=mnemonic,
+        )
 
     @staticmethod
     def riscv_gp_relative(res):
@@ -72320,6 +72331,10 @@ class KernelAddressHeuristicFinder:
                         KernelAddressHeuristicFinderUtil.arm32_movw_movt_ldr(res),
                         KernelAddressHeuristicFinderUtil.arm32_ldr_pc_relative_ldr(res),
                     )
+                elif is_riscv64() or is_riscv32():
+                    refs = list(KernelAddressHeuristicFinderUtil.riscv_load(res))
+                    seqs = set(KernelAddressHeuristicFinderUtil.riscv_load(res, "ld" if is_64bit() else "lw"))
+                    g = [x for x in refs if x + 8 in seqs]
                 else:
                     return None
                 for x in g:
@@ -72348,7 +72363,7 @@ class KernelAddressHeuristicFinder:
         if kversion and "3.5" <= kversion:
             addr = Ksym.get_addr("kmsg_dump_rewind_nolock")
             if addr:
-                res = gdb.execute("x/20i {:#x}".format(addr), to_string=True)
+                res = KernelAddressHeuristicFinderUtil.disassemble_until_next_symbol(addr, 20)
                 if is_x86_64():
                     g = KernelAddressHeuristicFinderUtil.x64_dword_ptr_rip_base(res, skip=1)
                 elif is_x86_32():
@@ -72361,6 +72376,11 @@ class KernelAddressHeuristicFinder:
                         KernelAddressHeuristicFinderUtil.arm32_movw_movt_ldr(res, skip=1),
                         KernelAddressHeuristicFinderUtil.arm32_ldr_pc_relative_ldr(res, skip=1),
                     )
+                elif is_riscv64() or is_riscv32():
+                    refs = list(KernelAddressHeuristicFinderUtil.riscv_load(res))
+                    seqs = set(KernelAddressHeuristicFinderUtil.riscv_load(res, "ld" if is_64bit() else "lw"))
+                    g = [x for x in refs if x + 8 in seqs]
+                    return g[1] if len(g) > 1 else None
                 else:
                     return None
                 for x in g:
@@ -72439,7 +72459,7 @@ class KernelAddressHeuristicFinder:
         if kversion and "3.17" <= kversion:
             addr = Ksym.get_addr("log_buf_len_get")
             if addr:
-                res = gdb.execute("x/10i {:#x}".format(addr), to_string=True)
+                res = KernelAddressHeuristicFinderUtil.disassemble_until_next_symbol(addr, 10)
                 if is_x86_64():
                     g = KernelAddressHeuristicFinderUtil.x64_dword_ptr_rip_base(res)
                 elif is_x86_32():
@@ -72451,6 +72471,8 @@ class KernelAddressHeuristicFinder:
                         KernelAddressHeuristicFinderUtil.arm32_movw_movt(res),
                         KernelAddressHeuristicFinderUtil.arm32_ldr_pc_relative_ldr(res),
                     )
+                elif is_riscv64() or is_riscv32():
+                    g = KernelAddressHeuristicFinderUtil.riscv_load(res)
                 else:
                     return None
                 for x in g:
@@ -72472,6 +72494,8 @@ class KernelAddressHeuristicFinder:
                 elif is_arm32():
                     # TODO
                     g = []
+                elif is_riscv64() or is_riscv32():
+                    g = KernelAddressHeuristicFinderUtil.riscv_load(res)
                 else:
                     return None
                 for x in g:
