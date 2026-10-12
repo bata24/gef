@@ -150193,8 +150193,8 @@ class IiCommand(GenericCommand):
 
         # get instruction size
         try:
-            insns = gdb.selected_frame().architecture().disassemble(addr, count=N)
-            res = gdb.execute("x/{:d}i {:#x}".format(N, addr), to_string=True)
+            res = gdb.execute("x/{:d}i {:#x}".format(N, addr), to_string=True).splitlines()
+            insns = gdb.selected_frame().architecture().disassemble(addr, count=len(res))
         except gdb.MemoryError:
             err("Memory read error")
             return
@@ -150202,7 +150202,7 @@ class IiCommand(GenericCommand):
         max_insn_width = max([x[1] for x in insn_sizes], default=0) * 2
 
         # print
-        for i, line in enumerate(res.splitlines()):
+        for i, line in enumerate(res):
             addr, size = insn_sizes[i]
             bytecode = read_memory(addr, size)
             bytecode_hex = "{:{:d}s}".format(bytecode.hex(), max_insn_width)
