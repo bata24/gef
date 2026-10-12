@@ -147963,7 +147963,8 @@ class CrcFileCommand(CrcCommand):
 
         step = 0x400 * get_pagesize()
 
-        with open(self.args.filename, "rb") as f:
+        with open(filename, "rb") as f:
+            end_pos = min(end_pos, os.fstat(f.fileno()).st_size)
             f.seek(start_pos)
             for chunk_pos in range(start_pos, end_pos, step):
                 chunk_size = min(end_pos - chunk_pos, step)
@@ -147988,7 +147989,7 @@ class CrcFileCommand(CrcCommand):
         self.out.append("FileSize: {:#x}".format(os.path.getsize(args.filename)))
 
         if args.size is None:
-            end_pos = args.start + os.path.getsize(args.filename)
+            end_pos = os.path.getsize(args.filename)
         else:
             end_pos = args.start + args.size
 
