@@ -85116,7 +85116,6 @@ class KernelModule:
             strtab = read_int_from_memory(kallsyms + current_arch.ptrsize * 2)
             if "5.2" <= kversion:
                 typetab = read_int_from_memory(kallsyms + current_arch.ptrsize * 3)
-        strtab_pos = 0
 
         #gef_print("symtab: {:#x}".format(symtab))
         #gef_print("sizeof_symtab_entry: {:#x}".format(sizeof_symtab_entry))
@@ -85128,8 +85127,8 @@ class KernelModule:
         entries = []
         for i in ProgressBar(range(num_symtab), disable=not progress):
             sym_addr = read_int_from_memory(symtab + sizeof_symtab_entry * i + current_arch.ptrsize)
+            strtab_pos = read_int32_from_memory(symtab + sizeof_symtab_entry * i)
             sym_name = read_cstring_from_memory(strtab + strtab_pos)
-            strtab_pos += len(sym_name) + 1
 
             if typetab is not None:
                 sym_type = chr(read_int8_from_memory(typetab + i))
