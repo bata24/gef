@@ -39065,6 +39065,8 @@ class MainBreakCommand(GenericCommand):
                 ContextCommand.context_hidden = hidden
                 if bp.is_valid():
                     bp.delete()
+            if not bp.hit:
+                return None
             libc_start_main = self.get_libc_start_main()
 
         if libc_start_main is None or libc_start_main == 0:
@@ -39080,6 +39082,8 @@ class MainBreakCommand(GenericCommand):
             ContextCommand.context_hidden = hidden
             if bp.is_valid():
                 bp.delete()
+        if not bp.hit:
+            return None
 
         # get first arg when break at __libc_start_main
         _, val = current_arch.get_ith_parameter(0)
@@ -39160,9 +39164,11 @@ class EntryBreakBreakpoint(gdb.Breakpoint):
     def __init__(self, location):
         super().__init__(location, gdb.BP_BREAKPOINT, internal=True, temporary=True)
         self.silent = True
+        self.hit = False
         return
 
     def stop(self):
+        self.hit = True
         EventHandler.__gef_check_disabled_bp__ = True
         self.enabled = False
         Cache.reset_gef_caches()
