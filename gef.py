@@ -6933,10 +6933,16 @@ class ModuleLoader:
             try:
                 # Angr seems to import readline internally, so tab completion breaks after loading.
                 # Therefore, disable readline temporarily.
+                readline_loaded = "readline" in sys.modules
                 readline = sys.modules.get("readline", None)
                 sys.modules["readline"] = None
-                __import__("angr")
-                sys.modules["readline"] = readline
+                try:
+                    __import__("angr")
+                finally:
+                    if readline_loaded:
+                        sys.modules["readline"] = readline
+                    else:
+                        sys.modules.pop("readline", None)
                 return f(*args, **kwargs)
             except ImportError as err:
                 msg = "Missing `angr` package for Python, try installing with `pip install angr`"
@@ -27885,10 +27891,8 @@ class AngrCommand(GenericCommand):
         content += "# symboled memories\n"
         for i, (sym, sym_sz) in enumerate(self.args.sym):
             content += "sym_mem{:d} = claripy.BVS('sym_mem{:d}', {:d} * 8)\n".format(i, i, sym_sz)
-            if self.args.type:
+            if self.args.type and "?" not in self.args.type[i]:
                 args_type_i = sorted(set(self.args.type[i]))
-                if "?" in args_type_i:
-                    continue
                 content += "for i in range({:d}):\n".format(sym_sz)
                 content += "    byte = sym_mem{:d}.get_byte(i)\n".format(i)
                 content += "    state.add_constraints(claripy.Or(\n"
