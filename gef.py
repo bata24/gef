@@ -13072,18 +13072,30 @@ def read_physmem(paddr, size, already_physmode=False):
         qemu_system_pid = Pid.get_pid()
         if qemu_system_pid is None:
             return None
-        res = gdb.execute("monitor gpa2hva {:#x}".format(paddr), to_string=True)
-        r = re.search("is (0x[0-9a-f]+)", res)
-        if not r:
-            return None
-        virt_addr = int(r.group(1), 16)
+        ranges = QemuMonitor.get_physical_memory_ranges()
+        current = paddr
+        end = paddr + size
+        out = []
         try:
             with open("/proc/{:d}/mem".format(qemu_system_pid), "rb") as fd:
-                fd.seek(virt_addr)
-                return fd.read(size)
-        except Exception:
-            pass
-        return None
+                while current < end:
+                    region_end = next((stop for start, stop in ranges if start <= current < stop), None)
+                    if region_end is None:
+                        return None
+                    read_size = min(end, region_end) - current
+                    res = gdb.execute("monitor gpa2hva {:#x}".format(current), to_string=True)
+                    r = re.search("is (0x[0-9a-f]+)", res)
+                    if not r:
+                        return None
+                    fd.seek(int(r.group(1), 16))
+                    data = fd.read(read_size)
+                    if len(data) != read_size:
+                        return None
+                    out.append(data)
+                    current += read_size
+        except (gdb.error, OSError, ValueError, OverflowError):
+            return None
+        return b"".join(out)
 
     def qemu_system_use_xp(paddr, size):
         # for older than qemu 4.1.0
@@ -13172,14 +13184,14 @@ def read_physmem(paddr, size, already_physmode=False):
 
     if is_qemu_system():
         out = qemu_system_proc_mem(paddr, size)
-        if out:
+        if out is not None and len(out) == size:
             return out
         if is_supported_physmode():
             out = transparent_read(paddr, size)
-            if out:
+            if out is not None and len(out) == size:
                 return out
         out = qemu_system_use_xp(paddr, size)
-        if out:
+        if out is not None and len(out) == size:
             return out
         return None
 
@@ -13315,6 +13327,21 @@ def is_double_link_list(addr, min_len=0):
 
 class QemuMonitor:
     """A collection of utility functions that are related to qemu-monitor."""
+
+    @staticmethod
+    @Cache.cache_until_next(per_inferior=True)
+    def get_physical_memory_ranges():
+        try:
+            res = gdb.execute("monitor info mtree -f", to_string=True)
+        except gdb.error:
+            return []
+        for view in re.split(r"(?m)^FlatView", res):
+            if 'AS "memory"' not in view:
+                continue
+            return [(int(start, 16), int(end, 16) + 1) for start, end in re.findall(
+                r"(?m)^  ([0-9a-f]+)-([0-9a-f]+) \([^)]*\):", view,
+            )]
+        return []
 
     @staticmethod
     @Cache.cache_until_next(per_cpu=True, per_inferior=True)
@@ -105736,6 +105763,8 @@ class MemoryCompareCommand(GenericCommand, BufferingOutput):
                 from1data = read_physmem(from1, size)
             else:
                 from1data = read_memory(from1, size)
+            if from1data is None or len(from1data) != size:
+                raise gdb.MemoryError
         except (gdb.MemoryError, ValueError, OverflowError, MemoryError):
             err("Read error {:#x}".format(from1))
             return None
@@ -105745,6 +105774,8 @@ class MemoryCompareCommand(GenericCommand, BufferingOutput):
                 from2data = read_physmem(from2, size)
             else:
                 from2data = read_memory(from2, size)
+            if from2data is None or len(from2data) != size:
+                raise gdb.MemoryError
         except (gdb.MemoryError, ValueError, OverflowError, MemoryError):
             err("Read error {:#x}".format(from2))
             return None
@@ -105996,6 +106027,8 @@ class MemoryCopyCommand(GenericCommand):
                 data = read_physmem(from_addr, size)
             else:
                 data = read_memory(from_addr, size)
+            if data is None or len(data) != size:
+                raise gdb.MemoryError
         except (gdb.MemoryError, ValueError, OverflowError):
             err("Read error {:#x}".format(from_addr))
             return None
@@ -149451,6 +149484,8 @@ class IsMemoryZeroCommand(GenericCommand):
                     data = read_physmem(current, read_size)
                 else:
                     data = read_memory(current, read_size)
+                if data is None or len(data) != read_size:
+                    raise gdb.MemoryError
             except (gdb.MemoryError, ValueError, OverflowError):
                 err("Read error {:#x}".format(current))
                 return
@@ -149535,8 +149570,10 @@ class StringLengthCommand(GenericCommand):
                     data = read_physmem(current, read_size)
                 else:
                     data = read_memory(current, read_size)
+                if data is None or len(data) != read_size:
+                    raise gdb.MemoryError
             except (gdb.MemoryError, ValueError, OverflowError):
-                err("Read error {:#x}".format(addr))
+                err("Read error {:#x}".format(current))
                 return None
             # count
             idx = data.find(b"\0")
@@ -149598,11 +149635,14 @@ class SequenceLengthCommand(GenericCommand):
             # read
             try:
                 if phys_mode:
-                    data += read_physmem(current, read_size)
+                    chunk = read_physmem(current, read_size)
                 else:
-                    data += read_memory(current, read_size)
+                    chunk = read_memory(current, read_size)
+                if chunk is None or len(chunk) != read_size:
+                    raise gdb.MemoryError
+                data += chunk
             except (gdb.MemoryError, ValueError, OverflowError):
-                err("Read error {:#x}".format(addr))
+                err("Read error {:#x}".format(current))
                 return None
             # init target
             if target is None:
@@ -174362,7 +174402,7 @@ class XphysAddrCommand(GenericCommand):
 
     @staticmethod
     def parse_type_unit_count(fmt):
-        m = re.search(r"/(\d*)([xibhwg]*)", fmt)
+        m = re.fullmatch(r"/(\d*)([xibhwg]*)", fmt)
         if not m:
             return None
 
