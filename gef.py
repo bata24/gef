@@ -31590,8 +31590,8 @@ class GlibcHeapSnapshotCompareCommand(GenericCommand, BufferingOutput):
 
         start_offset_list1 = {c["start_offset"] for c in info1["chunks"]}
         start_offset_list2 = {c["start_offset"] for c in info2["chunks"]}
-        end_offset_list1 = {c["end_offset"] for c in info1["chunks"]}
-        end_offset_list2 = {c["end_offset"] for c in info2["chunks"]}
+        end_offset_list1 = {c["end_offset"] for c in info1["chunks"] if c["size"] != 0}
+        end_offset_list2 = {c["end_offset"] for c in info2["chunks"] if c["size"] != 0}
         if self.args.extra:
             prefix_blank = " " * (AddressUtil.get_format_address_width() + 18)
             fwidth = (double_ptrsize + 2) * 2 + 7 + double_ptrsize
@@ -31600,12 +31600,16 @@ class GlibcHeapSnapshotCompareCommand(GenericCommand, BufferingOutput):
 
         used_dict1 = self.LightRangeDict()
         used_dict1.setdefault(False)
-        for ch in info1["chunks"]:
-            used_dict1.add(ch["start_offset"], ch["start_offset"] + ch["size"], ch["used"])
         used_dict2 = self.LightRangeDict()
         used_dict2.setdefault(False)
-        for ch in info2["chunks"]:
-            used_dict2.add(ch["start_offset"], ch["start_offset"] + ch["size"], ch["used"])
+        for index, (info, used_dict) in enumerate(((info1, used_dict1), (info2, used_dict2)), 1):
+            for ch in info["chunks"]:
+                if ch["size"] == 0:
+                    self.warn_add_out("Snapshot {:d}: zero-size chunk at {:#x} (offset {:+#x}); heap walk stopped".format(
+                        index, info["heap_base"] + ch["start_offset"], ch["start_offset"],
+                    ))
+                    continue
+                used_dict.add(ch["start_offset"], ch["start_offset"] + ch["size"], ch["used"])
 
         def to_ascii(v):
             s = ""
