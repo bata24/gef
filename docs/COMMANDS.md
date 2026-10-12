@@ -13458,14 +13458,16 @@ Dump memory regions for qemu-system.
 ### Syntax
 
 ```text
-usage: qemu-system-memory-region-dump [-h] [-s] [--meta] [-n] [-q]
+usage: qemu-system-memory-region-dump [-h] [-s] [--meta] [--qemu-version VERSION] [-n] [-q]
 
 options:
-  -h, --help      show this help message and exit
-  -s, --smart     show unique ops with read/write callbacks, including attribute-aware callbacks.
-  --meta          display offset information.
-  -n, --no-pager  do not use the pager.
-  -q, --quiet     enable quiet mode.
+  -h, --help            show this help message and exit
+  -s, --smart           show unique ops with read/write callbacks, including attribute-aware callbacks.
+  --meta                display offset information.
+  --qemu-version VERSION
+                        QEMU version when debug information is unavailable.
+  -n, --no-pager        do not use the pager.
+  -q, --quiet           enable quiet mode.
 ```
 
 # 99. GEF Maintenance Command

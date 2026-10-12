@@ -102,6 +102,7 @@ import math
 import os
 import re
 import shlex
+import stat
 import struct
 import subprocess
 import sys
@@ -7291,15 +7292,14 @@ class Checksec:
             addr = sp + current_arch.ptrsize * i
             mem[addr] = read_memory(addr, current_arch.ptrsize)
 
-        res = gdb.execute("call-syscall arch_prctl 0x3001 {:#x}".format(sp), to_string=True) # ARCH_CET_STATUS
-        output_line = res.splitlines()[-1]
-        ret = int(output_line.split()[2], 0)
-
-        sp_value = read_int_from_memory(sp)
-
-        # revert
-        for addr, data in mem.items():
-            write_memory(addr, data)
+        try:
+            res = gdb.execute("call-syscall arch_prctl 0x3001 {:#x}".format(sp), to_string=True) # ARCH_CET_STATUS
+            output_line = res.splitlines()[-1]
+            ret = int(output_line.split()[2], 0)
+            sp_value = read_int_from_memory(sp)
+        finally:
+            for addr, data in mem.items():
+                write_memory(addr, data)
 
         # check ret
         if ret != 0:
@@ -7319,15 +7319,14 @@ class Checksec:
             addr = sp + current_arch.ptrsize * i
             mem[addr] = read_memory(addr, current_arch.ptrsize)
 
-        res = gdb.execute("call-syscall arch_prctl 0x5005 {:#x}".format(sp), to_string=True) # ARCH_SHSTK_STATUS
-        output_line = res.splitlines()[-1]
-        ret = int(output_line.split()[2], 0)
-
-        sp_value = read_int_from_memory(sp)
-
-        # revert
-        for addr, data in mem.items():
-            write_memory(addr, data)
+        try:
+            res = gdb.execute("call-syscall arch_prctl 0x5005 {:#x}".format(sp), to_string=True) # ARCH_SHSTK_STATUS
+            output_line = res.splitlines()[-1]
+            ret = int(output_line.split()[2], 0)
+            sp_value = read_int_from_memory(sp)
+        finally:
+            for addr, data in mem.items():
+                write_memory(addr, data)
 
         if ret != 0:
             return None
@@ -7337,6 +7336,8 @@ class Checksec:
     @Cache.cache_until_next
     def get_cet_status_via_procfs():
         # https://www.kernel.org/doc/html/next/arch/x86/shstk.html
+        if is_core_file():
+            return None
         dic = {}
         pid = Pid.get_pid(remote=True) if is_remote_debug() else Pid.get_pid()
         if not pid:
@@ -7348,16 +7349,20 @@ class Checksec:
                 return None
         else:
             local_status = "/proc/{:d}/status".format(pid)
-            with open(local_status, "rb") as fd:
-                data = fd.read()
+            try:
+                with open(local_status, "rb") as fd:
+                    data = fd.read()
+            except OSError:
+                return None
             if not data:
                 return None
 
         if b"x86_Thread_features:" not in data:
             return False # unsupported
 
-        dic["shstk"] = b"x86_Thread_features: shstk" in data
-        dic["shstk lock"] = b"x86_Thread_features_locked: shstk" in data
+        features = dict(line.split(b":", 1) for line in data.splitlines() if b":" in line)
+        dic["shstk"] = b"shstk" in features.get(b"x86_Thread_features", b"").split()
+        dic["shstk lock"] = b"shstk" in features.get(b"x86_Thread_features_locked", b"").split()
         return dic
 
     @staticmethod
@@ -14340,7 +14345,7 @@ def get_register(regname, use_mbed_exec=False, use_monitor=False):
     return None
 
 
-@Cache.cache_this_session(cache_None=False)
+@Cache.cache_this_session(cache_None=False, per_inferior=True)
 def is_remote_debug():
     """GDB mode determination function for remote debugging."""
     if not is_alive():
@@ -14401,7 +14406,7 @@ def is_container_attach():
     return False
 
 
-@Cache.cache_this_session(cache_None=False)
+@Cache.cache_this_session(cache_None=False, per_inferior=True)
 def is_core_file():
     """GDB mode determination function for core file."""
     if not is_alive():
@@ -14573,19 +14578,23 @@ def is_qiling():
     return False
 
 
-@Cache.cache_this_session(cache_None=False)
+@Cache.cache_this_session(cache_None=False, per_inferior=True)
 def is_rr():
     """GDB mode determination function for rr."""
     if not is_alive():
         return None
+    if is_core_file():
+        return False
     return Pid.get_pid_from_tcp_session(filepath="rr") is not None
 
 
-@Cache.cache_this_session(cache_None=False)
+@Cache.cache_this_session(cache_None=False, per_inferior=True)
 def is_wine():
     """GDB mode determination function for winedbg."""
     if not is_alive():
         return None
+    if is_core_file():
+        return False
     return Pid.get_pid_from_tcp_session(filepath="wineserver") is not None
 
 
@@ -14895,6 +14904,8 @@ class Pid:
         """Return the PID of the debuggee process."""
         if not is_alive():
             return None
+        if is_core_file():
+            return (gdb.selected_inferior().pid or None) if remote else None
         if is_pin():
             return Pid.get_pid_from_tcp_session()
         elif is_qemu_user() or is_qemu_system():
@@ -15130,7 +15141,7 @@ class ProcessMap:
     # Fortunately, memory maps rarely change.
     # The cache is cleared and rechecked when the `vmmap` command is called explicitly.
     @staticmethod
-    @Cache.cache_this_session(cache_None=False)
+    @Cache.cache_this_session(cache_None=False, per_inferior=True)
     def get_explored_regions():
         """Return sections from auxv exploring."""
 
@@ -15341,11 +15352,13 @@ class ProcessMap:
                 return filepath
             return Path.get_remote_filepath()
 
-        def parse_region_from_link_map(link_map):
+        def parse_region_from_link_map(link_map, codebase):
             current = link_map
             new_regions = []
             while True:
                 l_addr = read_int_from_memory(current + current_arch.ptrsize * 0)
+                if current == link_map and not l_addr:
+                    l_addr = codebase
                 l_name = read_int_from_memory(current + current_arch.ptrsize * 1)
                 l_next = read_int_from_memory(current + current_arch.ptrsize * 3)
                 name = read_cstring_from_memory(l_name)
@@ -15368,7 +15381,7 @@ class ProcessMap:
             # plan1: from link_map info (code, all loaded shared library)
             link_map = get_link_map(codebase)
             if link_map:
-                new_regions += parse_region_from_link_map(link_map)
+                new_regions += parse_region_from_link_map(link_map, codebase)
 
             # plan2: use each auxv info (for code, linker)
             else:
@@ -15485,7 +15498,7 @@ class ProcessMap:
         maps = []
         for line in res.splitlines()[4:]:
             line = line.strip()
-            addr_start, addr_end, size, offset, perm, *path = line.split()
+            addr_start, addr_end, size, offset, perm, *path = line.split(None, 5)
             addr_start = int(addr_start, 16)
             addr_end = int(addr_end, 16)
             size = int(size, 16)
@@ -15502,32 +15515,34 @@ class ProcessMap:
             maps.append(sect)
         return maps
 
-    __gef_use_info_proc_mappings__ = None # the flag to use `info proc mappings`
+    __gef_use_info_proc_mappings__ = None # override automatic capability detection
+
+    @staticmethod
+    @Cache.cache_this_session(per_inferior=True, until_new_objfile=True)
+    def supports_info_proc_mappings():
+        try:
+            res = gdb.execute("info proc mappings", to_string=True)
+            return "warning" not in res and "Perms" in res
+        except gdb.error:
+            return False
 
     @staticmethod
     def get_process_maps_heuristic():
         if Config.get("context.disable_vmmap"):
             return []
 
-        if ProcessMap.__gef_use_info_proc_mappings__ is None:
-            try:
-                res = gdb.execute("info proc mappings", to_string=True)
-                if "warning" in res:
-                    ProcessMap.__gef_use_info_proc_mappings__ = False
-                elif "Perms" not in res: # xtensa-linux-gdb
-                    ProcessMap.__gef_use_info_proc_mappings__ = False
-                else: # for core files
-                    ProcessMap.__gef_use_info_proc_mappings__ = True
-            except gdb.error:
-                ProcessMap.__gef_use_info_proc_mappings__ = False
+        use_info_proc = ProcessMap.__gef_use_info_proc_mappings__
+        if use_info_proc is None:
+            use_info_proc = ProcessMap.supports_info_proc_mappings()
 
         # fast path
-        if ProcessMap.__gef_use_info_proc_mappings__ is True:
-            res = ProcessMap.get_process_maps_from_info_proc() # don't use cache
+        if use_info_proc:
+            try:
+                res = ProcessMap.get_process_maps_from_info_proc() # don't use cache
+            except (gdb.error, ValueError):
+                res = []
             if res:
                 return res
-            # something is wrong
-            ProcessMap.__gef_use_info_proc_mappings__ = False
 
         # slow path
         return ProcessMap.get_explored_regions() or [] # use cache
@@ -19200,10 +19215,16 @@ class ArgvCommand(GenericCommand, BufferingOutput):
         return
 
     def dump_proc_cmdline(self):
-        if is_remote_debug():
+        if is_remote_debug() or is_core_file():
             return
-        self.out.append(titlify("ARGV from /proc/{:d}/cmdline".format(Pid.get_pid())))
-        self.print_from_proc("/proc/{:d}/cmdline".format(Pid.get_pid()))
+        pid = Pid.get_pid()
+        if pid is None:
+            return
+        self.out.append(titlify("ARGV from /proc/{:d}/cmdline".format(pid)))
+        try:
+            self.print_from_proc("/proc/{:d}/cmdline".format(pid))
+        except OSError as e:
+            self.warn_add_out("Could not read process arguments: {}".format(e))
         return
 
     @Decorator.parse_args
@@ -19324,10 +19345,16 @@ class EnvpCommand(GenericCommand, BufferingOutput):
         return
 
     def dump_proc_environ(self):
-        if is_remote_debug():
+        if is_remote_debug() or is_core_file():
             return
-        self.out.append(titlify("ENVP from /proc/{:d}/environ".format(Pid.get_pid())))
-        self.print_from_proc("/proc/{:d}/environ".format(Pid.get_pid()))
+        pid = Pid.get_pid()
+        if pid is None:
+            return
+        self.out.append(titlify("ENVP from /proc/{:d}/environ".format(pid)))
+        try:
+            self.print_from_proc("/proc/{:d}/environ".format(pid))
+        except OSError as e:
+            self.warn_add_out("Could not read process environment: {}".format(e))
         return
 
     @Decorator.parse_args
@@ -20245,6 +20272,9 @@ class PidCommand(GenericCommand):
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     def do_invoke(self, args):
+        if is_core_file():
+            gef_print("Core PID: {:d}".format(Pid.get_pid(remote=True)))
+            return
         pid = Pid.get_pid()
         if pid:
             if is_qemu_user() or is_qemu_system():
@@ -20423,10 +20453,13 @@ class ProcInfoCommand(GenericCommand):
             return "Not found"
 
         def get_major_minor(name):
-            devnum = os.stat(name).st_rdev
-            major = (devnum >> 8) & 0xff
-            minor = devnum & 0xff
-            return major, minor
+            try:
+                device = os.stat(name)
+            except OSError:
+                return None
+            if stat.S_ISCHR(device.st_mode):
+                return os.major(device.st_rdev), os.minor(device.st_rdev)
+            return None
 
         if not os.path.exists(name):
             return "Not found"
@@ -20434,9 +20467,8 @@ class ProcInfoCommand(GenericCommand):
         if os.path.islink(name):
             return "Not found"
 
-        if os.path.isfile(name):
-            if get_major_minor(name) == (major, minor):
-                return name
+        if get_major_minor(name) == (major, minor):
+            return name
 
         if os.path.isdir(name):
             for path in GefUtil.walk(name):
@@ -20786,7 +20818,7 @@ class ProcInfoCommand(GenericCommand):
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.only_if_gdb_target_local
-    @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "rr"))
+    @Decorator.exclude_specific_gdb_mode(mode=("core", "qemu-system", "kgdb", "vmware", "rr"))
     def do_invoke(self, args):
         self.show_info_proc()
         self.show_info_proc_extra()
@@ -20831,7 +20863,7 @@ class FileDescriptorsCommand(GenericCommand):
 
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
-    @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @Decorator.exclude_specific_gdb_mode(mode=("core", "qemu-system", "kgdb", "vmware", "wine"))
     @Decorator.require_arch_set
     def do_invoke(self, args):
         self.fd_dump()
@@ -21096,6 +21128,9 @@ class ProcDumpCommand(GenericCommand, BufferingOutput):
 
     def proc_dump(self):
         pid = Pid.get_pid()
+        if pid is None:
+            err("Could not find the local pid")
+            return
         for root, dirs, files in os.walk("/proc/{:d}/".format(pid)):
             files = sorted(files)
 
@@ -21172,7 +21207,7 @@ class ProcDumpCommand(GenericCommand, BufferingOutput):
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.only_if_gdb_target_local
-    @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware"))
+    @Decorator.exclude_specific_gdb_mode(mode=("core", "qemu-system", "kgdb", "vmware"))
     @Decorator.require_arch_set
     def do_invoke(self, args):
         self.out = []
@@ -32907,7 +32942,7 @@ class ChecksecCommand(GenericCommand):
             return
         if not is_alive():
             return
-        if is_rr():
+        if is_rr() or is_core_file():
             return
 
         # Intel CET SHSTK status via arch_prctl
@@ -33163,9 +33198,9 @@ class ChecksecCommand(GenericCommand):
         return
 
     def check_system_ASLR(self):
-        if is_remote_debug():
+        if is_remote_debug() or is_core_file():
             msg = Color.grayify("Unknown")
-            gef_print("{:<40s}: {:s} (remote process)".format("System-ASLR", msg))
+            gef_print("{:<40s}: {:s} (remote process or core file)".format("System-ASLR", msg))
         else:
             try:
                 system_aslr = int(open("/proc/sys/kernel/randomize_va_space").read())
@@ -33184,9 +33219,9 @@ class ChecksecCommand(GenericCommand):
         return
 
     def check_gdb_ASLR(self):
-        if is_attach() or is_remote_debug():
+        if is_attach() or is_remote_debug() or is_core_file():
             msg = Color.grayify("Ignored")
-            gef_print("{:<40s}: {:s} (attached or remote process)".format("GDB ASLR setting", msg))
+            gef_print("{:<40s}: {:s} (attached, remote process or core file)".format("GDB ASLR setting", msg))
         else:
             ret = gdb.parameter("disable-randomization")
             if ret is True:
@@ -33393,14 +33428,14 @@ class ChecksecCommand(GenericCommand):
             err("File name could not be determined")
             return
 
-        runtime = args.file is None
+        runtime = args.file is None and not is_core_file()
         if args.file:
             if args.remote:
                 runtime = remote_filepath == Path.get_remote_filepath()
             else:
                 current_filepath = Path.get_filepath()
                 if current_filepath and os.path.isfile(current_filepath) and os.path.isfile(local_filepath):
-                    runtime = os.path.samefile(local_filepath, current_filepath)
+                    runtime = os.path.samefile(local_filepath, current_filepath) and not is_core_file()
         self.print_security_properties(local_filepath, runtime=runtime)
 
         if tmp_filepath and os.path.exists(tmp_filepath):
@@ -43822,7 +43857,8 @@ class VMMapCommand(GenericCommand, BufferingOutput):
 
         # warning message
         if is_qemu_user() and not args.outer:
-            if ProcessMap.__gef_use_info_proc_mappings__ is False:
+            if (ProcessMap.__gef_use_info_proc_mappings__ is False
+                    or (ProcessMap.__gef_use_info_proc_mappings__ is None and not ProcessMap.supports_info_proc_mappings())):
                 self.info_add_out("Some areas may be undetectable due to heuristic search (auxv, registers, stack)")
                 self.info_add_out("Permissions use ELF header or default rw-; dynamic changes undetectable")
 
@@ -161511,6 +161547,22 @@ class Ksym:
                                if addr >= start and (typ or "").lower() != "a"), default=start) + 1
                 ranges.append((start, end))
 
+                if current_arch.arch == "RISCV":
+                    head = min(kallsyms_map.get("_start", [start]))
+                    if head < start:
+                        ranges.append((head, start))
+
+            if is_arm32():
+                for base, prefix in ((0xffff0000, "__vectors"), (0xffff1000, "__stubs")):
+                    code = [addr for addr, name, typ in kallsyms
+                            if base <= addr < base + 0x1000 and (typ or "").lower() == "t"]
+                    if not code:
+                        continue
+                    low = next(iter(kallsyms_map.get(prefix + "_start", [])), None)
+                    high = next(iter(kallsyms_map.get(prefix + "_end", [])), None)
+                    end = base + high - low if low is not None and high is not None and low < high else max(code) + 1
+                    ranges.append((min(code), min(end, base + 0x1000)))
+
             start = next(iter(kallsyms_map.get("__per_cpu_start", [])), None)
             end = next(iter(kallsyms_map.get("__per_cpu_end", [])), None)
             percpu = start is not None and end is not None and start < end
@@ -185111,13 +185163,14 @@ class QemuMemoryRegionDumpCommand(GenericCommand, BufferingOutput):
     parser.add_argument("-s", "--smart", action="store_true",
                         help="show unique ops with read/write callbacks, including attribute-aware callbacks.")
     parser.add_argument("--meta", action="store_true", help="display offset information.")
+    parser.add_argument("--qemu-version", metavar="VERSION", help="QEMU version when debug information is unavailable.")
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
     parser.add_argument("-q", "--quiet", action="store_true", help="enable quiet mode.")
     _syntax_ = parser.format_help()
 
     def get_rw_map(self):
         filepath = Path.get_filepath(append_proc_root_prefix=False)
-        maps = ProcessMap.get_process_maps_linux(Pid.get_pid())
+        maps = ProcessMap.get_process_maps()
         RW = Permission.READ | Permission.WRITE
         rw_maps = []
         for m in maps:
@@ -185254,7 +185307,7 @@ class QemuMemoryRegionDumpCommand(GenericCommand, BufferingOutput):
         return self.get_memory_region("I/O")
 
     @Cache.cache_this_session(cache_None=False, per_inferior=True, until_new_objfile=True)
-    def initialize(self):
+    def initialize(self, qemu_version=None):
         self.meta = []
         self.callback_offsets = {}
         self.offset_endianness = GefUtil.offsetof("MemoryRegionOps", "endianness")
@@ -185285,12 +185338,23 @@ class QemuMemoryRegionDumpCommand(GenericCommand, BufferingOutput):
                 return None
             self.meta.append((self.quiet_info_add_out, "MemoryRegionOps layout: debug information"))
         else:
-            try:
-                binary = "/proc/{:d}/exe".format(Pid.get_pid())
-                version = GefUtil.gef_execute_external([binary, "--version"])
-            except (OSError, subprocess.CalledProcessError, TypeError) as e:
-                self.meta.append((self.quiet_err, "Could not determine QEMU callback layout: {}".format(e)))
-                return None
+            if qemu_version is not None:
+                if re.fullmatch(r"\d+\.\d+(?:\.\d+)?", qemu_version) is None:
+                    self.meta.append((self.quiet_err, "Invalid QEMU version; use MAJOR.MINOR or MAJOR.MINOR.PATCH"))
+                    return None
+                version = "QEMU emulator version " + qemu_version
+            else:
+                pid = Pid.get_pid() if not is_remote_debug() and not is_core_file() else None
+                if pid is None:
+                    self.meta.append((self.quiet_err,
+                                      "Could not determine QEMU version; use --qemu-version or load debug information"))
+                    return None
+                try:
+                    binary = "/proc/{:d}/exe".format(pid)
+                    version = GefUtil.gef_execute_external([binary, "--version"])
+                except (OSError, subprocess.CalledProcessError) as e:
+                    self.meta.append((self.quiet_err, "Could not determine QEMU callback layout: {}".format(e)))
+                    return None
             match = re.search(r"QEMU emulator version (\d+)\.(\d+)", version)
             if match is None:
                 self.meta.append((self.quiet_err, "Could not determine QEMU version; load debug information"))
@@ -185375,6 +185439,9 @@ class QemuMemoryRegionDumpCommand(GenericCommand, BufferingOutput):
                 return None
             if handler:
                 section = ProcessMap.lookup_address(handler).section
+                if section is not None and section.is_readable() and not section.is_executable() and is_ppc64():
+                    entry = read_int_from_memory(handler, safe=True)
+                    section = ProcessMap.lookup_address(entry).section if entry else None
                 if section is None or not section.is_executable():
                     return None
             handlers[field] = handler
@@ -185480,7 +185547,11 @@ class QemuMemoryRegionDumpCommand(GenericCommand, BufferingOutput):
     @Decorator.require_arch_set
     def do_invoke(self, args):
         self.out = []
-        ret = self.initialize()
+        layout_context = (Cache.inferior_context(), args.qemu_version)
+        if getattr(self, "layout_context", None) != layout_context:
+            Cache.clear_cache_for(self.initialize)
+        self.layout_context = layout_context
+        ret = self.initialize(args.qemu_version)
         if args.meta or not ret:
             for func, line in self.meta:
                 func(line)
@@ -185619,8 +185690,7 @@ class StringsContinueCommand(GenericCommand):
                         break
 
                     self.dump_new_strings(seen, previous_registers, args.min_length, args.max_length)
-                    if isinstance(stop_event, gdb.SignalEvent) or (isinstance(stop_event, gdb.BreakpointEvent) and any(
-                            not isinstance(bp, SimpleInternalTemporaryBreakpoint) for bp in stop_event.breakpoints)):
+                    if ExecUntilCommand.is_user_stop(stop_event):
                         stopped = True
                         break
         except KeyboardInterrupt:
@@ -185854,22 +185924,30 @@ class ExecUntilCommand(GenericCommand):
             return False
         return ExecUntilMemaccessCommand.is_memory_access(insn)
 
+    @staticmethod
+    def is_user_stop(event):
+        if isinstance(event, gdb.SignalEvent):
+            return True
+        reason = getattr(event, "details", {}).get("reason")
+        if reason in ("end-stepping-range", "function-finished"):
+            return False
+        if isinstance(event, gdb.BreakpointEvent):
+            return any(not isinstance(bp, (SimpleInternalTemporaryBreakpoint, SecondBreakpoint))
+                       for bp in event.breakpoints)
+        if reason is not None:
+            return True
+        try:
+            res = gdb.execute("info program", to_string=True)
+        except gdb.error:
+            return True
+        return "It stopped after being stepped." not in res
+
     def exec_step(self, command, insn=None):
         if insn and command in ("si", "ni") and self.requires_continue(insn):
             command = "xuntil"
         self.stop_event = None
         gdb.execute(command)
-        if not is_alive():
-            return True
-        if isinstance(self.stop_event, gdb.SignalEvent):
-            return True
-        reason = getattr(self.stop_event, "details", {}).get("reason")
-        if reason in ("end-stepping-range", "function-finished"):
-            return False
-        if isinstance(self.stop_event, gdb.BreakpointEvent):
-            return any(not isinstance(bp, (SimpleInternalTemporaryBreakpoint, SecondBreakpoint))
-                       for bp in self.stop_event.breakpoints)
-        return reason is not None
+        return not is_alive() or ExecUntilCommand.is_user_stop(self.stop_event)
 
     def exec_next(self):
         EventHooking.gef_on_stop_unhook(EventHandler.hook_stop_handler)
