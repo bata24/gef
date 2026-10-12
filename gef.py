@@ -22659,6 +22659,19 @@ class SearchPatternCommand(GenericCommand):
             return None
         return mem
 
+    @staticmethod
+    def find_hex_matches(pattern, mem):
+        regex = re.compile(pattern)
+        pos = 0
+        while pos <= len(mem):
+            for match in regex.finditer(mem, pos):
+                if match.start() % 2:
+                    pos = match.start() + 1
+                    break
+                yield match
+            else:
+                break
+
     def search_pattern_by_address(self, pattern, start_address, end_address):
         """Search for a pattern within a range defined by arguments."""
         if isinstance(pattern, str):
@@ -22726,10 +22739,9 @@ class SearchPatternCommand(GenericCommand):
                 # fall through
 
             # normal case
-            for match in re.finditer(pattern, mem):
+            matches = self.find_hex_matches(pattern, mem) if self.args.hex_regex else re.finditer(pattern, mem)
+            for match in matches:
                 if self.args.hex_regex:
-                    if match.start() % 2:
-                        continue
                     start_pos = match.start() // 2
                 else:
                     start_pos = match.start()
