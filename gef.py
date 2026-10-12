@@ -96195,7 +96195,8 @@ class KernelOperationsCommand(GenericCommand, BufferingOutput):
     _example_ = "\n".join(_example_).format(_cmdline_)
 
     _note_ = [
-        "This command requires CONFIG_RANDSTRUCT=n.",
+        "Reading values requires debug information or a known kernel config for conditional members.",
+        "Without debug information, CONFIG_RANDSTRUCT=n is required.",
         "",
         "Currently it supports from 3.0 to 7,0-rc7.",
         "",
@@ -97182,6 +97183,52 @@ class KernelOperationsCommand(GenericCommand, BufferingOutput):
         assert set(members.keys()) == set(self.types)
         return members
 
+    def get_layout(self, name, members):
+        struct_type = GefUtil.cached_lookup_type("struct " + name)
+        if struct_type is not None and GefUtil.type_size(struct_type):
+            layout = []
+            for field in struct_type.fields():
+                offset = GefUtil.member_offset(struct_type, field.name)
+                size = GefUtil.type_size(field.type)
+                if offset is None or size not in (1, 2, 4, 8):
+                    err("Unsupported member: {:s}.{:s}".format(name, field.name or "<anonymous>"))
+                    return None
+                typ = field.type.strip_typedefs()
+                type_name = str(typ)
+                if typ.code == gdb.TYPE_CODE_PTR:
+                    target = typ.target().strip_typedefs()
+                    if target.code == gdb.TYPE_CODE_FUNC:
+                        type_name = "func_ptr"
+                    elif target.code == gdb.TYPE_CODE_INT and target.sizeof == 1:
+                        type_name = "char*"
+                    else:
+                        type_name = "ptr"
+                layout.append((type_name, field.name, offset, size))
+            return layout
+
+        configs = __gef_command_instances__["kconfig"].get_configs()
+        if configs and any(configs.get(key) == "y" for key in ("CONFIG_RANDSTRUCT", "CONFIG_GCC_PLUGIN_RANDSTRUCT")):
+            err("CONFIG_RANDSTRUCT requires debug information; load matching types with ktypes-load")
+            return None
+
+        layout = []
+        offset = 0
+        for type_names, name in members:
+            condition = re.search(r" \((CONFIG_\w+)=y\)$", name)
+            if condition:
+                if configs is None:
+                    err("Unknown {:s}; load matching types with ktypes-load".format(condition.group(1)))
+                    return None
+                if configs.get(condition.group(1), "n") not in ("y", "m"):
+                    continue
+                name = name[:condition.start()]
+            for type_name, member in zip(type_names.split(", "), name.split(", ")):
+                size = {"int": 4, "bool": 1}.get(type_name, current_arch.ptrsize)
+                offset = align(offset, min(size, current_arch.ptrsize))
+                layout.append((type_name, member, offset, size))
+                offset += size
+        return layout
+
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
@@ -97210,6 +97257,11 @@ class KernelOperationsCommand(GenericCommand, BufferingOutput):
         if members_table is None:
             return
         members = members_table[args.name]
+        if args.address:
+            layout = self.get_layout(args.name, members)
+            if layout is None:
+                return
+            members = [(type_name, name) for type_name, name, offset, size in layout]
         if not members:
             warn("Not defined in this version")
             return
@@ -97230,7 +97282,8 @@ class KernelOperationsCommand(GenericCommand, BufferingOutput):
             # get name width
             name_width = max(len(m[1]) for m in members)
             try:
-                addrs = [read_int_from_memory(args.address + current_arch.ptrsize * i) for i in range(len(members))]
+                addrs = [GefUtil.get_unpack(size)(read_memory(args.address + offset, size))
+                         for type_name, name, offset, size in layout]
             except gdb.MemoryError:
                 self.quiet_err("Memory read error")
                 return
@@ -97244,10 +97297,12 @@ class KernelOperationsCommand(GenericCommand, BufferingOutput):
             # each entries
             width = AddressUtil.get_format_address_width()
             for idx, ((type_name, name), address) in enumerate(zip(members, addrs)):
-                if type_name == "char*":
+                if type_name == "char*" and address:
                     sym = " {!r}".format(read_cstring_from_memory(address))
-                else:
+                elif type_name in ("func_ptr", "ptr"):
                     sym = Symbol.get_symbol_string(address)
+                else:
+                    sym = ""
                 self.out.append("{:<5d} {:10s} {:{:d}s} {:#0{:d}x}{:s}".format(
                     idx, type_name, name, name_width, address, width, sym,
                 ))

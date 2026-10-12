@@ -10450,7 +10450,8 @@ kops -V 6.6.0 file_operations
 ### Notes
 
 ```text
-This command requires CONFIG_RANDSTRUCT=n.
+Reading values requires debug information or a known kernel config for conditional members.
+Without debug information, CONFIG_RANDSTRUCT=n is required.
 
 Currently it supports from 3.0 to 7,0-rc7.
 
