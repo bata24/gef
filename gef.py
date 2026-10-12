@@ -1959,7 +1959,7 @@ class AddressUtil:
             # goto next
             if phys and len(addr_list) == 1:
                 mem = read_physmem(addr, current_arch.ptrsize)
-                unpack = {2:u16, 4:u32, 8:u64}[current_arch.ptrsize]
+                unpack = GefUtil.get_unpack()
                 addr = unpack(mem)
             else:
                 addr = read_int_from_memory(addr, safe=True)
@@ -5665,10 +5665,7 @@ class GlibcHeap:
                     except gdb.MemoryError:
                         pass
             if self.header:
-                if self.ptrsize == 8:
-                    unpack = u64
-                else:
-                    unpack = u32
+                unpack = GefUtil.get_unpack(self.ptrsize)
                 return unpack(self.header[offset:offset + self.ptrsize])
             return read_int_from_memory(addr)
 
@@ -12958,7 +12955,7 @@ def read_int_from_memory(addr, safe=False, signed=False):
         # It works even if current_arch is None
         sz = AddressUtil.get_memory_alignment()
         mem = read_memory(addr, sz)
-        unpack = {2:u16, 4:u32, 8:u64}[sz]
+        unpack = GefUtil.get_unpack(sz)
         return unpack(mem, signed)
     except Exception:
         if safe:
@@ -14048,7 +14045,7 @@ def u2i(x, bits=64):
     if bits not in (8, 16, 32, 64):
         raise ValueError("u2i: unsupported bit length: {!r}".format(bits))
     pack = {8:p8, 16:p16, 32:p32, 64:p64}[bits]
-    unpack = {8:u8, 16:u16, 32:u32, 64:u64}[bits]
+    unpack = GefUtil.get_unpack(bits // 8)
     return unpack(pack(x & ((1 << bits) - 1)), s=True)
 
 
@@ -18909,10 +18906,7 @@ class CanaryCommand(GenericCommand):
 
         gef_print(titlify("Found canaries"))
         vmmap = ProcessMap.get_process_maps_exclude_special_regions(allow_vdso=True)
-        if current_arch.ptrsize == 4:
-            unpack = u32
-        else:
-            unpack = u64
+        unpack = GefUtil.get_unpack()
         sp = current_arch.sp
         printed_flag_sp = False
         for m in vmmap:
@@ -19116,10 +19110,7 @@ class SignalHandlersCommand(GenericCommand, BufferingOutput):
     @staticmethod
     def unpack_word(data, offset):
         size = current_arch.ptrsize
-        if size == 8:
-            unpack = u64
-        else:
-            unpack = u32
+        unpack = GefUtil.get_unpack(size)
         return unpack(data[offset:offset + size])
 
     def query(self, syscall_number, signal_number, address, layout):
@@ -23414,10 +23405,7 @@ class PtrDemangleCommand(GenericCommand):
 
         start, end = relro
         ptrsize = current_arch.ptrsize
-        if ptrsize == 8:
-            unpack = u64
-        else:
-            unpack = u32
+        unpack = GefUtil.get_unpack(ptrsize)
         bits = ptrsize * 8
         candidates = []
         for addr in range(start, end, ptrsize):
@@ -30681,12 +30669,11 @@ class GlibcHeapFindFakeFastCommand(GenericCommand, BufferingOutput):
 
     def find_fake_fast(self, target_size):
         """Scan memory regions for fake fastbin chunks matching the target size and display findings."""
+        unpack = GefUtil.get_unpack()
         if is_64bit():
             mask = ~0xf
-            unpack = u64
         else:
             mask = ~0x7
-            unpack = u32
 
         if self.args.aligned:
             unit = GlibcHeap.HeapInfo.MALLOC_ALIGNMENT()
@@ -30897,10 +30884,7 @@ class GlibcHeapVisualHeapCommand(GenericCommand, BufferingOutput):
             # The decoded fd row is kept apart from the following rows.
             return (decode_fd and x[0] == 1, x[1])
 
-        if current_arch.ptrsize == 4:
-            unpack = u32
-        else:
-            unpack = u64
+        unpack = GefUtil.get_unpack()
         data = slicer(chunk.data, current_arch.ptrsize * 2)
         group_line_threshold = 8
 
@@ -43978,7 +43962,7 @@ class DereferenceCommand(GenericCommand):
 
         # read memory function
         if args.phys:
-            unpack = {2:u16, 4:u32, 8:u64}[current_arch.ptrsize]
+            unpack = GefUtil.get_unpack()
             self.read_int_from_memory = lambda x: unpack(read_physmem(x, current_arch.ptrsize))
         else:
             self.read_int_from_memory = read_int_from_memory
@@ -45703,7 +45687,7 @@ class UcontextCommand(GenericCommand):
     @staticmethod
     def unpack(data, offset, size):
         chunk = data[offset:offset + size]
-        return {2: u16, 4: u32, 8: u64}[size](chunk)
+        return GefUtil.get_unpack(size)(chunk)
 
     @staticmethod
     def format_value(value, size, kind):
@@ -69505,10 +69489,7 @@ class KernelAddressHeuristicFinder:
         if ro_end is not None and not any(base <= ro_end < base + size for base, size in scan_regions):
             scan_regions.append((ro_end, 0x100_0000))
 
-        if current_arch.ptrsize == 8:
-            unpack = u64
-        else:
-            unpack = u32
+        unpack = GefUtil.get_unpack()
         for scan_base, scan_size in scan_regions:
             try:
                 data = read_memory(scan_base, scan_size)
@@ -72198,10 +72179,7 @@ class KernelAddressHeuristicFinder:
         hooks = {a for a, name, typ in kallsyms if name.startswith("tomoyo_") and typ in "tT"}
 
         ptrsize = current_arch.ptrsize
-        if ptrsize == 4:
-            unpack = u32
-        else:
-            unpack = u64
+        unpack = GefUtil.get_unpack(ptrsize)
         window = 0x8000 # the whole `.data..ro_after_init` block of tomoyo.c fits in this
         base = (anchor & ~(ptrsize - 1)) - window # keep the window aligned to the pointer slots
         try:
@@ -74245,10 +74223,7 @@ class KernelAddressHeuristicFinder:
         Return (offset of `clk`, [(offset of `vectors`, WHEEL_SIZE), ...]), or None.
         Both WHEEL_SIZEs are returned for an empty wheel, since it cannot tell them apart."""
         ptrsize = current_arch.ptrsize
-        if ptrsize == 8:
-            unpack = u64
-        else:
-            unpack = u32
+        unpack = GefUtil.get_unpack(ptrsize)
 
         try:
             header = read_memory(timer_base, 0x200)
@@ -79540,10 +79515,7 @@ class KernelDevice:
 
         # both are in the "mem" class
         ptrsize = current_arch.ptrsize
-        if ptrsize == 8:
-            unpack = u64
-        else:
-            unpack = u32
+        unpack = GefUtil.get_unpack(ptrsize)
         start = (offset_devt + 4 + ptrsize - 1) & ~(ptrsize - 1)
         for offset in range(start, min(offset_devt + 0x100, scan_size - ptrsize), ptrsize):
             classes = {unpack(sample[offset:offset + ptrsize]) for sample in samples.values()}
@@ -94324,6 +94296,7 @@ class KernelBlockDevicesCommand(GenericCommand, BufferingOutput):
 
         # bd_disk is searched as the pointer to a gendisk which covers bd_dev
         scan_size = 0x800
+        unpack = GefUtil.get_unpack(ptrsize)
         votes = {}
         for bdev in samples[:32]:
             try:
@@ -94331,7 +94304,7 @@ class KernelBlockDevicesCommand(GenericCommand, BufferingOutput):
             except gdb.MemoryError:
                 continue
             for offset_disk in range(0, scan_size, ptrsize):
-                gd = self.read_gendisk(u64(data[offset_disk:offset_disk + 8]) if ptrsize == 8 else u32(data[offset_disk:offset_disk + 4]))
+                gd = self.read_gendisk(unpack(data[offset_disk:offset_disk + ptrsize]))
                 if gd is None:
                     continue
                 for offset_dev in layouts:
@@ -105671,7 +105644,7 @@ class MemoryCompareCommand(GenericCommand, BufferingOutput):
         return from1data, from2data
 
     def memcmp_telescope_like(self, from1data, from2data):
-        unpack = {2:u16, 4:u32, 8:u64}[current_arch.ptrsize]
+        unpack = GefUtil.get_unpack()
         diff_found = False
         asterisk = False
 
@@ -164208,10 +164181,7 @@ class TcmallocHeapDumpCommand(GenericCommand, BufferingOutput):
                     continue
                 tail = data[-2 * ptrsize:]
                 for width in sorted({4, ptrsize}):
-                    if width == 4:
-                        unpack = u32
-                    else:
-                        unpack = u64
+                    unpack = GefUtil.get_unpack(width)
                     if width == 4:
                         pack = p32
                     else:
@@ -164312,10 +164282,7 @@ class TcmallocHeapDumpCommand(GenericCommand, BufferingOutput):
                 for current in range(current_page, current_page + pagesize, current_arch.ptrsize):
                     offset = current - current_page
                     if offset + offset_prev2 + current_arch.ptrsize <= len(x):
-                        if current_arch.ptrsize == 4:
-                            unpack = u32
-                        else:
-                            unpack = u64
+                        unpack = GefUtil.get_unpack()
                         links = ((offset_next1, self.CentralCache_offset_empty),
                                  (offset_prev1, self.CentralCache_offset_empty),
                                  (offset_next2, self.CentralCache_offset_nonempty),
@@ -164406,14 +164373,8 @@ class TcmallocHeapDumpCommand(GenericCommand, BufferingOutput):
             length_size = 4
         else:
             length_size = 2
-        if ptrsize == 4:
-            unpack = u32
-        else:
-            unpack = u64
-        if length_size == 4:
-            length_unpack = u32
-        else:
-            length_unpack = u16
+        unpack = GefUtil.get_unpack(ptrsize)
+        length_unpack = GefUtil.get_unpack(length_size)
         if length_size == 4:
             length_pack = p32
         else:
@@ -171213,10 +171174,7 @@ class JemallocBase:
 
     def is_tbins(self, tbins):
         # tcache_bin_t[] of v3/v4: tstats, low_water, lg_fill_div, ncached, avail
-        if is_32bit():
-            unpack = u32
-        else:
-            unpack = u64
+        unpack = GefUtil.get_unpack()
         data = read_memory(tbins, self.cache_bin_size * self.nbins)
         found = 0
         for i in range(self.nbins):
@@ -172169,10 +172127,7 @@ class JemallocV5(JemallocBase):
 
     def is_cache_bin_array(self, data, pos):
         ptr = self.ptrsize
-        if is_32bit():
-            unpack = u32
-        else:
-            unpack = u64
+        unpack = GefUtil.get_unpack()
         prev = None
         disabled = None
         for i in range(self.nbins):
@@ -173051,10 +173006,7 @@ class MuslHeapDumpCommand(GenericCommand, BufferingOutput):
         group_line_threshold = 8
 
         # create dump text
-        if current_arch.ptrsize == 4:
-            unpack = u32
-        else:
-            unpack = u64
+        unpack = GefUtil.get_unpack()
         width = current_arch.ptrsize * 2 + 2
         for blk, blks in itertools.groupby(data):
             repeat_count = len(list(blks))
@@ -173875,10 +173827,7 @@ class UclibcNgVisualHeapCommand(UclibcNgHeapDumpCommand, BufferingOutput):
             # The decoded fd row is kept apart from the following rows.
             return (decode_fd and x[0] == 1, x[1])
 
-        if current_arch.ptrsize == 4:
-            unpack = u32
-        else:
-            unpack = u64
+        unpack = GefUtil.get_unpack()
         display_end = max(malloc_state.top + current_arch.ptrsize * 4 - chunk.chunk_base_address, 0)
         data = slicer(chunk.data[:display_end], current_arch.ptrsize * 2)
         group_line_threshold = 8
@@ -175792,7 +175741,7 @@ class OpteeShmListCommand(GenericCommand, BufferingOutput):
             index = addr - virt_start
             if index < 0 or index + size > len(data):
                 return None
-            return {4: u32, 8: u64}[size](data[index:index + size])
+            return GefUtil.get_unpack(size)(data[index:index + size])
 
         def is_slist_head(addr, head_next, offset):
             current = head_next
@@ -176056,7 +176005,7 @@ class OpteeBgetDumpCommand(GenericCommand, BufferingOutput):
     _note_ = "\n".join(_note_)
 
     def read_word(self, addr):
-        return {4: u32, 8: u64}[self.ptrsize](read_memory(addr, self.ptrsize))
+        return GefUtil.get_unpack(self.ptrsize)(read_memory(addr, self.ptrsize))
 
     def is_readable_virt_memory(self, addr):
         if is_arm32():
@@ -202517,6 +202466,13 @@ class GefUtil:
         if GefUtil.get_x86_descriptor_mode() == "long" and base + size > AddressUtil.get_vmem_end():
             return gdb.selected_inferior().read_memory(base, size).tobytes()
         return read_memory(base, size)
+
+    @staticmethod
+    def get_unpack(size=None):
+        """Return an integer unpacker for a byte size, defaulting to the current pointer size."""
+        if size is None:
+            size = current_arch.ptrsize
+        return {1: u8, 2: u16, 4: u32, 8: u64}[size]
 
     @staticmethod
     def parse_and_eval_unsigned(expression):
