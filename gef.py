@@ -15995,7 +15995,7 @@ class EventHandler:
         """GDB event handler for exit cases."""
         Cache.reset_gef_caches(all=True)
         PatchCommand.invalidate_history(getattr(_event, "inferior", None))
-        Kernel.version_override = None
+        KernelVersion.clear_override(inferior=getattr(_event, "inferior", None))
         EventHandler.kpti_transition_active = False
         ExecAsm.queued_signals = {thread: sig for thread, sig in ExecAsm.queued_signals.items() if thread.is_valid()}
         return
@@ -16035,6 +16035,7 @@ class EventHandler:
             except (FileNotFoundError, ProcessLookupError):
                 pass
         PatchCommand.invalidate_history(connection_num=_event.connection.num)
+        KernelVersion.clear_override(connection_num=_event.connection.num)
         Cache.reset_gef_caches(all=True)
         return
 
@@ -74470,9 +74471,6 @@ KFU = KernelAddressHeuristicFinderUtil # for convenience using from python-inter
 class Kernel:
     """The entry points of the kernel specific features. The resolvers are the `Kernel*` classes."""
 
-    # overridden by `kversion VERSION`
-    version_override = None
-
     @staticmethod
     def get_ith_parameter(i, asmlinkage=False):
         if is_x86_32() and not asmlinkage:
@@ -74527,8 +74525,9 @@ class Kernel:
     @staticmethod
     def version():
         """Return the version of the running kernel, or the one specified by `kversion VERSION`."""
-        if Kernel.version_override is not None:
-            return Kernel.version_override
+        override = KernelVersion.get_override()
+        if override is not None:
+            return override
         return KernelVersion.detect()
 
     @staticmethod
@@ -75395,6 +75394,23 @@ class KernelLayout:
 
 
 class KernelVersion:
+    overrides = {}
+
+    @staticmethod
+    def get_override():
+        inferior = gdb.selected_inferior()
+        return KernelVersion.overrides.get((inferior, inferior.connection_num))
+
+    @staticmethod
+    def clear_override(inferior=None, connection_num=None):
+        if inferior is None and connection_num is None:
+            inferior = gdb.selected_inferior()
+        for context in list(KernelVersion.overrides):
+            if ((inferior is not None and context[0] == inferior)
+                    or (connection_num is not None and context[1] == connection_num)):
+                del KernelVersion.overrides[context]
+        return
+
     @staticmethod
     @Cache.cache_this_session(cache_None=False, per_inferior=True, until_new_objfile=True)
     def detect():
@@ -88442,7 +88458,7 @@ class KernelVersionCommand(GenericCommand):
     @Decorator.only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
         if args.rescan:
-            Kernel.version_override = None
+            KernelVersion.clear_override()
             Cache.reset_gef_caches(all=True)
 
         # override by user specified version
@@ -88457,7 +88473,9 @@ class KernelVersionCommand(GenericCommand):
             address = detected.address if detected is not None else 0
             version_string = (detected.version_string if detected is not None else "Linux version {:s} (user specified)".format(args.version))
             major, minor, patch = (int(value) if value is not None else 0 for value in match.groups())
-            Kernel.version_override = KernelVersion(address, version_string, major, minor, patch)
+            inferior = gdb.selected_inferior()
+            KernelVersion.overrides[inferior, inferior.connection_num] = KernelVersion(
+                address, version_string, major, minor, patch)
             Cache.reset_gef_caches(all=True)
 
         self.quiet_info("Wait for memory scan")
@@ -88469,7 +88487,7 @@ class KernelVersionCommand(GenericCommand):
         self.out = []
         if kversion.address:
             self.out.append("{:#x}: {:s}".format(kversion.address, kversion.version_string))
-        if Kernel.version_override is not None:
+        if KernelVersion.get_override() is not None:
             self.out.append("User-specified kernel version: {:s}".format(str(kversion)))
         if self.out:
             gef_print("\n".join(self.out))
