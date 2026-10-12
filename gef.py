@@ -148533,6 +148533,8 @@ class BaseNCodec:
 
     @staticmethod
     def int_to_bytes(value):
+        if value < 0:
+            raise ValueError("Negative base value")
         size = max(1, (value.bit_length() + 7) // 8)
         return value.to_bytes(size, "big")
 
@@ -148595,12 +148597,14 @@ class BaseNCodec:
         if not text:
             return b""
         if len(charset) == 16:
-            if any(char in text for char in "abcdef"):
-                charset = charset.lower()
-            elif any(char in text for char in "ABCDEF"):
-                charset = charset.upper()
+            text = text.upper()
         bits_per_char = int(math.log2(len(charset)))
         padding = len(text) - len(text.rstrip("="))
+        quantum = 8 // math.gcd(bits_per_char, 8)
+        payload = text.rstrip("=")
+        if ("=" in payload or len(text) % quantum or padding >= quantum
+                or len(payload) * bits_per_char % 8 >= bits_per_char):
+            raise ValueError("Incorrect padding")
         bits = ""
         for char in text:
             if char == "=":
@@ -148706,6 +148710,8 @@ class BaseNCodec:
 
     @staticmethod
     def decode85(text, name):
+        if name in ("base85", "base85-adobe"):
+            text = re.sub(r"[ \t\n\r\v\f]", "", text)
         if not text:
             return b""
         if name == "base85-zeromq" and len(text) % 5:
