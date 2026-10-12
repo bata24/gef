@@ -95783,7 +95783,13 @@ class KernelCharacterDevicesCommand(GenericCommand, BufferingOutput):
                 self.quiet_err("Memory read error")
                 return None
             addr = read_int_from_memory(chrdevs_i)
-            while addr and addr not in chrdev_seen:
+            while addr:
+                if addr in chrdev_seen:
+                    self.quiet_warn("Incomplete chrdevs: cycle or duplicate at {:#x}".format(addr))
+                    break
+                if len(chrdev_seen) >= 0x10000:
+                    self.quiet_warn("Incomplete chrdevs: traversal limit reached at {:#x}".format(addr))
+                    return chrdev_addrs
                 chrdev_addrs.append(addr)
                 chrdev_seen.add(addr)
                 if not is_valid_addr(addr):
@@ -95852,7 +95858,15 @@ class KernelCharacterDevicesCommand(GenericCommand, BufferingOutput):
         seen = set()
         for i in range(255):
             addr = read_int_from_memory(cdev_map_ + i * current_arch.ptrsize)
+            probe_seen = set()
             while addr:
+                if addr in probe_seen:
+                    self.quiet_warn("Incomplete cdev_map: probe cycle at {:#x} (bucket {:d})".format(addr, i))
+                    break
+                if len(probe_seen) >= 0x10000:
+                    self.quiet_warn("Incomplete cdev_map: probe traversal limit at {:#x} (bucket {:d})".format(addr, i))
+                    break
+                probe_seen.add(addr)
                 cdev = read_int_from_memory(addr + 6 * current_arch.ptrsize)
                 dev = read_int32_from_memory(addr + current_arch.ptrsize)
                 range_ = read_int_from_memory(addr + 2 * current_arch.ptrsize)
