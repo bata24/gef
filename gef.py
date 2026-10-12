@@ -97681,14 +97681,29 @@ class KernelFileSystemsCommand(GenericCommand, BufferingOutput):
             return
 
         s_instances = fs_supers
+        seen = set()
 
         # parse more
         while s_instances:
+            if s_instances in seen:
+                self.quiet_warn("Stopped at cyclic s_instances: {:#x}".format(s_instances))
+                break
+            if len(seen) >= 0x10000:
+                self.quiet_warn("Stopped at s_instances traversal limit: {:#x}".format(s_instances))
+                break
+            if not is_valid_addr(s_instances):
+                self.quiet_warn("Stopped at unreadable s_instances: {:#x}".format(s_instances))
+                break
+            seen.add(s_instances)
             super_block = s_instances - self.kfs.offset_s_instances
             # parse super_block
             self.parse_super_block(fst, super_block)
             # go to next
-            s_instances = read_int_from_memory(s_instances)
+            next_s_instances = read_int_from_memory(s_instances, safe=True)
+            if next_s_instances is None:
+                self.quiet_warn("Stopped at unreadable s_instances: {:#x}".format(s_instances))
+                break
+            s_instances = next_s_instances
         return
 
     def parse_file_systems(self):
