@@ -19931,24 +19931,30 @@ class IouringDumpCommand(GenericCommand, BufferingOutput):
         if -0x1000 < u2i(tmp, current_arch.ptrsize * 8) < 0:
             return None
 
-        # Each ExecAsm is slow on a slow remote link, so copy all mappings at once.
-        codes, dst = self.get_copy_codes(entries)
-        # A loop and `rep movsb` need a breakpoint, since stepi executes one iteration; do not resume other threads.
-        scheduler_locking = gdb.parameter("scheduler-locking")
         try:
-            gdb.execute("set scheduler-locking on", to_string=True)
-            ret = ExecAsm(codes, regs={dst: tmp}, step=len(codes), use_bp=True).exec_code()
-        finally:
-            gdb.execute("set scheduler-locking {:s}".format(scheduler_locking), to_string=True)
-
-        data = None
-        if ret["reg"][dst] == tmp + size:
+            # Each ExecAsm is slow on a slow remote link, so copy all mappings at once.
+            codes, dst = self.get_copy_codes(entries)
+            # A loop and `rep movsb` need a breakpoint, since stepi executes one iteration; do not resume other threads.
+            scheduler_locking = gdb.parameter("scheduler-locking")
             try:
-                data = read_memory(tmp, size)
-            except (gdb.error, OverflowError):
-                pass
-        ExecSyscall(syscall_table.name_table["munmap"].nr, [tmp, size]).exec_code()
-        return data
+                gdb.execute("set scheduler-locking on", to_string=True)
+                ret = ExecAsm(codes, regs={dst: tmp}, step=len(codes), use_bp=True).exec_code()
+            finally:
+                gdb.execute("set scheduler-locking {:s}".format(scheduler_locking), to_string=True)
+
+            data = None
+            if ret["reg"][dst] == tmp + size:
+                try:
+                    data = read_memory(tmp, size)
+                except (gdb.error, OverflowError):
+                    pass
+            return data
+        finally:
+            if is_alive():
+                try:
+                    ExecSyscall(syscall_table.name_table["munmap"].nr, [tmp, size]).exec_code()
+                except gdb.error as exception:
+                    warn("Failed to unmap temporary io_uring memory: {!s}".format(exception))
 
     def is_valid_ring(self, head, tail, mask, entries, max_entries):
         if entries == 0 or entries & (entries - 1) or entries > max_entries:
