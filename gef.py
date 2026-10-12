@@ -150255,17 +150255,20 @@ class IiCommand(GenericCommand):
 
 @register_command
 class ConstGrepCommand(GenericCommand):
-    """Grep for lines with #define in files under /usr/include."""
+    """Grep for lines with #define in header files (default: host /usr/include)."""
 
     _cmdline_ = "constgrep"
     _category_ = "07-b. Misc - Search"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("pattern", metavar="GREP_PATTERN", help="filter by regex.")
+    parser.add_argument("-r", "--root", metavar="DIRECTORY", default="/usr/include",
+                        help="header search directory (e.g. SYSROOT/usr/include; default: host /usr/include).")
     _syntax_ = parser.format_help()
 
     _example_ = [
         "{0:s} '__NR_*'",
+        "{0:s} -r /path/to/sysroot/usr/include '__NR_*'",
     ]
     _example_ = "\n".join(_example_).format(_cmdline_)
 
@@ -150287,8 +150290,12 @@ class ConstGrepCommand(GenericCommand):
 
     @Decorator.parse_args
     def do_invoke(self, args):
-        srcdir = "/usr/include"
+        srcdir = os.path.abspath(os.path.expanduser(args.root))
+        if not os.path.isdir(srcdir):
+            err("Could not find directory: {:s}".format(srcdir))
+            return
         pattern = re.compile(r"^\s*#\s*define\s+\S*" + args.pattern)
+        info("Header search directory: {:s}".format(srcdir))
         for path in GefUtil.walk(srcdir):
             content = self.read_normalize(path)
             if content is None:

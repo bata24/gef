@@ -13056,25 +13056,27 @@ unsigned -- -0xa0
 # 07-b. Misc - Search
 ## `constgrep`
 
-Grep for lines with #define in files under /usr/include.
+Grep for lines with #define in header files (default: host /usr/include).
 
 
 ### Syntax
 
 ```text
-usage: constgrep [-h] GREP_PATTERN
+usage: constgrep [-h] [-r DIRECTORY] GREP_PATTERN
 
 positional arguments:
-  GREP_PATTERN  filter by regex.
+  GREP_PATTERN          filter by regex.
 
 options:
-  -h, --help    show this help message and exit
+  -h, --help            show this help message and exit
+  -r, --root DIRECTORY  header search directory (e.g. SYSROOT/usr/include; default: host /usr/include).
 ```
 
 ### Examples
 
 ```gdb
 constgrep '__NR_*'
+constgrep -r /path/to/sysroot/usr/include '__NR_*'
 ```
 
 # 07-c. Misc - Generation
