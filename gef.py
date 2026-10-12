@@ -149890,12 +149890,12 @@ class SaveOutputCommand(GenericCommand):
         try:
             Config.set("gef.always_no_pager", True) # change temporarily
             current_output = Color.remove_color(gdb.execute(cmd, to_string=True))
-            Config.set("gef.always_no_pager", always_no_pager) # revert settings
         except gdb.error:
-            Config.set("gef.always_no_pager", always_no_pager) # revert settings
             exc_type, exc_value, exc_traceback = sys.exc_info()
             gef_print(exc_value)
             return
+        finally:
+            Config.set("gef.always_no_pager", always_no_pager) # revert settings
 
         # remove clear_screen code
         if current_output.startswith("\x1b[H\x1b[2J"):
