@@ -147447,11 +147447,14 @@ class JsonMemoryCommand(JsonCommand):
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("location", metavar="LOCATION", type=AddressUtil.parse_address,
                         help="start address for json.")
+    parser.add_argument("-r", "--max-read", type=AddressUtil.parse_address, default=0x10_0000,
+                        help="maximum bytes to inspect, including the NUL terminator. (default: %(default)s)")
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
     _syntax_ = parser.format_help()
 
     _example_ = [
         "{0:s} $rdi",
+        "{0:s} $rdi --max-read 0x20_0000",
     ]
     _example_ = "\n".join(_example_).format(_cmdline_)
 
@@ -147459,25 +147462,37 @@ class JsonMemoryCommand(JsonCommand):
         super().__init__(prefix=False, complete=gdb.COMPLETE_LOCATION)
         return
 
-    def read_json(self, loc):
-        pos = 0
+    def read_json(self, loc, max_read):
+        page_size = get_pagesize()
         s = bytearray()
-        while True:
+        while len(s) < max_read:
+            current = loc + len(s)
+            size = min(page_size - current % page_size, max_read - len(s))
             try:
-                blob = read_memory(loc + pos, 1)
+                blob = read_memory(current, size)
             except gdb.MemoryError:
-                err("Memory read error")
-                break
-            if blob == b"\x00":
-                break
+                err("Memory read error at {:#x}".format(current))
+                return None
+            pos = blob.find(b"\0")
+            if pos != -1:
+                return bytes(s + blob[:pos])
+            if len(blob) < size:
+                err("Memory read error at {:#x}".format(current + len(blob)))
+                return None
             s += blob
-            pos += 1
-        return bytes(s)
+        err("JSON read limit reached ({:#x} bytes); increase --max-read".format(max_read))
+        return None
 
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     def do_invoke(self, args):
-        j = self.read_json(args.location)
+        if args.max_read <= 0:
+            err("--max-read must be > 0")
+            return
+
+        j = self.read_json(args.location, args.max_read)
+        if j is None:
+            return
         if not j:
             err("Could not find JSON")
             return

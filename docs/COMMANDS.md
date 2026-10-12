@@ -3888,20 +3888,23 @@ Pretty print JSON from memory values.
 ### Syntax
 
 ```text
-usage: json memory [-h] [-n] LOCATION
+usage: json memory [-h] [-r MAX_READ] [-n] LOCATION
 
 positional arguments:
-  LOCATION        start address for json.
+  LOCATION              start address for json.
 
 options:
-  -h, --help      show this help message and exit
-  -n, --no-pager  do not use the pager.
+  -h, --help            show this help message and exit
+  -r, --max-read MAX_READ
+                        maximum bytes to inspect, including the NUL terminator. (default: 1048576)
+  -n, --no-pager        do not use the pager.
 ```
 
 ### Examples
 
 ```gdb
 json memory $rdi
+json memory $rdi --max-read 0x20_0000
 ```
 
 ## `json value`
