@@ -64053,7 +64053,7 @@ class ErrnoCommand(GenericCommand, BufferingOutput):
                 256 : ["ERFKILL",         "Operation not possible due to RF-kill"],
                 257 : ["EHWPOISON",       "Memory page has hardware error"],
             }
-        elif is_sparc32() or is_sparc64():
+        elif is_sparc32() or is_sparc32plus() or is_sparc64():
             ERRNO_DICT = {
                 36  : ["EINPROGRESS",     "Operation now in progress"],
                 37  : ["EALREADY",        "Operation already in progress"],
