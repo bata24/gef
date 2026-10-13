@@ -190701,6 +190701,7 @@ class KmallocAllocatedByCommand(GenericCommand):
         return
 
     def test_syscall(self, breakpoints):
+        test_dir = "/tmp/gef-kmalloc-{:s}".format(os.urandom(8).hex())
 
         def gen_testcase():
             # It is implemented with a generator because
@@ -191318,9 +191319,17 @@ class KmallocAllocatedByCommand(GenericCommand):
             yield "umask"
             yield ("umask(022)", "umask", [0o022])
 
+            yield "mkdir"
+            yield ('mkdir("{:s}", 0700)'.format(test_dir), "mkdir", [test_dir + "\0", 0o700])
+            if u2i(ret_history[-1]) < 0:
+                raise gdb.GdbError("Could not create the private syscall test directory")
+
             yield "open -> fallocate -> write -> fdatasync -> fsync -> syncfs -> fadvise64 -> close"
-            TMP_XXX = "/tmp/xxx\0"
-            yield ('fd = open("/tmp/xxx", 0_WRONLY|O_CREAT, 0666)', "open", [TMP_XXX, 0o1 | 0o100, 0o666])
+            TMP_XXX = test_dir + "/xxx\0"
+            yield ('fd = open("/tmp/xxx", O_WRONLY|O_CREAT|O_EXCL, 0666)', "open", [TMP_XXX, 0o1 | 0o100 | 0o200, 0o666])
+            if u2i(ret_history[-1]) < 0:
+                yield ('rmdir("{:s}")'.format(test_dir), "rmdir", [test_dir + "\0"])
+                raise gdb.GdbError("Could not create the private syscall test file")
             self.skipped_syscall.add("creat")
             self.skipped_syscall.add("openat")
             self.skipped_syscall.add("openat2")
@@ -191440,18 +191449,21 @@ class KmallocAllocatedByCommand(GenericCommand):
                 yield ("close(pipefd[1])", "close", [pipefd1])
 
             yield "mknod -> unlink"
-            TMP_PIPE = "/tmp/pipe\0"
+            TMP_PIPE = test_dir + "/pipe\0"
             yield ('mknod("/tmp/pipe", S_IFIFO|0644, 0)', "mknod", [TMP_PIPE, 0o10000 | 0o644, 0])
             self.skipped_syscall.add("mknodat")
             if u2i(ret_history[-1]) >= 0:
                 yield ('unlink("/tmp/pipe")', "unlink", [TMP_PIPE])
 
             yield "open -> sync_file_range -> copy_file_range -> close -> unlink -> close"
-            TMP_XXX2 = "/tmp/xxx2\0"
+            TMP_XXX2 = test_dir + "/xxx2\0"
             yield ('fd_in = open("/tmp/xxx", 0_RDONLY)', "open", [TMP_XXX, 0o0, 0])
             if u2i(ret_history[-1]) >= 0:
                 fd_in = ret_history[-1]
-                yield ('fd_out = open("/tmp/xxx2", 0_WRONLY|O_CREAT, 0666)', "open", [TMP_XXX2, 0o1 | 0o100, 0o666])
+                yield (
+                    'fd_out = open("/tmp/xxx2", O_WRONLY|O_CREAT|O_EXCL, 0666)',
+                    "open", [TMP_XXX2, 0o1 | 0o100 | 0o200, 0o666],
+                )
                 if u2i(ret_history[-1]) >= 0:
                     fd_out = ret_history[-1]
                     yield (
@@ -191561,7 +191573,7 @@ class KmallocAllocatedByCommand(GenericCommand):
                     self.skipped_syscall.add("fremovexattr")
 
             yield "link -> unlink"
-            TMP_XXX3 = "/tmp/xxx3\0"
+            TMP_XXX3 = test_dir + "/xxx3\0"
             yield ('link("/tmp/xxx", "/tmp/xxx3")', "link", [TMP_XXX, TMP_XXX3])
             self.skipped_syscall.add("linkat")
             if u2i(ret_history[-1]) >= 0:
@@ -191569,20 +191581,22 @@ class KmallocAllocatedByCommand(GenericCommand):
                 self.skipped_syscall.add("unlinkat")
 
             yield "symlink -> readlink -> rename -> unlink"
-            TMP_XXX4 = "/tmp/xxx4\0"
+            TMP_XXX4 = test_dir + "/xxx4\0"
             yield ('symlink("/tmp/xxx", "/tmp/xxx4")', "symlink", [TMP_XXX, TMP_XXX4])
             self.skipped_syscall.add("symlinkat")
             if u2i(ret_history[-1]) >= 0:
                 buf = "\0" * 0x100
                 yield ('readlink("/tmp/xxx4", &buf, sizeof(buf))', "readlink", [TMP_XXX4, buf, len(buf)])
                 self.skipped_syscall.add("readlinkat")
-                TMP_XXX5 = "/tmp/xxx5\0"
+                TMP_XXX5 = test_dir + "/xxx5\0"
                 yield ('rename("/tmp/xxx4", "/tmp/xxx5")', "rename", [TMP_XXX4, TMP_XXX5])
                 self.skipped_syscall.add("renameat")
                 self.skipped_syscall.add("renameat2")
                 if u2i(ret_history[-1]) >= 0:
                     yield ('unlink("/tmp/xxx5")', "unlink", [TMP_XXX5])
                     self.skipped_syscall.add("unlinkat")
+                else:
+                    yield ('unlink("/tmp/xxx4")', "unlink", [TMP_XXX4])
 
             yield "inotify_init1 -> inotify_add_watch -> inotify_rm_watch -> close"
             yield ("fd = inotify_init1(0)", "inotify_init1", [0])
@@ -191706,7 +191720,7 @@ class KmallocAllocatedByCommand(GenericCommand):
             yield ('unlink("/tmp/xxx")', "unlink", [TMP_XXX])
 
             yield "mkdir -> open_tree -> close -> chdir -> rmdir"
-            TMP_YYY = "/tmp/yyy\0"
+            TMP_YYY = test_dir + "/yyy\0"
             yield ('mkdir("/tmp/yyy", 0777)', "mkdir", [TMP_YYY, 0o777])
             self.skipped_syscall.add("mkdirat")
             if u2i(ret_history[-1]) >= 0:
@@ -191716,8 +191730,13 @@ class KmallocAllocatedByCommand(GenericCommand):
                     yield ("close(fd)", "close", [fd])
                 yield ('chdir("/tmp/yyy")', "chdir", [TMP_YYY])
                 self.skipped_syscall.add("fchdir")
-                yield ('chdir("..")', "chdir", ["..\0"])
+                if u2i(ret_history[-1]) >= 0:
+                    yield ('chdir("..")', "chdir", ["..\0"])
                 yield ('rmdir("/tmp/yyy")', "rmdir", [TMP_YYY])
+
+            yield "chdir -> rmdir"
+            yield ('chdir("/")', "chdir", ["/\0"])
+            yield ('rmdir("{:s}")'.format(test_dir), "rmdir", [test_dir + "\0"])
 
             yield "statfs"
             buf = p64(0)      # f_type
@@ -191931,6 +191950,8 @@ class KmallocAllocatedByCommand(GenericCommand):
                 continue
 
             desc, syscall_name, args = testcase
+            if test_dir not in desc:
+                desc = desc.replace("/tmp/", test_dir + "/")
             gef_print(titlify("{:s};".format(desc)))
             self.setup_syscall(syscall_name, args)
             for bp in breakpoints:
