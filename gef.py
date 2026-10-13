@@ -63085,16 +63085,13 @@ class SseCommand(GenericCommand):
         BitInfo("$mxcsr", 32, bit_info).print(reg)
         return
 
+    @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.exclude_specific_gdb_mode(mode=("kgdb",))
     @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64"))
-    def do_invoke(self, argv):
-        if "-h" in argv:
-            self.usage()
-            return
-
+    def do_invoke(self, args):
         self.print_sse()
-        if "-v" in argv:
+        if args.verbose:
             self.print_sse_other()
         else:
             info("for $mxcsr flags description, use `-v`")
