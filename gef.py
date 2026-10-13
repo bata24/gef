@@ -46661,7 +46661,7 @@ class LinkMapCommand(GenericCommand, BufferingOutput):
             else:
                 DT_NUM = 35
             # Note that the number of elements in an array varies depending on the architecture.
-            DT_THISPROCNUM, ARCH_SPECIFIC_DT_TABLE = DynamicCommand.get_ARCH_SPECIFIC_DT_TABLE()
+            DT_THISPROCNUM = DynamicCommand.get_DT_THISPROCNUM()
             # These values do not change between versions or architectures.
             DT_VERSIONTAGNUM = 16
             DT_EXTRANUM = 3
@@ -47010,19 +47010,16 @@ class DynamicCommand(GenericCommand, BufferingOutput):
     }
 
     @staticmethod
-    def get_ARCH_SPECIFIC_DT_TABLE():
+    def get_DT_THISPROCNUM():
         # default value
         DT_THISPROCNUM = 0
-        ARCH_SPECIFIC_DT_TABLE = {}
 
         # Considering glibc 2.20 and later
         if is_arm64():
             if get_libc_version() >= (2, 33):
                 DT_THISPROCNUM = 6
-                ARCH_SPECIFIC_DT_TABLE = DynamicCommand.ARCH_SPECIFIC_DT_TABLE["arm64"]
         elif is_alpha():
             DT_THISPROCNUM = 1
-            ARCH_SPECIFIC_DT_TABLE = DynamicCommand.ARCH_SPECIFIC_DT_TABLE["alpha"]
         elif is_mips32() or is_mips64() or is_mipsn32():
             if get_libc_version() >= (2, 31):
                 DT_THISPROCNUM = 0x37
@@ -47030,40 +47027,45 @@ class DynamicCommand(GenericCommand, BufferingOutput):
                 DT_THISPROCNUM = 0x36
             else:
                 DT_THISPROCNUM = 0x35
-            ARCH_SPECIFIC_DT_TABLE = DynamicCommand.ARCH_SPECIFIC_DT_TABLE["mips"] # 2.20~
-        elif is_nios2():
-            # DT_THISPROCNUM is not changed
-            ARCH_SPECIFIC_DT_TABLE = DynamicCommand.ARCH_SPECIFIC_DT_TABLE["nios2"]
         elif is_ppc32():
             if get_libc_version() >= (2, 22):
                 DT_THISPROCNUM = 2
             else:
                 DT_THISPROCNUM = 1
-            ARCH_SPECIFIC_DT_TABLE = DynamicCommand.ARCH_SPECIFIC_DT_TABLE["ppc32"]
         elif is_ppc64():
             DT_THISPROCNUM = 4
-            ARCH_SPECIFIC_DT_TABLE = DynamicCommand.ARCH_SPECIFIC_DT_TABLE["ppc64"]
-        elif is_riscv32() or is_riscv64():
-            if get_libc_version() >= (2, 36):
-                # DT_THISPROCNUM is not changed
-                ARCH_SPECIFIC_DT_TABLE = DynamicCommand.ARCH_SPECIFIC_DT_TABLE["riscv"]
         elif is_sparc32() or is_sparc32plus() or is_sparc64():
             DT_THISPROCNUM = 2
-            ARCH_SPECIFIC_DT_TABLE = DynamicCommand.ARCH_SPECIFIC_DT_TABLE["sparc"]
         elif is_x86_64():
             if get_libc_version() >= (2, 39):
                 DT_THISPROCNUM = 4
-                ARCH_SPECIFIC_DT_TABLE = DynamicCommand.ARCH_SPECIFIC_DT_TABLE["x86-64"]
-        elif is_xtensa():
-            # DT_THISPROCNUM is not changed
-            ARCH_SPECIFIC_DT_TABLE = DynamicCommand.ARCH_SPECIFIC_DT_TABLE["xtensa"]
-        return DT_THISPROCNUM, ARCH_SPECIFIC_DT_TABLE
+        return DT_THISPROCNUM
 
     @staticmethod
     @Cache.cache_this_session
     def get_DT_TABLE():
-        _, ARCH_SPECIFIC_DT_TABLE = DynamicCommand.get_ARCH_SPECIFIC_DT_TABLE()
-        return DynamicCommand.DT_TABLE | ARCH_SPECIFIC_DT_TABLE
+        ARCH_SPECIFIC_DT_TABLE = {}
+        if is_arm64():
+            ARCH_SPECIFIC_DT_TABLE = DynamicCommand.ARCH_SPECIFIC_DT_TABLE["arm64"]
+        elif is_alpha():
+            ARCH_SPECIFIC_DT_TABLE = DynamicCommand.ARCH_SPECIFIC_DT_TABLE["alpha"]
+        elif is_mips32() or is_mips64() or is_mipsn32():
+            ARCH_SPECIFIC_DT_TABLE = DynamicCommand.ARCH_SPECIFIC_DT_TABLE["mips"]
+        elif is_nios2():
+            ARCH_SPECIFIC_DT_TABLE = DynamicCommand.ARCH_SPECIFIC_DT_TABLE["nios2"]
+        elif is_ppc32():
+            ARCH_SPECIFIC_DT_TABLE = DynamicCommand.ARCH_SPECIFIC_DT_TABLE["ppc32"]
+        elif is_ppc64():
+            ARCH_SPECIFIC_DT_TABLE = DynamicCommand.ARCH_SPECIFIC_DT_TABLE["ppc64"]
+        elif is_riscv32() or is_riscv64():
+            ARCH_SPECIFIC_DT_TABLE = DynamicCommand.ARCH_SPECIFIC_DT_TABLE["riscv"]
+        elif is_sparc32() or is_sparc32plus() or is_sparc64():
+            ARCH_SPECIFIC_DT_TABLE = DynamicCommand.ARCH_SPECIFIC_DT_TABLE["sparc"]
+        elif is_x86_64():
+            ARCH_SPECIFIC_DT_TABLE = DynamicCommand.ARCH_SPECIFIC_DT_TABLE["x86-64"]
+        elif is_xtensa():
+            ARCH_SPECIFIC_DT_TABLE = DynamicCommand.ARCH_SPECIFIC_DT_TABLE["xtensa"]
+        return {**DynamicCommand.DT_TABLE, **ARCH_SPECIFIC_DT_TABLE}
 
     def __init__(self):
         super().__init__(complete=gdb.COMPLETE_FILENAME)
@@ -64291,7 +64293,7 @@ class ErrnoCommand(GenericCommand, BufferingOutput):
         if is_ppc32() or is_ppc64():
             ERRNO_DICT[58] = ["EDEADLOCK", "File locking deadlock error"]
 
-        return ERRNO_BASE_DICT | ERRNO_DICT
+        return {**ERRNO_BASE_DICT, **ERRNO_DICT}
 
     @Decorator.parse_args
     @Decorator.exclude_specific_gdb_mode(mode=("wine",))
