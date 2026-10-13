@@ -14726,28 +14726,7 @@ def is_over_serial():
     """GDB mode determination function for serial device."""
     if not is_alive():
         return None
-    if not is_remote_debug():
-        return False
-
-    serial_device = re.compile(
-        r"/dev/(?:tty(?:S\d+|AMA\d+|USB\S*|ACM\d+|XRUSB\S*)|serial/by-(?:id|path)/\S+)"
-    )
-    try:
-        dev = gdb.selected_inferior().connection.details
-        if dev and serial_device.search(str(dev)):
-            return True
-    except AttributeError:
-        # before gdb 11.x: AttributeError: 'gdb.Inferior' object has no attribute 'connection'
-        pass
-
-    for command in ("info target", "maintenance print target-stack"):
-        try:
-            details = gdb.execute(command, to_string=True, from_tty=False)
-        except gdb.error:
-            continue
-        if serial_device.search(details):
-            return True
-    return False
+    return bool(GefUtil.get_serial_device())
 
 
 @Cache.cache_this_session(cache_None=False)
@@ -16177,7 +16156,7 @@ class EventHandler:
         # when kgdb, assume x86-64 if /dev/ttyS
         if EventHandler.__gef_check_once__:
             if is_over_serial():
-                dev = gdb.selected_inferior().connection.details
+                dev = GefUtil.get_serial_device()
                 if dev.startswith("/dev/ttyS"):
                     gdb.execute("set architecture i386:x86-64:intel", to_string=True)
                 else:
@@ -201962,6 +201941,7 @@ class GefStatusCommand(GenericCommand):
         gef_print("{:30s}  ->  {!s}".format("is_normal_run()", is_normal_run()))
         gef_print("{:30s}  ->  {!s}".format("is_attach()", is_attach()))
         gef_print("{:30s}  ->  {!s}".format("is_remote_debug()", is_remote_debug()))
+        gef_print("{:30s}  ->  {!s}".format("is_core_file()", is_core_file()))
         gef_print("{:30s}  ->  {!s}".format("is_container_attach()", is_container_attach()))
         gef_print("{:30s}  ->  {!s}".format("is_qemu_system()", is_qemu_system()))
         gef_print("{:30s}  ->  {!s}".format("is_qemu_user()", is_qemu_user()))
@@ -202965,6 +202945,42 @@ class GefUtil:
             return GefUtil.parse_and_eval_unsigned("sizeof({:s})".format(name)) or None
         except gdb.error:
             return None
+
+    @staticmethod
+    @Cache.cache_this_session(cache_None=False)
+    def get_serial_device():
+        """Return the serial device used by the selected remote target."""
+        if not is_alive() or not is_remote_debug():
+            return None
+
+        serial_device = re.compile(
+            r"/dev/(?:tty(?:S\d+|AMA\d+|USB\S*|ACM\d+|XRUSB\S*)|serial/by-(?:id|path)/\S+)"
+        )
+        try:
+            dev = gdb.selected_inferior().connection.details
+            if dev:
+                r = serial_device.search(str(dev))
+                if r:
+                    return r.group(0)
+        except AttributeError:
+            # GDB < 12.1 has no Inferior.connection.
+            pass
+
+        for command in ("info connections", "info target", "maintenance print target-stack"):
+            try:
+                details = gdb.execute(command, to_string=True, from_tty=False)
+            except gdb.error:
+                continue
+            if command == "info connections":
+                r = re.search(r"^\s*\*\s+\d+\s+(?:extended-)?remote\s+(\S+)", details, re.MULTILINE)
+                if r:
+                    dev = serial_device.search(r.group(1))
+                    return dev.group(0) if dev else None
+                continue
+            r = serial_device.search(details)
+            if r:
+                return r.group(0)
+        return None
 
     @staticmethod
     def get_architecture():
