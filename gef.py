@@ -48908,8 +48908,9 @@ class FormatStringSearchCommand(GenericCommand):
         bp_count = 0
         while FormatStringSearchCommand.breakpoints:
             bp = FormatStringSearchCommand.breakpoints.pop()
-            bp.delete()
-            bp_count += 1
+            if bp.is_valid():
+                bp.delete()
+                bp_count += 1
         ok("Removed {:d} FormatStringBreakpoint".format(bp_count))
         return
 
