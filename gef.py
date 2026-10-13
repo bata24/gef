@@ -45353,6 +45353,8 @@ class SigreturnCommand(GenericCommand):
             return 128
         if is_mips32() or is_mipsn32() or is_mips64():
             return 152
+        if is_s390x():
+            return 296
         return 0
 
     def apply_x86_64_ss_label(self, base, entries):
