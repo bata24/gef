@@ -4497,9 +4497,9 @@ usage: patch range-replace [-h] [--phys] START_ADDR END_ADDR HEX_STR_FROM HEX_ST
 
 positional arguments:
   START_ADDR    start address to search.
-  END_ADDR      end address to search.
+  END_ADDR      exclusive end address for searching and writing.
   HEX_STR_FROM  the hex string to search for (source pattern).
-  HEX_STR_TO    the hex string to replace it with (replacement pattern).
+  HEX_STR_TO    the replacement bytes; lengths may differ, but all writes must fit in the range.
 
 options:
   -h, --help    show this help message and exit
@@ -5858,7 +5858,7 @@ options:
   -Ab, --auto-inclement-begin-width AUTO_INCLEMENT_BEGIN_WIDTH
                         auto inclement begin width. (default: 16)
   -Ae, --auto-inclement-end-width AUTO_INCLEMENT_END_WIDTH
-                        auto inclement end width. (default: min(len(data) // begin_width, 512)
+                        auto inclement end width. (default: max(begin_width, min(len(data) // begin_width, 512)))
   -As, --auto-inclement-step-width AUTO_INCLEMENT_STEP_WIDTH
                         auto inclement step width. (default: 2)
 ```
