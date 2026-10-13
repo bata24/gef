@@ -178849,12 +178849,12 @@ class AddrMap:
             return False
 
         def v2p(self, address):
-            if self.pstart is None or not self.contains_virtual(address):
+            if self.walk_disabled or self.pstart is None or not self.contains_virtual(address):
                 return None
             return self.pstart + address - self.vstart
 
         def p2v(self, address):
-            if not self.contains_physical(address):
+            if self.walk_disabled or not self.contains_physical(address):
                 return None
             return self.vstart + address - self.pstart
 
@@ -178888,6 +178888,10 @@ class AddrMap:
             return "ACCESSED" in self.flags
 
         @property
+        def walk_disabled(self):
+            return "WALK-DISABLED" in self.flags
+
+        @property
         def has_wildcard(self):
             return "*" in self.vstart_text or "*" in self.vend_text
 
@@ -178912,6 +178916,7 @@ class AddrMap:
                 vstart_text, vend_text = fields[0].split("-")
                 vstart = int(vstart_text.replace("*", "0"), 16)
                 vend = int(vend_text.replace("*", "f"), 16)
+                size = int(fields[2], 16) if "*" in vstart_text else vend - vstart
                 if fields[1] == "-":
                     pstart = pend = None
                 else:
@@ -178927,11 +178932,18 @@ class AddrMap:
             except (ValueError, IndexError):
                 continue
             flags = fields[5]
-            maps.append(AddrMap.Entry(
-                vstart, vend, pstart, pend, flags=flags,
-                permission=AddrMap.permission_from_flags(flags), page_size=page_size, count=count,
-                vstart_text=vstart_text, vend_text=vend_text, source_line=source_line,
-            ))
+            if "*" in vstart_text:
+                starts = (int("".join(digits), 16) for digits in itertools.product(
+                    *("0123456789abcdef" if digit == "*" else digit for digit in vstart_text[2:]),
+                ))
+            else:
+                starts = (vstart,)
+            for start in starts:
+                maps.append(AddrMap.Entry(
+                    start, start + size, pstart, pend, flags=flags,
+                    permission=AddrMap.permission_from_flags(flags), page_size=page_size, count=count,
+                    source_line=source_line,
+                ))
         return maps
 
     @staticmethod
@@ -179563,12 +179575,19 @@ class PageTable(BufferingOutput):
                     break
         return sorted(filtered_mappings)
 
-    def make_out(self, mappings):
+    def make_out(self, mappings, walk_disabled=False):
+        if walk_disabled:
+            self.warn_add_out("EPD=1: new translation table walks are disabled; raw tables shown, TLB state unknown")
         if mappings is None or len(mappings) == 0:
             self.warn_add_out("No virtual mappings found")
             return
 
         filtered_mappings = mappings.copy()
+        if walk_disabled:
+            filtered_mappings = [PageTable.Entry(
+                entry.vaddr, entry.paddr, entry.page_size, entry.page_count, entry.flags + " WALK-DISABLED",
+                vaddr_pattern=entry.vaddr_pattern, alias_starts=entry.alias_starts,
+            ) for entry in filtered_mappings]
 
         # filter by virtual address range
         if self.vrange != []:
@@ -181758,11 +181777,9 @@ class PageTableArm32(PageTable):
         self.quiet_info_add_out("$TTBCR{}: {:#x}".format(self.suffix, TTBCR))
         self.quiet_info_add_out("T0SZ: {:#x}".format(T0SZ))
         self.quiet_info_add_out("PL0 base: {:#x}".format(pl0_base))
-        if (TTBCR >> 7) & 1:
-            # TTBCR.EPD0 disables the walk with TTBR0 (e.g., CONFIG_CPU_TTBR0_PAN=y while in the kernel)
-            self.quiet_info_add_out("EPD0: 1 (TTBR0 is not used)")
-            self.ttbr0_mappings = []
-        elif not self.use_cached_mapping(
+        EPD0 = (TTBCR >> 7) & 1
+        self.quiet_info_add_out("EPD0: {:d}".format(EPD0))
+        if not self.use_cached_mapping(
             "ttbr0_mappings", TTBR0_EL1=TTBR0_EL1, TTBCR=TTBCR, suffix=self.suffix,
             SCTLR=self.get_system_register("SCTLR"),
         ):
@@ -181771,7 +181788,7 @@ class PageTableArm32(PageTable):
             self.flags_strings_cache = None
             self.merge_mappings()
             self.ttbr0_mappings = self.mappings.copy()
-        self.make_out(self.ttbr0_mappings)
+        self.make_out(self.ttbr0_mappings, walk_disabled=bool(EPD0))
 
         # pagewalk TTBR1_EL1
         self.out.append(titlify("$TTBR1_EL1{}".format(self.suffix), color="bold", msg_color="bold"))
@@ -181801,6 +181818,8 @@ class PageTableArm32(PageTable):
             self.quiet_info_add_out("PL1 base: {:#x}".format(pl1_base))
             self.quiet_info_add_out("PL1 table va_base: {:#x}".format(pl1_table_vabase))
             self.quiet_info_add_out("PL1 range start: {:#x}".format(pl1_range_start))
+            EPD1 = (TTBCR >> 23) & 1
+            self.quiet_info_add_out("EPD1: {:d}".format(EPD1))
             if not self.use_cached_mapping(
                 "ttbr1_mappings", TTBR1_EL1=TTBR1_EL1, TTBCR=TTBCR, suffix=self.suffix,
                 SCTLR=self.get_system_register("SCTLR"),
@@ -181814,7 +181833,7 @@ class PageTableArm32(PageTable):
                 ]
                 self.merge_mappings()
                 self.ttbr1_mappings = self.mappings.copy()
-            self.make_out(self.ttbr1_mappings)
+            self.make_out(self.ttbr1_mappings, walk_disabled=bool(EPD1))
         else:
             self.quiet_info_add_out("$TTBR1_EL1{} is unused".format(self.suffix))
         return
@@ -183419,6 +183438,8 @@ class PageTableArm64(PageTable):
         self.quiet_info_add_out("Intermediate Physical Address Size: {:d} bits".format(intermediate_pa_size))
         self.quiet_info_add_out("EL1 User Region: {:#018x} - {:#018x} ({:d} bits)".format(region_start, region_end - 1, region_bits))
         self.quiet_info_add_out("EL1 User Page Size: {:d}KB (per page)".format(page_size))
+        EPD0 = (TCR_EL1 >> 7) & 1
+        self.quiet_info_add_out("EPD0: {:d}".format(EPD0))
 
         self.parse_bit_range(granule_bits, region_bits)
         if not self.use_cached_mapping(
@@ -183431,7 +183452,7 @@ class PageTableArm64(PageTable):
             self.flags_strings_cache = None
             self.merge_mappings()
             self.ttbr0el1_mappings = self.mappings.copy()
-        self.make_out(self.ttbr0el1_mappings)
+        self.make_out(self.ttbr0el1_mappings, walk_disabled=bool(EPD0))
         return
 
     def pagewalk_TTBR1_EL1(self):
@@ -183468,6 +183489,8 @@ class PageTableArm64(PageTable):
         self.quiet_info_add_out("Intermediate Physical Address Size: {:d} bits".format(intermediate_pa_size))
         self.quiet_info_add_out("EL1 Kernel Region: {:#018x} - {:#018x} ({:d} bits)".format(region_start, region_end - 1, region_bits))
         self.quiet_info_add_out("EL1 Kernel Page Size: {:d}KB (per page)".format(page_size))
+        EPD1 = (TCR_EL1 >> 23) & 1
+        self.quiet_info_add_out("EPD1: {:d}".format(EPD1))
 
         self.parse_bit_range(granule_bits, region_bits)
         if not self.use_cached_mapping(
@@ -183480,7 +183503,7 @@ class PageTableArm64(PageTable):
             self.flags_strings_cache = None
             self.merge_mappings()
             self.ttbr1el1_mappings = self.mappings.copy()
-        self.make_out(self.ttbr1el1_mappings)
+        self.make_out(self.ttbr1el1_mappings, walk_disabled=bool(EPD1))
         return
 
     def pagewalk_VTTBR_EL2(self):
