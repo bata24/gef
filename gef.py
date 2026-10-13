@@ -104685,9 +104685,9 @@ class TlsCommand(GenericCommand, BufferingOutput):
             tls = current_arch.get_tls()
         except Exception:
             tls = None
-
-        orig_thread.switch() # revert
-        orig_frame.select()
+        finally:
+            orig_thread.switch() # revert
+            orig_frame.select()
         return tls
 
     def print_all_tls(self):
