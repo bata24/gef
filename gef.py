@@ -199985,8 +199985,8 @@ class SixelMemoryCommand(GenericCommand):
             err("Import error {}".format(e))
             return
 
-        image = PIL.Image.open(path)
-        decoded = pyzbar.pyzbar.decode(image)
+        with PIL.Image.open(path) as image:
+            decoded = pyzbar.pyzbar.decode(image)
         if decoded == []:
             err("Not found")
             return
@@ -200012,7 +200012,7 @@ class SixelMemoryCommand(GenericCommand):
             if args.size is not None:
                 size = args.size
             elif read_memory(args.location, 2) == b"BM": # BMP
-                size = read_int32_from_memory(args.location + 2)
+                size = struct.unpack("<I", read_memory(args.location + 2, 4))[0]
             elif read_memory(args.location, 2) == b"\xff\xd8": # JPG
                 size = self.get_jpg_size(args.location)
             elif read_memory(args.location, 4) == b"\x89PNG": # PNG
@@ -200026,14 +200026,15 @@ class SixelMemoryCommand(GenericCommand):
             return
 
         tmp_fd, tmp_path = GefUtil.mkstemp(prefix="sixel-memory", suffix=".img")
-        with os.fdopen(tmp_fd, "wb") as fdw:
-            fdw.write(data)
-        GefUtil.os_system("{!r} {!r} sixel:-".format(convert_command, tmp_path))
+        try:
+            with os.fdopen(tmp_fd, "wb") as fdw:
+                fdw.write(data)
+            GefUtil.os_system("{!r} {!r} sixel:-".format(convert_command, tmp_path))
 
-        if args.decode_barcode:
-            self.decode_barcode(tmp_path)
-
-        os.unlink(tmp_path)
+            if args.decode_barcode:
+                self.decode_barcode(tmp_path)
+        finally:
+            os.unlink(tmp_path)
         return
 
 
@@ -200190,7 +200191,8 @@ class VisualDumpCommand(GenericCommand):
     parser.add_argument("-Ab", "--auto-inclement-begin-width", type=AddressUtil.parse_address, default=16,
                         help="auto inclement begin width. (default: %(default)s)")
     parser.add_argument("-Ae", "--auto-inclement-end-width", type=AddressUtil.parse_address,
-                        help="auto inclement end width. (default: min(len(data) // begin_width, 512)")
+                        help="auto inclement end width. "
+                             "(default: max(begin_width, min(len(data) // begin_width, 512)))")
     parser.add_argument("-As", "--auto-inclement-step-width", type=AddressUtil.parse_address, default=2,
                         help="auto inclement step width. (default: %(default)s)")
     _syntax_ = parser.format_help()
@@ -200296,13 +200298,6 @@ class VisualDumpCommand(GenericCommand):
             img_width = args.width
         else:
             img_width = int(math.sqrt(len(data)))
-        while len(data) % img_width:
-            data += b"\0"
-        img_height = len(data) // img_width
-
-        tmp_fd, tmp_path = GefUtil.mkstemp(prefix="vhexdump", suffix=".raw")
-        with os.fdopen(tmp_fd, "wb") as fdw:
-            fdw.write(data)
 
         if args.auto_width_inclement:
             # if the width is too large, processing will be slow
@@ -200310,24 +200305,32 @@ class VisualDumpCommand(GenericCommand):
             if args.auto_inclement_end_width is not None:
                 max_width = args.auto_inclement_end_width
             else:
-                max_width = min(len(data) // min_width, 512)
+                max_width = max(min_width, min(len(data) // min_width, 512))
             step = args.auto_inclement_step_width
-            # processing while changing the width
-            for img_width in range(min_width, max_width + 1, step):
-                img_height = len(data) // img_width
-                cmd = self.make_command_line(img_width, img_height, tmp_path)
-                info(cmd)
-                # Ctrl+C is consumed by os.system, so it cannot escape from the python loop.
-                # Therefore, it is judged by the execution result.
-                e = GefUtil.os_system(cmd)
-                if e != 0:
-                    break
+            widths = range(min_width, max_width + 1, step)
         else:
-            cmd = self.make_command_line(img_width, img_height, tmp_path)
-            info(cmd)
-            GefUtil.os_system(cmd)
+            widths = (img_width,)
 
-        os.unlink(tmp_path)
+        tmp_fd, tmp_path = GefUtil.mkstemp(prefix="vhexdump", suffix=".raw")
+        try:
+            with os.fdopen(tmp_fd, "wb") as fdw:
+                for img_width in widths:
+                    padding = -len(data) % img_width
+                    img_height = (len(data) + padding) // img_width
+                    fdw.seek(0)
+                    fdw.truncate()
+                    fdw.write(data)
+                    fdw.write(b"\0" * padding)
+                    fdw.flush()
+                    cmd = self.make_command_line(img_width, img_height, tmp_path)
+                    info(cmd)
+                    # Ctrl+C is consumed by os.system, so it cannot escape from the python loop.
+                    # Therefore, it is judged by the execution result.
+                    e = GefUtil.os_system(cmd)
+                    if e != 0:
+                        break
+        finally:
+            os.unlink(tmp_path)
         return
 
 
@@ -200353,25 +200356,26 @@ class FiletypeMemoryCommand(GenericCommand):
             return
 
         dumpfile_name = "filetype_{:#x}-{:#x}.dat".format(start_address, end_address)
-        filepath = os.path.join(GEF_TEMP_DIR, dumpfile_name)
-        with open(filepath, "wb") as fdw:
-            fdw.write(data)
-
+        tmp_fd, filepath = GefUtil.mkstemp(prefix=dumpfile_name[:-4], suffix=".dat")
         try:
-            gef_print(titlify("file {!r}".format(filepath)))
-            file_command = GefUtil.which("file")
-            GefUtil.os_system("{!r} {!r}".format(file_command, filepath))
-        except FileNotFoundError as e:
-            warn("{}".format(e))
+            with os.fdopen(tmp_fd, "wb") as fdw:
+                fdw.write(data)
 
-        try:
-            gef_print(titlify("magika {!r}".format(filepath)))
-            magika_command = GefUtil.which("magika")
-            GefUtil.os_system("{!r} {!r}".format(magika_command, filepath))
-        except FileNotFoundError as e:
-            warn("{}".format(e))
+            try:
+                gef_print(titlify("file {!r}".format(filepath)))
+                file_command = GefUtil.which("file")
+                GefUtil.os_system("{!r} {!r}".format(file_command, filepath))
+            except FileNotFoundError as e:
+                warn("{}".format(e))
 
-        os.unlink(filepath)
+            try:
+                gef_print(titlify("magika {!r}".format(filepath)))
+                magika_command = GefUtil.which("magika")
+                GefUtil.os_system("{!r} {!r}".format(magika_command, filepath))
+            except FileNotFoundError as e:
+                warn("{}".format(e))
+        finally:
+            os.unlink(filepath)
         return
 
     @Decorator.parse_args
@@ -200450,8 +200454,6 @@ class BinwalkMemoryCommand(GenericCommand):
             if self.args.exclude and any(ex.search(dumpfile_name) for ex in self.args.exclude):
                 continue
 
-            filepath = os.path.join(GEF_TEMP_DIR, dumpfile_name)
-
             if self.args.commit:
                 gef_print(titlify("{:#x}-{:#x} [{}] {:s}".format(
                     entry.page_start, entry.page_end, entry.permission, entry.path,
@@ -200460,10 +200462,13 @@ class BinwalkMemoryCommand(GenericCommand):
                     data = read_memory(start, end - start)
                 except gdb.MemoryError:
                     continue
-                with open(filepath, "wb") as fdw:
-                    fdw.write(data)
-                binwalk.scan(filepath, signature=True)
-                os.unlink(filepath)
+                tmp_fd, filepath = GefUtil.mkstemp(prefix=dumpfile_name[:-4], suffix=".raw")
+                try:
+                    with os.fdopen(tmp_fd, "wb") as fdw:
+                        fdw.write(data)
+                    binwalk.scan(filepath, signature=True)
+                finally:
+                    os.unlink(filepath)
             else:
                 gef_print(dumpfile_name)
 
