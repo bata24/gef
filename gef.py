@@ -43472,11 +43472,11 @@ class PatchRangeReplaceCommand(PatchCommand):
     parser.add_argument("range_start", metavar="START_ADDR", type=AddressUtil.parse_address,
                         help="start address to search.")
     parser.add_argument("range_end", metavar="END_ADDR", type=AddressUtil.parse_address,
-                        help="end address to search.")
+                        help="exclusive end address for searching and writing.")
     parser.add_argument("hstr_from", metavar="HEX_STR_FROM", type=lambda x: bytes.fromhex(x),
                         help="the hex string to search for (source pattern).")
     parser.add_argument("hstr_to", metavar="HEX_STR_TO", type=lambda x: bytes.fromhex(x),
-                        help="the hex string to replace it with (replacement pattern).")
+                        help="the replacement bytes; lengths may differ, but all writes must fit in the range.")
     _syntax_ = parser.format_help()
 
     _example_ = [
@@ -43508,14 +43508,22 @@ class PatchRangeReplaceCommand(PatchCommand):
             err("Memory read error")
             return
 
-        tag = PatchCommand.PatchInfo.get_unique_tag()
+        positions = []
         pos = 0
         while True:
             found_pos = data.find(self.args.hstr_from, pos)
             if found_pos == -1:
                 break
-            self.PatchInfo(self.args.range_start + found_pos, self.args.hstr_to, phys=self.args.phys, tag=tag).patch()
+            if found_pos + len(self.args.hstr_to) > len(data):
+                err("Replacement at {:#x} would exceed END_ADDR; no patches applied".format(
+                    self.args.range_start + found_pos))
+                return
+            positions.append(found_pos)
             pos = found_pos + len(self.args.hstr_from)
+
+        tag = PatchCommand.PatchInfo.get_unique_tag()
+        for found_pos in positions:
+            self.PatchInfo(self.args.range_start + found_pos, self.args.hstr_to, phys=self.args.phys, tag=tag).patch()
         return
 
     @Decorator.parse_args
