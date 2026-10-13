@@ -16226,6 +16226,7 @@ class EventHandler:
         objfile = getattr(_event, "new_objfile", None)
         if objfile is not None and objfile.filename == objfile.progspace.filename:
             PatchCommand.invalidate_history(progspace=objfile.progspace)
+            GefUtil.clear_user_bases(progspace=objfile.progspace)
         Cache.reset_gef_caches(new_objfile=True)
         if current_arch is None:
             set_arch()
@@ -16237,6 +16238,9 @@ class EventHandler:
         """GDB event handler for removed object file cases.
         `remove-symbol-file`, an actual shared library unload and `file` replacing the whole
         symbol file set stale the same caches as loading a new one does."""
+        progspace = getattr(_event, "progspace", None)
+        if progspace is not None and not progspace.objfiles():
+            GefUtil.clear_user_bases(progspace=progspace)
         Cache.reset_gef_caches(new_objfile=True)
         return
 
@@ -16246,6 +16250,7 @@ class EventHandler:
         Cache.reset_gef_caches(all=True)
         PatchCommand.invalidate_history(getattr(_event, "inferior", None))
         KernelVersion.clear_override(inferior=getattr(_event, "inferior", None))
+        GefUtil.clear_user_bases(inferior=getattr(_event, "inferior", None))
         EventHandler.kpti_transition_active = False
         ExecAsm.queued_signals = {thread: sig for thread, sig in ExecAsm.queued_signals.items() if thread.is_valid()}
         return
@@ -16286,6 +16291,7 @@ class EventHandler:
                 pass
         PatchCommand.invalidate_history(connection_num=_event.connection.num)
         KernelVersion.clear_override(connection_num=_event.connection.num)
+        GefUtil.clear_user_bases(connection_num=_event.connection.num)
         Cache.reset_gef_caches(all=True)
         return
 
@@ -61529,12 +61535,12 @@ class CodeBaseCommand(GenericCommand):
     def do_invoke(self, args):
         # user specific
         if args.set is not None:
-            self.code_base_user_specific = args.set
+            GefUtil.set_user_base("codebase", args.set)
 
         if args.reset:
-            self.code_base_user_specific = None
+            GefUtil.set_user_base("codebase", None)
 
-        code_base = getattr(self, "code_base_user_specific", None)
+        code_base = GefUtil.get_user_base("codebase")
 
         # auto estimation
         if not is_valid_addr(code_base):
@@ -61730,9 +61736,9 @@ class HeapBaseCommand(GenericCommand):
         return None
 
     @staticmethod
-    @Cache.cache_this_session(cache_None=False)
+    @Cache.cache_this_session(cache_None=False, per_inferior=True, until_new_objfile=True)
     def heap_base(force_heuristic=False):
-        heap_base = getattr(HeapBaseCommand, "heap_base_user_specific", None)
+        heap_base = GefUtil.get_user_base("heapbase")
         if is_valid_addr(heap_base):
             return heap_base
 
@@ -61764,12 +61770,11 @@ class HeapBaseCommand(GenericCommand):
     def do_invoke(self, args):
         # user specific
         if args.set is not None:
-            HeapBaseCommand.heap_base_user_specific = args.set
+            GefUtil.set_user_base("heapbase", args.set)
             Cache.reset_gef_caches(all=True)
 
         if args.reset:
-            if hasattr(HeapBaseCommand, "heap_base_user_specific"):
-                delattr(HeapBaseCommand, "heap_base_user_specific")
+            GefUtil.set_user_base("heapbase", None)
             Cache.reset_gef_caches(all=True)
 
         # auto estimation
@@ -61874,12 +61879,12 @@ class LibcBaseCommand(GenericCommand):
     def do_invoke(self, args):
         # user specific
         if args.set is not None:
-            self.libc_base_user_specific = args.set
+            GefUtil.set_user_base("libc", args.set)
 
         if args.reset:
-            self.libc_base_user_specific = None
+            GefUtil.set_user_base("libc", None)
 
-        libc_base = getattr(self, "libc_base_user_specific", None)
+        libc_base = GefUtil.get_user_base("libc")
 
         # auto estimation
         if not is_valid_addr(libc_base):
@@ -61967,12 +61972,12 @@ class LdBaseCommand(GenericCommand):
     def do_invoke(self, args):
         # user specific
         if args.set is not None:
-            self.ld_base_user_specific = args.set
+            GefUtil.set_user_base("ld", args.set)
 
         if args.reset:
-            self.ld_base_user_specific = None
+            GefUtil.set_user_base("ld", None)
 
-        ld_base = getattr(self, "ld_base_user_specific", None)
+        ld_base = GefUtil.get_user_base("ld")
 
         # auto estimation
         if not is_valid_addr(ld_base):
@@ -202701,6 +202706,37 @@ class AliasesListCommand(AliasesCommand, BufferingOutput):
 
 class GefUtil:
     """A collection of utility functions that are related to GEF basic features."""
+
+    user_bases = {}
+
+    @staticmethod
+    def get_user_base(name):
+        inferior = gdb.selected_inferior()
+        context = (inferior, inferior.pid, inferior.connection_num, inferior.progspace)
+        return GefUtil.user_bases.get(context, {}).get(name)
+
+    @staticmethod
+    def set_user_base(name, address):
+        inferior = gdb.selected_inferior()
+        context = (inferior, inferior.pid, inferior.connection_num, inferior.progspace)
+        bases = GefUtil.user_bases.setdefault(context, {})
+        if address is None:
+            bases.pop(name, None)
+        else:
+            bases[name] = address
+        return
+
+    @staticmethod
+    def clear_user_bases(inferior=None, connection_num=None, progspace=None):
+        if inferior is None and connection_num is None and progspace is None:
+            inferior = gdb.selected_inferior()
+        for context in list(GefUtil.user_bases):
+            if (not context[0].is_valid()
+                    or (inferior is not None and context[0] == inferior)
+                    or (connection_num is not None and context[2] == connection_num)
+                    or (progspace is not None and context[3] == progspace)):
+                del GefUtil.user_bases[context]
+        return
 
     @staticmethod
     def get_owned_breakpoints(owner):
