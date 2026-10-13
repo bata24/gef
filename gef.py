@@ -85,6 +85,7 @@ print("Loading GEF...")
 
 import abc
 import argparse
+import bisect
 import builtins
 import binascii
 import codecs
@@ -15872,6 +15873,16 @@ class ProcessMap:
 
     @staticmethod
     @Cache.cache_until_next(per_inferior=True)
+    def get_process_map_index():
+        """Return sorted starts and sections, preserving the original order when regions overlap."""
+        maps = ProcessMap.get_process_maps()
+        ordered = sorted(maps, key=lambda section: section.page_start)
+        if any(first.page_end > second.page_start for first, second in zip(ordered, ordered[1:])):
+            return None, maps
+        return [section.page_start for section in ordered], ordered
+
+    @staticmethod
+    @Cache.cache_until_next(per_inferior=True)
     def process_lookup_address(addr):
         """Look up for an address in memory. Return an Address object if found, None otherwise."""
         if not is_alive():
@@ -15879,9 +15890,12 @@ class ProcessMap:
             return None
         if is_qemu_system() or is_vmware() or is_kgdb():
             return None
-        for sect in ProcessMap.get_process_maps():
-            if sect.page_start <= addr < sect.page_end:
-                return sect
+        starts, maps = ProcessMap.get_process_map_index()
+        if starts is None:
+            return next((section for section in maps if section.page_start <= addr < section.page_end), None)
+        index = bisect.bisect_right(starts, addr) - 1
+        if index >= 0 and addr < maps[index].page_end:
+            return maps[index]
         return None
 
     @staticmethod
@@ -31521,7 +31535,6 @@ class GlibcHeapSnapshotCompareCommand(GenericCommand, BufferingOutput):
             return
 
         def add(self, start, stop, value):
-            import bisect
             if not (start < stop):
                 raise ValueError("start must be < stop")
 
@@ -31538,7 +31551,6 @@ class GlibcHeapSnapshotCompareCommand(GenericCommand, BufferingOutput):
             return None
 
         def __getitem__(self, key):
-            import bisect
             i = bisect.bisect_right(self.starts, key) - 1
             if 0 <= i:
                 start, stop, value = self.items[i]
@@ -66551,11 +66563,7 @@ class KernelAddressHeuristicFinderUtil:
         A window wide enough for a KCOV build overruns a short function, and the
         constants of the neighbors are indistinguishable from the ones of the anchor."""
         res = gdb.execute("x/{:d}i {:#x}".format(count, addr), to_string=True)
-        ret = Ksym.get_kallsyms()
-        if ret is None:
-            return res
-        kallsyms, _kallsyms_map = ret
-        end = min([a for a, _name, _typ in kallsyms if a > addr], default=None)
+        end = Ksym.get_next_addr(addr)
         if end is None:
             return res
         lines = []
@@ -77399,7 +77407,6 @@ class KernelPerCpu:
 
     def lookup_symbol(self, static_addr):
         """Return (name, offset) of the static per-cpu variable at `static_addr`, or None."""
-        import bisect
         symbols = self.get_symbols()
         if not symbols:
             return None
@@ -102439,7 +102446,6 @@ class KernelSearchCodePtrCommand(GenericCommand, BufferingOutput):
         return "???"
 
     def is_kernel_addr(self, addr):
-        import bisect
         i = bisect.bisect_right(self.map_starts, addr) - 1
         return 0 <= i and addr < self.map_ends[i]
 
@@ -162068,6 +162074,8 @@ class Ksym:
     kallsyms_map = None
     name_by_addr = None
     address_index = None
+    sorted_addresses = None
+    name_index = None
     kernel_img = b""
     kernel_version = None
     version_string = None
@@ -162078,6 +162086,7 @@ class Ksym:
     # Each inferior may debug another kernel, so the parsed result is kept per inferior.
     initial_state = {
         "kallsyms": None, "kallsyms_map": None, "name_by_addr": None, "address_index": None,
+        "sorted_addresses": None, "name_index": None,
         "kernel_img": b"", "kernel_version": None, "version_string": None, "version_string_offset": 0,
         "ro_base": 0, "ro_size": 0,
     }
@@ -162091,6 +162100,8 @@ class Ksym:
         Ksym.kallsyms_map = None
         Ksym.name_by_addr = None
         Ksym.address_index = None
+        Ksym.sorted_addresses = None
+        Ksym.name_index = None
         Ksym.saved_states.clear()
         return
 
@@ -163639,7 +163650,6 @@ class Ksym:
                 entries.append((symbol_addr, i, limit))
             Ksym.address_index = sorted(entries)
 
-        import bisect
         i = bisect.bisect_right(Ksym.address_index, (addr, len(kallsyms))) - 1
         if i < 0:
             return None
@@ -163669,11 +163679,19 @@ class Ksym:
         exact = list(kallsyms_map.get(name, []))
         if match == "exact":
             return exact
-        if match == "split":
-            rest = [addr for addr, n, typ in kallsyms
-                    if n.startswith(name + ".") and typ.lower() in ("t", "w")]
-        elif match == "prefix":
-            rest = [addr for addr, n, _typ in kallsyms if n != name and n.startswith(name)]
+        if match in ("split", "prefix"):
+            if Ksym.name_index is None:
+                Ksym.name_index = sorted((symbol[1], i) for i, symbol in enumerate(kallsyms))
+            prefix = name + "." if match == "split" else name
+            indices = []
+            start = bisect.bisect_left(Ksym.name_index, (prefix,))
+            for i in range(start, len(Ksym.name_index)):
+                n, index = Ksym.name_index[i]
+                if not n.startswith(prefix):
+                    break
+                if n != name and (match != "split" or kallsyms[index][2].lower() in ("t", "w")):
+                    indices.append(index)
+            rest = [kallsyms[index][0] for index in sorted(indices)]
         else: # "in"
             rest = [addr for addr, n, _typ in kallsyms if n != name and name in n]
         return exact + rest
@@ -163699,17 +163717,25 @@ class Ksym:
         return Ksym.name_by_addr.get(addr)
 
     @staticmethod
+    def get_next_addr(addr):
+        """Return the address of the next symbol, or None."""
+        ret = Ksym.get_kallsyms()
+        if ret is None:
+            return None
+        if Ksym.sorted_addresses is None:
+            Ksym.sorted_addresses = sorted({symbol[0] for symbol in ret[0]})
+        index = bisect.bisect_right(Ksym.sorted_addresses, addr)
+        if index < len(Ksym.sorted_addresses):
+            return Ksym.sorted_addresses[index]
+        return None
+
+    @staticmethod
     def get_func_size(func_name):
         """Return the distance from `func_name` to the next symbol, or None."""
         first_func = Ksym.get_addr(func_name)
         if first_func is None:
             return None
-        ret = Ksym.get_kallsyms()
-        if ret is None:
-            return None
-        kallsyms, _kallsyms_map = ret
-        # the symbols parsed from a vmlinux file are not in address order
-        end = min([a for a, _name, _typ in kallsyms if a > first_func], default=None)
+        end = Ksym.get_next_addr(first_func)
         if end is None:
             return None
         return end - first_func
@@ -179148,8 +179174,6 @@ class PageTable(BufferingOutput):
 
         def contains_virtual(self, address):
             """Return whether an address belongs to one of this entry's virtual ranges."""
-            import bisect
-
             if not self.has_wildcard:
                 return self.vaddr <= address < self.vaddr + self.total_size
             if not self.vaddr <= address < (1 << 64):
@@ -181965,8 +181989,6 @@ class PageTableArm64(PageTable):
         return self.read_memory(addr, size)
 
     def translate_stage2_mappings(self, mappings):
-        import bisect
-
         stage2 = sorted(self.el2_mappings or [])
         starts = [entry.vaddr for entry in stage2]
         translated = []
@@ -194836,7 +194858,6 @@ class KernelRefsCommand(GenericCommand, BufferingOutput):
 
     def lookup_image_symbol(self, addr):
         """Return the nearest preceding kallsyms symbol as `name+0x..`, or ''."""
-        import bisect
         addrs, names = self.get_image_symbols()
         if not addrs:
             return ""
