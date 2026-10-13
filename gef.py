@@ -105095,19 +105095,19 @@ class GdtInfoCommand(GenericCommand, BufferingOutput):
                 out += "{:#06b}({:s})".format(entry.type_bytes, type_bytes_s)
         return out
 
-    def get_segreg_list(self):
+    def get_segreg_list(self, ldt=False):
         regs = {}
         if is_alive():
             for k in ["cs", "ds", "es", "fs", "gs", "ss"]:
                 v = get_register(k)
                 ti = (v >> 2) & 0b1
                 index = int(v >> 3)
-                if v != 0 and ti == 0:
+                if v & ~0b11 != 0 and ti == ldt:
                     regs[index] = regs.get(index, []) + [k]
         return regs
 
-    def print_entries(self, entries, segm_desc=None, skip_null=False):
-        regs = self.get_segreg_list()
+    def print_entries(self, entries, segm_desc=None, skip_null=False, ldt=False):
+        regs = self.get_segreg_list(ldt=ldt)
         long_mode = GefUtil.get_x86_descriptor_mode() == "long"
 
         # print legend
@@ -105342,7 +105342,7 @@ class GdtInfoCommand(GenericCommand, BufferingOutput):
             return
         entries = slice_unpack(ldt_data, 8)
 
-        self.print_entries(entries, skip_null=True)
+        self.print_entries(entries, skip_null=True, ldt=True)
         return
 
     def print_gdt_entry_legend(self):
