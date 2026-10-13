@@ -13001,7 +13001,7 @@ Lambdas, unnamed types and expressions in template arguments are unsupported.
 
 ## `u2d`
 
-Convert type (unsigned long <-> double/float).
+Compare bit reinterpretation and numeric conversion for double/float and unsigned integers.
 
 
 ### Syntax
@@ -13010,7 +13010,7 @@ Convert type (unsigned long <-> double/float).
 usage: u2d [-h] VALUE
 
 positional arguments:
-  VALUE       the hex value or double value.
+  VALUE       an integer (decimal/hex) or floating-point value.
 
 options:
   -h, --help  show this help message and exit
@@ -13027,7 +13027,9 @@ u2d 1.2345e-1
 ### Notes
 
 ```text
-Only ~64bit supported (Unsupported 80bit, 128bit)
+Supports 32-bit float/uint and 64-bit double/ull (not 80-bit or 128-bit).
+Integer inputs use their low 64/32 bits; use a decimal point or exponent for floating-point input.
+Integer round trips outside the unsigned range are marked <out of range>.
 ```
 
 ## `unsigned`
