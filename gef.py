@@ -46109,6 +46109,15 @@ class JmpbufCommand(GenericCommand):
         "CSKY",
     ))
     def do_invoke(self, args):
+        libc = SignalHandlersCommand.get_libc()
+        if libc is not None and libc != "glibc":
+            err("jmpbuf only supports the glibc layout (detected {:s})".format(libc))
+            return
+        if libc is None and eval(Config.get("libc.assume_version")) == ():
+            err("Could not determine the libc used by the inferior")
+            err("For glibc, specify its version with: `gef config libc.assume_version (2,39)`")
+            return
+
         try:
             layout = self.get_layout()
         except ValueError as exception:
