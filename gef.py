@@ -101305,7 +101305,8 @@ class KernelWorkqueueCommand(GenericCommand, BufferingOutput):
                     timer = None
                     continue
                 owner = self.find_delayed_owner(work, timer) or owner
-                state = "delayed"
+                if pending and read_int_from_memory(timer + self.offset_timer_pending, safe=True):
+                    state = "delayed"
                 break
             self.append_record(records, work, state, owner, None, timer, expires)
         return
@@ -101371,6 +101372,10 @@ class KernelWorkqueueCommand(GenericCommand, BufferingOutput):
             member("offset_worker_current_pwq", [("worker", "current_cwq")], ptrsize * 3)
         member("offset_delayed_timer", [("delayed_work", "timer")], None)
         member("offset_delayed_wq", [("delayed_work", "wq")], None)
+        if kversion < "4.2":
+            member("offset_timer_pending", [("timer_list", "entry.next")], 0)
+        else:
+            member("offset_timer_pending", [("timer_list", "entry.pprev")], ptrsize)
         member("offset_timer_expires", [("timer_list", "expires")], ptrsize * 2)
         # v3.0-v4.1 has `struct tvec_base *base` between `expires` and `function`;
         # v4.2 dropped it when timer_list.entry became an hlist_node.
