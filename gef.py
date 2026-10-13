@@ -186952,9 +186952,10 @@ class PageInfoCommand(GenericCommand):
                 return mapcount_raw, None, mapcount
 
         index, offset = layout["entire_mapcount"]
-        entire_mapcount = u2i(read_int32_from_memory(head_page + sizeof_struct_page * index + offset), 32) + 1
         if index == 2 and read_int_from_memory(second_page) & 0xff == 1:
             entire_mapcount = 0 # an order-1 folio has no page[2] on 32-bit (v6.15~)
+        else:
+            entire_mapcount = u2i(read_int32_from_memory(head_page + sizeof_struct_page * index + offset), 32) + 1
         mapcount += entire_mapcount
         if "4.5" <= kversion < "6.2":
             # PageDoubleMap() adds one to each _mapcount of the PMD-mapped THP that is also mapped by PTEs
