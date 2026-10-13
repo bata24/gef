@@ -179112,7 +179112,7 @@ class PageTable(BufferingOutput):
     class Entry:
         """One page-table mapping."""
 
-        def __init__(self, vaddr, paddr, page_size, page_count, flags, vaddr_pattern=None):
+        def __init__(self, vaddr, paddr, page_size, page_count, flags, vaddr_pattern=None, alias_starts=None):
             """Initialize one virtual-to-physical mapping."""
             self.vaddr = vaddr
             self.paddr = paddr
@@ -179120,6 +179120,7 @@ class PageTable(BufferingOutput):
             self.page_count = page_count
             self.flags = flags
             self.vaddr_pattern = vaddr_pattern
+            self.alias_starts = alias_starts
             return
 
         def __lt__(self, other):
@@ -179145,13 +179146,24 @@ class PageTable(BufferingOutput):
             """Return fields that must match when compressing virtual aliases."""
             return self.paddr, self.page_size, self.page_count, self.flags
 
+        def contains_virtual(self, address):
+            """Return whether an address belongs to one of this entry's virtual ranges."""
+            import bisect
+
+            if not self.has_wildcard:
+                return self.vaddr <= address < self.vaddr + self.total_size
+            if not self.vaddr <= address < (1 << 64):
+                return False
+            index = bisect.bisect_right(self.alias_starts, address) - 1
+            return address < self.alias_starts[index] + self.total_size
+
         @classmethod
         def merge_aliases(cls, entries):
             """[VA 0xffffffff11107000, ..., VA 0xffffffff111f7000] -> [VA 0xffffffff111*7000]."""
 
             def merge_patterns(patterns, position=0):
                 if position == 16:
-                    return [""]
+                    return {"": [int(patterns[0], 16)]}
 
                 groups = {}
                 for pattern in patterns:
@@ -179161,15 +179173,17 @@ class PageTable(BufferingOutput):
                 digits = "0123456789abcdef"
                 if set(groups) == set(digits):
                     first = suffixes[digits[0]]
-                    if all(suffixes[digit] == first for digit in digits[1:]):
-                        return ["*" + suffix for suffix in first]
+                    if all(suffixes[digit].keys() == first.keys() for digit in digits[1:]):
+                        return {"*" + suffix: [start for digit in digits for start in suffixes[digit][suffix]]
+                                for suffix in first}
 
-                return [digit + suffix for digit in sorted(suffixes) for suffix in suffixes[digit]]
+                return {digit + suffix: starts for digit in sorted(suffixes)
+                        for suffix, starts in suffixes[digit].items()}
 
             first = entries[0]
             patterns = ["{:016x}".format(entry.vaddr) for entry in entries]
             merged = []
-            for pattern in merge_patterns(patterns):
+            for pattern, starts in merge_patterns(patterns).items():
                 merged.append(cls(
                     int(pattern.replace("*", "0"), 16),
                     first.paddr,
@@ -179177,6 +179191,7 @@ class PageTable(BufferingOutput):
                     first.page_count,
                     first.flags,
                     vaddr_pattern=pattern,
+                    alias_starts=starts if "*" in pattern else None,
                 ))
             return merged
 
@@ -179307,7 +179322,7 @@ class PageTable(BufferingOutput):
             ) if hasattr(self.args, name)
         }
         source = "inferior={:d}, pid={:d}, connection={}, CPU(thread)={}, {}, options={!r}".format(
-            inferior.num, inferior.pid, inferior.connection_num, Cache.cpu_context(),
+            inferior.num, inferior.pid, getattr(inferior, "connection_num", None), Cache.cpu_context(),
             ", ".join("{}={:#x}".format(name, value) if isinstance(value, int) else "{}={}".format(name, value)
                       for name, value in registers.items()), options,
         )
@@ -179447,18 +179462,10 @@ class PageTable(BufferingOutput):
     def vrange_filter(self, mappings):
         filtered_mappings = []
         for mapping in mappings:
-            if mapping.has_wildcard:
-                start = mapping.vaddr
-                end = int(mapping.vaddr_pattern.replace("*", "f"), 16)
-                for addr in self.vrange:
-                    if start <= addr < end + mapping.total_size:
-                        filtered_mappings.append(mapping)
-                        break
-            else:
-                for addr in self.vrange:
-                    if mapping.vaddr <= addr < mapping.vaddr + mapping.total_size:
-                        filtered_mappings.append(mapping)
-                        break
+            for addr in self.vrange:
+                if mapping.contains_virtual(addr):
+                    filtered_mappings.append(mapping)
+                    break
         return sorted(filtered_mappings)
 
     def prange_filter(self, mappings):
@@ -180688,7 +180695,7 @@ class PageTableX64(PageTable):
             pagewalk_base = cr3 # without mask
         else:
             if is_x86_64(): # 64bit
-                pagewalk_base = cr3 & ~0xfff
+                pagewalk_base = cr3 & 0x000f_ffff_ffff_f000
             elif ((cr4 >> 5) & 1) == 1: # 32bit PAE
                 pagewalk_base = cr3 & ~0x1f
             else: # 32bit non-PAE
@@ -181405,7 +181412,8 @@ class PageTableArm32(PageTable):
         MB = []
         COUNT = 0
         for va_base, table_base, parent_flags in ProgressBar(LEVEL1, desc="LEVEL 2", disable=self.args.quiet):
-            entries = self.read_memory(table_base, 8 * (2 ** 9))
+            l2_count = 1 << (11 - self.N) if self.N >= 2 else 512
+            entries = self.read_memory(table_base, 8 * l2_count)
             entries = slice_unpack(entries, 8)
             COUNT += len(entries)
             for i, entry in enumerate(entries):
