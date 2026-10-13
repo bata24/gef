@@ -177491,9 +177491,13 @@ class CpuidCommand(GenericCommand, BufferingOutput):
 
         for id in range(valid_max_cpuid + 1):
             if id == 4:
-                for subid in range(3):
+                for subid in range(64):
                     eax, ebx, ecx, edx = self.execute_cpuid(id, subid)
+                    if (eax & 0x1f) == 0:
+                        break
                     self.make_out(id, subid, eax, ebx, ecx, edx)
+                else:
+                    self.warn_add_out("Cache enumeration is incomplete: subleaf limit reached (64)")
             elif id == 7:
                 eax, _, _, _ = self.execute_cpuid(id, 0)
                 for subid in range(eax + 1):
