@@ -178145,21 +178145,36 @@ class QemuRegistersCommand(GenericCommand, BufferingOutput):
 
         # CR3
         self.out.append(titlify("CR3 (Control Register 3)"))
-        desc = "It contains the physical address of the base of the paging-structure hierarchy and two flags"
+        cr4 = get_register("cr4", use_monitor=True)
+        efer = get_register("efer", use_monitor=True)
+        long_mode = efer is not None and bool(efer & (1 << 10))
+        if long_mode:
+            base_bits = range(12, 52)
+            base_desc = "Base of PML5 table" if cr4 & (1 << 12) else "Base of PML4 table"
+        elif cr4 & (1 << 5):
+            base_bits = range(5, 32)
+            base_desc = "Base of page-directory-pointer table (32-byte aligned)"
+        else:
+            base_bits = range(12, 32)
+            base_desc = "Base of page directory (4-KByte aligned)"
+        desc = "It contains the physical address of the base of the paging-structure hierarchy and control bits"
         bit_info = [
             [62, "LAM_U48", "User LAM48 enable",
              "If 1 and CR3.LAM_U57 is 0, enables LAM48 (masking of linear-address bits 62:48) for user pointers"],
             [61, "LAM_U57", "User LAM57 enable",
             "If 1, enables LAM57 (masking of linear-address bits 62:57) for user pointers; overrides CR3.LAM_U48"],
-            [range(12, 32), None, None,
-             "Base of page directory base, typically it points to PML4T if 4-level paging"],
-            [range(0, 12), None, None,
-             "Process context identifier when CR4.PCIDE=1"],
+        ] if long_mode else []
+        bit_info.append([base_bits, None, None, base_desc])
+        if long_mode:
+            bit_info.append(
+                [range(0, 12), None, None, "Process context identifier when CR4.PCIDE=1"],
+            )
+        bit_info.extend([
             [4, "PCD", "Page-level Cache Disable",
              "If 1, disable Page-Directory itself caching when CR4.PCIDE=0"],
             [3, "PWT", "Page-level Write-Through",
              "If 1, enable write through Page-Directory itself caching when CR4.PCIDE=0"],
-        ]
+        ])
         cr3 = get_register("cr3", use_monitor=True)
         self.out.extend(BitInfo("CR3", bit_info=bit_info, desc=desc).make_out(cr3))
 
@@ -178222,7 +178237,6 @@ class QemuRegistersCommand(GenericCommand, BufferingOutput):
             [0, "VME", "Virtual 8086 Mode Extensions",
              "If 1, enable support for the virtual interrupt flag (VIF) in virtual-8086 mode"],
         ]
-        cr4 = get_register("cr4", use_monitor=True)
         self.out.extend(BitInfo("CR4", bit_info=bit_info, desc=desc).make_out(cr4))
 
         # CR8
@@ -178339,7 +178353,6 @@ class QemuRegistersCommand(GenericCommand, BufferingOutput):
 
         # EFER
         self.out.append(titlify("EFER (Extended Feature Enable Register; MSR_EFER:0xc0000080)"))
-        efer = get_register("efer", use_monitor=True)
         bit_info = [
             [21, "AIBRSE", "Automatic IBRS Enable"],
             [20, "UAIE", "Upper Address Ignore Enable"],
@@ -178358,7 +178371,8 @@ class QemuRegistersCommand(GenericCommand, BufferingOutput):
             [1, "DPE", "Data Prefetch Enable", "only AMD K6"],
             [0, "SCE", "System Call Extensions"],
         ]
-        self.out.extend(BitInfo("EFER", bit_info=bit_info).make_out(efer))
+        if efer is not None:
+            self.out.extend(BitInfo("EFER", bit_info=bit_info).make_out(efer))
 
         # TR
         res = gdb.execute("monitor info registers", to_string=True)
