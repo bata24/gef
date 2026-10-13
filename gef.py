@@ -8370,7 +8370,7 @@ class ARM(Architecture):
             if scr is None:
                 mode = " [Mode={:s}({:#07b},PL{:d})]".format(CurrentMode, key, CurrentPL)
             else:
-                secure_state = ["Secure", "Non-Secure"][scr & 1]
+                secure_state = ["Secure", "Non-Secure"][key == 0b11010 or (scr & 1 and key != 0b10110)]
                 mode = " [Mode={:s}({:#07b},PL{:d}),{:s}]".format(CurrentMode, key, CurrentPL, secure_state)
         return Architecture.flags_to_human(val, self.flags_table) + mode
 
@@ -8518,7 +8518,7 @@ class AARCH64(ARM):
             if scr is None:
                 mode = " [EL={:d},SP={:d}]".format((val >> 2) & 0b11, val & 0b11)
             else:
-                secure_state = ["Secure", "Non-Secure"][scr & 1]
+                secure_state = ["Secure", "Non-Secure"][scr & 1 and (val & 0b11100) != 0b01100]
                 mode = " [EL={:d},SP={:d},{:s}]".format((val >> 2) & 0b11, val & 0b11, secure_state)
         return Architecture.flags_to_human(val, self.flags_table) + mode
 
@@ -8621,6 +8621,17 @@ class X86(Architecture):
     ret_insn = b"\xc3" # ret
     syscall_insn = b"\xcd\x80" # int 0x80
 
+    RE_PREFIX = re.compile(r"(?:lock|rep(?:e|ne|z|nz)?|bnd|notrack|addr(?:16|32|64)|data(?:16|32)|rex(?:\.[WRXB]+)?)$")
+
+    @staticmethod
+    def get_mnemonic_operands(insn, operands=None):
+        if operands is None:
+            operands = insn.operands
+        parts = (insn.mnemonic + " " + ",".join(operands)).split(None, 1)
+        while len(parts) == 2 and X86.RE_PREFIX.fullmatch(parts[0]):
+            parts = parts[1].split(None, 1)
+        return parts[0], parts[1] if len(parts) == 2 else ""
+
     def flag_register_to_human(self, val=None):
         if val is None:
             reg = self.flag_register
@@ -8629,25 +8640,27 @@ class X86(Architecture):
         return Architecture.flags_to_human(val, self.flags_table) + mode
 
     def is_syscall(self, insn):
-        if insn.mnemonic in ["sysenter", "syscall"]:
+        mnemo, operands = X86.get_mnemonic_operands(insn)
+        if mnemo in ["sysenter", "syscall"]:
             return True
         try:
-            return insn.mnemonic == "int" and int(insn.operands[0].lstrip("$"), 0) == 0x80
+            return mnemo == "int" and int(operands.split()[0].lstrip("$"), 0) == 0x80
         except Exception:
             return False
 
     def is_call(self, insn):
-        return insn.mnemonic == "call"
+        return X86.get_mnemonic_operands(insn)[0] == "call"
 
     def is_jump(self, insn):
-        return insn.mnemonic == "jmp" or self.is_conditional_branch(insn)
+        return X86.get_mnemonic_operands(insn)[0] == "jmp" or self.is_conditional_branch(insn)
 
     def is_ret(self, insn):
-        if insn.mnemonic in ["ret", "retf"]:
+        mnemo = X86.get_mnemonic_operands(insn)[0]
+        if mnemo in ["ret", "retf"]:
             return True
-        if insn.mnemonic in ["sysret"]:
+        if mnemo in ["sysret"]:
             return True
-        if insn.mnemonic in ["iret", "iretd", "iretw"]:
+        if mnemo in ["iret", "iretd", "iretw"]:
             return True
         return False
 
@@ -8658,10 +8671,17 @@ class X86(Architecture):
             "jl", "jnge", "jle", "jng", "jne", "jnz", "jno", "jnp", "jpo", "jns",
             "jo", "jp", "jpe", "js",
         ]
-        return insn.mnemonic in branch_mnemos
+        return X86.get_mnemonic_operands(insn)[0] in branch_mnemos or X86.is_loop(insn)
+
+    @staticmethod
+    def is_loop(insn):
+        return insn.mnemonic in ["loop", "loope", "loopz", "loopne", "loopnz"] or (
+            len(insn.opcodes) >= 2 and insn.opcodes[-2] in [0xe0, 0xe1, 0xe2]
+            and all(byte in [0x26, 0x2e, 0x36, 0x3e, 0x64, 0x65, 0x66, 0x67, 0xf2, 0xf3]
+                    or 0x40 <= byte <= 0x4f for byte in insn.opcodes[:-2]))
 
     def is_branch_taken(self, insn):
-        mnemo = insn.mnemonic
+        mnemo = X86.get_mnemonic_operands(insn)[0]
         # all kudos to fG! (https://github.com/gdbinit/Gdbinit/blob/master/gdbinit#L1654)
         flags = {self.flags_table[k]: k for k in self.flags_table}
         val = get_register(self.flag_register)
@@ -8673,7 +8693,20 @@ class X86(Architecture):
         carry = bool(val & (1 << flags["carry"]))
         parity = bool(val & (1 << flags["parity"]))
 
-        if mnemo in ["ja", "jnbe"]:
+        if X86.is_loop(insn):
+            bits = self.bit_length
+            if 0x67 in insn.opcodes[:-2]:
+                bits = 16 if bits == 32 else 32
+            reg = {16: "$cx", 32: "$ecx", 64: "$rcx"}[bits]
+            count = (int(gdb.parse_and_eval(reg)) - 1) & ((1 << bits) - 1)
+            if len(insn.opcodes) >= 2:
+                mnemo = {0xe0: "loopne", 0xe1: "loope", 0xe2: "loop"}.get(insn.opcodes[-2], mnemo)
+            taken, reason = count != 0, "({:s}-1)!=0".format(reg)
+            if mnemo in ["loope", "loopz"]:
+                taken, reason = taken and zero, reason + " && Z"
+            elif mnemo in ["loopne", "loopnz"]:
+                taken, reason = taken and not zero, reason + " && !Z"
+        elif mnemo in ["ja", "jnbe"]:
             taken, reason = not carry and not zero, "!C && !Z"
         elif mnemo in ["jae", "jnb", "jnc"]:
             taken, reason = not carry, "!C"
@@ -8719,14 +8752,15 @@ class X86(Architecture):
     def get_ra(self, insn, frame):
         ra = None
         try:
+            mnemo = X86.get_mnemonic_operands(insn)[0]
             if self.is_ret(insn):
-                if insn.mnemonic == "ret":
+                if mnemo == "ret":
                     ra = to_unsigned_long(AddressUtil.dereference(current_arch.sp))
-                elif insn.mnemonic == "retf": # eip, cs
+                elif mnemo == "retf": # eip, cs
                     ra = to_unsigned_long(AddressUtil.dereference(current_arch.sp))
-                elif insn.mnemonic == "sysret": # ecx
+                elif mnemo == "sysret": # ecx
                     ra = get_register("$ecx")
-                elif insn.mnemonic in ["iret", "iretd", "iretw"]: # eip, cs, eflags, esp, ss
+                elif mnemo in ["iret", "iretd", "iretw"]: # eip, cs, eflags, esp, ss
                     reg = to_unsigned_long(AddressUtil.dereference(current_arch.sp))
                     eflags = AddressUtil.dereference(current_arch.sp + current_arch.ptrsize * 2)
                     if eflags & (1 << 17): # eflags.vm
@@ -8868,29 +8902,30 @@ class X86_64(X86):
 
     syscall_insn = b"\x0f\x05" # syscall
 
-    def is_syscall(self, insn):
-        return insn.mnemonic in ["sysenter", "syscall"]
+    is_syscall = X86.is_syscall
 
     def is_ret(self, insn):
-        if insn.mnemonic in ["ret", "retf"]:
+        mnemo = X86.get_mnemonic_operands(insn)[0]
+        if mnemo in ["ret", "retf"]:
             return True
-        if insn.mnemonic in ["sysret", "sysretd", "sysretq"]:
+        if mnemo in ["sysret", "sysretd", "sysretq"]:
             return True
-        if insn.mnemonic in ["iret", "iretd", "iretq", "iretw"]:
+        if mnemo in ["iret", "iretd", "iretq", "iretw"]:
             return True
         return False
 
     def get_ra(self, insn, frame):
         ra = None
         try:
+            mnemo = X86.get_mnemonic_operands(insn)[0]
             if self.is_ret(insn):
-                if insn.mnemonic == "ret":
+                if mnemo == "ret":
                     ra = to_unsigned_long(AddressUtil.dereference(current_arch.sp))
-                elif insn.mnemonic == "retf": # rip, cs
+                elif mnemo == "retf": # rip, cs
                     ra = to_unsigned_long(AddressUtil.dereference(current_arch.sp))
-                elif insn.mnemonic in ["sysret", "sysretd", "sysretq"]: # rcx
+                elif mnemo in ["sysret", "sysretd", "sysretq"]: # rcx
                     ra = get_register("$rcx")
-                elif insn.mnemonic in ["iret", "iretd", "iretq", "iretw"]: # rip, cs, rflags, rsp, ss
+                elif mnemo in ["iret", "iretd", "iretq", "iretw"]: # rip, cs, rflags, rsp, ss
                     ra = to_unsigned_long(AddressUtil.dereference(current_arch.sp))
             elif frame.older():
                 ra = frame.older().pc()
@@ -9068,18 +9103,19 @@ class X86_16(Architecture):
     flag_register_to_human = X86.flag_register_to_human
 
     def is_syscall(self, insn):
+        mnemo, operands = X86.get_mnemonic_operands(insn)
         try:
-            return insn.mnemonic == "int" and int(insn.operands[0].lstrip("$"), 0) == 0x21
+            return mnemo == "int" and int(operands.split()[0].lstrip("$"), 0) == 0x21
         except Exception:
             return False
 
     is_call = X86.is_call
 
     def is_jump(self, insn):
-        return insn.mnemonic in ["jmp", "ljmp"] or self.is_conditional_branch(insn)
+        return X86.get_mnemonic_operands(insn)[0] in ["jmp", "ljmp"] or self.is_conditional_branch(insn)
 
     def is_ret(self, insn):
-        return insn.mnemonic in ["ret", "retf", "iret"]
+        return X86.get_mnemonic_operands(insn)[0] in ["ret", "retf", "iret"]
 
     is_conditional_branch = X86.is_conditional_branch
     is_branch_taken = X86.is_branch_taken
@@ -9087,15 +9123,16 @@ class X86_16(Architecture):
     def get_ra(self, insn, frame):
         ra = None
         try:
+            mnemo = X86.get_mnemonic_operands(insn)[0]
             if self.is_ret(insn):
-                if insn.mnemonic == "ret":
+                if mnemo == "ret":
                     reg = AddressUtil.dereference(current_arch.sp) & 0xffff
                     ra = current_arch.real2phys("$cs", reg)
-                elif insn.mnemonic == "retf": # ip, cs
+                elif mnemo == "retf": # ip, cs
                     reg = AddressUtil.dereference(current_arch.sp) & 0xffff
                     seg = AddressUtil.dereference(current_arch.sp + current_arch.ptrsize) & 0xffff
                     ra = current_arch.real2phys(seg, reg)
-                elif insn.mnemonic == "iret": # ip, cs, flags, sp, ss
+                elif mnemo == "iret": # ip, cs, flags, sp, ss
                     reg = AddressUtil.dereference(current_arch.sp) & 0xffff
                     seg = AddressUtil.dereference(current_arch.sp + current_arch.ptrsize) & 0xffff
                     ra = current_arch.real2phys(seg, reg)
@@ -9260,6 +9297,8 @@ class PPC(Architecture):
         return insn.mnemonic in ["sc", "scv"]
 
     def is_call(self, insn):
+        if insn.mnemonic in ["bcl", "bcla", "bclrl", "bcctrl"]:
+            return True
         conditions = [
             "", "lt", "le", "eq", "ge", "gt", "nl",
             "ne", "ng", "so", "ns", "un", "nu",
@@ -9285,6 +9324,8 @@ class PPC(Architecture):
         return False
 
     def is_jump(self, insn):
+        if insn.mnemonic in ["bc", "bca", "bcctr"]:
+            return True
         conditions = [
             "", "lt", "le", "eq", "ge", "gt", "nl",
             "ne", "ng", "so", "ns", "un", "nu",
@@ -9325,8 +9366,12 @@ class PPC(Architecture):
         return False
 
     def is_conditional_branch(self, insn):
+        if len(insn.opcodes) == 4:
+            opcode = u32(insn.opcodes)
+            if opcode >> 26 == 16 or (opcode >> 26 == 19 and (opcode >> 1) & 0x3ff in [16, 528]):
+                return (opcode >> 21) & 0b10100 != 0b10100
         branch_mnemos = (
-            "beq", "bne", "ble", "blt", "bgt", "bge", "bso", "bns",
+            "beq", "bne", "ble", "blt", "bgt", "bge", "bso", "bns", "bnl", "bng", "bun", "bnu",
             "bdz", "bdnz", "bdzt", "bdnzt", "bdzf", "bdnzf",
         )
         mnemo = insn.mnemonic.rstrip("+-")
@@ -9334,6 +9379,25 @@ class PPC(Architecture):
 
     def is_branch_taken(self, insn):
         mnemo = insn.mnemonic.rstrip("+-")
+        if len(insn.opcodes) == 4:
+            opcode = u32(insn.opcodes)
+            if opcode >> 26 == 16 or (opcode >> 26 == 19 and (opcode >> 1) & 0x3ff in [16, 528]):
+                bo, bi = (opcode >> 21) & 31, (opcode >> 16) & 31
+                taken, reason = True, []
+                if not bo & 4:
+                    ctr = get_register("$ctr")
+                    if ctr is None:
+                        return None, "CTR unavailable"
+                    count = (ctr - 1) & ((1 << self.bit_length) - 1)
+                    taken = (count == 0) if bo & 2 else (count != 0)
+                    reason.append("(CTR-1)==0" if bo & 2 else "(CTR-1)!=0")
+                if not bo & 16:
+                    cr = get_register(self.flag_register)
+                    if cr is None:
+                        return None, "CR unavailable"
+                    taken = taken and ((cr >> (31 - bi)) & 1) == bool(bo & 8)
+                    reason.append("CR[{:d}]=={:d}".format(bi, bool(bo & 8)))
+                return bool(taken), " && ".join(reason)
         flags = {self.flags_table[k]: k for k in self.flags_table}
         val = get_register(self.flag_register)
         taken, reason = False, ""
@@ -9365,7 +9429,6 @@ class PPC(Architecture):
             taken, reason = overflow, "V"
         elif mnemo.startswith("bns"):
             taken, reason = not overflow, "!V"
-        # todo: bdn?z[tf]? are unsupported
         return taken, reason
 
     def get_ith_parameter(self, i, in_func=True, sp=None):
@@ -14864,15 +14927,21 @@ def is_support_secure_world():
     return ".secure-ram" in ret
 
 
-@Cache.cache_until_next(per_cpu=True)
 def is_in_secure():
     """GDB mode determination function for secure world.
-    The answer comes from the current CPU registers, so it must not be reused for another CPU."""
+    Read the current CPU registers even while commands step with the stop hook disabled."""
     if not is_support_secure_world():
         return False
+    cpsr = get_register(current_arch.flag_register)
     if is_arm32():
+        if cpsr is not None and (cpsr & 0b11111) == 0b10110:
+            return True
+        if cpsr is not None and (cpsr & 0b11111) == 0b11010:
+            return False
         scr = get_register("$SCR")
     elif is_arm64():
+        if cpsr is not None and (cpsr & 0b11100) == 0b01100:
+            return True
         scr = get_register("$SCR_EL3")
     # In environments without a secure world:
     # Older qemu versions did not have the SCR register. (return None)
@@ -22243,16 +22312,18 @@ class XtapCommand(GenericCommand):
 
     def close_stdout_stderr(self):
         self.stdout = 1
-        self.stdout_bak = os.dup(self.stdout)
-        f = open("/dev/null", "w")
-        os.dup2(f.fileno(), self.stdout)
-        f.close()
-
         self.stderr = 2
-        self.stderr_bak = os.dup(self.stderr)
-        f = open("/dev/null", "w")
-        os.dup2(f.fileno(), self.stderr)
-        f.close()
+        with contextlib.ExitStack() as rollback:
+            self.stdout_bak = os.dup(self.stdout)
+            rollback.callback(os.close, self.stdout_bak)
+            rollback.callback(os.dup2, self.stdout_bak, self.stdout)
+            self.stderr_bak = os.dup(self.stderr)
+            rollback.callback(os.close, self.stderr_bak)
+            rollback.callback(os.dup2, self.stderr_bak, self.stderr)
+            with open("/dev/null", "w") as fd:
+                os.dup2(fd.fileno(), self.stdout)
+                os.dup2(fd.fileno(), self.stderr)
+            rollback.pop_all()
         return
 
     def revert_stdout_stderr(self):
@@ -22263,7 +22334,7 @@ class XtapCommand(GenericCommand):
         return
 
     def force_write_stdout(self, msg):
-        with open("/proc/self/fd/0", "wb") as fdw:
+        with os.fdopen(os.dup(self.stdout_bak), "wb") as fdw:
             fdw.write(msg)
         return
 
@@ -22425,8 +22496,8 @@ class XtapCommand(GenericCommand):
     def trace(self):
         bp_was_hit = False
         inferior_exited = False
-        EventHooking.gef_on_stop_unhook(EventHandler.hook_stop_handler)
         self.close_stdout_stderr()
+        EventHooking.gef_on_stop_unhook(EventHandler.hook_stop_handler)
         try:
             with EventHooking.temporary("stop", self.remember_stop):
                 while True:
@@ -59320,11 +59391,11 @@ class Syscall:
         return syscall_table
 
     @classmethod
-    def get_syscall_table(cls, arch=None, mode=None):
+    def get_syscall_table(cls, arch=None, mode=None, current_insn=False):
 
         if arch is None and mode is None :
             if is_x86_64():
-                arch, mode = "X86", "64"
+                arch, mode = "X86", "Emulated-32" if current_insn and cls.is_x86_int80() else "64"
             elif is_x86_32():
                 if is_emulated32():
                     arch, mode = "X86", "Emulated-32"
@@ -59356,6 +59427,16 @@ class Syscall:
             mode = "Native-32"
 
         return cls.make_syscall_table(arch, mode)
+
+    @staticmethod
+    def is_x86_int80():
+        if not is_x86_64():
+            return False
+        try:
+            insn = get_insn()
+        except gdb.error:
+            return False
+        return insn is not None and X86.get_mnemonic_operands(insn)[0] == "int" and current_arch.is_syscall(insn)
 
 
 class SyscallX86_64(Syscall):
@@ -61294,6 +61375,8 @@ class SyscallArgsCommand(GenericCommand):
     def get_nr():
         # str or list
         syscall_register = current_arch.syscall_register
+        if Syscall.is_x86_int80():
+            syscall_register = "$eax"
 
         # hppa specific. hppa syscall instruction has a delay slot and _NR may be set there.
         if is_hppa32() or is_hppa64():
@@ -61400,7 +61483,7 @@ class SyscallArgsCommand(GenericCommand):
             err("Could not read the syscall number; specify SYSCALL_NUM")
             return
 
-        syscall_table = Syscall.get_syscall_table()
+        syscall_table = Syscall.get_syscall_table(current_insn=True)
         if syscall_table and nr not in syscall_table.nr_table:
             warn("There is no system call for {:#x}".format(nr))
             return
@@ -188329,16 +188412,18 @@ class ExecUntilCommand(GenericCommand):
 
     def close_stdout_stderr(self):
         self.stdout = 1
-        self.stdout_bak = os.dup(self.stdout)
-        f = open("/dev/null", "w")
-        os.dup2(f.fileno(), self.stdout)
-        f.close()
-
         self.stderr = 2
-        self.stderr_bak = os.dup(self.stderr)
-        f = open("/dev/null", "w")
-        os.dup2(f.fileno(), self.stderr)
-        f.close()
+        with contextlib.ExitStack() as rollback:
+            self.stdout_bak = os.dup(self.stdout)
+            rollback.callback(os.close, self.stdout_bak)
+            rollback.callback(os.dup2, self.stdout_bak, self.stdout)
+            self.stderr_bak = os.dup(self.stderr)
+            rollback.callback(os.close, self.stderr_bak)
+            rollback.callback(os.dup2, self.stderr_bak, self.stderr)
+            with open("/dev/null", "w") as fd:
+                os.dup2(fd.fileno(), self.stdout)
+                os.dup2(fd.fileno(), self.stderr)
+            rollback.pop_all()
         return
 
     def revert_stdout_stderr(self):
@@ -188349,7 +188434,7 @@ class ExecUntilCommand(GenericCommand):
         return
 
     def force_write_stdout(self, msg):
-        with open("/proc/self/fd/0", "wb") as fdw:
+        with os.fdopen(os.dup(self.stdout_bak), "wb") as fdw:
             fdw.write(msg)
         return
 
@@ -188377,6 +188462,7 @@ class ExecUntilCommand(GenericCommand):
 
     def remember_stop(self, event):
         self.stop_event = event
+        Cache.reset_gef_caches()
         return
 
     @staticmethod
@@ -188390,7 +188476,7 @@ class ExecUntilCommand(GenericCommand):
             return False
         _reg, nr = SyscallArgsCommand.get_nr()
         names = ["<any syscall>", str(nr)]
-        syscall_table = Syscall.get_syscall_table()
+        syscall_table = Syscall.get_syscall_table(current_insn=True)
         if syscall_table and nr in syscall_table.nr_table:
             names.append(syscall_table.nr_table[nr].name)
         return any(name in caught for name in names)
@@ -188435,8 +188521,8 @@ class ExecUntilCommand(GenericCommand):
         return not is_alive() or ExecUntilCommand.is_user_stop(self.stop_event)
 
     def exec_next(self):
-        EventHooking.gef_on_stop_unhook(EventHandler.hook_stop_handler)
         self.close_stdout_stderr()
+        EventHooking.gef_on_stop_unhook(EventHandler.hook_stop_handler)
         self.err = None
 
         prev_addr = -1
@@ -188464,19 +188550,10 @@ class ExecUntilCommand(GenericCommand):
                     insn = get_insn()
 
                     # $pc is not changed
-                    if prev_prev_addr == prev_addr == current_arch.pc: # for faster, repeat insn is skip
-                        # infinity self loop
-                        if current_arch.is_call(insn) or current_arch.is_jump(insn) or current_arch.is_ret(insn):
-                            self.err = "Detected infinity loop prev_addr ({:#x})".format(prev_addr)
-                            break
-                        # maybe rep prefix
-                        if self.exec_step("xuntil"):
-                            break
-                        # recheck
-                        if prev_prev_addr == prev_addr == current_arch.pc:
-                            self.err = "Detected infinity loop prev_addr ({:#x})".format(prev_addr)
-                            break
-                        insn = get_insn()
+                    if (prev_prev_addr == prev_addr == current_arch.pc and current_arch.is_jump(insn)
+                            and not current_arch.is_conditional_branch(insn)):
+                        self.err = "Detected infinity loop prev_addr ({:#x})".format(prev_addr)
+                        break
 
                     if self.args.print_insn:
                         self.force_write_stdout((str(insn) + "\n").encode())
@@ -188619,7 +188696,7 @@ class ExecUntilIndirectBranchCommand(ExecUntilCommand):
     def is_target_insn(self, insn):
         if current_arch.is_call(insn) or self.check_jump_taken(insn):
             operands = insn.split_last_operands(insn.operands)[0]
-            operand = re.sub(r"<[^>]*>", "", ",".join(operands)).strip()
+            operand = re.sub(r"<[^>]*>", "", X86.get_mnemonic_operands(insn, operands)[1]).strip()
             if "[" in operand or operand.startswith("*"):
                 return True
             return operand.lstrip("%") in [reg.lstrip("$") for reg in current_arch.general_registers]
@@ -188700,7 +188777,7 @@ class ExecUntilSyscallCommand(ExecUntilCommand):
             if not self.args.filter and not self.args.ignore:
                 return True
             _reg, nr = SyscallArgsCommand.get_nr()
-            syscall_table = Syscall.get_syscall_table()
+            syscall_table = Syscall.get_syscall_table(current_insn=True)
             if syscall_table is None:
                 return True # for debug
             if nr not in syscall_table.nr_table:
@@ -188793,10 +188870,8 @@ class ExecUntilMemaccessCommand(ExecUntilCommand):
         operand = re.sub(r"<[^>]*>", "", ",".join(operands))
         mnemo = insn.mnemonic.lower()
         if is_x86():
-            if mnemo in ("lock", "rep", "repe", "repz", "repne", "repnz"):
-                if not operand.strip():
-                    return False
-                mnemo = operand.split()[0]
+            mnemo, operand = X86.get_mnemonic_operands(insn, operands)
+            operand = re.sub(r"<[^>]*>", "", operand)
             if mnemo in ("lea", "leaw", "leal", "leaq") or mnemo.startswith("nop"):
                 return False
             if mnemo.startswith(("push", "pop", "call", "ret", "iret", "enter", "leave", "xlat")):
@@ -188927,6 +189002,8 @@ class ExecUntilCondCommand(ExecUntilCommand):
     _repeat_ = True
     _aliases_ = ["next-cond"]
 
+    RE_QUOTED = r"\"(?:\\.|[^\"\\])*\"|'(?:\\.|[^'\\])*'"
+
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("-I", "--print-insn", action="store_true", help="print each instruction during execution.")
     parser.add_argument("-n", "--use-ni", action="store_true", help="use `ni` instead of `si`.")
@@ -188959,30 +189036,53 @@ class ExecUntilCondCommand(ExecUntilCommand):
             return True
         return bool(v)
 
+    def expand_condition(self, condition):
+        quoted = self.RE_QUOTED
+        matches = re.compile(quoted + r"|\$ALL_REG\b\s*==\s*")
+        tokens = re.compile(quoted + r"|[()\[\]{}]|&&|\|\||==|!=|[&^|?:,]")
+        if hasattr(current_arch, "general_registers"):
+            regs = list(current_arch.general_registers)
+        else:
+            regs = list(current_arch.all_registers)
+        if hasattr(current_arch, "flag_register") and current_arch.flag_register in regs:
+            regs.remove(current_arch.flag_register)
+        result = ""
+        position = 0
+        for match in matches.finditer(condition):
+            if not match.group().startswith("$ALL_REG") or match.start() < position:
+                continue
+            end = len(condition)
+            depth = 0
+            for token in tokens.finditer(condition, match.end()):
+                value = token.group()
+                if value[0] in "\"'":
+                    continue
+                if value in "([{":
+                    depth += 1
+                elif value in ")]}":
+                    if depth == 0:
+                        end = token.start()
+                        break
+                    depth -= 1
+                elif depth == 0:
+                    end = token.start()
+                    break
+            value = condition[match.end():end].strip()
+            result += condition[position:match.start()]
+            result += "(" + "||".join("{:s}==({:s})".format(regname, value) for regname in regs) + ")"
+            position = end
+        return result + condition[position:]
+
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.require_arch_set
     def do_invoke(self, args):
         condition = args.condition
-        if re.search(r"(?<![><!=])=(?!=)", condition):
-            err("Should not use `=` since it will be replace register/memory value, try use `==`")
+        if re.search(r"\+\+|--|<<=|>>=|(?<![><!=])=(?!=)", re.sub(self.RE_QUOTED, "", condition)):
+            err("Do not use assignment or increment/decrement in a condition; use `==` for comparisons")
             return
 
-        match = re.search(r"\$ALL_REG==(\w+)", condition)
-        if match:
-            value = match.groups()[0]
-            replace_cond = []
-            if hasattr(current_arch, "general_registers"):
-                regs = current_arch.general_registers
-            else:
-                regs = list(current_arch.all_registers)
-                if hasattr(current_arch, "flag_register"):
-                    if current_arch.flag_register in regs:
-                        regs.remove(current_arch.flag_register)
-            for regname in regs:
-                replace_cond.append("{:s}=={:s}".format(regname, value))
-            replace_string = "(" + "||".join(replace_cond) + ")"
-            condition = re.sub(r"\$ALL_REG==(\w+)", replace_string, condition)
+        condition = self.expand_condition(condition)
 
         info("Condition: {:s}".format(condition))
         self.condition = condition
@@ -189257,8 +189357,8 @@ class CallTraceCommand(ExecUntilCommand):
         return
 
     def call_trace(self):
-        EventHooking.gef_on_stop_unhook(EventHandler.hook_stop_handler)
         self.close_stdout_stderr()
+        EventHooking.gef_on_stop_unhook(EventHandler.hook_stop_handler)
         self.err = None
 
         prev_addr = -1
@@ -189268,8 +189368,6 @@ class CallTraceCommand(ExecUntilCommand):
         try:
             with EventHooking.temporary("stop", self.remember_stop):
                 while True:
-                    printed_already = False # flag to not output the same insn twice
-
                     # backup
                     prev_prev_addr = prev_addr
                     prev_addr = current_arch.pc
@@ -189281,48 +189379,36 @@ class CallTraceCommand(ExecUntilCommand):
                         self.print_syscall_ret(pending_syscall_ret_indent)
                         pending_syscall_ret_indent = None
 
-                    # print normal insn
-                    if next_should_print:
-                        next_should_print = False
-                        self.print_insn(insn, print_indent)
-                        printed_already = True
-
                     # call or ret or syscall
                     if current_arch.is_call(insn):
                         if not self.args.syscall_only:
-                            if not printed_already:
-                                self.print_insn_call(insn, print_indent)
+                            self.print_insn_call(insn, print_indent)
                             next_should_print = True
                             print_indent += 2
                     elif current_arch.is_ret(insn):
                         if not self.args.syscall_only:
-                            if not printed_already:
-                                self.print_insn_ret(insn, print_indent)
+                            self.print_insn_ret(insn, print_indent)
                             next_should_print = True
                             print_indent = max(print_indent - 2, 0)
                     elif current_arch.is_syscall(insn):
-                        if not printed_already:
-                            self.print_insn_syscall(insn, print_indent)
+                        self.print_insn_syscall(insn, print_indent)
                         if self.args.print_args:
                             pending_syscall_ret_indent = print_indent
+                        next_should_print = False
+                    else:
+                        if next_should_print:
+                            self.print_insn(insn, print_indent)
+                        next_should_print = False
 
                     if self.exec_step("si", insn): # use si wrapper
                         break
                     insn = get_insn()
 
                     # $pc is not changed
-                    if prev_prev_addr == prev_addr == current_arch.pc: # for faster, repeat insn is skip
-                        # infinity self loop
-                        if current_arch.is_call(insn) or current_arch.is_jump(insn) or current_arch.is_ret(insn):
-                            self.err = "Detected infinity loop prev_addr ({:#x})".format(prev_addr)
-                            break
-                        # maybe rep prefix
-                        if self.exec_step("xuntil"):
-                            break
-                        # recheck
-                        if prev_prev_addr == prev_addr == current_arch.pc:
-                            self.err = "Detected infinity loop prev_addr ({:#x})".format(prev_addr)
-                            break
+                    if (prev_prev_addr == prev_addr == current_arch.pc and current_arch.is_jump(insn)
+                            and not current_arch.is_conditional_branch(insn)):
+                        self.err = "Detected infinity loop prev_addr ({:#x})".format(prev_addr)
+                        break
 
         except KeyboardInterrupt:
             pass
@@ -189354,10 +189440,13 @@ class CallTraceCommand(ExecUntilCommand):
             fd, fname = GefUtil.mkstemp(prefix="call-trace", suffix=".log")
             self.output_fd = os.fdopen(fd, "w")
 
-        self.call_trace()
+        try:
+            self.call_trace()
+        finally:
+            if not self.args.no_file_output:
+                self.output_fd.close()
 
         if not self.args.no_file_output:
-            self.output_fd.close()
             info("Saved to {!r}".format(fname))
         return
 
