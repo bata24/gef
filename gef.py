@@ -64391,18 +64391,21 @@ class UnsignedCommand(GenericCommand):
 
 @register_command
 class AddressifyCommand(GenericCommand):
-    """Convert reverse-order hex values to address."""
+    """Convert hex bytes to an address using the specified byte order."""
 
     _cmdline_ = "addressify"
     _category_ = "07-a. Misc - Conversion"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("-b", "--byte-order", choices=("little", "big"), default="little",
+                        help="the input byte order (default: little, independent of the target).")
     parser.add_argument("value", metavar="VALUE", nargs="+", help="the string to convert.")
     _syntax_ = parser.format_help()
 
     _example_ = [
         '{0:s} "00 30 e0 f7 ff 7f"',
         "{0:s} 00 30 e0 f7 ff 7f",
+        "{0:s} --byte-order big 7f ff f7 e0 30 00",
     ]
     _example_ = "\n".join(_example_).format(_cmdline_)
 
@@ -64420,12 +64423,15 @@ class AddressifyCommand(GenericCommand):
             err("Hex value length is odd")
             return
 
-        hex_values = slicer(hex_value, 2)[::-1]
+        hex_values = slicer(hex_value, 2)
+        if args.byte_order == "little":
+            hex_values.reverse()
         hex_values = "".join(hex_values)
 
         address = int(hex_values, 16)
         address = ProcessMap.lookup_address(address)
 
+        gef_print("Byte order: {:s}".format(args.byte_order))
         if address.valid and address.section.path:
             gef_print("{!s} @ {:s}".format(address, address.section.path))
         elif is_valid_addr(address.value):

@@ -12835,19 +12835,21 @@ The preview uses the current in-SMM PC, or the detected SMRAM base outside SMM.
 # 07-a. Misc - Conversion
 ## `addressify`
 
-Convert reverse-order hex values to address.
+Convert hex bytes to an address using the specified byte order.
 
 
 ### Syntax
 
 ```text
-usage: addressify [-h] VALUE [VALUE ...]
+usage: addressify [-h] [-b {little,big}] VALUE [VALUE ...]
 
 positional arguments:
-  VALUE       the string to convert.
+  VALUE                 the string to convert.
 
 options:
-  -h, --help  show this help message and exit
+  -h, --help            show this help message and exit
+  -b, --byte-order {little,big}
+                        the input byte order (default: little, independent of the target).
 ```
 
 ### Examples
@@ -12855,6 +12857,7 @@ options:
 ```gdb
 addressify "00 30 e0 f7 ff 7f"
 addressify 00 30 e0 f7 ff 7f
+addressify --byte-order big 7f ff f7 e0 30 00
 ```
 
 ## `convert`
