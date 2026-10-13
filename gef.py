@@ -174872,9 +174872,11 @@ class WSecureMemAddrCommand(GenericCommand):
             ))
 
         try:
-            write_physmem(phys_addr, data)
+            ret = write_physmem(phys_addr, data)
         except Exception:
-            err("Failed to write adata")
+            ret = None
+        if ret is None:
+            err("Memory write error")
         return
 
     @Decorator.parse_args
