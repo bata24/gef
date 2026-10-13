@@ -101813,7 +101813,7 @@ class KernelPciDeviceCommand(GenericCommand, BufferingOutput):
                 continue
             seen.add(bus)
             buses.append(bus)
-            children = self.list_items(bus + self.offset_pci_bus_children, self.offset_pci_bus_children)
+            children = self.list_items(bus + self.offset_pci_bus_children, self.offset_pci_bus_node)
             stack.extend(reversed(children))
         return buses
 
@@ -101903,6 +101903,7 @@ class KernelPciDeviceCommand(GenericCommand, BufferingOutput):
         """
 
         ptrsize = current_arch.ptrsize
+        self.offset_pci_bus_node = self.type_offset("struct pci_bus", "node", 0)
         self.offset_pci_bus_children = self.type_offset("struct pci_bus", "children", ptrsize * 3)
         self.offset_pci_bus_devices = self.type_offset("struct pci_bus", "devices", ptrsize * 5)
 
@@ -101951,7 +101952,7 @@ class KernelPciDeviceCommand(GenericCommand, BufferingOutput):
         self.offset_pci_dev_class = self.type_offset("struct pci_dev", "class", self.offset_pci_dev_subsystem_device + 2)
         self.offset_pci_dev_revision = self.type_offset("struct pci_dev", "revision", self.offset_pci_dev_class + 4)
 
-        self.root_buses = self.list_items(self.pci_root_buses)
+        self.root_buses = self.list_items(self.pci_root_buses, self.offset_pci_bus_node)
         if not self.root_buses:
             self.meta.append((warn, "No PCI devices found"))
             return None
@@ -102281,7 +102282,7 @@ class KernelPciDeviceCommand(GenericCommand, BufferingOutput):
                 continue
             self.out.append(titlify("Bus {:s}: {:#x}".format(bus_name, bus)))
             self.walk_devices(bus)
-            children = self.list_items(bus + self.offset_pci_bus_children, self.offset_pci_bus_children)
+            children = self.list_items(bus + self.offset_pci_bus_children, self.offset_pci_bus_node)
             stack.extend(reversed(children))
         if self.incomplete:
             self.out.extend("Incomplete: {:s}".format(reason) for reason in self.incomplete)
