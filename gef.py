@@ -16771,7 +16771,9 @@ def set_arch(arch_str=None):
     Return the selected arch, or raise an OSError."""
     global current_arch, current_arch_context
 
+    current_arch = None
     current_arch_context = get_arch_context()
+    Cache.reset_gef_caches(all=True)
 
     # get defined arch
     arches = {}
@@ -17161,7 +17163,7 @@ class GenericCommand(gdb.Command):
     def invoke(self, args, from_tty): # noqa: V105
         try:
             # Another inferior or target may be selected since the architecture was resolved.
-            if current_arch is not None and current_arch_context != get_arch_context():
+            if current_arch_context is not None and current_arch_context != get_arch_context():
                 set_arch()
             self.command_args = args
             argv = gdb.string_to_argv(args)
