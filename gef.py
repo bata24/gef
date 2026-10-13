@@ -76572,6 +76572,7 @@ class KernelXArray:
         xa.head_offset                    # -> the found offset
         xa.parse()                        # -> [entry, entry, ...]
         xa.parse_indexed()                # -> [(index, entry), ...]
+        xa.broken                         # -> {node: reason, ...} if the last walk was incomplete
 
     struct xarray {
         spinlock_t xa_lock;
@@ -76612,6 +76613,7 @@ class KernelXArray:
         self.address = address
         self.head_offset = xa_head_offset
         self.seen = set()
+        self.broken = {}
         return
 
     @classmethod
@@ -76633,6 +76635,8 @@ class KernelXArray:
 
     def parse_indexed(self):
         """Return the list of (index, entry) pairs in the xarray."""
+        self.seen = set()
+        self.broken = {}
         cls = type(self)
         head_offset = self.head_offset
         if head_offset is None:
@@ -76641,7 +76645,6 @@ class KernelXArray:
             return []
 
         entry = read_int_from_memory(self.address + head_offset)
-        self.seen = set()
         return self.parse_entry(entry, 0)
 
     @classmethod
@@ -76721,6 +76724,7 @@ class KernelXArray:
 
         node = entry - 2
         if node in self.seen: # the tree is broken
+            self.broken[node] = "cyclic"
             return []
         self.seen.add(node)
 
@@ -76753,6 +76757,7 @@ class KernelRadixTree:
             ...                               # offsetof(the struct, rnode) is not found
         rt.rnode_offset                       # -> the found offset
         rt.parse()                            # -> [entry, entry, ...]
+        rt.broken                             # -> {node: reason, ...} if the last walk was incomplete
 
     struct radix_tree_root {
         unsigned int height; // ~v4.6
@@ -76795,6 +76800,7 @@ class KernelRadixTree:
         self.size_count = None
         self.offset_slots = None
         self.seen = set()
+        self.broken = {}
         return
 
     def parse(self):
@@ -76929,10 +76935,11 @@ class KernelRadixTree:
 
     def iter_indexed_entries(self):
         """Iterate all (index, leaf entry) pairs in the radix_tree lazily."""
+        self.seen = set()
+        self.broken = {}
         # Re-read the root every time, because the tree may be updated after the last walk.
         if not self.read_root():
             return
-        self.seen = set()
 
         cls = type(self)
         if self.rnode == 0:
@@ -76957,18 +76964,22 @@ class KernelRadixTree:
     def parse_node_indexed(self, node, height, index):
         """Iterate (index, leaf entry) pairs under `node` recursively."""
         if node in self.seen: # the tree is broken
+            self.broken[node] = "cyclic"
             return
         self.seen.add(node)
 
         if not is_valid_addr(node):
+            self.broken[node] = "unreadable"
             return
         if self.offset_slots is None and not self.detect_node_layout(node):
+            self.broken[node] = "unknown node layout"
             return
 
         cls = type(self)
         try:
             data = read_memory(node + self.offset_slots, current_arch.ptrsize * self.num_slots)
         except gdb.MemoryError:
+            self.broken[node] = "unreadable"
             return
 
         if height is None:
@@ -77006,6 +77017,7 @@ class KernelMapleTree:
         mt.root_offset                    # -> the found offset
         mt.parse()                        # -> [entry, entry, ...]
         mt.get_next()                     # -> entry (pop one by one, None if exhausted)
+        mt.broken                         # -> {node: reason, ...} if the last walk was incomplete
 
     struct maple_tree {
         union {
@@ -77087,6 +77099,7 @@ class KernelMapleTree:
         self.ma_flags = None
         self.max_depth = 0
         self.seen = set()
+        self.broken = {}
         self.walker = None
         return
 
@@ -77118,10 +77131,11 @@ class KernelMapleTree:
 
     def iter_entries(self):
         """Iterate all leaf entries in the maple_tree lazily."""
+        self.seen = set()
+        self.broken = {}
         # Re-read the root every time, because the tree may be updated after the last walk.
         if not self.read_root():
             return
-        self.seen = set()
         if self.ma_root == 0:
             return
         if not type(self).is_node(self.ma_root):
@@ -77207,15 +77221,17 @@ class KernelMapleTree:
 
     def parse_node(self, entry, depth):
         """Iterate the leaf entries under `entry` recursively."""
-        if entry in self.seen:
+        cls = type(self)
+        pointer = entry & ~cls.MAPLE_NODE_POINTER_MASK
+        if pointer in self.seen:
+            self.broken[pointer] = "cyclic"
             return
-        self.seen.add(entry)
+        self.seen.add(pointer)
 
         if self.max_depth < depth:
+            self.broken[pointer] = "depth limit"
             return
 
-        cls = type(self)
-        pointer = entry & ~(cls.MAPLE_NODE_POINTER_MASK)
         node_type = (entry >> cls.MAPLE_NODE_TYPE_SHIFT) & cls.MAPLE_NODE_TYPE_MASK
 
         if node_type == cls.MAPLE_DENSE:
@@ -77227,6 +77243,7 @@ class KernelMapleTree:
         elif node_type == cls.MAPLE_ARANGE_64:
             slot_top, num_slots, is_leaf = pointer + cls.offset_arange64_slot, cls.num_arange64_slots, False
         else:
+            self.broken[pointer] = "invalid node type"
             return
 
         for i in range(num_slots):
@@ -77247,6 +77264,7 @@ class KernelRBTree:
     How to use:
         rb = KernelRBTree(htb + offset_rb_root)   # the address of the struct rb_root
         rb.parse()                                 # -> [rb_node, rb_node, ...] (not sorted)
+        rb.broken                                  # -> {node: reason, ...} if the last walk was incomplete
 
     struct rb_root {
         struct rb_node *rb_node;
@@ -77263,21 +77281,27 @@ class KernelRBTree:
         """Set the address of the struct rb_root."""
         self.address = address
         self.seen = set()
+        self.broken = {}
         return
 
     def parse(self):
         """Return the list of all rb_nodes in the tree."""
+        self.seen = set()
+        self.broken = {}
         if self.address == 0:
             return []
 
-        self.seen = set()
         return self.parse_node(read_int_from_memory(self.address))
 
     def parse_node(self, rb_node):
         """Return the list of the rb_nodes under `rb_node` recursively."""
-        if not rb_node or not is_valid_addr(rb_node):
+        if not rb_node:
+            return []
+        if not is_valid_addr(rb_node):
+            self.broken[rb_node] = "unreadable"
             return []
         if rb_node in self.seen: # the tree is broken
+            self.broken[rb_node] = "cyclic"
             return []
         self.seen.add(rb_node)
 
@@ -160809,7 +160833,7 @@ class KernelIrqCommand(GenericCommand, BufferingOutput):
                     descs.append((None, desc))
         except (gdb.MemoryError, OverflowError):
             return descs, False
-        return descs, True
+        return descs, not tree.broken
 
     def resolve_offset_irq(self, layout, indexed_descs, descs):
         offset = GefUtil.offsetof("irq_desc", "irq_data.irq")
@@ -194291,14 +194315,18 @@ class KernelWalkCommand(GenericCommand, BufferingOutput):
             self.out.append("[{:d}] -> {!s}".format(idx, la))
         return
 
-    def dump_entries(self, entries):
+    def dump_entries(self, entries, broken=None):
         """Append the resolved entries to self.out."""
         entries = list(entries)
-        if not entries:
+        if broken:
+            for node, reason in broken.items():
+                self.err_add_out("Tree is broken at {:#x} ({:s}); results are incomplete".format(node, reason))
+            self.info_add_out("Partial entries: {:d}".format(len(entries)))
+        elif not entries:
             self.info_add_out("No entry was found")
             return
-
-        self.quiet_info_add_out("Num of entries: {:d}".format(len(entries)))
+        else:
+            self.quiet_info_add_out("Num of entries: {:d}".format(len(entries)))
         for idx, entry in enumerate(entries, start=1):
             self.add_entry_out(idx, entry)
         return
@@ -194447,7 +194475,7 @@ class KernelWalkRbtreeCommand(KernelWalkCommand):
 
         self.out = []
         self.quiet_info_add_out("rb_{:s}: {:#x}".format("node" if args.rb_node else "root", args.address))
-        self.dump_entries(nodes)
+        self.dump_entries(nodes, rb.broken)
         self.print_output(check_terminal_size=True)
         return
 
@@ -194524,7 +194552,7 @@ class KernelWalkRadixTreeCommand(KernelWalkCommand):
             self.quiet_info_add_out("offsetof(radix_tree_node, count): {:#x}".format(rt.offset_count))
             self.quiet_info_add_out("offsetof(radix_tree_node, slots): {:#x}".format(rt.offset_slots))
             self.quiet_info_add_out("RADIX_TREE_MAP_SIZE: {:d}".format(rt.num_slots))
-        self.dump_entries(entries)
+        self.dump_entries(entries, rt.broken)
         self.print_output(check_terminal_size=True)
         return
 
@@ -194596,7 +194624,7 @@ class KernelWalkXArrayCommand(KernelWalkCommand):
 
         self.out = []
         self.quiet_info_add_out("offsetof(the struct, xa_head): {:#x}".format(xa.head_offset))
-        self.dump_entries(entries)
+        self.dump_entries(entries, xa.broken)
         self.print_output(check_terminal_size=True)
         return
 
@@ -194667,7 +194695,7 @@ class KernelWalkMapleTreeCommand(KernelWalkCommand):
         self.out = []
         self.quiet_info_add_out("offsetof(the struct, ma_root): {:#x}".format(mt.root_offset))
         self.quiet_info_add_out("ma_root: {:#x}, ma_flags: {:#x}, max_depth: {:d}".format(mt.ma_root, mt.ma_flags, mt.max_depth))
-        self.dump_entries(entries)
+        self.dump_entries(entries, mt.broken)
         self.print_output(check_terminal_size=True)
         return
 
