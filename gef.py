@@ -70263,14 +70263,16 @@ class KernelAddressHeuristicFinder:
         sys_fork = Ksym.get_addr("sys_fork")
         sys_read = Ksym.get_addr("sys_read")
         if None not in [sys_restart_syscall, sys_exit, sys_fork, sys_read]:
-            seq_to_find = p32(sys_restart_syscall) + p32(sys_exit) + p32(sys_fork) + p32(sys_read)
             klayout = Kernel.layout()
             # `sys_call_table` is embedded in the .text area even if `CONFIG_KALLSYMS_ALL=n`
             if klayout.text_base:
                 text_data = read_memory(klayout.text_base, klayout.text_size)
-                sys_call_table_offset = text_data.find(seq_to_find)
-                if sys_call_table_offset >= 0:
-                    return klayout.text_base + sys_call_table_offset
+                for thumb_bit in (0, 1):
+                    seq_to_find = b"".join(p32(addr & ~1 | thumb_bit) for addr in (
+                        sys_restart_syscall, sys_exit, sys_fork, sys_read))
+                    sys_call_table_offset = text_data.find(seq_to_find)
+                    if sys_call_table_offset >= 0:
+                        return klayout.text_base + sys_call_table_offset
         return None
 
     @staticmethod
@@ -104045,7 +104047,13 @@ class KernelSyscallsCommand(GenericCommand, BufferingOutput):
     @staticmethod
     def is_plausible_address(addr):
         """Check an address without issuing a remote memory read."""
-        return isinstance(addr, int) and 0 <= addr < AddressUtil.get_vmem_end()
+        if not isinstance(addr, int) or not 0 <= addr < AddressUtil.get_vmem_end():
+            return False
+        if is_arm32():
+            return bool(addr & 1) or addr % 4 == 0
+        if is_arm64():
+            return addr % 4 == 0
+        return True
 
     @Cache.cache_this_session(per_inferior=True, until_new_objfile=True)
     def get_ni_syscalls(self, abi):
@@ -104067,7 +104075,12 @@ class KernelSyscallsCommand(GenericCommand, BufferingOutput):
     @staticmethod
     def get_insn_pair(addr):
         try:
-            insns = list(Disasm.gef_disassemble(addr, 2))
+            if is_arm32() and Config.get("context_code.use_capstone"):
+                read_memory(addr & ~1, 1)
+                mode = "THUMB" if addr & 1 else "ARM"
+                insns = list(Disasm.capstone_disassemble(addr, 2, mode=mode))
+            else:
+                insns = list(Disasm.gef_disassemble(addr, 2))
         except (gdb.error, gdb.MemoryError):
             return None, None
         if len(insns) < 2:
@@ -104077,7 +104090,8 @@ class KernelSyscallsCommand(GenericCommand, BufferingOutput):
     @Cache.cache_this_session(per_inferior=True, until_new_objfile=True)
     def analyze_syscall_function(self, syscall_function_addr):
         try:
-            symbol = Symbol.get_symbol_string(syscall_function_addr, nosymbol_string=" <NO_SYMBOL>")
+            symbol_addr = syscall_function_addr & ~1 if is_arm32() else syscall_function_addr
+            symbol = Symbol.get_symbol_string(symbol_addr, nosymbol_string=" <NO_SYMBOL>")
         except (gdb.error, gdb.MemoryError):
             return None
         if "+" in symbol:
@@ -104156,12 +104170,11 @@ class KernelSyscallsCommand(GenericCommand, BufferingOutput):
 
         function_addrs = []
         for syscall_function_addr in candidates:
-            if (is_arm32() or is_arm64()) and syscall_function_addr % 4:
-                break
             if not self.is_plausible_address(syscall_function_addr):
                 break
             try:
-                symbol = Symbol.get_symbol_string(syscall_function_addr, nosymbol_string=" <NO_SYMBOL>")
+                symbol_addr = syscall_function_addr & ~1 if is_arm32() else syscall_function_addr
+                symbol = Symbol.get_symbol_string(symbol_addr, nosymbol_string=" <NO_SYMBOL>")
             except (gdb.error, gdb.MemoryError):
                 break
             if "+" in symbol:
@@ -104185,10 +104198,6 @@ class KernelSyscallsCommand(GenericCommand, BufferingOutput):
             addr = sys_call_table_addr + i * current_arch.ptrsize
             syscall_function_addr = read_int_from_memory(addr, safe=True)
             if syscall_function_addr is None:
-                if indices is None:
-                    break
-                continue
-            if (is_arm32() or is_arm64()) and syscall_function_addr % 4: # should be aligned
                 if indices is None:
                     break
                 continue
@@ -104281,8 +104290,9 @@ class KernelSyscallsCommand(GenericCommand, BufferingOutput):
 
         # print
         for i, addr, syscall_function_addr, symbol, is_valid in table:
-            if syscall_function_addr in ni_syscalls:
-                symbol = " <{:s}>".format(ni_syscalls[syscall_function_addr])
+            symbol_addr = syscall_function_addr & ~1 if is_arm32() else syscall_function_addr
+            if symbol_addr in ni_syscalls:
+                symbol = " <{:s}>".format(ni_syscalls[symbol_addr])
             nr = nr_base + i
             if nr in syscall_list.nr_table:
                 expected_name = syscall_list.nr_table[nr].name
