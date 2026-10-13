@@ -33370,9 +33370,6 @@ class ElfInfoCommand(GenericCommand):
 
     @Decorator.parse_args
     def do_invoke(self, args):
-        local_filepath = None
-        remote_filepath = None
-        tmp_filepath = None
         self.out = []
 
         # memory parse pattern
@@ -33390,82 +33387,36 @@ class ElfInfoCommand(GenericCommand):
                 gef_print("\n".join(self.out), less=not args.no_pager)
             return
 
-        # file parse pattern
-        if args.remote:
-            if not is_remote_debug():
-                err("-r option is allowed only remote debug")
-                return
-            if is_qemu_system():
-                err("-r option is unsupported under qemu-system")
+        with GefUtil.local_elf(args.file, remote=args.remote, prefix=self._cmdline_) as (local_filepath, remote_filepath):
+            if local_filepath is None:
                 return
 
-            if args.file:
-                remote_filepath = args.file # if specified, assume it is remote
-            elif gdb.current_progspace().filename:
-                f = gdb.current_progspace().filename
-                if f.startswith("target:"): # gdbserver
-                    f = f[7:]
-                remote_filepath = f
-            elif Pid.get_pid(remote=True):
-                remote_filepath = "/proc/{:d}/exe".format(Pid.get_pid(remote=True))
+            # readelf pattern
+            if args.use_readelf:
+                try:
+                    readelf = GefUtil.which(Config.get("gef.readelf_command"))
+                except FileNotFoundError:
+                    err("Could not find readelf")
+                    return
+                try:
+                    less = GefUtil.which("less")
+                except FileNotFoundError:
+                    less = False
+                if args.no_pager or not less:
+                    GefUtil.os_system("LANG=C {!r} -a --wide {!r}".format(readelf, local_filepath))
+                else:
+                    GefUtil.os_system("LANG=C {!r} -a --wide {!r} | {!r}".format(readelf, local_filepath, less))
+                return
+
+            # self parse pattern
+            elf = Elf.get_elf(local_filepath)
+            if elf is None or not elf.is_valid():
+                err("Failed to parse ELF")
             else:
-                err("File name could not be determined")
-                return
-
-            data = Path.read_remote_file(remote_filepath, as_byte=True) # qemu-user is failed here, it is ok
-            if not data:
-                err("Failed to read remote filepath")
-                return
-            tmp_fd, tmp_filepath = GefUtil.mkstemp(prefix="elf-info", suffix=".elf")
-            with os.fdopen(tmp_fd, "wb") as fdw:
-                fdw.write(data)
-            local_filepath = tmp_filepath
-            del data
-
-        elif args.file:
-            local_filepath = args.file
-
-        elif args.file is None:
-            if is_qemu_system():
-                err("Argument-less calls are unsupported under qemu-system")
-                return
-            local_filepath = Path.get_filepath()
-
-        if local_filepath is None:
-            err("File name could not be determined")
-            return
-
-        # readelf pattern
-        if args.use_readelf:
-            try:
-                readelf = GefUtil.which(Config.get("gef.readelf_command"))
-            except FileNotFoundError:
-                err("Could not find readelf")
-                return
-            try:
-                less = GefUtil.which("less")
-            except FileNotFoundError:
-                less = False
-            if args.no_pager or not less:
-                GefUtil.os_system("LANG=C {!r} -a --wide {!r}".format(readelf, local_filepath))
-            else:
-                GefUtil.os_system("LANG=C {!r} -a --wide {!r} | {!r}".format(readelf, local_filepath, less))
-            if tmp_filepath and os.path.exists(tmp_filepath):
-                os.unlink(tmp_filepath)
-            return
-
-        # self parse pattern
-        elf = Elf.get_elf(local_filepath)
-        if elf is None or not elf.is_valid():
-            err("Failed to parse ELF")
-        else:
-            data = open(local_filepath, "rb").read()
-            self.out.append("size: {:d} bytes, sha1: {:s}".format(len(data), hashlib.sha1(data).hexdigest()))
-            self.elf_info(elf, remote_filepath)
-            gef_print("\n".join(self.out), less=not args.no_pager)
-
-        if tmp_filepath and os.path.exists(tmp_filepath):
-            os.unlink(tmp_filepath)
+                data = open(local_filepath, "rb").read()
+                self.out.append("size: {:d} bytes, sha1: {:s}".format(len(data), hashlib.sha1(data).hexdigest()))
+                self.elf_info(elf, remote_filepath)
+                gef_print("\n".join(self.out), less=not args.no_pager)
         return
 
 
@@ -33960,63 +33911,19 @@ class ChecksecCommand(GenericCommand):
             gdb.execute("kchecksec")
             return
 
-        local_filepath = None
-        remote_filepath = None
-        tmp_filepath = None
-
-        if args.remote:
-            if not is_remote_debug():
-                err("-r option is allowed only remote debug")
+        with GefUtil.local_elf(args.file, remote=args.remote, prefix=self._cmdline_) as (local_filepath, remote_filepath):
+            if local_filepath is None:
                 return
 
+            runtime = args.file is None and not is_core_file()
             if args.file:
-                remote_filepath = args.file # if specified, assume it is remote
-            elif gdb.current_progspace().filename:
-                f = gdb.current_progspace().filename
-                if f.startswith("target:"): # gdbserver
-                    f = f[7:]
-                remote_filepath = f
-            elif Pid.get_pid(remote=True):
-                remote_filepath = "/proc/{:d}/exe".format(Pid.get_pid(remote=True))
-            else:
-                err("File name could not be determined")
-                return
-
-            data = Path.read_remote_file(remote_filepath, as_byte=True) # qemu-user is failed here, it is ok
-            if not data:
-                err("Failed to read remote filepath")
-                return
-            tmp_fd, tmp_filepath = GefUtil.mkstemp(prefix="checksec", suffix=".elf")
-            with os.fdopen(tmp_fd, "wb") as fdw:
-                fdw.write(data)
-            local_filepath = tmp_filepath
-            del data
-
-        elif args.file:
-            local_filepath = args.file
-
-        elif args.file is None:
-            if is_qemu_system():
-                err("Argument-less calls are unsupported under qemu-system")
-                return
-            local_filepath = Path.get_filepath()
-
-        if local_filepath is None:
-            err("File name could not be determined")
-            return
-
-        runtime = args.file is None and not is_core_file()
-        if args.file:
-            if args.remote:
-                runtime = remote_filepath == Path.get_remote_filepath()
-            else:
-                current_filepath = Path.get_filepath()
-                if current_filepath and os.path.isfile(current_filepath) and os.path.isfile(local_filepath):
-                    runtime = os.path.samefile(local_filepath, current_filepath) and not is_core_file()
-        self.print_security_properties(local_filepath, runtime=runtime)
-
-        if tmp_filepath and os.path.exists(tmp_filepath):
-            os.unlink(tmp_filepath)
+                if args.remote:
+                    runtime = remote_filepath == Path.get_remote_filepath()
+                else:
+                    current_filepath = Path.get_filepath()
+                    if current_filepath and os.path.isfile(current_filepath) and os.path.isfile(local_filepath):
+                        runtime = os.path.samefile(local_filepath, current_filepath) and not is_core_file()
+            self.print_security_properties(local_filepath, runtime=runtime)
         return
 
 
@@ -38770,60 +38677,15 @@ class DwarfExceptionHandlerInfoCommand(GenericCommand, BufferingOutput):
     @Decorator.parse_args
     @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
     def do_invoke(self, args):
-        local_filepath = None
-        remote_filepath = None
-        tmp_filepath = None
-
-        if args.remote:
-            if not is_remote_debug():
-                err("-r option is allowed only remote debug")
+        with GefUtil.local_elf(args.file, remote=args.remote, prefix=self._cmdline_) as (local_filepath, remote_filepath):
+            if local_filepath is None:
                 return
 
-            if args.file:
-                remote_filepath = args.file # if specified, assume it is remote
-            elif gdb.current_progspace().filename:
-                f = gdb.current_progspace().filename
-                if f.startswith("target:"): # gdbserver
-                    f = f[7:]
-                remote_filepath = f
-            elif Pid.get_pid(remote=True):
-                remote_filepath = "/proc/{:d}/exe".format(Pid.get_pid(remote=True))
-            else:
-                err("File name could not be determined")
-                return
-
-            data = Path.read_remote_file(remote_filepath, as_byte=True) # qemu-user is failed here, it is ok
-            if not data:
-                err("Failed to read remote filepath")
-                return
-            tmp_fd, tmp_filepath = GefUtil.mkstemp(prefix="dwarf-exception-handler", suffix=".elf")
-            with os.fdopen(tmp_fd, "wb") as fdw:
-                fdw.write(data)
-            local_filepath = tmp_filepath
-            del data
-
-        elif args.file:
-            local_filepath = args.file
-
-        elif args.file is None:
-            if is_qemu_system():
-                err("Argument-less calls are unsupported under qemu-system")
-                return
-            local_filepath = Path.get_filepath()
-
-        if local_filepath is None:
-            err("File name could not be determined")
-            return
-
-        try:
             elf = Elf.get_elf(local_filepath)
             if elf is None or not elf.is_valid():
                 err("Failed to parse ELF")
                 return
             self.out = DwarfExceptionHandler(elf).dump(with_hexdump=args.hexdump)
-        finally:
-            if tmp_filepath and os.path.exists(tmp_filepath):
-                os.unlink(tmp_filepath)
 
         if self.out:
             self.print_output()
@@ -47847,92 +47709,49 @@ class DestructorDumpCommand(GenericCommand):
     def do_invoke(self, args):
         Cache.reset_gef_caches(all=True)
 
-        # init
-        local_filepath = None
-        remote_filepath = None
-        tmp_filepath = None
-
-        if args.remote:
-            if not is_remote_debug():
-                err("-r option is allowed only remote debug")
+        with GefUtil.local_elf(args.file, remote=args.remote, prefix=self._cmdline_) as (local_filepath, remote_filepath):
+            if local_filepath is None:
                 return
 
-            if args.file:
-                remote_filepath = args.file # if specified, assume it is remote
-            elif gdb.current_progspace().filename:
-                f = gdb.current_progspace().filename
-                if f.startswith("target:"): # gdbserver
-                    f = f[7:]
-                remote_filepath = f
-            elif Pid.get_pid(remote=True):
-                remote_filepath = "/proc/{:d}/exe".format(Pid.get_pid(remote=True))
-            else:
-                err("File name could not be determined")
+            # filepath and elf
+            self.local_filepath = local_filepath
+            self.elf = Elf.get_elf(local_filepath)
+            if self.elf is None or not self.elf.is_valid():
+                err("Invalid ELF")
                 return
 
-            data = Path.read_remote_file(remote_filepath, as_byte=True) # qemu-user is failed here, it is ok
-            if not data:
-                err("Failed to read remote filepath")
-                return
-            tmp_fd, tmp_filepath = GefUtil.mkstemp(prefix="dtor-dump", suffix=".elf")
-            with os.fdopen(tmp_fd, "wb") as fdw:
-                fdw.write(data)
-            local_filepath = tmp_filepath
-            del data
+            # codebase
+            if remote_filepath:
+                codebase = ProcessMap.get_section_base_address(remote_filepath)
+            elif local_filepath:
+                codebase = ProcessMap.get_section_base_address(local_filepath)
+            if codebase is None:
+                codebase = ProcessMap.get_section_base_address(Path.get_filepath(append_proc_root_prefix=False))
+            if codebase is None:
+                codebase = ProcessMap.get_section_base_address(Path.get_filepath_from_info_proc())
+            if codebase is None:
+                warn("Could not find codebase")
 
-        elif args.file:
-            local_filepath = args.file
+            # cookie
+            cookie = PtrDemangleCommand.get_cookie()
+            if cookie is None:
+                warn("Could not find cookie")
 
-        elif args.file is None:
-            local_filepath = Path.get_filepath()
+            # dump
+            gef_print(titlify("tls_dtor_list: registered by __cxa_thread_atexit_impl()"))
+            self.dump_tls_dtors(args.tdl, cookie, codebase)
 
-        if local_filepath is None:
-            err("File name could not be determined")
-            return
+            gef_print(titlify("__exit_funcs: registered by atexit(), on_exit()"))
+            self.dump_exit_funcs("__exit_funcs", cookie)
 
-        # filepath and elf
-        self.local_filepath = local_filepath
-        self.elf = Elf.get_elf(local_filepath)
-        if self.elf is None or not self.elf.is_valid():
-            err("Invalid ELF")
-            return
+            gef_print(titlify("__quick_exit_funcs: registered by at_quick_exit()"))
+            self.dump_exit_funcs("__quick_exit_funcs", cookie)
 
-        # codebase
-        if remote_filepath:
-            codebase = ProcessMap.get_section_base_address(remote_filepath)
-        elif local_filepath:
-            codebase = ProcessMap.get_section_base_address(local_filepath)
-        if codebase is None:
-            codebase = ProcessMap.get_section_base_address(Path.get_filepath(append_proc_root_prefix=False))
-        if codebase is None:
-            codebase = ProcessMap.get_section_base_address(Path.get_filepath_from_info_proc())
-        if codebase is None:
-            warn("Could not find codebase")
+            gef_print(titlify(".fini_array section"))
+            self.dump_fini_array(codebase)
 
-        # cookie
-        cookie = PtrDemangleCommand.get_cookie()
-        if cookie is None:
-            warn("Could not find cookie")
-
-        # dump
-        gef_print(titlify("tls_dtor_list: registered by __cxa_thread_atexit_impl()"))
-        self.dump_tls_dtors(args.tdl, cookie, codebase)
-
-        gef_print(titlify("__exit_funcs: registered by atexit(), on_exit()"))
-        self.dump_exit_funcs("__exit_funcs", cookie)
-
-        gef_print(titlify("__quick_exit_funcs: registered by at_quick_exit()"))
-        self.dump_exit_funcs("__quick_exit_funcs", cookie)
-
-        gef_print(titlify(".fini_array section"))
-        self.dump_fini_array(codebase)
-
-        gef_print(titlify(".fini section"))
-        self.dump_fini(codebase)
-
-        # cleanup
-        if tmp_filepath and os.path.exists(tmp_filepath):
-            os.unlink(tmp_filepath)
+            gef_print(titlify(".fini section"))
+            self.dump_fini(codebase)
         return
 
 
@@ -48768,134 +48587,83 @@ class GotCommand(GenericCommand, BufferingOutput):
             self.quiet_err("{}".format(e))
             return
 
-        # A valid path even if the mount namespace is different.
-        local_filepath = None
-
-        # A path in /proc/PID/maps. Ignore namespace differences.
-        # Used to find the base address.
-        vmmap_filepath = None
-
-        # A path in remote environment.
-        remote_filepath = None
-
-        # A path downloaded file from remote environment.
-        # It should be removed later.
-        tmp_filepath = None
-
-        # get local_filepath
-        if args.remote:
-            if not is_remote_debug():
-                self.quiet_err("-r option is allowed only remote debug")
+        with GefUtil.local_elf(args.file, remote=args.remote, prefix=self._cmdline_,
+                              error=self.quiet_err) as (local_filepath, remote_filepath):
+            if local_filepath is None:
                 return
 
-            if args.file:
-                remote_filepath = args.file # if specified, assume it is remote
-                vmmap_filepath = args.file
-            elif gdb.current_progspace().filename:
-                f = gdb.current_progspace().filename
-                if f.startswith("target:"): # gdbserver
-                    f = f[7:]
-                remote_filepath = f
-                vmmap_filepath = f
-            elif Pid.get_pid(remote=True):
-                remote_filepath = "/proc/{:d}/exe".format(Pid.get_pid(remote=True))
-            else:
-                self.quiet_err("File name could not be determined")
+            vmmap_filepath = remote_filepath
+            if not args.remote and args.file is None:
+                vmmap_filepath = Path.get_filepath(append_proc_root_prefix=False)
+
+            if not os.path.exists(local_filepath):
+                self.quiet_err("{:s} does not exist".format(local_filepath))
                 return
 
-            data = Path.read_remote_file(remote_filepath, as_byte=True) # qemu-user is failed here, it is ok
-            if not data:
-                self.quiet_err("Failed to read remote filepath")
+            elf = Elf.get_elf(local_filepath)
+            if elf is None or not elf.is_valid():
+                self.quiet_err("Invalid ELF")
                 return
-            tmp_fd, tmp_filepath = GefUtil.mkstemp(prefix="got", suffix=".elf")
-            with os.fdopen(tmp_fd, "wb") as fdw:
-                fdw.write(data)
-            local_filepath = tmp_filepath
-            del data
 
-        elif args.file:
-            local_filepath = args.file
-
-        elif args.file is None:
-            local_filepath = Path.get_filepath() # /proc/<PID>/root/path/to/binary if another mnt namespace
-            vmmap_filepath = Path.get_filepath(append_proc_root_prefix=False)
-
-        # check local filepath
-        if local_filepath is None:
-            self.quiet_err("File name could not be determined")
-            return
-
-        if not os.path.exists(local_filepath):
-            self.quiet_err("{:s} does not exist".format(local_filepath))
-            return
-
-        elf = Elf.get_elf(local_filepath)
-        if elf is None or not elf.is_valid():
-            self.quiet_err("Invalid ELF")
-            return
-
-        # title
-        self.out = []
-        if not args.quiet:
-            if remote_filepath:
-                print_filename = "{:s} (remote: {:s})".format(local_filepath, remote_filepath)
-            else:
-                print_filename = local_filepath
-
-            if elf.is_relro():
-                if elf.is_full_relro():
-                    relro_status = "Full RELRO"
+            # title
+            self.out = []
+            if not args.quiet:
+                if remote_filepath:
+                    print_filename = "{:s} (remote: {:s})".format(local_filepath, remote_filepath)
                 else:
-                    relro_status = "Partial RELRO"
-            else:
-                relro_status = "No RELRO"
-            self.out.append(titlify("PLT / GOT - {:s} - {:s}".format(print_filename, relro_status)))
+                    print_filename = local_filepath
 
-        # get base address
-        if args.elf_address:
-            if not args.file:
-                self.quiet_err("-e option needs -f option: in-memory ELF lacks Shdr, preventing full information resolution")
-                return
-            base_address = args.elf_address
-        else:
-            vmmap = ProcessMap.get_process_maps()
-            target_filepath = vmmap_filepath or local_filepath
-
-            # get the address matching the specified path
-            path_match = [x.page_start for x in vmmap if x.path == target_filepath]
-            if path_match:
-                base_address = min(path_match)
-            else:
-                # When using the -L option with qemu-user,
-                # the file path on the disk and the file path on vmmap are different.
-                #
-                # e.g., qemu-arm -g 1234 -L /usr/arm-linux-gnueabihf ./a.out
-                # gef> vmm
-                # [ Legend:  Code | Heap | Stack | Writable | ReadOnly | None | RWX ]
-                # Start      End        Size       Offset     Perm Path
-                # 0x3f694000 0x3f79f000 0x0010b000 0x00000000 r-x /lib/libc.so.6
-                # 0x3f79f000 0x3f7b9000 0x0001a000 0x0010a000 r-- /lib/libc.so.6
-                # 0x3f7b9000 0x3f7c4000 0x0000b000 0x00124000 rw- /lib/libc.so.6
-                # ...
-                path_match_end = [x.page_start for x in vmmap if x.path and target_filepath.endswith(x.path)]
-                if path_match_end:
-                    base_address = min(path_match_end)
+                if elf.is_relro():
+                    if elf.is_full_relro():
+                        relro_status = "Full RELRO"
+                    else:
+                        relro_status = "Partial RELRO"
                 else:
-                    self.quiet_err("Could not find {:s} in memory (Use -e option)".format(target_filepath))
+                    relro_status = "No RELRO"
+                self.out.append(titlify("PLT / GOT - {:s} - {:s}".format(print_filename, relro_status)))
+
+            # get base address
+            if args.elf_address:
+                if not args.file:
+                    self.quiet_err("-e option needs -f option: in-memory ELF lacks Shdr, "
+                                   "preventing full information resolution")
                     return
+                base_address = args.elf_address
+            else:
+                vmmap = ProcessMap.get_process_maps()
+                target_filepath = vmmap_filepath or local_filepath
 
-        # get the filtering parameter
-        self.filename = local_filepath
-        self.base_address = base_address
+                # get the address matching the specified path
+                path_match = [x.page_start for x in vmmap if x.path == target_filepath]
+                if path_match:
+                    base_address = min(path_match)
+                else:
+                    # When using the -L option with qemu-user,
+                    # the file path on the disk and the file path on vmmap are different.
+                    #
+                    # e.g., qemu-arm -g 1234 -L /usr/arm-linux-gnueabihf ./a.out
+                    # gef> vmm
+                    # [ Legend:  Code | Heap | Stack | Writable | ReadOnly | None | RWX ]
+                    # Start      End        Size       Offset     Perm Path
+                    # 0x3f694000 0x3f79f000 0x0010b000 0x00000000 r-x /lib/libc.so.6
+                    # 0x3f79f000 0x3f7b9000 0x0001a000 0x0010a000 r-- /lib/libc.so.6
+                    # 0x3f7b9000 0x3f7c4000 0x0000b000 0x00124000 rw- /lib/libc.so.6
+                    # ...
+                    path_match_end = [x.page_start for x in vmmap if x.path and target_filepath.endswith(x.path)]
+                    if path_match_end:
+                        base_address = min(path_match_end)
+                    else:
+                        self.quiet_err("Could not find {:s} in memory (Use -e option)".format(target_filepath))
+                        return
 
-        # doit
-        resolved_info = self.parse_plt_got()
-        self.make_output(resolved_info)
-        self.print_output(check_terminal_size=True)
+            # get the filtering parameter
+            self.filename = local_filepath
+            self.base_address = base_address
 
-        # clean up
-        if tmp_filepath and os.path.exists(tmp_filepath):
-            os.unlink(tmp_filepath)
+            # doit
+            resolved_info = self.parse_plt_got()
+            self.make_output(resolved_info)
+            self.print_output(check_terminal_size=True)
         return
 
 
@@ -203270,6 +203038,61 @@ class GefUtil:
         if dir is None:
             dir = GEF_TEMP_DIR
         return tempfile.mkstemp(dir=dir, prefix=real_prefix, suffix=suffix)
+
+    @staticmethod
+    @contextlib.contextmanager
+    def local_elf(filepath=None, remote=False, prefix="", error=err):
+        """Yield local and remote ELF paths, removing any downloaded copy on exit."""
+        remote_filepath = None
+        tmp_filepath = None
+        local_filepath = filepath or None
+
+        if remote:
+            if not is_remote_debug():
+                error("-r option is allowed only remote debug")
+                yield None, None
+                return
+            if is_qemu_system():
+                error("-r option is unsupported under qemu-system")
+                yield None, None
+                return
+
+            remote_filepath = filepath or Path.get_remote_filepath()
+            if not remote_filepath:
+                pid = Pid.get_pid(remote=True)
+                if pid:
+                    remote_filepath = "/proc/{:d}/exe".format(pid)
+            if not remote_filepath:
+                error("File name could not be determined")
+                yield None, None
+                return
+
+            data = Path.read_remote_file(remote_filepath, as_byte=True)
+            if not data:
+                error("Failed to read remote filepath")
+                yield None, None
+                return
+        elif filepath is None:
+            if is_qemu_system():
+                error("Argument-less calls are unsupported under qemu-system")
+                yield None, None
+                return
+            local_filepath = Path.get_filepath()
+
+        try:
+            if remote:
+                tmp_fd, tmp_filepath = GefUtil.mkstemp(prefix=prefix, suffix=".elf")
+                with os.fdopen(tmp_fd, "wb") as fdw:
+                    fdw.write(data)
+                local_filepath = tmp_filepath
+                del data
+            if local_filepath is None:
+                error("File name could not be determined")
+            yield local_filepath, remote_filepath
+        finally:
+            if tmp_filepath and os.path.exists(tmp_filepath):
+                os.unlink(tmp_filepath)
+        return
 
     @staticmethod
     def rmdir(directory, verbose=False, keep_root=False):
