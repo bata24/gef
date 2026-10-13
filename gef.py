@@ -66451,10 +66451,9 @@ class KernelAddressHeuristicFinderUtil:
 
     @staticmethod
     def riscv_auipc_gen(res, use_addi, use_mem, skip, skip_msb_check, read_valid,
-                        word_only=False, follow_addi=False, load_mnemonic=None):
+                        word_only=False, follow_addi=False, load_mnemonic=None, with_pc=False):
         """Yield the addresses built from `auipc rd, hi20` and the following `lo12(rd)`.
 
-        GDB does not annotate the pc-relative result for RISC-V, so it is computed here.
         `use_addi` takes `addi rX, rd, lo12` (the address itself), and `use_mem` takes the
         displacement of a load/store such as `ld rX, lo12(rd)` or `sd rX, lo12(rd)`.
         `word_only` limits the latter to the accesses as wide as a pointer.
@@ -66467,19 +66466,28 @@ class KernelAddressHeuristicFinderUtil:
             if not m:
                 continue
             pc, mnemonic = int(m.group(1), 16), m.group(2)
-            ops = [x.strip() for x in m.group(3).split(",")]
+            ops = [x.strip() for x in m.group(3).split("#", 1)[0].split(",")]
             if mnemonic == "auipc" and len(ops) == 2:
-                hi20 = int(ops[1], 0) & 0xfffff
+                try:
+                    hi20 = int(ops[1], 0) & 0xfffff
+                except ValueError:
+                    bases.pop(ops[0], None)
+                    continue
                 if hi20 & 0x80000:
                     hi20 -= 0x100000
                 bases[ops[0]] = pc + (hi20 << 12)
                 continue
             w = None
             if mnemonic == "addi" and len(ops) == 3 and ops[1] in bases:
+                try:
+                    offset = int(ops[2], 0)
+                except ValueError:
+                    bases.pop(ops[0], None)
+                    continue
                 if use_addi:
-                    w = AddressUtil.normalize_address(bases[ops[1]] + int(ops[2], 0))
+                    w = AddressUtil.normalize_address(bases[ops[1]] + offset)
                 if follow_addi:
-                    bases[ops[0]] = bases[ops[1]] + int(ops[2], 0)
+                    bases[ops[0]] = bases[ops[1]] + offset
             elif use_mem and (not word_only or mnemonic in (("ld", "sd") if is_64bit() else ("lw", "sw"))) \
                     and (load_mnemonic is None or mnemonic == load_mnemonic):
                 mm = re.fullmatch(r"(-?\d+)\((\w+)\)", ops[-1])
@@ -66494,7 +66502,7 @@ class KernelAddressHeuristicFinderUtil:
                     bases = {k: v for k, v in bases.items() if re.fullmatch(r"s\d+|fp", k)}
                 else:
                     bases.clear()
-            elif follow_addi and mnemonic == "addi" and ops[1] in bases:
+            elif follow_addi and mnemonic == "addi" and len(ops) == 3 and ops[1] in bases:
                 pass
             elif not re.fullmatch(r"(?:c\.)?(?:f?s[bhwdq]|b\w+|j|jr|ret|fence\S*|nop|wfi)", mnemonic):
                 bases.pop(ops[0], None)
@@ -66507,7 +66515,7 @@ class KernelAddressHeuristicFinderUtil:
             if skip > 0:
                 skip -= 1
                 continue
-            yield w
+            yield (pc, w) if with_pc else w
 
     @staticmethod
     def riscv_auipc_addi(res, skip=0, skip_msb_check=False, read_valid=False):
@@ -66525,6 +66533,59 @@ class KernelAddressHeuristicFinderUtil:
         )
 
     @staticmethod
+    def riscv_load_store(res, base_register=None):
+        """Map (base register, member offset, width) to the global load source."""
+        loads = {}
+        for mnemonic in ("lw", "ld"):
+            loads.update(KernelAddressHeuristicFinderUtil.riscv_auipc_gen(
+                res, False, True, 0, False, False, follow_addi=True, load_mnemonic=mnemonic, with_pc=True,
+            ))
+        registers = {}
+        pointers = {base_register: 0} if base_register else {}
+        stores = {}
+        for line in res.splitlines():
+            match = re.match(r"\s*(?:=>\s*)?(0x[0-9a-f]+)(?:\s+<[^>]*>)?:\s*(\S+)\s*(.*)", line)
+            if not match:
+                continue
+            pc, mnemonic = int(match.group(1), 16), match.group(2)
+            ops = [part.strip() for part in match.group(3).split("#", 1)[0].split(",")]
+            pointer = None
+            if mnemonic == "mv" and len(ops) == 2:
+                pointer = pointers.get(ops[1])
+            elif mnemonic == "addi" and len(ops) == 3 and ops[1] in pointers:
+                try:
+                    pointer = pointers[ops[1]] + int(ops[2], 0)
+                except ValueError:
+                    pass
+            if mnemonic in ("sw", "sd") and len(ops) == 2:
+                target = re.fullmatch(r"(-?\d+)\((\w+)\)", ops[1])
+                if target:
+                    base, offset = target.group(2), int(target.group(1))
+                    if base_register:
+                        if base not in pointers:
+                            continue
+                        offset += pointers[base]
+                        base = base_register
+                    key = (base, offset, 4 if mnemonic == "sw" else 8)
+                    stores.pop(key, None)
+                    if ops[0] in registers and registers[ops[0]][1] == key[2]:
+                        stores[key] = registers[ops[0]][0]
+            elif pc in loads:
+                registers[ops[0]] = (loads[pc], 4 if mnemonic == "lw" else 8)
+            elif mnemonic == "mv" and len(ops) == 2 and ops[1] in registers:
+                registers[ops[0]] = registers[ops[1]]
+            elif re.fullmatch(r"jalr?|call|tail|b\w+|j|jr|ret", mnemonic):
+                registers.clear()
+                pointers.clear()
+            elif not re.fullmatch(r"(?:c\.)?(?:f?s[bhwdq]|fence\S*|nop|wfi)", mnemonic):
+                registers.pop(ops[0], None)
+            if not re.fullmatch(r"(?:c\.)?(?:f?s[bhwdq]|b\w+|j|jr|ret|fence\S*|nop|wfi)", mnemonic):
+                pointers.pop(ops[0], None)
+            if pointer is not None:
+                pointers[ops[0]] = pointer
+        return stores
+
+    @staticmethod
     def riscv_gp_relative(res):
         """Yield the addresses built from `gp` with `addi rX, gp, lo12` or accessed as `lw/ld rX, lo12(gp)`.
 
@@ -66539,6 +66600,7 @@ class KernelAddressHeuristicFinderUtil:
         if not gp or not KernelAddressHeuristicFinderUtil.is_kernel_space(gp):
             return
         for line in res.splitlines():
+            line = line.split("#", 1)[0].rstrip()
             m = re.search(r"\baddi\s+\w+,\s*gp,\s*(-?\d+)$", line) or re.search(r"\b(?:lw|ld)\s+\w+,\s*(-?\d+)\(gp\)", line)
             if m:
                 yield AddressUtil.normalize_address(gp + int(m.group(1)))
@@ -73316,9 +73378,30 @@ class KernelAddressHeuristicFinder:
                         KernelAddressHeuristicFinderUtil.arm32_ldr_pc_relative_ldr(res),
                     )
                 elif is_riscv64() or is_riscv32():
-                    refs = list(KernelAddressHeuristicFinderUtil.riscv_load(res))
-                    seqs = set(KernelAddressHeuristicFinderUtil.riscv_load(res, "ld" if is_64bit() else "lw"))
-                    g = [x for x in refs if x + 8 in seqs]
+                    stores = KernelAddressHeuristicFinderUtil.riscv_load_store(res)
+                    idx_offset = GefUtil.member_offset("struct devkmsg_user", "idx")
+                    seq_offset = GefUtil.member_offset("struct devkmsg_user", "seq")
+                    idx_offset = 8 if idx_offset is None else idx_offset
+                    seq_offset = 0 if seq_offset is None else seq_offset
+                    width = current_arch.ptrsize
+                    g = set()
+                    for (base, offset, size), source in stores.items():
+                        if offset != idx_offset or size != 4 or base in ("sp", "gp", "tp"):
+                            continue
+                        if (base, seq_offset, width) not in stores:
+                            continue
+                        if width == 4 and (base, seq_offset + 4, 4) not in stores:
+                            continue
+                        g.add(source)
+                    if len(g) != 1:
+                        continue
+                    x = g.pop()
+                    length_addr = KernelAddressHeuristicFinder.get_log_buf_len()
+                    length = read_int32_from_memory(length_addr, safe=True) if length_addr else None
+                    value = read_int32_from_memory(x, safe=True)
+                    if value is not None and length and value < length:
+                        return x
+                    continue
                 else:
                     return None
                 for x in g:
@@ -73347,7 +73430,9 @@ class KernelAddressHeuristicFinder:
         if kversion and "3.5" <= kversion:
             addr = Ksym.get_addr("kmsg_dump_rewind_nolock")
             if addr:
-                res = KernelAddressHeuristicFinderUtil.disassemble_until_next_symbol(addr, 20)
+                res = KernelAddressHeuristicFinderUtil.disassemble_until_next_symbol(
+                    addr, 40 if is_riscv64() or is_riscv32() else 20,
+                )
                 if is_x86_64():
                     g = KernelAddressHeuristicFinderUtil.x64_dword_ptr_rip_base(res, skip=1)
                 elif is_x86_32():
@@ -73361,12 +73446,15 @@ class KernelAddressHeuristicFinder:
                         KernelAddressHeuristicFinderUtil.arm32_ldr_pc_relative_ldr(res, skip=1),
                     )
                 elif is_riscv64() or is_riscv32():
-                    refs = list(KernelAddressHeuristicFinderUtil.riscv_load(res))
-                    seqs = set(KernelAddressHeuristicFinderUtil.riscv_load(res, "ld" if is_64bit() else "lw"))
-                    g = [x for x in refs if x + 8 in seqs]
-                    if len(g) > 1:
-                        return g[1]
-                    return None
+                    stores = KernelAddressHeuristicFinderUtil.riscv_load_store(res, base_register="a0")
+                    offset = GefUtil.member_offset("struct kmsg_dumper", "next_idx")
+                    if offset is None:
+                        offset = align(current_arch.ptrsize * 3 + 6, 4) + 4
+                    x = stores.get(("a0", offset, 4))
+                    length_addr = KernelAddressHeuristicFinder.get_log_buf_len()
+                    length = read_int32_from_memory(length_addr, safe=True) if length_addr else None
+                    value = read_int32_from_memory(x, safe=True) if x else None
+                    return x if value is not None and length and value < length else None
                 else:
                     return None
                 for x in g:
@@ -103708,12 +103796,19 @@ class KernelDmesgCommand(GenericCommand, BufferingOutput):
         data_addr = Ksym.get_addr("vmcoreinfo_data")
         if not size_addr or not data_addr:
             return values
-        size = read_int32_from_memory(size_addr, safe=True)
+        size = read_int_from_memory(size_addr, safe=True)
         if not size or size > 0x10000:
             return values
         try:
+            prefix = b"OSRELEASE="[:current_arch.ptrsize]
+            if read_memory(data_addr, len(prefix)) != prefix:
+                data_addr = read_int_from_memory(data_addr, safe=True)
+                if not data_addr:
+                    return values
             text = read_memory(data_addr, size).decode("ascii", errors="ignore")
         except gdb.error:
+            return values
+        if not text.startswith("OSRELEASE="):
             return values
         for line in text.splitlines():
             match = re.match(r"(SIZE|OFFSET)\(([^)]+)\)=(\S+)", line)
