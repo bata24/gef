@@ -98797,7 +98797,7 @@ class KernelMountCommand(GenericCommand, BufferingOutput):
             self.propagation_flag_source = "mnt_flags (version fallback)"
             self.mnt_slave_is_hlist = False
         else:
-            self.propagation_flag_source = "mnt_share/mnt_slave lists (version fallback)"
+            self.propagation_flag_source = "mnt_group_id/mnt_share/mnt_slave (version fallback)"
             self.mnt_slave_is_hlist = True
         self.meta.append((self.quiet_info, "Mount propagation source: {:s}".format(self.propagation_flag_source)))
         return True
@@ -98956,9 +98956,13 @@ class KernelMountCommand(GenericCommand, BufferingOutput):
 
         shared_list = self.get_mount_list_node_status(mount, self.offset_mnt_share)
         shared = shared_flag
-        if shared is None:
-            shared = shared_list
-        mismatch = shared_flag is not None and shared_list is not None and shared_flag != shared_list
+        if shared is None and self.offset_mnt_group_id is not None:
+            group_id = read_int32_from_memory(mount + self.offset_mnt_group_id, safe=True)
+            if group_id is not None:
+                shared = bool(group_id)
+        if shared is None and shared_list is True:
+            shared = True
+        mismatch = shared is False and shared_list is True
 
         master = None
         if self.offset_mnt_master is not None:
