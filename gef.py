@@ -888,10 +888,8 @@ class Config:
         cfg.add_section("user-defined-aliases.repeat")
         for alias in __gef_alias_instances__.values():
             # check pre-defined alias or not
-            if alias._command_ in __gef_command_instances__:
-                instance = __gef_command_instances__[alias._command_]
-                if alias._alias_ in instance._aliases_:
-                    continue
+            if alias._pre_defined_:
+                continue
 
             cfg.set("user-defined-aliases", alias._alias_, alias._command_)
             cfg.set("user-defined-aliases.repeat", alias._alias_, str(alias._repeat_))
