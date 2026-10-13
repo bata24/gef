@@ -168587,13 +168587,11 @@ class V8DumpSpaceCommand(GenericCommand, BufferingOutput):
         elif instance_name == "PREPARSE_DATA_TYPE":
             data_length = read_int32_from_memory(addr + 4)
             children_length = read_int32_from_memory(addr + 8)
-            padding = align(data_length, 4)
-            length = data_length + padding + children_length * 4
+            length = align(data_length, 4) + children_length * 4
             return 12, length
         elif instance_name == "PROPERTY_ARRAY_TYPE":
             length_or_hash = read_int32_from_memory(addr + 4)
-            length = length_or_hash & 0x3ff
-            length >>= 1
+            length = (length_or_hash >> 1) & 0x3ff
             return 8, length * 4
         elif instance_name == "PROTECTED_FIXED_ARRAY_TYPE":
             length = read_int32_from_memory(addr + 4)
