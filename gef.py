@@ -9657,9 +9657,7 @@ class SPARC(Architecture):
                 value = get_register(reg)
                 if value is None:
                     return None, "register unavailable"
-                value &= (1 << self.bit_length) - 1
-                if value & (1 << (self.bit_length - 1)):
-                    value -= 1 << self.bit_length
+                value = u2i(value, self.bit_length)
                 taken = {"brz": value == 0, "brlez": value <= 0, "brlz": value < 0,
                          "brnz": value != 0, "brgz": value > 0, "brgez": value >= 0}[mnemo]
                 return taken, "{:s} = {:d}".format(reg, value)
@@ -20387,7 +20385,7 @@ class IouringDumpCommand(GenericCommand, BufferingOutput):
     def rings_size(self, layout):
         # the cache line size is unknown, so assume the largest one
         size = self.sq_array_offset(layout, True, 0x100) + layout["sq_entries"] * 4
-        return align(size, get_pagesize())
+        return align_to_pagesize(size)
 
     def find_sq_array(self, data, layout):
         """IORING_SETUP_CQE32 leaves no trace in the rings, but liburing fills sq_array with 0, 1, 2, ...,
@@ -20409,7 +20407,7 @@ class IouringDumpCommand(GenericCommand, BufferingOutput):
         if entry is None or layout["sq_tail"] == 0:
             return None, None
         for sqe_size in [0x40, 0x80]: # IORING_SETUP_SQE128
-            size = align(layout["sq_entries"] * sqe_size, get_pagesize())
+            size = align_to_pagesize(layout["sq_entries"] * sqe_size)
             addr = rings - size
             if addr < entry.page_start:
                 continue
@@ -22479,9 +22477,7 @@ class XtapCommand(GenericCommand):
             return
         entry = self.syscall_table.name_table[name]
         retval = get_register(entry.ret_regs[0])
-        # ret value is signed; treat large unsigned as negative error
-        if retval >= (1 << (current_arch.ptrsize * 8 - 1)):
-            retval = retval - (1 << (current_arch.ptrsize * 8))
+        retval = u2i(retval, current_arch.ptrsize * 8)
         direction = self.syscall_spec[name][0]
         fd = pending["fd"]
         for label, data in self.extract_exit_data(name, pending["arg_values"], retval):
@@ -26661,14 +26657,8 @@ class UnicornEmulator:
             # signed min/max sign-extend both values at the access width before comparing
             bits = width * 8
             if op in ("smax", "smin"):
-                if mem_val >> (bits - 1):
-                    a = mem_val - (1 << bits)
-                else:
-                    a = mem_val
-                if src_val >> (bits - 1):
-                    b = src_val - (1 << bits)
-                else:
-                    b = src_val
+                a = u2i(mem_val, bits)
+                b = u2i(src_val, bits)
             else:
                 a, b = mem_val, src_val
             if op in ("smax", "umax"):
@@ -66657,7 +66647,7 @@ class KernelAddressHeuristicFinderUtil:
                         or not any(marker == bits << shift
                                    for bits in (1, 3) for shift in range(23, 28))):
                     continue
-                head_addr = x + align(offset + 4, current_arch.ptrsize)
+                head_addr = x + align_to_ptrsize(offset + 4)
                 if not is_valid_addr(head_addr):
                     return False
                 head = read_int_from_memory(head_addr)
@@ -68367,7 +68357,7 @@ class KernelConstsArm64(KernelConstsBase):
         T1SZ = (tcr >> 16) & 0b111111
         region_end = 2 ** 64
         region_start = region_end - (2 ** (64 - T1SZ))
-        region_bits = GefUtil.log2(region_end - region_start)
+        region_bits = int(math.log2(region_end - region_start))
         if self.FEAT_LVA:
             return min(52, region_bits)
         return region_bits
@@ -74329,9 +74319,7 @@ class KernelAddressHeuristicFinder:
             # left 0 with CONFIG_NO_HZ_COMMON=n, where nothing updates it.
             bits = ptrsize * 8
             if next_expiry:
-                diff = (next_expiry - clk) & ((1 << bits) - 1)
-                if diff >= (1 << (bits - 1)):
-                    diff -= 1 << bits
+                diff = u2i(next_expiry - clk, bits)
                 if abs(diff) > (1 << 30) - 1:
                     continue
 
@@ -76916,8 +76904,8 @@ class KernelRadixTree:
     def default_rnode_offset(cls):
         """Return offsetof(radix_tree_root, rnode) derived from the kernel version."""
         if cls.use_height():
-            return align(8, current_arch.ptrsize) # height and gfp_mask
-        return align(4, current_arch.ptrsize) # gfp_mask only
+            return align_to_ptrsize(8) # height and gfp_mask
+        return align_to_ptrsize(4) # gfp_mask only
 
     @staticmethod
     def count_candidates():
@@ -77833,7 +77821,7 @@ class KernelPerCpu:
                 size = 0
             static_size = 0
             if self.start is not None and self.end is not None:
-                static_size = align(self.end - self.start, get_pagesize())
+                static_size = align_to_pagesize(self.end - self.start)
             if (static_size <= size <= 0x1000_0000
                     and size % get_pagesize() == 0
                     and all((off - offsets[0]) % size == 0 for off in offsets)):
@@ -78765,7 +78753,7 @@ class KernelPath:
 
         kversion = Kernel.version()
         if kversion is not None and kversion < "3.1":
-            return align(12, current_arch.ptrsize) + current_arch.ptrsize
+            return align_to_ptrsize(12) + current_arch.ptrsize
 
         # Since v3.1, i_mapping immediately follows i_sb and points to inode->i_data.
         first_pointer = 2 + 2 + 4 + 4 + 4
@@ -87293,7 +87281,7 @@ class KernelNftables:
             offset_name = tail
             name = read_cstring_from_memory(base + offset_name, 0x100, safe=True)
         else:
-            offset_name = align(tail, current_arch.ptrsize)
+            offset_name = align_to_ptrsize(tail)
             name = self.name_at(base, offset_name)
         if not self.looks_name(name):
             return None
@@ -89084,7 +89072,7 @@ class KernelNftablesSet:
         if not klen or dlen is None:
             return candidates
         first = align(fields + 4, 8)
-        exprs = align(fields + 5, current_arch.ptrsize)
+        exprs = align_to_ptrsize(fields + 5)
         if self.knft.kversion >= "5.13":
             stops = [align(exprs + current_arch.ptrsize * 4, 8)]
         elif self.knft.kversion >= "5.11":
@@ -89261,14 +89249,14 @@ class KernelNftablesSet:
         for count, count_size in count_values:
             if count is None or not (1 <= count <= 16):
                 continue
-            for offset_fields in range(align(count_size, current_arch.ptrsize), 0x60, current_arch.ptrsize):
+            for offset_fields in range(align_to_ptrsize(count_size), 0x60, current_arch.ptrsize):
                 for field_size in range(current_arch.ptrsize * 4, current_arch.ptrsize * 8 + 1, current_arch.ptrsize):
                     field = match + offset_fields + (count - 1) * field_size
                     for offset_rules in range(0, min(field_size, 0x18), 4):
                         rules = read_int32_from_memory(field + offset_rules, safe=True)
                         if rules is None or not (1 <= rules <= self.MAX_SET_SCAN * 0x100):
                             continue
-                        for offset_table in range(align(offset_rules + 4, current_arch.ptrsize),
+                        for offset_table in range(align_to_ptrsize(offset_rules + 4),
                                                   field_size, current_arch.ptrsize):
                             mapping = read_int_from_memory(field + offset_table, safe=True)
                             elements, status = self.walk_pipapo_mapping(mapping, rules, current_arch.ptrsize)
@@ -92782,7 +92770,7 @@ class KernelKeyringCommand(GenericCommand, BufferingOutput):
                 if nkeys > self.args.max_keys:
                     self.walk_error = "keyring_list has implausible nkeys={:d}".format(nkeys)
                     nkeys = self.args.max_keys
-                keys_offset = align(2 * current_arch.ptrsize + 6, current_arch.ptrsize)
+                keys_offset = align_to_ptrsize(2 * current_arch.ptrsize + 6)
                 return [read_int_from_memory(keylist + keys_offset + i * current_arch.ptrsize) for i in range(nkeys)]
             root = read_int_from_memory(info.address + self.offset_keys_root)
             return self.walk_assoc_array(root)
@@ -100066,10 +100054,7 @@ class KernelTimerCommand(GenericCommand, BufferingOutput):
     def time_to_expire(self, expires, now):
         """Return `expires - now` as the kernel does in `time_after()`, which wraps in unsigned long."""
         bits = current_arch.ptrsize * 8
-        diff = (expires - now) & ((1 << bits) - 1)
-        if diff >> (bits - 1):
-            diff -= 1 << bits
-        return diff
+        return u2i(expires - now, bits)
 
     def get_cpu_label(self, cpu):
         states = []
@@ -101546,9 +101531,8 @@ class KernelResourceLayout:
 
     @staticmethod
     def get_type_layout():
-        try:
-            resource_type = gdb.lookup_type("struct resource").strip_typedefs()
-        except (gdb.error, RuntimeError):
+        resource_type = GefUtil.cached_lookup_type("struct resource")
+        if resource_type is None:
             return None
 
         fields = {}
@@ -163418,7 +163402,7 @@ class Ksym:
 
                 else: # kernel_version >= (6, 4):
                     position = Ksym.offset_kallsyms_token_index + 0x200
-                    position_relative_base = align(position + Ksym.num_symbols * offset_byte_size, current_arch.ptrsize)
+                    position_relative_base = align_to_ptrsize(position + Ksym.num_symbols * offset_byte_size)
                     relative_base_address_data = Ksym.kernel_img[position_relative_base:position_relative_base + address_byte_size]
                     if len(relative_base_address_data) == 0:
                         Ksym.verbose_err(verbose, "kernel_img is not long enough.")
@@ -175912,10 +175896,7 @@ class OpteeShmListCommand(GenericCommand, BufferingOutput):
     def find_reg_shm_list(self, data, virt_start, phys_size=None):
 
         if phys_size is None:
-            try:
-                phys_size = gdb.lookup_type("paddr_t").sizeof
-            except gdb.error:
-                phys_size = current_arch.ptrsize
+            phys_size = GefUtil.type_size("paddr_t") or current_arch.ptrsize
 
         def is_valid_rw_addr(addr):
             return virt_start <= addr < virt_start + len(data)
@@ -183411,7 +183392,7 @@ class PageTableArm64(PageTable):
 
         region_start = 0
         region_end = region_start + (2 ** (64 - T0SZ))
-        region_bits = GefUtil.log2(region_end - region_start)
+        region_bits = int(math.log2(region_end - region_start))
         page_size = 2 ** (granule_bits - 10)
         intermediate_pa_size = self.get_pa_size_for_ps(IPS, granule_bits)
         start_level = self.get_start_level(T0SZ, granule_bits)
@@ -183462,7 +183443,7 @@ class PageTableArm64(PageTable):
 
         region_end = 2 ** 64
         region_start = region_end - (2 ** (64 - T1SZ))
-        region_bits = GefUtil.log2(region_end - region_start)
+        region_bits = int(math.log2(region_end - region_start))
         page_size = 2 ** (granule_bits - 10)
         intermediate_pa_size = self.get_pa_size_for_ps(IPS, granule_bits)
         start_level = self.get_start_level(T1SZ, granule_bits)
@@ -183517,7 +183498,7 @@ class PageTableArm64(PageTable):
 
         region_start = 0
         region_end = region_start + (2 ** (64 - T0SZ))
-        region_bits = GefUtil.log2(region_end - region_start)
+        region_bits = int(math.log2(region_end - region_start))
         page_size = 2 ** (granule_bits - 10)
         pa_size = self.get_pa_size_for_ps(PS, granule_bits)
 
@@ -183632,7 +183613,7 @@ class PageTableArm64(PageTable):
 
         region_start = 0
         region_end = region_start + (2 ** (64 - T0SZ))
-        region_bits = GefUtil.log2(region_end - region_start)
+        region_bits = int(math.log2(region_end - region_start))
         page_size = 2 ** (granule_bits - 10)
         pa_size = self.get_pa_size_for_ps(PS, granule_bits)
         start_level = self.get_start_level(T0SZ, granule_bits)
@@ -183688,7 +183669,7 @@ class PageTableArm64(PageTable):
 
         region_end = 2 ** 64
         region_start = region_end - (2 ** (64 - T1SZ))
-        region_bits = GefUtil.log2(region_end - region_start)
+        region_bits = int(math.log2(region_end - region_start))
         page_size = 2 ** (granule_bits - 10)
         intermediate_pa_size = self.get_pa_size_for_ps(IPS, granule_bits)
         start_level = self.get_start_level(T1SZ, granule_bits)
@@ -183737,7 +183718,7 @@ class PageTableArm64(PageTable):
 
         region_start = 0
         region_end = region_start + (2 ** (64 - T0SZ))
-        region_bits = GefUtil.log2(region_end - region_start)
+        region_bits = int(math.log2(region_end - region_start))
         page_size = 2 ** (granule_bits - 10)
         pa_size = self.get_pa_size_for_ps(PS, granule_bits)
         start_level = self.get_start_level(T0SZ, granule_bits)
@@ -203137,11 +203118,6 @@ class GefUtil:
         import inspect
         s = inspect.getsource(function)
         return s.rstrip()
-
-    @staticmethod
-    @Cache.cache_this_session
-    def log2(x):
-        return int(math.log2(x))
 
     @staticmethod
     def fromhex_ignore_invalid(value, to_str=False):
