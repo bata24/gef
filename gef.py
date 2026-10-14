@@ -14578,8 +14578,9 @@ def get_register(regname, use_mbed_exec=False, use_monitor=False):
         if ReadSystemRegisterForKgdbCommand.is_supported_reg(regname):
             try:
                 r = gdb.execute("read-system-register-for-kgdb {:s}".format(regname), to_string=True)
-                if r:
-                    return int(r.split("=")[1], 16)
+                match = re.search(re.escape(regname.lstrip("$")) + r"\s*=\s*(0x[0-9a-fA-F]+)", Color.remove_color(r))
+                if match:
+                    return int(match.group(1), 16)
             except gdb.error:
                 pass
 
@@ -24708,6 +24709,8 @@ class ReadSystemRegisterForKgdbCommand(GenericCommand):
             "cr0": {
                 "sym": [
                     "native_read_cr0",
+                    "save_processor_state",
+                    "x86_acpi_suspend_lowlevel",
                 ],
                 "insn": [
                     ["$rax", b"\x0f\x20\xc0"], # mov rax, cr0
@@ -24717,6 +24720,8 @@ class ReadSystemRegisterForKgdbCommand(GenericCommand):
                 "sym": [
                     "native_read_cr2",
                     "pv_native_read_cr2",
+                    "save_processor_state",
+                    "exc_nmi",
                 ],
                 "insn": [
                     ["$rax", b"\x0f\x20\xd0"], # mov rax, cr2
@@ -24726,6 +24731,8 @@ class ReadSystemRegisterForKgdbCommand(GenericCommand):
                 "sym": [
                     "native_read_cr3",
                     "__native_read_cr3",
+                    "paranoid_entry",
+                    "error_entry",
                 ],
                 "insn": [
                     ["$rax", b"\x0f\x20\xd8"], # mov rax, cr3
@@ -24903,8 +24910,10 @@ class ReadSystemRegisterForKgdbCommand(GenericCommand):
 
         # It may fail on the first run, possibly due to gdb cache, but succeed on the second run.
         for _ in range(2):
-            ret = ExecAsm(codes, regs=regs, step=1, use_bp=use_bp).exec_code()
-            if abs(ret["reg"]["$pc"] - stub_address) > 0x10:
+            ret = ExecAsm(codes, regs=regs, step=1, use_bp=use_bp).exec_code(check_complete=True)
+            if ret is None:
+                continue
+            if abs(ret["pc"] - stub_address) > 0x10:
                 return None
             if ret["reg"][return_register] != 0xdead_beef:
                 return ret["reg"][return_register]
@@ -68257,11 +68266,11 @@ class KernelConstsArm64(KernelConstsBase):
         assert "3.7" <= self.kversion # arm64 support start version
         return
 
-    @Cache.cache_until_next
+    @Cache.cache_until_next(per_cpu=True)
     def TCR_EL1(self):
         return get_register("$TCR_EL1", use_mbed_exec=True)
 
-    @Cache.cache_until_next
+    @Cache.cache_this_session(per_cpu=True, per_inferior=True)
     def ID_AA64MMFR2_EL1(self):
         return get_register("$ID_AA64MMFR2_EL1", use_mbed_exec=True)
 
@@ -68954,12 +68963,18 @@ class KernelConstsArm64(KernelConstsBase):
         PHYS_OFFSET = read_int_from_memory(memstart_addr)
         if "6.12" <= self.kversion:
             PHYS_OFFSET &= self.PHYS_MASK
+        self.cached_memstart_addr = PHYS_OFFSET
         self.cached_physmap_base = AddressUtil.normalize_address(self.PAGE_OFFSET - PHYS_OFFSET)
         return self.cached_physmap_base
 
     @property
     def memstart_addr(self):
         if hasattr(self, "cached_memstart_addr"):
+            return self.cached_memstart_addr
+
+        if is_kgdb():
+            if self.physmap_base is None:
+                return None
             return self.cached_memstart_addr
 
         # When p2v and v2p are available, memstart_addr can be resolved without relying on symbols.
@@ -69149,6 +69164,13 @@ class KernelAddressHeuristicFinder:
     @staticmethod
     @cpu_context_dependent
     def get_current_task_for_current_thread():
+        if is_kgdb():
+            cpu = KernelPerCpu.get_cpu_index(gdb.selected_thread())
+            if cpu is not None:
+                task = GefUtil.parse_and_eval_unsigned("kgdb_info[{:d}].task".format(cpu))
+                if task:
+                    return task
+
         if is_arm32():
             # plan 1 (from special register)
             page_offset = KernelAddressHeuristicFinder.get_PAGE_OFFSET()
@@ -77414,14 +77436,18 @@ class KernelPerCpu:
 
         The gdb thread number is assigned by GDB per inferior, so it is not a CPU number.
         QEMU uses `cpu_index + 1` as the remote thread ID, and keeps it unique across the
-        CPU clusters that it exposes as separate inferiors."""
-        if not is_qemu_system():
+        CPU clusters that it exposes as separate inferiors. KGDB uses the 32-bit ID
+        `-cpu - 2` for CPU shadow threads and positive IDs for ordinary tasks."""
+        if not (is_qemu_system() or is_kgdb()):
             return None
         try:
             _pid, lwp, tid = thread.ptid
         except (gdb.error, ValueError):
             return None
         tid = lwp or tid
+        if is_kgdb():
+            tid = u2i(tid, 32)
+            return -tid - 2 if tid < -1 else None
         if not tid or tid < 0:
             return None
         return tid - 1
@@ -77460,6 +77486,8 @@ class KernelPerCpu:
             return (cpu is None, cpu or 0, thread.inferior.num, thread.num)
 
         threads = [thread for inferior in inferiors for thread in inferior.threads()]
+        if is_kgdb():
+            threads = [thread for thread in threads if KernelPerCpu.get_cpu_index(thread) is not None]
         return sorted(threads, key=sort_key)
 
     def get_offset(self, cpu):
@@ -104453,16 +104481,19 @@ class ExecAsm:
         self.pc = current_arch.pc
         return
 
+    def get_end_pc(self):
+        pc = self.pc
+        if len(self.insn_sizes) >= self.step:
+            # the disassembler may decode the injected code in a stale mode (e.g., ARM vs Thumb)
+            return pc + sum(self.insn_sizes[:self.step])
+        for _ in range(self.step):
+            pc += get_insn(pc).size
+        return pc
+
     def execute_with_bp(self):
         bp = None
         try:
-            bp_addr = self.pc
-            if len(self.insn_sizes) >= self.step:
-                # the disassembler may decode the injected code in a stale mode (e.g., ARM vs Thumb)
-                bp_addr += sum(self.insn_sizes[:self.step])
-            else:
-                for _ in range(self.step):
-                    bp_addr += get_insn(bp_addr).size
+            bp_addr = self.get_end_pc()
             bp = gdb.Breakpoint("*{:#x}".format(bp_addr), gdb.BP_BREAKPOINT, internal=True)
             gdb.execute("c", to_string=True) # use c wrapper
         except gdb.error:
@@ -104492,6 +104523,8 @@ class ExecAsm:
             with EventHooking.temporary("stop", self.stops.append):
                 self.modify_regs()
                 self.modify_code(d["pc"])
+                if check_complete and self.regs and any(get_register(reg) != value for reg, value in self.regs.items()):
+                    return None
                 if stop_signal:
                     self.queue_signal(stop_signal[0], "0")
                 if self.debug:
@@ -104538,7 +104571,7 @@ class ExecAsm:
                 gdb.newest_frame().select()
 
         # Only linear instructions have a fixed completion PC; syscall stepping may stop past the instruction.
-        expected_pc = self.pc + sum(self.insn_sizes[:self.step])
+        expected_pc = self.get_end_pc()
         if not self.stops or gdb.selected_thread() != self.thread or current_arch.pc != expected_pc:
             return False
         event = self.stops[-1]
