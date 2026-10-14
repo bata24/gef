@@ -21405,11 +21405,8 @@ class ProcDumpCommand(GenericCommand, BufferingOutput):
         data = open(path, "rb").read()
         data = data.replace(b"tx_queue ", b"tx_queue:")
         data = data.replace(b" tr ", b" tr:")
-        tmp_fd, tmp_filename = GefUtil.mkstemp(prefix="proc-dump")
-        with os.fdopen(tmp_fd, "wb") as fdw:
-            fdw.write(data)
-        ret = GefUtil.gef_execute_external([column_command, "-t", tmp_filename], as_list=True)
-        os.unlink(tmp_filename)
+        with ContextManager.temporary_file(data, prefix="proc-dump") as tmp_filename:
+            ret = GefUtil.gef_execute_external([column_command, "-t", tmp_filename], as_list=True)
         self.out.extend(ret)
         return
 
@@ -21425,11 +21422,8 @@ class ProcDumpCommand(GenericCommand, BufferingOutput):
         data = re.sub(rb"\|\s*Receive", b"|Receive", data)
         data = re.sub(rb"\|\s*Transmit", b"|Transmit", data)
 
-        tmp_fd, tmp_filename = GefUtil.mkstemp(prefix="proc-dump")
-        with os.fdopen(tmp_fd, "wb") as fdw:
-            fdw.write(data)
-        ret = GefUtil.gef_execute_external([column_command, "-t", tmp_filename], as_list=True)
-        os.unlink(tmp_filename)
+        with ContextManager.temporary_file(data, prefix="proc-dump") as tmp_filename:
+            ret = GefUtil.gef_execute_external([column_command, "-t", tmp_filename], as_list=True)
 
         wrong = ret[0].rfind("|")
         rright = ret[1].rfind("|")
@@ -83739,13 +83733,8 @@ class KernelBpf:
                 count = read_int16_from_memory(orig_prog)
                 prog = read_int_from_memory(orig_prog + current_arch.ptrsize)
                 data = read_memory(prog, count * 8)
-                tmp_fd, tmp_path = GefUtil.mkstemp(prefix="kbpf")
-                try:
-                    with os.fdopen(tmp_fd, "wb") as fdw:
-                        fdw.write(data)
+                with ContextManager.temporary_file(data, prefix="kbpf") as tmp_path:
                     return GefUtil.gef_execute_external(tools_command + [tmp_path], as_list=True)
-                finally:
-                    os.unlink(tmp_path)
             if not is_valid_addr(bpf_func):
                 return None
             if not jited_len:
@@ -199926,16 +199915,11 @@ class SixelMemoryCommand(GenericCommand):
             err("Memory read error")
             return
 
-        tmp_fd, tmp_path = GefUtil.mkstemp(prefix="sixel-memory", suffix=".img")
-        try:
-            with os.fdopen(tmp_fd, "wb") as fdw:
-                fdw.write(data)
+        with ContextManager.temporary_file(data, prefix="sixel-memory", suffix=".img") as tmp_path:
             GefUtil.os_system("{!r} {!r} sixel:-".format(convert_command, tmp_path))
 
             if args.decode_barcode:
                 self.decode_barcode(tmp_path)
-        finally:
-            os.unlink(tmp_path)
         return
 
 
@@ -200212,15 +200196,13 @@ class VisualDumpCommand(GenericCommand):
         else:
             widths = (img_width,)
 
-        tmp_fd, tmp_path = GefUtil.mkstemp(prefix="vhexdump", suffix=".raw")
-        try:
-            with os.fdopen(tmp_fd, "wb") as fdw:
+        with ContextManager.temporary_file(data, prefix="vhexdump", suffix=".raw") as tmp_path:
+            with open(tmp_path, "r+b") as fdw:
                 for img_width in widths:
                     padding = -len(data) % img_width
                     img_height = (len(data) + padding) // img_width
-                    fdw.seek(0)
+                    fdw.seek(len(data))
                     fdw.truncate()
-                    fdw.write(data)
                     fdw.write(b"\0" * padding)
                     fdw.flush()
                     cmd = self.make_command_line(img_width, img_height, tmp_path)
@@ -200230,8 +200212,6 @@ class VisualDumpCommand(GenericCommand):
                     e = GefUtil.os_system(cmd)
                     if e != 0:
                         break
-        finally:
-            os.unlink(tmp_path)
         return
 
 
@@ -200257,11 +200237,7 @@ class FiletypeMemoryCommand(GenericCommand):
             return
 
         dumpfile_name = "filetype_{:#x}-{:#x}.dat".format(start_address, end_address)
-        tmp_fd, filepath = GefUtil.mkstemp(prefix=dumpfile_name[:-4], suffix=".dat")
-        try:
-            with os.fdopen(tmp_fd, "wb") as fdw:
-                fdw.write(data)
-
+        with ContextManager.temporary_file(data, prefix=dumpfile_name[:-4], suffix=".dat") as filepath:
             try:
                 gef_print(titlify("file {!r}".format(filepath)))
                 file_command = GefUtil.which("file")
@@ -200275,8 +200251,6 @@ class FiletypeMemoryCommand(GenericCommand):
                 GefUtil.os_system("{!r} {!r}".format(magika_command, filepath))
             except FileNotFoundError as e:
                 warn("{}".format(e))
-        finally:
-            os.unlink(filepath)
         return
 
     @Decorator.parse_args
@@ -200363,13 +200337,8 @@ class BinwalkMemoryCommand(GenericCommand):
                     data = read_memory(start, end - start)
                 except gdb.MemoryError:
                     continue
-                tmp_fd, filepath = GefUtil.mkstemp(prefix=dumpfile_name[:-4], suffix=".raw")
-                try:
-                    with os.fdopen(tmp_fd, "wb") as fdw:
-                        fdw.write(data)
+                with ContextManager.temporary_file(data, prefix=dumpfile_name[:-4], suffix=".raw") as filepath:
                     binwalk.scan(filepath, signature=True)
-                finally:
-                    os.unlink(filepath)
             else:
                 gef_print(dumpfile_name)
 
@@ -202631,10 +202600,24 @@ class ContextManager:
 
     @staticmethod
     @contextlib.contextmanager
+    def temporary_file(data, prefix="", suffix=None):
+        """Yield a file containing data and remove it on exit."""
+        tmp_fd, tmp_path = GefUtil.mkstemp(prefix=prefix, suffix=suffix)
+        try:
+            with os.fdopen(tmp_fd, "wb") as fdw:
+                fdw.write(data)
+            del data
+            yield tmp_path
+        finally:
+            if os.path.exists(tmp_path):
+                os.unlink(tmp_path)
+        return
+
+    @staticmethod
+    @contextlib.contextmanager
     def local_elf(filepath=None, remote=False, prefix="", error=err):
         """Yield local and remote ELF paths, removing any downloaded copy on exit."""
         remote_filepath = None
-        tmp_filepath = None
         local_filepath = filepath or None
 
         if remote:
@@ -202669,19 +202652,14 @@ class ContextManager:
                 return
             local_filepath = Path.get_filepath()
 
-        try:
-            if remote:
-                tmp_fd, tmp_filepath = GefUtil.mkstemp(prefix=prefix, suffix=".elf")
-                with os.fdopen(tmp_fd, "wb") as fdw:
-                    fdw.write(data)
-                local_filepath = tmp_filepath
+        if remote:
+            with ContextManager.temporary_file(data, prefix=prefix, suffix=".elf") as local_filepath:
                 del data
-            if local_filepath is None:
-                error("File name could not be determined")
-            yield local_filepath, remote_filepath
-        finally:
-            if tmp_filepath and os.path.exists(tmp_filepath):
-                os.unlink(tmp_filepath)
+                yield local_filepath, remote_filepath
+            return
+        if local_filepath is None:
+            error("File name could not be determined")
+        yield local_filepath, remote_filepath
         return
 
 
