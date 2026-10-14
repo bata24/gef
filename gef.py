@@ -19510,7 +19510,10 @@ class ArgvCommand(GenericCommand, BufferingOutput):
 
     def dump_dl_argv(self):
         paddr = self.get_address_from_symbol("&_dl_argv")
-        addr = self.get_address_from_symbol("_dl_argv")
+        addr = self.get_address_from_symbol("*(void**)&_dl_argv")
+        # a static glibc never sets it to argv, and keeps the initial value &__progname
+        if addr is not None and addr == self.get_address_from_symbol("&__progname"):
+            return
         if paddr and addr:
             self.out.append(titlify("ARGV from _dl_argv"))
             self.info_add_out("_dl_argv @ {}".format(ProcessMap.lookup_address(paddr)))
