@@ -4638,7 +4638,8 @@ class GlibcHeap:
     @Cache.cache_this_session(cache_None=False)
     def search_for_main_arena():
         """Search for the address of main_arena using multiple strategies and caches the result."""
-        if is_arm64():
+        # Qiling has no TLS register on ARM64, and gdb 16+ aborts when it evaluates a TLS variable without it.
+        if is_arm64() and not is_qiling():
             # For some reason, native gdb (at least v10.1) on ARM64 has a bug where evaluating main_arena
             # destroys tcache symbols. See issues #95
             # Once you evaluate it, it will work without any problems after that.
@@ -4924,6 +4925,8 @@ class GlibcHeap:
 
             def tcache_from_symbol():
                 if force_heuristic:
+                    return None
+                if is_qiling(): # no TLS register, and gdb 16+ aborts on ARM64 when it evaluates a TLS variable
                     return None
                 # tcache is per-thread, so the address obtained by a symbol is depending on the current thread.
                 # so we get all tcaches from all threads and take the address closest to self.heap_base.
@@ -5593,6 +5596,7 @@ class GlibcHeap:
         """Return the arena object for the given address or arena index, or None if not found."""
         if address is None or is_valid_addr(address):
             try:
+                get_libc_version() # every later step depends on it, so fail here if it is unknown
                 arena = GlibcHeap.GlibcArena(address)
                 str(arena) # check memory error
                 return arena
@@ -8406,7 +8410,7 @@ class ARM(Architecture):
         if tls is not None:
             return tls
 
-        if is_rr(): # unsupported ExecAsm when rr
+        if is_rr() or is_qiling(): # unsupported ExecAsm when rr; the mrc kills qiling
             return None
         if self.is_thumb():
             codes = [b"\x1d\xee", b"\x70\x2f"] # mrc p15, #0, r2, c13, c0, #3
@@ -14168,6 +14172,8 @@ class Decorator:
                 if not e.args[0]: # when --help or -h
                     self.usage(after_syntax_only=True)
                 return
+            except SystemExit: # error or help of a subparser, which has its own exit
+                return
             except Exception as e:
                 err("Invalid argument: {}".format(e))
                 return
@@ -14793,7 +14799,7 @@ def is_qiling():
     pid = Pid.get_pid(remote=True)
     if pid is None or pid < 42000:
         return False
-    for m in ProcessMap.get_process_maps():
+    for m in ProcessMap.get_process_maps_linux(pid, remote=True, with_thread_info=False):
         if m.path == "[hook_mem]":
             return True
     return False
@@ -15279,7 +15285,7 @@ class ProcessMap:
 
     @staticmethod
     @Cache.cache_until_next
-    def get_process_maps_linux(pid, remote=False, tid=None):
+    def get_process_maps_linux(pid, remote=False, tid=None, with_thread_info=True):
         """Parse the Linux process `/proc/pid/maps` (or `/proc/pid/task/tid/maps`) file."""
 
         if Config.get("context.disable_vmmap"):
@@ -15305,7 +15311,7 @@ class ProcessMap:
         # tls and $sp of each threads
         # under qemu, they are guest addresses, not addresses of the qemu process whose maps are parsed here
         extra_info = []
-        if is_x86() and not is_qemu():
+        if with_thread_info and is_x86() and not is_qemu():
             tls_list = []
             orig_thread = gdb.selected_thread()
             orig_frame = gdb.selected_frame()
@@ -15914,7 +15920,7 @@ class ProcessMap:
             elif len(blobs) == 7:
                 filepath = blobs[6]
             else:
-                filepath = Path.get_filepath(append_proc_root_prefix=False)
+                filepath = Path.get_filepath(append_proc_root_prefix=False) or Path.get_remote_filepath() or ""
             Zone = collections.namedtuple("Zone", ["name", "zone_start", "zone_end", "filename"])
             info = Zone(section_name, addr_start, addr_end, filepath)
             info_files.append(info)
@@ -19518,7 +19524,7 @@ class ArgvCommand(GenericCommand, BufferingOutput):
 
     def dump_libc_argv(self):
         paddr = self.get_address_from_symbol("&__libc_argv")
-        addr = self.get_address_from_symbol("__libc_argv")
+        addr = self.get_address_from_symbol("*(void**)&__libc_argv")
         if paddr and addr:
             self.out.append(titlify("ARGV from __libc_argv"))
             self.info_add_out("__libc_argv @ {}".format(ProcessMap.lookup_address(paddr)))
@@ -19642,7 +19648,7 @@ class EnvpCommand(GenericCommand, BufferingOutput):
     def dump_environ(self):
         self.out.append(titlify("ENVP from __environ"))
         paddr = self.get_address_from_symbol("&__environ")
-        addr = self.get_address_from_symbol("__environ")
+        addr = self.get_address_from_symbol("*(void**)&__environ")
         if paddr and addr:
             self.info_add_out("__environ @ {}".format(ProcessMap.lookup_address(paddr)))
             self.print_from_mem(addr)
@@ -19655,7 +19661,7 @@ class EnvpCommand(GenericCommand, BufferingOutput):
     def dump_last_environ(self):
         self.out.append(titlify("ENVP from last_environ (for putenv, etc.)"))
         paddr = self.get_address_from_symbol("&last_environ")
-        addr = self.get_address_from_symbol("last_environ")
+        addr = self.get_address_from_symbol("*(void**)&last_environ")
         if paddr and addr:
             self.info_add_out("last_environ @ {}".format(ProcessMap.lookup_address(paddr)))
             self.print_from_mem(addr)
@@ -24214,6 +24220,10 @@ class EditFlagsCommand(GenericCommand):
             warn("This command is not supported on this architecture")
             return
 
+        if get_register(current_arch.flag_register) is None:
+            err("Could not read {:s}".format(current_arch.flag_register))
+            return
+
         self.edit_flags(args.flagname)
 
         gef_print(current_arch.flag_register_to_human())
@@ -27697,17 +27707,22 @@ class UnicornEmulateScriptCommand(GenericCommand):
             # If TLS is not initialized, the fixed address 0x2000 is used.
             content += "    set_tls(emu, {:#x})\n".format(current_arch.get_tls() or 0x2000)
         if is_arm32() or is_arm64():
-            content += "    # need first. because other register values may be broken when $cpsr is set.\n"
             cpsr = get_register("$cpsr")
-            content += "    emu.reg_write({:s}, {:#x})\n".format(unicorn_registers["$cpsr"], cpsr)
+            if cpsr is not None:
+                content += "    # need first. because other register values may be broken when $cpsr is set.\n"
+                content += "    emu.reg_write({:s}, {:#x})\n".format(unicorn_registers["$cpsr"], cpsr)
         if is_arm64():
             tpidr = get_register("$TPIDR_EL0")
             if tpidr is None:
                 tpidr = get_register("$tpidr")
-            content += "    emu.reg_write({:s}, {:#x})\n".format(unicorn_registers["$tpidr_el0"], tpidr)
+            if tpidr is None:
+                tpidr = current_arch.get_tls()
+            if tpidr is not None:
+                content += "    emu.reg_write({:s}, {:#x})\n".format(unicorn_registers["$tpidr_el0"], tpidr)
         if is_arm32():
             tls = current_arch.get_tls()
-            content += "    emu.reg_write({:s}, {:#x})\n".format(unicorn_registers["$c13_c0_3"], tls)
+            if tls is not None:
+                content += "    emu.reg_write({:s}, {:#x})\n".format(unicorn_registers["$c13_c0_3"], tls)
         # special register (XMM)
         if kwargs["add_sse"]:
             lines = Color.remove_color(gdb.execute("xmm", to_string=True))
@@ -27726,6 +27741,8 @@ class UnicornEmulateScriptCommand(GenericCommand):
             if (is_arm32() or is_arm64()) and reg == "$cpsr":
                 continue
             regvalue = get_register(reg)
+            if regvalue is None:
+                continue
             content += "    emu.reg_write({:s}, {:#x})\n".format(unicorn_registers[reg], regvalue)
         content += "    return\n"
         content += "\n"
@@ -28354,6 +28371,8 @@ class AngrCommand(GenericCommand):
             target_registers = current_arch.all_registers
         for reg in target_registers:
             reg_value = get_register(reg)
+            if reg_value is None:
+                continue
             if is_arm32():
                 if reg == "$pc":
                     if current_arch.is_thumb():
@@ -28477,6 +28496,10 @@ class AngrCommand(GenericCommand):
                     if tc not in "Aa0s?z":
                         err("Invalid symbolic type: {:s}".format(tc))
                         return
+
+        if Path.get_filepath() is None:
+            err("File name could not be determined")
+            return
 
         self.run_angr()
         return
@@ -29900,16 +29923,16 @@ class GlibcHeapTcachebinsCommand(GenericCommand, GlibcHeapBinsDump, BufferingOut
     @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
     @Decorator.require_arch_set
     def do_invoke(self, args):
-        # Determine if we are using libc with tcache built in (2.26+)
-        if get_libc_version() < (2, 26):
-            info("No tcache in this version of libc")
-            return
-
         # parse arena
         arena = GlibcHeap.get_arena(args.arena_addr)
 
         if arena is None:
             err("No valid arena")
+            return
+
+        # Determine if we are using libc with tcache built in (2.26+)
+        if get_libc_version() < (2, 26):
+            info("No tcache in this version of libc")
             return
 
         if arena.heap_base is None or not is_valid_addr(arena.heap_base):
@@ -30652,16 +30675,16 @@ class GlibcHeapTcacheIndexHelperCommand(GenericCommand):
     @Decorator.only_if_gdb_running
     @Decorator.require_arch_set
     def do_invoke(self, args):
-        # Determine if we are using libc with tcache built in (2.26+)
-        if get_libc_version() < (2, 26):
-            err("No tcache in this version of libc")
-            return
-
         # parse arena
         arena = GlibcHeap.get_arena(args.arena_addr)
 
         if arena is None:
             err("No valid arena")
+            return
+
+        # Determine if we are using libc with tcache built in (2.26+)
+        if get_libc_version() < (2, 26):
+            err("No tcache in this version of libc")
             return
 
         if arena.heap_base is None or not is_valid_addr(arena.heap_base):
@@ -61609,6 +61632,9 @@ class HeapBaseCommand(GenericCommand):
     def heap_base_from_noncontiguous_main_arena():
         # If brk fails (e.g., memory tagging on ARM64, some qemu-user runs), glibc allocates the main heap
         # with mmap and sets NONCONTIGUOUS_BIT. Then the heap is not in `[heap]`, so use the mapping of top.
+        if get_libc_version(silent=True) is None:
+            return None
+
         main_arena_addr = GlibcHeap.search_for_main_arena()
         if main_arena_addr is None:
             return None
@@ -61661,7 +61687,8 @@ class HeapBaseCommand(GenericCommand):
         # and can be used to find the starting address of the heap.
         # This path is useful for old qemu-user emulation, etc.
 
-        if get_libc_version() < (2, 26):
+        libc_version = get_libc_version(silent=True)
+        if libc_version is None or libc_version < (2, 26):
             return None
 
         # In 2.42 and later, tcache_perthread_struct is not necessarily the first chunk,
@@ -61669,7 +61696,7 @@ class HeapBaseCommand(GenericCommand):
         # However, glibc 2.42 is used in an Ubuntu 25.10 environment, and in this environment qemu-user is 10.1.
         # This version of qemu-user can obtain the exact heap base address via `info proc map`,
         # so the heuristic method should not be necessary.
-        if get_libc_version() >= (2, 42):
+        if libc_version >= (2, 42):
             return None
 
         if not current_arch.tls_supported:
@@ -61694,6 +61721,9 @@ class HeapBaseCommand(GenericCommand):
     def heap_base_from_mp():
         # However, in the case of qemu-user runs static binary, the heapbase cannot be obtained even with
         # `info proc map`, and this way may be necessary.
+        if get_libc_version(silent=True) is None:
+            return None
+
         main_arena_addr = GlibcHeap.search_for_main_arena()
         if main_arena_addr is None:
             return None
@@ -169104,12 +169134,16 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
         maps = ProcessMap.get_process_maps()
         if is_64bit():
             codebase = ProcessMap.get_section_base_address(filepath)
+            if codebase is None:
+                return []
             mask = 0x0000_ffff_0000_0000
             chromium_rw_maps = [p for p in maps if p.permission.value == Permission.READ | Permission.WRITE]
             chromium_rw_maps = [p for p in chromium_rw_maps if (p.page_start & mask) == (codebase & mask) and p.path != filepath]
         elif is_32bit():
             mask = 0xff00_0000
             heapbase = HeapBaseCommand.heap_base()
+            if heapbase is None:
+                return []
             chromium_rw_maps = [p for p in maps if p.permission.value == Permission.READ | Permission.WRITE]
             chromium_rw_maps = [p for p in chromium_rw_maps if p.page_start < heapbase and p.path != filepath]
 
@@ -177430,14 +177464,7 @@ class CpuidCommand(GenericCommand, BufferingOutput):
             o(c(edx, 14, 0x3_ffff,    "EDX 31-14: Reserved"))
         return
 
-    @Decorator.parse_args
-    @Decorator.only_if_gdb_running
-    @Decorator.exclude_specific_gdb_mode(mode=("rr", "kgdb"))
-    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64"))
-    @Decorator.only_if_kvm_disabled
-    def do_invoke(self, args):
-        self.out = []
-
+    def dump_cpuid(self):
         # Basic Information
         eax, _, _, _ = self.execute_cpuid(0)
         valid_max_cpuid = min(eax, 0x20)
@@ -177493,7 +177520,19 @@ class CpuidCommand(GenericCommand, BufferingOutput):
         for id in range(0xc000_0000, valid_max_cpuid + 1):
             eax, ebx, ecx, edx = self.execute_cpuid(id)
             self.make_out(id, None, eax, ebx, ecx, edx)
+        return
 
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.exclude_specific_gdb_mode(mode=("rr", "kgdb"))
+    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64"))
+    @Decorator.only_if_kvm_disabled
+    def do_invoke(self, args):
+        self.out = []
+        try:
+            self.dump_cpuid()
+        except gdb.error as e:
+            self.err_add_out("{}".format(e))
         self.print_output()
         return
 
