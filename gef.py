@@ -197286,7 +197286,10 @@ class KernelIoUringCommand(GenericCommand, BufferingOutput):
         if value is None:
             return None
         try:
-            return to_unsigned_long(value)
+            value_type = value.type.strip_typedefs()
+            if value_type.code in (gdb.TYPE_CODE_PTR, gdb.TYPE_CODE_ARRAY):
+                return to_unsigned_long(value)
+            return int(value) & ((1 << (value_type.sizeof * 8)) - 1)
         except (gdb.error, RuntimeError, TypeError):
             return None
 
@@ -197622,8 +197625,7 @@ class KernelIoUringCommand(GenericCommand, BufferingOutput):
             if total is not None:
                 candidates = [
                     ("file_table.files", "struct io_fixed_file", "file_ptr"),
-                    ("file_data.table.files", None, None),
-                    ("file_data->table->files", None, None),
+                    ("file_data->table", None, None),
                     ("user_files", None, None),
                 ]
                 for member, element_type, element_member in candidates:
@@ -197631,12 +197633,31 @@ class KernelIoUringCommand(GenericCommand, BufferingOutput):
                     if base is None:
                         continue
                     source = member + "={:#x}".format(base)
+                    if not base:
+                        break
+                    two_level = False
+                    if element_type:
+                        table_type = self.eval_value("struct io_ring_ctx", ctx, member).type.strip_typedefs()
+                        two_level = table_type.target().strip_typedefs().code == gdb.TYPE_CODE_PTR
                     for index in range(min(total, self.MAX_RESOURCES)):
                         if element_type:
-                            file = self.eval_unsigned(element_type, base + index * current_arch.ptrsize, element_member)
+                            if two_level:
+                                block = read_int_from_memory(base + (index >> 9) * current_arch.ptrsize, safe=True)
+                                slot = block + (index & 511) * current_arch.ptrsize if block else 0
+                            else:
+                                slot = base + index * current_arch.ptrsize
+                            file = self.eval_unsigned(element_type, slot, element_member) if slot else 0
+                            mask = ~(current_arch.ptrsize - 1)
                         else:
-                            file = read_int_from_memory(base + index * current_arch.ptrsize, safe=True)
-                        files.append((index, (file or 0) & ~3, None))
+                            if member != "user_files":
+                                block_member = "file_data->table[{:d}].files".format(index >> 9)
+                                block = self.eval_unsigned("struct io_ring_ctx", ctx, block_member)
+                                slot = block + (index & 511) * current_arch.ptrsize if block else 0
+                            else:
+                                slot = base + index * current_arch.ptrsize
+                            file = read_int_from_memory(slot, safe=True) if slot else 0
+                            mask = -1
+                        files.append((index, (file or 0) & mask, None))
                     break
 
         if total is None:
