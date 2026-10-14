@@ -88286,17 +88286,22 @@ class KernelNftablesRule:
         self.rules_list_cache = {}
         return
 
-    def chain_rules(self, entry):
+    def chain_rules(self, entry, net):
         # Return the rules {address, end, handle, exprs} of the datapath and the walk status.
-        blob = self.get_chain_rule_blob(entry)
+        blob = self.get_chain_rule_blob(entry, net)
         if blob is not None:
             rules, status = self.blob_rule_records(blob)
             if status in ("broken", "limit"):
                 self.knft.partial_reasons.add("rule blob")
             return rules, status
+        if self.knft.kversion >= "5.17":
+            self.knft.partial_reasons.add("active rule blob unavailable")
         offset_rules = self.resolve_chain_rules_offset(entry)
         if offset_rules is not None:
-            return self.decode_rule_list(entry, offset_rules)
+            rules, status = self.decode_rule_list(entry, offset_rules)
+            if self.knft.kversion >= "5.17":
+                status = "control-plane" if status in ("ok", "empty") else status + "; control-plane"
+            return rules, status
         return None, None
 
     def control_rules(self, entry):
@@ -88312,8 +88317,8 @@ class KernelNftablesRule:
             rules[info["handle"]] = rule
         return rules
 
-    def chain_blob_range(self, entry):
-        blob = self.get_chain_rule_blob(entry)
+    def chain_blob_range(self, entry, net):
+        blob = self.get_chain_rule_blob(entry, net)
         if blob is None:
             return None
         size = self.blob_size(blob)
@@ -88417,8 +88422,8 @@ class KernelNftablesRule:
             return {"address": address, "end": None, "name": "?", "xt": None, "type_name": None, "value": None, "nested": []}
         return self.get_expr_info(address, address + size, self.expr_name(ops) or "?", depth)
 
-    def get_chain_rule_blob(self, entry):
-        # Prefer exact nft_chain member offsets when available; stripped targets use the bounded scan.
+    def get_chain_rule_blob(self, entry, net):
+        # Preserve the slot order even when one generation is unreadable.
         if entry in self.chain_blob_cache:
             return self.chain_blob_cache[entry]
 
@@ -88432,31 +88437,15 @@ class KernelNftablesRule:
             return None
         if offset_list is not None and any(offset is not None for offset in blob_offsets):
             chain = entry - offset_list
-            blobs = [read_int_from_memory(chain + offset_blob, safe=True)
-                     for offset_blob in blob_offsets if offset_blob is not None]
-            if len(blobs) == 2 and all(self.valid_blob(blob) for blob in blobs):
-                blob = self.current_blob(entry, blobs)
-            else:
-                blob = next((blob for blob in blobs if self.valid_blob(blob)), None)
-            self.chain_blob_cache[entry] = blob
-            return blob
-
-        ptrsize = current_arch.ptrsize
-        # blob_gen_0 and blob_gen_1 precede the rules and list heads
-        preferred = [-ptrsize * 4, -ptrsize * 3]
-        blobs = [read_int_from_memory(entry + offset, safe=True) for offset in preferred]
-        if all(self.valid_blob(blob) for blob in blobs):
-            blob = self.current_blob(entry, blobs)
-            self.chain_blob_cache[entry] = blob
-            return blob
-        for offset in preferred + [offset for offset in range(-0x40, 0x60, ptrsize) if offset not in preferred]:
-            blob = read_int_from_memory(entry + offset, safe=True)
-            if self.valid_blob(blob):
-                self.chain_blob_cache[entry] = blob
-                return blob
-
-        self.chain_blob_cache[entry] = None
-        return None
+            blobs = [read_int_from_memory(chain + offset, safe=True) if offset is not None else None
+                     for offset in blob_offsets]
+        else:
+            ptrsize = current_arch.ptrsize
+            # blob_gen_0 and blob_gen_1 precede the rules and list heads
+            blobs = [read_int_from_memory(entry + offset, safe=True) for offset in (-ptrsize * 4, -ptrsize * 3)]
+        blob = self.current_blob(net, blobs)
+        self.chain_blob_cache[entry] = blob
+        return blob
 
     def valid_blob(self, blob):
         if not blob or not KernelAddressHeuristicFinderUtil.is_kernel_space(blob) or blob % current_arch.ptrsize:
@@ -88545,24 +88534,15 @@ class KernelNftablesRule:
             "source": "heuristic",
         }
 
-    def current_blob(self, entry, blobs):
-        # blob_gen_0/1 are indexed by the generation cursor. After a commit, the other slot keeps
-        # the previous (possibly empty or already freed) blob until the chain is touched again.
-        # The committed control-plane rule list matches the current one.
-        blobs = list(dict.fromkeys(blobs))
-        if len(blobs) == 1:
-            return blobs[0]
-        rules = self.control_rules(entry)
-        if rules is None:
-            return blobs[0]
-        handles = list(rules)
-        best = None
-        for blob in blobs:
-            blob_handles = [record["handle"] for record in self.blob_rule_records(blob)[0]]
-            score = (blob_handles == handles, len(set(blob_handles) & set(handles)))
-            if best is None or score > best[0]:
-                best = (score, blob)
-        return best[1]
+    def current_blob(self, net, blobs):
+        generation = GefUtil.field_int(GefUtil.typed_struct(net, "struct net"), "nft", "gencursor")
+        if generation in (0, 1):
+            blob = blobs[generation]
+        elif blobs[0] == blobs[1]:
+            blob = blobs[0]
+        else:
+            return None
+        return blob if self.valid_blob(blob) else None
 
     def blob_rule_records(self, blob):
         size = self.blob_size(blob)
@@ -198225,7 +198205,7 @@ class KernelNftablesCommand(GenericCommand, BufferingOutput):
             return True
         return kind[:-1] in self.args.kind
 
-    def get_table_children(self, table):
+    def get_table_children(self, table, net):
         # Apply the child filters before any set element is decoded; rules are decoded only for
         # chains whose name matched.
         children = []
@@ -198238,7 +198218,7 @@ class KernelNftablesCommand(GenericCommand, BufferingOutput):
                     continue
                 rules, status = None, None
                 if kind == "chains" and not self.args.no_rules:
-                    rules, status = self.knft.rules.chain_rules(entry)
+                    rules, status = self.knft.rules.chain_rules(entry, net)
                     if self.args.handle is not None and not any(rule["handle"] == self.args.handle for rule in rules or []):
                         continue
                 children.append({
@@ -198291,17 +198271,20 @@ class KernelNftablesCommand(GenericCommand, BufferingOutput):
                     if kind != "chains" or self.args.no_rules:
                         continue
 
-                    blob_range = self.knft.rules.chain_blob_range(entry)
+                    blob_range = self.knft.rules.chain_blob_range(entry, net)
                     if blob_range is not None:
                         nodes.append({"address": blob_range[0], "end": blob_range[1],
                                       "description": 'rule blob of chain "{:s}"'.format(name)})
-                    for rule in self.knft.rules.chain_rules(entry)[0] or []:
+                    rules, status = self.knft.rules.chain_rules(entry, net)
+                    source = "control-plane " if status and "control-plane" in status else ""
+                    for rule in rules or []:
                         nodes.append({"address": rule["address"], "end": rule["end"],
-                                      "description": 'rule handle={:d} in chain "{:s}"'.format(rule["handle"], name)})
+                                      "description": '{:s}rule handle={:d} in chain "{:s}"'.format(
+                                          source, rule["handle"], name)})
                         for expr in rule["exprs"]:
                             nodes.append({"address": expr["address"], "end": expr["end"],
-                                          "description": 'expression "{:s}" in rule handle={:d} of chain "{:s}"'.format(
-                                              expr["name"], rule["handle"], name)})
+                                          "description": '{:s}expression "{:s}" in rule handle={:d} of chain "{:s}"'.format(
+                                              source, expr["name"], rule["handle"], name)})
         return nodes
 
     @staticmethod
@@ -198523,12 +198506,14 @@ class KernelNftablesCommand(GenericCommand, BufferingOutput):
             if kind == "chains":
                 if rules is None:
                     rules_text = ""
-                elif status == "limit":
+                elif status and "limit" in status:
                     rules_text = " rules>={:d} [scan limit]".format(len(rules))
                 else:
                     rules_text = " rules={:d}".format(len(rules))
-                    if status == "broken":
+                    if status and "broken" in status:
                         rules_text += " [corrupt]"
+                if status and "control-plane" in status:
+                    rules_text += " [control-plane; active datapath unavailable]"
                 self.out.append(prefix + connector + "chain {:s} {:s}{:s}".format(
                     Color.colorify(name, "bold green"), Color.colorify_hex(entry, "blue"), rules_text))
                 if self.args.handle is not None:
@@ -198627,7 +198612,7 @@ class KernelNftablesCommand(GenericCommand, BufferingOutput):
         for table in nftables["tables"]:
             if not self.table_selected(table):
                 continue
-            children = self.get_table_children(table)
+            children = self.get_table_children(table, net)
             if self.child_filter and not children:
                 continue
             selected.append((table, children))
