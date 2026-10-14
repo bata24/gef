@@ -4561,19 +4561,17 @@ class GlibcHeap:
         0x000000499838|+0x0078|015: 0x0000000000000000
         """
 
-        orig_thread = gdb.selected_thread()
-        orig_frame = gdb.selected_frame()
         threads = sorted(gdb.selected_inferior().threads(), key=lambda th: th.num)
         direction = TlsCommand.get_direction()
 
         # The main thread may have exited, so try each thread in order.
         for thread in threads:
-            thread.switch()
-            try:
+            with ContextManager.selected_thread():
+                try:
+                    thread.switch()
+                except (gdb.error, RuntimeError):
+                    continue
                 tls = current_arch.get_tls()
-            finally:
-                orig_thread.switch() # revert thread
-                orig_frame.select()
             if tls is None:
                 continue
 
@@ -4721,25 +4719,16 @@ class GlibcHeap:
         """
 
         def get_all_tls():
-            orig_thread = gdb.selected_thread()
-            orig_frame = gdb.selected_frame()
             threads = gdb.selected_inferior().threads()
             threads = sorted(threads, key=lambda th: th.num)
             tls_list = []
             if not threads:
                 return None
-            try:
-                for thread in threads:
-                    try:
-                        thread.switch()
-                    except gdb.error:
-                        continue
+            with ContextManager.threads(threads) as threads:
+                for _thread in threads:
                     tls = current_arch.get_tls()
                     if tls is not None:
                         tls_list.append(tls)
-            finally:
-                orig_thread.switch() # revert thread
-                orig_frame.select()
             return tls_list
 
         def get_suitable_tls_addr(arena_addr):
@@ -4930,14 +4919,11 @@ class GlibcHeap:
                     return None
                 # tcache is per-thread, so the address obtained by a symbol is depending on the current thread.
                 # so we get all tcaches from all threads and take the address closest to self.heap_base.
-                orig_thread = gdb.selected_thread()
-                orig_frame = gdb.selected_frame()
-                if not orig_thread: # orig_thread may be None if under winedbg
+                if not gdb.selected_thread(): # selected_thread may be None if under winedbg
                     return None
                 tcache = None
-                try:
-                    for thread in gdb.selected_inferior().threads():
-                        thread.switch() # change thread
+                with ContextManager.threads() as threads:
+                    for _thread in threads:
                         try:
                             tcache_candidate = AddressUtil.parse_address("(void*) tcache")
                             if tcache_candidate <= self.heap_base:
@@ -4947,9 +4933,6 @@ class GlibcHeap:
                         except gdb.error:
                             tcache_candidate = None
                             break
-                finally:
-                    orig_thread.switch() # revert thread
-                    orig_frame.select()
                 return tcache
 
             def tcache_from_heuristic_offset():
@@ -15311,23 +15294,16 @@ class ProcessMap:
         extra_info = []
         if with_thread_info and is_x86() and not is_qemu():
             tls_list = []
-            orig_thread = gdb.selected_thread()
-            orig_frame = gdb.selected_frame()
-            if orig_thread: # orig_thread may be None if under winedbg
-                try:
-                    for thread in gdb.selected_inferior().threads():
-                        if not thread.is_stopped():
-                            continue
-                        thread.switch() # change thread
+            if gdb.selected_thread(): # selected_thread may be None if under winedbg
+                threads = (thread for thread in gdb.selected_inferior().threads() if thread.is_stopped())
+                with ContextManager.threads(threads) as threads:
+                    for thread in threads:
                         tls = None
                         if is_x86_64():
                             tls = get_register("$fs_base") # note: for speed up
                         if is_x86_32() or tls is None:
                             tls = current_arch.get_tls()
                         tls_list.append([thread.num, tls, current_arch.sp])
-                finally:
-                    orig_thread.switch() # revert thread
-                    orig_frame.select()
                 extra_info = sorted(tls_list)
 
                 # When using gdbserver, thread.num may start from 2 even though there is no thread.
@@ -24269,7 +24245,6 @@ class KillThreadsCommand(GenericCommand):
 
         # list target thread id
         orig_thread = gdb.selected_thread()
-        orig_frame = gdb.selected_frame()
         target_threads = []
         for th in gdb.selected_inferior().threads():
             if th.num == orig_thread.num:
@@ -24296,20 +24271,17 @@ class KillThreadsCommand(GenericCommand):
             sched_lock = gdb.parameter("scheduler-locking")
             # change temporarily
             gdb.execute("set scheduler-locking on", to_string=True)
-            try:
-                # kill
-                for th in target_threads:
-                    # the thread may have exited after it was listed (e.g. non-stop mode)
-                    try:
-                        th.switch()
-                        gdb.execute("call (void)pthread_exit(0)")
-                    except (gdb.error, RuntimeError):
-                        pass
-            finally:
-                # restore
-                gdb.execute("set scheduler-locking {:s}".format(sched_lock), to_string=True)
-                orig_thread.switch()
-                orig_frame.select()
+            with ContextManager.threads(target_threads) as threads:
+                try:
+                    # kill
+                    for _thread in threads:
+                        try:
+                            gdb.execute("call (void)pthread_exit(0)")
+                        except (gdb.error, RuntimeError):
+                            pass
+                finally:
+                    # restore
+                    gdb.execute("set scheduler-locking {:s}".format(sched_lock), to_string=True)
         else:
             warn('This dry run mode skips killing; add "--commit" to proceed')
         return
@@ -33480,7 +33452,8 @@ class ElfInfoCommand(GenericCommand):
                 gef_print("\n".join(self.out), less=not args.no_pager)
             return
 
-        with GefUtil.local_elf(args.file, remote=args.remote, prefix=self._cmdline_) as (local_filepath, remote_filepath):
+        with ContextManager.local_elf(args.file, remote=args.remote,
+                                      prefix=self._cmdline_) as (local_filepath, remote_filepath):
             if local_filepath is None:
                 return
 
@@ -34004,7 +33977,8 @@ class ChecksecCommand(GenericCommand):
             gdb.execute("kchecksec")
             return
 
-        with GefUtil.local_elf(args.file, remote=args.remote, prefix=self._cmdline_) as (local_filepath, remote_filepath):
+        with ContextManager.local_elf(args.file, remote=args.remote,
+                                      prefix=self._cmdline_) as (local_filepath, remote_filepath):
             if local_filepath is None:
                 return
 
@@ -38770,7 +38744,8 @@ class DwarfExceptionHandlerInfoCommand(GenericCommand, BufferingOutput):
     @Decorator.parse_args
     @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
     def do_invoke(self, args):
-        with GefUtil.local_elf(args.file, remote=args.remote, prefix=self._cmdline_) as (local_filepath, remote_filepath):
+        with ContextManager.local_elf(args.file, remote=args.remote,
+                                      prefix=self._cmdline_) as (local_filepath, remote_filepath):
             if local_filepath is None:
                 return
 
@@ -41423,15 +41398,7 @@ class ContextThreadsCommand(GenericCommand):
             err("No thread selected", redirect)
             return
 
-        # get selected frame
-        selected_thread = gdb.selected_thread()
-        try:
-            selected_frame = gdb.selected_frame()
-        except gdb.error:
-            # gdb.selected_frame() may error for unknown reasons (often during kernel startup).
-            selected_frame = None
-
-        try:
+        with ContextManager.selected_thread() as selected_thread:
             # walk threads
             lines = []
             for thread in threads:
@@ -41483,13 +41450,6 @@ class ContextThreadsCommand(GenericCommand):
             for _, line in sorted(lines):
                 gef_print(line, redirect=redirect)
 
-        finally:
-            try:
-                selected_thread.switch()
-                if selected_frame is not None:
-                    selected_frame.select()
-            except gdb.error:
-                pass
         return
 
     @Decorator.parse_args
@@ -47802,7 +47762,8 @@ class DestructorDumpCommand(GenericCommand):
     def do_invoke(self, args):
         Cache.reset_gef_caches(all=True)
 
-        with GefUtil.local_elf(args.file, remote=args.remote, prefix=self._cmdline_) as (local_filepath, remote_filepath):
+        with ContextManager.local_elf(args.file, remote=args.remote,
+                                      prefix=self._cmdline_) as (local_filepath, remote_filepath):
             if local_filepath is None:
                 return
 
@@ -48680,8 +48641,8 @@ class GotCommand(GenericCommand, BufferingOutput):
             self.quiet_err("{}".format(e))
             return
 
-        with GefUtil.local_elf(args.file, remote=args.remote, prefix=self._cmdline_,
-                              error=self.quiet_err) as (local_filepath, remote_filepath):
+        with ContextManager.local_elf(args.file, remote=args.remote, prefix=self._cmdline_,
+                                      error=self.quiet_err) as (local_filepath, remote_filepath):
             if local_filepath is None:
                 return
 
@@ -69427,26 +69388,13 @@ class KernelAddressHeuristicFinder:
         # On ARM and RISC-V, another CPU may have a readable current task and a complete task list.
         if is_arm64() or is_arm32() or is_riscv32() or is_riscv64():
             orig_thread = gdb.selected_thread()
-            try:
-                orig_frame = gdb.selected_frame()
-            except gdb.error:
-                orig_frame = None
-            try:
-                for thread in KernelPerCpu.get_cpu_threads():
-                    if thread == orig_thread:
-                        continue
-                    try:
-                        thread.switch()
-                    except gdb.error:
-                        continue
+            threads = (thread for thread in KernelPerCpu.get_cpu_threads() if thread != orig_thread)
+            with ContextManager.threads(threads) as threads:
+                for _thread in threads:
                     current = KernelAddressHeuristicFinder.get_current_task_for_current_thread()
                     init_task = get_init_task_from_current(current)
                     if init_task is not None:
                         break
-            finally:
-                orig_thread.switch()
-                if orig_frame is not None:
-                    orig_frame.select()
             if init_task is not None:
                 return init_task
 
@@ -89890,21 +89838,12 @@ class KernelCurrentCommand(GenericCommand):
         return "failed to resolve current task"
 
     def dump_current_by_thread(self):
-        orig_thread = gdb.selected_thread()
-        try:
-            orig_frame = gdb.selected_frame()
-        except gdb.error:
-            # The selected frame is not always readable (e.g., ARM32 halted at the exception vector,
-            # where the frame pointer still holds an unmapped userland value).
-            # Reverting the thread is enough because this command never selects an outer frame.
-            orig_frame = None
         # Resolve `offsetof(task_struct, comm)` before switching to another thread.
         # If this CPU cannot resolve it, it is retried on the other CPUs in the kernel.
         self.resolve_offset_comm()
         results = []
-        try:
-            for thread in KernelPerCpu.get_cpu_threads():
-                thread.switch() # change thread
+        with ContextManager.threads(KernelPerCpu.get_cpu_threads()) as threads:
+            for thread in threads:
                 label = KernelPerCpu.get_cpu_label(thread)
                 task = KernelAddressHeuristicFinder.get_current_task_for_current_thread()
                 if task is None:
@@ -89913,10 +89852,6 @@ class KernelCurrentCommand(GenericCommand):
                 results.append((label, task, None))
                 if is_in_kernel():
                     self.resolve_offset_comm()
-        finally:
-            orig_thread.switch() # revert thread
-            if orig_frame is not None:
-                orig_frame.select()
 
         # A CPU halted in userland may not reach the kernel, so `comm` is read from the selected CPU.
         for label, task, reason in results:
@@ -90085,22 +90020,12 @@ class KernelTask:
                     break
                 current_tasks.setdefault(task, []).append("cpu{:d}".format(index))
         else:
-            thread = gdb.selected_thread()
-            try:
-                frame = gdb.selected_frame()
-            except gdb.error:
-                frame = None
-            try:
-                for cpu in KernelPerCpu.get_cpu_threads():
-                    cpu.switch()
+            with ContextManager.threads(KernelPerCpu.get_cpu_threads()) as threads:
+                for cpu in threads:
                     task = KernelAddressHeuristicFinder.get_current_task_for_current_thread()
                     if task is not None:
                         label = KernelPerCpu.get_cpu_label(cpu).replace("thread ", "th")
                         current_tasks.setdefault(task, []).append(label)
-            finally:
-                thread.switch()
-                if frame is not None:
-                    frame.select()
         return {task: labels[0] + (",.." if len(labels) > 1 else "") for task, labels in current_tasks.items()}
 
     def get_kstack_size(self):
@@ -104632,8 +104557,6 @@ class TlsCommand(GenericCommand, BufferingOutput):
         return direction
 
     def get_specific_tls(self, thread_id):
-        orig_thread = gdb.selected_thread()
-        orig_frame = gdb.selected_frame()
         threads = gdb.selected_inferior().threads()
         threads = [th for th in threads if th.num == thread_id]
 
@@ -104641,19 +104564,15 @@ class TlsCommand(GenericCommand, BufferingOutput):
             err("Could not find the target thread")
             return
 
-        try:
-            threads[0].switch()
-            tls = current_arch.get_tls()
-        except Exception:
-            tls = None
-        finally:
-            orig_thread.switch() # revert
-            orig_frame.select()
+        with ContextManager.selected_thread():
+            try:
+                threads[0].switch()
+                tls = current_arch.get_tls()
+            except Exception:
+                tls = None
         return tls
 
     def print_all_tls(self):
-        orig_thread = gdb.selected_thread()
-        orig_frame = gdb.selected_frame()
         threads = gdb.selected_inferior().threads()
         threads = sorted(threads, key=lambda th: th.num)
 
@@ -104661,12 +104580,12 @@ class TlsCommand(GenericCommand, BufferingOutput):
             err("No thread is detected")
             return
 
-        try:
+        with ContextManager.selected_thread():
             for thread in threads:
                 msg = "Thread Id:{:d}".format(thread.num)
                 try:
                     thread.switch()
-                except gdb.error:
+                except (gdb.error, RuntimeError):
                     msg += " - Failed to switch to this thread"
                     gef_print(msg)
                     continue
@@ -104679,9 +104598,6 @@ class TlsCommand(GenericCommand, BufferingOutput):
                 else:
                     msg += " - {:#x}".format(tls)
                 gef_print(msg)
-        finally:
-            orig_thread.switch() # revert
-            orig_frame.select()
         return
 
     def get_varnames(self):
@@ -164480,16 +164396,13 @@ class TcmallocHeapDumpCommand(GenericCommand, BufferingOutput):
         if current_arch.arch == "MIPS":
             return self.get_thread_heap_list_memory_heuristic()
 
-        orig_thread = gdb.selected_thread()
-        orig_frame = gdb.selected_frame()
         direction = TlsCommand.get_direction()
-        try:
-            for i in range(1, 65):
-                candidate_thread_heaps = []
-                candidate_next = []
-                candidate_prev = []
-                for thread in gdb.selected_inferior().threads():
-                    thread.switch()
+        for i in range(1, 65):
+            candidate_thread_heaps = []
+            candidate_next = []
+            candidate_prev = []
+            with ContextManager.threads() as threads:
+                for _thread in threads:
                     tls = current_arch.get_tls()
                     if tls is None:
                         continue
@@ -164510,9 +164423,6 @@ class TcmallocHeapDumpCommand(GenericCommand, BufferingOutput):
                         set(candidate_next) | set(candidate_prev) == set(candidate_thread_heaps) | {0}
                     ):
                         return list(dict.fromkeys(candidate_thread_heaps))
-        finally:
-            orig_thread.switch()
-            orig_frame.select()
         return self.get_thread_heap_list_memory_heuristic()
 
     def get_thread_heap_list_memory_heuristic(self):
@@ -165402,8 +165312,6 @@ class HoardHeapDumpCommand(GenericCommand, BufferingOutput):
 
     @Cache.cache_until_next
     def get_all_freelist_head_candidate_from_tls(self):
-        orig_thread = gdb.selected_thread()
-        orig_frame = gdb.selected_frame()
         threads = gdb.selected_inferior().threads()
         if not threads:
             return
@@ -165411,12 +165319,8 @@ class HoardHeapDumpCommand(GenericCommand, BufferingOutput):
         direction = TlsCommand.get_direction()
 
         head_candidates = []
-        try:
-            for thread in threads:
-                try:
-                    thread.switch()
-                except gdb.error:
-                    continue
+        with ContextManager.threads(threads) as threads:
+            for _thread in threads:
                 tls = current_arch.get_tls()
                 if tls is None:
                     continue
@@ -165427,9 +165331,6 @@ class HoardHeapDumpCommand(GenericCommand, BufferingOutput):
                     if not is_single_link_list(head_candidate):
                         continue
                     head_candidates.append(head_candidate)
-        finally:
-            orig_thread.switch() # revert thread
-            orig_frame.select()
         return head_candidates
 
     def get_freelist_start(self, sb):
@@ -166654,14 +166555,8 @@ class SnmallocHeapDumpCommand(GenericCommand, BufferingOutput):
               0x7ffff7f3f780|+0x0000|+000: 0x00007ffff7f3f780
               0x7ffff7f3f788|+0x0008|+001: 0x00007ffff7f40120
         """
-        orig_thread = gdb.selected_thread()
-        orig_frame = gdb.selected_frame()
-        try:
-            for thread in gdb.selected_inferior().threads():
-                try:
-                    thread.switch()
-                except gdb.error:
-                    continue
+        with ContextManager.threads() as threads:
+            for _thread in threads:
                 tls = current_arch.get_tls()
                 if tls is None:
                     continue
@@ -166673,26 +166568,17 @@ class SnmallocHeapDumpCommand(GenericCommand, BufferingOutput):
                     if not is_valid_addr(val) or not is_single_link_list(val):
                         continue
                     return offset
-        finally:
-            orig_thread.switch()
-            orig_frame.select()
         return None
 
     def get_thread_alloc_list(self, all_thread=False):
         if all_thread:
             # travarse all threads
-            orig_thread = gdb.selected_thread()
-            orig_frame = gdb.selected_frame()
             thread_allocs = []
-            try:
-                for thread in gdb.selected_inferior().threads():
-                    thread.switch() # change thread
+            with ContextManager.threads() as threads:
+                for thread in threads:
                     thread_alloc = self.get_current_thread_alloc()
                     if thread_alloc:
                         thread_allocs.append((thread.num, thread_alloc))
-            finally:
-                orig_thread.switch() # revert thread
-                orig_frame.select()
             return thread_allocs
         else:
             thread_alloc = self.get_current_thread_alloc()
@@ -170636,18 +170522,12 @@ class SsmallocHeapDumpCommand(GenericCommand, BufferingOutput):
             return [(gdb.selected_thread().num, self.args.local_heap)]
 
         if all_thread:
-            orig_thread = gdb.selected_thread()
-            orig_frame = gdb.selected_frame()
             local_heaps = []
-            try:
-                for thread in gdb.selected_inferior().threads():
-                    thread.switch()
+            with ContextManager.threads() as threads:
+                for thread in threads:
                     local_heap = self.get_current_local_heap()
                     if local_heap:
                         local_heaps.append((thread.num, local_heap))
-            finally:
-                orig_thread.switch()
-                orig_frame.select()
             return local_heaps
 
         local_heap = self.get_current_local_heap()
@@ -171310,11 +171190,8 @@ class JemallocBase:
     def get_tcaches(self):
         arenas = {arena: index for index, arena in self.arenas.items()}
         tcaches = []
-        orig_thread = gdb.selected_thread()
-        orig_frame = gdb.selected_frame()
-        try:
-            for thread in gdb.selected_inferior().threads():
-                thread.switch()
+        with ContextManager.threads() as threads:
+            for thread in threads:
                 tls = current_arch.get_tls()
                 if not tls:
                     continue
@@ -171332,9 +171209,6 @@ class JemallocBase:
                     bins, arena_index = found
                     cache_bins = self.read_cache_bins(bins)
                     tcaches.append((thread.num, arena_index, bins, cache_bins))
-        finally:
-            orig_thread.switch()
-            orig_frame.select()
         return tcaches
 
     def is_tbins(self, tbins):
@@ -202704,6 +202578,113 @@ class AliasesListCommand(AliasesCommand, BufferingOutput):
         return
 
 
+class ContextManager:
+    """A collection of context managers for temporary GEF state."""
+
+    @staticmethod
+    @contextlib.contextmanager
+    def selected_thread():
+        """Preserve the selected thread and frame, yielding the original thread.
+
+        Allow missing frames and ignore restoration errors if the saved context is no longer valid.
+        """
+        thread = gdb.selected_thread()
+        try:
+            frame = gdb.selected_frame()
+        except (gdb.error, RuntimeError):
+            frame = None
+        try:
+            yield thread
+        finally:
+            if thread is not None:
+                try:
+                    thread.switch()
+                    if frame is not None:
+                        frame.select()
+                except (gdb.error, RuntimeError):
+                    pass
+        return
+
+    @staticmethod
+    @contextlib.contextmanager
+    def threads(threads=None):
+        """Yield an iterator that selects each thread and restores the original selection on exit.
+
+        Use all threads of the selected inferior when omitted, skipping threads that cannot be selected.
+        Consume the iterator only inside the with block.
+        """
+
+        def switch_threads():
+            """Select and yield each available thread, skipping failed switches."""
+            for thread in threads:
+                try:
+                    thread.switch()
+                except (gdb.error, RuntimeError):
+                    continue
+                yield thread
+
+        with ContextManager.selected_thread():
+            if threads is None:
+                threads = gdb.selected_inferior().threads()
+            yield switch_threads()
+        return
+
+    @staticmethod
+    @contextlib.contextmanager
+    def local_elf(filepath=None, remote=False, prefix="", error=err):
+        """Yield local and remote ELF paths, removing any downloaded copy on exit."""
+        remote_filepath = None
+        tmp_filepath = None
+        local_filepath = filepath or None
+
+        if remote:
+            if not is_remote_debug():
+                error("-r option is allowed only remote debug")
+                yield None, None
+                return
+            if is_qemu_system():
+                error("-r option is unsupported under qemu-system")
+                yield None, None
+                return
+
+            remote_filepath = filepath or Path.get_remote_filepath()
+            if not remote_filepath:
+                pid = Pid.get_pid(remote=True)
+                if pid:
+                    remote_filepath = "/proc/{:d}/exe".format(pid)
+            if not remote_filepath:
+                error("File name could not be determined")
+                yield None, None
+                return
+
+            data = Path.read_remote_file(remote_filepath, as_byte=True)
+            if not data:
+                error("Failed to read remote filepath")
+                yield None, None
+                return
+        elif filepath is None:
+            if is_qemu_system():
+                error("Argument-less calls are unsupported under qemu-system")
+                yield None, None
+                return
+            local_filepath = Path.get_filepath()
+
+        try:
+            if remote:
+                tmp_fd, tmp_filepath = GefUtil.mkstemp(prefix=prefix, suffix=".elf")
+                with os.fdopen(tmp_fd, "wb") as fdw:
+                    fdw.write(data)
+                local_filepath = tmp_filepath
+                del data
+            if local_filepath is None:
+                error("File name could not be determined")
+            yield local_filepath, remote_filepath
+        finally:
+            if tmp_filepath and os.path.exists(tmp_filepath):
+                os.unlink(tmp_filepath)
+        return
+
+
 class GefUtil:
     """A collection of utility functions that are related to GEF basic features."""
 
@@ -203268,61 +203249,6 @@ class GefUtil:
         if dir is None:
             dir = GEF_TEMP_DIR
         return tempfile.mkstemp(dir=dir, prefix=real_prefix, suffix=suffix)
-
-    @staticmethod
-    @contextlib.contextmanager
-    def local_elf(filepath=None, remote=False, prefix="", error=err):
-        """Yield local and remote ELF paths, removing any downloaded copy on exit."""
-        remote_filepath = None
-        tmp_filepath = None
-        local_filepath = filepath or None
-
-        if remote:
-            if not is_remote_debug():
-                error("-r option is allowed only remote debug")
-                yield None, None
-                return
-            if is_qemu_system():
-                error("-r option is unsupported under qemu-system")
-                yield None, None
-                return
-
-            remote_filepath = filepath or Path.get_remote_filepath()
-            if not remote_filepath:
-                pid = Pid.get_pid(remote=True)
-                if pid:
-                    remote_filepath = "/proc/{:d}/exe".format(pid)
-            if not remote_filepath:
-                error("File name could not be determined")
-                yield None, None
-                return
-
-            data = Path.read_remote_file(remote_filepath, as_byte=True)
-            if not data:
-                error("Failed to read remote filepath")
-                yield None, None
-                return
-        elif filepath is None:
-            if is_qemu_system():
-                error("Argument-less calls are unsupported under qemu-system")
-                yield None, None
-                return
-            local_filepath = Path.get_filepath()
-
-        try:
-            if remote:
-                tmp_fd, tmp_filepath = GefUtil.mkstemp(prefix=prefix, suffix=".elf")
-                with os.fdopen(tmp_fd, "wb") as fdw:
-                    fdw.write(data)
-                local_filepath = tmp_filepath
-                del data
-            if local_filepath is None:
-                error("File name could not be determined")
-            yield local_filepath, remote_filepath
-        finally:
-            if tmp_filepath and os.path.exists(tmp_filepath):
-                os.unlink(tmp_filepath)
-        return
 
     @staticmethod
     def rmdir(directory, verbose=False, keep_root=False):
