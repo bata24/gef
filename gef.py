@@ -196587,6 +196587,7 @@ class KernelLsmCommand(GenericCommand, BufferingOutput):
             for _kind, regex in rules:
                 m = re.fullmatch(regex, insn)
                 if m:
+                    kind = _kind
                     g = {k: norm(v) for k, v in m.groupdict().items()}
                     break
             else:
@@ -196854,7 +196855,16 @@ class KernelLsmCommand(GenericCommand, BufferingOutput):
 
         def sids(names, offset=0):
             """Return the u32 SIDs at `part + offset` and their detail, or (None, "") if one is not a SID."""
-            values = [read_int32_from_memory(part + offset + i * 4, safe=True) for i in range(len(names))]
+            type_name = "struct {:s}_security_struct".format(kind)
+            offsets = [GefUtil.offsetof(type_name, name) for name in names]
+            if None in offsets:
+                if GefUtil.type_size(type_name):
+                    return None, ""
+                configs = __gef_command_instances__["kconfig"].get_configs()
+                if not configs or any(configs.get(key) == "y" for key in ("CONFIG_RANDSTRUCT", "CONFIG_GCC_PLUGIN_RANDSTRUCT")):
+                    return None, ""
+                offsets = [offset + i * 4 for i in range(len(names))]
+            values = [read_int32_from_memory(part + offset, safe=True) for offset in offsets]
             if not all(x is not None and x < 0x100000 for x in values):
                 return None, ""
             return values, " ".join("{:s}={:d}".format(n, x) for n, x in zip(names, values))
