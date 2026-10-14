@@ -77974,28 +77974,28 @@ class KernelPath:
         # in v6.13.  Stable kernels have backported parts of those changes, so a single
         # upstream version boundary is not sufficient for every following member.
         if kversion >= "3.3":
-            try:
-                self.offset_mount_mnt = GefUtil.parse_and_eval_unsigned("&((struct mount*)0).mnt")
-                self.offset_mount_mnt_parent = GefUtil.parse_and_eval_unsigned("&((struct mount*)0).mnt_parent")
-                self.offset_mount_mnt_mountpoint = GefUtil.parse_and_eval_unsigned("&((struct mount*)0).mnt_mountpoint")
-                self.offset_vfsmount_mnt_root = GefUtil.parse_and_eval_unsigned("&((struct vfsmount*)0).mnt_root")
-                self.offset_vfsmount_mnt_sb = GefUtil.parse_and_eval_unsigned("&((struct vfsmount*)0).mnt_sb")
-                self.offset_vfsmount_mnt_flags = GefUtil.parse_and_eval_unsigned("&((struct vfsmount*)0).mnt_flags")
-                self.nominal_mnt_mounts = GefUtil.parse_and_eval_unsigned("&((struct mount*)0).mnt_mounts")
-                self.offset_mount_mnt_mounts = self.nominal_mnt_mounts
-                self.offset_mount_mnt_child = GefUtil.parse_and_eval_unsigned("&((struct mount*)0).mnt_child")
+            self.offset_mount_mnt = GefUtil.offsetof("mount", "mnt")
+            self.offset_mount_mnt_parent = GefUtil.offsetof("mount", "mnt_parent")
+            self.offset_mount_mnt_mountpoint = GefUtil.offsetof("mount", "mnt_mountpoint")
+            self.offset_vfsmount_mnt_root = GefUtil.offsetof("vfsmount", "mnt_root")
+            self.offset_vfsmount_mnt_sb = GefUtil.offsetof("vfsmount", "mnt_sb")
+            self.offset_vfsmount_mnt_flags = GefUtil.offsetof("vfsmount", "mnt_flags")
+            self.nominal_mnt_mounts = GefUtil.offsetof("mount", "mnt_mounts")
+            self.offset_mount_mnt_mounts = self.nominal_mnt_mounts
+            self.offset_mount_mnt_child = GefUtil.offsetof("mount", "mnt_child")
+            if None not in (self.offset_mount_mnt, self.offset_mount_mnt_parent, self.offset_mount_mnt_mountpoint,
+                            self.offset_vfsmount_mnt_root, self.offset_vfsmount_mnt_sb, self.offset_vfsmount_mnt_flags,
+                            self.nominal_mnt_mounts, self.offset_mount_mnt_child):
                 self.offset_after_mnt_child = self.offset_mount_mnt_child + ptrsize * 2
                 self.mount_layout_source = "debug information"
                 return True
-            except gdb.error:
-                self.offset_mount_mnt = None
+            self.offset_mount_mnt = None
 
         if kversion < "3.3":
             self.offset_mount_mnt = 0
-            try:
-                self.offset_vfsmount_mnt_root = GefUtil.parse_and_eval_unsigned("&((struct vfsmount*)0).mnt_root")
-                self.offset_vfsmount_mnt_sb = GefUtil.parse_and_eval_unsigned("&((struct vfsmount*)0).mnt_sb")
-            except gdb.error:
+            self.offset_vfsmount_mnt_root = GefUtil.offsetof("vfsmount", "mnt_root")
+            self.offset_vfsmount_mnt_sb = GefUtil.offsetof("vfsmount", "mnt_sb")
+            if None in (self.offset_vfsmount_mnt_root, self.offset_vfsmount_mnt_sb):
                 self.offset_vfsmount_mnt_root = ptrsize * 4
                 self.offset_vfsmount_mnt_sb = ptrsize * 5
             self.offset_vfsmount_mnt_flags = None # it sits after mnt_child, see get_offset_mnt_flags()
@@ -78100,10 +78100,9 @@ class KernelPath:
         };
         """
         # fast path
-        try:
-            return GefUtil.parse_and_eval_unsigned("&((struct task_struct*)0).fs")
-        except gdb.error:
-            pass
+        offset = GefUtil.offsetof("task_struct", "fs")
+        if offset is not None:
+            return offset
 
         # slow path
         return offset_files - current_arch.ptrsize
@@ -78547,12 +78546,10 @@ class KernelPath:
             ...
         """
         # fast path
-        try:
-            f_path = GefUtil.parse_and_eval_unsigned("&((struct file*)0).f_path")
-            mnt = GefUtil.parse_and_eval_unsigned("&((struct path*)0).mnt")
+        f_path = GefUtil.offsetof("file", "f_path")
+        mnt = GefUtil.offsetof("path", "mnt")
+        if None not in (f_path, mnt):
             return f_path + mnt
-        except gdb.error:
-            pass
 
         # slow path
         if not is_valid_addr(file):
@@ -78694,12 +78691,10 @@ class KernelPath:
     @Cache.cache_this_session(cache_None=False)
     def get_offset_file_dentry(self, offset_mnt):
         # fast path
-        try:
-            f_path = GefUtil.parse_and_eval_unsigned("&((struct file*)0).f_path")
-            dentry = GefUtil.parse_and_eval_unsigned("&((struct path*)0).dentry")
+        f_path = GefUtil.offsetof("file", "f_path")
+        dentry = GefUtil.offsetof("path", "dentry")
+        if None not in (f_path, dentry):
             return f_path + dentry
-        except gdb.error:
-            pass
 
         # slow path
         return offset_mnt + current_arch.ptrsize
@@ -78728,10 +78723,9 @@ class KernelPath:
         };
         """
         # fast path
-        try:
-            return GefUtil.parse_and_eval_unsigned("&((struct dentry*)0).d_iname")
-        except gdb.error:
-            pass
+        offset = GefUtil.offsetof("dentry", "d_iname")
+        if offset is not None:
+            return offset
 
         # slow path
         if not is_valid_addr(dentry) or dentry & (current_arch.ptrsize - 1):
@@ -78746,10 +78740,9 @@ class KernelPath:
     @Cache.cache_this_session(cache_None=False)
     def get_offset_d_inode(self, offset_d_iname):
         # fast path
-        try:
-            return GefUtil.parse_and_eval_unsigned("&((struct dentry*)0).d_inode")
-        except gdb.error:
-            pass
+        offset = GefUtil.offsetof("dentry", "d_inode")
+        if offset is not None:
+            return offset
 
         # slow path
         return offset_d_iname - current_arch.ptrsize
@@ -78757,18 +78750,15 @@ class KernelPath:
     @Cache.cache_this_session(cache_None=False)
     def get_offset_i_mode(self):
         # i_mode is the first member of struct inode throughout the supported kernels.
-        try:
-            return GefUtil.parse_and_eval_unsigned("&((struct inode*)0).i_mode")
-        except gdb.error:
-            return 0
+        offset = GefUtil.offsetof("inode", "i_mode")
+        return offset if offset is not None else 0
 
     @Cache.cache_this_session(cache_None=False)
     def get_offset_i_sb(self, inode):
         """Resolve inode->i_sb from debug information or the target inode layout."""
-        try:
-            return GefUtil.parse_and_eval_unsigned("&((struct inode*)0).i_sb")
-        except gdb.error:
-            pass
+        offset = GefUtil.offsetof("inode", "i_sb")
+        if offset is not None:
+            return offset
 
         if not is_valid_addr(inode) or inode & (current_arch.ptrsize - 1):
             return None
@@ -78812,10 +78802,9 @@ class KernelPath:
             return None
 
         # fast path
-        try:
-            return GefUtil.parse_and_eval_unsigned("&((struct inode*)0).i_ino")
-        except gdb.error:
-            pass
+        offset = GefUtil.offsetof("inode", "i_ino")
+        if offset is not None:
+            return offset
 
         # slow path
         # `i_mapping` points to `&inode->i_data`, i.e. back into the inode itself, and
@@ -78851,10 +78840,9 @@ class KernelPath:
     @Cache.cache_this_session(cache_None=False)
     def get_offset_dname_name(self, dentry, offset_d_iname):
         # fast path
-        try:
-            return GefUtil.parse_and_eval_unsigned("&((struct dentry*)0).d_name.name")
-        except gdb.error:
-            pass
+        offset = GefUtil.offsetof("dentry", "d_name.name")
+        if offset is not None:
+            return offset
 
         # slow path
         offset = offset_d_iname - current_arch.ptrsize * 2
@@ -78867,10 +78855,9 @@ class KernelPath:
     @Cache.cache_this_session(cache_None=False)
     def get_offset_d_parent(self, dentry, offset_dname_name):
         # fast path
-        try:
-            return GefUtil.parse_and_eval_unsigned("&((struct dentry*)0).d_parent")
-        except gdb.error:
-            pass
+        offset = GefUtil.offsetof("dentry", "d_parent")
+        if offset is not None:
+            return offset
 
         # slow path
         offset_d_parent = offset_dname_name - 8 - current_arch.ptrsize
@@ -78912,10 +78899,9 @@ class KernelPath:
         };
         """
         # fast path
-        try:
-            return GefUtil.parse_and_eval_unsigned("&((struct fs_struct*)0).root")
-        except gdb.error:
-            pass
+        offset = GefUtil.offsetof("fs_struct", "root")
+        if offset is not None:
+            return offset
 
         # slow path
         if not is_valid_addr(fs):
@@ -79695,10 +79681,9 @@ class KernelFiles:
         };
         """
         # fast path
-        try:
-            return GefUtil.parse_and_eval_unsigned("&((struct files_struct*)0).fdt")
-        except gdb.error:
-            pass
+        offset = GefUtil.offsetof("files_struct", "fdt")
+        if offset is not None:
+            return offset
 
         # slow path
         MAX_FDS_DEFAULT = AddressUtil.get_memory_alignment(in_bits=True)
@@ -79725,11 +79710,9 @@ class KernelFiles:
         };
         """
         # fast path
-        try:
-            return tuple(GefUtil.parse_and_eval_unsigned("&((struct fdtable*)0).{:s}".format(name))
-                         for name in ["fd", "close_on_exec", "open_fds"])
-        except gdb.error:
-            pass
+        offsets = tuple(GefUtil.offsetof("fdtable", name) for name in ["fd", "close_on_exec", "open_fds"])
+        if None not in offsets:
+            return offsets
 
         # slow path
         ptrsize = current_arch.ptrsize
@@ -79811,10 +79794,9 @@ class KernelSignal:
         };
         """
         # fast path
-        try:
-            return GefUtil.parse_and_eval_unsigned("&((struct signal_struct*)0).thread_head")
-        except gdb.error:
-            pass
+        offset = GefUtil.offsetof("signal_struct", "thread_head")
+        if offset is not None:
+            return offset
 
         # slow path
         for i in range(10):
@@ -79872,10 +79854,9 @@ class KernelSighand:
         };
         """
         # fast path
-        try:
-            return GefUtil.parse_and_eval_unsigned("&((struct sighand_struct*)0).action")
-        except gdb.error:
-            pass
+        offset = GefUtil.offsetof("sighand_struct", "action")
+        if offset is not None:
+            return offset
 
         # slow path
         kversion = Kernel.version()
@@ -79965,10 +79946,9 @@ class KernelSighand:
         ...
         """
         # fast path
-        try:
-            return GefUtil.parse_and_eval_unsigned("sizeof(struct k_sigaction)")
-        except gdb.error:
-            pass
+        sizeof_action = GefUtil.sizeof("k_sigaction")
+        if sizeof_action is not None:
+            return sizeof_action
 
         # slow path
         # Every supported arch defines SA_RESTORER and none defines __ARCH_HAS_KA_RESTORER,
@@ -79991,15 +79971,10 @@ class KernelSighand:
         """Return (offsetof(k_sigaction, sa.sa_restorer) or None, offsetof(k_sigaction, sa.sa_mask)).
         sa_restorer exists only if the arch defines SA_RESTORER (e.g., RISC-V does not)."""
         # fast path
-        try:
-            offset_mask = GefUtil.parse_and_eval_unsigned("&((struct k_sigaction*)0).sa.sa_mask")
-            try:
-                offset_restorer = GefUtil.parse_and_eval_unsigned("&((struct k_sigaction*)0).sa.sa_restorer")
-            except gdb.error:
-                offset_restorer = None
+        offset_mask = GefUtil.offsetof("k_sigaction", "sa.sa_mask")
+        if offset_mask is not None:
+            offset_restorer = GefUtil.offsetof("k_sigaction", "sa.sa_restorer")
             return offset_restorer, offset_mask
-        except gdb.error:
-            pass
 
         # slow path
         ptrsize = current_arch.ptrsize
@@ -80089,12 +80064,9 @@ class KernelNamespace:
         try:
             gdb.parse_and_eval("(struct {:s}*)0".format(KernelNamespace.STRUCT_NAMES[ns_type]))
             for member in ["ns.inum", "proc_inum"]:
-                try:
-                    return GefUtil.parse_and_eval_unsigned("&((struct {:s}*)0).{:s}".format(
-                        KernelNamespace.STRUCT_NAMES[ns_type], member,
-                    ))
-                except gdb.error:
-                    pass
+                offset = GefUtil.offsetof(KernelNamespace.STRUCT_NAMES[ns_type], member)
+                if offset is not None:
+                    return offset
             return None
         except gdb.error:
             pass
@@ -80230,12 +80202,10 @@ class KernelNamespace:
         };
         """
         # fast path
-        try:
-            offset_level = GefUtil.parse_and_eval_unsigned("&((struct pid_namespace*)0).level")
-            offset_parent = GefUtil.parse_and_eval_unsigned("&((struct pid_namespace*)0).parent")
+        offset_level = GefUtil.offsetof("pid_namespace", "level")
+        offset_parent = GefUtil.offsetof("pid_namespace", "parent")
+        if None not in (offset_level, offset_parent):
             return offset_level, offset_parent
-        except gdb.error:
-            pass
 
         # slow path
         # the child reaper of the initial one is the init process (or init_task until it starts)
@@ -80275,13 +80245,11 @@ class KernelNamespace:
         };
         """
         # fast path
-        try:
-            offset_parent = GefUtil.parse_and_eval_unsigned("&((struct user_namespace*)0).parent")
-            offset_level = GefUtil.parse_and_eval_unsigned("&((struct user_namespace*)0).level")
-            offset_owner = GefUtil.parse_and_eval_unsigned("&((struct user_namespace*)0).owner")
+        offset_parent = GefUtil.offsetof("user_namespace", "parent")
+        offset_level = GefUtil.offsetof("user_namespace", "level")
+        offset_owner = GefUtil.offsetof("user_namespace", "owner")
+        if None not in (offset_parent, offset_level, offset_owner):
             return offset_parent, offset_level, offset_owner
-        except gdb.error:
-            pass
 
         # slow path
         # `parent` is the only pointer to another user namespace before `ns`, and a child of the initial one has level 1
@@ -80652,16 +80620,14 @@ class KernelCred:
             0xffffffff82046110:     0x0000000000000000      0x0000000000000000
         """
         # fast path
-        try:
-            offset_uid = GefUtil.parse_and_eval_unsigned("&((struct cred*)0).uid")
+        offset_uid = GefUtil.offsetof("cred", "uid")
+        if offset_uid is not None:
             # GDB may resolve atomic_long_t to an incomplete type whose size is 0
-            sizeof_usage = GefUtil.parse_and_eval_unsigned("sizeof(((struct cred*)0)->usage)")
+            sizeof_usage = GefUtil.member_type_size("struct cred", "usage")
             if sizeof_usage in (4, 8):
                 return offset_uid, sizeof_usage
-            if offset_uid in (4, current_arch.ptrsize):
+            if sizeof_usage is not None and offset_uid in (4, current_arch.ptrsize):
                 return offset_uid, offset_uid
-        except gdb.error:
-            pass
 
         # slow path
         kversion = Kernel.version()
@@ -80802,10 +80768,9 @@ class KernelCred:
         0xc1aabc4c|+0x006c|+027: 0xc1aa6be0  ->  0x00000001 // user_ns
         """
         # fast path
-        try:
-            return GefUtil.parse_and_eval_unsigned("&((struct cred*)0).user_ns")
-        except gdb.error:
-            pass
+        offset = GefUtil.offsetof("cred", "user_ns")
+        if offset is not None:
+            return offset
 
         # slow path
         kversion = Kernel.version()
@@ -80921,17 +80886,13 @@ class KernelCred:
         offsets = [base + 4 * i for i in range(0x8)]
 
         # fast path
-        try:
-            offsets = [GefUtil.parse_and_eval_unsigned("&((struct cred*)0).cap_inheritable")]
+        offset_cap = GefUtil.offsetof("cred", "cap_inheritable")
+        if offset_cap is not None:
+            offsets = [offset_cap]
             for member, is_u32_array in [("val", False), ("cap", True)]:
-                try:
-                    GefUtil.parse_and_eval_unsigned("&((kernel_cap_t*)0).{:s}".format(member))
-                    return offsets[0], is_u32_array
-                except gdb.error:
-                    pass
+                if GefUtil.member_offset("kernel_cap_t", member) is not None:
+                    return offset_cap, is_u32_array
             # kernel_cap_t may be resolved to an incomplete type, so the layout is checked in the slow path
-        except gdb.error:
-            pass
 
         # slow path
         for is_u32_array in layouts:
@@ -81022,10 +80983,9 @@ class KernelCred:
 
     def get_offset_group_info(self, cred_samples, offset_user_ns):
         # fast path
-        try:
-            return GefUtil.parse_and_eval_unsigned("&((struct cred*)0).group_info")
-        except gdb.error:
-            pass
+        offset = GefUtil.offsetof("cred", "group_info")
+        if offset is not None:
+            return offset
 
         # Slow path.  ucounts was introduced, backported and reverted on
         # different stable branches, so probe both live layouts without using
@@ -81227,10 +81187,9 @@ class KernelMM:
     @Cache.cache_this_session(cache_None=False)
     def get_offset_vm_mm(self):
         # fast path
-        try:
-            return GefUtil.parse_and_eval_unsigned("&((struct vm_area_struct*)0).vm_mm")
-        except gdb.error:
-            pass
+        offset = GefUtil.offsetof("vm_area_struct", "vm_mm")
+        if offset is not None:
+            return offset
 
         # slow path
         for task in self.task_addrs:
@@ -81250,10 +81209,9 @@ class KernelMM:
     @Cache.cache_this_session(cache_None=False, per_cpu=True)
     def get_offset_vm_flags(self, offset_vm_mm):
         # fast path
-        try:
-            return GefUtil.parse_and_eval_unsigned("&((struct vm_area_struct*)0).vm_flags")
-        except gdb.error:
-            pass
+        offset = GefUtil.offsetof("vm_area_struct", "vm_flags")
+        if offset is not None:
+            return offset
 
         # slow path
         if is_64bit():
@@ -81276,10 +81234,9 @@ class KernelMM:
     @Cache.cache_this_session(cache_None=False)
     def get_offset_vm_file(self):
         # fast path
-        try:
-            return GefUtil.parse_and_eval_unsigned("&((struct vm_area_struct*)0).vm_file")
-        except gdb.error:
-            pass
+        offset = GefUtil.offsetof("vm_area_struct", "vm_file")
+        if offset is not None:
+            return offset
 
         # Slow path. Locate the stable anon_vma_chain/anon_vma/vm_ops/vm_pgoff/vm_file tail.
         for i in range(50):
@@ -81541,10 +81498,7 @@ class KernelSocket:
     def resolve_by_dwarf(self):
         layout = {}
         for key, type_name, member in self.DWARF_MEMBERS:
-            try:
-                layout[key] = GefUtil.parse_and_eval_unsigned("&((struct {:s}*)0)->{:s}".format(type_name, member))
-            except gdb.error:
-                layout[key] = None
+            layout[key] = GefUtil.offsetof(type_name, member)
         return layout
 
     def sym_name(self, addr):
@@ -82125,10 +82079,7 @@ class KernelSkbuff:
         """Return the member offsets of struct sk_buff from DWARF, or None."""
         layout = {}
         for member in ["head", "data", "tail", "end", "len", "data_len", "truesize", "users", "destructor"]:
-            try:
-                layout[member] = GefUtil.parse_and_eval_unsigned("&((struct sk_buff*)0)->{:s}".format(member))
-            except gdb.error:
-                layout[member] = None
+            layout[member] = GefUtil.offsetof("sk_buff", member)
         if None in [layout[x] for x in ["head", "data", "tail", "end"]]:
             return None
         # sk_buff_data_t is an offset from head if NET_SKBUFF_DATA_USES_OFFSET, otherwise a pointer.
@@ -82278,18 +82229,15 @@ class KernelSkbuff:
 
         def member(names):
             for name in names:
-                try:
-                    offset = GefUtil.parse_and_eval_unsigned("&((skb_frag_t*)0)->{:s}".format(name))
-                    size = GefUtil.parse_and_eval_unsigned("sizeof(((skb_frag_t*)0)->{:s})".format(name))
+                offset = GefUtil.offsetof("skb_frag_t", name)
+                size = GefUtil.sizeof("((skb_frag_t *)0)->{:s}".format(name))
+                if None not in (offset, size):
                     return offset, size
-                except gdb.error:
-                    continue
             return None
 
-        try:
-            offset_frags = GefUtil.parse_and_eval_unsigned("&((struct skb_shared_info*)0)->frags")
-            sizeof_frag = GefUtil.parse_and_eval_unsigned("sizeof(skb_frag_t)")
-        except gdb.error:
+        offset_frags = GefUtil.offsetof("skb_shared_info", "frags")
+        sizeof_frag = GefUtil.type_size("skb_frag_t")
+        if offset_frags is None or not sizeof_frag:
             return None
         # skb_frag_struct (~v5.3), bio_vec (v5.4~v6.8) and skb_frag (v6.9~, netmem_ref since v6.10)
         page = member(["netmem", "bv_page", "page.p", "page"])
@@ -84340,9 +84288,8 @@ class KernelSeccomp:
 
         if (is_riscv32() or is_riscv64()) and "5.5" <= kversion:
             if "6.3" <= kversion: # generic entry
-                try:
-                    offset = GefUtil.parse_and_eval_unsigned("&((struct thread_info*)0).syscall_work")
-                except gdb.error:
+                offset = GefUtil.offsetof("thread_info", "syscall_work")
+                if offset is None:
                     offset = current_arch.ptrsize * 5
                 flags = read_int_from_memory(thread_info + offset)
                 bit = 0 # SYSCALL_WORK_SECCOMP
@@ -84357,14 +84304,14 @@ class KernelSeccomp:
     def get_thread_info(task_addr, offset_stack):
         """Return ``thread_info`` for both in-task and stack-based layouts."""
         # fast path
+        offset = GefUtil.offsetof("task_struct", "thread_info")
+        if offset is not None:
+            return task_addr + offset
         try:
-            return task_addr + GefUtil.parse_and_eval_unsigned("&((struct task_struct*)0).thread_info")
+            gdb.parse_and_eval("(struct task_struct*)0")
+            return read_int_from_memory(task_addr + offset_stack)
         except gdb.error:
-            try:
-                gdb.parse_and_eval("(struct task_struct*)0")
-                return read_int_from_memory(task_addr + offset_stack)
-            except gdb.error:
-                pass
+            pass
 
         # slow path
         kstack = read_int_from_memory(task_addr + offset_stack)
@@ -84385,17 +84332,11 @@ class KernelSeccomp:
         };
         """
         # fast path
-        try:
-            offset_seccomp = GefUtil.parse_and_eval_unsigned("&((struct task_struct*)0).seccomp")
-            offset_filter = GefUtil.parse_and_eval_unsigned("&((struct seccomp*)0).filter")
-            try:
-                GefUtil.parse_and_eval_unsigned("&((struct seccomp*)0).filter_count")
-                has_filter_count = True
-            except gdb.error:
-                has_filter_count = False
+        offset_seccomp = GefUtil.offsetof("task_struct", "seccomp")
+        offset_filter = GefUtil.offsetof("seccomp", "filter")
+        if None not in (offset_seccomp, offset_filter):
+            has_filter_count = GefUtil.offsetof("seccomp", "filter_count") is not None
             return offset_seccomp, offset_filter, has_filter_count
-        except gdb.error:
-            pass
 
         # slow path
         kversion = Kernel.version()
@@ -84481,10 +84422,9 @@ class KernelSeccomp:
     @Cache.cache_this_session(cache_None=False)
     def get_offset_prev(self):
         # fast path
-        try:
-            return GefUtil.parse_and_eval_unsigned("&((struct seccomp_filter*)0).prev")
-        except gdb.error:
-            pass
+        offset = GefUtil.offsetof("seccomp_filter", "prev")
+        if offset is not None:
+            return offset
 
         # slow path
         for task in self.task_addrs:
@@ -84507,10 +84447,9 @@ class KernelSeccomp:
     @Cache.cache_this_session(cache_None=False, per_inferior=True, until_new_objfile=True)
     def get_offset_prog(offset_prev):
         # fast path
-        try:
-            return GefUtil.parse_and_eval_unsigned("&((struct seccomp_filter*)0).prog")
-        except gdb.error:
-            pass
+        offset = GefUtil.offsetof("seccomp_filter", "prog")
+        if offset is not None:
+            return offset
 
         # slow path
         kversion = Kernel.version()
@@ -84630,10 +84569,7 @@ class KernelSched:
 
     @staticmethod
     def offsetof(member):
-        try:
-            return GefUtil.parse_and_eval_unsigned("&((struct task_struct*)0).{:s}".format(member))
-        except gdb.error:
-            return None
+        return GefUtil.offsetof("task_struct", member)
 
     def initialize(self, task_command, task_addrs):
         if self.initialized:
@@ -85365,13 +85301,11 @@ class KernelModule:
         };
         """
         # fast path
-        try:
-            offset_mem = GefUtil.parse_and_eval_unsigned("&((struct module*)0).mem")
-            offset_size = GefUtil.parse_and_eval_unsigned("&((struct module_memory*)0).size")
-            sizeof_module_memory = GefUtil.parse_and_eval_unsigned("sizeof(struct module_memory)")
+        offset_mem = GefUtil.offsetof("module", "mem")
+        offset_size = GefUtil.offsetof("module_memory", "size")
+        sizeof_module_memory = GefUtil.sizeof("module_memory")
+        if None not in (offset_mem, offset_size, sizeof_module_memory):
             return offset_mem, offset_mem + offset_size, sizeof_module_memory
-        except gdb.error:
-            pass
 
         # slow_path
         MOD_TEXT = 0
@@ -85515,12 +85449,10 @@ class KernelModule:
             0xbf22b184:     0x00008000      0x00005000      0x00006000      0x00006000
         """
         # fast path
-        try:
-            offset_core_layout = GefUtil.parse_and_eval_unsigned("&((struct module*)0).core_layout")
-            offset_size = GefUtil.parse_and_eval_unsigned("&((struct module_layout*)0).size")
+        offset_core_layout = GefUtil.offsetof("module", "core_layout")
+        offset_size = GefUtil.offsetof("module_layout", "size")
+        if None not in (offset_core_layout, offset_size):
             return offset_core_layout, offset_core_layout + offset_size
-        except gdb.error:
-            pass
 
         # slow_path
         for i in range(300):
@@ -85628,12 +85560,10 @@ class KernelModule:
         };
         """
         # fast path
-        try:
-            offset_module_core = GefUtil.parse_and_eval_unsigned("&((struct module*)0).module_core")
-            offset_core_size = GefUtil.parse_and_eval_unsigned("&((struct module*)0).core_size")
+        offset_module_core = GefUtil.offsetof("module", "module_core")
+        offset_core_size = GefUtil.offsetof("module", "core_size")
+        if None not in (offset_module_core, offset_core_size):
             return offset_module_core, offset_core_size
-        except gdb.error:
-            pass
 
         # slow_path
         for i in range(300):
@@ -85683,10 +85613,9 @@ class KernelModule:
         };
         """
         # fast path
-        try:
-            return GefUtil.parse_and_eval_unsigned("&((struct module*)0).kallsyms")
-        except gdb.error:
-            pass
+        offset = GefUtil.offsetof("module", "kallsyms")
+        if offset is not None:
+            return offset
 
         # slow_path
         kversion = Kernel.version()
@@ -85749,10 +85678,9 @@ class KernelModule:
         Once the module is initialized, symtab, num_symtab and strtab are replaced by the core_* ones.
         """
         # fast path
-        try:
-            return GefUtil.parse_and_eval_unsigned("&((struct module*)0).symtab")
-        except gdb.error:
-            pass
+        offset = GefUtil.offsetof("module", "symtab")
+        if offset is not None:
+            return offset
 
         # slow path
         if is_64bit():
@@ -85807,13 +85735,14 @@ class KernelModule:
         };
         """
         # fast path
+        offset_sect_attrs = GefUtil.offsetof("module", "sect_attrs")
         try:
-            offset_sect_attrs = GefUtil.parse_and_eval_unsigned("&((struct module*)0).sect_attrs")
             # it is created only if CONFIG_SYSFS=y, and it is NULL if the creation failed
-            sect_attrs = read_int_from_memory(module_addr + offset_sect_attrs)
-            if not self.is_valid_sect_attrs(sect_attrs):
-                return offset_sect_attrs, None
-            return offset_sect_attrs, sect_attrs
+            if offset_sect_attrs is not None:
+                sect_attrs = read_int_from_memory(module_addr + offset_sect_attrs)
+                if not self.is_valid_sect_attrs(sect_attrs):
+                    return offset_sect_attrs, None
+                return offset_sect_attrs, sect_attrs
         except gdb.error:
             pass
 
@@ -85949,16 +85878,12 @@ class KernelModule:
         kversion = Kernel.version()
 
         # fast path
+        offset_attrs = GefUtil.offsetof("attribute_group", "attrs")
         try:
-            if kversion < "3.11":
-                offset_attrs = GefUtil.parse_and_eval_unsigned("&((struct attribute_group*)0).attrs")
+            if offset_attrs is not None:
                 attrs_arr_ptr = read_int_from_memory(sect_attrs + offset_attrs)
-                return offset_attrs, attrs_arr_ptr
-            else:
                 # It is possible to use attrs or bin_attrs, so check both.
-                offset_attrs = GefUtil.parse_and_eval_unsigned("&((struct attribute_group*)0).attrs")
-                attrs_arr_ptr = read_int_from_memory(sect_attrs + offset_attrs)
-                if is_valid_addr(attrs_arr_ptr):
+                if kversion < "3.11" or is_valid_addr(attrs_arr_ptr):
                     return offset_attrs, attrs_arr_ptr
 
                 # Avoid relying on GDB's handling of anonymous union members in 6.14+.
@@ -85991,12 +85916,12 @@ class KernelModule:
         kversion = Kernel.version()
 
         # fast path
-        try:
-            if kversion < "6.14":
-                return GefUtil.parse_and_eval_unsigned("&((struct module_sect_attr*)0).address")
-            return GefUtil.parse_and_eval_unsigned("&((struct bin_attribute*)0).private")
-        except gdb.error:
-            pass
+        if kversion < "6.14":
+            offset = GefUtil.offsetof("module_sect_attr", "address")
+        else:
+            offset = GefUtil.offsetof("bin_attribute", "private")
+        if offset is not None:
+            return offset
 
         # slow path
         attrs_arr = []
@@ -90444,11 +90369,10 @@ class KernelTask:
             gdb.parse_and_eval("(struct nsproxy*)0")
             for name in names:
                 for field in ([name, "pid_ns"] if name == "pid_ns_for_children" else [name]):
-                    try:
-                        members.append((name, GefUtil.parse_and_eval_unsigned("&((struct nsproxy*)0).{:s}".format(field))))
+                    offset = GefUtil.offsetof("nsproxy", field)
+                    if offset is not None:
+                        members.append((name, offset))
                         break
-                    except gdb.error:
-                        pass
             if members and members[0][0] == "count":
                 return members
         except gdb.error:
@@ -90708,10 +90632,9 @@ class KernelTask:
     @Cache.cache_this_session(cache_None=False, per_inferior=True, until_new_objfile=True)
     def get_offset_tasks(self, init_task):
         # fast path
-        try:
-            return GefUtil.parse_and_eval_unsigned("&((struct task_struct*)0).tasks")
-        except gdb.error:
-            pass
+        offset = GefUtil.offsetof("task_struct", "tasks")
+        if offset is not None:
+            return offset
 
         # slow path
         # search for init_task->tasks
@@ -90748,10 +90671,9 @@ class KernelTask:
         task_addr = self.task_addrs_temp[0]
 
         # fast path
-        try:
-            return GefUtil.parse_and_eval_unsigned("&((struct task_struct*)0).mm")
-        except gdb.error:
-            pass
+        offset = GefUtil.offsetof("task_struct", "mm")
+        if offset is not None:
+            return offset
 
         # slow path
         kversion = Kernel.version()
@@ -90775,10 +90697,9 @@ class KernelTask:
         task_addrs = self.task_addrs_temp
 
         # fast path
-        try:
-            return GefUtil.parse_and_eval_unsigned("&((struct task_struct*)0).comm")
-        except gdb.error:
-            pass
+        offset = GefUtil.offsetof("task_struct", "comm")
+        if offset is not None:
+            return offset
 
         # slow path
         for i in range(0x300):
@@ -90824,10 +90745,9 @@ class KernelTask:
         task_addrs = self.task_addrs_temp
 
         # fast path
-        try:
-            return GefUtil.parse_and_eval_unsigned("&((struct task_struct*)0).cred")
-        except gdb.error:
-            pass
+        offset = GefUtil.offsetof("task_struct", "cred")
+        if offset is not None:
+            return offset
 
         # slow path
         # backward search from `comm`
@@ -90843,10 +90763,9 @@ class KernelTask:
     @Cache.cache_this_session(cache_None=False, per_inferior=True, until_new_objfile=True)
     def get_offset_real_cred(self, offset_cred):
         # fast path
-        try:
-            return GefUtil.parse_and_eval_unsigned("&((struct task_struct*)0).real_cred")
-        except gdb.error:
-            pass
+        offset = GefUtil.offsetof("task_struct", "real_cred")
+        if offset is not None:
+            return offset
 
         # slow path
         return offset_cred - current_arch.ptrsize
@@ -90867,10 +90786,9 @@ class KernelTask:
         task_addrs = self.task_addrs_temp
 
         # fast path
-        try:
-            return GefUtil.parse_and_eval_unsigned("&((struct task_struct*)0).stack")
-        except gdb.error:
-            pass
+        offset = GefUtil.offsetof("task_struct", "stack")
+        if offset is not None:
+            return offset
 
         # slow path
         for i in range(0x100):
@@ -90952,10 +90870,9 @@ class KernelTask:
 
         # candidates of the kstack size
         kstack_sizes = []
-        try:
-            kstack_sizes.append(GefUtil.parse_and_eval_unsigned("sizeof(union thread_union)"))
-        except gdb.error:
-            pass
+        sizeof_thread_union = GefUtil.sizeof("union thread_union")
+        if sizeof_thread_union is not None:
+            kstack_sizes.append(sizeof_thread_union)
         kstack_sizes += [0x2000, 0x4000, 0x8000, 0x10000]
         kstack_sizes = [x for x in dict.fromkeys(kstack_sizes) if x and all(k % x == 0 for k in kstacks)]
 
@@ -90973,10 +90890,9 @@ class KernelTask:
             else:
                 gap = 0
             distances = []
-            try:
-                distances.append(GefUtil.parse_and_eval_unsigned("sizeof(struct pt_regs)") + gap)
-            except gdb.error:
-                pass
+            sizeof_pt_regs = GefUtil.sizeof("pt_regs")
+            if sizeof_pt_regs is not None:
+                distances.append(sizeof_pt_regs + gap)
             if kversion < "4.9":
                 distances.append(ptrsize * 36 + gap)
             elif "5.10" <= kversion < "6.18":
@@ -90988,10 +90904,9 @@ class KernelTask:
             distances = [ptregs_size + ptrsize * 2]
         elif is_riscv32() or is_riscv64():
             distances = []
-            try:
-                distances.append(GefUtil.parse_and_eval_unsigned("sizeof(struct pt_regs)"))
-            except gdb.error:
-                pass
+            sizeof_pt_regs = GefUtil.sizeof("pt_regs")
+            if sizeof_pt_regs is not None:
+                distances.append(sizeof_pt_regs)
             distances.append(ptrsize * 36)
             distances = list(dict.fromkeys((x + 15) & ~15 for x in distances))
         else:
@@ -91042,10 +90957,9 @@ class KernelTask:
         task_addrs = self.task_addrs_temp
 
         # fast path
-        try:
-            return GefUtil.parse_and_eval_unsigned("&((struct task_struct*)0).pid")
-        except gdb.error:
-            pass
+        offset = GefUtil.offsetof("task_struct", "pid")
+        if offset is not None:
+            return offset
 
         # slow path
         if is_64bit():
@@ -91096,15 +91010,15 @@ class KernelTask:
         task_addrs = self.task_addrs_temp
 
         # fast path
+        offset = GefUtil.offsetof("task_struct", "stack_canary")
+        if offset is not None:
+            return offset
         try:
-            return GefUtil.parse_and_eval_unsigned("&((struct task_struct*)0).stack_canary")
+            # task_struct exists but has no stack_canary member
+            gdb.parse_and_eval("(struct task_struct*)0")
+            return None
         except gdb.error:
-            try:
-                # task_struct exists but has no stack_canary member
-                gdb.parse_and_eval("(struct task_struct*)0")
-                return None
-            except gdb.error:
-                pass
+            pass
 
         # slow path
         kversion = Kernel.version()
@@ -91148,10 +91062,9 @@ class KernelTask:
         };
         """
         # fast path
-        try:
-            return GefUtil.parse_and_eval_unsigned("&((struct task_struct*)0).group_leader")
-        except gdb.error:
-            pass
+        offset = GefUtil.offsetof("task_struct", "group_leader")
+        if offset is not None:
+            return offset
 
         # slow path
         if offset_kcanary is None:
@@ -91181,14 +91094,13 @@ class KernelTask:
             return None
 
         # fast path
-        try:
-            if "6.7" <= kversion:
-                member = "thread_node"
-            else:
-                member = "thread_group"
-            return GefUtil.parse_and_eval_unsigned("&((struct task_struct*)0).{:s}".format(member))
-        except gdb.error:
-            pass
+        if "6.7" <= kversion:
+            member = "thread_node"
+        else:
+            member = "thread_group"
+        offset = GefUtil.offsetof("task_struct", member)
+        if offset is not None:
+            return offset
 
         # slow path
         if "4.19" <= kversion:
@@ -91208,10 +91120,9 @@ class KernelTask:
         };
         """
         # fast path
-        try:
-            return GefUtil.parse_and_eval_unsigned("&((struct task_struct*)0).signal")
-        except gdb.error:
-            pass
+        offset = GefUtil.offsetof("task_struct", "signal")
+        if offset is not None:
+            return offset
 
         # slow path
         return offset_nsproxy + current_arch.ptrsize
@@ -91244,10 +91155,9 @@ class KernelTask:
         task_addrs = getattr(self, "task_addrs_temp", (self.init_task,))
 
         # fast path
-        try:
-            return GefUtil.parse_and_eval_unsigned("&((struct task_struct*)0).files")
-        except gdb.error:
-            pass
+        offset = GefUtil.offsetof("task_struct", "files")
+        if offset is not None:
+            return offset
 
         # slow path
         base = offset_comm + 16 # comm
@@ -91299,10 +91209,9 @@ class KernelTask:
         task_addr = self.task_addrs_temp[0]
 
         # fast path
-        try:
-            return GefUtil.parse_and_eval_unsigned("&((struct task_struct*)0).nsproxy")
-        except gdb.error:
-            pass
+        offset = GefUtil.offsetof("task_struct", "nsproxy")
+        if offset is not None:
+            return offset
 
         # slow path
         kversion = Kernel.version()
@@ -91340,10 +91249,9 @@ class KernelTask:
         task_addr = self.task_addrs_temp[0]
 
         # fast path
-        try:
-            return GefUtil.parse_and_eval_unsigned("&((struct task_struct*)0).sighand")
-        except gdb.error:
-            pass
+        offset = GefUtil.offsetof("task_struct", "sighand")
+        if offset is not None:
+            return offset
 
         # slow path
         kversion = Kernel.version()
@@ -92663,17 +92571,13 @@ class KernelKeyringCommand(GenericCommand, BufferingOutput):
 
     @staticmethod
     def cred_member_offset(member, fallback):
-        try:
-            return GefUtil.parse_and_eval_unsigned("&((struct cred *)0)->{:s}".format(member))
-        except gdb.error:
-            return fallback
+        offset = GefUtil.offsetof("cred", member)
+        return offset if offset is not None else fallback
 
     @staticmethod
     def tgcred_member_offset(member, fallback):
-        try:
-            return GefUtil.parse_and_eval_unsigned("&((struct thread_group_cred *)0)->{:s}".format(member))
-        except gdb.error:
-            return fallback
+        offset = GefUtil.offsetof("thread_group_cred", member)
+        return offset if offset is not None else fallback
 
     def task_roots(self, cred):
         if self.cred_key_offsets is None:
@@ -92763,9 +92667,10 @@ class KernelKeyringCommand(GenericCommand, BufferingOutput):
             return None
 
         ptrsize = current_arch.ptrsize
-        try:
-            bases = [GefUtil.parse_and_eval_unsigned("&((struct request_key_auth *)0)->target_key")]
-        except gdb.error:
+        offset = GefUtil.offsetof("request_key_auth", "target_key")
+        if offset is not None:
+            bases = [offset]
+        else:
             # rcu_head was added in front of target_key in v5.3, and refcount_t usage in v7.2.
             bases = [0, 2 * ptrsize, 3 * ptrsize]
         for base in bases:
@@ -96003,12 +95908,10 @@ class KernelCharacterDevicesCommand(GenericCommand, BufferingOutput):
         return True
 
     def get_offset_ops(self, cdevs):
-        try:
-            offset_ops = GefUtil.parse_and_eval_unsigned("&((struct cdev*)0)->ops")
+        offset_ops = GefUtil.offsetof("cdev", "ops")
+        if offset_ops is not None:
             self.quiet_info("offsetof(cdev, ops): {:#x}".format(offset_ops))
             return offset_ops
-        except gdb.error:
-            pass
 
         # cdev->list follows cdev->ops, but its position depends on struct kobject
         # (e.g., CONFIG_DEBUG_KOBJECT_RELEASE adds a delayed_work), so it is searched widely.
@@ -99873,9 +99776,13 @@ class KernelTimerCommand(GenericCommand, BufferingOutput):
         if None not in (offset_vectors, offset_cpu, offset_clk, sizeof_timer_base, sizeof_vectors):
             if all(self.is_timer_base_header(addr, cpu, offset_clk) for cpu, addr in cpu_addrs[:4]):
                 try:
-                    nr_bases = GefUtil.parse_and_eval_unsigned("sizeof(timer_bases)") // sizeof_timer_base
-                    source_nr_bases = "debug info"
+                    sizeof_timer_bases = GefUtil.type_size(gdb.parse_and_eval("timer_bases").type)
                 except gdb.error:
+                    sizeof_timer_bases = None
+                if sizeof_timer_bases:
+                    nr_bases = sizeof_timer_bases // sizeof_timer_base
+                    source_nr_bases = "debug info"
+                else:
                     nr_bases = self.count_timer_bases(cpu_addrs, offset_clk, sizeof_timer_base, 3)
                     source_nr_bases = "heuristic"
                 return {
@@ -103342,10 +103249,10 @@ class KernelDmesgModernRing(KernelDmesgRing):
         offset = self.vmcoreinfo.get(("OFFSET", "atomic_long_t.counter"))
         if offset is not None:
             return offset, "VMCOREINFO"
-        try:
-            return GefUtil.parse_and_eval_unsigned("&((atomic_long_t *)0)->counter"), "DWARF"
-        except gdb.error:
-            return 0, "fallback"
+        offset = GefUtil.member_offset("atomic_long_t", "counter")
+        if offset is not None:
+            return offset, "DWARF"
+        return 0, "fallback"
 
     def resolve_printk_ring(self, ring_address, source):
         """Validate a ring candidate and return its resolved layout."""
@@ -150970,11 +150877,9 @@ class KernelSlub:
         """
 
         # fast path
-        try:
-            self.kmem_cache_offset_list = GefUtil.parse_and_eval_unsigned("&((struct kmem_cache*)0).list")
+        self.kmem_cache_offset_list = GefUtil.offsetof("kmem_cache", "list")
+        if self.kmem_cache_offset_list is not None:
             return
-        except gdb.error:
-            pass
 
         # slow path
         self.kmem_cache_offset_list = None
@@ -151028,18 +150933,17 @@ class KernelSlub:
 
     def resolve_kmem_cache_offset_random(self):
         # fast path
+        # find kmem_cache.random
+        self.kmem_cache_offset_random = GefUtil.offsetof("kmem_cache", "random")
+        if self.kmem_cache_offset_random is not None:
+            return
         try:
-            # find kmem_cache.random
-            self.kmem_cache_offset_random = GefUtil.parse_and_eval_unsigned("&((struct kmem_cache*)0).random")
+            # kmem_cache exists but has no random member
+            gdb.parse_and_eval("(struct kmem_cache*)0")
+            self.kmem_cache_offset_random = None
             return
         except gdb.error:
-            try:
-                # kmem_cache exists but has no random member
-                gdb.parse_and_eval("(struct kmem_cache*)0")
-                self.kmem_cache_offset_random = None
-                return
-            except gdb.error:
-                pass
+            pass
 
         # slow path
         if self.no_xor:
@@ -151147,29 +151051,21 @@ class KernelSlub:
     def resolve_kmem_cache_offset_node(self):
         kversion = Kernel.version()
 
-        self.kmem_cache_offset_random_seq = None
-        try:
-            self.kmem_cache_offset_random_seq = GefUtil.parse_and_eval_unsigned("&((struct kmem_cache*)0).random_seq")
-        except gdb.error:
-            pass
+        self.kmem_cache_offset_random_seq = GefUtil.offsetof("kmem_cache", "random_seq")
 
         # fast path
         if kversion < "7.1":
-            try:
-                self.kmem_cache_offset_node = GefUtil.parse_and_eval_unsigned("&((struct kmem_cache*)0).node")
+            self.kmem_cache_offset_node = GefUtil.offsetof("kmem_cache", "node")
+            if self.kmem_cache_offset_node is not None:
                 self.kmem_cache_offset_barn = None
                 self.kmem_cache_node_step = current_arch.ptrsize
                 return
-            except gdb.error:
-                pass
         else:
-            try:
-                self.kmem_cache_offset_barn = GefUtil.parse_and_eval_unsigned("&((struct kmem_cache*)0).per_node[0].barn")
-                self.kmem_cache_offset_node = GefUtil.parse_and_eval_unsigned("&((struct kmem_cache*)0).per_node[0].node")
+            self.kmem_cache_offset_barn = GefUtil.offsetof("kmem_cache", "per_node[0].barn")
+            self.kmem_cache_offset_node = GefUtil.offsetof("kmem_cache", "per_node[0].node")
+            if None not in (self.kmem_cache_offset_barn, self.kmem_cache_offset_node):
                 self.kmem_cache_node_step = current_arch.ptrsize * 2
                 return
-            except gdb.error:
-                pass
 
         # user specified
         if self.offset_node is not None:
@@ -151696,11 +151592,9 @@ class KernelSlub:
 
     def resolve_kmem_cache_node_offset_partial(self):
         # fast path
-        try:
-            self.kmem_cache_node_offset_partial = GefUtil.parse_and_eval_unsigned("&((struct kmem_cache_node*)0).partial")
+        self.kmem_cache_node_offset_partial = GefUtil.offsetof("kmem_cache_node", "partial")
+        if self.kmem_cache_node_offset_partial is not None:
             return
-        except gdb.error:
-            pass
 
         # slow path
         if self.kmem_cache_offset_node is None:
@@ -151733,11 +151627,9 @@ class KernelSlub:
             return
 
         # fast path
-        try:
-            self.slub_percpu_sheaves_offset_main = GefUtil.parse_and_eval_unsigned("&((struct slub_percpu_sheaves*)0).main")
+        self.slub_percpu_sheaves_offset_main = GefUtil.offsetof("slub_percpu_sheaves", "main")
+        if self.slub_percpu_sheaves_offset_main is not None:
             return
-        except gdb.error:
-            pass
 
         """
         struct slub_percpu_sheaves {
@@ -151801,11 +151693,9 @@ class KernelSlub:
             return
 
         # fast path
-        try:
-            self.kmem_cache_node_offset_barn = GefUtil.parse_and_eval_unsigned("&((struct kmem_cache_node*)0).barn")
+        self.kmem_cache_node_offset_barn = GefUtil.offsetof("kmem_cache_node", "barn")
+        if self.kmem_cache_node_offset_barn is not None:
             return
-        except gdb.error:
-            pass
 
         """
         struct kmem_cache_node {
@@ -151859,11 +151749,9 @@ class KernelSlub:
             return
 
         # fast path
-        try:
-            self.node_barn_offset_sheaves_full = GefUtil.parse_and_eval_unsigned("&((struct node_barn*)0).sheaves_full")
+        self.node_barn_offset_sheaves_full = GefUtil.offsetof("node_barn", "sheaves_full")
+        if self.node_barn_offset_sheaves_full is not None:
             return
-        except gdb.error:
-            pass
 
         """
         struct node_barn {
@@ -153637,11 +153525,9 @@ class KernelSlubTiny:
 
     def resolve_kmem_cache_offset_list(self):
         # fast path
-        try:
-            self.kmem_cache_offset_list = GefUtil.parse_and_eval_unsigned("&((struct kmem_cache*)0).list")
+        self.kmem_cache_offset_list = GefUtil.offsetof("kmem_cache", "list")
+        if self.kmem_cache_offset_list is not None:
             return
-        except gdb.error:
-            pass
 
         # slow path
         kmem_caches = self.parse_kmem_caches_for_initialize()
@@ -153683,11 +153569,9 @@ class KernelSlubTiny:
 
     def resolve_kmem_cache_offset_node(self):
         # fast path
-        try:
-            self.kmem_cache_offset_node = GefUtil.parse_and_eval_unsigned("&((struct kmem_cache*)0).node")
+        self.kmem_cache_offset_node = GefUtil.offsetof("kmem_cache", "node")
+        if self.kmem_cache_offset_node is not None:
             return
-        except gdb.error:
-            pass
 
         # slow path
         self.kmem_cache_offset_node = None
@@ -153736,11 +153620,9 @@ class KernelSlubTiny:
 
     def resolve_kmem_cache_node_offset_partial(self):
         # fast path
-        try:
-            self.kmem_cache_node_offset_partial = GefUtil.parse_and_eval_unsigned("&((struct kmem_cache_node*)0).partial")
+        self.kmem_cache_node_offset_partial = GefUtil.offsetof("kmem_cache_node", "partial")
+        if self.kmem_cache_node_offset_partial is not None:
             return
-        except gdb.error:
-            pass
 
         # slow path
         self.kmem_cache_node_offset_partial = None
@@ -154776,11 +154658,9 @@ class KernelSlab:
 
     def resolve_kmem_cache_offset_node(self):
         # fast path
-        try:
-            self.kmem_cache_offset_node = GefUtil.parse_and_eval_unsigned("&((struct kmem_cache*)0).node")
+        self.kmem_cache_offset_node = GefUtil.offsetof("kmem_cache", "node")
+        if self.kmem_cache_offset_node is not None:
             return
-        except gdb.error:
-            pass
 
         self.kmem_cache_offset_node = GefUtil.offsetof("kmem_cache", "nodelists")
         if self.kmem_cache_offset_node is not None:
@@ -154847,13 +154727,9 @@ class KernelSlab:
             return
 
         # fast path
-        try:
-            self.kmem_cache_node_offset_slabs_partial = GefUtil.parse_and_eval_unsigned(
-                "&((struct kmem_cache_node*)0).slabs_partial",
-            )
+        self.kmem_cache_node_offset_slabs_partial = GefUtil.offsetof("kmem_cache_node", "slabs_partial")
+        if self.kmem_cache_node_offset_slabs_partial is not None:
             return
-        except gdb.error:
-            pass
 
         # slow path
         kversion = Kernel.version()
@@ -157743,12 +157619,10 @@ class KernelBuddy:
 
     def resolve_zone_offset_name(self, node):
         # fast path
-        try:
-            self.offset_name = GefUtil.parse_and_eval_unsigned("&((struct zone*)0).name")
-            self.sizeof_zone = GefUtil.parse_and_eval_unsigned("sizeof(struct zone)")
+        self.offset_name = GefUtil.offsetof("zone", "name")
+        self.sizeof_zone = GefUtil.sizeof("zone")
+        if None not in (self.offset_name, self.sizeof_zone):
             return True
-        except gdb.error:
-            pass
 
         # slow path
         current = node
@@ -157771,14 +157645,12 @@ class KernelBuddy:
     def resolve_zone_offset_per_cpu_pageset(self):
         # fast path
         kversion = Kernel.version()
-        try:
-            if kversion < "5.14":
-                self.offset_per_cpu_pageset = GefUtil.parse_and_eval_unsigned("&((struct zone*)0).pageset")
-            else:
-                self.offset_per_cpu_pageset = GefUtil.parse_and_eval_unsigned("&((struct zone*)0).per_cpu_pageset")
+        if kversion < "5.14":
+            self.offset_per_cpu_pageset = GefUtil.offsetof("zone", "pageset")
+        else:
+            self.offset_per_cpu_pageset = GefUtil.offsetof("zone", "per_cpu_pageset")
+        if self.offset_per_cpu_pageset is not None:
             return
-        except gdb.error:
-            pass
 
         # slow path
         if "3.12" <= kversion < "3.13" or "3.14" <= kversion:
@@ -157841,11 +157713,9 @@ class KernelBuddy:
         """
 
         # fast path
-        try:
-            self.offset_lists = GefUtil.parse_and_eval_unsigned("&((struct per_cpu_pages*)0).lists")
+        self.offset_lists = GefUtil.offsetof("per_cpu_pages", "lists")
+        if self.offset_lists is not None:
             return
-        except gdb.error:
-            pass
 
         # slow path
         self.offset_lists = None
@@ -157917,11 +157787,9 @@ class KernelBuddy:
         };
         """
         # fast path
-        try:
-            self.offset_free_area = GefUtil.parse_and_eval_unsigned("&((struct zone*)0).free_area")
+        self.offset_free_area = GefUtil.offsetof("zone", "free_area")
+        if self.offset_free_area is not None:
             return
-        except gdb.error:
-            pass
 
         # slow path
         kversion = Kernel.version()
@@ -195525,12 +195393,9 @@ class KernelLsmCommand(GenericCommand, BufferingOutput):
         # struct lsm_id { const char *name; u64 id; }.  Resolve `name` from
         # DWARF when present, while retaining offset zero as the ABI fallback.
         offsets = [0]
-        try:
-            dwarf_offset = GefUtil.parse_and_eval_unsigned("&((struct lsm_id*)0).name")
-            if dwarf_offset not in offsets:
-                offsets.insert(0, dwarf_offset)
-        except gdb.error:
-            pass
+        dwarf_offset = GefUtil.offsetof("lsm_id", "name")
+        if dwarf_offset is not None and dwarf_offset not in offsets:
+            offsets.insert(0, dwarf_offset)
         for offset in offsets:
             name_ptr = read_int_from_memory(addr + offset, safe=True)
             if name_ptr is None:
@@ -203092,8 +202957,8 @@ class GefUtil:
     @Cache.cache_this_session(per_inferior=True, until_new_objfile=True)
     def offsetof(type_name, member):
         """Return offsetof(type_name, member) from the loaded debug information, or None if unavailable.
-        `type_name` is a C type such as `struct file`; a bare name means a struct. `member` may be nested (`a.b`)."""
-        if " " not in type_name:
+        `type_name` is a C type or typedef; an unknown bare name means a struct. `member` may be nested (`a.b`)."""
+        if " " not in type_name and GefUtil.cached_lookup_type(type_name) is None:
             type_name = "struct " + type_name
         try:
             return GefUtil.parse_and_eval_unsigned("&(({:s} *)0)->{:s}".format(type_name, member))
