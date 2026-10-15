@@ -94063,39 +94063,18 @@ class KernelModuleCommand(GenericCommand, BufferingOutput):
 
         # make blank ELF
         text_base &= get_pagesize_mask_high()
-        blank_elf = AddSymbolTemporaryCommand.create_blank_elf(text_base, text_end)
+        blank_elf = GefUtil.create_blank_elf(text_base, text_end)
         if blank_elf is None:
             self.quiet_err("Failed to create blank ELF")
             return
 
-        # create command
-        cmd_string_arr = []
-        for sym_addr, sym_type, sym_name in entries:
-            if sym_type in ["T", "t", "W", None]:
-                type_flag = "function"
-            else:
-                type_flag = "object"
-            if sym_type and sym_type in "abcdefghijklmnopqrstuvwxyz":
-                global_flag = "local"
-            else:
-                global_flag = "global"
-
-            # higher address needs relative
-            relative_addr = sym_addr - text_base
-            cmd_string_arr.append("--add-symbol")
-            cmd_string_arr.append("{:s}.{:s}=.text:{:#x},{:s},{:s}".format(
-                # modules often contain the same symbols, such as "__this_module".
-                # to avoid collisions, register them in the form "module_name.symbol".
-                module_name, sym_name, relative_addr, global_flag, type_flag,
-            ))
+        # modules often contain the same symbols, such as "__this_module".
+        # to avoid collisions, register them in the form "module_name.symbol".
+        symbols = [(sym_addr, sym_type, "{:s}.{:s}".format(module_name, sym_name)) for sym_addr, sym_type, sym_name in entries]
 
         # embedding symbols
-        objcopy = GefUtil.which(Config.get("gef.objcopy_command"))
-        processed_count = 0
-        for cmd_string_arr_sliced in slicer(cmd_string_arr, 10000 * 2):
-            subprocess.check_output([objcopy] + cmd_string_arr_sliced + [blank_elf])
-            processed_count += len(cmd_string_arr_sliced) // 2
-        self.quiet_info("{:s} ({:s}): {:d} entries were processed".format(module_name, region_name, processed_count))
+        for processed_count in GefUtil.embed_symbols(blank_elf, text_base, symbols):
+            self.quiet_info("{:s} ({:s}): {:d} entries were processed".format(module_name, region_name, processed_count))
         os.rename(blank_elf, sym_elf_path)
 
         # apply
@@ -193157,137 +193136,18 @@ class AddSymbolTemporaryCommand(GenericCommand):
     ]
     _example_ = "\n".join(_example_).format(_cmdline_)
 
-    @staticmethod
-    def create_blank_elf(text_base, text_end):
-        try:
-            objcopy = GefUtil.which(Config.get("gef.objcopy_command"))
-        except FileNotFoundError as e:
-            err("{}".format(e))
-            return None
-
-        try:
-            gcc = GefUtil.which("gcc")
-        except FileNotFoundError:
-            gcc = None
-
-        # create light ELF
-        if gcc:
-            fd, fname = GefUtil.mkstemp(prefix="add-symbol-temporary", suffix=".c")
-            blank_elf = fname + ".elf"
-            os.fdopen(fd, "w").write("int main() {}")
-            # When adding symbols, it is not necessary to match the architecture of the ELF to be created
-            # and the architecture of the debugged kernel. Regardless of the architecture of the kernel
-            # you are debugging, create an ELF using gcc in the host environment.
-            GefUtil.os_system("{!r} {!r} -no-pie -o {!r}".format(gcc, fname, blank_elf))
-            os.unlink(fname)
-            # delete unneeded section for faster (`ksymaddr-remote-apply` will embed many symbols)
-            GefUtil.os_system("{!r} --only-keep-debug {!r}".format(objcopy, blank_elf))
-            GefUtil.os_system("{!r} --strip-all {!r}".format(objcopy, blank_elf))
-            elf = Elf.get_elf(blank_elf)
-            for s in elf.shdrs:
-                if s.sh_name == "": # null, skip
-                    continue
-                if s.sh_name == ".text": # .text is needed, don't remove
-                    continue
-                if s.sh_name == ".interp": # broken if remove
-                    continue
-                if s.sh_name == ".rela.dyn": # cannot remove
-                    continue
-                if s.sh_name == ".dynamic": # cannot remove
-                    continue
-                if s.sh_name == ".data": # broken if remove (e.g., add-symbol-temporary hoge 0x1234)
-                    continue
-                if s.sh_name == ".bss": # broken if remove
-                    continue
-                GefUtil.os_system("{!r} --remove-section={!r} {!r} 2>/dev/null".format(
-                    objcopy, s.sh_name, blank_elf,
-                ))
-        else:
-            # not found gcc. we use pre-built elf for x64
-            blank_elf_skelton = [
-                "7f45 4c46 0201 0100 0000 0000 0000 0000 0200 3e00 0100 0000 2010 4000 0000 0000",
-                "4000 0000 0000 0000 1803 0000 0000 0000 0000 0000 4000 3800 0c00 4000 0800 0700",
-                "0600 0000 0400 0000 4000 0000 0000 0000 4000 4000 0000 0000 4000 4000 0000 0000",
-                "a002 0000 0000 0000 a002 0000 0000 0000 0800 0000 0000 0000 0300 0000 0400 0000",
-                "1803 0000 0000 0000 1803 4000 0000 0000 1803 4000 0000 0000 0000 0000 0000 0000",
-                "1c00 0000 0000 0000 0100 0000 0000 0000 0100 0000 0400 0000 0000 0000 0000 0000",
-                "0000 4000 0000 0000 0000 4000 0000 0000 e002 0000 0000 0000 a804 0000 0000 0000",
-                "0010 0000 0000 0000 0100 0000 0500 0000 2000 0000 0000 0000 2010 4000 0000 0000",
-                "2010 4000 0000 0000 0000 0000 0000 0000 f500 0000 0000 0000 0010 0000 0000 0000",
-                "0100 0000 0400 0000 e002 0000 0000 0000 2820 4000 0000 0000 0000 0000 0000 0000",
-                "0000 0000 0000 0000 0000 0000 0000 0000 0010 0000 0000 0000 0100 0000 0600 0000",
-                "480e 0000 0000 0000 483e 4000 0000 0000 483e 4000 0000 0000 0000 0000 0000 0000",
-                "d001 0000 0000 0000 0010 0000 0000 0000 0200 0000 0600 0000 480e 0000 0000 0000",
-                "483e 4000 0000 0000 483e 4000 0000 0000 0000 0000 0000 0000 9001 0000 0000 0000",
-                "0800 0000 0000 0000 0400 0000 0400 0000 0000 0000 0000 0000 3803 4000 0000 0000",
-                "0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0800 0000 0000 0000",
-                "0400 0000 0400 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000",
-                "0000 0000 0000 0000 0000 0000 0000 0000 0800 0000 0000 0000 53e5 7464 0400 0000",
-                "0000 0000 0000 0000 3803 4000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000",
-                "0000 0000 0000 0000 0800 0000 0000 0000 50e5 7464 0400 0000 0000 0000 0000 0000",
-                "0420 4000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000",
-                "0800 0000 0000 0000 51e5 7464 0600 0000 0000 0000 0000 0000 0000 0000 0000 0000",
-                "0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0800 0000 0000 0000",
-                "002e 7368 7374 7274 6162 002e 696e 7465 7270 002e 7265 6c61 2e64 796e 002e 7465",
-                "7874 002e 6479 6e61 6d69 6300 2e64 6174 6100 2e62 7373 0000 0000 0000 0000 0000",
-                "0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000",
-                "0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0b00 0000 0800 0000",
-                "0200 0000 0000 0000 1803 4000 0000 0000 1803 0000 0000 0000 1c00 0000 0000 0000",
-                "0000 0000 0000 0000 0100 0000 0000 0000 0000 0000 0000 0000 1300 0000 0800 0000",
-                "0200 0000 0000 0000 7804 4000 0000 0000 1803 0000 0000 0000 3000 0000 0000 0000",
-                "0000 0000 0000 0000 0800 0000 0000 0000 1800 0000 0000 0000 1d00 0000 0800 0000",
-                "0600 0000 0000 0000 2010 4000 0000 0000 2010 0000 0000 0000 f500 0000 0000 0000",
-                "0000 0000 0000 0000 1000 0000 0000 0000 0000 0000 0000 0000 2300 0000 0800 0000",
-                "0300 0000 0000 0000 483e 4000 0000 0000 480e 0000 0000 0000 9001 0000 0000 0000",
-                "0000 0000 0000 0000 0800 0000 0000 0000 1000 0000 0000 0000 2c00 0000 0800 0000",
-                "0300 0000 0000 0000 0040 4000 0000 0000 480e 0000 0000 0000 1000 0000 0000 0000",
-                "0000 0000 0000 0000 0800 0000 0000 0000 0000 0000 0000 0000 3200 0000 0800 0000",
-                "0300 0000 0000 0000 1040 4000 0000 0000 480e 0000 0000 0000 0800 0000 0000 0000",
-                "0000 0000 0000 0000 0100 0000 0000 0000 0000 0000 0000 0000 0100 0000 0300 0000",
-                "0000 0000 0000 0000 0000 0000 0000 0000 e002 0000 0000 0000 3700 0000 0000 0000",
-                "0000 0000 0000 0000 0100 0000 0000 0000 0000 0000 0000 0000",
-            ]
-            blank_elf_skelton = bytes.fromhex("".join(blank_elf_skelton).replace(" ", ""))
-            fd, blank_elf = GefUtil.mkstemp(prefix="add-symbol-temporary", suffix=".elf")
-            os.fdopen(fd, "wb").write(blank_elf_skelton)
-            elf = Elf.get_elf(blank_elf)
-
-        new_size = text_end - text_base
-        if not 0 <= text_base < 1 << elf.get_bits() or not 0 < new_size < 1 << elf.get_bits():
-            err("The symbol range does not fit the host ELF")
-            os.unlink(blank_elf)
-            return None
-
-        # fix .text base address
-        GefUtil.os_system("{!r} --change-section-address .text={:#x} {!r} 2>/dev/null".format(
-            objcopy, text_base, blank_elf,
-        ))
-
-        # objcopy may move the section table, so read it again after changing the address.
-        elf = Elf(blank_elf)
-        text = elf.get_shdr(".text")
-        if text is None or text.sh_addr != text_base:
-            err("Failed to set the .text address")
-            os.unlink(blank_elf)
-            return None
-        index = elf.shdrs.index(text)
-        offset = elf.e_shoff + index * elf.e_shentsize + (0x20 if elf.get_bits() == 64 else 0x14)
-        if elf.e_endianness == Elf.LITTLE_ENDIAN:
-            endian = "<"
-        else:
-            endian = ">"
-        with open(blank_elf, "r+b") as output:
-            output.seek(offset)
-            output.write(struct.pack(endian + ("Q" if elf.get_bits() == 64 else "I"), new_size))
-        return blank_elf
-
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     def do_invoke(self, args):
         try:
-            objcopy = GefUtil.which(Config.get("gef.objcopy_command"))
+            GefUtil.which(Config.get("gef.objcopy_command"))
         except FileNotFoundError as e:
             err("{}".format(e))
+            return
+
+        # objcopy splits `--add-symbol NAME=VALUE` at the first "="
+        if "=" in args.function_name:
+            self.quiet_err("The function name must not contain `=`")
             return
 
         # check address validity
@@ -193305,7 +193165,7 @@ class AddSymbolTemporaryCommand(GenericCommand):
 
         # make blank ELF
         text_base = args.function_start & get_pagesize_mask_high()
-        sym_elf = self.create_blank_elf(text_base, args.function_end or args.function_start + 1)
+        sym_elf = GefUtil.create_blank_elf(text_base, args.function_end or args.function_start + 1)
         if sym_elf is None:
             err("Failed to create blank ELF")
             return
@@ -193313,12 +193173,8 @@ class AddSymbolTemporaryCommand(GenericCommand):
         self.quiet_info("1 entries will be added")
 
         # embedding symbols
-        relative_addr = args.function_start - text_base
-        GefUtil.os_system("{!r} --add-symbol {!r}=.text:{:#x},global,function {!r} 2>/dev/null".format(
-            objcopy, args.function_name, relative_addr, sym_elf,
-        ))
-
-        self.quiet_info("1 entries were processed")
+        for processed_count in GefUtil.embed_symbols(sym_elf, text_base, [(args.function_start, "T", args.function_name)]):
+            self.quiet_info("{:d} entries were processed".format(processed_count))
 
         # add symbol to gdb
         try:
@@ -193357,50 +193213,24 @@ class KsymaddrRemoteApplyCommand(GenericCommand):
 
         # make blank ELF
         text_base &= get_pagesize_mask_high()
-        blank_elf = AddSymbolTemporaryCommand.create_blank_elf(text_base, text_end)
+        blank_elf = GefUtil.create_blank_elf(text_base, text_end)
         if blank_elf is None:
             err("Failed to create blank ELF")
             return False
 
         # parse kernel symbol
-        cmd_string_arr = []
+        symbols = []
         for addr, func_name, typ in kallsyms:
-            if (typ or "").lower() == "a":
-                cmd_string_arr.extend(["--add-symbol", "{:s}={:#x},{:s}".format(
-                    func_name, addr, "local" if typ == "a" else "global")])
-                continue
             if addr < text_base:
                 # lower address is percpu-relative. It is meaningless to import the address, so it is skipped.
                 continue
+            symbols.append((addr, typ, func_name))
 
-            if typ in ["T", "t", "W", None]:
-                type_flag = "function"
-            else:
-                type_flag = "object"
-            if typ and typ in "abcdefghijklmnopqrstuvwxyz":
-                global_flag = "local"
-            else:
-                global_flag = "global"
-
-            # higher address needs relative
-            relative_addr = addr - text_base
-            cmd_string_arr.append("--add-symbol")
-            cmd_string_arr.append("{:s}=.text:{:#x},{:s},{:s}".format(func_name, relative_addr, global_flag, type_flag))
-
-        self.quiet_info("{:d} entries will be added".format(len(cmd_string_arr) // 2))
+        self.quiet_info("{:d} entries will be added".format(len(symbols)))
 
         # embedding symbols
-        objcopy = GefUtil.which(Config.get("gef.objcopy_command"))
-        processed_count = 0
-        for cmd_string_arr_sliced in slicer(cmd_string_arr, 10000 * 2):
-            subprocess.check_output([objcopy] + cmd_string_arr_sliced + [blank_elf])
-            processed_count += len(cmd_string_arr_sliced) // 2
-
-            # debug print
-            if processed_count and processed_count % 10000 == 0:
-                self.quiet_info("{:d} entries were processed".format(processed_count))
-
-        self.quiet_info("{:d} entries were processed".format(processed_count))
+        for processed_count in GefUtil.embed_symbols(blank_elf, text_base, symbols):
+            self.quiet_info("{:d} entries were processed".format(processed_count))
         os.rename(blank_elf, sym_elf_path)
         return True
 
@@ -202772,6 +202602,157 @@ class GefUtil:
 
         if not keep_root:
             os.rmdir(directory)
+        return
+
+    @staticmethod
+    def create_blank_elf(text_base, text_end):
+        try:
+            objcopy = GefUtil.which(Config.get("gef.objcopy_command"))
+        except FileNotFoundError as e:
+            err("{}".format(e))
+            return None
+
+        try:
+            gcc = GefUtil.which("gcc")
+        except FileNotFoundError:
+            gcc = None
+
+        # create light ELF
+        if gcc:
+            fd, fname = GefUtil.mkstemp(prefix="add-symbol-temporary", suffix=".c")
+            blank_elf = fname + ".elf"
+            os.fdopen(fd, "w").write("int main() {}")
+            # When adding symbols, it is not necessary to match the architecture of the ELF to be created
+            # and the architecture of the debugged kernel. Regardless of the architecture of the kernel
+            # you are debugging, create an ELF using gcc in the host environment.
+            GefUtil.os_system("{!r} {!r} -no-pie -o {!r}".format(gcc, fname, blank_elf))
+            os.unlink(fname)
+            # delete unneeded section for faster (`ksymaddr-remote-apply` will embed many symbols)
+            GefUtil.os_system("{!r} --only-keep-debug {!r}".format(objcopy, blank_elf))
+            GefUtil.os_system("{!r} --strip-all {!r}".format(objcopy, blank_elf))
+            elf = Elf.get_elf(blank_elf)
+            for s in elf.shdrs:
+                if s.sh_name == "": # null, skip
+                    continue
+                if s.sh_name == ".text": # .text is needed, don't remove
+                    continue
+                if s.sh_name == ".interp": # broken if remove
+                    continue
+                if s.sh_name == ".rela.dyn": # cannot remove
+                    continue
+                if s.sh_name == ".dynamic": # cannot remove
+                    continue
+                if s.sh_name == ".data": # broken if remove (e.g., add-symbol-temporary hoge 0x1234)
+                    continue
+                if s.sh_name == ".bss": # broken if remove
+                    continue
+                GefUtil.os_system("{!r} --remove-section={!r} {!r} 2>/dev/null".format(
+                    objcopy, s.sh_name, blank_elf,
+                ))
+        else:
+            # not found gcc. we use pre-built elf for x64
+            blank_elf_skelton = [
+                "7f45 4c46 0201 0100 0000 0000 0000 0000 0200 3e00 0100 0000 2010 4000 0000 0000",
+                "4000 0000 0000 0000 1803 0000 0000 0000 0000 0000 4000 3800 0c00 4000 0800 0700",
+                "0600 0000 0400 0000 4000 0000 0000 0000 4000 4000 0000 0000 4000 4000 0000 0000",
+                "a002 0000 0000 0000 a002 0000 0000 0000 0800 0000 0000 0000 0300 0000 0400 0000",
+                "1803 0000 0000 0000 1803 4000 0000 0000 1803 4000 0000 0000 0000 0000 0000 0000",
+                "1c00 0000 0000 0000 0100 0000 0000 0000 0100 0000 0400 0000 0000 0000 0000 0000",
+                "0000 4000 0000 0000 0000 4000 0000 0000 e002 0000 0000 0000 a804 0000 0000 0000",
+                "0010 0000 0000 0000 0100 0000 0500 0000 2000 0000 0000 0000 2010 4000 0000 0000",
+                "2010 4000 0000 0000 0000 0000 0000 0000 f500 0000 0000 0000 0010 0000 0000 0000",
+                "0100 0000 0400 0000 e002 0000 0000 0000 2820 4000 0000 0000 0000 0000 0000 0000",
+                "0000 0000 0000 0000 0000 0000 0000 0000 0010 0000 0000 0000 0100 0000 0600 0000",
+                "480e 0000 0000 0000 483e 4000 0000 0000 483e 4000 0000 0000 0000 0000 0000 0000",
+                "d001 0000 0000 0000 0010 0000 0000 0000 0200 0000 0600 0000 480e 0000 0000 0000",
+                "483e 4000 0000 0000 483e 4000 0000 0000 0000 0000 0000 0000 9001 0000 0000 0000",
+                "0800 0000 0000 0000 0400 0000 0400 0000 0000 0000 0000 0000 3803 4000 0000 0000",
+                "0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0800 0000 0000 0000",
+                "0400 0000 0400 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000",
+                "0000 0000 0000 0000 0000 0000 0000 0000 0800 0000 0000 0000 53e5 7464 0400 0000",
+                "0000 0000 0000 0000 3803 4000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000",
+                "0000 0000 0000 0000 0800 0000 0000 0000 50e5 7464 0400 0000 0000 0000 0000 0000",
+                "0420 4000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000",
+                "0800 0000 0000 0000 51e5 7464 0600 0000 0000 0000 0000 0000 0000 0000 0000 0000",
+                "0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0800 0000 0000 0000",
+                "002e 7368 7374 7274 6162 002e 696e 7465 7270 002e 7265 6c61 2e64 796e 002e 7465",
+                "7874 002e 6479 6e61 6d69 6300 2e64 6174 6100 2e62 7373 0000 0000 0000 0000 0000",
+                "0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000",
+                "0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0b00 0000 0800 0000",
+                "0200 0000 0000 0000 1803 4000 0000 0000 1803 0000 0000 0000 1c00 0000 0000 0000",
+                "0000 0000 0000 0000 0100 0000 0000 0000 0000 0000 0000 0000 1300 0000 0800 0000",
+                "0200 0000 0000 0000 7804 4000 0000 0000 1803 0000 0000 0000 3000 0000 0000 0000",
+                "0000 0000 0000 0000 0800 0000 0000 0000 1800 0000 0000 0000 1d00 0000 0800 0000",
+                "0600 0000 0000 0000 2010 4000 0000 0000 2010 0000 0000 0000 f500 0000 0000 0000",
+                "0000 0000 0000 0000 1000 0000 0000 0000 0000 0000 0000 0000 2300 0000 0800 0000",
+                "0300 0000 0000 0000 483e 4000 0000 0000 480e 0000 0000 0000 9001 0000 0000 0000",
+                "0000 0000 0000 0000 0800 0000 0000 0000 1000 0000 0000 0000 2c00 0000 0800 0000",
+                "0300 0000 0000 0000 0040 4000 0000 0000 480e 0000 0000 0000 1000 0000 0000 0000",
+                "0000 0000 0000 0000 0800 0000 0000 0000 0000 0000 0000 0000 3200 0000 0800 0000",
+                "0300 0000 0000 0000 1040 4000 0000 0000 480e 0000 0000 0000 0800 0000 0000 0000",
+                "0000 0000 0000 0000 0100 0000 0000 0000 0000 0000 0000 0000 0100 0000 0300 0000",
+                "0000 0000 0000 0000 0000 0000 0000 0000 e002 0000 0000 0000 3700 0000 0000 0000",
+                "0000 0000 0000 0000 0100 0000 0000 0000 0000 0000 0000 0000",
+            ]
+            blank_elf_skelton = bytes.fromhex("".join(blank_elf_skelton).replace(" ", ""))
+            fd, blank_elf = GefUtil.mkstemp(prefix="add-symbol-temporary", suffix=".elf")
+            os.fdopen(fd, "wb").write(blank_elf_skelton)
+            elf = Elf.get_elf(blank_elf)
+
+        new_size = text_end - text_base
+        if not 0 <= text_base < 1 << elf.get_bits() or not 0 < new_size < 1 << elf.get_bits():
+            err("The symbol range does not fit the host ELF")
+            os.unlink(blank_elf)
+            return None
+
+        # fix .text base address
+        GefUtil.os_system("{!r} --change-section-address .text={:#x} {!r} 2>/dev/null".format(
+            objcopy, text_base, blank_elf,
+        ))
+
+        # objcopy may move the section table, so read it again after changing the address.
+        elf = Elf(blank_elf)
+        text = elf.get_shdr(".text")
+        if text is None or text.sh_addr != text_base:
+            err("Failed to set the .text address")
+            os.unlink(blank_elf)
+            return None
+        index = elf.shdrs.index(text)
+        offset = elf.e_shoff + index * elf.e_shentsize + (0x20 if elf.get_bits() == 64 else 0x14)
+        if elf.e_endianness == Elf.LITTLE_ENDIAN:
+            endian = "<"
+        else:
+            endian = ">"
+        with open(blank_elf, "r+b") as output:
+            output.seek(offset)
+            output.write(struct.pack(endian + ("Q" if elf.get_bits() == 64 else "I"), new_size))
+        return blank_elf
+
+    @staticmethod
+    def embed_symbols(elf_path, text_base, symbols):
+        """Embed [(address, nm type, name), ...] into .text of the ELF by objcopy, yielding the number of processed entries."""
+        cmd_string_arr = []
+        for sym_addr, sym_type, sym_name in symbols:
+            if sym_type in ["T", "t", "W", None]:
+                type_flag = "function"
+            else:
+                type_flag = "object"
+            if sym_type and sym_type in "abcdefghijklmnopqrstuvwxyz":
+                global_flag = "local"
+            else:
+                global_flag = "global"
+
+            # higher address needs relative
+            relative_addr = sym_addr - text_base
+            cmd_string_arr.append("--add-symbol")
+            cmd_string_arr.append("{:s}=.text:{:#x},{:s},{:s}".format(sym_name, relative_addr, global_flag, type_flag))
+
+        objcopy = GefUtil.which(Config.get("gef.objcopy_command"))
+        processed_count = 0
+        for cmd_string_arr_sliced in slicer(cmd_string_arr, 10000 * 2):
+            subprocess.check_output([objcopy] + cmd_string_arr_sliced + [elf_path])
+            processed_count += len(cmd_string_arr_sliced) // 2
+            yield processed_count
         return
 
     @staticmethod
