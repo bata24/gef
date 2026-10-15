@@ -24776,17 +24776,7 @@ class ReadSystemRegisterForKgdbCommand(GenericCommand):
         return reg_name.lstrip("$").lower() in regs
 
     def complete(self, text, word):
-        regs = ReadSystemRegisterForKgdbCommand.get_supported_regs()
-        if text.strip() in regs:
-            # already matched
-            return []
-
-        if text == "":
-            # no prefix
-            return [s for s in regs if ((word is None) or (s and word in s))]
-
-        # finally, look for possible values for given prefix
-        return [s for s in regs if s and s.startswith(text.strip())]
+        return GefUtil.complete_candidates(ReadSystemRegisterForKgdbCommand.get_supported_regs(), text, word)
 
     @Cache.cache_this_session(cache_None=False, until_new_objfile=True)
     def get_stub_address(self, reg_name):
@@ -39433,16 +39423,11 @@ class ContextCommand(GenericCommand):
         return
 
     def complete(self, text, word):
-        if text == "":
-            # no prefix
-            return [s for s in self.commands if ((word is None) or (s and word in s))]
-
-        if text.strip().split()[-1] in self.commands:
-            # already matched, but repeat again
-            return [s for s in self.commands if ((word is None) or (s and word in s))]
-
-        # finally, look for possible values for given prefix
-        return [s for s in self.commands if s and s.startswith(text.strip().split()[-1])]
+        words = text.split()
+        prefix = words[-1] if words else ""
+        if prefix in self.commands:
+            prefix = ""
+        return GefUtil.complete_candidates(self.commands, prefix, word)
 
     @staticmethod
     @Cache.cache_this_session
@@ -41666,16 +41651,7 @@ class HexdumpCommand(GenericCommand, BufferingOutput):
         return
 
     def complete(self, text, word):
-        if text.strip() in self.modes:
-            # already matched
-            return []
-
-        if text == "":
-            # no prefix
-            return [s for s in self.modes if ((word is None) or (s and word in s))]
-
-        # finally, look for possible values for given prefix
-        return [s for s in self.modes if s and s.startswith(text.strip())]
+        return GefUtil.complete_candidates(self.modes, text, word)
 
     @staticmethod
     def merge_lines(lines_unmerged, nb_skip_merge=1):
@@ -43928,16 +43904,7 @@ class ASLRCommand(GenericCommand):
         return
 
     def complete(self, text, word):
-        if text.strip() in self.modes:
-            # already matched
-            return []
-
-        if text == "":
-            # no prefix
-            return [s for s in self.modes if ((word is None) or (s and word in s))]
-
-        # finally, look for possible values for given prefix
-        return [s for s in self.modes if s and s.startswith(text.strip())]
+        return GefUtil.complete_candidates(self.modes, text, word)
 
     @Decorator.parse_args
     @Decorator.only_if_gdb_target_local
@@ -43980,16 +43947,7 @@ class FollowCommand(GenericCommand):
         return
 
     def complete(self, text, word):
-        if text.strip() in self.modes:
-            # already matched
-            return []
-
-        if text == "":
-            # no prefix
-            return [s for s in self.modes if ((word is None) or (s and word in s))]
-
-        # finally, look for possible values for given prefix
-        return [s for s in self.modes if s and s.startswith(text.strip())]
+        return GefUtil.complete_candidates(self.modes, text, word)
 
     @Decorator.parse_args
     @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware"))
@@ -46090,16 +46048,7 @@ class SropHintCommand(GenericCommand):
         return
 
     def complete(self, text, word):
-        if text.strip() in self.architectures:
-            # already matched
-            return []
-
-        if text == "":
-            # no prefix
-            return [s for s in self.architectures if ((word is None) or (s and word in s))]
-
-        # finally, look for possible values for given prefix
-        return [s for s in self.architectures if s and s.startswith(text.strip())]
+        return GefUtil.complete_candidates(self.architectures, text, word)
 
     def build_hint(self, mode, abi=None):
         nr, reg, insn = self.TRIGGERS[mode]
@@ -96079,16 +96028,7 @@ class KernelOperationsCommand(GenericCommand, BufferingOutput):
         return
 
     def complete(self, text, word):
-        if text.strip() in self.types:
-            # already matched
-            return []
-
-        if text == "":
-            # no prefix: example: `kops TAB`
-            return [s for s in self.types if ((word is None) or (s and word in s))]
-
-        # finally, look for possible values for given prefix
-        return [s for s in self.types if s and s.startswith(text.strip())]
+        return GefUtil.complete_candidates(self.types, text, word)
 
     @Cache.cache_this_session(cache_None=False)
     def get_members(self, kversion):
@@ -168755,16 +168695,7 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
         return
 
     def complete(self, text, word):
-        if text.strip() in self.modes:
-            # already matched
-            return []
-
-        if text == "":
-            # no prefix
-            return [s for s in self.modes if ((word is None) or (s and word in s))]
-
-        # finally, look for possible values for given prefix
-        return [s for s in self.modes if s and s.startswith(text.strip())]
+        return GefUtil.complete_candidates(self.modes, text, word)
 
     def initialize(self):
         auxv = Auxv.get_auxiliary_values()
@@ -172588,16 +172519,7 @@ class MuslHeapDumpCommand(GenericCommand, BufferingOutput):
         return
 
     def complete(self, text, word):
-        if text.strip() in self.modes:
-            # already matched
-            return []
-
-        if text == "":
-            # no prefix
-            return [s for s in self.modes if ((word is None) or (s and word in s))]
-
-        # finally, look for possible values for given prefix
-        return [s for s in self.modes if s and s.startswith(text.strip())]
+        return GefUtil.complete_candidates(self.modes, text, word)
 
     def get_malloc_context_heuristic(self):
         if not is_x86():
@@ -174498,16 +174420,7 @@ class WSecureMemAddrCommand(GenericCommand):
         return
 
     def complete(self, text, word):
-        if text.strip() in self.modes:
-            # already matched
-            return []
-
-        if text == "":
-            # no prefix
-            return [s for s in self.modes if ((word is None) or (s and word in s))]
-
-        # finally, look for possible values for given prefix
-        return [s for s in self.modes if s and s.startswith(text.strip())]
+        return GefUtil.complete_candidates(self.modes, text, word)
 
     def redirect_to_write_physmem(self, data):
         if self.args.off:
@@ -200858,22 +200771,10 @@ class GefConfigCommand(GenericCommand):
 
     def complete(self, text, word):
         """Provide tab-completion suggestions for GEF config settings based on user input."""
-        settings = sorted(Config.names())
-
-        if text.strip() in settings:
-            # already matched
-            return []
-
-        if text == "":
-            # no prefix: example: `gef config TAB`
-            return [s for s in settings if ((word is None) or (s and word in s))]
-
-        if "." not in text:
-            # if looking for possible prefix
-            return [s for s in settings if s.startswith(text.strip())]
-
-        # finally, look for possible values for given prefix
-        return [s.split(".", 1)[1] for s in settings if s and s.startswith(text.strip())]
+        settings = GefUtil.complete_candidates(sorted(Config.names()), text, word)
+        if "." in text:
+            return [s.split(".", 1)[1] for s in settings]
+        return settings
 
     @Decorator.parse_args
     def do_invoke(self, args):
@@ -202591,6 +202492,15 @@ class GefUtil:
     """A collection of utility functions that are related to GEF basic features."""
 
     user_bases = {}
+
+    @staticmethod
+    def complete_candidates(candidates, text, word):
+        """Filter completion candidates by the argument text and current word."""
+        if text.strip() in candidates:
+            return []
+        if text == "":
+            return [s for s in candidates if word is None or (s and word in s)]
+        return [s for s in candidates if s and s.startswith(text.strip())]
 
     @staticmethod
     def get_user_base(name):
