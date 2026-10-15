@@ -63051,26 +63051,6 @@ class FpuCommand(GenericCommand):
                         help="also display bit information of fpu control registers.")
     _syntax_ = parser.format_help()
 
-    def f2u(self, a):
-        u = lambda a: struct.unpack("<I", a)[0]
-        pf = lambda a: struct.pack("<f", a)
-        return u(pf(a))
-
-    def u2f(self, a):
-        p = lambda a: struct.pack("<I", a & 0xffff_ffff)
-        uf = lambda a: struct.unpack("<f", a)[0]
-        return uf(p(a))
-
-    def d2u(self, a):
-        uQ = lambda a: struct.unpack("<Q", a)[0]
-        pd = lambda a: struct.pack("<d", a)
-        return uQ(pd(a))
-
-    def u2d(self, a):
-        pQ = lambda a: struct.pack("<Q", a & 0xffff_ffff_ffff_ffff)
-        ud = lambda a: struct.unpack("<d", a)[0]
-        return ud(pQ(a))
-
     def get_arm_value(self, regname):
         try:
             value = gdb.parse_and_eval(regname)
@@ -63118,11 +63098,11 @@ class FpuCommand(GenericCommand):
             if reg1 is None:
                 fmt1 = "{:s}: {:s}".format(red(regname1), "Access denied")
             else:
-                fmt1 = "{:s}: {:15s} {:<#10x}".format(red(regname1), "{:<+.8e}".format(self.u2f(reg1)), reg1)
+                fmt1 = "{:s}: {:15s} {:<#10x}".format(red(regname1), "{:<+.8e}".format(GefUtil.u2f(reg1)), reg1)
             if reg2 is None:
                 fmt2 = "{:s}: {:s}".format(red(regname2), "Access denied")
             else:
-                fmt2 = "{:s}: {:28s} {:<#18x}".format(red(regname2), "{:<+.20e}".format(self.u2d(reg2)), reg2)
+                fmt2 = "{:s}: {:28s} {:<#18x}".format(red(regname2), "{:<+.20e}".format(GefUtil.u2d(reg2)), reg2)
             if reg3 is None:
                 fmt3 = "{:s}: {:s}".format(red(regname3), "Access denied")
             else:
@@ -63165,9 +63145,9 @@ class FpuCommand(GenericCommand):
                     if math.isinf(reg) and (u80 >> 64) & 0x7fff != 0x7fff:
                         u64, u32 = "<overflow>", "<overflow>"
                     else:
-                        u64 = "{:#x}".format(self.d2u(reg))
+                        u64 = "{:#x}".format(GefUtil.d2u(reg))
                         try:
-                            u32 = "{:#x}".format(self.f2u(reg))
+                            u32 = "{:#x}".format(GefUtil.f2u(reg))
                         except OverflowError:
                             u32 = "<overflow>"
             except gdb.error:
@@ -64119,38 +64099,18 @@ class U2dCommand(GenericCommand):
     ]
     _note_ = "\n".join(_note_)
 
-    def f2u(self, x):
-        u = lambda a: struct.unpack("<I", a)[0]
-        pf = lambda a: struct.pack("<f", a)
-        return u(pf(x))
-
-    def u2f(self, x):
-        p = lambda a: struct.pack("<I", a & 0xffff_ffff)
-        uf = lambda a: struct.unpack("<f", a)[0]
-        return uf(p(x))
-
-    def d2u(self, x):
-        uQ = lambda a: struct.unpack("<Q", a)[0]
-        pd = lambda a: struct.pack("<d", a)
-        return uQ(pd(x))
-
-    def u2d(self, x):
-        pQ = lambda a: struct.pack("<Q", a & 0xffff_ffff_ffff_ffff)
-        ud = lambda a: struct.unpack("<d", a)[0]
-        return ud(pQ(x))
-
     def convert_from_float(self, n):
         gef_print(titlify("double -> unsigned long long"))
         gef_print(Color.cyanify("double -> ull (reinterpret_cast)"))
-        gef_print("  {:.20e} ---> {:#018x}".format(n, self.d2u(n)))
+        gef_print("  {:.20e} ---> {:#018x}".format(n, GefUtil.d2u(n)))
         gef_print(titlify("float -> unsigned int"))
         gef_print(Color.cyanify("float -> uint (reinterpret_cast)"))
         try:
-            bits = self.f2u(n)
+            bits = GefUtil.f2u(n)
         except OverflowError:
             gef_print("  {:.20e} ---> <overflow>".format(n))
             return
-        f = self.u2f(bits)
+        f = GefUtil.u2f(bits)
         gef_print("  {:.20e} ---> {:#010x}".format(f, bits))
         return
 
@@ -64158,22 +64118,22 @@ class U2dCommand(GenericCommand):
         n &= 0xffff_ffff_ffff_ffff
         gef_print(titlify("unsigned long long <-> double"))
         gef_print(Color.cyanify("ull -> double (reinterpret_cast)"))
-        gef_print("  {:#018x} ---> {:.20e}".format(n, self.u2d(n)))
+        gef_print("  {:#018x} ---> {:.20e}".format(n, GefUtil.u2d(n)))
         gef_print(Color.cyanify("ull -> double -> ull (static_cast)"))
         d = float(n)
         restored = int(d)
         result = "{:#018x}".format(restored) if restored <= 0xffff_ffff_ffff_ffff else "<out of range>"
         gef_print("  {:#018x} ---> {:.20e} ---> {}".format(n, d, result))
         gef_print(Color.cyanify("double -> ull (reinterpret_cast)"))
-        gef_print("  {:.20e} ---> {:#018x}".format(d, self.d2u(d)))
+        gef_print("  {:.20e} ---> {:#018x}".format(d, GefUtil.d2u(d)))
 
         n &= 0xffff_ffff
         gef_print(titlify("unsigned int <-> float"))
         gef_print(Color.cyanify("uint -> float (reinterpret_cast)"))
-        gef_print("  {:#010x} ---> {:.20e}".format(n, self.u2f(n)))
+        gef_print("  {:#010x} ---> {:.20e}".format(n, GefUtil.u2f(n)))
         gef_print(Color.cyanify("uint -> float -> uint (static_cast)"))
-        bits = self.f2u(n)
-        f = self.u2f(bits)
+        bits = GefUtil.f2u(n)
+        f = GefUtil.u2f(bits)
         restored = int(f)
         result = "{:#010x}".format(restored) if restored <= 0xffff_ffff else "<out of range>"
         gef_print("  {:#010x} ---> {:.20e} ---> {}".format(n, f, result))
@@ -202294,6 +202254,30 @@ class GefUtil:
         if size is None:
             size = current_arch.ptrsize
         return {1: u8, 2: u16, 4: u32, 8: u64}[size]
+
+    @staticmethod
+    def f2u(x):
+        u = lambda a: struct.unpack("<I", a)[0]
+        pf = lambda a: struct.pack("<f", a)
+        return u(pf(x))
+
+    @staticmethod
+    def u2f(x):
+        p = lambda a: struct.pack("<I", a & 0xffff_ffff)
+        uf = lambda a: struct.unpack("<f", a)[0]
+        return uf(p(x))
+
+    @staticmethod
+    def d2u(x):
+        uQ = lambda a: struct.unpack("<Q", a)[0]
+        pd = lambda a: struct.pack("<d", a)
+        return uQ(pd(x))
+
+    @staticmethod
+    def u2d(x):
+        pQ = lambda a: struct.pack("<Q", a & 0xffff_ffff_ffff_ffff)
+        ud = lambda a: struct.unpack("<d", a)[0]
+        return ud(pQ(x))
 
     @staticmethod
     @Cache.cache_until_next(per_inferior=True)
