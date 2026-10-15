@@ -19118,10 +19118,7 @@ class LinuxSignal:
 
     @classmethod
     def format_flags(cls, flags, extra=()):
-        table = cls.FLAGS + tuple(extra)
-        names = [name for value, name in table if flags & value]
-        known = sum(value for value, name in table)
-        unknown = flags & ~known
+        names, unknown = GefUtil.flags_to_names(flags, cls.FLAGS + tuple(extra))
         if unknown:
             names.append("{:#x}".format(unknown))
         if names:
@@ -45589,7 +45586,7 @@ class UcontextCommand(GenericCommand):
 
     @classmethod
     def format_ss_flags(cls, flags):
-        names = [name for value, name in cls.SS_FLAGS if flags & value]
+        names, _ = GefUtil.flags_to_names(flags, cls.SS_FLAGS)
         return "{:#x} [{:s}]".format(flags, "|".join(names) or "-")
 
     @staticmethod
@@ -80332,27 +80329,15 @@ class KernelCred:
             return "none"
         if self.cap_full and value == self.cap_full:
             return "CAP_FULL_SET"
-        names = []
-        for i in range(64):
-            if not (value & (1 << i)):
-                continue
-            if i < len(self.CAP_NAMES):
-                names.append(self.CAP_NAMES[i])
-            else:
-                names.append("CAP_{:d}".format(i))
+        names, unknown = GefUtil.flags_to_names(value, {1 << i: name for i, name in enumerate(self.CAP_NAMES)})
+        names += ["CAP_{:d}".format(i) for i in range(64) if unknown & (1 << i)]
         return "|".join(names)
 
     def securebits_to_str(self, value):
         if value == 0:
             return "none"
-        names = []
-        for i in range(32):
-            if not (value & (1 << i)):
-                continue
-            if i < len(self.SECUREBITS):
-                names.append(self.SECUREBITS[i])
-            else:
-                names.append("SECBIT_{:d}".format(i))
+        names, unknown = GefUtil.flags_to_names(value, {1 << i: name for i, name in enumerate(self.SECUREBITS)})
+        names += ["SECBIT_{:d}".format(i) for i in range(32) if unknown & (1 << i)]
         return "|".join(names)
 
     def get_groups_str(self, group_info, max_display=0x10):
@@ -84626,8 +84611,7 @@ class KernelSched:
     def state_to_str(self, v):
         if v == 0:
             return "TASK_RUNNING"
-        names = [name for name, bit in self.state_bits.items() if v & bit]
-        rest = v & ~sum(self.state_bits.values())
+        names, rest = GefUtil.flags_to_names(v, ((bit, name) for name, bit in self.state_bits.items()))
         if rest:
             names.append("{:#x}".format(rest))
         if names:
@@ -99247,15 +99231,11 @@ class KernelClockSourceCommand(GenericCommand, BufferingOutput):
     def format_flags(self, flags):
         if flags is None:
             return "-"
-        names = []
-        for bit, name in self.FLAGS:
-            if flags & bit:
-                if bit == 0x200 and self.kversion >= "7.1":
-                    name = "INLINE"
-                names.append(name)
-                flags &= ~bit
-        if flags:
-            names.append("{:#x}".format(flags))
+        names, unknown = GefUtil.flags_to_names(flags, self.FLAGS)
+        if "VERIFY_PERCPU" in names and self.kversion >= "7.1":
+            names[names.index("VERIFY_PERCPU")] = "INLINE"
+        if unknown:
+            names.append("{:#x}".format(unknown))
         return "|".join(names) or "0"
 
     def read_clocksource(self, node):
@@ -101887,10 +101867,7 @@ class KernelPciDeviceCommand(GenericCommand, BufferingOutput):
             0x0000_0200: "IORESOURCE_MEM",
             0x0000_0100: "IORESOURCE_IO",
         }
-        flags = []
-        for k, v in flags_dic.items():
-            if flags_value & k:
-                flags.append(v)
+        flags, _ = GefUtil.flags_to_names(flags_value, flags_dic)
 
         if "IORESOURCE_IO" in flags and "IORESOURCE_MEM" in flags:
             flags.remove("IORESOURCE_IO")
@@ -151512,12 +151489,7 @@ class KernelSlub:
         if flags_dic is None:
             return None
 
-        flags = []
-        unparsed_flags = flags_value
-        for mask, name in flags_dic.items():
-            if flags_value & mask:
-                flags.append(name)
-                unparsed_flags &= ~mask
+        flags, unparsed_flags = GefUtil.flags_to_names(flags_value, flags_dic)
         if unparsed_flags:
             flags.append(hex(unparsed_flags))
         return " | ".join(flags) or "none"
@@ -158887,10 +158859,7 @@ class KernelPipeCommand(GenericCommand, BufferingOutput):
             0x20: "PIPE_BUF_FLAG_WHOLE",
             0x40: "PIPE_BUF_FLAG_LOSS",
         }
-        flags = []
-        for k, v in flags_dic.items():
-            if flags_value & k:
-                flags.append(v)
+        flags, _ = GefUtil.flags_to_names(flags_value, flags_dic)
 
         flags_str = " | ".join(flags)
         if flags_str == "":
@@ -175168,10 +175137,7 @@ class OpteeTaDumpMemoryCommand(OpteeTaDumpCommand):
             0x0000_0002: "TA_FLAG_EXEC_DDR",
             0x0000_0001: "TA_FLAG_USER_MODE",
         }
-        flags = []
-        for k, v in flags_dic.items():
-            if flags_value & k:
-                flags.append(v)
+        flags, _ = GefUtil.flags_to_names(flags_value, flags_dic)
 
         flags_str = " | ".join(flags)
         if flags_str == "":
@@ -186175,10 +186141,7 @@ class PageInfoCommand(GenericCommand):
 
     @staticmethod
     def get_flags_str(flags_value):
-        flags = []
-        for k, v in PageInfoCommand.get_flags_dic().items():
-            if flags_value & k:
-                flags.append(v)
+        flags, _ = GefUtil.flags_to_names(flags_value, PageInfoCommand.get_flags_dic())
 
         flags_str = " | ".join(flags)
         if flags_str == "":
@@ -186266,10 +186229,7 @@ class PageInfoCommand(GenericCommand):
             }
 
         if kversion < "6.12":
-            flags = []
-            for k, v in flags_dic.items():
-                if ~flags_value & k:
-                    flags.append(v)
+            flags, _ = GefUtil.flags_to_names(~flags_value, flags_dic)
             flags_str = " | ".join(flags)
             if flags_str == "":
                 flags_str = "none"
@@ -193242,11 +193202,7 @@ class UefiOvmfInfoCommand(GenericCommand):
         }
 
         def att2str(att):
-            s = []
-            for k, v in att_list.items():
-                if k & att:
-                    s.append(v)
-            unknown = att & ~sum(att_list)
+            s, unknown = GefUtil.flags_to_names(att, att_list)
             if unknown:
                 s.append("UNKNOWN({:#x})".format(unknown))
             return ",".join(s)
@@ -197741,8 +197697,7 @@ class KernelNftablesCommand(GenericCommand, BufferingOutput):
     def flags_str(value, names):
         if value is None:
             return None
-        parts = [name for bit, name in sorted(names.items()) if value & bit]
-        rest = value & ~sum(names)
+        parts, rest = GefUtil.flags_to_names(value, sorted(names.items()))
         if rest:
             parts.append("{:#x}".format(rest))
         return "{:#x}".format(value) + ("({:s})".format(",".join(parts)) if parts else "")
@@ -198513,13 +198468,12 @@ class PeekPageFlagsCommand(GenericCommand, BufferingOutput):
             return self.value
 
         def get_set_flags(self):
-            flags = [flag for flag, bit in self.FLAGS.items() if self.value & bit]
+            flags, unknown = GefUtil.flags_to_names(self.value, ((bit, flag) for flag, bit in self.FLAGS.items()))
             if "OFFLINE" in flags:
                 if self.host_version is None:
                     flags[flags.index("OFFLINE")] = "BALLOON/OFFLINE (unknown host kernel version)"
                 elif self.host_version < (5, 1):
                     flags[flags.index("OFFLINE")] = "BALLOON"
-            unknown = self.value & ~sum(self.FLAGS.values())
             if unknown:
                 flags.append("UNKNOWN({:#x})".format(unknown))
             return flags
@@ -202362,6 +202316,22 @@ class GefUtil:
                 head2, f2_hex_s, f2_ascii_s,
             ))
         return lines
+
+    @staticmethod
+    def flags_to_names(value, table):
+        """Return the names whose masks are set in value, and the set bits that no mask covers.
+
+        The table is a dict or pairs of mask and name.
+        """
+        if isinstance(table, dict):
+            table = table.items()
+        names = []
+        unknown = value
+        for mask, name in table:
+            if value & mask:
+                names.append(name)
+            unknown &= ~mask
+        return names, unknown
 
     @staticmethod
     def complete_candidates(candidates, text, word):
