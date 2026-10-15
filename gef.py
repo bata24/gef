@@ -101785,7 +101785,7 @@ class KernelPciDeviceCommand(GenericCommand, BufferingOutput):
             flags.remove("IORESOURCE_MEM")
             flags.append("IORESOURCE_REG")
 
-        flags_str = " | ".join(flags)
+        flags_str = "|".join(flags)
         if flags_str == "":
             flags_str = "none"
         return flags_str.replace("IORESOURCE_", "")
@@ -151400,7 +151400,7 @@ class KernelSlub:
         flags, unparsed_flags = GefUtil.flags_to_names(flags_value, flags_dic)
         if unparsed_flags:
             flags.append(hex(unparsed_flags))
-        return " | ".join(flags) or "none"
+        return "|".join(flags) or "none"
 
     def get_next_kmem_cache(self, addr, point_to_base=True, *, reverse_walk=False):
         if point_to_base:
@@ -158769,7 +158769,7 @@ class KernelPipeCommand(GenericCommand, BufferingOutput):
         }
         flags, _ = GefUtil.flags_to_names(flags_value, flags_dic)
 
-        flags_str = " | ".join(flags)
+        flags_str = "|".join(flags)
         if flags_str == "":
             flags_str = "none"
         return flags_str
@@ -174992,7 +174992,7 @@ class OpteeTaDumpMemoryCommand(OpteeTaDumpCommand):
         }
         flags, _ = GefUtil.flags_to_names(flags_value, flags_dic)
 
-        flags_str = " | ".join(flags)
+        flags_str = "|".join(flags)
         if flags_str == "":
             flags_str = "none"
         return flags_str.replace("TA_FLAG_", "")
@@ -185991,7 +185991,7 @@ class PageInfoCommand(GenericCommand):
     def get_flags_str(flags_value):
         flags, _ = GefUtil.flags_to_names(flags_value, PageInfoCommand.get_flags_dic())
 
-        flags_str = " | ".join(flags)
+        flags_str = "|".join(flags)
         if flags_str == "":
             flags_str = "none"
         return flags_str
@@ -186078,7 +186078,7 @@ class PageInfoCommand(GenericCommand):
 
         if kversion < "6.12":
             flags, _ = GefUtil.flags_to_names(~flags_value, flags_dic)
-            flags_str = " | ".join(flags)
+            flags_str = "|".join(flags)
             if flags_str == "":
                 flags_str = "none"
         else:
