@@ -21837,14 +21837,7 @@ class SmartMemoryDumpCommand(GenericCommand):
                 end = entry.page_end
                 size = end - start
                 perm = str(entry.permission)
-
-                if not entry.path.startswith(("[", "<")):
-                    path = os.path.basename(entry.path)
-                else:
-                    path = entry.path
-                    path = path.replace("[", "").replace("]", "") # consider [heap], [stack], [vdso]
-                    path = path.replace("<", "").replace(">", "") # consider <tls-th1>, <explored>
-                path = path.replace(" ", "_") # consider deleted case. e.g., /path/to/file (deleted)
+                path = GefUtil.mapping_path_to_filename(entry.path)
 
             dumpfile_name = "{:s}{:0{:d}x}-{:0{:d}x}_{:s}_{:s}{:s}.raw".format(
                 prefix, start, width, end, width, perm, path, suffix,
@@ -199581,13 +199574,7 @@ class BinwalkMemoryCommand(GenericCommand):
             if entry.size > self.args.maxsize:
                 continue
 
-            if not entry.path.startswith(("[", "<")):
-                path = os.path.basename(entry.path)
-            else:
-                path = entry.path
-                path = path.replace("[", "").replace("]", "") # consider [heap], [stack], [vdso]
-                path = path.replace("<", "").replace(">", "") # consider <tls-th1>, <explored>
-            path = path.replace(" ", "_") # consider deleted case. e.g., /path/to/file (deleted)
+            path = GefUtil.mapping_path_to_filename(entry.path)
 
             dumpfile_name = "binwalk-{:0{}x}-{:0{}x}_{:s}_{:s}.raw".format(
                 start, addr_len, end, addr_len, perm, path,
@@ -202558,6 +202545,18 @@ class GefUtil:
                     continue
                 yield path
         return
+
+    @staticmethod
+    def mapping_path_to_filename(path):
+        """Return the mapping path converted for use as a part of a filename."""
+        if not path.startswith(("[", "<")):
+            path = os.path.basename(path)
+        else:
+            path = path.replace("[", "").replace("]", "") # consider [heap], [stack], [vdso]
+            path = path.replace("<", "").replace(">", "") # consider <tls-th1>, <explored>
+            path = path.replace("/", "_") # consider the name by PR_SET_VMA_ANON_NAME. e.g., [anon:a/b]
+        path = path.replace(" ", "_") # consider deleted case. e.g., /path/to/file (deleted)
+        return path
 
     @staticmethod
     def now_str():
