@@ -699,10 +699,7 @@ class MemoryCache:
         # Prefer GDB's symbol table because this fallback may itself be needed
         # while kallsyms is being initialized.  Consult only an already parsed
         # kallsyms table afterwards to avoid recursive scanning.
-        try:
-            swapper = GefUtil.parse_and_eval_unsigned("&swapper_pg_dir")
-        except gdb.error:
-            swapper = None
+        swapper = Symbol.resolve_address("swapper_pg_dir")
         if swapper is None:
             ret = Ksym.peek()
             if ret is not None:
@@ -1842,7 +1839,7 @@ class AddressUtil:
             raise ValueError
         # Don't enclose it in a try-catch. This is because it is used with argparse,
         # and is intended to raise an exception if parsing fails.
-        return GefUtil.parse_and_eval_unsigned(addr)
+        return to_unsigned_long(gdb.parse_and_eval(addr))
 
     @staticmethod
     def parse_string_range(s):
@@ -2037,7 +2034,8 @@ class AddressUtil:
             if quiet:
                 msg.append(address.long_fmt())
             else:
-                msg.append(address.long_fmt() + Symbol.get_symbol_string(addr))
+                symbol = Symbol.format(addr)
+                msg.append(address.long_fmt() + (" " + symbol if symbol else ""))
 
         if error:
             msg.append(error)
@@ -3614,7 +3612,7 @@ class Instruction:
 
     @functools.cached_property
     def location(self):
-        return Symbol.get_symbol_string(self.address, nosymbol_string=" <NO_SYMBOL>")
+        return " " + Symbol.format(self.address, missing="NO_SYMBOL")
 
     @functools.cached_property
     def is_branch(self):
@@ -3797,7 +3795,7 @@ class Instruction:
                 if self.operands and self.operands[-1]:
                     addr = ContextCodeCommand.get_branch_addr(self)
                     # Not using += is intentional; useless comments are discarded
-                    comment = Symbol.get_symbol_string(addr).lstrip()
+                    comment = Symbol.format(addr)
 
         # add strings
         if not self.is_branch:
@@ -4648,28 +4646,25 @@ class GlibcHeap:
                 pass
 
         # plan 1 (directly)
-        try:
-            return AddressUtil.parse_address("(void*) &main_arena")
-        except gdb.error:
-            pass
+        main_arena = Symbol.resolve_address("main_arena")
+        if main_arena is not None:
+            return main_arena
 
         # plan 2 (from __malloc_hook)
         if get_libc_version() < (2, 34):
-            try:
-                malloc_hook_addr = AddressUtil.parse_address("(void*) &__malloc_hook")
-                if is_x86():
-                    return align(malloc_hook_addr + current_arch.ptrsize, 0x20)
-                elif is_arm64():
-                    mstate_size = GlibcHeap.MallocStateStruct(0).sizeof
-                    return malloc_hook_addr - current_arch.ptrsize * 2 - mstate_size
-                elif is_arm32():
-                    mstate_size = GlibcHeap.MallocStateStruct(0).sizeof
-                    return malloc_hook_addr - current_arch.ptrsize - mstate_size
-                else:
-                    # unsupported architecture; fall through to plan 3
-                    raise gdb.error("unsupported architecture")
-            except gdb.error:
-                pass
+            malloc_hook_addr = Symbol.resolve_address("__malloc_hook")
+            if malloc_hook_addr is not None:
+                try:
+                    if is_x86():
+                        return align(malloc_hook_addr + current_arch.ptrsize, 0x20)
+                    elif is_arm64():
+                        mstate_size = GlibcHeap.MallocStateStruct(0).sizeof
+                        return malloc_hook_addr - current_arch.ptrsize * 2 - mstate_size
+                    elif is_arm32():
+                        mstate_size = GlibcHeap.MallocStateStruct(0).sizeof
+                        return malloc_hook_addr - current_arch.ptrsize - mstate_size
+                except gdb.error:
+                    pass
 
         # plan 3 (from TLS)
         main_arena = GlibcHeap.search_for_main_arena_from_tls()
@@ -5856,15 +5851,15 @@ class GlibcHeap:
 
             def get_sym(addr):
                 a = ProcessMap.lookup_address(addr)
-                b = Symbol.get_symbol_string(addr)
-                return a, b
+                b = Symbol.format(addr)
+                return a, " " + b if b else ""
 
             def get_sym_chunk(addr):
                 a = ProcessMap.lookup_address(addr)
                 b1 = Color.colorify_hex(addr, Config.get("theme.heap_chunk_address_freed"))
                 b2 = Color.colorify_hex(addr, Config.get("theme.heap_chunk_address_used"))
-                c = Symbol.get_symbol_string(addr)
-                return a, (b1, b2), c
+                c = Symbol.format(addr)
+                return a, (b1, b2), " " + c if c else ""
 
             def get_err(addrs, sll=False):
                 for a in addrs:
@@ -6622,7 +6617,8 @@ def hexdump(source, length=0x10, separator=".", color=True, show_symbol=True, ba
         addr = base + i
 
         if show_symbol:
-            sym = Symbol.get_symbol_string(addr)
+            sym = Symbol.format(addr)
+            sym = " " + sym if sym else ""
         else:
             sym = ""
         if len(sym) > max_sym_width:
@@ -6664,99 +6660,120 @@ def hexdump(source, length=0x10, separator=".", color=True, show_symbol=True, ba
 
 
 class Symbol:
-    """A collection of utility functions that are related to symbols."""
+    """Symbol address resolution, lookup and formatting."""
 
     @staticmethod
     @Cache.cache_this_session(until_new_objfile=True)
-    def get_address(expression):
-        """Resolve a static, address-valued GDB symbol expression once per session.
-
-        GDB does not remember a failed symbol lookup. Kernel commands commonly probe
-        optional symbols, so preserve both an address and the absent result until the
-        target or its objfiles change. Callers which need a thread-local value must
-        continue to evaluate it directly.
+    def resolve_address(name):
+        """resolve_address("main") -> 0x401000.
+        resolve_address("missing") -> None.
         """
         try:
-            return GefUtil.parse_and_eval_unsigned(expression)
+            return to_unsigned_long(gdb.parse_and_eval("&{:s}".format(name)))
         except (gdb.error, OverflowError, ValueError):
             return None
 
-    # `info symbol` called from gdb_get_location is heavy processing.
-    # Moreover, AddressUtil.recursive_dereference causes each address to be resolved every time.
-    # Cache.cache_until_next is ineffective due to frequent resets (each time the `stepi` runs).
-    # Fortunately, symbol information rarely changes.
-    # The cache is retained until explicitly cleared.
     @staticmethod
     @Cache.cache_this_session(until_new_objfile=True)
-    def gdb_get_location(address):
-        """e.g., 0xffffffff9f6bd2a0 -> ('commit_creds', 0)"""
+    def lookup_gdb(address):
+        """lookup_gdb(0x401042) -> ("main", 0x42).
+        lookup_gdb(0x1) -> None.
+        """
         if address is None:
             return None
+        # gdb.format_address can miss symbols loaded by add-symbol-temporary.
+        text = gdb.execute("info symbol {:#x}".format(address), to_string=True).strip()
+        if not text or text.startswith("No symbol matches"):
+            return None
+        text = text.partition(" in section ")[0]
+        name, separator, offset = text.rpartition(" + ")
+        if separator and offset.isdigit():
+            return name, int(offset)
+        return text, 0
 
-        # Do not use gdb.format_address available from gdb 13.x,
-        # because symbols added with add-symbol-temporary may not be recognized.
+    @staticmethod
+    def lookup(address, ksym="cached"):
+        """ksym="off": query GDB only.
+        ksym="cached" (default): query GDB first; on a miss in kernel mode, use already parsed kallsyms without scanning.
+        ksym="prefer": try an exact kallsyms address first (parsing if needed), then use the "cached" policy.
 
-        # slow path uses `info symbol` command
-        name = None
-        sym = gdb.execute("info symbol {:#x}".format(address), to_string=True)
-        if sym.startswith("No symbol matches"):
+        lookup(0x401042, ksym="off") -> ("main", 0x42).
+        lookup(0xffffffff81001042, ksym="cached") -> ("schedule", 0x42).
+        lookup(0xffffffff81001000, ksym="prefer") -> ("schedule", 0).
+        lookup(0x1) -> None.
+        """
+        if ksym not in ("off", "cached", "prefer"):
+            raise ValueError("Unknown kallsyms mode: {!r}".format(ksym))
+        if address is None:
+            return None
+        try:
+            if ksym == "prefer":
+                name = Ksym.get_name(address)
+                if name:
+                    return name, 0
+            try:
+                ret = Symbol.lookup_gdb(address)
+            except (ValueError, gdb.error):
+                ret = None
+            if ret is None and ksym != "off" and is_in_kernel():
+                ret = Ksym.get_location_from_peek(address)
+            return ret
+        except (ValueError, gdb.error):
             return None
 
-        i = sym.find(" in section ")
-        sym = sym[:i].split()
-        if len(sym) >= 3 and sym[-1].isdigit():
-            # e.g., ptmalloc_init.part + 1 in section .text of /lib/x86_64-linux-gnu/libc.so.6
-            name = " ".join(sym[:-2])
-            offset = int(sym[-1])
-        else:
-            # e.g., ptmalloc_init.part in section .text of /lib/x86_64-linux-gnu/libc.so.6
-            name = " ".join(sym)
-            offset = 0
-        return name, offset
+    @staticmethod
+    def format(addr, missing="", show_offset=True, ksym="cached", bracket="<>", show_address=False, nocolor=False):
+        """ksym uses the same "cached" (default), "prefer" and "off" policies as Symbol.lookup().
+
+        format(0x401042) -> "<main+0x42>".
+        format(0x401042, show_offset=False) -> "<main>".
+        format(0x401042, bracket="") -> "main+0x42".
+        format(0x401042, bracket="()") -> "(main+0x42)".
+        format(0x401042, bracket="[]") -> "[main+0x42]".
+        format(0x401042, show_address=True) -> "0x000000401042 <main+0x42>".
+        format(0x401042, show_address=True, nocolor=True) -> "0x000000401042 <main+0x42>" (no mapping lookup or color).
+        format(0x1, missing="NO_SYMBOL") -> "<NO_SYMBOL>".
+        format(0x1) -> "".
+        format(0xffffffff81001000, ksym="prefer") -> "<schedule>".
+        """
+        if len(bracket) not in (0, 2):
+            raise ValueError("Expected an empty string or two bracket characters")
+        if isinstance(addr, str):
+            try:
+                addr = int(Color.remove_color(addr), 16)
+            except ValueError:
+                addr = None
+
+        symbol = missing
+        if addr:
+            ret = Symbol.lookup(addr, ksym=ksym)
+            if ret is not None:
+                name, offset = ret
+                if addr - offset != 0:
+                    name = Instruction.smartify_text(name)
+                    if show_offset and offset:
+                        name += "+{:#x}".format(offset)
+                    symbol = name
+        if symbol and bracket:
+            symbol = "{:s}{:s}{:s}".format(bracket[0], symbol, bracket[1])
+        if show_address and addr is not None:
+            address = AddressUtil.format_address(addr) if nocolor else ProcessMap.lookup_address(addr)
+            return "{!s}{:s}".format(address, " " + symbol if symbol else "")
+        return symbol
 
     @staticmethod
-    @Cache.cache_this_session(until_new_objfile=True)
-    def get_symbol_string(addr, nosymbol_string=""):
-        """e.g., 0xffffffff9f6bd2a1 -> ' <commit_creds+0x1>'. Be careful to include leading spaces."""
-        if addr is None:
-            return nosymbol_string
-        try:
-            if isinstance(addr, str):
-                addr = Color.remove_color(addr)
-                addr = int(addr, 16)
-            ret = Symbol.gdb_get_location(addr)
-            if ret is None and is_in_kernel():
-                # Do not call get_kallsyms() here: on KGDB its initial scan can be
-                # prohibitively slow. A previously parsed result is enough to name
-                # callbacks in commands such as ktimer and ksyscalls.
-                ret = Ksym.get_location_from_peek(addr)
-            if ret is None:
-                return nosymbol_string
-        except (ValueError, gdb.error):
-            return nosymbol_string
-
-        sym_name, sym_offset = ret[0], ret[1]
-        if addr - sym_offset == 0:
-            return nosymbol_string
-
-        sym_name = Instruction.smartify_text(sym_name)
-        if sym_offset == 0:
-            return " <{}>".format(sym_name)
-        else:
-            return " <{}+{:#x}>".format(sym_name, sym_offset)
-
-    @staticmethod
-    def get_symbol_by_monitor(symbol):
+    def resolve_kdb_address(name):
+        """resolve_kdb_address("_stext") -> 0xffffffff81000000.
+        resolve_kdb_address("missing") -> None.
+        """
         if not is_kdb():
             return None
-        res = gdb.execute("monitor {:s}".format(symbol), to_string=True)
-        r = re.search(symbol + r" = 0x(\S+)", res)
-        if not r:
+        text = gdb.execute("monitor {:s}".format(name), to_string=True)
+        match = re.search(re.escape(name) + r" = 0x([0-9a-fA-F]+)\b", text)
+        if not match:
             return None
-        v = int(r.group(1), 16)
-        if not is_valid_addr(v):
-            return None
-        return v
+        address = int(match.group(1), 16)
+        return address if is_valid_addr(address) else None
 
 
 class ProgressBar:
@@ -18943,7 +18960,9 @@ class CanaryCommand(GenericCommand):
                     return None
             else:
                 try:
-                    canary_location = int(gdb.parse_and_eval("&__stack_chk_guard"))
+                    canary_location = Symbol.resolve_address("__stack_chk_guard")
+                    if canary_location is None:
+                        return None
                     canary = read_int_from_memory(canary_location)
                     return canary, canary_location
                 except (gdb.error, gdb.MemoryError):
@@ -19206,7 +19225,7 @@ class SignalHandlersCommand(GenericCommand, BufferingOutput):
             return "SIG_DFL"
         if handler == 1:
             return "SIG_IGN"
-        symbol = Symbol.get_symbol_string(handler, nosymbol_string="").strip()
+        symbol = Symbol.format(handler)
         value = AddressUtil.format_address(handler, long_fmt=True)
         return "{:s} {:s}".format(value, symbol).rstrip()
 
@@ -19909,7 +19928,7 @@ class CppVtableCommand(GenericCommand, BufferingOutput):
         if not vptr or not name or name.endswith("[...]"):
             raise ValueError("Invalid RTTI at {:#x}".format(address))
 
-        location = Symbol.gdb_get_location(vptr)
+        location = Symbol.lookup_gdb(vptr)
         if location:
             kind_name = location[0]
         else:
@@ -20024,10 +20043,10 @@ class CppVtableCommand(GenericCommand, BufferingOutput):
         return ProcessMap.lookup_address(address).is_in_text_segment()
 
     def dump_functions(self, table, count):
-        table_symbol = Symbol.gdb_get_location(table["vptr"])
+        table_symbol = Symbol.lookup_gdb(table["vptr"])
         for i in range(count):
             slot = table["vptr"] + i * self.ptrsize
-            slot_symbol = Symbol.gdb_get_location(slot)
+            slot_symbol = Symbol.lookup_gdb(slot)
             if table_symbol and slot_symbol and slot_symbol[0] != table_symbol[0]:
                 break
             function = read_int_from_memory(slot, safe=True)
@@ -20045,11 +20064,8 @@ class CppVtableCommand(GenericCommand, BufferingOutput):
                         break
             if function and not self.is_function(function):
                 break
-            if function:
-                symbol = Symbol.get_symbol_string(function)
-            else:
-                symbol = " <null>"
-            self.out.append("{:10s} {!s}{:s}".format("[{:d}]".format(i), ProcessMap.lookup_address(function), symbol))
+            symbol = Symbol.format(function, missing="NO_SYMBOL", show_address=True)
+            self.out.append("{:10s} {:s}".format("[{:d}]".format(i), symbol))
         else:
             self.warn_add_out("Function entry limit reached; use --count to adjust it")
         return
@@ -20079,7 +20095,7 @@ class CppVtableCommand(GenericCommand, BufferingOutput):
             else:
                 rtti = None
             if rtti is None:
-                symbol = Symbol.gdb_get_location(table["vptr"] - self.ptrsize)
+                symbol = Symbol.lookup_gdb(table["vptr"] - self.ptrsize)
                 if not (symbol and symbol[0].startswith(("vtable for ", "_ZTV"))) and not any(
                     self.is_function(read_int_from_memory(table["vptr"] + i * self.ptrsize, safe=True))
                     for i in range(3)
@@ -20103,8 +20119,8 @@ class CppVtableCommand(GenericCommand, BufferingOutput):
         for address, entry in tables.items():
             self.out.append("")
             self.out.append("{:10s} {!s} (offset {:+d})".format("Subobject:", ProcessMap.lookup_address(address), address - table["top"]))
-            self.out.append("{:10s} {!s}{:s}".format("vptr:", ProcessMap.lookup_address(entry["vptr"]), Symbol.get_symbol_string(entry["vptr"])))
-            self.out.append("{:10s} {!s}{:s}".format("RTTI:", ProcessMap.lookup_address(entry["rtti"]), Symbol.get_symbol_string(entry["rtti"])))
+            self.out.append("{:10s} {:s}".format("vptr:", Symbol.format(entry["vptr"], show_address=True)))
+            self.out.append("{:10s} {:s}".format("RTTI:", Symbol.format(entry["rtti"], show_address=True)))
             self.out.append("offset-to-top: {:d}".format(entry["offset_to_top"]))
             self.dump_functions(entry, args.count)
 
@@ -21290,8 +21306,7 @@ class ProcDumpCommand(GenericCommand, BufferingOutput):
                     self.out.append("{:2d} {:s}: {:s}".format(i + 1, elem_name, elem))
             else: # argN, sp, pc
                 address = int(elem, 0)
-                sym = Symbol.get_symbol_string(address)
-                elem = "{!s}{:s}".format(ProcessMap.lookup_address(address), sym)
+                elem = Symbol.format(address, show_address=True)
                 self.out.append("{:2d} {:s}: {:s}".format(i + 1, elem_name, elem))
         return
 
@@ -21326,8 +21341,7 @@ class ProcDumpCommand(GenericCommand, BufferingOutput):
 
             if i + 1 in [26, 27, 28, 29, 30, 45, 46, 47, 48, 49, 50, 51]:
                 address = int(elem)
-                sym = Symbol.get_symbol_string(address)
-                elem = "{!s}{:s}".format(ProcessMap.lookup_address(address), sym)
+                elem = Symbol.format(address, show_address=True)
             elif i + 1 in [23, 33, 34]:
                 elem = hex(int(elem))
             self.out.append("{:2d} {:s}: {:s}".format(i + 1, elem_name, elem))
@@ -23579,13 +23593,11 @@ class PtrDemangleCommand(GenericCommand):
         info("Cookie is {:s}".format(Color.colorify_hex(cookie, "bold")))
 
         decoded = current_arch.decode_cookie(args.value, cookie)
-        decoded = ProcessMap.lookup_address(decoded)
-        decoded_sym = Symbol.get_symbol_string(decoded.value)
-        if is_valid_addr(decoded.value):
+        if is_valid_addr(decoded):
             valid_msg = Color.colorify("valid", "bold green")
         else:
             valid_msg = Color.colorify("invalid", "bold red")
-        info("Decoded value is {!s}{:s} [{:s}]".format(decoded, decoded_sym, valid_msg))
+        info("Decoded value is {:s} [{:s}]".format(Symbol.format(decoded, show_address=True), valid_msg))
         return
 
 
@@ -23659,11 +23671,10 @@ class SearchMangledPtrCommand(GenericCommand):
         return
 
     def print_loc(self, addr, value, decoded):
-        addr_sym = Symbol.get_symbol_string(addr)
-        decoded = ProcessMap.lookup_address(decoded)
-        decoded_sym = Symbol.get_symbol_string(decoded.value)
+        addr_sym = Symbol.format(addr)
+        addr_sym = " " + addr_sym if addr_sym else ""
 
-        if is_valid_addr(decoded.value):
+        if is_valid_addr(decoded):
             valid_msg = Color.colorify("valid", "bold green")
         else:
             valid_msg = Color.colorify("invalid", "bold red")
@@ -23672,7 +23683,9 @@ class SearchMangledPtrCommand(GenericCommand):
         width = AddressUtil.get_format_address_width()
         addr = Color.colorify("{:#0{:d}x}".format(addr, width), base_address_color)
 
-        gef_print("  {:s}{:s}: {:#x} (={!s}{:s}) [{:s}]".format(addr, addr_sym, value, decoded, decoded_sym, valid_msg))
+        gef_print("  {:s}{:s}: {:#x} (={:s}) [{:s}]".format(
+            addr, addr_sym, value, Symbol.format(decoded, show_address=True), valid_msg,
+        ))
         return
 
     def search_mangled_ptr(self, start_address, end_address, cookie):
@@ -24803,7 +24816,7 @@ class ReadSystemRegisterForKgdbCommand(GenericCommand):
         for symbol in d["sym"]:
             # resolve symbol
             if is_kdb():
-                address = Symbol.get_symbol_by_monitor(symbol)
+                address = Symbol.resolve_kdb_address(symbol)
             else:
                 address = Ksym.get_addr(symbol)
             if address is None:
@@ -25604,9 +25617,7 @@ class UnicornEmulator:
             if address is None:
                 return "UNKNOWN"
             try:
-                addr = ProcessMap.lookup_address(address)
-                sym = Symbol.get_symbol_string(addr.value, nosymbol_string=" <NO_SYMBOL>")
-                return "{!s}{:s}".format(addr, sym)
+                return Symbol.format(address, missing="NO_SYMBOL", show_address=True)
             except Exception:
                 return "{:#x} <NO_SYMBOL>".format(address)
 
@@ -26399,10 +26410,10 @@ class UnicornEmulator:
                     continue
 
                 # get original function (e.g., __memmove_avx_unaligned_erms -> __memmove)
-                base_func_addr = Symbol.get_address("&{:s}".format(base_func_name))
+                base_func_addr = Symbol.resolve_address(base_func_name)
                 if base_func_addr is None:
                     base_func_name = "__" + base_func_name # e.g., __memmove_chk
-                    base_func_addr = Symbol.get_address("&{:s}".format(base_func_name))
+                    base_func_addr = Symbol.resolve_address(base_func_name)
                     if base_func_addr is None:
                         continue
 
@@ -27700,10 +27711,10 @@ class UnicornEmulateScriptCommand(GenericCommand):
                     continue
 
                 # get original function (e.g., __memmove_avx_unaligned_erms -> __memmove)
-                base_func_addr = Symbol.get_address("&{:s}".format(base_func_name))
+                base_func_addr = Symbol.resolve_address(base_func_name)
                 if base_func_addr is None:
                     base_func_name = "__" + base_func_name # e.g., __memmove_chk
-                    base_func_addr = Symbol.get_address("&{:s}".format(base_func_name))
+                    base_func_addr = Symbol.resolve_address(base_func_name)
                     if base_func_addr is None:
                         continue
 
@@ -28784,9 +28795,8 @@ class GlibcHeapArenaCommand(GenericCommand, BufferingOutput):
     def parse_mp(self):
         """Parse and append a formatted representation of the malloc_par (mp_) structure
         to the output list."""
-        try:
-            mp = AddressUtil.parse_address("&mp_")
-        except gdb.error:
+        mp = Symbol.resolve_address("mp_")
+        if mp is None:
             mp = GlibcHeap.search_for_mp_()
             if mp is None:
                 self.out.append(titlify("[mp_]"))
@@ -29311,9 +29321,10 @@ class GlibcHeapBinsSimpleCommand(GenericCommand):
 
         # iterate arena ------------------------------------------------------------------------------------------------------
         for arena in arenas:
-            gef_print(titlify("arena: {:#x}{:s}".format(
-                arena.addr, Symbol.get_symbol_string(arena.addr)), color="bold", msg_color="bold"),
-            )
+            gef_print(titlify("arena: {:s}".format(
+                Symbol.format(arena.addr, show_address=True, nocolor=True)),
+                color="bold", msg_color="bold",
+            ))
 
             # tcache ---------------------------------------------------------------------------------------------------------
             TCACHE_SMALL_BINS = arena.TCACHE_SMALL_BINS()
@@ -29329,12 +29340,10 @@ class GlibcHeapBinsSimpleCommand(GenericCommand):
                         if isinstance(c, str):
                             m.append(Color.colorify(c, corrupted_msg_color))
                         elif libc_version < (2, 42) or i < TCACHE_SMALL_BINS:
-                            m.append("{!s}{:s}".format(
-                                ProcessMap.lookup_address(c), Symbol.get_symbol_string(c),
-                            ))
+                            m.append(Symbol.format(c, show_address=True))
                         else:
-                            m.append("{!s}{:s}{:s}".format(
-                                ProcessMap.lookup_address(c), Symbol.get_symbol_string(c), get_size(arena, c, from_base=False),
+                            m.append("{:s}{:s}".format(
+                                Symbol.format(c, show_address=True), get_size(arena, c, from_base=False),
                             ))
                     if m or self.args.verbose:
                         count = arena.tcachebins_i_count(i)
@@ -29359,9 +29368,7 @@ class GlibcHeapBinsSimpleCommand(GenericCommand):
                         if isinstance(c, str):
                             m.append(Color.colorify(c, corrupted_msg_color))
                         else:
-                            m.append("{!s}{:s}".format(
-                                ProcessMap.lookup_address(c), Symbol.get_symbol_string(c),
-                            ))
+                            m.append(Symbol.format(c, show_address=True))
                     if m or self.args.verbose:
                         bin_table = GlibcHeap.get_binsize_table()["fastbins"]
                         if i in bin_table:
@@ -29379,9 +29386,7 @@ class GlibcHeapBinsSimpleCommand(GenericCommand):
                     if isinstance(c, str):
                         m.append(Color.colorify(c, corrupted_msg_color))
                     else:
-                        m.append("{!s}{:s}{:s}".format(
-                            ProcessMap.lookup_address(c), Symbol.get_symbol_string(c), get_size(arena, c),
-                        ))
+                        m.append("{:s}{:s}".format(Symbol.format(c, show_address=True), get_size(arena, c)))
                 if m or self.args.verbose:
                     gef_print("any [0]: {:s}".format(" <-> ".join(m)).rstrip())
 
@@ -29393,9 +29398,7 @@ class GlibcHeapBinsSimpleCommand(GenericCommand):
                     if isinstance(c, str):
                         m.append(Color.colorify(c, corrupted_msg_color))
                     else:
-                        m.append("{!s}{:s}".format(
-                            ProcessMap.lookup_address(c), Symbol.get_symbol_string(c),
-                        ))
+                        m.append(Symbol.format(c, show_address=True))
                 if m or self.args.verbose:
                     size = GlibcHeap.get_binsize_table()["small_bins"][i]["size"]
                     gef_print("{:#x} [{:d}]: {:s}".format(size, i, " <-> ".join(m)).rstrip())
@@ -29408,9 +29411,7 @@ class GlibcHeapBinsSimpleCommand(GenericCommand):
                     if isinstance(c, str):
                         m.append(Color.colorify(c, corrupted_msg_color))
                     else:
-                        m.append("{!s}{:s}{:s}".format(
-                            ProcessMap.lookup_address(c), Symbol.get_symbol_string(c), get_size(arena, c),
-                        ))
+                        m.append("{:s}{:s}".format(Symbol.format(c, show_address=True), get_size(arena, c)))
                 if m or self.args.verbose:
                     size_min = GlibcHeap.get_binsize_table()["large_bins"][i]["size_min"]
                     size_max = GlibcHeap.get_binsize_table()["large_bins"][i]["size_max"]
@@ -29419,15 +29420,11 @@ class GlibcHeapBinsSimpleCommand(GenericCommand):
             gef_print(titlify("arena"))
             # top ------------------------------------------------------------------------------------------------------------
             top = arena.top
-            gef_print("top: {!s}{:s}{:s}".format(
-                ProcessMap.lookup_address(top), Symbol.get_symbol_string(top), get_size(arena, top),
-            ))
+            gef_print("top: {:s}{:s}".format(Symbol.format(top, show_address=True), get_size(arena, top)))
 
             # last_remainder -------------------------------------------------------------------------------------------------
             lm = arena.last_remainder
-            gef_print("last_remainder: {!s}{:s}{:s}".format(
-                ProcessMap.lookup_address(lm), Symbol.get_symbol_string(lm), get_size(arena, lm),
-            ))
+            gef_print("last_remainder: {:s}{:s}".format(Symbol.format(lm, show_address=True), get_size(arena, lm)))
         return
 
     @Decorator.parse_args
@@ -29767,9 +29764,10 @@ class GlibcHeapBinsCommand(GenericCommand, GlibcHeapBinsDump, BufferingOutput):
         # doit
         self.out = []
         for arena in arenas:
-            self.out.append(titlify("arena: {:#x}{:s}".format(
-                arena.addr, Symbol.get_symbol_string(arena.addr)), color="bold", msg_color="bold"),
-            )
+            self.out.append(titlify("arena: {:s}".format(
+                Symbol.format(arena.addr, show_address=True, nocolor=True)),
+                color="bold", msg_color="bold",
+            ))
 
             # tcache
             self.print_tcache(arena, args.verbose)
@@ -29858,9 +29856,10 @@ class GlibcHeapTcachebinsCommand(GenericCommand, GlibcHeapBinsDump, BufferingOut
         # doit
         self.out = []
         for arena in arenas:
-            self.out.append(titlify("arena: {:#x}{:s}".format(
-                arena.addr, Symbol.get_symbol_string(arena.addr)), color="bold", msg_color="bold"),
-            )
+            self.out.append(titlify("arena: {:s}".format(
+                Symbol.format(arena.addr, show_address=True, nocolor=True)),
+                color="bold", msg_color="bold",
+            ))
             self.print_tcache(arena, args.verbose, args.index_filter)
         self.print_output(check_terminal_size=True)
         return
@@ -29912,9 +29911,10 @@ class GlibcHeapFastbinsYCommand(GenericCommand, GlibcHeapBinsDump, BufferingOutp
         # doit
         self.out = []
         for arena in arenas:
-            self.out.append(titlify("arena: {:#x}{:s}".format(
-                arena.addr, Symbol.get_symbol_string(arena.addr)), color="bold", msg_color="bold"),
-            )
+            self.out.append(titlify("arena: {:s}".format(
+                Symbol.format(arena.addr, show_address=True, nocolor=True)),
+                color="bold", msg_color="bold",
+            ))
             self.print_fastbin(arena, args.verbose, args.index_filter)
         self.print_output(check_terminal_size=True)
         return
@@ -29964,9 +29964,10 @@ class GlibcHeapUnsortedBinsCommand(GenericCommand, GlibcHeapBinsDump, BufferingO
         # doit
         self.out = []
         for arena in arenas:
-            self.out.append(titlify("arena: {:#x}{:s}".format(
-                arena.addr, Symbol.get_symbol_string(arena.addr)), color="bold", msg_color="bold"),
-            )
+            self.out.append(titlify("arena: {:s}".format(
+                Symbol.format(arena.addr, show_address=True, nocolor=True)),
+                color="bold", msg_color="bold",
+            ))
             self.out.append(titlify("unsorted bin"))
             nb_chunk = self.pprint_bin(arena, 0, "unsorted_bin", args.verbose)
             self.info_add_out("Found {:d} valid chunks in unsorted bin (when traced from `bk`)".format(nb_chunk))
@@ -30020,9 +30021,10 @@ class GlibcHeapSmallBinsCommand(GenericCommand, GlibcHeapBinsDump, BufferingOutp
         # doit
         self.out = []
         for arena in arenas:
-            self.out.append(titlify("arena: {:#x}{:s}".format(
-                arena.addr, Symbol.get_symbol_string(arena.addr)), color="bold", msg_color="bold"),
-            )
+            self.out.append(titlify("arena: {:s}".format(
+                Symbol.format(arena.addr, show_address=True, nocolor=True)),
+                color="bold", msg_color="bold",
+            ))
             self.out.append(titlify("small bins"))
             bins = {}
             for i in range(1, 63):
@@ -30088,9 +30090,10 @@ class GlibcHeapLargeBinsCommand(GenericCommand, GlibcHeapBinsDump, BufferingOutp
         # doit
         self.out = []
         for arena in arenas:
-            self.out.append(titlify("arena: {:#x}{:s}".format(
-                arena.addr, Symbol.get_symbol_string(arena.addr)), color="bold", msg_color="bold"),
-            )
+            self.out.append(titlify("arena: {:s}".format(
+                Symbol.format(arena.addr, show_address=True, nocolor=True)),
+                color="bold", msg_color="bold",
+            ))
             self.out.append(titlify("large bins"))
             bins = {}
             for i in range(63, 126):
@@ -30162,7 +30165,7 @@ class GlibcHeapTryFreeCommand(GenericCommand):
         caller_address = None
 
         # PLT pattern (e.g., &'malloc@plt')
-        caller_address = Symbol.get_address("&'{:s}@plt'".format(name))
+        caller_address = Symbol.resolve_address("'{:s}@plt'".format(name))
         if caller_address is not None:
             # If you use PLT, only userland binary's PLT is valid (libc PLT is invalid)
             x = ProcessMap.lookup_address(caller_address)
@@ -30170,7 +30173,7 @@ class GlibcHeapTryFreeCommand(GenericCommand):
                 return caller_address
 
         # real address (not PLT)
-        caller_address = Symbol.get_address("&{:s}".format(name))
+        caller_address = Symbol.resolve_address(name)
         return caller_address
 
     def make_patch_info(self, caller_address, arg1, arg2):
@@ -34545,12 +34548,12 @@ class KernelChecksecCommand(GenericCommand):
                     break
             else:
                 if kernel_area and start < kernel_area[1] and kernel_area[0] < end:
-                    label = Symbol.get_symbol_string(start, nosymbol_string="").strip()
+                    label = Symbol.format(start)
                     categories["kernel"].append((start, end, label))
                 elif module_area and start < module_area[1] and module_area[0] < end:
                     categories["other"].append((start, end, "module allocation area (unresolved/JIT)"))
                 else:
-                    label = Symbol.get_symbol_string(start, nosymbol_string="").strip()
+                    label = Symbol.format(start)
                     categories["other"].append((start, end, label))
 
         def print_category(name, entries):
@@ -38825,11 +38828,10 @@ class UnwindInfoCommand(GenericCommand):
         fde_start = fde["pc_begin"] + load_bias
         fde_end = fde["pc_end"] + load_bias
 
-        symbol = Symbol.get_symbol_string(pc)
         lines = [
             ("CIE", "{:#x}".format(cie["address"] + load_bias)),
             ("FDE", "{:#x} [{:#x}-{:#x})".format(fde["address"] + load_bias, fde_start, fde_end)),
-            ("PC", "{!s}{:s}".format(ProcessMap.lookup_address(pc), symbol)),
+            ("PC", Symbol.format(pc, show_address=True)),
             ("CFA", handler.format_cfa_rule(state["cfa"])),
             ("RA", handler.format_register_rule(registers.get(return_register, ("undefined",)))),
         ]
@@ -40076,7 +40078,7 @@ class ContextCodeCommand(GenericCommand):
         #   x86/x64 (default): call ... [rip+0x1111] # 0xAABBCCDD
         if " # 0x" in ops and not is_loongarch64():
             addr = ContextCodeCommand.RE_SUB_BRANCH_ADDR1.sub(r"\1", ops)
-            ptr = GefUtil.parse_and_eval_unsigned(addr)
+            ptr = to_unsigned_long(gdb.parse_and_eval(addr))
             value = read_int_from_memory(ptr, safe=True)
             if value is None:
                 if to_str:
@@ -40090,7 +40092,7 @@ class ContextCodeCommand(GenericCommand):
         #   loongarch64: bnez $t1, -8 (0x7ffff8) # 0x120000868
         if " # 0x" in ops and is_loongarch64():
             addr = ContextCodeCommand.RE_SUB_BRANCH_ADDR2.sub(r"\1", ops)
-            ptr = GefUtil.parse_and_eval_unsigned(addr)
+            ptr = to_unsigned_long(gdb.parse_and_eval(addr))
             if to_str:
                 return "{:#x}".format(ptr)
             else:
@@ -40108,7 +40110,7 @@ class ContextCodeCommand(GenericCommand):
                 if is_x86_64():
                     addr = re.sub(r"\$(rip|eip)\b", r"($\1+{:#x})".format(len(insn.opcodes)), addr)
                 try:
-                    ptr = GefUtil.parse_and_eval_unsigned(addr)
+                    ptr = to_unsigned_long(gdb.parse_and_eval(addr))
                 except gdb.error:
                     return None
                 if is_x86_64() and re.search(r"\$e(?:ax|bx|cx|dx|si|di|sp|bp|ip)\b|\$r\d+d\b", addr):
@@ -40128,7 +40130,7 @@ class ContextCodeCommand(GenericCommand):
         if is_x86_64():
             if " PTR fs:" in ops or " ptr fs:" in ops:
                 ofs = ContextCodeCommand.RE_SUB_BRANCH_ADDR4.sub(r"\2", ops)
-                ofs = GefUtil.parse_and_eval_unsigned(ofs)
+                ofs = to_unsigned_long(gdb.parse_and_eval(ofs))
                 fs = current_arch.get_fs()
                 if fs is None:
                     return None
@@ -40147,7 +40149,7 @@ class ContextCodeCommand(GenericCommand):
         if is_x86_32():
             if " PTR gs:" in ops or " ptr gs:" in ops:
                 ofs = ContextCodeCommand.RE_SUB_BRANCH_ADDR5.sub(r"\2", ops)
-                ofs = GefUtil.parse_and_eval_unsigned(ofs)
+                ofs = to_unsigned_long(gdb.parse_and_eval(ofs))
                 gs = current_arch.get_gs()
                 if gs is None:
                     return None
@@ -40195,9 +40197,9 @@ class ContextCodeCommand(GenericCommand):
         if "0x" in ops:
             addr = ContextCodeCommand.RE_SUB_BRANCH_ADDR7.sub(r"\1", ops)
             if to_str:
-                return "{:#x}".format(GefUtil.parse_and_eval_unsigned(addr))
+                return "{:#x}".format(to_unsigned_long(gdb.parse_and_eval(addr)))
             else:
-                return GefUtil.parse_and_eval_unsigned(addr)
+                return to_unsigned_long(gdb.parse_and_eval(addr))
 
         # is there register(s)?
         #   x86/x64: call   rax
@@ -40676,7 +40678,7 @@ class ContextArgumentsCommand(GenericCommand):
             return None
 
         # something is wrong
-        ret = Symbol.gdb_get_location(addr)
+        ret = Symbol.lookup_gdb(addr)
         if not ret:
             return None
 
@@ -40867,9 +40869,7 @@ class ContextArgumentsCommand(GenericCommand):
         # no symbols, try extract target address
         addr = ContextCodeCommand.get_branch_addr(insn)
         if addr is not None:
-            function_name = "{:#x}{:s}".format(
-                addr, Symbol.get_symbol_string(addr, nosymbol_string=" <NO_SYMBOL>"),
-            )
+            function_name = Symbol.format(addr, missing="NO_SYMBOL", show_address=True, nocolor=True)
         else:
             # failed, use raw operands
             function_name = " ".join(insn.operands)
@@ -41160,11 +41160,11 @@ class ContextTraceCommand(GenericCommand):
                 pc = current_frame.pc()
                 if is_x86_16():
                     pc = current_arch.real2phys("$cs", pc)
-                sym = Symbol.get_symbol_string(pc, nosymbol_string=" <NO_SYMBOL>")
+                location = Symbol.format(pc, missing="NO_SYMBOL", show_address=True)
 
                 # frame name
                 """
-                Frame names (=current_frmae.name()) and symbols (=Symbol.get_symbol_string(current_frame.pc()))
+                Frame names (=current_frmae.name()) and symbols (=Symbol.format(current_frame.pc()))
                 usually match, but sometimes they don't. This is an example.
 
                 gef> bt
@@ -41185,7 +41185,7 @@ class ContextTraceCommand(GenericCommand):
                 Therefore, the frame name is also displayed if it differs.
                 """
                 try:
-                    ret = Symbol.gdb_get_location(pc)
+                    ret = Symbol.lookup_gdb(pc)
                     if ret is None:
                         frame_name = None
                     elif ret[0] == current_frame.name():
@@ -41206,13 +41206,11 @@ class ContextTraceCommand(GenericCommand):
                 # print
                 if frame_name:
                     frame_name = Color.colorify(frame_name, "bold yellow")
-                    gef_print("[{:s}{:s}] {!s}{:s} (frame name: {:s})".format(
-                        current_frame_symbol, idx, ProcessMap.lookup_address(pc), sym, frame_name,
+                    gef_print("[{:s}{:s}] {:s} (frame name: {:s})".format(
+                        current_frame_symbol, idx, location, frame_name,
                     ), redirect=redirect)
                 else:
-                    gef_print("[{:s}{:s}] {!s}{:s}".format(
-                        current_frame_symbol, idx, ProcessMap.lookup_address(pc), sym,
-                    ), redirect=redirect)
+                    gef_print("[{:s}{:s}] {:s}".format(current_frame_symbol, idx, location), redirect=redirect)
 
                 # go next frame
                 try:
@@ -41371,8 +41369,7 @@ class ContextThreadsCommand(GenericCommand):
                         # if failed, print thread information without frame (but with $pc).
                         pc = get_register("$pc")
                     # make reason
-                    sym = Symbol.get_symbol_string(pc, nosymbol_string=" <NO_SYMBOL>")
-                    line += " at {!s}{:s}".format(ProcessMap.lookup_address(pc), sym)
+                    line += " at " + Symbol.format(pc, missing="NO_SYMBOL", show_address=True)
                     line += ", reason: {:s}".format(Color.colorify(self.reason(), "bold magenta"))
 
                 lines.append([thread.num, line])
@@ -42285,10 +42282,7 @@ class PatchCommand(GenericCommand):
 
             # print
             if not silent:
-                ok("Patch success: {!s}{:s}: {:s} -> {:s}".format(
-                    ProcessMap.lookup_address(self.addr), Symbol.get_symbol_string(self.addr),
-                    self.b(), self.a(),
-                ))
+                ok("Patch success: {:s}: {:s} -> {:s}".format(Symbol.format(self.addr, show_address=True), self.b(), self.a()))
 
             return
 
@@ -42327,10 +42321,7 @@ class PatchCommand(GenericCommand):
 
             # print
             if not silent:
-                ok("Revert success: {!s}{:s}: {:s} -> {:s}".format(
-                    ProcessMap.lookup_address(self.addr), Symbol.get_symbol_string(self.addr),
-                    self.a(), self.b(),
-                ))
+                ok("Revert success: {:s}: {:s} -> {:s}".format(Symbol.format(self.addr, show_address=True), self.a(), self.b()))
 
             return
 
@@ -43145,9 +43136,8 @@ class PatchHistoryCommand(PatchCommand, BufferingOutput):
                         if j > 8:
                             self.out.append("    ...")
                             break
-                    self.out.append("    {!s}{:s}: {:s} -> {:s}".format(
-                        ProcessMap.lookup_address(patch_info.addr),
-                        Symbol.get_symbol_string(patch_info.addr),
+                    self.out.append("    {:s}: {:s} -> {:s}".format(
+                        Symbol.format(patch_info.addr, show_address=True),
                         patch_info.b(), patch_info.a(),
                     ))
                 self.out.append("[{:s}]".format(Color.boldify("{:d}".format(i))))
@@ -44550,9 +44540,9 @@ class XInfoCommand(GenericCommand):
                 zone_start, addr.info.name, addr.value - addr.info.zone_start,
             ))
 
-        sym = Symbol.get_symbol_string(address)
+        sym = Symbol.format(address)
         if sym:
-            msg = "Symbol:                {:s}".format(sym.strip())
+            msg = "Symbol:                {:s}".format(sym)
             gef_print(msg)
 
         if addr.section and addr.section.inode:
@@ -46935,11 +46925,10 @@ class DynamicCommand(GenericCommand, BufferingOutput):
         if not filename_or_addr:
             # fast path
             try:
-                dynamic = AddressUtil.parse_address("(void*) &_DYNAMIC")
-                dynamic = ProcessMap.lookup_address(dynamic)
+                dynamic = Symbol.resolve_address("_DYNAMIC")
                 # patchelf may leave _DYNAMIC pointing to a clobbered old .dynamic section.
-                if read_memory(dynamic.value, 4) != b"\x5a\x5a\x5a\x5a":
-                    return dynamic
+                if dynamic is not None and read_memory(dynamic, 4) != b"\x5a\x5a\x5a\x5a":
+                    return ProcessMap.lookup_address(dynamic)
             except gdb.error:
                 pass
 
@@ -47405,16 +47394,15 @@ class DestructorDumpCommand(GenericCommand):
                 decoded_fn = func.value
             else:
                 decoded_fn = current_arch.decode_cookie(func.value, cookie)
-            decoded_fn = ProcessMap.lookup_address(decoded_fn)
-            sym = Symbol.get_symbol_string(decoded_fn.value)
 
-            if is_valid_addr(decoded_fn.value):
+            if is_valid_addr(decoded_fn):
                 valid_msg = Color.colorify("valid", "bold green")
             else:
                 valid_msg = Color.colorify("invalid", "bold red")
 
-            gef_print("    -> func:     {:s}: {!s} (={!s}{:s}) [{:s}]".format(
-                self.C(current), func, decoded_fn, sym, "not decoded" if cookie is None else valid_msg,
+            gef_print("    -> func:     {:s}: {!s} (={:s}) [{:s}]".format(
+                self.C(current), func, Symbol.format(decoded_fn, show_address=True),
+                "not decoded" if cookie is None else valid_msg,
             ))
             gef_print("       obj:      {:s}: {!s}".format(
                 self.C(current + ptrsize * 1), obj,
@@ -47429,9 +47417,8 @@ class DestructorDumpCommand(GenericCommand):
         return
 
     def dump_exit_funcs(self, name, cookie):
-        try:
-            head_p = AddressUtil.parse_address("&" + name)
-        except gdb.error:
+        head_p = Symbol.resolve_address(name)
+        if head_p is None:
             err("Could not find symbol ({:s})".format(name))
             return
 
@@ -47486,12 +47473,10 @@ class DestructorDumpCommand(GenericCommand):
                     decoded_fn = fn.value
                 else:
                     decoded_fn = current_arch.decode_cookie(fn.value, cookie)
-                decoded_fn = ProcessMap.lookup_address(decoded_fn)
-                sym = Symbol.get_symbol_string(decoded_fn.value)
 
                 if cookie is None:
                     valid_msg = "not decoded"
-                elif is_valid_addr(decoded_fn.value):
+                elif is_valid_addr(decoded_fn):
                     valid_msg = Color.colorify("valid", "bold green")
                 else:
                     valid_msg = Color.colorify("invalid", "bold red")
@@ -47499,7 +47484,9 @@ class DestructorDumpCommand(GenericCommand):
                 fns = "       fns[{:#x}]: {:s}:".format(i, self.C(addr))
                 width = len(fns) - 9
                 gef_print("{} flavor:     {!s}".format(fns, flavor))
-                gef_print("{} func:       {!s} (={!s}{:s}) [{:s}]".format(" " * width, fn, decoded_fn, sym, valid_msg))
+                gef_print("{} func:       {!s} (={:s}) [{:s}]".format(
+                    " " * width, fn, Symbol.format(decoded_fn, show_address=True), valid_msg,
+                ))
                 gef_print("{} arg:        {!s}".format(" " * width, arg))
                 gef_print("{} dso_handle: {!s}".format(" " * width, dso_handle))
             current = next.value
@@ -47556,9 +47543,7 @@ class DestructorDumpCommand(GenericCommand):
 
                 # print .fini
                 gef_print(link_map.name)
-                fini = ProcessMap.lookup_address(fini)
-                sym = Symbol.get_symbol_string(fini.value)
-                gef_print("    -> {!s}{:s}".format(fini, sym))
+                gef_print("    -> {:s}".format(Symbol.format(fini, show_address=True)))
         else:
             # Static binary has no _DYNAMIC, but we can resolve the target address
             # from section name due to local file path.
@@ -47571,9 +47556,7 @@ class DestructorDumpCommand(GenericCommand):
             if fini < codebase:
                 fini += codebase
             gef_print(self.local_filepath)
-            fini = ProcessMap.lookup_address(fini)
-            sym = Symbol.get_symbol_string(fini.value)
-            gef_print("    -> {!s}{:s}".format(fini, sym))
+            gef_print("    -> {:s}".format(Symbol.format(fini, show_address=True)))
         return
 
     def dump_fini_array(self, codebase):
@@ -47619,9 +47602,7 @@ class DestructorDumpCommand(GenericCommand):
                 # print .fini_array
                 gef_print(link_map.name)
                 for addr, func in entries:
-                    func = ProcessMap.lookup_address(func)
-                    sym = Symbol.get_symbol_string(func.value)
-                    gef_print("    -> {:s}: {!s}{:s}".format(self.C(addr), func, sym))
+                    gef_print("    -> {:s}: {:s}".format(self.C(addr), Symbol.format(func, show_address=True)))
         else:
             # Static binary has no _DYNAMIC, but we can resolve the target address
             # from section name due to local file path.
@@ -47643,9 +47624,7 @@ class DestructorDumpCommand(GenericCommand):
                 return
             gef_print(self.local_filepath)
             for addr, func in entries:
-                func = ProcessMap.lookup_address(func)
-                sym = Symbol.get_symbol_string(func.value)
-                gef_print("    -> {:s}: {!s}{:s}".format(self.C(addr), func, sym))
+                gef_print("    -> {:s}: {:s}".format(self.C(addr), Symbol.format(func, show_address=True)))
         return
 
     @Decorator.parse_args
@@ -47716,11 +47695,7 @@ class FpChainCommand(GenericCommand):
     _syntax_ = parser.format_help()
 
     def get_io_list_all(self):
-        try:
-            return AddressUtil.parse_address("(void*) &_IO_list_all")
-        except gdb.error:
-            pass
-        return None
+        return Symbol.resolve_address("_IO_list_all")
 
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
@@ -47734,9 +47709,7 @@ class FpChainCommand(GenericCommand):
         else:
             io_list_all = args.address
 
-        gef_print("[0]    {!s}{:s}".format(
-            ProcessMap.lookup_address(io_list_all), Symbol.get_symbol_string(io_list_all),
-        ))
+        gef_print("[0]    {:s}".format(Symbol.format(io_list_all, show_address=True)))
 
         if is_64bit():
             offset_of_chain = 0x68
@@ -47755,9 +47728,7 @@ class FpChainCommand(GenericCommand):
                 err("Loop detected at {:#x}".format(current))
                 break
             seen.add(current)
-            gef_print("[{:d}] -> {!s}{:s}".format(
-                i, ProcessMap.lookup_address(current), Symbol.get_symbol_string(current),
-            ))
+            gef_print("[{:d}] -> {:s}".format(i, Symbol.format(current, show_address=True)))
 
             i += 1
         return
@@ -47810,14 +47781,16 @@ class StandardIoCommand(GenericCommand, BufferingOutput):
             member_addr = st + member_offset
             if member_name == "__addr__":
                 address_obj = ProcessMap.lookup_address(st)
-                sym = Symbol.get_symbol_string(st)
+                sym = Symbol.format(st)
+                sym = " " + sym if sym else ""
                 msg += "{:s}{:{:d}s} ".format(address_obj.long_fmt(), sym, sym_width)
             elif not is_valid_addr(member_addr):
                 msg += "{:{:d}s}{:{:d}s} ".format("", val_width, "", sym_width)
             elif member_size == current_arch.ptrsize:
                 val = read_int_from_memory(member_addr)
                 address_obj = ProcessMap.lookup_address(val)
-                sym = Symbol.get_symbol_string(val)
+                sym = Symbol.format(val)
+                sym = " " + sym if sym else ""
                 msg += "{:s}{:{:d}s} ".format(address_obj.long_fmt(), sym, sym_width)
             elif member_size == 8:
                 val = read_int64_from_memory(member_addr)
@@ -48361,7 +48334,8 @@ class GotCommand(GenericCommand, BufferingOutput):
             elif plt_begin - self.base_address <= got_value < plt_end - self.base_address: # PIE
                 got_value_sym = self.get_section_sym(got_value)
             else:
-                got_value_sym = Symbol.get_symbol_string(got_value)
+                got_value_sym = Symbol.format(got_value)
+                got_value_sym = " " + got_value_sym if got_value_sym else ""
 
             # different colors if the function has been resolved or not
             if got_value == 0:
@@ -49033,9 +49007,7 @@ class TraceMallocRetBreakpoint(gdb.Breakpoint):
         def get_caller():
             try:
                 caller = get_insn_prev().address
-                caller = ProcessMap.lookup_address(caller)
-                sym = Symbol.get_symbol_string(caller.value, nosymbol_string=" <NO_SYMBOL>")
-                return "{!s}{:s}".format(caller, sym)
+                return Symbol.format(caller, missing="NO_SYMBOL", show_address=True)
             except Exception:
                 return ""
 
@@ -49251,9 +49223,7 @@ class TraceReallocRetBreakpoint(gdb.Breakpoint):
         def get_caller():
             try:
                 caller = get_insn_prev().address
-                caller = ProcessMap.lookup_address(caller)
-                sym = Symbol.get_symbol_string(caller.value, nosymbol_string=" <NO_SYMBOL>")
-                return "{!s}{:s}".format(caller, sym)
+                return Symbol.format(caller, missing="NO_SYMBOL", show_address=True)
             except Exception:
                 return ""
 
@@ -49441,9 +49411,7 @@ class TraceFreeBreakpoint(gdb.Breakpoint):
             try:
                 caller = gdb.selected_frame().older().pc()
                 caller = get_insn_prev(caller).address
-                caller = ProcessMap.lookup_address(caller)
-                sym = Symbol.get_symbol_string(caller.value, nosymbol_string=" <NO_SYMBOL>")
-                return "{!s}{:s}".format(caller, sym)
+                return Symbol.format(caller, missing="NO_SYMBOL", show_address=True)
             except Exception:
                 return ""
 
@@ -61915,10 +61883,12 @@ class MagicCommand(GenericCommand):
             return
 
         width = AddressUtil.get_format_address_width()
-        addr = Symbol.get_address(f"&{sym}")
+        addr = Symbol.resolve_address(sym.removeprefix("*"))
         if addr is None:
             gef_print("{:45s} {:>{:d}s}".format(sym, "Not found", width))
             return
+        if sym.startswith("*"):
+            addr = read_int_from_memory(addr)
 
         addr = ProcessMap.lookup_address(addr)
         perm = addr.section.permission
@@ -61929,7 +61899,8 @@ class MagicCommand(GenericCommand):
             ))
         else:
             val = ProcessMap.lookup_address(read_int_from_memory(addr.value))
-            val_sym = Symbol.get_symbol_string(val.value)
+            val_sym = Symbol.format(val.value)
+            val_sym = " " + val_sym if val_sym else ""
             gef_print("{:45s} {!s} [{!s}] ({:+#011x}) -> {:s}{:s}".format(
                 sym, addr, perm, addr.value - base, val.long_fmt(), val_sym,
             ))
@@ -61944,7 +61915,7 @@ class MagicCommand(GenericCommand):
         if not self.args.print_file_jumps:
             return
 
-        vtable = Symbol.get_address(f"&{sym}")
+        vtable = Symbol.resolve_address(sym)
         if vtable is None:
             return
 
@@ -69032,7 +69003,7 @@ class KernelAddressHeuristicFinder:
         if is_kgdb():
             cpu = KernelPerCpu.get_cpu_index(gdb.selected_thread())
             if cpu is not None:
-                task = GefUtil.parse_and_eval_unsigned("kgdb_info[{:d}].task".format(cpu))
+                task = to_unsigned_long(gdb.parse_and_eval("kgdb_info[{:d}].task".format(cpu)))
                 if task:
                     return task
 
@@ -69702,8 +69673,8 @@ class KernelAddressHeuristicFinder:
                 return x
             # the address from the debug information is not relocated by KASLR
             try:
-                x = GefUtil.parse_and_eval_unsigned("&chrdevs")
-                if is_chrdevs(x):
+                x = Symbol.resolve_address("chrdevs")
+                if x is not None and is_chrdevs(x):
                     return x
             except gdb.error:
                 pass
@@ -69797,8 +69768,8 @@ class KernelAddressHeuristicFinder:
                 return x
             # the address from the debug information is not relocated by KASLR
             try:
-                x = GefUtil.parse_and_eval_unsigned("&devices_kset")
-                if is_devices_kset(x):
+                x = Symbol.resolve_address("devices_kset")
+                if x is not None and is_devices_kset(x):
                     return x
             except gdb.error:
                 pass
@@ -75338,7 +75309,7 @@ class Kernel:
 
         def get_saved_command_line_candidates():
             if is_kdb():
-                yield Symbol.get_symbol_by_monitor("saved_command_line")
+                yield Symbol.resolve_kdb_address("saved_command_line")
             # cmdline_proc_show used by the heuristic does not exist when CONFIG_PROC_FS=n
             if KernelAddressHeuristicFinder.USE_DIRECTLY:
                 yield Ksym.get_addr("saved_command_line")
@@ -75796,10 +75767,10 @@ class KernelLayout:
                         return div0_handler
 
             elif is_kdb(): # not kgdb
-                r = Symbol.get_symbol_by_monitor("asm_exc_divide_error")
+                r = Symbol.resolve_kdb_address("asm_exc_divide_error")
                 if r:
                     return r
-                r = Symbol.get_symbol_by_monitor("divide_error")
+                r = Symbol.resolve_kdb_address("divide_error")
                 if r:
                     return r
 
@@ -75860,14 +75831,14 @@ class KernelLayout:
         if is_kdb():
             # no-symbol, but monitor may be used
             # The head of newer ARM64 (`_text` to `_stext`) is not mapped
-            dic["text_base"] = Symbol.get_symbol_by_monitor("_text")
+            dic["text_base"] = Symbol.resolve_kdb_address("_text")
             if not dic["text_base"] or not is_valid_addr(dic["text_base"]):
-                dic["text_base"] = Symbol.get_symbol_by_monitor("_stext")
-            dic["text_end"] = Symbol.get_symbol_by_monitor("_etext")
-            dic["rw_base"] = Symbol.get_symbol_by_monitor("_sdata")
-            dic["rw_end"] = Symbol.get_symbol_by_monitor("_edata")
-            dic["ro_base"] = Symbol.get_symbol_by_monitor("__start_rodata")
-            dic["ro_end"] = Symbol.get_symbol_by_monitor("__end_rodata_aligned") or Symbol.get_symbol_by_monitor("__end_rodata")
+                dic["text_base"] = Symbol.resolve_kdb_address("_stext")
+            dic["text_end"] = Symbol.resolve_kdb_address("_etext")
+            dic["rw_base"] = Symbol.resolve_kdb_address("_sdata")
+            dic["rw_end"] = Symbol.resolve_kdb_address("_edata")
+            dic["ro_base"] = Symbol.resolve_kdb_address("__start_rodata")
+            dic["ro_end"] = Symbol.resolve_kdb_address("__end_rodata_aligned") or Symbol.resolve_kdb_address("__end_rodata")
             return KernelLayout.build(dic, use_iomem)
 
         if is_kgdb():
@@ -76308,7 +76279,7 @@ class KernelVersion:
         """Return the address of `linux_banner`, or None."""
         linux_banner = None
         if is_kdb():
-            linux_banner = Symbol.get_symbol_by_monitor("linux_banner")
+            linux_banner = Symbol.resolve_kdb_address("linux_banner")
         if linux_banner is None:
             linux_banner = Ksym.get_addr("linux_banner")
         return linux_banner
@@ -81306,17 +81277,6 @@ class KernelSocket:
             layout[key] = GefUtil.offsetof(type_name, member)
         return layout
 
-    def sym_name(self, addr):
-        """Reverse-resolve an address to a kernel symbol name, or '' if unknown."""
-        if not addr:
-            return ""
-        name = Ksym.get_name(addr)
-        if name:
-            return name
-        # fall back to gdb's applied symbol table (works after `ksymaddr-remote-apply`)
-        s = Symbol.get_symbol_string(addr, nosymbol_string="")
-        return s.strip().strip("<>")
-
     def is_sk_buff_head(self, addr):
         """Return the qlen if `addr` is an embedded `struct sk_buff_head`, or None."""
         try:
@@ -81485,7 +81445,7 @@ class KernelSocket:
         if offset is not None:
             prot = read_int_from_memory(sk + offset)
             if is_valid_addr(prot):
-                name = self.sym_name(prot)
+                name = Symbol.format(prot, ksym="prefer", bracket="")
                 ret = self.read_proto_name(prot)
                 if ret or self.PROTO_SYMBOL_RE.search(name):
                     return prot, name or None, ret, offset, "DWARF"
@@ -81496,7 +81456,7 @@ class KernelSocket:
             prot = read_int_from_memory(sk + ptr * i)
             if not is_valid_addr(prot) or (prot & (ptr - 1)):
                 continue
-            name = self.sym_name(prot)
+            name = Symbol.format(prot, ksym="prefer", bracket="")
             if name and self.PROTO_SYMBOL_RE.search(name):
                 return prot, name, self.read_proto_name(prot), ptr * i, "heuristic"
         # pass 2: a pointer to a verified `struct proto`.
@@ -81508,7 +81468,8 @@ class KernelSocket:
                 continue
             ret = self.read_proto_name(prot)
             if ret:
-                return prot, self.sym_name(prot) or None, ret, ptr * i, "heuristic"
+                name = Symbol.format(prot, ksym="prefer", bracket="")
+                return prot, name or None, ret, ptr * i, "heuristic"
         return None, None, None, None, None
 
     def proto_hint_family(self, proto_name):
@@ -81694,7 +81655,7 @@ class KernelSocket:
             found = []
             for (label, _, _), offset in zip(self.CALLBACKS, offsets):
                 p = read_int_from_memory(sk + offset)
-                found.append((label, p, self.sym_name(p), offset, "DWARF"))
+                found.append((label, p, Symbol.format(p, ksym="prefer", bracket=""), offset, "DWARF"))
             # sock_init_data() sets all of them, and only sk_destruct can be NULL.
             if all(is_valid_addr(p) for label, p, _, _, _ in found if label != "sk_destruct"):
                 return found
@@ -81708,7 +81669,7 @@ class KernelSocket:
                 break
             if not is_valid_addr(p) or not KernelAddressHeuristicFinderUtil.is_kernel_space(p):
                 continue
-            nm = self.sym_name(p)
+            nm = Symbol.format(p, ksym="prefer", bracket="")
             if nm:
                 slots.append((off, p, nm))
 
@@ -81868,15 +81829,6 @@ class KernelSkbuff:
             except gdb.MemoryError:
                 raw = None
         return {"address": data, "headlen": headlen, "size": size, "data": raw}
-
-    def sym_name(self, addr):
-        if not addr:
-            return ""
-        name = Ksym.get_name(addr)
-        if name:
-            return name
-        s = Symbol.get_symbol_string(addr, nosymbol_string="")
-        return s.strip().strip("<>")
 
     @staticmethod
     @Cache.cache_this_session(per_inferior=True, until_new_objfile=True)
@@ -82091,12 +82043,12 @@ class KernelSkbuff:
             p = read_int_from_memory(skb + layout["destructor"])
             if p == 0:
                 return None
-            return p, self.sym_name(p), layout["destructor"]
+            return p, Symbol.format(p, ksym="prefer", bracket=""), layout["destructor"]
         for i in range(3, layout["head"] // current_arch.ptrsize):
             p = read_int_from_memory(skb + current_arch.ptrsize * i)
             if not is_valid_addr(p) or not KernelAddressHeuristicFinderUtil.is_kernel_space(p):
                 continue
-            nm = self.sym_name(p)
+            nm = Symbol.format(p, ksym="prefer", bracket="")
             if nm and re.search(r"free|destruct", nm):
                 return p, nm, current_arch.ptrsize * i
         return None
@@ -88009,19 +87961,14 @@ class KernelNftables:
 
     @staticmethod
     def symbol_name(address):
-        if not address:
-            return None
-        name = Ksym.get_name(address)
-        if name is not None:
-            return name
-        text = Symbol.get_symbol_string(address, nosymbol_string="").strip()
-        if not text.startswith("<") or not text.endswith(">") or "+" in text:
+        name = Symbol.format(address, ksym="prefer", bracket="")
+        if not name or "+" in name:
             return None
         # `kmod -a` names module symbols "<module>.<symbol>"
-        module, unused, symbol = text[1:-1].partition(".")
+        module, unused, symbol = name.partition(".")
         if symbol.startswith("nft_") and module.replace("_", "").isalnum():
             return symbol
-        return text[1:-1]
+        return name
 
 
 class KernelNftablesRule:
@@ -91829,14 +91776,6 @@ class KernelCredCommand(GenericCommand, BufferingOutput):
             return None
         return True
 
-    def sym_name(self, addr):
-        if not addr:
-            return ""
-        name = Ksym.get_name(addr)
-        if name:
-            return " <{:s}>".format(name)
-        return Symbol.get_symbol_string(addr, nosymbol_string="")
-
     def dump_cred(self, task, pid, comm, cred, real_cred):
         kcred = self.kcred
         info = kcred.parse(cred)
@@ -91845,10 +91784,10 @@ class KernelCredCommand(GenericCommand, BufferingOutput):
             return
 
         self.out.append('task: {:#018x} (pid: {:d}, comm: "{:s}")'.format(task, pid, comm))
-        self.out.append("  `- cred {:#018x}{:s}".format(cred, self.sym_name(cred)))
+        self.out.append("  `- cred " + Symbol.format(cred, ksym="prefer", show_address=True, nocolor=True))
 
         lines = []
-        lines.append(("real_cred", "{:#018x}{:s}".format(real_cred, self.sym_name(real_cred))))
+        lines.append(("real_cred", Symbol.format(real_cred, ksym="prefer", show_address=True, nocolor=True)))
         lines.append(("usage", "{:d}".format(info.usage)))
         for i, name in enumerate(["uid/gid", "suid/sgid", "euid/egid", "fsuid/fsgid"]):
             lines.append((name, "{:d}/{:d}".format(info.ids[i * 2], info.ids[i * 2 + 1])))
@@ -91856,11 +91795,11 @@ class KernelCredCommand(GenericCommand, BufferingOutput):
         for name, value in zip(kcred.cap_members, info.caps):
             lines.append((name, "{:#018x} ({:s})".format(value, kcred.cap_to_str(value))))
         if info.security is not None:
-            lines.append(("security", "{:#018x}{:s}".format(info.security, self.sym_name(info.security))))
+            lines.append(("security", Symbol.format(info.security, ksym="prefer", show_address=True, nocolor=True)))
         if info.user_ns is not None:
-            lines.append(("user_ns", "{:#018x}{:s}".format(info.user_ns, self.sym_name(info.user_ns))))
+            lines.append(("user_ns", Symbol.format(info.user_ns, ksym="prefer", show_address=True, nocolor=True)))
         if info.group_info is not None:
-            value = "{:#018x}{:s}".format(info.group_info, self.sym_name(info.group_info))
+            value = Symbol.format(info.group_info, ksym="prefer", show_address=True, nocolor=True)
             groups = kcred.get_groups_str(info.group_info)
             if groups:
                 value += " ({:s})".format(groups)
@@ -91905,8 +91844,8 @@ class KernelCredCommand(GenericCommand, BufferingOutput):
                 usage = "?"
             else:
                 usage = "{:d}".format(info.usage)
-            self.out.append("cred: {:#018x}{:s} (usage: {:s}, tasks: {:d})".format(
-                cred, self.sym_name(cred), usage, len(sharers),
+            self.out.append("cred: {:s} (usage: {:s}, tasks: {:d})".format(
+                Symbol.format(cred, ksym="prefer", show_address=True, nocolor=True), usage, len(sharers),
             ))
             for task, pid, comm, _cred, real_cred in sharers:
                 if real_cred == cred:
@@ -93913,10 +93852,9 @@ class KernelBlockDevicesCommand(GenericCommand, BufferingOutput):
 
         blockdev_superblock = Ksym.get_addr("blockdev_superblock")
         if blockdev_superblock is None:
-            try:
-                blockdev_superblock = GefUtil.parse_and_eval_unsigned("&blockdev_superblock")
-            except gdb.error:
-                return None
+            blockdev_superblock = Symbol.resolve_address("blockdev_superblock")
+        if blockdev_superblock is None:
+            return None
         sb = read_int_from_memory(blockdev_superblock, safe=True)
         if not is_valid_addr(sb):
             return None
@@ -95771,8 +95709,9 @@ class KernelCharacterDevicesCommand(GenericCommand, BufferingOutput):
                 ops = read_int_from_memory(cdev + off_ops)
             else:
                 ops = 0
-            self.out.append("{:#018x} {:<20s} {:<12s} {:<6d} {:<6d} {:<18s} {:#018x} {:#018x}{:s}".format(
-                device, name, class_name, major, minor, region_name or "-", cdev, ops, Symbol.get_symbol_string(ops),
+            self.out.append("{:#018x} {:<20s} {:<12s} {:<6d} {:<6d} {:<18s} {:#018x} {:s}".format(
+                device, name, class_name, major, minor, region_name or "-", cdev,
+                Symbol.format(ops, show_address=True, nocolor=True),
             ))
         self.print_output(check_terminal_size=True)
         return
@@ -95855,7 +95794,6 @@ class KernelCharacterDevicesCommand(GenericCommand, BufferingOutput):
                 merged[k]["ops"] = read_int_from_memory(merged[k]["cdev"] + off_ops)
             else:
                 merged[k]["ops"] = 0x0
-            merged[k]["ops_sym"] = Symbol.get_symbol_string(merged[k]["ops"])
 
         # add parent info
         off_parent = offsetof("cdev", "kobj.parent")
@@ -95901,9 +95839,9 @@ class KernelCharacterDevicesCommand(GenericCommand, BufferingOutput):
             else:
                 minors = "{:d}-{:d}".format(minor, minor + count - 1)
                 guessed_name = "-"
-            self.out.append("{:#018x} {:<18s} {:<24s} {:<6d} {:<15s} {:<7d} {:#018x} {:#018x} {:<18s} {:#018x}{:s}".format(
+            self.out.append("{:#018x} {:<18s} {:<24s} {:<6d} {:<15s} {:<7d} {:#018x} {:#018x} {:<18s} {:s}".format(
                 m["chrdev"], m["name"], guessed_name, major, minors, count,
-                m["cdev"], m["parent"], m["parent_name"], m["ops"], m["ops_sym"],
+                m["cdev"], m["parent"], m["parent_name"], Symbol.format(m["ops"], show_address=True, nocolor=True),
             ))
 
         self.print_output(check_terminal_size=True)
@@ -97065,7 +97003,8 @@ class KernelOperationsCommand(GenericCommand, BufferingOutput):
                 if type_name == "char*" and address:
                     sym = " {!r}".format(read_cstring_from_memory(address))
                 elif type_name in ("func_ptr", "ptr"):
-                    sym = Symbol.get_symbol_string(address)
+                    sym = Symbol.format(address)
+                    sym = " " + sym if sym else ""
                 else:
                     sym = ""
                 self.out.append("{:<5d} {:10s} {:{:d}s} {:#0{:d}x}{:s}".format(
@@ -97166,12 +97105,6 @@ class KernelSysctlCommand(GenericCommand, BufferingOutput):
                     return True
             return False
 
-    def get_handler_symbol(self, handler):
-        name = Ksym.get_name(handler)
-        if name:
-            return " <{:s}>".format(name)
-        return Symbol.get_symbol_string(handler, nosymbol_string=" <NO_SYMBOL>")
-
     def get_data_value(self, data):
         if not data.address:
             return "-", "-"
@@ -97235,7 +97168,9 @@ class KernelSysctlCommand(GenericCommand, BufferingOutput):
         handler_info = ""
         header_info = ""
         if self.args.verbose:
-            handler_info = " {:#018x}{:s}".format(data.handler, self.get_handler_symbol(data.handler))
+            handler_info = " " + Symbol.format(
+                data.handler, ksym="prefer", missing="NO_SYMBOL", show_address=True, nocolor=True,
+            )
             header_info = "{:#018x} {:#018x} {:<23s} ".format(entry.header, data.ctset, data.namespace)
             data_val = "{:<18s}".format(data_val)
 
@@ -99308,7 +99243,7 @@ class KernelClockSourceCommand(GenericCommand, BufferingOutput):
                 "{:#0{:d}x}".format(entry["address"], width), entry["name"], status, entry["rating"],
                 entry["frequency"], str(entry["bits"]), entry["flags"], w=width, fw=flags_width,
             )
-            line += "{:#0{:d}x}{:s}".format(entry["read"], width, Symbol.get_symbol_string(entry["read"], nosymbol_string=" <NO_SYMBOL>"))
+            line += Symbol.format(entry["read"], missing="NO_SYMBOL", show_address=True, nocolor=True)
             if entry["module"]:
                 line += "  [module: {:s}]".format(entry["module"])
             self.out.append(line)
@@ -99872,10 +99807,10 @@ class KernelTimerCommand(GenericCommand, BufferingOutput):
 
             entries = timers.get((cpu, n), [])
             for timer in sorted(entries, key=lambda x: self.time_to_expire(x["expires"], jiffies)):
-                sym = Symbol.get_symbol_string(timer["function"], nosymbol_string=" <NO_SYMBOL>")
                 tte = self.time_to_expire(timer["expires"], jiffies)
-                self.out.append("{:#018x}  {:#018x}  {:#018x} tick  {:#018x}{:s}".format(
-                    timer["timer"], timer["expires"], tte, timer["function"], sym,
+                self.out.append("{:#018x}  {:#018x}  {:#018x} tick  {:s}".format(
+                    timer["timer"], timer["expires"], tte,
+                    Symbol.format(timer["function"], missing="NO_SYMBOL", show_address=True, nocolor=True),
                 ).rstrip())
         return
 
@@ -100371,11 +100306,9 @@ class KernelTimerCommand(GenericCommand, BufferingOutput):
                 if get_time is None:
                     self.incomplete.append("{:s} get_time is unreadable".format(name))
                     continue
-                self.out.append(titlify("{:s} hrtimer_clock_base[{:d}]: {:#x}  [{:s}; get_time: {:#x}{:s}]".format(
-                    self.get_cpu_label(cpu), n, htb,
-                    self.clockid_dict.get(clockid, "UNKNOWN"),
-                    get_time,
-                    Symbol.get_symbol_string(get_time, nosymbol_string=" <NO_SYMBOL>"),
+                self.out.append(titlify("{:s} hrtimer_clock_base[{:d}]: {:#x}  [{:s}; get_time: {:s}]".format(
+                    self.get_cpu_label(cpu), n, htb, self.clockid_dict.get(clockid, "UNKNOWN"),
+                    Symbol.format(get_time, missing="NO_SYMBOL", show_address=True, nocolor=True),
                 )).rstrip())
 
             # print legend
@@ -100399,11 +100332,9 @@ class KernelTimerCommand(GenericCommand, BufferingOutput):
                     continue
                 if not self.is_callback(function):
                     self.incomplete.append("hrtimer {:#x} callback {:#x} is outside kernel/module text".format(hrtimer, function))
-                self.out.append("{:#018x}  {:#018x}  {:23s}  {:#018x}{:s}".format(
-                    hrtimer, expires,
-                    "? (too hard to calc)",
-                    function,
-                    Symbol.get_symbol_string(function, nosymbol_string=" <NO_SYMBOL>"),
+                self.out.append("{:#018x}  {:#018x}  {:23s}  {:s}".format(
+                    hrtimer, expires, "? (too hard to calc)",
+                    Symbol.format(function, missing="NO_SYMBOL", show_address=True, nocolor=True),
                 ).rstrip())
         return
 
@@ -100540,15 +100471,6 @@ class KernelWorkqueueCommand(GenericCommand, BufferingOutput):
         if self.module_text_ranges is None:
             self.module_text_ranges = [(start, end) for start, end, _module, _name in Kernel.modules().get_text_ranges()]
         return self.module_text_ranges
-
-    def format_symbol(self, address):
-        symbol = Symbol.get_symbol_string(address)
-        if symbol:
-            return symbol
-        name = self.kallsyms_names.get(address)
-        if name is not None:
-            return " <{:s}>".format(name)
-        return " <NO_SYMBOL>"
 
     def read_work(self, work, check_function=True):
         try:
@@ -101119,10 +101041,6 @@ class KernelWorkqueueCommand(GenericCommand, BufferingOutput):
         self.worklist_offset = None
         self.module_text_ranges = None
         kallsyms = Ksym.get_kallsyms()
-        if kallsyms:
-            self.kallsyms_names = {address: name for address, name, symbol_type in kallsyms[0]}
-        else:
-            self.kallsyms_names = {}
         self.kallsyms_text = {
             address: name for address, name, symbol_type in kallsyms[0] if symbol_type.lower() in ("t", "w")
         } if kallsyms else {}
@@ -101204,11 +101122,12 @@ class KernelWorkqueueCommand(GenericCommand, BufferingOutput):
                 cpu = "-"
             else:
                 cpu = str(record["cpu"])
-            symbol = self.format_symbol(record["function"])
-            line = "{:<{ww}s}  {:<10s}  {:<5s}  {:<{qw}s}  {:#0{w}x}{:s}".format(
+            line = "{:<{ww}s}  {:<10s}  {:<5s}  {:<{qw}s}  {:s}".format(
                 "{:#0{w}x}".format(record["work"], w=width), record["state"], cpu, queue,
-                record["function"], symbol,
-                w=width, ww=work_width, qw=queue_width,
+                Symbol.format(
+                    record["function"], missing="NO_SYMBOL", ksym="prefer", show_address=True, nocolor=True,
+                ),
+                ww=work_width, qw=queue_width,
             ).rstrip()
             extras = []
             if object_address is not None:
@@ -102287,7 +102206,7 @@ class KernelSearchCodePtrCommand(GenericCommand, BufferingOutput):
             new_backtrack_info = backtrack_info + [(addr, 0)]
             msg = []
             for addr, offset in new_backtrack_info:
-                addr_sym = Symbol.get_symbol_string(addr + offset, nosymbol_string=" <NO_SYMBOL>")
+                addr_sym = " " + Symbol.format(addr + offset, missing="NO_SYMBOL")
                 m = "{:#x}+{:#x}{:s} [{:s}]".format(addr, offset, addr_sym, self.get_permission(addr + offset))
                 msg.append(m)
 
@@ -103715,7 +103634,7 @@ class KernelSyscallsCommand(GenericCommand, BufferingOutput):
     def analyze_syscall_function(self, syscall_function_addr):
         try:
             symbol_addr = syscall_function_addr & ~1 if is_arm32() else syscall_function_addr
-            symbol = Symbol.get_symbol_string(symbol_addr, nosymbol_string=" <NO_SYMBOL>")
+            symbol = Symbol.format(symbol_addr, missing="NO_SYMBOL")
         except (gdb.error, gdb.MemoryError):
             return None
         if "+" in symbol:
@@ -103798,12 +103717,12 @@ class KernelSyscallsCommand(GenericCommand, BufferingOutput):
                 break
             try:
                 symbol_addr = syscall_function_addr & ~1 if is_arm32() else syscall_function_addr
-                symbol = Symbol.get_symbol_string(symbol_addr, nosymbol_string=" <NO_SYMBOL>")
+                symbol = Symbol.format(symbol_addr, missing="NO_SYMBOL")
             except (gdb.error, gdb.MemoryError):
                 break
             if "+" in symbol:
                 break
-            if symbol == " <NO_SYMBOL>":
+            if symbol == "<NO_SYMBOL>":
                 insn, insn2 = self.get_insn_pair(syscall_function_addr)
                 if insn is None or insn2 is None:
                     break
@@ -103916,14 +103835,14 @@ class KernelSyscallsCommand(GenericCommand, BufferingOutput):
         for i, addr, syscall_function_addr, symbol, is_valid in table:
             symbol_addr = syscall_function_addr & ~1 if is_arm32() else syscall_function_addr
             if symbol_addr in ni_syscalls:
-                symbol = " <{:s}>".format(ni_syscalls[symbol_addr])
+                symbol = "<{:s}>".format(ni_syscalls[symbol_addr])
             nr = nr_base + i
             if nr in syscall_list.nr_table:
                 expected_name = syscall_list.nr_table[nr].name
             else:
                 expected_name = "<UNDEFINED_IN_THIS_ARCH>"
 
-            fmt = "{:8s} [{:03d}] {:7s} {:30s} {:#018x} {:#018x}{:s}"
+            fmt = "{:8s} [{:03d}] {:7s} {:30s} {:#018x} {:#018x} {:s}"
             if seen_count[syscall_function_addr] == 1 and is_valid: # valid entry
                 msg = fmt.format(abi, i, "valid", expected_name, addr, syscall_function_addr, symbol)
             if seen_count[syscall_function_addr] > 1 or not is_valid: # invalid entry
@@ -105402,7 +105321,7 @@ class IdtInfoCommand(GenericCommand, BufferingOutput):
                 address = idt.offset
             sym = ""
             if entry_size == 4 or (idt.present and idt.gate_type != 5):
-                sym = Symbol.get_symbol_string(address, nosymbol_string=" <NO_SYMBOL>")
+                sym = " " + Symbol.format(address, missing="NO_SYMBOL")
             self.out.append("{:<3d} {:36s} {:s}{:s}".format(i, int_name, valstr, sym))
         return
 
@@ -154460,7 +154379,7 @@ class KernelSlab:
                 index_type = GefUtil.cached_lookup_type("freelist_idx_t")
                 min_size = 16
                 try:
-                    min_size = GefUtil.parse_and_eval_unsigned("SLAB_OBJ_MIN_SIZE")
+                    min_size = to_unsigned_long(gdb.parse_and_eval("SLAB_OBJ_MIN_SIZE"))
                 except gdb.error:
                     pass
                 kmem_cache["freelist_idx_size"] = (int(index_type.sizeof) if index_type is not None
@@ -156211,9 +156130,9 @@ class KobjCommand(GenericCommand):
         return
 
     def report_symbol(self, addr):
-        sym = Symbol.get_symbol_string(addr)
+        sym = Symbol.format(addr)
         if sym:
-            self.emit("Symbol", sym.strip())
+            self.emit("Symbol", sym)
         return
 
     @Decorator.parse_args
@@ -157324,9 +157243,9 @@ class KernelBuddy:
 
         # fast path
         try:
-            self.NR_PCP_LISTS = GefUtil.parse_and_eval_unsigned(
+            self.NR_PCP_LISTS = to_unsigned_long(gdb.parse_and_eval(
                 "sizeof(((struct per_cpu_pages*)0).lists) / sizeof(((struct per_cpu_pages*)0).lists[0])",
-            )
+            ))
             return
         except gdb.error:
             # In some environments, the size of list_head is not saved, resulting in division by 0.
@@ -157351,9 +157270,9 @@ class KernelBuddy:
     def resolve_MAX_NR_ZONES(self):
         # fast path
         try:
-            self.MAX_NR_ZONES = GefUtil.parse_and_eval_unsigned(
+            self.MAX_NR_ZONES = to_unsigned_long(gdb.parse_and_eval(
                 "sizeof(((struct zone*)0).lowmem_reserve) / sizeof(((struct zone*)0).lowmem_reserve[0])",
-            )
+            ))
             return
         except gdb.error:
             pass
@@ -157397,9 +157316,9 @@ class KernelBuddy:
     def resolve_MIGRATE_TYPES(self):
         # fast path
         try:
-            self.MIGRATE_TYPES = GefUtil.parse_and_eval_unsigned(
+            self.MIGRATE_TYPES = to_unsigned_long(gdb.parse_and_eval(
                 "sizeof(((struct free_area*)0).free_list) / sizeof(((struct free_area*)0).free_list[0])",
-            )
+            ))
             return
         except gdb.error:
             pass
@@ -157538,9 +157457,9 @@ class KernelBuddy:
     def resolve_MAX_ORDER(self):
         # fast path
         try:
-            self.MAX_ORDER = GefUtil.parse_and_eval_unsigned(
+            self.MAX_ORDER = to_unsigned_long(gdb.parse_and_eval(
                 "sizeof(((struct zone*)0).free_area) / sizeof(((struct zone*)0).free_area[0])",
-            )
+            ))
             return
         except gdb.error:
             pass
@@ -160735,7 +160654,7 @@ class KernelIrqCommand(GenericCommand, BufferingOutput):
                 if layout["offset_flow"] is not None:
                     flow = read_int_from_memory(desc + layout["offset_flow"], safe=True)
                     if flow is not None:
-                        extras.append("flow={:#x}{:s}".format(flow, Symbol.get_symbol_string(flow, nosymbol_string=" <NO_SYMBOL>")))
+                        extras.append("flow=" + Symbol.format(flow, missing="NO_SYMBOL", show_address=True, nocolor=True))
                 affinity = self.read_affinity(layout, desc)
                 if affinity is not None:
                     extras.append("affinity={:s}".format(affinity))
@@ -160754,9 +160673,9 @@ class KernelIrqCommand(GenericCommand, BufferingOutput):
                 if i > 0:
                     # the following actions of a shared IRQ
                     columns = ["", "", "", ""]
-                symbol = Symbol.get_symbol_string(handler, nosymbol_string=" <NO_SYMBOL>")
                 line = fmt.format(
-                    *columns, "{:#0{:d}x}".format(action, width), name, "{:#0{:d}x}{:s}".format(handler, width, symbol),
+                    *columns, "{:#0{:d}x}".format(action, width), name,
+                    Symbol.format(handler, missing="NO_SYMBOL", show_address=True, nocolor=True),
                     w=width, cw=chip_width, nw=name_width,
                 ).rstrip()
                 self.out.append(line + (extras if i == 0 else ""))
@@ -161915,7 +161834,7 @@ class Ksym:
                     return None
                 expected = expected.encode() + b"\0"
                 if is_kgdb():
-                    candidate = Symbol.get_address("&linux_banner")
+                    candidate = Symbol.resolve_address("linux_banner")
                     if candidate is None:
                         candidate = banner
                     try:
@@ -163454,10 +163373,8 @@ class Ksym:
 
         Ksym.kallsyms = kallsyms
         Ksym.kallsyms_map = kallsyms_map
-        # Symbol.get_symbol_string may have cached GDB misses before this parse.
-        # Drop those only now that a no-scan fallback is available.
-        Cache.clear_cache_for(Symbol.gdb_get_location)
-        Cache.clear_cache_for(Symbol.get_symbol_string)
+        # Drop cached GDB misses now that a no-scan fallback is available.
+        Cache.clear_cache_for(Symbol.lookup_gdb)
         return Ksym.kallsyms, Ksym.kallsyms_map
 
 
@@ -163916,10 +163833,10 @@ class TcmallocHeapDumpCommand(GenericCommand, BufferingOutput):
 
     def get_size_classes_heuristic(self):
         ptrsize = current_arch.ptrsize
-        try:
-            address = AddressUtil.parse_address("&'tcmalloc::Static::sizemap_'")
+        address = Symbol.resolve_address("'tcmalloc::Static::sizemap_'")
+        if address is not None:
             regions = [(address, address + 8192)]
-        except gdb.error:
+        else:
             regions = [(m.page_start, m.page_end) for m in ProcessMap.get_process_maps()
                        if m.permission == Permission.READ | Permission.WRITE and "[heap]" not in m.path]
         for start, end in regions:
@@ -164003,10 +163920,7 @@ class TcmallocHeapDumpCommand(GenericCommand, BufferingOutput):
     def get_central_cache_(self):
         if self.args.force_heuristic:
             return None
-        try:
-            return AddressUtil.parse_address("&'tcmalloc::Static::central_cache_'")
-        except gdb.error:
-            return None
+        return Symbol.resolve_address("'tcmalloc::Static::central_cache_'")
 
     def get_central_cache_heuristic(self):
         self.quiet_info("Use heuristic search for central_cache_")
@@ -164072,10 +163986,7 @@ class TcmallocHeapDumpCommand(GenericCommand, BufferingOutput):
     def get_thread_heaps_(self):
         if self.args.force_heuristic:
             return None
-        try:
-            return AddressUtil.parse_address("&'tcmalloc::ThreadCache::thread_heaps_'")
-        except gdb.error:
-            return None
+        return Symbol.resolve_address("'tcmalloc::ThreadCache::thread_heaps_'")
 
     def get_thread_heap_list_heuristic(self):
         """thread_heap_ itself cannot be found, so it returns the detected list."""
@@ -164527,10 +164438,7 @@ class GoHeapDumpCommand(GenericCommand, BufferingOutput):
         return True
 
     def get_mheap_(self):
-        try:
-            return AddressUtil.parse_address("&'runtime.mheap_'")
-        except gdb.error:
-            return None
+        return Symbol.resolve_address("'runtime.mheap_'")
 
     def parse_mheap(self, mheap):
         self.out.append(titlify("runtime.mheap_ @ {:#x}".format(mheap)))
@@ -164758,12 +164666,8 @@ class TlsfHeapDumpCommand(GenericCommand, BufferingOutput):
         return
 
     def get_pool(self):
-        try:
-            mp = AddressUtil.parse_address("&mp")
-        except gdb.error:
-            return None
-
-        if not is_valid_addr(mp):
+        mp = Symbol.resolve_address("mp")
+        if mp is None or not is_valid_addr(mp):
             return None
 
         pool = read_int_from_memory(mp)
@@ -165894,10 +165798,9 @@ class MimallocHeapDumpCommand(GenericCommand, BufferingOutput):
 
     def get_mi_heap_main(self):
         for name in ("heap_main", "_mi_heap_main", "mi_process_heap_main"):
-            try:
-                return AddressUtil.parse_address("&" + name)
-            except gdb.error:
-                pass
+            address = Symbol.resolve_address(name)
+            if address is not None:
+                return address
 
         tls = current_arch.get_tls()
         if tls is None:
@@ -167138,7 +167041,10 @@ class CageCommand(GenericCommand, BufferingOutput):
         vtable = read_int_from_memory(owner, safe=True)
         if not vtable:
             return None
-        symbol = gdb.execute("info symbol {:#x}".format(vtable), to_string=True).split(" + ")[0]
+        location = Symbol.lookup(vtable, ksym="off")
+        if location is None:
+            return None
+        symbol, _ = location
         identity = read_int32_from_memory(owner + 0x10, safe=True)
         if identity == 1 and symbol in ("vtable for v8::internal::SemiSpace",
                                         "vtable for v8::internal::PagedSpaceForNewSpace"):
@@ -168678,20 +168584,11 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
     def get_roots(self, force_heuristic):
 
         def get_root(root_string):
-            # newer version
-            try:
-                root_addr = AddressUtil.parse_address("&'blink::Partitions::{:s}'".format(root_string))
-                Root = collections.namedtuple("Root", ["name", "address"])
-                return [Root(root_string, root_addr)]
-            except gdb.error:
-                pass
-            # older version
-            try:
-                root_addr = AddressUtil.parse_address("&'WTF::Partitions::{:s}'".format(root_string))
-                Root = collections.namedtuple("Root", ["name", "address"])
-                return [Root(root_string, root_addr)]
-            except gdb.error:
-                pass
+            for namespace in ("blink", "WTF"):
+                root_addr = Symbol.resolve_address("'{:s}::Partitions::{:s}'".format(namespace, root_string))
+                if root_addr is not None:
+                    Root = collections.namedtuple("Root", ["name", "address"])
+                    return [Root(root_string, root_addr)]
             return []
 
         roots = []
@@ -168719,25 +168616,17 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
         sentinel = []
 
         # new version
-        try:
-            ns = "partition_alloc::internal::SlotSpanMetadata<(partition_alloc::internal::MetadataKind)1>"
-            t = AddressUtil.parse_address("&'{:s}::sentinel_slot_span_'".format(ns))
+        ns = "partition_alloc::internal::SlotSpanMetadata<(partition_alloc::internal::MetadataKind)1>"
+        t = Symbol.resolve_address("'{:s}::sentinel_slot_span_'".format(ns))
+        if t is not None:
             sentinel.append(t)
             return sentinel
-        except gdb.error:
-            pass
 
         # old version
-        try:
-            t = AddressUtil.parse_address("&'base::internal::SlotSpanMetadata<true>::sentinel_slot_span_'")
-            sentinel.append(t)
-        except gdb.error:
-            pass
-        try:
-            f = AddressUtil.parse_address("&'base::internal::SlotSpanMetadata<false>::sentinel_slot_span_'")
-            sentinel.append(f)
-        except gdb.error:
-            pass
+        for flag in ("true", "false"):
+            address = Symbol.resolve_address("'base::internal::SlotSpanMetadata<{:s}>::sentinel_slot_span_'".format(flag))
+            if address is not None:
+                sentinel.append(address)
         return sentinel
 
     def read_root(self, addr, name):
@@ -169741,10 +169630,7 @@ class ScallocHeapDumpCommand(GenericCommand, BufferingOutput):
 
         ## use symbol
         if object_space is None:
-            try:
-                object_space = AddressUtil.parse_address("&_ZN7scalloc12object_spaceE")
-            except gdb.error:
-                object_space = None
+            object_space = Symbol.resolve_address("_ZN7scalloc12object_spaceE")
 
         # heuristic search
         if object_space is None:
@@ -170091,11 +169977,12 @@ class SsmallocHeapDumpCommand(GenericCommand, BufferingOutput):
     @Cache.cache_this_session(per_inferior=True, until_new_objfile=True, cache_None=False)
     def build_class_to_size_list(self):
         try:
-            cls2size = AddressUtil.parse_address("&cls2size")
+            cls2size = Symbol.resolve_address("cls2size")
             class_to_size_list = []
-            for size_cls in range(self.DEFAULT_BLOCK_CLASS):
-                size = read_int32_from_memory(cls2size + (size_cls * 4))
-                class_to_size_list.append(size)
+            if cls2size is not None:
+                for size_cls in range(self.DEFAULT_BLOCK_CLASS):
+                    size = read_int32_from_memory(cls2size + (size_cls * 4))
+                    class_to_size_list.append(size)
             if any(class_to_size_list):
                 return class_to_size_list
         except gdb.error:
@@ -170209,11 +170096,7 @@ class SsmallocHeapDumpCommand(GenericCommand, BufferingOutput):
     def get_global_pool(self):
         if self.args.global_pool:
             return self.args.global_pool
-        try:
-            return AddressUtil.parse_address("&global_pool")
-        except gdb.error:
-            pass
-        return None
+        return Symbol.resolve_address("global_pool")
 
     def read_dchunk(self, addr):
         dic = {}
@@ -170695,10 +170578,9 @@ class JemallocBase:
     def symbol_address(name):
         # v3.0~v3.4 do not have the `je_` prefix
         for sym in ("je_" + name, name):
-            try:
-                return AddressUtil.parse_address("&" + sym)
-            except gdb.error:
-                pass
+            address = Symbol.resolve_address(sym)
+            if address is not None:
+                return address
         return None
 
     @staticmethod
@@ -172465,10 +172347,9 @@ class MuslHeapDumpCommand(GenericCommand, BufferingOutput):
         else:
             symbols = ("__malloc_context",)
         for symbol in symbols:
-            try:
-                return AddressUtil.parse_address("&" + symbol)
-            except gdb.error:
-                continue
+            address = Symbol.resolve_address(symbol)
+            if address is not None:
+                return address
         self.info_add_out("Could not find the symbol, GEF will use heuristic search")
         return self.get_malloc_context_heuristic()
 
@@ -173055,10 +172936,9 @@ class UclibcNgHeapDumpCommand(GenericCommand, BufferingOutput):
 
     def get_malloc_state(self):
         # fast path
-        try:
-            return AddressUtil.parse_address("&__malloc_state")
-        except gdb.error:
-            pass
+        address = Symbol.resolve_address("__malloc_state")
+        if address is not None:
+            return address
 
         # slow path
         # Do not use AddressUtil.parse_address("malloc").
@@ -176981,7 +176861,8 @@ class MsrCommand(GenericCommand):
 
             sym = ""
             if is_valid_addr(value):
-                sym = Symbol.get_symbol_string(value)
+                sym = Symbol.format(value)
+                sym = " " + sym if sym else ""
 
             gef_print("{:30s}  {:#010x}  {:30s}  {:s}{:s}".format(
                 name, const, desc, AddressUtil.format_address(value, memalign_size=8), sym,
@@ -187240,8 +187121,8 @@ class QemuMemoryRegionDumpCommand(GenericCommand, BufferingOutput):
         else:
             symbol = "address_space_io"
         try:
-            addr = AddressUtil.parse_address("&" + symbol)
-            root = read_int_from_memory(addr + root_offset, safe=True)
+            addr = Symbol.resolve_address(symbol)
+            root = read_int_from_memory(addr + root_offset, safe=True) if addr is not None else None
             if root and self.check_root_name(root, root_name):
                 self.meta.append((self.quiet_info_add_out, "Root source: {:s}.root".format(symbol)))
                 return root
@@ -187309,8 +187190,8 @@ class QemuMemoryRegionDumpCommand(GenericCommand, BufferingOutput):
     def get_system_memory(self):
         # fast path
         try:
-            system_memory = AddressUtil.parse_address("&system_memory")
-            root = read_int_from_memory(system_memory, safe=True)
+            system_memory = Symbol.resolve_address("system_memory")
+            root = read_int_from_memory(system_memory, safe=True) if system_memory is not None else None
             if root and self.check_root_name(root, "system"):
                 self.meta.append((self.quiet_info_add_out, "Root source: system_memory symbol"))
                 return root
@@ -187322,8 +187203,8 @@ class QemuMemoryRegionDumpCommand(GenericCommand, BufferingOutput):
     def get_system_io(self):
         # fast path
         try:
-            system_io = AddressUtil.parse_address("&system_io")
-            root = read_int_from_memory(system_io, safe=True)
+            system_io = Symbol.resolve_address("system_io")
+            root = read_int_from_memory(system_io, safe=True) if system_io is not None else None
             if root and self.check_root_name(root, "io"):
                 self.meta.append((self.quiet_info_add_out, "Root source: system_io symbol"))
                 return root
@@ -187493,11 +187374,6 @@ class QemuMemoryRegionDumpCommand(GenericCommand, BufferingOutput):
         return (read_int_from_memory(first + self.offset_subregions_link + current_arch.ptrsize, safe=True) == head
                 and read_int_from_memory(last, safe=True) == 0)
 
-    def make_symbol_string(self, addr):
-        addr = ProcessMap.lookup_address(addr)
-        sym = Symbol.get_symbol_string(addr.value, nosymbol_string=" <NO_SYMBOL>")
-        return "{!s}{:s}".format(addr, sym)
-
     def print_region_smart(self, name, ops, level):
         if not ops or ops in self.seen:
             return
@@ -187516,7 +187392,7 @@ class QemuMemoryRegionDumpCommand(GenericCommand, BufferingOutput):
         if not ops:
             self.out.append("{:s}  ops:{:#x}".format(indent, ops))
             return
-        self.out.append("{:s}  ops:{:s}".format(indent, self.make_symbol_string(ops)))
+        self.out.append("{:s}  ops:{:s}".format(indent, Symbol.format(ops, missing="NO_SYMBOL", show_address=True)))
         if handlers is None:
             handlers = self.get_callbacks(ops)
         if handlers is None:
@@ -187525,8 +187401,8 @@ class QemuMemoryRegionDumpCommand(GenericCommand, BufferingOutput):
         for read, write in (("read", "write"), ("read_with_attrs", "write_with_attrs")):
             if handlers.get(read) or handlers.get(write):
                 self.out.append("{:s}    {:s}:{:s}, {:s}:{:s}".format(
-                    indent, read, self.make_symbol_string(handlers.get(read, 0)),
-                    write, self.make_symbol_string(handlers.get(write, 0)),
+                    indent, read, Symbol.format(handlers.get(read, 0), missing="NO_SYMBOL", show_address=True),
+                    write, Symbol.format(handlers.get(write, 0), missing="NO_SYMBOL", show_address=True),
                 ))
         return
 
@@ -188983,24 +188859,15 @@ class ThunkBreakpoint(gdb.Breakpoint):
         else:
             self.seen.add((caller_address, target_address))
 
-        # get caller address, symbol
-        if caller_address:
-            caller_symbol = Symbol.get_symbol_string(caller_address, nosymbol_string=" <NO_SYMBOL>")
-        else:
-            caller_symbol = ""
-
-        # get callee address, symbol
-        target_symbol = Symbol.get_symbol_string(target_address, nosymbol_string=" <NO_SYMBOL>")
-
-        # print information
         if caller_address is None:
-            info("{:s}{:s} -> {:#x} <{:s}> -> {:#x}{:s}".format(
-                "???(unknown)", caller_symbol, self.loc, self.sym, target_address, target_symbol,
-            ))
+            caller = "???(unknown)"
         else:
-            info("{:#x}{:s} -> {:#x} <{:s}> -> {:#x}{:s}".format(
-                caller_address, caller_symbol, self.loc, self.sym, target_address, target_symbol,
-            ))
+            caller = Symbol.format(
+                caller_address, missing="NO_SYMBOL" if caller_address else "", show_address=True, nocolor=True,
+            )
+        info("{:s} -> {:#x} <{:s}> -> {:s}".format(
+            caller, self.loc, self.sym, Symbol.format(target_address, missing="NO_SYMBOL", show_address=True, nocolor=True),
+        ))
 
         # print preferred register condition
         pattern = [0] + [(x + 1) * y for x, y in itertools.product(range(0x100), [1, -1])] # [0, 1, -1, 2, -2, ...]
@@ -189015,10 +188882,9 @@ class ThunkBreakpoint(gdb.Breakpoint):
                 if mem_value != target_address:
                     continue
                 perm = self.search_perm(reg_value_slided)
-                reg_value_slided_symbol = Symbol.get_symbol_string(reg_value_slided, nosymbol_string=" <NO_SYMBOL>")
-                mem_value_symbol = Symbol.get_symbol_string(mem_value, nosymbol_string=" <NO_SYMBOL>")
-                info("    {:s}{:+#x}: {:#x}{:s} [{:s}]  ->  {:#x}{:s}".format(
-                    reg, slide, reg_value_slided, reg_value_slided_symbol, perm, mem_value, mem_value_symbol,
+                info("    {:s}{:+#x}: {:s} [{:s}]  ->  {:s}".format(
+                    reg, slide, Symbol.format(reg_value_slided, missing="NO_SYMBOL", show_address=True, nocolor=True), perm,
+                    Symbol.format(mem_value, missing="NO_SYMBOL", show_address=True, nocolor=True),
                 ))
                 break
         return False # continue
@@ -189532,8 +189398,7 @@ class KmallocTracerCommand(GenericCommand):
                 addr = frame.pc()
                 if not is_valid_addr(addr):
                     break
-                sym = Symbol.get_symbol_string(addr, nosymbol_string=" <NO_SYMBOL>")
-                gef_print("  {:#018x}{:s}".format(addr, sym))
+                gef_print("  " + Symbol.format(addr, missing="NO_SYMBOL", show_address=True, nocolor=True))
                 frame = frame.older()
         except gdb.error:
             return
@@ -191624,14 +191489,6 @@ class KuafWatchCommand(GenericCommand):
             pid = read_int32_from_memory(task_addr + self.offset_pid)
         return task_addr, comm, pid, cpu
 
-    def symbolize(self, caller_pc):
-        if caller_pc is None:
-            return "?"
-        sym = Symbol.get_symbol_string(caller_pc).strip()
-        if sym:
-            return sym.strip("<>")
-        return "{:#x}".format(caller_pc)
-
     def lookup_cache(self, addr):
         ret = KmallocTracerCommand.virt2name_and_size(addr)
         if ret:
@@ -191661,7 +191518,7 @@ class KuafWatchCommand(GenericCommand):
 
     def emit_event(self, tag, addr, cache, caller_pc, api):
         _task_addr, _comm, pid, cpu = self.get_task_info()
-        caller = self.symbolize(caller_pc)
+        caller = Symbol.format(caller_pc, bracket="", missing="?" if caller_pc is None else "{:#x}".format(caller_pc))
         if tag == "FREE":
             theme = "theme.heap_chunk_address_freed"
         else:
@@ -192125,14 +191982,6 @@ class KpageWatchCommand(GenericCommand):
         task_addr, comm = KmallocTracerCommand.get_task()
         return task_addr, comm, cpu
 
-    def symbolize(self, caller_pc):
-        if caller_pc is None:
-            return "?"
-        sym = Symbol.get_symbol_string(caller_pc).strip()
-        if sym:
-            return sym.strip("<>")
-        return "{:#x}".format(caller_pc)
-
     def pfn_of(self, page):
         if not is_valid_addr(page):
             return None
@@ -192242,7 +192091,7 @@ class KpageWatchCommand(GenericCommand):
 
     def emit_event(self, tag, pfn, api, page, order, cache, caller_pc):
         task_addr, comm, cpu = self.get_task_info()
-        caller = self.symbolize(caller_pc)
+        caller = Symbol.format(caller_pc, bracket="", missing="?" if caller_pc is None else "{:#x}".format(caller_pc))
         if tag == "FREE":
             theme = "theme.heap_chunk_address_freed"
         else:
@@ -194789,16 +194638,6 @@ class KernelLsmCommand(GenericCommand, BufferingOutput):
         ("yama", "yama_"),
     )
 
-    def sym_name(self, addr):
-        """Reverse-resolve an address to a kernel symbol name, or '' if unknown."""
-        if not addr:
-            return ""
-        name = Ksym.get_name(addr)
-        if name:
-            return name
-        s = Symbol.get_symbol_string(addr, nosymbol_string="")
-        return s.strip().strip("<>")
-
     @staticmethod
     def format_addr(value):
         return Color.colorify(AddressUtil.format_address(value), "bold blue")
@@ -195023,7 +194862,8 @@ class KernelLsmCommand(GenericCommand, BufferingOutput):
             func = 0
             if code[0] == 0xe9: # jmp rel32
                 target = AddressUtil.normalize_address(addr + 5 + struct.unpack("<i", code[1:5])[0])
-                if self.is_kernel_text(target) and "return_thunk" not in self.sym_name(target):
+                if (self.is_kernel_text(target)
+                        and "return_thunk" not in Symbol.format(target, ksym="prefer", bracket="")):
                     func = target
             hooks.setdefault(hook, []).append((int(slot), addr, func))
         for entries in hooks.values():
@@ -195285,7 +195125,8 @@ class KernelLsmCommand(GenericCommand, BufferingOutput):
                 entries = [(slot, key, funcs[key]) for slot, key in enumerate(group)]
                 guessed = None
                 if len(groups) > 1 and funcs[group[0]]:
-                    guessed = self.hook_name_from_callback(self.sym_name(funcs[group[0]]), None)
+                    name = Symbol.format(funcs[group[0]], ksym="prefer", bracket="")
+                    guessed = self.hook_name_from_callback(name, None)
                 if guessed and guessed != hook:
                     hooks.setdefault(guessed + " (guessed)", entries)
                 else:
@@ -195326,7 +195167,7 @@ class KernelLsmCommand(GenericCommand, BufferingOutput):
             for slot, addr, func in entries:
                 if not func:
                     continue
-                name = self.sym_name(func)
+                name = Symbol.format(func, ksym="prefer", bracket="")
                 callbacks.append((slot, addr, func, name))
                 lsm = self.lsm_of_callback(name)
                 if lsm:
@@ -195640,7 +195481,7 @@ class KernelLsmCommand(GenericCommand, BufferingOutput):
                     continue
                 if not re.fullmatch(r"[a-z][a-z0-9_]{1,15}", lsm):
                     lsm = ""
-                name = self.sym_name(func)
+                name = Symbol.format(func, ksym="prefer", bracket="")
                 if not lsm:
                     lsm = self.lsm_of_callback(name) or ""
                 if lsm:
@@ -195737,8 +195578,9 @@ class KernelLsmCommand(GenericCommand, BufferingOutput):
 
         lsm = self.read_cstring(ops, 16)
         self.quiet_info_add_out("LSM framework: security_ops (v4.1 or earlier)")
-        self.quiet_info_add_out("security_ops: {:s} -> {:s} <{:s}>".format(
-            self.format_addr(addr), self.format_addr(ops), self.sym_name(ops) or "NO_SYMBOL",
+        self.quiet_info_add_out("security_ops: {:s} -> {:s}{:s}".format(
+            self.format_addr(addr), self.format_addr(ops),
+            " " + Symbol.format(ops, ksym="prefer", missing="NO_SYMBOL"),
         ))
         self.dump_lsm_list({lsm} if lsm else set())
 
@@ -195771,7 +195613,7 @@ class KernelLsmCommand(GenericCommand, BufferingOutput):
                 break
             if self.is_kernel_text(func):
                 miss = 0
-                func_name = self.sym_name(func)
+                func_name = Symbol.format(func, ksym="prefer", bracket="")
                 name = name_by_offset.get(i * ptrsize)
                 if name is None:
                     name = self.hook_name_from_callback(func_name, lsm)
@@ -197199,9 +197041,7 @@ class KernelIoUringCommand(GenericCommand, BufferingOutput):
         callback, callback_member = self.eval_first(
             "struct io_kiocb", request, ["io_task_work.func", "task_work.func", "work.func"],
         )
-        callback_text = "?" if callback is None else "{:#x}{:s}".format(
-            callback, Symbol.get_symbol_string(callback, nosymbol_string=""),
-        )
+        callback_text = "?" if callback is None else Symbol.format(callback, show_address=True, nocolor=True)
         return {
             "address": request, "state": state, "opcode": opcode, "file": file,
             "buffer": buffer, "buffer_member": buffer_member, "refs": refs,
@@ -198771,14 +198611,10 @@ class StackRecoverCommand(GenericCommand, BufferingOutput):
             lookup_addr = addr & ~1
         else:
             lookup_addr = addr
-        try:
-            ret = Symbol.gdb_get_location(lookup_addr)
-        except gdb.error:
-            ret = None
-        if ret is None and self.in_kernel:
-            ret = Ksym.get_location_from_peek(lookup_addr)
+        ret = Symbol.lookup(lookup_addr, ksym="cached" if self.in_kernel else "off")
         if ret is not None:
-            ret = (ret[0], lookup_addr - ret[1])
+            name, offset = ret
+            ret = name, lookup_addr - offset
         self.func_cache[addr] = ret
         return ret
 
@@ -199060,13 +198896,15 @@ class StackRecoverCommand(GenericCommand, BufferingOutput):
         if func and func_pc != pc:
             sym = " <{:s}+{:#x}>".format(Instruction.smartify_text(func[0]), pc - func[1])
         else:
-            sym = Symbol.get_symbol_string(pc, nosymbol_string=" <NO_SYMBOL>")
+            return Symbol.format(pc, missing="NO_SYMBOL", show_address=True)
         return "{!s}{:s}".format(ProcessMap.lookup_address(pc), sym)
 
     def format_call(self, insn, target=None):
         operands = ", ".join(insn.operands)
         if target is not None and "<" not in operands:
-            operands += Symbol.get_symbol_string(target)
+            symbol = Symbol.format(target)
+            if symbol:
+                operands += " " + symbol
         return "{:s}{:s}".format(insn.mnemonic, " " + operands if operands else "")
 
     @Decorator.parse_args
@@ -202401,11 +202239,6 @@ class GefUtil:
         return {1: u8, 2: u16, 4: u32, 8: u64}[size]
 
     @staticmethod
-    def parse_and_eval_unsigned(expression):
-        """Evaluate a GDB expression and return its unsigned address-sized value."""
-        return to_unsigned_long(gdb.parse_and_eval(expression))
-
-    @staticmethod
     @Cache.cache_until_next(per_inferior=True)
     def cached_lookup_type(type_name):
         """Look up a GDB type by name and strip typedefs, returning None on failure."""
@@ -202553,7 +202386,7 @@ class GefUtil:
         if " " not in type_name and GefUtil.cached_lookup_type(type_name) is None:
             type_name = "struct " + type_name
         try:
-            return GefUtil.parse_and_eval_unsigned("&(({:s} *)0)->{:s}".format(type_name, member))
+            return to_unsigned_long(gdb.parse_and_eval("&(({:s} *)0)->{:s}".format(type_name, member)))
         except gdb.error:
             return None
 
@@ -202563,7 +202396,7 @@ class GefUtil:
         count = None
         if array:
             try:
-                count = GefUtil.parse_and_eval_unsigned("sizeof({:s}) / sizeof(({:s})[0])".format(array, array)) or None
+                count = to_unsigned_long(gdb.parse_and_eval("sizeof({:s}) / sizeof(({:s})[0])".format(array, array))) or None
             except gdb.error:
                 pass
         addr = Ksym.get_addr("nr_node_ids")
@@ -202639,7 +202472,7 @@ class GefUtil:
         if " " not in name:
             name = "struct " + name
         try:
-            return GefUtil.parse_and_eval_unsigned("sizeof({:s})".format(name)) or None
+            return to_unsigned_long(gdb.parse_and_eval("sizeof({:s})".format(name))) or None
         except gdb.error:
             return None
 
