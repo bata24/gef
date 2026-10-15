@@ -105580,81 +105580,15 @@ class MemoryCompareCommand(GenericCommand, BufferingOutput):
         return
 
     def memcmp(self, from1data, from2data):
-        diff_found = False
-        asterisk = False
+        lines = GefUtil.hexdump_diff(
+            from1data, from2data,
+            lambda pos: ProcessMap.lookup_address(self.args.location1 + pos),
+            lambda pos: ProcessMap.lookup_address(self.args.location2 + pos),
+            full=self.args.full,
+        )
+        self.out.extend(lines)
 
-        hex_pad_len = {
-            1: 37,
-            2: 35,
-            3: 32,
-            4: 30,
-            5: 27,
-            6: 25,
-            7: 22,
-            8: 20,
-            9: 17,
-            10: 15,
-            11: 12,
-            12: 9,
-            13: 7,
-            14: 5,
-            15: 2,
-            16: 0,
-        }
-
-        for pos in range(0, self.args.size, 16):
-            # determining continuity
-            f1_bin = from1data[pos : pos + 16]
-            f2_bin = from2data[pos : pos + 16]
-            if not self.args.full:
-                if f1_bin == f2_bin:
-                    if asterisk is False:
-                        self.out.append("*")
-                        asterisk = True
-                    continue
-
-            diff_found = True
-            asterisk = False
-
-            # coloring
-            f1_hex = []
-            f2_hex = []
-            f1_ascii = []
-            f2_ascii = []
-            f1_text = GefUtil.bytes_to_ascii(f1_bin)
-            f2_text = GefUtil.bytes_to_ascii(f2_bin)
-            for i in range(min(len(f1_bin), 16)):
-                if f1_bin[i] == f2_bin[i]:
-                    color_func = lambda x: x
-                else:
-                    color_func = Color.boldify
-                f1_hex.append(color_func("{:02x}".format(f1_bin[i])))
-                f2_hex.append(color_func("{:02x}".format(f2_bin[i])))
-                f1_ascii.append(color_func(f1_text[i]))
-                f2_ascii.append(color_func(f2_text[i]))
-
-            # formatting
-            # ["00", "00", "00" "00", ...] -> ["0000", "0000", ...]
-            f1_hex2 = ["".join(x) for x in slicer(f1_hex, 2)]
-            f2_hex2 = ["".join(x) for x in slicer(f2_hex, 2)]
-
-            # padding
-            # ["0000", "0000", ...] -> "0000 0000 ..."
-            f1_hex_s = " ".join(f1_hex2) + " " * hex_pad_len[len(f1_hex)]
-            f2_hex_s = " ".join(f2_hex2) + " " * hex_pad_len[len(f2_hex)]
-            # [".", ".", ...] -> "................"
-            f1_ascii_s = "".join(f1_ascii) + " " * (16 - len(f1_ascii))
-            f2_ascii_s = "".join(f2_ascii) + " " * (16 - len(f2_ascii))
-
-            # make line
-            addr1 = ProcessMap.lookup_address(self.args.location1 + pos)
-            addr2 = ProcessMap.lookup_address(self.args.location2 + pos)
-            self.out.append("{!s}: {:s} |{:s}| {!s}: {:s} |{:s}|".format(
-                addr1, f1_hex_s, f1_ascii_s,
-                addr2, f2_hex_s, f2_ascii_s,
-            ))
-
-        if diff_found is False:
+        if all(line == "*" for line in lines):
             self.info_add_out("No difference")
         return
 
@@ -105666,6 +105600,7 @@ class MemoryCompareCommand(GenericCommand, BufferingOutput):
                 err("Unsupported `--phys` option in this gdb mode")
                 return
 
+        self.out = []
         if args.size == 0:
             self.info_add_out("The size is zero, maybe wrong")
 
@@ -105673,7 +105608,6 @@ class MemoryCompareCommand(GenericCommand, BufferingOutput):
         if ret is None:
             return
 
-        self.out = []
         from1data, from2data = ret
         if args.telescope_like:
             if current_arch is None:
@@ -146740,78 +146674,10 @@ class HashKnownCollisionCommand(HashCommand, BufferingOutput):
         return
 
     def make_cmp(self, data1, data2, show_full=True):
-        diff_found = False
-        asterisk = False
+        lines = GefUtil.hexdump_diff(data1, data2, lambda pos: "{:#06x}".format(pos), full=show_full)
+        self.out.extend(lines)
 
-        hex_pad_len = {
-            1: 37,
-            2: 35,
-            3: 32,
-            4: 30,
-            5: 27,
-            6: 25,
-            7: 22,
-            8: 20,
-            9: 17,
-            10: 15,
-            11: 12,
-            12: 9,
-            13: 7,
-            14: 5,
-            15: 2,
-            16: 0,
-        }
-
-        for pos in range(0, len(data1), 16):
-            # determining continuity
-            f1_bin = data1[pos : pos + 16]
-            f2_bin = data2[pos : pos + 16]
-            if not show_full:
-                if f1_bin == f2_bin:
-                    if asterisk is False:
-                        self.out.append("*")
-                        asterisk = True
-                    continue
-
-            diff_found = True
-            asterisk = False
-
-            # coloring
-            f1_hex = []
-            f2_hex = []
-            f1_ascii = []
-            f2_ascii = []
-            f1_text = GefUtil.bytes_to_ascii(f1_bin)
-            f2_text = GefUtil.bytes_to_ascii(f2_bin)
-            for i in range(min(len(f1_bin), 16)):
-                if f1_bin[i] == f2_bin[i]:
-                    color_func = lambda x: x
-                else:
-                    color_func = Color.boldify
-                f1_hex.append(color_func("{:02x}".format(f1_bin[i])))
-                f2_hex.append(color_func("{:02x}".format(f2_bin[i])))
-                f1_ascii.append(color_func(f1_text[i]))
-                f2_ascii.append(color_func(f2_text[i]))
-
-            # formatting
-            # ["00", "00", "00" "00", ...] -> ["0000", "0000", ...]
-            f1_hex2 = ["".join(x) for x in slicer(f1_hex, 2)]
-            f2_hex2 = ["".join(x) for x in slicer(f2_hex, 2)]
-
-            # padding
-            # ["0000", "0000", ...] -> "0000 0000 ..."
-            f1_hex_s = " ".join(f1_hex2) + " " * hex_pad_len[len(f1_hex)]
-            f2_hex_s = " ".join(f2_hex2) + " " * hex_pad_len[len(f2_hex)]
-            # [".", ".", ...] -> "................"
-            f1_ascii_s = "".join(f1_ascii) + " " * (16 - len(f1_ascii))
-            f2_ascii_s = "".join(f2_ascii) + " " * (16 - len(f2_ascii))
-
-            # make line
-            self.out.append("{:#06x}: {:s} |{:s}| {:s} |{:s}|".format(
-                pos, f1_hex_s, f1_ascii_s, f2_hex_s, f2_ascii_s,
-            ))
-
-        if diff_found is False:
+        if all(line == "*" for line in lines):
             self.info_add_out("No difference")
         return
 
@@ -200185,83 +200051,16 @@ class BincompareCommand(GenericCommand, BufferingOutput):
             ))
             return
 
-        diff_found = False
-        asterisk = False
+        width = len(hex(self.args.file_offset + size))
+        lines = GefUtil.hexdump_diff(
+            from1data[:size], from2data[:size],
+            lambda pos: "{:#{:d}x}".format(self.args.file_offset + pos, width),
+            lambda pos: ProcessMap.lookup_address(self.args.address + pos),
+            full=self.args.full,
+        )
+        self.out.extend(lines)
 
-        hex_pad_len = {
-            1: 37,
-            2: 35,
-            3: 32,
-            4: 30,
-            5: 27,
-            6: 25,
-            7: 22,
-            8: 20,
-            9: 17,
-            10: 15,
-            11: 12,
-            12: 9,
-            13: 7,
-            14: 5,
-            15: 2,
-            16: 0,
-        }
-
-        width = len(hex(size))
-
-        for pos in range(0, size, 16):
-            # determining continuity
-            f1_bin = from1data[pos : min(pos + 16, size)]
-            f2_bin = from2data[pos : min(pos + 16, size)]
-            if not self.args.full:
-                if f1_bin == f2_bin:
-                    if asterisk is False:
-                        self.out.append("*")
-                        asterisk = True
-                    continue
-
-            diff_found = True
-            asterisk = False
-
-            # coloring
-            f1_hex = []
-            f2_hex = []
-            f1_ascii = []
-            f2_ascii = []
-            f1_text = GefUtil.bytes_to_ascii(f1_bin)
-            f2_text = GefUtil.bytes_to_ascii(f2_bin)
-            for i in range(min(len(f1_bin), 16)):
-                if f1_bin[i] == f2_bin[i]:
-                    color_func = lambda x: x
-                else:
-                    color_func = Color.boldify
-                f1_hex.append(color_func("{:02x}".format(f1_bin[i])))
-                f2_hex.append(color_func("{:02x}".format(f2_bin[i])))
-                f1_ascii.append(color_func(f1_text[i]))
-                f2_ascii.append(color_func(f2_text[i]))
-
-            # formatting
-            # ["00", "00", "00" "00", ...] -> ["0000", "0000", ...]
-            f1_hex2 = ["".join(x) for x in slicer(f1_hex, 2)]
-            f2_hex2 = ["".join(x) for x in slicer(f2_hex, 2)]
-
-            # padding
-            # ["0000", "0000", ...] -> "0000 0000 ..."
-            f1_hex_s = " ".join(f1_hex2) + " " * hex_pad_len[len(f1_hex)]
-            f2_hex_s = " ".join(f2_hex2) + " " * hex_pad_len[len(f2_hex)]
-            # [".", ".", ...] -> "................"
-            f1_ascii_s = "".join(f1_ascii) + " " * (16 - len(f1_ascii))
-            f2_ascii_s = "".join(f2_ascii) + " " * (16 - len(f2_ascii))
-
-            # make line
-            addr1 = "{:#{:d}x}".format(self.args.file_offset + pos, width)
-            addr2 = ProcessMap.lookup_address(self.args.address + pos)
-            self.out.append("{:s}: {:s} |{:s}| {!s}: {:s} |{:s}|".format(
-                addr1, f1_hex_s, f1_ascii_s,
-                addr2, f2_hex_s, f2_ascii_s,
-            ))
-
-        if diff_found is False:
+        if all(line == "*" for line in lines):
             self.info_add_out("No difference")
         return
 
@@ -202484,6 +202283,85 @@ class GefUtil:
     def bytes_to_ascii(data, separator="."):
         """Return printable ASCII, replacing nonprintable bytes with the separator."""
         return "".join(chr(b) if 0x20 <= b < 0x7f else separator for b in data)
+
+    @staticmethod
+    def hexdump_diff(data1, data2, label1, label2=None, full=False):
+        """Return lines comparing two byte strings every 16 bytes, boldifying the differing bytes.
+
+        label1 and label2 make the head of each side from the offset. Identical lines are omitted unless full.
+        """
+        hex_pad_len = {
+            1: 37,
+            2: 35,
+            3: 32,
+            4: 30,
+            5: 27,
+            6: 25,
+            7: 22,
+            8: 20,
+            9: 17,
+            10: 15,
+            11: 12,
+            12: 10,
+            13: 7,
+            14: 5,
+            15: 2,
+            16: 0,
+        }
+
+        lines = []
+        asterisk = False
+        for pos in range(0, len(data1), 16):
+            # determining continuity
+            f1_bin = data1[pos : pos + 16]
+            f2_bin = data2[pos : pos + 16]
+            if not full:
+                if f1_bin == f2_bin:
+                    if asterisk is False:
+                        lines.append("*")
+                        asterisk = True
+                    continue
+
+            asterisk = False
+
+            # coloring
+            f1_hex = []
+            f2_hex = []
+            f1_ascii = []
+            f2_ascii = []
+            f1_text = GefUtil.bytes_to_ascii(f1_bin)
+            f2_text = GefUtil.bytes_to_ascii(f2_bin)
+            for i in range(min(len(f1_bin), 16)):
+                if f1_bin[i] == f2_bin[i]:
+                    color_func = lambda x: x
+                else:
+                    color_func = Color.boldify
+                f1_hex.append(color_func("{:02x}".format(f1_bin[i])))
+                f2_hex.append(color_func("{:02x}".format(f2_bin[i])))
+                f1_ascii.append(color_func(f1_text[i]))
+                f2_ascii.append(color_func(f2_text[i]))
+
+            # formatting
+            # ["00", "00", "00" "00", ...] -> ["0000", "0000", ...]
+            f1_hex2 = ["".join(x) for x in slicer(f1_hex, 2)]
+            f2_hex2 = ["".join(x) for x in slicer(f2_hex, 2)]
+
+            # padding
+            # ["0000", "0000", ...] -> "0000 0000 ..."
+            f1_hex_s = " ".join(f1_hex2) + " " * hex_pad_len[len(f1_hex)]
+            f2_hex_s = " ".join(f2_hex2) + " " * hex_pad_len[len(f2_hex)]
+            # [".", ".", ...] -> "................"
+            f1_ascii_s = "".join(f1_ascii) + " " * (16 - len(f1_ascii))
+            f2_ascii_s = "".join(f2_ascii) + " " * (16 - len(f2_ascii))
+
+            # make line
+            head1 = "{!s}: ".format(label1(pos))
+            head2 = "" if label2 is None else "{!s}: ".format(label2(pos))
+            lines.append("{:s}{:s} |{:s}| {:s}{:s} |{:s}|".format(
+                head1, f1_hex_s, f1_ascii_s,
+                head2, f2_hex_s, f2_ascii_s,
+            ))
+        return lines
 
     @staticmethod
     def complete_candidates(candidates, text, word):
