@@ -2030,7 +2030,7 @@ class AddressUtil:
         # others
         msg = []
         for addr in addrs[skip_idx:]:
-            address = ProcessMap.lookup_address(addr)
+            address = ProcessMap.lookup(addr)
             if quiet:
                 msg.append(address.long_fmt())
             else:
@@ -5222,18 +5222,18 @@ class GlibcHeap:
             if self.heap_base is None:
                 heap_base = "uninitialized"
             else:
-                heap_base = ProcessMap.lookup_address(self.heap_base)
-            arena_addr = ProcessMap.lookup_address(self.__addr)
-            top = ProcessMap.lookup_address(self.top)
+                heap_base = ProcessMap.lookup(self.heap_base)
+            arena_addr = ProcessMap.lookup(self.__addr)
+            top = ProcessMap.lookup(self.top)
             if is_valid_addr(self.last_remainder):
-                last_remainder = ProcessMap.lookup_address(self.last_remainder)
+                last_remainder = ProcessMap.lookup(self.last_remainder)
             else:
                 last_remainder = hex(self.last_remainder)
-            next = ProcessMap.lookup_address(self.next)
+            next = ProcessMap.lookup(self.next)
             system_mem = int(self.system_mem)
             try:
                 if is_valid_addr(self.next_free):
-                    next_free = ProcessMap.lookup_address(self.next_free)
+                    next_free = ProcessMap.lookup(self.next_free)
                 else:
                     next_free = hex(self.next_free)
                 fmt = "{:s}(addr={!s}, heap_base={!s}, top={!s}, last_remainder={!s}, "
@@ -5850,12 +5850,12 @@ class GlibcHeap:
             including color and symbol information."""
 
             def get_sym(addr):
-                a = ProcessMap.lookup_address(addr)
+                a = ProcessMap.lookup(addr)
                 b = Symbol.format(addr)
                 return a, " " + b if b else ""
 
             def get_sym_chunk(addr):
-                a = ProcessMap.lookup_address(addr)
+                a = ProcessMap.lookup(addr)
                 b1 = Color.colorify_hex(addr, Config.get("theme.heap_chunk_address_freed"))
                 b2 = Color.colorify_hex(addr, Config.get("theme.heap_chunk_address_used"))
                 c = Symbol.format(addr)
@@ -6757,7 +6757,7 @@ class Symbol:
         if symbol and bracket:
             symbol = "{:s}{:s}{:s}".format(bracket[0], symbol, bracket[1])
         if show_address and addr is not None:
-            address = AddressUtil.format_address(addr) if nocolor else ProcessMap.lookup_address(addr)
+            address = AddressUtil.format_address(addr) if nocolor else ProcessMap.lookup(addr)
             return "{!s}{:s}".format(address, " " + symbol if symbol else "")
         return symbol
 
@@ -12934,7 +12934,7 @@ def write_memory(addr, data):
 
         # 3. heuristic addr search and try use it
         if is_qemu_user(): # not Intel Pin
-            inner_section = ProcessMap.lookup_address(addr).section
+            inner_section = ProcessMap.lookup(addr).section
             target_path = inner_section.path
 
             outer_maps = ProcessMap.get_process_maps(outer=True)
@@ -15974,7 +15974,7 @@ class ProcessMap:
 
     @staticmethod
     @Cache.cache_until_next(per_inferior=True)
-    def lookup_address(addr):
+    def lookup(addr):
         """Try to find the address in the process address space. Return an Address object with caching."""
         return Address(addr)
 
@@ -18995,7 +18995,7 @@ class CanaryCommand(GenericCommand):
         gef_print(titlify("Canary value"))
         if canary_location is not None:
             info("Found canary at {!s}, reading {:d} bytes".format(
-                ProcessMap.lookup_address(canary_location), current_arch.ptrsize,
+                ProcessMap.lookup(canary_location), current_arch.ptrsize,
             ))
         info("The canary is {:s}".format(Color.colorify_hex(canary, "bold")))
 
@@ -19025,14 +19025,14 @@ class CanaryCommand(GenericCommand):
                     path = m.path
                 if prev_addr <= sp <= addr:
                     if printed_flag_sp is False:
-                        info("(Stack pointer is at {!s})".format(ProcessMap.lookup_address(sp)))
+                        info("(Stack pointer is at {!s})".format(ProcessMap.lookup(sp)))
                         printed_flag_sp = True
                 if path == "[stack]":
                     info("Found at {!s} in {!r} (sp{:+#x})".format(
-                        ProcessMap.lookup_address(addr), path, addr - sp,
+                        ProcessMap.lookup(addr), path, addr - sp,
                     ))
                 else:
-                    info("Found at {!s} in {!r}".format(ProcessMap.lookup_address(addr), path))
+                    info("Found at {!s} in {!r}".format(ProcessMap.lookup(addr), path))
                 prev_addr = addr
         return
 
@@ -19407,7 +19407,7 @@ class AuxvCommand(GenericCommand):
                     additional_message = " -> {:s}".format(s)
 
             if is_valid_addr(v):
-                v = str(ProcessMap.lookup_address(v))
+                v = str(ProcessMap.lookup(v))
             else:
                 v = hex(v)
             gef_print("{:6s} {:22s} {:s}{:s}".format(num, k + ":", v, additional_message))
@@ -19467,8 +19467,8 @@ class ArgvCommand(GenericCommand, BufferingOutput):
 
             self.out.append("{:03d} {!s}: {!s} -> {:s}".format(
                 i,
-                ProcessMap.lookup_address(pos),
-                ProcessMap.lookup_address(addr),
+                ProcessMap.lookup(pos),
+                ProcessMap.lookup(addr),
                 s,
             ))
             i += 1
@@ -19506,7 +19506,7 @@ class ArgvCommand(GenericCommand, BufferingOutput):
             return
         if paddr and addr:
             self.out.append(titlify("ARGV from _dl_argv"))
-            self.info_add_out("_dl_argv @ {}".format(ProcessMap.lookup_address(paddr)))
+            self.info_add_out("_dl_argv @ {}".format(ProcessMap.lookup(paddr)))
             self.print_from_mem(addr)
             return
         elif addr == 0:
@@ -19520,7 +19520,7 @@ class ArgvCommand(GenericCommand, BufferingOutput):
         addr = self.get_address_from_symbol("*(void**)&__libc_argv")
         if paddr and addr:
             self.out.append(titlify("ARGV from __libc_argv"))
-            self.info_add_out("__libc_argv @ {}".format(ProcessMap.lookup_address(paddr)))
+            self.info_add_out("__libc_argv @ {}".format(ProcessMap.lookup(paddr)))
             self.print_from_mem(addr)
         elif addr == 0:
             self.err_add_out("__libc_argv is 0x0")
@@ -19607,8 +19607,8 @@ class EnvpCommand(GenericCommand, BufferingOutput):
 
             self.out.append("{:03d} {!s}: {!s} -> {:s}".format(
                 i,
-                ProcessMap.lookup_address(pos),
-                ProcessMap.lookup_address(addr),
+                ProcessMap.lookup(pos),
+                ProcessMap.lookup(addr),
                 s,
             ))
             i += 1
@@ -19643,7 +19643,7 @@ class EnvpCommand(GenericCommand, BufferingOutput):
         paddr = self.get_address_from_symbol("&__environ")
         addr = self.get_address_from_symbol("*(void**)&__environ")
         if paddr and addr:
-            self.info_add_out("__environ @ {}".format(ProcessMap.lookup_address(paddr)))
+            self.info_add_out("__environ @ {}".format(ProcessMap.lookup(paddr)))
             self.print_from_mem(addr)
         elif addr == 0:
             self.err_add_out("___environ is 0x0")
@@ -19656,7 +19656,7 @@ class EnvpCommand(GenericCommand, BufferingOutput):
         paddr = self.get_address_from_symbol("&last_environ")
         addr = self.get_address_from_symbol("*(void**)&last_environ")
         if paddr and addr:
-            self.info_add_out("last_environ @ {}".format(ProcessMap.lookup_address(paddr)))
+            self.info_add_out("last_environ @ {}".format(ProcessMap.lookup(paddr)))
             self.print_from_mem(addr)
         elif addr == 0:
             self.err_add_out("last_environ is 0x0")
@@ -19996,7 +19996,7 @@ class CppVtableCommand(GenericCommand, BufferingOutput):
         else:
             tree = ""
         self.out.append("  {!s} {:s}{:s} (offset {:+d}){:s}".format(
-            ProcessMap.lookup_address(address), tree, record["name"], address - root["top"],
+            ProcessMap.lookup(address), tree, record["name"], address - root["top"],
             " [" + details + "]" if details else "",
         ))
         key = (rtti, address)
@@ -20040,7 +20040,7 @@ class CppVtableCommand(GenericCommand, BufferingOutput):
             return False
         if is_arm32():
             address &= ~1
-        return ProcessMap.lookup_address(address).is_in_text_segment()
+        return ProcessMap.lookup(address).is_in_text_segment()
 
     def dump_functions(self, table, count):
         table_symbol = Symbol.lookup_gdb(table["vptr"])
@@ -20105,8 +20105,8 @@ class CppVtableCommand(GenericCommand, BufferingOutput):
             err("Failed to read C++ object at {:#x}: {!s}".format(args.address, exception))
             return
 
-        self.out.append("{:10s} {!s}".format("Object:", ProcessMap.lookup_address(args.address)))
-        self.out.append("{:10s} {!s}".format("Top:", ProcessMap.lookup_address(table["top"])))
+        self.out.append("{:10s} {!s}".format("Object:", ProcessMap.lookup(args.address)))
+        self.out.append("{:10s} {!s}".format("Top:", ProcessMap.lookup(table["top"])))
         tables = {args.address: table}
         if rtti:
             self.out.append("{:10s} {:s}".format("Type:", rtti["name"]))
@@ -20118,7 +20118,7 @@ class CppVtableCommand(GenericCommand, BufferingOutput):
 
         for address, entry in tables.items():
             self.out.append("")
-            self.out.append("{:10s} {!s} (offset {:+d})".format("Subobject:", ProcessMap.lookup_address(address), address - table["top"]))
+            self.out.append("{:10s} {!s} (offset {:+d})".format("Subobject:", ProcessMap.lookup(address), address - table["top"]))
             self.out.append("{:10s} {:s}".format("vptr:", Symbol.format(entry["vptr"], show_address=True)))
             self.out.append("{:10s} {:s}".format("RTTI:", Symbol.format(entry["rtti"], show_address=True)))
             self.out.append("offset-to-top: {:d}".format(entry["offset_to_top"]))
@@ -23376,7 +23376,7 @@ class PtrDemangleCommand(GenericCommand):
             return None
 
         def is_stack_address(addr):
-            return ProcessMap.lookup_address(addr).is_in_stack_segment()
+            return ProcessMap.lookup(addr).is_in_stack_segment()
 
         start, end = relro
         ptrsize = current_arch.ptrsize
@@ -23829,7 +23829,7 @@ class SearchCfiGadgetsCommand(GenericCommand, BufferingOutput):
                         # 0x555555558634 ff2536e90100 <free@plt+0x4> jmp QWORD PTR [rip+0x1e936] # 0x555555576f70
                         r = re.search(r"# (0x\w+)", insn.operands[0])
                         if r:
-                            v = ProcessMap.lookup_address(int(r.group(1), 16))
+                            v = ProcessMap.lookup(int(r.group(1), 16))
                             if not v.section.is_writable():
                                 valid = False
                     break
@@ -29513,8 +29513,8 @@ class GlibcHeapBinsDump:
 
             if m or verbose:
                 count = arena.tcachebins_i_count(i)
-                bins_addr = ProcessMap.lookup_address(arena.addrof_tcachebins_i(i))
-                fd = ProcessMap.lookup_address(read_int_from_memory(bins_addr.value))
+                bins_addr = ProcessMap.lookup(arena.addrof_tcachebins_i(i))
+                fd = ProcessMap.lookup(read_int_from_memory(bins_addr.value))
                 if "size" in GlibcHeap.get_binsize_table()["tcache"][i]:
                     size = GlibcHeap.get_binsize_table()["tcache"][i]["size"]
                     self.out.append("tcachebins[idx={:d}, size={:#x}, @{!s}]: fd={!s} count={:d}".format(
@@ -29596,8 +29596,8 @@ class GlibcHeapBinsDump:
 
             if m or verbose:
                 bin_table = GlibcHeap.get_binsize_table()["fastbins"]
-                bins_addr = ProcessMap.lookup_address(arena.addrof_fastbins_i(i))
-                fd = ProcessMap.lookup_address(read_int_from_memory(bins_addr.value))
+                bins_addr = ProcessMap.lookup(arena.addrof_fastbins_i(i))
+                fd = ProcessMap.lookup(read_int_from_memory(bins_addr.value))
                 if i in bin_table:
                     self.out.append("fastbins[idx={:d}, size={:#x}, @{!s}]: fd={!s}".format(
                         i, bin_table[i]["size"], bins_addr, fd,
@@ -29701,9 +29701,9 @@ class GlibcHeapBinsDump:
         m = []
         m.append("{:s}[idx={:d}, size={:s}, @{!s}]: fd={!s}, bk={!s}".format(
             bin_name, index, size_str,
-            ProcessMap.lookup_address(bins_addr),
-            ProcessMap.lookup_address(fw),
-            ProcessMap.lookup_address(bk),
+            ProcessMap.lookup(bins_addr),
+            ProcessMap.lookup(fw),
+            ProcessMap.lookup(bk),
         ))
         if corrupted and mf:
             m += mf
@@ -30168,7 +30168,7 @@ class GlibcHeapTryFreeCommand(GenericCommand):
         caller_address = Symbol.resolve_address("'{:s}@plt'".format(name))
         if caller_address is not None:
             # If you use PLT, only userland binary's PLT is valid (libc PLT is invalid)
-            x = ProcessMap.lookup_address(caller_address)
+            x = ProcessMap.lookup(caller_address)
             if x and x.section and x.section.path == Path.get_filepath(append_proc_root_prefix=False):
                 return caller_address
 
@@ -30574,14 +30574,14 @@ class GlibcHeapTcacheIndexHelperCommand(GenericCommand):
         # counts / num_slots
         if get_libc_version() < (2, 42):
             count_addr = arena.addrof_tcachebins_i_count(index)
-            info("&tcache.counts[{:d}] = {!s}".format(index, ProcessMap.lookup_address(count_addr)))
+            info("&tcache.counts[{:d}] = {!s}".format(index, ProcessMap.lookup(count_addr)))
         else:
             num_slots_addr = arena.addrof_tcachebins_i_count(index)
-            info("&tcache.num_slots[{:d}] = {!s}".format(index, ProcessMap.lookup_address(num_slots_addr)))
+            info("&tcache.num_slots[{:d}] = {!s}".format(index, ProcessMap.lookup(num_slots_addr)))
 
         # entries
         entry_addr = arena.addrof_tcachebins_i(index)
-        info("&tcache.entries[{:d}] = {!s}".format(index, ProcessMap.lookup_address(entry_addr)))
+        info("&tcache.entries[{:d}] = {!s}".format(index, ProcessMap.lookup(entry_addr)))
         return
 
     @Decorator.parse_args
@@ -30609,8 +30609,8 @@ class GlibcHeapTcacheIndexHelperCommand(GenericCommand):
             return
 
         # doit
-        info("heap_base: {!s}".format(ProcessMap.lookup_address(arena.heap_base)))
-        info("tcache: {!s} (tcache_perthread_struct)".format(ProcessMap.lookup_address(arena.tcache_perthread_struct)))
+        info("heap_base: {!s}".format(ProcessMap.lookup(arena.heap_base)))
+        info("tcache: {!s} (tcache_perthread_struct)".format(ProcessMap.lookup(arena.tcache_perthread_struct)))
 
         if (args.index, args.count_addr, args.entry_addr) == (None, None, None):
             self.print_tcache_info(arena, 0)
@@ -30665,7 +30665,7 @@ class GlibcHeapFindFakeFastCommand(GenericCommand, BufferingOutput):
             path = "unknown"
         else:
             path = m.path
-        address = ProcessMap.lookup_address(m.page_start + pos)
+        address = ProcessMap.lookup(m.page_start + pos)
         self.info_add_out("Found at {!s} in {!r} [{!s}]".format(address, path, m.permission))
 
         # flag with coloring
@@ -30839,7 +30839,7 @@ class GlibcHeapExtractHeapAddrCommand(GenericCommand):
         if not is_valid_addr(extracted_ptr) and is_valid_addr(args.value << 12):
             extracted_ptr = args.value << 12
             note = "fd << 12, terminal node"
-        extracted_ptr = ProcessMap.lookup_address(extracted_ptr)
+        extracted_ptr = ProcessMap.lookup(extracted_ptr)
         gef_print("Protected fd pointer: {:#x}".format(args.value))
         gef_print(" -> Extracted heap address: {!s} (={:s})".format(extracted_ptr, note))
         return
@@ -31352,7 +31352,7 @@ class GlibcHeapSnapshotCommand(GenericCommand):
     def dump_heap(arena):
         # data
         try:
-            section = ProcessMap.lookup_address(arena.heap_base).section
+            section = ProcessMap.lookup(arena.heap_base).section
             region_size = section.page_end - arena.heap_base
         except Exception:
             err("Failed to get memory range")
@@ -31695,7 +31695,7 @@ class GlibcHeapSnapshotCompareCommand(GenericCommand, BufferingOutput):
                     self.out.append(line.rstrip())
 
             # make line
-            addr = ProcessMap.lookup_address(info1["heap_base"] + pos)
+            addr = ProcessMap.lookup(info1["heap_base"] + pos)
             line = "{:s}{!s}|{:+#08x}|{:+06d}: {:s} | {:s} | {:s} | {:s} |".format(
                 " " if is_line_same else "+",
                 addr, pos, pos // double_ptrsize,
@@ -31905,7 +31905,7 @@ class RegistersCommand(GenericCommand):
             line = "{:s}: ".format(Color.colorify(padreg, color))
             if self.args.simple:
                 # not dereference
-                line += "{:s} ".format(ProcessMap.lookup_address(value).long_fmt())
+                line += "{:s} ".format(ProcessMap.lookup(value).long_fmt())
             else:
                 # dereference values
                 if is_x86_16():
@@ -40666,7 +40666,7 @@ class ContextArgumentsCommand(GenericCommand):
             return None
 
         # GOT Cannot be detected if no file is specified
-        addr_obj = ProcessMap.lookup_address(addr)
+        addr_obj = ProcessMap.lookup(addr)
         if not addr_obj:
             return None
         if not addr_obj.section:
@@ -43709,7 +43709,7 @@ class DereferenceCommand(GenericCommand):
                 if self.args.perm is not None:
                     v = self.read_int_from_memory(current_address)
                     try:
-                        pm = ProcessMap.lookup_address(v)
+                        pm = ProcessMap.lookup(v)
                         if not pm.section.permission.match(self.args.perm):
                             continue
                     except Exception:
@@ -44474,8 +44474,8 @@ class XFilesCommand(GenericCommand, BufferingOutput):
 
         for xfile in ProcessMap.get_info_files():
             lines = []
-            lines.append(str(ProcessMap.lookup_address(xfile.zone_start)))
-            lines.append(str(ProcessMap.lookup_address(xfile.zone_end)))
+            lines.append(str(ProcessMap.lookup(xfile.zone_start)))
+            lines.append(str(ProcessMap.lookup(xfile.zone_end)))
             lines.append("{:<21s}".format(xfile.name))
             lines.append(xfile.filename)
             line = " ".join(lines)
@@ -44515,7 +44515,7 @@ class XInfoCommand(GenericCommand):
         return
 
     def xinfo(self, address):
-        addr = ProcessMap.lookup_address(address)
+        addr = ProcessMap.lookup(address)
         if not addr.valid:
             warn("Cannot reach {:#x} in memory space".format(address))
             return
@@ -44523,19 +44523,19 @@ class XInfoCommand(GenericCommand):
         gdb.execute("vmmap {:#x}".format(address))
 
         if addr.section:
-            page_start = ProcessMap.lookup_address(addr.section.page_start)
+            page_start = ProcessMap.lookup(addr.section.page_start)
             gef_print("Offset (from mapped):  {!s} + {:#x}".format(
                 page_start, addr.value - addr.section.page_start,
             ))
 
             if addr.section.path and addr.section.path.startswith("/"):
-                base_start = ProcessMap.lookup_address(ProcessMap.get_section_base_address(addr.section.path))
+                base_start = ProcessMap.lookup(ProcessMap.get_section_base_address(addr.section.path))
                 gef_print("Offset (from base):    {!s} + {:#x}".format(
                     base_start, addr.value - base_start.section.page_start,
                 ))
 
         if addr.info:
-            zone_start = ProcessMap.lookup_address(addr.info.zone_start)
+            zone_start = ProcessMap.lookup(addr.info.zone_start)
             gef_print("Offset (from segment): {!s} ({:s}) + {:#x}".format(
                 zone_start, addr.info.name, addr.value - addr.info.zone_start,
             ))
@@ -46507,9 +46507,9 @@ class LinkMapCommand(GenericCommand, BufferingOutput):
                 self.err_add_out("Loop detected")
                 break
             seen.add(current)
-            l_name = ProcessMap.lookup_address(read_int_from_memory(current + current_arch.ptrsize * 1))
+            l_name = ProcessMap.lookup(read_int_from_memory(current + current_arch.ptrsize * 1))
             name = read_cstring_from_memory(l_name.value)
-            l_next = ProcessMap.lookup_address(read_int_from_memory(current + current_arch.ptrsize * 3))
+            l_next = ProcessMap.lookup(read_int_from_memory(current + current_arch.ptrsize * 3))
 
             if not name:
                 if Path.get_filepath():
@@ -46533,7 +46533,7 @@ class LinkMapCommand(GenericCommand, BufferingOutput):
             # fast path
             try:
                 link_map = AddressUtil.parse_address("(void*) _rtld_global")
-                link_map = ProcessMap.lookup_address(link_map)
+                link_map = ProcessMap.lookup(link_map)
                 return link_map
             except gdb.error:
                 pass
@@ -46545,17 +46545,17 @@ class LinkMapCommand(GenericCommand, BufferingOutput):
 
         for addr, tag, val in DynamicCommand.iter_dynamic(dynamic):
             if tag == 21: # DT_DEBUG
-                dt_debug = ProcessMap.lookup_address(val)
-                val_addr = ProcessMap.lookup_address(addr + current_arch.ptrsize)
+                dt_debug = ProcessMap.lookup(val)
+                val_addr = ProcessMap.lookup(addr + current_arch.ptrsize)
                 val_addr_offset = val_addr.value - dynamic.value
                 if not silent:
                     info("_DYNAMIC+{:#x}(=DT_DEBUG): {!s} -> {!s}".format(
                         val_addr_offset, val_addr, dt_debug,
                     ))
-                link_map_ptr = ProcessMap.lookup_address(dt_debug.value + current_arch.ptrsize)
+                link_map_ptr = ProcessMap.lookup(dt_debug.value + current_arch.ptrsize)
                 if not is_valid_addr(link_map_ptr.value):
                     return None
-                link_map = ProcessMap.lookup_address(read_int_from_memory(link_map_ptr.value))
+                link_map = ProcessMap.lookup(read_int_from_memory(link_map_ptr.value))
                 if not silent:
                     info("DT_DEBUG+{:#x}: {!s} -> {!s}".format(
                         current_arch.ptrsize, link_map_ptr, link_map,
@@ -46579,7 +46579,7 @@ class LinkMapCommand(GenericCommand, BufferingOutput):
                 self.verbose = True
 
         if args.link_map_address:
-            link_map = ProcessMap.lookup_address(args.link_map_address)
+            link_map = ProcessMap.lookup(args.link_map_address)
         else:
             try:
                 link_map = self.get_link_map(args.elf_address)
@@ -46911,7 +46911,7 @@ class DynamicCommand(GenericCommand, BufferingOutput):
         if raw is None:
             raw = remain_size is not None
         for addr, tag, val in self.iter_dynamic(dynamic, remain_size, raw):
-            val = ProcessMap.lookup_address(val)
+            val = ProcessMap.lookup(val)
             tag_description = DT_TABLE.get(tag, "Unknown")
             colored_addr = Color.colorify("{:#0{:d}x}".format(addr, width), base_address_color)
             self.out.append("{:s}: {:#0{:d}x} {!s}  |  {:s}".format(
@@ -46928,7 +46928,7 @@ class DynamicCommand(GenericCommand, BufferingOutput):
                 dynamic = Symbol.resolve_address("_DYNAMIC")
                 # patchelf may leave _DYNAMIC pointing to a clobbered old .dynamic section.
                 if dynamic is not None and read_memory(dynamic, 4) != b"\x5a\x5a\x5a\x5a":
-                    return ProcessMap.lookup_address(dynamic)
+                    return ProcessMap.lookup(dynamic)
             except gdb.error:
                 pass
 
@@ -46997,7 +46997,7 @@ class DynamicCommand(GenericCommand, BufferingOutput):
             else:
                 dynamic = phdr.p_vaddr
 
-        dynamic = ProcessMap.lookup_address(dynamic)
+        dynamic = ProcessMap.lookup(dynamic)
         if not silent:
             info("_DYNAMIC: {!s} [{!s}]".format(dynamic, dynamic.section.permission))
         return dynamic
@@ -47009,7 +47009,7 @@ class DynamicCommand(GenericCommand, BufferingOutput):
     def do_invoke(self, args):
         dynamic_size = args.dynamic_size
         if args.dynamic_address:
-            dynamic = ProcessMap.lookup_address(args.dynamic_address)
+            dynamic = ProcessMap.lookup(args.dynamic_address)
         else:
             try:
                 dynamic = self.get_dynamic(args.elf_address or args.filename)
@@ -47064,7 +47064,7 @@ class DestructorDumpCommand(GenericCommand):
             addr, AddressUtil.get_format_address_width(),
         ), base_address_color)
         try:
-            b = "[{!s}]".format(ProcessMap.lookup_address(addr).section.permission)
+            b = "[{!s}]".format(ProcessMap.lookup(addr).section.permission)
             return a + b
         except Exception:
             return a + "[???]"
@@ -47362,7 +47362,7 @@ class DestructorDumpCommand(GenericCommand):
 
         # parse tls_dtor_list and print
         head_p = tls_dtor_list
-        head = ProcessMap.lookup_address(read_int_from_memory(head_p))
+        head = ProcessMap.lookup(read_int_from_memory(head_p))
         current = head.value
         if head.section is None:
             gef_print("{:s}: {:s}: {!s}".format("tls_dtor_list", self.C(head_p), head))
@@ -47372,10 +47372,10 @@ class DestructorDumpCommand(GenericCommand):
         ptrsize = current_arch.ptrsize
 
         def read_fns(addr):
-            func = ProcessMap.lookup_address(read_int_from_memory(current))
-            obj = ProcessMap.lookup_address(read_int_from_memory(current + ptrsize * 1))
-            link_map = ProcessMap.lookup_address(read_int_from_memory(current + ptrsize * 2))
-            next = ProcessMap.lookup_address(read_int_from_memory(current + ptrsize * 3))
+            func = ProcessMap.lookup(read_int_from_memory(current))
+            obj = ProcessMap.lookup(read_int_from_memory(current + ptrsize * 1))
+            link_map = ProcessMap.lookup(read_int_from_memory(current + ptrsize * 2))
+            next = ProcessMap.lookup(read_int_from_memory(current + ptrsize * 3))
             return func, obj, link_map, next
 
         seen = set()
@@ -47422,7 +47422,7 @@ class DestructorDumpCommand(GenericCommand):
             err("Could not find symbol ({:s})".format(name))
             return
 
-        head = ProcessMap.lookup_address(read_int_from_memory(head_p))
+        head = ProcessMap.lookup(read_int_from_memory(head_p))
         current = head.value
         if head.section is None:
             gef_print("{:s}: {:s}: {!s}".format(name, self.C(head_p), head))
@@ -47434,10 +47434,10 @@ class DestructorDumpCommand(GenericCommand):
         ptrsize = current_arch.ptrsize
 
         def read_fns(addr):
-            flavor = ProcessMap.lookup_address(read_int_from_memory(addr))
-            fn = ProcessMap.lookup_address(read_int_from_memory(addr + ptrsize * 1))
-            arg = ProcessMap.lookup_address(read_int_from_memory(addr + ptrsize * 2))
-            dso_handle = ProcessMap.lookup_address(read_int_from_memory(addr + ptrsize * 3))
+            flavor = ProcessMap.lookup(read_int_from_memory(addr))
+            fn = ProcessMap.lookup(read_int_from_memory(addr + ptrsize * 1))
+            arg = ProcessMap.lookup(read_int_from_memory(addr + ptrsize * 2))
+            dso_handle = ProcessMap.lookup(read_int_from_memory(addr + ptrsize * 3))
             return flavor, fn, arg, dso_handle
 
         fns_size = ptrsize * 4 # flavor, fn, arg, dso_handle
@@ -47449,8 +47449,8 @@ class DestructorDumpCommand(GenericCommand):
                 break
             seen.add(current)
             try:
-                next = ProcessMap.lookup_address(read_int_from_memory(current))
-                idx = ProcessMap.lookup_address(read_int_from_memory(current + ptrsize))
+                next = ProcessMap.lookup(read_int_from_memory(current))
+                idx = ProcessMap.lookup(read_int_from_memory(current + ptrsize))
             except gdb.MemoryError:
                 err("Memory read error at {:#x}".format(current))
                 break
@@ -47780,7 +47780,7 @@ class StandardIoCommand(GenericCommand, BufferingOutput):
         for st in struct_array:
             member_addr = st + member_offset
             if member_name == "__addr__":
-                address_obj = ProcessMap.lookup_address(st)
+                address_obj = ProcessMap.lookup(st)
                 sym = Symbol.format(st)
                 sym = " " + sym if sym else ""
                 msg += "{:s}{:{:d}s} ".format(address_obj.long_fmt(), sym, sym_width)
@@ -47788,7 +47788,7 @@ class StandardIoCommand(GenericCommand, BufferingOutput):
                 msg += "{:{:d}s}{:{:d}s} ".format("", val_width, "", sym_width)
             elif member_size == current_arch.ptrsize:
                 val = read_int_from_memory(member_addr)
-                address_obj = ProcessMap.lookup_address(val)
+                address_obj = ProcessMap.lookup(val)
                 sym = Symbol.format(val)
                 sym = " " + sym if sym else ""
                 msg += "{:s}{:{:d}s} ".format(address_obj.long_fmt(), sym, sym_width)
@@ -48240,7 +48240,7 @@ class GotCommand(GenericCommand, BufferingOutput):
         return plt_begin, plt_end
 
     def perm(self, addr):
-        sec = ProcessMap.lookup_address(addr).section
+        sec = ProcessMap.lookup(addr).section
         if sec is None:
             return "[???]"
         return "[{!s}]".format(sec.permission)
@@ -48429,7 +48429,7 @@ class GotCommand(GenericCommand, BufferingOutput):
             if self.args.verbose:
                 if info.plt_address:
                     plt_info = "{!s} @{:{:d}s} {:#{:d}x} {:9s}".format(
-                        ProcessMap.lookup_address(info.plt_address),
+                        ProcessMap.lookup(info.plt_address),
                         info.plt_section, plt_section_width,
                         info.plt_offset, plt_offset_width,
                         reloc_arg_info,
@@ -48443,19 +48443,19 @@ class GotCommand(GenericCommand, BufferingOutput):
                     )
             else:
                 if info.plt_address:
-                    plt_info = "{!s}".format(ProcessMap.lookup_address(info.plt_address))
+                    plt_info = "{!s}".format(ProcessMap.lookup(info.plt_address))
                 else:
                     plt_info = "{:{:d}s}".format("Not found", width)
 
             # make got format
             if self.args.verbose:
                 got_info = "{!s} @{:{:d}s} {:#{:d}x}".format(
-                    ProcessMap.lookup_address(info.got_address),
+                    ProcessMap.lookup(info.got_address),
                     info.got_section, got_section_width,
                     info.got_offset, got_offset_width,
                 )
             else:
-                got_info = "{!s}".format(ProcessMap.lookup_address(info.got_address))
+                got_info = "{!s}".format(ProcessMap.lookup(info.got_address))
 
             # make got value format
             got_value_info = Color.colorify(
@@ -48682,7 +48682,7 @@ class FormatStringBreakpoint(gdb.Breakpoint):
         Cache.reset_gef_caches()
         msg = []
         ptr, addr = current_arch.get_ith_parameter(self.num_args)
-        addr = ProcessMap.lookup_address(addr)
+        addr = ProcessMap.lookup(addr)
 
         if not addr.valid:
             return False
@@ -49066,7 +49066,7 @@ class TraceMallocRetBreakpoint(gdb.Breakpoint):
             allocated = read_int_from_memory(self.memptr)
         else:
             allocated = AddressUtil.parse_address(current_arch.return_register)
-        allocated = ProcessMap.lookup_address(allocated)
+        allocated = ProcessMap.lookup(allocated)
 
         # show information
         self.show_information(allocated)
@@ -49122,7 +49122,7 @@ class TraceReallocBreakpoint(gdb.Breakpoint):
 
         # set bp to return address
         _, old_loc = current_arch.get_ith_parameter(0)
-        old_loc = ProcessMap.lookup_address(old_loc)
+        old_loc = ProcessMap.lookup(old_loc)
         if self.name == "realloc":
             nmemb = 1
             _, size = current_arch.get_ith_parameter(1)
@@ -49313,7 +49313,7 @@ class TraceReallocRetBreakpoint(gdb.Breakpoint):
 
         # get returned address
         new_loc = AddressUtil.parse_address(current_arch.return_register)
-        new_loc = ProcessMap.lookup_address(new_loc)
+        new_loc = ProcessMap.lookup(new_loc)
 
         # show information
         self.show_information(new_loc)
@@ -49473,7 +49473,7 @@ class TraceFreeBreakpoint(gdb.Breakpoint):
 
         # get the address to free
         _, to_free = current_arch.get_ith_parameter(0)
-        to_free = ProcessMap.lookup_address(to_free)
+        to_free = ProcessMap.lookup(to_free)
 
         if self.check_nested(to_free):
             return False
@@ -49604,7 +49604,7 @@ class GlibcHeapTracerCommand(GenericCommand):
         def setup_breakpoints(bp_class, name):
             try:
                 address = AddressUtil.parse_address(name)
-                address = ProcessMap.lookup_address(address)
+                address = ProcessMap.lookup(address)
             except gdb.error:
                 warn("breakpoint setup failed: {:s}".format(name))
                 return
@@ -61890,7 +61890,7 @@ class MagicCommand(GenericCommand):
         if sym.startswith("*"):
             addr = read_int_from_memory(addr)
 
-        addr = ProcessMap.lookup_address(addr)
+        addr = ProcessMap.lookup(addr)
         perm = addr.section.permission
         if is_ascii_string(addr.value):
             val = read_cstring_from_memory(addr.value)
@@ -61898,7 +61898,7 @@ class MagicCommand(GenericCommand):
                 sym, addr, perm, addr.value - base, val,
             ))
         else:
-            val = ProcessMap.lookup_address(read_int_from_memory(addr.value))
+            val = ProcessMap.lookup(read_int_from_memory(addr.value))
             val_sym = Symbol.format(val.value)
             val_sym = " " + val_sym if val_sym else ""
             gef_print("{:45s} {!s} [{!s}] ({:+#011x}) -> {:s}{:s}".format(
@@ -62468,7 +62468,7 @@ class OneGadgetCommand(GenericCommand):
                     if ret is None:
                         valid = False
                         break
-                    addr = ProcessMap.lookup_address(ret)
+                    addr = ProcessMap.lookup(ret)
                     if not addr.valid or not addr.section.is_writable():
                         valid &= False
                         break
@@ -62490,7 +62490,7 @@ class OneGadgetCommand(GenericCommand):
                         ret = self.parse_exp(exp)
                         if ret is None:
                             continue
-                        addr = ProcessMap.lookup_address(ret)
+                        addr = ProcessMap.lookup(ret)
                         if addr.valid and addr.section.is_writable():
                             sub_valid = True
                             break
@@ -64077,7 +64077,7 @@ class DistanceCommand(GenericCommand):
             gef_print("Offset:  {:#x}".format(offset))
             return
 
-        addr_a = ProcessMap.lookup_address(args.address_a)
+        addr_a = ProcessMap.lookup(args.address_a)
         if addr_a.section is None:
             err("Could not find the base address")
             return
@@ -64274,7 +64274,7 @@ class AddressifyCommand(GenericCommand):
         hex_values = "".join(hex_values)
 
         address = int(hex_values, 16)
-        address = ProcessMap.lookup_address(address)
+        address = ProcessMap.lookup(address)
 
         gef_print("Byte order: {:s}".format(args.byte_order))
         if address.valid and address.section.path:
@@ -103506,7 +103506,7 @@ class StringsCommand(GenericCommand, BufferingOutput):
                     continue
 
                 if GefUtil.matches_regex(cstr, self.args.filter, self.args.exclude):
-                    self.out.append("{!s}: {:s}".format(ProcessMap.lookup_address(address), cstr))
+                    self.out.append("{!s}: {:s}".format(ProcessMap.lookup(address), cstr))
                 seen_cstr.append((address, address + len(cstr) + 1))
 
             if depth == 0:
@@ -103542,7 +103542,7 @@ class StringsCommand(GenericCommand, BufferingOutput):
                     return
                 first_range = args.end_location - args.location
             else:
-                loc = ProcessMap.lookup_address(args.location)
+                loc = ProcessMap.lookup(args.location)
                 if loc.valid:
                     first_range = loc.section.page_end - args.location
                 else:
@@ -105450,11 +105450,11 @@ class MemoryCompareCommand(GenericCommand, BufferingOutput):
             diff_found = True
             asterisk = False
 
-            f1_hex = ProcessMap.lookup_address(unpack(f1_bin))
-            f2_hex = ProcessMap.lookup_address(unpack(f2_bin))
+            f1_hex = ProcessMap.lookup(unpack(f1_bin))
+            f2_hex = ProcessMap.lookup(unpack(f2_bin))
 
-            addr1 = ProcessMap.lookup_address(self.args.location1 + pos)
-            addr2 = ProcessMap.lookup_address(self.args.location2 + pos)
+            addr1 = ProcessMap.lookup(self.args.location1 + pos)
+            addr2 = ProcessMap.lookup(self.args.location2 + pos)
             self.out.append("{!s}|{:+#07x}|{:+04d}: {:s}  |  {!s}|{:+#07x}|{:+04d}: {:s}".format(
                 addr1, pos, pos // current_arch.ptrsize, f1_hex.long_fmt(),
                 addr2, pos, pos // current_arch.ptrsize, f2_hex.long_fmt(),
@@ -105467,8 +105467,8 @@ class MemoryCompareCommand(GenericCommand, BufferingOutput):
     def memcmp(self, from1data, from2data):
         lines = GefUtil.hexdump_diff(
             from1data, from2data,
-            lambda pos: ProcessMap.lookup_address(self.args.location1 + pos),
-            lambda pos: ProcessMap.lookup_address(self.args.location2 + pos),
+            lambda pos: ProcessMap.lookup(self.args.location1 + pos),
+            lambda pos: ProcessMap.lookup(self.args.location2 + pos),
             full=self.args.full,
         )
         self.out.extend(lines)
@@ -149037,7 +149037,7 @@ class IsMemoryZeroCommand(GenericCommand):
         if nonzero_addr is None:
             warn("Scan failed to find non-zero byte unexpectedly")
             return
-        found_addr = ProcessMap.lookup_address(nonzero_addr)
+        found_addr = ProcessMap.lookup(nonzero_addr)
         info("{:#x} - {:#x} is {:s}".format(start, end, Color.colorify("NON-ZERO", "bold red")))
         info("Around {!s} is NON-ZERO".format(found_addr))
         info("Length of 0x00: {:d}".format(found_addr.value - start))
@@ -149198,7 +149198,7 @@ class SequenceLengthCommand(GenericCommand):
             err("Too large unit size")
             return
 
-        addr = ProcessMap.lookup_address(args.addr)
+        addr = ProcessMap.lookup(args.addr)
         info("Check from {!s} in units of {:s} bytes".format(
             addr, Color.colorify_hex(args.unit, "bold"),
         ))
@@ -149209,7 +149209,7 @@ class SequenceLengthCommand(GenericCommand):
 
         count, target = ret
         size = args.unit * count
-        end = ProcessMap.lookup_address(args.addr + size)
+        end = ProcessMap.lookup(args.addr + size)
 
         if len(target) > 0x100:
             target = target[:0x100] + b"..."
@@ -164161,7 +164161,7 @@ class TcmallocHeapDumpCommand(GenericCommand, BufferingOutput):
                 idx,
                 Color.colorify_hex(chunksize, chunk_size_color),
                 length,
-                ProcessMap.lookup_address(freelist),
+                ProcessMap.lookup(freelist),
             ))
             self.out.extend(out)
         return
@@ -164233,7 +164233,7 @@ class TcmallocHeapDumpCommand(GenericCommand, BufferingOutput):
                     break
             # print
             self.out.append("central_cache_[{:d}].tc_slot[{:d}] @ {!s}".format(
-                i, j, ProcessMap.lookup_address(freelist),
+                i, j, ProcessMap.lookup(freelist),
             ))
             self.out.extend(out)
         return
@@ -164563,10 +164563,10 @@ class GoHeapDumpCommand(GenericCommand, BufferingOutput):
             range_addr_str += Color.colorify_hex(mspan.end_addr, page_address_color)
             range_size = mspan.end_addr - mspan.start_addr
             msg = "mspan @ {!s} [{:s} sz={:#x} chunk_size={:s} next={!s}, prev:{!s} state={:d}]".format(
-                ProcessMap.lookup_address(mspan.address),
+                ProcessMap.lookup(mspan.address),
                 range_addr_str, range_size, chunk_size_str,
-                ProcessMap.lookup_address(mspan.next),
-                ProcessMap.lookup_address(mspan.prev),
+                ProcessMap.lookup(mspan.next),
+                ProcessMap.lookup(mspan.prev),
                 mspan.state,
             )
             self.out.append(msg)
@@ -164794,8 +164794,8 @@ class TlsfHeapDumpCommand(GenericCommand, BufferingOutput):
                         Color.colorify_hex(current, freed_address_color),
                         prev_hdr,
                         Color.colorify_hex(size & ~0xf, chunk_size_color),
-                        ProcessMap.lookup_address(prev_),
-                        ProcessMap.lookup_address(next_),
+                        ProcessMap.lookup(prev_),
+                        ProcessMap.lookup(next_),
                     )
                     self.out.append(msg)
                     current = next_
@@ -166342,7 +166342,7 @@ class SnmallocHeapDumpCommand(GenericCommand, BufferingOutput):
             self.out.append("small_fast_free_lists[{:d}, size={:s}] @ {!s}:".format(
                 i,
                 Color.colorify_hex(self.class_to_size(i), Config.get("theme.heap_chunk_size")),
-                ProcessMap.lookup_address(free_list_i),
+                ProcessMap.lookup(free_list_i),
             ))
             for i, chunk in enumerate(free_list):
                 chunk_str = Color.colorify_hex(chunk, freed_address_color)
@@ -166424,7 +166424,7 @@ class SnmallocHeapDumpCommand(GenericCommand, BufferingOutput):
 
         # print
         self.out.append("free_queue[size={:s}, needed_={:#x}, sleeping_={:#x}, large_={:#x}] @ {!s}:".format(
-            cl_msg, needed_, sleeping_, large_, ProcessMap.lookup_address(free_queue),
+            cl_msg, needed_, sleeping_, large_, ProcessMap.lookup(free_queue),
         ))
         for i, chunk in enumerate(free_list):
             if is_laden:
@@ -166486,7 +166486,7 @@ class SnmallocHeapDumpCommand(GenericCommand, BufferingOutput):
             self.out.append("SlabMetadataCache[{:d}, size={:s}] @ {!s}: {:#x} slab(s)".format(
                 i,
                 Color.colorify_hex(self.class_to_size(i), Config.get("theme.heap_chunk_size")),
-                ProcessMap.lookup_address(entry),
+                ProcessMap.lookup(entry),
                 length,
             ))
 
@@ -166783,7 +166783,7 @@ class CageCommand(GenericCommand, BufferingOutput):
             value = read_int_from_memory(isolate + offset, safe=True)
             if not value or value & 0xfff:
                 continue
-            section = ProcessMap.lookup_address(value).section
+            section = ProcessMap.lookup(value).section
             if section and section.page_start == value and section.permission.value == Permission.READ:
                 if section.size <= 0x10000 and (not section.path or section.path.startswith("[anon:v8")):
                     candidates[offset] = value
@@ -166997,7 +166997,7 @@ class CageCommand(GenericCommand, BufferingOutput):
                         return None
                     table = getattr(self, "metadata_pointer_table", None)
                     if table is None:
-                        section = ProcessMap.lookup_address(group + index * 16).section
+                        section = ProcessMap.lookup(group + index * 16).section
                         if not section or not section.is_readable():
                             return None
                         size = min(0x10000, section.page_end - group - index * 16)
@@ -167010,7 +167010,7 @@ class CageCommand(GenericCommand, BufferingOutput):
                             value = int.from_bytes(data[offset:offset + 8], "little")
                             if not value or value & 7:
                                 continue
-                            region = ProcessMap.lookup_address(value).section
+                            region = ProcessMap.lookup(value).section
                             if not region or not region.is_readable() or value + 0x58 > region.page_end:
                                 continue
                             start = read_int_from_memory(value + start_offset, safe=True)
@@ -167492,7 +167492,7 @@ class V8ListMapsCommand(GenericCommand, BufferingOutput):
             if not heap_base:
                 err("Could not find the glibc heap")
                 return None
-            heap_section = ProcessMap.lookup_address(heap_base).section
+            heap_section = ProcessMap.lookup(heap_base).section
             heap_contents = read_memory(heap_base, heap_section.size)
             heap_contents = slice_unpack(heap_contents, current_arch.ptrsize)
         return heap_contents
@@ -169044,7 +169044,7 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
 
         # not in extent, but valid
         if is_valid_addr(address):
-            return str(ProcessMap.lookup_address(address))
+            return str(ProcessMap.lookup(address))
 
         # not valid
         return "{:#x}".format(address)
@@ -169159,7 +169159,7 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
         ))
         inv_inv = root.inverted_self_ ^ AddressUtil.get_vmem_end_mask()
         self.out.append("uintptr_t inverted_self_:                                       {:#x} (=~{!s})".format(
-            root.inverted_self_, ProcessMap.lookup_address(inv_inv),
+            root.inverted_self_, ProcessMap.lookup(inv_inv),
         ))
         self.out.append("internal::Lock thread_cache_construction_lock_:                 {:#x}".format(
             root.thread_cache_construction_lock_,
@@ -169196,7 +169196,7 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
                     self.C(extent.addr),
                 ))
                 self.out.append("           root:{!s} ".format(
-                    ProcessMap.lookup_address(extent.root),
+                    ProcessMap.lookup(extent.root),
                 ))
                 super_page_info = "{:s} - {:s}".format(
                     self.P(extent.super_page_base), self.P(extent.super_page_end),
@@ -169272,11 +169272,11 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
         slot_size = Color.colorify("{:#7x}".format(bucket.slot_size), chunk_size_color)
         if idx is not None:
             self.out.append("    buckets_[{:3d}](slot_size:{:s}) @{!s}".format(
-                idx, slot_size, ProcessMap.lookup_address(bucket.addr),
+                idx, slot_size, ProcessMap.lookup(bucket.addr),
             ))
         else:
             self.out.append("    bucket(slot_size:{:s}) @{!s}".format(
-                slot_size, ProcessMap.lookup_address(bucket.addr),
+                slot_size, ProcessMap.lookup(bucket.addr),
             ))
         self.out.append("        num_system_pages_per_slot_span:{:#x} ".format(
             bucket.num_system_pages_per_slot_span,
@@ -169731,13 +169731,13 @@ class ScallocHeapDumpCommand(GenericCommand, BufferingOutput):
                 self.out.append(titlify("Span @{:#x} (size: {:#x}, capacity: {:#x}, available: {:#x})".format(
                     span.addr, span.object_size, span.object_num, span.freelist_len,
                 )))
-                self.out.append("freelist @ {!s}:".format(ProcessMap.lookup_address(span.freelist_addr)))
+                self.out.append("freelist @ {!s}:".format(ProcessMap.lookup(span.freelist_addr)))
                 cnt = self.dump_freelist(span.freelist)
                 self.out.append("bump_pointer: {!s} (num: {:#x})".format(
-                    ProcessMap.lookup_address(span.bump_pointer),
+                    ProcessMap.lookup(span.bump_pointer),
                     span.freelist_len - cnt,
                 ))
-                self.out.append("remote freelist @ {!s}:".format(ProcessMap.lookup_address(span.top_addr)))
+                self.out.append("remote freelist @ {!s}:".format(ProcessMap.lookup(span.top_addr)))
                 self.dump_freelist(span.top_decoded)
             current += 0x20_0000 # kVirtualSpanSize
         return span
@@ -170219,7 +170219,7 @@ class SsmallocHeapDumpCommand(GenericCommand, BufferingOutput):
         if addr is None:
             self.out.append("{:s}:".format(title))
         else:
-            self.out.append("{:s} @ {!s}:".format(title, ProcessMap.lookup_address(addr)))
+            self.out.append("{:s} @ {!s}:".format(title, ProcessMap.lookup(addr)))
 
         for i, obj in enumerate(free_list):
             obj_str = Color.colorify_hex(obj, freed_address_color)
@@ -170269,7 +170269,7 @@ class SsmallocHeapDumpCommand(GenericCommand, BufferingOutput):
 
         self.out.append(titlify("{:s} @ {:#x}".format(title or "dchunk", dchunk.addr)))
         self.out.append("owner: {!s}, state: {:s}, numa_node: {:#x}".format(
-            ProcessMap.lookup_address(dchunk.owner),
+            ProcessMap.lookup(dchunk.owner),
             self.get_state_name(dchunk.state),
             dchunk.numa_node,
         ))
@@ -170280,7 +170280,7 @@ class SsmallocHeapDumpCommand(GenericCommand, BufferingOutput):
             dchunk.free_blk_cnt,
             dchunk.blk_cnt,
         ))
-        self.out.append("free_mem: {!s}".format(ProcessMap.lookup_address(dchunk.free_mem)))
+        self.out.append("free_mem: {!s}".format(ProcessMap.lookup(dchunk.free_mem)))
 
         local_count = self.append_freelist(
             "free_head",
@@ -170326,14 +170326,14 @@ class SsmallocHeapDumpCommand(GenericCommand, BufferingOutput):
             if dchunk_addr == lheap.addr + self.offset_lheap_dummy_chunk:
                 if self.args.verbose:
                     self.out.append("foreground[{:#x}, size={:#x}] @ {!s}: dummy_chunk".format(
-                        size_cls, size, ProcessMap.lookup_address(entry),
+                        size_cls, size, ProcessMap.lookup(entry),
                     ))
                     printed_flag = True
                 continue
             if dchunk_addr == 0:
                 if self.args.verbose:
                     self.out.append("foreground[{:#x}, size={:#x}] @ {!s}: 0x0".format(
-                        size_cls, size, ProcessMap.lookup_address(entry),
+                        size_cls, size, ProcessMap.lookup(entry),
                     ))
                     printed_flag = True
                 continue
@@ -170364,7 +170364,7 @@ class SsmallocHeapDumpCommand(GenericCommand, BufferingOutput):
                 continue
 
             self.out.append("background[{:#x}, size={:#x}] @ {!s}:".format(
-                size_cls, size, ProcessMap.lookup_address(entry),
+                size_cls, size, ProcessMap.lookup(entry),
             ))
             if error:
                 self.out.append(" {:s}".format(error))
@@ -170399,7 +170399,7 @@ class SsmallocHeapDumpCommand(GenericCommand, BufferingOutput):
                 continue
 
             self.out.append("need_gc[{:#x}, size={:#x}] @ {!s}:".format(
-                size_cls, size, ProcessMap.lookup_address(entry),
+                size_cls, size, ProcessMap.lookup(entry),
             ))
             if error:
                 self.out.append(" {:s}".format(error))
@@ -170432,9 +170432,9 @@ class SsmallocHeapDumpCommand(GenericCommand, BufferingOutput):
 
             self.out.append("block_bufs[{:#x}] @ {!s}: dc={!s}, first={!s}, count={:#x}".format(
                 index,
-                ProcessMap.lookup_address(entry),
-                ProcessMap.lookup_address(obj_buf.dc),
-                ProcessMap.lookup_address(obj_buf.first),
+                ProcessMap.lookup(entry),
+                ProcessMap.lookup(obj_buf.dc),
+                ProcessMap.lookup(obj_buf.first),
                 obj_buf.count,
             ))
 
@@ -170481,9 +170481,9 @@ class SsmallocHeapDumpCommand(GenericCommand, BufferingOutput):
     def dump_global_pool(self, global_pool):
         gpool = self.read_gpool(global_pool)
         self.out.append(titlify("global_pool @ {:#x}".format(global_pool), color="bold", msg_color="bold"))
-        self.out.append("pool_start: {!s}".format(ProcessMap.lookup_address(gpool.pool_start)))
-        self.out.append("pool_end: {!s}".format(ProcessMap.lookup_address(gpool.pool_end)))
-        self.out.append("free_start: {!s}".format(ProcessMap.lookup_address(gpool.free_start)))
+        self.out.append("pool_start: {!s}".format(ProcessMap.lookup(gpool.pool_start)))
+        self.out.append("pool_end: {!s}".format(ProcessMap.lookup(gpool.pool_end)))
+        self.out.append("free_start: {!s}".format(ProcessMap.lookup(gpool.free_start)))
 
         for index in range(self.MAX_CORE_ID):
             queue_addr = global_pool + self.offset_gpool_free_dc_head + (self.sizeof_queue * index)
@@ -171946,7 +171946,7 @@ class JemallocHeapDumpCommand(GenericCommand, BufferingOutput):
         corrupted_msg_color = Config.get("theme.heap_corrupted_msg")
 
         msg = "    {:s} @ {:#x}: addr={!s} size={:#x} reg_size={:s} nregs={:d} nfree={:d}".format(
-            record["kind"], record["header"], ProcessMap.lookup_address(record["addr"]), record["size"],
+            record["kind"], record["header"], ProcessMap.lookup(record["addr"]), record["size"],
             Color.colorify_hex(record["reg_size"], chunk_size_color), record["nregs"], len(record["free"]),
         )
         if record["nfree"] != len(record["free"]):
@@ -172461,14 +172461,14 @@ class MuslHeapDumpCommand(GenericCommand, BufferingOutput):
             self.out.append("  size_t pagesize:                    {:#x}".format(ctx.pagesize))
         self.out.append("  int init_done:                      {:#x}".format(ctx.init_done))
         self.out.append("  unsigned int mmap_counter:          {:#x}".format(ctx.mmap_counter))
-        self.out.append("  struct meta* free_meta_head:        {!s}".format(ProcessMap.lookup_address(ctx.free_meta_head)))
-        self.out.append("  struct meta* avail_meta:            {!s}".format(ProcessMap.lookup_address(ctx.avail_meta)))
+        self.out.append("  struct meta* free_meta_head:        {!s}".format(ProcessMap.lookup(ctx.free_meta_head)))
+        self.out.append("  struct meta* avail_meta:            {!s}".format(ProcessMap.lookup(ctx.avail_meta)))
         self.out.append("  size_t avail_meta_count:            {:#x}".format(ctx.avail_meta_count))
         self.out.append("  size_t avail_meta_area_count:       {:#x}".format(ctx.avail_meta_area_count))
         self.out.append("  size_t alloc_shift:                 {:#x}".format(ctx.alloc_shift))
-        self.out.append("  struct meta_area* meta_area_head:   {!s}".format(ProcessMap.lookup_address(ctx.meta_area_head)))
-        self.out.append("  struct meta_area* meta_area_tail:   {!s}".format(ProcessMap.lookup_address(ctx.meta_area_tail)))
-        self.out.append("  unsigned char* avail_meta_areas:    {!s}".format(ProcessMap.lookup_address(ctx.avail_meta_areas)))
+        self.out.append("  struct meta_area* meta_area_head:   {!s}".format(ProcessMap.lookup(ctx.meta_area_head)))
+        self.out.append("  struct meta_area* meta_area_tail:   {!s}".format(ProcessMap.lookup(ctx.meta_area_tail)))
+        self.out.append("  unsigned char* avail_meta_areas:    {!s}".format(ProcessMap.lookup(ctx.avail_meta_areas)))
         self.out.append("  struct meta* active[48]:")
         for i in range(48):
             self.out.append("     active[{:2d}] (for chunk_size={:#7x}):     {:#x}".format(i, self.class_to_size(i), ctx.active[i]))
@@ -172478,7 +172478,7 @@ class MuslHeapDumpCommand(GenericCommand, BufferingOutput):
         self.out.append("  uint8_t unmap_seq[32]:              {}".format(" ".join(["{:02x}".format(x) for x in ctx.unmap_seq])))
         self.out.append("  uint8_t bounces[32]:                {}".format(" ".join(["{:02x}".format(x) for x in ctx.bounces])))
         self.out.append("  uint8_t seq:                        {:#x}".format(ctx.seq))
-        self.out.append("  uintptr_t brk:                      {!s}".format(ProcessMap.lookup_address(ctx.brk)))
+        self.out.append("  uintptr_t brk:                      {!s}".format(ProcessMap.lookup(ctx.brk)))
         return
 
     def read_meta(self, addr):
@@ -172775,14 +172775,14 @@ class uClibcNgHeap:
             flags = self.flags_as_string()
 
             if is_fastbin:
-                decoded_fd = ProcessMap.lookup_address(self.get_fwd_ptr(safe_linking))
+                decoded_fd = ProcessMap.lookup(self.get_fwd_ptr(safe_linking))
                 fd = self.get_fwd_ptr()
                 msg = "{:s}(base={:s}, addr={:s}, size={:s}, flags={:s}, fd={:#x}(={!s}))".format(
                     chunk_c, base_c, addr_c, size_c, flags, fd, decoded_fd,
                 )
             else:
-                fd = ProcessMap.lookup_address(self.fd)
-                bk = ProcessMap.lookup_address(self.bk)
+                fd = ProcessMap.lookup(self.fd)
+                bk = ProcessMap.lookup(self.bk)
                 msg = "{:s}(base={:s}, addr={:s}, size={:s}, flags={:s}, fd={!s}, bk={!s})".format(
                     chunk_c, base_c, addr_c, size_c, flags, fd, bk,
                 )
@@ -173141,7 +173141,7 @@ class UclibcNgHeapDumpCommand(GenericCommand, BufferingOutput):
     def dump_malloc_state(self, malloc_state):
         chunk_size_color = Config.get("theme.heap_chunk_size")
 
-        self.verbose_add_out("malloc_state: {!s}".format(ProcessMap.lookup_address(malloc_state.address)))
+        self.verbose_add_out("malloc_state: {!s}".format(ProcessMap.lookup(malloc_state.address)))
         max_fast_flags = "|".join(malloc_state.max_fast_flags)
         self.verbose_add_out("max_fast:            {:#x} ({:s})".format(malloc_state.max_fast, max_fast_flags))
 
@@ -173155,8 +173155,8 @@ class UclibcNgHeapDumpCommand(GenericCommand, BufferingOutput):
                     colored_size = Color.colorify(size, chunk_size_color)
                 self.out.append("fastbins[idx={:d}, size={:s}, @{!s}]: fd={!s}".format(
                     i, colored_size,
-                    ProcessMap.lookup_address(addr),
-                    ProcessMap.lookup_address(n),
+                    ProcessMap.lookup(addr),
+                    ProcessMap.lookup(n),
                 ))
 
             if n != 0:
@@ -173169,8 +173169,8 @@ class UclibcNgHeapDumpCommand(GenericCommand, BufferingOutput):
                     ))
                     n = chunk.get_fwd_ptr(self.args.safe_linking_decode)
 
-        self.verbose_add_out("top:                 {!s}".format(ProcessMap.lookup_address(malloc_state.top)))
-        self.verbose_add_out("last_remainder:      {!s}".format(ProcessMap.lookup_address(malloc_state.last_remainder)))
+        self.verbose_add_out("top:                 {!s}".format(ProcessMap.lookup(malloc_state.top)))
+        self.verbose_add_out("last_remainder:      {!s}".format(ProcessMap.lookup(malloc_state.last_remainder)))
 
         self.out.append(titlify("Unsorted Bin / Small Bins"))
         for i in range(len(malloc_state.smallbins)):
@@ -173183,9 +173183,9 @@ class UclibcNgHeapDumpCommand(GenericCommand, BufferingOutput):
                 self.out.append("{:s}[idx={:d}, size={:s}, @{!s}]: fd={!s}, bk={!s}".format(
                     ["small_bins", "unsorted_bin"][i == self.UNSORTED_BIN],
                     i, colored_size,
-                    ProcessMap.lookup_address(addr),
-                    ProcessMap.lookup_address(n),
-                    ProcessMap.lookup_address(p),
+                    ProcessMap.lookup(addr),
+                    ProcessMap.lookup(n),
+                    ProcessMap.lookup(p),
                 ))
 
             if n and addr - current_arch.ptrsize * 2 != n:
@@ -173206,9 +173206,9 @@ class UclibcNgHeapDumpCommand(GenericCommand, BufferingOutput):
                     colored_size = Color.colorify(size, chunk_size_color)
                 self.out.append("large_bins[idx={:d}, size={:s}, @{!s}]: fd={!s}, bk={!s}".format(
                     self.NSMALLBINS + i, colored_size,
-                    ProcessMap.lookup_address(addr),
-                    ProcessMap.lookup_address(n),
-                    ProcessMap.lookup_address(p),
+                    ProcessMap.lookup(addr),
+                    ProcessMap.lookup(n),
+                    ProcessMap.lookup(p),
                 ))
 
             if addr - current_arch.ptrsize * 2 != n:
@@ -173660,7 +173660,7 @@ class XStringCommand(GenericCommand, BufferingOutput):
                 self.out.append("{:s}{:s}".format(cs, suffix))
             else:
                 self.out.append("{!s}: {:s} ({:#x}{:s} bytes){:s}".format(
-                    ProcessMap.lookup_address(address), cs, len(s), "+" if pos == -1 else "", suffix,
+                    ProcessMap.lookup(address), cs, len(s), "+" if pos == -1 else "", suffix,
                 ))
 
             # go to next address
@@ -177135,7 +177135,7 @@ class MteTagsCommand(GenericCommand):
                 err("Failed to read MTE tag at {:#x}".format(address))
                 return
             tag = (ret["reg"]["$x0"] >> 56) & 0xf
-            gef_print("{!s}: {:#04x} ({:#018x})".format(ProcessMap.lookup_address(address), tag, tag << 56))
+            gef_print("{!s}: {:#04x} ({:#018x})".format(ProcessMap.lookup(address), tag, tag << 56))
         return
 
 
@@ -187157,7 +187157,7 @@ class QemuMemoryRegionDumpCommand(GenericCommand, BufferingOutput):
             root = read_int_from_memory(rw_map.page_start + ofs_root, safe=True)
             if not is_valid_addr(root):
                 continue
-            root = ProcessMap.lookup_address(root)
+            root = ProcessMap.lookup(root)
             if root.section is None or not root.section.is_writable():
                 continue
 
@@ -187166,7 +187166,7 @@ class QemuMemoryRegionDumpCommand(GenericCommand, BufferingOutput):
             current_map = read_int_from_memory(rw_map.page_start + ofs_current_map, safe=True)
             if not is_valid_addr(current_map):
                 continue
-            current_map = ProcessMap.lookup_address(current_map)
+            current_map = ProcessMap.lookup(current_map)
             if current_map.section is None or not current_map.section.is_writable():
                 continue
 
@@ -187301,7 +187301,7 @@ class QemuMemoryRegionDumpCommand(GenericCommand, BufferingOutput):
                        (self.system_memory, self.system_io)]
                 if not all(ops):
                     continue
-                sections = [ProcessMap.lookup_address(value).section for value in ops]
+                sections = [ProcessMap.lookup(value).section for value in ops]
                 if any(section is None or section.is_writable() for section in sections):
                     continue
                 handlers = [self.get_callbacks(value) for value in ops]
@@ -187338,7 +187338,7 @@ class QemuMemoryRegionDumpCommand(GenericCommand, BufferingOutput):
         return True
 
     def get_callbacks(self, ops):
-        section = ProcessMap.lookup_address(ops).section
+        section = ProcessMap.lookup(ops).section
         if section is None or not section.is_readable():
             return None
         if self.offset_endianness is not None:
@@ -187351,11 +187351,11 @@ class QemuMemoryRegionDumpCommand(GenericCommand, BufferingOutput):
             if handler is None:
                 return None
             if handler:
-                section = ProcessMap.lookup_address(handler).section
+                section = ProcessMap.lookup(handler).section
                 if section is not None and section.is_readable() and not section.is_executable() and is_ppc64():
                     entry = read_int_from_memory(handler, safe=True)
                     if entry:
-                        section = ProcessMap.lookup_address(entry).section
+                        section = ProcessMap.lookup(entry).section
                     else:
                         section = None
                 if section is None or not section.is_executable():
@@ -188580,7 +188580,7 @@ class ExecUntilRegionChangeCommand(ExecUntilCommand):
     def do_invoke(self, args):
         self.args.skip_lib = False
 
-        start_range = ProcessMap.lookup_address(current_arch.pc)
+        start_range = ProcessMap.lookup(current_arch.pc)
         if not start_range.valid:
             err("Invalid address")
             return
@@ -193510,9 +193510,9 @@ class KernelWalkCommand(GenericCommand, BufferingOutput):
 
     def add_entry_out(self, idx, entry):
         """Append the resolved entry to self.out."""
-        la = ProcessMap.lookup_address(entry)
+        la = ProcessMap.lookup(entry)
         if self.args.container_of:
-            la_container = ProcessMap.lookup_address(entry - self.args.container_of)
+            la_container = ProcessMap.lookup(entry - self.args.container_of)
             self.out.append("[{:d}] -> {!s} (container: {!s})".format(idx, la, la_container))
         else:
             self.out.append("[{:d}] -> {!s}".format(idx, la))
@@ -198897,7 +198897,7 @@ class StackRecoverCommand(GenericCommand, BufferingOutput):
             sym = " <{:s}+{:#x}>".format(Instruction.smartify_text(func[0]), pc - func[1])
         else:
             return Symbol.format(pc, missing="NO_SYMBOL", show_address=True)
-        return "{!s}{:s}".format(ProcessMap.lookup_address(pc), sym)
+        return "{!s}{:s}".format(ProcessMap.lookup(pc), sym)
 
     def format_call(self, insn, target=None):
         operands = ", ".join(insn.operands)
@@ -199037,7 +199037,7 @@ class XRefTelescopeCommand(SearchPatternCommand, BufferingOutput):
                 else:
                     prefix = "  " * i + " -> "
                 if isinstance(h, int):
-                    addr = ProcessMap.lookup_address(h)
+                    addr = ProcessMap.lookup(h)
                     path = addr.section.path
                     perm = addr.section.permission
                     self.out.append("{:s}{!s} {:s} [{!s}]".format(prefix, addr, path, perm))
@@ -199450,7 +199450,7 @@ class FrequencyAnalysisCommand(GenericCommand, BufferingOutput):
     def do_invoke(self, args):
 
         if args.size is None:
-            loc = ProcessMap.lookup_address(args.location)
+            loc = ProcessMap.lookup(args.location)
             if loc.valid:
                 size = loc.section.page_end - args.location
             else:
@@ -199570,7 +199570,7 @@ class VisualDumpCommand(GenericCommand):
             return
 
         if args.size is None:
-            loc = ProcessMap.lookup_address(args.location)
+            loc = ProcessMap.lookup(args.location)
             if loc.valid:
                 size = loc.section.page_end - args.location
             else:
@@ -199689,7 +199689,7 @@ class FiletypeMemoryCommand(GenericCommand):
             if args.end_address is not None:
                 size = args.end_address - args.address
             else:
-                section = ProcessMap.lookup_address(args.address).section
+                section = ProcessMap.lookup(args.address).section
                 size = section.page_end - args.address
             end_address = start_address + size
         except (AttributeError, ValueError):
@@ -199809,7 +199809,7 @@ class BincompareCommand(GenericCommand, BufferingOutput):
         lines = GefUtil.hexdump_diff(
             from1data[:size], from2data[:size],
             lambda pos: "{:#{:d}x}".format(self.args.file_offset + pos, width),
-            lambda pos: ProcessMap.lookup_address(self.args.address + pos),
+            lambda pos: ProcessMap.lookup(self.args.address + pos),
             full=self.args.full,
         )
         self.out.extend(lines)
@@ -199934,7 +199934,7 @@ class SymbolsCommand(GenericCommand, BufferingOutput):
                 if not is_valid_addr(addr):
                     self.out.append(line)
                     continue
-                addr = ProcessMap.lookup_address(addr)
+                addr = ProcessMap.lookup(addr)
 
                 index = r.group(1)
                 remain = r.group(4)
