@@ -6649,7 +6649,7 @@ def hexdump(source, length=0x10, separator=".", color=True, show_symbol=True, ba
         hexa = " ".join(hexa)
         padded_hexa = hexa + " " * padlen
 
-        text = "".join([chr(b) if 0x20 <= b < 0x7f else separator for b in chunk])
+        text = GefUtil.bytes_to_ascii(chunk, separator)
         text_padlen = WIDTH - len(text)
         padded_text = text + " " * text_padlen
 
@@ -30947,7 +30947,7 @@ class GlibcHeapVisualHeapCommand(GenericCommand, BufferingOutput):
         for (_, blk), blks in itertools.groupby(enumerate(data), key=group_key):
             repeat_count = len(list(blks))
             d1, d2 = unpack(blk[:current_arch.ptrsize]), unpack(blk[current_arch.ptrsize:])
-            dascii = "".join([chr(x) if 0x20 <= x < 0x7f else "." for x in blk])
+            dascii = GefUtil.bytes_to_ascii(blk)
 
             if self.args.full or repeat_count < group_line_threshold:
                 # non-collapsed line
@@ -31627,13 +31627,6 @@ class GlibcHeapSnapshotCompareCommand(GenericCommand, BufferingOutput):
                     continue
                 used_dict.add(ch["start_offset"], ch["start_offset"] + ch["size"], ch["used"])
 
-        def to_ascii(v):
-            s = ""
-            for i in range(ptrsize):
-                c = (v >> (8 * i)) & 0xff
-                s += chr(c) if 0x20 <= c < 0x7f else "."
-            return s
-
         # process block
         for pos in ProgressBar(range(0, max_size, double_ptrsize), disable=self.args.quiet):
             # skip or not
@@ -31664,7 +31657,7 @@ class GlibcHeapSnapshotCompareCommand(GenericCommand, BufferingOutput):
                 try:
                     v1 = values1[i]
                     h1 = "{:#0{:d}x}".format(v1, hex_width)
-                    a1 = to_ascii(v1)
+                    a1 = GefUtil.bytes_to_ascii(raw16_1[i * ptrsize : (i + 1) * ptrsize])
                 except IndexError:
                     v1 = None
                     h1 = " " * hex_width
@@ -31672,7 +31665,7 @@ class GlibcHeapSnapshotCompareCommand(GenericCommand, BufferingOutput):
                 try:
                     v2 = values2[i]
                     h2 = "{:#0{:d}x}".format(v2, hex_width)
-                    a2 = to_ascii(v2)
+                    a2 = GefUtil.bytes_to_ascii(raw16_2[i * ptrsize : (i + 1) * ptrsize])
                 except IndexError:
                     v2 = None
                     h2 = " " * hex_width
@@ -62849,10 +62842,7 @@ class MmxCommand(GenericCommand):
             if reg is None:
                 continue
             regname = "$mm{:d}".format(i)
-            reghex = ""
-            for j in range(8):
-                c = (reg >> (8 * j)) & 0xff
-                reghex += chr(c) if 0x20 <= c < 0x7f else "."
+            reghex = GefUtil.bytes_to_ascii(reg.to_bytes(8, "little"))
             gef_print("{:s} : {:#018x}  |  {:s}  |".format(red(regname), reg, reghex))
         return
 
@@ -62955,10 +62945,7 @@ class SseCommand(GenericCommand):
         for i, reg in regs:
             if i == 8:
                 gef_print("* xmm8-15 are introduced by AVX")
-            reghex = ""
-            for j in range(16):
-                c = (reg >> (8 * j)) & 0xff
-                reghex += chr(c) if 0x20 <= c < 0x7f else "."
+            reghex = GefUtil.bytes_to_ascii(reg.to_bytes(16, "little"))
             regname = "$xmm{:<2d}".format(i)
             gef_print("{:s} : {:#034x}  |  {:s}  |".format(red(regname), reg, reghex))
         return
@@ -63031,10 +63018,7 @@ class AvxCommand(GenericCommand):
             red = lambda x: Color.colorify("{:s}".format(x), "bold red")
             for i, reg in regs:
                 regname = "$ymm{:<2d}".format(i)
-                reghex = ""
-                for j in range(32):
-                    c = (reg >> (8 * j)) & 0xff
-                    reghex += chr(c) if 0x20 <= c < 0x7f else "."
+                reghex = GefUtil.bytes_to_ascii(reg.to_bytes(32, "little"))
                 gef_print("{:s} : {:#066x}  |  {:s}  |".format(red(regname), reg, reghex))
         else:
             err("Could not find avx registers")
@@ -63079,10 +63063,7 @@ class Avx512Command(GenericCommand):
             red = lambda x: Color.colorify("{:s}".format(x), "bold red")
             for i, reg in regs:
                 regname = "$zmm{:<2d}".format(i)
-                reghex = ""
-                for j in range(64):
-                    c = (reg >> (8 * j)) & 0xff
-                    reghex += chr(c) if 0x20 <= c < 0x7f else "."
+                reghex = GefUtil.bytes_to_ascii(reg.to_bytes(64, "little"))
                 gef_print("{:s} : {:#0130x}  |  {:s}  |".format(red(regname), reg, reghex))
         else:
             err("Could not find avx512 registers")
@@ -105640,6 +105621,8 @@ class MemoryCompareCommand(GenericCommand, BufferingOutput):
             f2_hex = []
             f1_ascii = []
             f2_ascii = []
+            f1_text = GefUtil.bytes_to_ascii(f1_bin)
+            f2_text = GefUtil.bytes_to_ascii(f2_bin)
             for i in range(min(len(f1_bin), 16)):
                 if f1_bin[i] == f2_bin[i]:
                     color_func = lambda x: x
@@ -105647,8 +105630,8 @@ class MemoryCompareCommand(GenericCommand, BufferingOutput):
                     color_func = Color.boldify
                 f1_hex.append(color_func("{:02x}".format(f1_bin[i])))
                 f2_hex.append(color_func("{:02x}".format(f2_bin[i])))
-                f1_ascii.append(color_func(chr(f1_bin[i]) if 0x20 <= f1_bin[i] < 0x7f else "."))
-                f2_ascii.append(color_func(chr(f2_bin[i]) if 0x20 <= f2_bin[i] < 0x7f else "."))
+                f1_ascii.append(color_func(f1_text[i]))
+                f2_ascii.append(color_func(f2_text[i]))
 
             # formatting
             # ["00", "00", "00" "00", ...] -> ["0000", "0000", ...]
@@ -146798,6 +146781,8 @@ class HashKnownCollisionCommand(HashCommand, BufferingOutput):
             f2_hex = []
             f1_ascii = []
             f2_ascii = []
+            f1_text = GefUtil.bytes_to_ascii(f1_bin)
+            f2_text = GefUtil.bytes_to_ascii(f2_bin)
             for i in range(min(len(f1_bin), 16)):
                 if f1_bin[i] == f2_bin[i]:
                     color_func = lambda x: x
@@ -146805,8 +146790,8 @@ class HashKnownCollisionCommand(HashCommand, BufferingOutput):
                     color_func = Color.boldify
                 f1_hex.append(color_func("{:02x}".format(f1_bin[i])))
                 f2_hex.append(color_func("{:02x}".format(f2_bin[i])))
-                f1_ascii.append(color_func(chr(f1_bin[i]) if 0x20 <= f1_bin[i] < 0x7f else "."))
-                f2_ascii.append(color_func(chr(f2_bin[i]) if 0x20 <= f2_bin[i] < 0x7f else "."))
+                f1_ascii.append(color_func(f1_text[i]))
+                f2_ascii.append(color_func(f2_text[i]))
 
             # formatting
             # ["00", "00", "00" "00", ...] -> ["0000", "0000", ...]
@@ -172910,7 +172895,7 @@ class MuslHeapDumpCommand(GenericCommand, BufferingOutput):
         for blk, blks in itertools.groupby(data):
             repeat_count = len(list(blks))
             d1, d2 = unpack(blk[:current_arch.ptrsize]), unpack(blk[current_arch.ptrsize:])
-            dascii = "".join([chr(x) if 0x20 <= x < 0x7f else "." for x in blk])
+            dascii = GefUtil.bytes_to_ascii(blk)
             fmt = "{:#x}: {:#0{:d}x} {:#0{:d}x} | {:s} | {:s}"
             if repeat_count < group_line_threshold:
                 for _ in range(repeat_count):
@@ -173742,7 +173727,7 @@ class UclibcNgVisualHeapCommand(UclibcNgHeapDumpCommand, BufferingOutput):
         # Group rows to display rows with the same value together.
         for (_, blk), blks in itertools.groupby(enumerate(data), key=group_key):
             repeat_count = len(list(blks))
-            dascii = "".join([chr(x) if 0x20 <= x < 0x7f else "." for x in blk])
+            dascii = GefUtil.bytes_to_ascii(blk)
             if len(blk) < current_arch.ptrsize * 2:
                 offset1 = addr - chunk.chunk_base_address
                 offset2 = addr - malloc_state.heap_base
@@ -200243,6 +200228,8 @@ class BincompareCommand(GenericCommand, BufferingOutput):
             f2_hex = []
             f1_ascii = []
             f2_ascii = []
+            f1_text = GefUtil.bytes_to_ascii(f1_bin)
+            f2_text = GefUtil.bytes_to_ascii(f2_bin)
             for i in range(min(len(f1_bin), 16)):
                 if f1_bin[i] == f2_bin[i]:
                     color_func = lambda x: x
@@ -200250,8 +200237,8 @@ class BincompareCommand(GenericCommand, BufferingOutput):
                     color_func = Color.boldify
                 f1_hex.append(color_func("{:02x}".format(f1_bin[i])))
                 f2_hex.append(color_func("{:02x}".format(f2_bin[i])))
-                f1_ascii.append(color_func(chr(f1_bin[i]) if 0x20 <= f1_bin[i] < 0x7f else "."))
-                f2_ascii.append(color_func(chr(f2_bin[i]) if 0x20 <= f2_bin[i] < 0x7f else "."))
+                f1_ascii.append(color_func(f1_text[i]))
+                f2_ascii.append(color_func(f2_text[i]))
 
             # formatting
             # ["00", "00", "00" "00", ...] -> ["0000", "0000", ...]
@@ -202492,6 +202479,11 @@ class GefUtil:
     """A collection of utility functions that are related to GEF basic features."""
 
     user_bases = {}
+
+    @staticmethod
+    def bytes_to_ascii(data, separator="."):
+        """Return printable ASCII, replacing nonprintable bytes with the separator."""
+        return "".join(chr(b) if 0x20 <= b < 0x7f else separator for b in data)
 
     @staticmethod
     def complete_candidates(candidates, text, word):
