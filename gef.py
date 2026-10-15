@@ -85858,10 +85858,15 @@ class KernelSysctl:
         "proc_dointvec_ms_jiffies": (4, True, "jiffies"),
         "proc_dointvec_ms_jiffies_minmax": (4, True, "jiffies"),
         "proc_doulongvec_ms_jiffies_minmax": (0, False, "jiffies"),
+        "proc_do_large_bitmap": "bitmap",
+        "proc_do_static_key": "static_key",
         # custom handlers passing a temporary table of another type, or wrapping a custom handler
         "addrconf_sysctl_stable_secret": None,
+        "bpf_stats_handler": "static_key",
         "ipv4_ping_group_range": (4, False, ""),
+        "neigh_proc_dointvec_unres_qlen": (4, True, "bytes"),
         "proc_cap_handler": None,
+        "proc_unres_qlen": (4, True, "bytes"),
         "proc_watchdog_common": (4, True, ""),
     }
 
@@ -86261,8 +86266,7 @@ class KernelSysctl:
             addr = Ksym.get_addr(name)
             if addr:
                 self.handler_types[addr] = handler_type
-                # a wrapper of a string handler formats binary data (e.g., proc_do_uuid)
-                if handler_type not in [None, "string"]:
+                if handler_type is not None:
                     self.known_handlers[addr] = handler_type
         return
 
@@ -86287,6 +86291,10 @@ class KernelSysctl:
                 res, use_addi=False, use_mem=True, skip=0, skip_msb_check=False, read_valid=False,
             ))
         found = {self.known_handlers[x] for x in targets if x in self.known_handlers}
+        if found == {"string"}:
+            # a wrapper of a string handler may format binary data (e.g., proc_do_uuid)
+            self.handler_types[handler] = "wrapped-string"
+        found.discard("string")
         if len(found) == 1:
             self.handler_types[handler] = found.pop()
         elif len({x[:2] for x in found}) == 1:
@@ -97037,6 +97045,7 @@ class KernelSysctlCommand(GenericCommand, BufferingOutput):
     parser.add_argument("-f", "--filter", action="append", type=re.compile, default=[], help="REGEXP filter.")
     parser.add_argument("-s", "--skip-symlink", action="store_true", help="do not follow symlink (net.* and user.*).")
     parser.add_argument("-e", "--exact", action="store_true", help="use exact match.")
+    parser.add_argument("-d", "--decimal", action="store_true", help="display integer values in decimal.")
     parser.add_argument("--meta", action="store_true", help="display offset information.")
     parser.add_argument("-r", "--rescan", action="store_true", help="do not use cache.")
     parser.add_argument("-v", "--verbose", action="store_true", help="dump zero-sized entries and proc_handler too.")
@@ -97054,7 +97063,8 @@ class KernelSysctlCommand(GenericCommand, BufferingOutput):
     _note_ = [
         "This command requires CONFIG_RANDSTRUCT=n unless vmlinux with debug information is loaded.",
         "ParamValue is decoded as proc_handler (or the known handler it calls) reads it:",
-        "strings, integer vectors (`jiffies` is the raw stored count), or `raw:` bytes if unknown.",
+        "strings, integer vectors in hex (decimal with -d), bit ranges of a bitmap, or `raw:` bytes if unknown.",
+        "The unit is the one of the stored value (e.g., `jiffies`), not of /proc/sys. MaxLen of a bitmap is in bits.",
         "",
         "Simplified sysctl_table structure:",
         "",
@@ -97129,10 +97139,31 @@ class KernelSysctlCommand(GenericCommand, BufferingOutput):
         if data.address == self.ksysctl.init_net:
             return "-"
         maxlen = min(data.maxlen, 0x1000)
+        if handler_type == "static_key":
+            # the value is `enabled`, the first member of struct static_key
+            handler_type, maxlen = (4, True, ""), 4
         if handler_type == "string":
             value = read_cstring_from_memory(data.address, max_length=maxlen)
             if value is not None:
                 return "{!r}".format(value)
+        elif handler_type == "wrapped-string":
+            # data of a wrapper is a string only if it is printable text padded with NUL
+            text = read_memory(data.address, maxlen).rstrip(b"\0")
+            if 0 < len(text) < maxlen and all(chr(x) in String.STRING_PRINTABLE for x in text):
+                return "{!r}".format(String.bytes2str(text))
+        elif handler_type == "bitmap":
+            # maxlen is the number of bits, and the data points to the bitmap since v3.16
+            bitmap = data.address
+            if "3.16" <= Kernel.version():
+                bitmap = read_int_from_memory(bitmap)
+            if not bitmap:
+                return "-"
+            nbits = data.maxlen
+            word_bits = current_arch.ptrsize * 8
+            raw = read_memory(bitmap, (nbits + word_bits - 1) // word_bits * current_arch.ptrsize)
+            words = slice_unpack(raw, current_arch.ptrsize)
+            bits = {i * word_bits + j for i, w in enumerate(words) if w for j in range(word_bits) if w >> j & 1}
+            return KernelPerCpuCommand.format_cpus({x for x in bits if x < nbits})
         elif handler_type is not None:
             size, signed, unit = handler_type
             if size is None:
@@ -97146,14 +97177,17 @@ class KernelSysctlCommand(GenericCommand, BufferingOutput):
             if count:
                 max_count = 0x10
                 raw = read_memory(data.address, min(count, max_count) * size)
-                values = [str(u2i(x, size * 8) if signed else x) for x in slice_unpack(raw, size)]
+                if self.args.decimal:
+                    values = [str(u2i(x, size * 8) if signed else x) for x in slice_unpack(raw, size)]
+                else:
+                    values = ["{:#x}".format(x) for x in slice_unpack(raw, size)]
                 if count > max_count:
                     values.append("...")
                 if unit:
                     values.append(unit)
                 return " ".join(values)
-        raw = read_memory(data.address, min(maxlen, 0x20))
-        return "raw:{:s}{:s}".format(raw.hex(), "..." if maxlen > 0x20 else "")
+        raw = read_memory(data.address, min(maxlen, 0x10))
+        return "raw:{:s}{:s}".format(raw.hex(), "..." if maxlen > 0x10 else "")
 
     def dump_data(self, entry):
         if not self.should_be_print(entry.path):
