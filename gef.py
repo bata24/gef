@@ -30233,8 +30233,7 @@ class GlibcHeapTryFreeCommand(GenericCommand):
         dic["regs_old"] = {r: get_register(r) for r, v in regs_new.items() if v is not None}
         dic["patches"] = patches
         dic["stop_address"] = stop_address
-        Info = collections.namedtuple("Info", dic.keys())
-        return Info(*dic.values())
+        return GefUtil.dict_to_namedtuple("Info", dic)
 
     def get_reason(self, emulator):
         """From the emulator state, get the reason why the run failed."""
@@ -36719,8 +36718,7 @@ class DwarfExceptionHandler:
                     cie["address_size"] = ptr_size
                     cie["code_alignment_factor"] = code_alignment_factor
                     cie["data_alignment_factor"] = data_alignment_factor
-                    Cie = collections.namedtuple("Cie", cie.keys())
-                    cie = Cie(*cie.values())
+                    cie = GefUtil.dict_to_namedtuple("Cie", cie)
                     cies.append(cie)
 
                 else: # FDE parsing
@@ -38572,8 +38570,7 @@ class DwarfExceptionHandler:
             info("Found {} section".format(section_name))
 
         dic = {"name": section_name, "offset": shdr.sh_offset, "data": data}
-        Section = collections.namedtuple("Section", dic.keys())
-        return Section(*dic.values())
+        return GefUtil.dict_to_namedtuple("Section", dic)
 
     def dump(self, with_hexdump=False):
         eh_frame = self.read_section(".eh_frame")
@@ -47527,8 +47524,7 @@ class DestructorDumpCommand(GenericCommand):
                 dic["name"] = "{:s}".format(self.local_filepath)
             dic["dynamic"] = read_int_from_memory(current + current_arch.ptrsize * 2)
             dic["next"] = read_int_from_memory(current + current_arch.ptrsize * 3)
-            LinkMap = collections.namedtuple("LinkMap", dic.keys())
-            link_map = LinkMap(*dic.values())
+            link_map = GefUtil.dict_to_namedtuple("LinkMap", dic)
             yield link_map
             current = dic["next"]
         return
@@ -48401,8 +48397,7 @@ class GotCommand(GenericCommand, BufferingOutput):
                 "got_value_sym": got_value_sym,
                 "got_value_color": got_value_color,
             }
-            PltGotInfo = collections.namedtuple("PltGotInfo", dic.keys())
-            plt_got_info = PltGotInfo(*dic.values())
+            plt_got_info = GefUtil.dict_to_namedtuple("PltGotInfo", dic)
             resolved_info.append(plt_got_info)
         return resolved_info
 
@@ -104753,8 +104748,7 @@ class GdtInfoCommand(GenericCommand, BufferingOutput):
                     entry["dc_s"] = ["NON-CONFORMING", "CONFORMING"][entry["dc"]]
                 entry["ac_s"] = ["NotAccessed", "Accessed"][entry["ac"]]
 
-        Entry = collections.namedtuple("Entry", entry.keys())
-        return Entry(*entry.values())
+        return GefUtil.dict_to_namedtuple("Entry", entry)
 
     def entry2str(self, value, value_only=False):
         if value_only:
@@ -105245,8 +105239,7 @@ class IdtInfoCommand(GenericCommand, BufferingOutput):
         elif idt["gate_type"] == 5:
             idt["offset"] = 0
 
-        Idt = collections.namedtuple("Idt", idt.keys())
-        return Idt(*idt.values())
+        return GefUtil.dict_to_namedtuple("Idt", idt)
 
     @staticmethod
     def get_entry_size():
@@ -168972,8 +168965,7 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
         root["scheduler_loop_quarantine_for_advanced_memory_safety_checks_"] = read_int_from_memory(current)
         current += ptrsize
 
-        Root = collections.namedtuple("Root", root.keys())
-        root = Root(*root.values())
+        root = GefUtil.dict_to_namedtuple("Root", root)
         return root, current
 
     @Cache.cache_until_next
@@ -169024,8 +169016,7 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
         bucket["can_store_raw_size"] = x & 0xff
         current += ptrsize # with pad
 
-        Bucket = collections.namedtuple("Bucket", bucket.keys())
-        bucket = Bucket(*bucket.values())
+        bucket = GefUtil.dict_to_namedtuple("Bucket", bucket)
         return bucket, current
 
     @Cache.cache_until_next
@@ -169057,8 +169048,7 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
         current += 2
         extent["super_page_end"] = extent["super_page_base"] + extent["number_of_consecutive_super_pages"] * 0x20_0000
 
-        Extent = collections.namedtuple("Extent", extent.keys())
-        extent = Extent(*extent.values())
+        extent = GefUtil.dict_to_namedtuple("Extent", extent)
         return extent, current
 
     @Cache.cache_until_next
@@ -169089,8 +169079,7 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
         direct_map["padding_for_alignment"] = read_int_from_memory(current)
         current += ptrsize
 
-        DirectMap = collections.namedtuple("DirectMap", direct_map.keys())
-        direct_map = DirectMap(*direct_map.values())
+        direct_map = GefUtil.dict_to_namedtuple("DirectMap", direct_map)
         return direct_map, current
 
     @Cache.cache_until_next
@@ -169140,8 +169129,7 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
         slot_span["in_empty_cache_"] = (x >> 1) & 1
         slot_span["empty_cache_index_"] = (x >> 2) & 0x3ff
 
-        SlotSpan = collections.namedtuple("SlotSpan", slot_span.keys())
-        slot_span = SlotSpan(*slot_span.values())
+        slot_span = GefUtil.dict_to_namedtuple("SlotSpan", slot_span)
         return slot_span, current
 
     def C(self, address):
@@ -169709,8 +169697,7 @@ class ScallocHeapDumpCommand(GenericCommand, BufferingOutput):
         dic["end"] = read_int_from_memory(addr + self.arena_offsets["end_"])
         dic["len"] = read_int_from_memory(addr + self.arena_offsets["len_"])
         dic["current"] = read_int_from_memory(addr + self.arena_offsets["current_"])
-        Arena = collections.namedtuple("Arena", dic.keys())
-        arena = Arena(*dic.values())
+        arena = GefUtil.dict_to_namedtuple("Arena", dic)
         return arena
 
     def get_object_space_heuristic(self):
@@ -169815,8 +169802,7 @@ class ScallocHeapDumpCommand(GenericCommand, BufferingOutput):
         dic["top_addr"] = addr + self.span_offsets["remote_free_list_"]
         dic["top"] = read_int64_from_memory(dic["top_addr"])
         dic["top_decoded"] = self.decode_top(dic["top"])
-        Span = collections.namedtuple("Span", dic.keys())
-        span = Span(*dic.values())
+        span = GefUtil.dict_to_namedtuple("Span", dic)
         return span
 
     def dump_freelist(self, head):
@@ -170246,8 +170232,7 @@ class SsmallocHeapDumpCommand(GenericCommand, BufferingOutput):
         dic["remote_head_raw"] = read_int_from_memory(addr + self.offset_dchunk_remote_free_head)
         dic["remote_head"] = self.decode_aba_address(dic["remote_head_raw"])
         dic["remote_count"] = self.decode_aba_count(dic["remote_head_raw"])
-        Dchunk = collections.namedtuple("Dchunk", dic.keys())
-        dchunk = Dchunk(*dic.values())
+        dchunk = GefUtil.dict_to_namedtuple("Dchunk", dic)
         return dchunk
 
     def read_lheap(self, addr):
@@ -170256,8 +170241,7 @@ class SsmallocHeapDumpCommand(GenericCommand, BufferingOutput):
         dic["numa_node"] = read_int32_from_memory(addr + self.offset_lheap_numa_node)
         dic["free_head"] = read_int_from_memory(addr + self.offset_lheap_free_head)
         dic["free_cnt"] = read_int32_from_memory(addr + self.offset_lheap_free_cnt)
-        Lheap = collections.namedtuple("Lheap", dic.keys())
-        lheap = Lheap(*dic.values())
+        lheap = GefUtil.dict_to_namedtuple("Lheap", dic)
         return lheap
 
     def read_obj_buf(self, addr):
@@ -170267,8 +170251,7 @@ class SsmallocHeapDumpCommand(GenericCommand, BufferingOutput):
         dic["first"] = read_int_from_memory(addr + self.offset_obj_buf_first)
         dic["free_head"] = read_int_from_memory(addr + self.offset_obj_buf_free_head)
         dic["count"] = read_int32_from_memory(addr + self.offset_obj_buf_count)
-        ObjBuf = collections.namedtuple("ObjBuf", dic.keys())
-        obj_buf = ObjBuf(*dic.values())
+        obj_buf = GefUtil.dict_to_namedtuple("ObjBuf", dic)
         return obj_buf
 
     def read_gpool(self, addr):
@@ -170277,8 +170260,7 @@ class SsmallocHeapDumpCommand(GenericCommand, BufferingOutput):
         dic["pool_start"] = read_int_from_memory(addr + self.offset_gpool_pool_start)
         dic["pool_end"] = read_int_from_memory(addr + self.offset_gpool_pool_end)
         dic["free_start"] = read_int_from_memory(addr + self.offset_gpool_free_start)
-        Gpool = collections.namedtuple("Gpool", dic.keys())
-        gpool = Gpool(*dic.values())
+        gpool = GefUtil.dict_to_namedtuple("Gpool", dic)
         return gpool
 
     def parse_single_link_list(self, head, next_offset=0, decode_head=False, dchunk=None):
@@ -172589,8 +172571,7 @@ class MuslHeapDumpCommand(GenericCommand, BufferingOutput):
         ctx["brk"] = read_int_from_memory(current)
         current += ptrsize
 
-        Ctx = collections.namedtuple("Ctx", ctx.keys())
-        return Ctx(*ctx.values())
+        return GefUtil.dict_to_namedtuple("Ctx", ctx)
 
     def dump_ctx(self, ctx):
         self.out.append(titlify("__malloc_context: {:#x}".format(ctx.addr)))
@@ -172660,8 +172641,7 @@ class MuslHeapDumpCommand(GenericCommand, BufferingOutput):
             meta["maplen"] = x >> 12
         current += ptrsize
 
-        Meta = collections.namedtuple("Meta", meta.keys())
-        return Meta(*meta.values())
+        return GefUtil.dict_to_namedtuple("Meta", meta)
 
     def make_state(self, meta):
         avail_mask = meta.avail_mask
@@ -172703,8 +172683,7 @@ class MuslHeapDumpCommand(GenericCommand, BufferingOutput):
             group["slot_offset"] = read_int32_from_memory(current - 8)
         else:
             group["slot_offset"] = read_int16_from_memory(current - 2)
-        Group = collections.namedtuple("Group", group.keys())
-        return Group(*group.values())
+        return GefUtil.dict_to_namedtuple("Group", group)
 
     def dump_chunk(self, group, state):
         chunk_used_color = Config.get("theme.heap_chunk_used")
@@ -173277,8 +173256,7 @@ class UclibcNgHeapDumpCommand(GenericCommand, BufferingOutput):
         except gdb.MemoryError:
             malloc_state["heap_base"] = 0
 
-        MallocState = collections.namedtuple("MallocState", malloc_state.keys())
-        return MallocState(*malloc_state.values())
+        return GefUtil.dict_to_namedtuple("MallocState", malloc_state)
 
     def dump_malloc_state(self, malloc_state):
         chunk_size_color = Config.get("theme.heap_chunk_size")
@@ -174735,8 +174713,7 @@ class OpteeSmcServiceDumpCommand(GenericCommand, BufferingOutput):
             s["name_string"] = name
             s["init"] = init_ptr
             s["handle"] = handle_ptr
-            Service = collections.namedtuple("Service", s.keys())
-            candidate_services.append(Service(*s.values()))
+            candidate_services.append(GefUtil.dict_to_namedtuple("Service", s))
 
         # filter false positive
         valid_services = []
@@ -175187,8 +175164,7 @@ class OpteeTaDumpMemoryCommand(OpteeTaDumpCommand):
                 # ref_count
                 d["ref_count"] = read_int_from_memory(current + offsetof_ref_count) & 0xffff_ffff
                 # append
-                Ctx = collections.namedtuple("Ctx", d.keys())
-                taa_ctx_list.append(Ctx(*d.values()))
+                taa_ctx_list.append(GefUtil.dict_to_namedtuple("Ctx", d))
                 # goto next
                 current = read_int_from_memory(current + offsetof_link)
 
@@ -175344,8 +175320,7 @@ class OpteeTaDumpDirectoryCommand(OpteeTaDumpCommand):
             if processed_size > file_size:
                 raise ValueError("Truncated TA payload")
 
-        TAInfo = collections.namedtuple("TAInfo", d.keys())
-        return TAInfo(*d.values()), processed_size
+        return GefUtil.dict_to_namedtuple("TAInfo", d), processed_size
 
     def get_ta_info(self, file_path):
         filesize = os.path.getsize(file_path)
@@ -175800,8 +175775,7 @@ class OpteeBgetDumpCommand(GenericCommand, BufferingOutput):
                 "addr": current, "prevfree": prevfree, "bsize": bsize, "flink": flink, "blink": blink,
                 "next_prevfree": next_prevfree, "next_bsize": next_bsize,
             }
-            Chunk = collections.namedtuple("Chunk", chunk.keys())
-            flinks.append(Chunk(*chunk.values()))
+            flinks.append(GefUtil.dict_to_namedtuple("Chunk", chunk))
             if flink == head:
                 break
             if flink in seen:
@@ -175833,8 +175807,7 @@ class OpteeBgetDumpCommand(GenericCommand, BufferingOutput):
                 "addr": current, "prevfree": prevfree, "bsize": bsize, "flink": flink, "blink": blink,
                 "next_prevfree": next_prevfree, "next_bsize": next_bsize,
             }
-            Chunk = collections.namedtuple("Chunk", chunk.keys())
-            blinks.append(Chunk(*chunk.values()))
+            blinks.append(GefUtil.dict_to_namedtuple("Chunk", chunk))
             if blink == head:
                 break
             if blink in seen:
@@ -175877,11 +175850,9 @@ class OpteeBgetDumpCommand(GenericCommand, BufferingOutput):
             buf = self.read_word(malloc_ctx["pool"] + (i * 2) * self.ptrsize)
             size = self.read_word(malloc_ctx["pool"] + (i * 2 + 1) * self.ptrsize)
             pool = {"buf": buf, "len": size}
-            Pool = collections.namedtuple("Pool", pool.keys())
-            malloc_ctx["pool_list"].append(Pool(*pool.values()))
+            malloc_ctx["pool_list"].append(GefUtil.dict_to_namedtuple("Pool", pool))
 
-        MallocCtx = collections.namedtuple("MallocCtx", malloc_ctx.keys())
-        return MallocCtx(*malloc_ctx.values())
+        return GefUtil.dict_to_namedtuple("MallocCtx", malloc_ctx)
 
     def dump_malloc_ctx(self, malloc_ctx):
         freed_address_color = Config.get("theme.heap_chunk_address_freed")
@@ -189471,8 +189442,7 @@ class KmallocTracerCommand(GenericCommand):
             "task_name": getattr(args, "task_name", []),
             "target_task": target_task,
         }
-        OptionInfo = collections.namedtuple("OptionInfo", dic.keys())
-        option_info = OptionInfo(*dic.values())
+        option_info = GefUtil.dict_to_namedtuple("OptionInfo", dic)
         return option_info
 
     @staticmethod
@@ -189518,8 +189488,7 @@ class KmallocTracerCommand(GenericCommand):
             "kmem_cache_offset_size": kmem_cache_offset_size,
             "page_offset_slab_cache": page_offset_slab_cache,
         }
-        ExtraInfo = collections.namedtuple("ExtraInfo", dic.keys())
-        extra_info = ExtraInfo(*dic.values())
+        extra_info = GefUtil.dict_to_namedtuple("ExtraInfo", dic)
         return extra_info
 
     @staticmethod
@@ -202223,6 +202192,7 @@ class GefUtil:
     """A collection of utility functions that are related to GEF basic features."""
 
     user_bases = {}
+    namedtuple_classes = {}
 
     @staticmethod
     def bytes_to_ascii(data, separator="."):
@@ -202341,6 +202311,14 @@ class GefUtil:
         if excludes and any(pattern.search(text) for pattern in excludes):
             return False
         return True
+
+    @staticmethod
+    def dict_to_namedtuple(name, dic):
+        """Return the dict as a namedtuple, reusing the class made for the same name and keys."""
+        key = (name, tuple(dic))
+        if key not in GefUtil.namedtuple_classes:
+            GefUtil.namedtuple_classes[key] = collections.namedtuple(name, dic.keys())
+        return GefUtil.namedtuple_classes[key](*dic.values())
 
     @staticmethod
     def get_user_base(name):
