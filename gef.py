@@ -14189,16 +14189,11 @@ class Decorator:
 
         @functools.wraps(f)
         def wrapper(*args, **kwargs):
-            if not is_x86():
+            if not is_x86() or gdb.parameter("disassembly-flavor") != "att":
                 return f(*args, **kwargs)
 
-            att = gdb.parameter("disassembly-flavor") == "att"
-            if att:
-                gdb.execute("set disassembly-flavor intel", to_string=True)
-            ret = f(*args, **kwargs)
-            if att:
-                gdb.execute("set disassembly-flavor att", to_string=True)
-            return ret
+            with ContextManager.gdb_parameter("disassembly-flavor", "intel"):
+                return f(*args, **kwargs)
 
         return wrapper
 
@@ -19249,31 +19244,18 @@ class SignalHandlersCommand(GenericCommand, BufferingOutput):
             return
 
         actions = []
-        suppress_cli_notifications = None
-        try:
-            suppress_cli_notifications = gdb.parameter("suppress-cli-notifications")
-            gdb.execute("set suppress-cli-notifications on", to_string=True)
-        except gdb.error:
-            pass
-        try:
-            for signal_number in range(1, 65):
-                result, action = self.query(syscall_number, signal_number, address, layout)
-                if result == -22 and signal_number in (9, 19): # SIGKILL and SIGSTOP cannot be queried.
-                    action = {"handler": 0, "flags": 0, "restorer": 0, "mask": 0}
-                elif result != 0:
-                    err("rt_sigaction({:d}) failed with errno {:d}".format(signal_number, -result))
-                    return
-                actions.append((signal_number, action))
-        finally:
+        with ContextManager.gdb_parameter("suppress-cli-notifications", "on", ignore_error=True):
             try:
-                write_memory(address, backup)
+                for signal_number in range(1, 65):
+                    result, action = self.query(syscall_number, signal_number, address, layout)
+                    if result == -22 and signal_number in (9, 19): # SIGKILL and SIGSTOP cannot be queried.
+                        action = {"handler": 0, "flags": 0, "restorer": 0, "mask": 0}
+                    elif result != 0:
+                        err("rt_sigaction({:d}) failed with errno {:d}".format(signal_number, -result))
+                        return
+                    actions.append((signal_number, action))
             finally:
-                if suppress_cli_notifications is not None:
-                    if suppress_cli_notifications:
-                        setting = "on"
-                    else:
-                        setting = "off"
-                    gdb.execute("set suppress-cli-notifications {:s}".format(setting), to_string=True)
+                write_memory(address, backup)
 
         libc = self.get_libc()
         names = {number: name for number, name in LinuxSignal.NAMES.items() if number < 32}
@@ -20288,12 +20270,8 @@ class IouringDumpCommand(GenericCommand, BufferingOutput):
             # Each ExecAsm is slow on a slow remote link, so copy all mappings at once.
             codes, dst = self.get_copy_codes(entries)
             # A loop and `rep movsb` need a breakpoint, since stepi executes one iteration; do not resume other threads.
-            scheduler_locking = gdb.parameter("scheduler-locking")
-            try:
-                gdb.execute("set scheduler-locking on", to_string=True)
+            with ContextManager.gdb_parameter("scheduler-locking", "on"):
                 ret = ExecAsm(codes, regs={dst: tmp}, step=len(codes), use_bp=True).exec_code()
-            finally:
-                gdb.execute("set scheduler-locking {:s}".format(scheduler_locking), to_string=True)
 
             data = None
             if ret["reg"][dst] == tmp + size:
@@ -22655,12 +22633,8 @@ class FindSyscallCommand(GenericCommand, BufferingOutput):
         mode = self.syscall_mode
         if loc % (2 if mode == "thumb" else 4):
             return
-        original_mode = gdb.parameter("arm force-mode")
-        try:
-            gdb.execute("set arm force-mode " + mode, to_string=True)
+        with ContextManager.gdb_parameter("arm force-mode", mode):
             self.print_loc_by_mode(loc)
-        finally:
-            gdb.execute("set arm force-mode " + original_mode, to_string=True)
         return
 
     def print_loc_by_mode(self, loc):
@@ -24229,21 +24203,14 @@ class KillThreadsCommand(GenericCommand):
 
         # kill
         if args.commit:
-            # backup
-            sched_lock = gdb.parameter("scheduler-locking")
-            # change temporarily
-            gdb.execute("set scheduler-locking on", to_string=True)
-            with ContextManager.threads(target_threads) as threads:
-                try:
+            with ContextManager.gdb_parameter("scheduler-locking", "on"):
+                with ContextManager.threads(target_threads) as threads:
                     # kill
                     for _thread in threads:
                         try:
                             gdb.execute("call (void)pthread_exit(0)")
                         except (gdb.error, RuntimeError):
                             pass
-                finally:
-                    # restore
-                    gdb.execute("set scheduler-locking {:s}".format(sched_lock), to_string=True)
         else:
             warn('This dry run mode skips killing; add "--commit" to proceed')
         return
@@ -27058,27 +27025,15 @@ class UnicornEmulateCommand(GenericCommand):
         drive the emulator as they need: `run_in_process` runs a linear emulation,
         `future-calls` walks the call tree."""
         # thread locking
-        sched_lock = gdb.parameter("scheduler-locking")
-        try:
-            gdb.execute("set scheduler-locking on", to_string=True)
-        except gdb.error:
-            pass
+        with ContextManager.gdb_parameter("scheduler-locking", "on", ignore_error=True):
+            Cache.reset_gef_caches(all=True)
 
-        Cache.reset_gef_caches(all=True)
-
-        try:
             try:
                 emulator = UnicornEmulator.Emulator(kwargs)
             except Exception as e:
                 err("Failed to initialize Unicorn: {!s}".format(e))
                 emulator = None
             yield emulator
-        finally:
-            # revert
-            try:
-                gdb.execute("set scheduler-locking {:s}".format(sched_lock), to_string=True)
-            except gdb.error:
-                pass
 
     @staticmethod
     def run_in_process(kwargs, suppress_output=False):
@@ -27841,12 +27796,8 @@ class UnicornEmulateScriptCommand(GenericCommand):
         saved = False
         try:
             # thread locking
-            sched_lock = gdb.parameter("scheduler-locking")
-            try:
-                gdb.execute("set scheduler-locking on", to_string=True)
+            with ContextManager.gdb_parameter("scheduler-locking", "on"):
                 script = self.make_script(kwargs)
-            finally:
-                gdb.execute("set scheduler-locking {:s}".format(sched_lock), to_string=True)
             if script is None:
                 return
             self.run_unicorn(script, kwargs)
@@ -38998,12 +38949,8 @@ class LoadBreakCommand(GenericCommand):
             return
 
         before = gdb.execute("vmmap --quiet --no-pager", to_string=True)
-        gdb.execute("set stop-on-solib-events 1")
-
-        try:
+        with ContextManager.gdb_parameter("stop-on-solib-events", "1"):
             gdb.execute("continue")
-        finally:
-            gdb.execute("set stop-on-solib-events 0")
 
         if not is_alive():
             return
@@ -42725,18 +42672,14 @@ class PatchNopCommand(PatchCommand):
             if not available:
                 raise gdb.error("Could not select {:s} memory mode".format(target_mode))
             arm = is_arm32() or is_arm32_cortex_m()
-            if arm:
-                original_mode = gdb.parameter("arm force-mode")
-            else:
-                original_mode = None
-            try:
+            with contextlib.ExitStack() as force_mode:
                 if arm:
                     nop = self.get_patch_insn(addr, "nop")[1]
                     if len(nop) == 2:
                         mode = "thumb"
                     else:
                         mode = "arm"
-                    gdb.execute("set arm force-mode " + mode, to_string=True)
+                    force_mode.enter_context(ContextManager.gdb_parameter("arm force-mode", mode))
                 if arm:
                     location = addr & ~1
                 else:
@@ -42746,9 +42689,6 @@ class PatchNopCommand(PatchCommand):
                 else:
                     insns = []
                 return sum(insn["length"] for insn in insns)
-            finally:
-                if arm:
-                    gdb.execute("set arm force-mode " + original_mode, to_string=True)
 
     def patch_nop(self, addr, num_bytes):
         if num_bytes == 0:
@@ -104775,54 +104715,51 @@ class ExecAsm:
         stop_signal = self.get_stop_signal()
 
         # do not deliver the pending stop signal or let other threads pass it while executing
-        scheduler_locking = gdb.parameter("scheduler-locking")
-        gdb.execute("set scheduler-locking on", to_string=True)
+        with ContextManager.gdb_parameter("scheduler-locking", "on"):
+            # exec
+            try:
+                with contextlib.ExitStack() as output:
+                    if not self.debug:
+                        gdb.flush() # do not discard the buffered output of the user
+                        output.enter_context(ContextManager.redirect_output(stderr=False))
+                        output.callback(gdb.flush) # discard the buffered stop messages while executing
+                    EventHooking.gef_on_stop_unhook(EventHandler.hook_stop_handler)
+                    output.callback(EventHooking.gef_on_stop_hook, EventHandler.hook_stop_handler)
+                    with EventHooking.temporary("stop", self.stops.append):
+                        self.modify_regs()
+                        self.modify_code(d["pc"])
+                        if check_complete and self.regs and any(get_register(reg) != value for reg, value in self.regs.items()):
+                            return None
+                        if stop_signal:
+                            self.queue_signal(stop_signal[0], "0")
+                        if self.debug:
+                            gdb.execute("context")
+                        if self.use_bp:
+                            self.execute_with_bp()
+                        else:
+                            try:
+                                gdb.execute("stepi {:d}".format(self.step), to_string=True)
+                            except gdb.MemoryError:
+                                if check_complete:
+                                    return None
+                        if self.debug:
+                            gdb.execute("context")
 
-        # exec
-        try:
-            with contextlib.ExitStack() as output:
-                if not self.debug:
-                    gdb.flush() # do not discard the buffered output of the user
-                    output.enter_context(ContextManager.redirect_output(stderr=False))
-                    output.callback(gdb.flush) # discard the buffered stop messages while executing
-                EventHooking.gef_on_stop_unhook(EventHandler.hook_stop_handler)
-                output.callback(EventHooking.gef_on_stop_hook, EventHandler.hook_stop_handler)
-                with EventHooking.temporary("stop", self.stops.append):
-                    self.modify_regs()
-                    self.modify_code(d["pc"])
-                    if check_complete and self.regs and any(get_register(reg) != value for reg, value in self.regs.items()):
-                        return None
-                    if stop_signal:
-                        self.queue_signal(stop_signal[0], "0")
-                    if self.debug:
-                        gdb.execute("context")
-                    if self.use_bp:
-                        self.execute_with_bp()
-                    else:
-                        try:
-                            gdb.execute("stepi {:d}".format(self.step), to_string=True)
-                        except gdb.MemoryError:
-                            if check_complete:
-                                return None
-                    if self.debug:
-                        gdb.execute("context")
-
-                    # get result
-                    if check_complete and not self.is_complete():
-                        return None
-                    ret = self.get_state()
-        except gdb.error:
-            if not check_complete:
-                raise
-            return None
-        finally:
-            if check_complete and gdb.selected_thread() != self.thread:
-                self.thread.switch()
-            gdb.execute("set scheduler-locking {:s}".format(scheduler_locking), to_string=True)
-            if stop_signal:
-                self.queue_signal(*stop_signal)
-                ExecAsm.queued_signals[stop_signal[0]] = stop_signal[1]
-            self.revert_state(d)
+                        # get result
+                        if check_complete and not self.is_complete():
+                            return None
+                        ret = self.get_state()
+            except gdb.error:
+                if not check_complete:
+                    raise
+                return None
+            finally:
+                if check_complete and gdb.selected_thread() != self.thread:
+                    self.thread.switch()
+                if stop_signal:
+                    self.queue_signal(*stop_signal)
+                    ExecAsm.queued_signals[stop_signal[0]] = stop_signal[1]
+                self.revert_state(d)
 
         return ret
 
@@ -150432,12 +150369,8 @@ class IiCommand(GenericCommand):
             location = args.location
 
         if (is_arm32() or is_arm32_cortex_m()) and location & 1:
-            original_mode = gdb.parameter("arm force-mode")
-            try:
-                gdb.execute("set arm force-mode thumb", to_string=True)
+            with ContextManager.gdb_parameter("arm force-mode", "thumb"):
                 self.ii(location & ~1, args.length)
-            finally:
-                gdb.execute("set arm force-mode " + original_mode, to_string=True)
         else:
             self.ii(location, args.length)
         return
@@ -187568,12 +187501,6 @@ class StringsContinueCommand(GenericCommand):
             stop_event = event
             return
 
-        suppress_cli_notifications = None
-        try:
-            suppress_cli_notifications = gdb.parameter("suppress-cli-notifications")
-            gdb.execute("set suppress-cli-notifications on", to_string=True)
-        except gdb.error:
-            pass
         EventHooking.gef_on_stop_unhook(EventHandler.hook_stop_handler)
         info("Single-stepping for register strings. Stop with a breakpoint or Ctrl+C.")
 
@@ -187581,22 +187508,23 @@ class StringsContinueCommand(GenericCommand):
         inferior_exited = False
         execution_error = None
         try:
-            with EventHooking.temporary("stop", remember_stop):
-                self.dump_new_strings(seen, previous_registers, args.min_length, args.max_length)
-                while is_alive():
-                    stop_event = None
-                    if ExecUntilCommand.requires_continue(get_insn()):
-                        gdb.execute("xuntil", to_string=True)
-                    else:
-                        gdb.execute("stepi", to_string=True)
-                    if not is_alive():
-                        inferior_exited = True
-                        break
-
+            with ContextManager.gdb_parameter("suppress-cli-notifications", "on", ignore_error=True):
+                with EventHooking.temporary("stop", remember_stop):
                     self.dump_new_strings(seen, previous_registers, args.min_length, args.max_length)
-                    if ExecUntilCommand.is_user_stop(stop_event):
-                        stopped = True
-                        break
+                    while is_alive():
+                        stop_event = None
+                        if ExecUntilCommand.requires_continue(get_insn()):
+                            gdb.execute("xuntil", to_string=True)
+                        else:
+                            gdb.execute("stepi", to_string=True)
+                        if not is_alive():
+                            inferior_exited = True
+                            break
+
+                        self.dump_new_strings(seen, previous_registers, args.min_length, args.max_length)
+                        if ExecUntilCommand.is_user_stop(stop_event):
+                            stopped = True
+                            break
         except KeyboardInterrupt:
             stopped = True
         except gdb.error as e:
@@ -187606,12 +187534,6 @@ class StringsContinueCommand(GenericCommand):
                 inferior_exited = True
         finally:
             EventHooking.gef_on_stop_hook(EventHandler.hook_stop_handler)
-            if suppress_cli_notifications is not None:
-                if suppress_cli_notifications:
-                    setting = "on"
-                else:
-                    setting = "off"
-                gdb.execute("set suppress-cli-notifications {:s}".format(setting), to_string=True)
             Cache.reset_gef_caches()
 
         if inferior_exited:
@@ -201771,6 +201693,35 @@ class ContextManager:
             if threads is None:
                 threads = gdb.selected_inferior().threads()
             yield switch_threads()
+        return
+
+    @staticmethod
+    @contextlib.contextmanager
+    def gdb_parameter(name, value, ignore_error=False):
+        """Temporarily set a GDB parameter and restore the original value on exit.
+
+        With ignore_error, run the body unchanged if the parameter is missing or cannot be set,
+        and ignore a failed restoration.
+        """
+        restore = None
+        try:
+            original = gdb.parameter(name)
+            if isinstance(original, bool):
+                original = "on" if original else "off"
+            gdb.execute("set {:s} {:s}".format(name, value), to_string=True)
+            restore = "set {:s} {!s}".format(name, original)
+        except (gdb.error, RuntimeError):
+            if not ignore_error:
+                raise
+        try:
+            yield
+        finally:
+            if restore is not None:
+                try:
+                    gdb.execute(restore, to_string=True)
+                except (gdb.error, RuntimeError):
+                    if not ignore_error:
+                        raise
         return
 
     @staticmethod
