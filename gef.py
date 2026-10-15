@@ -21838,9 +21838,7 @@ class SmartMemoryDumpCommand(GenericCommand):
             filepath = os.path.join(dirpath, dumpfile_name)
 
             # filtering
-            if self.args.filter and not any(filt.search(dumpfile_name) for filt in self.args.filter):
-                continue
-            if self.args.exclude and any(ex.search(dumpfile_name) for ex in self.args.exclude):
+            if not GefUtil.matches_regex(dumpfile_name, self.args.filter, self.args.exclude):
                 continue
 
             # dump
@@ -89849,7 +89847,7 @@ class KernelTask:
 
     def get_task_info(self, task, *, all_ids=False, comm_filter=None, task_filter=None, user_only=False):
         comm = read_cstring_from_memory(task + self.offset_comm)
-        if comm_filter and not any(pattern.search(comm) for pattern in comm_filter):
+        if not GefUtil.matches_regex(comm, comm_filter):
             return None
         if task_filter and task not in task_filter:
             return None
@@ -91970,7 +91968,7 @@ class KernelCredCommand(GenericCommand, BufferingOutput):
                 continue
             if args.cred_filter and cred not in args.cred_filter:
                 continue
-            if args.filter and not any(x.search(comm) for x in args.filter):
+            if not GefUtil.matches_regex(comm, args.filter):
                 continue
             filtered.append(entry)
         return filtered
@@ -92403,7 +92401,7 @@ class KernelKeyringCommand(GenericCommand, BufferingOutput):
                 continue
             if self.args.task_filter and task not in self.args.task_filter:
                 continue
-            if self.args.filter and not any(pattern.search(comm) for pattern in self.args.filter):
+            if not GefUtil.matches_regex(comm, self.args.filter):
                 continue
             roots = self.task_roots(cred)
             if roots is not None:
@@ -93029,7 +93027,7 @@ class KernelSchedCommand(GenericCommand, BufferingOutput):
 
         selected = entries
         if args.filter:
-            selected = [e for e in entries if any(x.search(e[2]) for x in args.filter)]
+            selected = [e for e in entries if GefUtil.matches_regex(e[2], args.filter)]
         if not selected:
             err("No task matched")
             return
@@ -93546,9 +93544,8 @@ class KernelModuleCommand(GenericCommand, BufferingOutput):
         progress = not self.args.quiet and not self.args.apply_symbol
         for module in ProgressBar(self.module_addrs, disable=not progress):
             name_string = self.kmod.get_name(module)
-            if self.args.filter:
-                if not any(re_pattern.search(name_string) for re_pattern in self.args.filter):
-                    continue
+            if not GefUtil.matches_regex(name_string, self.args.filter):
+                continue
 
             regions = self.kmod.get_regions(module)
 
@@ -103594,9 +103591,8 @@ class StringsCommand(GenericCommand, BufferingOutput):
                 if seen:
                     continue
 
-                if not self.args.filter or any(filt.search(cstr) for filt in self.args.filter):
-                    if not self.args.exclude or not any(ex.search(cstr) for ex in self.args.exclude):
-                        self.out.append("{!s}: {:s}".format(ProcessMap.lookup_address(address), cstr))
+                if GefUtil.matches_regex(cstr, self.args.filter, self.args.exclude):
+                    self.out.append("{!s}: {:s}".format(ProcessMap.lookup_address(address), cstr))
                 seen_cstr.append((address, address + len(cstr) + 1))
 
             if depth == 0:
@@ -103857,7 +103853,7 @@ class KernelSyscallsCommand(GenericCommand, BufferingOutput):
             if not 0 <= i < 0x10000:
                 continue
             all_indices.append(i)
-            if any(pattern.search(entry.name) for pattern in self.args.filter):
+            if self.args.filter and GefUtil.matches_regex(entry.name, self.args.filter):
                 filtered_indices.append(i)
         return tuple(sorted(all_indices)), tuple(sorted(filtered_indices))
 
@@ -147482,7 +147478,7 @@ class CrcCommand(GenericCommand, BufferingOutput):
 
     def get_valid_crc_funcs(self):
         for cname, *params in CrcEngine.PARAMETERS:
-            if self.args.filter and not any(filt.search(cname) for filt in self.args.filter):
+            if not GefUtil.matches_regex(cname, self.args.filter):
                 continue
             yield (cname, CrcEngine(*params))
         return None
@@ -196510,7 +196506,7 @@ class KernelLsmCommand(GenericCommand, BufferingOutput):
                 self.quiet_info_add_out("The {:s} blob: {:s}".format(kind, layout))
 
         selected = [e for e in entries if (args.pid is None or e[1] == args.pid) and (not args.task_filter or e[0] in args.task_filter)
-                    and (not args.filter or any(x.search(e[2]) for x in args.filter))]
+                    and GefUtil.matches_regex(e[2], args.filter)]
         if not selected:
             self.err_add_out("No task matched")
             return
@@ -199943,10 +199939,7 @@ class BinwalkMemoryCommand(GenericCommand):
                 start, addr_len, end, addr_len, perm, path,
             )
 
-            if self.args.filter and not any(filt.search(dumpfile_name) for filt in self.args.filter):
-                continue
-
-            if self.args.exclude and any(ex.search(dumpfile_name) for ex in self.args.exclude):
+            if not GefUtil.matches_regex(dumpfile_name, self.args.filter, self.args.exclude):
                 continue
 
             if self.args.commit:
@@ -200213,9 +200206,7 @@ class TypesCommand(GenericCommand, BufferingOutput):
             line = re.sub(r"^\d+:|;$", "", line).strip()
             if line in basic_types:
                 continue
-            if self.args.filter and not any(filt.search(line) for filt in self.args.filter):
-                continue
-            if self.args.exclude and any(filt.search(line) for filt in self.args.exclude):
+            if not GefUtil.matches_regex(line, self.args.filter, self.args.exclude):
                 continue
             if self.args.no_enum and line.startswith("enum "):
                 continue
@@ -202341,6 +202332,15 @@ class GefUtil:
         if text == "":
             return [s for s in candidates if word is None or (s and word in s)]
         return [s for s in candidates if s and s.startswith(text.strip())]
+
+    @staticmethod
+    def matches_regex(text, filters=None, excludes=None):
+        """Match compiled inclusion and exclusion patterns, giving exclusions priority."""
+        if filters and not any(pattern.search(text) for pattern in filters):
+            return False
+        if excludes and any(pattern.search(text) for pattern in excludes):
+            return False
+        return True
 
     @staticmethod
     def get_user_base(name):
