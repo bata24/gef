@@ -22273,48 +22273,6 @@ class XtapCommand(GenericCommand):
         """All hooked syscalls take fd as their first argument."""
         return get_register(arg_regs[0])
 
-    def close_stdout_stderr(self):
-        self.stdout = 1
-        self.stderr = 2
-        with contextlib.ExitStack() as rollback:
-            self.stdout_bak = os.dup(self.stdout)
-            rollback.callback(os.close, self.stdout_bak)
-            rollback.callback(os.dup2, self.stdout_bak, self.stdout)
-            self.stderr_bak = os.dup(self.stderr)
-            rollback.callback(os.close, self.stderr_bak)
-            rollback.callback(os.dup2, self.stderr_bak, self.stderr)
-            with open("/dev/null", "w") as fd:
-                os.dup2(fd.fileno(), self.stdout)
-                os.dup2(fd.fileno(), self.stderr)
-            rollback.pop_all()
-        return
-
-    def revert_stdout_stderr(self):
-        os.dup2(self.stdout_bak, self.stdout)
-        os.close(self.stdout_bak)
-        os.dup2(self.stderr_bak, self.stderr)
-        os.close(self.stderr_bak)
-        return
-
-    def force_write_stdout(self, msg):
-        with os.fdopen(os.dup(self.stdout_bak), "wb") as fdw:
-            fdw.write(msg)
-        return
-
-    def dump_transfer(self, name, direction, fd, label, data):
-        if direction == "in":
-            arrow = "<-"
-        else:
-            arrow = "->"
-        head = "[fd {:d}] {:s} {:s} {:s}".format(fd, name, arrow, label)
-        lines = [titlify(head)]
-        if data:
-            lines.append(hexdump(data, base=0))
-        else:
-            lines.append("(no data)")
-        self.force_write_stdout(String.str2bytes("\n".join(lines) + "\n"))
-        return
-
     def setup_catchpoints(self):
         """Set a catch syscall for every supported+available syscall. Returns count set."""
         for name in self.syscall_spec:
@@ -22437,7 +22395,7 @@ class XtapCommand(GenericCommand):
         self.pending_by_thread[tid] = {"name": name, "fd": fd, "arg_values": arg_values}
         return
 
-    def handle_return(self, name):
+    def handle_return(self, name, write_stdout):
         try:
             tid = gdb.selected_thread().num
         except Exception:
@@ -22450,41 +22408,50 @@ class XtapCommand(GenericCommand):
         retval = u2i(retval, current_arch.ptrsize * 8)
         direction = self.syscall_spec[name][0]
         fd = pending["fd"]
+        if direction == "in":
+            arrow = "<-"
+        else:
+            arrow = "->"
         for label, data in self.extract_exit_data(name, pending["arg_values"], retval):
-            self.dump_transfer(name, direction, fd, label, data)
+            head = "[fd {:d}] {:s} {:s} {:s}".format(fd, name, arrow, label)
+            lines = [titlify(head)]
+            if data:
+                lines.append(hexdump(data, base=0))
+            else:
+                lines.append("(no data)")
+            write_stdout(String.str2bytes("\n".join(lines) + "\n"))
         return
 
     def trace(self):
         bp_was_hit = False
         inferior_exited = False
-        self.close_stdout_stderr()
-        EventHooking.gef_on_stop_unhook(EventHandler.hook_stop_handler)
-        try:
-            with EventHooking.temporary("stop", self.remember_stop):
-                while True:
-                    self.stop_event = None
-                    gdb.execute("continue", to_string=True)
-                    Cache.reset_gef_caches() # hook_stop_handler that does this is unhooked
-                    if not is_alive():
-                        inferior_exited = True
-                        break
-                    hit = self.identify_stop()
-                    if hit is None:
-                        # stopped for some other reason (user breakpoint, signal, etc.)
-                        bp_was_hit = True
-                        break
-                    name, is_entry = hit
-                    if is_entry:
-                        self.handle_entry(name)
-                    else:
-                        self.handle_return(name)
-        except KeyboardInterrupt:
-            bp_was_hit = True
-        except gdb.error as e:
-            self.err = e
-        finally:
-            self.revert_stdout_stderr()
-            EventHooking.gef_on_stop_hook(EventHandler.hook_stop_handler)
+        with ContextManager.redirect_output() as write_stdout:
+            EventHooking.gef_on_stop_unhook(EventHandler.hook_stop_handler)
+            try:
+                with EventHooking.temporary("stop", self.remember_stop):
+                    while True:
+                        self.stop_event = None
+                        gdb.execute("continue", to_string=True)
+                        Cache.reset_gef_caches() # hook_stop_handler that does this is unhooked
+                        if not is_alive():
+                            inferior_exited = True
+                            break
+                        hit = self.identify_stop()
+                        if hit is None:
+                            # stopped for some other reason (user breakpoint, signal, etc.)
+                            bp_was_hit = True
+                            break
+                        name, is_entry = hit
+                        if is_entry:
+                            self.handle_entry(name)
+                        else:
+                            self.handle_return(name, write_stdout)
+            except KeyboardInterrupt:
+                bp_was_hit = True
+            except gdb.error as e:
+                self.err = e
+            finally:
+                EventHooking.gef_on_stop_hook(EventHandler.hook_stop_handler)
         if inferior_exited:
             info("Inferior exited")
         return bp_was_hit
@@ -104151,8 +104118,6 @@ class ExecAsm:
         self.use_bp = use_bp
         # debug print enable
         self.debug = debug
-        # output is always stdout
-        self.stdout = 1
         self.pc = None
         self.thread = None
         self.stops = []
@@ -104259,27 +104224,6 @@ class ExecAsm:
             current.switch()
         return
 
-    def close_stdout(self):
-        EventHooking.gef_on_stop_unhook(EventHandler.hook_stop_handler)
-        if self.debug:
-            return
-
-        gdb.flush() # do not discard the buffered output of the user
-        self.stdout_bak = os.dup(self.stdout)
-        f = open("/dev/null", "w")
-        os.dup2(f.fileno(), self.stdout)
-        f.close()
-        return
-
-    def revert_stdout(self):
-        EventHooking.gef_on_stop_hook(EventHandler.hook_stop_handler)
-        if self.debug:
-            return
-        gdb.flush() # discard the buffered stop messages while executing
-        os.dup2(self.stdout_bak, self.stdout)
-        os.close(self.stdout_bak)
-        return
-
     def modify_regs(self):
         if not self.regs:
             return
@@ -104356,32 +104300,38 @@ class ExecAsm:
         gdb.execute("set scheduler-locking on", to_string=True)
 
         # exec
-        self.close_stdout()
         try:
-            with EventHooking.temporary("stop", self.stops.append):
-                self.modify_regs()
-                self.modify_code(d["pc"])
-                if check_complete and self.regs and any(get_register(reg) != value for reg, value in self.regs.items()):
-                    return None
-                if stop_signal:
-                    self.queue_signal(stop_signal[0], "0")
-                if self.debug:
-                    gdb.execute("context")
-                if self.use_bp:
-                    self.execute_with_bp()
-                else:
-                    try:
-                        gdb.execute("stepi {:d}".format(self.step), to_string=True)
-                    except gdb.MemoryError:
-                        if check_complete:
-                            return None
-                if self.debug:
-                    gdb.execute("context")
+            with contextlib.ExitStack() as output:
+                if not self.debug:
+                    gdb.flush() # do not discard the buffered output of the user
+                    output.enter_context(ContextManager.redirect_output(stderr=False))
+                    output.callback(gdb.flush) # discard the buffered stop messages while executing
+                EventHooking.gef_on_stop_unhook(EventHandler.hook_stop_handler)
+                output.callback(EventHooking.gef_on_stop_hook, EventHandler.hook_stop_handler)
+                with EventHooking.temporary("stop", self.stops.append):
+                    self.modify_regs()
+                    self.modify_code(d["pc"])
+                    if check_complete and self.regs and any(get_register(reg) != value for reg, value in self.regs.items()):
+                        return None
+                    if stop_signal:
+                        self.queue_signal(stop_signal[0], "0")
+                    if self.debug:
+                        gdb.execute("context")
+                    if self.use_bp:
+                        self.execute_with_bp()
+                    else:
+                        try:
+                            gdb.execute("stepi {:d}".format(self.step), to_string=True)
+                        except gdb.MemoryError:
+                            if check_complete:
+                                return None
+                    if self.debug:
+                        gdb.execute("context")
 
-                # get result
-                if check_complete and not self.is_complete():
-                    return None
-                ret = self.get_state()
+                    # get result
+                    if check_complete and not self.is_complete():
+                        return None
+                    ret = self.get_state()
         except gdb.error:
             if not check_complete:
                 raise
@@ -104389,7 +104339,6 @@ class ExecAsm:
         finally:
             if check_complete and gdb.selected_thread() != self.thread:
                 self.thread.switch()
-            self.revert_stdout()
             gdb.execute("set scheduler-locking {:s}".format(scheduler_locking), to_string=True)
             if stop_signal:
                 self.queue_signal(*stop_signal)
@@ -188244,34 +188193,6 @@ class ExecUntilCommand(GenericCommand):
         super().__init__(prefix=prefix)
         return
 
-    def close_stdout_stderr(self):
-        self.stdout = 1
-        self.stderr = 2
-        with contextlib.ExitStack() as rollback:
-            self.stdout_bak = os.dup(self.stdout)
-            rollback.callback(os.close, self.stdout_bak)
-            rollback.callback(os.dup2, self.stdout_bak, self.stdout)
-            self.stderr_bak = os.dup(self.stderr)
-            rollback.callback(os.close, self.stderr_bak)
-            rollback.callback(os.dup2, self.stderr_bak, self.stderr)
-            with open("/dev/null", "w") as fd:
-                os.dup2(fd.fileno(), self.stdout)
-                os.dup2(fd.fileno(), self.stderr)
-            rollback.pop_all()
-        return
-
-    def revert_stdout_stderr(self):
-        os.dup2(self.stdout_bak, self.stdout)
-        os.close(self.stdout_bak)
-        os.dup2(self.stderr_bak, self.stderr)
-        os.close(self.stderr_bak)
-        return
-
-    def force_write_stdout(self, msg):
-        with os.fdopen(os.dup(self.stdout_bak), "wb") as fdw:
-            fdw.write(msg)
-        return
-
     def check_jump_taken(self, insn):
         if not current_arch.is_jump(insn):
             return False
@@ -188355,71 +188276,70 @@ class ExecUntilCommand(GenericCommand):
         return not is_alive() or ExecUntilCommand.is_user_stop(self.stop_event)
 
     def exec_next(self):
-        self.close_stdout_stderr()
-        EventHooking.gef_on_stop_unhook(EventHandler.hook_stop_handler)
         self.err = None
 
         prev_addr = -1
-        try:
-            with EventHooking.temporary("stop", self.remember_stop):
-                count = 0
-                while True:
-                    # progress
-                    if not self.args.print_insn and count % 100 == 0:
-                        self.force_write_stdout([b"\r|", b"\r/", b"\r-", b"\r\\"][count // 100 % 4])
+        with ContextManager.redirect_output() as write_stdout:
+            EventHooking.gef_on_stop_unhook(EventHandler.hook_stop_handler)
+            try:
+                with EventHooking.temporary("stop", self.remember_stop):
+                    count = 0
+                    while True:
+                        # progress
+                        if not self.args.print_insn and count % 100 == 0:
+                            write_stdout([b"\r|", b"\r/", b"\r-", b"\r\\"][count // 100 % 4])
 
-                    # backup
-                    prev_prev_addr = prev_addr
-                    prev_addr = current_arch.pc
+                        # backup
+                        prev_prev_addr = prev_addr
+                        prev_addr = current_arch.pc
 
-                    # execute 1 instruction
-                    insn = get_insn()
-                    if self.args.use_ni or (self.args.skip_lib and "@plt>" in str(insn)):
-                        stopped = self.exec_step("ni", insn) # use ni wrapper
-                    else:
-                        stopped = self.exec_step("si", insn) # use si wrapper
+                        # execute 1 instruction
+                        insn = get_insn()
+                        if self.args.use_ni or (self.args.skip_lib and "@plt>" in str(insn)):
+                            stopped = self.exec_step("ni", insn) # use ni wrapper
+                        else:
+                            stopped = self.exec_step("si", insn) # use si wrapper
 
-                    if stopped:
-                        break
-                    insn = get_insn()
+                        if stopped:
+                            break
+                        insn = get_insn()
 
-                    # $pc is not changed
-                    if (prev_prev_addr == prev_addr == current_arch.pc and current_arch.is_jump(insn)
-                            and not current_arch.is_conditional_branch(insn)):
-                        self.err = "Detected infinity loop prev_addr ({:#x})".format(prev_addr)
-                        break
+                        # $pc is not changed
+                        if (prev_prev_addr == prev_addr == current_arch.pc and current_arch.is_jump(insn)
+                                and not current_arch.is_conditional_branch(insn)):
+                            self.err = "Detected infinity loop prev_addr ({:#x})".format(prev_addr)
+                            break
 
-                    if self.args.print_insn:
-                        self.force_write_stdout((str(insn) + "\n").encode())
+                        if self.args.print_insn:
+                            write_stdout((str(insn) + "\n").encode())
 
-                    # found and break
-                    if self.is_target_insn(insn) and (self.err or current_arch.pc not in self.args.exclude):
-                        if not self.args.print_insn:
-                            self.force_write_stdout(b"\r \r")
-                        break
+                        # found and break
+                        if self.is_target_insn(insn) and (self.err or current_arch.pc not in self.args.exclude):
+                            if not self.args.print_insn:
+                                write_stdout(b"\r \r")
+                            break
 
-                    count += 1
+                        count += 1
 
-        except KeyboardInterrupt:
-            pass
-
-        except Exception:
-            if is_alive():
-                exc_type, exc_value, exc_traceback = sys.exc_info()
-                self.err = exc_value
-            else:
+            except KeyboardInterrupt:
                 pass
 
-        finally:
-            self.revert_stdout_stderr() # anytime needed
-            EventHooking.gef_on_stop_hook(EventHandler.hook_stop_handler) # anytime needed
-            Cache.reset_gef_caches()
-            if self.err:
-                err(self.err)
-            elif is_alive():
-                gdb.execute("context")
-            else:
-                info("Inferior exited")
+            except Exception:
+                if is_alive():
+                    exc_type, exc_value, exc_traceback = sys.exc_info()
+                    self.err = exc_value
+                else:
+                    pass
+
+            finally:
+                EventHooking.gef_on_stop_hook(EventHandler.hook_stop_handler)
+        Cache.reset_gef_caches()
+        if self.err:
+            err(self.err)
+        elif is_alive():
+            gdb.execute("context")
+        else:
+            info("Inferior exited")
         return
 
     @Decorator.parse_args
@@ -189126,144 +189046,126 @@ class CallTraceCommand(ExecUntilCommand):
         super().__init__(prefix=False)
         return
 
-    def write_trace(self, msg):
-        if isinstance(msg, str):
-            msg = String.str2bytes(msg)
-
-        self.force_write_stdout(msg)
-
-        if self.args.no_file_output:
-            return
-
-        msg = String.bytes2str(msg)
-        msg = Color.remove_color(msg)
-        self.output_fd.write(msg)
-        self.output_fd.flush()
-        return
-
-    def print_insn(self, insn, indent):
-        colors_table = [
-            Color.redify,
-            Color.greenify,
-            Color.blueify,
-            Color.yellowify,
-        ]
-        color_func = colors_table[(indent // 2) % len(colors_table)]
-        insn_b = String.str2bytes(color_func(str(insn)))
-        msg = b" " * indent + insn_b + b"\n"
-        self.write_trace(msg)
-        return
-
-    def print_insn_call(self, insn, indent):
-        self.print_insn(insn, indent)
-        if self.args.print_args:
-            res = gdb.execute("registers {:s}".format(" ".join(current_arch.function_parameters)), to_string=True)
-            res = "\n".join(" " * indent + x for x in res.splitlines()) + "\n"
-            self.write_trace(res)
-        return
-
-    def print_insn_ret(self, insn, indent):
-        self.print_insn(insn, indent)
-        if self.args.print_args:
-            res = gdb.execute("registers {:s}".format(current_arch.return_register), to_string=True)
-            res = "\n".join(" " * indent + x for x in res.splitlines()) + "\n"
-            self.write_trace(res)
-        return
-
-    def print_insn_syscall(self, insn, indent):
-        self.print_insn(insn, indent)
-        if self.args.print_args:
-            res = gdb.execute("syscall-args", to_string=True)
-            res = "\n".join(" " * indent + x for x in res.splitlines()) + "\n"
-            self.write_trace(res)
-        return
-
-    def print_syscall_ret(self, indent):
-        if not self.args.print_args:
-            return
-
-        msg = " " * indent + "[+] Syscall return\n"
-        self.write_trace(msg)
-
-        res = gdb.execute("registers {:s}".format(current_arch.return_register), to_string=True)
-        res = "\n".join(" " * indent + x for x in res.splitlines()) + "\n"
-        self.write_trace(res)
-        return
-
     def call_trace(self):
-        self.close_stdout_stderr()
-        EventHooking.gef_on_stop_unhook(EventHandler.hook_stop_handler)
+
+        def write_trace(msg):
+            if isinstance(msg, str):
+                msg = String.str2bytes(msg)
+
+            write_stdout(msg)
+
+            if self.args.no_file_output:
+                return
+
+            msg = String.bytes2str(msg)
+            msg = Color.remove_color(msg)
+            self.output_fd.write(msg)
+            self.output_fd.flush()
+            return
+
+        def print_insn(insn, indent):
+            colors_table = [
+                Color.redify,
+                Color.greenify,
+                Color.blueify,
+                Color.yellowify,
+            ]
+            color_func = colors_table[(indent // 2) % len(colors_table)]
+            insn_b = String.str2bytes(color_func(str(insn)))
+            msg = b" " * indent + insn_b + b"\n"
+            write_trace(msg)
+            return
+
         self.err = None
 
         prev_addr = -1
         next_should_print = False # flag to dump instructions to which calls and rets are jumped
         pending_syscall_ret_indent = None
         print_indent = 0
-        try:
-            with EventHooking.temporary("stop", self.remember_stop):
-                while True:
-                    # backup
-                    prev_prev_addr = prev_addr
-                    prev_addr = current_arch.pc
+        with ContextManager.redirect_output() as write_stdout:
+            EventHooking.gef_on_stop_unhook(EventHandler.hook_stop_handler)
+            try:
+                with EventHooking.temporary("stop", self.remember_stop):
+                    while True:
+                        # backup
+                        prev_prev_addr = prev_addr
+                        prev_addr = current_arch.pc
 
-                    insn = get_insn()
+                        insn = get_insn()
 
-                    # print syscall ret
-                    if pending_syscall_ret_indent is not None:
-                        self.print_syscall_ret(pending_syscall_ret_indent)
-                        pending_syscall_ret_indent = None
+                        # print syscall ret
+                        if pending_syscall_ret_indent is not None:
+                            if self.args.print_args:
+                                indent = pending_syscall_ret_indent
+                                write_trace(" " * indent + "[+] Syscall return\n")
+                                res = gdb.execute("registers {:s}".format(current_arch.return_register), to_string=True)
+                                res = "\n".join(" " * indent + x for x in res.splitlines()) + "\n"
+                                write_trace(res)
+                            pending_syscall_ret_indent = None
 
-                    # call or ret or syscall
-                    if current_arch.is_call(insn):
-                        if not self.args.syscall_only:
-                            self.print_insn_call(insn, print_indent)
-                            next_should_print = True
-                            print_indent += 2
-                    elif current_arch.is_ret(insn):
-                        if not self.args.syscall_only:
-                            self.print_insn_ret(insn, print_indent)
-                            next_should_print = True
-                            print_indent = max(print_indent - 2, 0)
-                    elif current_arch.is_syscall(insn):
-                        self.print_insn_syscall(insn, print_indent)
-                        if self.args.print_args:
-                            pending_syscall_ret_indent = print_indent
-                        next_should_print = False
-                    else:
-                        if next_should_print:
-                            self.print_insn(insn, print_indent)
-                        next_should_print = False
+                        # call or ret or syscall
+                        if current_arch.is_call(insn):
+                            if not self.args.syscall_only:
+                                print_insn(insn, print_indent)
+                                if self.args.print_args:
+                                    res = gdb.execute(
+                                        "registers {:s}".format(" ".join(current_arch.function_parameters)), to_string=True,
+                                    )
+                                    res = "\n".join(" " * print_indent + x for x in res.splitlines()) + "\n"
+                                    write_trace(res)
+                                next_should_print = True
+                                print_indent += 2
+                        elif current_arch.is_ret(insn):
+                            if not self.args.syscall_only:
+                                print_insn(insn, print_indent)
+                                if self.args.print_args:
+                                    res = gdb.execute("registers {:s}".format(current_arch.return_register), to_string=True)
+                                    res = "\n".join(" " * print_indent + x for x in res.splitlines()) + "\n"
+                                    write_trace(res)
+                                next_should_print = True
+                                print_indent = max(print_indent - 2, 0)
+                        elif current_arch.is_syscall(insn):
+                            print_insn(insn, print_indent)
+                            if self.args.print_args:
+                                res = gdb.execute("syscall-args", to_string=True)
+                                res = "\n".join(" " * print_indent + x for x in res.splitlines()) + "\n"
+                                write_trace(res)
+                                pending_syscall_ret_indent = print_indent
+                            next_should_print = False
+                        else:
+                            if next_should_print:
+                                print_insn(insn, print_indent)
+                            next_should_print = False
 
-                    if self.exec_step("si", insn): # use si wrapper
-                        break
-                    insn = get_insn()
+                        if self.exec_step("si", insn): # use si wrapper
+                            break
+                        insn = get_insn()
 
-                    # $pc is not changed
-                    if (prev_prev_addr == prev_addr == current_arch.pc and current_arch.is_jump(insn)
-                            and not current_arch.is_conditional_branch(insn)):
-                        self.err = "Detected infinity loop prev_addr ({:#x})".format(prev_addr)
-                        break
+                        # $pc is not changed
+                        if (prev_prev_addr == prev_addr == current_arch.pc and current_arch.is_jump(insn)
+                                and not current_arch.is_conditional_branch(insn)):
+                            self.err = "Detected infinity loop prev_addr ({:#x})".format(prev_addr)
+                            break
 
-        except KeyboardInterrupt:
-            pass
-
-        except Exception:
-            if is_alive():
-                exc_type, exc_value, exc_traceback = sys.exc_info()
-                self.err = exc_value
-            else:
+            except KeyboardInterrupt:
                 pass
 
-        finally:
-            self.revert_stdout_stderr() # anytime needed
-            EventHooking.gef_on_stop_hook(EventHandler.hook_stop_handler) # anytime needed
-            Cache.reset_gef_caches()
-            if self.err:
-                err(self.err)
-            elif is_alive():
-                gdb.execute("context")
-            else:
-                info("Inferior exited")
+            except Exception:
+                if is_alive():
+                    exc_type, exc_value, exc_traceback = sys.exc_info()
+                    self.err = exc_value
+                else:
+                    pass
+
+            finally:
+                EventHooking.gef_on_stop_hook(EventHandler.hook_stop_handler)
+        Cache.reset_gef_caches()
+        if self.err:
+            err(self.err)
+        elif is_alive():
+            gdb.execute("context")
+        else:
+            info("Inferior exited")
         return
 
     @Decorator.parse_args
@@ -202596,6 +202498,28 @@ class ContextManager:
             if threads is None:
                 threads = gdb.selected_inferior().threads()
             yield switch_threads()
+        return
+
+    @staticmethod
+    @contextlib.contextmanager
+    def redirect_output(stderr=True):
+        """Temporarily silence stdout and optionally stderr, yielding a writer to the saved stdout."""
+        with contextlib.ExitStack() as restore:
+            saved = {}
+            for fd in (1, 2) if stderr else (1,):
+                saved[fd] = os.dup(fd)
+                restore.callback(os.close, saved[fd])
+                restore.callback(os.dup2, saved[fd], fd)
+            with open("/dev/null", "w") as null:
+                for fd in saved:
+                    os.dup2(null.fileno(), fd)
+
+            def write_stdout(msg):
+                with os.fdopen(os.dup(saved[1]), "wb") as fdw:
+                    fdw.write(msg)
+                return
+
+            yield write_stdout
         return
 
     @staticmethod
