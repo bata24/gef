@@ -104238,6 +104238,10 @@ class ExecAsm:
                 gdb.execute("set $npc = {:#x}".format(dst2), to_string=True)
             else:
                 gdb.execute("set $pc = {:#x}".format(dst), to_string=True)
+        if is_x86_32() or is_x86_64():
+            reg = "$orig_rax" if is_x86_64() else "$orig_eax"
+            if get_register(reg) is not None:
+                gdb.execute("set {:s} = -1".format(reg), to_string=True)
         self.pc = current_arch.pc
         return
 
