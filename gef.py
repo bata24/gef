@@ -533,7 +533,6 @@ class Cache:
 
 class MemoryCache:
     """A read-through block cache for memory readers.
-
     The cost of reading memory via a remote gdb stub is dominated by the number of
     round trips, not by the size (with qemu-system, 8 bytes costs 95us while 4096 bytes
     costs 303us). Reading a whole block at once and reusing it makes many commands
@@ -591,7 +590,6 @@ class MemoryCache:
     @staticmethod
     def read_raw(addr, length):
         """Return a `length` long byte array at `addr`, without using the cache.
-
         `gdb.Inferior.read_memory()` does not tell the stub which thread is selected, so under
         qemu-system a virtual address is always translated by the first cpu. When that cpu is
         stopped in userland, it cannot reach the kernel, and the read fails even though the
@@ -628,7 +626,6 @@ class MemoryCache:
     @staticmethod
     def read(addr, length, reader=None, namespace=None):
         """Return bytes at `addr`, using the block cache when available.
-
         `reader` and `namespace` allow users such as page-table walkers to cache
         address spaces other than the inferior's normal virtual memory without
         mixing their contents.  Reads larger than the selected block size bypass
@@ -677,12 +674,10 @@ class MemoryCache:
     @Cache.cache_until_next(per_cpu=True)
     def get_arm32_lpae_root():
         """Return the physical address of ARM32 Linux's LPAE master page table.
-
         QEMU's gdbstub normally translates a virtual read with the page tables of the selected CPU. On ARM32 Linux, a secondary
         CPU can be stopped while its active table is missing kernel PMDs that are present in the master ``swapper_pg_dir``. A
         normal GDB read then fails even though the kernel address is valid. This root lets ``read_memory`` retry through that
         authoritative table.
-
         The fallback is limited to QEMU ARM32 with TTBCR.EAE set because the companion walker implements only ARM32's LPAE
         long-descriptor format. x86/x64 does not have this ARM32 table-synchronization failure and uses the active CR3 through
         the gdbstub. ARM64 keeps its kernel mappings in TTBR1_EL1, independently of the process-specific TTBR0_EL1, so it does
@@ -735,10 +730,8 @@ class MemoryCache:
     @staticmethod
     def translate_arm32_lpae(vaddr, root, reader):
         """Translate one ARM32 LPAE virtual address using physical reads.
-
         ``root`` is the physical ``swapper_pg_dir`` address and ``reader`` reads physical bytes. The walk handles an L1 1GB
         block, an L2 2MB block, or an L3 4KB page and returns the final physical address. Invalid descriptors return None.
-
         This is deliberately not a general pagewalk implementation: it exists only so a failed ARM32 GDB virtual read can use
         the Linux master table. The normal x86/x64 and ARM64 reads remain handled by their gdbstubs.
         """
@@ -766,11 +759,9 @@ class MemoryCache:
     @staticmethod
     def read_arm32_lpae(vaddr, length):
         """Read ARM32 virtual memory through the LPAE ``swapper_pg_dir``.
-
         This is the cache reader used only after the ordinary virtual read has failed. It temporarily enables physical mode,
         translates each virtual page with ``translate_arm32_lpae``, and reads the resulting physical ranges. Reads are split at
         4KB boundaries because consecutive virtual pages need not be consecutive in physical memory.
-
         x86/x64 and ARM64 do not call this function: their normal gdbstub reads do not need the ARM32-specific master-table
         recovery described by ``get_arm32_lpae_root``.
         """
@@ -5627,7 +5618,6 @@ class GlibcHeap:
 
         def read_header_int(self, addr, offset):
             """Return the header word at `addr`, which is `offset` bytes from the chunk base.
-
             The header fields used to be read one by one, which costs up to 7 `read_memory`
             per chunk. Read the whole header at once instead and memoize it.
             If the whole header is not readable (e.g. the chunk is at the end of a mapping),
@@ -13570,7 +13560,6 @@ class SystemManagementMemory:
     @Cache.cache_this_session(per_inferior=True)
     def get_smram_map():
         """Return the most useful SMRAM range as ``(base, size, label)``.
-
         QEMU names the protected range differently depending on the chipset and
         firmware (TSEG, HSEG, ABSEG, or SMRAM).  The flat memory tree is a more
         reliable source than assuming the architectural reset SMBASE.  Do not
@@ -13599,7 +13588,6 @@ class SystemManagementMemory:
     @Cache.cache_until_next(per_cpu=True)
     def get_smm_monitor_state():
         """Return ``(state, token)`` from QEMU's current-CPU register dump.
-
         ``state`` is None when this QEMU version does not expose an SMM marker.
         """
         if not is_qemu_system() or not is_x86():
@@ -13625,7 +13613,6 @@ class SystemManagementMemory:
     @Cache.cache_until_next(per_cpu=True)
     def get_smm_status():
         """Return details about the current CPU's SMM state.
-
         QEMU's explicit ``SMM=`` marker is authoritative.  Older builds without
         that marker fall back to checking whether the current PC lies in SMRAM.
         """
@@ -13765,7 +13752,6 @@ class SystemManagementMemory:
 
 class SecureMemory:
     """A collection of utility functions that are related to the secure world memory.
-
     The secure memory is invisible from the non-secure world, so gdb itself cannot read it.
     A plain physical read does not fail either, it silently answers with unrelated bytes.
     The only way in is the memory of qemu-system itself, which needs the privilege to open
@@ -13779,7 +13765,6 @@ class SecureMemory:
     @Cache.cache_until_next
     def get_area(verbose=False):
         """Return the secure memory area of qemu-system, or None if there is none.
-
         The returned object is the process map of qemu-system that backs the secure memory,
         with `sm_base` / `sm_size` added for the guest side of it."""
         # find secure-ram base
@@ -17564,7 +17549,6 @@ class HighlightCommand(GenericCommand):
     @staticmethod
     def highlight_text(text):
         """Highlight text using highlight_table { match -> color } settings.
-
         Split by ANSI codes and color each literal or regex match in the text.
         Invalid regex patterns are ignored."""
         if not HighlightCommand.highlight_table:
@@ -18155,7 +18139,6 @@ class StepiForKGDBCommand(GenericCommand):
     @staticmethod
     def get_daif_update(instruction):
         """Return the instruction's DAIF action and intended IRQ bit.
-
         Read MSR source registers before stepping; a None IRQ bit preserves PSTATE.
         """
         if (instruction & 0xffff_f0df) == 0xd503_40df: # MSR DAIFSet/DAIFClr, #imm
@@ -18195,7 +18178,6 @@ class StepiForKGDBCommand(GenericCommand):
     @staticmethod
     def is_branch_instruction(instruction):
         """Identify ordinary branches for the post-step PC check.
-
         Matching the saved opcode avoids disassembly and Instruction creation,
         making it more efficient here than using current_arch.is_call. It covers
         the calls, jumps and returns needed for this check, while is_call only
@@ -26580,7 +26562,6 @@ class UnicornEmulator:
 
         def emulate_arm32_mrc(self, insn):
             """Proactively emulate `mrc p15, 0, Rt, c13, c0, {2,3,4}` (TLS); used for kernel too.
-
             Returns "skip" when the instruction is not such an mrc, None when handled, or
             an error string otherwise."""
             rt = None
@@ -26958,7 +26939,6 @@ class UnicornEmulateCommand(GenericCommand):
     @contextlib.contextmanager
     def emulation_session(kwargs):
         """Set up the in-process Unicorn emulator the same way for every caller.
-
         Locks the scheduler, resets gef caches, builds the Emulator and yields it
         (or None if init failed); the scheduler state is restored on exit. Callers
         drive the emulator as they need: `run_in_process` runs a linear emulation,
@@ -26977,7 +26957,6 @@ class UnicornEmulateCommand(GenericCommand):
     @staticmethod
     def run_in_process(kwargs, suppress_output=False):
         """Run a linear in-process emulation and return the Emulator instance.
-
         Shared by `unicorn-emulate` and `heap try-free`: the latter reads the result
         straight off the returned object (`.failed`, `.last_syscall`, `.changed_mem`,
         registers) instead of parsing the printed dump, and passes suppress_output=True
@@ -37075,7 +37054,6 @@ class DwarfExceptionHandler:
 
     def read_frame_records(self):
         """Return structured CIE/FDE records from .eh_frame.
-
         The regular parser above deliberately produces display entries.  Unwind row
         evaluation needs the same fields plus the original CFA bytecode boundaries,
         so keep that representation separate from the dump output.
@@ -65919,7 +65897,6 @@ class KernelAddressHeuristicFinderUtil:
     def riscv_auipc_gen(res, use_addi, use_mem, skip, skip_msb_check, read_valid,
                         word_only=False, follow_addi=False, load_mnemonic=None, with_pc=False):
         """Yield the addresses built from `auipc rd, hi20` and the following `lo12(rd)`.
-
         `use_addi` takes `addi rX, rd, lo12` (the address itself), and `use_mem` takes the
         displacement of a load/store such as `ld rX, lo12(rd)` or `sd rX, lo12(rd)`.
         `word_only` limits the latter to the accesses as wide as a pointer.
@@ -66054,7 +66031,6 @@ class KernelAddressHeuristicFinderUtil:
     @staticmethod
     def riscv_gp_relative(res):
         """Yield the addresses built from `gp` with `addi rX, gp, lo12` or accessed as `lw/ld rX, lo12(gp)`.
-
         The linker relaxes an access near `__global_pointer$` to a gp-relative one, and the
         kernel keeps `__global_pointer$` in `gp` while it runs."""
         gp = Ksym.get_addr("__global_pointer$")
@@ -66104,7 +66080,6 @@ class KernelAddressHeuristicFinderUtil:
     @staticmethod
     def is_in_kernel_image(x):
         """Sanity check for a symbol that is statically allocated in the kernel image.
-
         `init_task`, `slab_caches`, `modprobe_path` and so on are always in the kernel image,
         so a candidate outside of it is always wrong and must not be adopted.
         It returns True when the kernel layout is unknown, to keep the legacy behavior."""
@@ -66118,7 +66093,6 @@ class KernelAddressHeuristicFinderUtil:
     @staticmethod
     def is_in_freed_init_region(x):
         """True when `x` lies in the [__init_begin, __init_end) area that is freed after boot.
-
         A symbol placed there (e.g. `apparmor_initialized`, which is `__initdata` before v4.12)
         is discarded at runtime, so its value is meaningless and it has no live code reference
         to anchor a heuristic search."""
@@ -66140,14 +66114,12 @@ class KernelAddressHeuristicFinderUtil:
     @staticmethod
     def select_idr(candidates):
         """Return the candidate that is really a `struct idr`, not the adjacent `*_idr_lock`.
-
         The anchor functions take the lock before touching the idr, so newer kernels
         materialize `&*_idr_lock` first. The lock lives in .bss and the idr in .data,
         so adopting the lock is not a slight deviation the caller can absorb.
         Return None if no candidate can be verified."""
         def is_idr(x):
             """Return True if `x` is the base of a `struct idr` whose xarray is populated.
-
             `xa_node->array` points back to the xarray itself, so it identifies the base address.
             It cannot decide anything while the xarray is empty or holds a single entry."""
             cls = KernelXArray
@@ -66161,7 +66133,6 @@ class KernelAddressHeuristicFinderUtil:
 
         def has_idr_marker(x):
             """Return True if `x` holds the IDR_RT_MARKER that IDR_INIT() stores into xa_flags.
-
             The marker is ROOT_IS_IDR plus the free mark of the empty tree, so only the
             low flag bits and one or two bits at __GFP_BITS_SHIFT (23 to 27 depending on
             the version and CONFIG_LOCKDEP) are ever set, and xa_head follows it.
@@ -66197,7 +66168,6 @@ class KernelAddressHeuristicFinderUtil:
     @Cache.cache_until_next
     def get_list_head_array_stride(addr, count, max_stride=0x200):
         """Return the element size of the array at `addr` whose `count` elements start with a list_head, or None.
-
         The lock and the padding that follow a list_head never look like a list_head, so the smallest stride
         that makes every element a list_head is the element size. A broken list is accepted if a link
         points back to the head or both links are unreadable, so that the caller can report it."""
@@ -66223,7 +66193,6 @@ class KernelAddressHeuristicFinderUtil:
     @staticmethod
     def disassemble_until_next_symbol(addr, count):
         """Disassemble up to `count` instructions from `addr`, dropping what belongs to the next symbol.
-
         A window wide enough for a KCOV build overruns a short function, and the
         constants of the neighbors are indistinguishable from the ones of the anchor."""
         res = gdb.execute("x/{:d}i {:#x}".format(count, addr), to_string=True)
@@ -69857,7 +69826,6 @@ class KernelAddressHeuristicFinder:
     @Decorator.switch_to_intel_syntax
     def find_per_cpu_static_range(offsets):
         """Return (`__per_cpu_start`, `__per_cpu_end`), or (None, None) if they are unknown.
-
         Both are data symbols, so a CONFIG_KALLSYMS_ALL=n kernel keeps neither, but
         `__is_kernel_percpu_address` (`is_kernel_percpu_address` before v4.14) materializes
         both of them as constants:
@@ -69867,7 +69835,6 @@ class KernelAddressHeuristicFinder:
         `__per_cpu_start` is the only page aligned constant of the function and
         `__per_cpu_end` is the nearest one above it, which is enough to tell them apart.
         CONFIG_SMP=n compiles the body away to `return false`, so nothing is found.
-
         `offsets` is `__per_cpu_offset[]`, which the caller already has."""
         # the static area never fills a whole unit, and 1MB covers every kernel of the corpus
         limit = 0x10_0000
@@ -69970,7 +69937,6 @@ class KernelAddressHeuristicFinder:
     @Decorator.switch_to_intel_syntax
     def find_cpu_mask(kind, anchors, percpu=None):
         """Return the address of the cpu mask bitmap of `kind` found in the code of `anchors`, or None.
-
         `init_cpu_possible()`, `init_cpu_present()` and `init_cpu_online()` are
         `cpumask_copy(&__cpu_<kind>_mask, src)` (`cpu_<kind>_bits` before v4.5), and
         `set_cpu_online()` sets or clears a bit of it, so the bitmap is the first word-sized datum
@@ -73731,7 +73697,6 @@ class KernelAddressHeuristicFinder:
     def check_timer_wheel(timer_base, offset_pending, offset_vectors, wheel_size):
         """Return (the number of the mismatches with `pending_map`, the number of the non-empty buckets)
         of the timer wheel, or None if a bucket is broken.
-
         The bit of `pending_map` is set exactly when the bucket is not empty, except for the bucket
         being moved under the lock."""
         ptrsize = current_arch.ptrsize
@@ -74078,7 +74043,6 @@ class KernelAddressHeuristicFinder:
     @staticmethod
     def find_clock_base_anchor(hrtimer_cpu_base):
         """Find `clock_base[]` by the back-pointer `clock_base[i].cpu_base`.
-
         Return (offset of clock_base[0], sizeof(struct hrtimer_clock_base), real
         `&hrtimer_cpu_base`). The offset is measured from the argument, which may point at
         a member instead of the head (see `get_hrtimer_bases()`).
@@ -75342,11 +75306,9 @@ class KernelLayout:
     @staticmethod
     def current(use_iomem=True):
         """Resolve the kernel memory layout.
-
         It is refined in two stages. `resolve()` uses the page-table mappings and the iomem resource tree,
         and is cached for each `use_iomem`. `refine_by_kallsyms()` is applied on each call,
         because kallsyms may become available after the base layout has already been cached.
-
         `use_iomem` controls whether the iomem resource tree is used to refine the kernel text base
         and .data/.bss range. GEF internals disable it while resolving symbols and resources
         to avoid circular dependencies.
@@ -76038,7 +76000,6 @@ class KernelListHead:
 
     def iter_entries(self, include_head=False, backward=False):
         """Iterate the structs linked from the list head. Just stop there if the list is broken.
-
         `backward` follows `prev` instead of `next`, which allows to pick up the entries
         located behind an unreadable one.
         """
@@ -76259,7 +76220,6 @@ class KernelXArray:
 
 class KernelRadixTree:
     """Parse Linux radix trees, the predecessor of the xarray.
-
     Linux v4.20 renames radix_tree_root to xarray, so use KernelXArray for v4.20 and later.
 
     How to use:
@@ -76330,7 +76290,6 @@ class KernelRadixTree:
 
     def find_rnode_offset(self, max_offset):
         """Search offsetof(the struct, rnode) heuristically. Return None if it is not found.
-
         A tree holding only one item keeps it in rnode directly without the tag, so it is
         indistinguishable from any other pointer. Pass `rnode_offset` explicitly for such a tree.
         """
@@ -76464,7 +76423,6 @@ class KernelRadixTree:
 
     def parse_node(self, node, height):
         """Iterate the leaf entries under `node` recursively.
-
         `height` is the number of the remaining levels, or None if the internal nodes are tagged.
         """
         for _, entry in self.parse_node_indexed(node, height, 0):
@@ -76516,7 +76474,6 @@ class KernelRadixTree:
 
 class KernelMapleTree:
     """Parse Linux maple trees and share their detected layout between commands.
-
     Linux v6.1 introduces maple_tree for mm_struct.mm_mt, v6.5 for sparse_irqs.
 
     How to use:
@@ -76657,7 +76614,6 @@ class KernelMapleTree:
 
     def find_root_offset(self, max_offset):
         """Search offsetof(the struct, ma_root) heuristically. Return None if it is not found.
-
         ____cacheline_aligned_in_smp attribute, spinlock_t and lockdep_map_p can be different size
         in each environment or situation, so search for it.
 
@@ -76827,12 +76783,10 @@ class KernelRBTree:
 
 class KernelPerCpu:
     """Resolve the per-cpu areas and the static per-cpu variables.
-
     per_cpu(var, cpu) is `&var + __per_cpu_offset[cpu]`, where `&var` is the static
     per-cpu symbol representation held by kallsyms. Older x86-64 kernels use a
     zero-based representation; x86-64 v6.15 and later use relative per-cpu offsets
     as well. The effective address is selected from the detected kernel layout.
-
     CONFIG_SMP=n has no `__per_cpu_offset` and expands `per_cpu(var, cpu)` to `var`
     itself. That is the same as a single cpu whose displacement is 0, so every
     accessor here covers it; only `offsets` and `is_smp` show the difference.
@@ -76889,7 +76843,6 @@ class KernelPerCpu:
     @property
     def is_smp(self):
         """Return True if this kernel has a real per-cpu area.
-
         CONFIG_SMP=n does not have `__per_cpu_offset` at all. Only the callers that
         must tell the two apart should look at this; the accessors below cover both."""
         return bool(self.offsets)
@@ -76902,7 +76855,6 @@ class KernelPerCpu:
     @property
     def nr_cpus(self):
         """Return the number of cpus that have a per-cpu area.
-
         CONFIG_SMP=n runs on a single cpu, so it is 1 there, not 0. It is 0 only when
         `__per_cpu_offset[]` of an SMP kernel is unknown, because treating that as one cpu
         at +0x0 would silently return the static address as the variable of cpu0."""
@@ -76920,7 +76872,6 @@ class KernelPerCpu:
     @staticmethod
     def get_cpu_index(thread):
         """Return the target's CPU index of the gdb thread, or None if it cannot be derived.
-
         The gdb thread number is assigned by GDB per inferior, so it is not a CPU number.
         QEMU uses `cpu_index + 1` as the remote thread ID, and keeps it unique across the
         CPU clusters that it exposes as separate inferiors. KGDB uses the 32-bit ID
@@ -76950,7 +76901,6 @@ class KernelPerCpu:
     @staticmethod
     def get_cpu_threads():
         """Return the gdb threads of every CPU of the target, sorted by CPU index.
-
         QEMU exposes each CPU cluster as a separate inferior, so the other inferiors attached
         through the same connection are also included if their architecture is the same."""
         selected = gdb.selected_inferior()
@@ -76979,7 +76929,6 @@ class KernelPerCpu:
 
     def get_offset(self, cpu):
         """Return `__per_cpu_offset[cpu]`, or None for an invalid cpu.
-
         CONFIG_SMP=n expands `per_cpu(var, cpu)` to `var` itself, which is the same as
         a single cpu whose displacement is 0, so it is reported as 0 here."""
         if cpu < 0 or cpu >= self.nr_cpus:
@@ -76990,7 +76939,6 @@ class KernelPerCpu:
 
     def get_base(self, cpu):
         """Return the base address of `cpu`'s per-cpu unit, or None if it is unknown.
-
         This is `__per_cpu_start + __per_cpu_offset[cpu]`. The displacement alone is
         not an address, except on x86-64 before v6.15 where the section is linked at 0
         and the two happen to be equal."""
@@ -77027,7 +76975,6 @@ class KernelPerCpu:
 
     def get_symbol_addr(self, name):
         """Return the static address of the per-cpu variable `name`, or None if it is not one.
-
         A name that is not in `get_symbols()` is still looked up when the list is not
         available (e.g. the end of the section is unknown), so it cannot be verified then."""
         addrs = Ksym.get_addrs(name)
@@ -77072,7 +77019,6 @@ class KernelPerCpu:
 
     def possible_addrs_of(self, static_addr):
         """Return [(cpu, per_cpu(the variable at `static_addr`, cpu)), ...] of the possible cpus.
-
         `__per_cpu_offset[]` may have the preallocated unit of an impossible cpu, which can be
         unreadable or garbage. It is told by the possible mask, by the present mask if it is unknown
         (a cpu that has never been present has no per-cpu state), or by the unreadable unit."""
@@ -77097,7 +77043,6 @@ class KernelPerCpu:
 
     def unit_range(self, cpu):
         """Return [start, end) of the per-cpu unit of `cpu`, or None if it is unknown.
-
         `__per_cpu_offset[cpu]` is a displacement, not a base, unless the section is
         linked at 0, so the base cannot be told without `__per_cpu_start`."""
         base = self.get_base(cpu)
@@ -77113,7 +77058,6 @@ class KernelPerCpu:
 
     def read_cpu_mask(self, addr):
         """Read the bitmap of a `struct cpumask` at `addr` and return the set of the cpus, or None.
-
         As many words as the cpus of the per-cpu area cover are read, since NR_CPUS is unknown."""
         if not addr:
             return None
@@ -77128,7 +77072,6 @@ class KernelPerCpu:
 
     def get_cpu_masks(self):
         """Return {"possible": set(cpus), "present": ..., "online": ...}, where an unknown mask is None.
-
         `nr_cpu_ids` (the number of the per-cpu units) is only the upper bound of the cpu ids;
         a cpu below it can be offline, not present, or even not possible."""
         if self.cpu_masks is None:
@@ -77155,7 +77098,6 @@ class KernelPerCpu:
 
     def get_each_cpu_offset(self):
         """Read `__per_cpu_offset[]` and return the displacement of each cpu.
-
         Note that the number of CPUs and the number of threads may not match.
         x64 example:
         len(gdb.selected_inferior().threads()) == 2; but __per_cpu_offset entry is 1
@@ -77192,7 +77134,6 @@ class KernelPerCpu:
 
     def get_nr_cpu_ids(self):
         """Return `nr_cpu_ids`, the upper bound of the cpu ids, or None if it is unknown.
-
         `Ksym.peek()` is used instead of a lookup because this runs while the per-cpu
         area is still being resolved, and a parse must not be triggered from here."""
         ret = Ksym.peek()
@@ -77209,7 +77150,6 @@ class KernelPerCpu:
 
     def resolve_state(self):
         """Return "smp", "up" (CONFIG_SMP=n) or "unknown".
-
         A missing `__per_cpu_offset` alone cannot tell CONFIG_SMP=n from a heuristic that
         does not work, e.g. on a CONFIG_KALLSYMS_ALL=n kernel of an unsupported architecture.
         The banner can: UTS_VERSION gets " SMP" after the build number exactly when CONFIG_SMP=y.
@@ -78382,7 +78322,6 @@ class KernelPath:
 class KernelFileSystem:
     """A collection of utility functions that resolve the layout of `struct file_system_type`
     and `struct super_block`, and the members of `struct mount` that tie a mount to them.
-
     `KernelPath` resolves what is needed to name a mount; this class resolves what the mount
     is made of, i.e. which filesystem type and which device it comes from.
 
@@ -79175,7 +79114,6 @@ class KernelFiles:
     @staticmethod
     def get_open_fds(fdt):
         """Return ([(fd, struct file, close-on-exec), ...], [warning, ...]) of `fdt`.
-
         `max_fds` stays large after the table is expanded once, so only the slots whose bit is set
         in `open_fds` are read. If the bitmaps are unreadable, every slot is read instead and
         close-on-exec is None."""
@@ -79734,7 +79672,6 @@ class KernelNamespace:
 
 class KernelCred:
     """A collection of utility functions that resolve the layout of `struct cred` and parse it.
-
     `offsetof(cred, uid)` and `offsetof(cred, user_ns)` are already resolved by `ktask`,
     so they are handed over to `initialize()`. The other members are resolved here.
 
@@ -81767,7 +81704,6 @@ class KernelSocket:
 
     def read_proto_name(self, prot):
         """Return (name, offset, source) of the inline `char name[32]` of `struct proto`, or None if `prot` is not verified.
-
         Without the debug info, it is verified by `struct list_head node` that follows the name
         and links all registered protocols."""
         ptr = current_arch.ptrsize
@@ -81803,7 +81739,6 @@ class KernelSocket:
     def find_skc_prot(self, sk):
         """skc_prot is a `struct proto*` in sock_common. Return (prot, symbol_name, name, offset, source),
         where `name` is the return value of `read_proto_name()`.
-
         It usually resolves to a static symbol (e.g. tcp_prot), but with CONFIG_KALLSYMS_ALL=n the
         data symbol is missing, so fall back to the verified inline proto->name string."""
         ptr = current_arch.ptrsize
@@ -81858,7 +81793,6 @@ class KernelSocket:
     def find_skc_family(self, sk, proto_hint=None):
         """skc_family (unsigned short) is followed by skc_state (unsigned char).
         Return (family, offset_family, offset_state, source).
-
         skc_family lives at offset 0x10 of sock_common (after skc_addrpair/skc_hash/skc_portpair).
         If it does not look valid, scan and prefer the value that agrees with the protocol family
         implied by skc_prot."""
@@ -81892,7 +81826,6 @@ class KernelSocket:
 
     def looks_like_backlog(self, addr):
         """`struct { atomic_t rmem_alloc; int len; struct sk_buff *head, *tail; } sk_backlog`.
-
         This struct always immediately follows sk_receive_queue, which is how we anchor it."""
         try:
             rmem = read_int32_from_memory(addr)
@@ -82248,7 +82181,6 @@ class KernelSkbuff:
     def find_len(skb, headlen):
         """Locate the adjacent (len, data_len) u32 pair where skb->len - skb->data_len == headlen.
         Returns the offset of len, or None.
-
         len follows `char cb[48]`, _skb_refdst, destructor and a few config-dependent pointers.
         The fields before cb (next, prev, dev/tstamp, sk) take ptrsize * 4 + 8 bytes."""
         ptr = current_arch.ptrsize
@@ -84808,7 +84740,6 @@ class KernelSched:
 
     def get_offset_state(self, kversion):
         """Resolve `__state`/`state`, which is placed in front of `stack`.
-
         On 64-bit it is 8 bytes before `stack` (`long state` before v5.14, or `__state`
         plus the 4 padding/`saved_state` bytes after it). On 32-bit `long state` and a plain
         v5.14+ `__state` are 4 bytes before it, while `__state`+`saved_state` (unconditional
@@ -84857,7 +84788,6 @@ class KernelSched:
 
     def get_offset_policy(self, kversion):
         """Locate `policy` by cross-checking it against the scheduler class of each task.
-
         The distance between `policy` and the following fields moves across versions and arches
         (`max_allowed_capacity` was inserted at v6.10, and alignment differs), so `policy` is not
         derived by arithmetic. Instead every 4-byte slot after the prio cluster is tested: an RT
@@ -86502,7 +86432,6 @@ class KernelSysctl:
 
     def is_valid_layout(self):
         """Check the layout with the root directory and its first child, which is always a directory.
-
         sysctl_table_root.default_set.dir.header.set points to sysctl_table_root.default_set,
         and a top-level directory has the root directory as its parent and a ctl_table entry of S_IFDIR."""
         if self.is_legacy:
@@ -86532,7 +86461,6 @@ class KernelSysctl:
 
     def is_valid_legacy_layout(self):
         """Check the layout of v3.0~v3.3 with the first header and its first two entries.
-
         sysctl_table_root.default_set.list starts with root_table_header, which points back to the root and the set,
         and its ctl_table is root_table, whose entries ("kernel", "vm", ...) are directories having `child`."""
         default_set = self.sysctl_table_root + self.offset_default_set
@@ -90916,7 +90844,6 @@ class KernelTask:
     @Cache.cache_this_session(cache_None=False, per_inferior=True, until_new_objfile=True)
     def get_offset_ptregs(self, offset_stack):
         """Return (kstack_size, offsetof(kstack, saved ptregs)).
-
         The size of the kernel stack and the gap between the saved ptregs and the stack top depend on the
         arch, the config and the kernel version, so each candidate pair is checked against the ptregs of the
         user-land tasks, which always hold a user-mode context. The pair that most tasks agree on is used.
@@ -98104,7 +98031,6 @@ class KernelPathCommand(GenericCommand, BufferingOutput):
 
     def find_mounts_for_dentry(self, dentry, task_root):
         """Return every (vfsmount, dentry) the dentry can be reached through, the nearest mount first.
-
         Only the target mount namespace is searched first. The other namespaces are searched
         just when that finds nothing, so that a container private mount does not shadow the
         answer the user is asking about."""
@@ -98870,7 +98796,6 @@ class KernelMountCommand(GenericCommand, BufferingOutput):
 
     def resolve_target(self):
         """Return (ok, [(namespace root mount, tree root mount), ...], root).
-
         `root` is the (vfsmount, dentry) pair the pathnames stop at, or None when they are absolute.
         With --pid/--task the tree starts at the mount of task->fs->root instead of the namespace
         root. Mounts outside that root may also be returned and are marked `outside-root`."""
@@ -100442,7 +100367,6 @@ class KernelTimerCommand(GenericCommand, BufferingOutput):
 
     def find_hrtimer_members(self, samples):
         """Resolve the offsets of `expires`, `function` and `base` in `struct hrtimer` from the queued ones.
-
         `struct timerqueue_node` has gained a sorted list at v7.1, which shifts the members
         placed after it. `base`, which points back to the hrtimer_clock_base, is used as
         an anchor to absorb such a difference."""
@@ -101320,7 +101244,6 @@ class KernelWorkqueueCommand(GenericCommand, BufferingOutput):
     @Cache.cache_this_session(cache_None=False, per_inferior=True, until_new_objfile=True)
     def resolve_layout(self):
         """Return {name: (offset, source)} of the workqueue structures, preferring the type information.
-
         An offset that is None is searched in memory at each call."""
         kversion = Kernel.version()
         ptrsize = current_arch.ptrsize
@@ -159757,7 +159680,6 @@ class KernelIrqCommand(GenericCommand, BufferingOutput):
 
     def find_desc_array_layout(self, base):
         """Return (offsetof(irq_desc, irq_data.irq), sizeof(irq_desc), NR_IRQS) of irq_desc[] at `base`, or None.
-
         early_irq_init() sets irq_desc[i].irq_data.irq = i for every descriptor, so the
         array ends where the sequence breaks."""
         offset_irq = GefUtil.offsetof("irq_desc", "irq_data.irq")
@@ -162750,7 +162672,6 @@ class Ksym:
     @staticmethod
     def peek():
         """Return the parsed kallsyms without parsing it, or None when it is not parsed yet.
-
         Some callers must not trigger a parse, e.g. to avoid a recursion."""
         Ksym.switch_inferior()
         if Ksym.kallsyms is None:
@@ -162760,7 +162681,6 @@ class Ksym:
     @staticmethod
     def get_location_from_peek(addr):
         """Return ``(name, offset)`` from already parsed kallsyms, or None.
-
         This intentionally consults ``peek()`` rather than ``get_kallsyms()`` so a
         normal symbol formatter never starts the expensive remote kallsyms scan.
         """
@@ -162932,7 +162852,6 @@ class Ksym:
     @staticmethod
     def get_kallsyms(rescan=False, vmlinux_file=None, system_map=None, ignore_loaded_vmlinux=False, verbose=False, quiet=False):
         """Return ([[addr, name, type], ...], {name: [addr, ...]}), or None if it could not be parsed.
-
         One parse is shared by every caller. The options select the parse source, so any of
         them drops that result and parses again. The map is built here because
         Ksym.get_addr is called hundreds of times by some commands, and scanning all
@@ -191284,7 +191203,6 @@ class KpageWatchFreeBreakpoint(gdb.Breakpoint):
 
 class KpageWatchBatchFreeBreakpoint(gdb.Breakpoint):
     """Create a breakpoint at the batched free path (folio_batch or page list) for kpage-watch.
-
     These paths return order-0 pages straight to the pcp lists without going through
     free_frozen_pages/__free_pages, so a page freed here would otherwise be missed."""
 
@@ -194136,7 +194054,6 @@ class KernelLsmCommand(GenericCommand, BufferingOutput):
 
     def collect_static_call_trampolines(self):
         """Return {hook name: [(slot, trampoline address, callback), ...]} decoded from the trampolines.
-
         CONFIG_HAVE_STATIC_CALL (x86) generates a text symbol `__SCT__lsm_static_call_<hook>_<N>` for each slot,
         which remains even if CONFIG_KALLSYMS_ALL=n. static_call_update() rewrites it into `jmp callback`,
         or `ret` (or a jump to the return thunk) for an empty slot."""
@@ -194172,7 +194089,6 @@ class KernelLsmCommand(GenericCommand, BufferingOutput):
         materialized) in the disassembled dispatcher of ARM32, ARM64 or RISC-V, e.g. `adrp x21;
         add x21, x21, #lo; ldr x1, [x21, #off]; blr x1`. The base registers are tracked through the listing
         in address order.
-
         The call of each slot sits in an out-of-line block, and neither the block order nor the key address
         order is the slot order. The main flow checks the slots in order and branches to the blocks
         (a patched jump label, or `ldr; cmp; bgt` without CONFIG_JUMP_LABEL), so the calls are sorted by
@@ -194350,7 +194266,6 @@ class KernelLsmCommand(GenericCommand, BufferingOutput):
 
     def collect_static_call_dispatchers(self):
         """Return {hook name: [(slot, key address, callback), ...]} built from the keys the dispatchers load.
-
         Without CONFIG_HAVE_STATIC_CALL, a static call loads `key.func` and calls it, so a dispatcher calls
         through every key of its hook point, and the keys of a hook point are adjacent. A few dispatchers iterate
         `static_calls_table.<hook>[]` (struct lsm_static_call {key, trampoline, hl, active}) instead, which
@@ -194504,7 +194419,6 @@ class KernelLsmCommand(GenericCommand, BufferingOutput):
 
     def walk_head(self, head, is_list_head, off_head):
         """Return the `struct security_hook_list`s linked from the head, or None if it is not a valid list.
-
         Every node must link back to the previous link and to the head, and hold a kernel text callback,
         so that a neighboring variable or a kmem_cache is never taken as a hook list."""
         ptrsize = current_arch.ptrsize
@@ -194987,7 +194901,6 @@ class KernelLsmCommand(GenericCommand, BufferingOutput):
 
     def trace_arg_accesses(self, res):
         """Return ([offsets stored zero], [offsets loaded]) of the pointer-sized members accessed through the first argument.
-
         A register that holds the argument plus a constant is followed too, because a member far from the head is
         reached by adding the upper part of the offset first (e.g. `lui a0, 0x1; add s1, s1, a0; sd zero, -1384(s1)`)."""
         branch = r"b(?:\.\w+|eq|ne|cs|cc|hs|lo|mi|pl|vs|vc|hi|ls|ge|lt|gt|le|al)?"
@@ -195212,7 +195125,6 @@ class KernelLsmCommand(GenericCommand, BufferingOutput):
 
     def resolve_blob_layout(self, lsms, samples):
         """Return {kind: [(lsm, offset, how), ...]}, the part each active LSM owns in the blob of each kind.
-
         Until v5.0 the major LSM owns the whole blob (offset 0). From v5.1 one blob is shared by the LSMs, and
         the offset of each part is read from `<lsm>_blob_sizes`. Without the symbol, the only user owns the head
         of the blob, and otherwise the offset where the part decodes on most samples is taken (guessed)."""
@@ -195651,7 +195563,6 @@ class KernelLsmCommand(GenericCommand, BufferingOutput):
 
     def has_lsm_framework(self):
         """Return True if this kernel looks like CONFIG_SECURITY=y.
-
         A kernel built without it keeps only a handful of `security_*` stubs, while the
         framework brings one dispatcher per hook point."""
         ret = Ksym.get_kallsyms()
@@ -201175,7 +201086,6 @@ class ContextManager:
     @contextlib.contextmanager
     def selected_thread():
         """Preserve the selected thread and frame, yielding the original thread.
-
         Allow missing frames and ignore restoration errors if the saved context is no longer valid.
         """
         thread = gdb.selected_thread()
@@ -201199,7 +201109,6 @@ class ContextManager:
     @contextlib.contextmanager
     def threads(threads=None):
         """Yield an iterator that selects each thread and restores the original selection on exit.
-
         Use all threads of the selected inferior when omitted, skipping threads that cannot be selected.
         Consume the iterator only inside the with block.
         """
@@ -201223,7 +201132,6 @@ class ContextManager:
     @contextlib.contextmanager
     def gdb_parameter(name, value, ignore_error=False):
         """Temporarily set a GDB parameter and restore the original value on exit.
-
         With ignore_error, run the body unchanged if the parameter is missing or cannot be set,
         and ignore a failed restoration.
         """
@@ -201252,7 +201160,6 @@ class ContextManager:
     @contextlib.contextmanager
     def exception_level(target_el, info=None, error=err):
         """Temporarily switch the AArch64 exception level and restore $cpsr on exit, yielding whether it succeeded.
-
         Report the switch and the restoration to info when given.
         """
         cpsr = get_register("$cpsr") & 0xffff_ffff
@@ -201364,7 +201271,6 @@ class GefUtil:
     @staticmethod
     def read_memory_padded(addr, length, chunk_size=None):
         """Read memory, retrying at chunk boundaries and zero-filling unreadable chunks.
-
         Use the page size when chunk_size is omitted. Preserve offsets within the requested range.
         """
         if length < 0 or (chunk_size is not None and chunk_size <= 0):
@@ -201390,7 +201296,6 @@ class GefUtil:
     @staticmethod
     def hexdump_diff(data1, data2, label1, label2=None, full=False):
         """Return lines comparing two byte strings every 16 bytes, boldifying the differing bytes.
-
         label1 and label2 make the head of each side from the offset. Identical lines are omitted unless full.
         """
         hex_pad_len = {
@@ -201469,7 +201374,6 @@ class GefUtil:
     @staticmethod
     def flags_to_names(value, table):
         """Return the names whose masks are set in value, and the set bits that no mask covers.
-
         The table is a dict or pairs of mask and name.
         """
         if isinstance(table, dict):
@@ -201584,7 +201488,6 @@ class GefUtil:
     @staticmethod
     def get_stop_reason():
         """Parse `info program`, which describes the last stop in all-stop mode, or return None on error.
-
         "reason" names the stop of the selected thread (e.g. "BREAKPOINT"). "breakpoints" has None for a deleted breakpoint.
         """
         try:
@@ -201967,7 +201870,6 @@ class GefUtil:
     @staticmethod
     def get_architecture():
         """Return the gdb.Architecture of the current target. It raises gdb.error if unavailable.
-
         The inferior is preferred over the selected frame because it keeps the architecture
         without building a frame. The selected frame does not exist before the process starts,
         and building it can fail (e.g., ARM32 halted at the exception vector, where the frame
@@ -202108,7 +202010,6 @@ class GefUtil:
     @staticmethod
     def os_system(cmd):
         """Execute an external command, letting it write to our stdout directly.
-
         The child inherits our stdout, so anything still sitting in the python buffer
         has to go out first. Otherwise the child's output jumps ahead of it whenever
         stdout is not a tty (e.g. gdb -batch redirected to a file)."""
