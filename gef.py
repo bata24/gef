@@ -6213,31 +6213,9 @@ def get_libc_version(verbose=False, silent=False):
             if "libc" not in section.path:
                 continue
 
-            if is_container_attach():
-                real_libc_path = Path.append_proc_root(section.path)
-                if not os.path.exists(real_libc_path):
-                    continue
-                data = open(real_libc_path, "rb").read()
-
-            elif is_remote_debug():
-                if is_qemu_user():
-                    data = None
-                    for maps in ProcessMap.get_process_maps(outer=True):
-                        if os.path.basename(maps.path) != os.path.basename(section.path):
-                            continue
-                        if maps.size != section.size:
-                            continue
-                        real_libc_path = maps.path
-                        data = open(real_libc_path, "rb").read()
-                        break
-                else:
-                    data = Path.read_remote_file(section.path)
-                if not data:
-                    continue
-            else:
-                if not os.path.exists(section.path):
-                    continue
-                data = open(section.path, "rb").read()
+            data, _ = GefUtil.read_mapped_file(section)
+            if not data:
+                continue
 
             r = RE_GLIBC_VERSION.search(data)
             if r:
@@ -23413,6 +23391,7 @@ class PtrDemangleCommand(GenericCommand):
         unpack = GefUtil.get_unpack(ptrsize)
         bits = ptrsize * 8
         candidates = []
+        files = {}
         for addr in range(start, end, ptrsize):
             cookie = read_int_from_memory(addr, safe=True)
             if cookie is None:
@@ -23426,18 +23405,15 @@ class PtrDemangleCommand(GenericCommand):
             section = ProcessMap.process_lookup_address(addr)
             if section is None or not section.path or section.path.startswith("["):
                 continue
-            if is_container_attach():
-                path = Path.append_proc_root(section.path)
-            else:
-                path = section.path
-            try:
-                with open(path, "rb") as fd:
-                    fd.seek(section.offset + addr - section.page_start)
-                    original = fd.read(ptrsize)
-                if len(original) == ptrsize and unpack(original) == 0:
-                    candidates.append(cookie)
-            except (OSError, ValueError):
-                pass
+            if section.path not in files:
+                files[section.path], _ = GefUtil.read_mapped_file(section)
+            data = files[section.path]
+            if data is None:
+                continue
+            pos = section.offset + addr - section.page_start
+            original = data[pos:pos + ptrsize]
+            if len(original) == ptrsize and unpack(original) == 0:
+                candidates.append(cookie)
 
         candidates = list(dict.fromkeys(candidates))
         if len(candidates) == 1:
@@ -61538,50 +61514,14 @@ class LibcBaseCommand(GenericCommand):
         self.add_setting("assume_version", "()", "The default libc version")
         return
 
-    @staticmethod
-    def is_same_filename(a, b):
-        # If the file names match, they are considered to be the same file.
-        if os.path.basename(a) == os.path.basename(b):
-            return True
-
-        # If `a` is the destination of a symbolic link, compare whether resolving `b` results in `a`.
-        a_dir = os.path.join(os.path.dirname(a))
-        b_file = os.path.basename(b)
-        ab_path = os.path.join(a_dir, b_file)
-        while os.path.islink(ab_path):
-            ab_path = os.path.normpath(os.path.join(os.path.dirname(ab_path), os.readlink(ab_path)))
-        return os.path.basename(a) == os.path.basename(ab_path)
-
     def libc_calc_hash(self, libc_base):
         libc = ProcessMap.process_lookup_address(libc_base)
-        real_libc_path = None
-
-        if is_container_attach():
-            real_libc_path = Path.append_proc_root(libc.path)
-            if not os.path.exists(real_libc_path):
-                return
-            data = open(real_libc_path, "rb").read()
-
-        elif is_remote_debug():
-            if is_qemu_user():
-                data = None
-                for maps in ProcessMap.get_process_maps(outer=True):
-                    if not LibcBaseCommand.is_same_filename(maps.path, libc.path):
-                        continue
-                    real_libc_path = maps.path
-                    data = open(real_libc_path, "rb").read()
-                    break
-            else:
-                data = Path.read_remote_file(libc.path)
-            if not data:
-                return
-        else:
-            if not os.path.exists(libc.path):
-                return
-            data = open(libc.path, "rb").read()
+        data, real_libc_path = GefUtil.read_mapped_file(libc)
+        if not data:
+            return
 
         gef_print("path:\t{:s}{:s}".format(libc.path, " (remote)" if is_remote_debug() else ""))
-        if real_libc_path:
+        if real_libc_path != libc.path:
             gef_print("path:\t{:s} (real)".format(real_libc_path))
         gef_print("sha512:\t{:s}".format(hashlib.sha512(data).hexdigest()))
         gef_print("sha256:\t{:s}".format(hashlib.sha256(data).hexdigest()))
@@ -61657,34 +61597,12 @@ class LdBaseCommand(GenericCommand):
 
     def ld_calc_hash(self, ld_base):
         ld = ProcessMap.process_lookup_address(ld_base)
-        real_ld_path = None
-
-        if is_container_attach():
-            real_ld_path = Path.append_proc_root(ld.path)
-            if not os.path.exists(real_ld_path):
-                return
-            data = open(real_ld_path, "rb").read()
-
-        elif is_remote_debug():
-            if is_qemu_user():
-                data = None
-                for maps in ProcessMap.get_process_maps(outer=True):
-                    if not LibcBaseCommand.is_same_filename(maps.path, ld.path):
-                        continue
-                    real_ld_path = maps.path
-                    data = open(real_ld_path, "rb").read()
-                    break
-            else:
-                data = Path.read_remote_file(ld.path)
-            if not data:
-                return
-        else:
-            if not os.path.exists(ld.path):
-                return
-            data = open(ld.path, "rb").read()
+        data, real_ld_path = GefUtil.read_mapped_file(ld)
+        if not data:
+            return
 
         gef_print("path:\t{:s}{:s}".format(ld.path, " (remote)" if is_remote_debug() else ""))
-        if real_ld_path:
+        if real_ld_path != ld.path:
             gef_print("path:\t{:s} (real)".format(real_ld_path))
         gef_print("sha512:\t{:s}".format(hashlib.sha512(data).hexdigest()))
         gef_print("sha256:\t{:s}".format(hashlib.sha256(data).hexdigest()))
@@ -202387,6 +202305,47 @@ class GefUtil:
             path = path.replace("/", "_") # consider the name by PR_SET_VMA_ANON_NAME. e.g., [anon:a/b]
         path = path.replace(" ", "_") # consider deleted case. e.g., /path/to/file (deleted)
         return path
+
+    @staticmethod
+    def read_mapped_file(section):
+        """Return the content of the file mapped to `section` and the path actually read, or (None, None)."""
+        if is_qemu_user():
+            outer_maps = ProcessMap.get_process_maps(outer=True)
+            paths = [m.path for m in outer_maps if m.path == section.path]
+            paths += [m.path for m in outer_maps if GefUtil.is_same_filename(m.path, section.path)]
+            if not paths:
+                return None, None
+            path = paths[0]
+        elif is_remote_debug() and not is_pin() and not is_wine():
+            data = Path.read_remote_file(section.path)
+            if not data:
+                return None, None
+            return data, section.path
+        else:
+            path = section.path
+
+        if is_container_attach():
+            path = Path.append_proc_root(path)
+        if path is None:
+            return None, None
+        try:
+            return open(path, "rb").read(), path
+        except OSError:
+            return None, None
+
+    @staticmethod
+    def is_same_filename(a, b):
+        # If the file names match, they are considered to be the same file.
+        if os.path.basename(a) == os.path.basename(b):
+            return True
+
+        # If `a` is the destination of a symbolic link, compare whether resolving `b` results in `a`.
+        a_dir = os.path.join(os.path.dirname(a))
+        b_file = os.path.basename(b)
+        ab_path = os.path.join(a_dir, b_file)
+        while os.path.islink(ab_path):
+            ab_path = os.path.normpath(os.path.join(os.path.dirname(ab_path), os.readlink(ab_path)))
+        return os.path.basename(a) == os.path.basename(ab_path)
 
     @staticmethod
     def now_str():
