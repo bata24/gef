@@ -38731,12 +38731,10 @@ class MainBreakCommand(GenericCommand):
                     return None
                 entry += codebase
             bp = EntryBreakBreakpoint("*{:#x}".format(entry))
-            hidden = ContextCommand.context_hidden
-            ContextCommand.hide_context()
             try:
-                gdb.execute("continue") # do not use c wrapper
+                with ContextManager.hidden_context():
+                    gdb.execute("continue") # do not use c wrapper
             finally:
-                ContextCommand.context_hidden = hidden
                 if bp.is_valid():
                     bp.delete()
             if not bp.hit:
@@ -38748,12 +38746,10 @@ class MainBreakCommand(GenericCommand):
             return None
 
         bp = EntryBreakBreakpoint("*{:#x}".format(libc_start_main))
-        hidden = ContextCommand.context_hidden
-        ContextCommand.hide_context()
         try:
-            gdb.execute("continue") # do not use c wrapper
+            with ContextManager.hidden_context():
+                gdb.execute("continue") # do not use c wrapper
         finally:
-            ContextCommand.context_hidden = hidden
             if bp.is_valid():
                 bp.delete()
         if not bp.hit:
@@ -38777,15 +38773,13 @@ class MainBreakCommand(GenericCommand):
             return
 
         bp = EntryBreakBreakpoint("*{:#x}".format(main_address))
-        hidden = ContextCommand.context_hidden
-        ContextCommand.hide_context()
         try:
-            gdb.execute("continue") # do not use c wrapper
+            with ContextManager.hidden_context():
+                gdb.execute("continue") # do not use c wrapper
         except gdb.error as e:
             err(str(e))
             return
         finally:
-            ContextCommand.context_hidden = hidden
             if bp.is_valid():
                 bp.delete()
         gdb.execute("context")
@@ -38954,13 +38948,9 @@ class EntryBreakCommand(GenericCommand):
         # Use gdb.events.new_objfile instead of `set stop-on-solib-events 1`
         # because shared objects are never loaded.
         # At least gdb 10.1 (Ubuntu 18.04) supports gdb.events.new_objfile.
-        hidden = ContextCommand.context_hidden
-        ContextCommand.hide_context()
-        try:
-            with EventHooking.temporary("new_objfile", EntryBreakCommand.stop_callback, once=True):
-                gdb.execute("run {}".format(" ".join(shlex.quote(arg) for arg in argv)))
-        finally:
-            ContextCommand.context_hidden = hidden
+        with ContextManager.hidden_context(), \
+                EventHooking.temporary("new_objfile", EntryBreakCommand.stop_callback, once=True):
+            gdb.execute("run {}".format(" ".join(shlex.quote(arg) for arg in argv)))
         return
 
 
@@ -190655,41 +190645,37 @@ class KmallocAllocatedByCommand(GenericCommand):
         ))
 
         hwbp = None
-        context_hidden = ContextCommand.context_hidden
-        try:
-            hwbp = KmallocAllocatedBy_UserlandHardwareBreakpoint(rip_of_sleep, target_task)
-            self.hwbp = hwbp
-            breakpoints = KmallocTracerCommand.set_bp_to_kmalloc_kfree(option_info, self.extra_info)
-            ContextCommand.hide_context()
-            info("Setup is complete. continuing...")
-            gdb.execute("continue")
-
-            if not hwbp.matched or current_arch.pc != rip_of_sleep:
-                raise gdb.GdbError("Not stopped at the expected sleep syscall return")
-            if get_register("$cs") & 3 != 3 or current_arch.ptrsize != 8:
-                raise gdb.GdbError("Expected a 64-bit userspace syscall return")
-            self.syscall_pc = rip_of_sleep - 2
-            self.scratch_start = current_arch.sp
-            self.scratch_end = current_arch.sp
-            self.tested_syscall = set()
-            self.setup_syscall("mmap", [0, 0x10000, 3, 0x8022, -1, 0])
-            scratch = self.continue_syscall("mmap")
-            if u2i(scratch) < 0:
-                raise gdb.GdbError("Could not allocate syscall scratch memory")
-            self.scratch_start = scratch + 0x8000
-            self.scratch_end = scratch + 0x10000
-            gdb.execute("set $rsp={:#x}".format(self.scratch_start), to_string=True)
-            gdb.execute("set $rip={:#x}".format(rip_of_sleep), to_string=True)
-            hwbp.sp = self.scratch_start
-
-            self.test_syscall(breakpoints)
-            info("Syscall test is complete, cleaning up...")
-            self.setup_syscall("exit", [0])
-        finally:
+        with ContextManager.hidden_context():
             try:
-                self.cleanup(hwbp, option_info)
+                hwbp = KmallocAllocatedBy_UserlandHardwareBreakpoint(rip_of_sleep, target_task)
+                self.hwbp = hwbp
+                breakpoints = KmallocTracerCommand.set_bp_to_kmalloc_kfree(option_info, self.extra_info)
+                info("Setup is complete. continuing...")
+                gdb.execute("continue")
+
+                if not hwbp.matched or current_arch.pc != rip_of_sleep:
+                    raise gdb.GdbError("Not stopped at the expected sleep syscall return")
+                if get_register("$cs") & 3 != 3 or current_arch.ptrsize != 8:
+                    raise gdb.GdbError("Expected a 64-bit userspace syscall return")
+                self.syscall_pc = rip_of_sleep - 2
+                self.scratch_start = current_arch.sp
+                self.scratch_end = current_arch.sp
+                self.tested_syscall = set()
+                self.setup_syscall("mmap", [0, 0x10000, 3, 0x8022, -1, 0])
+                scratch = self.continue_syscall("mmap")
+                if u2i(scratch) < 0:
+                    raise gdb.GdbError("Could not allocate syscall scratch memory")
+                self.scratch_start = scratch + 0x8000
+                self.scratch_end = scratch + 0x10000
+                gdb.execute("set $rsp={:#x}".format(self.scratch_start), to_string=True)
+                gdb.execute("set $rip={:#x}".format(rip_of_sleep), to_string=True)
+                hwbp.sp = self.scratch_start
+
+                self.test_syscall(breakpoints)
+                info("Syscall test is complete, cleaning up...")
+                self.setup_syscall("exit", [0])
             finally:
-                ContextCommand.context_hidden = context_hidden
+                self.cleanup(hwbp, option_info)
         info("Exiting `sleep` process... (Please issue Ctrl+C)")
         gdb.execute("continue")
         return
@@ -201025,6 +201011,18 @@ class ContextManager:
     """A collection of context managers for temporary GEF state."""
 
     stop_handler_suspended = False
+
+    @staticmethod
+    @contextlib.contextmanager
+    def hidden_context():
+        """Temporarily hide context output and restore its original visibility on exit."""
+        hidden = ContextCommand.context_hidden
+        ContextCommand.hide_context()
+        try:
+            yield
+        finally:
+            ContextCommand.context_hidden = hidden
+        return
 
     @staticmethod
     @contextlib.contextmanager
