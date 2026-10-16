@@ -18718,6 +18718,14 @@ class PrintFormatCommand(GenericCommand):
         else:
             end_addr = self.args.location + self.args.length * unit_size
 
+        size = end_addr - self.args.location
+        if size < 0:
+            err("Invalid range")
+            return None
+        if size % unit_size:
+            err("Range size must be a multiple of {:d}".format(unit_size))
+            return None
+
         bit_format = Endian.endian_str() + {8: "B", 16: "H", 32: "I", 64: "Q"}[self.args.bitlen]
         data = []
         for address in range(self.args.location, end_addr, unit_size):
@@ -43522,6 +43530,10 @@ class DereferenceCommand(GenericCommand):
             err("Unsupported option pairs")
             return
 
+        if args.interval <= 0:
+            err("Interval must be > 0")
+            return
+
         # perm
         if args.perm:
             if len(args.perm) != 3:
@@ -62412,6 +62424,10 @@ class MmxSetCommand(GenericCommand):
         # check register is valid or not
         if reg not in ["$mm{:d}".format(i) for i in range(8)]:
             err("Invalid register name")
+            return
+
+        if not 0 <= value <= 0xffff_ffff_ffff_ffff:
+            err("Value must be between 0 and 0xffffffffffffffff")
             return
 
         # modify
@@ -151994,8 +152010,13 @@ class KernelSlub:
 
     def walk_slab_list(self, list_head, offset_next, *, resolve_virt=False):
         slab_list = []
+        seen = set()
         current_slab = read_int_from_memory(list_head) - offset_next
         while is_valid_addr(current_slab) and current_slab + offset_next != list_head:
+            if current_slab in seen:
+                warn("Corrupted slab list (Loop detected at {:#x})".format(current_slab))
+                break
+            seen.add(current_slab)
             slab = {}
             slab["address"] = current_slab
             kmem_cache = read_int_from_memory(current_slab + self.page_offset_slab_cache)
@@ -173163,6 +173184,10 @@ class XStringCommand(GenericCommand, BufferingOutput):
                 err("Failed to parse: {}".format(args.count))
                 return
 
+        if count < 0:
+            err("Count must be >= 0")
+            return
+
         if args.max_length is not None:
             max_length = args.max_length
         else:
@@ -176859,7 +176884,7 @@ class BitInfo:
                 out = "0" + out
             if i % 4 == 3:
                 out = "_" + out
-        return "0b" + out[1:]
+        return "0b" + out.lstrip("_")
 
     def print_value(self, regval, split=False):
         regname = Color.colorify(self.name, "bold red")
@@ -192771,6 +192796,9 @@ class KernelWalkListCommand(KernelWalkCommand):
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     def do_invoke(self, args):
+        if args.dump_bytes_before < 0 or args.dump_bytes_after < 0:
+            err("Dump size must be >= 0")
+            return
         self.out = []
         self.quiet_info_add_out("head address: {:#x}".format(args.address))
         self.quiet_info_add_out("next pointer offset: {:#x}".format(args.next_offset))
@@ -198957,6 +198985,12 @@ class BincompareCommand(GenericCommand, BufferingOutput):
     @Decorator.only_if_gdb_running
     def do_invoke(self, args):
         # file_data
+        if args.file_offset < 0:
+            err("File offset must be >= 0")
+            return
+        if args.size is not None and args.size < 0:
+            err("Size must be >= 0")
+            return
         if not os.path.isfile(args.filename):
             err("Specified file '{:s}' does not exist".format(args.filename))
             return
@@ -202106,6 +202140,11 @@ class GefUtil:
     @staticmethod
     def rmdir(directory, verbose=False, keep_root=False):
         """Recursively delete the target directory."""
+        directory = os.fspath(directory).rstrip(os.sep) or os.sep
+        if os.path.islink(directory):
+            if not keep_root:
+                os.remove(directory)
+            return
         for root, dirs, files in os.walk(directory, topdown=False):
             for file in files:
                 file_path = os.path.join(root, file)
@@ -202117,7 +202156,10 @@ class GefUtil:
                 dir_path = os.path.join(root, dir)
                 if verbose:
                     info("Removed: {:s}".format(dir_path))
-                os.rmdir(dir_path)
+                if os.path.islink(dir_path):
+                    os.remove(dir_path)
+                else:
+                    os.rmdir(dir_path)
 
         if not keep_root:
             os.rmdir(directory)
