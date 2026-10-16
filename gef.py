@@ -13419,10 +13419,10 @@ class QemuMonitor:
                 r"^(CS|SS|DS|ES|FS|GS)\s*=\s*([0-9a-f]+)\s+([0-9a-f]+)\s+[0-9a-f]+\s+([0-9a-f]+)",
                 res, re.I | re.M):
             segments[name.upper()] = (int(selector, 16), int(base, 16), int(flags, 16))
-        gdt = re.search(r"^GDT\s*=\s*([0-9a-f]+)\s+([0-9a-f]+)", res, re.I | re.M)
-        if gdt:
-            segments["GDT"] = (int(gdt.group(1), 16), int(gdt.group(2), 16))
-        ldt = QemuMonitor.parse_x86_ldt(res)
+        base, limit = QemuMonitor.parse_x86_descriptor_table_register(res, "GDT")
+        if base is not None:
+            segments["GDT"] = (base, limit)
+        ldt = QemuMonitor.parse_x86_system_segment(res, "LDT")
         if ldt and not ldt["base_truncated"]:
             segments["LDT"] = (ldt["base"], ldt["limit"])
         cr0 = re.search(r"\bCR0=([0-9a-f]+)", res, re.I)
@@ -13432,9 +13432,16 @@ class QemuMonitor:
         return segments
 
     @staticmethod
-    def parse_x86_ldt(registers):
+    def parse_x86_descriptor_table_register(registers, name):
+        match = re.search(r"^{:s}\s*=\s*([0-9a-f]+)\s+([0-9a-f]+)".format(name), registers, re.I | re.M)
+        if not match:
+            return None, None
+        return int(match.group(1), 16), int(match.group(2), 16)
+
+    @staticmethod
+    def parse_x86_system_segment(registers, name):
         match = re.search(
-            r"^LDT\s*=\s*([0-9a-f]+)\s+([0-9a-f]+)\s+([0-9a-f]+)\s+([0-9a-f]+)",
+            r"^{:s}\s*=\s*([0-9a-f]+)\s+([0-9a-f]+)\s+([0-9a-f]+)\s+([0-9a-f]+)".format(name),
             registers, re.I | re.M,
         )
         if not match:
@@ -13447,11 +13454,10 @@ class QemuMonitor:
 
     @staticmethod
     def infer_x86_ldt_base(registers, ldtr):
-        gdt = re.search(r"^GDT\s*=\s*([0-9a-f]+)\s+([0-9a-f]+)", registers, re.I | re.M)
+        base, limit = QemuMonitor.parse_x86_descriptor_table_register(registers, "GDT")
         offset = ldtr["selector"] & ~7
-        if not gdt or ldtr["selector"] & 4 or offset == 0:
+        if base is None or ldtr["selector"] & 4 or offset == 0:
             return None
-        base, limit = [int(value, 16) for value in gdt.groups()]
         if limit > 0xffff or offset + 15 > limit:
             return None
         try:
@@ -73222,32 +73228,16 @@ class KernelAddressHeuristicFinder:
     @Decorator.switch_to_intel_syntax
     def get_idt_base():
         if is_x86():
-            if is_qemu_system():
-                res = gdb.execute("monitor info registers", to_string=True)
-                idtr = re.search(r"IDT\s*=\s*(\w+) (\w+)", res)
-                base, _limit = [int(idtr.group(i), 16) for i in range(1, 3)]
-                return base
-            elif is_vmware():
-                res = gdb.execute("monitor r idtr", to_string=True)
-                r = re.search(r"idtr base=(\w+) limit=(\w+)", res)
-                base = int(r.group(1), 16)
-                return base
+            base, _ = GefUtil.get_x86_descriptor_table_register("idtr")
+            return base
         return None
 
     @staticmethod
     @Decorator.switch_to_intel_syntax
     def get_gdt_base():
         if is_x86():
-            if is_qemu_system():
-                res = gdb.execute("monitor info registers", to_string=True)
-                gdtr = re.search(r"GDT\s*=\s*(\w+) (\w+)", res)
-                base, _limit = [int(gdtr.group(i), 16) for i in range(1, 3)]
-                return base
-            elif is_vmware():
-                res = gdb.execute("monitor r gdtr", to_string=True)
-                r = re.search(r"gdtr base=(\w+) limit=(\w+)", res)
-                base = int(r.group(1), 16)
-                return base
+            base, _ = GefUtil.get_x86_descriptor_table_register("gdtr")
+            return base
         return None
 
     @staticmethod
@@ -73256,9 +73246,9 @@ class KernelAddressHeuristicFinder:
         if is_x86():
             if is_qemu_system():
                 res = gdb.execute("monitor info registers", to_string=True)
-                tr = re.search(r"TR\s*=\s*(\w+) (\w+) (\w+) (\w+)", res)
-                _trseg, base, _limit, _attr = [int(tr.group(i), 16) for i in range(1, 5)]
-                return base
+                tr = QemuMonitor.parse_x86_system_segment(res, "TR")
+                if tr and not tr["base_truncated"]:
+                    return tr["base"]
         return None
 
     @staticmethod
@@ -73267,7 +73257,7 @@ class KernelAddressHeuristicFinder:
         if is_x86():
             if is_qemu_system():
                 res = gdb.execute("monitor info registers", to_string=True)
-                ldtr = QemuMonitor.parse_x86_ldt(res)
+                ldtr = QemuMonitor.parse_x86_system_segment(res, "LDT")
                 if ldtr and not ldtr["base_truncated"]:
                     return ldtr["base"]
             elif is_vmware():
@@ -75652,11 +75642,8 @@ class KernelLayout:
                         return div0_handler
 
             elif is_vmware():
-                res = gdb.execute("monitor r idtr", to_string=True)
-                r = re.search(r"idtr base=(\S+) limit=(\S+)", res)
-                if r:
-                    base = int(r.group(1), 16)
-                    limit = int(r.group(2), 16)
+                base, limit = GefUtil.get_x86_descriptor_table_register("idtr")
+                if base is not None:
                     idt_data = read_memory(base, min(limit + 1, current_arch.ptrsize * 2 * 256))
                     entries = slice_unpack(idt_data, current_arch.ptrsize * 2)
                     idt0 = IdtInfoCommand.idt_unpack(entries[0])
@@ -105473,19 +105460,10 @@ class GdtInfoCommand(GenericCommand, BufferingOutput):
 
     def print_gdt_real(self):
         # parse real value
-        if is_qemu_system():
-            res = gdb.execute("monitor info registers", to_string=True)
-            r = re.search(r"GDT\s*=\s*(\S+) (\S+)", res)
-        elif is_vmware():
-            res = gdb.execute("monitor r gdtr", to_string=True)
-            r = re.search(r"gdtr base=(\S+) limit=(\S+)", res)
-
-        if not r:
+        base, limit = GefUtil.get_x86_descriptor_table_register("gdtr")
+        if base is None:
             self.err_add_out("Could not find GDTR")
             return
-
-        base = int(r.group(1), 16)
-        limit = int(r.group(2), 16)
 
         # print title
         self.out.append(titlify("GDT Entry: base:{:#x} / limit:{:#x}".format(base, limit)))
@@ -105515,7 +105493,7 @@ class GdtInfoCommand(GenericCommand, BufferingOutput):
         truncated = False
         if is_qemu_system():
             res = gdb.execute("monitor info registers", to_string=True)
-            ldtr = QemuMonitor.parse_x86_ldt(res)
+            ldtr = QemuMonitor.parse_x86_system_segment(res, "LDT")
             if not ldtr:
                 self.err_add_out("Could not find LDTR")
                 return
@@ -105884,19 +105862,11 @@ class IdtInfoCommand(GenericCommand, BufferingOutput):
 
     def print_idt_real(self):
         # parse real value
-        if is_qemu_system():
-            res = gdb.execute("monitor info registers", to_string=True)
-            r = re.search(r"IDT\s*=\s*(\S+) (\S+)", res)
-        elif is_vmware():
-            res = gdb.execute("monitor r idtr", to_string=True)
-            r = re.search(r"idtr base=(\S+) limit=(\S+)", res)
-
-        if not r:
+        base, limit = GefUtil.get_x86_descriptor_table_register("idtr")
+        if base is None:
             self.err_add_out("Could not find IDTR")
             return
 
-        base = int(r.group(1), 16)
-        limit = int(r.group(2), 16)
         entry_size = self.get_entry_size()
 
         # print title
@@ -177745,8 +177715,11 @@ class QemuRegistersCommand(GenericCommand, BufferingOutput):
         # TR
         res = gdb.execute("monitor info registers", to_string=True)
         self.out.append(titlify("TR (Task Register)"))
-        tr = re.search(r"TR\s*=\s*(\S+) (\S+) (\S+) (\S+)", res)
-        trseg, base, limit, attr = [int(tr.group(i), 16) for i in range(1, 5)]
+        tr = QemuMonitor.parse_x86_system_segment(res, "TR")
+        if tr is None:
+            self.err_add_out("Could not find TR")
+            return
+        trseg, base, limit, attr = [tr[name] for name in ("selector", "base", "limit", "flags")]
         self.out.append("{:s} = {:s}".format(red("TR"), yellow("{:#x}".format(trseg))))
         self.out.append("seg: {:s}: segment selector for TSS (Task State Segment)".format(
             Color.boldify("{:#x} (rpl:{:d},ti:{:d},index:{:d})".format(
@@ -177754,7 +177727,7 @@ class QemuRegistersCommand(GenericCommand, BufferingOutput):
             ),
         ))
         self.out.append("  base : {:s}: starting address of TSS".format(
-            Color.colorify_hex(base, "bold"),
+            "unknown (low32:{:#x})".format(base) if tr["base_truncated"] else Color.colorify_hex(base, "bold"),
         ))
         self.out.append("  limit: {:s}: segment limit or fixed value(={:s})".format(
             Color.colorify_hex(limit, "bold"),
@@ -177764,8 +177737,10 @@ class QemuRegistersCommand(GenericCommand, BufferingOutput):
 
         # GDTR
         self.out.append(titlify("GDTR (Global Descriptor Table Register)"))
-        gdtr = re.search(r"GDT\s*=\s*(\S+) (\S+)", res)
-        base, limit = [int(gdtr.group(i), 16) for i in range(1, 3)]
+        base, limit = QemuMonitor.parse_x86_descriptor_table_register(res, "GDT")
+        if base is None:
+            self.err_add_out("Could not find GDTR")
+            return
         self.out.append("{:s} = {:s}:{:s}".format(
             red("GDTR"), yellow("{:#x}".format(base)), yellow("{:#x}".format(limit)),
         ))
@@ -177781,8 +177756,10 @@ class QemuRegistersCommand(GenericCommand, BufferingOutput):
 
         # IDTR
         self.out.append(titlify("IDTR (Interrupt Descriptor Table Register)"))
-        idtr = re.search(r"IDT\s*=\s*(\S+) (\S+)", res)
-        base, limit = [int(idtr.group(i), 16) for i in range(1, 3)]
+        base, limit = QemuMonitor.parse_x86_descriptor_table_register(res, "IDT")
+        if base is None:
+            self.err_add_out("Could not find IDTR")
+            return
         self.out.append("{:s} = {:s}:{:s}".format(
             red("IDTR"), yellow("{:#x}".format(base)), yellow("{:#x}".format(limit)),
         ))
@@ -177798,7 +177775,7 @@ class QemuRegistersCommand(GenericCommand, BufferingOutput):
 
         # LDTR
         self.out.append(titlify("LDTR (Local Descriptor Table Register)"))
-        ldtr = QemuMonitor.parse_x86_ldt(res)
+        ldtr = QemuMonitor.parse_x86_system_segment(res, "LDT")
         if ldtr is None:
             self.err_add_out("Could not find LDTR")
             return
@@ -177830,9 +177807,10 @@ class QemuRegistersCommand(GenericCommand, BufferingOutput):
             self.out.append(line.rstrip())
 
         if is_x86():
-            ldtr = QemuMonitor.parse_x86_ldt(res)
-            if ldtr and ldtr["base_truncated"]:
-                self.warn_add_out("QEMU truncated the cached LDT base to 32 bits")
+            for name in ("LDT", "TR"):
+                segment = QemuMonitor.parse_x86_system_segment(res, name)
+                if segment and segment["base_truncated"]:
+                    self.warn_add_out("QEMU truncated the cached {:s} base to 32 bits".format(name))
             if not self.args.verbose:
                 self.info_add_out("use `-v` for print Additional info")
             else:
@@ -202008,6 +201986,19 @@ class GefUtil:
         if is_x86_64() or is_emulated32():
             return "long"
         return "protected"
+
+    @staticmethod
+    def get_x86_descriptor_table_register(name):
+        """Return (base, limit) of `gdtr` or `idtr`, or (None, None)."""
+        if is_qemu_system():
+            res = gdb.execute("monitor info registers", to_string=True)
+            return QemuMonitor.parse_x86_descriptor_table_register(res, name[:-1].upper())
+        if is_vmware():
+            res = gdb.execute("monitor r {:s}".format(name), to_string=True)
+            r = re.search(r"{:s} base=(\S+) limit=(\S+)".format(name), res)
+            if r:
+                return int(r.group(1), 16), int(r.group(2), 16)
+        return None, None
 
     @staticmethod
     def read_x86_descriptor_table(base, size):
