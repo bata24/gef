@@ -3059,10 +3059,7 @@ class Elf:
                 elif self.addr is not None:
                     if self.is_pie() and self.vaddr_to_offset(strtab_addr) is not None:
                         strtab_addr += self.addr
-                    try:
-                        dynstr = read_memory(strtab_addr, strtab_size)
-                    except gdb.MemoryError:
-                        pass
+                    dynstr = read_memory(strtab_addr, strtab_size, safe=True)
         if dynstr:
             dynstr = dynstr.split(b"\0")
         strtab = self.read_shdr(".strtab")
@@ -5641,10 +5638,7 @@ class GlibcHeap:
                 # If normalize_address() wrapped one of the addresses around, the fields
                 # are not contiguous and the header cannot be read at once.
                 if self.ptrsize in (4, 8) and self.size_addr == self.chunk_base_address + self.ptrsize:
-                    try:
-                        self.header = read_memory(self.chunk_base_address, self.ptrsize * 6)
-                    except gdb.MemoryError:
-                        pass
+                    self.header = read_memory(self.chunk_base_address, self.ptrsize * 6, safe=True) or b""
             if self.header:
                 unpack = GefUtil.get_unpack(self.ptrsize)
                 return unpack(self.header[offset:offset + self.ptrsize])
@@ -7147,9 +7141,8 @@ class Disasm:
         # we try to find a good set of previous instructions by "guessing" disassembling backwards
         # the 15 comes from the longest instruction valid size
         for i in range(15 * n, 0, -1):
-            try:
-                code = read_memory(addr - i, i)
-            except gdb.MemoryError:
+            code = read_memory(addr - i, i, safe=True)
+            if code is None:
                 continue
 
             insns = list(cs.disasm(code, addr - i))
@@ -7219,9 +7212,8 @@ class Disasm:
         while nb_insn > 0:
             if not dont_read and len(code_remain) < get_pagesize():
                 # not enough code to disassemble, so read the memory to pool
-                try:
-                    read_data = read_memory(read_addr, read_size)
-                except gdb.MemoryError:
+                read_data = read_memory(read_addr, read_size, safe=True)
+                if read_data is None:
                     err("Memory read error at {:#x}-{:#x}".format(read_addr, read_addr + read_size))
                     if not code_remain:
                         return
@@ -12885,10 +12877,7 @@ def write_memory(addr, data):
                 return None
 
             ret = write_memory_via_proc_mem(pid, addr + offset, data, length)
-            try:
-                after = read_memory(addr, length)
-            except gdb.MemoryError:
-                after = None
+            after = read_memory(addr, length, safe=True)
 
             if ret:
                 if after == data[:length]:
@@ -12950,44 +12939,49 @@ def write_memory(addr, data):
     raise Exception("Memory write error")
 
 
-def read_memory(addr, length):
-    """Return a `length` long byte array with the copy of the process memory at `addr`."""
-    if length == 0:
-        return b""
-    end = AddressUtil.get_vmem_end()
-    if not 0 <= addr < end or not 0 <= length <= end - addr:
-        raise gdb.MemoryError("Memory read outside address space: {:#x}+{:#x}".format(addr, length))
-
-    if is_pin():
-        # Memory read of Intel Pin is very slow, so speed it up
-        try:
-            pid = Pid.get_pid()
-            fd = open("/proc/{:d}/mem".format(pid), "rb")
-            fd.seek(addr)
-            content = fd.read(length)
-            fd.close()
-            return content
-        except Exception:
-            pass
-
-    if is_arm64() and is_qemu_system():
-        if Config.get("gef.read_memory_work_around_for_aarch64_secure_memory"):
-            if SecureMemory.get_area():
-                target_phys = AddrMap.v2p(addr, force_secure=True) # heavy
-                if target_phys is not None and SecureMemory.contains(target_phys):
-                    data = SecureMemory.read_phys(target_phys, length)
-                    if data:
-                        return data
-
+def read_memory(addr, length, safe=False):
+    """Return bytes at `addr`, or None on a read error when safe is True."""
     try:
-        return MemoryCache.read(addr, length)
-    except gdb.MemoryError:
-        # An ARM32 CPU may be stopped with a TTBR0 whose kernel half is incomplete.
-        # In particular, secondary CPUs do not necessarily have the module PMDs
-        # copied into their active table.  The kernel's master page table remains
-        # authoritative, so retry through it before reporting an unreadable address.
-        if MemoryCache.get_arm32_lpae_root() is not None:
-            return MemoryCache.read(addr, length, reader=MemoryCache.read_arm32_lpae, namespace="arm32-lpae-swapper")
+        if length == 0:
+            return b""
+        end = AddressUtil.get_vmem_end()
+        if not 0 <= addr < end or not 0 <= length <= end - addr:
+            raise gdb.MemoryError("Memory read outside address space: {:#x}+{:#x}".format(addr, length))
+
+        if is_pin():
+            # Memory read of Intel Pin is very slow, so speed it up
+            try:
+                pid = Pid.get_pid()
+                with open("/proc/{:d}/mem".format(pid), "rb") as fd:
+                    fd.seek(addr)
+                    content = fd.read(length)
+                if len(content) == length:
+                    return content
+            except Exception:
+                pass
+
+        if is_arm64() and is_qemu_system():
+            if Config.get("gef.read_memory_work_around_for_aarch64_secure_memory"):
+                if SecureMemory.get_area():
+                    target_phys = AddrMap.v2p(addr, force_secure=True) # heavy
+                    if target_phys is not None and SecureMemory.contains(target_phys):
+                        data = SecureMemory.read_phys(target_phys, length)
+                        if data:
+                            return data
+
+        try:
+            return MemoryCache.read(addr, length)
+        except gdb.MemoryError:
+            # An ARM32 CPU may be stopped with a TTBR0 whose kernel half is incomplete.
+            # In particular, secondary CPUs do not necessarily have the module PMDs
+            # copied into their active table.  The kernel's master page table remains
+            # authoritative, so retry through it before reporting an unreadable address.
+            if MemoryCache.get_arm32_lpae_root() is not None:
+                return MemoryCache.read(addr, length, reader=MemoryCache.read_arm32_lpae, namespace="arm32-lpae-swapper")
+            raise
+    except (gdb.MemoryError, MemoryError, OverflowError, ValueError, TypeError, struct.error):
+        if safe:
+            return None
         raise
 
 
@@ -13063,9 +13057,8 @@ def read_cstring_from_memory(addr, max_length=None, safe=False):
 
         # first, read to page boundary
         length = block_size - (addr % block_size)
-        try:
-            res = read_memory(addr, length)
-        except gdb.MemoryError:
+        res = read_memory(addr, length, safe=True)
+        if res is None:
             return None
 
         # if too short, more read
@@ -13178,10 +13171,7 @@ def read_physmem(paddr, size, already_physmode=False):
                 return None
 
         vaddr = physmap + paddr
-        try:
-            return read_memory(vaddr, size)
-        except gdb.MemoryError:
-            return None
+        return read_memory(vaddr, size, safe=True)
 
     def kdb_use_mdp(paddr, size):
         # for KDB; not supported by KGDB
@@ -14839,9 +14829,8 @@ def is_in_kpti_transition():
 
     # `msr ttbr1_el1, x0` is encoded as 0xd518_2020. The source register xN is
     # encoded in the low 5 bits, so mask them out when matching the instruction.
-    try:
-        code = read_memory(pc - 8 * instruction_length, 17 * instruction_length)
-    except gdb.MemoryError:
+    code = read_memory(pc - 8 * instruction_length, 17 * instruction_length, safe=True)
+    if code is None:
         return False
     if not any(insn & 0xffff_ffe0 == 0xd518_2020 for insn in slice_unpack(code, 4)):
         return False
@@ -15401,9 +15390,8 @@ class ProcessMap:
             for _ in range(128):
                 if addr < 0 or addr > upper_bound:
                     return None
-                try:
-                    e_magic = read_memory(addr, 4)
-                except gdb.MemoryError:
+                e_magic = read_memory(addr, 4, safe=True)
+                if e_magic is None:
                     return None
                 if e_magic == b"\x7fELF":
                     return Elf.get_elf(addr)
@@ -16870,13 +16858,11 @@ class Auxv:
             return None
 
         # find stack bottom
-        try:
-            while True:
-                if b"\x7fELF" == read_memory(addr, 4):
-                    break
-                addr += page_size
-        except gdb.MemoryError: # if read error, that is stack bottom
-            pass
+        while True:
+            data = read_memory(addr, 4, safe=True)
+            if data is None or data == b"\x7fELF":
+                break
+            addr += page_size
         current = addr - current_arch.ptrsize * 2 - offset
 
         # check readable or not again
@@ -18814,9 +18800,8 @@ class PrintFormatCommand(GenericCommand):
         bit_format = Endian.endian_str() + {8: "B", 16: "H", 32: "I", 64: "Q"}[self.args.bitlen]
         data = []
         for address in range(self.args.location, end_addr, unit_size):
-            try:
-                mem = read_memory(address, unit_size)
-            except gdb.MemoryError:
+            mem = read_memory(address, unit_size, safe=True)
+            if mem is None:
                 err("Memory read error")
                 return None
             value = struct.unpack(bit_format, mem)[0]
@@ -18969,9 +18954,8 @@ class CanaryCommand(GenericCommand):
                 continue
             if not (m.permission & Permission.WRITE):
                 continue
-            try:
-                data = read_memory(m.page_start, m.page_end - m.page_start)
-            except gdb.MemoryError:
+            data = read_memory(m.page_start, m.page_end - m.page_start, safe=True)
+            if data is None:
                 continue
             prev_addr = -1
             for pos in range(0, m.page_end - m.page_start, current_arch.ptrsize):
@@ -19202,9 +19186,8 @@ class SignalHandlersCommand(GenericCommand, BufferingOutput):
 
         layout = self.get_layout()
         address = current_arch.sp
-        try:
-            backup = read_memory(address, layout["size"])
-        except gdb.MemoryError:
+        backup = read_memory(address, layout["size"], safe=True)
+        if backup is None:
             err("Could not reserve scratch space on the inferior stack")
             return
 
@@ -21744,9 +21727,8 @@ class SmartMemoryDumpCommand(GenericCommand):
 
         if self.args.commit:
             # read
-            try:
-                data = read_memory(start, size)
-            except gdb.MemoryError:
+            data = read_memory(start, size, safe=True)
+            if data is None:
                 warn("Memory read error; skipped: {:s} ({:s})".format(filepath, size_str))
                 return
 
@@ -21875,9 +21857,8 @@ class HijackFdCommand(GenericCommand):
         stack_addr = stack_addrs[0]
 
         # read original contents
-        try:
-            original_contents = read_memory(stack_addr, len(data))
-        except gdb.MemoryError:
+        original_contents = read_memory(stack_addr, len(data), safe=True)
+        if original_contents is None:
             err("Failed to read stack")
             return None, None
 
@@ -22502,9 +22483,8 @@ class ScanSectionCommand(GenericCommand):
         for hstart, hend, hname in haystack_sections:
             # a trailing fragment shorter than a pointer cannot hold one
             size = (hend - hstart) // current_arch.ptrsize * current_arch.ptrsize
-            try:
-                mem = read_memory(hstart, size)
-            except gdb.MemoryError:
+            mem = read_memory(hstart, size, safe=True)
+            if mem is None:
                 continue
 
             for i, target in enumerate(slice_unpack(mem, current_arch.ptrsize)):
@@ -22638,9 +22618,8 @@ class FindSyscallCommand(GenericCommand, BufferingOutput):
 
     def read_data(self, chunk_addr, size, end_address):
         read_size = min(size, end_address - chunk_addr)
-        try:
-            mem = read_memory(chunk_addr, read_size)
-        except (gdb.MemoryError, ValueError, OverflowError):
+        mem = read_memory(chunk_addr, read_size, safe=True)
+        if mem is None:
             # cannot access memory this range. It doesn't make sense to try any more
             self.err_add_out("skip due to memory access error")
             return None
@@ -23634,16 +23613,16 @@ class SearchMangledPtrCommand(GenericCommand):
             else:
                 chunk_size = step
 
-            try:
-                mems = [(chunk_addr, read_memory(chunk_addr, chunk_size))]
-            except gdb.MemoryError:
+            mem = read_memory(chunk_addr, chunk_size, safe=True)
+            if mem is not None:
+                mems = [(chunk_addr, mem)]
+            else:
                 # part of the range may have been unmapped after the maps were read, so retry per page
                 mems = []
                 for page in range(chunk_addr, chunk_addr + chunk_size, get_pagesize()):
-                    try:
-                        mems.append((page, read_memory(page, min(get_pagesize(), chunk_addr + chunk_size - page))))
-                    except gdb.MemoryError:
-                        pass
+                    mem = read_memory(page, min(get_pagesize(), chunk_addr + chunk_size - page), safe=True)
+                    if mem is not None:
+                        mems.append((page, mem))
 
             for mem_addr, mem in mems:
                 for i, value in enumerate(slice_unpack(mem, current_arch.ptrsize)):
@@ -23815,10 +23794,9 @@ class SearchCfiGadgetsCommand(GenericCommand, BufferingOutput):
             h = hashlib.sha256()
             for entry in maps:
                 h.update(String.str2bytes("{:#x}-{:#x} {:s}\n".format(entry.page_start, entry.page_end, entry.path)))
-                try:
-                    h.update(read_memory(entry.page_start, entry.size))
-                except gdb.MemoryError:
-                    pass
+                data = read_memory(entry.page_start, entry.size, safe=True)
+                if data is not None:
+                    h.update(data)
             output_file = "cfi_{:s}-{:s}.txt".format(os.path.basename(filepath), h.hexdigest()[-16:])
             output_path = os.path.join(GEF_TEMP_DIR, output_file)
 
@@ -24363,9 +24341,8 @@ class MmapMemoryCommand(GenericCommand):
         if is_s390x():
             mmap_args = b"".join(p64(x) for x in [args.location or 0, args.size, perm, flags, 0xffff_ffff_ffff_ffff, 0])
             address = current_arch.sp
-            try:
-                backup = read_memory(address, len(mmap_args))
-            except gdb.MemoryError:
+            backup = read_memory(address, len(mmap_args), safe=True)
+            if backup is None:
                 err("Could not reserve scratch space on the inferior stack")
                 return
             write_memory(address, mmap_args)
@@ -24746,9 +24723,8 @@ class ReadSystemRegisterForKgdbCommand(GenericCommand):
                 address = Ksym.get_addr(symbol)
             if address is None:
                 continue
-            try:
-                data = read_memory(address, 0x100)
-            except gdb.MemoryError:
+            data = read_memory(address, 0x100, safe=True)
+            if data is None:
                 continue
             if not data:
                 continue
@@ -26043,20 +26019,18 @@ class UnicornEmulator:
 
         def read_page(self, page):
             """Read one page from GDB, falling back to partial chunks."""
-            try:
-                return read_memory(page, self.page_size), None
-            except gdb.MemoryError:
-                data = bytearray(b"\x00" * self.page_size)
-                ok = False
-                for off in range(0, self.page_size, 0x100):
-                    try:
-                        chunk = read_memory(page + off, min(0x100, self.page_size - off))
-                        data[off:off + len(chunk)] = chunk
-                        ok = True
-                    except gdb.MemoryError:
-                        pass
-                if ok:
-                    return bytes(data), None
+            data = read_memory(page, self.page_size, safe=True)
+            if data is not None:
+                return data, None
+            data = bytearray(b"\x00" * self.page_size)
+            ok = False
+            for off in range(0, self.page_size, 0x100):
+                chunk = read_memory(page + off, min(0x100, self.page_size - off), safe=True)
+                if chunk is not None:
+                    data[off:off + len(chunk)] = chunk
+                    ok = True
+            if ok:
+                return bytes(data), None
             return None, "read_memory {:#x}-{:#x} failed".format(page, page + self.page_size)
 
         def map_page(self, address, zero_fill=False, translate=True, emu_address=False):
@@ -30954,9 +30928,8 @@ class GlibcHeapVisualHeapCommand(GenericCommand, BufferingOutput):
                 self.generate_visual_chunk(chunk, i)
                 break
             # maybe not corrupted
-            try:
-                chunk.data = read_memory(addr, chunk.size)
-            except gdb.MemoryError:
+            chunk.data = read_memory(addr, chunk.size, safe=True)
+            if chunk.data is None:
                 msg = "{} Corrupted (Memory access denied)".format(Color.colorify("[!]", "bold red"))
                 self.out.append(msg)
                 break
@@ -31077,9 +31050,8 @@ class GlibcHeapDumpImageCommand(GenericCommand):
                 chunks.append(chunk)
                 break
             # maybe not corrupted
-            try:
-                chunk.data = read_memory(addr, chunk.size)
-            except gdb.MemoryError:
+            chunk.data = read_memory(addr, chunk.size, safe=True)
+            if chunk.data is None:
                 err_msg = "{} Corrupted (Memory access denied)".format(Color.colorify("[!]", "bold red"))
                 break
 
@@ -31267,9 +31239,8 @@ class GlibcHeapSnapshotCommand(GenericCommand):
             err("Failed to get memory range")
             return None
 
-        try:
-            raw = read_memory(arena.heap_base, region_size)
-        except gdb.MemoryError:
+        raw = read_memory(arena.heap_base, region_size, safe=True)
+        if raw is None:
             err("Failed to dump memory")
             return None
 
@@ -39876,9 +39847,8 @@ class ContextStackCommand(GenericCommand):
             err("Failed to get value of $SP", redirect=redirect)
             return
 
-        try:
-            data = read_memory(sp, 0x40)
-        except gdb.MemoryError:
+        data = read_memory(sp, 0x40, safe=True)
+        if data is None:
             err("Failed to read from $sp", redirect)
             return
 
@@ -44524,9 +44494,8 @@ class XorMemoryDisplayCommand(GenericCommand, BufferingOutput):
 
         start_addr = args.location
         end_addr = args.location + args.size
-        try:
-            block = read_memory(start_addr, args.size)
-        except gdb.MemoryError:
+        block = read_memory(start_addr, args.size, safe=True)
+        if block is None:
             err("Failed to read memory")
             return
 
@@ -44579,9 +44548,8 @@ class XorMemoryPatchCommand(GenericCommand):
             return
         start_addr = args.location
         end_addr = args.location + args.size
-        try:
-            block = read_memory(start_addr, args.size)
-        except gdb.MemoryError:
+        block = read_memory(start_addr, args.size, safe=True)
+        if block is None:
             err("Failed to read memory")
             return
         info("Patching XOR-ing {:#x}-{:#x} with '{:s}'".format(start_addr, end_addr, repr(args.key)))
@@ -45028,9 +44996,8 @@ class SigreturnCommand(GenericCommand):
 
     def apply_x86_64_ss_label(self, base, entries):
         # uc_flags bit UC_SIGCONTEXT_SS (0x2) turns the trailing __pad0 into the saved ss
-        try:
-            uc_flags = u64(read_memory(base + current_arch.ptrsize, 8))
-        except gdb.MemoryError:
+        uc_flags = read_int64_from_memory(base + current_arch.ptrsize, safe=True)
+        if uc_flags is None:
             return entries
         if not (uc_flags & 0x2):
             return entries
@@ -45039,29 +45006,28 @@ class SigreturnCommand(GenericCommand):
     def append_aarch64_ext(self, out, addr):
         addr = (addr + 15) & ~15  # extension records are 16-byte aligned
         out.append(titlify("uc_mcontext.__reserved @ {:#x}".format(addr)))
-        try:
-            for _ in range(16):
-                header = read_memory(addr, 8)
-                magic, size = u32(header[0:4]), u32(header[4:8])
-                if magic == 0 and size == 0:
-                    out.append("{:#x}: (end)".format(addr))
-                    break
-                name = self.AARCH64_EXT_MAGIC.get(magic, "unknown magic {:#x}".format(magic))
-                out.append("{:#x}: {:s} size={:#x}".format(addr, name, size))
-                if magic == 0x45585401 or size < 0x10:
-                    out.append("(further records are not followed; general registers above are complete)")
-                    break
-                addr += (size + 15) & ~15
-        except gdb.MemoryError:
-            out.append("(unreadable; FP/SIMD, SVE/SME, etc. may be present but are not shown)")
+        for _ in range(16):
+            header = read_memory(addr, 8, safe=True)
+            if header is None:
+                out.append("(unreadable; FP/SIMD, SVE/SME, etc. may be present but are not shown)")
+                break
+            magic, size = u32(header[0:4]), u32(header[4:8])
+            if magic == 0 and size == 0:
+                out.append("{:#x}: (end)".format(addr))
+                break
+            name = self.AARCH64_EXT_MAGIC.get(magic, "unknown magic {:#x}".format(magic))
+            out.append("{:#x}: {:s} size={:#x}".format(addr, name, size))
+            if magic == 0x45585401 or size < 0x10:
+                out.append("(further records are not followed; general registers above are complete)")
+                break
+            addr += (size + 15) & ~15
         return
 
     def print_ucontext_frame(self, base, args):
         layout = UcontextCommand.get_layout()
         fields = UcontextCommand.frame_fields(layout)
-        try:
-            data = read_memory(base, max(offset + size for offset, size, _, _ in fields))
-        except gdb.MemoryError:
+        data = read_memory(base, max(offset + size for offset, size, _, _ in fields), safe=True)
+        if data is None:
             err("Failed to read memory")
             return
 
@@ -48480,9 +48446,8 @@ class GotAllCommand(GenericCommand, BufferingOutput):
 
             if not is_valid_addr(m.page_start):
                 continue
-            try:
-                x = read_memory(m.page_start, 4)
-            except gdb.MemoryError:
+            x = read_memory(m.page_start, 4, safe=True)
+            if x is None:
                 continue
             if x != b"\x7fELF":
                 continue
@@ -48517,9 +48482,8 @@ class FormatStringBreakpoint(gdb.Breakpoint):
         data = bytearray()
         suffix = ""
         for index in range(max_length + 1):
-            try:
-                char = read_memory(addr + index * width, width)
-            except gdb.MemoryError:
+            char = read_memory(addr + index * width, width, safe=True)
+            if char is None:
                 break
             if not any(char):
                 break
@@ -64480,9 +64444,8 @@ class ConvertMemoryCommand(ConvertCommand):
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     def do_invoke(self, args):
-        try:
-            value = read_memory(args.location, args.size)
-        except (gdb.MemoryError, MemoryError):
+        value = read_memory(args.location, args.size, safe=True)
+        if value is None:
             err("Memory read error")
             return
         value = str(value)[2:-1]
@@ -68878,9 +68841,8 @@ class KernelAddressHeuristicFinder:
             # and its head `scx_tasks` is in the kernel .data section, but it is located
             # before `tasks`, so it is found first.
             # init_task also points to itself through real_parent, parent and group_leader.
-            try:
-                data = read_memory(task, get_pagesize())
-            except gdb.MemoryError:
+            data = read_memory(task, get_pagesize(), safe=True)
+            if data is None:
                 return False
             return (b"swapper/0\0" in data or b"swapper\0" in data) \
                 and slice_unpack(data, current_arch.ptrsize).count(task) >= 3
@@ -69011,10 +68973,7 @@ class KernelAddressHeuristicFinder:
         if is_arm32() and kversion and kversion < "5.15":
             klayout = Kernel.layout()
             if klayout.rw_base and klayout.rw_size:
-                try:
-                    rw_data = read_memory(klayout.rw_base, min(klayout.rw_size, 0x100_0000))
-                except gdb.MemoryError:
-                    rw_data = b""
+                rw_data = read_memory(klayout.rw_base, min(klayout.rw_size, 0x100_0000), safe=True) or b""
 
                 page_offset = KernelAddressHeuristicFinder.get_PAGE_OFFSET()
                 pos = -1
@@ -69083,18 +69042,7 @@ class KernelAddressHeuristicFinder:
 
         unpack = GefUtil.get_unpack()
         for scan_base, scan_size in scan_regions:
-            try:
-                data = read_memory(scan_base, scan_size)
-            except gdb.MemoryError:
-                # Some pages may be absent from the page tables of the halted context.
-                data = bytearray()
-                for off in range(0, scan_size, 0x1_0000):
-                    chunk_size = min(0x1_0000, scan_size - off)
-                    try:
-                        data += read_memory(scan_base + off, chunk_size)
-                    except gdb.MemoryError:
-                        data += b"\0" * chunk_size
-                data = bytes(data)
+            data = GefUtil.read_memory_padded(scan_base, scan_size, chunk_size=0x1_0000)
 
             for needle in [b"swapper/0\0", b"swapper\0"]:
                 pos = -1
@@ -71339,17 +71287,7 @@ class KernelAddressHeuristicFinder:
                 # unreadable pages with zero to keep the offset of the readable pages.
                 for addr in range(start, end, chunk_size - ptrsize * 40):
                     size = min(chunk_size, end - addr)
-                    try:
-                        data = read_memory(addr, size)
-                    except (gdb.MemoryError, MemoryError):
-                        data = b""
-                        pagesize = get_pagesize()
-                        for offset in range(0, size, pagesize):
-                            n = min(pagesize, size - offset)
-                            try:
-                                data += read_memory(addr + offset, n)
-                            except (gdb.MemoryError, MemoryError):
-                                data += b"\0" * n
+                    data = GefUtil.read_memory_padded(addr, size)
                     pos = -1
                     while True:
                         pos = data.find(hooks[0], pos + 1)
@@ -71763,6 +71701,10 @@ class KernelAddressHeuristicFinder:
                 )
             elif is_arm32():
                 g = KernelAddressHeuristicFinderUtil.arm32_movw_movt_ldr(res)
+            elif is_riscv32() or is_riscv64():
+                g = KernelAddressHeuristicFinderUtil.riscv_load(res, mnemonic="lwu" if is_riscv64() else "lw")
+            else:
+                return get_from_check_profile()
             anchor = next(iter(g), None)
             if anchor is not None:
                 break
@@ -71776,16 +71718,7 @@ class KernelAddressHeuristicFinder:
         unpack = GefUtil.get_unpack(ptrsize)
         window = 0x8000 # the whole `.data..ro_after_init` block of tomoyo.c fits in this
         base = (anchor & ~(ptrsize - 1)) - window # keep the window aligned to the pointer slots
-        try:
-            data = read_memory(base, window * 2)
-        except (gdb.MemoryError, MemoryError):
-            data = b""
-            pagesize = get_pagesize()
-            for offset in range(0, window * 2, pagesize):
-                try:
-                    data += read_memory(base + offset, pagesize)
-                except (gdb.MemoryError, MemoryError):
-                    data += b"\0" * pagesize
+        data = GefUtil.read_memory_padded(base, window * 2)
         found = {base + i for i in range(0, len(data) - ptrsize, ptrsize) if unpack(data[i:i + ptrsize]) in hooks}
 
         # sizeof(security_hook_list) is 3 pointers from v6.12 (`scalls`, `hook`, `lsmid`),
@@ -73829,9 +73762,8 @@ class KernelAddressHeuristicFinder:
         ptrsize = current_arch.ptrsize
         unpack = GefUtil.get_unpack(ptrsize)
 
-        try:
-            header = read_memory(timer_base, 0x200)
-        except gdb.MemoryError:
+        header = read_memory(timer_base, 0x200, safe=True)
+        if header is None:
             return None
 
         # Fields inserted by lockdep and PREEMPT_RT move `clk`, so find the stable tail:
@@ -74025,9 +73957,8 @@ class KernelAddressHeuristicFinder:
         The bucket is `struct list_head` (~v4.1) or `struct hlist_head` (v4.2~).
         """
         ptrsize = current_arch.ptrsize
-        try:
-            header = read_memory(tvec_base, 0x100)
-        except gdb.MemoryError:
+        header = read_memory(tvec_base, 0x100, safe=True)
+        if header is None:
             return None
         words = slice_unpack(header, ptrsize)
 
@@ -74035,10 +73966,10 @@ class KernelAddressHeuristicFinder:
             # ~v4.1: even an empty list_head is linked (to itself)
             for i in range(len(words)):
                 offset = i * ptrsize
-                try:
-                    heads = slice_unpack(read_memory(tvec_base + offset, nr_buckets * ptrsize * 2), ptrsize)
-                except gdb.MemoryError:
+                heads = read_memory(tvec_base + offset, nr_buckets * ptrsize * 2, safe=True)
+                if heads is None:
                     break
+                heads = slice_unpack(heads, ptrsize)
                 for j in range(nr_buckets):
                     head = tvec_base + offset + j * ptrsize * 2
                     next_entry, prev_entry = heads[j * 2], heads[j * 2 + 1]
@@ -74066,10 +73997,10 @@ class KernelAddressHeuristicFinder:
                     continue
                 all_timers = words[offset_cpu // ptrsize - 1]
                 offset = align(offset_cpu + 6, ptrsize)
-                try:
-                    heads = slice_unpack(read_memory(tvec_base + offset, nr_buckets * ptrsize), ptrsize)
-                except gdb.MemoryError:
+                heads = read_memory(tvec_base + offset, nr_buckets * ptrsize, safe=True)
+                if heads is None:
                     continue
+                heads = slice_unpack(heads, ptrsize)
                 count = 0
                 for j, first in enumerate(heads):
                     link = tvec_base + offset + j * ptrsize
@@ -74785,10 +74716,10 @@ class KernelAddressHeuristicFinder:
 
         def is_irq_desc_array(address):
             # early_irq_init() sets irq_desc[i].irq_data.irq = i for every descriptor.
-            try:
-                words = slice_unpack(read_memory(address, 0x2000), 4)
-            except gdb.MemoryError:
+            words = read_memory(address, 0x2000, safe=True)
+            if words is None:
                 return False
+            words = slice_unpack(words, 4)
             for offset in range(0, 0x100 // 4):
                 if words[offset] != 0:
                     continue
@@ -75534,9 +75465,8 @@ class KernelLayout:
                 # SCTLR.V overrides VBAR and selects the high-vector page.
                 vector_bases.append(0xffff_0000 if (sctlr or 0) & (1 << 13) else (vbar or 0))
             for vector_base in dict.fromkeys(vector_bases):
-                try:
-                    data = read_memory(vector_base + get_pagesize(), 0x10)
-                except gdb.MemoryError:
+                data = read_memory(vector_base + get_pagesize(), 0x10, safe=True)
+                if data is None:
                     continue
                 for handler in slice_unpack(data, 4):
                     if 0x4000_0000 <= handler < 0xff00_0000 and handler & 3 == 0 and is_valid_addr(handler):
@@ -75746,10 +75676,9 @@ class KernelLayout:
             ro_base = None
             chunk_size = 0x10_0000
             for addr in range(start, end, chunk_size):
-                try:
-                    # read a little more to find the banner across the chunk boundary
-                    data = read_memory(addr, min(chunk_size + 0x200, end - addr))
-                except gdb.MemoryError:
+                # read a little more to find the banner across the chunk boundary
+                data = read_memory(addr, min(chunk_size + 0x200, end - addr), safe=True)
+                if data is None:
                     continue
                 r = re.search(rb"Linux version \d+\.\d+\.\d+[ -~]+\n\0", data)
                 if r and r.start() < chunk_size:
@@ -76028,9 +75957,8 @@ class KernelVersion:
     def scan_banner():
         """Find `linux_banner` in the kernel image and return the version, or None."""
         for start, end in KernelVersion.get_search_area():
-            try:
-                data = read_memory(start, end - start)
-            except gdb.MemoryError:
+            data = read_memory(start, end - start, safe=True)
+            if data is None:
                 continue
             # linux_banner ends with a newline and NUL. Requiring both avoids
             # shorter build strings and stale copies elsewhere in the image.
@@ -76491,9 +76419,8 @@ class KernelRadixTree:
             for slot_unit in self.slot_unit_candidates(size_count):
                 # A CONFIG_BASE_SMALL node has 16 slots, so reading 64 of them runs off the object.
                 for num_slots in (64, 16): # RADIX_TREE_MAP_SIZE
-                    try:
-                        data = read_memory(node + ptrsize * slot_unit, ptrsize * num_slots)
-                    except gdb.MemoryError:
+                    data = read_memory(node + ptrsize * slot_unit, ptrsize * num_slots, safe=True)
+                    if data is None:
                         continue
                     used = [x for x in slice_unpack(data, ptrsize) if x]
                     if len(used) != count or not all(self.is_slot(x) for x in used):
@@ -76559,9 +76486,8 @@ class KernelRadixTree:
             return
 
         cls = type(self)
-        try:
-            data = read_memory(node + self.offset_slots, current_arch.ptrsize * self.num_slots)
-        except gdb.MemoryError:
+        data = read_memory(node + self.offset_slots, current_arch.ptrsize * self.num_slots, safe=True)
+        if data is None:
             self.broken[node] = "unreadable"
             return
 
@@ -78187,10 +78113,10 @@ class KernelPath:
         ptrsize = current_arch.ptrsize
         offset_mnt_root = getattr(self, "offset_vfsmount_mnt_root", None) or 0
         offset_mnt_sb = getattr(self, "offset_vfsmount_mnt_sb", None) or ptrsize
-        try:
-            words = slice_unpack(read_memory(file, ptrsize * 0x42), ptrsize)
-        except (gdb.MemoryError, OverflowError):
+        words = read_memory(file, ptrsize * 0x42, safe=True)
+        if words is None:
             return None
+        words = slice_unpack(words, ptrsize)
         for i in range(0x40):
             mnt, dentry = words[i], words[i + 1]
             if mnt == dentry:
@@ -79128,10 +79054,10 @@ class KernelDevice:
         scan_size = 0x800
         for kobj, name in kobjs:
             if name in anchors and name not in samples:
-                try:
-                    samples[name] = read_memory(kobj, scan_size)
-                except gdb.MemoryError:
+                data = read_memory(kobj, scan_size, safe=True)
+                if data is None:
                     continue
+                samples[name] = data
         if len(samples) != len(anchors):
             return None, None
 
@@ -79524,10 +79450,10 @@ class KernelSighand:
         # SA_NOCLDSTOP, SA_NOCLDWAIT, SA_SIGINFO, SA_UNSUPPORTED, SA_EXPOSE_TAGBITS, SA_IMMUTABLE,
         # SA_THIRTYTWO, SA_RESTORER, SA_ONSTACK, SA_INTERRUPT, SA_RESTART, SA_NODEFER, SA_RESETHAND
         known_flags = 0x0000_0007 | 0x0000_0c00 | 0x0080_0000 | 0x0200_0000 | 0x0400_0000 | 0xf800_0000
-        try:
-            data = slice_unpack(read_memory(action, sizeof_action * 64), current_arch.ptrsize)
-        except gdb.MemoryError:
+        data = read_memory(action, sizeof_action * 64, safe=True)
+        if data is None:
             return False
+        data = slice_unpack(data, current_arch.ptrsize)
         stride = sizeof_action // current_arch.ptrsize
         for i in range(64):
             handler, flags = data[stride * i], data[stride * i + 1]
@@ -79559,10 +79485,10 @@ class KernelNamespace:
         data = b""
         while len(data) < size:
             chunk = min(size - len(data), get_pagesize() - (addr + len(data)) % get_pagesize())
-            try:
-                data += read_memory(addr + len(data), chunk)
-            except (gdb.MemoryError, OverflowError):
+            chunk_data = read_memory(addr + len(data), chunk, safe=True)
+            if chunk_data is None:
                 break
+            data += chunk_data
         return data[:len(data) - len(data) % current_arch.ptrsize]
 
     @staticmethod
@@ -82264,10 +82190,7 @@ class KernelSkbuff:
         size = min(0x40, headlen)
         raw = b""
         if size:
-            try:
-                raw = read_memory(data, size)
-            except gdb.MemoryError:
-                raw = None
+            raw = read_memory(data, size, safe=True)
         return {"address": data, "headlen": headlen, "size": size, "data": raw}
 
     @staticmethod
@@ -84073,9 +83996,8 @@ class KernelBpf:
             chunks = []
             backlinks = set()
             for prog in progs:
-                try:
-                    data = read_memory(prog["aux"], 0x800)
-                except gdb.MemoryError:
+                data = read_memory(prog["aux"], 0x800, safe=True)
+                if data is None:
                     continue
                 words = slice_unpack(data, ptrsize)
                 if prog["address"] in words:
@@ -84152,10 +84074,10 @@ class KernelBpf:
             base = self.offset_max_entries + 4
             chunks = []
             for m in maps:
-                try:
-                    chunks.append(read_memory(m, base + 0x180))
-                except gdb.MemoryError:
+                data = read_memory(m, base + 0x180, safe=True)
+                if data is None:
                     continue
+                chunks.append(data)
             offset = self.find_name_offset(chunks, range(base, base + 0x170, 4))
             if offset is None:
                 return
@@ -88297,10 +88219,7 @@ class KernelNftables:
     def read_bytes(address, size):
         if not address or not size:
             return None
-        try:
-            return bytes(read_memory(address, size))
-        except gdb.MemoryError:
-            return None
+        return read_memory(address, size, safe=True)
 
     def field_string(self, value, *path):
         value = GefUtil.field(value, *path)
@@ -92861,10 +92780,7 @@ class KernelKeyringCommand(GenericCommand, BufferingOutput):
                 dest_info = None
             callout = None
             if callout_info and is_valid_addr(callout_info):
-                try:
-                    callout = read_memory(callout_info, min(callout_len, 0x40))
-                except (gdb.MemoryError, OverflowError):
-                    pass
+                callout = read_memory(callout_info, min(callout_len, 0x40), safe=True)
             # op[] was added in v5.0.
             if b"\0" in op:
                 op = op.split(b"\0")[0]
@@ -93607,10 +93523,7 @@ class KernelLoadCommand(GenericCommand):
             results.append(("build ID", "unknown", "no NT_GNU_BUILD_ID note in the vmlinux"))
         else:
             address, desc = build_id
-            try:
-                actual = read_memory(address + slide, len(desc))
-            except (gdb.MemoryError, OverflowError):
-                actual = None
+            actual = read_memory(address + slide, len(desc), safe=True)
             if actual is None:
                 results.append(("build ID", "unknown", "{:s} is unreadable in memory".format(desc.hex())))
             elif actual == desc:
@@ -94464,9 +94377,8 @@ class KernelBlockDevicesCommand(GenericCommand, BufferingOutput):
         unpack = GefUtil.get_unpack(ptrsize)
         votes = {}
         for bdev in samples[:32]:
-            try:
-                data = read_memory(bdev, scan_size)
-            except gdb.MemoryError:
+            data = read_memory(bdev, scan_size, safe=True)
+            if data is None:
                 continue
             for offset_disk in range(0, scan_size, ptrsize):
                 gd = self.read_gendisk(unpack(data[offset_disk:offset_disk + ptrsize]))
@@ -97411,12 +97323,13 @@ class KernelOperationsCommand(GenericCommand, BufferingOutput):
 
             # get name width
             name_width = max(len(m[1]) for m in members)
-            try:
-                addrs = [GefUtil.get_unpack(size)(read_memory(args.address + offset, size))
-                         for type_name, name, offset, size in layout]
-            except gdb.MemoryError:
-                self.quiet_err("Memory read error")
-                return
+            addrs = []
+            for _, _, offset, size in layout:
+                data = read_memory(args.address + offset, size, safe=True)
+                if data is None:
+                    self.quiet_err("Memory read error")
+                    return
+                addrs.append(GefUtil.get_unpack(size)(data))
 
             # legend
             if not args.quiet:
@@ -100174,11 +100087,11 @@ class KernelTimerCommand(GenericCommand, BufferingOutput):
                 self.incomplete.append("{:s} ({:#x}) does not match the layout".format(name, base))
                 continue
             vectors = base + layout["offset_vectors"]
-            try:
-                heads = slice_unpack(read_memory(vectors, layout["nr_vectors"] * sizeof_head), ptrsize)
-            except gdb.MemoryError:
+            heads = read_memory(vectors, layout["nr_vectors"] * sizeof_head, safe=True)
+            if heads is None:
                 self.incomplete.append("{:s} ({:#x}) is unreadable".format(name, base))
                 continue
+            heads = slice_unpack(heads, ptrsize)
             for i in range(layout["nr_vectors"]):
                 head = vectors + i * sizeof_head
                 if is_hlist:
@@ -100955,9 +100868,8 @@ class KernelWorkqueueCommand(GenericCommand, BufferingOutput):
         else:
             byteorder = "big"
         for workqueue in workqueues:
-            try:
-                data = bytes(read_memory(workqueue, 0x800))
-            except gdb.MemoryError:
+            data = read_memory(workqueue, 0x800, safe=True)
+            if data is None:
                 continue
             offset = data.find(b"events\x00")
             if offset >= 0:
@@ -101231,15 +101143,14 @@ class KernelWorkqueueCommand(GenericCommand, BufferingOutput):
                 start = pool - 0x1000
             else:
                 start = pool
-            try:
-                words = slice_unpack(read_memory(start, 0x2000), ptrsize)
-            except gdb.MemoryError:
+            data = read_memory(start, 0x2000, safe=True)
+            if data is None:
                 start = pool
-                try:
-                    words = slice_unpack(read_memory(start, 0x1000), ptrsize)
-                except gdb.MemoryError:
+                data = read_memory(start, 0x1000, safe=True)
+                if data is None:
                     self.incomplete.append("the busy_hash of pool {:#x} is unreadable".format(pool))
                     return
+            words = slice_unpack(data, ptrsize)
             buckets = [start + ptrsize * i for i, word in enumerate(words) if word and is_valid_addr(word)]
 
         seen = set()
@@ -102412,13 +102323,13 @@ class KernelConfigCommand(GenericCommand, BufferingOutput):
     def extract_config(self, addr, end=None):
         # v5.1~: `kernel_config_data` points just after IKCFG_ST
         # ~v5.0: `kernel_config_data` is a static array that begins with IKCFG_ST
-        try:
-            if read_memory(addr, len(self.MAGIC_START)) != self.MAGIC_START:
-                addr -= len(self.MAGIC_START)
-                if read_memory(addr, len(self.MAGIC_START)) != self.MAGIC_START:
-                    return None
-        except gdb.MemoryError:
+        data = read_memory(addr, len(self.MAGIC_START), safe=True)
+        if data is None:
             return None
+        if data != self.MAGIC_START:
+            addr -= len(self.MAGIC_START)
+            if read_memory(addr, len(self.MAGIC_START), safe=True) != self.MAGIC_START:
+                return None
 
         import zlib
         decompressor = zlib.decompressobj(zlib.MAX_WBITS | 16)
@@ -102433,20 +102344,18 @@ class KernelConfigCommand(GenericCommand, BufferingOutput):
                 warn("Truncated gzip stream at {:#x}".format(addr))
                 return None
             size = min(limit, (pos & ~0xfff) + 0x1000) - pos
-            try:
-                configs.append(decompressor.decompress(read_memory(pos, size)))
-            except gdb.MemoryError:
+            data = read_memory(pos, size, safe=True)
+            if data is None:
                 warn("Failed to read the gzip stream at {:#x}".format(pos))
                 return None
+            try:
+                configs.append(decompressor.decompress(data))
             except zlib.error as e:
                 warn("Gzip decompress error at {:#x}: {}".format(addr, e))
                 return None
             pos += size
         end_pos = pos - len(decompressor.unused_data)
-        try:
-            found_end = read_memory(end_pos, len(self.MAGIC_END)) == self.MAGIC_END
-        except gdb.MemoryError:
-            found_end = False
+        found_end = read_memory(end_pos, len(self.MAGIC_END), safe=True) == self.MAGIC_END
         self.markers = (addr, end_pos, found_end)
         return String.bytes2str(b"".join(configs))
 
@@ -102463,16 +102372,12 @@ class KernelConfigCommand(GenericCommand, BufferingOutput):
         pagesize = get_pagesize()
         for pos in ProgressBar(range(start, end, chunk_size), disable=self.args.quiet or not is_kgdb()):
             size = min(chunk_size, end - pos)
-            try:
-                yield pos, read_memory(pos, size)
+            data = read_memory(pos, size, safe=True)
+            if data is not None:
+                yield pos, data
                 continue
-            except gdb.MemoryError:
-                pass
             for page in range(pos, pos + size, pagesize):
-                try:
-                    yield page, read_memory(page, min(pagesize, pos + size - page))
-                except gdb.MemoryError:
-                    yield page, None
+                yield page, read_memory(page, min(pagesize, pos + size - page), safe=True)
         return
 
     def search_config(self, start, end, chunk_size):
@@ -102720,9 +102625,8 @@ class KernelSearchCodePtrCommand(GenericCommand, BufferingOutput):
             end = min(entry.vend, self.klayout.rw_end)
             if start >= end:
                 continue
-            try:
-                data = read_memory(start, end - start)
-            except gdb.MemoryError:
+            data = read_memory(start, end - start, safe=True)
+            if data is None:
                 continue
             for i, rw_d in enumerate(slice_unpack(data, current_arch.ptrsize)):
                 rw_data.append((start + i * current_arch.ptrsize, rw_d))
@@ -145317,9 +145221,8 @@ class HashMemoryCommand(HashCommand, BufferingOutput):
 
         for chunk_addr in range(start_address, end_address, step):
             chunk_size = min(end_address - chunk_addr, step)
-            try:
-                mem = read_memory(chunk_addr, chunk_size)
-            except (gdb.MemoryError, MemoryError):
+            mem = read_memory(chunk_addr, chunk_size, safe=True)
+            if mem is None:
                 err("Memory read error")
                 return False
             try:
@@ -147434,9 +147337,8 @@ class JsonMemoryCommand(JsonCommand):
         while len(s) < max_read:
             current = loc + len(s)
             size = min(page_size - current % page_size, max_read - len(s))
-            try:
-                blob = read_memory(current, size)
-            except gdb.MemoryError:
+            blob = read_memory(current, size, safe=True)
+            if blob is None:
                 err("Memory read error at {:#x}".format(current))
                 return None
             pos = blob.find(b"\0")
@@ -147866,9 +147768,8 @@ class CrcMemoryCommand(CrcCommand):
                 chunk_size = end_address - chunk_addr
             else:
                 chunk_size = step
-            try:
-                mem = read_memory(chunk_addr, chunk_size)
-            except (gdb.MemoryError, MemoryError):
+            mem = read_memory(chunk_addr, chunk_size, safe=True)
+            if mem is None:
                 err("Memory read error")
                 return False
             try:
@@ -148979,9 +148880,8 @@ class BaseNDecodeMemoryCommand(BaseNDecodeCommand):
         self.out.append("Address: {:#x}".format(args.location))
         self.out.append("Size: {:#x}".format(args.size))
 
-        try:
-            mem = read_memory(args.location, args.size)
-        except (gdb.MemoryError, MemoryError):
+        mem = read_memory(args.location, args.size, safe=True)
+        if mem is None:
             err("Memory read error")
             return False
 
@@ -149116,9 +149016,8 @@ class BaseNEncodeMemoryCommand(BaseNEncodeCommand):
         self.out.append("Address: {:#x}".format(args.location))
         self.out.append("Size: {:#x}".format(args.size))
 
-        try:
-            mem = read_memory(args.location, args.size)
-        except (gdb.MemoryError, MemoryError):
+        mem = read_memory(args.location, args.size, safe=True)
+        if mem is None:
             err("Memory read error")
             return False
 
@@ -149247,9 +149146,8 @@ class MorseDecodeMemoryCommand(MorseDecodeCommand):
         gef_print("Address: {:#x}".format(args.location))
         gef_print("Size: {:#x}".format(args.size))
 
-        try:
-            mem = read_memory(args.location, args.size)
-        except (gdb.MemoryError, MemoryError):
+        mem = read_memory(args.location, args.size, safe=True)
+        if mem is None:
             err("Memory read error")
             return False
 
@@ -149347,9 +149245,8 @@ class MorseEncodeMemoryCommand(MorseEncodeCommand):
         gef_print("Address: {:#x}".format(args.location))
         gef_print("Size: {:#x}".format(args.size))
 
-        try:
-            mem = read_memory(args.location, args.size)
-        except (gdb.MemoryError, MemoryError):
+        mem = read_memory(args.location, args.size, safe=True)
+        if mem is None:
             err("Memory read error")
             return False
 
@@ -150114,9 +150011,8 @@ class IiCommand(GenericCommand):
         if N <= 0:
             err("Invalid instruction count")
             return
-        try:
-            res = read_memory(addr, N)
-        except gdb.MemoryError:
+        res = read_memory(addr, N, safe=True)
+        if res is None:
             err("Memory read error")
             return
 
@@ -151115,9 +151011,8 @@ class KernelSlub:
             # CONFIG_SLUB_DEBUG=y). An empty list_head points to itself, otherwise the
             # first element points back to the head. Neither random_seq nor a random
             # value has such a structure.
-            try:
-                data = read_memory(addr, search_size + current_arch.ptrsize)
-            except gdb.MemoryError:
+            data = read_memory(addr, search_size + current_arch.ptrsize, safe=True)
+            if data is None:
                 return False
             data = slice_unpack(data, current_arch.ptrsize)
             for i in range(len(data) - 1):
@@ -159870,10 +159765,10 @@ class KernelIrqCommand(GenericCommand, BufferingOutput):
         if offset_irq is not None and stride:
             candidates = [(offset_irq, stride)]
         else:
-            try:
-                words = slice_unpack(read_memory(base, 0x2000), 4)
-            except gdb.MemoryError:
+            words = read_memory(base, 0x2000, safe=True)
+            if words is None:
                 return None
+            words = slice_unpack(words, 4)
             candidates = []
             for offset in range(0, 0x100 // 4):
                 if words[offset] != 0:
@@ -160024,9 +159919,8 @@ class KernelIrqCommand(GenericCommand, BufferingOutput):
         """Return None if `action` is not a struct irqaction, else whether it holds `irq`."""
         if not is_valid_addr(action):
             return None
-        try:
-            data = read_memory(action, 0x48)
-        except gdb.MemoryError:
+        data = read_memory(action, 0x48, safe=True)
+        if data is None:
             return None
         handler = slice_unpack(data[:current_arch.ptrsize], current_arch.ptrsize)[0]
         if not KernelAddressHeuristicFinderUtil.is_kernel_space(handler) or not is_valid_addr(handler):
@@ -160805,10 +160699,10 @@ class VmallocDumpCommand(GenericCommand, BufferingOutput):
 
         # sizeof(struct vmap_node) depends on spinlock_t and work_struct, so find vmap_nodes[1]
         start = node + busy_offset + ptrsize * 2
-        try:
-            data = slice_unpack(read_memory(start, ptrsize * 130), ptrsize)
-        except gdb.MemoryError:
+        data = read_memory(start, ptrsize * 130, safe=True)
+        if data is None:
             return heads
+        data = slice_unpack(data, ptrsize)
         for i in range(128):
             # the first pool list of vmap_nodes[1] is empty or points to vmap_areas
             next_node = start + ptrsize * i
@@ -160849,10 +160743,10 @@ class VmallocDumpCommand(GenericCommand, BufferingOutput):
         heads = []
         ptrsize = current_arch.ptrsize
         for i, node in enumerate(self.vmap_nodes):
-            try:
-                data = slice_unpack(read_memory(node, ptrsize * 3 * 256), ptrsize)
-            except gdb.MemoryError:
+            data = read_memory(node, ptrsize * 3 * 256, safe=True)
+            if data is None:
                 continue
+            data = slice_unpack(data, ptrsize)
             for j in range(256):
                 head = node + ptrsize * 3 * j
                 if data[j * 3] != head:
@@ -160861,10 +160755,10 @@ class VmallocDumpCommand(GenericCommand, BufferingOutput):
 
     def is_vmap_node(self, node, busy_offset):
         ptrsize = current_arch.ptrsize
-        try:
-            data = slice_unpack(read_memory(node, ptrsize * 3 * 256), ptrsize)
-        except gdb.MemoryError:
+        data = read_memory(node, ptrsize * 3 * 256, safe=True)
+        if data is None:
             return False
+        data = slice_unpack(data, ptrsize)
 
         # pool[] lists
         for i in range(256):
@@ -161194,9 +161088,8 @@ class KtypesCommand(GenericCommand, BufferingOutput):
             warn("Could not find a valid BTF range; this kernel may be CONFIG_DEBUG_INFO_BTF=n")
             return None
 
-        try:
-            content = bytes(read_memory(*addr_size))
-        except gdb.MemoryError:
+        content = read_memory(*addr_size, safe=True)
+        if content is None:
             err("Memory read error")
             return None
 
@@ -161700,10 +161593,9 @@ class Ksym:
             current = (current_arch.pc & ~0xffff) + 0x10000 # Starting address to brute force ro_base
             step_size = 0x10000
             while True:
-                try:
-                    # As kernel version string is near the top of ro_base, it is enough to check the first page.
-                    candidate_rodata = read_memory(current, get_pagesize())
-                except gdb.MemoryError:
+                # As kernel version string is near the top of ro_base, it is enough to check the first page.
+                candidate_rodata = read_memory(current, get_pagesize(), safe=True)
+                if candidate_rodata is None:
                     # reached to the end of ro_base
                     Ksym.quiet_info(quiet, "Use slow path")
                     return None
@@ -163302,12 +163194,13 @@ class VmlinuxToElfApplyCommand(GenericCommand):
         start = klayout.text_base
         end = start + klayout.text_size
         gef_print("Dumping .text area:   {:#x} - {:#x}".format(start, end))
-        try:
-            with open(dumped_mem_file, "wb") as output:
-                output.write(read_memory(start, end - start))
-        except gdb.MemoryError:
+        data = read_memory(start, end - start, safe=True)
+        if data is None:
             err("Memory read error. Make sure the context is in supervisor mode / Ring-0")
             return None
+        with open(dumped_mem_file, "wb") as output:
+            output.write(data)
+        del data
 
         # dump sparse
         text_end = klayout.text_end
@@ -163321,12 +163214,13 @@ class VmlinuxToElfApplyCommand(GenericCommand):
         start = klayout.ro_base
         end = start + fixed_ro_base_size
         gef_print("Dumping .rodata area: {:#x} - {:#x}".format(start, end))
-        try:
-            with open(dumped_mem_file, "ab") as output:
-                output.write(read_memory(start, end - start))
-        except gdb.MemoryError:
+        data = read_memory(start, end - start, safe=True)
+        if data is None:
             err("Memory read error. Make sure the context is in supervisor mode / Ring-0")
             return None
+        with open(dumped_mem_file, "ab") as output:
+            output.write(data)
+        del data
 
         with open(dumped_mem_file, "rb") as source:
             digest = hashlib.sha256(source.read())
@@ -163571,11 +163465,11 @@ class TcmallocHeapDumpCommand(GenericCommand, BufferingOutput):
             tail = b""
             for page in range(start, end, get_pagesize()):
                 origin = page - len(tail)
-                try:
-                    data = tail + read_memory(page, min(get_pagesize(), end - page))
-                except gdb.MemoryError:
+                data = read_memory(page, min(get_pagesize(), end - page), safe=True)
+                if data is None:
                     tail = b""
                     continue
+                data = tail + data
                 tail = data[-2 * ptrsize:]
                 for width in sorted({4, ptrsize}):
                     unpack = GefUtil.get_unpack(width)
@@ -163784,11 +163678,11 @@ class TcmallocHeapDumpCommand(GenericCommand, BufferingOutput):
             tail = b""
             for page in range(region.page_start, region.page_end, 65536):
                 origin = page - len(tail)
-                try:
-                    data = tail + read_memory(page, min(65536, region.page_end - page))
-                except gdb.MemoryError:
+                data = read_memory(page, min(65536, region.page_end - page), safe=True)
+                if data is None:
                     tail = b""
                     continue
+                data = tail + data
                 tail = data[-array_size - self.ThreadCache_offset_freelist_array:]
                 for match in re.finditer(re.escape(pattern), data):
                     for index in indices:
@@ -169326,10 +169220,10 @@ class ScallocHeapDumpCommand(GenericCommand, BufferingOutput):
                 continue
             if m.size > 0x100_0000: # heuristic
                 continue
-            try:
-                values = slice_unpack(read_memory(m.page_start, m.size), ptr)
-            except gdb.MemoryError:
+            values = read_memory(m.page_start, m.size, safe=True)
+            if values is None:
                 continue
+            values = slice_unpack(values, ptr)
             for i in range(len(values) - max(offsets.values())):
                 start = values[i + offsets["start_"]]
                 end = values[i + offsets["end_"]]
@@ -170354,9 +170248,8 @@ class JemallocBase:
         for m in ProcessMap.get_process_maps_exclude_special_regions():
             if not m.is_writable() or m.path.startswith("[stack"):
                 continue
-            try:
-                data = read_memory(m.page_start, m.size)
-            except gdb.MemoryError:
+            data = read_memory(m.page_start, m.size, safe=True)
+            if data is None:
                 continue
             self.writable_maps.append((m.page_start, data))
             for offset in range(0, len(data), pagesize):
@@ -170630,9 +170523,8 @@ class JemallocV3(JemallocBase):
 
     def run_starts(self, chunk, layout):
         elem_size, bits_offset, map_bias = layout
-        try:
-            data = read_memory(chunk + self.map_offset, elem_size * (self.chunk_npages - map_bias))
-        except gdb.MemoryError:
+        data = read_memory(chunk + self.map_offset, elem_size * (self.chunk_npages - map_bias), safe=True)
+        if data is None:
             return
         mapbits = slice_unpack(data, self.ptrsize)[bits_offset // self.ptrsize::elem_size // self.ptrsize]
         shift = self.page.bit_length() - 1 # LG_PAGE
@@ -170812,9 +170704,8 @@ class JemallocV4(JemallocBase):
 
     def run_starts(self, chunk):
         map_bias = self.off["map_bias"]
-        try:
-            data = read_memory(chunk + self.off["mapbits"], (self.chunk_npages - map_bias) * self.ptrsize)
-        except gdb.MemoryError:
+        data = read_memory(chunk + self.off["mapbits"], (self.chunk_npages - map_bias) * self.ptrsize, safe=True)
+        if data is None:
             return
         mapbits = slice_unpack(data, self.ptrsize)
         for k, bits in enumerate(mapbits):
@@ -171333,10 +171224,10 @@ class JemallocV5(JemallocBase):
                         parents[parent] = addr
                     elif all(self.rtree_extent(parent, a) == e for e, a in known.items()):
                         # TLS caches also contain leaf pointers, but are not sparse node arrays.
-                        try:
-                            nodes = slice_unpack(read_memory(parent, (1 << bits) * self.ptrsize), self.ptrsize)
-                        except gdb.MemoryError:
+                        nodes = read_memory(parent, (1 << bits) * self.ptrsize, safe=True)
+                        if nodes is None:
                             continue
+                        nodes = slice_unpack(nodes, self.ptrsize)
                         if all(not node or node % self.ptrsize == 0 and self.word_at(pages, node) is not None
                                for node in nodes):
                             return parent
@@ -171650,9 +171541,8 @@ class JemallocHeapDumpCommand(GenericCommand, BufferingOutput):
         for m in maps:
             if m.path not in paths or m.is_writable() or not m.is_readable():
                 continue
-            try:
-                data = read_memory(m.page_start, m.size)
-            except gdb.MemoryError:
+            data = read_memory(m.page_start, m.size, safe=True)
+            if data is None:
                 continue
             found = pattern.search(data)
             if found:
@@ -173348,9 +173238,8 @@ class XStringCommand(GenericCommand, BufferingOutput):
                 if max_read:
                     size = min(size, max_read - len(s))
                 start = len(s)
-                try:
-                    data = read_memory(current, size)
-                except gdb.MemoryError:
+                data = read_memory(current, size, safe=True)
+                if data is None:
                     break
                 s += data
                 pos = s.find(b"\0", start)
@@ -184244,17 +184133,15 @@ class KernelVMMapCommand(GenericCommand, BufferingOutput):
             if r.size >= page_size * 0x10:
                 continue
             for addr in range(r.addr_start, r.addr_end, page_size):
-                try:
-                    x = read_memory(addr, 0x10)
-                except gdb.MemoryError:
+                x = read_memory(addr, 0x10, safe=True)
+                if x is None:
                     self.insert_region(addr, page_size, "can not access")
                     continue
 
                 if x not in [z10, ff10, cc10]:
                     continue
-                try:
-                    x = read_memory(addr, page_size)
-                except gdb.MemoryError:
+                x = read_memory(addr, page_size, safe=True)
+                if x is None:
                     continue
                 if x == z1000:
                     self.insert_region(addr, page_size, "0x00-filled")
@@ -193441,9 +193328,8 @@ class KernelPerCpuCommand(GenericCommand, BufferingOutput):
     def add_dump_out(self, addr):
         if not self.args.dump:
             return
-        try:
-            data = read_memory(addr, self.args.dump)
-        except gdb.MemoryError:
+        data = read_memory(addr, self.args.dump, safe=True)
+        if data is None:
             self.out.append("       (memory read error)")
             return
         for line in hexdump(data, base=addr, unit=current_arch.ptrsize).splitlines():
@@ -193829,9 +193715,8 @@ class KernelRefsCommand(GenericCommand, BufferingOutput):
             n -= n % ptrsize
             if n <= 0:
                 break
-            try:
-                data = read_memory(pos, n)
-            except gdb.MemoryError:
+            data = read_memory(pos, n, safe=True)
+            if data is None:
                 # A range may begin in the middle of a page.  Bound each retry at
                 # the next page boundary; otherwise an unreadable following page
                 # makes us discard the readable tail of the current one as well.
@@ -193842,11 +193727,8 @@ class KernelRefsCommand(GenericCommand, BufferingOutput):
                     m = min(next_page - sub, block_end - sub)
                     m -= m % ptrsize
                     if m > 0:
-                        try:
-                            data = read_memory(sub, m)
-                        except gdb.MemoryError:
-                            pass
-                        else:
+                        data = read_memory(sub, m, safe=True)
+                        if data is not None:
                             for hit in self.scan_block(sub, data, label):
                                 yield hit
                     sub = next_page
@@ -194063,9 +193945,8 @@ class KernelLsmCommand(GenericCommand, BufferingOutput):
         """Read a NUL-terminated ASCII string, or return '' if it is not one."""
         if not addr or not is_valid_addr(addr):
             return ""
-        try:
-            data = read_memory(addr, size)
-        except gdb.MemoryError:
+        data = read_memory(addr, size, safe=True)
+        if data is None:
             return ""
         data = data.split(b"\0")[0]
         if not data or not all(0x20 <= c < 0x7f for c in bytearray(data)):
@@ -194272,9 +194153,8 @@ class KernelLsmCommand(GenericCommand, BufferingOutput):
             hook, _sep, slot = name[len(self.SCT_PREFIX):].rpartition("_")
             if not hook or not slot.isdigit():
                 continue
-            try:
-                code = read_memory(addr, 5)
-            except gdb.MemoryError:
+            code = read_memory(addr, 5, safe=True)
+            if code is None:
                 continue
             func = 0
             if code[0] == 0xe9: # jmp rel32
@@ -195927,9 +195807,12 @@ class KernelIoUringCommand(GenericCommand, BufferingOutput):
         # the rings are mapped to the userland, so they start at a page boundary
         if not is_valid_addr(ring) or ring & 0xfff:
             return None
+        data = read_memory(ring, 0x300, safe=True)
+        if data is None:
+            return None
         try:
-            return slice_unpack(read_memory(ring, 0x300), 4)
-        except (gdb.MemoryError, OverflowError, struct.error):
+            return slice_unpack(data, 4)
+        except struct.error:
             return None
 
     @staticmethod
@@ -195998,9 +195881,12 @@ class KernelIoUringCommand(GenericCommand, BufferingOutput):
         """Return the ring metadata found from the pointers in io_ring_ctx, or None."""
         if not is_valid_addr(ctx) or ctx & (current_arch.ptrsize - 1):
             return None
+        pointers = read_memory(ctx, 0x400, safe=True)
+        if pointers is None:
+            return None
         try:
-            pointers = slice_unpack(read_memory(ctx, 0x400), current_arch.ptrsize)
-        except (gdb.MemoryError, OverflowError, struct.error):
+            pointers = slice_unpack(pointers, current_arch.ptrsize)
+        except struct.error:
             return None
         singles = []
         for pointer in pointers:
@@ -196048,9 +195934,12 @@ class KernelIoUringCommand(GenericCommand, BufferingOutput):
 
         # struct file is randomized in old kernels and was reordered in v6.5/v7.0.
         # Restrict the fallback to a known io_uring fd, then validate the target as a ring context.
+        pointers = read_memory(file, 0x200, safe=True)
+        if pointers is None:
+            return None, None
         try:
-            pointers = slice_unpack(read_memory(file, 0x200), current_arch.ptrsize)
-        except (gdb.MemoryError, OverflowError, struct.error):
+            pointers = slice_unpack(pointers, current_arch.ptrsize)
+        except struct.error:
             return None, None
         candidates = []
         for index, pointer in enumerate(pointers):
@@ -197922,9 +197811,8 @@ class StackRecoverCommand(GenericCommand, BufferingOutput):
             addr, end = start, start + size
             while addr < end:
                 chunk_end = min(end, (addr & ~(pagesize - 1)) + pagesize)
-                try:
-                    data = read_memory(addr, chunk_end - addr)
-                except gdb.MemoryError:
+                data = read_memory(addr, chunk_end - addr, safe=True)
+                if data is None:
                     break
                 for i, v in enumerate(slice_unpack(data, ptrsize)):
                     slots.append((addr + i * ptrsize, v))
@@ -197933,9 +197821,8 @@ class StackRecoverCommand(GenericCommand, BufferingOutput):
             addr, end = start, start - size
             while addr > end:
                 chunk_start = max(end, (addr - 1) & ~(pagesize - 1))
-                try:
-                    data = read_memory(chunk_start, addr - chunk_start)
-                except gdb.MemoryError:
+                data = read_memory(chunk_start, addr - chunk_start, safe=True)
+                if data is None:
                     break
                 for i, v in reversed(list(enumerate(slice_unpack(data, ptrsize)))):
                     slots.append((chunk_start + i * ptrsize, v))
@@ -198661,10 +198548,10 @@ class SixelMemoryCommand(GenericCommand):
         jpg_data = bytearray() # except header
         while len(jpg_data) < MAX_FILE_SIZE:
             start = max(0, len(jpg_data) - 1)
-            try:
-                jpg_data += read_memory(pos, read_size)
-            except (gdb.MemoryError, MemoryError):
+            chunk_data = read_memory(pos, read_size, safe=True)
+            if chunk_data is None:
                 return None
+            jpg_data += chunk_data
             marker_pos = jpg_data.find(b"\xff\xd9", start)
             if marker_pos != -1:
                 image_data_size = marker_pos + 2
@@ -198685,10 +198572,10 @@ class SixelMemoryCommand(GenericCommand):
         png_data = bytearray()
         chunk_pos = 8
         while len(png_data) < MAX_FILE_SIZE:
-            try:
-                png_data += read_memory(pos, read_size)
-            except (gdb.MemoryError, MemoryError):
+            chunk_data = read_memory(pos, read_size, safe=True)
+            if chunk_data is None:
                 return None
+            png_data += chunk_data
             if len(png_data) >= 8 and png_data[:8] != b"\x89PNG\r\n\x1a\n":
                 return None
             while chunk_pos + 8 <= len(png_data):
@@ -198876,9 +198763,8 @@ class FrequencyAnalysisCommand(GenericCommand, BufferingOutput):
         else:
             size = args.size
 
-        try:
-            data = read_memory(args.location, size)
-        except (gdb.MemoryError, MemoryError, TypeError):
+        data = read_memory(args.location, size, safe=True)
+        if data is None:
             err("Memory read error")
             return
 
@@ -199013,9 +198899,8 @@ class VisualDumpCommand(GenericCommand):
                 err("--auto-inclement-step-width must be positive")
                 return
 
-        try:
-            data = read_memory(args.location, size)
-        except (gdb.MemoryError, MemoryError, TypeError):
+        data = read_memory(args.location, size, safe=True)
+        if data is None:
             err("Memory read error")
             return
 
@@ -199070,9 +198955,8 @@ class FiletypeMemoryCommand(GenericCommand):
     _syntax_ = parser.format_help()
 
     def filetype_memory(self, start_address, end_address, size):
-        try:
-            data = read_memory(start_address, size)
-        except gdb.MemoryError:
+        data = read_memory(start_address, size, safe=True)
+        if data is None:
             err("Memory read error")
             return
 
@@ -199164,9 +199048,8 @@ class BinwalkMemoryCommand(GenericCommand):
                 gef_print(titlify("{:#x}-{:#x} [{}] {:s}".format(
                     entry.page_start, entry.page_end, entry.permission, entry.path,
                 )))
-                try:
-                    data = read_memory(start, end - start)
-                except gdb.MemoryError:
+                data = read_memory(start, end - start, safe=True)
+                if data is None:
                     continue
                 with ContextManager.temporary_file(data, prefix=dumpfile_name[:-4], suffix=".raw") as filepath:
                     binwalk.scan(filepath, signature=True)
@@ -199255,9 +199138,8 @@ class BincompareCommand(GenericCommand, BufferingOutput):
             return
 
         # memory_data
-        try:
-            memory_data = read_memory(args.address, size)
-        except gdb.MemoryError:
+        memory_data = read_memory(args.address, size, safe=True)
+        if memory_data is None:
             err("Cannot reach memory {:#x}".format(args.address))
             return
 
@@ -201478,6 +201360,27 @@ class GefUtil:
 
     user_bases = {}
     namedtuple_classes = {}
+
+    @staticmethod
+    def read_memory_padded(addr, length, chunk_size=None):
+        """Read memory, retrying at chunk boundaries and zero-filling unreadable chunks.
+
+        Use the page size when chunk_size is omitted. Preserve offsets within the requested range.
+        """
+        if length < 0 or (chunk_size is not None and chunk_size <= 0):
+            raise ValueError("Invalid memory read size")
+        data = read_memory(addr, length, safe=True)
+        if data is not None:
+            return data
+        if chunk_size is None:
+            chunk_size = get_pagesize()
+        data = bytearray()
+        while len(data) < length:
+            current = addr + len(data)
+            size = min(length - len(data), chunk_size - current % chunk_size)
+            chunk = read_memory(current, size, safe=True)
+            data += chunk if chunk is not None else b"\0" * size
+        return bytes(data)
 
     @staticmethod
     def bytes_to_ascii(data, separator="."):
