@@ -7330,24 +7330,11 @@ class Checksec:
     def get_cet_status_old_interface():
         # https://lore.kernel.org/lkml/1531342544.15351.37.camel@intel.com/
         sp = current_arch.sp
-        mem = {}
-
-        # backup
-        for i in range(3):
-            # *addr = SHSTK/IBT status
-            # *(addr + 1) = SHSTK base address
-            # *(addr + 2) = SHSTK size
-            addr = sp + current_arch.ptrsize * i
-            mem[addr] = read_memory(addr, current_arch.ptrsize)
-
-        try:
+        with ContextManager.temporary_memory(sp, length=current_arch.ptrsize * 3):
             res = gdb.execute("call-syscall arch_prctl 0x3001 {:#x}".format(sp), to_string=True) # ARCH_CET_STATUS
             output_line = res.splitlines()[-1]
             ret = int(output_line.split()[2], 0)
             sp_value = read_int_from_memory(sp)
-        finally:
-            for addr, data in mem.items():
-                write_memory(addr, data)
 
         # check ret
         if ret != 0:
@@ -7359,22 +7346,11 @@ class Checksec:
     def get_cet_status_new_interface():
         # https://www.kernel.org/doc/html/next/arch/x86/shstk.html
         sp = current_arch.sp
-        mem = {}
-
-        # backup
-        for i in range(1):
-            # *addr = SHSTK status
-            addr = sp + current_arch.ptrsize * i
-            mem[addr] = read_memory(addr, current_arch.ptrsize)
-
-        try:
+        with ContextManager.temporary_memory(sp, length=current_arch.ptrsize):
             res = gdb.execute("call-syscall arch_prctl 0x5005 {:#x}".format(sp), to_string=True) # ARCH_SHSTK_STATUS
             output_line = res.splitlines()[-1]
             ret = int(output_line.split()[2], 0)
             sp_value = read_int_from_memory(sp)
-        finally:
-            for addr, data in mem.items():
-                write_memory(addr, data)
 
         if ret != 0:
             return None
@@ -7444,16 +7420,14 @@ class Checksec:
     def get_gcs_status():
         """Return the arm64 Guarded Control Stack status flags."""
         sp = current_arch.sp
-        backup = read_memory(sp, current_arch.ptrsize)
-        try:
-            res = gdb.execute("call-syscall prctl 74 {:#x} 0 0 0".format(sp), to_string=True) # PR_GET_SHADOW_STACK_STATUS
-            output_line = res.splitlines()[-1]
-            ret = int(output_line.split()[2], 0)
-            status = read_int_from_memory(sp)
-        except (gdb.error, gdb.MemoryError, IndexError, ValueError):
-            return None
-        finally:
-            write_memory(sp, backup)
+        with ContextManager.temporary_memory(sp, length=current_arch.ptrsize):
+            try:
+                res = gdb.execute("call-syscall prctl 74 {:#x} 0 0 0".format(sp), to_string=True) # PR_GET_SHADOW_STACK_STATUS
+                output_line = res.splitlines()[-1]
+                ret = int(output_line.split()[2], 0)
+                status = read_int_from_memory(sp)
+            except (gdb.error, gdb.MemoryError, IndexError, ValueError):
+                return None
 
         if ret != 0:
             return None
@@ -19168,14 +19142,13 @@ class SignalHandlersCommand(GenericCommand, BufferingOutput):
 
         layout = self.get_layout()
         address = current_arch.sp
-        backup = read_memory(address, layout["size"], safe=True)
-        if backup is None:
-            err("Could not reserve scratch space on the inferior stack")
-            return
+        with ContextManager.temporary_memory(address, length=layout["size"], safe=True) as backup:
+            if backup is None:
+                err("Could not reserve scratch space on the inferior stack")
+                return
 
-        actions = []
-        with ContextManager.gdb_parameter("suppress-cli-notifications", "on", ignore_error=True):
-            try:
+            actions = []
+            with ContextManager.gdb_parameter("suppress-cli-notifications", "on", ignore_error=True):
                 for signal_number in range(1, 65):
                     result, action = self.query(syscall_number, signal_number, address, layout)
                     if result == -22 and signal_number in (9, 19): # SIGKILL and SIGSTOP cannot be queried.
@@ -19184,8 +19157,6 @@ class SignalHandlersCommand(GenericCommand, BufferingOutput):
                         err("rt_sigaction({:d}) failed with errno {:d}".format(signal_number, -result))
                         return
                     actions.append((signal_number, action))
-            finally:
-                write_memory(address, backup)
 
         libc = self.get_libc()
         names = {number: name for number, name in LinuxSignal.NAMES.items() if number < 32}
@@ -21827,6 +21798,7 @@ class HijackFdCommand(GenericCommand):
         self.quiet_info(output_line)
         return int(output_line.split()[2], 0)
 
+    @contextlib.contextmanager
     def write_stack(self, data):
         data = String.str2bytes(data)
 
@@ -21835,37 +21807,34 @@ class HijackFdCommand(GenericCommand):
         stack_addrs = [entry.page_start for entry in vmmap if entry.path == "[stack]"]
         if len(stack_addrs) == 0:
             err("Could not find the stack")
-            return None, None
+            yield None
+            return
         stack_addr = stack_addrs[0]
 
-        # read original contents
-        original_contents = read_memory(stack_addr, len(data), safe=True)
-        if original_contents is None:
-            err("Failed to read stack")
-            return None, None
+        with ContextManager.temporary_memory(stack_addr, length=len(data), safe=True) as original_contents:
+            if original_contents is None:
+                err("Failed to read stack")
+                yield None
+                return
 
-        self.quiet_info("Original contents: {!s} @ {:#x}".format(original_contents, stack_addr))
-        self.quiet_info("Overwrite data: {!s}".format(data))
+            self.quiet_info("Original contents: {!s} @ {:#x}".format(original_contents, stack_addr))
+            self.quiet_info("Overwrite data: {!s}".format(data))
 
-        written = False
-        try:
             # overwrite it
             try:
                 write_memory(stack_addr, data)
             except Exception:
                 err("Failed to write stack")
-                return None, None
+                yield None
+                return
 
             # read again and check
             if read_memory(stack_addr, len(data)) != data:
                 err("Failed to write stack")
-                return None, None
-            written = True
-        finally:
-            if not written:
-                write_memory(stack_addr, original_contents)
-
-        return stack_addr, original_contents
+                yield None
+                return
+            yield stack_addr
+        return
 
     def close_fd(self, fd):
         close_result = self.call_syscall("close", [fd])
@@ -21876,15 +21845,13 @@ class HijackFdCommand(GenericCommand):
         return True
 
     def get_fd_from_file_open(self):
-        # call open
-        stack_addr, original_contents = self.write_stack(self.args.new_output + "\0")
-        if stack_addr is None:
-            return None
-
         open_fd = None
         success = False
         try:
-            try:
+            # call open
+            with self.write_stack(self.args.new_output + "\0") as stack_addr:
+                if stack_addr is None:
+                    return None
                 self.quiet_info("Trying to open {:s}".format(Color.boldify(self.args.new_output)))
 
                 AT_FDCWD = -100
@@ -21892,8 +21859,6 @@ class HijackFdCommand(GenericCommand):
                 mode = 0o666
                 # open does not exist in aarch64. So use openat instead of open.
                 open_fd = self.call_syscall("openat", [AT_FDCWD, stack_addr, flags, mode])
-            finally:
-                write_memory(stack_addr, original_contents) # revert
 
             if AddressUtil.is_msb_on(open_fd):
                 err("Failed to open {:s}".format(self.args.new_output))
@@ -21922,15 +21887,11 @@ class HijackFdCommand(GenericCommand):
 
             # call connect (Also supports big endian)
             sockaddr_in = p16(self.AF_INET) + struct.pack("<H", socket.htons(port)) + socket.inet_aton(address)
-            stack_addr, original_contents = self.write_stack(sockaddr_in)
-            if stack_addr is None:
-                return None
-
-            try:
+            with self.write_stack(sockaddr_in) as stack_addr:
+                if stack_addr is None:
+                    return None
                 self.quiet_info("Trying to connect to {:s}".format(Color.boldify(self.args.new_output)))
                 connect_result = self.call_syscall("connect", [sock_fd, stack_addr, 16])
-            finally:
-                write_memory(stack_addr, original_contents) # revert
 
             if AddressUtil.is_msb_on(connect_result):
                 err("Failed to connect to {:s}:{:d}".format(address, port))
@@ -24323,15 +24284,11 @@ class MmapMemoryCommand(GenericCommand):
         if is_s390x():
             mmap_args = b"".join(p64(x) for x in [args.location or 0, args.size, perm, flags, 0xffff_ffff_ffff_ffff, 0])
             address = current_arch.sp
-            backup = read_memory(address, len(mmap_args), safe=True)
-            if backup is None:
-                err("Could not reserve scratch space on the inferior stack")
-                return
-            write_memory(address, mmap_args)
-            try:
+            with ContextManager.temporary_memory(address, mmap_args, safe=True) as backup:
+                if backup is None:
+                    err("Could not reserve scratch space on the inferior stack")
+                    return
                 gdb.execute("call-syscall {:s} {:#x}".format(mmap_syscall_name, address))
-            finally:
-                write_memory(address, backup)
         else:
             cmd = "call-syscall {:s} {:#x} {:#x} {:#x} {:#x} -1 0".format(
                 mmap_syscall_name, args.location or 0, args.size, perm, flags,
@@ -166952,13 +166909,9 @@ class V8ListMapsCommand(GenericCommand, BufferingOutput):
         file_fd = None
         redirected = False
         try:
-            p = PatchCommand.PatchInfo(current_arch.sp, output_path.encode() + b"\0")
-            p.patch(silent=True)
-            try:
+            with ContextManager.temporary_memory(current_arch.sp, output_path.encode() + b"\0"):
                 flags = 0o100 | 0o1 | 0o1000 # O_CREAT | O_WRONLY | O_TRUNC
                 file_fd = V8ListMapsCommand.stdout_syscall("open", [current_arch.sp, flags, 0o600])
-            finally:
-                p.revert(silent=True)
             V8ListMapsCommand.stdout_syscall("dup2", [file_fd, 1])
             redirected = True
         finally:
@@ -201173,6 +201126,26 @@ class ContextManager:
                 gdb.parse_and_eval("$cpsr = {:#x}".format(cpsr))
                 if info:
                     info("Moving back to EL{:d}".format((cpsr >> 2) & 0b11))
+        return
+
+    @staticmethod
+    @contextlib.contextmanager
+    def temporary_memory(addr, data=None, length=None, safe=False):
+        """Preserve memory and optionally write data, yielding the original bytes.
+        With safe, yield None without writing if the original memory cannot be read.
+        """
+        if data is not None:
+            length = len(data)
+        original = read_memory(addr, length, safe=safe)
+        if original is None:
+            yield None
+            return
+        try:
+            if data is not None:
+                write_memory(addr, data)
+            yield original
+        finally:
+            write_memory(addr, original)
         return
 
     @staticmethod
