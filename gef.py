@@ -2084,7 +2084,7 @@ class Permission:
 
         if perm_str[0] not in "rR-_?":
             return False
-        if perm_str[1] not in "wR-_?":
+        if perm_str[1] not in "wW-_?":
             return False
         if perm_str[2] not in "xX-_?":
             return False
@@ -2637,7 +2637,7 @@ class Elf:
 
         if self.filename:
             fd = open(self.filename, "rb")
-            fd.seek(phdr.p_offset)
+            fd.seek(self.seek_init_offset + phdr.p_offset)
             data = fd.read(phdr.p_filesz)
             fd.close()
             return data
@@ -2659,7 +2659,7 @@ class Elf:
 
         if self.filename:
             fd = open(self.filename, "rb")
-            fd.seek(shdr.sh_offset)
+            fd.seek(self.seek_init_offset + shdr.sh_offset)
             data = fd.read(shdr.sh_size)
             fd.close()
             return data
@@ -2770,7 +2770,7 @@ class Elf:
             if offset is None:
                 return None
             with open(self.filename, "rb") as fd:
-                fd.seek(offset)
+                fd.seek(self.seek_init_offset + offset)
                 data = fd.read(size)
             return self.get_string_from_data(data, 0)
 
@@ -3043,7 +3043,7 @@ class Elf:
                     offset = self.vaddr_to_offset(strtab_addr)
                     if offset is not None:
                         with open(self.filename, "rb") as fd:
-                            fd.seek(offset)
+                            fd.seek(self.seek_init_offset + offset)
                             dynstr = fd.read(strtab_size)
                         if len(dynstr) != strtab_size:
                             dynstr = None
@@ -22819,6 +22819,16 @@ class SearchPatternCommand(GenericCommand):
         if isinstance(pattern, str):
             pattern = String.str2bytes(pattern)
 
+        ofs = 0
+        if not self.args.hex_regex:
+            try:
+                pattern = codecs.escape_decode(pattern)[0]
+            except (ValueError, UnicodeDecodeError):
+                err('Could not decode "\\xXX" encoded pattern')
+                return []
+            ofs = len(pattern) - 1
+            pattern = re.escape(pattern)
+
         if self.args.hex_regex:
             step = end_address - start_address
         elif is_qemu_system():
@@ -22828,12 +22838,6 @@ class SearchPatternCommand(GenericCommand):
 
         locations = []
         old_mem = b""
-        # `pattern` may contain regex escapes (e.g. rb"\\x41"), so the number of
-        # bytes it matches is not len(pattern).
-        try:
-            ofs = len(codecs.escape_decode(pattern)[0]) - 1
-        except (ValueError, UnicodeDecodeError):
-            ofs = len(pattern) - 1
         for chunk_addr in ProgressBar(range(start_address, end_address, step), disable=not self.args.verbose):
             # read
             mem = self.read_data(chunk_addr, step, end_address)
@@ -23036,6 +23040,11 @@ class SearchPatternCommand(GenericCommand):
     def create_patterns(self):
         if self.args.hex_regex:
             pattern = self.args.pattern.lower().replace(" ", "")
+            try:
+                re.compile(String.str2bytes(pattern))
+            except re.error as e:
+                err("Invalid pattern: {!s}".format(e))
+                return None
             return (pattern,)
 
         # create normal pattern
@@ -23053,14 +23062,16 @@ class SearchPatternCommand(GenericCommand):
         else:
             pattern = self.args.pattern
 
-        def isascii(string):
-            val = codecs.escape_decode(string)[0]
-            return all(0x20 <= c < 0x7f for c in val)
+        try:
+            val = codecs.escape_decode(pattern)[0]
+        except (ValueError, UnicodeDecodeError):
+            err('Could not decode "\\xXX" encoded pattern')
+            return None
 
         # create utf16 pattern
         pattern_utf16 = None
         if not self.args.disable_utf16:
-            if isascii(pattern) and "\\" not in pattern:
+            if all(0x20 <= c < 0x7f for c in val) and "\\" not in pattern:
                 pattern_utf16 = "".join([x + "\\x00" for x in pattern])
         return (pattern, pattern_utf16)
 
@@ -24415,7 +24426,7 @@ class MprotectCommand(GenericCommand):
             size = sect.page_end - sect.page_start
 
         # permission
-        if re.match(r"[-_r][-_w][-_x]", args.permission):
+        if re.fullmatch(r"[-_r][-_w][-_x]", args.permission):
             perm = Permission.NONE
             if args.permission[0] == "r":
                 perm |= Permission.READ
@@ -41552,7 +41563,11 @@ class HexdumpFlexibleCommand(GenericCommand, BufferingOutput):
         tags_dic = {}
         if self.args.tag:
             for idx, tag in self.args.tag:
-                idx = int(idx, 0)
+                try:
+                    idx = int(idx, 0)
+                except ValueError:
+                    self.err_add_out("Invalid tag index")
+                    return
                 tags_dic[idx] = tag
                 max_tag_width = max(max_tag_width, len(tag))
 
@@ -58624,7 +58639,7 @@ x86_16_dos_syscall_list = [
     [0x3c, "CreateFile", ["$ax"], ["pathname", "attribute"], ["$ds:$dx", "$cx"]],
     [0x3d, "OpenFile", ["$ax"], ["mode", "pathname"], ["$al", "$ds:$dx"]],
     [0x3e, "CloseFile", ["$ax"], ["handle"], ["$bx"]],
-    [0x3f, "ReadFileOrDevice", ["$ax"], ["handle", "size"], ["$bx", "$cx", "$ds:$dx"]],
+    [0x3f, "ReadFileOrDevice", ["$ax"], ["handle", "size", "buffer"], ["$bx", "$cx", "$ds:$dx"]],
     [0x40, "WriteFileOrDevice", ["$ax"], ["handle", "size", "buffer"], ["$bx", "$cx", "$ds:$dx"]],
     [0x41, "DeleteFile", ["$ax"], ["pathname"], ["$ds:$dx"]],
     [0x42, "SeekFile", ["$dx", "$ax"], ["origin", "handle", "move_size_high", "move_size_low"], ["$al", "$bx", "$cx", "$dx"]],
@@ -64076,7 +64091,7 @@ class ConvertCommand(GenericCommand, BufferingOutput):
     def url_encode(self, value):
         try:
             import urllib.parse
-            s = urllib.parse.quote(value)
+            s = urllib.parse.quote_from_bytes(codecs.escape_decode(value)[0])
             if s != value:
                 self.out.append(titlify("URL-encode"))
                 self.out.append("URL-encode:     {:s}".format(s))
@@ -145187,6 +145202,9 @@ class HashFileCommand(HashCommand, BufferingOutput):
         if not os.path.exists(args.filename):
             err("File not found")
             return
+        if not os.path.isfile(args.filename):
+            err("Not a regular file")
+            return
         self.out.append("Path: {:s}".format(args.filename))
         self.out.append("FileSize: {:#x}".format(os.path.getsize(args.filename)))
 
@@ -147687,6 +147705,9 @@ class CrcFileCommand(CrcCommand):
         if not os.path.exists(args.filename):
             err("File not found")
             return
+        if not os.path.isfile(args.filename):
+            err("Not a regular file")
+            return
         self.out.append("Path: {:s}".format(args.filename))
         self.out.append("FileSize: {:#x}".format(os.path.getsize(args.filename)))
 
@@ -148008,7 +148029,11 @@ class Crc32revCommand(GenericCommand):
         """Build map from --known and --known-hex."""
         known_map = {}
         for raw_idx, raw_char in self.args.known or []:
-            idx = int(raw_idx, 0)
+            try:
+                idx = int(raw_idx, 0)
+            except ValueError:
+                err("Invalid known IDX")
+                return None
             if idx < 0:
                 err("known IDX must be >= 0")
                 return None
@@ -148023,7 +148048,11 @@ class Crc32revCommand(GenericCommand):
             known_map[idx] = b
 
         for raw_idx, hex_char in self.args.known_hex or []:
-            idx = int(raw_idx, 0)
+            try:
+                idx = int(raw_idx, 0)
+            except ValueError:
+                err("Invalid known IDX")
+                return None
             if idx < 0:
                 err("known IDX must be >= 0")
                 return None
@@ -149931,6 +149960,8 @@ class ConstGrepCommand(GenericCommand):
     _example_ = "\n".join(_example_).format(_cmdline_)
 
     def read_normalize(self, path):
+        if not os.path.isfile(path):
+            return None
         try:
             content = open(path, "rb").read()
         except (FileNotFoundError, IsADirectoryError):
@@ -149952,7 +149983,11 @@ class ConstGrepCommand(GenericCommand):
         if not os.path.isdir(srcdir):
             err("Could not find directory: {:s}".format(srcdir))
             return
-        pattern = re.compile(r"^\s*#\s*define\s+\S*" + args.pattern)
+        try:
+            pattern = re.compile(r"^\s*#\s*define\s+\S*" + args.pattern)
+        except re.error as e:
+            err("Invalid pattern: {!s}".format(e))
+            return
         info("Header search directory: {:s}".format(srcdir))
         for path in GefUtil.walk(srcdir):
             content = self.read_normalize(path)
