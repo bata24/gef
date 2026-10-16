@@ -22296,8 +22296,7 @@ class XtapCommand(GenericCommand):
     def trace(self):
         bp_was_hit = False
         inferior_exited = False
-        with ContextManager.redirect_output() as write_stdout:
-            EventHooking.gef_on_stop_unhook(EventHandler.hook_stop_handler)
+        with ContextManager.redirect_output() as write_stdout, ContextManager.suspend_stop_handler():
             try:
                 with EventHooking.temporary("stop", self.remember_stop):
                     while True:
@@ -22321,8 +22320,6 @@ class XtapCommand(GenericCommand):
                 bp_was_hit = True
             except gdb.error as e:
                 self.err = e
-            finally:
-                EventHooking.gef_on_stop_hook(EventHandler.hook_stop_handler)
         if inferior_exited:
             info("Inferior exited")
         return bp_was_hit
@@ -104330,8 +104327,7 @@ class ExecAsm:
                         gdb.flush() # do not discard the buffered output of the user
                         output.enter_context(ContextManager.redirect_output(stderr=False))
                         output.callback(gdb.flush) # discard the buffered stop messages while executing
-                    EventHooking.gef_on_stop_unhook(EventHandler.hook_stop_handler)
-                    output.callback(EventHooking.gef_on_stop_hook, EventHandler.hook_stop_handler)
+                    output.enter_context(ContextManager.suspend_stop_handler())
                     with EventHooking.temporary("stop", self.stops.append):
                         self.modify_regs()
                         self.modify_code(d["pc"])
@@ -186994,14 +186990,14 @@ class StringsContinueCommand(GenericCommand):
             stop_event = event
             return
 
-        EventHooking.gef_on_stop_unhook(EventHandler.hook_stop_handler)
         info("Single-stepping for register strings. Stop with a breakpoint or Ctrl+C.")
 
         stopped = False
         inferior_exited = False
         execution_error = None
         try:
-            with ContextManager.gdb_parameter("suppress-cli-notifications", "on", ignore_error=True):
+            with ContextManager.suspend_stop_handler(), \
+                    ContextManager.gdb_parameter("suppress-cli-notifications", "on", ignore_error=True):
                 with EventHooking.temporary("stop", remember_stop):
                     self.dump_new_strings(seen, previous_registers, args.min_length, args.max_length)
                     while is_alive():
@@ -187026,7 +187022,6 @@ class StringsContinueCommand(GenericCommand):
             else:
                 inferior_exited = True
         finally:
-            EventHooking.gef_on_stop_hook(EventHandler.hook_stop_handler)
             Cache.reset_gef_caches()
 
         if inferior_exited:
@@ -187247,8 +187242,7 @@ class ExecUntilCommand(GenericCommand):
         self.err = None
 
         prev_addr = -1
-        with ContextManager.redirect_output() as write_stdout:
-            EventHooking.gef_on_stop_unhook(EventHandler.hook_stop_handler)
+        with ContextManager.redirect_output() as write_stdout, ContextManager.suspend_stop_handler():
             try:
                 with EventHooking.temporary("stop", self.remember_stop):
                     count = 0
@@ -187299,8 +187293,6 @@ class ExecUntilCommand(GenericCommand):
                 else:
                     pass
 
-            finally:
-                EventHooking.gef_on_stop_hook(EventHandler.hook_stop_handler)
         Cache.reset_gef_caches()
         if self.err:
             err(self.err)
@@ -188050,8 +188042,7 @@ class CallTraceCommand(ExecUntilCommand):
         next_should_print = False # flag to dump instructions to which calls and rets are jumped
         pending_syscall_ret_indent = None
         print_indent = 0
-        with ContextManager.redirect_output() as write_stdout:
-            EventHooking.gef_on_stop_unhook(EventHandler.hook_stop_handler)
+        with ContextManager.redirect_output() as write_stdout, ContextManager.suspend_stop_handler():
             try:
                 with EventHooking.temporary("stop", self.remember_stop):
                     while True:
@@ -188125,8 +188116,6 @@ class CallTraceCommand(ExecUntilCommand):
                 else:
                     pass
 
-            finally:
-                EventHooking.gef_on_stop_hook(EventHandler.hook_stop_handler)
         Cache.reset_gef_caches()
         if self.err:
             err(self.err)
@@ -201034,6 +201023,24 @@ class AliasesListCommand(AliasesCommand, BufferingOutput):
 
 class ContextManager:
     """A collection of context managers for temporary GEF state."""
+
+    stop_handler_suspended = False
+
+    @staticmethod
+    @contextlib.contextmanager
+    def suspend_stop_handler():
+        """Temporarily disconnect the GEF stop handler, restoring it when the outermost block exits."""
+        suspended = ContextManager.stop_handler_suspended
+        if not suspended:
+            EventHooking.gef_on_stop_unhook(EventHandler.hook_stop_handler)
+        ContextManager.stop_handler_suspended = True
+        try:
+            yield
+        finally:
+            ContextManager.stop_handler_suspended = suspended
+            if not suspended:
+                EventHooking.gef_on_stop_hook(EventHandler.hook_stop_handler)
+        return
 
     @staticmethod
     @contextlib.contextmanager
