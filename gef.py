@@ -22319,8 +22319,10 @@ class XtapCommand(GenericCommand):
         if isinstance(event, gdb.BreakpointEvent):
             numbers = [bp.number for bp in event.breakpoints]
         else:
-            res = gdb.execute("info program", to_string=True)
-            numbers = [int(num) for num in re.findall(r"It stopped at breakpoint (\d+)\.", res)]
+            stop = GefUtil.get_stop_reason()
+            if stop is None:
+                return None
+            numbers = [num for num in stop["breakpoints"] if num is not None]
         if not numbers or any(num not in self.catch_numbers for num in numbers):
             return None
 
@@ -35926,15 +35928,10 @@ class ExploitableCommand(GenericCommand):
 
     def current_signal_name(self):
         """Return the stop signal name (e.g. 'SIGSEGV')"""
-        try:
-            res = gdb.execute("info program", to_string=True).splitlines()
-        except gdb.error:
+        stop = GefUtil.get_stop_reason()
+        if stop is None or not stop["selected_thread"]:
             return None
-        for line in res:
-            line = line.strip()
-            if line.startswith("It stopped with signal "):
-                return line.replace("It stopped with signal ", "").split(",", 1)[0].strip()
-        return None
+        return stop["signal"]
 
     def fault_address(self):
         """Return the faulting address from siginfo, or None if unavailable."""
@@ -41186,30 +41183,6 @@ class ContextThreadsCommand(GenericCommand):
         self.add_setting("nb_lines", 4, "Number of line in the threads pane (-1: infinity)")
         return
 
-    def reason(self):
-        try:
-            res = gdb.execute("info program", to_string=True).splitlines()
-        except gdb.error:
-            return "STOPPED"
-
-        if not res:
-            return "NOT RUNNING"
-
-        for line in res:
-            line = line.strip()
-            if line.startswith("It stopped with signal "):
-                return line.replace("It stopped with signal ", "").split(",", 1)[0]
-            if line == "The program being debugged is not being run.":
-                return "NOT RUNNING"
-            if line == "It stopped at a breakpoint that has since been deleted.":
-                return "TEMPORARY BREAKPOINT"
-            if line.startswith("It stopped at breakpoint "):
-                return "BREAKPOINT"
-            if line == "It stopped after being stepped.":
-                return "SINGLE STEP"
-
-        return "STOPPED"
-
     def context_threads(self, redirect):
         if self.args.nb_lines is not None:
             nb_lines = self.args.nb_lines
@@ -41296,7 +41269,9 @@ class ContextThreadsCommand(GenericCommand):
                         pc = get_register("$pc")
                     # make reason
                     line += " at " + Symbol.format(pc, missing="NO_SYMBOL", show_address=True)
-                    line += ", reason: {:s}".format(Color.colorify(self.reason(), "bold magenta"))
+                    stop = GefUtil.get_stop_reason()
+                    reason = stop["reason"] if stop else "STOPPED"
+                    line += ", reason: {:s}".format(Color.colorify(reason, "bold magenta"))
 
                 lines.append([thread.num, line])
 
@@ -104565,22 +104540,13 @@ class ExecAsm:
 
     @staticmethod
     def get_stop_signal():
-        try:
-            res = gdb.execute("info program", to_string=True)
-        except gdb.error:
+        stop = GefUtil.get_stop_reason()
+        if stop is None:
             return None
-        r = re.search(r"It stopped with signal (\w+),", res)
         thread = gdb.selected_thread()
         signal = ExecAsm.queued_signals.get(thread)
-        if signal is None and r:
-            stopped = re.search(r"Last stopped for thread (?:(\d+)\.)?(\d+) ", res)
-            if stopped:
-                if (int(stopped.group(1) or 1), int(stopped.group(2))) == (thread.inferior.num, thread.num):
-                    signal = r.group(1)
-            else:
-                stopped = re.search(r"Program stopped at (0x[0-9a-f]+)\.", res)
-                if stopped and int(stopped.group(1), 16) == get_register("$pc"):
-                    signal = r.group(1)
+        if signal is None and stop["selected_thread"]:
+            signal = stop["signal"]
         if signal is None:
             return None
 
@@ -187670,11 +187636,8 @@ class ExecUntilCommand(GenericCommand):
                        for bp in event.breakpoints)
         if reason is not None:
             return True
-        try:
-            res = gdb.execute("info program", to_string=True)
-        except gdb.error:
-            return True
-        return "It stopped after being stepped." not in res
+        stop = GefUtil.get_stop_reason()
+        return stop is None or not stop["stepped"]
 
     def exec_step(self, command, insn=None):
         if insn and command in ("si", "ni") and self.requires_continue(insn):
@@ -201911,6 +201874,46 @@ class GefUtil:
             if bp.is_valid():
                 bp.delete()
         return
+
+    @staticmethod
+    def get_stop_reason():
+        """Parse `info program`, which describes the last stop in all-stop mode, or return None on error.
+
+        "reason" names the stop of the selected thread (e.g. "BREAKPOINT"). "breakpoints" has None for a deleted breakpoint.
+        """
+        try:
+            res = gdb.execute("info program", to_string=True)
+        except gdb.error:
+            return None
+        thread = re.search(r"^(?:Last stopped for|Selected) thread (?:(\d+)\.)?(\d+) ", res, re.M)
+        if thread: # gdb 14.1~
+            selected = gdb.selected_thread()
+            is_selected = (int(thread.group(1) or 1), int(thread.group(2))) == (selected.inferior.num, selected.num)
+        else:
+            pc = re.search(r"^Program stopped at (0x[0-9a-f]+)\.", res, re.M)
+            is_selected = bool(pc) and int(pc.group(1), 16) == get_register("$pc")
+        breakpoints = re.findall(r"^It stopped at (?:breakpoint (\d+)|a breakpoint that has since been deleted)\.", res, re.M)
+        signal = re.search(r"^It stopped with signal (\w+),", res, re.M)
+        stepped = "It stopped after being stepped." in res
+        if "The program being debugged is not being run." in res:
+            reason = "NOT RUNNING"
+        elif not is_selected:
+            reason = "STOPPED"
+        elif signal:
+            reason = signal.group(1)
+        elif breakpoints:
+            reason = "BREAKPOINT" if breakpoints[0] else "TEMPORARY BREAKPOINT"
+        elif stepped:
+            reason = "SINGLE STEP"
+        else:
+            reason = "STOPPED"
+        return {
+            "reason": reason,
+            "selected_thread": is_selected,
+            "stepped": stepped,
+            "breakpoints": [int(num) if num else None for num in breakpoints],
+            "signal": signal.group(1) if signal else None,
+        }
 
     @staticmethod
     @Cache.cache_until_next(per_cpu=True, per_inferior=True)
