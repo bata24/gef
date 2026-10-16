@@ -40173,18 +40173,7 @@ class ContextCodeCommand(GenericCommand):
             return []
         bp_locations = []
         for b in breakpoints:
-            if hasattr(b, "locations"): # gdb 13.1~
-                for bl in b.locations:
-                    if bl and bl.address is not None:
-                        bp_locations.append(bl.address)
-            else: # for old gdb
-                if b.location and b.location.startswith("*"):
-                    pos = b.location.lstrip("*")
-                    try:
-                        x = int(pos, 16)
-                        bp_locations.append(x)
-                    except ValueError:
-                        pass
+            bp_locations.extend(GefUtil.get_breakpoint_addresses(b))
         return bp_locations
 
     def context_code_default(self, redirect):
@@ -40849,22 +40838,15 @@ class ContextSourceCommand(GenericCommand):
             return []
         bp_locations = set()
         for b in breakpoints:
-            if hasattr(b, "locations") and b.locations:
-                for bl in b.locations:
-                    if bl and bl.address is not None:
-                        sal = gdb.find_pc_line(bl.address)
-                        if sal.symtab and sal.line:
-                            bp_locations.add((os.path.realpath(sal.symtab.fullname()), sal.line))
-            else: # for old gdb
-                if not b.location:
-                    continue
+            locations = [gdb.find_pc_line(x) for x in GefUtil.get_breakpoint_addresses(b)]
+            if not locations and b.location: # for old gdb
                 try:
                     _, locations = gdb.decode_line(b.location)
                 except gdb.error:
                     continue
-                for sal in locations or []:
-                    if sal.symtab and sal.line:
-                        bp_locations.add((os.path.realpath(sal.symtab.fullname()), sal.line))
+            for sal in locations or []:
+                if sal.symtab and sal.line:
+                    bp_locations.add((os.path.realpath(sal.symtab.fullname()), sal.line))
         return bp_locations
 
     def line_has_breakpoint(self, file_name, line_number, bp_locations):
@@ -200143,20 +200125,6 @@ class GefResetBreakpointsCommand(GenericCommand):
     parser.add_argument("-c", "--commit", action="store_true", help="actually perform delete.")
     _syntax_ = parser.format_help()
 
-    def get_breakpoint(self, b):
-        if hasattr(b, "locations"): # gdb 13.1~
-            for bl in b.locations:
-                if bl and bl.address is not None:
-                    return bl.address
-        else: # for old gdb
-            if b.location and b.location.startswith("*"):
-                pos = b.location.lstrip("*")
-                try:
-                    return int(pos, 16)
-                except ValueError:
-                    pass
-        return None
-
     @Decorator.parse_args
     def do_invoke(self, args):
         breakpoints = gdb.breakpoints()
@@ -200164,7 +200132,8 @@ class GefResetBreakpointsCommand(GenericCommand):
 
         for bp in breakpoints:
             bp_str = repr(bp)
-            bp_addr = self.get_breakpoint(bp)
+            bp_addrs = GefUtil.get_breakpoint_addresses(bp)
+            bp_addr = bp_addrs[0] if bp_addrs else None
             if args.commit:
                 bp.delete()
                 if bp_addr is not None:
@@ -201874,6 +201843,21 @@ class GefUtil:
             if bp.is_valid():
                 bp.delete()
         return
+
+    @staticmethod
+    def get_breakpoint_addresses(bp):
+        addresses = []
+        if hasattr(bp, "locations"): # gdb 13.1~
+            for bl in bp.locations:
+                if bl and bl.address is not None:
+                    addresses.append(bl.address)
+        else: # for old gdb
+            if bp.location and bp.location.startswith("*0x"):
+                try:
+                    addresses.append(int(bp.location[1:], 16))
+                except ValueError:
+                    pass
+        return addresses
 
     @staticmethod
     def get_stop_reason():
