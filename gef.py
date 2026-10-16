@@ -18379,21 +18379,9 @@ class UpCommand(GenericCommand):
         if current_frame and current_frame.is_valid():
             current_frame.select()
 
-        # back up
-        nb_lines_before = Config.get("context_trace.nb_lines_before")
-        nb_lines = Config.get("context_trace.nb_lines")
-
-        try:
-            # change temporarily
-            Config.set("context_trace.nb_lines_before", 0xff)
-            Config.set("context_trace.nb_lines", 0x100)
-
-            # print
+        with ContextManager.config("context_trace.nb_lines_before", 0xff), \
+                ContextManager.config("context_trace.nb_lines", 0x100):
             gdb.execute("context trace -i")
-        finally:
-            # restore
-            Config.set("context_trace.nb_lines_before", nb_lines_before)
-            Config.set("context_trace.nb_lines", nb_lines)
         return
 
     @Decorator.parse_args
@@ -18442,21 +18430,9 @@ class DownCommand(GenericCommand):
         if current_frame and current_frame.is_valid():
             current_frame.select()
 
-        # back up
-        nb_lines_before = Config.get("context_trace.nb_lines_before")
-        nb_lines = Config.get("context_trace.nb_lines")
-
-        try:
-            # change temporarily
-            Config.set("context_trace.nb_lines_before", 0xff)
-            Config.set("context_trace.nb_lines", 0x100)
-
-            # print
+        with ContextManager.config("context_trace.nb_lines_before", 0xff), \
+                ContextManager.config("context_trace.nb_lines", 0x100):
             gdb.execute("context trace -i")
-        finally:
-            # restore
-            Config.set("context_trace.nb_lines_before", nb_lines_before)
-            Config.set("context_trace.nb_lines", nb_lines)
         return
 
     @Decorator.parse_args
@@ -18630,14 +18606,7 @@ class DisplayTypeCommand(GenericCommand, BufferingOutput):
             err("{:s} is not struct or union or enum".format(tp.name or args.type))
             return
 
-        # change setting temporarily
-        if args.smart:
-            old_smart_setting = Config.get("context.smart_cpp_function_name")
-
-        try:
-            if args.smart:
-                Config.set("context.smart_cpp_function_name", True)
-
+        with ContextManager.config("context.smart_cpp_function_name", True, enabled=args.smart):
             # doit
             if args.address is None:
                 ret = self.dump_type(tp, args.type)
@@ -18646,10 +18615,6 @@ class DisplayTypeCommand(GenericCommand, BufferingOutput):
 
             if ret:
                 self.print_output(check_terminal_size=True)
-        finally:
-            # revert setting
-            if args.smart:
-                Config.set("context.smart_cpp_function_name", old_smart_setting)
         return
 
 
@@ -149584,14 +149549,12 @@ class SaveOutputCommand(GenericCommand):
 
         # do the command
         try:
-            Config.set("gef.always_no_pager", True) # change temporarily
-            current_output = Color.remove_color(gdb.execute(cmd, to_string=True))
+            with ContextManager.config("gef.always_no_pager", True):
+                current_output = Color.remove_color(gdb.execute(cmd, to_string=True))
         except gdb.error:
             exc_type, exc_value, exc_traceback = sys.exc_info()
             gef_print(exc_value)
             return
-        finally:
-            Config.set("gef.always_no_pager", always_no_pager) # revert settings
 
         # remove clear_screen code
         if current_output.startswith("\x1b[H\x1b[2J"):
@@ -199164,14 +199127,7 @@ class TypesCommand(GenericCommand, BufferingOutput):
         """Display type information for each type name, optionally using verbose output and smart formatting."""
         type_names = self.get_type_names()
 
-        # temporarily changed
-        if self.args.smart:
-            old_smart_setting = Config.get("context.smart_cpp_function_name")
-
-        try:
-            if self.args.smart:
-                Config.set("context.smart_cpp_function_name", True)
-
+        with ContextManager.config("context.smart_cpp_function_name", True, enabled=self.args.smart):
             # formatting typenames
             for type_name in ProgressBar(type_names):
                 if self.args.verbose:
@@ -199183,10 +199139,6 @@ class TypesCommand(GenericCommand, BufferingOutput):
                     self.out.append(ret)
                 else:
                     self.out.append(Instruction.smartify_text(type_name))
-        finally:
-            # revert
-            if self.args.smart:
-                Config.set("context.smart_cpp_function_name", old_smart_setting)
         return
 
     @Decorator.parse_args
@@ -201011,6 +200963,21 @@ class ContextManager:
     """A collection of context managers for temporary GEF state."""
 
     stop_handler_suspended = False
+
+    @staticmethod
+    @contextlib.contextmanager
+    def config(name, value, enabled=True):
+        """Temporarily set a GEF setting and restore its original value on exit, unless disabled."""
+        if not enabled:
+            yield
+            return
+        original = Config.get(name)
+        Config.set(name, value)
+        try:
+            yield
+        finally:
+            Config.set(name, original)
+        return
 
     @staticmethod
     @contextlib.contextmanager
