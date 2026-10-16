@@ -188587,29 +188587,12 @@ class KmallocBreakpoint(gdb.Breakpoint):
         self.enabled = False
         return
 
-    def check_nested(self, task_addr):
-        if not task_addr:
-            return False
-        interrupt_context = Kernel.get_interrupt_context()
-        if interrupt_context[-1] is None:
-            return False
-        for bp in gdb.breakpoints() or ():
-            try:
-                if bp.__class__.__name__ in ["KmallocRetBreakpoint"]:
-                    if (bp.enabled and bp.option is self.option
-                            and bp.task_addr == task_addr
-                            and bp.interrupt_context == interrupt_context):
-                        return True
-            except Exception:
-                pass
-        return False
-
     def stop(self):
         Cache.reset_gef_caches()
 
         # fast return if nested break
         task_addr, task_name = KmallocTracerCommand.get_task()
-        if self.check_nested(task_addr):
+        if GefUtil.is_nested_call(self.option, ["KmallocRetBreakpoint"], task_addr):
             return False
 
         # filtering by task addr
@@ -188770,29 +188753,12 @@ class AllocPagesBreakpoint(gdb.Breakpoint):
         self.enabled = False
         return
 
-    def check_nested(self, task_addr):
-        if not task_addr:
-            return False
-        interrupt_context = Kernel.get_interrupt_context()
-        if interrupt_context[-1] is None:
-            return False
-        for bp in gdb.breakpoints() or ():
-            try:
-                if bp.__class__.__name__ in ["AllocPagesRetBreakpoint"]:
-                    if (bp.enabled and bp.option is self.option
-                            and bp.task_addr == task_addr
-                            and bp.interrupt_context == interrupt_context):
-                        return True
-            except Exception:
-                pass
-        return False
-
     def stop(self):
         Cache.reset_gef_caches()
 
         # fast return if nested break
         task_addr, task_name = KmallocTracerCommand.get_task()
-        if self.check_nested(task_addr):
+        if GefUtil.is_nested_call(self.option, ["AllocPagesRetBreakpoint"], task_addr):
             return False
 
         # filtering by task addr
@@ -191309,28 +191275,12 @@ class KpageWatchAllocBreakpoint(gdb.Breakpoint):
         self.enabled = False
         return
 
-    def check_nested(self, task_addr):
-        if not task_addr:
-            return False
-        interrupt_context = Kernel.get_interrupt_context()
-        if interrupt_context[-1] is None:
-            return False
-        for bp in gdb.breakpoints() or ():
-            try:
-                # the bulk allocator falls back to this one; its return records the page instead
-                if bp.__class__.__name__ in ("KpageWatchAllocRetBreakpoint", "KpageWatchAllocBulkRetBreakpoint"):
-                    if (bp.enabled and bp.watcher is self.watcher
-                            and bp.task_addr == task_addr
-                            and bp.interrupt_context == interrupt_context):
-                        return True
-            except Exception:
-                pass
-        return False
-
     def stop(self):
         Cache.reset_gef_caches()
         task_addr, task_name = KmallocTracerCommand.get_task()
-        if self.check_nested(task_addr):
+        # the bulk allocator falls back to this one; its return records the page instead
+        names = ["KpageWatchAllocRetBreakpoint", "KpageWatchAllocBulkRetBreakpoint"]
+        if GefUtil.is_nested_call(self.watcher, names, task_addr):
             return False
         order = KmallocTracerCommand.get_ith_parameter(self.index_of_order_arg)
         caller_pc = KmallocTracerCommand.get_return_address()
@@ -191494,27 +191444,10 @@ class KpageWatchSlabBreakpoint(gdb.Breakpoint):
         self.enabled = False
         return
 
-    def check_nested(self, task_addr):
-        if not task_addr:
-            return False
-        interrupt_context = Kernel.get_interrupt_context()
-        if interrupt_context[-1] is None:
-            return False
-        for bp in gdb.breakpoints() or ():
-            try:
-                if bp.__class__.__name__ == "KpageWatchSlabRetBreakpoint":
-                    if (bp.enabled and bp.watcher is self.watcher
-                            and bp.task_addr == task_addr
-                            and bp.interrupt_context == interrupt_context):
-                        return True
-            except Exception:
-                pass
-        return False
-
     def stop(self):
         Cache.reset_gef_caches()
         task_addr, task_name = KmallocTracerCommand.get_task()
-        if self.check_nested(task_addr):
+        if GefUtil.is_nested_call(self.watcher, ["KpageWatchSlabRetBreakpoint"], task_addr):
             return False
         kmem_cache = KmallocTracerCommand.get_ith_parameter(0)
         caller_pc = KmallocTracerCommand.get_return_address()
@@ -201707,6 +201640,16 @@ class GefUtil:
             return []
         return [bp for bp in gdb.breakpoints() or ()
                 if any(getattr(bp, name, None) is owner for name in ("owner", "option", "watcher"))]
+
+    @staticmethod
+    def is_nested_call(owner, names, task_addr):
+        if not task_addr:
+            return False
+        interrupt_context = Kernel.get_interrupt_context()
+        if interrupt_context[-1] is None:
+            return False
+        return any(bp.__class__.__name__ in names and bp.enabled and bp.task_addr == task_addr
+                   and bp.interrupt_context == interrupt_context for bp in GefUtil.get_owned_breakpoints(owner))
 
     @staticmethod
     def delete_breakpoints(owner, report_pending=False):
