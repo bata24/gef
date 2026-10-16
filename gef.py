@@ -102612,7 +102612,22 @@ class KernelDiffCommand(GenericCommand, BufferingOutput):
     @staticmethod
     def load_snapshot(path):
         try:
-            return json.loads(open(path).read())
+            snapshot = json.loads(open(path).read())
+            if not isinstance(snapshot, dict):
+                raise ValueError("Invalid snapshot format")
+            kernel = snapshot.get("kernel")
+            commands = snapshot.get("commands")
+            if not isinstance(kernel, list) or len(kernel) != 4 or not isinstance(commands, dict):
+                raise ValueError("Invalid snapshot format")
+            version = kernel[1]
+            if version is not None and (
+                not isinstance(version, list) or len(version) != 3 or not all(isinstance(v, int) for v in version)
+            ):
+                raise ValueError("Invalid kernel version")
+            if not all(isinstance(command, str) and command.strip() and isinstance(lines, list)
+                       and all(isinstance(line, str) for line in lines) for command, lines in commands.items()):
+                raise ValueError("Invalid snapshot commands")
+            return snapshot
         except (OSError, ValueError) as e:
             err("Failed to load {!r}: {!s}".format(path, e))
             return None
@@ -102667,7 +102682,11 @@ class KernelDiffCommand(GenericCommand, BufferingOutput):
         GefUtil.get_terminal_size = staticmethod(lambda redirect="": (600, 200))
         try:
             for command in commands:
-                if command.strip().split()[0] == self._cmdline_:
+                words = command.split()
+                if not words:
+                    err("Empty snapshot command is not allowed")
+                    return None
+                if words[0] == self._cmdline_:
                     err("Recursive kdiff command is not allowed")
                     return None
                 try:
@@ -147235,8 +147254,8 @@ class JsonMemoryCommand(JsonCommand):
             return
 
         try:
-            jstr = json.dumps(json.loads(j), indent=2)
-        except (json.JSONDecodeError, UnicodeDecodeError):
+            jstr = json.dumps(json.loads(j), indent=2, allow_nan=False)
+        except (ValueError, UnicodeDecodeError):
             err("Invalid JSON")
             return
 
@@ -147270,8 +147289,8 @@ class JsonValueCommand(JsonCommand):
     @Decorator.parse_args
     def do_invoke(self, args):
         try:
-            jstr = json.dumps(json.loads(self.args.value), indent=2)
-        except (json.JSONDecodeError, UnicodeDecodeError):
+            jstr = json.dumps(json.loads(self.args.value), indent=2, allow_nan=False)
+        except (ValueError, UnicodeDecodeError):
             err("Invalid JSON")
             return
 
@@ -152907,7 +152926,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
         elif cpu is None:
             target_cpus = list(range(self.kslub.ncpus))
         else:
-            if self.kslub.ncpus <= cpu:
+            if not 0 <= cpu < self.kslub.ncpus:
                 self.quiet_err("CPU number is invalid (valid range: {:d}-{:d})".format(0, self.kslub.ncpus - 1))
                 return
             target_cpus = [cpu]
@@ -153000,6 +153019,9 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
     @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
     @Decorator.only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
+        if args.hexdump_used < 0:
+            err("Hexdump size must be >= 0")
+            return
         if args.help_for_slab_virtual:
             gef_print(self._note2_.strip())
             return
@@ -153857,6 +153879,9 @@ class SlubTinyDumpCommand(GenericCommand, BufferingOutput):
     @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
     @Decorator.only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
+        if args.hexdump_used < 0:
+            err("Hexdump size must be >= 0")
+            return
         self.quiet_info("Wait for memory scan")
 
         allocator = Kernel.get_slab_type()
@@ -154961,7 +154986,7 @@ class SlabDumpCommand(GenericCommand, BufferingOutput):
         elif cpu is None:
             target_cpus = list(range(self.kslab.ncpus))
         else:
-            if self.kslab.ncpus <= cpu:
+            if not 0 <= cpu < self.kslab.ncpus:
                 self.quiet_err("CPU number is invalid (valid range: {:d}-{:d})".format(0, self.kslab.ncpus - 1))
                 return
             target_cpus = [cpu]
@@ -154989,6 +155014,9 @@ class SlabDumpCommand(GenericCommand, BufferingOutput):
     @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
     @Decorator.only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
+        if args.hexdump_used < 0:
+            err("Hexdump size must be >= 0")
+            return
         self.quiet_info("Wait for memory scan")
 
         allocator = Kernel.get_slab_type()
@@ -157935,6 +157963,9 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
     @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
     @Decorator.only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
+        if any(order < 0 for order in args.order_filter or []):
+            err("Order must be >= 0")
+            return
         kversion = Kernel.version()
         if kversion is None:
             self.quiet_err("Could not find Linux kernel")
@@ -162872,7 +162903,7 @@ class Ksym:
         aliases = {}
         for addr, name, _typ in kallsyms:
             base, sep, suffix = name.partition(".llvm.")
-            if sep and suffix.isdigit() and base not in kallsyms_map:
+            if sep and re.fullmatch(r"[0-9a-f]+", suffix) and base not in kallsyms_map:
                 aliases.setdefault(base, []).append(addr)
         kallsyms_map.update(aliases)
 
@@ -182811,16 +182842,17 @@ class PagewalkCommand(GenericCommand, BufferingOutput):
     @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
     @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "x86_16", "ARM32", "ARM64", "RISCV32", "RISCV64"))
     def do_invoke(self, argv):
+        arguments = " ".join(shlex.quote(arg) for arg in argv)
         if is_x86_32() or is_x86_16():
-            gdb.execute("pagewalk x86 {}".format(" ".join(argv)))
+            gdb.execute("pagewalk x86 {}".format(arguments))
         elif is_x86_64():
-            gdb.execute("pagewalk x64 {}".format(" ".join(argv)))
+            gdb.execute("pagewalk x64 {}".format(arguments))
         elif is_arm32():
-            gdb.execute("pagewalk arm {}".format(" ".join(argv)))
+            gdb.execute("pagewalk arm {}".format(arguments))
         elif is_arm64():
-            gdb.execute("pagewalk arm64 {}".format(" ".join(argv)))
+            gdb.execute("pagewalk arm64 {}".format(arguments))
         elif is_riscv64() or is_riscv32():
-            gdb.execute("pagewalk riscv {}".format(" ".join(argv)))
+            gdb.execute("pagewalk riscv {}".format(arguments))
         return
 
 
@@ -189134,6 +189166,9 @@ class KmallocTracerCommand(GenericCommand):
         info("Wait for memory scan")
 
         kversion = Kernel.version()
+        if kversion is None:
+            err("Could not find Linux kernel")
+            return
         if kversion < "3.0":
             err("Unsupported before v3.0")
             return
@@ -193315,6 +193350,9 @@ class KernelPerCpuCommand(GenericCommand, BufferingOutput):
             return
 
         pc = Kernel.per_cpu()
+        if any(cpu < 0 or cpu >= pc.nr_cpus for cpu in args.cpu):
+            err("CPU number is invalid")
+            return
         self.cpu_masks = pc.get_cpu_masks()
         self.out = []
         self.dump_meta(pc)
