@@ -174003,33 +174003,6 @@ class BreakSecureMemAddrCommand(GenericCommand):
             return None
         return maps
 
-    def aarch64_switch_el(self, target_el):
-        cpsr = get_register("$cpsr") & 0xffff_ffff
-        current_el = int((cpsr >> 2) & 0b11)
-        if target_el == current_el:
-            info("Current EL{:d} == Target EL{:d}".format(current_el, target_el))
-            return cpsr
-
-        # change EL
-        try:
-            saved_cpsr = cpsr
-            cpsr = cpsr & ~(0b11 << 2) # clear EL
-            cpsr |= target_el << 2 # set desired EL
-            gdb.parse_and_eval("$cpsr = {:#x}".format(cpsr))
-            info("Moving to EL{:d}".format(target_el))
-        except gdb.error:
-            err("Maybe unsupported to change to EL{:d}".format(target_el))
-            return None
-        return saved_cpsr
-
-    def aarch64_revert_el(self, saved_cpsr):
-        if saved_cpsr is None:
-            return
-        gdb.parse_and_eval("$cpsr = {:#x}".format(saved_cpsr))
-        saved_el = (saved_cpsr >> 2) & 0b11
-        info("Moving back to EL{:d}".format(saved_el))
-        return
-
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.only_if_specific_gdb_mode(mode=("qemu-system",))
@@ -174044,14 +174017,10 @@ class BreakSecureMemAddrCommand(GenericCommand):
                 virt_addrs = AddrMap.p2v(args.location, maps=maps)
                 # found any, fast return
                 if virt_addrs:
-                    saved_cpsr = self.aarch64_switch_el(target_el=3)
-                    if saved_cpsr is None:
-                        return
-                    try:
-                        for virt_addr in virt_addrs:
-                            gdb.execute("break *{:#x}".format(virt_addr))
-                    finally:
-                        self.aarch64_revert_el(saved_cpsr)
+                    with ContextManager.exception_level(3, info=info) as switched:
+                        if switched:
+                            for virt_addr in virt_addrs:
+                                gdb.execute("break *{:#x}".format(virt_addr))
                     return
 
         maps = AddrMap.get_maps(force_secure=True, verbose=args.verbose)
@@ -177133,8 +177102,7 @@ class VBARCommand(GenericCommand, BufferingOutput):
         vbars = self.get_vbar_arm64()
         max_width = max(len(x[2]) for x in self.A64_VECTOR_NAMES)
 
-        base_CPSR = get_register("$cpsr") & 0xffff_ffff
-        base_EL = (base_CPSR >> 2) & 0b11
+        base_EL = (get_register("$cpsr") >> 2) & 0b11
 
         for regname, vbar in vbars:
             self.out.append(titlify(regname))
@@ -177150,44 +177118,38 @@ class VBARCommand(GenericCommand, BufferingOutput):
                 "$VBAR_EL3": 3,
             }.get(regname, base_EL)
 
-            try:
-                # switch EL
-                if target_EL != base_EL:
-                    target_CPSR = base_CPSR & ~(0b11 << 2)
-                    target_CPSR |= target_EL << 2
-                    SwitchELCommand.set_cpsr(target_CPSR)
-
-                # address check
-                if (vbar & 0x7ff) != 0 or not is_valid_addr(vbar):
-                    self.err_add_out("Invalid VBAR address: {:#x}".format(vbar))
+            with ContextManager.exception_level(target_EL, error=self.err_add_out) as switched:
+                if not switched:
                     continue
+                try:
+                    # address check
+                    if (vbar & 0x7ff) != 0 or not is_valid_addr(vbar):
+                        self.err_add_out("Invalid VBAR address: {:#x}".format(vbar))
+                        continue
 
-                # read each entry
-                for ofs, sz, s in self.A64_VECTOR_NAMES:
-                    if self.args.verbose:
-                        # full
-                        pos = 0
-                        while pos < sz:
-                            insn = get_insn(vbar + ofs + pos)
+                    # read each entry
+                    for ofs, sz, s in self.A64_VECTOR_NAMES:
+                        if self.args.verbose:
+                            # full
+                            pos = 0
+                            while pos < sz:
+                                insn = get_insn(vbar + ofs + pos)
+                                insn_str = insn.colored_text(4)
+                                if pos == 0:
+                                    s = Color.colorify(s.ljust(max_width), "bold")
+                                    self.out.append("[{:+#06x}] {:s}: {:s}".format(ofs, s, insn_str))
+                                else:
+                                    s = " " * max_width
+                                    self.out.append("{:8s} {:s}: {:s}".format("", s, insn_str))
+                                pos += insn.size
+                        else:
+                            # compact
+                            insn = get_insn(vbar + ofs)
                             insn_str = insn.colored_text(4)
-                            if pos == 0:
-                                s = Color.colorify(s.ljust(max_width), "bold")
-                                self.out.append("[{:+#06x}] {:s}: {:s}".format(ofs, s, insn_str))
-                            else:
-                                s = " " * max_width
-                                self.out.append("{:8s} {:s}: {:s}".format("", s, insn_str))
-                            pos += insn.size
-                    else:
-                        # compact
-                        insn = get_insn(vbar + ofs)
-                        insn_str = insn.colored_text(4)
-                        s = Color.colorify(s.ljust(max_width), "bold")
-                        self.out.append("[{:+#06x}] {:s}: {:s}".format(ofs, s, insn_str))
-            except gdb.MemoryError:
-                self.err_add_out("Memory read error at VBAR address: {:#x}".format(vbar))
-            finally:
-                if target_EL != base_EL:
-                    SwitchELCommand.set_cpsr(base_CPSR)
+                            s = Color.colorify(s.ljust(max_width), "bold")
+                            self.out.append("[{:+#06x}] {:s}: {:s}".format(ofs, s, insn_str))
+                except gdb.MemoryError:
+                    self.err_add_out("Memory read error at VBAR address: {:#x}".format(vbar))
         return
 
     @Decorator.parse_args
@@ -181214,7 +181176,8 @@ class PageTableArm64(PageTable):
         """
 
         if self.EL3_M and self.args.target_el == 3:
-            return read_memory(addr, size)
+            with QemuMonitor.use_mmu_mode("virt"):
+                return read_memory(addr, size)
 
         # translate via EL2 mappings
         if self.EL2_VM and self.args.target_el == 1 and self.el2_mappings is not None:
@@ -182489,40 +182452,6 @@ class PageTableArm64(PageTable):
         self.mappings = sorted(self.mappings)
         return
 
-    def switch_el(self):
-        self.SAVED_CPSR = None
-        CPSR = get_register("$cpsr") & 0xffff_ffff
-        CurrentEL = int((CPSR >> 2) & 0b11)
-        # change EL
-        try:
-            if self.args.target_el < 1 or self.args.target_el > 3:
-                self.err_add_out("Invalid argument (ELx>=1 && ELx<=3)")
-                return
-            if self.args.target_el != CurrentEL:
-                self.SAVED_CPSR = CPSR
-                CPSR = CPSR & ~(0b11 << 2) # clear EL
-                CPSR |= self.args.target_el << 2 # set desired EL
-                gdb.parse_and_eval("$cpsr = {:#x}".format(CPSR))
-                self.quiet_info_add_out("Moving to EL{:d}".format(self.args.target_el))
-        except ValueError:
-            self.err_add_out("Invalid argument (ELx integer required)")
-            return
-        except gdb.error:
-            self.err_add_out("Maybe unsupported to change to EL{:d}".format(self.args.target_el))
-            return
-        # reload CPSR
-        CPSR = get_register("$cpsr") & 0xffff_ffff
-        CurrentEL = int((CPSR >> 2) & 0b11)
-        self.quiet_info_add_out("CPSR: EL{:d}".format(CurrentEL))
-        return True
-
-    def revert_el(self):
-        if self.SAVED_CPSR is not None:
-            gdb.parse_and_eval("$cpsr = {:#x}".format(self.SAVED_CPSR))
-            SavedEL = (self.SAVED_CPSR >> 2) & 0b11
-            self.quiet_info_add_out("Moving back to EL{:d}".format(SavedEL))
-        return
-
     def get_granule_bits(self, TG, reg_name):
         if reg_name == "TG0":
             if TG == 0b00:
@@ -183089,12 +183018,10 @@ class PageTableArm64(PageTable):
         if self.args.target_el == 2 and self.EL2_VM:
             self.quiet_info_add_out("EL2(as stage1) translation is unused")
         if self.args.target_el == 3 and self.EL3_M:
-            try:
-                if not self.switch_el():
+            with ContextManager.exception_level(3, info=self.quiet_info_add_out, error=self.err_add_out) as switched:
+                if not switched:
                     return
                 self.pagewalk_TTBR0_EL3()
-            finally:
-                self.revert_el()
         if self.args.target_el == 3 and not self.EL3_M:
             self.quiet_info_add_out("EL3 translation is unused")
         self.save_mapping_cache()
@@ -183423,16 +183350,52 @@ class SwitchELCommand(GenericCommand):
     _category_ = "06-b. Qemu-system/KGDB Cooperation - Register"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
-    parser.add_argument("target_el", metavar="TARGET_EL", nargs="?", type=int,
-                        help="Exception Level to change to.")
+    parser.add_argument("target_el", metavar="TARGET_EL", nargs="?", type=int, help="Exception Level to change to.")
     _syntax_ = parser.format_help()
 
     @staticmethod
-    def set_cpsr(cpsr):
-        gdb.parse_and_eval("$cpsr = {:#x}".format(cpsr))
-        return
+    def switch_el(target_el, error=err):
+        """Switch the AArch64 exception level by rewriting $cpsr, returning whether the CPU is at target_el.
+        Refuse AArch32 execution state and unimplemented ELs, and check that the target accepted the new $cpsr.
+        """
+        cpsr = get_register("$cpsr") & 0xffff_ffff
+        if cpsr & 0x10:
+            error("Switching EL requires AArch64 execution state")
+            return False
+        if (cpsr >> 2) & 0b11 == target_el:
+            return True
 
-    def switch_el(self, target_el):
+        if target_el >= 2:
+            features = get_register("$ID_AA64PFR0_EL1")
+            if features is None:
+                register = {2: "$HCR_EL2", 3: "$SCR_EL3"}[target_el]
+                if get_register(register) is None:
+                    error("EL{:d} is unavailable; could not read {:s}".format(target_el, register))
+                    return False
+            elif (features >> (target_el * 4)) & 0xf not in (1, 2):
+                error("EL{:d} is not implemented on this CPU".format(target_el))
+                return False
+
+        cpsr = cpsr & ~(0b11 << 2) # clear EL
+        cpsr |= target_el << 2 # set desired EL
+        if target_el == 0:
+            cpsr &= ~1 # EL0 only supports SP_EL0
+        try:
+            gdb.parse_and_eval("$cpsr = {:#x}".format(cpsr))
+        except gdb.error:
+            error("Maybe unsupported to change to EL{:d}".format(target_el))
+            return False
+        actual_cpsr = int(gdb.parse_and_eval("$cpsr")) & 0xffff_ffff
+        if actual_cpsr & 0x1f != cpsr & 0x1f:
+            error("Could not switch to EL{:d}; $cpsr = {:#x}".format(target_el, actual_cpsr))
+            return False
+        return True
+
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.only_if_specific_gdb_mode(mode=("qemu-system",))
+    @Decorator.only_if_specific_arch(arch=("ARM64",))
+    def do_invoke(self, args):
         # current EL
         CPSR = get_register("$cpsr") & 0xffff_ffff
         if CPSR & 0x10:
@@ -183441,13 +183404,13 @@ class SwitchELCommand(GenericCommand):
         CurrentEL = (CPSR >> 2) & 0b11
 
         # check argv
-        if target_el is None:
+        if args.target_el is None:
             info("$cpsr = {:#x} (EL{:d})".format(CPSR, CurrentEL))
             return
 
         # check target EL
         try:
-            if target_el < 0 or target_el > 3:
+            if args.target_el < 0 or args.target_el > 3:
                 err("Invalid argument (ELx>=0 && ELx<=3)")
                 return
         except ValueError:
@@ -183455,42 +183418,17 @@ class SwitchELCommand(GenericCommand):
             return
 
         # change CPSR
-        if target_el != CurrentEL:
-            if target_el >= 2:
-                features = get_register("$ID_AA64PFR0_EL1")
-                if features is None:
-                    register = {2: "$HCR_EL2", 3: "$SCR_EL3"}[target_el]
-                    if get_register(register) is None:
-                        err("EL{:d} is unavailable; could not read {:s}".format(target_el, register))
-                        return
-                elif (features >> (target_el * 4)) & 0xf not in (1, 2):
-                    err("EL{:d} is not implemented on this CPU".format(target_el))
-                    return
-            CPSR = CPSR & ~(0b11 << 2) # clear EL
-            CPSR |= target_el << 2 # set desired EL
-            if target_el == 0:
-                CPSR &= ~1 # EL0 only supports SP_EL0
-            self.set_cpsr(CPSR)
-            actual_cpsr = int(gdb.parse_and_eval("$cpsr")) & 0xffff_ffff
-            if actual_cpsr & 0x1f == CPSR & 0x1f:
-                info("Moving to EL{:d}".format(target_el))
-            else:
-                err("Could not switch to EL{:d}; $cpsr = {:#x}".format(target_el, actual_cpsr))
+        if args.target_el != CurrentEL:
+            if not self.switch_el(args.target_el):
+                return
+            info("Moving to EL{:d}".format(args.target_el))
         else:
-            info("Already at EL{:d}".format(target_el))
+            info("Already at EL{:d}".format(args.target_el))
 
         # reprint CPSR
         CPSR = int(gdb.parse_and_eval("$cpsr")) & 0xffff_ffff
         CurrentEL = (CPSR >> 2) & 0b11
         info("$cpsr = {:#x} (EL{:d})".format(CPSR, CurrentEL))
-        return
-
-    @Decorator.parse_args
-    @Decorator.only_if_gdb_running
-    @Decorator.only_if_specific_gdb_mode(mode=("qemu-system",))
-    @Decorator.only_if_specific_arch(arch=("ARM64",))
-    def do_invoke(self, args):
-        self.switch_el(args.target_el)
         return
 
 
@@ -201575,6 +201513,26 @@ class ContextManager:
                 except (gdb.error, RuntimeError):
                     if not ignore_error:
                         raise
+        return
+
+    @staticmethod
+    @contextlib.contextmanager
+    def exception_level(target_el, info=None, error=err):
+        """Temporarily switch the AArch64 exception level and restore $cpsr on exit, yielding whether it succeeded.
+
+        Report the switch and the restoration to info when given.
+        """
+        cpsr = get_register("$cpsr") & 0xffff_ffff
+        try:
+            switched = SwitchELCommand.switch_el(target_el, error=error)
+            if switched and info and (cpsr >> 2) & 0b11 != target_el:
+                info("Moving to EL{:d}".format(target_el))
+            yield switched
+        finally:
+            if get_register("$cpsr") & 0xffff_ffff != cpsr:
+                gdb.parse_and_eval("$cpsr = {:#x}".format(cpsr))
+                if info:
+                    info("Moving back to EL{:d}".format((cpsr >> 2) & 0b11))
         return
 
     @staticmethod
