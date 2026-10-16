@@ -13394,18 +13394,26 @@ class QemuMonitor:
 
     @staticmethod
     @Cache.cache_until_next(per_inferior=True)
-    def get_physical_memory_ranges():
+    def get_mtree_regions(address_space=None):
+        """Return the regions of `monitor info mtree -f` as a list of (start, end, attr, name).
+        `end` is exclusive and `attr` is like "prio 0, ram". If `address_space` is given, only its FlatView is used."""
         try:
             res = gdb.execute("monitor info mtree -f", to_string=True)
         except gdb.error:
             return []
+        regions = []
         for view in re.split(r"(?m)^FlatView", res):
-            if 'AS "memory"' not in view:
+            if address_space is not None and 'AS "{:s}"'.format(address_space) not in view:
                 continue
-            return [(int(start, 16), int(end, 16) + 1) for start, end in re.findall(
-                r"(?m)^  ([0-9a-f]+)-([0-9a-f]+) \([^)]*\):", view,
-            )]
-        return []
+            for start, end, attr, name in re.findall(r"(?m)^  ([0-9a-f]+)-([0-9a-f]+) \(([^)]*)\): (.*?)\r?$", view):
+                # the end is inclusive
+                regions.append((int(start, 16), int(end, 16) + 1, attr, name))
+        return regions
+
+    @staticmethod
+    @Cache.cache_until_next(per_inferior=True)
+    def get_physical_memory_ranges():
+        return [(start, end) for start, end, _, _ in QemuMonitor.get_mtree_regions("memory")]
 
     @staticmethod
     @Cache.cache_until_next(per_cpu=True, per_inferior=True)
@@ -13494,24 +13502,14 @@ class QemuMonitor:
         if not is_arm32() and not is_arm64():
             return []
 
-        try:
-            res = gdb.execute("monitor info mtree -f", to_string=True)
-        except gdb.error:
-            return []
-
         gic_list = []
-        for line in res.splitlines():
+        for start, end, attr, name in QemuMonitor.get_mtree_regions():
             # gef> monitor info mtree -f # these are physical addresses
             #   0000000008000000-0000000008000fff (prio 0, i/o): gic_dist
             #   0000000008010000-0000000008011fff (prio 0, i/o): gic_cpu
             #   000000001e000200-000000001e00021f (prio 0, i/o): a9gtimer shared
-            if not line.startswith("  "):
-                continue
-            m = re.search(r"  ([0-9a-f]+)-([0-9a-f]+).*i/o\): (gic_(dist|cpu|viface|vcpu)|a9gtimer)", line)
-            if not m:
-                continue
-            # the end is inclusive
-            gic_list.append([int(m.group(1), 16), int(m.group(2), 16) + 1])
+            if attr.endswith("i/o") and re.match(r"gic_(dist|cpu|viface|vcpu)|a9gtimer", name):
+                gic_list.append([start, end])
         return gic_list
 
     @staticmethod
@@ -13614,24 +13612,10 @@ class SystemManagementMemory:
         if not is_qemu_system() or not is_x86():
             return None
 
-        try:
-            output = gdb.execute("monitor info mtree -f", to_string=True)
-        except gdb.error:
-            return None
-
         candidates = []
-        pattern = re.compile(
-            r"^\s*([0-9a-f]+)-([0-9a-f]+)\s+\([^)]*\):\s*(\S+)",
-            re.IGNORECASE,
-        )
         rank = {"tseg": 4, "smram": 4, "hseg": 3, "abseg": 3}
-        for line in output.splitlines():
-            match = pattern.match(line)
-            if not match:
-                continue
-            base = int(match.group(1), 16)
-            end = int(match.group(2), 16) + 1 # QEMU prints an inclusive end
-            label = match.group(3)
+        for base, end, _, region_name in QemuMonitor.get_mtree_regions():
+            label = region_name.split(" ")[0]
             words = re.split(r"[^a-z0-9]+", label.lower())
             kind = next((name for name in rank if name in words), None)
             if kind is None or end <= base:
@@ -13831,12 +13815,10 @@ class SecureMemory:
         The returned object is the process map of qemu-system that backs the secure memory,
         with `sm_base` / `sm_size` added for the guest side of it."""
         # find secure-ram base
-        ret = gdb.execute("monitor info mtree -f", to_string=True)
-        for line in ret.splitlines():
-            m = re.search(r"([0-9a-f]{16})-([0-9a-f]{16}).*: \S+.secure-ram", line)
-            if m:
-                secure_memory_base = int(m.group(1), 16)
-                secure_memory_size = int(m.group(2), 16) + 1 - secure_memory_base
+        for start, end, _, name in QemuMonitor.get_mtree_regions():
+            if ".secure-ram" in name:
+                secure_memory_base = start
+                secure_memory_size = end - start
                 if verbose:
                     info("secure memory base: {:#x}-{:#x} ({:#x} bytes)".format(
                         secure_memory_base,
@@ -14908,8 +14890,7 @@ def is_support_secure_world():
         return False
     if not is_qemu_system():
         return False
-    ret = gdb.execute("monitor info mtree -f", to_string=True)
-    return ".secure-ram" in ret
+    return any(".secure-ram" in name for _, _, _, name in QemuMonitor.get_mtree_regions())
 
 
 def is_in_secure():
@@ -34534,8 +34515,7 @@ class KernelChecksecCommand(GenericCommand):
         if not is_arm32() and not is_arm64():
             return
 
-        mtree_ret = gdb.execute("monitor info mtree -f", to_string=True)
-        if ".secure-ram" in mtree_ret:
+        if is_support_secure_world():
             gef_print("{:<40s}: {:s}".format("Secure world", "Found"))
         else:
             gef_print("{:<40s}: {:s}".format("Secure world", "Not found"))
@@ -102393,21 +102373,11 @@ class KernelPciDeviceCommand(GenericCommand, BufferingOutput):
             return []
 
         label_list = []
-        res = gdb.execute("monitor info mtree -f", to_string=True)
-        for line in res.splitlines():
-            if not line.startswith("  "):
+        for s, e, attr, name in QemuMonitor.get_mtree_regions():
+            if not (start <= s and e - 1 <= end):
                 continue
 
-            m = re.search(r"  ([0-9a-f]+)-([0-9a-f]+)", line)
-            if not m:
-                continue
-
-            s = int(m.group(1), 16)
-            e = int(m.group(2), 16)
-            if not (start <= s and e <= end):
-                continue
-
-            line = "      -> " + line.lstrip()
+            line = "      -> {:016x}-{:016x} ({:s}): {:s}".format(s, e - 1, attr, name)
             if line not in label_list:
                 label_list.append(line)
 
@@ -181119,8 +181089,7 @@ class PageTableArm32(PageTable):
                 self.suffix = "_S"
 
             elif SCR is not None and SCR_S is not None:
-                r = gdb.execute("monitor info mtree -f", to_string=True)
-                if ".secure-ram" in r:
+                if is_support_secure_world():
                     # do not use "_S"
                     self.SECURE = (SCR & 0x1) == 0 # NS bit
                     self.suffix = ""
@@ -184421,36 +184390,19 @@ class KernelVMMapCommand(GenericCommand, BufferingOutput):
             return
         self.quiet_info("Resolving device physmem")
 
-        try:
-            res = gdb.execute("monitor info mtree -f", to_string=True)
-        except gdb.error:
+        regions = QemuMonitor.get_mtree_regions("memory")
+        if not regions:
             return
 
         maps = AddrMap.get_maps()
         if not maps:
             return
 
-        if "FlatView" in res:
-            views = [view for view in re.split(r"(?m)^FlatView", res) if 'AS "memory"' in view]
-            if not views:
-                self.quiet_warn("Could not find the physical memory address space")
-                return
-            res = "\n".join(views)
-
-        for line in res.splitlines():
-            if not line.startswith("  "):
-                continue
-
-            m = re.search(r"  ([0-9a-f]+)-([0-9a-f]+) \(.+?\): (.+)", line)
-            if not m:
-                continue
-
-            paddr = int(m.group(1), 16)
-            pend = int(m.group(2), 16) + 1
+        for paddr, pend, _, name in regions:
             if pend <= paddr:
                 continue
 
-            device_name = "device ({:s})".format(m.group(3))
+            device_name = "device ({:s})".format(name)
 
             # each mapping may cover only a part of the device
             entries = [e for e in maps if e.pstart is not None and e.pstart < pend and paddr < e.pend]
@@ -192442,16 +192394,7 @@ class UefiOvmfInfoCommand(GenericCommand):
         return d
 
     def get_search_ranges(self):
-        try:
-            output = gdb.execute("monitor info mtree -f", to_string=True)
-        except gdb.error:
-            output = ""
-        ranges = []
-        for view in re.split(r"(?m)^FlatView", output):
-            if 'AS "memory"' not in view:
-                continue
-            for start, end in re.findall(r"(?m)^\s*([0-9a-f]+)-([0-9a-f]+) \([^)]*, ram\):", view):
-                ranges.append((int(start, 16), int(end, 16) + 1))
+        ranges = [(start, end) for start, end, attr, _ in QemuMonitor.get_mtree_regions("memory") if attr.endswith(", ram")]
         if self.args.start is not None and self.args.end is not None:
             return [(self.args.start, self.args.end)]
         return sorted({(max(start, self.args.start or 0), min(end, self.args.end or end))
