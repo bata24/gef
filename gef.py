@@ -41434,9 +41434,23 @@ class HexdumpCommand(GenericCommand, BufferingOutput):
             read_end -= get_pagesize()
         return None
 
+    def do_invoke(self, argv):
+        options_done = False
+        for index, arg in enumerate(argv):
+            if not options_done and arg == "--":
+                options_done = True
+                continue
+            if not options_done and arg.startswith("-") and not re.match(r"-\d", arg):
+                continue
+            if arg not in self.modes:
+                argv = argv[:index] + ["byte"] + argv[index:]
+            break
+        self.hexdump(argv)
+        return
+
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
-    def do_invoke(self, args):
+    def hexdump(self, args):
         if args.phys:
             if not is_qemu_system() and not is_vmware() and not is_kgdb():
                 err("Unsupported in this gdb mode.")
@@ -176524,7 +176538,11 @@ class CetCommand(GenericCommand):
     @Decorator.only_if_in_kernel
     @Decorator.only_if_kvm_disabled
     def do_invoke(self, args):
-        capabilities = self.get_capabilities()
+        try:
+            capabilities = self.get_capabilities()
+        except gdb.error as e:
+            err("Could not read CET capabilities: {!s}".format(e))
+            return
         cr4 = get_register("cr4", use_monitor=True)
         gef_print(titlify("CET summary"))
         gef_print("Selected CPU: GDB thread {:d}".format(Cache.cpu_context()))
@@ -178073,7 +178091,8 @@ class PageTable(BufferingOutput):
     class Entry:
         """One page-table mapping."""
 
-        def __init__(self, vaddr, paddr, page_size, page_count, flags, vaddr_pattern=None, alias_starts=None):
+        def __init__(self, vaddr, paddr, page_size, page_count, flags, vaddr_pattern=None, alias_starts=None,
+                     merged_entries=None):
             """Initialize one virtual-to-physical mapping."""
             self.vaddr = vaddr
             self.paddr = paddr
@@ -178082,6 +178101,7 @@ class PageTable(BufferingOutput):
             self.flags = flags
             self.vaddr_pattern = vaddr_pattern
             self.alias_starts = alias_starts
+            self.merged_entries = merged_entries
             return
 
         def __lt__(self, other):
@@ -178173,8 +178193,21 @@ class PageTable(BufferingOutput):
             if not self.can_merge(other, simple=simple):
                 return None
             if simple:
-                return type(self)(self.vaddr, self.paddr, self.total_size + other.total_size, 1, self.flags)
+                merged = type(self)(self.vaddr, self.paddr, self.total_size + other.total_size, 1, self.flags)
+                if self.merged_entries or other.merged_entries or self.paddr + self.total_size != other.paddr:
+                    merged.merged_entries = (self, other)
+                return merged
             return type(self)(self.vaddr, self.paddr, self.page_size, self.page_count + other.page_count, self.flags)
+
+        def contains_physical(self, address):
+            pending = [self]
+            while pending:
+                entry = pending.pop()
+                if entry.merged_entries:
+                    pending.extend(entry.merged_entries)
+                elif entry.paddr <= address < entry.paddr + entry.total_size:
+                    return True
+            return False
 
         def __add__(self, other):
             """Entry(VA=0x1000) + Entry(VA=0x2000) -> Entry(VA=0x1000, count=2)."""
@@ -178431,7 +178464,7 @@ class PageTable(BufferingOutput):
         filtered_mappings = []
         for mapping in mappings:
             for addr in self.args.prange:
-                if mapping.paddr <= addr < mapping.paddr + mapping.total_size:
+                if mapping.contains_physical(addr):
                     filtered_mappings.append(mapping)
                     break
         return sorted(filtered_mappings)
@@ -178447,7 +178480,7 @@ class PageTable(BufferingOutput):
         if walk_disabled:
             filtered_mappings = [PageTable.Entry(
                 entry.vaddr, entry.paddr, entry.page_size, entry.page_count, entry.flags + " WALK-DISABLED",
-                vaddr_pattern=entry.vaddr_pattern, alias_starts=entry.alias_starts,
+                vaddr_pattern=entry.vaddr_pattern, alias_starts=entry.alias_starts, merged_entries=entry.merged_entries,
             ) for entry in filtered_mappings]
 
         # filter by virtual address range
@@ -202138,17 +202171,10 @@ class GefUtil:
 
     @staticmethod
     def is_same_filename(a, b):
-        # If the file names match, they are considered to be the same file.
-        if os.path.basename(a) == os.path.basename(b):
-            return True
-
-        # If `a` is the destination of a symbolic link, compare whether resolving `b` results in `a`.
-        a_dir = os.path.join(os.path.dirname(a))
-        b_file = os.path.basename(b)
-        ab_path = os.path.join(a_dir, b_file)
-        while os.path.islink(ab_path):
-            ab_path = os.path.normpath(os.path.join(os.path.dirname(ab_path), os.readlink(ab_path)))
-        return os.path.basename(a) == os.path.basename(ab_path)
+        try:
+            return os.path.samefile(a, b)
+        except OSError:
+            return False
 
     @staticmethod
     def now_str():
