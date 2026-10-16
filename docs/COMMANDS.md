@@ -4770,13 +4770,52 @@ The base command to decode baseN.
 ### Syntax
 
 ```text
-usage: base-n-decode [-h] {memory,value} ...
+usage: base-n-decode [-h] {memory,file,value} ...
+
+options:
+  -h, --help           show this help message and exit
+
+command:
+  {memory,file,value}
+```
+
+### Notes
+
+```text
+For integer bases other than base1, each leading zero symbol represents one zero byte.
+```
+
+## `base-n-decode file`
+
+Decode baseN from file.
+
+
+### Syntax
+
+```text
+usage: base-n-decode file [-h] [-n] FILE [START_POS] [SIZE]
+
+positional arguments:
+  FILE            the filepath for baseN decoding.
+  START_POS       the start position for baseN decoding.
+  SIZE            the size for baseN decoding.
 
 options:
   -h, --help      show this help message and exit
+  -n, --no-pager  do not use the pager.
+```
 
-command:
-  {memory,value}
+### Examples
+
+```gdb
+base-n-decode file /tmp/data.bin
+base-n-decode file /tmp/data.bin 0x10 0x20
+```
+
+### Notes
+
+```text
+For integer bases other than base1, each leading zero symbol represents one zero byte.
 ```
 
 ## `base-n-decode memory`
@@ -4802,6 +4841,12 @@ options:
 
 ```gdb
 base-n-decode memory $rsp 0x20
+```
+
+### Notes
+
+```text
+For integer bases other than base1, each leading zero symbol represents one zero byte.
 ```
 
 ## `base-n-decode value`
@@ -4830,6 +4875,12 @@ base-n-decode value "\\x51\\x55\\x46\\x42"
 base-n-decode value --hex "51 55 46 42"
 ```
 
+### Notes
+
+```text
+For integer bases other than base1, each leading zero symbol represents one zero byte.
+```
+
 ## `base-n-encode`
 
 The base command to encode baseN.
@@ -4838,13 +4889,52 @@ The base command to encode baseN.
 ### Syntax
 
 ```text
-usage: base-n-encode [-h] {memory,value} ...
+usage: base-n-encode [-h] {memory,file,value} ...
+
+options:
+  -h, --help           show this help message and exit
+
+command:
+  {memory,file,value}
+```
+
+### Notes
+
+```text
+For integer bases other than base1, each leading zero symbol represents one zero byte.
+```
+
+## `base-n-encode file`
+
+Encode baseN from file.
+
+
+### Syntax
+
+```text
+usage: base-n-encode file [-h] [-n] FILE [START_POS] [SIZE]
+
+positional arguments:
+  FILE            the filepath for baseN encoding.
+  START_POS       the start position for baseN encoding.
+  SIZE            the size for baseN encoding.
 
 options:
   -h, --help      show this help message and exit
+  -n, --no-pager  do not use the pager.
+```
 
-command:
-  {memory,value}
+### Examples
+
+```gdb
+base-n-encode file /tmp/data.bin
+base-n-encode file /tmp/data.bin 0x10 0x20
+```
+
+### Notes
+
+```text
+For integer bases other than base1, each leading zero symbol represents one zero byte.
 ```
 
 ## `base-n-encode memory`
@@ -4872,6 +4962,12 @@ options:
 base-n-encode memory $rsp 0x20
 ```
 
+### Notes
+
+```text
+For integer bases other than base1, each leading zero symbol represents one zero byte.
+```
+
 ## `base-n-encode value`
 
 Encode baseN from specified values.
@@ -4896,6 +4992,12 @@ options:
 ```gdb
 base-n-encode value "\\x41\\x42\\x43\\x44"
 base-n-encode value --hex "41 42 43 44"
+```
+
+### Notes
+
+```text
+For integer bases other than base1, each leading zero symbol represents one zero byte.
 ```
 
 ## `crc`

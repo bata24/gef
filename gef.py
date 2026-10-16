@@ -148326,13 +148326,13 @@ class BaseNCodec:
                 raise ValueError("Input exceeded size limit")
             return (charset * value).encode("latin-1")
         if len(charset) == 10:
-            return str(value).encode()
-        result = ""
-        while value:
-            value, digit = divmod(value, len(charset))
-            result = charset[digit] + result
-        if len(charset) == 58:
-            result = charset[0] * (len(data) - len(data.lstrip(b"\0"))) + result
+            result = str(value) if value else ""
+        else:
+            result = ""
+            while value:
+                value, digit = divmod(value, len(charset))
+                result = charset[digit] + result
+        result = charset[0] * (len(data) - len(data.lstrip(b"\0"))) + result
         return result.encode("latin-1")
 
     @staticmethod
@@ -148342,19 +148342,21 @@ class BaseNCodec:
         if len(charset) == 1:
             return BaseNCodec.int_to_bytes(len(text))
         if len(charset) == 10:
-            return BaseNCodec.int_to_bytes(int(text))
-        value = 0
-        text = text.replace("\r\n", "").replace("\n", "")
-        for char in text:
-            try:
-                digit = charset.index(char)
-            except ValueError as exc:
-                raise ValueError("Invalid base character {!r}".format(char)) from exc
-            value = value * len(charset) + digit
-        if len(charset) == 58:
-            zeros = len(text) - len(text.lstrip(charset[0]))
-            return b"\0" * zeros + (BaseNCodec.int_to_bytes(value) if value else b"")
-        return BaseNCodec.int_to_bytes(value)
+            value = int(text)
+            text = text.strip()
+        else:
+            value = 0
+            text = text.replace("\r\n", "").replace("\n", "")
+            if not text:
+                return b""
+            for char in text:
+                try:
+                    digit = charset.index(char)
+                except ValueError as exc:
+                    raise ValueError("Invalid base character {!r}".format(char)) from exc
+                value = value * len(charset) + digit
+        zeros = len(text) - len(text.lstrip(charset[0]))
+        return b"\0" * zeros + (BaseNCodec.int_to_bytes(value) if value or not zeros else b"")
 
     @staticmethod
     def encode_power(data, charset):
@@ -148732,6 +148734,7 @@ class BaseNDecodeCommand(GenericCommand, BufferingOutput):
     else:
         subparsers = parser.add_subparsers(title="command")
     subparsers.add_parser("memory")
+    subparsers.add_parser("file")
     subparsers.add_parser("value")
     _syntax_ = parser.format_help()
 
@@ -148743,6 +148746,8 @@ class BaseNDecodeCommand(GenericCommand, BufferingOutput):
         "base85-adobe", "base85-ipv6", "base85-xml", "base85-xbtoa", "base85-zeromq",
         "base91", "base100", "base122",
     ]
+
+    _note_ = "For integer bases other than base1, each leading zero symbol represents one zero byte."
 
     def __init__(self, *args, **kwargs):
         prefix = kwargs.get("prefix", True)
@@ -148801,6 +148806,68 @@ class BaseNDecodeMemoryCommand(BaseNDecodeCommand):
         for bname, bfunc in self.get_valid_base_decode_funcs():
             try:
                 b = bfunc(mem)
+                self.out.append("{:17s}: {!s}".format(bname, b))
+            except ValueError:
+                self.out.append("{:17s}: ERROR".format(bname))
+        self.print_output(check_terminal_size=True)
+        return
+
+
+@register_command
+class BaseNDecodeFileCommand(BaseNDecodeCommand):
+    """Decode baseN from file."""
+
+    _cmdline_ = "base-n-decode file"
+    _category_ = "03-e. Memory - Calculation"
+
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("filename", metavar="FILE", help="the filepath for baseN decoding.")
+    parser.add_argument("start", metavar="START_POS", nargs="?", default=0, type=AddressUtil.parse_address,
+                        help="the start position for baseN decoding.")
+    parser.add_argument("size", metavar="SIZE", nargs="?", type=AddressUtil.parse_address,
+                        help="the size for baseN decoding.")
+    parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
+    _syntax_ = parser.format_help()
+
+    _example_ = [
+        "{0:s} /tmp/data.bin",
+        "{0:s} /tmp/data.bin 0x10 0x20",
+    ]
+    _example_ = "\n".join(_example_).format(_cmdline_)
+
+    def __init__(self):
+        super().__init__(prefix=False, complete=gdb.COMPLETE_FILENAME)
+        return
+
+    @Decorator.parse_args
+    def do_invoke(self, args):
+        if args.start < 0 or (args.size is not None and args.size < 0):
+            err("Invalid range")
+            return
+        if not os.path.exists(args.filename):
+            err("File not found")
+            return
+        if not os.path.isfile(args.filename):
+            err("Not a regular file")
+            return
+        try:
+            with open(args.filename, "rb") as f:
+                file_size = os.fstat(f.fileno()).st_size
+                size = max(0, file_size - args.start)
+                if args.size is not None:
+                    size = min(size, args.size)
+                f.seek(min(args.start, file_size))
+                value = f.read(size)
+        except OSError as exc:
+            err(str(exc))
+            return
+
+        self.out = []
+        self.out.append("Path: {:s}".format(args.filename))
+        self.out.append("FileSize: {:#x}".format(file_size))
+        for bname, bfunc in self.get_valid_base_decode_funcs():
+            try:
+                b = bfunc(value)
                 self.out.append("{:17s}: {!s}".format(bname, b))
             except ValueError:
                 self.out.append("{:17s}: ERROR".format(bname))
@@ -148868,6 +148935,7 @@ class BaseNEncodeCommand(GenericCommand, BufferingOutput):
     else:
         subparsers = parser.add_subparsers(title="command")
     subparsers.add_parser("memory")
+    subparsers.add_parser("file")
     subparsers.add_parser("value")
     _syntax_ = parser.format_help()
 
@@ -148879,6 +148947,8 @@ class BaseNEncodeCommand(GenericCommand, BufferingOutput):
         "base85-adobe", "base85-ipv6", "base85-xml", "base85-xbtoa", "base85-zeromq",
         "base91", "base100", "base122",
     ]
+
+    _note_ = "For integer bases other than base1, each leading zero symbol represents one zero byte."
 
     def __init__(self, *args, **kwargs):
         prefix = kwargs.get("prefix", True)
@@ -148940,6 +149010,71 @@ class BaseNEncodeMemoryCommand(BaseNEncodeCommand):
                 continue
             try:
                 b = bfunc(mem)
+                self.out.append("{:17s}: {!s}".format(bname, b))
+            except ValueError:
+                self.out.append("{:17s}: ERROR".format(bname))
+        self.print_output(check_terminal_size=True)
+        return
+
+
+@register_command
+class BaseNEncodeFileCommand(BaseNEncodeCommand):
+    """Encode baseN from file."""
+
+    _cmdline_ = "base-n-encode file"
+    _category_ = "03-e. Memory - Calculation"
+
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("filename", metavar="FILE", help="the filepath for baseN encoding.")
+    parser.add_argument("start", metavar="START_POS", nargs="?", default=0, type=AddressUtil.parse_address,
+                        help="the start position for baseN encoding.")
+    parser.add_argument("size", metavar="SIZE", nargs="?", type=AddressUtil.parse_address,
+                        help="the size for baseN encoding.")
+    parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
+    _syntax_ = parser.format_help()
+
+    _example_ = [
+        "{0:s} /tmp/data.bin",
+        "{0:s} /tmp/data.bin 0x10 0x20",
+    ]
+    _example_ = "\n".join(_example_).format(_cmdline_)
+
+    def __init__(self):
+        super().__init__(prefix=False, complete=gdb.COMPLETE_FILENAME)
+        return
+
+    @Decorator.parse_args
+    def do_invoke(self, args):
+        if args.start < 0 or (args.size is not None and args.size < 0):
+            err("Invalid range")
+            return
+        if not os.path.exists(args.filename):
+            err("File not found")
+            return
+        if not os.path.isfile(args.filename):
+            err("Not a regular file")
+            return
+        try:
+            with open(args.filename, "rb") as f:
+                file_size = os.fstat(f.fileno()).st_size
+                size = max(0, file_size - args.start)
+                if args.size is not None:
+                    size = min(size, args.size)
+                f.seek(min(args.start, file_size))
+                value = f.read(size)
+        except OSError as exc:
+            err(str(exc))
+            return
+
+        self.out = []
+        self.out.append("Path: {:s}".format(args.filename))
+        self.out.append("FileSize: {:#x}".format(file_size))
+        for bname, bfunc in self.get_valid_base_encode_funcs():
+            if bname == "base1":
+                self.out.append("{:17s}: Skipped because too long".format(bname))
+                continue
+            try:
+                b = bfunc(value)
                 self.out.append("{:17s}: {!s}".format(bname, b))
             except ValueError:
                 self.out.append("{:17s}: ERROR".format(bname))
