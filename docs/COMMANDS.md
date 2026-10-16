@@ -10887,7 +10887,7 @@ Dump the sysctl parameters.
 ### Syntax
 
 ```text
-usage: ksysctl [-h] [-hh] [-f FILTER] [-s] [-e] [--meta] [-r] [-v] [-n] [-q]
+usage: ksysctl [-h] [-hh] [-f FILTER] [-s] [-e] [-d] [--meta] [-r] [-v] [-n] [-q]
 
 options:
   -h, --help           show this help message and exit
@@ -10895,6 +10895,7 @@ options:
   -f, --filter FILTER  REGEXP filter.
   -s, --skip-symlink   do not follow symlink (net.* and user.*).
   -e, --exact          use exact match.
+  -d, --decimal        display integer values in decimal.
   --meta               display offset information.
   -r, --rescan         do not use cache.
   -v, --verbose        dump zero-sized entries and proc_handler too.
@@ -10915,7 +10916,8 @@ ksysctl -s                            # skip symlink (improves performance with 
 ```text
 This command requires CONFIG_RANDSTRUCT=n unless vmlinux with debug information is loaded.
 ParamValue is decoded as proc_handler (or the known handler it calls) reads it:
-strings, integer vectors (`jiffies` is the raw stored count), or `raw:` bytes if unknown.
+strings, integer vectors in hex (decimal with -d), bit ranges of a bitmap, or `raw:` bytes if unknown.
+The unit is the one of the stored value (e.g., `jiffies`), not of /proc/sys. MaxLen of a bitmap is in bits.
 
 Simplified sysctl_table structure:
 
