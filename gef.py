@@ -23229,6 +23229,7 @@ class SearchPatternCommand(GenericCommand):
         if not self.args.pattern or self.args.pattern.lower() == "0x":
             err("Search pattern must not be empty")
             return None
+
         if self.args.hex_regex:
             pattern = self.args.pattern.lower().replace(" ", "")
             if not pattern:
@@ -198837,6 +198838,7 @@ class XRefTelescopeCommand(SearchPatternCommand, BufferingOutput):
         if not args.pattern or args.pattern.lower() == "0x":
             err("Search pattern must not be empty")
             return
+
         self.found_count = 0
 
         # Since it inherits SearchPatternCommand, set the values to be used there.
