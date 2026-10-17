@@ -84555,7 +84555,9 @@ class KernelSched:
         self.task_addrs = ()
         self.class_addrs = {}
         self.state_bits = self.get_state_bits(None)
+        self.report_idle = False
         self.offset_state = None
+        self.offset_exit_state = None
         self.offset_prio = None
         self.offset_static_prio = None
         self.offset_normal_prio = None
@@ -84580,6 +84582,7 @@ class KernelSched:
         self.task_addrs = tuple(task_addrs)
         kversion = Kernel.version()
         self.state_bits = self.get_state_bits(kversion)
+        self.report_idle = kversion is not None and "4.14" <= kversion
         if kversion is None:
             self.meta.append(("warn", "Unknown kernel version; only common task state bits are decoded"))
 
@@ -84613,6 +84616,15 @@ class KernelSched:
             self.meta.append(("info", "offsetof(task_struct, state): {:#x}".format(self.offset_state)))
         else:
             self.meta.append(("warn", "Could not find task_struct->__state"))
+
+        # task_struct->exit_state
+        self.offset_exit_state = self.offsetof("exit_state")
+        if self.offset_exit_state is None:
+            self.offset_exit_state = self.get_offset_exit_state()
+        if self.offset_exit_state is not None:
+            self.meta.append(("info", "offsetof(task_struct, exit_state): {:#x}".format(self.offset_exit_state)))
+        else:
+            self.meta.append(("warn", "Could not find task_struct->exit_state; exited tasks may be misclassified"))
 
         # task_struct->sched_class
         self.offset_sched_class = self.offsetof("sched_class")
@@ -84698,7 +84710,9 @@ class KernelSched:
         plus the 4 padding/`saved_state` bytes after it). On 32-bit `long state` and a plain
         v5.14+ `__state` are 4 bytes before it, while `__state`+`saved_state` (unconditional
         since v6.7) is 8 bytes before it. An all-zero padding slot must not win, so a candidate
-        is accepted only when the sampled tasks show more than one plausible value."""
+        is accepted only when the sampled tasks show more than one plausible value.
+        An anonymous struct can align `stack` away from `state`; require a unique match
+        in the leading fields when the adjacent slots do not match."""
         stack = self.task_command.offset_stack
         if stack is None:
             return None
@@ -84708,7 +84722,8 @@ class KernelSched:
             candidates = [stack - 8, stack - 4]
         else:
             candidates = [stack - 4, stack - 8]
-        for off in candidates:
+        matches = []
+        for off in candidates + [off for off in range(0, stack, 4) if off not in candidates]:
             if off < 0:
                 continue
             vals = []
@@ -84721,7 +84736,53 @@ class KernelSched:
             if not vals or vals[0] != 0:
                 continue
             if len(set(vals)) >= 2:
-                return off
+                if off in candidates:
+                    return off
+                matches.append(off)
+        if len(matches) == 1:
+            offset, = matches
+            return offset
+        return None
+
+    def get_offset_exit_state(self):
+        """Locate the exit_state/exit_code/exit_signal/pdeath_signal cluster between mm and pid.
+        PID 1 can retain exit_signal=0 on older kernels. Require SIGCHLD in at least one task
+        and a unique match across the task list rather than accepting an all-zero slot."""
+        offset_mm = self.task_command.offset_mm
+        offset_pid = self.task_command.offset_pid
+        if offset_mm is None or offset_pid is None:
+            return None
+        init = next((task for task in self.task_addrs
+                     if read_int32_from_memory(task + offset_pid, safe=True) == 1), None)
+        if init is None:
+            return None
+        candidates = {0: [], 17: []}
+        for off in range(offset_mm + 2 * current_arch.ptrsize, offset_pid - 16, 4):
+            values = [read_int32_from_memory(init + off + i * 4, safe=True) for i in range(4)]
+            if values not in ([0, 0, 17, 0], [0, 0, 0, 0]):
+                continue
+            seen_sigchld = False
+            for task in self.task_addrs:
+                state = read_int32_from_memory(task + off, safe=True)
+                signal = read_int32_from_memory(task + off + 8, safe=True, signed=True)
+                pdeath = read_int32_from_memory(task + off + 12, safe=True)
+                if state not in (0, 0x10, 0x20, 0x30) or signal is None or not -1 <= signal <= 64:
+                    break
+                if pdeath is None or not 0 <= pdeath <= 64:
+                    break
+                if state == 0 and self.offset_state is not None and "TASK_DEAD" in self.state_bits:
+                    task_state = read_int32_from_memory(task + self.offset_state, safe=True)
+                    if task_state == self.state_bits["TASK_DEAD"]:
+                        break
+                if signal == 17:
+                    seen_sigchld = True
+            else:
+                if seen_sigchld:
+                    candidates[values[2]].append(off)
+        candidates = candidates[17] or candidates[0]
+        if len(candidates) == 1:
+            offset, = candidates
+            return offset
         return None
 
     def get_offset_sched_class(self):
@@ -84814,6 +84875,8 @@ class KernelSched:
             return "?"
         if v == 0:
             return "R"
+        if self.report_idle and v == (self.state_bits["TASK_UNINTERRUPTIBLE"] | self.state_bits["TASK_NOLOAD"]):
+            return "I"
         for name, letter in self.STATE_LETTERS:
             if v & self.state_bits.get(name, 0):
                 return letter
@@ -84830,6 +84893,12 @@ class KernelSched:
         state = state_name = None
         if self.offset_state is not None:
             state = read_int32_from_memory(task + self.offset_state, safe=True)
+            if state is not None and self.offset_exit_state is not None:
+                exit_state = read_int32_from_memory(task + self.offset_exit_state, safe=True)
+                if exit_state is None:
+                    state = None
+                else:
+                    state |= exit_state
             if state is not None:
                 state_name = self.state_to_str(state)
 
@@ -92991,6 +93060,7 @@ class KernelSchedCommand(GenericCommand, BufferingOutput):
         "needs the `*_sched_class` symbols (CONFIG_KALLSYMS_ALL=y). The other fields (`on_cpu`, `cpu`)",
         "are shown only when debug information is loaded. The running cpu of each current task comes from",
         "`kcurrent`, which reads it from the cpu context rather than from `task_struct`.",
+        "The exit state is included when its offset can be resolved; `--meta` reports a warning otherwise.",
     ]
     _note_ = "\n".join(_note_)
 

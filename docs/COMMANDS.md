@@ -9391,6 +9391,7 @@ every supported version, `on_rq` up to v7.1, and `policy` on v5.3 or later. The 
 needs the `*_sched_class` symbols (CONFIG_KALLSYMS_ALL=y). The other fields (`on_cpu`, `cpu`)
 are shown only when debug information is loaded. The running cpu of each current task comes from
 `kcurrent`, which reads it from the cpu context rather than from `task_struct`.
+The exit state is included when its offset can be resolved; `--meta` reports a warning otherwise.
 ```
 
 ## `ksighands`
