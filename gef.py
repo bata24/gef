@@ -26153,6 +26153,8 @@ class UnicornEmulator:
             """Write a GDB register value into Unicorn after translation."""
             if value is None or name not in self.regs:
                 return
+            if is_arm32() and self.regs[name] == self.pc_reg:
+                return self.write_pc(value)
             value = AddressUtil.normalize_address(value)
             for candidate in self.arm64_kernel_address_candidates(value):
                 try:
@@ -26812,6 +26814,7 @@ class UnicornEmulator:
                     detail = ""
                 return "cannot map {:#x}{:s}".format(insn.address, detail)
             start = self.to_emu(insn.address)
+            end = start + max(1, len(insn.opcodes))
             self.write_pc(insn.address)
             # ARM: emu_start selects Thumb mode from bit 0 of the start address (see step_one).
             if is_arm32() and (self.emu.reg_read(self.regs["$cpsr"]) & 0x20):
@@ -26857,7 +26860,7 @@ class UnicornEmulator:
             if is_arm64() and self.is_arm64_atomic(insn.mnemonic.lower()):
                 return self.emulate_arm64_atomic(insn)
             try:
-                self.emu.emu_start(start, start + max(1, len(insn.opcodes)), count=1)
+                self.emu.emu_start(start, end, count=1)
             except self.unicorn.UcError as e:
                 recovered_pc = None
                 if is_x86_32() and self.last_fault is not None:
