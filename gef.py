@@ -201834,6 +201834,7 @@ class GefUtil:
         label1 and label2 make the head of each side from the offset. Identical lines are omitted unless full.
         """
         hex_pad_len = {
+            0: 39,
             1: 37,
             2: 35,
             3: 32,
@@ -201854,7 +201855,7 @@ class GefUtil:
 
         lines = []
         asterisk = False
-        for pos in range(0, len(data1), 16):
+        for pos in range(0, max(len(data1), len(data2)), 16):
             # determining continuity
             f1_bin = data1[pos : pos + 16]
             f2_bin = data2[pos : pos + 16]
@@ -201874,15 +201875,17 @@ class GefUtil:
             f2_ascii = []
             f1_text = GefUtil.bytes_to_ascii(f1_bin)
             f2_text = GefUtil.bytes_to_ascii(f2_bin)
-            for i in range(min(len(f1_bin), 16)):
-                if f1_bin[i] == f2_bin[i]:
+            for i in range(max(len(f1_bin), len(f2_bin))):
+                if i < min(len(f1_bin), len(f2_bin)) and f1_bin[i] == f2_bin[i]:
                     color_func = lambda x: x
                 else:
                     color_func = Color.boldify
-                f1_hex.append(color_func("{:02x}".format(f1_bin[i])))
-                f2_hex.append(color_func("{:02x}".format(f2_bin[i])))
-                f1_ascii.append(color_func(f1_text[i]))
-                f2_ascii.append(color_func(f2_text[i]))
+                if i < len(f1_bin):
+                    f1_hex.append(color_func("{:02x}".format(f1_bin[i])))
+                    f1_ascii.append(color_func(f1_text[i]))
+                if i < len(f2_bin):
+                    f2_hex.append(color_func("{:02x}".format(f2_bin[i])))
+                    f2_ascii.append(color_func(f2_text[i]))
 
             # formatting
             # ["00", "00", "00" "00", ...] -> ["0000", "0000", ...]
