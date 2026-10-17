@@ -156868,6 +156868,10 @@ class KobjCommand(GenericCommand):
     @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
     @Decorator.only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
+        if Kernel.version() is None:
+            err("Could not find Linux kernel")
+            return
+
         self.quiet_info("Resolving")
         if args.rescan:
             self.rr = "-r "
@@ -158743,6 +158747,9 @@ class BuddyContainsCommand(BuddyDumpCommand):
     @Decorator.only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
         kversion = Kernel.version()
+        if kversion is None:
+            self.quiet_err("Could not find Linux kernel")
+            return
         if kversion < "3.0":
             self.quiet_err("Unsupported before v3.0")
             return
@@ -185678,6 +185685,9 @@ class SlabVirtualCommand(GenericCommand):
             return
 
         kversion = Kernel.version()
+        if kversion is None:
+            err("Could not find Linux kernel")
+            return False
         if kversion < "6.1":
             err("Unsupported before v6.1")
             return False
@@ -191199,6 +191209,9 @@ class KmallocAllocatedByCommand(GenericCommand):
         info("Wait for memory scan")
 
         kversion = Kernel.version()
+        if kversion is None:
+            err("Could not find Linux kernel")
+            return
         if kversion < "3.0":
             err("Unsupported before v3.0")
             return
@@ -191536,6 +191549,9 @@ class KuafWatchCommand(GenericCommand):
             return
 
         kversion = Kernel.version()
+        if kversion is None:
+            err("Could not find Linux kernel")
+            return
         if kversion < "3.0":
             err("Unsupported before v3.0")
             return
@@ -192168,6 +192184,9 @@ class KpageWatchCommand(GenericCommand):
             return
 
         kversion = Kernel.version()
+        if kversion is None:
+            err("Could not find Linux kernel")
+            return
         if kversion < "3.0":
             err("Unsupported before v3.0")
             return
