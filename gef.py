@@ -102889,11 +102889,10 @@ class KernelDiffCommand(GenericCommand, BufferingOutput):
 
     def get_snapshot_by_index(self, index):
         files = self.get_saved_files()
-        try:
-            path = files[index]
-        except IndexError:
+        if not 0 <= index < len(files):
             err("Snapshot index out of range: {:d}".format(index))
             return None
+        path = files[index]
         snapshot = self.load_snapshot(path)
         if snapshot is None:
             return None
@@ -103017,11 +103016,10 @@ class KernelDiffCommand(GenericCommand, BufferingOutput):
         elif indexes:
             paths = []
             for index in indexes:
-                try:
-                    path = files[index]
-                except IndexError:
+                if not 0 <= index < len(files):
                     err("Snapshot index out of range: {:d}".format(index))
                     return
+                path = files[index]
                 if path not in paths:
                     paths.append(path)
         else:
