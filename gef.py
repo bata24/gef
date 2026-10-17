@@ -199,9 +199,22 @@ class DisplayHook:
     """It enables pretty printing of list, dict, set, and so on.
     It also displays in hexadecimal by default."""
 
+    visiting = set()
+
     @staticmethod
     def pp(o, idt):
-        """Create a string for pretty print recursively."""
+        """Create a string for pretty print recursively. A recursive reference is shown as "..." like reprlib."""
+        if id(o) in DisplayHook.visiting:
+            return "..."
+        DisplayHook.visiting.add(id(o))
+        try:
+            return DisplayHook.pp_object(o, idt)
+        finally:
+            DisplayHook.visiting.remove(id(o))
+
+    @staticmethod
+    def pp_object(o, idt):
+        """Create a string for pretty print of an object."""
 
         def I1(idt):
             """Create an indent for current level."""
