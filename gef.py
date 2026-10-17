@@ -17143,6 +17143,8 @@ class GenericCommand(gdb.Command):
             else:
                 self.dont_repeat()
             self.do_invoke(argv)
+        except ExecAsm.ExecutionExitedError as e:
+            err(str(e))
         except Exception:
             # Since we are intercepting cleaning exceptions here, commands preferably should avoid
             # catching generic Exception, but rather specific ones. This is allows a much cleaner use.
@@ -104221,6 +104223,9 @@ class ExecAsm:
     # `info program` only describes the last stop in all-stop mode.
     queued_signals = {}
 
+    class ExecutionExitedError(gdb.GdbError):
+        pass
+
     @staticmethod
     def clear_queued_signal(event):
         thread = getattr(event, "inferior_thread", None) or gdb.selected_thread()
@@ -104438,18 +104443,23 @@ class ExecAsm:
                             except gdb.MemoryError:
                                 if check_complete:
                                     return None
-                        if self.debug:
-                            gdb.execute("context")
+                        if self.thread.is_valid():
+                            if self.debug:
+                                gdb.execute("context")
 
-                        # get result
-                        if check_complete and not self.is_complete():
-                            return None
-                        ret = self.get_state()
+                            # get result
+                            if check_complete and not self.is_complete():
+                                return None
+                            ret = self.get_state()
             except gdb.error:
                 if not check_complete:
                     raise
                 return None
             finally:
+                if not self.thread.is_valid():
+                    target = "Thread" if is_alive() else "Inferior"
+                    raise ExecAsm.ExecutionExitedError(
+                        "{:s} exited while executing injected instructions".format(target)) from None
                 if check_complete and gdb.selected_thread() != self.thread:
                     self.thread.switch()
                 if stop_signal:
@@ -201407,7 +201417,7 @@ class ContextManager:
     def gdb_parameter(name, value, ignore_error=False):
         """Temporarily set a GDB parameter and restore the original value on exit.
         With ignore_error, run the body unchanged if the parameter is missing or cannot be set,
-        and ignore a failed restoration.
+        and ignore a failed restoration. A scheduler-locking restoration may also fail after the inferior exits.
         """
         restore = None
         try:
@@ -201426,7 +201436,7 @@ class ContextManager:
                 try:
                     gdb.execute(restore, to_string=True)
                 except (gdb.error, RuntimeError):
-                    if not ignore_error:
+                    if not ignore_error and (name != "scheduler-locking" or is_alive()):
                         raise
         return
 
