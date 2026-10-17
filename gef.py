@@ -144758,7 +144758,7 @@ class HashCommand(GenericCommand):
         'The key for KMAC128 and KMAC256 is blank.',
         'The key for SipHash is "\\0" * 16.',
         'The key for HalfSipHash is "\\0" * 8.',
-        "To calculate FSB hash, you need the `gmpy2` package (uv pip install gmpy2).",
+        "To calculate FSB hash, install `gmpy2` into the Python environment used by GEF.",
     ]
     _note_ = "\n".join(_note_)
 
@@ -203054,79 +203054,33 @@ class Gef:
 
     @staticmethod
     def fix_venv():
-        """Detect if you are in a venv environment and adjust GEF settings."""
-
-        def fast_path():
-            """If you installed it with the latest installer, there should be a gev.venv.conf file.
-            Interpreting this file will speed up the process."""
-            gef_venv_conf = os.path.join(os.path.dirname(GEF_FILEPATH), "gef.venv.conf")
-            if not os.path.exists(gef_venv_conf):
-                return False
-
-            with open(gef_venv_conf, "rb") as fdw:
-                content = fdw.read().decode()
-            for line in content.splitlines():
-                if line.startswith("GEF_VENV_SYS_PATH="):
-                    Gef.GEF_VENV_SYS_PATH = line[len("GEF_VENV_SYS_PATH="):]
-                    to_add = []
-                    for path in Gef.GEF_VENV_SYS_PATH.split(":"):
-                        if path and path not in sys.path:
-                            to_add.append(path)
-                    sys.path = to_add + sys.path
-                    continue
-
-            if hasattr(Gef, "GEF_VENV_SYS_PATH"):
-                return True
-            return False
-
-        def create_skip_config():
-            # If venv-gef is in the default location, it is likely that the user simply forgot to activate the venv.
-            # Therefore, for convenience, skip-venv-check is not created.
-            default_venv = os.path.join(os.path.dirname(GEF_FILEPATH), "venv-gef")
-            if os.path.exists(default_venv):
-                return
-
-            skip_config = os.path.join(GEF_TEMP_DIR, "skip-venv-check")
-            open(skip_config, "w").close()
-            return
-
-        def slow_path():
-            """For those who used the old installer or installed manually.
-            It launches python via shell and collects and imports its configuration."""
-            # venv check is very slow, so skip if unneeded
-            skip_config = os.path.join(GEF_TEMP_DIR, "skip-venv-check")
-            if os.path.exists(skip_config):
-                return
-
-            # GEF supports pyenv, venv, uv, etc.
-            # To achieve this, you need to run python outside of gdb.
-            # Modify sys.path based on the results of the execution.
-
-            # check python3 command to get prefix
+        """Load extra packages from the dedicated environment or the active Python."""
+        pythonbin = os.path.join(os.path.dirname(GEF_FILEPATH), "venv-gef", "bin", "python")
+        if not os.path.isfile(pythonbin):
             try:
                 pythonbin = GefUtil.which("python3")
             except FileNotFoundError:
-                create_skip_config()
                 return
 
-            # check prefix
-            cmds = [pythonbin, "-c", "import os,sys;print(sys.prefix)"]
-            PREFIX = subprocess.check_output(cmds).decode("utf-8").strip()
-            if PREFIX == sys.base_prefix:
-                create_skip_config()
-                return
-
-            # add path
-            cmds = [pythonbin, "-c", "import os,sys;print(os.linesep.join(sys.path).strip())"]
-            SITE_PACKAGES_DIRS = subprocess.check_output(cmds).decode("utf-8").split()
-            to_add = []
-            for path in SITE_PACKAGES_DIRS:
-                if path not in sys.path:
-                    to_add.append(path)
-            sys.path = to_add + sys.path
+        cmds = [pythonbin, "-c", "import os,sys;print(sys.version_info[:2]);"
+                "print(os.linesep.join(path for path in sys.path "
+                "if path.rstrip('/').endswith(('/site-packages','/dist-packages'))))"]
+        try:
+            VERSION, *SITE_PACKAGES_DIRS = subprocess.check_output(cmds).decode("utf-8").splitlines()
+        except (OSError, subprocess.CalledProcessError):
+            warn("Could not inspect Python environment: {:s}".format(pythonbin))
+            return
+        if VERSION != str(sys.version_info[:2]):
+            warn("Skipping Python environment {:s}: Python {:s} does not match GDB's Python {:s}.".format(
+                pythonbin, VERSION, str(sys.version_info[:2]),
+            ))
             return
 
-        fast_path() or slow_path()
+        to_add = []
+        for path in SITE_PACKAGES_DIRS:
+            if path and path not in sys.path:
+                to_add.append(path)
+        sys.path = to_add + sys.path
         return
 
     @staticmethod
@@ -203154,10 +203108,7 @@ class Gef:
             err("Permission denied to {:s}. Please delete it first.".format(GEF_TEMP_DIR))
             return
 
-        # When using a python virtual environment (pyenv, venv, etc.), GDB still loads
-        # the system-installed python, so GEF doesn't load site-packages dir from environment.
-        # In order to fix it, from the shell we run the python3 binary,
-        # take and parse its path, add the path to the current python process.
+        # GDB's embedded Python does not inherit packages from virtual environments.
         Gef.fix_venv()
 
         # setup prompt

@@ -5140,7 +5140,7 @@ The salt for BLAKE2s and BLAKE2b is blank.
 The key for KMAC128 and KMAC256 is blank.
 The key for SipHash is "\0" * 16.
 The key for HalfSipHash is "\0" * 8.
-To calculate FSB hash, you need the `gmpy2` package (uv pip install gmpy2).
+To calculate FSB hash, install `gmpy2` into the Python environment used by GEF.
 ```
 
 ## `hash file`
@@ -5176,7 +5176,7 @@ The salt for BLAKE2s and BLAKE2b is blank.
 The key for KMAC128 and KMAC256 is blank.
 The key for SipHash is "\0" * 16.
 The key for HalfSipHash is "\0" * 8.
-To calculate FSB hash, you need the `gmpy2` package (uv pip install gmpy2).
+To calculate FSB hash, install `gmpy2` into the Python environment used by GEF.
 ```
 
 ## `hash known-collision`
@@ -5202,7 +5202,7 @@ The salt for BLAKE2s and BLAKE2b is blank.
 The key for KMAC128 and KMAC256 is blank.
 The key for SipHash is "\0" * 16.
 The key for HalfSipHash is "\0" * 8.
-To calculate FSB hash, you need the `gmpy2` package (uv pip install gmpy2).
+To calculate FSB hash, install `gmpy2` into the Python environment used by GEF.
 ```
 
 ## `hash list`
@@ -5262,7 +5262,7 @@ The salt for BLAKE2s and BLAKE2b is blank.
 The key for KMAC128 and KMAC256 is blank.
 The key for SipHash is "\0" * 16.
 The key for HalfSipHash is "\0" * 8.
-To calculate FSB hash, you need the `gmpy2` package (uv pip install gmpy2).
+To calculate FSB hash, install `gmpy2` into the Python environment used by GEF.
 ```
 
 ## `hash test`
@@ -5328,7 +5328,7 @@ The salt for BLAKE2s and BLAKE2b is blank.
 The key for KMAC128 and KMAC256 is blank.
 The key for SipHash is "\0" * 16.
 The key for HalfSipHash is "\0" * 8.
-To calculate FSB hash, you need the `gmpy2` package (uv pip install gmpy2).
+To calculate FSB hash, install `gmpy2` into the Python environment used by GEF.
 ```
 
 ## `is-mem-zero`

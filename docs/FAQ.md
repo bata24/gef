@@ -64,6 +64,8 @@ It installs the same packages as `install-no-uv.sh` (previously named simply `in
 The key difference is that Python packages are installed into the virtual environment.
 
 By default, it installs into `$HOME/.gef/venv-gef`.
+The installer creates a CPython environment matching GDB's Python major and minor version.
+An existing environment must match too; otherwise, installation stops and asks you to recreate it.
 This directory contains only the Python environment. External tools go in `$HOME/.gef/bin`, with Ruby gems in `$HOME/.gef/gems` (see below).
 
 Usage:
@@ -79,7 +81,7 @@ wget -q https://raw.githubusercontent.com/bata24/gef/dev/install-uv.sh -O- | env
 ```
 
 `GEF_INSTALL_DIR` must be an absolute path.
-It changes the location of `gef.py`, the virtual environment, external tools, Ruby gems, and `gef.venv.conf`;
+It changes the location of `gef.py`, the virtual environment, external tools, and Ruby gems;
 system packages, the `uv` executable, and `$HOME/.gdbinit` remain in their default locations.
 
 When run as a non-root user, the installer uses `sudo` only for system packages.
@@ -90,6 +92,8 @@ This is the old installer that was used before the `uv`-based installation becam
 This installer is not currently recommended, but it still works.
 On systems protected by PEP 668, it automatically passes `--break-system-packages` to pip.
 Python packages are installed system-wide; external tools and Ruby gems use the same local directories as `install-uv.sh`.
+The installer uses `/usr/bin/python3` and checks that its major and minor version matches GDB's Python.
+If they differ, use `install-uv.sh` to create a matching environment.
 
 Usage:
 ```
@@ -123,12 +127,25 @@ wget -q https://raw.githubusercontent.com/bata24/gef/dev/install-minimal.sh -O- 
 Notes:
 - The process is straightforward: download `gef.py`, place it in the appropriate location, and add a line to `.gdbinit` to load it. You can also do the same thing manually.
 - Because it does not install any Python packages, it does not create a `venv`.
+- A standalone `python3` command is optional as long as GDB has Python support.
 
 ## What is `gef.venv.conf`?
-This is the path information file required by GEF that is automatically generated when you install GEF using `install-uv.sh`.
-It is not generated if you use `install-no-uv.sh` or `install-minimal.sh`. Place this file in the same directory as `gef.py`.
+Older installers generated this file to save Python search paths in `GEF_VENV_SYS_PATH`.
+GEF no longer reads it, and the installers no longer generate it. You can delete an existing copy.
+Restart GDB after upgrading from a version that loaded this file.
 
-It contains only `GEF_VENV_SYS_PATH`, which adds the Python environment's directories to GDB's `sys.path`.
+GEF first uses `venv-gef/bin/python` beside `gef.py`, or `python3` from `PATH` if that environment is absent.
+It queries that Python once at startup and imports only its `site-packages` and `dist-packages` directories.
+The Python major and minor version must match GDB's Python; otherwise, extra packages are skipped with a warning.
+There is no need to activate the dedicated environment or regenerate search-path files after updating packages.
+Manual installations can use an activated environment or `uv run`, including packages added with `--with`.
+The dedicated environment takes priority when present. Old `skip-venv-check` files are also ignored.
+
+To add a package to the default dedicated environment:
+```
+uv pip install --python "$HOME/.gef/venv-gef" gmpy2
+```
+Use the corresponding `venv-gef` path if you set `GEF_INSTALL_DIR`.
 
 ## Where are external tools installed?
 Both full installers install `one_gadget` and `rp-lin` under `$GEF_INSTALL_DIR/bin` (by default, `$HOME/.gef/bin`) unless they are already available on `PATH`.

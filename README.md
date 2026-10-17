@@ -37,7 +37,7 @@ Numerous other commands have been added and enhanced. Enjoy!
 - May work, but not recommended: Ubuntu 20.04-23.10.
 
 ### Install
-__The installer has been refactored. I recommend re-installing.__ (2026-09-13)
+__The installer has been refactored. I recommend re-installing.__ (2026-10-17)
 
 - Run the following command:
     ```bash
@@ -53,6 +53,9 @@ __The installer has been refactored. I recommend re-installing.__ (2026-09-13)
     - Notes
         - By default, `gef.py` is installed to `$HOME/.gef/gef.py`.
         - The required Python packages are installed to `$HOME/.gef/venv-gef`.
+        - The installer selects CPython matching GDB's Python major and minor version.
+        - GEF queries the environment at startup; activation and `gef.venv.conf` are not required.
+        - An existing environment with a different Python version must be recreated before installation.
         - GEF's installation directory is registered in `$HOME/.gdbinit`.
         - For more installation options and non-`root` user's limitations, see [docs/FAQ.md](docs/FAQ.md).
 
@@ -63,6 +66,7 @@ __The installer has been refactored. I recommend re-installing.__ (2026-09-13)
     ```
     - Notes
         - Most features work fine even without external tools.
+        - Extra Python packages are optional; commands requiring them remain unavailable until installed.
 
 ### Upgrade
 ```bash
@@ -71,6 +75,8 @@ python3 "$HOME/.gef/gef.py" --upgrade
 
 - Note
     - If you get errors after upgrading, it may be due to old config. Try renaming `$HOME/.gef.rc`.
+    - Restart GDB after upgrading. Old `gef.venv.conf` and `skip-venv-check` files are no longer used.
+    - If GDB's Python major or minor version changes, recreate `venv-gef` with a matching Python and reinstall its packages.
 
 ### Uninstall
 ```bash

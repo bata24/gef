@@ -85,6 +85,11 @@ else
 fi
 
 
+echo "[+] Check GDB Python version"
+GDB_BIN=$(command -v gdb-multiarch || command -v gdb) || fail "gdb is not installed."
+GDB_PYTHON_VERSION=$("${GDB_BIN}" -q -nx -batch -ex 'python import sys; print("%d.%d" % sys.version_info[:2])')
+
+
 echo "[+] Install uv"
 UV_BIN=$(command -v uv) || UV_BIN="${HOME}/.local/bin/uv"
 if [ ! -x "${UV_BIN}" ]; then
@@ -92,7 +97,10 @@ if [ ! -x "${UV_BIN}" ]; then
     wget -qO- "https://astral.sh/uv/install.sh" | UV_INSTALL_DIR="${HOME}/.local/bin" UV_NO_MODIFY_PATH=1 sh
     [ -x "${UV_BIN}" ] || fail "Installing uv failed."
 fi
-[ -e "${VENV}" ] || "${UV_BIN}" venv "${VENV}"
+[ -e "${VENV}" ] || "${UV_BIN}" venv --no-project --python "cpython${GDB_PYTHON_VERSION}" "${VENV}"
+VENV_PYTHON_VERSION=$("${VENV}/bin/python" -c 'import sys; print("%d.%d" % sys.version_info[:2])')
+[ "${VENV_PYTHON_VERSION}" = "${GDB_PYTHON_VERSION}" ] || \
+    fail "${VENV} uses Python ${VENV_PYTHON_VERSION}, but GDB uses ${GDB_PYTHON_VERSION}. Recreate the environment."
 
 
 echo "[+] pip3"
@@ -131,20 +139,6 @@ echo "[+] Setup GEF"
 if ! grep -Fqx "${STARTUP_COMMAND}" "${GDBINIT}" 2>/dev/null; then
     printf '%s\n' "${STARTUP_COMMAND}" >> "${GDBINIT}"
 fi
-
-
-echo "[+] Setup venv path hint file"
-GDB_BIN=$(command -v gdb-multiarch || command -v gdb) || fail "gdb is not installed."
-"${VENV}/bin/python" - "${GDB_BIN}" > "${TMP_DIR}/gef.venv.conf" <<'PYTHON'
-import ast, os, subprocess, sys
-
-gdb_output = subprocess.check_output([sys.argv[1], "-q", "-nx", "-batch", "-ex", "pi import sys; print(repr(sys.path))"], text=True)
-gdb_paths = set(ast.literal_eval(gdb_output.strip()))
-venv_paths = [path for path in sys.path if path and path not in gdb_paths]
-
-print("GEF_VENV_SYS_PATH=" + os.pathsep.join(venv_paths))
-PYTHON
-mv "${TMP_DIR}/gef.venv.conf" "${GEF_DIR}/gef.venv.conf"
 
 
 echo "[+] INSTALLATION SUCCESSFUL"

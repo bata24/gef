@@ -84,11 +84,20 @@ else
 fi
 
 
+echo "[+] Check GDB Python version"
+GDB_BIN=$(command -v gdb-multiarch || command -v gdb) || fail "gdb is not installed."
+GDB_PYTHON_VERSION=$("${GDB_BIN}" -q -nx -batch -ex 'python import sys; print("%d.%d" % sys.version_info[:2])')
+PYTHON_BIN=/usr/bin/python3
+PYTHON_VERSION=$("${PYTHON_BIN}" -c 'import sys; print("%d.%d" % sys.version_info[:2])')
+[ "${PYTHON_VERSION}" = "${GDB_PYTHON_VERSION}" ] || \
+    fail "System Python ${PYTHON_VERSION} does not match GDB's Python ${GDB_PYTHON_VERSION}. Use install-uv.sh."
+
+
 echo "[+] pip3"
-if python3 -m pip install --help | grep -q -- '--break-system-packages'; then
-    pip_install() { run_as_root python3 -m pip install --break-system-packages "$@"; }
+if "${PYTHON_BIN}" -m pip install --help | grep -q -- '--break-system-packages'; then
+    pip_install() { run_as_root "${PYTHON_BIN}" -m pip install --break-system-packages "$@"; }
 else
-    pip_install() { run_as_root python3 -m pip install "$@"; }
+    pip_install() { run_as_root "${PYTHON_BIN}" -m pip install "$@"; }
 fi
 pip_install --upgrade --ignore-installed pip
 pip_install "filebytes @ git+https://github.com/sashs/filebytes.git" setuptools unicorn capstone ropper keystone-engine magika angr pillow pyzbar cffi gmpy2
