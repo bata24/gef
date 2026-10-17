@@ -22967,6 +22967,9 @@ class SearchPatternCommand(GenericCommand):
 
     def search_pattern_by_address(self, pattern, start_address, end_address):
         """Search for a pattern within a range defined by arguments."""
+        if start_address >= end_address:
+            return []
+
         if isinstance(pattern, str):
             pattern = String.str2bytes(pattern)
 
