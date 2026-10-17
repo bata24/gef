@@ -14657,7 +14657,7 @@ def is_remote_debug():
 # However, it cannot detect that traffic is being redirected to another host.
 
 
-@Cache.cache_this_session(cache_None=False)
+@Cache.cache_this_session(cache_None=False, per_inferior=True)
 def is_normal_run():
     """GDB mode determination function for normal running."""
     if not is_alive():
@@ -14666,7 +14666,7 @@ def is_normal_run():
     return "Using the running image of child" in ret
 
 
-@Cache.cache_this_session(cache_None=False)
+@Cache.cache_this_session(cache_None=False, per_inferior=True)
 def is_attach():
     """GDB mode determination function for attaching."""
     if not is_alive():
@@ -14678,7 +14678,7 @@ def is_attach():
         return "Using the running image of attached" in ret
 
 
-@Cache.cache_this_session(cache_None=False)
+@Cache.cache_this_session(cache_None=False, per_inferior=True)
 def is_container_attach():
     """GDB mode determination function for attaching another namespace."""
     if not is_alive():
@@ -14711,7 +14711,7 @@ def is_core_file():
         return "core" in res
 
 
-@Cache.cache_this_session(cache_None=False)
+@Cache.cache_this_session(cache_None=False, per_inferior=True)
 def is_pin():
     """GDB mode determination function for pin and SDE."""
     if not is_alive():
@@ -14726,7 +14726,7 @@ def is_pin():
     return "intel.name=" in response
 
 
-@Cache.cache_this_session(cache_None=False)
+@Cache.cache_this_session(cache_None=False, per_inferior=True)
 def is_qemu():
     """GDB mode determination function for qemu-user or qemu-system."""
     if not is_alive():
@@ -14741,7 +14741,7 @@ def is_qemu():
     return "ENABLE=" in response
 
 
-@Cache.cache_this_session(cache_None=False)
+@Cache.cache_this_session(cache_None=False, per_inferior=True)
 def is_qemu_user():
     """GDB mode determination function for qemu-user gdb stub."""
     if not is_alive():
@@ -14756,7 +14756,7 @@ def is_qemu_user():
     return "Text=" in response
 
 
-@Cache.cache_this_session(cache_None=False)
+@Cache.cache_this_session(cache_None=False, per_inferior=True)
 def is_qemu_system():
     """GDB mode determination function for qemu-system gdb stub."""
     if not is_alive():
@@ -14771,7 +14771,7 @@ def is_qemu_system():
     return 'received: ""' in response
 
 
-@Cache.cache_this_session(cache_None=False)
+@Cache.cache_this_session(cache_None=False, per_inferior=True)
 def is_over_serial():
     """GDB mode determination function for serial device."""
     if not is_alive():
@@ -14779,7 +14779,7 @@ def is_over_serial():
     return bool(GefUtil.get_serial_device())
 
 
-@Cache.cache_this_session(cache_None=False)
+@Cache.cache_this_session(cache_None=False, per_inferior=True)
 def is_kgdb():
     """GDB mode determination function for KGDB."""
     # Forcing KGDB mode is useful when KGDB is being used via agent-proxy
@@ -14796,7 +14796,7 @@ def kgdb_has_system_registers():
     return Config.get("gef.kgdb_system_registers") is True
 
 
-@Cache.cache_this_session(cache_None=False)
+@Cache.cache_this_session(cache_None=False, per_inferior=True)
 def is_kdb():
     """GDB mode determination function for KDB (over KGDB)."""
     if not is_alive():
@@ -14811,7 +14811,7 @@ def is_kdb():
     return bool(r)
 
 
-@Cache.cache_this_session(cache_None=False)
+@Cache.cache_this_session(cache_None=False, per_inferior=True)
 def is_vmware():
     """GDB mode determination function for VMware gdb stub."""
     if not is_alive():
@@ -14830,7 +14830,7 @@ def is_vmware():
         return False
 
 
-@Cache.cache_this_session(cache_None=False)
+@Cache.cache_this_session(cache_None=False, per_inferior=True)
 def is_qiling():
     """GDB mode determination function for qiling framework gdb stub."""
     if not is_alive():
@@ -14943,7 +14943,7 @@ def is_in_kpti_transition():
     return not is_valid_addr(known_addresses[0])
 
 
-@Cache.cache_this_session(cache_None=False)
+@Cache.cache_this_session(cache_None=False, per_inferior=True)
 def is_support_secure_world():
     if not is_alive():
         return None
@@ -14978,7 +14978,7 @@ def is_in_secure():
     return (scr & 0b1) == 0
 
 
-@Cache.cache_this_session(cache_None=False)
+@Cache.cache_this_session(cache_None=False, per_inferior=True)
 def is_kvm_enabled():
     """GDB mode determination function for KVM."""
     if not is_alive():
@@ -14990,7 +14990,7 @@ def is_kvm_enabled():
         return False
 
 
-@Cache.cache_this_session(cache_None=False)
+@Cache.cache_this_session(cache_None=False, per_inferior=True)
 def is_smp_enabled():
     """GDB mode determination function for smp."""
     if not is_alive():
@@ -15222,7 +15222,7 @@ class Path:
         return os.path.join(prefix, relative_path)
 
     @staticmethod
-    @Cache.cache_this_session(cache_None=False)
+    @Cache.cache_this_session(cache_None=False, per_inferior=True, until_new_objfile=True)
     def get_filepath(append_proc_root_prefix=True):
         """Return the local absolute path of the file currently debugged."""
         filepath = gdb.current_progspace().filename
@@ -15295,7 +15295,7 @@ class Path:
         return None
 
     @staticmethod
-    @Cache.cache_this_session(cache_None=False)
+    @Cache.cache_this_session(cache_None=False, per_inferior=True, until_new_objfile=True)
     def get_filename():
         """Return the full filename of the file currently debugged."""
         filename = Path.get_filepath()
@@ -19452,7 +19452,10 @@ class ArgvCommand(GenericCommand, BufferingOutput):
         i = 0
         while True:
             pos = array + i * current_arch.ptrsize
-            addr = read_int_from_memory(pos)
+            addr = read_int_from_memory(pos, safe=True)
+            if addr is None:
+                self.warn_add_out("Could not read pointer at {:#x}".format(pos))
+                break
             if addr == 0:
                 break
             if not self.args.verbose and i >= 100:
@@ -19592,7 +19595,10 @@ class EnvpCommand(GenericCommand, BufferingOutput):
         i = 0
         while True:
             pos = array + i * current_arch.ptrsize
-            addr = read_int_from_memory(pos)
+            addr = read_int_from_memory(pos, safe=True)
+            if addr is None:
+                self.warn_add_out("Could not read pointer at {:#x}".format(pos))
+                break
             if addr == 0:
                 break
             if not self.args.verbose and i >= 100:
@@ -76775,7 +76781,9 @@ class KernelMapleTree:
 
         cls = type(self)
         for offset in range(0, max_offset, cls.ptrsize):
-            entry = read_int_from_memory(self.address + offset)
+            entry = read_int_from_memory(self.address + offset, safe=True)
+            if entry is None:
+                continue
             if cls.is_root(entry, self.address + offset):
                 self.root_offset = offset
                 return self.root_offset
@@ -76791,11 +76799,15 @@ class KernelMapleTree:
             offset_ma_flags = self.root_offset + type(self).ptrsize
         else:
             offset_ma_flags = self.root_offset - 4
-            if is_64bit() and read_int32_from_memory(self.address + offset_ma_flags) == 0:
+            if is_64bit() and read_int32_from_memory(self.address + offset_ma_flags, safe=True) == 0:
                 offset_ma_flags = self.root_offset - 8
 
-        self.ma_root = read_int_from_memory(self.address + self.root_offset)
-        self.ma_flags = read_int32_from_memory(self.address + offset_ma_flags)
+        self.ma_root = read_int_from_memory(self.address + self.root_offset, safe=True)
+        self.ma_flags = read_int32_from_memory(self.address + offset_ma_flags, safe=True)
+        if self.ma_root is None or self.ma_flags is None:
+            address = self.address + (self.root_offset if self.ma_root is None else offset_ma_flags)
+            self.broken[address] = "unreadable"
+            return False
         self.max_depth = (self.ma_flags & self.MT_FLAGS_HEIGHT_MASK) >> self.MT_FLAGS_HEIGHT_OFFSET
         return True
 
@@ -76855,7 +76867,10 @@ class KernelMapleTree:
             return
 
         for i in range(num_slots):
-            slot = read_int_from_memory(slot_top + cls.ptrsize * i)
+            slot = read_int_from_memory(slot_top + cls.ptrsize * i, safe=True)
+            if slot is None:
+                self.broken[pointer] = "unreadable"
+                return
             if (slot & ~(cls.MAPLE_NODE_TYPE_MASK)) == 0:
                 continue
             if is_leaf:
@@ -76899,7 +76914,11 @@ class KernelRBTree:
         if self.address == 0:
             return []
 
-        return self.parse_node(read_int_from_memory(self.address))
+        root = read_int_from_memory(self.address, safe=True)
+        if root is None:
+            self.broken[self.address] = "unreadable"
+            return []
+        return self.parse_node(root)
 
     def parse_node(self, rb_node):
         """Return the list of the rb_nodes under `rb_node` recursively."""
@@ -76913,14 +76932,16 @@ class KernelRBTree:
             return []
         self.seen.add(rb_node)
 
-        right = read_int_from_memory(rb_node + current_arch.ptrsize * 1) & ~1 # remove RB_BLACK
-        left = read_int_from_memory(rb_node + current_arch.ptrsize * 2) & ~1 # remove RB_BLACK
+        right = read_int_from_memory(rb_node + current_arch.ptrsize * 1, safe=True)
+        left = read_int_from_memory(rb_node + current_arch.ptrsize * 2, safe=True)
+        if right is None or left is None:
+            self.broken[rb_node] = "unreadable"
 
         ret = [rb_node]
         if right:
-            ret += self.parse_node(right)
+            ret += self.parse_node(right & ~1) # remove RB_BLACK
         if left:
-            ret += self.parse_node(left)
+            ret += self.parse_node(left & ~1) # remove RB_BLACK
         return ret
 
 
@@ -104037,7 +104058,7 @@ class StringsCommand(GenericCommand, BufferingOutput):
             maps = ProcessMap.get_process_maps_exclude_special_regions()
             queue = [(m.page_start, m.size, args.depth) for m in maps]
         else:
-            if args.end_location:
+            if args.end_location is not None:
                 if args.end_location < args.location:
                     err("Invalid END_LOCATION")
                     return
@@ -106805,7 +106826,7 @@ class Hash:
             self.block_size = self.chunk_size
             self.buf = bytearray()
             self.msg_len = 0  # in bytes
-            self.custom = custom
+            self.custom = bytes(custom)
             if data:
                 self.update(data)
             return
@@ -113201,14 +113222,14 @@ class Hash:
         def __init__(self, data=b"", seed=0):
             if not isinstance(data, (bytes, bytearray, memoryview)):
                 raise TypeError("data must be bytes-like")
-            self.data = data
+            self.data = bytes(data)
             self.seed = seed
             return
 
         def update(self, data):
             if not isinstance(data, (bytes, bytearray, memoryview)):
                 raise TypeError("data must be bytes-like")
-            self.data += data
+            self.data += bytes(data)
             return
 
         def ror32(self, x, r):
@@ -193591,7 +193612,10 @@ class KernelWalkMapleTreeCommand(KernelWalkCommand):
 
         self.out = []
         self.quiet_info_add_out("offsetof(the struct, ma_root): {:#x}".format(mt.root_offset))
-        self.quiet_info_add_out("ma_root: {:#x}, ma_flags: {:#x}, max_depth: {:d}".format(mt.ma_root, mt.ma_flags, mt.max_depth))
+        if mt.ma_root is not None and mt.ma_flags is not None:
+            self.quiet_info_add_out("ma_root: {:#x}, ma_flags: {:#x}, max_depth: {:d}".format(
+                mt.ma_root, mt.ma_flags, mt.max_depth,
+            ))
         self.dump_entries(entries, mt.broken)
         self.print_output(check_terminal_size=True)
         return
@@ -198794,7 +198818,7 @@ class XrefToStringCommand(GenericCommand):
         no_pager = ""
         if args.no_pager:
             no_pager = "--no-pager"
-        gdb.execute("xref-telescope {:s} {!r} 2".format(no_pager, args.string))
+        gdb.execute("xref-telescope {:s} -- {:s} 2".format(no_pager, shlex.quote(args.string)))
         return
 
 
@@ -199351,14 +199375,14 @@ class FiletypeMemoryCommand(GenericCommand):
             try:
                 gef_print(titlify("file {!r}".format(filepath)))
                 file_command = GefUtil.which("file")
-                GefUtil.os_system("{!r} {!r}".format(file_command, filepath))
+                GefUtil.os_system("{:s} {:s}".format(shlex.quote(file_command), shlex.quote(filepath)))
             except FileNotFoundError as e:
                 warn("{}".format(e))
 
             try:
                 gef_print(titlify("magika {!r}".format(filepath)))
                 magika_command = GefUtil.which("magika")
-                GefUtil.os_system("{!r} {!r}".format(magika_command, filepath))
+                GefUtil.os_system("{:s} {:s}".format(shlex.quote(magika_command), shlex.quote(filepath)))
             except FileNotFoundError as e:
                 warn("{}".format(e))
         return
@@ -202390,7 +202414,7 @@ class GefUtil:
             return None
 
     @staticmethod
-    @Cache.cache_this_session(cache_None=False)
+    @Cache.cache_this_session(cache_None=False, per_inferior=True)
     def get_serial_device():
         """Return the serial device used by the selected remote target."""
         if not is_alive() or not is_remote_debug():
