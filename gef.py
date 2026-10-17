@@ -178345,7 +178345,7 @@ class AddrMap:
         if maps is None and force_secure is None:
             try:
                 ret = gdb.execute("monitor gva2gpa {:#x}".format(address), to_string=True)
-                match = re.search(r"gpa: (0x\S+)", ret)
+                match = re.search(r"gpa: (0x[0-9a-fA-F]+|0)\b", ret)
                 if match:
                     return int(match.group(1), 16)
             except (gdb.error, ValueError):
@@ -178386,6 +178386,41 @@ class AddrMap:
             if cr0 is not None and not cr0 & (1 << 31):
                 maps = [AddrMap.Entry(0, 1 << 32, 0, 1 << 32)]
                 return p2v_from_map()
+
+        if maps is None and force_secure is None and (is_arm32() or is_arm64()):
+            cpsr = get_register("$cpsr")
+            sctlr = None
+            hcr = 0
+            if cpsr is not None:
+                if is_arm64():
+                    el = (cpsr >> 2) & 0b11
+                    if el < 2:
+                        hcr = get_register("$HCR_EL2") or 0
+                        if el == 0 and hcr & (1 << 34) and hcr & (1 << 27):
+                            el = 2
+                            hcr = 0
+                    sctlr = get_register("$SCTLR_EL{:d}".format(max(el, 1)))
+                else:
+                    if cpsr & 0b11111 == 0b11010:
+                        sctlr = get_register("$HSCTLR")
+                        if sctlr is None:
+                            sctlr = get_register("$SCTLR_EL2")
+                    else:
+                        secure = is_in_secure()
+                        suffix = "_S" if secure else ""
+                        sctlr = get_register("$SCTLR" + suffix)
+                        if sctlr is None:
+                            sctlr = get_register("$SCTLR_EL1" + suffix)
+                        if not secure:
+                            hcr = get_register("$HCR")
+                            if hcr is None:
+                                hcr = get_register("$HCR_EL2")
+                            hcr = hcr or 0
+            if sctlr is not None and not sctlr & 1 and not hcr & ((1 << 12) | 1):
+                if AddrMap.v2p(address) == address:
+                    size = 1 << (64 if is_arm64() else 32)
+                    maps = [AddrMap.Entry(0, size, 0, size)]
+                    return p2v_from_map()
 
         if maps is None:
             maps = AddrMap.get_maps(force_secure=force_secure, verbose=verbose)
