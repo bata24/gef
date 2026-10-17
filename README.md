@@ -86,6 +86,8 @@ rm -rf /tmp/gef
 sed -i -e '/from gef import/d' "$HOME/.gdbinit"
 ```
 
+If you used `GEF_INSTALL_DIR`, remove that directory instead of `$HOME/.gef`.
+
 ### Dependencies
 Please refer to [install-uv.sh](install-uv.sh) for installation requirements.
 

@@ -1,8 +1,8 @@
 ## Building Qemu
 
 ```bash
-apt install libslirp-dev
-apt build-dep qemu ninja-build
+apt install libslirp-dev ninja-build
+apt build-dep qemu
 
 wget https://download.qemu.org/qemu-9.2.0.tar.xz
 tar xf qemu-9.2.0.tar.xz
@@ -65,8 +65,8 @@ qemu-system-x86_64 \
 
         qemu-system-x86_64 \
             -M pc \
-            -kernel kernel/linux/arch/x86_64/boot/bzImage \
-            -drive file=buildroot-2024.11.1/output/images/rootfs.ext2,if=ide \
+            -kernel arch/x86/boot/bzImage \
+            -drive file=/PATH/TO/buildroot-2024.11.1/output/images/rootfs.ext2,if=ide,format=raw \
             -append "root=/dev/sda console=ttyS0" \
             -nographic \
             -netdev tap,id=tap0 \

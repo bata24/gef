@@ -166,6 +166,10 @@ Upgrading `gef.py` alone does not move the old tools; use a fresh full installat
 ## How many ways are there to install GEF?
 There are three installers.
 
+All three refuse to overwrite an existing `gef.py` or add a different GEF startup command alongside an existing one.
+For a reinstall, remove or rename the old installation and remove its GEF startup line from `$HOME/.gdbinit` first.
+For a code-only update, use `python3 /path/to/gef.py --upgrade`, then restart GDB.
+
 - `uv`-based install
     - This is the installation method provided by `install-uv.sh`.
     - This uses `uv` to install Python packages into an isolated environment.
@@ -197,8 +201,8 @@ Examples:
     - If this is unavailable, GEF falls back to slower memory access through `gdb`.
 - qemu-system (ARM32/ARM64): Reads and writes secure-world memory.
 
-GEF itself and its installers can run as a normal user. Only the features above
-need GDB to run with root privileges.
+GEF itself and its installers can run as a normal user. The features above may
+need elevated privileges, depending on process ownership and ptrace restrictions.
 
 ## How to change the location of GEF?
 Set `GEF_INSTALL_DIR` to an absolute path when running any of the installers:
@@ -274,7 +278,7 @@ To use these commands fully, you need to manually install the necessary packages
 Notes:
 - To save installation time, the GEF installer does not install `binwalk` by default. This is because it has many package dependencies.
 - The GEF installer does no longer install `bpftool` when run inside a Docker container because `bpftool` is intended to run in the host.
-- The full installers prefer prebuilt `ceccomp` packages and never build it from source. Ubuntu 26.04 and Arch use their native package; other supported systems with glibc 2.38 or newer use Debian's compatible binary package. On older systems, neither `ceccomp` nor `seccomp-tools` is installed.
+- The full installers prefer prebuilt `ceccomp` packages and never build it from source. Ubuntu 26.04 and Arch use their native package; APT systems without a native package and with glibc 2.38 or newer try Debian's binary package for the host architecture, skipping it if unavailable. On older systems, neither `ceccomp` nor `seccomp-tools` is installed.
 - The GEF installer does no longer install `vmlinux-to-elf` because in many cases you can use `ks-apply` instead.
 
 ## Is there a lighter version with fewer features?
@@ -402,7 +406,7 @@ Let's consider debug information and debug symbols separately.
 - Debug symbols
     - Yes.
         - If the symbols are already loaded:
-            - The `ksymaddr-remtote` command will automatically use offsets read from the `vmlinux` file (with rebasing).
+            - The `ksymaddr-remote` command will automatically use offsets read from the `vmlinux` file (with rebasing).
         - If the symbols are not loaded yet:
             - First, load the `vmlinux` symbols using the `file` command.
     - Note:
@@ -560,8 +564,11 @@ GEF resolves kernel symbols using the `ksymaddr-remote` command.
 This command caches the offsets (needed for parsing) under the `/tmp/gef` directory.
 At that time, it uses the kernel version string (its hash) as the cache key.
 
-Because of this, in a situation like following, you may encounter an issue where the wrong cache is used.
+GEF checks cached offsets against the running kernel and rescans when they do not match.
+The same cache can be shared in a situation like the following:
 - You have built and debug multiple kernels with slightly different build configs (same kernel version)
+
+If symbol resolution still looks wrong, force a fresh scan before continuing.
 
 To resolve this, after attaching with GDB, execute either of the following:
 - `gef reset-cache --hard` (clears the cache)
@@ -622,7 +629,7 @@ As you can see, this does not work well if structure members are arranged random
 Also, depending on the assembly output by the compiler, it may not be possible to parse correctly.
 
 ## How does GEF achieve the conversion from `page` to `virt` (or `phys`)?
-GEF achieves this by using the parsed results of the SLUB free list.
+GEF achieves this by using the parsed results of allocator structures.
 
 If you are interested in this question, you probably know how difficult this conversion formula is.
 As you can see, this conversion (`page <-> virt`) is very difficult.
@@ -631,15 +638,15 @@ This is because several values are needed to convert `page` to `virt` (or vice v
 - `vmemmap`
 - `sizeof(struct page)`
 
-I concluded that the only way to get these is to calculate them backwards from valid `page` and `virt` pairs.
+GEF calculates these values backwards from valid `page` and `virt` pairs.
 
-These pairs can be found with a very high probability while parsing the SLUB structure.
-Therefore, GEF calls the `slub-dump` command internally and temporarily, then calculates these values from the result.
+These pairs can be found while parsing the active allocator's structures.
+GEF calls `slub-dump`, `slub-tiny-dump`, `slab-dump`, or `slob-dump` internally, depending on the allocator, and uses the result to infer the values needed for the conversion.
 
-This is the reason why the first time the `page2virt` command runs, it takes a long time: it parses the page tables, identifies function symbols, and internally calls `slub-dump` twice.
+This is why the first `page2virt` call may take time: it parses page tables, identifies function symbols, and inspects allocator data when needed.
 
 Note:
-- The `slub-dump` command itself uses the `page` to `virt` conversion function as well, resulting in a circular reference. GEF avoid this problem by adding an option to skip this (`--skip-page2virt`).
+- The SLUB and SLUB-TINY dump commands also use the `page` to `virt` conversion function. Internal queries use `--skip-page2virt` to avoid a circular reference.
 
 
 # About the Python Interface
@@ -669,14 +676,14 @@ There are also similar functions. Here is the list:
 
 ## Are there any other globally accessible functions that are useful?
 - Memory access
-    - `write_memory(addr, data)`, `read_memory(addr, length)`
-    - `read_int_from_memory(addr)` # Sizes are estimated
-        - `read_int8_from_memory(addr)`
-        - `read_int16_from_memory(addr)`
-        - `read_int32_from_memory(addr)`
-        - `read_int64_from_memory(addr)`
-    - `read_cstring_from_memory(addr, max_length=None)`
-    - `read_physmem(paddr, size)`, `write_physmem(paddr, data)`
+    - `write_memory(addr, data)`, `read_memory(addr, length, safe=False)`
+    - `read_int_from_memory(addr, safe=False, signed=False)` # Uses the target pointer size
+        - `read_int8_from_memory(addr, safe=False, signed=False)`
+        - `read_int16_from_memory(addr, safe=False, signed=False)`
+        - `read_int32_from_memory(addr, safe=False, signed=False)`
+        - `read_int64_from_memory(addr, safe=False, signed=False)`
+    - `read_cstring_from_memory(addr, max_length=None, safe=False)`
+    - `read_physmem(paddr, size, already_physmode=False)`, `write_physmem(paddr, data, already_physmode=False)`
     - `is_valid_addr(addr)`
     - `is_single_link_list(addr)`, `is_double_link_list(addr, min_len=0)`
     - `is_ascii_string(addr)`
@@ -694,7 +701,7 @@ There are also similar functions. Here is the list:
     - `align(value, align)`, `align_to_ptrsize(addr)`, `align_to_pagesize(addr)`,
 - Other
     - `get_pagesize()`, `get_pagesize_mask_low()`, `get_pagesize_mask_high()`
-    - `get_syscall_table(arch=None, mode=None)`
+    - `Syscall.get_syscall_table(arch=None, mode=None, current_insn=False)`
 
 If you want the complete list, run `gef pyobj-list`.
 

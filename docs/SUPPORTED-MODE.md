@@ -31,7 +31,7 @@
         - Possibly ARM and ARM64
 - Notes
     - You can also install and use GEF inside Docker.
-    - However, the `--privileged` option is required when running `docker run` or `docker exec`.
+    - For debugging inside Docker, use `--privileged` when running `docker run` or `docker exec`, or configure equivalent ptrace permissions.
 
 ## With Gdbserver
 - Usage
@@ -235,7 +235,7 @@
         - `adb shell chmod +x /data/local/tmp/gdbserver-static`.
     - Start `gdbserver`.
         - `adb shell /data/local/tmp/gdbserver-static localhost:9999 /PATH/TO/BINARY`.
-    - Attach using `gdb-multiarch 'target remote localhost:9999'`.
+    - Attach using `gdb-multiarch -ex 'target remote localhost:9999'`.
 - Supported architectures
     - Debugger (GDB) host
         - x64
@@ -245,4 +245,4 @@
 - Notes
     - To connect from another machine, you can forward the port further.
         - Run `socat TCP-LISTEN:9998,fork,reuseaddr TCP-CONNECT:localhost:9999` on the `Android Studio` host machine.
-        - Attach using `gdb-multiarch 'target remote <Android Studio host machine's IP address>:9998'` from another machine.
+        - Attach using `gdb-multiarch -ex 'target remote HOST_IP:9998'` from another machine, replacing `HOST_IP` with the Android Studio host's IP address.

@@ -137,7 +137,7 @@ I also list the tools I used in my Ubuntu 25.10 environment.
 - gdb: build from latest. See [docs/FAQ](FAQ.md#how-to-build-gdb).
 
 ## loongarch64
-- toolchain: [x86_64-cross-t    ools-loongarch64-binutils_2.45-gcc_15.1.0-glibc_2.42.tar.xz](https://github.com/loongson/build-tools/releases/download/2025.08.08/x86_64-cross-tools-loongarch64-binutils_2.45-gcc_15.1.0-glibc_2.42.tar.xz)
+- toolchain: [x86_64-cross-tools-loongarch64-binutils_2.45-gcc_15.1.0-glibc_2.42.tar.xz](https://github.com/loongson/build-tools/releases/download/2025.08.08/x86_64-cross-tools-loongarch64-binutils_2.45-gcc_15.1.0-glibc_2.42.tar.xz)
 - qemu: `qemu-loongarch64` via apt.
 - gdb: build from latest. See [docs/FAQ](FAQ.md#how-to-build-gdb).
 
@@ -162,11 +162,11 @@ I also list the tools I used in my Ubuntu 25.10 environment.
           354 #endif
           ```
     - `./configure --target-list=arc-linux-user --disable-werror && make && cp build/qemu-arc /usr/local/bin`
-    - It needs `-cpu` option like `qemu-arc -cpu hs5x -g 1234 ./a.out`.
+    - Use `qemu-arc -cpu archs -g 1234 ./a.out` for ARCv2; `hs5x` is the ARCv3 CPU used in the next section.
 - gdb: build from latest. See [docs/FAQ](FAQ.md#how-to-build-gdb).
 
 ## arc32 (HS58; ARCv3)
-- toolchain: [arc_gnu_2025.09_prebuilt_arc32_glibc_linux_install.tar.bz2](https://github.com/foss-for-synopsys-dwc-arc-processors/toolchain/releases/download/arc-2025.09-release/arc_gnu_2025.09_prebuilt_arc32_glibc_linux_install.tar.xz)
+- toolchain: [arc_gnu_2025.09_prebuilt_arc32_glibc_linux_install.tar.xz](https://github.com/foss-for-synopsys-dwc-arc-processors/toolchain/releases/download/arc-2025.09-release/arc_gnu_2025.09_prebuilt_arc32_glibc_linux_install.tar.xz)
     - `gdb` is included, but it does not support `python3`.
 - qemu: https://github.com/foss-for-synopsys-dwc-arc-processors/qemu
     - Add `#ifndef` and `#endif` like following to `linux-user/syscall.c`.
