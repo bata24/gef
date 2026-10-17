@@ -157802,8 +157802,16 @@ class KernelBuddy:
                 continue
             record = {"index": index, "address": zone, "name": name}
             zones.append(record)
-            if offset_spanned_pages is not None and read_int_from_memory(zone + offset_spanned_pages, safe=True) == 0:
-                continue
+            if offset_spanned_pages is not None:
+                if read_int_from_memory(zone + offset_spanned_pages, safe=True) == 0:
+                    continue
+            else:
+                # the free lists of an empty zone are left zero-filled
+                free_list = zone + self.offset_free_area
+                next_ptr = read_int_from_memory(free_list, safe=True)
+                prev_ptr = read_int_from_memory(free_list + current_arch.ptrsize, safe=True)
+                if next_ptr == prev_ptr == 0:
+                    continue
             if not options["skip_pcp"]:
                 record["per_cpu_pageset"] = self.walk_pcp(zone, name == "HighMem", options)
             if not options["only_pcp"]:
