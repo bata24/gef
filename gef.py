@@ -13348,6 +13348,50 @@ class QemuMonitor:
         return [(start, end) for start, end, _, _ in QemuMonitor.get_mtree_regions("memory")]
 
     @staticmethod
+    @Cache.cache_this_session(per_inferior=True)
+    def get_cpu_property(name):
+        """Return the QOM property `name` of the first CPU that has it, decoded from the JSON of `monitor qom-get`.
+        Return None if it is unavailable, e.g. QEMU before 5.1 has no qom-get in HMP."""
+        if not is_qemu_system():
+            return None
+        try:
+            res = gdb.execute("monitor info qom-tree", to_string=True)
+        except gdb.error:
+            return None
+        for obj in QemuMonitor.parse_qom_tree(res):
+            if not obj["type"].endswith("-cpu"):
+                continue
+            try:
+                value = gdb.execute("monitor qom-get {:s} {:s}".format(obj["path"], name), to_string=True)
+                return json.loads(value)
+            except (gdb.error, ValueError):
+                continue
+        return None
+
+    @staticmethod
+    def parse_qom_tree(output):
+        objects = []
+        parents = []
+        for line in output.splitlines():
+            match = re.match(r"^( *)/(.*) \(([^()]*)\)\s*$", line)
+            if match is None:
+                continue
+
+            indent = len(match.group(1))
+            while parents and parents[-1][0] >= indent:
+                parents.pop()
+            if parents:
+                parent_path = parents[-1][1]
+            else:
+                parent_path = ""
+            name = match.group(2)
+            path = "{:s}/{:s}".format(parent_path, name)
+            obj = {"name": name, "type": match.group(3), "path": path}
+            objects.append(obj)
+            parents.append((indent, path))
+        return objects
+
+    @staticmethod
     @Cache.cache_until_next(per_cpu=True, per_inferior=True)
     def get_x86_segments():
         try:
@@ -183361,12 +183405,16 @@ class SwitchELCommand(GenericCommand):
 
         if target_el >= 2:
             features = get_register("$ID_AA64PFR0_EL1")
-            if features is None:
+            if features is not None:
+                implemented = (features >> (target_el * 4)) & 0xf in (1, 2)
+            else:
+                implemented = QemuMonitor.get_cpu_property("has_el{:d}".format(target_el))
+            if implemented is None:
                 register = {2: "$HCR_EL2", 3: "$SCR_EL3"}[target_el]
                 if get_register(register) is None:
                     error("EL{:d} is unavailable; could not read {:s}".format(target_el, register))
                     return False
-            elif (features >> (target_el * 4)) & 0xf not in (1, 2):
+            elif not implemented:
                 error("EL{:d} is not implemented on this CPU".format(target_el))
                 return False
 
@@ -186417,28 +186465,6 @@ class QemuDeviceInfoCommand(GenericCommand, BufferingOutput):
                 parents[-1][1]["bars"].append({"index": match.group(1), "address": match.group(2)})
         return devices
 
-    def parse_qom_tree(self, output):
-        objects = []
-        parents = []
-        for line in output.splitlines():
-            match = re.match(r"^( *)/(.*) \(([^()]*)\)\s*$", line)
-            if match is None:
-                continue
-
-            indent = len(match.group(1))
-            while parents and parents[-1][0] >= indent:
-                parents.pop()
-            if parents:
-                parent_path = parents[-1][1]
-            else:
-                parent_path = ""
-            name = match.group(2)
-            path = "{:s}/{:s}".format(parent_path, name)
-            obj = {"name": name, "type": match.group(3), "path": path}
-            objects.append(obj)
-            parents.append((indent, path))
-        return objects
-
     def attach_qom_info(self, device, obj, objects):
         device["qom_path"] = obj["path"]
         device["memory_regions"] = [
@@ -186461,7 +186487,7 @@ class QemuDeviceInfoCommand(GenericCommand, BufferingOutput):
             qom_tree = None
 
         if qom_tree is not None:
-            objects = self.parse_qom_tree(qom_tree)
+            objects = QemuMonitor.parse_qom_tree(qom_tree)
         else:
             objects = []
         instances = []
