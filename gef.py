@@ -76334,15 +76334,24 @@ class KernelXArray:
             return []
         self.seen.add(node)
 
-        count = read_int8_from_memory(node + cls.offset_count)
+        count = read_int8_from_memory(node + cls.offset_count, safe=True)
+        if count is None:
+            self.broken[node] = "unreadable"
+            return []
         if count == 0:
             return []
 
-        shift = read_int8_from_memory(node + cls.offset_shift)
+        shift = read_int8_from_memory(node + cls.offset_shift, safe=True)
+        if shift is None:
+            self.broken[node] = "unreadable"
+            return []
         slots = node + cls.offset_slots
         elems = []
         for i in range(64): # 16 or 64
-            child = read_int_from_memory(slots + cls.ptrsize * i)
+            child = read_int_from_memory(slots + cls.ptrsize * i, safe=True)
+            if child is None:
+                self.broken[node] = "unreadable"
+                break
             if child == 0:
                 continue
             elems += self.parse_entry(child, index + (i << shift))
