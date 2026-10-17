@@ -132032,8 +132032,8 @@ class Hash:
         word_mask = 0xffff_ffff
         q_const_a = 0xaaaa_aaaa
         q_const_b = 0x5555_5555
-        rot1 = (4, 8, 13, 17, 22, 24, 29)
-        rot2 = (5, 9, 11, 15, 20, 25, 27)
+        rot1 = (5, 11, 13, 17, 19, 29, 31)
+        rot2 = (3, 7, 11, 17, 19, 23, 29)
         word_format = "I"
         init_pipe = (
             0x0001_0203, 0x0405_0607, 0x0809_0a0b, 0x0c0d_0e0f, 0x1011_1213, 0x1415_1617, 0x1819_1a1b, 0x1c1d_1e1f,
@@ -132060,8 +132060,8 @@ class Hash:
         word_mask = 0xffff_ffff_ffff_ffff
         q_const_a = 0xaaaa_aaaa_aaaa_aaaa
         q_const_b = 0x5555_5555_5555_5555
-        rot1 = (5, 15, 22, 31, 40, 50, 59)
-        rot2 = (10, 19, 29, 36, 44, 48, 55)
+        rot1 = (5, 19, 29, 31, 41, 57, 61)
+        rot2 = (3, 17, 23, 31, 37, 45, 59)
         word_format = "Q"
         init_pipe = (
             0x0001_0203_0405_0607, 0x0809_0a0b_0c0d_0e0f, 0x1011_1213_1415_1617, 0x1819_1a1b_1c1d_1e1f,
@@ -145982,13 +145982,14 @@ class HashTestCommand(HashCommand, BufferingOutput):
             "a7e9114eac54cc2d2014c5c976849739d66ad7f049fcd4047992f0bed1e7022e864cf12a2581254a44163b64156930632e28fca145c612d551507503734cd89c",
         # https://csrc.nist.rip/groups/ST/hash/sha-3/Round1/documents/EDON-R.zip
         "EDONR-224":
-            "8f2cf96634e6be40f2534a9ab9e5ff18070f2ecd0e2040b2d1ebda4a",
+            "e443ce8de0433647beb79df3ed5361cdce8cd2f34ea09537d370d4fa",
         "EDONR-256":
-            "42201941c0020a52cca6772d31fefddfc4db45deb64c7b7dc9e8e8f82cd7ad1e",
+            "e77a5ac00923b86c1811d42f1cb1198f43412a6d987dc98bdae11e6d91399609",
         "EDONR-384":
-            "8c2bfcee0c7224d576c8153046d684ce1152c2db137228d3dc0dbe9f14f8ce8c32d7f0e3bb19c6de864865f0a8f2f7a6",
+            "403e73a0a4afff530785564ad443f9d03d06ef1b7eed5fda9ec94606300d7379aeae4c33997f490d15723ffbf8fb16c5",
         "EDONR-512":
-            "7d7bc0c23e810d16916f392738c9f58139bea582096517672963aae6608f3945f8ab1a7c6b32823a07b71dca57694230c88a708476696e220da6ca2a6a20ad56",
+            "b986adabfa9adb1e5b152b6d64c733389082e354fde2fd9740faea6766f440ea"
+            "4391fc745bb9b11a821756944077bb30723f616645492c70fa4c614db7e9d45b",
         # https://csrc.nist.rip/groups/ST/hash/sha-3/Round1/documents/EnRUPT.zip
         "EnRUPT-224":
             "18766355483f44a5789b2ed7d1c2cff79ec56913a7a0d83c80be55f4",
