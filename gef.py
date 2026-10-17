@@ -22412,6 +22412,9 @@ class XtapCommand(GenericCommand):
     def trace(self):
         bp_was_hit = False
         inferior_exited = False
+        libc = ctypes.CDLL(None)
+        gdb.flush()
+        libc.fflush(None)
         with ContextManager.redirect_output() as write_stdout, ContextManager.suspend_stop_handler():
             try:
                 with EventHooking.temporary("stop", self.remember_stop):
@@ -22436,6 +22439,9 @@ class XtapCommand(GenericCommand):
                 bp_was_hit = True
             except gdb.error as e:
                 self.err = e
+            finally:
+                gdb.flush()
+                libc.fflush(None)
         if inferior_exited:
             info("Inferior exited")
         return bp_was_hit
