@@ -183424,10 +183424,17 @@ class PagewalkCommand(GenericCommand, BufferingOutput):
         return
 
     # Need not @Decorator.parse_args because argparse can't stop interpreting options for pagewalk sub-command.
+    def do_invoke(self, argv):
+        if not is_alive() and ("-h" in argv or "--help" in argv):
+            self.usage()
+            return
+        self.invoke_subcommand(argv)
+        return
+
     @Decorator.only_if_gdb_running
     @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
     @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "x86_16", "ARM32", "ARM64", "RISCV32", "RISCV64"))
-    def do_invoke(self, argv):
+    def invoke_subcommand(self, argv):
         arguments = " ".join(shlex.quote(arg) for arg in argv)
         if is_x86_32() or is_x86_16():
             gdb.execute("pagewalk x86 {}".format(arguments))
