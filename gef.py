@@ -9932,9 +9932,9 @@ class MIPS(Architecture):
             taken, reason = get_register(ops[0]) != 0, "{0[0]} != 0".format(ops)
         elif mnemo in ["bgtz", "bgtzl"]:
             taken, reason = u2i(get_register(ops[0]), self.bit_length_reg) > 0, "{0[0]} > 0".format(ops)
-        elif mnemo in ["bgez", "bgezl"]:
+        elif mnemo in ["bgez", "bgezl", "bgezal", "bgezall"]:
             taken, reason = u2i(get_register(ops[0]), self.bit_length_reg) >= 0, "{0[0]} >= 0".format(ops)
-        elif mnemo in ["bltz", "bltzl"]:
+        elif mnemo in ["bltz", "bltzl", "bltzal", "bltzall"]:
             taken, reason = u2i(get_register(ops[0]), self.bit_length_reg) < 0, "{0[0]} < 0".format(ops)
         elif mnemo in ["blez", "blezl"]:
             taken, reason = u2i(get_register(ops[0]), self.bit_length_reg) <= 0, "{0[0]} <= 0".format(ops)
@@ -9958,6 +9958,18 @@ class MIPS(Architecture):
             taken, reason = get_register(ops[0]) < get_register(ops[1]), "{0[0]} < {0[1]}".format(ops)
         elif mnemo in ["bltiuc"]:
             taken, reason = get_register(ops[0]) < int(ops[1], 0), "{0[0]} < {0[1]}".format(ops)
+        elif mnemo in ["bc1t", "bc1tl", "bc1f", "bc1fl"]:
+            fsr = get_register("$fsr")
+            if fsr is None:
+                return None, "FCSR unavailable"
+            cc = int(ops[0][4:]) if ops[0].startswith("$fcc") else 0
+            cond = (fsr >> (23 if cc == 0 else 24 + cc)) & 1
+            if mnemo.startswith("bc1t"):
+                taken, reason = cond == 1, "fcc{:d} == 1".format(cc)
+            else:
+                taken, reason = cond == 0, "fcc{:d} == 0".format(cc)
+        elif mnemo in ["bc2t", "bc2tl", "bc2f", "bc2fl"]:
+            taken, reason = None, "COP2 condition unavailable"
         return taken, reason
 
     def get_ith_parameter(self, i, in_func=True, sp=None):
@@ -10795,7 +10807,39 @@ class M68K(Architecture):
             regname = insn.operands[0].replace("%", "$")
             val = get_register(regname) & 0xffff
             taken, reason = val != 0, "{:s}!=0".format(regname)
-        # TODO: fbXXw, fbXXl
+        elif mnemo.startswith("fb"):
+            fpsr = get_register("$fpstatus")
+            if fpsr is None:
+                return None, "FPSR unavailable"
+            n = bool(fpsr & (1 << 27))
+            z = bool(fpsr & (1 << 26))
+            nan = bool(fpsr & (1 << 24))
+            aliases = {
+                "sf": "f", "seq": "eq", "gt": "ogt", "ge": "oge", "lt": "olt", "le": "ole", "gl": "ogl", "gle": "or",
+                "ngle": "un", "ngl": "ueq", "nle": "ugt", "nlt": "uge", "nge": "ult", "ngt": "ule", "sne": "ne", "st": "t",
+            }
+            conditions = {
+                "f": (False, ""),
+                "eq": (z, "Z"),
+                "ogt": (not (nan or z or n), "!(NAN || Z || N)"),
+                "oge": (z or not (nan or n), "Z || !(NAN || N)"),
+                "olt": (n and not (nan or z), "N && !(NAN || Z)"),
+                "ole": (z or (n and not nan), "Z || (N && !NAN)"),
+                "ogl": (not (nan or z), "!(NAN || Z)"),
+                "or": (not nan, "!NAN"),
+                "un": (nan, "NAN"),
+                "ueq": (nan or z, "NAN || Z"),
+                "ugt": (nan or not (n or z), "NAN || !(N || Z)"),
+                "uge": (nan or z or not n, "NAN || Z || !N"),
+                "ult": (nan or (n and not z), "NAN || (N && !Z)"),
+                "ule": (nan or z or n, "NAN || Z || N"),
+                "ne": (not z, "!Z"),
+                "t": (True, "Always True"),
+            }
+            cc = mnemo[2:]
+            if cc not in conditions and cc not in aliases:
+                cc = cc[:-1]
+            taken, reason = conditions[aliases.get(cc, cc)]
         return taken, reason
 
     def flag_register_to_human(self, val=None):
