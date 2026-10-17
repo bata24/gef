@@ -993,7 +993,7 @@ def gef_print(x="", less=False, redirect=None, skip_color=False, *args, **kwargs
 
     # less
     less_option = Config.get("gef.less_option")
-    GefUtil.os_system("{!r} {:s} {!r}".format(less, less_option, tmp_path))
+    GefUtil.os_system("{:s} {:s} {:s}".format(shlex.quote(less), less_option, shlex.quote(tmp_path)))
 
     # cleanup
     keep_pager_result = Config.get("gef.keep_pager_result")
@@ -15309,7 +15309,9 @@ class Path:
         tmp_fd, tmp_name = GefUtil.mkstemp(prefix="read_remote_file", suffix=".tmp")
         os.close(tmp_fd)
         try:
-            gdb.execute("remote get {!r} {!r}".format(filepath, tmp_name), to_string=True)
+            gdb.execute("remote get {:s} {:s}".format(
+                GefUtil.quote_gdb_argument(filepath), GefUtil.quote_gdb_argument(tmp_name),
+            ), to_string=True)
             if as_byte:
                 data = open(tmp_name, "rb").read()
             else:
@@ -17639,7 +17641,7 @@ class GefThemeCommand(GenericCommand, BufferingOutput):
 
         # set
         val = [x for x in args.value if x in Color.colors]
-        gdb.execute("gef config theme.{:s} {!r}".format(args.key, " ".join(val)))
+        gdb.execute("gef config theme.{:s} {:s}".format(args.key, GefUtil.quote_gdb_argument(" ".join(val))))
         return
 
 
@@ -31238,16 +31240,16 @@ class GlibcHeapDumpImageCommand(GenericCommand):
         ])
 
         if self.args.save_as_png:
-            cmd = "{!r} {:s} rgb:{!r} PNG:{!r}".format(
-                GefUtil.which("convert"),
+            cmd = "{:s} {:s} {:s} {:s}".format(
+                shlex.quote(GefUtil.which("convert")),
                 " ".join(command_options),
-                image_path, image_path[:-4] + ".png"
+                shlex.quote("rgb:" + image_path), shlex.quote("PNG:" + image_path[:-4] + ".png"),
             )
         else:
-            cmd = "{!r} {:s} rgb:{!r} sixel:-".format(
-                GefUtil.which("convert"),
+            cmd = "{:s} {:s} {:s} sixel:-".format(
+                shlex.quote(GefUtil.which("convert")),
                 " ".join(command_options),
-                image_path,
+                shlex.quote("rgb:" + image_path),
             )
         return cmd
 
@@ -32074,7 +32076,9 @@ class RpCommand(GenericCommand, BufferingOutput):
             aops = "--allow-branches "
         else:
             aops = ""
-        cmd = "{!r} --file={!r} --rop={:d} {:s}--unique > {!r}".format(rp, path, ropN, aops, output_path)
+        cmd = "{:s} --file={:s} --rop={:d} {:s}--unique > {:s}".format(
+            shlex.quote(rp), shlex.quote(path), ropN, aops, shlex.quote(output_path),
+        )
         gef_print(titlify(cmd))
         if not os.path.exists(output_path):
             GefUtil.os_system(cmd)
@@ -32158,7 +32162,9 @@ class RpCommand(GenericCommand, BufferingOutput):
                 return
             path = symboled_vmlinux_file
 
-            cmd = "{!r} {!r} | {!r} ' _stext$'".format(nm, symboled_vmlinux_file, grep)
+            cmd = "{:s} {:s} | {:s} ' _stext$'".format(
+                shlex.quote(nm), shlex.quote(symboled_vmlinux_file), shlex.quote(grep),
+            )
             out = GefUtil.gef_execute_external(cmd, as_list=True, shell=True)
             if len(out) != 1:
                 err("Failed to resolve _stext")
@@ -33377,9 +33383,13 @@ class ElfInfoCommand(GenericCommand):
                 except FileNotFoundError:
                     less = False
                 if args.no_pager or not less:
-                    GefUtil.os_system("LANG=C {!r} -a --wide {!r}".format(readelf, local_filepath))
+                    GefUtil.os_system("LANG=C {:s} -a --wide {:s}".format(
+                        shlex.quote(readelf), shlex.quote(local_filepath),
+                    ))
                 else:
-                    GefUtil.os_system("LANG=C {!r} -a --wide {!r} | {!r}".format(readelf, local_filepath, less))
+                    GefUtil.os_system("LANG=C {:s} -a --wide {:s} | {:s}".format(
+                        shlex.quote(readelf), shlex.quote(local_filepath), shlex.quote(less),
+                    ))
                 return
 
             # self parse pattern
@@ -40631,7 +40641,9 @@ class ContextArgumentsCommand(GenericCommand):
 
         # use `got` command to obtain function address
         try:
-            ret = gdb.execute("got -q -f {!r} --exact {:s}".format(filepath, func_name), to_string=True)
+            ret = gdb.execute("got -q -f {:s} --exact -- {:s}".format(
+                GefUtil.quote_gdb_argument(filepath), GefUtil.quote_gdb_argument(func_name),
+            ), to_string=True)
             ret = Color.remove_color(ret).splitlines()
             if len(ret) != 1:
                 return None
@@ -61930,7 +61942,7 @@ class MagicCommand(GenericCommand):
     def do_invoke(self, args):
         if is_qemu_system() or is_vmware():
             info("Redirect to kmagic")
-            gdb.execute("kmagic {:s}".format(" ".join(args.filter)))
+            gdb.execute("kmagic -- {:s}".format(" ".join(GefUtil.quote_gdb_argument(value) for value in args.filter)))
             return
 
         self.magic()
@@ -93815,10 +93827,10 @@ class KernelLoadCommand(GenericCommand):
         else:
             warn("Confidence: low (nothing but the KASLR offset shows that the vmlinux matches)")
 
-        cmd = "add-symbol-file {!r} -o {:#x}".format(args.path, slide)
+        cmd = "add-symbol-file {:s} -o {:#x}".format(GefUtil.quote_gdb_argument(args.path), slide)
         for shdr in elf.shdrs:
             if shdr.sh_flags & Elf.Shdr.SHF_ALLOC and shdr.sh_addr < image_base:
-                cmd += " -s {:s} {:#x}".format(shdr.sh_name, shdr.sh_addr)
+                cmd += " -s {:s} {:#x}".format(GefUtil.quote_gdb_argument(shdr.sh_name), shdr.sh_addr)
         info("Execute `{:s}`".format(cmd))
         gdb.execute(cmd)
         return
@@ -93927,7 +93939,7 @@ class KernelModuleCommand(GenericCommand, BufferingOutput):
         os.rename(blank_elf, sym_elf_path)
 
         # apply
-        cmd = "add-symbol-file {!r} {:#x}".format(sym_elf_path, text_base)
+        cmd = "add-symbol-file {:s} {:#x}".format(GefUtil.quote_gdb_argument(sym_elf_path), text_base)
         self.quiet_info("Execute `{:s}`".format(cmd))
         gdb.execute(cmd, to_string=True)
         return
@@ -94212,8 +94224,9 @@ class KernelModuleLoadCommand(GenericCommand):
             self.quiet_warn("Could not verify beyond the architecture and the section names")
 
         # load; .symtab and .strtab are allocated only in memory for the module kallsyms
-        command = " ".join(['-s {:s} {:#x}'.format(name, addr) for (name, addr) in sections if name not in (".symtab", ".strtab")])
-        gdb.execute("add-symbol-file {!r} {:s}".format(self.args.path, command))
+        command = " ".join(['-s {:s} {:#x}'.format(GefUtil.quote_gdb_argument(name), addr)
+                            for (name, addr) in sections if name not in (".symtab", ".strtab")])
+        gdb.execute("add-symbol-file {:s} {:s}".format(GefUtil.quote_gdb_argument(self.args.path), command))
         return
 
     @Decorator.parse_args
@@ -161602,7 +161615,7 @@ class KtypesLoadCommand(KtypesCommand):
             return
 
         info(obj_path)
-        gdb.execute("file {!r}".format(obj_path), to_string=True)
+        gdb.execute("file {:s}".format(GefUtil.quote_gdb_argument(obj_path)), to_string=True)
         info("Kernel types are loaded successfully")
         return
 
@@ -163609,7 +163622,9 @@ class VmlinuxToElfApplyCommand(GenericCommand):
             os.unlink(symboled_vmlinux_file)
 
         # apply vmlinux-to-elf
-        cmd = "{!r} {!r} {!r} --base-address={:#x}".format(vmlinux2elf, dumped_mem_file, symboled_vmlinux_file, klayout.text_base)
+        cmd = "{:s} {:s} {:s} --base-address={:#x}".format(
+            shlex.quote(vmlinux2elf), shlex.quote(dumped_mem_file), shlex.quote(symboled_vmlinux_file), klayout.text_base,
+        )
         warn("Execute `{:s}`".format(cmd))
         if GefUtil.os_system(cmd):
             if os.path.exists(symboled_vmlinux_file):
@@ -163649,7 +163664,9 @@ class VmlinuxToElfApplyCommand(GenericCommand):
         #   gdb 8.x: Usage: add-symbol-file FILE ADDR [-readnow | -readnever | -s SECT-NAME SECT-ADDR]...
         # But the created ELF has no .text, only a .kernel
         # Applying an empty symbol has no effect, so tentatively specify the same address as the .kernel.
-        cmd = "add-symbol-file {!r} {:#x} -s .kernel {:#x}".format(symboled_vmlinux_file, text_base, text_base)
+        cmd = "add-symbol-file {:s} {:#x} -s .kernel {:#x}".format(
+            GefUtil.quote_gdb_argument(symboled_vmlinux_file), text_base, text_base,
+        )
         warn("Execute `{:s}`".format(cmd))
         gdb.execute(cmd)
         return
@@ -172932,7 +172949,9 @@ class UclibcNgHeapDumpCommand(GenericCommand, BufferingOutput):
         libc = ProcessMap.process_lookup_path("libuClibc-")
         if libc is None:
             return None
-        ret = gdb.execute("got --no-pager --quiet --file {!r} <malloc>".format(libc.path), to_string=True)
+        ret = gdb.execute("got --no-pager --quiet --file {:s} <malloc>".format(
+            GefUtil.quote_gdb_argument(libc.path),
+        ), to_string=True)
         if not ret:
             return None
         elem = Color.remove_color(ret).splitlines()[0].split()
@@ -193043,7 +193062,7 @@ class AddSymbolTemporaryCommand(GenericCommand):
 
         # add symbol to gdb
         try:
-            gdb.execute("add-symbol-file {!r} {:#x}".format(sym_elf, text_base), to_string=True)
+            gdb.execute("add-symbol-file {:s} {:#x}".format(GefUtil.quote_gdb_argument(sym_elf), text_base), to_string=True)
         except gdb.error as e:
             err(e)
         os.unlink(sym_elf)
@@ -193130,7 +193149,7 @@ class KsymaddrRemoteApplyCommand(GenericCommand):
 
         # add symbol to gdb
         text_base = Ksym.get_text_base() & get_pagesize_mask_high()
-        cmd = "add-symbol-file {!r} {:#x}".format(sym_elf_path, text_base)
+        cmd = "add-symbol-file {:s} {:#x}".format(GefUtil.quote_gdb_argument(sym_elf_path), text_base)
         self.quiet_warn("Execute `{:s}`".format(cmd))
         gdb.execute(cmd)
         return
@@ -198818,7 +198837,7 @@ class XrefToStringCommand(GenericCommand):
         no_pager = ""
         if args.no_pager:
             no_pager = "--no-pager"
-        gdb.execute("xref-telescope {:s} -- {:s} 2".format(no_pager, shlex.quote(args.string)))
+        gdb.execute("xref-telescope {:s} -- {:s} 2".format(no_pager, GefUtil.quote_gdb_argument(args.string)))
         return
 
 
@@ -199053,7 +199072,7 @@ class SixelMemoryCommand(GenericCommand):
             return
 
         with ContextManager.temporary_file(data, prefix="sixel-memory", suffix=".img") as tmp_path:
-            GefUtil.os_system("{!r} {!r} sixel:-".format(convert_command, tmp_path))
+            GefUtil.os_system("{:s} {:s} sixel:-".format(shlex.quote(convert_command), shlex.quote(tmp_path)))
 
             if args.decode_barcode:
                 self.decode_barcode(tmp_path)
@@ -199266,10 +199285,10 @@ class VisualDumpCommand(GenericCommand):
         if self.args.negate:
             command_options.append("-negate")
 
-        cmd = "{!r} {:s} GRAY:{!r} sixel:-".format(
-            GefUtil.which("convert"),
+        cmd = "{:s} {:s} {:s} sixel:-".format(
+            shlex.quote(GefUtil.which("convert")),
             " ".join(command_options),
-            tmp_path,
+            shlex.quote("GRAY:" + tmp_path),
         )
         return cmd
 
@@ -199745,7 +199764,7 @@ class TypesCommand(GenericCommand, BufferingOutput):
             # formatting typenames
             for type_name in ProgressBar(type_names):
                 if self.args.verbose:
-                    ret = gdb.execute("dt -n {!r}".format(type_name), to_string=True)
+                    ret = gdb.execute("dt -n -- {:s}".format(GefUtil.quote_gdb_argument(type_name)), to_string=True)
                     if not ret or (" is not struct or union" in ret) or ("Could not find " in ret):
                         self.out.append(Instruction.smartify_text(type_name))
                         self.out.append("")
@@ -201333,8 +201352,8 @@ class GefTmuxSetupCommand(GenericCommand):
         atexit.register(GefTmuxSetupCommand.reset_panes)
 
         # clear the screen and let it wait for input forever
-        gdb.execute(f"!'{tmux}' send-keys -t {pane_id} 'clear ; cat' C-m")
-        gdb.execute(f"!'{tmux}' select-pane -L")
+        gdb.execute(f"!{shlex.quote(tmux)} send-keys -t {shlex.quote(pane_id)} 'clear ; cat' C-m")
+        gdb.execute(f"!{shlex.quote(tmux)} select-pane -L")
 
         ok(f"Setting `context.redirect` to '{pane_tty}'...")
         gdb.execute(f"gef config context.redirect {pane_tty}")
@@ -201826,6 +201845,11 @@ class GefUtil:
 
     user_bases = {}
     namedtuple_classes = {}
+
+    @staticmethod
+    def quote_gdb_argument(value):
+        """Quote an argv-style GDB argument, preserving backslashes on older GDB too."""
+        return '"{:s}"'.format(value.replace("\\", "\\\\").replace('"', '\\"'))
 
     @staticmethod
     def read_memory_padded(addr, length, chunk_size=None):
@@ -202743,11 +202767,13 @@ class GefUtil:
             # When adding symbols, it is not necessary to match the architecture of the ELF to be created
             # and the architecture of the debugged kernel. Regardless of the architecture of the kernel
             # you are debugging, create an ELF using gcc in the host environment.
-            GefUtil.os_system("{!r} {!r} -no-pie -o {!r}".format(gcc, fname, blank_elf))
+            GefUtil.os_system("{:s} {:s} -no-pie -o {:s}".format(
+                shlex.quote(gcc), shlex.quote(fname), shlex.quote(blank_elf),
+            ))
             os.unlink(fname)
             # delete unneeded section for faster (`ksymaddr-remote-apply` will embed many symbols)
-            GefUtil.os_system("{!r} --only-keep-debug {!r}".format(objcopy, blank_elf))
-            GefUtil.os_system("{!r} --strip-all {!r}".format(objcopy, blank_elf))
+            GefUtil.os_system("{:s} --only-keep-debug {:s}".format(shlex.quote(objcopy), shlex.quote(blank_elf)))
+            GefUtil.os_system("{:s} --strip-all {:s}".format(shlex.quote(objcopy), shlex.quote(blank_elf)))
             elf = Elf.get_elf(blank_elf)
             for s in elf.shdrs:
                 if s.sh_name == "": # null, skip
@@ -202764,8 +202790,8 @@ class GefUtil:
                     continue
                 if s.sh_name == ".bss": # broken if remove
                     continue
-                GefUtil.os_system("{!r} --remove-section={!r} {!r} 2>/dev/null".format(
-                    objcopy, s.sh_name, blank_elf,
+                GefUtil.os_system("{:s} --remove-section={:s} {:s} 2>/dev/null".format(
+                    shlex.quote(objcopy), shlex.quote(s.sh_name), shlex.quote(blank_elf),
                 ))
         else:
             # not found gcc. we use pre-built elf for x64
@@ -202824,8 +202850,8 @@ class GefUtil:
             return None
 
         # fix .text base address
-        GefUtil.os_system("{!r} --change-section-address .text={:#x} {!r} 2>/dev/null".format(
-            objcopy, text_base, blank_elf,
+        GefUtil.os_system("{:s} --change-section-address .text={:#x} {:s} 2>/dev/null".format(
+            shlex.quote(objcopy), text_base, shlex.quote(blank_elf),
         ))
 
         # objcopy may move the section table, so read it again after changing the address.
@@ -203190,7 +203216,11 @@ class Gef:
             gdb.execute("set follow-fork-mode child")
 
         # index file
-        gdb.execute("save gdb-index {:s}".format(GEF_TEMP_DIR)) # don't use {!r}
+        index_fd = os.open(GEF_TEMP_DIR, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            gdb.execute("save gdb-index /proc/self/fd/{:d}".format(index_fd))
+        finally:
+            os.close(index_fd)
 
         # gdb events configuration
         gdb.execute("define hookpost-queue-signal\n"
