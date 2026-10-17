@@ -103845,9 +103845,10 @@ class KernelDmesgCommand(GenericCommand, BufferingOutput):
             match = re.match(r"(SIZE|OFFSET)\(([^)]+)\)=(\S+)", line)
             if not match:
                 continue
-            name = match.group(2).replace(",", ".").replace(" ", "")
+            name = match.group(2)
             if name.startswith("struct "):
                 name = name[7:]
+            name = name.replace(",", ".").replace(" ", "")
             try:
                 values[(match.group(1), name)] = int(match.group(3), 0)
             except ValueError:
