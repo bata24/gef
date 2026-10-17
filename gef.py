@@ -147668,7 +147668,7 @@ class CrcEngine:
 
     REFLECT8 = bytes(int("{:08b}".format(i)[::-1], 2) for i in range(256))
 
-    # name, width, poly, initvalue, reflect_input, reflect_output, xor_output
+    # name, width, poly, initvalue, reflect_input, reflect_output, xor_output[, append_length]
     PARAMETERS = [
         ("CrcBase", 0, 0x0, 0x0, False, False, 0x0),
         ("Crc8Base", 8, 0x7, 0x0, False, False, 0x0),
@@ -147868,17 +147868,21 @@ class CrcEngine:
         # CRC-32K (Koopman), which is not included in the crccheck package
         ("Crc32K", 32, 0x741b8cd7, 0xffffffff, True, True, 0xffffffff),
         ("Crc32Koopman", 32, 0x741b8cd7, 0xffffffff, True, True, 0xffffffff),
+        # the output of the POSIX `cksum` command, which feeds the data length to CRC-32/CKSUM after the data
+        ("Cksum", 32, 0x4c11db7, 0x0, False, False, 0xffffffff, True),
     ]
 
-    def __init__(self, width, poly, initvalue, reflect_input, reflect_output, xor_output):
-        self.params = (width, poly, initvalue, reflect_input, reflect_output, xor_output)
+    def __init__(self, width, poly, initvalue, reflect_input, reflect_output, xor_output, append_length=False):
+        self.params = (width, poly, initvalue, reflect_input, reflect_output, xor_output, append_length)
         self._width = width
         self.poly = poly
         self.initvalue = initvalue
         self.reflect_input = reflect_input
         self.reflect_output = reflect_output
         self.xor_output = xor_output
+        self.append_length = append_length
         self.value = initvalue
+        self.length = 0
         return
 
     def process(self, data):
@@ -147912,10 +147916,15 @@ class CrcEngine:
         if diff8:
             crc >>= diff8
         self.value = crc
+        self.length += len(data)
         return self
 
     def final(self):
         crc = self.value
+        if self.append_length:
+            # in as few bytes as needed, the least significant byte first
+            length = self.length.to_bytes((self.length.bit_length() + 7) // 8, "little")
+            crc = CrcEngine(self._width, self.poly, crc, self.reflect_input, False, 0).process(length).value
         if self.reflect_output:
             crc = int("{:0{:d}b}".format(crc, self._width)[::-1], 2)
         return crc ^ self.xor_output
