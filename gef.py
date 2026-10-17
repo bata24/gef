@@ -9678,10 +9678,20 @@ class SPARC(Architecture):
             taken, reason = not carry, "!C"
         return taken, reason
 
+    def is_register_window_saved(self):
+        try:
+            frame = gdb.selected_frame()
+            caller = frame.older()
+            if caller is not None:
+                return int(frame.read_register("fp")) == int(caller.read_register("sp"))
+        except (gdb.error, ValueError):
+            pass
+        return True
+
     def get_ith_parameter(self, i, in_func=True, sp=None):
+        in_func = in_func and self.is_register_window_saved()
         if i < len(self.function_parameters):
             if in_func:
-                # TODO: Leaf functions use $o0...$o5 despite in_func=True
                 reg = self.function_parameters_infunc[i]
             else:
                 reg = self.function_parameters[i]
@@ -9800,9 +9810,9 @@ class SPARC64(SPARC):
             return False
 
     def get_ith_parameter(self, i, in_func=True, sp=None):
+        in_func = in_func and self.is_register_window_saved()
         if i < len(self.function_parameters):
             if in_func:
-                # TODO: Leaf functions use $o0...$o5 despite in_func=True
                 reg = self.function_parameters_infunc[i]
             else:
                 reg = self.function_parameters[i]
