@@ -8730,7 +8730,7 @@ class X86(Architecture):
         tls = self.get_gs()
         if tls is not None:
             return tls
-        if is_rr() or is_kvm_enabled() or is_qiling():
+        if is_rr() or is_kvm_enabled() or is_qiling() or is_pin():
             return None
         codes = [b"\x65\xa1\x00\x00\x00\x00"] # mov eax, dword ptr gs:[0x0]
         ret = ExecAsm(codes).exec_code(check_complete=True)
@@ -8890,7 +8890,7 @@ class X86_64(X86):
         tls = self.get_fs()
         if tls is not None:
             return tls
-        if is_rr() or is_kvm_enabled() or is_qiling():
+        if is_rr() or is_kvm_enabled() or is_qiling() or is_pin():
             return None
         codes = [b"\x64\x48\xa1\x00\x00\x00\x00\x00\x00\x00\x00"] # movabs rax, qword ptr fs:[0x0]
         ret = ExecAsm(codes).exec_code(check_complete=True)
