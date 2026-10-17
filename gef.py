@@ -2701,7 +2701,14 @@ class Elf:
 
     def is_static(self):
         # note: static-pie has no PT_INTERP
-        return not bool(self.get_phdr(Elf.Phdr.PT_INTERP))
+        return not bool(self.get_phdr(Elf.Phdr.PT_INTERP)) and not self.is_shared_object()
+
+    def is_shared_object(self):
+        # note: executables including static-pie have DT_DEBUG, and DF_1_PIE if the linker is new
+        if self.e_type != Elf.ET_DYN or self.get_dynamic_value(0x15) is not None: # DT_DEBUG
+            return False
+        flags_1 = self.get_dynamic_value(0x6fff_fffb) or 0 # DT_FLAGS_1
+        return not flags_1 & 0x0800_0000 # DF_1_PIE
 
     def has_dynamic(self):
         # note: static-pie has PT_DYNAMIC
@@ -3098,6 +3105,7 @@ class Elf:
 
         # PIE
         sec["PIE"] = self.is_pie()
+        sec["Shared object"] = self.is_shared_object()
 
         # RELRO
         sec["Partial RELRO"] = self.is_relro()
@@ -33806,7 +33814,9 @@ class ChecksecCommand(GenericCommand):
         gef_print("{:<40s}: {:s}".format("NX", self.get_colored_msg(sec["NX"])))
 
         # PIE
-        if sec["PIE"]:
+        if sec["Shared object"]:
+            gef_print("{:<40s}: {:s} (shared object)".format("PIE", self.get_colored_msg(sec["PIE"])))
+        elif sec["PIE"]:
             gef_print("{:<40s}: {:s}".format("PIE", self.get_colored_msg(sec["PIE"])))
         else:
             vaddr = min([p.p_vaddr for p in elf.phdrs if p.p_type == Elf.Phdr.PT_LOAD])
