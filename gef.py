@@ -8272,6 +8272,8 @@ class ARM(Architecture):
             taken, reason = carry, "C"
         elif mnemo.endswith(("cc", "cc.n", "cc.w")) or mnemo.endswith(("lo", "lo.n", "lo.w")):
             taken, reason = not carry, "!C"
+        elif mnemo.endswith(("al", "al.n", "al.w", "nv")):
+            taken, reason = True, "Always True"
         return taken, reason
 
     __mode_dic = {
@@ -10175,7 +10177,7 @@ class S390X(Architecture):
             return True
         if insn.mnemonic in ["clib", "clgib", "clij", "clgij"]:
             return True
-        conditions = ["h", "l", "ne"]
+        conditions = ["e", "h", "l", "ne", "nl", "nh"]
         for cc in conditions:
             if insn.mnemonic == f"crb{cc}": # alias for `crb r,r,N`
                 return True
@@ -12427,13 +12429,13 @@ class ARC(Architecture):
             v1s = u2i(v1u, self.bit_length)
 
         taken, reason = False, ""
-        if mnemo.startswith(("beq", "breq", "jeq")):
+        if mnemo.startswith(("beq", "breq", "jeq", "bz")):
             if len(ops) >= 2:
                 taken, reason = v0u == v1u, "{:s}=={:s}".format(ops[0], ops[1])
             else:
                 taken, reason = zero, "Z"
 
-        elif mnemo.startswith(("bne", "brne", "jne")):
+        elif mnemo.startswith(("bne", "brne", "jne", "bnz")):
             if len(ops) >= 2:
                 taken, reason = v0u != v1u, "{:s}!={:s}".format(ops[0], ops[1])
             else:
@@ -12470,13 +12472,13 @@ class ARC(Architecture):
             else:
                 taken, reason = not carry and not zero, "!C && !Z"
 
-        elif mnemo.startswith(("bhs", "brhs", "jhs")):
+        elif mnemo.startswith(("bhs", "brhs", "jhs", "bnc", "bcc")):
             if len(ops) >= 2:
                 taken, reason = v0u >= v1u, "{:s}>={:s}".format(ops[0], ops[1])
             else:
                 taken, reason = not carry, "!C"
 
-        elif mnemo.startswith(("blo", "brlo", "jlo")):
+        elif mnemo.startswith(("blo", "brlo", "jlo", "bc")):
             if len(ops) >= 2:
                 taken, reason = v0u < v1u, "{:s}<{:s}".format(ops[0], ops[1])
             else:
@@ -12487,6 +12489,30 @@ class ARC(Architecture):
                 taken, reason = v0u <= v1u, "{:s}<={:s}".format(ops[0], ops[1])
             else:
                 taken, reason = carry or zero, "C || Z"
+
+        elif mnemo.startswith(("bal", "bra")):
+            taken, reason = True, "Always True"
+
+        elif mnemo.startswith("bpnz"):
+            taken, reason = not negative and not zero, "!N && !Z"
+
+        elif mnemo.startswith("bp"):
+            taken, reason = not negative, "!N"
+
+        elif mnemo.startswith(("bvc", "bnv")):
+            taken, reason = not overflow, "!V"
+
+        elif mnemo.startswith("bv"):
+            taken, reason = overflow, "V"
+
+        elif mnemo.startswith(("bmi", "bn")):
+            taken, reason = negative, "N"
+
+        elif mnemo.startswith("bbit0"):
+            taken, reason = (v0u >> v1u) & 1 == 0, "{:s}&1<<{:s}==0".format(ops[0], ops[1])
+
+        elif mnemo.startswith("bbit1"):
+            taken, reason = (v0u >> v1u) & 1 != 0, "{:s}&1<<{:s}!=0".format(ops[0], ops[1])
 
         return taken, reason
 
@@ -22898,6 +22924,7 @@ class SearchPatternCommand(GenericCommand):
 
         locations = []
         old_mem = b""
+        last_end = start_address
         for chunk_addr in ProgressBar(range(start_address, end_address, step), disable=not self.args.verbose):
             # read
             mem = self.read_data(chunk_addr, step, end_address)
@@ -22927,9 +22954,10 @@ class SearchPatternCommand(GenericCommand):
                        -ofs     ofs
                 """
                 tmp_mem = old_mem[-ofs:] + mem[:ofs]
-                m = re.search(pattern, tmp_mem)
+                m = re.compile(pattern).search(tmp_mem, max(last_end - (chunk_addr - ofs), 0))
                 if m:
                     r = m.start()
+                    last_end = chunk_addr - ofs + m.end()
                 else:
                     r = -1
                 if r >= 0:
@@ -22951,12 +22979,13 @@ class SearchPatternCommand(GenericCommand):
             if self.args.hex_regex:
                 matches = self.find_hex_matches(pattern, mem)
             else:
-                matches = re.finditer(pattern, mem)
+                matches = re.compile(pattern).finditer(mem, max(last_end - chunk_addr, 0))
             for match in matches:
                 if self.args.hex_regex:
                     start_pos = match.start() // 2
                 else:
                     start_pos = match.start()
+                    last_end = chunk_addr + match.end()
                 start = chunk_addr + start_pos
 
                 # check filter
@@ -60945,10 +60974,13 @@ class SyscallARC(Syscall):
         sc_def = cls.parse_common_syscall_defs()
         tbl = cls.parse_syscall_table_defs(arc_syscall_tbl)
         syscall_list = []
+        # arch/arc/kernel/Makefile.syscalls
+        abis = ["common", bit_str, "arc", "renameat", "rlimit"]
+        if bit_str == "32":
+            abis += ["time32", "stat64"]
         for entry in tbl:
             nr, abi, name, func = entry[:4]
-            # arch/arc/kernel/Makefile.syscalls
-            if abi not in ["common", bit_str, "arc", "time32", "renameat", "stat64", "rlimit"]:
+            if abi not in abis:
                 continue
             # special case
             if func in cls.arch_specific_dic:
@@ -106987,9 +107019,8 @@ class Hash:
             data = bytes(data)
             msg = bytearray(data)
             msg.append(suffix)
-            while (len(msg) % rate) != (rate - 1):
-                msg.append(0)
-            msg.append(0x80)
+            msg.extend(b"\x00" * (-len(msg) % rate))
+            msg[-1] ^= 0x80
 
             s = [0] * 25
             rate_words = rate // 8
@@ -107054,11 +107085,11 @@ class Hash:
 
     class KMAC128(KMACBase):
         block_size = 168  # rate for cshake_128/kmac_128
-        digest_size = 32  # 256 bits
+        digest_bits = 256
 
     class KMAC256(KMACBase):
         block_size = 136  # rate for cshake_256/kmac_256
-        digest_size = 64  # 512 bits
+        digest_bits = 512
 
     class TupleHashBase:
         rho = (
@@ -148487,6 +148518,10 @@ class BaseNCodec:
         if not text:
             return b""
         if len(charset) == 1:
+            text = text.replace("\r\n", "").replace("\n", "")
+            invalid = text.replace(charset, "")
+            if invalid:
+                raise ValueError("Invalid base character {!r}".format(invalid[0]))
             return BaseNCodec.int_to_bytes(len(text))
         if len(charset) == 10:
             value = int(text)
@@ -148768,8 +148803,11 @@ class BaseNCodec:
             raise ValueError("Bad input (length should be multiple of 4)")
         result = bytearray()
         for pos in range(0, len(data), 4):
-            high = ((data[pos + 2] - 143) * 64) % 256
-            result.append((data[pos + 3] - 128 + high - 55) & 255)
+            block = data[pos:pos + 4]
+            value = (block[2] - 143) * 64 + block[3] - 128 - 55
+            if block[:2] != b"\xf0\x9f" or not 128 <= block[3] < 192 or not 0 <= value < 256:
+                raise ValueError("Invalid base100 character {!r}".format(block))
+            result.append(value)
         return bytes(result)
 
     @staticmethod
@@ -179972,15 +180010,12 @@ class PageTableX64(PageTable):
         va_base = 0
 
         # pagewalk base is from CR3 register
-        if self.args.user_specified_cr3 is not None:
-            pagewalk_base = cr3 # without mask
-        else:
-            if is_x86_64(): # 64bit
-                pagewalk_base = cr3 & 0x000f_ffff_ffff_f000
-            elif ((cr4 >> 5) & 1) == 1: # 32bit PAE
-                pagewalk_base = cr3 & ~0x1f
-            else: # 32bit non-PAE
-                pagewalk_base = cr3 & ~0xfff
+        if is_x86_64(): # 64bit
+            pagewalk_base = cr3 & 0x000f_ffff_ffff_f000
+        elif ((cr4 >> 5) & 1) == 1: # 32bit PAE
+            pagewalk_base = cr3 & ~0x1f
+        else: # 32bit non-PAE
+            pagewalk_base = cr3 & ~0xfff
 
         # we ignore PWT and PCD flags.
         flags = []
