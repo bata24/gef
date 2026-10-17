@@ -58603,7 +58603,7 @@ arm_OPTEE_syscall_list = [
     [0x2b, "syscall_storage_obj_del", ["unsigned long obj"]],
     [0x2c, "syscall_storage_obj_rename", ["unsigned long obj", "void *object_id", "size_t object_id_len"]],
     [0x2d, "syscall_storage_alloc_enum", ["uint32_t *obj_enum"]],
-    [0x2e, "syscall_storage_free_enum", ["nsigned long obj_enum"]],
+    [0x2e, "syscall_storage_free_enum", ["unsigned long obj_enum"]],
     [0x2f, "syscall_storage_reset_enum", ["unsigned long obj_enum"]],
     [0x30, "syscall_storage_start_enum", ["unsigned long obj_enum", "unsigned long storage_id"]],
     [0x31, "syscall_storage_next_enum", ["unsigned long obj_enum", "TEE_ObjectInfo *info", "void *obj_id", "uint64_t *len"]],
@@ -58868,12 +58868,13 @@ class Syscall:
 
         elif arch == "ARM64" and mode == "Secure-World":
             return_register = AARCH64.return_register
-            args_register = AARCH64.syscall_parameters + ["$x6"] # OPTEE uses 7 args
+            args_register = AARCH64.syscall_parameters + ["$x6", "$x7"] # OPTEE uses 8 args
             syscall_list = arm_OPTEE_syscall_list.copy()
 
         elif arch == "ARM" and mode == "Secure-World":
             return_register = ARM.return_register
-            args_register = ARM.syscall_parameters
+            # OPTEE passes the 5th and later args on the user stack pointed to by $r5
+            args_register = ARM.function_parameters + ["$r5+0x0", "$r5+0x4", "$r5+0x8", "$r5+0xc"]
             syscall_list = arm_OPTEE_syscall_list.copy()
 
         elif arch == "MIPS" and mode == "32":
