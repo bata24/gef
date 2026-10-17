@@ -6461,7 +6461,7 @@ class String:
         """Return whether provided string is a hexadecimal value."""
         if not pattern.startswith("0x") and not pattern.startswith("0X"):
             return False
-        return len(pattern) % 2 == 0 and all(c in String.STRING_HEXDIGITS for c in pattern[2:])
+        return len(pattern) > 2 and len(pattern) % 2 == 0 and all(c in String.STRING_HEXDIGITS for c in pattern[2:])
 
 
 def slicer(data, n):
@@ -23205,8 +23205,14 @@ class SearchPatternCommand(GenericCommand):
         return
 
     def create_patterns(self):
+        if not self.args.pattern or self.args.pattern.lower() == "0x":
+            err("Search pattern must not be empty")
+            return None
         if self.args.hex_regex:
             pattern = self.args.pattern.lower().replace(" ", "")
+            if not pattern:
+                err("Search pattern must not be empty")
+                return None
             try:
                 re.compile(String.str2bytes(pattern))
             except re.error as e:
@@ -23233,6 +23239,10 @@ class SearchPatternCommand(GenericCommand):
             val = codecs.escape_decode(pattern)[0]
         except (ValueError, UnicodeDecodeError):
             err('Could not decode "\\xXX" encoded pattern')
+            return None
+
+        if not val:
+            err("Search pattern must not be empty")
             return None
 
         # create utf16 pattern
@@ -33888,7 +33898,6 @@ class ChecksecCommand(GenericCommand):
 
     @Decorator.parse_args
     @Decorator.exclude_specific_gdb_mode(mode=("wine", "kgdb"))
-    @Decorator.require_arch_set
     def do_invoke(self, args):
         if is_qemu_system() or is_vmware():
             info("Redirect to kchecksec")
@@ -43238,7 +43247,7 @@ class PatchRangeReplaceCommand(PatchCommand):
     parser.add_argument("hstr_from", metavar="HEX_STR_FROM", type=lambda x: bytes.fromhex(x),
                         help="the hex string to search for (source pattern).")
     parser.add_argument("hstr_to", metavar="HEX_STR_TO", type=lambda x: bytes.fromhex(x),
-                        help="the replacement bytes; lengths may differ, but all writes must fit in the range.")
+                        help="the replacement bytes; all writes must fit in the range and must not overlap.")
     _syntax_ = parser.format_help()
 
     _example_ = [
@@ -43278,6 +43287,10 @@ class PatchRangeReplaceCommand(PatchCommand):
                 break
             if found_pos + len(self.args.hstr_to) > len(data):
                 err("Replacement at {:#x} would exceed END_ADDR; no patches applied".format(
+                    self.args.range_start + found_pos))
+                return
+            if positions and found_pos < positions[-1] + len(self.args.hstr_to):
+                err("Replacement at {:#x} would overlap a previous replacement; no patches applied".format(
                     self.args.range_start + found_pos))
                 return
             positions.append(found_pos)
@@ -64101,7 +64114,7 @@ class AddressifyCommand(GenericCommand):
     def do_invoke(self, args):
         hex_value = ""
         for value in args.value:
-            for c in value.lower():
+            for c in value.lower().replace("0x", ""):
                 if c in "0123456789abcdef":
                     hex_value += c
         if hex_value == "":
@@ -145630,7 +145643,7 @@ class HashValueCommand(HashCommand, BufferingOutput):
     def do_invoke(self, args):
         if args.hex: # "41414141" -> b"\x41\x41\x41\x41"
             value = GefUtil.fromhex_ignore_invalid(args.value)
-            if not value:
+            if value is None:
                 return
         else:
             try:
@@ -148118,7 +148131,7 @@ class CrcValueCommand(CrcCommand):
     def do_invoke(self, args):
         if args.hex: # "41414141" -> b"\x41\x41\x41\x41"
             value = GefUtil.fromhex_ignore_invalid(args.value)
-            if not value:
+            if value is None:
                 return
         else:
             try:
@@ -149221,7 +149234,7 @@ class BaseNDecodeValueCommand(BaseNDecodeCommand):
     def do_invoke(self, args):
         if args.hex: # "41414141" -> b"\x41\x41\x41\x41"
             value = GefUtil.fromhex_ignore_invalid(args.value)
-            if not value:
+            if value is None:
                 return
         else:
             try:
@@ -149428,7 +149441,7 @@ class BaseNEncodeValueCommand(BaseNEncodeCommand):
     def do_invoke(self, args):
         if args.hex: # "41414141" -> b"\x41\x41\x41\x41"
             value = GefUtil.fromhex_ignore_invalid(args.value)
-            if not value:
+            if value is None:
                 return
         else:
             try:
@@ -198798,6 +198811,9 @@ class XRefTelescopeCommand(SearchPatternCommand, BufferingOutput):
     @Decorator.only_if_gdb_running
     @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware"))
     def do_invoke(self, args):
+        if not args.pattern or args.pattern.lower() == "0x":
+            err("Search pattern must not be empty")
+            return
         self.found_count = 0
 
         # Since it inherits SearchPatternCommand, set the values to be used there.
