@@ -15992,6 +15992,9 @@ class EventHandler:
     def continue_handler(event):
         """GDB event handler for new object continue cases."""
         ExecAsm.clear_queued_signal(event)
+        thread = getattr(event, "inferior_thread", None) or gdb.selected_thread()
+        context = thread if gdb.parameter("non-stop") else gdb.selected_inferior()
+        ExecAsm.stop_reasons.pop(context, None)
         return
 
     @staticmethod
@@ -16158,6 +16161,9 @@ class EventHandler:
         GefUtil.clear_user_bases(inferior=getattr(_event, "inferior", None))
         EventHandler.kpti_transition_active = False
         ExecAsm.queued_signals = {thread: sig for thread, sig in ExecAsm.queued_signals.items() if thread.is_valid()}
+        for context in list(ExecAsm.stop_reasons):
+            if not context.is_valid() or context == _event.inferior or getattr(context, "inferior", None) == _event.inferior:
+                ExecAsm.stop_reasons.pop(context, None)
         return
 
     @staticmethod
@@ -35806,9 +35812,13 @@ class ExploitableCommand(GenericCommand):
         # so the member access works even on stripped binaries (it does not rely on the
         # target's debug symbols). It has no memory address, so there is no raw-memory
         # fallback; we just try the known member paths.
-        for expr in ("$_siginfo._sifields._sigfault.si_addr", "$_siginfo.si_addr"):
+        siginfo = GefUtil.get_siginfo()
+        for fields in (("_sifields", "_sigfault", "si_addr"), ("si_addr",)):
             try:
-                return AddressUtil.normalize_address(int(gdb.parse_and_eval(expr)))
+                value = siginfo
+                for field in fields:
+                    value = value[field]
+                return AddressUtil.normalize_address(int(value))
             except Exception:
                 continue
         return None
@@ -35863,9 +35873,9 @@ class ExploitableCommand(GenericCommand):
 
         if signame == "SIGILL":
             try:
-                code = int(gdb.parse_and_eval("$_siginfo.si_code"))
+                code = int(GefUtil.get_siginfo()["si_code"])
                 self.details.append("SIGILL si_code = {:d}".format(code))
-            except gdb.error:
+            except (gdb.error, TypeError):
                 pass
             if insn is not None and insn.mnemonic.lower() in ("ud2", "ud2a", "ud1", "ud0"):
                 self.details.append("=> explicit undefined-instruction trap (possibly compiler-generated).")
@@ -104222,6 +104232,7 @@ class ExecAsm:
 
     # `info program` only describes the last stop in all-stop mode.
     queued_signals = {}
+    stop_reasons = {}
 
     class ExecutionExitedError(gdb.GdbError):
         pass
@@ -104315,7 +104326,7 @@ class ExecAsm:
 
     @staticmethod
     def get_stop_signal():
-        stop = GefUtil.get_stop_reason()
+        stop = GefUtil.get_stop_reason(use_saved=False)
         if stop is None:
             return None
         thread = gdb.selected_thread()
@@ -104414,6 +104425,12 @@ class ExecAsm:
         d = self.get_state()
         self.thread = gdb.selected_thread()
         self.stops.clear()
+        context = self.thread if gdb.parameter("non-stop") else gdb.selected_inferior()
+        stop_reason = ExecAsm.stop_reasons.get(context)
+        if stop_reason is None:
+            stop_reason = {"info": gdb.execute("info program", to_string=True), "siginfo": {}}
+        if self.thread not in stop_reason["siginfo"]:
+            stop_reason["siginfo"][self.thread] = GefUtil.get_siginfo()
         stop_signal = self.get_stop_signal()
 
         # do not deliver the pending stop signal or let other threads pass it while executing
@@ -104465,7 +104482,12 @@ class ExecAsm:
                 if stop_signal:
                     self.queue_signal(*stop_signal)
                     ExecAsm.queued_signals[stop_signal[0]] = stop_signal[1]
+                elif self.stops and isinstance(self.stops[-1], gdb.SignalEvent):
+                    event = self.stops[-1]
+                    if getattr(event, "inferior_thread", None) in (None, self.thread):
+                        self.queue_signal(self.thread, "0")
                 self.revert_state(d)
+                ExecAsm.stop_reasons[context] = stop_reason
 
         return ret
 
@@ -201790,12 +201812,15 @@ class GefUtil:
         return addresses
 
     @staticmethod
-    def get_stop_reason():
-        """Parse `info program`, which describes the last stop in all-stop mode, or return None on error.
+    def get_stop_reason(use_saved=True):
+        """Parse saved or current `info program`, which describes the last stop in all-stop mode, or return None on error.
         "reason" names the stop of the selected thread (e.g. "BREAKPOINT"). "breakpoints" has None for a deleted breakpoint.
+        Set use_saved=False to read GDB's current stop.
         """
         try:
-            res = gdb.execute("info program", to_string=True)
+            context = gdb.selected_thread() if gdb.parameter("non-stop") else gdb.selected_inferior()
+            saved = ExecAsm.stop_reasons.get(context) if use_saved else None
+            res = saved["info"] if saved is not None else gdb.execute("info program", to_string=True)
         except gdb.error:
             return None
         thread = re.search(r"^(?:Last stopped for|Selected) thread (?:(\d+)\.)?(\d+) ", res, re.M)
@@ -201827,6 +201852,23 @@ class GefUtil:
             "breakpoints": [int(num) if num else None for num in breakpoints],
             "signal": signal.group(1) if signal else None,
         }
+
+    @staticmethod
+    def get_siginfo():
+        """Return the signal information from before injected instructions, if saved."""
+        thread = gdb.selected_thread()
+        context = thread if gdb.parameter("non-stop") else gdb.selected_inferior()
+        saved = ExecAsm.stop_reasons.get(context)
+        if saved is not None and thread in saved["siginfo"]:
+            return saved["siginfo"][thread]
+        try:
+            value = gdb.parse_and_eval("$_siginfo")
+            if value.type.code == gdb.TYPE_CODE_VOID:
+                return None
+            value.fetch_lazy()
+            return value
+        except gdb.error:
+            return None
 
     @staticmethod
     @Cache.cache_until_next(per_cpu=True, per_inferior=True)
