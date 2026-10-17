@@ -149876,8 +149876,11 @@ class SequenceLengthCommand(GenericCommand):
                     raise gdb.MemoryError
                 data += chunk
             except (gdb.MemoryError, ValueError, OverflowError):
-                err("Read error {:#x}".format(current))
-                return None
+                if target is None:
+                    err("Read error {:#x}".format(current))
+                    return None
+                warn("Read error {:#x}, stopped counting there".format(current))
+                return count, target
             # init target
             if target is None:
                 target = data[:unit]
