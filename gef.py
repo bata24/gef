@@ -7960,6 +7960,9 @@ class ARM(Architecture):
         "ARMV7",
     ]
 
+    # the condition code of a mnemonic, e.g. `popne`, `ldmiane.w`
+    RE_CONDITION_SUFFIX = re.compile(r"(?:eq|ne|lt|le|gt|ge|vs|vc|mi|pl|hi|ls|cs|cc|hs|lo|al)(?=(?:\.[nw])?$)")
+
     cached_is_cortex_m = None
 
     def is_cortex_m(self):
@@ -8154,7 +8157,7 @@ class ARM(Architecture):
         return False
 
     def is_jump(self, insn):
-        if self.is_ret(insn):
+        if self.is_ret(insn) or self.is_call(insn):
             return False
         if self.is_conditional_branch(insn):
             return True
@@ -8174,7 +8177,7 @@ class ARM(Architecture):
             "ldm.w", "ldmea.w", "ldmed.w", "ldmfa.w",
             "ldmfd.w", "ldmia.w", "ldmib.w", "ldmda.w", "ldmdb.w",
         ]
-        mnemo = insn.mnemonic
+        mnemo = self.RE_CONDITION_SUFFIX.sub("", insn.mnemonic)
         if mnemo in load_mnemos:
             return "pc}" in "".join(insn.operands)
         if mnemo in ["b", "b.n", "b.w", "bx", "bx.n", "bx.w"]:
@@ -8197,7 +8200,13 @@ class ARM(Architecture):
                 return True
         if insn.mnemonic in ["cbnz", "cbz", "tbnz", "tbz"]:
             return True
-        return False
+        # the other branches with a condition code, e.g. `blne label`, `popne {pc}`, `ldrne pc, [r0]`
+        mnemo = self.RE_CONDITION_SUFFIX.sub("", insn.mnemonic)
+        if mnemo == insn.mnemonic:
+            return False
+        if mnemo in ["mov", "mov.n", "mov.w", "ldr", "ldr.n", "ldr.w", "add", "add.n", "add.w"]:
+            return insn.operands[0] == "pc"
+        return self.is_call(insn) or self.is_ret(insn)
 
     def is_branch_taken(self, insn):
         mnemo, operands = insn.mnemonic, insn.operands
@@ -8318,9 +8327,11 @@ class ARM(Architecture):
         ra = None
         try:
             if self.is_ret(insn):
-                if insn.mnemonic == "pop":
+                if insn.mnemonic.startswith("pop"):
                     # If it's a pop, we have to peek into the stack.
-                    ra_addr = current_arch.sp + (len(insn.operands) - 1) * AddressUtil.get_memory_alignment()
+                    # The last operand may be followed by a comment, e.g. `pop {pc} @ (ldr pc, [sp], #4)`.
+                    index = next(i for i, op in enumerate(insn.operands) if "pc}" in op)
+                    ra_addr = current_arch.sp + index * AddressUtil.get_memory_alignment()
                     ra = read_int32_from_memory(ra_addr)
                 elif insn.mnemonic.startswith("ldm"):
                     # GDB seems to disassemble ldm* instructions as pop.
@@ -22870,22 +22881,16 @@ class SearchPatternCommand(GenericCommand):
     ]
     _note_ = "\n".join(_note_)
 
-    def is_aligned(self, addr):
-        a = self.args.aligned or 1
-        return (a <= 1) or (addr % a == 0)
-
-    def accept_match(self, start_addr, locations):
-        # alignment
-        if not self.is_aligned(start_addr):
-            return False
+    def get_acceptable_addr(self, start_addr, locations):
+        """Return the lowest address from `start_addr` that a match can start at."""
+        addr = start_addr
 
         # interval
-        if self.args.interval:
-            if locations:
-                last_loc = locations[-1]
-                if start_addr < last_loc[0] + self.args.interval:
-                    return False
-        return True
+        if self.args.interval and locations:
+            addr = max(addr, locations[-1][0] + self.args.interval)
+
+        # alignment
+        return align(addr, self.args.aligned or 1)
 
     def check_limit(self):
         if self.args.limit is not None:
@@ -22931,14 +22936,20 @@ class SearchPatternCommand(GenericCommand):
             return None
         return mem
 
-    @staticmethod
-    def find_hex_matches(pattern, mem):
+    def find_matches(self, pattern, mem, pos, base, locations):
+        # A rejected match must not consume the overlapping candidates, so the search restarts after it.
+        # For hex regex, a match must start at an even position since 2 characters make a byte.
         regex = re.compile(pattern)
-        pos = 0
+        unit = 2 if self.args.hex_regex else 1
         while pos <= len(mem):
             for match in regex.finditer(mem, pos):
-                if match.start() % 2:
+                if match.start() % unit:
                     pos = match.start() + 1
+                    break
+                start_addr = base + match.start() // unit
+                acceptable_addr = self.get_acceptable_addr(start_addr, locations)
+                if start_addr < acceptable_addr:
+                    pos = (acceptable_addr - base) * unit
                     break
                 yield match
             else:
@@ -22998,43 +23009,39 @@ class SearchPatternCommand(GenericCommand):
                        -ofs     ofs
                 """
                 tmp_mem = old_mem[-ofs:] + mem[:ofs]
-                m = re.compile(pattern).search(tmp_mem, max(last_end - (chunk_addr - ofs), 0))
+                pos = max(last_end - (chunk_addr - ofs), 0)
+                m = next(self.find_matches(pattern, tmp_mem, pos, chunk_addr - ofs, locations), None)
                 if m:
                     r = m.start()
                     last_end = chunk_addr - ofs + m.end()
                 else:
                     r = -1
                 if r >= 0:
-                    if self.accept_match(chunk_addr - ofs + r, locations):
-                        # read dump data
-                        data = (old_mem[-ofs:] + mem[:ofs + 0x10])[r:][:0x10]
+                    # read dump data
+                    data = (old_mem[-ofs:] + mem[:ofs + 0x10])[r:][:0x10]
 
-                        # add
-                        locations.append((chunk_addr - ofs + r, data))
-                        self.found_count += 1
+                    # add
+                    locations.append((chunk_addr - ofs + r, data))
+                    self.found_count += 1
 
-                        # loop check
-                        if self.check_limit():
-                            info("Limit reached, no more matches shown")
-                            return locations
+                    # loop check
+                    if self.check_limit():
+                        info("Limit reached, no more matches shown")
+                        return locations
                 # fall through
 
             # normal case
             if self.args.hex_regex:
-                matches = self.find_hex_matches(pattern, mem)
+                pos = 0
             else:
-                matches = re.compile(pattern).finditer(mem, max(last_end - chunk_addr, 0))
-            for match in matches:
+                pos = max(last_end - chunk_addr, 0)
+            for match in self.find_matches(pattern, mem, pos, chunk_addr, locations):
                 if self.args.hex_regex:
                     start_pos = match.start() // 2
                 else:
                     start_pos = match.start()
                     last_end = chunk_addr + match.end()
                 start = chunk_addr + start_pos
-
-                # check filter
-                if not self.accept_match(start, locations):
-                    continue
 
                 # read dump data
                 if self.args.hex_regex:
@@ -27972,6 +27979,13 @@ class FutureCallsCommand(GenericCommand, BufferingOutput):
                 return False
 
             if current_arch.is_ret(insn):
+                # a conditional return falls through if it is not taken
+                if current_arch.is_conditional_branch(insn):
+                    if not self.step(tracer, parent, insn):
+                        return False
+                    if tracer.from_emu(tracer.emu.reg_read(tracer.pc_reg)) == insn.address + len(insn.opcodes):
+                        continue
+                    return self.add_child(parent, UnicornEmulator.Node(return_address, insn.address, kind="ret")) is not None
                 child = self.add_child(parent, UnicornEmulator.Node(return_address, insn.address, kind="ret"))
                 if child is None or return_address is None:
                     return child is not None
@@ -27995,6 +28009,9 @@ class FutureCallsCommand(GenericCommand, BufferingOutput):
                 reason = None
                 if self.step(tracer, parent, insn):
                     target = tracer.from_emu(tracer.emu.reg_read(tracer.pc_reg))
+                    # a conditional call falls through if it is not taken
+                    if target == next_pc and current_arch.is_conditional_branch(insn):
+                        continue
                 else:
                     reason = parent.error
                     if self.stop_reasons.intersection(("node limit reached", "instruction limit reached")):
@@ -40248,7 +40265,10 @@ class ContextCodeCommand(GenericCommand):
                         if is_taken is None:
                             line += "\t" + Color.colorify("UNKNOWN ({:s})".format(reason), "bold yellow")
                         elif is_taken:
-                            target = ContextCodeCommand.get_branch_addr(insn)
+                            if current_arch.is_ret(insn):
+                                target = current_arch.get_ra(insn, frame)
+                            else:
+                                target = ContextCodeCommand.get_branch_addr(insn)
                             if reason:
                                 reason = "[Reason: {:s}]".format(reason)
                             else:
@@ -75970,11 +75990,16 @@ class KernelVersion:
     def __lt__(self, v):
         return self.to_version_tuple(v) > self.version_tuple
 
+    # A version string never compares equal, since it cannot have the same hash value
     def __eq__(self, v):
-        return self.to_version_tuple(v) == self.version_tuple
+        if not isinstance(v, KernelVersion):
+            return NotImplemented
+        return v.version_tuple == self.version_tuple
 
     def __ne__(self, v):
-        return self.to_version_tuple(v) != self.version_tuple
+        if not isinstance(v, KernelVersion):
+            return NotImplemented
+        return v.version_tuple != self.version_tuple
 
     def __hash__(self):
         return hash(self.version_tuple)
@@ -178331,7 +178356,7 @@ class AddrMap:
         )]
 
     @staticmethod
-    def p2v_mappings(address, force_secure=None, maps=None):
+    def p2v_mappings(address, force_secure=None, maps=None, verbose=False):
         """Return every virtual address and mapping associated with a physical address."""
 
         def p2v_from_map():
@@ -178342,8 +178367,15 @@ class AddrMap:
                     results.append((vaddr, entry))
             return results
 
+        # Without x86 paging (CR0.PG=0), a 32-bit linear address is the physical address, as `gva2gpa` in `v2p` returns.
+        if maps is None and force_secure is None and is_x86():
+            cr0 = get_register("cr0", use_monitor=True)
+            if cr0 is not None and not cr0 & (1 << 31):
+                maps = [AddrMap.Entry(0, 1 << 32, 0, 1 << 32)]
+                return p2v_from_map()
+
         if maps is None:
-            maps = AddrMap.get_maps(force_secure=force_secure)
+            maps = AddrMap.get_maps(force_secure=force_secure, verbose=verbose)
         if not maps:
             return []
         return p2v_from_map()
@@ -178427,8 +178459,7 @@ class Phys2VirtCommand(GenericCommand):
             elif args.force_secure:
                 force_secure = True
 
-        maps = AddrMap.get_maps(force_secure=force_secure, verbose=args.verbose)
-        mappings = AddrMap.p2v_mappings(args.address, maps=maps)
+        mappings = AddrMap.p2v_mappings(args.address, force_secure=force_secure, verbose=args.verbose)
 
         if args.verbose:
             for result in mappings:
@@ -188487,8 +188518,14 @@ class CallTraceCommand(ExecUntilCommand):
                                 write_trace(res)
                             pending_syscall_ret_indent = None
 
+                        # a conditional call or ret falls through if it is not taken
+                        is_taken = True
+                        if current_arch.is_call(insn) or current_arch.is_ret(insn):
+                            if current_arch.is_conditional_branch(insn):
+                                is_taken, _ = current_arch.is_branch_taken(insn)
+
                         # call or ret or syscall
-                        if current_arch.is_call(insn):
+                        if current_arch.is_call(insn) and is_taken is not False:
                             if not self.args.syscall_only:
                                 print_insn(insn, print_indent)
                                 if self.args.print_args:
@@ -188499,7 +188536,7 @@ class CallTraceCommand(ExecUntilCommand):
                                     write_trace(res)
                                 next_should_print = True
                                 print_indent += 2
-                        elif current_arch.is_ret(insn):
+                        elif current_arch.is_ret(insn) and is_taken is not False:
                             if not self.args.syscall_only:
                                 print_insn(insn, print_indent)
                                 if self.args.print_args:
