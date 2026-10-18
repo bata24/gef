@@ -33206,7 +33206,7 @@ class ElfInfoCommand(GenericCommand):
         Elf.Phdr.PT_SHLIB         : "SHLIB",
         Elf.Phdr.PT_PHDR          : "PHDR",
         Elf.Phdr.PT_TLS           : "TLS",
-        Elf.Phdr.PT_GNU_EH_FRAME  : "GNU_EH_FLAME",
+        Elf.Phdr.PT_GNU_EH_FRAME  : "GNU_EH_FRAME",
         Elf.Phdr.PT_GNU_STACK     : "GNU_STACK",
         Elf.Phdr.PT_GNU_RELRO     : "GNU_RELRO",
         Elf.Phdr.PT_GNU_PROPERTY  : "GNU_PROPERTY",
