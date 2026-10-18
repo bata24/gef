@@ -32287,7 +32287,7 @@ class RpCommand(GenericCommand, BufferingOutput):
 
         base_address = 0
         if args.libc:
-            libc_targets = ("libc-2.", "libc.so.6", "libuClibc-")
+            libc_targets = ("libc-2.", "libc.so.6", "libuClibc-", "/libc.so")
             libc = ProcessMap.process_lookup_path(libc_targets)
             if libc is None:
                 err("Could not find the libc")
