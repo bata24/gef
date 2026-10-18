@@ -76794,6 +76794,9 @@ class KernelRadixTree:
             height = read_int32_from_memory(self.address + self.rnode_offset - 8)
             if 0 < height <= type(self).MAX_HEIGHT:
                 self.height = height
+            elif self.rnode & 3 == type(self).RADIX_TREE_INDIRECT_PTR:
+                self.broken[self.address + self.rnode_offset - 8] = "invalid height"
+                return False
         return True
 
     @staticmethod
