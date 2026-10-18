@@ -21837,8 +21837,14 @@ class SmartMemoryDumpCommand(GenericCommand):
                 return 0
 
             # write
-            with open(filepath, "wb") as fdw:
-                saved_size = fdw.write(data)
+            try:
+                with open(filepath, "wb") as fdw:
+                    saved_size = fdw.write(data)
+            except OSError as e:
+                warn("Failed to save {:s}: {!s}".format(filepath, e))
+                with contextlib.suppress(OSError):
+                    os.unlink(filepath)
+                return 0
             info("Saved to {:s} ({:s})".format(filepath, GefUtil.get_size_str(saved_size)))
             return saved_size
         else:
@@ -21896,6 +21902,11 @@ class SmartMemoryDumpCommand(GenericCommand):
     @Decorator.exclude_specific_gdb_mode(mode=("kgdb", "vmware"))
     @Decorator.require_arch_set
     def do_invoke(self, args):
+        for name in ("prefix", "suffix"):
+            value = getattr(args, name)
+            if os.path.sep in value or "\0" in value:
+                err("Invalid {:s}".format(name))
+                return
         if is_qemu_system():
             maps = AddrMap.get_maps(scope="kernel")
         else:
