@@ -40591,7 +40591,7 @@ class ContextMemoryAccessCommand(GenericCommand):
         if not (is_x86() or is_arm32() or is_arm32_cortex_m() or is_arm64()):
             return
 
-        inst_iter = Disasm.gef_disassemble(current_arch.pc, 2)
+        inst_iter = Disasm.gef_disassemble(current_arch.pc, 1)
         try:
             insn_here = inst_iter.__next__()
         except StopIteration:
@@ -40608,8 +40608,7 @@ class ContextMemoryAccessCommand(GenericCommand):
         if not r:
             return
 
-        insn_next = inst_iter.__next__()
-        codesize = insn_next.address - insn_here.address
+        codesize = insn_here.size
 
         for code in r:
             code = code[1:-1] # skip "[" and "]"
@@ -40675,7 +40674,7 @@ class ContextMemoryAccessCommand(GenericCommand):
         if not is_x86():
             return
 
-        inst_iter = Disasm.gef_disassemble(current_arch.pc, 2)
+        inst_iter = Disasm.gef_disassemble(current_arch.pc, 1)
         try:
             insn_here = inst_iter.__next__()
         except StopIteration:
@@ -40687,11 +40686,7 @@ class ContextMemoryAccessCommand(GenericCommand):
         insn = ",".join(insn_here.operands)
         insn = re.sub(r"<.+>", "", insn)
 
-        try:
-            insn_next = inst_iter.__next__()
-        except StopIteration:
-            return
-        codesize = insn_next.address - insn_here.address
+        codesize = insn_here.size
 
         r = self.RE_FINDALL_SEG2.findall(str(insn))
         if r:
