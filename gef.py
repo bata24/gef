@@ -47660,7 +47660,10 @@ class DestructorDumpCommand(GenericCommand):
                 entries = []
                 for i in range(fini_array_sz // current_arch.ptrsize):
                     addr = fini_array + current_arch.ptrsize * i
-                    func = read_int_from_memory(addr)
+                    func = read_int_from_memory(addr, safe=True)
+                    if func is None:
+                        warn("Cannot read .fini_array at {:#x}".format(addr))
+                        break
                     if not is_valid_addr(func):
                         continue
                     entries.append([addr, func])
@@ -47683,7 +47686,10 @@ class DestructorDumpCommand(GenericCommand):
             vend = AddressUtil.get_vmem_end() - 1
             for i in range(shdr.sh_size // current_arch.ptrsize):
                 addr = shdr.sh_addr + current_arch.ptrsize * i
-                func = read_int_from_memory(addr)
+                func = read_int_from_memory(addr, safe=True)
+                if func is None:
+                    warn("Cannot read .fini_array at {:#x}".format(addr))
+                    break
                 if func in [0, vend]:
                     continue
                 entries.append([addr, func])
