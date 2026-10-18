@@ -147004,6 +147004,9 @@ class HashTestCommand(HashCommand, BufferingOutput):
         return
 
     def hash_test_time(self):
+        if self.args.size < 0:
+            err("Invalid size")
+            return
         value = b"A" * self.args.size
         category = None
         result = []
