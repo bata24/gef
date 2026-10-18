@@ -79849,11 +79849,13 @@ class KernelSighand:
             return sizeof_action
 
         # slow path
-        # Every supported arch defines SA_RESTORER and none defines __ARCH_HAS_KA_RESTORER,
-        # so the ABI size is sa_handler, sa_flags, sa_restorer and a 64-bit sa_mask.
-        # The other sizes are only for the kernels that do not match it.
+        # RISC-V has no sa_restorer; its action contains a handler, flags, and 64-bit mask.
+        # Other architectures usually have sa_restorer, with alternate sizes as fallbacks.
         ptrsize = current_arch.ptrsize
-        candidates = [ptrsize * 3 + 8, ptrsize * 4 + 8, ptrsize * 2 + 8]
+        if is_riscv32() or is_riscv64():
+            candidates = [ptrsize * 2 + 8]
+        else:
+            candidates = [ptrsize * 3 + 8, ptrsize * 4 + 8, ptrsize * 2 + 8]
         best = None
         for sizeof_action in candidates:
             score = sum(KernelSighand.is_valid_action_array(sighand + offset_action, sizeof_action) for sighand in sighands)
