@@ -76848,9 +76848,7 @@ class KernelRadixTree:
                 count = read_int8_from_memory(node + offset_count, safe=True)
             else:
                 count = read_int32_from_memory(node + offset_count, safe=True)
-            if count is None:
-                continue
-            if not 0 < count <= 64:
+            if count is None or count <= 0:
                 continue
 
             for slot_unit in self.slot_unit_candidates(size_count):
@@ -76860,7 +76858,14 @@ class KernelRadixTree:
                     if data is None:
                         continue
                     used = [x for x in slice_unpack(data, ptrsize) if x]
-                    if len(used) != count or not all(self.is_slot(x) for x in used):
+                    if len(used) != count:
+                        shift = num_slots.bit_length()
+                        shadows = count >> shift if size_count == 4 else 0
+                        if not shadows or (count & ((1 << shift) - 1)) + shadows != len(used):
+                            continue
+                        if shadows != sum(x & 3 == self.RADIX_TREE_EXCEPTIONAL_ENTRY for x in used):
+                            continue
+                    if not all(self.is_slot(x) for x in used):
                         continue
                     self.offset_count = offset_count
                     self.size_count = size_count
