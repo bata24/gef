@@ -66402,8 +66402,10 @@ class KernelAddressHeuristicFinderUtil:
             yield (pc, w) if with_pc else w
 
     @staticmethod
-    def riscv_auipc_addi(res, skip=0, skip_msb_check=False, read_valid=False):
-        return KernelAddressHeuristicFinderUtil.riscv_auipc_gen(res, True, False, skip, skip_msb_check, read_valid)
+    def riscv_auipc_addi(res, skip=0, skip_msb_check=False, read_valid=False, include_lui=False):
+        return KernelAddressHeuristicFinderUtil.riscv_auipc_gen(
+            res, True, False, skip, skip_msb_check, read_valid, include_lui=include_lui,
+        )
 
     @staticmethod
     def riscv_auipc_use(res, skip=0, skip_msb_check=False, read_valid=False, include_lui=False):
@@ -70259,7 +70261,7 @@ class KernelAddressHeuristicFinder:
                 elif is_arm32():
                     g = KernelAddressHeuristicFinderUtil.arm32_movw_movt(res)
                 elif is_riscv64() or is_riscv32():
-                    g = KernelAddressHeuristicFinderUtil.riscv_auipc_addi(res)
+                    g = KernelAddressHeuristicFinderUtil.riscv_auipc_addi(res, include_lui=True)
                 for x in g:
                     if not is_valid_addr(x):
                         continue
@@ -74237,7 +74239,9 @@ class KernelAddressHeuristicFinder:
         # plan 2 (available v4.8 or later)
         if kversion and "4.8" <= kversion:
             for addr in Ksym.get_addrs("run_timer_softirq", match="split"):
-                res = KernelAddressHeuristicFinderUtil.disassemble_until_next_symbol(addr, 20)
+                res = KernelAddressHeuristicFinderUtil.disassemble_until_next_symbol(
+                    addr, 40 if is_riscv32() or is_riscv64() else 20,
+                )
                 if is_arm32() or is_riscv32() or is_riscv64():
                     # v6.19: `run_timer_softirq()` only passes the index to `__run_timer_base()`,
                     # so `timer_bases` is referenced in the callee.
@@ -74277,7 +74281,7 @@ class KernelAddressHeuristicFinder:
                 elif is_riscv32() or is_riscv64():
                     # the per-cpu symbol is a linked address, which is also `&timer_bases` with CONFIG_SMP=n
                     g = list(itertools.chain(
-                        KernelAddressHeuristicFinderUtil.riscv_auipc_addi(res, skip_msb_check=True),
+                        KernelAddressHeuristicFinderUtil.riscv_auipc_addi(res, skip_msb_check=True, include_lui=True),
                         KernelAddressHeuristicFinderUtil.riscv_gp_relative(res),
                     ))
                     g2 = g
@@ -74571,7 +74575,7 @@ class KernelAddressHeuristicFinder:
                     g2 = []
                 elif is_riscv32() or is_riscv64():
                     g = list(itertools.chain(
-                        KernelAddressHeuristicFinderUtil.riscv_auipc_addi(res, skip_msb_check=True),
+                        KernelAddressHeuristicFinderUtil.riscv_auipc_addi(res, skip_msb_check=True, include_lui=True),
                         KernelAddressHeuristicFinderUtil.riscv_gp_relative(res),
                     ))
                     g2 = g
