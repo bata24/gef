@@ -40966,7 +40966,7 @@ class ContextSourceCommand(GenericCommand):
             for sym in current_block:
                 if sym.is_function:
                     continue
-                if re.search(r"\W{}\W".format(sym.name), line):
+                if re.search(r"\b{}\b".format(re.escape(sym.name)), line):
                     try:
                         val = gdb.parse_and_eval(sym.name)
                     except gdb.error:
