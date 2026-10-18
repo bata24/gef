@@ -92918,9 +92918,10 @@ class KernelKeyringCommand(GenericCommand, BufferingOutput):
     RequestAuth = collections.namedtuple("RequestAuth", "target target_info dest dest_info cred callout callout_len pid op")
 
     def type_name(self, type_addr):
-        if not type_addr or not is_valid_addr_addr(type_addr):
+        if not type_addr or not is_valid_addr(type_addr):
             return None
-        name_addr = read_int_from_memory(type_addr, safe=True)
+        offset = GefUtil.offsetof("key_type", "name")
+        name_addr = read_int_from_memory(type_addr + (offset or 0), safe=True)
         if name_addr is None:
             return None
         if not is_valid_addr(name_addr):
@@ -93247,22 +93248,26 @@ class KernelKeyringCommand(GenericCommand, BufferingOutput):
             return None
 
         ptrsize = current_arch.ptrsize
-        offset = GefUtil.offsetof("request_key_auth", "target_key")
-        if offset is not None:
-            bases = [offset]
+        fields = ("target_key", "dest_keyring", "cred", "callout_info", "callout_len", "pid", "op")
+        offsets = [GefUtil.offsetof("request_key_auth", name) for name in fields]
+        if offsets[0] is not None:
+            bases = [offsets[0]]
         else:
             # rcu_head was added in front of target_key in v5.3, and refcount_t usage in v7.2.
             bases = [0, 2 * ptrsize, 3 * ptrsize]
         for base in bases:
-            address = info.payload + base
+            positions = [offset if offset is not None else base + delta for offset, delta in zip(
+                offsets, (0, ptrsize, 2 * ptrsize, 3 * ptrsize, 4 * ptrsize, 5 * ptrsize, 5 * ptrsize + 4)
+            )]
+            address = info.payload
             try:
-                target = read_int_from_memory(address)
-                dest = read_int_from_memory(address + ptrsize)
-                cred = read_int_from_memory(address + 2 * ptrsize)
-                callout_info = read_int_from_memory(address + 3 * ptrsize)
-                callout_len = read_int_from_memory(address + 4 * ptrsize)
-                pid = read_int32_from_memory(address + 5 * ptrsize)
-                op = read_memory(address + 5 * ptrsize + 4, 8)
+                target = read_int_from_memory(address + positions[0])
+                dest = read_int_from_memory(address + positions[1])
+                cred = read_int_from_memory(address + positions[2])
+                callout_info = read_int_from_memory(address + positions[3])
+                callout_len = read_int_from_memory(address + positions[4])
+                pid = read_int32_from_memory(address + positions[5])
+                op = read_memory(address + positions[6], 8)
             except (gdb.MemoryError, OverflowError):
                 continue
             # The auth key is described by the target key serial in hex.
