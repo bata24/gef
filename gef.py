@@ -21026,7 +21026,7 @@ class ProcInfoCommand(GenericCommand):
             ))
         return
 
-    def get_state_string(self, proto, state):
+    def get_state_string(self, proto, state, flags="0"):
         if proto in ["tcp", "tcp6"]:
             dic = {
                 0x01: "ESTABLISHED",
@@ -21050,11 +21050,13 @@ class ProcInfoCommand(GenericCommand):
         elif proto in ["unix"]:
             dic = {
                 0x00: "FREE",
-                0x01: "LISTEN", # "UNCONNECTED"
+                0x01: "UNCONNECTED",
                 0x02: "CONNECTING",
                 0x03: "CONNECTED",
                 0x04: "DISCONNECTING",
             }
+            if int(state, 16) == 0x01 and int(flags, 16) & 0x10000:
+                return "LISTEN"
         else:
             return str(int(state, 16))
         return dic.get(int(state, 16), "???")
@@ -21153,7 +21155,7 @@ class ProcInfoCommand(GenericCommand):
                 lines = open(f"/proc/{pid}/net/{prot}", "r").readlines()
             except (FileNotFoundError, OSError):
                 continue # e.g., ipv6.disable=1
-            entries[prot] = [x.split() for x in lines[1:]]
+            entries[prot] = [x.rstrip("\n").split(maxsplit=7) if prot == "unix" else x.split() for x in lines[1:]]
 
         extra_info = {}
         for proto, proto_entries in entries.items():
@@ -21162,7 +21164,7 @@ class ProcInfoCommand(GenericCommand):
                 if proto in ["tcp", "tcp6", "udp", "udp6", "raw", "raw6"]:
                     _, local, remote, state, _, _, _, _, _, inode, *_ = proto_entry
                 elif proto == "unix":
-                    _, _, _, _, _, state, inode, *path = proto_entry
+                    _, _, _, flags, _, state, inode, *path = proto_entry
                     if path:
                         path = path[0]
                     else:
@@ -21174,7 +21176,7 @@ class ProcInfoCommand(GenericCommand):
                     continue
 
                 # get state
-                state = self.get_state_string(proto, state)
+                state = self.get_state_string(proto, state, flags if proto == "unix" else "0")
 
                 # make extra info
                 if proto in ["tcp", "tcp6", "udp", "udp6"]:
