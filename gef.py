@@ -913,7 +913,7 @@ class Config:
             if section == "user-defined-aliases":
                 # load the aliases
                 for key in cfg.options(section):
-                    repeat = cfg.getboolean("user-defined-aliases.repeat", key)
+                    repeat = cfg.getboolean("user-defined-aliases.repeat", key, fallback=False)
                     GefAlias(key, cfg.get("user-defined-aliases", key), force_repeat=repeat)
                 continue
 
