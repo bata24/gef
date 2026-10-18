@@ -96899,7 +96899,7 @@ class KernelOperationsCommand(GenericCommand, BufferingOutput):
             ["int",      "num",                                     "5.16.0",  None],
             ["int",      "num",                                     None,      "5.16.0", is_32bit()],
             ["int",      "flags",                                   None,      "5.16.0", is_32bit()],
-            ["int, int", "flags, num",                              None,      "5.16.0", is_64bit()],
+            ["int, int", "num, flags",                              None,      "5.16.0", is_64bit()],
             ["func_ptr", "open",                                    None,      None],
             ["func_ptr", "close",                                   None,      None],
             ["func_ptr", "flush_buffer",                            None,      None],
