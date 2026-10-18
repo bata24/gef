@@ -41628,8 +41628,6 @@ class MemoryUnwatchCommand(GenericCommand):
         return
 
     @Decorator.parse_args
-    @Decorator.only_if_gdb_running
-    @Decorator.require_arch_set
     def do_invoke(self, args):
         res = MemoryWatchCommand.mem_watches.pop(args.address, None)
         if not res:
@@ -41650,8 +41648,6 @@ class MemoryResetCommand(GenericCommand):
     _syntax_ = parser.format_help()
 
     @Decorator.parse_args
-    @Decorator.only_if_gdb_running
-    @Decorator.require_arch_set
     def do_invoke(self, args):
         MemoryWatchCommand.mem_watches.clear()
         ok("Memory watches cleared")
@@ -41669,8 +41665,6 @@ class MemoryWatchListCommand(GenericCommand):
     _syntax_ = parser.format_help()
 
     @Decorator.parse_args
-    @Decorator.only_if_gdb_running
-    @Decorator.require_arch_set
     def do_invoke(self, args):
         if not MemoryWatchCommand.mem_watches:
             info("No memory watches")
