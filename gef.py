@@ -62521,7 +62521,9 @@ class OneGadgetCommand(GenericCommand):
             prefix = exp[:m.regs[1][0]]
             target = m.group(1)[1:-1] # skip "[", "]"
             suffix = exp[m.regs[1][1]:]
-            target = "(*(unsigned long*)(" + target + "))"
+            cast = re.search(r"\((?:unsigned|signed) (?:short|int|long long)\)$", prefix.rstrip())
+            target_type = cast.group(0)[1:-1] if cast else "unsigned long"
+            target = "(*({:s}*)({:s}))".format(target_type, target)
             exp = prefix + target + suffix
 
         # evaluate
