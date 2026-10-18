@@ -62423,7 +62423,7 @@ class KernelMagicCommand(GenericCommand):
             "tty_ldiscs", text_base, maps, KernelAddressHeuristicFinder.get_tty_ldiscs,
         )
         gef_print(titlify("Allocator"))
-        self.resolve_and_print_kernel("__kmalloc", text_base, maps)
+        self.resolve_and_print_kernel(["__kmalloc", "__kmalloc_noprof"], text_base, maps)
         self.resolve_and_print_kernel(["kzalloc", "kzalloc.constprop.0"], text_base, maps)
         self.resolve_and_print_kernel("kfree", text_base, maps)
         self.resolve_and_print_kernel(["kzfree", "kfree_sensitive"], text_base, maps)
