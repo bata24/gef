@@ -41764,6 +41764,9 @@ class HexdumpCommand(GenericCommand, BufferingOutput):
             if not is_qemu_system() and not is_vmware() and not is_kgdb():
                 err("Unsupported in this gdb mode.")
                 return
+        if args.count > 0x0100_0000:
+            err("Maximum read size is 16 MiB; split the range")
+            return
 
         from_idx = args.count * self.repeat_count
         to_idx = args.count * (self.repeat_count + 1)
@@ -41793,6 +41796,8 @@ class HexdumpCommand(GenericCommand, BufferingOutput):
             lines.reverse()
 
         self.out = lines
+        if len(mem) < args.count:
+            self.warn_add_out("Partial memory read: {:d}/{:d} bytes".format(len(mem), args.count))
         self.print_output(check_terminal_size=True)
         return
 
