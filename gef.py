@@ -44595,7 +44595,8 @@ class VMMapCommand(GenericCommand, BufferingOutput):
 
             # `binary` case
             if args.filter == "binary":
-                if Path.get_filepath(append_proc_root_prefix=False) == entry.path:
+                filepath = Path.get_filepath(append_proc_root_prefix=False)
+                if filepath and entry.path in (filepath, filepath + " (deleted)"):
                     self.dump_entry(entry)
                     continue
 
@@ -188773,7 +188774,8 @@ class ExecUntilUserCodeCommand(ExecUntilCommand):
             filepath = Path.get_remote_filepath()
 
         maps = ProcessMap.get_process_maps()
-        self.code_addrs = [p for p in maps if p.permission.value & Permission.EXECUTE and p.path == filepath]
+        self.code_addrs = [p for p in maps if filepath and p.permission.value & Permission.EXECUTE
+                           and p.path in (filepath, filepath + " (deleted)")]
         if not self.code_addrs:
             err("Could not find code address")
             return
@@ -188818,7 +188820,7 @@ class ExecUntilLibcCodeCommand(ExecUntilCommand):
         maps = ProcessMap.get_process_maps()
         libc_pattern = r"libc-2\.\d+\.so|libc\.so(?:\.6)?|libuClibc-.*\.so|(?:ld-musl|libc\.musl)-[\w-]+\.so\.1"
         self.libc_addrs = [p for p in maps if p.permission.value & Permission.EXECUTE
-                           and re.fullmatch(libc_pattern, os.path.basename(p.path))]
+                           and re.fullmatch("(?:{})".format(libc_pattern) + r"(?: \(deleted\))?", os.path.basename(p.path))]
         if not self.libc_addrs:
             err("Could not find libc address")
             return
