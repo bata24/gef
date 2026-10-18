@@ -19839,8 +19839,14 @@ class VdsoCommand(GenericCommand, BufferingOutput):
         # disassemble
         try:
             __import__("capstone")
-            ret = gdb.execute("capstone-disassemble {:#x} -l {:#x}".format(text_start, text_size), to_string=True)
-            result_lines = ret.splitlines()
+            result_lines = []
+            for insn in Disasm.capstone_disassemble(text_start, text_size):
+                if insn.address >= text_end:
+                    break
+                if insn.address == current_arch.pc:
+                    result_lines.append(" -> {:s}".format(insn.colored_text(10, highlight=True)))
+                else:
+                    result_lines.append("    {:s}".format(insn.colored_text(10, highlight=False)))
         except ImportError:
             gen = Disasm.gdb_disassemble(text_start, end_pc=text_end - 1)
             result_lines = [str(x) for x in gen]
