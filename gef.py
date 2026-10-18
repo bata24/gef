@@ -98025,7 +98025,7 @@ class KernelSysctlCommand(GenericCommand, BufferingOutput):
                 if self.args.exact and self.exact_found:
                     break
         except gdb.MemoryError:
-            self.quiet_err("Memory read error")
+            self.err_add_out("Memory read error; sysctl scan incomplete")
             return None
         finally:
             if progress is not None:
@@ -98059,8 +98059,7 @@ class KernelSysctlCommand(GenericCommand, BufferingOutput):
 
         self.out = []
         self.append_legend()
-        if not self.dump_sysctls():
-            return
+        self.dump_sysctls()
         self.print_output(check_terminal_size=True)
         return
 
