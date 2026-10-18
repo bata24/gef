@@ -187034,7 +187034,10 @@ class QemuDeviceInfoCommand(GenericCommand, BufferingOutput):
             err("Could not determine the QEMU device driver from {:s}".format(device["argument"]))
             return None
 
-        self.info_add_out("device name: {:s}".format(Color.boldify(device["driver"])))
+        if device["argument"] is None and self.args.device and self.args.device.startswith("/"):
+            self.info_add_out("device selector: {:s}".format(Color.boldify(device["driver"])))
+        else:
+            self.info_add_out("device name: {:s}".format(Color.boldify(device["driver"])))
         if device["id"] is not None:
             self.info_add_out("device id: {:s}".format(Color.boldify(device["id"])))
         if device["argument"] is not None and device["argument"] != device["driver"]:
