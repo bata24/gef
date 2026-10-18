@@ -31138,6 +31138,10 @@ class GlibcHeapVisualHeapCommand(GenericCommand, BufferingOutput):
         else:
             dump_start = args.location
 
+        if not arena.heap_base <= dump_start <= arena.top or not is_valid_addr(dump_start):
+            err("Invalid heap start: {:#x}".format(dump_start))
+            return
+
         self.out = []
         self.generate_visual_heap(arena, dump_start, args.max_count)
         self.print_output()
@@ -31362,6 +31366,10 @@ class GlibcHeapDumpImageCommand(GenericCommand):
                     dump_start += 8
         else:
             dump_start = args.location
+
+        if not arena.heap_base <= dump_start <= arena.top or not is_valid_addr(dump_start):
+            err("Invalid heap start: {:#x}".format(dump_start))
+            return
 
         # parse chunks
         chunks, err_msg = self.collect_chunks(arena, dump_start, args.max_count)
