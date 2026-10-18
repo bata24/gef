@@ -174176,6 +174176,7 @@ class XphysAddrCommand(GenericCommand):
             kwargs["arch"] = "ARM"
             if target & 1:
                 kwargs["mode"] = "THUMB"
+                target -= 1
             else:
                 kwargs["mode"] = "ARM"
         elif is_arm64():
