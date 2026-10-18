@@ -22036,8 +22036,16 @@ class HijackFdCommand(GenericCommand):
 
     def get_fd_from_connect_server(self):
         import socket
-        address = socket.gethostbyname(self.args.new_output.split(":")[0])
-        port = int(self.args.new_output.split(":")[1])
+        host, port_text = self.args.new_output.rsplit(":", 1)
+        try:
+            port = int(port_text)
+        except ValueError:
+            err("Invalid port: {:s}".format(port_text))
+            return None
+        if not 1 <= port <= 65535:
+            err("Invalid port: {:s}".format(port_text))
+            return None
+        address = socket.gethostbyname(host)
 
         # call socket
         sock_fd = self.call_syscall("socket", [self.AF_INET, self.SOCK_STREAM, 0])
