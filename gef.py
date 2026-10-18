@@ -158153,12 +158153,14 @@ class KernelBuddy:
         page_list = KernelListHead(head, self.offset_lru)
         for page in page_list.iter_entries():
             link = page + self.offset_lru
-            if link == 0 or read_int_from_memory(link, safe=True) is None:
+            next_link = read_int_from_memory(link, safe=True) if link else None
+            if next_link is None:
                 self.list_scan_incomplete = True
                 break
             entries.append({"page": page, "size": size, "is_highmem": is_highmem, "cpu_num": cpu_num})
             if count and len(entries) >= count:
-                entries.append(None)
+                if next_link != head:
+                    entries.append(None)
                 break
         if page_list.broken:
             self.list_scan_incomplete = True
