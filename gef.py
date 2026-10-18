@@ -39214,7 +39214,10 @@ class CommandBreakCommand(GenericCommand):
     def do_invoke(self, args):
         location = args.location
         if location is None:
-            location = current_arch.pc
+            location = current_arch.pc if current_arch else None
+        if location is None:
+            err("Specify a location")
+            return
         CommandBreakBreakpoint(location, args.command)
         return
 
@@ -39278,6 +39281,9 @@ class RegisterDumpBreakCommand(GenericCommand):
         location = args.location
         if location is None:
             location = current_arch.pc
+        if location is None:
+            err("Specify a location")
+            return
         RegisterDumpBreakBreakpoint(location, args.tag, args.regs)
         return
 
