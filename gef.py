@@ -184127,10 +184127,8 @@ class SwitchELCommand(GenericCommand):
             else:
                 implemented = QemuMonitor.get_cpu_property("has_el{:d}".format(target_el))
             if implemented is None:
-                register = {2: "$HCR_EL2", 3: "$SCR_EL3"}[target_el]
-                if get_register(register) is None:
-                    error("EL{:d} is unavailable; could not read {:s}".format(target_el, register))
-                    return False
+                error("Could not determine whether EL{:d} is implemented".format(target_el))
+                return False
             elif not implemented:
                 error("EL{:d} is not implemented on this CPU".format(target_el))
                 return False
