@@ -81818,7 +81818,7 @@ class KernelSocket:
                 9: "TCP_LAST_ACK", 10: "TCP_LISTEN", 11: "TCP_CLOSING", 12: "TCP_NEW_SYN_RECV"}
     # address family (partial, only the common ones)
     AF_FAMILY = {0: "AF_UNSPEC", 1: "AF_UNIX", 2: "AF_INET", 10: "AF_INET6", 16: "AF_NETLINK",
-                 17: "AF_PACKET", 4: "AF_IPX", 5: "AF_APPLETALK", 29: "AF_CAN", 30: "AF_TIPC",
+                 17: "AF_PACKET", 4: "AF_IPX", 5: "AF_APPLETALK", 29: "AF_CAN", 30: "AF_TIPC", 31: "AF_BLUETOOTH",
                  38: "AF_ALG", 39: "AF_NFC", 40: "AF_VSOCK", 41: "AF_KCM", 43: "AF_SMC",
                  44: "AF_XDP", 45: "AF_MCTP"}
 
@@ -82261,7 +82261,7 @@ class KernelSocket:
         matches = []
         for off in range(4, 0x28, 2):
             fam = read_int16_from_memory(sk + off)
-            if fam == 0 or fam not in self.AF_FAMILY:
+            if not fam or (fam not in self.AF_FAMILY and not (off == 0x10 and 0 < fam < 0x40)):
                 continue
             st = read_int8_from_memory(sk + off + 2)
             if st > 12:  # layout heuristic; protocol-specific state names are handled later
