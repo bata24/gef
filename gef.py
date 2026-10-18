@@ -70094,19 +70094,22 @@ class KernelAddressHeuristicFinder:
         # plan 2 (search for the memory)
         sys_restart_syscall = Ksym.get_addr("sys_restart_syscall")
         sys_exit = Ksym.get_addr("sys_exit")
-        sys_fork = Ksym.get_addr("sys_fork")
+        sys_forks = (Ksym.get_addr("sys_fork"), Ksym.get_addr("sys_fork_wrapper"))
         sys_read = Ksym.get_addr("sys_read")
-        if None not in [sys_restart_syscall, sys_exit, sys_fork, sys_read]:
+        if None not in (sys_restart_syscall, sys_exit, sys_read) and any(addr is not None for addr in sys_forks):
             klayout = Kernel.layout()
             # `sys_call_table` is embedded in the .text area even if `CONFIG_KALLSYMS_ALL=n`
             if klayout.text_base:
                 text_data = read_memory(klayout.text_base, klayout.text_size)
-                for thumb_bit in (0, 1):
-                    seq_to_find = b"".join(p32(addr & ~1 | thumb_bit) for addr in (
-                        sys_restart_syscall, sys_exit, sys_fork, sys_read))
-                    sys_call_table_offset = text_data.find(seq_to_find)
-                    if sys_call_table_offset >= 0:
-                        return klayout.text_base + sys_call_table_offset
+                for sys_fork in sys_forks:
+                    if sys_fork is None:
+                        continue
+                    for thumb_bit in (0, 1):
+                        seq_to_find = b"".join(p32(addr & ~1 | thumb_bit) for addr in (
+                            sys_restart_syscall, sys_exit, sys_fork, sys_read))
+                        sys_call_table_offset = text_data.find(seq_to_find)
+                        if sys_call_table_offset >= 0:
+                            return klayout.text_base + sys_call_table_offset
         return None
 
     @staticmethod
