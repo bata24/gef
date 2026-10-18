@@ -66335,14 +66335,15 @@ class KernelAddressHeuristicFinderUtil:
 
     @staticmethod
     def riscv_auipc_gen(res, use_addi, use_mem, skip, skip_msb_check, read_valid,
-                        word_only=False, follow_addi=False, load_mnemonic=None, with_pc=False):
+                        word_only=False, follow_addi=False, load_mnemonic=None, with_pc=False, include_lui=False):
         """Yield the addresses built from `auipc rd, hi20` and the following `lo12(rd)`.
         `use_addi` takes `addi rX, rd, lo12` (the address itself), and `use_mem` takes the
         displacement of a load/store such as `ld rX, lo12(rd)` or `sd rX, lo12(rd)`.
         `word_only` limits the latter to the accesses as wide as a pointer.
         `follow_addi` keeps the result of `addi` as a base, for a member accessed at an offset
         from the address of the whole object (e.g. `addi s4, s4, lo12` then `ld s2, 176(s4)`).
-        `load_mnemonic` selects a load width and also includes gp-relative loads."""
+        `load_mnemonic` selects a load width and also includes gp-relative loads.
+        `include_lui` also accepts absolute addresses constructed with `lui`."""
         bases = {}
         for line in res.splitlines():
             m = re.match(r"\s*(?:=>\s*)?(0x[0-9a-f]+)(?:\s+<[^>]*>)?:\s*(\S+)\s*(.*)", line)
@@ -66350,7 +66351,7 @@ class KernelAddressHeuristicFinderUtil:
                 continue
             pc, mnemonic = int(m.group(1), 16), m.group(2)
             ops = [x.strip() for x in m.group(3).split("#", 1)[0].split(",")]
-            if mnemonic == "auipc" and len(ops) == 2:
+            if (mnemonic == "auipc" or include_lui and mnemonic == "lui") and len(ops) == 2:
                 try:
                     hi20 = int(ops[1], 0) & 0xfffff
                 except ValueError:
@@ -66358,7 +66359,7 @@ class KernelAddressHeuristicFinderUtil:
                     continue
                 if hi20 & 0x80000:
                     hi20 -= 0x100000
-                bases[ops[0]] = pc + (hi20 << 12)
+                bases[ops[0]] = (pc if mnemonic == "auipc" else 0) + (hi20 << 12)
                 continue
             w = None
             if mnemonic == "addi" and len(ops) == 3 and ops[1] in bases:
@@ -66405,14 +66406,16 @@ class KernelAddressHeuristicFinderUtil:
         return KernelAddressHeuristicFinderUtil.riscv_auipc_gen(res, True, False, skip, skip_msb_check, read_valid)
 
     @staticmethod
-    def riscv_auipc_use(res, skip=0, skip_msb_check=False, read_valid=False):
+    def riscv_auipc_use(res, skip=0, skip_msb_check=False, read_valid=False, include_lui=False):
         # `addi` or a pointer-sized load/store, in order. An int (`lw` on RV64) is skipped.
-        return KernelAddressHeuristicFinderUtil.riscv_auipc_gen(res, True, True, skip, skip_msb_check, read_valid, word_only=True)
+        return KernelAddressHeuristicFinderUtil.riscv_auipc_gen(
+            res, True, True, skip, skip_msb_check, read_valid, word_only=True, include_lui=include_lui,
+        )
 
     @staticmethod
-    def riscv_load(res, mnemonic="lw", skip=0):
+    def riscv_load(res, mnemonic="lw", skip=0, include_lui=False):
         return KernelAddressHeuristicFinderUtil.riscv_auipc_gen(
-            res, False, True, skip, False, False, follow_addi=True, load_mnemonic=mnemonic,
+            res, False, True, skip, False, False, follow_addi=True, load_mnemonic=mnemonic, include_lui=include_lui,
         )
 
     @staticmethod
@@ -71608,7 +71611,8 @@ class KernelAddressHeuristicFinder:
                 )
             if is_riscv32() or is_riscv64():
                 return itertools.chain(
-                    KernelAddressHeuristicFinderUtil.riscv_auipc_use(res),
+                    KernelAddressHeuristicFinderUtil.riscv_load(res, mnemonic="ld" if is_riscv64() else "lw", include_lui=True),
+                    KernelAddressHeuristicFinderUtil.riscv_auipc_use(res, include_lui=True),
                     KernelAddressHeuristicFinderUtil.riscv_gp_relative(res),
                 )
             return []
