@@ -183569,8 +183569,8 @@ class PageTableArm64(PageTable):
             self.warn_add_out("Maybe unused TTBR0_EL2")
             return
 
-        self.TCR_ELx_DS = ((TCR_EL2 >> 32) & 1) == 1
-        PS = (TCR_EL2 >> 16) & 0b111
+        self.TCR_ELx_DS = ((TCR_EL2 >> (59 if self.EL2_E2H else 32)) & 1) == 1
+        PS = (TCR_EL2 >> (32 if self.EL2_E2H else 16)) & 0b111
         TG0 = (TCR_EL2 >> 14) & 0b11
         T0SZ = TCR_EL2 & 0b111111
 
@@ -183625,7 +183625,7 @@ class PageTableArm64(PageTable):
             self.warn_add_out("Maybe unused TTBR1_EL2")
             return
 
-        self.TCR_ELx_DS = ((TCR_EL2 >> 32) & 1) == 1
+        self.TCR_ELx_DS = ((TCR_EL2 >> (59 if self.EL2_E2H else 32)) & 1) == 1
         IPS = (TCR_EL2 >> 32) & 0b111
         TG1 = (TCR_EL2 >> 30) & 0b11
         T1SZ = (TCR_EL2 >> 16) & 0b111111
