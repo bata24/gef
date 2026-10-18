@@ -44446,6 +44446,11 @@ class XFilesCommand(GenericCommand, BufferingOutput):
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     def do_invoke(self, args):
+        try:
+            patterns = [re.compile(filt) for filt in args.filter]
+        except re.error as e:
+            err("Invalid regex: {!s}".format(e))
+            return
         self.out = []
 
         fmt = "{:{:d}s} {:{:d}s} {:<21s} {:s}"
@@ -44461,12 +44466,12 @@ class XFilesCommand(GenericCommand, BufferingOutput):
             lines.append(xfile.filename)
             line = " ".join(lines)
 
-            if not args.filter:
+            if not patterns:
                 self.out.append(line)
                 continue
 
-            for filt in args.filter:
-                if re.search(filt, line):
+            for pattern in patterns:
+                if pattern.search(line):
                     self.out.append(line)
                     break
 
@@ -49713,7 +49718,7 @@ class SyscallSearchCommand(GenericCommand, BufferingOutput):
         self.out.append(GefUtil.make_legend(fmt.format(*legend)))
 
         for entry in syscall_table.nr_table.values():
-            if not re.search(syscall_name_pattern, entry.name):
+            if not syscall_name_pattern.search(entry.name):
                 continue
             if syscall_num is not None and entry.nr != syscall_num:
                 continue
@@ -49804,6 +49809,11 @@ class SyscallSearchCommand(GenericCommand, BufferingOutput):
             syscall_num = int(args.search_pattern, 0)
         except ValueError:
             syscall_name_pattern = args.search_pattern
+        try:
+            syscall_name_pattern = re.compile(syscall_name_pattern)
+        except re.error as e:
+            err("Invalid regex: {!s}".format(e))
+            return
 
         syscall_table = Syscall.get_syscall_table(target_arch, target_mode)
         if syscall_table is None:
