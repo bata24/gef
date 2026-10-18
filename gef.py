@@ -164651,7 +164651,10 @@ class GoHeapDumpCommand(GenericCommand, BufferingOutput):
                 return None
             if nelems:
                 allocBits_addr = read_int_from_memory(mspan + self.offset_allocBits)
-                allocBits_data = read_memory(allocBits_addr, (nelems + 7) // 8)
+                allocBits_data = read_memory(allocBits_addr, (nelems + 7) // 8, safe=True)
+                if allocBits_data is None:
+                    self.out.append("Unreadable allocation bitmap in mspan @ {:#x}".format(mspan))
+                    return None
                 allocBits_array = [int(i < freeindex or (allocBits_data[i // 8] >> (i % 8)) & 1)
                                    for i in range(nelems)]
 
