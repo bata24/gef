@@ -17661,8 +17661,11 @@ class GefThemeCommand(GenericCommand, BufferingOutput):
             return
 
         # set
-        val = [x for x in args.value if x in Color.colors]
-        gdb.execute("gef config theme.{:s} {:s}".format(args.key, GefUtil.quote_gdb_argument(" ".join(val))))
+        invalid = [x for x in args.value if x not in Color.colors]
+        if invalid:
+            err("Invalid color: {:s} (use `theme --color-sample` for available colors)".format(", ".join(invalid)))
+            return
+        gdb.execute("gef config theme.{:s} {:s}".format(args.key, GefUtil.quote_gdb_argument(" ".join(args.value))))
         return
 
 
