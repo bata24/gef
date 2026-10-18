@@ -94568,8 +94568,23 @@ class KernelModuleLoadCommand(GenericCommand):
             self.quiet_warn("Could not verify beyond the architecture and the section names")
 
         # load; .symtab and .strtab are allocated only in memory for the module kallsyms
+        if not self.kmod.initialize_memory(self.module_addrs):
+            self.quiet_err("Could not find module memory regions")
+            return
+        regions = self.kmod.get_regions(module)
+        loaded = []
+        for name, addr in sections:
+            if name in (".symtab", ".strtab"):
+                continue
+            if any(base <= addr < base + size for _, base, size in regions):
+                loaded.append((name, addr))
+            else:
+                self.quiet_warn("Skipping unloaded section {:s}".format(name))
+        if not loaded:
+            self.quiet_err("Could not find loaded module sections")
+            return
         command = " ".join(['-s {:s} {:#x}'.format(GefUtil.quote_gdb_argument(name), addr)
-                            for (name, addr) in sections if name not in (".symtab", ".strtab")])
+                            for name, addr in loaded])
         gdb.execute("add-symbol-file {:s} {:s}".format(GefUtil.quote_gdb_argument(self.args.path), command))
         return
 
