@@ -69035,8 +69035,8 @@ class KernelAddressHeuristicFinder:
                         KernelAddressHeuristicFinderUtil.arm32_ldr_pc_relative(res),
                     )
                 elif is_riscv32() or is_riscv64():
-                    # auipc a1, hi20; ld a1, lo12(a1)
-                    g = KernelAddressHeuristicFinderUtil.riscv_auipc_use(res)
+                    # auipc/lui a1, hi20; ld/lw a1, lo12(a1)
+                    g = KernelAddressHeuristicFinderUtil.riscv_auipc_use(res, include_lui=True)
                 for x in g:
                     return x
         return None
