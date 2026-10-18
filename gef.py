@@ -102670,9 +102670,9 @@ class KernelPciDeviceCommand(GenericCommand, BufferingOutput):
                 resource_i = dev + self.offset_pci_dev_resource + self.sizeof_resource * i
                 resource_name_ptr = read_int_from_memory(resource_i + self.resource_layout["name"], safe=True)
                 if not resource_name_ptr or not is_valid_addr(resource_name_ptr):
-                    break
+                    continue
                 if read_cstring_from_memory(resource_name_ptr, safe=True) != dev_name:
-                    break
+                    continue
                 resource_i_start = KernelResourceLayout.read_size(
                     resource_i + self.resource_layout["start"], self.resource_layout["width"],
                 )
