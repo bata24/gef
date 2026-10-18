@@ -165161,7 +165161,7 @@ class HoardHeapDumpCommand(GenericCommand, BufferingOutput):
             super_blocks = args.superblock
         else:
             super_blocks = self.get_super_blocks()
-            if super_blocks is None:
+            if not super_blocks:
                 err("Could not find superblock")
                 return
 
