@@ -78126,7 +78126,7 @@ class KernelPath:
                     status = "disconnected"
                 elif root is not None:
                     status = "outside-root"
-                names.append(self.get_dentry_name(dentry, unknown))
+                names.append("/" if dentry == mnt_root else self.get_dentry_name(dentry, unknown))
                 break
 
             names.append(self.get_dentry_name(dentry, unknown))
