@@ -105701,13 +105701,16 @@ class GdtInfoCommand(GenericCommand, BufferingOutput):
         # print title
         self.out.append(titlify("GDT Entry: base:{:#x} / limit:{:#x}".format(base, limit)))
 
-        # check initialized or not
+        # Reset GDTR values can also name a live table; keep this guard to avoid dumping up to 8192 unset entries.
         if (base == 0x0 and limit == 0xffff) or limit == 0x0:
             self.err_add_out("GDT is uninitialized")
             return
 
+        size = limit + 1
+        if size % 8:
+            self.warn_add_out("Ignoring {:d} trailing GDT byte(s)".format(size % 8))
         try:
-            gdt_data = GefUtil.read_x86_descriptor_table(base, limit + 1)
+            gdt_data = GefUtil.read_x86_descriptor_table(base, size - size % 8)
         except gdb.MemoryError:
             self.err_add_out("Memory read error")
             return
@@ -105772,12 +105775,15 @@ class GdtInfoCommand(GenericCommand, BufferingOutput):
             self.info_add_out("LDT is not active")
             return
 
-        if not 7 <= limit <= 0xffff or (limit & 7) != 7:
+        if not 7 <= limit <= 0xffff:
             self.err_add_out("Invalid LDT limit: {:#x}".format(limit))
             return
 
+        size = limit + 1
+        if size % 8:
+            self.warn_add_out("Ignoring {:d} trailing LDT byte(s)".format(size % 8))
         try:
-            ldt_data = GefUtil.read_x86_descriptor_table(base, limit + 1)
+            ldt_data = GefUtil.read_x86_descriptor_table(base, size - size % 8)
         except gdb.MemoryError:
             self.err_add_out("Memory read error")
             return
@@ -105916,7 +105922,7 @@ class IdtInfoCommand(GenericCommand, BufferingOutput):
     ]
     _note_ = "\n".join(_note_)
 
-    # arch/x86/include/asm/trapnr.h
+    # arch/x86/include/asm/trapnr.h; X86_TRAP_IRET (32) is not an IDT vector.
     INTERRUPT_DESCRIPTION = {
         0: "#DE: Divide-by-zero",
         1: "#DB: Debug",
@@ -105941,7 +105947,6 @@ class IdtInfoCommand(GenericCommand, BufferingOutput):
         20: "#VE: Virtualization Exception",
         21: "#CP: Control Protection Exception",
         29: "#VC: VMM Communication Exception",
-        32: "#IRET: IRET Exception",
     }
 
     @staticmethod
@@ -106108,7 +106113,7 @@ class IdtInfoCommand(GenericCommand, BufferingOutput):
         # print legend
         self.out.append(GefUtil.make_legend(self.idtval2str_legend(entry_size)))
 
-        # check initialized or not
+        # Reset IDTR values can also name a live table; keep this guard to avoid dumping up to 256 unset vectors.
         if (base == 0x0 and limit == 0xffff) or limit == 0x0:
             self.err_add_out("IDT is uninitialized")
             return
