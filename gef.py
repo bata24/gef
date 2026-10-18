@@ -99361,7 +99361,7 @@ class KernelMountCommand(GenericCommand, BufferingOutput):
                 children.append(child)
         return children
 
-    def walk_tree(self, root_mount, max_mounts=0x1000):
+    def walk_tree(self, root_mount, max_mounts=0x20000):
         """Yield (mount, tree prefix) over the whole tree under `root_mount`, depth first."""
         kpath = self.kpath
         if kpath.get_offset_mnt_mounts(root_mount) is None:
@@ -99372,8 +99372,11 @@ class KernelMountCommand(GenericCommand, BufferingOutput):
         stack = [(root_mount, "", True, True)]
         while stack:
             mount, prefix, is_last, is_root = stack.pop()
-            if mount in seen or len(seen) >= max_mounts:
+            if mount in seen:
                 continue
+            if len(seen) >= max_mounts:
+                self.err_add_out("Mount tree truncated after {:d} mounts".format(max_mounts))
+                break
             seen.add(mount)
             if is_root:
                 mark, child_prefix = "", ""
