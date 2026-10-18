@@ -90768,7 +90768,7 @@ class KernelTask:
                 head = signal + self.offset_thread_head
                 lwps = KernelListHead(head, self.offset_thread_group).iter_entries()
             lwp_task_addrs.extend(lwps)
-        return lwp_task_addrs
+        return list(dict.fromkeys(lwp_task_addrs))
 
     def get_regs(self, kstack, offset_ptregs):
         if is_x86_64():
