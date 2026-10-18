@@ -193754,14 +193754,16 @@ class KernelWalkListCommand(KernelWalkCommand):
             if flink is None:
                 self.err_add_out("memory corrupted")
                 return
-            if self.args.dump_bytes_before:
-                source = read_memory(current - self.args.dump_bytes_before, self.args.dump_bytes_before)
-                dump = hexdump(source, base=current - self.args.dump_bytes_before, unit=current_arch.ptrsize)
-                for line in dump.splitlines():
-                    self.out.append(indent + line)
-            if self.args.dump_bytes_after:
-                source = read_memory(current, self.args.dump_bytes_after)
-                dump = hexdump(source, base=current, unit=current_arch.ptrsize)
+            for start, size in ((current - self.args.dump_bytes_before, self.args.dump_bytes_before),
+                                (current, self.args.dump_bytes_after)):
+                if not size:
+                    continue
+                try:
+                    source = read_memory(start, size)
+                except gdb.error:
+                    self.err_add_out("unreadable dump range {:#x}-{:#x}".format(start, start + size))
+                    continue
+                dump = hexdump(source, base=start, unit=current_arch.ptrsize)
                 for line in dump.splitlines():
                     self.out.append(indent + line)
             self.add_entry_out(idx, flink)
