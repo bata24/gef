@@ -28492,7 +28492,7 @@ class StubCommand(GenericCommand):
     _aliases_ = ["deactivate"]
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
-    parser.add_argument("-r", "--retval", type=int, default=0,
+    parser.add_argument("-r", "--retval", type=AddressUtil.parse_address, default=0,
                         help="the return value from stub. (default: %(default)s)")
     parser.add_argument("location", metavar="LOCATION", type=AddressUtil.parse_address,
                         help="address/symbol to stub out.")
