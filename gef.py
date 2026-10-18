@@ -47794,10 +47794,12 @@ class FpChainCommand(GenericCommand):
         i = 1
         seen = set()
         while is_valid_addr(current):
-            if i == 1:
-                current = read_int_from_memory(current)
-            else:
-                current = read_int_from_memory(current + offset_of_chain)
+            addr = current if i == 1 else current + offset_of_chain
+            next_value = read_int_from_memory(addr, safe=True)
+            if next_value is None:
+                warn("Memory read error at {:#x}".format(addr))
+                break
+            current = next_value
             if current in seen:
                 err("Loop detected at {:#x}".format(current))
                 break
@@ -48061,7 +48063,10 @@ class StandardIoCommand(GenericCommand, BufferingOutput):
             struct_io_file_array = [stdin, stdout, stderr]
 
         self.out = []
-        self.stdio_dump(struct_io_file_array)
+        try:
+            self.stdio_dump(struct_io_file_array)
+        except gdb.MemoryError as e:
+            self.warn_add_out("Memory read error: {:s}".format(str(e)))
         self.print_output(check_terminal_size=True)
         return
 
