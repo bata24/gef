@@ -177798,6 +177798,12 @@ class VBARCommand(GenericCommand, BufferingOutput):
         for regname, vbar in vbars:
             self.out.append(titlify(regname))
 
+            sctlr_reg = "$SCTLR_S" if "$VBAR_S" in regname else "$SCTLR"
+            sctlr = get_register(sctlr_reg)
+            if sctlr is None:
+                sctlr = get_register(sctlr_reg.replace("$SCTLR", "$SCTLR_EL1"))
+            mode = "THUMB" if sctlr is not None and sctlr & (1 << 30) else "ARM"
+
             # address check
             if vbar is None:
                 self.err_add_out("Invalid VBAR address: None")
@@ -177829,14 +177835,18 @@ class VBARCommand(GenericCommand, BufferingOutput):
                         self.out.append("[{:+#05x}] {:s}: {:s}".format(ofs, s, "Memory access error"))
                         continue
                     try:
-                        insn_str = gdb.execute("pdisas {:#x} code={:s} -l 1".format(vbar + ofs, code.hex()), to_string=True)
+                        insn_str = gdb.execute("pdisas {:#x} code={:s} mode={:s} -l 1".format(
+                            vbar + ofs, code.hex(), mode), to_string=True)
                         insn_str = insn_str.replace("            ", "")
                     except gdb.error:
                         self.out.append("[{:+#05x}] {:s}: {:s}".format(ofs, s, "Capstone not found"))
                         continue
                 else:
                     try:
-                        insn = get_insn(vbar + ofs)
+                        if Config.get("context_code.use_capstone"):
+                            insn = next(Disasm.capstone_disassemble(vbar + ofs, 1, mode=mode))
+                        else:
+                            insn = get_insn(vbar + ofs)
                     except gdb.MemoryError:
                         self.out.append("[{:+#05x}] {:s}: {:s}".format(ofs, s, "Memory access error"))
                         continue
