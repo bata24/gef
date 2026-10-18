@@ -188261,7 +188261,7 @@ class ExecUntilIndirectBranchCommand(ExecUntilCommand):
         if current_arch.is_call(insn) or self.check_jump_taken(insn):
             operands = insn.split_last_operands(insn.operands)[0]
             operand = re.sub(r"<[^>]*>", "", X86.get_mnemonic_operands(insn, operands)[1]).strip()
-            if "[" in operand or operand.startswith("*"):
+            if "[" in operand or operand.startswith("*") or re.search(r"\b(?:cs|ds|es|fs|gs|ss):", operand, re.I):
                 return True
             return operand.lstrip("%") in [reg.lstrip("$") for reg in current_arch.general_registers]
         return False
