@@ -150466,10 +150466,6 @@ class IiCommand(GenericCommand):
             err("Memory read error")
             return
 
-        if N >= 50 and res[0:1] * N == res:
-            info("all targeted area is {:#04x}".format(res[0]))
-            return
-
         # get instruction size
         try:
             res = gdb.execute("x/{:d}i {:#x}".format(N, addr), to_string=True).splitlines()
