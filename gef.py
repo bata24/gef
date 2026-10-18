@@ -103566,14 +103566,18 @@ class KernelDmesgOldestRing(KernelDmesgRing):
         start = self.log_end - size
         index = start % self.buf_len
         first_size = min(size, self.buf_len - index)
-        try:
-            text = read_memory(self.address + index, first_size)
-            if first_size < size:
-                text += read_memory(self.address, size - first_size)
-        except gdb.error:
-            return True
+        segments = [(self.address + index, first_size)]
+        if first_size < size:
+            segments.append((self.address, size - first_size))
+        text = b""
+        partial = False
+        for address, length in segments:
+            try:
+                text += read_memory(address, length)
+            except gdb.error:
+                partial = True
         self.out.extend(String.bytes2str(text).splitlines())
-        return False
+        return partial
 
 
 class KernelDmesgLegacyRing(KernelDmesgRing):
