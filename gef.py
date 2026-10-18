@@ -184956,7 +184956,7 @@ class KernelVMMapCommand(GenericCommand, BufferingOutput):
             device_name = "device ({:s})".format(name)
 
             # each mapping may cover only a part of the device
-            entries = [e for e in maps if e.pstart is not None and e.pstart < pend and paddr < e.pend]
+            entries = [e for e in maps if not e.walk_disabled and e.pstart is not None and e.pstart < pend and paddr < e.pend]
             ranges = []
             for entry in sorted(entries, key=lambda e: e.vstart):
                 start = max(paddr, entry.pstart)
