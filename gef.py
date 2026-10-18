@@ -172230,6 +172230,9 @@ class JemallocHeapDumpCommand(GenericCommand, BufferingOutput):
         if error:
             err(error)
             return False
+        if self.args.arena_index is not None and self.args.arena_index not in self.heap.arenas:
+            err("Invalid arena index: {:d}".format(self.args.arena_index))
+            return False
         if self.args.bin_index is not None and not 0 <= self.args.bin_index < self.heap.nclasses:
             err("size class index must be 0 to {:d}".format(self.heap.nclasses - 1))
             return False
