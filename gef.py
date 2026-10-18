@@ -17700,6 +17700,8 @@ class HighlightCommand(GenericCommand):
 
         regex = Config.get("highlight.regex")
         for match, color in HighlightCommand.highlight_table.items():
+            if not match:
+                continue
             if regex:
                 try:
                     pattern = re.compile(match)
@@ -17708,7 +17710,9 @@ class HighlightCommand(GenericCommand):
             ansiSplit = re.split(r"(\033\[[\d;]*m)", text)
             for index in range(0, len(ansiSplit), 2):
                 if regex:
-                    ansiSplit[index] = pattern.sub(lambda m, color=color: Color.colorify(m.group(0), color), ansiSplit[index])
+                    ansiSplit[index] = pattern.sub(
+                        lambda m, color=color: Color.colorify(m.group(0), color) if m.group(0) else "", ansiSplit[index],
+                    )
                 else:
                     ansiSplit[index] = ansiSplit[index].replace(match, Color.colorify(match, color))
             text = "".join(ansiSplit)
@@ -17795,15 +17799,22 @@ class HighlightAddCommand(GenericCommand):
 
     @Decorator.parse_args
     def do_invoke(self, args):
+        if not args.match:
+            err("Empty match")
+            return
         for a in args.color:
             if a not in Color.colors.keys():
                 err("Invalid color")
                 return
         if Config.get("highlight.regex"):
             try:
-                re.compile(args.match)
+                pattern = re.compile(args.match)
             except re.error as e:
                 err("Invalid regex: {}".format(e))
+                return
+            matches = [match.group(0) for sample in ("", "abc xyz") for match in pattern.finditer(sample)]
+            if matches and not any(matches):
+                err("Empty match")
                 return
         HighlightCommand.highlight_table[args.match] = " ".join(args.color)
         return
