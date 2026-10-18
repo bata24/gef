@@ -34338,22 +34338,31 @@ class KernelChecksecCommand(GenericCommand):
 
         cr0 = get_register("cr0", use_monitor=True)
         cr4 = get_register("cr4", use_monitor=True)
+        efer = get_register("efer", use_monitor=True)
 
         bits = [
-            ["Write Protection (CR0 bit 16)", cr0, "CR0", 16, "", ""],
-            ["PAE (CR4 bit 5)", cr4, "CR4", 5, " (NX is supported)", " (NX is unsupported)"],
-            ["SMEP (CR4 bit 20)", cr4, "CR4", 20, "", ""],
-            ["SMAP (CR4 bit 21)", cr4, "CR4", 21, "", ""],
-            ["CET (CR4 bit 23)", cr4, "CR4", 23, "", ""],
+            ["Write Protection (CR0 bit 16)", cr0, "CR0", 16],
+            ["PAE (CR4 bit 5)", cr4, "CR4", 5],
+            ["SMEP (CR4 bit 20)", cr4, "CR4", 20],
+            ["SMAP (CR4 bit 21)", cr4, "CR4", 21],
+            ["CET (CR4 bit 23)", cr4, "CR4", 23],
         ]
-        for name, reg, regname, bit, enabled_msg, disabled_msg in bits:
+        for name, reg, regname, bit in bits:
             if reg is None:
                 additional = "{:s}: Not available".format(regname)
                 gef_print("{:<40s}: {:s} ({:s})".format(name, Color.grayify("Unknown"), additional))
             elif (reg >> bit) & 1:
-                gef_print("{:<40s}: {:s}{:s}".format(name, Color.colorify("Enabled", "bold green"), enabled_msg))
+                gef_print("{:<40s}: {:s}".format(name, Color.colorify("Enabled", "bold green")))
             else:
-                gef_print("{:<40s}: {:s}{:s}".format(name, Color.colorify("Disabled", "bold red"), disabled_msg))
+                gef_print("{:<40s}: {:s}".format(name, Color.colorify("Disabled", "bold red")))
+
+        if (cr4 is not None and not cr4 & (1 << 5)) or (efer is not None and not efer & (1 << 11)):
+            state = Color.colorify("Disabled", "bold red")
+        elif cr4 is None or efer is None:
+            state = Color.grayify("Unknown")
+        else:
+            state = Color.colorify("Enabled", "bold green")
+        gef_print("{:<40s}: {:s}".format("NX (CR4.PAE + EFER.NXE)", state))
 
         # CET MSR
         if cr4 is not None and (cr4 >> 23) & 1:
@@ -35298,8 +35307,8 @@ class KernelChecksecCommand(GenericCommand):
 
         kversion = Kernel.version()
         if kversion < "5.2":
-            additional = "userfaultfd syscall: Enabled, but without {:s} restriction! (implemented from linux 5.2)".format(cfg)
-            gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Unimplemented", "bold red"), additional))
+            additional = "userfaultfd syscall: Enabled; sysctl unavailable before Linux 5.2"
+            gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Unrestricted", "bold red"), additional))
             return
 
         sysctl_unprivileged_userfaultfd = KernelAddressHeuristicFinder.get_sysctl_unprivileged_userfaultfd()
@@ -35332,8 +35341,8 @@ class KernelChecksecCommand(GenericCommand):
 
         kversion = Kernel.version()
         if kversion < "4.4":
-            additional = "bpf syscall: Enabled, without {:s}, but it needs CAP_SYS_ADMIN (implemented from linux 4.4)".format(cfg)
-            gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Unimplemented", "bold green"), additional))
+            additional = "bpf syscall: Enabled; CAP_SYS_ADMIN required; sysctl unavailable before Linux 4.4"
+            gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Privileged only", "bold green"), additional))
             return
 
         sysctl_unprivileged_bpf_disabled = KernelAddressHeuristicFinder.get_sysctl_unprivileged_bpf_disabled()
