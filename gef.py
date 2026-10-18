@@ -199683,8 +199683,13 @@ class BincompareCommand(GenericCommand, BufferingOutput):
         if not os.path.isfile(args.filename):
             err("Specified file '{:s}' does not exist".format(args.filename))
             return
-        file_data = open(args.filename, "rb").read()
-        file_data = file_data[args.file_offset:]
+        try:
+            with open(args.filename, "rb") as fd:
+                fd.seek(args.file_offset)
+                file_data = fd.read(args.size) if args.size is not None else fd.read()
+        except OSError as e:
+            err("Cannot read file '{:s}': {!s}".format(args.filename, e))
+            return
         file_size = len(file_data)
 
         # size
