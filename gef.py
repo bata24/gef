@@ -173695,6 +173695,9 @@ class UclibcNgVisualHeapCommand(UclibcNgHeapDumpCommand, BufferingOutput):
     @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
     @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64"))
     def do_invoke(self, args):
+        if args.max_count is not None and args.max_count <= 0:
+            err("Invalid maximum count")
+            return
         try:
             malloc_state = self.read_malloc_state(args.malloc_state)
         except gdb.MemoryError:
