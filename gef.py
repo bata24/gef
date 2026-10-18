@@ -76143,7 +76143,7 @@ class KernelLayout:
                 for entry in dic["maps"][ro_base_map_index + 1:]:
                     if dic["rw_base"] is None:
                         vstart = max(entry.vstart, rw_search_base)
-                        if str(entry.permission) == "rw-" and entry.vend - vstart >= RW_REGION_MIN_SIZE:
+                        if str(entry.permission) in ("rw-", "rwx") and entry.vend - vstart >= RW_REGION_MIN_SIZE:
                             dic["rw_base"] = vstart
                             dic["rw_end"] = entry.vend
                     elif dic["rw_end"] == entry.vstart:
