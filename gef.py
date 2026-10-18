@@ -90872,7 +90872,8 @@ class KernelTask:
         elif is_x86_32():
             if regs["ss"] & 0xffff != 0x7b: # __USER_DS
                 return False
-            if regs["cs"] & 0xffff != 0x73: # __USER_CS
+            cs = regs["cs"] & 0xffff
+            if cs != 0x73 and cs & 7 != 7: # __USER_CS or a user LDT selector
                 return False
             return regs["eflags"] & 0x2 and regs["eflags"] >> 22 == 0
         elif is_arm64():
