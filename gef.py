@@ -94060,8 +94060,8 @@ class KernelLoadCommand(GenericCommand):
             results.append(("kallsyms", "MISMATCH", "{:d}/{:d} sampled functions".format(matched, compared)))
             mismatched = True
 
-        # another build of the same source still has the same symbols
-        if results[0][1] == "mismatch" and results[-1][1] != "match":
+        # Matching symbol addresses do not establish that a different build has the same type layout.
+        if results[0][1] == "mismatch":
             results[0] = ("build ID", "MISMATCH", results[0][2])
             mismatched = True
         return results, mismatched
