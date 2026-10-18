@@ -32794,7 +32794,6 @@ class ProcessSearchCommand(GenericCommand, BufferingOutput):
 
     @Decorator.parse_args
     @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware"))
-    @Decorator.require_arch_set
     def do_invoke(self, args):
         if args.attach is not None:
             if args.attach <= 0:
