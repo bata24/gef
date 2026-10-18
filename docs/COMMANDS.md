@@ -4499,7 +4499,7 @@ positional arguments:
   START_ADDR    start address to search.
   END_ADDR      exclusive end address for searching and writing.
   HEX_STR_FROM  the hex string to search for (source pattern).
-  HEX_STR_TO    the replacement bytes; lengths may differ, but all writes must fit in the range.
+  HEX_STR_TO    the replacement bytes; all writes must fit in the range and must not overlap.
 
 options:
   -h, --help    show this help message and exit
