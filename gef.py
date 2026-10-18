@@ -164742,6 +164742,9 @@ class GoHeapDumpCommand(GenericCommand, BufferingOutput):
     @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64", "MIPS32", "MIPS64",
                                           "PPC64", "RISCV64", "S390X", "LOONGARCH64"))
     def do_invoke(self, args):
+        if args.mheap is not None and not is_valid_addr(args.mheap):
+            err("Cannot read mheap at {:#x}".format(args.mheap))
+            return
         self.out = []
         if not self.initialize():
             return
@@ -164749,7 +164752,11 @@ class GoHeapDumpCommand(GenericCommand, BufferingOutput):
         if args.mspan is not None:
             mspans = [self.parse_mspan(args.mspan)]
         elif args.mheap is not None:
-            mspans = self.parse_mheap(args.mheap)
+            try:
+                mspans = self.parse_mheap(args.mheap)
+            except gdb.MemoryError:
+                err("Cannot read mheap at {:#x}".format(args.mheap))
+                return
         else:
             mheap = self.get_mheap_()
             if mheap is None:
@@ -164970,13 +164977,20 @@ class TlsfHeapDumpCommand(GenericCommand, BufferingOutput):
     def do_invoke(self, args):
         if args.pool is not None:
             pool_addr = args.pool
+            if not is_valid_addr(pool_addr):
+                err("Cannot read pool at {:#x}".format(pool_addr))
+                return
         else:
             pool_addr = self.get_pool()
             if pool_addr is None:
                 err("Could not find pool")
                 return
 
-        pool = self.parse_pool(pool_addr)
+        try:
+            pool = self.parse_pool(pool_addr)
+        except gdb.MemoryError:
+            err("Cannot read pool at {:#x}".format(pool_addr))
+            return
         if pool is None:
             err("Failed to parse pool")
             return
@@ -165177,7 +165191,13 @@ class HoardHeapDumpCommand(GenericCommand, BufferingOutput):
 
         self.out = []
         for super_block in super_blocks:
-            self.dump_super_block(super_block)
+            if not is_valid_addr(super_block):
+                self.err_add_out("Cannot read superblock at {:#x}".format(super_block))
+                continue
+            try:
+                self.dump_super_block(super_block)
+            except gdb.MemoryError:
+                self.err_add_out("Cannot read superblock at {:#x}".format(super_block))
         self.print_output()
         return
 
@@ -169904,8 +169924,18 @@ class ScallocHeapDumpCommand(GenericCommand, BufferingOutput):
     @Decorator.only_if_gdb_running
     @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
     def do_invoke(self, args):
+        if args.object_space is not None and not is_valid_addr(args.object_space):
+            err("Cannot read object_space at {:#x}".format(args.object_space))
+            return
         self.initialize()
-        object_space = self.get_object_space()
+        try:
+            object_space = self.get_object_space()
+        except gdb.MemoryError:
+            if args.object_space is None:
+                err("Cannot read object_space")
+            else:
+                err("Cannot read object_space at {:#x}".format(args.object_space))
+            return
         if object_space is None:
             err("Could not find object_space")
             return
