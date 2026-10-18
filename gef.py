@@ -201459,15 +201459,18 @@ class GefTmuxSetupCommand(GenericCommand):
             err("{}".format(e))
             return
 
+        if not os.getenv("TMUX"):
+            warn("Not in a tmux session")
+            return
+
         if args.reset:
-            GefTmuxSetupCommand.reset_panes()
+            try:
+                GefTmuxSetupCommand.reset_panes()
+            except subprocess.CalledProcessError:
+                warn("Not in a tmux session")
             return
 
-        if os.getenv("TMUX"):
-            self.tmux_setup()
-            return
-
-        warn("Not in a tmux session")
+        self.tmux_setup()
         return
 
 
