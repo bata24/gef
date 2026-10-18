@@ -161643,17 +161643,17 @@ class VmallocDumpCommand(GenericCommand, BufferingOutput):
 
             # dump chunks
             # VM_IOREMAP maps device registers, whose reads may have side effects (QEMU dies reading the ARM GIC)
-            dumpable = used and not (flags or 0) & 0x1
+            dumpable = used and va_end > va_start and not (flags or 0) & 0x1
             if self.args.hexdump_used and dumpable:
                 try:
-                    peeked_data = read_memory(va_start, self.args.hexdump_used)
+                    peeked_data = read_memory(va_start, min(self.args.hexdump_used, va_end - va_start))
                     h = hexdump(peeked_data, 0x10, base=va_start, unit=current_arch.ptrsize)
                     self.out.append(h)
                 except Exception:
                     pass
 
             if self.args.telescope_used and dumpable:
-                n = self.args.telescope_used // current_arch.ptrsize
+                n = min(self.args.telescope_used, va_end - va_start) // current_arch.ptrsize
                 for i in range(n):
                     try:
                         line = DereferenceCommand.pprint_dereferenced(va_start, i)
