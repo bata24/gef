@@ -72969,6 +72969,10 @@ class KernelAddressHeuristicFinder:
     @staticmethod
     def get_log_buffer(buf_len, buffer_pointer_address=None):
         """Find the storage currently used by the legacy log_buf ring."""
+        kversion = Kernel.version()
+        if kversion and "5.10" <= kversion:
+            return False
+
         # plan 1 (directly)
         if KernelAddressHeuristicFinder.USE_DIRECTLY:
             addr = Ksym.get_addr("log_buf")
@@ -90045,6 +90049,10 @@ class KernelAddressHeuristicSelftestCommand(GenericCommand, BufferingOutput):
     ]
     _note_ = "\n".join(_note_)
 
+    def invoke(self, args, from_tty):
+        gdb.set_convenience_variable("ks_selftest_failures", -1)
+        return super().invoke(args, from_tty)
+
     @staticmethod
     def direct_symbol_name(finder_name):
         if finder_name == "get_sys_call_table_x86":
@@ -90115,7 +90123,6 @@ class KernelAddressHeuristicSelftestCommand(GenericCommand, BufferingOutput):
     @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
     @Decorator.only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
-        gdb.set_convenience_variable("ks_selftest_failures", -1)
         self.quiet_info("Wait for kallsyms and heuristic scans")
 
         direct_results = {}
