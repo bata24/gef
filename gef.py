@@ -76594,7 +76594,9 @@ class KernelXArray:
         if not is_valid_addr(node):
             return False
 
-        array = read_int_from_memory(node + cls.offset_array)
+        array = read_int_from_memory(node + cls.offset_array, safe=True)
+        if array is None:
+            return False
         offset = head_address - array
         # xa_lock grows to 72 bytes with CONFIG_LOCK_STAT, and more with CONFIG_PREEMPT_RT
         if offset < 0 or offset >= cls.ptrsize * 32 or offset % cls.ptrsize:
