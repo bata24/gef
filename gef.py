@@ -197657,6 +197657,8 @@ class KernelNftablesCommand(GenericCommand, BufferingOutput):
                     rules, status = self.knft.rules.chain_rules(entry, net)
                     source = "control-plane " if status and "control-plane" in status else ""
                     for rule in rules or []:
+                        if self.args.handle is not None and rule["handle"] != self.args.handle:
+                            continue
                         nodes.append({"address": rule["address"], "end": rule["end"],
                                       "description": '{:s}rule handle={:d} in chain "{:s}"'.format(
                                           source, rule["handle"], name)})
