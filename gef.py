@@ -164731,7 +164731,7 @@ class GoHeapDumpCommand(GenericCommand, BufferingOutput):
 
         if args.mspan is not None:
             mspans = [self.parse_mspan(args.mspan)]
-        elif args.mheap:
+        elif args.mheap is not None:
             mspans = self.parse_mheap(args.mheap)
         else:
             mheap = self.get_mheap_()
@@ -164951,7 +164951,7 @@ class TlsfHeapDumpCommand(GenericCommand, BufferingOutput):
     @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
     @Decorator.only_if_specific_arch(arch=("x86_64",))
     def do_invoke(self, args):
-        if args.pool:
+        if args.pool is not None:
             pool_addr = args.pool
         else:
             pool_addr = self.get_pool()
@@ -166171,7 +166171,7 @@ class MimallocHeapDumpCommand(GenericCommand, BufferingOutput):
     @Decorator.only_if_gdb_running
     @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
     def do_invoke(self, args):
-        if args.mi_heap_main:
+        if args.mi_heap_main is not None:
             mi_heap_main = args.mi_heap_main
         else:
             mi_heap_main = self.get_mi_heap_main()
@@ -169766,7 +169766,7 @@ class ScallocHeapDumpCommand(GenericCommand, BufferingOutput):
         object_space = None
 
         # use specific address
-        if self.args.object_space:
+        if self.args.object_space is not None:
             object_space = self.args.object_space
 
         ## use symbol
@@ -170217,7 +170217,7 @@ class SsmallocHeapDumpCommand(GenericCommand, BufferingOutput):
         return self.get_current_local_heap_heuristic()
 
     def get_local_heap_list(self, all_thread=False):
-        if self.args.local_heap:
+        if self.args.local_heap is not None:
             return [(gdb.selected_thread().num, self.args.local_heap)]
 
         if all_thread:
@@ -170235,7 +170235,7 @@ class SsmallocHeapDumpCommand(GenericCommand, BufferingOutput):
         return None
 
     def get_global_pool(self):
-        if self.args.global_pool:
+        if self.args.global_pool is not None:
             return self.args.global_pool
         return Symbol.resolve_address("global_pool")
 
