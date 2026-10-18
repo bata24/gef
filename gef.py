@@ -23846,7 +23846,7 @@ class SearchCfiGadgetsCommand(GenericCommand, BufferingOutput):
             addrs.append(start + pos)
         return addrs
 
-    def filter_gadgets(self, endbr_addrs):
+    def filter_gadgets(self, endbr_addrs, end):
         filtered_addrs = []
 
         for addr in endbr_addrs:
@@ -23854,10 +23854,20 @@ class SearchCfiGadgetsCommand(GenericCommand, BufferingOutput):
             inscount = 0
             valid = True
 
-            while True:
-                insn = get_insn(addr)
+            while addr < end:
+                try:
+                    insn = get_insn(addr)
+                except (gdb.MemoryError, gdb.error, MemoryError):
+                    valid = False
+                    break
+                if insn is None:
+                    valid = False
+                    break
                 inscount += 1
                 length = len(insn.opcodes)
+                if not length or addr + length > end:
+                    valid = False
+                    break
                 addr += length
 
                 if current_arch.is_ret(insn):
@@ -23888,6 +23898,9 @@ class SearchCfiGadgetsCommand(GenericCommand, BufferingOutput):
                     valid = False
                     break
 
+            else:
+                valid = False
+
             if valid:
                 filtered_addrs.append([start, inscount])
         return filtered_addrs
@@ -23908,7 +23921,7 @@ class SearchCfiGadgetsCommand(GenericCommand, BufferingOutput):
             info("Search from {:s}".format(entry.path))
             self.out.append(titlify(entry.path))
             addrs = self.find_endbr(entry.page_start, entry.page_end)
-            filtered_addrs = self.filter_gadgets(addrs)
+            filtered_addrs = self.filter_gadgets(addrs, entry.page_end)
             self.disasm_addrs(filtered_addrs)
         return
 
