@@ -157500,6 +157500,7 @@ class KmemCacheAliasCommand(GenericCommand, BufferingOutput):
             # skip if not found
             if slab_cache_name not in alias_groups:
                 self.quiet_err("Could not find key: {:s}".format(original_slab_cache_name))
+                add_unresolved_cache(original_slab_cache_name, object_size, chunk_size, kmem_cache)
                 continue
 
             target_name = alias_groups[slab_cache_name]["alias"]
@@ -157554,7 +157555,7 @@ class KmemCacheAliasCommand(GenericCommand, BufferingOutput):
             # A cache with no unclaimed sysfs node must remain visible as an
             # unresolved physical cache instead of being folded into another
             # cache with the same name.
-            if original_slab_cache_name == slab_cache_name and not resolved:
+            if not resolved:
                 if not any(v["kmem_cache"] == kmem_cache for v in alias_groups.values()):
                     add_unresolved_cache(original_slab_cache_name, object_size, chunk_size, kmem_cache)
         return alias_groups
