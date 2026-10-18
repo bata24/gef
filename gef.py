@@ -29125,6 +29125,14 @@ class GlibcHeapChunksCommand(GenericCommand, BufferingOutput):
     @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
     @Decorator.require_arch_set
     def do_invoke(self, args):
+        if args.nb_byte is not None:
+            peek_nb = args.nb_byte
+        else:
+            peek_nb = Config.get("heap_chunks.peek_nb_byte")
+        if peek_nb < 0:
+            err("Invalid number of bytes to peek")
+            return
+
         # parse arena
         arena = GlibcHeap.get_arena(args.arena_addr)
 
@@ -29144,11 +29152,6 @@ class GlibcHeapChunksCommand(GenericCommand, BufferingOutput):
                     dump_start += 8
         else:
             dump_start = args.location
-
-        if args.nb_byte is not None:
-            peek_nb = args.nb_byte
-        else:
-            peek_nb = Config.get("heap_chunks.peek_nb_byte")
 
         if args.peek_offset is not None:
             peek_offset = args.peek_offset
