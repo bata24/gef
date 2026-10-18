@@ -105552,11 +105552,11 @@ class GdtInfoCommand(GenericCommand, BufferingOutput):
                 0b1111: ["32bit trap gate", "64bit trap gate"],
             }[entry["type_bytes"]][GefUtil.get_x86_descriptor_mode() == "long"])
 
-        if entry["s"] == 0 and entry["type_bytes"] == 0b1100:
+        if entry["s"] == 0 and entry["type_bytes"] in (0b0100, 0b1100):
             # SYSTEM segment (call gate)
             entry["offseg0"] = val & 0xffff
             entry["segsel"] = (val >> 16) & 0xffff
-            entry["offseg1"] = (val >> 48) & 0xffff
+            entry["offseg1"] = (val >> 48) & 0xffff if entry["type_bytes"] == 0b1100 else 0
             entry["offseg"] = (entry["offseg1"] << 16) | entry["offseg0"]
 
             if isinstance(vals, list):
@@ -105623,7 +105623,7 @@ class GdtInfoCommand(GenericCommand, BufferingOutput):
         entry = self.entry_unpack(value)
         out = ""
         out += "{:#018x} ".format(entry.value)
-        if entry.s == 0 and entry.type_bytes == 0b1100: # SYSTEM - call gate
+        if entry.s == 0 and entry.type_bytes in (0b0100, 0b1100): # SYSTEM - call gate
             out += "{:#018x} ".format(entry.segsel)
             out += "{:#010x} ".format(entry.offseg)
             out += "{:15s}".format("")
