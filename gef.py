@@ -39223,11 +39223,9 @@ class EntryBreakCommand(GenericCommand):
     # Need not @Decorator.parse_args because argparse can't stop interpreting argument for start.
     @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
     def do_invoke(self, argv):
-        if is_alive():
-            if is_remote_debug():
-                err("Unsupported gdb mode")
-                return
-            gdb.execute("kill", to_string=True)
+        if is_alive() and is_remote_debug():
+            err("Unsupported gdb mode")
+            return
 
         fpath = Path.get_filepath()
         if fpath is None:
@@ -39242,6 +39240,9 @@ class EntryBreakCommand(GenericCommand):
         if elf is None or not elf.is_valid():
             warn("Invalid ELF")
             return
+
+        if is_alive():
+            gdb.execute("kill", to_string=True)
 
         # use symbol if loaded
         entrypoints = Config.get("entry_break.entrypoint_symbols").split()
