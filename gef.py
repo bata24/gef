@@ -13688,7 +13688,7 @@ class QemuMonitor:
 class SystemManagementMemory:
 
     @staticmethod
-    @Cache.cache_this_session(per_inferior=True)
+    @Cache.cache_until_next(per_inferior=True)
     def get_smram_map():
         """Return the most useful SMRAM range as ``(base, size, label)``.
         QEMU names the protected range differently depending on the chipset and
