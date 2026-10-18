@@ -69234,15 +69234,29 @@ class KernelAddressHeuristicFinder:
                 if priv == 0 or is_valid_addr(r):
                     return r
         elif is_arm64():
-            # plan 1 (from special register)
-            # sp_el0 holds the current task only while the CPU is in EL1.
-            # In EL0 it is the user stack pointer and must not be interpreted
-            # as a task_struct address.
             if not is_in_kernel():
                 return None
-            r = get_register("$SP_EL0")
-            if r and AddressUtil.is_msb_on(r) and is_valid_addr(r):
-                return r
+            kversion = Kernel.version()
+            if kversion and kversion < "4.5":
+                sp = current_arch.sp
+                thread_size = 0x2000 if kversion < "3.11" else 0x4000
+                r = sp & ~(thread_size - 1) if sp is not None else None
+            else:
+                r = get_register("$SP_EL0")
+            if not r or not AddressUtil.is_msb_on(r) or not is_valid_addr(r):
+                return None
+            if kversion and kversion < "4.10":
+                offset_task = GefUtil.offsetof("thread_info", "task")
+                if offset_task is None:
+                    offset_task = current_arch.ptrsize * 2
+                task = read_int_from_memory(r + offset_task, safe=True)
+                if not task or not AddressUtil.is_msb_on(task) or not is_valid_addr(task):
+                    return None
+                offset_stack = GefUtil.offsetof("task_struct", "stack")
+                if offset_stack is not None and read_int_from_memory(task + offset_stack, safe=True) != r:
+                    return None
+                return task
+            return r
         return None
 
     @staticmethod
