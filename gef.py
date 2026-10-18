@@ -77217,6 +77217,9 @@ class KernelRBTree:
         """Return the list of the rb_nodes under `rb_node` recursively."""
         if not rb_node:
             return []
+        if rb_node & (current_arch.ptrsize - 1):
+            self.broken[rb_node] = "unaligned"
+            return []
         if not is_valid_addr(rb_node):
             self.broken[rb_node] = "unreadable"
             return []
@@ -77232,9 +77235,9 @@ class KernelRBTree:
 
         ret = [rb_node]
         if right:
-            ret += self.parse_node(right & ~1) # remove RB_BLACK
+            ret += self.parse_node(right)
         if left:
-            ret += self.parse_node(left & ~1) # remove RB_BLACK
+            ret += self.parse_node(left)
         return ret
 
 
