@@ -194639,10 +194639,10 @@ class KernelRefsCommand(GenericCommand, BufferingOutput):
         try:
             for start, size, label in ranges:
                 for hit in self.scan_range(start, size, label, bar):
-                    hits.append(hit)
                     if args.limit and len(hits) >= args.limit:
                         truncated = True
                         break
+                    hits.append(hit)
                 if truncated:
                     break
         finally:
