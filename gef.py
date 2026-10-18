@@ -24950,7 +24950,6 @@ class ReadSystemRegisterForKgdbCommand(GenericCommand):
         codes = []
         regs = {
             "$pc": stub_address,
-            return_register: 0xdead_beef,
         }
         use_bp = False
 
@@ -24960,14 +24959,18 @@ class ReadSystemRegisterForKgdbCommand(GenericCommand):
             use_bp = True
 
         # It may fail on the first run, possibly due to gdb cache, but succeed on the second run.
-        for _ in range(2):
-            ret = ExecAsm(codes, regs=regs, step=1, use_bp=use_bp).exec_code(check_complete=True)
-            if ret is None:
-                continue
-            if abs(ret["pc"] - stub_address) > 0x10:
-                return None
-            if ret["reg"][return_register] != 0xdead_beef:
-                return ret["reg"][return_register]
+        for sentinel in (0xdead_beef, 0xbeef_dead):
+            regs[return_register] = sentinel
+            attempts = 0
+            while attempts < 2:
+                attempts += 1
+                ret = ExecAsm(codes, regs=regs, step=1, use_bp=use_bp).exec_code(check_complete=True)
+                if ret is None:
+                    continue
+                if abs(ret["pc"] - stub_address) > 0x10:
+                    return None
+                if ret["reg"][return_register] != sentinel:
+                    return ret["reg"][return_register]
         return None
 
     @Decorator.parse_args
