@@ -32389,19 +32389,22 @@ class AssembleCommand(GenericCommand):
     def do_invoke(self, args):
         if (args.arch, args.mode) == (None, None):
             if is_alive() and current_arch:
+                big_endian = args.big_endian or Endian.is_big_endian()
                 arch, mode = UnicornKeystoneCapstone.get_keystone_arch(
-                    arch=current_arch.arch, mode=current_arch.mode, endian=Endian.is_big_endian(),
+                    arch=current_arch.arch, mode=current_arch.mode, endian=big_endian,
                 )
                 arch_mode_s = ":".join([current_arch.arch, current_arch.mode])
-                if Endian.is_big_endian():
+                if big_endian:
                     endian_s = "big"
                 else:
                     endian_s = "little"
             else:
                 # if not alive, defaults to x86-64
-                arch, mode = UnicornKeystoneCapstone.get_keystone_arch(arch="X86", mode="64", endian=False)
+                arch, mode = UnicornKeystoneCapstone.get_keystone_arch(
+                    arch="X86", mode="64", endian=args.big_endian,
+                )
                 arch_mode_s = "X86:64"
-                endian_s = "little"
+                endian_s = "big" if args.big_endian else "little"
         elif not args.arch:
             err("An architecture (-a) must be provided")
             return
@@ -32504,21 +32507,22 @@ class DisassembleCommand(GenericCommand):
     def do_invoke(self, args):
         if (args.arch, args.mode) == (None, None):
             if is_alive() and current_arch:
+                big_endian = args.big_endian or Endian.is_big_endian()
                 arch, mode = UnicornKeystoneCapstone.get_capstone_arch(
-                    arch=current_arch.arch, mode=current_arch.mode, endian=Endian.is_big_endian(),
+                    arch=current_arch.arch, mode=current_arch.mode, endian=big_endian,
                 )
                 arch_mode_s = ":".join([current_arch.arch, current_arch.mode])
-                if Endian.is_big_endian():
+                if big_endian:
                     endian_s = "big"
                 else:
                     endian_s = "little"
             else:
                 # if not alive, defaults to x86-64
                 arch, mode = UnicornKeystoneCapstone.get_capstone_arch(
-                    arch="X86", mode="64", endian=False,
+                    arch="X86", mode="64", endian=args.big_endian,
                 )
                 arch_mode_s = "X86:64"
-                endian_s = "little"
+                endian_s = "big" if args.big_endian else "little"
         elif not args.arch:
             err("An architecture (-a) must be provided")
             return
@@ -32796,19 +32800,22 @@ class AsmListCommand(GenericCommand):
     def do_invoke(self, args):
         if (args.arch, args.mode) == (None, None):
             if is_alive():
+                big_endian = args.big_endian or Endian.is_big_endian()
                 arch, mode = UnicornKeystoneCapstone.get_capstone_arch(
-                    arch=current_arch.arch, mode=current_arch.mode, endian=Endian.is_big_endian(),
+                    arch=current_arch.arch, mode=current_arch.mode, endian=big_endian,
                 )
                 arch_mode_s = ":".join([current_arch.arch, current_arch.mode])
-                if Endian.is_big_endian():
+                if big_endian:
                     endian_s = "big"
                 else:
                     endian_s = "little"
             else:
                 # if not alive, defaults to x86-64
-                arch, mode = UnicornKeystoneCapstone.get_capstone_arch(arch="X86", mode="64", endian=False)
+                arch, mode = UnicornKeystoneCapstone.get_capstone_arch(
+                    arch="X86", mode="64", endian=args.big_endian,
+                )
                 arch_mode_s = "X86:64"
-                endian_s = "little"
+                endian_s = "big" if args.big_endian else "little"
         elif not args.arch:
             err("An architecture (-a) must be provided")
             return
