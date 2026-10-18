@@ -19261,13 +19261,23 @@ class SignalHandlersCommand(GenericCommand, BufferingOutput):
 
     @staticmethod
     def get_libc():
-        """Return the libc ("glibc" or "musl") that the inferior loads, or None if it is unknown (e.g., a static binary)."""
+        """Return the inferior's libc ("glibc" or "musl"), or None if it is unknown."""
         for objfile in gdb.objfiles():
             name = os.path.basename(objfile.filename or "")
             if re.fullmatch(r"libc\.so\.6|libc-2\.\d+\.so", name):
                 return "glibc"
             if re.fullmatch(r"(?:ld-musl|libc\.musl)-\w+\.so\.1", name):
                 return "musl"
+        if is_alive():
+            if Symbol.resolve_address("__init_libc") and Symbol.resolve_address("__libc"):
+                return "musl"
+            if is_x86_64():
+                try:
+                    tls = current_arch.get_tls()
+                    if tls is not None and read_int_from_memory(tls + 0x30) == gdb.selected_thread().ptid[1]:
+                        return "musl"
+                except (gdb.error, gdb.MemoryError, AttributeError):
+                    pass
         return None
 
     @staticmethod
@@ -23602,6 +23612,8 @@ class PtrDemangleCommand(GenericCommand):
     @Cache.cache_until_next
     def get_cookie(force_heuristic=False):
         if is_in_kernel():
+            return None
+        if SignalHandlersCommand.get_libc() == "musl":
             return None
         if is_arm32_cortex_m():
             return None
