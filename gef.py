@@ -30861,12 +30861,11 @@ class GlibcHeapExtractHeapAddrCommand(GenericCommand):
 
     def reveal(self, fd):
         # https://smallkirby.hatenablog.com/entry/safeunlinking
-        L = fd >> 36
-        for i in range(3):
-            temp = (fd >> (36 - (i + 1) * 8)) & 0xff
-            element = ((L >> 4) ^ temp) & 0xff
-            L = (L << 8) + element
-        return L << 12
+        fd &= (1 << (current_arch.ptrsize * 8)) - 1
+        ptr = fd
+        for shift in range(12, current_arch.ptrsize * 8, 12):
+            ptr ^= fd >> shift
+        return ptr & ~0xfff
 
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
@@ -30879,7 +30878,7 @@ class GlibcHeapExtractHeapAddrCommand(GenericCommand):
             return
 
         extracted_ptr = self.reveal(args.value)
-        note = "fd & ~0xfff"
+        note = "Safe-Linking decode"
         # the terminal node holds protected NULL (= pos >> 12)
         if not is_valid_addr(extracted_ptr) and is_valid_addr(args.value << 12):
             extracted_ptr = args.value << 12
