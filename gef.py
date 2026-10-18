@@ -83095,8 +83095,12 @@ class KernelIpcs:
             # the nsproxy of an exiting task is NULL
             if nsproxy:
                 ipc_ns = read_int_from_memory(nsproxy + offset_ipc_ns, safe=True)
+                if ipc_ns is None:
+                    incomplete.append("task {:#x}->nsproxy->ipc_ns is unreadable".format(task))
             else:
                 ipc_ns = None
+                if nsproxy is None:
+                    incomplete.append("task {:#x}->nsproxy is unreadable".format(task))
             if ipc_ns is None and not namespaces:
                 return {"namespaces": [], "incomplete": ["init_task->nsproxy->ipc_ns is unreadable"]}
             if ipc_ns is not None and ipc_ns not in namespaces:
