@@ -19504,10 +19504,10 @@ class ArgvCommand(GenericCommand, BufferingOutput):
                 self.out.append("...")
                 break
 
-            s = read_cstring_from_memory(addr, get_pagesize())
-            s = Color.yellowify(repr(s))
+            s = repr(read_cstring_from_memory(addr, get_pagesize()))
             if len(s) > max_size:
                 s = s[:max_size] + "[...]"
+            s = Color.yellowify(s)
 
             self.out.append("{:03d} {!s}: {!s} -> {:s}".format(
                 i,
@@ -19647,10 +19647,10 @@ class EnvpCommand(GenericCommand, BufferingOutput):
                 self.out.append("...")
                 break
 
-            s = read_cstring_from_memory(addr, get_pagesize())
-            s = Color.yellowify(repr(s))
+            s = repr(read_cstring_from_memory(addr, get_pagesize()))
             if len(s) > max_size:
                 s = s[:max_size] + "[...]"
+            s = Color.yellowify(s)
 
             self.out.append("{:03d} {!s}: {!s} -> {:s}".format(
                 i,
@@ -19679,9 +19679,9 @@ class EnvpCommand(GenericCommand, BufferingOutput):
             if not self.args.verbose and i >= 100:
                 self.out.append("...")
                 break
-            elem = re.sub(r"^(.*?=)", Color.boldify("\\1"), elem)
             if len(elem) > max_size:
                 elem = elem[:max_size] + "[...]"
+            elem = re.sub(r"^(.*?=)", Color.boldify("\\1"), elem)
             self.out.append("{:03d} {:s}".format(i, elem))
         return
 
