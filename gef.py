@@ -153799,7 +153799,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
     @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
     @Decorator.only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
-        if args.hexdump_used < 0:
+        if args.hexdump_used < 0 or args.hexdump_freed < 0:
             err("Hexdump size must be >= 0")
             return
         if args.help_for_slab_virtual:
@@ -154659,7 +154659,7 @@ class SlubTinyDumpCommand(GenericCommand, BufferingOutput):
     @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
     @Decorator.only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
-        if args.hexdump_used < 0:
+        if args.hexdump_used < 0 or args.hexdump_freed < 0:
             err("Hexdump size must be >= 0")
             return
         self.quiet_info("Wait for memory scan")
@@ -155794,7 +155794,7 @@ class SlabDumpCommand(GenericCommand, BufferingOutput):
     @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
     @Decorator.only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
-        if args.hexdump_used < 0:
+        if args.hexdump_used < 0 or args.hexdump_freed < 0:
             err("Hexdump size must be >= 0")
             return
         self.quiet_info("Wait for memory scan")
