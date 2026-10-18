@@ -27749,7 +27749,7 @@ class UnicornEmulateScriptCommand(GenericCommand):
                 loc = os.path.join(kwargs["dloc"], "{:s}-{:#x}.raw".format(filename, sect.page_start))
                 with open(loc, "wb") as fdw:
                     fdw.write(bytes(code))
-                content += "    emu.mem_write({:#x}, open('{:s}', 'rb').read())\n".format(sect.page_start, loc)
+                content += "    emu.mem_write({:#x}, open({!r}, 'rb').read())\n".format(sect.page_start, loc)
 
         # memory patch to avoid avx/neon optimized function
         if kwargs["patch_got"] and (is_x86_64() or is_arm32()):
@@ -28346,7 +28346,7 @@ class AngrCommand(GenericCommand):
         mems = self.save_memories(dt)
         for sect, loc in mems:
             content += "# {!r} {!s}\n".format(sect.path or "", sect.permission)
-            content += "state.memory.store({:#x}, open('{:s}', 'rb').read())\n".format(sect.page_start, loc)
+            content += "state.memory.store({:#x}, open({!r}, 'rb').read())\n".format(sect.page_start, loc)
         content += "\n"
 
         # set registers
