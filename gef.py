@@ -158910,7 +158910,7 @@ class BuddyContainsCommand(BuddyDumpCommand):
         if self.args.page:
             offset = 0
         else:
-            offset = self.args.address & get_pagesize_mask_low()
+            offset = self.args.address & (KernelAddressHeuristicFinder.consts().PAGE_SIZE - 1)
 
         phys = Kernel.page2phys(page)
         if phys is None:
