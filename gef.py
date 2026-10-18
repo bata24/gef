@@ -156987,8 +156987,10 @@ class KobjCommand(GenericCommand):
         return sorted({entry["name"] for entry in matches if entry["alias"] != "-" and entry["name"] != name})
 
     def report_page_alloc(self, addr):
-        pi = self.run("pageinfo {:#x}".format(addr))
-        if not pi:
+        pi = self.run("pageinfo {:#x}".format(addr)) or ""
+        buddy_match = re.search(r"^in_buddy_list\s*:\s*(True|False)\s*$", pi, re.M)
+        refcount_match = re.search(r"^refcount\s*:\s*(0x[0-9a-fA-F]+)\s*$", pi, re.M)
+        if not buddy_match or not refcount_match:
             self.emit("Allocator", "unknown (not slab; page metadata unavailable)")
             self.emit("State", "unknown")
             self.emit("Candidate", "not a slab object; buddy/page-type data unavailable on this target")
@@ -156999,11 +157001,8 @@ class KobjCommand(GenericCommand):
         m = re.search(r"page_type\s*:\s*\S+ \((.+)\)", pi)
         if m:
             ptype = m.group(1)
-        refcount = 0
-        m = re.search(r"^refcount\s*:\s*(0x\S+)", pi, re.M)
-        if m:
-            refcount = int(m.group(1), 16)
-        in_buddy = "in_buddy_list   : True" in pi
+        refcount = int(refcount_match.group(1), 16)
+        in_buddy = buddy_match.group(1) == "True"
 
         self.emit("Allocator", "buddy (page allocator)")
         if in_buddy:
