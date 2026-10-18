@@ -74601,6 +74601,8 @@ class KernelAddressHeuristicFinder:
 
                 cpu_offset = Kernel.per_cpu().offsets
                 if cpu_offset:
+                    cpu_masks = Kernel.per_cpu().get_cpu_masks()
+                    ready_cpus = cpu_masks["online"] or cpu_masks["present"]
                     # pattern1: per_cpu
                     # pattern1-a:
                     # 0xffffffff9b127acb: mov rbx,0x27040 <-- hrtimer_bases
@@ -74621,7 +74623,8 @@ class KernelAddressHeuristicFinder:
                         anchor = KernelAddressHeuristicFinder.find_clock_base_anchor(addr_cpu0)
                         if anchor and all(
                             KernelAddressHeuristicFinder.find_clock_base_anchor(addr)
-                            for cpu, addr in Kernel.per_cpu().possible_addrs_of(x) if cpu
+                            for cpu, addr in Kernel.per_cpu().possible_addrs_of(x)
+                            if cpu and (ready_cpus is None or cpu in ready_cpus)
                         ):
                             return AddressUtil.normalize_address(x - (addr_cpu0 - anchor[2]))
                 else:
