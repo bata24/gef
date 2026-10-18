@@ -174837,7 +174837,11 @@ class OpteeBreakTaAddrCommand(GenericCommand):
                 err("Could not find ELF header")
                 return
 
-            elf = Elf(self.args.ta_file, elf_header_off)
+            try:
+                elf = Elf(self.args.ta_file, elf_header_off)
+            except Exception:
+                err("Invalid TA/ELF")
+                return
             if elf is None:
                 err("Invalid ELF")
                 return
