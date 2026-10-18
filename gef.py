@@ -18773,15 +18773,12 @@ class DisplayTypeCommand(GenericCommand, BufferingOutput):
 
         limit = gdb.parameter("max-value-size")
         raise_limit = 0 <= limit < tp.sizeof
-        if raise_limit:
-            gdb.execute("set max-value-size {:#x}".format(tp.sizeof))
-        try:
+        with contextlib.ExitStack() as stack:
+            if raise_limit:
+                stack.enter_context(ContextManager.gdb_parameter("max-value-size", str(tp.sizeof)))
             v = gdb.Value(args_address)
             s = v.cast(tp.pointer()).dereference()
             self.out = s.format_string(styling=True).splitlines()
-        finally:
-            if raise_limit:
-                gdb.execute("set max-value-size {:#x}".format(limit))
         return True
 
     @Decorator.parse_args
