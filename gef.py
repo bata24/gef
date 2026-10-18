@@ -21825,7 +21825,7 @@ class SmartMemoryDumpCommand(GenericCommand):
     def do_dump(self, filepath, start, size):
         if self.args.max_region_size and self.args.max_region_size < size:
             warn("Too large, so skip: {:s}".format(filepath))
-            return
+            return 0
 
         size_str = GefUtil.get_size_str(size)
 
@@ -21834,15 +21834,16 @@ class SmartMemoryDumpCommand(GenericCommand):
             data = read_memory(start, size, safe=True)
             if data is None:
                 warn("Memory read error; skipped: {:s} ({:s})".format(filepath, size_str))
-                return
+                return 0
 
             # write
             with open(filepath, "wb") as fdw:
-                fdw.write(data)
-            info("Saved to {:s} ({:s})".format(filepath, size_str))
+                saved_size = fdw.write(data)
+            info("Saved to {:s} ({:s})".format(filepath, GefUtil.get_size_str(saved_size)))
+            return saved_size
         else:
             info("It will be saved to {:s} ({:s})".format(filepath, size_str))
-        return
+        return size
 
     def smart_memory_dump(self, maps, prefix, suffix):
         dt = GefUtil.now_str()
@@ -21878,8 +21879,7 @@ class SmartMemoryDumpCommand(GenericCommand):
                 continue
 
             # dump
-            self.do_dump(filepath, start, size)
-            total_size += size
+            total_size += self.do_dump(filepath, start, size)
 
         info("Total size: {:s}".format(GefUtil.get_size_str(total_size)))
 
