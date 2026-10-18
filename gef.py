@@ -199209,13 +199209,23 @@ class SixelMemoryCommand(GenericCommand):
         # parse header
         pos = start_address + 2
         while True:
-            marker = read_memory(pos, 2)
-            pos += 2
-            if marker[0] != 0xff:
+            if read_memory(pos, 1, safe=True) != b"\xff":
                 return None
-            length = struct.unpack(">H", read_memory(pos, 2))[0]
+            marker = b"\xff"
+            while marker == b"\xff":
+                pos += 1
+                marker = read_memory(pos, 1, safe=True)
+                if marker is None:
+                    return None
+            pos += 1
+            length_data = read_memory(pos, 2, safe=True)
+            if length_data is None:
+                return None
+            length = struct.unpack(">H", length_data)[0]
+            if length < 2:
+                return None
             pos += length
-            if marker == b"\xff\xda":
+            if marker == b"\xda":
                 break
         header_size = pos - start_address
 
