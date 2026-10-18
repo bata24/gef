@@ -105069,7 +105069,11 @@ class ExecSyscall(ExecAsm):
             else:
                 if is_sh4() and reg in ["$r0", "$r1", "$r2", "$r3", "$r4", "$r5", "$r6", "$r7"]:
                     reg = reg + "b0" # since r0-r7 cannot be changed directly, use bank 0
-                gdb.execute("set {:s} = {:#x}".format(reg, val), to_string=True)
+                try:
+                    gdb.execute("set {:s} = {:#x}".format(reg, val), to_string=True)
+                except (gdb.error, gdb.MemoryError):
+                    if get_register(reg) != val:
+                        raise
 
         # modify syscall register
         if is_s390x():
