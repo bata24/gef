@@ -46553,7 +46553,7 @@ class LinkMapCommand(GenericCommand, BufferingOutput):
             if "GNU C Library" in res:
                 self.verbose = True
 
-        if args.link_map_address:
+        if args.link_map_address is not None:
             link_map = ProcessMap.lookup(args.link_map_address)
         else:
             try:
@@ -46983,7 +46983,7 @@ class DynamicCommand(GenericCommand, BufferingOutput):
     @Decorator.require_arch_set
     def do_invoke(self, args):
         dynamic_size = args.dynamic_size
-        if args.dynamic_address:
+        if args.dynamic_address is not None:
             dynamic = ProcessMap.lookup(args.dynamic_address)
         else:
             try:
