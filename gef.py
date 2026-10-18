@@ -30798,7 +30798,10 @@ class GlibcHeapFindFakeFastCommand(GenericCommand, BufferingOutput):
                 ))
                 continue
 
-            data = read_memory(m.page_start, m.size)
+            data = read_memory(m.page_start, m.size, safe=True)
+            if data is None:
+                self.warn_add_out("Cannot read region {:#x}-{:#x}; skipped".format(m.page_start, m.page_end))
+                continue
             # Scanning page-by-page
             pos = 0
             while pos < m.size:
