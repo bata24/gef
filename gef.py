@@ -42096,7 +42096,8 @@ class LoadFileMmapCommand(GenericCommand):
 
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
-    @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware"))
+    @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "rr", "wine"))
+    @Decorator.exclude_specific_arch(arch=("CRIS", "x86_16"))
     @Decorator.require_arch_set
     def do_invoke(self, args):
         data_size = LoadFileCommand.get_load_size(args)
@@ -42130,8 +42131,12 @@ class LoadFileMmapCommand(GenericCommand):
             err("Failed to mmap")
             return
 
-        output_line = res.splitlines()[-1]
-        ret = int(output_line.split()[2], 0)
+        output_lines = Color.remove_color(res).splitlines()
+        match = re.fullmatch(r"\S+ = (0x[0-9a-fA-F]+)(?: \(.*\))?", output_lines[-1]) if output_lines else None
+        if match is None:
+            err("Failed to mmap")
+            return
+        ret = int(match.group(1), 16)
 
         ret = AddressUtil.normalize_address(ret)
         if ret != mmap_start:
