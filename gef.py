@@ -61583,7 +61583,10 @@ class HeapBaseCommand(GenericCommand):
         if get_libc_version(silent=True) is None:
             return None
 
-        main_arena_addr = GlibcHeap.search_for_main_arena()
+        try:
+            main_arena_addr = GlibcHeap.search_for_main_arena()
+        except OSError:
+            return None
         if main_arena_addr is None:
             return None
 
@@ -61650,7 +61653,10 @@ class HeapBaseCommand(GenericCommand):
         if not current_arch.tls_supported:
             return None
 
-        main_arena_addr = GlibcHeap.search_for_main_arena()
+        try:
+            main_arena_addr = GlibcHeap.search_for_main_arena()
+        except OSError:
+            return None
         if main_arena_addr is None:
             return None
 
@@ -61672,7 +61678,10 @@ class HeapBaseCommand(GenericCommand):
         if get_libc_version(silent=True) is None:
             return None
 
-        main_arena_addr = GlibcHeap.search_for_main_arena()
+        try:
+            main_arena_addr = GlibcHeap.search_for_main_arena()
+        except OSError:
+            return None
         if main_arena_addr is None:
             return None
 
