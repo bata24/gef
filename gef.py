@@ -19023,8 +19023,8 @@ class CanaryCommand(GenericCommand):
             return None
 
         libc_version = get_libc_version(silent=True)
-        if libc_version and libc_version >= (2, 44):
-            # from glibc 2.44, AT_RANDOM will be refilled
+        if SignalHandlersCommand.get_libc() == "musl" or (libc_version and libc_version >= (2, 44)):
+            # musl uses the TLS guard; from glibc 2.44, AT_RANDOM will be refilled
             canary_offset = current_arch.get_canary_offset()
             if canary_offset is not None:
                 try:
