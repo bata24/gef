@@ -103181,6 +103181,7 @@ class KernelSearchCodePtrCommand(GenericCommand, BufferingOutput):
 
         # The data area may contain unmapped holes (e.g., freed __init between .data and .bss)
         rw_data = []
+        unreadable = []
         for entry in maps:
             start = max(entry.vstart, self.klayout.rw_base)
             end = min(entry.vend, self.klayout.rw_end)
@@ -103188,12 +103189,28 @@ class KernelSearchCodePtrCommand(GenericCommand, BufferingOutput):
                 continue
             data = read_memory(start, end - start, safe=True)
             if data is None:
-                continue
-            for i, rw_d in enumerate(slice_unpack(data, current_arch.ptrsize)):
-                rw_data.append((start + i * current_arch.ptrsize, rw_d))
+                chunks = []
+                page_size = get_pagesize()
+                for page_start in range(start - start % page_size, end, page_size):
+                    chunk_start = max(start, page_start)
+                    chunk_end = min(end, page_start + page_size)
+                    chunk = read_memory(chunk_start, chunk_end - chunk_start, safe=True)
+                    if chunk is None:
+                        unreadable.append((chunk_start, chunk_end))
+                    else:
+                        chunks.append((chunk_start, chunk))
+            else:
+                chunks = [(start, data)]
+            for chunk_start, chunk in chunks:
+                for i, rw_d in enumerate(slice_unpack(chunk, current_arch.ptrsize)):
+                    rw_data.append((chunk_start + i * current_arch.ptrsize, rw_d))
         if not rw_data:
             err("Memory read error")
             return
+        if unreadable:
+            first_start, first_end = unreadable[0]
+            self.warn_add_out("Incomplete: {:d} unreadable range(s), first {:#x}-{:#x}".format(
+                len(unreadable), first_start, first_end))
 
         for rw_addr, rw_d in ProgressBar(rw_data, total=len(rw_data), disable=self.args.quiet):
             backtrack_info = [(rw_addr, 0)]
