@@ -161895,6 +161895,15 @@ class KtypesCommand(GenericCommand, BufferingOutput):
             return start, end - start
 
         kernel_img = Ksym.kernel_img
+        ro_base = Ksym.ro_base
+        if not kernel_img:
+            layout = Kernel.layout(use_iomem=False)
+            ro_base = layout.ro_base
+            if ro_base is None or not layout.ro_size:
+                return None
+            kernel_img = read_memory(ro_base, layout.ro_size, safe=True)
+            if kernel_img is None:
+                return None
         endian = Endian.endian_str()
         header_fmt = endian + "HBBIIIII"
         header_size = struct.calcsize(header_fmt)
@@ -161911,7 +161920,7 @@ class KtypesCommand(GenericCommand, BufferingOutput):
                     and type_off + type_len <= str_off and payload_end <= len(kernel_img) - pos
                     and kernel_img[str_start:str_start + 1] == b"\0"
                     and b"\0task_struct\0" in kernel_img[str_start:str_start + str_len]):
-                return Ksym.ro_base + pos, payload_end
+                return ro_base + pos, payload_end
             pos = kernel_img.find(magic, pos + 1)
 
         return None
