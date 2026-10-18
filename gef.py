@@ -93721,7 +93721,7 @@ class KernelSchedCommand(GenericCommand, BufferingOutput):
             if addr is not None and task == addr:
                 return task, pid, comm
         try:
-            pid_want = int(target, 0)
+            pid_want = int(target, 10 if target.isdigit() else 0)
         except ValueError:
             pid_want = None
         if pid_want is not None:
