@@ -145671,7 +145671,11 @@ class HashFileCommand(HashCommand, BufferingOutput):
         else:
             end_pos = args.start + args.size
 
-        self.process(args.filename, args.start, end_pos)
+        try:
+            self.process(args.filename, args.start, end_pos)
+        except OSError as e:
+            err("Cannot read file {:s}: {:s}".format(args.filename, str(e)))
+            return
         self.print_output(check_terminal_size=True)
         return
 
@@ -148188,7 +148192,11 @@ class CrcFileCommand(CrcCommand):
             end_pos = args.start + args.size
 
         for cname, cfunc in self.get_valid_crc_funcs():
-            crc = self.calc_crc(cfunc, args.filename, args.start, end_pos)
+            try:
+                crc = self.calc_crc(cfunc, args.filename, args.start, end_pos)
+            except OSError as e:
+                err("Cannot read file {:s}: {:s}".format(args.filename, str(e)))
+                return
             if crc is False:
                 return
             if crc is None:
