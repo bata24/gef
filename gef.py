@@ -75380,7 +75380,7 @@ class Kernel:
             block_size = 64
         else:
             block_size = get_pagesize()
-        max_length = 0x1000
+        max_length = 0x10000
         seen = set()
         for saved_command_line in get_saved_command_line_candidates():
             if saved_command_line is None or saved_command_line in seen:
@@ -75401,10 +75401,11 @@ class Kernel:
                 continue
 
             # keep non-printable bytes visible instead of failing (e.g., non-ASCII boot arguments)
+            complete = b"\0" in data
             data = data.split(b"\0")[0]
             cmdline = "".join(chr(c) if chr(c) in String.STRING_PRINTABLE else "\\x{:02x}".format(c) for c in data)
-            Kcmdline = collections.namedtuple("Kcmdline", ["address", "cmdline"])
-            return Kcmdline(ptr, cmdline)
+            Kcmdline = collections.namedtuple("Kcmdline", ["address", "cmdline", "complete"])
+            return Kcmdline(ptr, cmdline, complete)
         return None
 
     @staticmethod
@@ -90404,7 +90405,10 @@ class KernelCmdlineCommand(GenericCommand):
             return
 
         self.out = []
-        self.out.append("{:#x}: '{:s}'".format(kcmdline.address, kcmdline.cmdline))
+        suffix = "" if kcmdline.complete else " [incomplete]"
+        self.out.append("{:#x}: '{:s}'{:s}".format(kcmdline.address, kcmdline.cmdline, suffix))
+        if not kcmdline.complete:
+            self.quiet_warn("Incomplete command line: missing terminator within 64 KiB or unreadable memory")
         if self.out:
             gef_print("\n".join(self.out))
         return
