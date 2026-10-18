@@ -178606,8 +178606,10 @@ class AddrMap:
             return False
 
         def is_kernel(self):
-            if is_x86() or is_riscv32() or is_riscv64():
+            if is_x86():
                 return "KERN" in self.flags
+            if is_riscv32() or is_riscv64():
+                return "KERN" in self.flags and "KERN/---" not in self.flags
             if is_arm32():
                 return "PL0/---" in self.flags or self.vstart == 0xffff_0000
             if is_arm64():
@@ -179181,7 +179183,7 @@ class PageTable(BufferingOutput):
         def colorize(self, text):
             """Apply the address theme selected by this entry's permissions."""
             color = None
-            if is_x86() or is_riscv32() or is_riscv64():
+            if is_x86():
                 if self.flags.startswith("R-- "):
                     color = Config.get("theme.address_readonly")
                 elif re.search(r"^..X ", self.flags):
@@ -179190,6 +179192,18 @@ class PageTable(BufferingOutput):
                     color = Config.get("theme.address_writable")
                 if self.flags.startswith("RWX "):
                     color = Config.get("theme.address_rwx")
+            elif is_riscv32() or is_riscv64():
+                match = re.search(r"KERN/([RWX-]{3})", self.flags)
+                if match:
+                    perm = match.group(1)
+                    if perm == "R--":
+                        color = Config.get("theme.address_readonly")
+                    elif perm[2] == "X":
+                        color = Config.get("theme.address_code")
+                    elif perm == "RW-":
+                        color = Config.get("theme.address_writable")
+                    if perm == "RWX":
+                        color = Config.get("theme.address_rwx")
             elif is_arm32():
                 if re.search(r"PL[01]/R--", self.flags):
                     color = Config.get("theme.address_readonly")
@@ -179510,21 +179524,17 @@ class PageTableRiscv(PageTable):
         flags = []
 
         perm = ""
-        perm += ["-", "R"]["R" in flag_info]
+        perm += ["-", "R"]["R" in flag_info or ("X" in flag_info and getattr(self, "sstatus_mxr", 0))]
         perm += ["-", "W"]["W" in flag_info]
         perm += ["-", "X"]["X" in flag_info]
-        if perm in ["R--", "RW-", "--X", "R-X", "RWX"]:
-            flags.append(perm)
-        else:
-            flags.append("???")
+        if perm not in ["R--", "RW-", "--X", "R-X", "RWX"]:
+            perm = "???"
 
         if "U" in flag_info:
-            if self.sstatus_sum:
-                flags.append("USER+KERN")
-            else:
-                flags.append("USER")
+            flags.append("USER/" + perm)
+            flags.append("KERN/" + (perm[:2] + "-" if self.sstatus_sum else "---"))
         else:
-            flags.append("KERN")
+            flags.append("KERN/" + perm)
 
         if not self.args.simple:
             if "A" in flag_info:
@@ -179985,6 +179995,7 @@ class PageTableRiscv(PageTable):
             mode = (satp >> 31) & 0b1 # upper 1 bit
             pagewalk_base = (satp & 0x3f_ffff) * get_pagesize() # lower 22 bit
         self.sstatus_sum = (sstatus >> 18) & 1
+        self.sstatus_mxr = (sstatus >> 19) & 1
 
         # virtual address base
         va_base = 0
