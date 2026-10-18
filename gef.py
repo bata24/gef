@@ -192458,8 +192458,12 @@ class KpageWatchCommand(GenericCommand):
         if not is_valid_addr(page_array) or nr_pages <= 0:
             return []
         targets = [target_page for target_page, _virt in self.watched.values()]
-        data = read_memory(page_array, current_arch.ptrsize * min(nr_pages, 4096))
-        return [page for page in slice_unpack(data, current_arch.ptrsize) if page in targets]
+        pages = []
+        for index in range(0, nr_pages, 4096):
+            count = min(nr_pages - index, 4096)
+            data = read_memory(page_array + index * current_arch.ptrsize, count * current_arch.ptrsize)
+            pages.extend(page for page in slice_unpack(data, current_arch.ptrsize) if page in targets)
+        return pages
 
     def folio_order(self, folio):
         # folio_order(): a large folio keeps its order in the low byte of _flags_1 (the flags of page[1])
