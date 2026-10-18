@@ -99932,35 +99932,23 @@ class KernelClockSourceCommand(GenericCommand, BufferingOutput):
 
     def validate_type_info_offsets(self, clocksources, sources):
         rating_offset = self.offsets["rating"]
-        rating_guess = self.find_offset_rating(clocksources)
         if rating_offset is None:
-            self.offsets["rating"] = rating_guess
+            self.offsets["rating"] = self.find_offset_rating(clocksources)
             sources["rating"] = "heuristic"
         else:
             ratings = [read_int32_from_memory(cs + rating_offset, signed=True, safe=True) for cs in clocksources]
-            valid = (
-                None not in ratings
-                and any(ratings)
-                and all(0 <= rating < 0x10000 for rating in ratings)
-                and ratings == sorted(ratings, reverse=True)
-            )
-            if not valid:
-                self.offsets["rating"] = rating_guess
-                sources["rating"] = "heuristic"
-                self.meta.append((self.quiet_warn, "The debug information offset of clocksource.rating does not match clocksource_list"))
+            if None not in ratings and (not any(ratings) or any(rating < 0 or rating >= 0x10000 for rating in ratings)
+                                        or ratings != sorted(ratings, reverse=True)):
+                self.meta.append((self.quiet_warn, "clocksource.rating has unusual values; keeping the debug information offset"))
 
         flags_offset = self.offsets["flags"]
-        flags_guess = self.find_offset_flags(clocksources)
         if flags_offset is None:
-            self.offsets["flags"] = flags_guess
+            self.offsets["flags"] = self.find_offset_flags(clocksources)
             sources["flags"] = "heuristic"
         else:
             flags = [read_int_from_memory(cs + flags_offset, safe=True) for cs in clocksources]
-            valid = None not in flags and all(value < 0x2000 for value in flags)
-            if not valid or (not any(flags) and flags_guess is not None and flags_guess != flags_offset):
-                self.offsets["flags"] = flags_guess
-                sources["flags"] = "heuristic"
-                self.meta.append((self.quiet_warn, "The debug information offset of clocksource.flags does not match clocksource_list"))
+            if None not in flags and any(value >= 0x2000 for value in flags):
+                self.meta.append((self.quiet_warn, "clocksource.flags has unknown high bits; keeping the debug information offset"))
 
         owner_offset = self.offsets["owner"]
         if owner_offset is None:
