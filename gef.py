@@ -98422,7 +98422,7 @@ class KernelPathCommand(GenericCommand, BufferingOutput):
 
         # plan 3: the open files of the tasks
         task_command = Kernel.task()
-        task_ready = task_command.initialize(files=True)
+        task_ready = task_command.initialize(files=True, threads=self.args.pid is not None)
         self.meta.extend(Kernel.export_meta(self, task_command.meta))
         if not task_ready:
             task_command = None
@@ -98444,7 +98444,7 @@ class KernelPathCommand(GenericCommand, BufferingOutput):
         task_command = self.task_command
         if task_command is None:
             task_command = Kernel.task()
-            task_ready = task_command.initialize()
+            task_ready = task_command.initialize(threads=self.args.pid is not None)
             self.meta.extend(Kernel.export_meta(self, task_command.meta))
             if not task_ready:
                 task_command = None
@@ -98478,6 +98478,8 @@ class KernelPathCommand(GenericCommand, BufferingOutput):
     def get_task_by_pid(self, pid):
         task_command = self.task_command
         task_addrs = KernelTask.get_task_list(task_command.init_task, task_command.offset_tasks)
+        if task_command.enabled.get("threads"):
+            task_addrs = task_command.add_lwp_task(task_addrs)
         for task in task_addrs:
             if read_int32_from_memory(task + task_command.offset_pid, safe=True) == pid:
                 return task
@@ -98801,7 +98803,7 @@ class KernelVfsCommand(GenericCommand, BufferingOutput):
         fd_mode = self.args.pid is not None or self.args.fd is not None
         if fd_mode:
             self.task_command = Kernel.task()
-            task_ready = self.task_command.initialize(files=True)
+            task_ready = self.task_command.initialize(files=True, threads=True)
             self.meta.extend(Kernel.export_meta(self, self.task_command.meta))
             if not task_ready:
                 self.task_command = None
@@ -98881,7 +98883,10 @@ class KernelVfsCommand(GenericCommand, BufferingOutput):
 
     def get_task_by_pid(self, pid):
         task_command = self.task_command
-        for task in KernelTask.get_task_list(task_command.init_task, task_command.offset_tasks):
+        task_addrs = KernelTask.get_task_list(task_command.init_task, task_command.offset_tasks)
+        if task_command.enabled.get("threads"):
+            task_addrs = task_command.add_lwp_task(task_addrs)
+        for task in task_addrs:
             if read_int32_from_memory(task + task_command.offset_pid) == pid:
                 return task
         return None
@@ -99199,7 +99204,8 @@ class KernelMountCommand(GenericCommand, BufferingOutput):
         self.kversion = kversion
 
         task_command = Kernel.task()
-        task_ready = task_command.initialize(files=kversion < "3.3", namespaces=True)
+        task_ready = task_command.initialize(files=kversion < "3.3", namespaces=True,
+                                             threads=self.args.pid is not None)
         self.meta.extend(Kernel.export_meta(self, task_command.meta))
         if not task_ready:
             task_command = None
@@ -99326,7 +99332,10 @@ class KernelMountCommand(GenericCommand, BufferingOutput):
 
     def get_task_by_pid(self, pid):
         task_command = self.task_command
-        for task in KernelTask.get_task_list(task_command.init_task, task_command.offset_tasks):
+        task_addrs = KernelTask.get_task_list(task_command.init_task, task_command.offset_tasks)
+        if task_command.enabled.get("threads"):
+            task_addrs = task_command.add_lwp_task(task_addrs)
+        for task in task_addrs:
             if read_int32_from_memory(task + task_command.offset_pid) == pid:
                 return task
         return None
