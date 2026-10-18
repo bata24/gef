@@ -25660,18 +25660,28 @@ class ReadSystemRegisterForQemuArmCommand(GenericCommand):
                         return k
         return None
 
-    def get_mrc_code(self, cp_info):
-        code = "mrc {:s}, {:d}, r0, {:s}, {:s}, {:d}".format(cp_info[0], cp_info[2], cp_info[1], cp_info[3], cp_info[4])
+    def get_mrc_code(self, cp_info, wide=False):
+        if wide:
+            code = "mrrc {:s}, {:d}, r0, r1, {:s}".format(cp_info[0], cp_info[4], cp_info[1])
+        else:
+            code = "mrc {:s}, {:d}, r0, {:s}, {:s}, {:d}".format(cp_info[0], cp_info[2], cp_info[1], cp_info[3], cp_info[4])
         arch, mode = UnicornKeystoneCapstone.get_keystone_arch()
         raw_insns = UnicornKeystoneCapstone.keystone_assemble(code, arch, mode, raw=True)
         return raw_insns
 
     def mrc_execute(self, reg_name):
+        reg_name = reg_name.upper()
         cp_info = self.get_coproc_info(reg_name)
         if cp_info is None:
             err("Unknown register name")
             return None
-        codes = [self.get_mrc_code(cp_info)]
+        wide = False
+        if reg_name in ("TTBR0", "TTBR1"):
+            ttbcr = self.mrc_execute("TTBCR")
+            if ttbcr is None:
+                return None
+            wide = bool(ttbcr & (1 << 31))
+        codes = [self.get_mrc_code(cp_info, wide=wide)]
 
         before_pc = current_arch.pc
         ret = ExecAsm(codes).exec_code()
@@ -25682,7 +25692,10 @@ class ReadSystemRegisterForQemuArmCommand(GenericCommand):
         if abs(after_pc - before_pc) > 0x10:
             err("Undefined register, it probably crashes the kernel")
             return None
-        return ret["reg"][current_arch.return_register]
+        value = ret["reg"][current_arch.return_register]
+        if wide:
+            value |= ret["reg"]["$r1"] << 32
+        return value
 
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
