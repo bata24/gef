@@ -28143,7 +28143,7 @@ class FutureCallsCommand(GenericCommand, BufferingOutput):
         self.stop_reasons = set()
         self.truncated_reasons = set()
         self.debug_events = []
-        start_address = self.args.address or current_arch.pc
+        start_address = current_arch.pc if self.args.address is None else self.args.address
         root = UnicornEmulator.Node(start_address, kind="root")
 
         with UnicornEmulateCommand.emulation_session({
@@ -28566,7 +28566,7 @@ class CapstoneDisassembleCommand(GenericCommand):
             return
 
         length = args.length or Config.get("capstone_disassemble.nb_lines_code_default")
-        location = args.location or current_arch.pc
+        location = current_arch.pc if args.location is None else args.location
 
         try:
             skip = length * self.repeat_count
