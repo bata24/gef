@@ -34451,11 +34451,11 @@ class KernelChecksecCommand(GenericCommand):
             found = [sym for sym in kaslr_only_symbols if Ksym.get_addr(sym) is not None]
             if found:
                 build = True
-                build_str = "inferred: {:s}: Found".format(found[0])
+                build_str = "{:s}: Found".format(found[0])
             else:
                 others = sorted({Ksym.get_name(addr) or "?" for addr in Ksym.get_addrs("kaslr", match="in")})
                 others = [x for x in others if not x.startswith(("__setup", "__initcall", "__pfx_", "__cfi_"))]
-                build_str = "inferred: KASLR specific symbols: Not found"
+                build_str = "KASLR specific symbols: Not found"
                 if others:
                     build_str += " ({:s}: Found, but not specific)".format(", ".join(others[:3]))
                 # x86 3.14~4.7 has no such symbols in vmlinux, so leave it to the runtime check
@@ -34570,7 +34570,7 @@ class KernelChecksecCommand(GenericCommand):
                 additional = "fgkaslr=off is in cmdline"
                 gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Disabled", "bold red"), additional))
             else:
-                additional = "inferred: swapgs_restore_regs_and_return_to_usermode < commit_creds"
+                additional = "swapgs_restore_regs_and_return_to_usermode < commit_creds"
                 gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Enabled", "bold green"), additional))
             # Could not build detection logic for CONFIG_MODULE_FG_KASLR.
             # But there is no way to disable it except at build time.
@@ -34578,7 +34578,7 @@ class KernelChecksecCommand(GenericCommand):
             cfg = "CONFIG_MODULE_FG_KASLR (FGKASLR)"
             gef_print("{:<40s}: {:s}".format(cfg, Color.colorify("Enabled (maybe)", "bold green")))
         else:
-            additional = "inferred: swapgs_restore_regs_and_return_to_usermode > commit_creds"
+            additional = "swapgs_restore_regs_and_return_to_usermode > commit_creds"
             gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Unsupported", "bold red"), additional))
             cfg = "CONFIG_MODULE_FG_KASLR (FGKASLR)"
             gef_print("{:<40s}: {:s}".format(cfg, Color.colorify("Unsupported", "bold red")))
@@ -34613,10 +34613,10 @@ class KernelChecksecCommand(GenericCommand):
         else:
             found = [sym for sym in symbols if Ksym.get_addr(sym) is not None]
             if not found:
-                build_str = "inferred: {:s}: Not found".format(symbols[0])
+                build_str = "{:s}: Not found".format(symbols[0])
                 gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Unsupported", "bold red"), build_str))
                 return
-            build_str = "inferred: {:s}: Found".format(found[0])
+            build_str = "{:s}: Found".format(found[0])
 
         # runtime
         state = None
@@ -34794,10 +34794,10 @@ class KernelChecksecCommand(GenericCommand):
         slub_dump_ret = gdb.execute("slub-dump --meta", to_string=True)
         r = re.search(r"offsetof\(kmem_cache, random\): (0x\S+)", slub_dump_ret)
         if r:
-            additional = "inferred: offsetof(kmem_cache, random): {:s}".format(r.group(1))
+            additional = "offsetof(kmem_cache, random): {:s}".format(r.group(1))
             gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Enabled", "bold green"), additional))
         else:
-            additional = "inferred: offsetof(kmem_cache, random): Not found"
+            additional = "offsetof(kmem_cache, random): Not found"
             gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Disabled", "bold red"), additional))
         return
 
@@ -34825,7 +34825,7 @@ class KernelChecksecCommand(GenericCommand):
             gef_print("{:<40s}: {:s}".format(cfg, Color.grayify("Unknown")))
             return
         if offset is None:
-            additional = "inferred: offsetof(kmem_cache, random_seq): Not found"
+            additional = "offsetof(kmem_cache, random_seq): Not found"
             gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Disabled", "bold red"), additional))
             return
 
@@ -34850,7 +34850,7 @@ class KernelChecksecCommand(GenericCommand):
             if random_seq and is_valid_addr(random_seq):
                 enabled += 1
 
-        additional = "inferred: random_seq at {:#x} offset, {:d}/{:d} representative caches".format(offset, enabled, checked)
+        additional = "random_seq at {:#x} offset, {:d}/{:d} representative caches".format(offset, enabled, checked)
         if checked == 0:
             state = Color.grayify("Unknown")
         elif enabled == checked:
@@ -34872,7 +34872,7 @@ class KernelChecksecCommand(GenericCommand):
             build_str = self.config_str(name, value)
         else:
             build = Ksym.get_addr(stw) is not None
-            build_str = "inferred: {:s}: {:s}".format(stw, "Found" if build else "Not found")
+            build_str = "{:s}: {:s}".format(stw, "Found" if build else "Not found")
         if not build:
             gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Disabled", "bold red"), build_str))
             return
@@ -35481,15 +35481,17 @@ class KernelChecksecCommand(GenericCommand):
         if self.print_kconfig_state(cfg, secure_if_enabled=False):
             return
 
-        modprobe_path = Ksym.get_addr("modprobe_path")
-        if modprobe_path:
-            additional = "inferred: modprobe_path: Found"
+        kallsyms = Ksym.get_runtime_kallsyms(quiet=True)
+        if kallsyms is None:
+            gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.grayify("Unknown"), "runtime kallsyms unavailable"))
+        elif "modprobe_path" in kallsyms[1]:
+            additional = "modprobe_path: Found"
             gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Enabled", "bold red"), additional))
-        elif KernelAddressHeuristicFinder.get_modules() is None:
-            gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.grayify("Unknown"), "CONFIG_MODULES=n"))
-        else:
-            additional = "inferred: modprobe_path: Not found"
+        elif self.is_modules_supported():
+            additional = "modprobe_path: Not found"
             gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Disabled", "bold green"), additional))
+        else:
+            gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.grayify("Unknown"), "module support not confirmed"))
         return
 
     def check_CONFIG_IKCONFIG(self):
@@ -35508,7 +35510,7 @@ class KernelChecksecCommand(GenericCommand):
 
         if Ksym.get_addr("ikconfig_init"):
             # CONFIG_IKCONFIG_PROC=y needs CONFIG_IKCONFIG, but the config could not be extracted
-            additional = "inferred: ikconfig_init: Found, IKCFG_ST: Not extracted"
+            additional = "ikconfig_init: Found, IKCFG_ST: Not extracted"
             gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Enabled", "bold red"), additional))
         elif self.is_modules_supported():
             additional = "IKCFG_ST: Not found in the kernel and the loaded modules (CONFIG_IKCONFIG=n, or =m and not loaded)"
@@ -35533,13 +35535,13 @@ class KernelChecksecCommand(GenericCommand):
 
         # ikconfig_init is built only with CONFIG_IKCONFIG_PROC
         if Ksym.get_addr("ikconfig_init"):
-            additional = "inferred: ikconfig_init: Found"
+            additional = "ikconfig_init: Found"
             gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Enabled", "bold red"), additional))
         elif self.is_modules_supported():
-            additional = "inferred: ikconfig_init: Not found, it may be in the configs module"
+            additional = "ikconfig_init: Not found, it may be in the configs module"
             gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.grayify("Unknown"), additional))
         else:
-            additional = "inferred: ikconfig_init: Not found"
+            additional = "ikconfig_init: Not found"
             gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Disabled", "bold green"), additional))
         return
 
@@ -35550,22 +35552,22 @@ class KernelChecksecCommand(GenericCommand):
 
         start_btf = Ksym.get_addr("__start_BTF")
         if start_btf:
-            additional = "inferred: __start_BTF: Found"
+            additional = "__start_BTF: Found"
             gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Enabled", "bold red"), additional))
             return
 
         btf_range = KtypesCommand.get_btf_addr()
         if btf_range is not None:
-            additional = "inferred: BTF header: Found at {:#x} (__start_BTF hidden)".format(btf_range[0])
+            additional = "BTF header: Found at {:#x} (__start_BTF hidden)".format(btf_range[0])
             gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Enabled", "bold red"), additional))
             return
 
         if Ksym.kernel_img:
-            additional = "inferred: BTF header: Not found"
+            additional = "BTF header: Not found"
             gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Disabled", "bold green"), additional))
             return
 
-        additional = "inferred: __start_BTF: Not found"
+        additional = "__start_BTF: Not found"
         if Ksym.get_addr("modprobe_path") is None and KernelAddressHeuristicFinder.get_modules() is not None:
             gef_print("{:<40s}: {:s} ({:s}, CONFIG_KALLSYMS_ALL=n)".format(cfg, Color.grayify("Unknown"), additional))
         else:
@@ -35584,19 +35586,24 @@ class KernelChecksecCommand(GenericCommand):
         if self.print_kconfig_state(cfg, names=[cfg, "CONFIG_GCC_PLUGIN_RANDSTRUCT"]):
             return
 
+        members = ("procname", "data", "maxlen", "mode", "proc_handler", "extra1", "extra2")
+        offsets = [GefUtil.offsetof("ctl_table", member) for member in members]
+        if None not in offsets:
+            randomized = offsets != sorted(offsets)
+            state = Color.colorify("Enabled", "bold green") if randomized else Color.colorify("Disabled", "bold red")
+            gef_print("{:<40s}: {:s} (ctl_table layout from debug information)".format(cfg, state))
+            return
+
         # If kallsyms can be resolved but ksysctl cannot, the structure layout may be unusual.
         # The structures parsed by ksysctl are stable across kernel versions, except for
         # `struct ctl_dir.inodes`. Also, the first member of `struct ctl_table` is a
         # `const char *procname`, which will almost certainly point to readable data.
         # Therefore, a ksysctl failure is a useful RANDSTRUCT signal, but it is not sufficient
         # positive evidence by itself because unrelated finder failures can produce the same result.
-        ksysctl_ret = KernelSysctl.get("kernel.version")
-        if ksysctl_ret is None:
-            additional = "inferred: ksysctl failed"
-            gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.grayify("Unknown"), additional))
+        if KernelSysctl.get("kernel.version") is None:
+            gef_print("{:<40s}: {:s}".format(cfg, Color.grayify("Unknown")))
         else:
-            additional = "inferred: ksysctl was successful"
-            gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Disabled", "bold red"), additional))
+            gef_print("{:<40s}: {:s}".format(cfg, Color.colorify("Disabled", "bold red")))
         return
 
     @staticmethod
@@ -35789,13 +35796,13 @@ class KernelChecksecCommand(GenericCommand):
         res = KernelAddressHeuristicFinderUtil.disassemble_until_next_symbol(call_usermodehelper_setup, 50)
         source = self.get_usermodehelper_path_source(res)
         if source == ["arg", 0]:
-            additional = "inferred: call_usermodehelper_setup stores the argument to sub_info->path"
+            additional = "call_usermodehelper_setup stores the argument to sub_info->path"
             gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Disabled", "bold red"), additional))
             return
         if source is not None:
             path = read_cstring_from_memory(source[1], max_length=0x100, safe=True)
             if path is not None:
-                additional = "inferred: call_usermodehelper_setup stores \"{:s}\" to sub_info->path".format(path)
+                additional = "call_usermodehelper_setup stores \"{:s}\" to sub_info->path".format(path)
                 if path == "":
                     additional += " (all usermode helpers are blocked)"
                 gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Enabled", "bold green"), additional))
@@ -35822,14 +35829,14 @@ class KernelChecksecCommand(GenericCommand):
             path = read_cstring_from_memory(x, max_length=0x100, safe=True)
             # the default value of CONFIG_STATIC_USERMODEHELPER_PATH is "/sbin/usermode-helper".
             if path and path.startswith("/"):
-                additional = "inferred: call_usermodehelper_setup uses static path \"{:s}\"".format(path)
+                additional = "call_usermodehelper_setup uses static path \"{:s}\"".format(path)
                 gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Enabled", "bold green"), additional))
                 return
         if self.is_first_arg_used(res):
-            additional = "inferred: call_usermodehelper_setup uses the argument"
+            additional = "call_usermodehelper_setup uses the argument"
             gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Disabled", "bold red"), additional))
         else:
-            additional = "inferred: call_usermodehelper_setup uses neither a path constant nor the argument"
+            additional = "call_usermodehelper_setup uses neither a path constant nor the argument"
             gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.grayify("Unknown"), additional))
         return
 
@@ -35842,12 +35849,12 @@ class KernelChecksecCommand(GenericCommand):
         ktask_ret = gdb.execute("ktask --meta", to_string=True)
         r = re.search(r"offsetof\(task_struct, stack_canary\): (0x\S+)", ktask_ret)
         if r:
-            additional = "inferred: offsetof(task_struct, stack_canary): {:s}".format(r.group(1))
+            additional = "offsetof(task_struct, stack_canary): {:s}".format(r.group(1))
             gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Enabled", "bold green"), additional))
             return
 
         if "stack_canary" in ktask_ret:
-            additional = "inferred: offsetof(task_struct, stack_canary): Not found"
+            additional = "offsetof(task_struct, stack_canary): Not found"
             gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Disabled", "bold red"), additional))
         else:
             additional = "ktask was failed"
@@ -35864,10 +35871,10 @@ class KernelChecksecCommand(GenericCommand):
 
         scs_alloc = Ksym.get_addr("scs_alloc")
         if scs_alloc:
-            additional = "inferred: scs_alloc: Found"
+            additional = "scs_alloc: Found"
             gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Enabled", "bold green"), additional))
         else:
-            additional = "inferred: scs_alloc: Not found"
+            additional = "scs_alloc: Not found"
             gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Disabled", "bold red"), additional))
         return
 
@@ -35878,10 +35885,10 @@ class KernelChecksecCommand(GenericCommand):
 
         __check_heap_object = Ksym.get_addr("__check_heap_object")
         if __check_heap_object:
-            additional = "inferred: __check_heap_object: Found"
+            additional = "__check_heap_object: Found"
             gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Enabled", "bold green"), additional))
         else:
-            additional = "inferred: __check_heap_object: Not found"
+            additional = "__check_heap_object: Not found"
             gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Disabled", "bold red"), additional))
         return
 
@@ -35892,7 +35899,7 @@ class KernelChecksecCommand(GenericCommand):
             if value:
                 additional = self.config_str(name, value)
             else:
-                additional = "inferred: fuse_do_open: Found"
+                additional = "fuse_do_open: Found"
             gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Enabled", "bold red"), additional))
             return
         if value == "n":
@@ -35909,7 +35916,7 @@ class KernelChecksecCommand(GenericCommand):
         if value:
             additional = self.config_str(cfg, value)
         else:
-            additional = "inferred: fuse_do_open: Not found"
+            additional = "fuse_do_open: Not found"
         if loaded is True:
             additional += ", runtime: fuse module: Loaded"
             gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Module", "bold red"), additional))
@@ -163772,6 +163779,25 @@ class Ksym:
         # Drop cached GDB misses now that a no-scan fallback is available.
         Cache.clear_cache_for(Symbol.lookup_gdb)
         return Ksym.kallsyms, Ksym.kallsyms_map
+
+    @staticmethod
+    def get_runtime_kallsyms(quiet=False):
+        """Rescan memory without replacing the current kallsyms source or other inferiors' results."""
+        Ksym.switch_inferior()
+        state = {name: value for name, value in vars(Ksym).items()
+                 if not name.startswith("__") and not callable(value)}
+        state["saved_states"] = Ksym.saved_states.copy()
+        updates = Ksym.Config.updates.copy()
+        try:
+            result = Ksym.get_kallsyms(ignore_loaded_vmlinux=True, quiet=quiet)
+        finally:
+            for name, value in list(vars(Ksym).items()):
+                if name not in state and not name.startswith("__") and not callable(value):
+                    delattr(Ksym, name)
+            for name, value in state.items():
+                setattr(Ksym, name, value)
+            Ksym.Config.updates = updates
+        return result
 
 
 @register_command
