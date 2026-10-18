@@ -32267,10 +32267,27 @@ class RpCommand(GenericCommand, BufferingOutput):
         return
 
     @Decorator.parse_args
-    @Decorator.only_if_gdb_running
     @Decorator.exclude_specific_gdb_mode(mode=("kgdb", "vmware"))
-    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64"))
     def do_invoke(self, args):
+        if args.file:
+            if not os.path.isfile(args.file):
+                err("Could not find {}".format(args.file))
+                return
+            elf = Elf.get_elf(args.file)
+            if elf is None or not elf.is_valid():
+                err("Invalid ELF")
+                return
+            if elf.e_machine not in (Elf.EM_386, Elf.EM_X86_64):
+                warn("This command is not supported on this architecture")
+                return
+        else:
+            if not is_alive():
+                warn("No debugging session active")
+                return
+            if not (is_x86_32() or is_x86_64()):
+                warn("This command is not supported on this architecture")
+                return
+
         try:
             rp = GefUtil.which("rp-lin")
         except FileNotFoundError as e:
@@ -32300,9 +32317,6 @@ class RpCommand(GenericCommand, BufferingOutput):
                 return
             path = binary
         elif args.file:
-            if not os.path.exists(args.file):
-                err("Could not find {}".format(args.file))
-                return
             path = args.file
         elif args.kernel:
             if not is_qemu_system():
