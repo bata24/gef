@@ -90504,7 +90504,8 @@ class KernelCurrentCommand(GenericCommand):
             for i, cpu_base in enumerate(cpu_bases):
                 task = KernelAddressHeuristicFinder.dereference_current_task(task_offset, cpu_base)
                 if task is None:
-                    break
+                    gef_print("current (cpu{:d}): unavailable".format(i))
+                    continue
                 gef_print("current (cpu{:d}): {:#x} {:s}".format(i, task, self.get_comm_str(task)))
         else:
             # pattern 2: current_task is the address that stores a pointer to the current task (not per_cpu).
@@ -90645,7 +90646,7 @@ class KernelTask:
             for index, base in enumerate(bases or [None]):
                 task = KernelAddressHeuristicFinder.dereference_current_task(current, base)
                 if task is None:
-                    break
+                    continue
                 current_tasks.setdefault(task, []).append("cpu{:d}".format(index))
         else:
             with ContextManager.threads(KernelPerCpu.get_cpu_threads()) as threads:
