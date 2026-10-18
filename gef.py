@@ -45029,7 +45029,11 @@ class SigreturnCommand(GenericCommand):
         idx = 0
         for entry in entries:
             if isinstance(entry, str):
-                out.append(DereferenceCommand.pprint_dereferenced(base, idx, entry.ljust(width)))
+                try:
+                    out.append(DereferenceCommand.pprint_dereferenced(base, idx, entry.ljust(width)))
+                except gdb.MemoryError:
+                    out.append("Cannot access memory at address {:#x}".format(base + idx * ptrsize))
+                    break
                 idx += 1
             else:
                 _, nwords, label = entry
