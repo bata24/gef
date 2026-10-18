@@ -77127,9 +77127,14 @@ class KernelMapleTree:
         if kversion < "6.6":
             offset_ma_flags = self.root_offset + type(self).ptrsize
         else:
-            offset_ma_flags = self.root_offset - 4
-            if is_64bit() and read_int32_from_memory(self.address + offset_ma_flags, safe=True) == 0:
-                offset_ma_flags = self.root_offset - 8
+            root_field = GefUtil.offsetof("maple_tree", "ma_root")
+            flags_field = GefUtil.offsetof("maple_tree", "ma_flags")
+            if root_field is not None and flags_field is not None:
+                offset_ma_flags = self.root_offset + flags_field - root_field
+            else:
+                offset_ma_flags = self.root_offset - 4
+                if is_64bit() and read_int32_from_memory(self.address + offset_ma_flags, safe=True) == 0:
+                    offset_ma_flags = self.root_offset - 8
 
         self.ma_root = read_int_from_memory(self.address + self.root_offset, safe=True)
         self.ma_flags = read_int32_from_memory(self.address + offset_ma_flags, safe=True)
