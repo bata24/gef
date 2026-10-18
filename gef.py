@@ -177181,7 +177181,8 @@ class MsrCommand(GenericCommand):
             if name == target_name:
                 return const
         try:
-            return int(target_name, 0)
+            const = int(target_name, 0)
+            return const if 0 <= const <= 0xffff_ffff else None
         except ValueError:
             return None
 
@@ -177219,6 +177220,8 @@ class MsrCommand(GenericCommand):
 
     @staticmethod
     def read_msr(const):
+        if not 0 <= const <= 0xffff_ffff:
+            return None
         codes = [b"\x0f\x32"] # rdmsr
         if is_x86_64():
             regs = {"$rcx": const}
@@ -177239,6 +177242,8 @@ class MsrCommand(GenericCommand):
 
     @staticmethod
     def write_msr(const, value):
+        if not 0 <= const <= 0xffff_ffff or not 0 <= value <= 0xffff_ffff_ffff_ffff:
+            return False
         codes = [b"\x0f\x30"] # wrmsr
         if is_x86_64():
             regs = {"$rcx": const, "$rdx": value >> 32, "$rax": value & 0xffff_ffff}
