@@ -81965,12 +81965,14 @@ class KernelSocket:
         head = sk + off
         qlen = self.is_sk_buff_head(head)
         skbs = []
+        truncated = False
         if qlen:
             for skb in KernelListHead(head, 0).iter_entries():
                 skbs.append(skb)
                 if len(skbs) >= 0x1000:
+                    truncated = read_int_from_memory(skb, safe=True) != head
                     break
-        return {"address": head, "qlen": qlen if qlen else 0, "skbs": skbs}
+        return {"address": head, "qlen": qlen if qlen else 0, "skbs": skbs, "truncated": truncated}
 
     def collect_socket_files(self):
         """Parse `ktask --print-fd` and return the socket file descriptors with their owning task."""
@@ -159376,6 +159378,8 @@ class KernelSocketCommand(GenericCommand, BufferingOutput):
                 self.out.append("     |    [{:d}] {:#018x}".format(idx, skb))
                 if self.args.dump:
                     self.dump_skb_data(skb, "     |        ")
+            if queue["truncated"]:
+                self.out.append("     |    ... (truncated by 4096-skb limit; qlen={:d})".format(qlen))
         return
 
     def dump_skb_data(self, skb, prefix):
