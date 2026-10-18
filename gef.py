@@ -17708,12 +17708,31 @@ class HighlightCommand(GenericCommand):
                 except re.error:
                     continue
             ansiSplit = re.split(r"(\033\[[\d;]*m)", text)
-            for index in range(0, len(ansiSplit), 2):
-                if regex:
-                    ansiSplit[index] = pattern.sub(
-                        lambda m, color=color: Color.colorify(m.group(0), color) if m.group(0) else "", ansiSplit[index],
-                    )
-                else:
+            if regex:
+                plain = "".join(ansiSplit[::2])
+                matches = [item for item in pattern.finditer(plain) if item.group(0)]
+                offset = 0
+                match_index = 0
+                for index in range(0, len(ansiSplit), 2):
+                    segment = ansiSplit[index]
+                    segment_end = offset + len(segment)
+                    replacements = []
+                    while match_index < len(matches) and matches[match_index].end() <= offset:
+                        match_index += 1
+                    scan_index = match_index
+                    while scan_index < len(matches) and matches[scan_index].start() < segment_end:
+                        item = matches[scan_index]
+                        start = max(item.start(), offset) - offset
+                        end = min(item.end(), segment_end) - offset
+                        if start < end:
+                            replacements.append((start, end))
+                        scan_index += 1
+                    for start, end in reversed(replacements):
+                        segment = segment[:start] + Color.colorify(segment[start:end], color) + segment[end:]
+                    ansiSplit[index] = segment
+                    offset = segment_end
+            else:
+                for index in range(0, len(ansiSplit), 2):
                     ansiSplit[index] = ansiSplit[index].replace(match, Color.colorify(match, color))
             text = "".join(ansiSplit)
         return text
