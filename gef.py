@@ -189228,6 +189228,8 @@ class ThunkBreakpoint(gdb.Breakpoint):
         pattern = [0] + [(x + 1) * y for x, y in itertools.product(range(0x100), [1, -1])] # [0, 1, -1, 2, -2, ...]
         for reg in current_arch.general_registers:
             reg_value = get_register(reg)
+            if reg_value is None:
+                continue
             for i in pattern:
                 slide = current_arch.ptrsize * i
                 reg_value_slided = reg_value + slide
