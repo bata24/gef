@@ -24924,6 +24924,7 @@ class ReadSystemRegisterForKgdbCommand(GenericCommand):
         d = dic.get(reg_name.lower(), None) or dic.get(reg_name.upper(), None)
         if not d:
             return None
+        alignment = 4 if is_arm64() else 1
 
         for symbol in d["sym"]:
             # resolve symbol
@@ -24942,8 +24943,10 @@ class ReadSystemRegisterForKgdbCommand(GenericCommand):
             for return_register, byte_code in d["insn"]:
                 # adjust offset
                 index = data.find(byte_code)
-                if index >= 0:
-                    return address + index, return_register
+                while index >= 0:
+                    if (address + index) % alignment == 0:
+                        return address + index, return_register
+                    index = data.find(byte_code, index + 1)
         return None
 
     def execute_stub(self, stub_address, return_register):
