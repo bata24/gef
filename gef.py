@@ -191964,10 +191964,9 @@ class KuafWatchCommand(GenericCommand):
             return None
         name, object_size = m.group(1), int(m.group(2), 0)
         m = re.search(r"^object_base: (0x\S+)", out, re.M)
-        if m:
-            base = int(m.group(1), 16)
-        else:
-            base = addr
+        if not m:
+            return None
+        base = int(m.group(1), 16)
         m = re.search(r"^status: (freed|in-use)", out, re.M)
         state = None
         if m:
