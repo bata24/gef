@@ -164673,7 +164673,14 @@ class GoHeapDumpCommand(GenericCommand, BufferingOutput):
         if not mspan.chunk_size:
             # `--verbose` does not filter out the span of chunk_size == 0
             return
-        chunk_data = read_memory(mspan.start_addr, mspan.end_addr - mspan.start_addr)
+        section = ProcessMap.process_lookup_address(mspan.start_addr)
+        if section is not None and (not section.permission & Permission.READ or mspan.end_addr > section.page_end):
+            self.out.append("Unreadable mspan data @ {:#x}".format(mspan.start_addr))
+            return
+        chunk_data = read_memory(mspan.start_addr, mspan.end_addr - mspan.start_addr, safe=True)
+        if chunk_data is None:
+            self.out.append("Unreadable mspan data @ {:#x}".format(mspan.start_addr))
+            return
         ptrsize = current_arch.ptrsize
         chunk_hexdump = hexdump(chunk_data, base=mspan.start_addr, color=False, show_symbol=False, unit=ptrsize)
         lines = chunk_hexdump.splitlines()
