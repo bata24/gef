@@ -162001,7 +162001,7 @@ class KtypesLoadCommand(KtypesCommand):
         gcc, opt = compiler
         with open(header_path, "rb") as file:
             content = file.read()
-        options = [gcc] + opt + ["-std=c11", "-g", "-O0", "-fno-eliminate-unused-debug-types", "-w", "-c"]
+        options = [gcc] + opt + ["-std=c11", "-fms-extensions", "-g", "-O0", "-fno-eliminate-unused-debug-types", "-w", "-c"]
         h = hashlib.sha256(content + repr(options).encode()).hexdigest()
         obj_path = header_path[:-2] + "-" + h + ".o"
 
