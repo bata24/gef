@@ -21282,6 +21282,9 @@ class ProcDumpCommand(GenericCommand, BufferingOutput):
         for line in sorted(data.split(b"\0")):
             if line:
                 line = String.bytes2str(line)
+                if "=" not in line:
+                    self.out.append(line)
+                    continue
                 key, val = line.split("=", 1)
                 self.out.append("{:s}={:s}".format(Color.boldify(key), val))
         return
