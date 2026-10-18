@@ -83558,6 +83558,8 @@ class KernelDmabuf:
                 return None
             self.meta.append(("info", "DMA-BUF global list is unavailable; showing buffers held by file descriptors"))
             file_buffers = self.get_file_buffers()
+            if file_buffers is None:
+                return None
             if not file_buffers:
                 self.meta.append(("info", "No DMA-BUF file descriptors are present"))
                 return None
@@ -83832,11 +83834,15 @@ class KernelDmabuf:
         return self.sizeof_scatterlist
 
     def get_file_buffers(self):
-        output = gdb.execute("ktask --print-fd --user-process-only --no-pager --quiet", to_string=True)
+        output = Color.remove_color(gdb.execute("ktask --print-fd --user-process-only --no-pager --quiet", to_string=True))
+        for line in output.splitlines():
+            if "Disabled --print-fd" in line:
+                self.meta.append(("err", line.strip()))
+                return None
         buffers = []
         ptr = current_arch.ptrsize
         offset = GefUtil.offsetof("file", "private_data")
-        for line in Color.remove_color(output).splitlines():
+        for line in output.splitlines():
             match = re.match(r"^\s*\d+\s+(?:True|False)\s+(0x[0-9a-f]+)\s+.*(?:dmabuf|dma_buf)", line)
             if not match:
                 continue
