@@ -94245,6 +94245,9 @@ class KernelModuleCommand(GenericCommand, BufferingOutput):
     def apply_symbol_region(self, module_name, region_name, text_base, text_end, entries):
         # remove old file
         sym_elf_path = os.path.join(GEF_TEMP_DIR, "kmod-{:s}-{:s}.elf".format(module_name, region_name))
+        for objfile in gdb.objfiles():
+            if objfile.filename == sym_elf_path:
+                gdb.execute("remove-symbol-file {:s}".format(GefUtil.quote_gdb_argument(sym_elf_path)), to_string=True)
         if os.path.exists(sym_elf_path):
             os.unlink(sym_elf_path)
 
@@ -193669,6 +193672,9 @@ class KsymaddrRemoteApplyCommand(GenericCommand):
 
         # add symbol to gdb
         text_base = Ksym.get_text_base() & get_pagesize_mask_high()
+        for objfile in gdb.objfiles():
+            if objfile.filename == sym_elf_path:
+                gdb.execute("remove-symbol-file {:s}".format(GefUtil.quote_gdb_argument(sym_elf_path)), to_string=True)
         cmd = "add-symbol-file {:s} {:#x}".format(GefUtil.quote_gdb_argument(sym_elf_path), text_base)
         self.quiet_warn("Execute `{:s}`".format(cmd))
         gdb.execute(cmd)
