@@ -31432,6 +31432,8 @@ class GlibcHeapSnapshotCommand(GenericCommand):
                 "heap_base": arena.heap_base,
                 "dump_start": dump_start,
                 "top": arena.top,
+                "ptrsize": current_arch.ptrsize,
+                "endian": "little" if Endian.is_little_endian() else "big",
             }
 
             chunks = []
@@ -31804,6 +31806,23 @@ class GlibcHeapSnapshotCompareCommand(GenericCommand, BufferingOutput):
             return
         raw1, info1 = ret1
         raw2, info2 = ret2
+        endian = "little" if Endian.is_little_endian() else "big"
+        for info in (info1, info2):
+            if not isinstance(info, dict):
+                err("Invalid snapshot metadata")
+                return
+            try:
+                ptrsize = info.get("ptrsize")
+                if ptrsize is None:
+                    chunk = info["chunks"][0]
+                    width = chunk["start_offset"] + chunk["size"] - chunk["end_offset"]
+                    ptrsize = width // 2 if width % 2 == 0 else None
+            except (KeyError, IndexError, TypeError):
+                err("Invalid snapshot metadata")
+                return
+            if ptrsize != current_arch.ptrsize or info.get("endian", endian) != endian:
+                err("Snapshot architecture mismatch")
+                return
         if len(raw1) % current_arch.ptrsize or len(raw2) % current_arch.ptrsize:
             err("Invalid snapshot size")
             return
