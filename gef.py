@@ -154360,9 +154360,12 @@ class KernelSlubTiny:
         kmem_cache["node_addresses"] = []
         kmem_cache["node_ids"] = []
         kmem_cache_node_array = kmem_cache["address"] + self.kmem_cache_offset_node
-        count = GefUtil.get_kernel_cache_node_count(self, self.kmem_cache_offset_node, current_arch.ptrsize)
+        kversion = Kernel.version()
+        step = current_arch.ptrsize * (2 if kversion and kversion >= "7.1" else 1)
+        count_offset = self.kmem_cache_offset_node - (step - current_arch.ptrsize)
+        count = GefUtil.get_kernel_cache_node_count(self, count_offset, step)
         for node_index, current_kmem_cache_node in GefUtil.iter_kernel_node_pointers(
-                kmem_cache_node_array, "((struct kmem_cache *)0)->node", count=count):
+                kmem_cache_node_array, "((struct kmem_cache *)0)->node", step=step, count=count):
             # node list
             node_page_list = []
             node_page_head = current_kmem_cache_node + self.kmem_cache_node_offset_partial
