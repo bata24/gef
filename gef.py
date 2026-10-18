@@ -160205,6 +160205,10 @@ class KernelDeviceIOCommand(GenericCommand, BufferingOutput):
             child = read_int_from_memory(addr + layout["child"], safe=True)
             if None in (start, end, name_ptr, flags, parent, sibling, child):
                 self.incomplete.append("unreadable resource at {:#x}".format(addr))
+                if sibling and sibling != root and sibling != addr:
+                    stack.append((sibling, expected_parent))
+                if child:
+                    stack.append((child, addr))
                 continue
             if expected_parent is not None and parent != expected_parent:
                 self.incomplete.append("invalid parent backlink at {:#x}".format(addr))
