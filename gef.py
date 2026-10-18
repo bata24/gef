@@ -96520,16 +96520,20 @@ class KernelCharacterDevicesCommand(GenericCommand, BufferingOutput):
             return
 
         def find_region(major, minor):
+            devt = major << 20 | minor
             for m in regions:
-                if m["major"] == major and m["minor"] <= minor < m["minor"] + m["count"]:
+                start = m["major"] << 20 | m["minor"]
+                if start <= devt < start + m["count"]:
                     return m["name"]
             return None
 
         def find_cdev(major, minor):
             # kobj_lookup() takes the narrowest range
-            found = [(range_, cdev) for cdev, ma, mi, range_ in cdev_addrs if ma == major and mi <= minor < mi + range_]
+            devt = major << 20 | minor
+            found = [(range_, cdev) for cdev, ma, mi, range_ in cdev_addrs
+                     if (ma << 20 | mi) <= devt < (ma << 20 | mi) + range_]
             if found:
-                return min(found)[1]
+                return min(found, key=lambda entry: entry[0])[1]
             return 0
 
         self.out = []
@@ -96589,6 +96593,7 @@ class KernelCharacterDevicesCommand(GenericCommand, BufferingOutput):
             regions.append({"major": major, "minor": minor, "count": count, "name": name_string})
 
         # merge cdev (from cdev_map)
+        registered_ranges = sorted((m["major"] << 20 | m["minor"], m["count"]) for m in regions)
         for cdev, major, minor, range_ in cdev_addrs:
             kobj = read_int_from_memory(cdev)
             name_string = read_cstring_from_memory(kobj) or "<None>"
@@ -96602,9 +96607,17 @@ class KernelCharacterDevicesCommand(GenericCommand, BufferingOutput):
                 merged[major, minor] = {"chrdev": 0x0, "name": name_string, "cdev": cdev, "count": range_}
 
             # a cdev must be added in a range registered by register_chrdev_region() or its variants
-            last = minor + range_ - 1
-            if not any(m["major"] == major and m["minor"] <= minor and last < m["minor"] + m["count"] for m in regions):
-                self.quiet_warn("cdev {:#x} ({:d}:{:d}-{:d}) is not in any range of chrdevs".format(cdev, major, minor, last))
+            start = major << 20 | minor
+            last = start + range_ - 1
+            covered = start
+            for region_start, count in registered_ranges:
+                if region_start <= covered < region_start + count:
+                    covered = region_start + count
+                    if covered > last:
+                        break
+            if covered <= last:
+                self.quiet_warn("cdev {:#x} ({:d}:{:d}-{:d}:{:d}) is not in any range of chrdevs".format(
+                    cdev, major, minor, last >> 20, last & ((1 << 20) - 1)))
 
         # add ops info
         off_ops = self.get_offset_ops([v["cdev"] for k, v in merged.items() if v["cdev"]])
@@ -96679,7 +96692,11 @@ class KernelCharacterDevicesCommand(GenericCommand, BufferingOutput):
                 minors = "{:d}".format(minor)
                 guessed_name = KernelCharacterDevicesCommand.guess_cdev_path(major, minor)
             else:
-                minors = "{:d}-{:d}".format(minor, minor + count - 1)
+                last = (major << 20 | minor) + count - 1
+                if last >> 20 == major:
+                    minors = "{:d}-{:d}".format(minor, last & ((1 << 20) - 1))
+                else:
+                    minors = "{:d}-{:d}:{:d}".format(minor, last >> 20, last & ((1 << 20) - 1))
                 guessed_name = "-"
             self.out.append("{:#018x} {:<18s} {:<24s} {:<6d} {:<15s} {:<7d} {:#018x} {:#018x} {:<18s} {:s}".format(
                 m["chrdev"], m["name"], guessed_name, major, minors, count,
