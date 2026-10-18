@@ -163905,6 +163905,7 @@ class VmlinuxToElfApplyCommand(GenericCommand):
         data = read_memory(start, end - start, safe=True)
         if data is None:
             err("Memory read error. Make sure the context is in supervisor mode / Ring-0")
+            os.unlink(dumped_mem_file)
             return None
         with open(dumped_mem_file, "wb") as output:
             output.write(data)
@@ -163925,6 +163926,7 @@ class VmlinuxToElfApplyCommand(GenericCommand):
         data = read_memory(start, end - start, safe=True)
         if data is None:
             err("Memory read error. Make sure the context is in supervisor mode / Ring-0")
+            os.unlink(dumped_mem_file)
             return None
         with open(dumped_mem_file, "ab") as output:
             output.write(data)
