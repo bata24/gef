@@ -178406,7 +178406,8 @@ class SmmDumpCommand(GenericCommand):
 
     def dump_smram(self, smram, in_smm):
         base, size, label = smram
-        directory = os.path.join(GEF_TEMP_DIR, "mem-dump-" + GefUtil.now_str())
+        dt = GefUtil.now_str()
+        directory = os.path.join(GEF_TEMP_DIR, "mem-dump-{:s}-XXXXXXXX".format(dt))
         filename = "{:016x}-{:016x}_{:s}.raw".format(base, base + size - 1, re.sub(r"[^a-zA-Z0-9_.-]+", "_", label))
         filepath = os.path.join(directory, filename)
         if not self.args.commit:
@@ -178433,7 +178434,8 @@ class SmmDumpCommand(GenericCommand):
             warn("SMRAM read returned only {:#04x}; chipset masking may have hidden the real contents".format(byte))
 
         try:
-            os.makedirs(directory, exist_ok=True)
+            directory = tempfile.mkdtemp(dir=GEF_TEMP_DIR, prefix="mem-dump-{:s}-".format(dt))
+            filepath = os.path.join(directory, filename)
             with open(filepath, "wb") as file:
                 file.write(data)
         except OSError as exception:
