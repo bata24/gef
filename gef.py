@@ -91930,13 +91930,6 @@ class KernelTask:
             return None
         self.meta.append(("info", "offsetof(task_struct, sighand): {:#x}".format(self.offset_sighand)))
 
-        sighand = read_int_from_memory(task_addrs[1] + self.offset_sighand)
-        self.offset_action = KernelSighand.get_offset_action(sighand)
-        if self.offset_action is None:
-            self.meta.append(("err", "Could not find sighand_struct->action"))
-            return None
-        self.meta.append(("info", "offsetof(sighand_struct, action): {:#x}".format(self.offset_action)))
-
         sighands = []
         for task in task_addrs:
             if read_int_from_memory(task + self.offset_mm) == 0:
@@ -91944,6 +91937,16 @@ class KernelTask:
             sample = read_int_from_memory(task + self.offset_sighand)
             if is_valid_addr(sample):
                 sighands.append(sample)
+        if not sighands:
+            self.meta.append(("err", "Could not find a user task for sighand"))
+            return None
+
+        self.offset_action = KernelSighand.get_offset_action(sighands[0])
+        if self.offset_action is None:
+            self.meta.append(("err", "Could not find sighand_struct->action"))
+            return None
+        self.meta.append(("info", "offsetof(sighand_struct, action): {:#x}".format(self.offset_action)))
+
         self.sizeof_action = KernelSighand.get_sizeof_action(tuple(sighands), self.offset_action)
         if self.sizeof_action is None:
             self.meta.append(("err", "Could not find sizeof(action[0])"))
