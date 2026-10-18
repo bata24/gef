@@ -103575,6 +103575,17 @@ class KernelDmesgOldestRing(KernelDmesgRing):
         self.address = log_buf_start
         self.buf_len = log_buf_len
         self.log_end = log_end
+        logged_chars_addr = Ksym.get_addr("logged_chars")
+        logged_chars = read_int32_from_memory(logged_chars_addr, safe=True) if logged_chars_addr else None
+        self.logged_chars = logged_chars if logged_chars is not None and logged_chars <= log_buf_len else None
+        log_start_addr = Ksym.get_addr("log_start") if self.logged_chars is None else None
+        if not log_start_addr and self.logged_chars is None:
+            if is_x86():
+                log_start_addr = log_end_addr + 8
+            elif is_arm32():
+                log_start_addr = log_end_addr + 4
+        log_start = read_int32_from_memory(log_start_addr, safe=True) if log_start_addr else None
+        self.log_start = log_start if log_start is not None and ((log_end - log_start) & 0xffff_ffff) <= log_buf_len else None
         self.details = [
             "active log_buf: {:#x}, size: {:#x}".format(log_buf_start, log_buf_len),
             "legacy printk layout source: {:s}".format(layout_source),
@@ -103584,6 +103595,10 @@ class KernelDmesgOldestRing(KernelDmesgRing):
     def dump(self):
         """Append retained text lines and report whether memory was unreadable."""
         size = min(self.log_end, self.buf_len)
+        if self.log_start is not None:
+            size = max(size, min((self.log_end - self.log_start) & 0xffff_ffff, self.buf_len))
+        if self.logged_chars is not None:
+            size = self.logged_chars
         start = self.log_end - size
         index = start % self.buf_len
         first_size = min(size, self.buf_len - index)
