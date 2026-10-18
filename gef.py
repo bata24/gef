@@ -33843,8 +33843,9 @@ class ChecksecCommand(GenericCommand):
         elif sec["PIE"]:
             gef_print("{:<40s}: {:s}".format("PIE", self.get_colored_msg(sec["PIE"])))
         else:
-            vaddr = min([p.p_vaddr for p in elf.phdrs if p.p_type == Elf.Phdr.PT_LOAD])
-            gef_print("{:<40s}: {:s} ({:#x})".format("PIE", self.get_colored_msg(sec["PIE"]), vaddr))
+            vaddr = min((p.p_vaddr for p in elf.phdrs if p.p_type == Elf.Phdr.PT_LOAD), default=None)
+            detail = "{:#x}".format(vaddr) if vaddr is not None else "N/A"
+            gef_print("{:<40s}: {:s} ({:s})".format("PIE", self.get_colored_msg(sec["PIE"]), detail))
 
         # RELRO
         if sec["Full RELRO"]:
