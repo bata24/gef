@@ -23606,7 +23606,6 @@ class PtrDemangleCommand(GenericCommand):
         return None
 
     @Decorator.parse_args
-    @Decorator.only_if_gdb_running
     @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware"))
     @Decorator.exclude_specific_arch(arch=("XTENSA", "CRIS"))
     @Decorator.require_arch_set
@@ -23617,6 +23616,10 @@ class PtrDemangleCommand(GenericCommand):
             gef_print()
             s = GefUtil.get_source(current_arch.decode_cookie_legacy)
             gef_print(s)
+            return
+
+        if not is_alive():
+            warn("No debugging session active")
             return
 
         cookie = PtrDemangleCommand.get_cookie(force_heuristic=args.force_heuristic)
@@ -23650,7 +23653,6 @@ class PtrMangleCommand(GenericCommand):
     _syntax_ = parser.format_help()
 
     @Decorator.parse_args
-    @Decorator.only_if_gdb_running
     @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware"))
     @Decorator.exclude_specific_arch(arch=("XTENSA", "CRIS"))
     @Decorator.require_arch_set
@@ -23661,6 +23663,10 @@ class PtrMangleCommand(GenericCommand):
             gef_print()
             s = GefUtil.get_source(current_arch.encode_cookie_legacy)
             gef_print(s)
+            return
+
+        if not is_alive():
+            warn("No debugging session active")
             return
 
         cookie = PtrDemangleCommand.get_cookie(force_heuristic=args.force_heuristic)
