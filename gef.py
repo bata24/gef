@@ -150668,6 +150668,9 @@ class ConstGrepCommand(GenericCommand):
             content = open(path, "rb").read()
         except (FileNotFoundError, IsADirectoryError):
             return None
+        except OSError as exception:
+            err("Could not read {:s}: {!s}".format(path, exception))
+            return None
         content = content.replace(b"\\\n", b"GEF_MARKER")
         content = content.replace(b"\t", b" ")
         for i in range(0x80, 0x100):
