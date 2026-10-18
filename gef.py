@@ -28551,11 +28551,29 @@ class CapstoneDisassembleCommand(GenericCommand):
         for arg in args.args:
             if "=" in arg:
                 key, value = arg.split("=", 1)
+                if key not in ("arch", "mode", "endian", "nb_prev", "code"):
+                    err("Invalid argument: {:s}".format(key))
+                    return
                 if key == "endian":
                     if value not in ("0", "1"):
                         err("endian must be 0 or 1")
                         return
                     value = value == "1"
+                elif key == "nb_prev":
+                    try:
+                        value = int(value, 0)
+                    except ValueError:
+                        err("Invalid nb_prev")
+                        return
+                    if value < 0:
+                        err("Invalid nb_prev")
+                        return
+                elif key == "code":
+                    try:
+                        bytes.fromhex(value)
+                    except ValueError:
+                        err("Invalid code")
+                        return
                 kwargs[key] = value
             else:
                 err("ARGS must be KEY=VALUE style")
