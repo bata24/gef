@@ -62272,7 +62272,7 @@ class KernelMagicCommand(GenericCommand):
                 return True
         return False
 
-    def resolve_and_print_kernel(self, sym, base, maps, external_func=None, to_string=False):
+    def resolve_and_print_kernel(self, sym, base, maps, external_func=None, to_string=False, value_only=False):
 
         def get_permission(addr, maps):
             entry = AddrMap.find_virtual(addr, maps=maps)
@@ -62309,6 +62309,10 @@ class KernelMagicCommand(GenericCommand):
                     sym = sym[0]
                     gef_print("{:42s} {:>{:d}s}".format(sym, "Not found", width))
                     return
+
+        if value_only:
+            self.print_kernel_value(sym, addr)
+            return
 
         if not is_valid_addr(addr):
             gef_print("{:42s} {:#0{:d}x} [---]               -> Inaccessible".format(
@@ -62524,20 +62528,20 @@ class KernelMagicCommand(GenericCommand):
             "PAGE_OFFSET (physmem direct map)", None, maps, KernelAddressHeuristicFinder.get_PAGE_OFFSET,
         )
         self.resolve_and_print_kernel(
-            "PAGE_OFFSET_END", None, maps, KernelAddressHeuristicFinder.get_PAGE_OFFSET_END,
+            "PAGE_OFFSET_END", None, maps, KernelAddressHeuristicFinder.get_PAGE_OFFSET_END, value_only=True,
         )
         self.resolve_and_print_kernel(
             "VMALLOC_START", None, maps, KernelAddressHeuristicFinder.get_VMALLOC_START,
         )
         self.resolve_and_print_kernel(
-            "VMALLOC_END", None, maps, KernelAddressHeuristicFinder.get_VMALLOC_END,
+            "VMALLOC_END", None, maps, KernelAddressHeuristicFinder.get_VMALLOC_END, value_only=True,
         )
         if is_x86_64() or is_arm64():
             self.resolve_and_print_kernel(
                 "VMEMMAP_START (struct page[])", None, maps, KernelAddressHeuristicFinder.get_VMEMMAP_START,
             )
             self.resolve_and_print_kernel(
-                "VMEMMAP_END", None, maps, KernelAddressHeuristicFinder.get_VMEMMAP_END,
+                "VMEMMAP_END", None, maps, KernelAddressHeuristicFinder.get_VMEMMAP_END, value_only=True,
             )
         if is_x86_64() and (
             self.should_be_print("phys_base (load delta)") or self.should_be_print("kbase@phys")
