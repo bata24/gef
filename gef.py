@@ -156140,6 +156140,8 @@ class KernelSlob:
             page["next"] = next = read_int_from_memory(current)
             page_freelist.append(page)
             current = next
+        if current != head:
+            warn("Corrupted SLOB page list (Loop detected at {:#x})".format(current - self.page_offset_next))
         return page_freelist
 
     def walk_caches(self, target_names, *, names_only=False, reverse_walk=False, simple=False,
