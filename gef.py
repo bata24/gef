@@ -199276,6 +199276,9 @@ class FrequencyAnalysisCommand(GenericCommand, BufferingOutput):
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     def do_invoke(self, args):
+        if args.topn < 0:
+            err("Invalid top N")
+            return
 
         if args.size is None:
             loc = ProcessMap.lookup(args.location)
@@ -199295,7 +199298,8 @@ class FrequencyAnalysisCommand(GenericCommand, BufferingOutput):
         self.out = []
         hist = self.hist256(data)
         self.print_heatmap(hist)
-        self.print_top_n(hist, self.args.topn)
+        if args.topn:
+            self.print_top_n(hist, args.topn)
 
         self.print_output()
         return
