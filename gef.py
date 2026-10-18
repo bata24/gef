@@ -31490,20 +31490,27 @@ class GlibcHeapSnapshotCommand(GenericCommand):
         raw_path = base + ".raw"
         json_path = base + ".json"
 
-        if not os.path.exists(raw_path) or os.path.getsize(raw_path) == 0:
+        if not os.path.isfile(raw_path):
             err("Invalid file path (.raw)")
             return None
-        if not os.path.exists(json_path) or os.path.getsize(json_path) == 0:
+        if not os.path.isfile(json_path):
             err("Invalid file path (.json)")
             return None
 
         try:
-            raw = open(raw_path, "rb").read()
-        except gdb.MemoryError:
+            with open(raw_path, "rb") as file:
+                raw = file.read()
+        except OSError as e:
+            err("Cannot read snapshot {:s}: {:s}".format(raw_path, str(e)))
+            return None
+        if not raw:
+            err("Invalid file path (.raw)")
             return None
         try:
-            info = json.loads(open(json_path).read())
-        except Exception:
+            with open(json_path) as file:
+                info = json.load(file)
+        except (OSError, ValueError) as e:
+            err("Cannot read snapshot {:s}: {:s}".format(json_path, str(e)))
             return None
         return raw, info
 
@@ -31612,9 +31619,6 @@ class GlibcHeapSnapshotCompareCommand(GenericCommand, BufferingOutput):
 
     def compare(self, raw1, info1, raw2, info2):
         ptrsize = current_arch.ptrsize
-        assert len(raw1) % ptrsize == 0
-        assert len(raw2) % ptrsize == 0
-
         double_ptrsize = ptrsize * 2
         hex_width = double_ptrsize + 2
 
@@ -31789,6 +31793,9 @@ class GlibcHeapSnapshotCompareCommand(GenericCommand, BufferingOutput):
             return
         raw1, info1 = ret1
         raw2, info2 = ret2
+        if len(raw1) % current_arch.ptrsize or len(raw2) % current_arch.ptrsize:
+            err("Invalid snapshot size")
+            return
 
         # legend
         self.out = []
