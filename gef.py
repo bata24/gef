@@ -44275,7 +44275,7 @@ class CommentAddCommand(CommentCommand):
     _category_ = "01-f. Debugging Support - Context Extension"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
-    parser.add_argument("location", metavar="LOCATION", type=AddressUtil.parse_address,
+    parser.add_argument("location", metavar="LOCATION",
                         help="the address for comment.")
     parser.add_argument("comment", metavar="COMMENT", help="the comment to print when hit.")
     _syntax_ = parser.format_help()
@@ -44287,8 +44287,22 @@ class CommentAddCommand(CommentCommand):
     @Decorator.parse_args
     @Decorator.require_arch_set
     def do_invoke(self, args):
-        comms = ContextCodeCommand.context_comments.get(args.location, [])
-        ContextCodeCommand.context_comments[args.location] = comms + [args.comment]
+        if not is_alive():
+            filepath = Path.get_filepath()
+            elf = Elf.get_elf(filepath) if filepath else None
+            if elf is not None and elf.is_valid() and elf.is_pie():
+                try:
+                    int(args.location, 0)
+                except ValueError:
+                    warn("PIE symbols require a running process")
+                    return
+        try:
+            location = AddressUtil.parse_address(args.location)
+        except (gdb.error, ValueError):
+            err("Invalid address")
+            return
+        comms = ContextCodeCommand.context_comments.get(location, [])
+        ContextCodeCommand.context_comments[location] = comms + [args.comment]
         return
 
 
