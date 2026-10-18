@@ -71493,26 +71493,22 @@ class KernelAddressHeuristicFinder:
                 return False
 
             current = read_int_from_memory(addr)
-            name_addr = read_int_from_memory(current - current_arch.ptrsize)
-            if not is_valid_addr(name_addr):
-                return False
-            name = read_cstring_from_memory(name_addr, safe=True)
-            if name is None:
-                return False
-            if not name or len(name) > 64 or not name.isprintable():
-                return False
-
-            for i in range(5, 64):
-                clocksource = current - ptrsize * i
-                read = read_int_from_memory(clocksource, safe=True)
-                if not is_valid_addr(read):
-                    continue
-                for offset_mask in mask_offsets:
-                    mask = read_int64_from_memory(clocksource + offset_mask, safe=True)
-                    mult = read_int32_from_memory(clocksource + offset_mask + 8, safe=True)
-                    shift = read_int32_from_memory(clocksource + offset_mask + 12, safe=True)
-                    if mask and not mask & (mask + 1) and mult and shift is not None and shift <= 64:
-                        return True
+            while current != addr:
+                name_addr = read_int_from_memory(current - ptrsize)
+                name = read_cstring_from_memory(name_addr, safe=True) if is_valid_addr(name_addr) else None
+                if name and len(name) <= 64 and name.isprintable():
+                    for i in range(5, 64):
+                        clocksource = current - ptrsize * i
+                        read = read_int_from_memory(clocksource, safe=True)
+                        if not is_valid_addr(read):
+                            continue
+                        for offset_mask in mask_offsets:
+                            mask = read_int64_from_memory(clocksource + offset_mask, safe=True)
+                            mult = read_int32_from_memory(clocksource + offset_mask + 8, safe=True)
+                            shift = read_int32_from_memory(clocksource + offset_mask + 12, safe=True)
+                            if mask and not mask & (mask + 1) and mult and shift is not None and shift <= 64:
+                                return True
+                current = read_int_from_memory(current)
             return False
 
         def is_empty_clocksource_list(addr):
@@ -71527,6 +71523,11 @@ class KernelAddressHeuristicFinder:
             if x:
                 try:
                     if is_empty_clocksource_list(x) or looks_like_clocksource_list(x):
+                        return x
+                    first = read_int_from_memory(x, safe=True)
+                    last = read_int_from_memory(x + ptrsize, safe=True)
+                    if (first and is_valid_addr(first) and read_int_from_memory(first + ptrsize, safe=True) == x
+                            or last and is_valid_addr(last) and read_int_from_memory(last, safe=True) == x):
                         return x
                 except gdb.MemoryError:
                     pass
@@ -100022,9 +100023,12 @@ class KernelClockSourceCommand(GenericCommand, BufferingOutput):
         self.meta.append((self.quiet_info, "clocksource_list: {:#x}".format(self.clocksource_list)))
 
         lh = KernelListHead(self.clocksource_list)
-        self.nodes = list(lh.iter_entries())
+        self.nodes = [node for node in lh.iter_entries() if is_valid_addr(node)]
         if lh.broken:
             self.incomplete.append("clocksource_list is broken at {:#x}".format(lh.broken_at))
+            backward = KernelListHead(self.clocksource_list)
+            tail = [node for node in backward.iter_entries(backward=True) if is_valid_addr(node)]
+            self.nodes = list(dict.fromkeys(self.nodes + tail[::-1]))
         if not self.nodes:
             self.meta.append((self.quiet_err, "clocksource_list is empty"))
             return False
