@@ -181,6 +181,7 @@ __gef_command_instances__   = {} # gef command instances
 GCI                         = __gef_command_instances__ # short cut for debug # noqa: F841
 __gef_alias_instances__     = {} # gef alias instances
 GAI                         = __gef_alias_instances__ # short cut for debug # noqa: F841
+__gef_registered_aliases__  = set() # names registered with GDB, including removed aliases
 current_arch                = None # keep Architecture instance
 current_arch_context        = None # the target which current_arch is resolved for
 
@@ -201594,6 +201595,7 @@ class GefAlias(gdb.Command):
         # add or overwrite
         global __gef_alias_instances__
         __gef_alias_instances__[alias] = self
+        __gef_registered_aliases__.add(alias)
         return
 
     def invoke(self, args, from_tty): # noqa: V105
@@ -201671,6 +201673,14 @@ class AliasesAddCommand(AliasesCommand):
         if args.alias in __gef_command_instances__:
             err("Not allowed due to circular references")
             return
+        if args.alias not in __gef_registered_aliases__:
+            try:
+                gdb.execute("help {:s}".format(args.alias), to_string=True)
+            except gdb.error:
+                pass
+            else:
+                err("Command name is already in use: {:s}".format(args.alias))
+                return
         lexer = shlex.shlex(self.command_args, posix=True)
         lexer.whitespace_split = True # noqa: V101
         lexer.commenters = "" # noqa: V101
