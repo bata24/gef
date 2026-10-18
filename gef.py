@@ -174364,10 +174364,6 @@ class XSecureMemAddrCommand(GenericCommand):
         if args.phys:
             if SecureMemory.contains(args.location):
                 return args.location - sm.sm_base
-
-            err("Phys {:#x} is not default secure memory ({:#x}-{:#x})".format(
-                args.location, sm.sm_base, sm.sm_base + sm.sm_size,
-            ))
             return None
 
         elif args.off:
@@ -174390,10 +174386,6 @@ class XSecureMemAddrCommand(GenericCommand):
 
             if SecureMemory.contains(target_phys):
                 return target_phys - sm.sm_base
-
-            err("Virt {:#x} is not default secure memory ({:#x}-{:#x})".format(
-                args.location, sm.sm_base, sm.sm_base + sm.sm_size,
-            ))
             return None
 
         return None
