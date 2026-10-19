@@ -75645,6 +75645,30 @@ class Kernel:
             return None
         allocator = Kernel.get_slab_type()
 
+        kversion = Kernel.version()
+        if is_kgdb() and allocator in ("SLAB", "SLUB_TINY") and kversion and kversion >= "3.13":
+            if allocator == "SLAB":
+                resolver = Kernel.slab()
+                if resolver.initialize():
+                    caches = resolver.walk_caches(["kmalloc-256"], [], simple=True)
+                    for cache in caches[1:]:
+                        for node in cache.get("nodes", []):
+                            for page in node.values():
+                                for entry in page:
+                                    if entry.get("s_mem_base"):
+                                        return entry["address"], entry["s_mem_base"]
+            else:
+                resolver = Kernel.slub_tiny()
+                if resolver.initialize():
+                    for size in (8, 16, 32, 64, 128, 192, 256, 512):
+                        caches = resolver.walk_caches(["kmalloc-{:d}".format(size)], simple=True, skip_page2virt=True)
+                        for cache in caches[1:]:
+                            for node in cache.get("nodes", []):
+                                for page in node:
+                                    if page.get("virt_addr"):
+                                        return page["address"], page["virt_addr"]
+            return False
+
         if allocator in ["SLUB", "SLUB_TINY"]:
             # get valid page and vaddr pair
             command = {"SLUB": "slub-dump --node --skip-sheaf", "SLUB_TINY": "slub-tiny-dump"}[allocator]
@@ -156600,6 +156624,25 @@ class SlabContainsCommand(GenericCommand):
     def initialize(self, allocator):
         if allocator == "SLAB" and Kernel.version() < "3.13":
             return Kernel.slab().initialize()
+        if is_kgdb() and allocator in ("SLAB", "SLUB_TINY"):
+            resolver = Kernel.slab() if allocator == "SLAB" else Kernel.slub_tiny()
+            if not resolver.initialize():
+                return None
+            prefix = "page" if allocator == "SLAB" else "slab"
+            self.page_offset_slab_cache = getattr(resolver, prefix + "_offset_slab_cache")
+            self.page_offset_next = getattr(resolver, prefix + "_offset_next")
+            self.kmem_cache_offset_name = resolver.kmem_cache_offset_name
+            self.kmem_cache_offset_size = resolver.kmem_cache_offset_size
+            self.kmem_cache_offset_object_size = resolver.kmem_cache_offset_object_size
+            self.slab_virtual_enabled = False
+            if allocator == "SLAB":
+                self.page_offset_s_mem = resolver.page_offset_s_mem
+                self.kmem_cache_offset_gfporder = resolver.kmem_cache_offset_gfporder
+                self.kmem_cache_offset_num = resolver.kmem_cache_offset_num
+            else:
+                self.kmem_cache_offset_red_left_pad = resolver.kmem_cache_offset_red_left_pad
+                self.page_offset_inuse_objects_frozen = resolver.slab_offset_inuse_objects_frozen
+            return True
         cmd = {"SLUB": "slub-dump", "SLAB": "slab-dump", "SLUB_TINY": "slub-tiny-dump"}[allocator]
         res = gdb.execute("{:s} --meta".format(cmd), to_string=True)
 
