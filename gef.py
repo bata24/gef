@@ -178797,7 +178797,8 @@ class AddrMap:
             if is_arm32():
                 return "PL0/---" in self.flags or self.vstart == 0xffff_0000
             if is_arm64():
-                return "EL0/---" in self.flags
+                # Older kernels leave EL0 execute permission on TTBR1 mappings.
+                return not self.is_userland()
             return False
 
         def v2p(self, address):
