@@ -2085,9 +2085,18 @@ class Permission:
 
     def __str__(self):
         perm_str = ""
-        perm_str += "r" if self & Permission.READ else "-"
-        perm_str += "w" if self & Permission.WRITE else "-"
-        perm_str += "x" if self & Permission.EXECUTE else "-"
+        if self & Permission.READ:
+            perm_str += "r"
+        else:
+            perm_str += "-"
+        if self & Permission.WRITE:
+            perm_str += "w"
+        else:
+            perm_str += "-"
+        if self & Permission.EXECUTE:
+            perm_str += "x"
+        else:
+            perm_str += "-"
         return perm_str
 
     def match(self, perm_str):
@@ -6602,7 +6611,10 @@ def hexdump(source, length=0x10, separator=".", color=True, show_symbol=True, ba
 
         if show_symbol:
             sym = Symbol.format(addr)
-            sym = " " + sym if sym else ""
+            if sym:
+                sym = " " + sym
+            else:
+                sym = ""
         else:
             sym = ""
         if len(sym) > max_sym_width:
@@ -6741,7 +6753,10 @@ class Symbol:
         if symbol and bracket:
             symbol = "{:s}{:s}{:s}".format(bracket[0], symbol, bracket[1])
         if show_address and addr is not None:
-            address = AddressUtil.format_address(addr) if nocolor else ProcessMap.lookup(addr)
+            if nocolor:
+                address = AddressUtil.format_address(addr)
+            else:
+                address = ProcessMap.lookup(addr)
             return "{!s}{:s}".format(address, " " + symbol if symbol else "")
         return symbol
 
@@ -6757,7 +6772,10 @@ class Symbol:
         if not match:
             return None
         address = int(match.group(1), 16)
-        return address if is_valid_addr(address) else None
+        if is_valid_addr(address):
+            return address
+        else:
+            return None
 
 
 class ProgressBar:
@@ -8669,7 +8687,10 @@ class X86(Architecture):
         if X86.is_loop(insn):
             bits = self.bit_length
             if 0x67 in insn.opcodes[:-2]:
-                bits = 16 if bits == 32 else 32
+                if bits == 32:
+                    bits = 16
+                else:
+                    bits = 32
             reg = {16: "$cx", 32: "$ecx", 64: "$rcx"}[bits]
             count = (int(gdb.parse_and_eval(reg)) - 1) & ((1 << bits) - 1)
             if len(insn.opcodes) >= 2:
@@ -9362,7 +9383,10 @@ class PPC(Architecture):
                     if ctr is None:
                         return None, "CTR unavailable"
                     count = (ctr - 1) & ((1 << self.bit_length) - 1)
-                    taken = (count == 0) if bo & 2 else (count != 0)
+                    if bo & 2:
+                        taken = count == 0
+                    else:
+                        taken = count != 0
                     reason.append("(CTR-1)==0" if bo & 2 else "(CTR-1)!=0")
                 if not bo & 16:
                     cr = get_register(self.flag_register)
@@ -10005,7 +10029,10 @@ class MIPS(Architecture):
             fsr = get_register("$fsr")
             if fsr is None:
                 return None, "FCSR unavailable"
-            cc = int(ops[0][4:]) if ops[0].startswith("$fcc") else 0
+            if ops[0].startswith("$fcc"):
+                cc = int(ops[0][4:])
+            else:
+                cc = 0
             cond = (fsr >> (23 if cc == 0 else 24 + cc)) & 1
             if mnemo.startswith("bc1t"):
                 taken, reason = cond == 1, "fcc{:d} == 1".format(cc)
@@ -16152,7 +16179,10 @@ class EventHandler:
         """GDB event handler for new object continue cases."""
         ExecAsm.clear_queued_signal(event)
         thread = getattr(event, "inferior_thread", None) or gdb.selected_thread()
-        context = thread if gdb.parameter("non-stop") else gdb.selected_inferior()
+        if gdb.parameter("non-stop"):
+            context = thread
+        else:
+            context = gdb.selected_inferior()
         ExecAsm.stop_reasons.pop(context, None)
         return
 
@@ -20091,7 +20121,10 @@ class CppVtableCommand(GenericCommand, BufferingOutput):
             pass
 
         if depth:
-            prefix += "    " if last else "\u2502   "
+            if last:
+                prefix += "    "
+            else:
+                prefix += "\u2502   "
         for i, (base, offset, flags) in enumerate(record["bases"]):
             if flags & 2:
                 attributes = "public"
@@ -20516,7 +20549,10 @@ class IouringDumpCommand(GenericCommand, BufferingOutput):
                     name = "SQ ring"
                 else:
                     name = "CQ ring"
-            name += " (IORING_OFF_SQ_RING" if is_sq else " (IORING_OFF_CQ_RING"
+            if is_sq:
+                name += " (IORING_OFF_SQ_RING"
+            else:
+                name += " (IORING_OFF_CQ_RING"
             if not layout and delta == 0:
                 name += ", unknown layout"
                 lines = ["struct {:s} on Linux v5.1-v5.3, struct io_rings on Linux v5.4-".format(
@@ -23060,7 +23096,10 @@ class SearchPatternCommand(GenericCommand):
         # A rejected match must not consume the overlapping candidates, so the search restarts after it.
         # For hex regex, a match must start at an even position since 2 characters make a byte.
         regex = re.compile(pattern)
-        unit = 2 if self.args.hex_regex else 1
+        if self.args.hex_regex:
+            unit = 2
+        else:
+            unit = 1
         while pos <= len(mem):
             for match in regex.finditer(mem, pos):
                 if match.start() % unit:
@@ -23781,7 +23820,10 @@ class SearchMangledPtrCommand(GenericCommand):
 
     def print_loc(self, addr, value, decoded):
         addr_sym = Symbol.format(addr)
-        addr_sym = " " + addr_sym if addr_sym else ""
+        if addr_sym:
+            addr_sym = " " + addr_sym
+        else:
+            addr_sym = ""
 
         if is_valid_addr(decoded):
             valid_msg = Color.colorify("valid", "bold green")
@@ -24921,7 +24963,10 @@ class ReadSystemRegisterForKgdbCommand(GenericCommand):
         d = dic.get(reg_name.lower(), None) or dic.get(reg_name.upper(), None)
         if not d:
             return None
-        alignment = 4 if is_arm64() else 1
+        if is_arm64():
+            alignment = 4
+        else:
+            alignment = 1
 
         for symbol in d["sym"]:
             # resolve symbol
@@ -28252,7 +28297,10 @@ class FutureCallsCommand(GenericCommand, BufferingOutput):
         self.stop_reasons = set()
         self.truncated_reasons = set()
         self.debug_events = []
-        start_address = current_arch.pc if self.args.address is None else self.args.address
+        if self.args.address is None:
+            start_address = current_arch.pc
+        else:
+            start_address = self.args.address
         root = UnicornEmulator.Node(start_address, kind="root")
 
         with UnicornEmulateCommand.emulation_session({
@@ -28693,7 +28741,10 @@ class CapstoneDisassembleCommand(GenericCommand):
             return
 
         length = args.length or Config.get("capstone_disassemble.nb_lines_code_default")
-        location = current_arch.pc if args.location is None else args.location
+        if args.location is None:
+            location = current_arch.pc
+        else:
+            location = args.location
 
         try:
             skip = length * self.repeat_count
@@ -31897,7 +31948,10 @@ class GlibcHeapSnapshotCompareCommand(GenericCommand, BufferingOutput):
             return
         raw1, info1 = ret1
         raw2, info2 = ret2
-        endian = "little" if Endian.is_little_endian() else "big"
+        if Endian.is_little_endian():
+            endian = "little"
+        else:
+            endian = "big"
         for info in (info1, info2):
             if not isinstance(info, dict):
                 err("Invalid snapshot metadata")
@@ -31907,7 +31961,10 @@ class GlibcHeapSnapshotCompareCommand(GenericCommand, BufferingOutput):
                 if ptrsize is None:
                     chunk = info["chunks"][0]
                     width = chunk["start_offset"] + chunk["size"] - chunk["end_offset"]
-                    ptrsize = width // 2 if width % 2 == 0 else None
+                    if width % 2 == 0:
+                        ptrsize = width // 2
+                    else:
+                        ptrsize = None
             except (KeyError, IndexError, TypeError):
                 err("Invalid snapshot metadata")
                 return
@@ -32467,7 +32524,10 @@ class AssembleCommand(GenericCommand):
                     arch="X86", mode="64", endian=args.big_endian,
                 )
                 arch_mode_s = "X86:64"
-                endian_s = "big" if args.big_endian else "little"
+                if args.big_endian:
+                    endian_s = "big"
+                else:
+                    endian_s = "little"
         elif not args.arch:
             err("An architecture (-a) must be provided")
             return
@@ -32585,7 +32645,10 @@ class DisassembleCommand(GenericCommand):
                     arch="X86", mode="64", endian=args.big_endian,
                 )
                 arch_mode_s = "X86:64"
-                endian_s = "big" if args.big_endian else "little"
+                if args.big_endian:
+                    endian_s = "big"
+                else:
+                    endian_s = "little"
         elif not args.arch:
             err("An architecture (-a) must be provided")
             return
@@ -32878,7 +32941,10 @@ class AsmListCommand(GenericCommand):
                     arch="X86", mode="64", endian=args.big_endian,
                 )
                 arch_mode_s = "X86:64"
-                endian_s = "big" if args.big_endian else "little"
+                if args.big_endian:
+                    endian_s = "big"
+                else:
+                    endian_s = "little"
         elif not args.arch:
             err("An architecture (-a) must be provided")
             return
@@ -34013,7 +34079,10 @@ class ChecksecCommand(GenericCommand):
             gef_print("{:<40s}: {:s}".format("PIE", self.get_colored_msg(sec["PIE"])))
         else:
             vaddr = min((p.p_vaddr for p in elf.phdrs if p.p_type == Elf.Phdr.PT_LOAD), default=None)
-            detail = "{:#x}".format(vaddr) if vaddr is not None else "N/A"
+            if vaddr is not None:
+                detail = "{:#x}".format(vaddr)
+            else:
+                detail = "N/A"
             gef_print("{:<40s}: {:s} ({:s})".format("PIE", self.get_colored_msg(sec["PIE"]), detail))
 
         # RELRO
@@ -35612,7 +35681,10 @@ class KernelChecksecCommand(GenericCommand):
         offsets = [GefUtil.offsetof("ctl_table", member) for member in members]
         if None not in offsets:
             randomized = offsets != sorted(offsets)
-            state = Color.colorify("Enabled", "bold green") if randomized else Color.colorify("Disabled", "bold red")
+            if randomized:
+                state = Color.colorify("Enabled", "bold green")
+            else:
+                state = Color.colorify("Disabled", "bold red")
             gef_print("{:<40s}: {:s} (ctl_table layout from debug information)".format(cfg, state))
             return
 
@@ -39401,7 +39473,10 @@ class CommandBreakCommand(GenericCommand):
     def do_invoke(self, args):
         location = args.location
         if location is None:
-            location = current_arch.pc if current_arch else None
+            if current_arch:
+                location = current_arch.pc
+            else:
+                location = None
         if location is None:
             err("Specify a location")
             return
@@ -39620,7 +39695,10 @@ class ContextCommand(GenericCommand):
 
     def complete(self, text, word):
         words = text.split()
-        prefix = words[-1] if words else ""
+        if words:
+            prefix = words[-1]
+        else:
+            prefix = ""
         if prefix in self.commands:
             prefix = ""
         return GefUtil.complete_candidates(self.commands, prefix, word)
@@ -41537,7 +41615,10 @@ class ContextThreadsCommand(GenericCommand):
                     # make reason
                     line += " at " + Symbol.format(pc, missing="NO_SYMBOL", show_address=True)
                     stop = GefUtil.get_stop_reason()
-                    reason = stop["reason"] if stop else "STOPPED"
+                    if stop:
+                        reason = stop["reason"]
+                    else:
+                        reason = "STOPPED"
                     line += ", reason: {:s}".format(Color.colorify(reason, "bold magenta"))
 
                 lines.append([thread.num, line])
@@ -42250,7 +42331,10 @@ class LoadFileMmapCommand(GenericCommand):
             return
 
         output_lines = Color.remove_color(res).splitlines()
-        match = re.fullmatch(r"\S+ = (0x[0-9a-fA-F]+)(?: \(.*\))?", output_lines[-1]) if output_lines else None
+        if output_lines:
+            match = re.fullmatch(r"\S+ = (0x[0-9a-fA-F]+)(?: \(.*\))?", output_lines[-1])
+        else:
+            match = None
         if match is None:
             err("Failed to mmap")
             return
@@ -43033,7 +43117,10 @@ class PatchInfloopCommand(PatchCommand):
                 insn = insn[::-1]
         elif current_arch.has_delay_slot:
             nop = current_arch.nop_insn
-            insn += nop[::-1] if Endian.is_big_endian() else nop
+            if Endian.is_big_endian():
+                insn += nop[::-1]
+            else:
+                insn += nop
 
         self.PatchInfo(addr, insn, phys=self.args.phys).patch()
         return
@@ -43093,7 +43180,10 @@ class PatchTrapCommand(PatchCommand):
         addr, insn = self.get_patch_insn(addr, "trap")
         if current_arch.has_delay_slot and not isinstance(current_arch, MIPS):
             nop = current_arch.nop_insn
-            insn += nop[::-1] if Endian.is_big_endian() else nop
+            if Endian.is_big_endian():
+                insn += nop[::-1]
+            else:
+                insn += nop
 
         self.PatchInfo(addr, insn, phys=self.args.phys).patch()
         return
@@ -43194,7 +43284,10 @@ class PatchRetCommand(PatchCommand):
                 raise gdb.error("--return-mode is only supported on SPARC")
             if current_arch.has_ret_delay_slot:
                 nop = current_arch.nop_insn
-                insn += nop[::-1] if Endian.is_big_endian() else nop
+                if Endian.is_big_endian():
+                    insn += nop[::-1]
+                else:
+                    insn += nop
 
         self.PatchInfo(addr, insn, phys=self.args.phys).patch()
         return
@@ -43254,7 +43347,10 @@ class PatchSyscallCommand(PatchCommand):
         addr, insn = self.get_patch_insn(addr, "syscall")
         if current_arch.has_syscall_delay_slot:
             nop = current_arch.nop_insn
-            insn += nop[::-1] if Endian.is_big_endian() else nop
+            if Endian.is_big_endian():
+                insn += nop[::-1]
+            else:
+                insn += nop
 
         self.PatchInfo(addr, insn, phys=self.args.phys).patch()
         return
@@ -44333,7 +44429,10 @@ class CommentAddCommand(CommentCommand):
     def do_invoke(self, args):
         if not is_alive():
             filepath = Path.get_filepath()
-            elf = Elf.get_elf(filepath) if filepath else None
+            if filepath:
+                elf = Elf.get_elf(filepath)
+            else:
+                elf = None
             if elf is not None and elf.is_valid() and elf.is_pie():
                 try:
                     int(args.location, 0)
@@ -45740,9 +45839,12 @@ class UcontextCommand(GenericCommand):
             layout["sigmask_size"] = 16
         else:
             layout["sigmask_size"] = 8
-        layout["sigmask_word"] = 8 if arch in (
+        if arch in (
             "x64", "aarch64", "riscv64", "mips64", "ppc64", "s390x", "loongarch64", "sparc64", "alpha", "arc64",
-        ) else 4
+        ):
+            layout["sigmask_word"] = 8
+        else:
+            layout["sigmask_word"] = 4
         return layout
 
     @staticmethod
@@ -46115,9 +46217,12 @@ class JmpbufCommand(GenericCommand):
             layout["sigmask_size"] = 16
         else:
             layout["sigmask_size"] = 8
-        layout["sigmask_word"] = 8 if arch in (
+        if arch in (
             "x64", "aarch64", "riscv64", "mips64", "ppc64", "s390x", "loongarch64", "sparc64", "alpha", "arc64",
-        ) else 4
+        ):
+            layout["sigmask_word"] = 8
+        else:
+            layout["sigmask_word"] = 4
         return layout
 
     @Decorator.parse_args
@@ -47937,7 +48042,10 @@ class FpChainCommand(GenericCommand):
         i = 1
         seen = set()
         while is_valid_addr(current):
-            addr = current if i == 1 else current + offset_of_chain
+            if i == 1:
+                addr = current
+            else:
+                addr = current + offset_of_chain
             next_value = read_int_from_memory(addr, safe=True)
             if next_value is None:
                 warn("Memory read error at {:#x}".format(addr))
@@ -48001,7 +48109,10 @@ class StandardIoCommand(GenericCommand, BufferingOutput):
             if member_name == "__addr__":
                 address_obj = ProcessMap.lookup(st)
                 sym = Symbol.format(st)
-                sym = " " + sym if sym else ""
+                if sym:
+                    sym = " " + sym
+                else:
+                    sym = ""
                 msg += "{:s}{:{:d}s} ".format(address_obj.long_fmt(), sym, sym_width)
             elif not is_valid_addr(member_addr):
                 msg += "{:{:d}s}{:{:d}s} ".format("", val_width, "", sym_width)
@@ -48009,7 +48120,10 @@ class StandardIoCommand(GenericCommand, BufferingOutput):
                 val = read_int_from_memory(member_addr)
                 address_obj = ProcessMap.lookup(val)
                 sym = Symbol.format(val)
-                sym = " " + sym if sym else ""
+                if sym:
+                    sym = " " + sym
+                else:
+                    sym = ""
                 msg += "{:s}{:{:d}s} ".format(address_obj.long_fmt(), sym, sym_width)
             elif member_size == 8:
                 val = read_int64_from_memory(member_addr)
@@ -48557,7 +48671,10 @@ class GotCommand(GenericCommand, BufferingOutput):
                 got_value_sym = self.get_section_sym(got_value)
             else:
                 got_value_sym = Symbol.format(got_value)
-                got_value_sym = " " + got_value_sym if got_value_sym else ""
+                if got_value_sym:
+                    got_value_sym = " " + got_value_sym
+                else:
+                    got_value_sym = ""
 
             # different colors if the function has been resolved or not
             if got_value == 0:
@@ -49863,7 +49980,10 @@ class GlibcHeapTracerCommand(GenericCommand):
         return
 
     def clean(self, event):
-        inferior = event.inferior if event is not None else gdb.selected_inferior()
+        if event is not None:
+            inferior = event.inferior
+        else:
+            inferior = gdb.selected_inferior()
         if inferior not in GlibcHeapTracerCommand.heap_states:
             return
         ok("{:s} - Cleaning up".format(Color.colorify("Heap-Analysis", "bold yellow")))
@@ -62080,7 +62200,10 @@ class MagicCommand(GenericCommand):
         else:
             val = ProcessMap.lookup(read_int_from_memory(addr.value))
             val_sym = Symbol.format(val.value)
-            val_sym = " " + val_sym if val_sym else ""
+            if val_sym:
+                val_sym = " " + val_sym
+            else:
+                val_sym = ""
             gef_print("{:45s} {!s} [{!s}] ({:+#011x}) -> {:s}{:s}".format(
                 sym, addr, perm, addr.value - base, val.long_fmt(), val_sym,
             ))
@@ -62620,7 +62743,10 @@ class OneGadgetCommand(GenericCommand):
             target = m.group(1)[1:-1] # skip "[", "]"
             suffix = exp[m.regs[1][1]:]
             cast = re.search(r"\((?:unsigned|signed) (?:short|int|long long)\)$", prefix.rstrip())
-            target_type = cast.group(0)[1:-1] if cast else "unsigned long"
+            if cast:
+                target_type = cast.group(0)[1:-1]
+            else:
+                target_type = "unsigned long"
             target = "(*({:s}*)({:s}))".format(target_type, target)
             exp = prefix + target + suffix
 
@@ -64312,7 +64438,10 @@ class U2dCommand(GenericCommand):
         gef_print(Color.cyanify("ull -> double -> ull (static_cast)"))
         d = float(n)
         restored = int(d)
-        result = "{:#018x}".format(restored) if restored <= 0xffff_ffff_ffff_ffff else "<out of range>"
+        if restored <= 0xffff_ffff_ffff_ffff:
+            result = "{:#018x}".format(restored)
+        else:
+            result = "<out of range>"
         gef_print("  {:#018x} ---> {:.20e} ---> {}".format(n, d, result))
         gef_print(Color.cyanify("double -> ull (reinterpret_cast)"))
         gef_print("  {:.20e} ---> {:#018x}".format(d, GefUtil.d2u(d)))
@@ -64325,7 +64454,10 @@ class U2dCommand(GenericCommand):
         bits = GefUtil.f2u(n)
         f = GefUtil.u2f(bits)
         restored = int(f)
-        result = "{:#010x}".format(restored) if restored <= 0xffff_ffff else "<out of range>"
+        if restored <= 0xffff_ffff:
+            result = "{:#010x}".format(restored)
+        else:
+            result = "<out of range>"
         gef_print("  {:#010x} ---> {:.20e} ---> {}".format(n, f, result))
         gef_print(Color.cyanify("float -> uint (reinterpret_cast)"))
         gef_print("  {:.20e} ---> {:#010x}".format(f, bits))
@@ -65038,7 +65170,10 @@ class CppMangleCommand(GenericCommand):
                 self.pos += 2
                 token += "[]"
             elif token in ("(", "["):
-                token += ")" if token == "(" else "]"
+                if token == "(":
+                    token += ")"
+                else:
+                    token += "]"
                 self.expect(token[1])
             elif token not in self.OPERATORS:
                 self.pos -= 1
@@ -65095,7 +65230,10 @@ class CppMangleCommand(GenericCommand):
         while True:
             token = self.peek()
             if token in ("const", "volatile"):
-                quals += "K" if token == "const" else "V"
+                if token == "const":
+                    quals += "K"
+                else:
+                    quals += "V"
             elif t is None and (token in self.BUILTINS or token in self.INTEGER_WORDS):
                 words.append(token)
             elif t is None and not words and token == "decltype":
@@ -65248,7 +65386,10 @@ class CppMangleCommand(GenericCommand):
                 else:
                     ref = "O"
             else:
-                quals += "K" if token == "const" else "V"
+                if token == "const":
+                    quals += "K"
+                else:
+                    quals += "V"
         return "".join(q for q in "VK" if q in quals), ref
 
     def unqualified(self, comp, encode_type):
@@ -66443,7 +66584,10 @@ class KernelAddressHeuristicFinderUtil:
                 res, False, True, 0, False, False, follow_addi=True, load_mnemonic=mnemonic, with_pc=True,
             ))
         registers = {}
-        pointers = {base_register: 0} if base_register else {}
+        if base_register:
+            pointers = {base_register: 0}
+        else:
+            pointers = {}
         stores = {}
         for line in res.splitlines():
             match = re.match(r"\s*(?:=>\s*)?(0x[0-9a-f]+)(?:\s+<[^>]*>)?:\s*(\S+)\s*(.*)", line)
@@ -69239,8 +69383,14 @@ class KernelAddressHeuristicFinder:
             kversion = Kernel.version()
             if kversion and kversion < "4.5":
                 sp = current_arch.sp
-                thread_size = 0x2000 if kversion < "3.11" else 0x4000
-                r = sp & ~(thread_size - 1) if sp is not None else None
+                if kversion < "3.11":
+                    thread_size = 0x2000
+                else:
+                    thread_size = 0x4000
+                if sp is not None:
+                    r = sp & ~(thread_size - 1)
+                else:
+                    r = None
             else:
                 r = get_register("$SP_EL0")
             if not r or not AddressUtil.is_msb_on(r) or not is_valid_addr(r):
@@ -71277,8 +71427,10 @@ class KernelAddressHeuristicFinder:
             section_shift = section_bits - consts.PAGE_SHIFT
             map_mask = AddressUtil.normalize_address(-1 << min(section_shift, consts.PAGE_SHIFT))
             pa_bits = (configs or {}).get("CONFIG_ARM64_PA_BITS")
-            shifts = ([64 - (int(pa_bits) - section_bits)] if pa_bits else
-                      [shift for shift in range(1, 64) if section_id and flags >> shift == section_id])
+            if pa_bits:
+                shifts = [64 - (int(pa_bits) - section_bits)]
+            else:
+                shifts = [shift for shift in range(1, 64) if section_id and flags >> shift == section_id]
             if len(shifts) != 1 or flags >> shifts[0] != section_id:
                 continue
             section_pgshift = shifts[0]
@@ -71523,7 +71675,10 @@ class KernelAddressHeuristicFinder:
             current = read_int_from_memory(addr)
             while current != addr:
                 name_addr = read_int_from_memory(current - ptrsize)
-                name = read_cstring_from_memory(name_addr, safe=True) if is_valid_addr(name_addr) else None
+                if is_valid_addr(name_addr):
+                    name = read_cstring_from_memory(name_addr, safe=True)
+                else:
+                    name = None
                 if name and len(name) <= 64 and name.isprintable():
                     for i in range(5, 64):
                         clocksource = current - ptrsize * i
@@ -73266,8 +73421,14 @@ class KernelAddressHeuristicFinder:
                     stores = KernelAddressHeuristicFinderUtil.riscv_load_store(res)
                     idx_offset = GefUtil.member_offset("struct devkmsg_user", "idx")
                     seq_offset = GefUtil.member_offset("struct devkmsg_user", "seq")
-                    idx_offset = 8 if idx_offset is None else idx_offset
-                    seq_offset = 0 if seq_offset is None else seq_offset
+                    if idx_offset is None:
+                        idx_offset = 8
+                    else:
+                        idx_offset = idx_offset
+                    if seq_offset is None:
+                        seq_offset = 0
+                    else:
+                        seq_offset = seq_offset
                     width = current_arch.ptrsize
                     g = set()
                     for (base, offset, size), source in stores.items():
@@ -73282,7 +73443,10 @@ class KernelAddressHeuristicFinder:
                         continue
                     x = g.pop()
                     length_addr = KernelAddressHeuristicFinder.get_log_buf_len()
-                    length = read_int32_from_memory(length_addr, safe=True) if length_addr else None
+                    if length_addr:
+                        length = read_int32_from_memory(length_addr, safe=True)
+                    else:
+                        length = None
                     value = read_int32_from_memory(x, safe=True)
                     if value is not None and length and value < length:
                         return x
@@ -73337,9 +73501,18 @@ class KernelAddressHeuristicFinder:
                         offset = align(current_arch.ptrsize * 3 + 6, 4) + 4
                     x = stores.get(("a0", offset, 4))
                     length_addr = KernelAddressHeuristicFinder.get_log_buf_len()
-                    length = read_int32_from_memory(length_addr, safe=True) if length_addr else None
-                    value = read_int32_from_memory(x, safe=True) if x else None
-                    return x if value is not None and length and value < length else None
+                    if length_addr:
+                        length = read_int32_from_memory(length_addr, safe=True)
+                    else:
+                        length = None
+                    if x:
+                        value = read_int32_from_memory(x, safe=True)
+                    else:
+                        value = None
+                    if value is not None and length and value < length:
+                        return x
+                    else:
+                        return None
                 else:
                     return None
                 for x in g:
@@ -76925,7 +77098,10 @@ class KernelRadixTree:
                     used = [x for x in slice_unpack(data, ptrsize) if x]
                     if len(used) != count:
                         shift = num_slots.bit_length()
-                        shadows = count >> shift if size_count == 4 else 0
+                        if size_count == 4:
+                            shadows = count >> shift
+                        else:
+                            shadows = 0
                         if not shadows or (count & ((1 << shift) - 1)) + shadows != len(used):
                             continue
                         if shadows != sum(x & 3 == self.RADIX_TREE_EXCEPTIONAL_ENTRY for x in used):
@@ -77314,8 +77490,14 @@ class KernelRBTree:
         self.offset_left = GefUtil.offsetof("rb_node", "rb_left")
         if self.offset_right is None or self.offset_left is None:
             kernel_target = is_qemu_system() or is_vmware() or is_kgdb() or is_in_kernel()
-            kversion = Kernel.version() if kernel_target else None
-            first_child = 2 if kversion is not None and kversion < "2.6.18" else 1
+            if kernel_target:
+                kversion = Kernel.version()
+            else:
+                kversion = None
+            if kversion is not None and kversion < "2.6.18":
+                first_child = 2
+            else:
+                first_child = 1
             self.offset_right = current_arch.ptrsize * first_child
             self.offset_left = self.offset_right + current_arch.ptrsize
         return
@@ -77465,7 +77647,10 @@ class KernelPerCpu:
         tid = lwp or tid
         if is_kgdb():
             tid = u2i(tid, 32)
-            return -tid - 2 if tid < -1 else None
+            if tid < -1:
+                return -tid - 2
+            else:
+                return None
         if not tid or tid < 0:
             return None
         return tid - 1
@@ -78725,7 +78910,10 @@ class KernelPath:
     def get_offset_i_mode(self):
         # i_mode is the first member of struct inode throughout the supported kernels.
         offset = GefUtil.offsetof("inode", "i_mode")
-        return offset if offset is not None else 0
+        if offset is not None:
+            return offset
+        else:
+            return 0
 
     @Cache.cache_this_session(cache_None=False)
     def get_offset_i_sb(self, inode):
@@ -80960,8 +81148,14 @@ class KernelCred:
                 for cred in cred_samples:
                     group_info = read_int_from_memory(cred + offset_group_info)
                     ngroups = read_int32_from_memory(group_info + 4)
-                    score += 2 if ngroups else 0
-                    score += 4 if init_groups is not None and group_info == init_groups else 0
+                    if ngroups:
+                        score += 2
+                    else:
+                        score += 0
+                    if init_groups is not None and group_info == init_groups:
+                        score += 4
+                    else:
+                        score += 0
                 candidates.append((score, -i, offset_group_info))
         if candidates:
             return max(candidates)[2]
@@ -82605,8 +82799,10 @@ class KernelSkbuff:
             nr_offset, nr_size, frag_list_offset, max_frags = dwarf
             max_frags = max_frags or 0xff
             try:
-                nr_frags = (read_int16_from_memory(shinfo + nr_offset) if nr_size == 2
-                            else read_int8_from_memory(shinfo + nr_offset))
+                if nr_size == 2:
+                    nr_frags = read_int16_from_memory(shinfo + nr_offset)
+                else:
+                    nr_frags = read_int8_from_memory(shinfo + nr_offset)
                 frag_list = read_int_from_memory(shinfo + frag_list_offset)
             except gdb.MemoryError:
                 return None
@@ -84379,7 +84575,10 @@ class KernelBpf:
                     offsets.update(type=8, expected_attach_type=12, len=16, jited_len=20)
                     end = 24
                 offsets["tag"] = end
-                end += 32 if "6.18" <= kversion else 8
+                if "6.18" <= kversion:
+                    end += 32
+                else:
+                    end += 8
             offsets["aux"] = align_to_ptrsize(end)
             offsets["bpf_func"] = offsets["aux"] + ptrsize * 2
             if "5.12" <= kversion:
@@ -88990,7 +89189,10 @@ class KernelNftablesRule:
         if offset_rules is not None:
             rules, status = self.decode_rule_list(entry, offset_rules)
             if self.knft.kversion >= "5.17":
-                status = "control-plane" if status in ("ok", "empty") else status + "; control-plane"
+                if status in ("ok", "empty"):
+                    status = "control-plane"
+                else:
+                    status = status + "; control-plane"
             return rules, status
         return None, None
 
@@ -89232,7 +89434,10 @@ class KernelNftablesRule:
             blob = blobs[0]
         else:
             return None
-        return blob if self.valid_blob(blob) else None
+        if self.valid_blob(blob):
+            return blob
+        else:
+            return None
 
     def blob_rule_records(self, blob):
         size = self.blob_size(blob)
@@ -90526,7 +90731,10 @@ class KernelCmdlineCommand(GenericCommand):
             return
 
         self.out = []
-        suffix = "" if kcmdline.complete else " [incomplete]"
+        if kcmdline.complete:
+            suffix = ""
+        else:
+            suffix = " [incomplete]"
         self.out.append("{:#x}: '{:s}'{:s}".format(kcmdline.address, kcmdline.cmdline, suffix))
         if not kcmdline.complete:
             self.quiet_warn("Incomplete command line: missing terminator within 64 KiB or unreadable memory")
@@ -93256,12 +93464,18 @@ class KernelKeyringCommand(GenericCommand, BufferingOutput):
     @staticmethod
     def cred_member_offset(member, fallback):
         offset = GefUtil.offsetof("cred", member)
-        return offset if offset is not None else fallback
+        if offset is not None:
+            return offset
+        else:
+            return fallback
 
     @staticmethod
     def tgcred_member_offset(member, fallback):
         offset = GefUtil.offsetof("thread_group_cred", member)
-        return offset if offset is not None else fallback
+        if offset is not None:
+            return offset
+        else:
+            return fallback
 
     def task_roots(self, cred):
         if self.cred_key_offsets is None:
@@ -97987,7 +98201,10 @@ class KernelOperationsCommand(GenericCommand, BufferingOutput):
                     sym = " {!r}".format(read_cstring_from_memory(address))
                 elif type_name in ("func_ptr", "ptr"):
                     sym = Symbol.format(address)
-                    sym = " " + sym if sym else ""
+                    if sym:
+                        sym = " " + sym
+                    else:
+                        sym = ""
                 else:
                     sym = ""
                 self.out.append("{:<5d} {:10s} {:{:d}s} {:#0{:d}x}{:s}".format(
@@ -102046,9 +102263,12 @@ class KernelWorkqueueCommand(GenericCommand, BufferingOutput):
         self.worklist_offset = None
         self.module_text_ranges = None
         kallsyms = Ksym.get_kallsyms()
-        self.kallsyms_text = {
-            address: name for address, name, symbol_type in kallsyms[0] if symbol_type.lower() in ("t", "w")
-        } if kallsyms else {}
+        if kallsyms:
+            self.kallsyms_text = {
+                address: name for address, name, symbol_type in kallsyms[0] if symbol_type.lower() in ("t", "w")
+            }
+        else:
+            self.kallsyms_text = {}
 
         layout = self.resolve_layout()
         for name, (value, source, label) in layout.items():
@@ -103750,16 +103970,31 @@ class KernelDmesgOldestRing(KernelDmesgRing):
         self.buf_len = log_buf_len
         self.log_end = log_end
         logged_chars_addr = Ksym.get_addr("logged_chars")
-        logged_chars = read_int32_from_memory(logged_chars_addr, safe=True) if logged_chars_addr else None
-        self.logged_chars = logged_chars if logged_chars is not None and logged_chars <= log_buf_len else None
-        log_start_addr = Ksym.get_addr("log_start") if self.logged_chars is None else None
+        if logged_chars_addr:
+            logged_chars = read_int32_from_memory(logged_chars_addr, safe=True)
+        else:
+            logged_chars = None
+        if logged_chars is not None and logged_chars <= log_buf_len:
+            self.logged_chars = logged_chars
+        else:
+            self.logged_chars = None
+        if self.logged_chars is None:
+            log_start_addr = Ksym.get_addr("log_start")
+        else:
+            log_start_addr = None
         if not log_start_addr and self.logged_chars is None:
             if is_x86():
                 log_start_addr = log_end_addr + 8
             elif is_arm32():
                 log_start_addr = log_end_addr + 4
-        log_start = read_int32_from_memory(log_start_addr, safe=True) if log_start_addr else None
-        self.log_start = log_start if log_start is not None and ((log_end - log_start) & 0xffff_ffff) <= log_buf_len else None
+        if log_start_addr:
+            log_start = read_int32_from_memory(log_start_addr, safe=True)
+        else:
+            log_start = None
+        if log_start is not None and ((log_end - log_start) & 0xffff_ffff) <= log_buf_len:
+            self.log_start = log_start
+        else:
+            self.log_start = None
         self.details = [
             "active log_buf: {:#x}, size: {:#x}".format(log_buf_start, log_buf_len),
             "legacy printk layout source: {:s}".format(layout_source),
@@ -104662,7 +104897,10 @@ class KernelSyscallsCommand(GenericCommand, BufferingOutput):
         try:
             if is_arm32() and Config.get("context_code.use_capstone"):
                 read_memory(addr & ~1, 1)
-                mode = "THUMB" if addr & 1 else "ARM"
+                if addr & 1:
+                    mode = "THUMB"
+                else:
+                    mode = "ARM"
                 insns = list(Disasm.capstone_disassemble(addr, 2, mode=mode))
             else:
                 insns = list(Disasm.gef_disassemble(addr, 2))
@@ -104675,7 +104913,10 @@ class KernelSyscallsCommand(GenericCommand, BufferingOutput):
     @Cache.cache_this_session(per_inferior=True, until_new_objfile=True)
     def analyze_syscall_function(self, syscall_function_addr):
         try:
-            symbol_addr = syscall_function_addr & ~1 if is_arm32() else syscall_function_addr
+            if is_arm32():
+                symbol_addr = syscall_function_addr & ~1
+            else:
+                symbol_addr = syscall_function_addr
             symbol = Symbol.format(symbol_addr, missing="NO_SYMBOL")
         except (gdb.error, gdb.MemoryError):
             return None
@@ -104758,7 +104999,10 @@ class KernelSyscallsCommand(GenericCommand, BufferingOutput):
             if not self.is_plausible_address(syscall_function_addr):
                 break
             try:
-                symbol_addr = syscall_function_addr & ~1 if is_arm32() else syscall_function_addr
+                if is_arm32():
+                    symbol_addr = syscall_function_addr & ~1
+                else:
+                    symbol_addr = syscall_function_addr
                 symbol = Symbol.format(symbol_addr, missing="NO_SYMBOL")
             except (gdb.error, gdb.MemoryError):
                 break
@@ -104875,7 +105119,10 @@ class KernelSyscallsCommand(GenericCommand, BufferingOutput):
 
         # print
         for i, addr, syscall_function_addr, symbol, is_valid in table:
-            symbol_addr = syscall_function_addr & ~1 if is_arm32() else syscall_function_addr
+            if is_arm32():
+                symbol_addr = syscall_function_addr & ~1
+            else:
+                symbol_addr = syscall_function_addr
             if symbol_addr in ni_syscalls:
                 symbol = "<{:s}>".format(ni_syscalls[symbol_addr])
             nr = nr_base + i
@@ -105106,7 +105353,10 @@ class ExecAsm:
             else:
                 gdb.execute("set $pc = {:#x}".format(dst), to_string=True)
         if is_x86_32() or is_x86_64():
-            reg = "$orig_rax" if is_x86_64() else "$orig_eax"
+            if is_x86_64():
+                reg = "$orig_rax"
+            else:
+                reg = "$orig_eax"
             if get_register(reg) is not None:
                 gdb.execute("set {:s} = -1".format(reg), to_string=True)
         self.pc = current_arch.pc
@@ -105142,7 +105392,10 @@ class ExecAsm:
         d = self.get_state()
         self.thread = gdb.selected_thread()
         self.stops.clear()
-        context = self.thread if gdb.parameter("non-stop") else gdb.selected_inferior()
+        if gdb.parameter("non-stop"):
+            context = self.thread
+        else:
+            context = gdb.selected_inferior()
         stop_reason = ExecAsm.stop_reasons.get(context)
         if stop_reason is None:
             stop_reason = {"info": gdb.execute("info program", to_string=True), "siginfo": {}}
@@ -105191,7 +105444,10 @@ class ExecAsm:
                 return None
             finally:
                 if not self.thread.is_valid():
-                    target = "Thread" if is_alive() else "Inferior"
+                    if is_alive():
+                        target = "Thread"
+                    else:
+                        target = "Inferior"
                     raise ExecAsm.ExecutionExitedError(
                         "{:s} exited while executing injected instructions".format(target)) from None
                 if check_complete and gdb.selected_thread() != self.thread:
@@ -105669,7 +105925,10 @@ class GdtInfoCommand(GenericCommand, BufferingOutput):
             # SYSTEM segment (call gate)
             entry["offseg0"] = val & 0xffff
             entry["segsel"] = (val >> 16) & 0xffff
-            entry["offseg1"] = (val >> 48) & 0xffff if entry["type_bytes"] == 0b1100 else 0
+            if entry["type_bytes"] == 0b1100:
+                entry["offseg1"] = (val >> 48) & 0xffff
+            else:
+                entry["offseg1"] = 0
             entry["offseg"] = (entry["offseg1"] << 16) | entry["offseg0"]
 
             if isinstance(vals, list):
@@ -149174,7 +149433,10 @@ class BaseNCodec:
                 raise ValueError("Input exceeded size limit")
             return (charset * value).encode("latin-1")
         if len(charset) == 10:
-            result = str(value) if value else ""
+            if value:
+                result = str(value)
+            else:
+                result = ""
         else:
             result = ""
             while value:
@@ -149449,7 +149711,10 @@ class BaseNCodec:
                 continue
             pending += digit * 91
             value |= pending << bit_count
-            bit_count += 13 if pending & 8191 > 88 else 14
+            if pending & 8191 > 88:
+                bit_count += 13
+            else:
+                bit_count += 14
             while bit_count > 7:
                 result.append(value & 255)
                 value >>= 8
@@ -149491,7 +149756,10 @@ class BaseNCodec:
         else:
             value = (data[index] & ((1 << available) - 1)) << (7 - available)
             index += 1
-            value |= data[index] >> (8 - (7 - available)) if index < len(data) else 0
+            if index < len(data):
+                value |= data[index] >> (8 - (7 - available))
+            else:
+                value |= 0
             bit = 7 - available
         if bit >= 8:
             bit -= 8
@@ -152868,7 +153136,10 @@ class KernelSlub:
                 kmem_cache["size"] * active_page["objects"] + (pagesize - 1)
             ) // pagesize
             # Round the required page count up to 2^n.
-            active_page["num_pages"] = 1 << (pages_needed - 1).bit_length() if pages_needed else 0
+            if pages_needed:
+                active_page["num_pages"] = 1 << (pages_needed - 1).bit_length()
+            else:
+                active_page["num_pages"] = 0
 
             active_page["virt_addr"] = self.page2virt(
                 active_page, kmem_cache, kmem_cache["kmem_cache_cpu"][cpu]["freelist"]
@@ -152904,7 +153175,10 @@ class KernelSlub:
                 kmem_cache["size"] * partial_page["objects"] + (pagesize - 1)
             ) // pagesize
             # Round the required page count up to 2^n.
-            partial_page["num_pages"] = 1 << (pages_needed - 1).bit_length() if pages_needed else 0
+            if pages_needed:
+                partial_page["num_pages"] = 1 << (pages_needed - 1).bit_length()
+            else:
+                partial_page["num_pages"] = 0
             partial_page["virt_addr"] = self.page2virt(partial_page, kmem_cache, skip_page2virt=skip_page2virt)
             kmem_cache["kmem_cache_cpu"][cpu]["partial_pages"].append(partial_page)
             next_partial_page = read_int_from_memory(current_partial_page + self.page_offset_next)
@@ -152943,7 +153217,10 @@ class KernelSlub:
                 kmem_cache["size"] * node_page["objects"] + (pagesize - 1)
             ) // pagesize
             # Round the required page count up to 2^n.
-            node_page["num_pages"] = 1 << (pages_needed - 1).bit_length() if pages_needed else 0
+            if pages_needed:
+                node_page["num_pages"] = 1 << (pages_needed - 1).bit_length()
+            else:
+                node_page["num_pages"] = 0
             node_page["virt_addr"] = self.page2virt(node_page, kmem_cache, skip_page2virt=skip_page2virt)
             node_page_list.append(node_page)
             current_node_page = read_int_from_memory(node_page["address"] + self.page_offset_next)
@@ -154513,7 +154790,10 @@ class KernelSlubTiny:
                     kmem_cache["size"] * node_page["objects"] + (pagesize - 1)
                 ) // pagesize
                 # Round the required page count up to 2^n.
-                node_page["num_pages"] = 1 << (pages_needed - 1).bit_length() if pages_needed else 0
+                if pages_needed:
+                    node_page["num_pages"] = 1 << (pages_needed - 1).bit_length()
+                else:
+                    node_page["num_pages"] = 0
                 node_page["virt_addr"] = self.page2virt(node_page, kmem_cache, skip_page2virt=skip_page2virt)
                 node_page_list.append(node_page)
                 current_node_page = read_int_from_memory(node_page["address"] + self.slab_offset_next)
@@ -155147,8 +155427,10 @@ class KernelSlab:
         # offsetof(kmem_cache, object_size)
         self.kmem_cache_offset_object_size = GefUtil.offsetof("kmem_cache", "object_size")
         if self.kmem_cache_offset_object_size is None:
-            self.kmem_cache_offset_object_size = (self.kmem_cache_offset_list + current_arch.ptrsize * 2 + 4
-                                                  if "3.7" <= kversion else self.kmem_cache_offset_size)
+            if "3.7" <= kversion:
+                self.kmem_cache_offset_object_size = self.kmem_cache_offset_list + current_arch.ptrsize * 2 + 4
+            else:
+                self.kmem_cache_offset_object_size = self.kmem_cache_offset_size
         self.meta.append(("info", "offsetof(kmem_cache, object_size): {:#x}".format(self.kmem_cache_offset_object_size)))
 
         # offsetof(kmem_cache, node)
@@ -155164,8 +155446,10 @@ class KernelSlab:
             self.kmem_cache_offset_cpu_cache = 0
             self.meta.append(("info", "offsetof(kmem_cache, cpu_cache): {:#x}".format(self.kmem_cache_offset_cpu_cache)))
         else:
-            self.kmem_cache_offset_array = (0 if kversion < "3.1"
-                                            else self.kmem_cache_offset_node + current_arch.ptrsize)
+            if kversion < "3.1":
+                self.kmem_cache_offset_array = 0
+            else:
+                self.kmem_cache_offset_array = self.kmem_cache_offset_node + current_arch.ptrsize
             self.meta.append(("info", "offsetof(kmem_cache, array): {:#x}".format(self.kmem_cache_offset_array)))
 
         # offsetof(kmem_cache_node, slabs_partial)
@@ -155618,9 +155902,12 @@ class KernelSlab:
                     min_size = to_unsigned_long(gdb.parse_and_eval("SLAB_OBJ_MIN_SIZE"))
                 except gdb.error:
                     pass
-                kmem_cache["freelist_idx_size"] = (int(index_type.sizeof) if index_type is not None
-                                                   else 1 if KernelAddressHeuristicFinder.consts().PAGE_SIZE >> 8 <= min_size
-                                                   else 2)
+                if index_type is not None:
+                    kmem_cache["freelist_idx_size"] = int(index_type.sizeof)
+                elif KernelAddressHeuristicFinder.consts().PAGE_SIZE >> 8 <= min_size:
+                    kmem_cache["freelist_idx_size"] = 1
+                else:
+                    kmem_cache["freelist_idx_size"] = 2
             gfporder = read_int32_from_memory(current_kmem_cache + self.kmem_cache_offset_gfporder)
             kmem_cache["pagesperslab"] = 1 << gfporder
             kmem_cache["next"] = self.get_next_kmem_cache(current_kmem_cache, reverse_walk=reverse_walk)
@@ -155663,9 +155950,12 @@ class KernelSlab:
                 array = "((struct kmem_cache *)0)->node"
             else:
                 array = None
-            count = (GefUtil.get_kernel_cache_node_count(
-                self, kmem_cache_node_array - kmem_cache["address"], current_arch.ptrsize,
-            ) if "3.1" <= kversion else None)
+            if "3.1" <= kversion:
+                count = GefUtil.get_kernel_cache_node_count(
+                    self, kmem_cache_node_array - kmem_cache["address"], current_arch.ptrsize,
+                )
+            else:
+                count = None
             for node_index, current_kmem_cache_node in GefUtil.iter_kernel_node_pointers(
                     kmem_cache_node_array, array, count=count):
                 slabs_list = {}
@@ -156654,10 +156944,16 @@ class SlabContainsCommand(GenericCommand):
         if allocator == "SLAB" and Kernel.version() < "3.13":
             return Kernel.slab().initialize()
         if is_kgdb() and allocator in ("SLAB", "SLUB_TINY"):
-            resolver = Kernel.slab() if allocator == "SLAB" else Kernel.slub_tiny()
+            if allocator == "SLAB":
+                resolver = Kernel.slab()
+            else:
+                resolver = Kernel.slub_tiny()
             if not resolver.initialize():
                 return None
-            prefix = "page" if allocator == "SLAB" else "slab"
+            if allocator == "SLAB":
+                prefix = "page"
+            else:
+                prefix = "slab"
             self.page_offset_slab_cache = getattr(resolver, prefix + "_offset_slab_cache")
             self.page_offset_next = getattr(resolver, prefix + "_offset_next")
             self.kmem_cache_offset_name = resolver.kmem_cache_offset_name
@@ -156867,7 +157163,10 @@ class SlabContainsCommand(GenericCommand):
                 objects = (x >> 16) & 0x7fff
                 pages_needed = (slab_cache_size * objects + (pagesize - 1)) // pagesize
                 # Round the required page count up to 2^n.
-                num_pages = 1 << (pages_needed - 1).bit_length() if pages_needed else 0
+                if pages_needed:
+                    num_pages = 1 << (pages_needed - 1).bit_length()
+                else:
+                    num_pages = 0
             else:
                 red_left_pad = 0
                 s_mem = read_int_from_memory(page + self.page_offset_s_mem)
@@ -158389,7 +158688,10 @@ class KernelBuddy:
         page_list = KernelListHead(head, self.offset_lru)
         for page in page_list.iter_entries():
             link = page + self.offset_lru
-            next_link = read_int_from_memory(link, safe=True) if link else None
+            if link:
+                next_link = read_int_from_memory(link, safe=True)
+            else:
+                next_link = None
             if next_link is None:
                 self.list_scan_incomplete = True
                 break
@@ -158910,9 +159212,12 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
         size_str = Color.colorify("{:#08x}".format(entry["size"]), chunk_size_color)
         addresses = self.kbuddy.get_entry_addresses(entry, skip_phys=self.args.skip_phys)
         virt, phys = addresses["virt"], addresses["phys"]
-        virt_str = "???" if virt is None else Color.colorify(
-            "{:#0{:d}x}-{:#0{:d}x}".format(virt, align, virt + entry["size"], align), heap_page_color,
-        )
+        if virt is None:
+            virt_str = "???"
+        else:
+            virt_str = Color.colorify(
+                "{:#0{:d}x}-{:#0{:d}x}".format(virt, align, virt + entry["size"], align), heap_page_color,
+            )
         if phys is None:
             phys_str = "???"
         else:
@@ -163837,7 +164142,10 @@ class Ksym:
         if match in ("split", "prefix"):
             if Ksym.name_index is None:
                 Ksym.name_index = sorted((symbol[1], i) for i, symbol in enumerate(kallsyms))
-            prefix = name + "." if match == "split" else name
+            if match == "split":
+                prefix = name + "."
+            else:
+                prefix = name
             indices = []
             start = bisect.bisect_left(Ksym.name_index, (prefix,))
             for i in range(start, len(Ksym.name_index)):
@@ -170558,13 +170866,15 @@ class SsmallocHeapDumpCommand(GenericCommand, BufferingOutput):
             if name.startswith(("offset_", "sizeof_")) or name in ("DEFAULT_BLOCK_CLASS", "MAX_CORE_ID", "BLOCK_BUF_CNT"):
                 setattr(self, name, value)
 
-        structures = {"gpool": "gpool_s"} if global_only else {
-            "dchunk": "dchunk_s", "lheap": "lheap_s", "obj_buf": "obj_buf_s",
-        }
-        sizes = {"sizeof_queue": "Queue"} if global_only else {
-            "sizeof_linked_list": "LinkedList", "sizeof_queue": "FastQueue",
-            "sizeof_obj_buf": "obj_buf_t", "sizeof_dchunk": "dchunk_t",
-        }
+        if global_only:
+            structures = {"gpool": "gpool_s"}
+            sizes = {"sizeof_queue": "Queue"}
+        else:
+            structures = {"dchunk": "dchunk_s", "lheap": "lheap_s", "obj_buf": "obj_buf_s"}
+            sizes = {
+                "sizeof_linked_list": "LinkedList", "sizeof_queue": "FastQueue",
+                "sizeof_obj_buf": "obj_buf_t", "sizeof_dchunk": "dchunk_t",
+            }
         arrays = [("MAX_CORE_ID", "gpool_s", "free_dc_head", "sizeof_queue" if global_only else None)]
         if global_only:
             arrays += [
@@ -171563,7 +171873,10 @@ class JemallocV3(JemallocBase):
                         if binind is None:
                             continue
                         bin_addr = read_int_from_memory(chunk + pageind * page, safe=True)
-                        count += 1 if bin_addr and 0 < bin_addr - arena < 0x4000 else -1
+                        if bin_addr and 0 < bin_addr - arena < 0x4000:
+                            count += 1
+                        else:
+                            count += -1
                     break
                 if best_count is None or count > best_count:
                     best, best_count = (page, layout), count
@@ -171744,7 +172057,10 @@ class JemallocV4(JemallocBase):
             for chunk, _, _ in self.scan_chunks(self.chunksize):
                 for pageind, binind, _ in self.run_starts(chunk):
                     if binind is not None:
-                        count += 1 if read_int32_from_memory(self.run_header(chunk, pageind), safe=True) == binind else -1
+                        if read_int32_from_memory(self.run_header(chunk, pageind), safe=True) == binind:
+                            count += 1
+                        else:
+                            count += -1
                 break
             if best_count is None or count > best_count:
                 best, best_count = page, count
@@ -177480,7 +177796,10 @@ class MsrCommand(GenericCommand):
                 return const
         try:
             const = int(target_name, 0)
-            return const if 0 <= const <= 0xffff_ffff else None
+            if 0 <= const <= 0xffff_ffff:
+                return const
+            else:
+                return None
         except ValueError:
             return None
 
@@ -177507,7 +177826,10 @@ class MsrCommand(GenericCommand):
             sym = ""
             if is_valid_addr(value):
                 sym = Symbol.format(value)
-                sym = " " + sym if sym else ""
+                if sym:
+                    sym = " " + sym
+                else:
+                    sym = ""
 
             gef_print("{:30s}  {:#010x}  {:30s}  {:s}{:s}".format(
                 name, const, desc, AddressUtil.format_address(value, memalign_size=8), sym,
@@ -177904,11 +178226,17 @@ class VBARCommand(GenericCommand, BufferingOutput):
         for regname, vbar in vbars:
             self.out.append(titlify(regname))
 
-            sctlr_reg = "$SCTLR_S" if "$VBAR_S" in regname else "$SCTLR"
+            if "$VBAR_S" in regname:
+                sctlr_reg = "$SCTLR_S"
+            else:
+                sctlr_reg = "$SCTLR"
             sctlr = get_register(sctlr_reg)
             if sctlr is None:
                 sctlr = get_register(sctlr_reg.replace("$SCTLR", "$SCTLR_EL1"))
-            mode = "THUMB" if sctlr is not None and sctlr & (1 << 30) else "ARM"
+            if sctlr is not None and sctlr & (1 << 30):
+                mode = "THUMB"
+            else:
+                mode = "ARM"
 
             # address check
             if vbar is None:
@@ -178252,7 +178580,10 @@ class QemuRegistersCommand(GenericCommand, BufferingOutput):
         long_mode = efer is not None and bool(efer & (1 << 10))
         if long_mode:
             base_bits = range(12, 52)
-            base_desc = "Base of PML5 table" if cr4 & (1 << 12) else "Base of PML4 table"
+            if cr4 & (1 << 12):
+                base_desc = "Base of PML5 table"
+            else:
+                base_desc = "Base of PML4 table"
         elif cr4 & (1 << 5):
             base_bits = range(5, 32)
             base_desc = "Base of page-directory-pointer table (32-byte aligned)"
@@ -178260,12 +178591,15 @@ class QemuRegistersCommand(GenericCommand, BufferingOutput):
             base_bits = range(12, 32)
             base_desc = "Base of page directory (4-KByte aligned)"
         desc = "It contains the physical address of the base of the paging-structure hierarchy and control bits"
-        bit_info = [
-            [62, "LAM_U48", "User LAM48 enable",
-             "If 1 and CR3.LAM_U57 is 0, enables LAM48 (masking of linear-address bits 62:48) for user pointers"],
-            [61, "LAM_U57", "User LAM57 enable",
-            "If 1, enables LAM57 (masking of linear-address bits 62:57) for user pointers; overrides CR3.LAM_U48"],
-        ] if long_mode else []
+        if long_mode:
+            bit_info = [
+                [62, "LAM_U48", "User LAM48 enable",
+                 "If 1 and CR3.LAM_U57 is 0, enables LAM48 (masking of linear-address bits 62:48) for user pointers"],
+                [61, "LAM_U57", "User LAM57 enable",
+                 "If 1, enables LAM57 (masking of linear-address bits 62:57) for user pointers; overrides CR3.LAM_U48"],
+            ]
+        else:
+            bit_info = []
         bit_info.append([base_bits, None, None, base_desc])
         if long_mode:
             bit_info.append(
@@ -178943,7 +179277,10 @@ class AddrMap:
                 vstart_text, vend_text = fields[0].split("-")
                 vstart = int(vstart_text.replace("*", "0"), 16)
                 vend = int(vend_text.replace("*", "f"), 16)
-                size = int(fields[2], 16) if "*" in vstart_text else vend - vstart
+                if "*" in vstart_text:
+                    size = int(fields[2], 16)
+                else:
+                    size = vend - vstart
                 if fields[1] == "-":
                     pstart = pend = None
                 else:
@@ -179153,7 +179490,10 @@ class AddrMap:
                             sctlr = get_register("$SCTLR_EL2")
                     else:
                         secure = is_in_secure()
-                        suffix = "_S" if secure else ""
+                        if secure:
+                            suffix = "_S"
+                        else:
+                            suffix = ""
                         sctlr = get_register("$SCTLR" + suffix)
                         if sctlr is None:
                             sctlr = get_register("$SCTLR_EL1" + suffix)
@@ -181606,7 +181946,10 @@ class PageTableArm32(PageTable):
         MB = []
         COUNT = 0
         for va_base, table_base, parent_flags in ProgressBar(LEVEL1, desc="LEVEL 2", disable=self.args.quiet):
-            l2_count = 1 << (11 - self.N) if self.N >= 2 else 512
+            if self.N >= 2:
+                l2_count = 1 << (11 - self.N)
+            else:
+                l2_count = 512
             entries = self.read_memory(table_base, 8 * l2_count)
             entries = slice_unpack(entries, 8)
             COUNT += len(entries)
@@ -186167,8 +186510,14 @@ class SlabVirtualCommand(GenericCommand):
             self.slab_meta_entry_size = entry_size
             self.slab_offset_compound_slab_head = compound
             self.slab_offset_backing_folio = backing
-        branch = ("slub-virtual-v6.1" if kversion < "6.1.56" else "mitigations-v6.1.56" if kversion < "6.6"
-                  else "slub-virtual-v6.6" if kversion < "6.12" else "mitigations-next (v6.12)")
+        if kversion < "6.1.56":
+            branch = "slub-virtual-v6.1"
+        elif kversion < "6.6":
+            branch = "mitigations-v6.1.56"
+        elif kversion < "6.12":
+            branch = "slub-virtual-v6.6"
+        else:
+            branch = "mitigations-next (v6.12)"
         self.layout_source = "{:s}; fields: {:s}; reservation: branch constants".format(
             branch, "debug information" if entry_size is not None else "branch constants",
         )
@@ -187308,12 +187657,15 @@ class QemuDeviceInfoCommand(GenericCommand, BufferingOutput):
                         or device["id"] == self.args.device
                     )
                 ]
-            device = matches[0] if len(matches) == 1 else {
-                "driver": self.args.device,
-                "id": None,
-                "properties": {},
-                "argument": None,
-            }
+            if len(matches) == 1:
+                device = matches[0]
+            else:
+                device = {
+                    "driver": self.args.device,
+                    "id": None,
+                    "properties": {},
+                    "argument": None,
+                }
         else:
             if error is not None or not devices or len(devices) != 1:
                 return None
@@ -187648,10 +188000,13 @@ class QemuDeviceInfoCommand(GenericCommand, BufferingOutput):
             self.err_add_out("Executing `nm` failed for {:s}: {}".format(qemu_path, e))
             return
 
-        matches = result if all_nm else [
-            line for line in result
-            if device_name in line and line.endswith(("read", "write"))
-        ]
+        if all_nm:
+            matches = result
+        else:
+            matches = [
+                line for line in result
+                if device_name in line and line.endswith(("read", "write"))
+            ]
         if not matches:
             if all_nm:
                 self.info_add_out("No QEMU host symbols were found")
@@ -187803,7 +188158,10 @@ class QemuMemoryRegionDumpCommand(GenericCommand, BufferingOutput):
             symbol = "address_space_io"
         try:
             addr = Symbol.resolve_address(symbol)
-            root = read_int_from_memory(addr + root_offset, safe=True) if addr is not None else None
+            if addr is not None:
+                root = read_int_from_memory(addr + root_offset, safe=True)
+            else:
+                root = None
             if root and self.check_root_name(root, root_name):
                 self.meta.append((self.quiet_info_add_out, "Root source: {:s}.root".format(symbol)))
                 return root
@@ -187872,7 +188230,10 @@ class QemuMemoryRegionDumpCommand(GenericCommand, BufferingOutput):
         # fast path
         try:
             system_memory = Symbol.resolve_address("system_memory")
-            root = read_int_from_memory(system_memory, safe=True) if system_memory is not None else None
+            if system_memory is not None:
+                root = read_int_from_memory(system_memory, safe=True)
+            else:
+                root = None
             if root and self.check_root_name(root, "system"):
                 self.meta.append((self.quiet_info_add_out, "Root source: system_memory symbol"))
                 return root
@@ -187885,7 +188246,10 @@ class QemuMemoryRegionDumpCommand(GenericCommand, BufferingOutput):
         # fast path
         try:
             system_io = Symbol.resolve_address("system_io")
-            root = read_int_from_memory(system_io, safe=True) if system_io is not None else None
+            if system_io is not None:
+                root = read_int_from_memory(system_io, safe=True)
+            else:
+                root = None
             if root and self.check_root_name(root, "io"):
                 self.meta.append((self.quiet_info_add_out, "Root source: system_io symbol"))
                 return root
@@ -197299,19 +197663,31 @@ class KernelIoUringCommand(GenericCommand, BufferingOutput):
                         if element_type:
                             if two_level:
                                 block = read_int_from_memory(base + (index >> 9) * current_arch.ptrsize, safe=True)
-                                slot = block + (index & 511) * current_arch.ptrsize if block else 0
+                                if block:
+                                    slot = block + (index & 511) * current_arch.ptrsize
+                                else:
+                                    slot = 0
                             else:
                                 slot = base + index * current_arch.ptrsize
-                            file = self.eval_unsigned(element_type, slot, element_member) if slot else 0
+                            if slot:
+                                file = self.eval_unsigned(element_type, slot, element_member)
+                            else:
+                                file = 0
                             mask = ~(current_arch.ptrsize - 1)
                         else:
                             if member != "user_files":
                                 block_member = "file_data->table[{:d}].files".format(index >> 9)
                                 block = self.eval_unsigned("struct io_ring_ctx", ctx, block_member)
-                                slot = block + (index & 511) * current_arch.ptrsize if block else 0
+                                if block:
+                                    slot = block + (index & 511) * current_arch.ptrsize
+                                else:
+                                    slot = 0
                             else:
                                 slot = base + index * current_arch.ptrsize
-                            file = read_int_from_memory(slot, safe=True) if slot else 0
+                            if slot:
+                                file = read_int_from_memory(slot, safe=True)
+                            else:
+                                file = 0
                             mask = -1
                         files.append((index, (file or 0) & mask, None))
                     break
@@ -197439,9 +197815,10 @@ class KernelIoUringCommand(GenericCommand, BufferingOutput):
             for container in KernelListHead(ctx + head_offset, list_offset).iter_entries():
                 if len(requests) >= self.MAX_REQUESTS:
                     break
-                request = container if request_member is None else self.eval_unsigned(
-                    container_type, container, request_member,
-                )
+                if request_member is None:
+                    request = container
+                else:
+                    request = self.eval_unsigned(container_type, container, request_member)
                 if not request or self.request_context(request) != ctx:
                     break
                 requests.append((request, state))
@@ -197504,7 +197881,10 @@ class KernelIoUringCommand(GenericCommand, BufferingOutput):
         callback, callback_member = self.eval_first(
             "struct io_kiocb", request, ["io_task_work.func", "task_work.func", "work.func"],
         )
-        callback_text = "?" if callback is None else Symbol.format(callback, show_address=True, nocolor=True)
+        if callback is None:
+            callback_text = "?"
+        else:
+            callback_text = Symbol.format(callback, show_address=True, nocolor=True)
         return {
             "address": request, "state": state, "opcode": opcode, "file": file,
             "buffer": buffer, "buffer_member": buffer_member, "refs": refs,
@@ -197950,7 +198330,10 @@ class KernelNftablesCommand(GenericCommand, BufferingOutput):
                         nodes.append({"address": blob_range[0], "end": blob_range[1],
                                       "description": 'rule blob of chain "{:s}"'.format(name)})
                     rules, status = self.knft.rules.chain_rules(entry, net)
-                    source = "control-plane " if status and "control-plane" in status else ""
+                    if status and "control-plane" in status:
+                        source = "control-plane "
+                    else:
+                        source = ""
                     for rule in rules or []:
                         if self.args.handle is not None and rule["handle"] != self.args.handle:
                             continue
@@ -200305,7 +200688,10 @@ class BincompareCommand(GenericCommand, BufferingOutput):
         try:
             with open(args.filename, "rb") as fd:
                 fd.seek(args.file_offset)
-                file_data = fd.read(args.size) if args.size is not None else fd.read()
+                if args.size is not None:
+                    file_data = fd.read(args.size)
+                else:
+                    file_data = fd.read()
         except OSError as e:
             err("Cannot read file '{:s}': {!s}".format(args.filename, e))
             return
@@ -200981,7 +201367,10 @@ class GefResetBreakpointsCommand(GenericCommand):
         for bp in breakpoints:
             bp_str = repr(bp)
             bp_addrs = GefUtil.get_breakpoint_addresses(bp)
-            bp_addr = bp_addrs[0] if bp_addrs else None
+            if bp_addrs:
+                bp_addr = bp_addrs[0]
+            else:
+                bp_addr = None
             if args.commit:
                 bp.delete()
                 if bp_addr is not None:
@@ -202462,7 +202851,10 @@ class ContextManager:
         try:
             original = gdb.parameter(name)
             if isinstance(original, bool):
-                original = "on" if original else "off"
+                if original:
+                    original = "on"
+                else:
+                    original = "off"
             gdb.execute("set {:s} {:s}".format(name, value), to_string=True)
             restore = "set {:s} {!s}".format(name, original)
         except (gdb.error, RuntimeError):
@@ -202633,7 +203025,10 @@ class GefUtil:
             current = addr + len(data)
             size = min(length - len(data), chunk_size - current % chunk_size)
             chunk = read_memory(current, size, safe=True)
-            data += chunk if chunk is not None else b"\0" * size
+            if chunk is not None:
+                data += chunk
+            else:
+                data += b"\0" * size
         return bytes(data)
 
     @staticmethod
@@ -202715,7 +203110,10 @@ class GefUtil:
 
             # make line
             head1 = "{!s}: ".format(label1(pos))
-            head2 = "" if label2 is None else "{!s}: ".format(label2(pos))
+            if label2 is None:
+                head2 = ""
+            else:
+                head2 = "{!s}: ".format(label2(pos))
             lines.append("{:s}{:s} |{:s}| {:s}{:s} |{:s}|".format(
                 head1, f1_hex_s, f1_ascii_s,
                 head2, f2_hex_s, f2_ascii_s,
@@ -202843,9 +203241,18 @@ class GefUtil:
         Set use_saved=False to read GDB's current stop.
         """
         try:
-            context = gdb.selected_thread() if gdb.parameter("non-stop") else gdb.selected_inferior()
-            saved = ExecAsm.stop_reasons.get(context) if use_saved else None
-            res = saved["info"] if saved is not None else gdb.execute("info program", to_string=True)
+            if gdb.parameter("non-stop"):
+                context = gdb.selected_thread()
+            else:
+                context = gdb.selected_inferior()
+            if use_saved:
+                saved = ExecAsm.stop_reasons.get(context)
+            else:
+                saved = None
+            if saved is not None:
+                res = saved["info"]
+            else:
+                res = gdb.execute("info program", to_string=True)
         except gdb.error:
             return None
         thread = re.search(r"^(?:Last stopped for|Selected) thread (?:(\d+)\.)?(\d+) ", res, re.M)
@@ -202865,7 +203272,10 @@ class GefUtil:
         elif signal:
             reason = signal.group(1)
         elif breakpoints:
-            reason = "BREAKPOINT" if breakpoints[0] else "TEMPORARY BREAKPOINT"
+            if breakpoints[0]:
+                reason = "BREAKPOINT"
+            else:
+                reason = "TEMPORARY BREAKPOINT"
         elif stepped:
             reason = "SINGLE STEP"
         else:
@@ -202882,7 +203292,10 @@ class GefUtil:
     def get_siginfo():
         """Return the signal information from before injected instructions, if saved."""
         thread = gdb.selected_thread()
-        context = thread if gdb.parameter("non-stop") else gdb.selected_inferior()
+        if gdb.parameter("non-stop"):
+            context = thread
+        else:
+            context = gdb.selected_inferior()
         saved = ExecAsm.stop_reasons.get(context)
         if saved is not None and thread in saved["siginfo"]:
             return saved["siginfo"][thread]
@@ -203231,7 +203644,10 @@ class GefUtil:
                 r = re.search(r"^\s*\*\s+\d+\s+(?:extended-)?remote\s+(\S+)", details, re.MULTILINE)
                 if r:
                     dev = serial_device.search(r.group(1))
-                    return dev.group(0) if dev else None
+                    if dev:
+                        return dev.group(0)
+                    else:
+                        return None
                 continue
             r = serial_device.search(details)
             if r:
