@@ -13772,20 +13772,26 @@ class SystemManagementMemory:
     def get_smm_status():
         """Return details about the current CPU's SMM state.
         QEMU's explicit ``SMM=`` marker is authoritative.  Older builds without
-        that marker fall back to checking whether the current PC lies in SMRAM.
+        that marker fall back to checking whether the physical instruction address lies in SMRAM.
         """
         smram = SystemManagementMemory.get_smram_map()
         monitor_state, monitor_token = SystemManagementMemory.get_smm_monitor_state()
         pc = get_register("$pc")
-        pc_in_smram = False
+        pc_phys = None
+        pc_in_smram = None
         if smram is not None and pc is not None:
+            cs = QemuMonitor.get_x86_segments().get("CS")
+            if cs is not None:
+                linear = pc if cs[2] & (1 << 21) else (cs[1] + pc) & 0xffffffff
+                pc_phys = AddrMap.v2p(linear)
+        if smram is not None and pc_phys is not None:
             base, size, _ = smram
-            pc_in_smram = base <= pc < base + size
+            pc_in_smram = base <= pc_phys < base + size
 
         if monitor_state is not None:
             state = monitor_state
             source = "qemu-monitor"
-        elif smram is not None and pc is not None:
+        elif pc_in_smram is not None:
             state = pc_in_smram
             source = "pc-range"
         else:
@@ -13798,6 +13804,7 @@ class SystemManagementMemory:
             "monitor_state": monitor_state,
             "monitor_token": monitor_token,
             "pc": pc,
+            "pc_phys": pc_phys,
             "pc_in_smram": pc_in_smram,
             "smram": smram,
         }
@@ -179062,8 +179069,8 @@ class SmmStatusCommand(GenericCommand, BufferingOutput):
 
     _note_ = [
         "The QEMU monitor SMM flag is preferred.",
-        "On older QEMU builds, $pc is compared with the SMRAM range from `monitor info mtree -f`.",
-        "The preview uses the current in-SMM PC, or the detected SMRAM base outside SMM.",
+        "On older QEMU builds, the physical instruction address is compared with the detected SMRAM range.",
+        "The preview uses the physical instruction address in SMRAM, or the detected SMRAM base.",
     ]
     _note_ = "\n".join(_note_)
 
@@ -179089,17 +179096,19 @@ class SmmStatusCommand(GenericCommand, BufferingOutput):
             base, size, label = smram
             region_text = "[{:#x}-{:#x}) {} ({:s})".format(base, base + size, label, GefUtil.get_size_str(size))
 
-        lines = ["{:s}: $pc={:s}, SMRAM={:s}".format(verdict, pc_text, region_text)]
+        pc_phys = status["pc_phys"]
+        phys_text = "unavailable" if pc_phys is None else "{:#x}".format(pc_phys)
+        lines = ["{:s}: $pc={:s}, physical PC={:s}, SMRAM={:s}".format(verdict, pc_text, phys_text, region_text)]
         if status["monitor_state"] is not None:
             reason = "QEMU monitor reports {:s}".format(status["monitor_token"])
-            if status["pc_in_smram"] != status["monitor_state"]:
+            if status["pc_in_smram"] is not None and status["pc_in_smram"] != status["monitor_state"]:
                 reason += "; PC-range heuristic disagrees (monitor result takes precedence)"
         elif status["source"] == "pc-range":
-            reason = "$pc is {:s}the detected SMRAM range; QEMU exposes no SMM marker".format(
+            reason = "physical PC is {:s}the detected SMRAM range; QEMU exposes no SMM marker".format(
                 "inside " if status["pc_in_smram"] else "outside ",
             )
         else:
-            reason = "neither a QEMU SMM marker nor a usable PC/SMRAM pair is available"
+            reason = "neither a QEMU SMM marker nor a usable physical PC/SMRAM pair is available"
         lines.append("  rationale: {:s}".format(reason))
         return lines
 
@@ -179113,7 +179122,7 @@ class SmmStatusCommand(GenericCommand, BufferingOutput):
         preview = base
         title = "SMRAM preview"
         if status["state"] is True and status["pc_in_smram"]:
-            preview = status["pc"] & ~0xf
+            preview = max(base, status["pc_phys"] & ~0xf)
             title = "SMRAM preview at the current PC"
         preview_size = min(0x100, base + size - preview)
         self.out.append(titlify(title))
