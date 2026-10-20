@@ -179431,7 +179431,7 @@ class AddrMap:
                 maps.append(AddrMap.Entry(
                     start, start + size, pstart, pend, flags=flags,
                     permission=AddrMap.permission_from_flags(flags), page_size=page_size, count=count,
-                    source_line=source_line,
+                    vstart_text=vstart_text, vend_text=vend_text, source_line=source_line,
                 ))
         return maps
 
@@ -179976,7 +179976,7 @@ class PageTable(BufferingOutput):
         inferior = gdb.selected_inferior()
         options = {
             name: getattr(self.args, name) for name in (
-                "simple", "no_merge", "include_esp_fixup_stacks", "user_pt", "ept", "ept_levels", "force_prefix_s",
+                "simple", "no_merge", "include_aliased_pages", "user_pt", "ept", "ept_levels", "force_prefix_s",
             ) if hasattr(self.args, name)
         }
         source = "inferior={:d}, pid={:d}, connection={}, CPU(thread)={}, {}, options={!r}".format(
@@ -180108,6 +180108,8 @@ class PageTable(BufferingOutput):
         if not self.args.no_merge:
             if is_x86_64():
                 self.mappings = self.merge_virtual_aliases(self.mappings)
+                if not self.args.include_aliased_pages:
+                    self.mappings = [entry for entry in self.mappings if not entry.has_wildcard]
                 self.quiet_info_add_out("PT Entry (merged similar pages that refer the same physpage): {:d}".format(
                     len(self.mappings),
                 ))
@@ -180852,15 +180854,13 @@ class PageTableX64(PageTable):
             return (entry & 0b111) != 0 and (entry & 0b11) != 0b10
         return (entry & 1) != 0
 
-    def is_espfix_table(self, va_base, entries):
-        if self.args.include_esp_fixup_stacks or self.args.ept or not is_x86_64():
+    def is_aliased_table(self, va_base, entries, bit_shift):
+        if self.args.include_aliased_pages or self.args.ept or not is_x86_64():
             return False
-        if not 0xffff_ff00_0000_0000 <= va_base < 0xffff_ff80_0000_0000:
+        if len({entry & 0x000f_ffff_ffff_f001 for entry in entries}) != 1 or not entries[0] & 1:
             return False
-        if len({entry & ~0b111 for entry in entries}) != 1:
-            return False
-        self.quiet_info_add_out("Skipping espfix aliases at {:#x}; use --include-esp-fixup-stacks to include".format(va_base))
-        return True
+        va_end = va_base + (len(entries) << bit_shift)
+        return not any(va_base <= address < va_end for address in self.args.trace)
 
     def pagewalk_PML5T(self):
         self.quiet_add_out(titlify("PML5E: Page Map Level 5 Entry"))
@@ -180943,6 +180943,7 @@ class PageTableX64(PageTable):
         self.quiet_add_out(titlify("PML4E: Page Map Level 4 Entry"))
         PML4E = []
         COUNT = 0
+        SKIPPED = 0
         bit_shift = sum([
             self.bits["PDPT_BITS"],
             self.bits["PDT_BITS"],
@@ -180952,6 +180953,9 @@ class PageTableX64(PageTable):
         for va_base, table_base, parent_flags in ProgressBar(self.TABLES, desc="PML4E", disable=self.args.quiet):
             entries = self.read_memory(table_base, 2 ** self.bits["PML4T_BITS"] * self.bits["ENTRY_SIZE"])
             entries = slice_unpack(entries, self.bits["ENTRY_SIZE"])
+            if self.is_aliased_table(va_base, entries, bit_shift):
+                SKIPPED += 1
+                continue
             COUNT += len(entries)
             for i, entry in enumerate(entries):
                 # present flag
@@ -181015,6 +181019,7 @@ class PageTableX64(PageTable):
 
         self.quiet_info_add_out("Number of entries: {:d}".format(COUNT))
         self.quiet_info_add_out("PML4 Entry: {:d}".format(len(PML4E)))
+        self.quiet_info_add_out("Aliased tables (skipped): {:d}".format(SKIPPED))
         self.quiet_info_add_out("Invalid entries: {:d}".format(COUNT - len(PML4E)))
         self.TABLES = PML4E
         return
@@ -181028,6 +181033,7 @@ class PageTableX64(PageTable):
         PDPTE = []
         PTE = []
         COUNT = 0
+        SKIPPED = 0
         bit_shift = sum([
             self.bits["PDT_BITS"],
             self.bits["PT_BITS"],
@@ -181036,6 +181042,9 @@ class PageTableX64(PageTable):
         for va_base, table_base, parent_flags in ProgressBar(self.TABLES, desc="PDPE", disable=self.args.quiet):
             entries = self.read_memory(table_base, 2 ** self.bits["PDPT_BITS"] * self.bits["ENTRY_SIZE"])
             entries = slice_unpack(entries, self.bits["ENTRY_SIZE"])
+            if self.is_aliased_table(va_base, entries, bit_shift):
+                SKIPPED += 1
+                continue
             COUNT += len(entries)
             for i, entry in enumerate(entries):
                 # present flag
@@ -181112,6 +181121,7 @@ class PageTableX64(PageTable):
         self.quiet_info_add_out("Number of entries: {:d}".format(COUNT))
         self.quiet_info_add_out("PDPT Entry: {:d}".format(len(PDPTE)))
         self.quiet_info_add_out("PT Entry (1GB): {:d}".format(len(PTE)))
+        self.quiet_info_add_out("Aliased tables (skipped): {:d}".format(SKIPPED))
         self.quiet_info_add_out("Invalid entries: {:d}".format(COUNT - len(PDPTE) - len(PTE)))
         self.TABLES = PDPTE
         self.PTE += PTE
@@ -181126,6 +181136,7 @@ class PageTableX64(PageTable):
         PDE = []
         PTE = []
         COUNT = 0
+        SKIPPED = 0
         bit_shift = sum([
             self.bits["PT_BITS"],
             self.bits["OFFSET"],
@@ -181133,10 +181144,10 @@ class PageTableX64(PageTable):
         for va_base, table_base, parent_flags in ProgressBar(self.TABLES, desc="PDE", disable=self.args.quiet):
             entries = self.read_memory(table_base, 2 ** self.bits["PDT_BITS"] * self.bits["ENTRY_SIZE"])
             entries = slice_unpack(entries, self.bits["ENTRY_SIZE"])
-            COUNT += len(entries)
-
-            if self.is_espfix_table(va_base, entries):
+            if self.is_aliased_table(va_base, entries, bit_shift):
+                SKIPPED += 1
                 continue
+            COUNT += len(entries)
 
             for i, entry in enumerate(entries):
                 # present flag
@@ -181218,6 +181229,7 @@ class PageTableX64(PageTable):
         self.quiet_info_add_out("Number of entries: {:d}".format(COUNT))
         self.quiet_info_add_out("PD Entry: {:d}".format(len(PDE)))
         self.quiet_info_add_out("PT Entry ({:d}MB): {:d}".format(2 if self.PAE else 4, len(PTE)))
+        self.quiet_info_add_out("Aliased tables (skipped): {:d}".format(SKIPPED))
         self.quiet_info_add_out("Invalid entries: {:d}".format(COUNT - len(PDE) - len(PTE)))
         self.TABLES = PDE
         self.PTE += PTE
@@ -181227,16 +181239,17 @@ class PageTableX64(PageTable):
         self.quiet_add_out(titlify("PTE: Page Table Entry"))
         PTE = []
         COUNT = 0
+        SKIPPED = 0
         bit_shift = self.bits["OFFSET"]
         flag_cache = {}
 
         for va_base, table_base, parent_flags in ProgressBar(self.TABLES, desc="PTE", disable=self.args.quiet):
             entries = self.read_memory(table_base, 2 ** self.bits["PT_BITS"] * self.bits["ENTRY_SIZE"])
             entries = slice_unpack(entries, self.bits["ENTRY_SIZE"])
-            COUNT += len(entries)
-
-            if self.is_espfix_table(va_base, entries):
+            if self.is_aliased_table(va_base, entries, bit_shift):
+                SKIPPED += 1
                 continue
+            COUNT += len(entries)
 
             for i, entry in enumerate(entries):
                 # present flag
@@ -181309,6 +181322,7 @@ class PageTableX64(PageTable):
 
         self.quiet_info_add_out("Number of entries: {:d}".format(COUNT))
         self.quiet_info_add_out("PT Entry (4KB): {:d}".format(len(PTE)))
+        self.quiet_info_add_out("Aliased tables (skipped): {:d}".format(SKIPPED))
         self.quiet_info_add_out("Invalid entries: {:d}".format(COUNT - len(PTE)))
         self.PTE += PTE
 
@@ -184627,8 +184641,8 @@ class PagewalkX64Command(PagewalkCommand):
                         help="filter by map included specified physical address.")
     parser.add_argument("-t", "--trace", metavar="VADDR", action="append", type=AddressUtil.parse_address, default=[],
                         help="show all level pagetables only associated specified address.")
-    parser.add_argument("-i", "--include-esp-fixup-stacks", action="store_true",
-                        help="include `%%esp fixup stacks` area (sometimes heavy memory use; x64 only).")
+    parser.add_argument("-i", "--include-aliased-pages", action="store_true",
+                        help="include aliased pages such as espfix stacks and KASAN shadow (heavy memory use; x64 only).")
     parser.add_argument("-U", "--user-pt", action="store_true",
                         help="print userland pagetables (for KPTI, x64 only, in kernel context).")
     parser.add_argument("--cr3", dest="user_specified_cr3", type=AddressUtil.parse_address,
@@ -184650,8 +184664,8 @@ class PagewalkX64Command(PagewalkCommand):
     @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "x86_16"))
     def do_invoke(self, args):
         self.page_table = PageTableX64()
-        if args.include_esp_fixup_stacks and not is_x86_64():
-            err("Unsupported --include-esp-fixup-stacks option in this arch")
+        if args.include_aliased_pages and not is_x86_64():
+            err("Unsupported --include-aliased-pages option in this arch")
             return
 
         if not is_x86_64() or not is_in_kernel():
@@ -184871,8 +184885,8 @@ class KernelVMMapCommand(GenericCommand, BufferingOutput):
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("-U", "--exclude-user", action="store_true", help="exclude userland memory.")
-    parser.add_argument("-i", "--include-esp-fixup-stacks", action="store_true",
-                        help="include `%%esp fixup stacks` area (sometimes heavy memory use; x64 only).")
+    parser.add_argument("-i", "--include-aliased-pages", action="store_true",
+                        help="include aliased pages such as espfix stacks and KASAN shadow (heavy memory use; x64 only).")
     parser.add_argument("-v", "--verbose", action="count", default=0,
                         help="increase output verbosity. (-v, -vv, -vvv)")
     parser.add_argument("address_filter", metavar="ADDRESS", nargs="*", type=AddressUtil.parse_address,
@@ -185086,8 +185100,8 @@ class KernelVMMapCommand(GenericCommand, BufferingOutput):
 
     def get_regions(self):
         option = ""
-        if self.args.include_esp_fixup_stacks:
-            option = " --include-esp-fixup-stacks"
+        if self.args.include_aliased_pages:
+            option = " --include-aliased-pages"
         maps = AddrMap.get_maps(command="pagewalk --quiet --no-pager --disable-color" + option)
 
         regions = {} # {addr_start: Region(), ...}
@@ -185098,11 +185112,14 @@ class KernelVMMapCommand(GenericCommand, BufferingOutput):
 
             # add region
             if entry.has_wildcard:
-                regions[entry.vstart] = self.Region(
-                    entry.vstart, entry.vend, str(entry.permission), merge=False,
-                    description="esp_fixup (=0x1000*N)",
+                vstart = int(entry.vstart_text.replace("*", "0"), 16)
+                if vstart in regions:
+                    continue
+                regions[vstart] = self.Region(
+                    vstart, vstart + entry.vsize, str(entry.permission), merge=False,
+                    description="aliased pages (={:#x}*N)".format(entry.vsize),
                     addr_start_str=entry.vstart_text, addr_end_str=entry.vend_text,
-                    size_str="0x0000000000001000",
+                    size_str="{:#018x}".format(entry.vsize),
                 )
             elif entry.is_userland():
                 regions[entry.vstart] = self.Region(
@@ -185786,8 +185803,8 @@ class KernelVMMapCommand(GenericCommand, BufferingOutput):
     @Decorator.only_if_specific_arch(arch=("x86_64", "x86_32", "ARM64", "ARM32"))
     @Decorator.only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
-        if self.args.include_esp_fixup_stacks and not is_x86_64():
-            err("Unsupported --include-esp-fixup-stacks option in this arch")
+        if self.args.include_aliased_pages and not is_x86_64():
+            err("Unsupported --include-aliased-pages option in this arch")
             return
 
         if Kernel.version() is None:
