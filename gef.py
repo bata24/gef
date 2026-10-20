@@ -35250,22 +35250,83 @@ class KernelChecksecCommand(GenericCommand):
             gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Enabled", "bold green"), additional))
         return
 
+    def is_yama_initialized(self):
+        # Returns True, False or None (unknown), and the reason if False.
+        # Until v4.1, yama_init() returns early unless Yama is the major LSM or CONFIG_SECURITY_YAMA_STACKED=y.
+        # Since v5.1, yama_init() is not called unless Yama is in the LSM order (CONFIG_LSM or lsm=).
+        # Then Yama restricts nothing, though `ptrace_scope` keeps its initial value 1.
+
+        # v4.2 - v5.0 always register Yama
+        if Ksym.get_addr("yama_add_hooks") is not None:
+            return True, None
+
+        # v4.1 or earlier
+        security_ops = Ksym.get_addr("security_ops")
+        if security_ops is not None:
+            # CONFIG_SECURITY_YAMA_STACKED=y has no yama_ops, and the hooks of Yama are called directly
+            yama_ops = Ksym.get_addr("yama_ops")
+            if yama_ops is None:
+                return True, None
+            ops = read_int_from_memory(security_ops)
+            if ops == yama_ops:
+                return True, None
+            name = read_cstring_from_memory(ops, 16, safe=True) or "???"
+            return False, "security_ops: {:s}".format(name)
+
+        # v4.15 - v6.18
+        lsm_names = Ksym.get_addr("lsm_names")
+        if lsm_names is not None:
+            names = read_cstring_from_memory(read_int_from_memory(lsm_names), 256, safe=True)
+            if names is not None:
+                if "yama" in names.split(","):
+                    return True, None
+                return False, "lsm_names: {:s}".format(names)
+
+        # v6.19 or later
+        lsm_idlist = Ksym.get_addr("lsm_idlist")
+        lsm_active_cnt = Ksym.get_addr("lsm_active_cnt")
+        if lsm_idlist is not None and lsm_active_cnt is not None:
+            names = []
+            for i in range(read_int32_from_memory(lsm_active_cnt)):
+                lsmid = read_int_from_memory(lsm_idlist + current_arch.ptrsize * i)
+                names.append(read_cstring_from_memory(read_int_from_memory(lsmid), 32, safe=True) or "???")
+            if "yama" in names:
+                return True, None
+            return False, "lsm_idlist: {:s}".format(",".join(names))
+
+        # A sysctl tree walk reads too much memory over KGDB.
+        if is_kgdb() or not Kernel.sysctl().initialize():
+            return None, None
+        if KernelSysctl.get("kernel.yama.ptrace_scope") is None:
+            return False, "kernel.yama.ptrace_scope: Not registered"
+        return True, None
+
     def check_yama(self):
         cfg = "Yama (ptrace_scope)"
-        yama_init = Ksym.get_addr("yama_init")
+        # v4.2 - v5.0 have yama_add_hooks() instead
+        yama_init_name = "yama_init"
+        if Ksym.get_addr("yama_add_hooks") is not None:
+            yama_init_name = "yama_add_hooks"
+        yama_init = Ksym.get_addr(yama_init_name)
         if yama_init is None:
             additional = "yama_init: Not found"
             gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Unsupported", "bold red"), additional))
             return
 
+        initialized, reason = self.is_yama_initialized()
+        if initialized is False:
+            additional = "{:s}: Found, {:s}".format(yama_init_name, reason)
+            gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Disabled", "bold red"), additional))
+            return
+
         ptrace_scope_addr = KernelAddressHeuristicFinder.get_ptrace_scope()
-        if ptrace_scope_addr is None:
-            additional = "yama_init: Found, kernel.yama.ptrace_scope: Not found"
+        if initialized is None or ptrace_scope_addr is None:
+            additional = "{:s}: Found, kernel.yama.ptrace_scope: Not found".format(yama_init_name)
             gef_print("{:<40s}: {:s} ({:s})".format(cfg, "Supported", additional))
             return
 
         ptrace_scope = read_int32_from_memory(ptrace_scope_addr)
-        additional = "yama_init: Found, kernel.yama.ptrace_scope: {:d}".format(ptrace_scope)
+        additional = "{:s}: Found, kernel.yama.ptrace_scope: {:d}".format(yama_init_name, ptrace_scope)
         if ptrace_scope == 0:
             gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Disabled", "bold red"), additional))
         else:
@@ -66287,7 +66348,7 @@ class KernelAddressHeuristicFinderUtil:
             yield w
 
     @staticmethod
-    def arm32_movw_movt_ldr(res, skip=0, skip_msb_check=False, read_valid=False, allow_cc=False):
+    def arm32_movw_movt_ldr(res, skip=0, skip_msb_check=False, read_valid=False, allow_cc=False, mnemonic="ldr"):
         bases = {}
         add1time = {}
         for line in res.splitlines():
@@ -66319,7 +66380,7 @@ class KernelAddressHeuristicFinderUtil:
                     add1time[dstreg] = add1time[srcreg]
                     continue
             w = None
-            m = re.search(r"ldr\s+\w+,\s*\[(\w+)(?:,\s*#(\d+))?\]", line)
+            m = re.search(mnemonic + r"\s+\w+,\s*\[(\w+)(?:,\s*#(\d+))?\]", line)
             if m:
                 reg = m.group(1)
                 if m.group(2):
@@ -72236,6 +72297,7 @@ class KernelAddressHeuristicFinder:
         kversion = Kernel.version()
 
         # plan 2 (available v4.12 or later)
+        # `apparmor_enabled` is bool before v5.1, so ARM loads it by `ldrb`.
         if kversion and "4.12" <= kversion:
             addr = Ksym.get_addr("param_get_aauint")
             if addr:
@@ -72244,8 +72306,12 @@ class KernelAddressHeuristicFinder:
                     g = KernelAddressHeuristicFinderUtil.x64_any_ptr_rip_base(res)
                 elif is_x86_32():
                     g = KernelAddressHeuristicFinderUtil.x86_noptr_ds(res)
+                elif is_arm64() and kversion < "5.1":
+                    g = KernelAddressHeuristicFinderUtil.aarch64_adrp_ldrb(res)
                 elif is_arm64():
                     g = KernelAddressHeuristicFinderUtil.aarch64_adrp_ldr(res)
+                elif is_arm32() and kversion < "5.1":
+                    g = KernelAddressHeuristicFinderUtil.arm32_movw_movt_ldr(res, mnemonic="ldrb")
                 elif is_arm32():
                     g = KernelAddressHeuristicFinderUtil.arm32_movw_movt_ldr(res)
                 for x in g:
@@ -72259,8 +72325,12 @@ class KernelAddressHeuristicFinder:
                 g = KernelAddressHeuristicFinderUtil.x64_any_ptr_rip_base(res)
             elif is_x86_32():
                 g = KernelAddressHeuristicFinderUtil.x86_noptr_ds(res)
+            elif is_arm64() and kversion and kversion < "5.1":
+                g = KernelAddressHeuristicFinderUtil.aarch64_adrp_ldrb(res)
             elif is_arm64():
                 g = KernelAddressHeuristicFinderUtil.aarch64_adrp_ldr(res)
+            elif is_arm32() and kversion and kversion < "5.1":
+                g = KernelAddressHeuristicFinderUtil.arm32_movw_movt_ldr(res, mnemonic="ldrb")
             elif is_arm32():
                 g = KernelAddressHeuristicFinderUtil.arm32_movw_movt_ldr(res)
             for x in g:
@@ -72283,6 +72353,7 @@ class KernelAddressHeuristicFinder:
         # can keep `apparmor_initialized` live and reference it from this parameter handler too.
         # What the older layout actually produces is a candidate in the freed init region,
         # so reject that instead of the version.
+        kversion = Kernel.version()
         addr = Ksym.get_addr("param_get_aauint")
         if addr:
             res = gdb.execute("x/20i {:#x}".format(addr), to_string=True)
@@ -72291,6 +72362,9 @@ class KernelAddressHeuristicFinder:
                 g = KernelAddressHeuristicFinderUtil.x64_any_ptr_rip_base(res, skip=1)
             elif is_x86_32():
                 g = KernelAddressHeuristicFinderUtil.x86_noptr_ds(res, skip=1)
+            elif is_arm64() and kversion and kversion < "5.1":
+                # the preceding `apparmor_enabled` is bool and loaded by `ldrb`
+                g = KernelAddressHeuristicFinderUtil.aarch64_adrp_ldr(res)
             elif is_arm64():
                 g = KernelAddressHeuristicFinderUtil.aarch64_adrp_ldr(res, skip=1)
             elif is_arm32():
@@ -72875,7 +72949,8 @@ class KernelAddressHeuristicFinder:
 
         # plan 3 (available v3.4 or later)
         # A kernel built without CONFIG_SYSCTL has no sysctl tree at all, so plan 2 can never
-        # answer. Both Yama hooks read `ptrace_scope` before touching any other global.
+        # answer. Both Yama hooks read `ptrace_scope` before touching any other global, except
+        # `__stack_chk_guard` that ARM loads first with CONFIG_STACKPROTECTOR.
         anchors = ["yama_ptrace_access_check", "yama_ptrace_traceme"]
         for name in anchors:
             for addr in Ksym.get_addrs(name, match="split"):
@@ -72889,7 +72964,9 @@ class KernelAddressHeuristicFinder:
                 elif is_arm32():
                     g = KernelAddressHeuristicFinderUtil.arm32_movw_movt_ldr(res)
                 for x in g:
-                    return x
+                    # `ptrace_scope` is 0 to 3 (YAMA_SCOPE_NO_ATTACH)
+                    if read_int32_from_memory(x, safe=True) in [0, 1, 2, 3]:
+                        return x
         return None
 
     @staticmethod
