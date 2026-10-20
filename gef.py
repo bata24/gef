@@ -99711,6 +99711,8 @@ class KernelMountCommand(GenericCommand, BufferingOutput):
     parser.add_argument("-T", "--task", type=AddressUtil.parse_address, help="dump the mount namespace of this task_struct.")
     parser.add_argument("-a", "--all", action="store_true", help="dump every mount namespace.")
     parser.add_argument("-t", "--tasks", action="store_true", help="list the tasks of each mount namespace.")
+    parser.add_argument("-v", "--verbose", action="store_true",
+                        help="also show mnt_id, peer_group, mnt_master and propagation.")
     parser.add_argument("--meta", action="store_true", help="display offset information.")
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
     parser.add_argument("-q", "--quiet", action="store_true", help="enable quiet mode.")
@@ -100115,7 +100117,7 @@ class KernelMountCommand(GenericCommand, BufferingOutput):
             names.append("marked")
         return ",".join(names)
 
-    def dump_mount(self, mount, mark, root):
+    def get_mount_row(self, mount, mark, root):
         kpath = self.kpath
         vfsmnt = mount + kpath.offset_mount_mnt
         try:
@@ -100123,7 +100125,7 @@ class KernelMountCommand(GenericCommand, BufferingOutput):
             super_block = read_int_from_memory(vfsmnt + kpath.offset_vfsmount_mnt_sb)
         except (gdb.MemoryError, OverflowError):
             self.warn_add_out("Unreadable mount: {:#x}".format(mount))
-            return
+            return None
 
         fstype = None
         devname = None
@@ -100135,6 +100137,13 @@ class KernelMountCommand(GenericCommand, BufferingOutput):
         path = path_info.path or "???"
         if path_info.status != "normal":
             path += " ({:s})".format(path_info.status)
+
+        row = [
+            "{:#018x}".format(mount), "{:#018x}".format(vfsmnt), "{:#018x}".format(mnt_root), "{:#018x}".format(super_block),
+            fstype or "???", devname or "???", mark + path, self.get_mnt_flags_str(mount),
+        ]
+        if not self.args.verbose:
+            return row
 
         mount_id = None
         if self.offset_mnt_id is not None:
@@ -100165,12 +100174,8 @@ class KernelMountCommand(GenericCommand, BufferingOutput):
             master = "{:#x}".format(master)
         else:
             master = "?"
-
-        self.out.append("{:#018x} {:#018x} {:#018x} {:#018x} {:12s} {:20s} {:45s} {:24s} {:>7s} {:>10s} {:18s} {:s}".format(
-            mount, vfsmnt, mnt_root, super_block, fstype or "???", devname or "???", mark + path,
-            self.get_mnt_flags_str(mount), mount_id, group_id, master, self.get_mnt_propagation_str(mount),
-        ))
-        return
+        row += [mount_id, group_id, master, self.get_mnt_propagation_str(mount)]
+        return row
 
     def dump_namespace(self, root_mount, tree_root, root):
         info = self.namespaces.get(root_mount, {"mnt_ns": None, "tasks": []})
@@ -100202,16 +100207,20 @@ class KernelMountCommand(GenericCommand, BufferingOutput):
         if tree_root != root_mount:
             self.quiet_info_add_out("the tree starts at the mount of task->fs->root: {:#018x}".format(tree_root))
 
-        if not self.args.quiet:
-            fmt = "{:18s} {:18s} {:18s} {:18s} {:12s} {:20s} {:45s} {:24s} {:>7s} {:>10s} {:18s} {:s}"
-            legend = [
-                "mount", "vfsmount", "mnt_root", "super_block", "fstype", "devname",
-                "mount_point", "mnt_flags", "mnt_id", "peer_group", "mnt_master", "propagation",
-            ]
-            self.out.append(GefUtil.make_legend(fmt.format(*legend)))
-
+        legend = ["mount", "vfsmount", "mnt_root", "super_block", "fstype", "devname", "mount_point", "mnt_flags"]
+        if self.args.verbose:
+            legend += ["mnt_id", "peer_group", "mnt_master", "propagation"]
+        rows = []
         for mount, mark in self.walk_tree(tree_root):
-            self.dump_mount(mount, mark, root)
+            row = self.get_mount_row(mount, mark, root)
+            if row is not None:
+                rows.append(row)
+        widths = [max(len(row[i]) for row in [legend] + rows) for i in range(len(legend))]
+        fmt = " ".join("{{:{:d}s}}".format(width) for width in widths)
+        if not self.args.quiet:
+            self.out.append(GefUtil.make_legend(fmt.format(*legend)))
+        for row in rows:
+            self.out.append(fmt.format(*row).rstrip())
         return
 
     @Decorator.parse_args
