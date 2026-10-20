@@ -77302,6 +77302,7 @@ class KernelRBTree:
         struct rb_node *rb_right;
         struct rb_node *rb_left;
     };
+    Before v2.6.18, rb_parent and rb_color were separate fields before rb_right.
     """
 
     def __init__(self, address):
@@ -77309,6 +77310,14 @@ class KernelRBTree:
         self.address = address
         self.seen = set()
         self.broken = {}
+        self.offset_right = GefUtil.offsetof("rb_node", "rb_right")
+        self.offset_left = GefUtil.offsetof("rb_node", "rb_left")
+        if self.offset_right is None or self.offset_left is None:
+            kernel_target = is_qemu_system() or is_vmware() or is_kgdb() or is_in_kernel()
+            kversion = Kernel.version() if kernel_target else None
+            first_child = 2 if kversion is not None and kversion < "2.6.18" else 1
+            self.offset_right = current_arch.ptrsize * first_child
+            self.offset_left = self.offset_right + current_arch.ptrsize
         return
 
     def parse(self):
@@ -77339,8 +77348,8 @@ class KernelRBTree:
             return []
         self.seen.add(rb_node)
 
-        right = read_int_from_memory(rb_node + current_arch.ptrsize * 1, safe=True)
-        left = read_int_from_memory(rb_node + current_arch.ptrsize * 2, safe=True)
+        right = read_int_from_memory(rb_node + self.offset_right, safe=True)
+        left = read_int_from_memory(rb_node + self.offset_left, safe=True)
         if right is None or left is None:
             self.broken[rb_node] = "unreadable"
 
