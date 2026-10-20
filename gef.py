@@ -152843,9 +152843,11 @@ class KernelSlub:
             active_page["frozen"] = (x >> 31) & 1
             active_chunk = read_int_from_memory(page + self.page_offset_freelist)
             active_page["freelist"] = self.walk_freelist(active_chunk, kmem_cache, simple=simple)
-            active_page["num_pages"] = (
+            pages_needed = (
                 kmem_cache["size"] * active_page["objects"] + (pagesize - 1)
             ) // pagesize
+            # Round the required page count up to 2^n.
+            active_page["num_pages"] = 1 << (pages_needed - 1).bit_length() if pages_needed else 0
 
             active_page["virt_addr"] = self.page2virt(
                 active_page, kmem_cache, kmem_cache["kmem_cache_cpu"][cpu]["freelist"]
@@ -152877,9 +152879,11 @@ class KernelSlub:
             partial_page["frozen"] = (x >> 31) & 1
             partial_chunk = read_int_from_memory(current_partial_page + self.page_offset_freelist)
             partial_page["freelist"] = self.walk_freelist(partial_chunk, kmem_cache, simple=simple)
-            partial_page["num_pages"] = (
+            pages_needed = (
                 kmem_cache["size"] * partial_page["objects"] + (pagesize - 1)
             ) // pagesize
+            # Round the required page count up to 2^n.
+            partial_page["num_pages"] = 1 << (pages_needed - 1).bit_length() if pages_needed else 0
             partial_page["virt_addr"] = self.page2virt(partial_page, kmem_cache, skip_page2virt=skip_page2virt)
             kmem_cache["kmem_cache_cpu"][cpu]["partial_pages"].append(partial_page)
             next_partial_page = read_int_from_memory(current_partial_page + self.page_offset_next)
@@ -152914,9 +152918,11 @@ class KernelSlub:
             node_page["frozen"] = (x >> 31) & 1
             node_chunk = read_int_from_memory(node_page["address"] + self.page_offset_freelist)
             node_page["freelist"] = self.walk_freelist(node_chunk, kmem_cache, simple=simple)
-            node_page["num_pages"] = (
+            pages_needed = (
                 kmem_cache["size"] * node_page["objects"] + (pagesize - 1)
             ) // pagesize
+            # Round the required page count up to 2^n.
+            node_page["num_pages"] = 1 << (pages_needed - 1).bit_length() if pages_needed else 0
             node_page["virt_addr"] = self.page2virt(node_page, kmem_cache, skip_page2virt=skip_page2virt)
             node_page_list.append(node_page)
             current_node_page = read_int_from_memory(node_page["address"] + self.page_offset_next)
@@ -154482,9 +154488,11 @@ class KernelSlubTiny:
                 node_page["frozen"] = (x >> 31) & 1
                 node_chunk = read_int_from_memory(node_page["address"] + self.slab_offset_freelist)
                 node_page["freelist"] = self.walk_freelist(node_chunk, kmem_cache, simple=simple)
-                node_page["num_pages"] = (
+                pages_needed = (
                     kmem_cache["size"] * node_page["objects"] + (pagesize - 1)
                 ) // pagesize
+                # Round the required page count up to 2^n.
+                node_page["num_pages"] = 1 << (pages_needed - 1).bit_length() if pages_needed else 0
                 node_page["virt_addr"] = self.page2virt(node_page, kmem_cache, skip_page2virt=skip_page2virt)
                 node_page_list.append(node_page)
                 current_node_page = read_int_from_memory(node_page["address"] + self.slab_offset_next)
@@ -156836,7 +156844,9 @@ class SlabContainsCommand(GenericCommand):
                 color_offset = 0
                 x = read_int_from_memory(page + self.page_offset_inuse_objects_frozen)
                 objects = (x >> 16) & 0x7fff
-                num_pages = (slab_cache_size * objects + (pagesize - 1)) // pagesize
+                pages_needed = (slab_cache_size * objects + (pagesize - 1)) // pagesize
+                # Round the required page count up to 2^n.
+                num_pages = 1 << (pages_needed - 1).bit_length() if pages_needed else 0
             else:
                 red_left_pad = 0
                 s_mem = read_int_from_memory(page + self.page_offset_s_mem)
