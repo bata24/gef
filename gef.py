@@ -76439,20 +76439,29 @@ class KernelVersion:
             data = read_memory(start, end - start, safe=True)
             if data is None:
                 continue
-            # linux_banner ends with a newline and NUL. Requiring both avoids
-            # shorter build strings and stale copies elsewhere in the image.
+            # linux_banner ends with a newline and NUL. These exclude ordinary build strings,
+            # but a static short copy or a printk record can have both terminators too.
             matches = list(re.finditer(rb"(Linux version \d+\.\d+\.\d+[ -~]+\n)\0", data))
             if not matches:
                 continue
-            # If .data is not separated from the RWX .rodata, .bss is searched too. There the printk ringbuffer
-            # (v5.10~) keeps a copy of the banner with a newline and NUL, which may be longer by leftovers of
-            # other records. So a copy of an earlier banner with a longer tail is skipped.
-            matches = [x for x in matches if not any(
-                y.start() < x.start() and y.group(1) != x.group(1) and x.group(1).startswith(y.group(1)[:-1])
-                for y in matches
-            )]
-            r = max(matches, key=lambda match: len(match.group(1)))
+            if len(matches) > 1:
+                layout = Kernel.layout(use_iomem=False)
 
+                # If .data is not separated from .rodata, the search can include .bss. The printk
+                # ringbuffer (v5.10+) may contain an older banner extended by leftover records.
+                # In the 7.2.3 image, the short static copy and the full linux_banner are both
+                # read-only; neither is a printk record. Filter prefixes only in writable mappings.
+                def is_writable(match, base, maps):
+                    address = base + match.start(1)
+                    return any(entry.contains_virtual(address) and entry.is_writable() for entry in maps)
+
+                def extends_prefix(match, matches):
+                    pos = match.start()
+                    banner = match.group(1)
+                    return any(p.start() < pos and p.group(1) != banner and banner.startswith(p.group(1)[:-1]) for p in matches)
+
+                matches = [m for m in matches if not (extends_prefix(m, matches) and is_writable(m, start, layout.maps))]
+            r = max(matches, key=lambda match: len(match.group(1)))
             version_string = r.group(1).decode("ascii").rstrip()
             address = start + r.start(1)
             return KernelVersion.from_banner(address, version_string)
