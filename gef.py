@@ -180862,6 +180862,18 @@ class PageTableX64(PageTable):
         va_end = va_base + (len(entries) << bit_shift)
         return not any(va_base <= address < va_end for address in self.args.trace)
 
+    def is_user_pgd(self, pgd):
+        user_pgd = pgd + get_pagesize()
+        if pgd & get_pagesize():
+            return False
+        kernel = slice_unpack(self.read_memory(pgd, get_pagesize()), 8)
+        user = slice_unpack(self.read_memory(user_pgd, get_pagesize()), 8)
+        if any(entry & 1 and entry & 0x000f_ffff_ffff_f000 == user_pgd for entry in kernel):
+            return False
+        if any((k ^ u) & ~0x8000_0000_0000_0020 for k, u in zip(kernel[:256], user[:256])):
+            return False
+        return any(entry & 1 for entry in user[256:])
+
     def pagewalk_PML5T(self):
         self.quiet_add_out(titlify("PML5E: Page Map Level 5 Entry"))
         PML5E = []
@@ -181356,6 +181368,10 @@ class PageTableX64(PageTable):
             return
 
         if is_x86_64() and self.args.user_pt and not self.args.ept:
+            if not self.is_user_pgd(cr3 & 0x000f_ffff_ffff_f000):
+                if not self.args.quiet:
+                    self.err_add_out("Could not find the KPTI user page table next to cr3")
+                return
             cr3 += get_pagesize()
         self.quiet_info_add_out("cr3: {:#018x}".format(cr3))
         if self.args.ept:
