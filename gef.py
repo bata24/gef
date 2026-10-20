@@ -34220,6 +34220,9 @@ class KernelChecksecCommand(GenericCommand):
     def get_kconfig(self):
         self.kconfig = None
         self.kconfig_where = None
+        # Over KGDB, scanning .rodata and the configs module for IKCFG_ST is too slow.
+        if is_kgdb() and Ksym.get_addr("kernel_config_data") is None:
+            return
         try:
             ret = gdb.execute("kconfig --quiet --no-pager", to_string=True)
         except gdb.error:
@@ -34291,12 +34294,21 @@ class KernelChecksecCommand(GenericCommand):
             self.loaded_modules = [[name, base, size] for _module, name, regions in modules for _type, base, size in regions]
         return self.loaded_modules
 
+    @staticmethod
+    def get_sysctl_addr(name, symbol):
+        # A sysctl tree walk reads too much memory over KGDB, so only the symbol of the variable is used.
+        if is_kgdb():
+            return Ksym.get_addr(symbol)
+        return KernelSysctl.get(name)
+
     def is_modules_supported(self):
-        return KernelAddressHeuristicFinder.get_modules() is not None or KernelSysctl.get("kernel.modules_disabled") is not None
+        if KernelAddressHeuristicFinder.get_modules() is not None:
+            return True
+        return self.get_sysctl_addr("kernel.modules_disabled", "modules_disabled") is not None
 
     def check_loadable_modules(self):
         modules_symbol = KernelAddressHeuristicFinder.get_modules()
-        modules_disabled_addr = KernelSysctl.get("kernel.modules_disabled")
+        modules_disabled_addr = self.get_sysctl_addr("kernel.modules_disabled", "modules_disabled")
         modules_supported = modules_symbol is not None or modules_disabled_addr is not None
         modules_disabled = None
         if modules_disabled_addr is not None:
@@ -34342,7 +34354,7 @@ class KernelChecksecCommand(GenericCommand):
             except gdb.error:
                 pass
 
-        disabled_addr = KernelSysctl.get("kernel.io_uring_disabled")
+        disabled_addr = self.get_sysctl_addr("kernel.io_uring_disabled", "sysctl_io_uring_disabled")
         if disabled_addr is not None:
             supported = True
         if supported is False:
@@ -34368,7 +34380,7 @@ class KernelChecksecCommand(GenericCommand):
             additional = "kernel.io_uring_disabled=0"
         elif disabled == 1:
             state = Color.colorify("Privileged or group only", "bold yellow")
-            group_addr = KernelSysctl.get("kernel.io_uring_group")
+            group_addr = self.get_sysctl_addr("kernel.io_uring_group", "sysctl_io_uring_group")
             group = None
             if group_addr is not None:
                 group = read_int32_from_memory(group_addr, safe=True)
@@ -34418,8 +34430,8 @@ class KernelChecksecCommand(GenericCommand):
         if not is_x86():
             return
 
-        cr0 = get_register("cr0", use_monitor=True)
-        cr4 = get_register("cr4", use_monitor=True)
+        cr0 = get_register("cr0", use_mbed_exec=True, use_monitor=True)
+        cr4 = get_register("cr4", use_mbed_exec=True, use_monitor=True)
         efer = get_register("efer", use_monitor=True)
 
         bits = [
@@ -34483,6 +34495,9 @@ class KernelChecksecCommand(GenericCommand):
             gef_print("{:<40s}: {:s}".format("PXN (ID_MMFR0 bit 2)", Color.colorify("Enabled", "bold green")))
         elif ID_MMFR0_S is not None and (ID_MMFR0_S >> 2) & 1:
             gef_print("{:<40s}: {:s}".format("PXN (ID_MMFR0 bit 2)", Color.colorify("Enabled", "bold green")))
+        elif is_kgdb() and ID_MMFR0 is None and ID_MMFR0_S is None:
+            additional = "ID_MMFR0: Not available in KGDB mode"
+            gef_print("{:<40s}: {:s} ({:s})".format("PXN (ID_MMFR0 bit 2)", Color.grayify("Unknown"), additional))
         else:
             gef_print("{:<40s}: {:s}".format("PXN (ID_MMFR0 bit 2)", Color.colorify("Disabled", "bold red")))
 
@@ -34721,6 +34736,9 @@ class KernelChecksecCommand(GenericCommand):
                 state, runtime_str = "Disabled", "mitigations=off is in cmdline"
             elif kcmdline and "pti=on" in kcmdline.cmdline:
                 state, runtime_str = "Enabled", "pti=on is in cmdline"
+            elif is_kgdb():
+                # A whole pagewalk reads too much memory over KGDB.
+                runtime_str = "pagewalk is skipped in KGDB mode"
             elif is_in_kernel():
                 maps = AddrMap.get_maps(command="pagewalk --quiet --no-pager --simple --disable-color")
                 if not maps:
@@ -34740,7 +34758,7 @@ class KernelChecksecCommand(GenericCommand):
             if use_ng_mappings is not None:
                 use_ng_mappings = read_int8_from_memory(use_ng_mappings, safe=True)
             text_flags = None
-            if use_ng_mappings is None:
+            if use_ng_mappings is None and not is_kgdb():
                 # KPTI maps the kernel with nG, so it is the runtime state itself
                 try:
                     ret = gdb.execute("pagewalk --quiet --no-pager --disable-color --trace {:#x}".format(Ksym.get_addr("_stext")), to_string=True)
@@ -34865,7 +34883,10 @@ class KernelChecksecCommand(GenericCommand):
         if not is_arm32() and not is_arm64():
             return
 
-        if is_support_secure_world():
+        # The secure memory is found from the memory tree of QEMU.
+        if is_kgdb():
+            gef_print("{:<40s}: {:s}".format("Secure world", Color.grayify("Unknown")))
+        elif is_support_secure_world():
             gef_print("{:<40s}: {:s}".format("Secure world", "Found"))
         else:
             gef_print("{:<40s}: {:s}".format("Secure world", "Not found"))
@@ -34874,6 +34895,20 @@ class KernelChecksecCommand(GenericCommand):
     def check_CONFIG_SLAB_FREELIST_HARDENED(self):
         cfg = "CONFIG_SLAB_FREELIST_HARDENED"
         if self.print_kconfig_state(cfg):
+            return
+
+        # Dumping the freelists reads too much memory over KGDB, so use the debug information.
+        if is_kgdb():
+            offset = GefUtil.offsetof("kmem_cache", "random")
+            if GefUtil.sizeof("kmem_cache") is None:
+                additional = "struct kmem_cache: Not found in debug information"
+                gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.grayify("Unknown"), additional))
+            elif offset is None:
+                additional = "offsetof(kmem_cache, random): Not found"
+                gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Disabled", "bold red"), additional))
+            else:
+                additional = "offsetof(kmem_cache, random): {:#x}".format(offset)
+                gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Enabled", "bold green"), additional))
             return
 
         slab_cache_names = " ".join("kmalloc-{:d}".format(n) for n in [8, 16, 32, 64, 96, 128, 192, 256, 512])
@@ -34895,6 +34930,20 @@ class KernelChecksecCommand(GenericCommand):
     def check_CONFIG_SLAB_FREELIST_RANDOM(self):
         cfg = "CONFIG_SLAB_FREELIST_RANDOM"
         if self.print_kconfig_state(cfg):
+            return
+
+        # Walking the caches reads too much memory over KGDB, so use the debug information.
+        if is_kgdb():
+            offset = GefUtil.offsetof("kmem_cache", "random_seq")
+            if GefUtil.sizeof("kmem_cache") is None:
+                additional = "struct kmem_cache: Not found in debug information"
+                gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.grayify("Unknown"), additional))
+            elif offset is None:
+                additional = "offsetof(kmem_cache, random_seq): Not found"
+                gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Disabled", "bold red"), additional))
+            else:
+                additional = "offsetof(kmem_cache, random_seq): {:#x}".format(offset)
+                gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Enabled", "bold green"), additional))
             return
 
         try:
@@ -35493,7 +35542,18 @@ class KernelChecksecCommand(GenericCommand):
         ]
         supported_cfgs = [cfg for kv, cfg in cfgs if not kversion < kv]
         addrs = {}
-        if supported_cfgs:
+        if supported_cfgs and is_kgdb():
+            # A ksysctl tree walk reads too much memory over KGDB, so use init_user_ns.ucount_max[] from the debug information.
+            user_ns = GefUtil.typed_struct(Ksym.get_addr("init_user_ns"), "struct user_namespace")
+            ucount_max = GefUtil.field(user_ns, "ucount_max")
+            for cfg in supported_cfgs:
+                try:
+                    index = int(gdb.parse_and_eval("UCOUNT_{:s}_NAMESPACES".format(cfg.split("_")[1].upper())))
+                    value = ucount_max[index]
+                    addrs[cfg] = (to_unsigned_long(value.address), value.type.sizeof)
+                except (gdb.error, TypeError):
+                    pass
+        elif supported_cfgs:
             # A ksysctl tree walk is slow, so resolve all namespace limits in one pass.
             filters = " ".join("-f {:s}".format(cfg) for cfg in supported_cfgs)
             try:
@@ -35537,7 +35597,7 @@ class KernelChecksecCommand(GenericCommand):
 
     def check_unprivileged_userns_clone(self):
         cfg = "kernel.unprivileged_userns_clone"
-        addr = KernelSysctl.get(cfg)
+        addr = self.get_sysctl_addr(cfg, "unprivileged_userns_clone")
         if addr is None:
             additional = "{:s}: Not found, Only present in debian-based environments".format(cfg)
             gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.grayify("Unknown"), additional))
@@ -35553,7 +35613,7 @@ class KernelChecksecCommand(GenericCommand):
 
     def check_userns_restrict(self):
         cfg = "kernel.userns_restrict"
-        addr = KernelSysctl.get(cfg)
+        addr = self.get_sysctl_addr(cfg, "sysctl_userns_restrict")
         if addr is None:
             additional = "{:s}: Not found, Only present in ALT-linux-based environments".format(cfg)
             gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.grayify("Unknown"), additional))
@@ -35572,7 +35632,11 @@ class KernelChecksecCommand(GenericCommand):
         if self.print_kconfig_state(cfg, secure_if_enabled=False):
             return
 
-        kallsyms = Ksym.get_runtime_kallsyms(quiet=True)
+        # Scanning the runtime kallsyms reads too much memory over KGDB.
+        if is_kgdb():
+            kallsyms = None
+        else:
+            kallsyms = Ksym.get_runtime_kallsyms(quiet=True)
         if kallsyms is None:
             gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.grayify("Unknown"), "runtime kallsyms unavailable"))
         elif "modprobe_path" in kallsyms[1]:
@@ -35647,6 +35711,12 @@ class KernelChecksecCommand(GenericCommand):
             gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Enabled", "bold red"), additional))
             return
 
+        # Over KGDB, scanning memory for the BTF header is too slow, and the symbols of vmlinux keep __start_BTF.
+        if is_kgdb() and not Ksym.kernel_img:
+            additional = "__start_BTF: Not found"
+            gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Disabled", "bold green"), additional))
+            return
+
         btf_range = KtypesCommand.get_btf_addr()
         if btf_range is not None:
             additional = "BTF header: Found at {:#x} (__start_BTF hidden)".format(btf_range[0])
@@ -35686,6 +35756,12 @@ class KernelChecksecCommand(GenericCommand):
             else:
                 state = Color.colorify("Disabled", "bold red")
             gef_print("{:<40s}: {:s} (ctl_table layout from debug information)".format(cfg, state))
+            return
+
+        # A sysctl tree walk reads too much memory over KGDB.
+        if is_kgdb():
+            additional = "ctl_table layout: Not found in debug information"
+            gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.grayify("Unknown"), additional))
             return
 
         # If kallsyms can be resolved but ksysctl cannot, the structure layout may be unusual.
@@ -35775,7 +35851,8 @@ class KernelChecksecCommand(GenericCommand):
             if not m:
                 continue
             pos, mnemonic, operands = int(m.group(1), 16), m.group(2), m.group(3)
-            comment = re.search(r"(?:# |@ |; |// #)(0x[0-9a-f]+|-?\d+)\s*$", operands)
+            # gdb appends `<symbol>` to an address if vmlinux is loaded (always in KGDB mode)
+            comment = re.search(r"(?:# |@ |; |// #)(0x[0-9a-f]+|-?\d+)(?:\s+<[^>]*>)?\s*$", operands)
             operands = re.sub(r"\s+(?://|@|;|# ).*$", "", operands).strip()
             ops = re.split(r",\s*(?![^\[]*\]|[^{]*})", operands)
 
@@ -35827,7 +35904,7 @@ class KernelChecksecCommand(GenericCommand):
             elif mnemonic == "lea" and comment:
                 regs[dst] = ["const", int(comment.group(1), 16)]
             elif mnemonic in ("adrp", "adr") and len(ops) == 2:
-                regs[dst] = ["const", int(ops[1], 16)]
+                regs[dst] = ["const", int(ops[1].split()[0], 16)]
             elif mnemonic == "add" and len(ops) == 3 and regs.get(ops[1], [None])[0] == "const" and ops[2].startswith("#"):
                 regs[dst] = ["const", regs[ops[1]][1] + int(ops[2].lstrip("#"), 0)]
             elif mnemonic == "movw" and comment:
@@ -35938,6 +36015,17 @@ class KernelChecksecCommand(GenericCommand):
         cfg = "CONFIG_STACKPROTECTOR"
         # ~4.17: CONFIG_CC_STACKPROTECTOR
         if self.print_kconfig_state(cfg, names=[cfg, "CONFIG_CC_STACKPROTECTOR"]):
+            return
+
+        # __stack_chk_fail is built only with it. ktask cannot find task_struct.stack_canary with CONFIG_RANDSTRUCT,
+        # and walks the task list, which is slow over KGDB.
+        if Ksym.get_addr("__stack_chk_fail") is not None:
+            additional = "__stack_chk_fail: Found"
+            gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Enabled", "bold green"), additional))
+            return
+        if is_kgdb():
+            additional = "__stack_chk_fail: Not found"
+            gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Disabled", "bold red"), additional))
             return
 
         ktask_ret = gdb.execute("ktask --meta", to_string=True)
@@ -36237,10 +36325,18 @@ class KernelChecksecCommand(GenericCommand):
 
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
-    @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware"))
+    @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
     @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
     @Decorator.only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
+        # Over KGDB, scanning memory for kallsyms is too slow, so the symbols of vmlinux are required.
+        if is_kgdb() and Ksym.peek() is None:
+            if Ksym.Vmlinux.loaded_path(ignore_loaded_vmlinux=False, quiet=True) is None:
+                err("Load vmlinux with symbols first in KGDB mode")
+                return
+            # A failed parse is not kept, so parse once here instead of each lookup
+            if Ksym.get_kallsyms() is None:
+                return
         self.print_security_properties_qemu_system()
         return
 
@@ -70146,6 +70242,10 @@ class KernelAddressHeuristicFinder:
                 for x in g:
                     return x
 
+        # KGDB uses the symbols of vmlinux, so the table is absent here, and reading the image is too slow.
+        if is_kgdb():
+            return None
+
         # plan 5 (search for the memory)
         sys_read = Ksym.get_addr("__x64_sys_read")
         sys_write = Ksym.get_addr("__x64_sys_write")
@@ -70255,6 +70355,10 @@ class KernelAddressHeuristicFinder:
             for x in g:
                 return x
 
+        # KGDB uses the symbols of vmlinux, so the table is absent here, and reading the image is too slow.
+        if is_kgdb():
+            return None
+
         # plan 3 (search for the memory)
         # Since v4.17, syscall wrappers use the __ia32_sys_* names.  Keep the
         # legacy sys_* sequence as a fallback for older kernels.
@@ -70295,6 +70399,10 @@ class KernelAddressHeuristicFinder:
             x = Ksym.get_addr("sys_call_table")
             if x:
                 return x
+
+        # KGDB uses the symbols of vmlinux, so the table is absent here, and reading the image is too slow.
+        if is_kgdb():
+            return None
 
         # plan 2 (search for the memory)
         sys_restart_syscall = Ksym.get_addr("sys_restart_syscall")
@@ -70346,6 +70454,10 @@ class KernelAddressHeuristicFinder:
             for x in g:
                 return x
 
+        # KGDB uses the symbols of vmlinux, so the table is absent here, and reading the image is too slow.
+        if is_kgdb():
+            return None
+
         # plan 3 (search for the memory)
         sys_io_setup = Ksym.get_addr("__arm64_sys_io_setup")
         sys_io_destroy = Ksym.get_addr("__arm64_sys_io_destroy")
@@ -70389,6 +70501,10 @@ class KernelAddressHeuristicFinder:
             g = KernelAddressHeuristicFinderUtil.aarch64_adrp_add(res, read_valid=True)
             for x in g:
                 return x
+
+        # KGDB uses the symbols of vmlinux, so the table is absent here, and reading the image is too slow.
+        if is_kgdb():
+            return None
 
         # plan 3 (search for the memory)
         sys_restart_syscall = Ksym.get_addr("__arm64_sys_restart_syscall")
@@ -98662,7 +98778,7 @@ class KernelFileSystemsCommand(GenericCommand, BufferingOutput):
 
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
-    @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware"))
+    @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
     @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
     @Decorator.only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
@@ -105180,7 +105296,7 @@ class KernelSyscallsCommand(GenericCommand, BufferingOutput):
 
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
-    @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware"))
+    @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
     @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
     @Decorator.only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
@@ -162841,7 +162957,7 @@ class Ksym:
                 anchors.append(("linux_banner", banner_address - symbols["linux_banner"]))
 
             # KGDB's layout resolution needs kallsyms, so it cannot be used during this parse.
-            if banner_address is None and "linux_banner" in symbols and (is_qemu_system() or is_vmware()):
+            if banner_address is None and "linux_banner" in symbols and (is_qemu_system() or is_vmware()) and not is_kgdb():
                 try:
                     version = KernelVersion.scan_banner()
                 except gdb.error:
