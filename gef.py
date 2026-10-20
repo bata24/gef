@@ -74211,6 +74211,7 @@ class KernelAddressHeuristicFinder:
         Both WHEEL_SIZEs are returned for an empty wheel, since it cannot tell them apart."""
         ptrsize = current_arch.ptrsize
         unpack = GefUtil.get_unpack(ptrsize)
+        kversion = Kernel.version()
 
         header = read_memory(timer_base, 0x200, safe=True)
         if header is None:
@@ -74233,12 +74234,11 @@ class KernelAddressHeuristicFinder:
             if clk == 0:
                 continue
 
-            # `next_expiry` is a jiffies value that __next_timer_interrupt() keeps within
-            # NEXT_TIMER_MAX_DELTA of `clk`, but it is not always ahead of it: before v5.14 only
-            # the idle path refreshes it, so it stays stale while the cpu keeps running. It is
-            # left 0 with CONFIG_NO_HZ_COMMON=n, where nothing updates it.
+            # Since v5.14 an empty base can refresh `next_expiry` from current jiffies while
+            # `clk` stays stale. `next_expiry` is invalid while recalculation is pending.
             bits = ptrsize * 8
-            if next_expiry:
+            if next_expiry and (not kversion or kversion < "5.14"
+                                or (not header[offset_cpu + 4] and header[offset_cpu + 6])):
                 diff = u2i(next_expiry - clk, bits)
                 if abs(diff) > (1 << 30) - 1:
                     continue
