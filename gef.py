@@ -70121,6 +70121,8 @@ class KernelAddressHeuristicFinder:
                     KernelAddressHeuristicFinderUtil.arm32_movw_movt_ldr(res),
                     KernelAddressHeuristicFinderUtil.arm32_ldr_pc_relative(res),
                     KernelAddressHeuristicFinderUtil.arm32_movw_movt(res),
+                    # Older ARM32 kernels load a section anchor 8 bytes before chrdevs.
+                    (x + 8 for x in KernelAddressHeuristicFinderUtil.arm32_ldr_pc_relative(res)),
                 )
             return []
 
@@ -70184,7 +70186,11 @@ class KernelAddressHeuristicFinder:
         if kversion and "2.5.70" <= kversion:
             addr = Ksym.get_addr("cdev_del")
             if addr:
-                res = gdb.execute("x/30i {:#x}".format(addr), to_string=True)
+                if is_arm32():
+                    # KASAN pushes the cdev_map load beyond the first 30 instructions.
+                    res = KernelAddressHeuristicFinderUtil.disassemble_until_next_symbol(addr, 100)
+                else:
+                    res = gdb.execute("x/30i {:#x}".format(addr), to_string=True)
                 if is_x86_64():
                     g = KernelAddressHeuristicFinderUtil.x64_qword_ptr_rip_base(res)
                 elif is_x86_32():
