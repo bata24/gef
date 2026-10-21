@@ -70031,9 +70031,10 @@ class KernelAddressHeuristicFinder:
 
         kversion = Kernel.version()
 
-        # plan 2 (available v3.7.5 or later)
-        if kversion and "3.7.5" <= kversion:
-            for addr in Ksym.get_addrs("find_module_all", match="split"):
+        # plan 2 (find_module was replaced by find_module_all in v3.7.5)
+        if kversion:
+            symbol = "find_module_all" if "3.7.5" <= kversion else "find_module"
+            for addr in Ksym.get_addrs(symbol, match="split"):
                 # KCOV builds interleave __sanitizer_cov_trace_* calls, pushing &modules past 40 insns
                 res = KernelAddressHeuristicFinderUtil.disassemble_until_next_symbol(addr, 60)
                 if is_x86_64():
