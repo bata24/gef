@@ -99853,14 +99853,16 @@ class KernelMountCommand(GenericCommand, BufferingOutput):
         self.task_command = task_command
         self.offset_nsproxy = getattr(task_command, "offset_nsproxy", None)
 
-        self.kfs = Kernel.file_system()
-        kfs_ret = None
+        self.kfs = None
         if "3.3" <= kversion:
+            self.kfs = Kernel.file_system()
             kfs_ret = self.kfs.initialize()
-        self.meta.extend(Kernel.export_meta(self, self.kfs.meta, demote_err=True))
-        if not kfs_ret:
-            self.meta.append((self.quiet_warn, "Could not resolve the super_block layout; fstype and devname are not shown"))
-            self.kfs = None
+            self.meta.extend(Kernel.export_meta(self, self.kfs.meta, demote_err=True))
+            if not kfs_ret:
+                self.meta.append((
+                    self.quiet_warn, "Could not resolve the super_block layout; fstype and devname are not shown",
+                ))
+                self.kfs = None
 
         self.kpath = Kernel.path()
         if not self.kpath.initialized:
@@ -99904,6 +99906,36 @@ class KernelMountCommand(GenericCommand, BufferingOutput):
             self.meta.append((self.quiet_info, "MNT_ONRB: {:s} (live mount flags)".format(
                 "present" if self.mnt_onrb_present else "absent",
             )))
+
+        if kversion < "3.3":
+            self.offset_s_type = GefUtil.offsetof("super_block", "s_type")
+            if self.offset_s_type is None:
+                loff_t_align = 8 if is_64bit() or is_arm32() else 4
+                self.offset_s_type = align(current_arch.ptrsize * 3 + 8, loff_t_align) + 8
+            self.meta.append((self.quiet_info, "offsetof(super_block, s_type): {:#x}".format(self.offset_s_type)))
+
+            self.offset_mnt_devname = GefUtil.offsetof("vfsmount", "mnt_devname")
+            if self.offset_mnt_devname is None and self.offset_mnt_flags is not None:
+                base = align(self.offset_mnt_flags + 4, current_arch.ptrsize)
+                candidates = (base, align(self.offset_mnt_flags + 8, current_arch.ptrsize) + current_arch.ptrsize)
+                mounts = [mount for mount, _ in self.walk_tree(root_mount)][:16]
+                scores = []
+                for offset in candidates:
+                    score = 0
+                    for mount in mounts:
+                        name_ptr = read_int_from_memory(mount + offset, safe=True)
+                        if not is_valid_addr(name_ptr):
+                            continue
+                        name = read_cstring_from_memory(name_ptr, max_length=64, safe=True)
+                        if name and all(0x20 <= ord(char) < 0x7f for char in name):
+                            score += 1
+                    scores.append(score)
+                if max(scores) > 0 and scores.count(max(scores)) == 1:
+                    self.offset_mnt_devname = candidates[scores.index(max(scores))]
+            if self.offset_mnt_devname is not None:
+                self.meta.append((self.quiet_info, "offsetof(vfsmount, mnt_devname): {:#x}".format(self.offset_mnt_devname)))
+            else:
+                self.meta.append((self.quiet_warn, "Could not find vfsmount->mnt_devname"))
 
         self.offset_mnt_t_flags = GefUtil.offsetof("mount", "mnt_t_flags")
         self.offset_mnt_master = GefUtil.offsetof("mount", "mnt_master")
@@ -100174,6 +100206,16 @@ class KernelMountCommand(GenericCommand, BufferingOutput):
         if self.kfs is not None:
             fstype = self.kfs.get_fstype_name(super_block)
             devname = self.kfs.get_dev_name(mount)
+        elif self.kversion < "3.3":
+            fst = read_int_from_memory(super_block + self.offset_s_type, safe=True)
+            if is_valid_addr(fst):
+                name_ptr = read_int_from_memory(fst, safe=True)
+                if is_valid_addr(name_ptr):
+                    fstype = read_cstring_from_memory(name_ptr, max_length=64, safe=True)
+            if self.offset_mnt_devname is not None:
+                name_ptr = read_int_from_memory(vfsmnt + self.offset_mnt_devname, safe=True)
+                if is_valid_addr(name_ptr):
+                    devname = read_cstring_from_memory(name_ptr, max_length=64, safe=True)
 
         path_info = kpath.get_mount_path(mount, root)
         path = path_info.path or "???"
