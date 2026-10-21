@@ -72187,6 +72187,16 @@ class KernelAddressHeuristicFinder:
     @staticmethod
     @Decorator.switch_to_intel_syntax
     def get_sysctl_table_root():
+
+        def is_sysctl_table_root(x):
+            # Since v3.4, default_set (the first member) has dir.header.root and dir.header.set in a row,
+            # and both point back to the root. Slot 0 (is_seen) is skipped so that an empty list_head does not pass.
+            data = read_memory(x, 0x80, safe=True)
+            if data is None:
+                return False
+            values = slice_unpack(data, current_arch.ptrsize)
+            return any(a == b == x for a, b in zip(values[1:], values[2:]))
+
         # plan 1 (directly)
         if KernelAddressHeuristicFinder.USE_DIRECTLY:
             x = Ksym.get_addr("sysctl_table_root")
@@ -72203,7 +72213,8 @@ class KernelAddressHeuristicFinder:
             else:
                 addr = Ksym.get_addr("register_sysctl_paths")
             if addr:
-                res = gdb.execute("x/20i {:#x}".format(addr), to_string=True)
+                # register_sysctl() is a short wrapper, and the next function builds other addresses with adrp + add + add
+                res = KernelAddressHeuristicFinderUtil.disassemble_until_next_symbol(addr, 20)
                 if is_x86_64():
                     g = KernelAddressHeuristicFinderUtil.x64_x86_mov_reg_const(res, "rdi")
                 elif is_x86_32():
@@ -72223,7 +72234,8 @@ class KernelAddressHeuristicFinder:
                 else:
                     g = []
                 for x in g:
-                    return x
+                    if kversion < "3.4" or is_sysctl_table_root(x):
+                        return x
         return None
 
     @staticmethod
