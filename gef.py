@@ -75201,13 +75201,21 @@ class KernelAddressHeuristicFinder:
                         if pos2 % current_arch.ptrsize != 0:
                             continue
                         name_addr = rw_base + pos2
+                        candidates = []
                         for sizeof_resource_size_t in (8, 4):
                             maybe_ioport_resource = name_addr - sizeof_resource_size_t * 2
                             layout = KernelResourceLayout.get_layout(
                                 maybe_ioport_resource, "PCI IO", 0x100, name_addr,
                             )
-                            if layout:
+                            if not layout:
+                                continue
+                            # Without a child, both widths can pass (e.g., ARM without PCI has {0, 0, "PCI IO"}),
+                            # but only the right one reads iomem_resource next to it correctly.
+                            if KernelResourceLayout.find_iomem_resource(maybe_ioport_resource, layout):
                                 return maybe_ioport_resource
+                            candidates.append(maybe_ioport_resource)
+                        if candidates:
+                            return candidates[0]
         return None
 
     @staticmethod
@@ -75224,16 +75232,7 @@ class KernelAddressHeuristicFinder:
         if x:
             layout = KernelResourceLayout.get_layout(x, "PCI IO", 0x100)
             if layout:
-                for i in range(-0x1000, 0x1000, current_arch.ptrsize):
-                    name_addr = x + i
-                    name_ptr = read_int_from_memory(name_addr, safe=True)
-                    if not name_ptr or not is_valid_addr(name_ptr):
-                        continue
-                    if read_cstring_from_memory(name_ptr, safe=True) != "PCI mem":
-                        continue
-                    root = name_addr - layout["name"]
-                    if KernelResourceLayout.get_layout(root, "PCI mem", 0x200, name_addr):
-                        return root
+                return KernelResourceLayout.find_iomem_resource(x, layout)
         return None
 
     @staticmethod
@@ -102766,6 +102765,26 @@ class KernelResourceLayout:
         if plain_layouts:
             return plain_layouts[0]
         return candidates[0]
+
+    @staticmethod
+    def find_iomem_resource(ioport_resource, layout):
+        # iomem_resource is defined next to ioport_resource
+        for i in range(-0x1000, 0x1000, current_arch.ptrsize):
+            name_addr = ioport_resource + i
+            name_ptr = read_int_from_memory(name_addr, safe=True)
+            if not name_ptr or not is_valid_addr(name_ptr):
+                continue
+            if read_cstring_from_memory(name_ptr, safe=True) != "PCI mem":
+                continue
+            root = name_addr - layout["name"]
+            if not KernelResourceLayout.get_layout(root, "PCI mem", 0x200, name_addr):
+                continue
+            # iomem_resource is {0, -1}, or {0, 2^phys_bits - 1} on x86, which a wrong width does not read
+            start = KernelResourceLayout.read_size(root + layout["start"], layout["width"])
+            end = KernelResourceLayout.read_size(root + layout["end"], layout["width"])
+            if start == 0 and end and end & (end + 1) == 0:
+                return root
+        return None
 
 
 @register_command
