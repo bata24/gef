@@ -101967,6 +101967,14 @@ class KernelWorkqueueCommand(GenericCommand, BufferingOutput):
         }
 
     def find_name_offset(self, workqueues):
+
+        def has_names(offset, is_pointer):
+            # The window also covers the following objects, where SLAB places the older `events`,
+            # so the offset must give a name to every workqueue.
+            self.offset_wq_name = offset
+            self.name_is_pointer = is_pointer
+            return all(self.read_workqueue_name(workqueue) != "???" for workqueue in workqueues)
+
         offset = GefUtil.offsetof("struct workqueue_struct", "name")
         if offset is not None:
             self.name_is_pointer = False
@@ -101981,8 +101989,7 @@ class KernelWorkqueueCommand(GenericCommand, BufferingOutput):
             if data is None:
                 continue
             offset = data.find(b"events\x00")
-            if offset >= 0:
-                self.name_is_pointer = False
+            if offset >= 0 and has_names(offset, False):
                 self.system_wq = workqueue
                 return offset
 
@@ -101990,8 +101997,7 @@ class KernelWorkqueueCommand(GenericCommand, BufferingOutput):
                 name_address = int.from_bytes(data[offset:offset + current_arch.ptrsize], byteorder)
                 if not is_valid_addr(name_address):
                     continue
-                if read_cstring_from_memory(name_address, safe=True) == "events":
-                    self.name_is_pointer = True
+                if read_cstring_from_memory(name_address, safe=True) == "events" and has_names(offset, True):
                     self.system_wq = workqueue
                     return offset
         return None
