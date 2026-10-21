@@ -77483,7 +77483,7 @@ class KernelMapleTree:
 
     How to use:
         mt = KernelMapleTree(mm)         # KernelMapleTree(mm, ma_root_offset) skips the search below
-        if mt.find_root_offset(current_arch.ptrsize * 0x20) is None:
+        if mt.find_root_offset(current_arch.ptrsize * 0x40) is None:
             ...                           # offsetof(mm_struct, mm_mt.ma_root) is not found
         mt.root_offset                    # -> the found offset
         mt.parse()                        # -> [entry, entry, ...]
@@ -81614,7 +81614,7 @@ class KernelMM:
         else:
             # Linux 6.1 replaced mm_struct.mmap with mm_struct.mm_mt.
             mm_mt = KernelMapleTree(mm, offset_ma_root)
-            if mm_mt.find_root_offset(current_arch.ptrsize * 0x20) is None:
+            if mm_mt.find_root_offset(current_arch.ptrsize * 0x40) is None:
                 raise RuntimeError("Could not find offsetof(mm_struct, mm_mt.ma_root)")
             get_next_vma_area_struct = mm_mt.get_next
             vm_area_struct = get_next_vma_area_struct()
@@ -195064,7 +195064,7 @@ class KernelWalkMapleTreeCommand(KernelWalkCommand):
     parser.add_argument("-o", "--root-offset", type=AddressUtil.parse_address,
                         help="offsetof(the struct, ma_root). it is searched if not given.")
     parser.add_argument("-m", "--max-offset", type=AddressUtil.parse_address,
-                        help="the search range of offsetof(the struct, ma_root). (default: ptrsize*0x20)")
+                        help="the search range of offsetof(the struct, ma_root). (default: ptrsize*0x40)")
     KernelWalkCommand.add_common_arguments(parser)
     _syntax_ = parser.format_help()
 
@@ -195102,7 +195102,7 @@ class KernelWalkMapleTreeCommand(KernelWalkCommand):
             err("Invalid address")
             return
 
-        max_offset = args.max_offset or current_arch.ptrsize * 0x20
+        max_offset = args.max_offset or current_arch.ptrsize * 0x40
         mt = KernelMapleTree(args.address, args.root_offset)
         try:
             if mt.find_root_offset(max_offset) is None:
