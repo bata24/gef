@@ -69357,8 +69357,11 @@ class KernelAddressHeuristicFinder:
                         KernelAddressHeuristicFinderUtil.arm32_ldr_pc_relative(res),
                     )
                 elif is_riscv32() or is_riscv64():
-                    # auipc/lui a1, hi20; ld/lw a1, lo12(a1)
-                    g = KernelAddressHeuristicFinderUtil.riscv_auipc_use(res, include_lui=True)
+                    # auipc/lui + ld/lw, or a gp-relative load after linker relaxation
+                    g = itertools.chain(
+                        KernelAddressHeuristicFinderUtil.riscv_auipc_use(res, include_lui=True),
+                        KernelAddressHeuristicFinderUtil.riscv_gp_relative(res),
+                    )
                 for x in g:
                     return x
         return None
@@ -70648,8 +70651,8 @@ class KernelAddressHeuristicFinder:
             static_size = __per_cpu_end - __per_cpu_start;
             base = __addr_to_pcpu_ptr(pcpu_base_addr); // folds to `__per_cpu_start`
             for_each_possible_cpu(cpu) { start = base + __per_cpu_offset[cpu]; ... }
-        `__per_cpu_start` is the only page aligned constant of the function and
-        `__per_cpu_end` is the nearest one above it, which is enough to tell them apart.
+        `__per_cpu_start` is page aligned, and `__per_cpu_end` is the nearest
+        completed address above it, which is enough to tell them apart.
         CONFIG_SMP=n compiles the body away to `return false`, so nothing is found.
         `offsets` is `__per_cpu_offset[]`, which the caller already has."""
         # the static area never fills a whole unit, and 1MB covers every kernel of the corpus
@@ -70670,14 +70673,21 @@ class KernelAddressHeuristicFinder:
                 elif is_arm64():
                     g = KernelAddressHeuristicFinderUtil.aarch64_adrp_add(res)
                 elif is_arm32():
-                    g = KernelAddressHeuristicFinderUtil.arm32_movw_movt(res)
+                    g = list(KernelAddressHeuristicFinderUtil.arm32_movw_movt(res))
+                    zero_regs = set(re.findall(r"\bmovw\s+(\w+),\s*#0[ \t]*$", res, re.MULTILINE))
+                    g.extend(int(m.group(2)) << 16 for m in re.finditer(r"\bmovt\s+(\w+),\s*#(\d+)", res)
+                             if m.group(1) in zero_regs)
                 elif is_riscv64() or is_riscv32():
-                    g = KernelAddressHeuristicFinderUtil.riscv_auipc_addi(res)
+                    g = KernelAddressHeuristicFinderUtil.riscv_auipc_addi(res, include_lui=is_riscv32())
                 else:
                     g = []
                 consts = sorted({AddressUtil.normalize_address(x) for x in g})
+                starts = set(consts)
+                if is_riscv32():
+                    starts.update(AddressUtil.normalize_address(int(m.group(1), 16) << 12)
+                                  for m in re.finditer(r"\blui\s+\w+,\s*(0x[0-9a-f]+)\s*$", res, re.MULTILINE))
 
-                for i, start in enumerate(consts):
+                for start in sorted(starts):
                     if start % 0x1000: # `__per_cpu_start` is `. = ALIGN(PAGE_SIZE)` in the linker script
                         continue
                     if start == 0:
@@ -70685,7 +70695,7 @@ class KernelAddressHeuristicFinder:
                             continue
                     elif not KernelAddressHeuristicFinderUtil.is_in_kernel_image(start):
                         continue
-                    end = next((x for x in consts[i + 1:] if 0x1000 <= x - start <= limit), None)
+                    end = next((x for x in consts if 0x1000 <= x - start <= limit), None)
                     if end is None:
                         continue
                     # `__per_cpu_start + __per_cpu_offset[cpu]` is the base of the unit of `cpu`,
@@ -72261,7 +72271,7 @@ class KernelAddressHeuristicFinder:
                         KernelAddressHeuristicFinderUtil.arm32_ldr_pc_relative(res),
                     )
                 elif is_riscv64() or is_riscv32():
-                    g = KernelAddressHeuristicFinderUtil.riscv_auipc_addi(res)
+                    g = KernelAddressHeuristicFinderUtil.riscv_auipc_addi(res, include_lui=is_riscv32())
                 else:
                     g = []
                 for x in g:
@@ -75126,7 +75136,7 @@ class KernelAddressHeuristicFinder:
                     )
                 elif is_riscv32() or is_riscv64():
                     g = itertools.chain(
-                        KernelAddressHeuristicFinderUtil.riscv_auipc_use(res),
+                        KernelAddressHeuristicFinderUtil.riscv_auipc_use(res, include_lui=is_riscv32()),
                         KernelAddressHeuristicFinderUtil.riscv_gp_relative(res),
                     )
                 else:
@@ -75523,7 +75533,7 @@ class KernelAddressHeuristicFinder:
                 elif is_arm32():
                     g = KernelAddressHeuristicFinderUtil.arm32_movw_movt(res)
                 elif is_riscv32() or is_riscv64():
-                    g = KernelAddressHeuristicFinderUtil.riscv_auipc_addi(res)
+                    g = KernelAddressHeuristicFinderUtil.riscv_auipc_addi(res, include_lui=is_riscv32())
                 else:
                     g = []
                 for x in g:
@@ -76726,9 +76736,37 @@ class KernelLayout:
             rw_base = lookup(("_sdata",), base.ro_base + get_pagesize(), vmem_end)
             if rw_base is None and (is_riscv32() or is_riscv64()):
                 rw_base = lookup(("__start_init_task", "init_thread_union"), base.ro_base + get_pagesize(), vmem_end)
+            if rw_base is None and is_riscv64() and base.rwx:
+                # The boot task's stack is init_thread_union, the first object after .rodata.
+                with ContextManager.threads(KernelPerCpu.get_cpu_threads()) as threads:
+                    for _ in threads:
+                        task = KernelAddressHeuristicFinder.get_current_task_for_current_thread()
+                        if task is None or not base.ro_base < task < base.ro_end:
+                            continue
+                        data = read_memory(task, get_pagesize(), safe=True)
+                        if data is None or b"swapper/0\0" not in data:
+                            continue
+                        words = slice_unpack(data, current_arch.ptrsize)
+                        if words.count(task) < 3:
+                            continue
+                        stacks = {value for value in words[:0x20]
+                                  if base.ro_base < value < task and value % get_pagesize() == 0}
+                        if len(stacks) == 1:
+                            rw_base = stacks.pop()
+                            break
             # .data may be in the same RWX mapping as .rodata
             if rw_base is not None and (base.rwx or base.ro_end <= rw_base):
                 rw_end = lookup(("_end", "__bss_stop", "_edata"), rw_base + 1, vmem_end)
+                if rw_end is None and is_riscv64() and base.rwx:
+                    # module_alloc uses PFN_ALIGN(_end - SZ_2G); recover the value before alignment.
+                    addr = lookup(("module_alloc",), base.text_base, base.text_end)
+                    if addr is not None:
+                        res = KernelAddressHeuristicFinderUtil.disassemble_until_next_symbol(addr, 16)
+                        for value in KernelAddressHeuristicFinderUtil.riscv_auipc_addi(res):
+                            end = AddressUtil.normalize_address(value + 0x80000000 - get_pagesize() + 1)
+                            if rw_base < end <= base.text_base + 0x10000000 and is_valid_addr(end - 1):
+                                rw_end = end
+                                break
                 if rw_end is not None and is_valid_addr(rw_end - 1):
                     klayout = klayout.replace(ro_end=min(base.ro_end, rw_base), rw_base=rw_base, rw_end=rw_end)
         else:
