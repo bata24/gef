@@ -71852,30 +71852,49 @@ class KernelAddressHeuristicFinder:
             offset for base in base_mask_offsets for offset in (base, base + 8)
         ))
 
+        def looks_like_clocksource(current, i, offset_mask):
+            clocksource = current - ptrsize * i
+            read = read_int_from_memory(clocksource, safe=True)
+            if not is_valid_addr(read):
+                return False
+            mask = read_int64_from_memory(clocksource + offset_mask, safe=True)
+            mult = read_int32_from_memory(clocksource + offset_mask + 8, safe=True)
+            shift = read_int32_from_memory(clocksource + offset_mask + 12, safe=True)
+            if not mask or mask & (mask + 1) or not mult or shift is None or shift > 64:
+                return False
+            name_addr = read_int_from_memory(current - ptrsize, safe=True)
+            if is_valid_addr(name_addr):
+                name = read_cstring_from_memory(name_addr, safe=True)
+            else:
+                name = None
+            return bool(name and len(name) <= 64 and name.isprintable())
+
         def looks_like_clocksource_list(addr):
             if not is_double_link_list(addr, min_len=1):
                 return False
 
+            nodes = []
             current = read_int_from_memory(addr)
             while current != addr:
-                name_addr = read_int_from_memory(current - ptrsize)
-                if is_valid_addr(name_addr):
-                    name = read_cstring_from_memory(name_addr, safe=True)
-                else:
-                    name = None
-                if name and len(name) <= 64 and name.isprintable():
-                    for i in range(5, 64):
-                        clocksource = current - ptrsize * i
-                        read = read_int_from_memory(clocksource, safe=True)
-                        if not is_valid_addr(read):
-                            continue
-                        for offset_mask in mask_offsets:
-                            mask = read_int64_from_memory(clocksource + offset_mask, safe=True)
-                            mult = read_int32_from_memory(clocksource + offset_mask + 8, safe=True)
-                            shift = read_int32_from_memory(clocksource + offset_mask + 12, safe=True)
-                            if mask and not mask & (mask + 1) and mult and shift is not None and shift <= 64:
-                                return True
+                nodes.append(current)
                 current = read_int_from_memory(current)
+
+            # A corrupted node is tolerated only when the other nodes agree on the layout,
+            # since a single node of an unrelated list (e.g., kobject.entry) may look like a clocksource.
+            if len(nodes) >= 2:
+                tolerance = 1
+            else:
+                tolerance = 0
+            for i in range(5, 64):
+                for offset_mask in mask_offsets:
+                    failed = 0
+                    for current in nodes:
+                        if not looks_like_clocksource(current, i, offset_mask):
+                            failed += 1
+                            if failed > tolerance:
+                                break
+                    else:
+                        return True
             return False
 
         def is_empty_clocksource_list(addr):
@@ -71911,9 +71930,15 @@ class KernelAddressHeuristicFinder:
                 elif is_x86_32():
                     g = KernelAddressHeuristicFinderUtil.x86_noptr_ds(res)
                 elif is_arm64():
-                    g = KernelAddressHeuristicFinderUtil.aarch64_adrp_add(res)
-                elif is_arm32():
+                    # the section anchor is followed by a second add for &clocksource_list
                     g = itertools.chain(
+                        KernelAddressHeuristicFinderUtil.aarch64_adrp_add_add(res),
+                        KernelAddressHeuristicFinderUtil.aarch64_adrp_add(res),
+                    )
+                elif is_arm32():
+                    # the section anchor is often used as `ldr r3, [r5, #off]!`
+                    g = itertools.chain(
+                        KernelAddressHeuristicFinderUtil.arm32_movw_movt_ldr(res),
                         KernelAddressHeuristicFinderUtil.arm32_movw_movt(res),
                         KernelAddressHeuristicFinderUtil.arm32_ldr_pc_relative(res),
                     )
@@ -100417,29 +100442,28 @@ class KernelClockSourceCommand(GenericCommand, BufferingOutput):
             offset for base in base_mask_offsets for offset in (base, base + 8)
         ))
 
-        if len(self.nodes) >= 3:
-            tolerance = 1
-        else:
-            tolerance = 0
-        for i in range(5, 64):
-            offset_list = i * ptrsize
-            for offset_mask in mask_offsets:
-                offsets = {
-                    "list": offset_list,
-                    "read": 0,
-                    "mask": offset_mask,
-                    "mult": offset_mask + 8,
-                    "shift": offset_mask + 12,
-                    "name": offset_list - ptrsize,
-                }
-                failed = 0
-                for node in self.nodes:
-                    if not self.is_clocksource(node - offset_list, offsets):
-                        failed += 1
-                        if failed > tolerance:
-                            break
-                else:
-                    return offsets
+        # A layout that every node matches is preferred, so a single healthy node of two can decide it
+        # only when the other one is corrupted.
+        for tolerance in range(min(len(self.nodes), 2)):
+            for i in range(5, 64):
+                offset_list = i * ptrsize
+                for offset_mask in mask_offsets:
+                    offsets = {
+                        "list": offset_list,
+                        "read": 0,
+                        "mask": offset_mask,
+                        "mult": offset_mask + 8,
+                        "shift": offset_mask + 12,
+                        "name": offset_list - ptrsize,
+                    }
+                    failed = 0
+                    for node in self.nodes:
+                        if not self.is_clocksource(node - offset_list, offsets):
+                            failed += 1
+                            if failed > tolerance:
+                                break
+                    else:
+                        return offsets
         return None
 
     def find_offset_rating(self, clocksources):
