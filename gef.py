@@ -66898,17 +66898,17 @@ class KernelAddressHeuristicFinderUtil:
                     return True
             return False
 
-        def has_idr_marker(x):
-            """Return True if `x` holds the IDR_RT_MARKER that IDR_INIT() stores into xa_flags.
+        def idr_marker_offset(x):
+            """Return the offset of IDR_RT_MARKER that IDR_INIT() stores into xa_flags, or None.
             The marker is ROOT_IS_IDR plus the free mark of the empty tree, so only the
             low flag bits and one or two bits at __GFP_BITS_SHIFT (23 to 27 depending on
             the version and CONFIG_LOCKDEP) are ever set, and xa_head follows it.
             This recognizes an idr that `is_idr()` cannot see because it is still empty.
             The offset of xa_flags depends on sizeof(spinlock_t), which grows a lot with
-            CONFIG_DEBUG_SPINLOCK, so it is searched instead of assumed."""
-            for offset in range(0, current_arch.ptrsize * 9, 4):
+            CONFIG_DEBUG_SPINLOCK or CONFIG_PREEMPT_RT, so it is searched instead of assumed."""
+            for offset in range(0, current_arch.ptrsize * 20, 4):
                 if not is_valid_addr(x + offset):
-                    return False
+                    return None
                 v = u32(read_memory(x + offset, 4))
                 marker = v & ~0xFF
                 if ((v & 0xFF) not in (0, 4)
@@ -66917,18 +66917,24 @@ class KernelAddressHeuristicFinderUtil:
                     continue
                 head_addr = x + align_to_ptrsize(offset + 4)
                 if not is_valid_addr(head_addr):
-                    return False
+                    return None
                 head = read_int_from_memory(head_addr)
                 if head == 0 or is_valid_addr(head):
-                    return True
-            return False
+                    return offset
+            return None
 
-        # `is_idr()` scans a wide window of a .bss neighborhood, so it hits the lock by
-        # chance on some boots. Let the exact marker decide first.
-        for check in (has_idr_marker, is_idr):
-            for x in candidates:
-                if check(x):
-                    return x
+        # An adjacent lock can reach the same marker, but the idr is closer to it.
+        best_offset = current_arch.ptrsize * 20
+        best = None
+        for x in candidates:
+            offset = idr_marker_offset(x)
+            if offset is not None and offset < best_offset:
+                best_offset, best = offset, x
+        if best is not None:
+            return best
+        for x in candidates:
+            if is_idr(x):
+                return x
         return None
 
     @staticmethod
