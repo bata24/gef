@@ -159233,7 +159233,7 @@ class KernelBuddy:
             zone = self.nodes[0] + self.sizeof_zone * i
             name_ptr = read_int_from_memory(zone + self.offset_name)
             name = read_cstring_from_memory(name_ptr)
-            if not name:
+            if name not in ("DMA", "DMA32", "Normal", "HighMem", "Movable", "Device"):
                 break
             self.MAX_NR_ZONES += 1
         return
