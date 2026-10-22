@@ -84969,7 +84969,7 @@ class KernelBpf:
             return None
 
     def resolve_head_offset(self):
-        """Resolve offsetof(idr, idr_rt.xa_head) from either IDR. Return False if neither has a node to verify it."""
+        """Resolve the IDR head from a node or the paired XArray flags."""
         if self.offset_head is not None:
             return True
         for idr in (self.prog_idr, self.map_idr):
@@ -84982,6 +84982,21 @@ class KernelBpf:
             if offset is not None:
                 self.offset_head = offset
                 self.meta.append(("info", "offsetof(idr, {:s}): {:#x}".format(self.head_member, offset)))
+                return True
+        if self.tree_kind == "xarray":
+            for offset in range(0, self.max_sizeof_idr - current_arch.ptrsize, 4):
+                flags = [read_int32_from_memory(idr + offset, safe=True) for idr in (self.prog_idr, self.map_idr)]
+                marks = [value & ~4 for value in flags if value is not None and value & 4 and (value & 0xfff) == 4]
+                if len(marks) != 2:
+                    continue
+                marker = max(marks)
+                if marker < 1 << 16 or marker & (marker - 1) or any(value not in (0, marker) for value in marks):
+                    continue
+                head = align_to_ptrsize(offset + 4)
+                if head + current_arch.ptrsize > self.max_sizeof_idr:
+                    continue
+                self.offset_head = head
+                self.meta.append(("info", "offsetof(idr, {:s}): {:#x}".format(self.head_member, head)))
                 return True
         return False
 
