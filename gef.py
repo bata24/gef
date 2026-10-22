@@ -105341,11 +105341,13 @@ class KernelSyscallsCommand(GenericCommand, BufferingOutput):
         # Skip control-flow instrumentation before the actual syscall body.
         if insn.mnemonic in prefix_mnemonics:
             insn, insn2 = self.get_insn_pair(insn.address + len(insn.opcodes))
-        while insn and insn2 and insn.mnemonic in call_mnemonics:
+        while insn and insn2 and (insn.mnemonic in call_mnemonics or is_x86() and insn.mnemonic == "nop"):
             insn, insn2 = self.get_insn_pair(insn.address + len(insn.opcodes))
-        # CONFIG_FRAME_POINTER saves the frame pointer first (push rbp; mov rax, -ENOSYS; mov rbp, rsp; pop rbp; ret)
+        # CONFIG_FRAME_POINTER can put mov rbp, rsp before or after the -ENOSYS return value.
         if insn and is_x86() and insn.mnemonic == "push" and insn.operands[-1] in ("rbp", "ebp"):
             insn, insn2 = self.get_insn_pair(insn.address + len(insn.opcodes))
+            if insn and insn2 and insn.mnemonic == "mov" and insn.operands in (["rbp", "rsp"], ["ebp", "esp"]):
+                insn, insn2 = self.get_insn_pair(insn.address + len(insn.opcodes))
 
         if insn is None or insn2 is None:
             return None
