@@ -84077,7 +84077,7 @@ class KernelIpcs:
                 ipc_id = u32(data[offset_id:offset_id + 4])
                 mode = u16(data[offset_id + 24:offset_id + 26])
                 seq = slice_unpack(data[offset_seq:offset_seq + ptr], ptr)[0]
-                if mode & ~0o3777:
+                if mode & ~0o777:
                     return None
                 if not any(index < 1 << shift and ipc_id == (seq << shift) + index for shift in (15, 24)):
                     return None
