@@ -82126,10 +82126,21 @@ class KernelPipe:
             # sometimes it is allocated from kmalloc-512, kmalloc-128, kmalloc-96 and kmalloc-64.
             # Other candidates found are kmalloc-2k, kmalloc-1024 and inode_cache (these are false positives),
             # so these should be excluded.
-            if re.search(r"kmalloc(-cg)?-(64|96|128|192|256|512)", ret):
-                offset_i_pipe = current_arch.ptrsize * i
-                if self.get_offset_head_or_nrbuf(pipe_files, offset_i_pipe) is not None:
-                    return offset_i_pipe
+            # RT and lockdep can increase pipe_inode_info to the 1k cache; validate this case across all pipe inodes.
+            match = re.search(r"kmalloc(-cg)?-(64|96|128|192|256|512|1k)(?=\s|$)", ret)
+            if not match:
+                continue
+            offset_i_pipe = current_arch.ptrsize * i
+            if match.group(2) == "1k":
+                inodes = {pipe_inode for _, pipe_inode in pipe_files}
+                pipes = [read_int_from_memory(pipe_inode + offset_i_pipe) for pipe_inode in inodes]
+                if len(set(pipes)) != len(pipes):
+                    continue
+                if any(not re.search(r"kmalloc(-cg)?-1k(?=\s|$)", Kernel.get_slab_contains(pipe) or "")
+                       for pipe in pipes):
+                    continue
+            if self.get_offset_head_or_nrbuf(pipe_files, offset_i_pipe) is not None:
+                return offset_i_pipe
 
         return None
 
