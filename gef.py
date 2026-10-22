@@ -80336,7 +80336,7 @@ class KernelSighand:
         if "5.3" <= kversion:
             # search for signalfd_wqh.list_head
             found = False
-            for i in range(1, 30):
+            for i in range(1, 0x40):
                 offset_list_head = current_arch.ptrsize * i
                 head = sighand + offset_list_head
                 if not is_valid_addr(head):
