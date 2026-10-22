@@ -72186,11 +72186,17 @@ class KernelAddressHeuristicFinder:
         if kversion and "2.6.37" <= kversion:
             addr = Ksym.get_addr("tty_register_ldisc")
             if addr:
-                if is_x86_64():
-                    instruction_count = 40
+                if is_arm32():
+                    # KASAN checks the shadow first and puts a redzone after tty_ldiscs_lock, so `tty_ldiscs`
+                    # is loaded from the literal pool beyond the 30th instruction.
+                    # 0x8130d2f8 <tty_register_ldisc+136>: ldr r0,[pc,#140] @ 0x8130d38c <-- tty_ldiscs
+                    res = KernelAddressHeuristicFinderUtil.disassemble_until_next_symbol(addr, 100)
                 else:
-                    instruction_count = 20
-                res = gdb.execute("x/{:d}i {:#x}".format(instruction_count, addr), to_string=True)
+                    if is_x86_64():
+                        instruction_count = 40
+                    else:
+                        instruction_count = 20
+                    res = gdb.execute("x/{:d}i {:#x}".format(instruction_count, addr), to_string=True)
                 if is_x86_64():
                     g = itertools.chain(
                         KernelAddressHeuristicFinderUtil.x64_qword_ptr_array_base(res),
@@ -74697,10 +74703,18 @@ class KernelAddressHeuristicFinder:
 
         # plan 2 (available v4.8 or later)
         if kversion and "4.8" <= kversion:
+            if is_arm32():
+                # KASAN poisons the stack frame first, which pushes `timer_bases` beyond the 20th instruction
+                # (also in the callee of v6.19~).
+                # 0x802c7e24 <run_timer_softirq+116>: movw r2,#0xc500
+                # 0x802c7e34 <run_timer_softirq+132>: movt r2,#0x81e9    <-- timer_bases
+                count = 100
+            elif is_riscv32() or is_riscv64():
+                count = 40
+            else:
+                count = 20
             for addr in Ksym.get_addrs("run_timer_softirq", match="split"):
-                res = KernelAddressHeuristicFinderUtil.disassemble_until_next_symbol(
-                    addr, 40 if is_riscv32() or is_riscv64() else 20,
-                )
+                res = KernelAddressHeuristicFinderUtil.disassemble_until_next_symbol(addr, count)
                 if is_arm32() or is_riscv32() or is_riscv64():
                     # v6.19: `run_timer_softirq()` only passes the index to `__run_timer_base()`,
                     # so `timer_bases` is referenced in the callee.
@@ -74710,7 +74724,8 @@ class KernelAddressHeuristicFinder:
                     # 0xffffffff800bf750 <run_timer_softirq+10>: jal 0xffffffff800bf6de <__run_timer_base>
                     m = re.search(r"\b(?:bl|jal)\s+(0x\w+)", res)
                     if m:
-                        res += gdb.execute("x/20i {:s}".format(m.group(1)), to_string=True)
+                        callee = int(m.group(1), 16)
+                        res += "\n" + KernelAddressHeuristicFinderUtil.disassemble_until_next_symbol(callee, count)
                 if is_x86_64():
                     g = itertools.chain(
                         KernelAddressHeuristicFinderUtil.x64_x86_mov_reg_const(res, skip_msb_check=True),
