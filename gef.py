@@ -70985,6 +70985,15 @@ class KernelAddressHeuristicFinder:
                     y = read_int_from_memory(x)
                     if is_double_link_list(y):
                         return x
+                    for i in range(0x40):
+                        kobj_name = y + current_arch.ptrsize * i
+                        if not is_valid_addr(kobj_name):
+                            continue
+                        name_ptr = read_int_from_memory(kobj_name)
+                        if read_cstring_from_memory(name_ptr) != "slab":
+                            continue
+                        if is_double_link_list(kobj_name + current_arch.ptrsize):
+                            return x
         return None
 
     @staticmethod
@@ -158190,7 +158199,7 @@ class KmemCacheAliasCommand(GenericCommand, BufferingOutput):
         } __randomize_layout;
         """
         kset = read_int_from_memory(self.slab_kset)
-        for i in range(0x10):
+        for i in range(0x40):
             if not is_valid_addr(kset + current_arch.ptrsize * i):
                 continue
             name_ptr = read_int_from_memory(kset + current_arch.ptrsize * i)
