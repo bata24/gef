@@ -103244,7 +103244,12 @@ class KernelPciDeviceCommand(GenericCommand, BufferingOutput):
         if self.offset_pci_bus_dev is None:
             self.meta.append((self.quiet_err, "Could not find pci_bus->dev"))
             return None
-        self.meta.append((self.quiet_info, "offsetof(pci_bus, dev): {:#x} ({:s})".format(self.offset_pci_bus_dev, bus_source)))
+        bus_dev_offset = self.type_offset("struct pci_bus", "dev")
+        if bus_source == "DWARF" and bus_dev_offset is not None:
+            self.meta.append((self.quiet_info, "offsetof(pci_bus, dev): {:#x} (DWARF)".format(bus_dev_offset)))
+        self.meta.append((self.quiet_info, "offsetof(pci_bus, dev.kobj.name): {:#x} ({:s})".format(
+            self.offset_pci_bus_dev, bus_source,
+        )))
 
         devices = []
         for bus in self.buses:
@@ -103259,7 +103264,12 @@ class KernelPciDeviceCommand(GenericCommand, BufferingOutput):
         if self.offset_pci_dev_dev is None:
             self.meta.append((self.quiet_err, "Could not find pci_dev->dev"))
             return None
-        self.meta.append((self.quiet_info, "offsetof(pci_dev, dev): {:#x} ({:s})".format(self.offset_pci_dev_dev, dev_source)))
+        pci_dev_offset = self.type_offset("struct pci_dev", "dev")
+        if dev_source == "DWARF" and pci_dev_offset is not None:
+            self.meta.append((self.quiet_info, "offsetof(pci_dev, dev): {:#x} (DWARF)".format(pci_dev_offset)))
+        self.meta.append((self.quiet_info, "offsetof(pci_dev, dev.kobj.name): {:#x} ({:s})".format(
+            self.offset_pci_dev_dev, dev_source,
+        )))
 
         resource_offset = self.resource_layout = resource_source = None
         for dev in devices:
