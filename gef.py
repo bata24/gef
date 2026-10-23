@@ -163718,7 +163718,12 @@ class Ksym:
                 Ksym.kallsyms_markers_table_element_size = 4
 
             if Ksym.kernel_version >= (6, 1, 42) and Ksym.kernel_version < (6, 9, 0):
-                if Ksym.KsymParse.load_offsets(rescan, verbose, "kallsyms_markers", "kallsyms_seqs_of_names"):
+                if Ksym.Config.load(["offset_kallsyms_markers", "offset_kallsyms_seqs_of_names"], rescan):
+                    Ksym.offset_kallsyms_seqs_of_names = align(Ksym.offset_kallsyms_seqs_of_names, current_arch.ptrsize)
+                    Ksym.Config.save("offset_kallsyms_seqs_of_names")
+                    Ksym.verbose_info(verbose, "kallsyms_markers: {:#x}".format(Ksym.ro_base + Ksym.offset_kallsyms_markers))
+                    Ksym.verbose_info(verbose, "kallsyms_seqs_of_names: {:#x}".format(
+                        Ksym.ro_base + Ksym.offset_kallsyms_seqs_of_names))
                     return True
             elif Ksym.KsymParse.load_offsets(rescan, verbose, "kallsyms_markers"):
                 return True
@@ -163861,6 +163866,8 @@ class Ksym:
                     if a > b or b - a > 0x10_0000:
                         break
                     position += Ksym.kallsyms_markers_table_element_size
+                # The generated label is pointer-aligned; a zero padding word can follow the markers.
+                position = align(position, current_arch.ptrsize)
                 Ksym.KsymParse.set_offset(verbose, "kallsyms_seqs_of_names", position)
 
             return True
