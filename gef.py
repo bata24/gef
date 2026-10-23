@@ -70680,7 +70680,10 @@ class KernelAddressHeuristicFinder:
                 elif is_arm64():
                     g = KernelAddressHeuristicFinderUtil.aarch64_adrp_add(res)
                 elif is_arm32():
-                    g = list(KernelAddressHeuristicFinderUtil.arm32_movw_movt(res))
+                    g = list(itertools.chain(
+                        KernelAddressHeuristicFinderUtil.arm32_movw_movt(res),
+                        KernelAddressHeuristicFinderUtil.arm32_ldr_pc_relative(res),
+                    ))
                     zero_regs = set(re.findall(r"\bmovw\s+(\w+),\s*#0[ \t]*$", res, re.MULTILINE))
                     g.extend(int(m.group(2)) << 16 for m in re.finditer(r"\bmovt\s+(\w+),\s*#(\d+)", res)
                              if m.group(1) in zero_regs)
@@ -70712,6 +70715,30 @@ class KernelAddressHeuristicFinder:
                         continue
                     return start, end
         return None, None
+
+    @staticmethod
+    def find_per_cpu_unit_size(offsets, static_size):
+        """Recover pcpu_unit_size from pcpu_chunk_slot when the data symbol is absent."""
+        if not is_arm32() or not offsets:
+            return None
+        sorted_offsets = sorted(set(offsets))
+        gaps = [b - a for a, b in zip(sorted_offsets, sorted_offsets[1:])]
+        limit = min(gaps, default=0x1000_0000)
+        for anchor in Ksym.get_addrs("pcpu_chunk_slot", match="split"):
+            res = KernelAddressHeuristicFinderUtil.disassemble_until_next_symbol(anchor, 60)
+            addresses = itertools.chain(
+                KernelAddressHeuristicFinderUtil.arm32_movw_movt_ldr(res),
+                KernelAddressHeuristicFinderUtil.arm32_ldr_pc_relative_ldr(res),
+            )
+            for addr in addresses:
+                if not KernelAddressHeuristicFinderUtil.is_in_kernel_image(addr):
+                    continue
+                size = read_int32_from_memory(addr, safe=True)
+                if (size is not None and static_size <= size <= min(limit, 0x1000_0000)
+                        and size % get_pagesize() == 0
+                        and all((off - offsets[0]) % size == 0 for off in offsets)):
+                    return size
+        return None
 
     @staticmethod
     def get_cpu_possible_mask(percpu=None):
@@ -78292,6 +78319,13 @@ class KernelPerCpu:
         if addr is not None:
             size = read_int32_from_memory(addr, safe=True) or 0
             if 0 < size <= 0x1000_0000:
+                return size
+
+        if self.start is not None and self.end is not None and self.offsets:
+            size = KernelAddressHeuristicFinder.find_per_cpu_unit_size(
+                self.offsets, align_to_pagesize(self.end - self.start),
+            )
+            if size is not None:
                 return size
 
         # CPU numbers are not necessarily laid out consecutively: the per-cpu
@@ -195344,9 +195378,16 @@ class KernelPerCpuCommand(GenericCommand, BufferingOutput):
         for cpu in self.target_cpus(pc):
             rng = pc.unit_range(cpu)
             if rng is None:
-                self.out.append("CPU{:<4d} offset: {:s}{:s}".format(
-                    cpu, AddressUtil.format_address(pc.get_offset(cpu)), self.cpu_state(cpu),
-                ))
+                base = pc.get_base(cpu)
+                if base is None:
+                    self.out.append("CPU{:<4d} offset: {:s}{:s}".format(
+                        cpu, AddressUtil.format_address(pc.get_offset(cpu)), self.cpu_state(cpu),
+                    ))
+                else:
+                    self.out.append("CPU{:<4d} offset: {:s}  unit: {:#x}- (end unknown){:s}".format(
+                        cpu, AddressUtil.format_address(pc.get_offset(cpu)), base, self.cpu_state(cpu),
+                    ))
+                    self.add_dump_out(base)
                 continue
             self.out.append("CPU{:<4d} offset: {:s}  unit: {:#x}-{:#x}{:s}".format(
                 cpu, AddressUtil.format_address(pc.get_offset(cpu)), rng[0], rng[1], self.cpu_state(cpu),
