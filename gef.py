@@ -151808,9 +151808,11 @@ class KernelSlub:
         void (*ctor)(void *);
         unsigned int inuse;
         unsigned int align;
-        unsigned int red_left_pad;
+        unsigned int reserved;                   // if kernel < 4.18
+        unsigned int red_left_pad;               // if 4.13 <= kernel
         const char *name;
         struct list_head list; <-----> struct list_head <-----> struct list_head <-----> ...
+        unsigned int red_left_pad;               // if 4.6 <= kernel < 4.13
         struct kobject kobj;                     // if CONFIG_SYSFS=y
         struct work_struct kobj_remove_work;     // if CONFIG_SYSFS=y && kernel < 5.9
         struct memcg_cache_params memcg_params;  // if CONFIG_MEMCG=y && kernel < 5.9
@@ -152106,8 +152108,18 @@ class KernelSlub:
         self.meta.append(("info", "offsetof(kmem_cache, offset): {:#x}".format(self.kmem_cache_offset_offset)))
 
         # offsetof(kmem_cache, red_left_pad)
-        self.kmem_cache_offset_red_left_pad = self.kmem_cache_offset_name - current_arch.ptrsize
-        self.meta.append(("info", "offsetof(kmem_cache, red_left_pad): {:#x}".format(self.kmem_cache_offset_red_left_pad)))
+        self.kmem_cache_offset_red_left_pad = GefUtil.offsetof("kmem_cache", "red_left_pad")
+        if self.kmem_cache_offset_red_left_pad is None and "4.6" <= kversion:
+            if kversion < "4.13":
+                self.kmem_cache_offset_red_left_pad = self.kmem_cache_offset_list + current_arch.ptrsize * 2
+            elif kversion < "4.18":
+                self.kmem_cache_offset_red_left_pad = self.kmem_cache_offset_name - 4
+            else:
+                self.kmem_cache_offset_red_left_pad = self.kmem_cache_offset_name - current_arch.ptrsize
+        if self.kmem_cache_offset_red_left_pad is None:
+            self.meta.append(("info", "offsetof(kmem_cache, red_left_pad): Not present"))
+        else:
+            self.meta.append(("info", "offsetof(kmem_cache, red_left_pad): {:#x}".format(self.kmem_cache_offset_red_left_pad)))
 
         # offsetof(kmem_cache, random)
         self.resolve_kmem_cache_offset_random()
@@ -152289,7 +152301,7 @@ class KernelSlub:
     @staticmethod
     @Cache.cache_this_session(per_inferior=True)
     def warmup_page2virt():
-        if is_x86() or is_arm32():
+        if is_x86() or is_arm32() or is_arm64():
             gdb.execute("page2virt 0", to_string=True)
         return
 
@@ -152331,9 +152343,11 @@ class KernelSlub:
             void (*ctor)(void *);
             unsigned int inuse;
             unsigned int align;
-            unsigned int red_left_pad;
+            unsigned int reserved;                   // if kernel < 4.18
+            unsigned int red_left_pad;               // if 4.13 <= kernel
             const char *name;
             struct list_head list; <-----> struct list_head <-----> struct list_head <-----> ...
+            unsigned int red_left_pad;               // if 4.6 <= kernel < 4.13
             ...
         """
 
@@ -153903,7 +153917,9 @@ class KernelSlub:
             kmem_cache["size"] = read_int32_from_memory(current_kmem_cache + self.kmem_cache_offset_size)
             kmem_cache["object_size"] = read_int32_from_memory(current_kmem_cache + self.kmem_cache_offset_object_size)
             kmem_cache["offset"] = read_int32_from_memory(current_kmem_cache + self.kmem_cache_offset_offset)
-            kmem_cache["red_left_pad"] = read_int32_from_memory(current_kmem_cache + self.kmem_cache_offset_red_left_pad)
+            kmem_cache["red_left_pad"] = 0
+            if self.kmem_cache_offset_red_left_pad is not None:
+                kmem_cache["red_left_pad"] = read_int32_from_memory(current_kmem_cache + self.kmem_cache_offset_red_left_pad)
             kmem_cache["random"] = self.get_random(current_kmem_cache)
             kmem_cache["next"] = self.get_next_kmem_cache(current_kmem_cache, reverse_walk=reverse_walk)
             # parse extra members for feat. CONFIG_SLAB_VIRTUAL
@@ -154716,7 +154732,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
 
     @Cache.cache_this_session
     def warmup_page2virt(self):
-        if is_x86() or is_arm32():
+        if is_x86() or is_arm32() or is_arm64():
             args = self.args # backup
             KernelSlub.warmup_page2virt()
             # self.args will be overwritten. this is workaround.
@@ -155624,7 +155640,7 @@ class SlubTinyDumpCommand(GenericCommand, BufferingOutput):
 
     @Cache.cache_this_session
     def warmup_page2virt(self):
-        if is_x86() or is_arm32():
+        if is_x86() or is_arm32() or is_arm64():
             args = self.args # backup
             KernelSlub.warmup_page2virt()
             # self.args will be overwritten. this is workaround.
@@ -157463,9 +157479,12 @@ class SlabContainsCommand(GenericCommand):
         # for aligned check
         if allocator in ["SLUB", "SLUB_TINY"]:
             r = re.search(r"offsetof\(kmem_cache, red_left_pad\): (0x\S+)", res)
-            if not r:
+            if r:
+                self.kmem_cache_offset_red_left_pad = int(r.group(1), 16)
+            elif "offsetof(kmem_cache, red_left_pad): Not present" in res:
+                self.kmem_cache_offset_red_left_pad = None
+            else:
                 return None
-            self.kmem_cache_offset_red_left_pad = int(r.group(1), 16)
 
         if allocator == "SLAB":
             r = re.search(r"offsetof\((?:page|slab), s_mem\): (0x\S+)", res)
@@ -157510,7 +157529,10 @@ class SlabContainsCommand(GenericCommand):
         info("offsetof(kmem_cache, size): {:#x}".format(self.kmem_cache_offset_size))
         info("offsetof(kmem_cache, object_size): {:#x}".format(self.kmem_cache_offset_object_size))
         if self.allocator in ["SLUB", "SLUB_TINY"]:
-            info("offsetof(kmem_cache, red_left_pad): {:#x}".format(self.kmem_cache_offset_red_left_pad))
+            if self.kmem_cache_offset_red_left_pad is None:
+                info("offsetof(kmem_cache, red_left_pad): Not present")
+            else:
+                info("offsetof(kmem_cache, red_left_pad): {:#x}".format(self.kmem_cache_offset_red_left_pad))
         if self.allocator == "SLAB":
             info("offsetof({:s}, s_mem): {:#x}".format(Kernel.slab_page_str(), self.page_offset_s_mem))
         if self.slab_virtual_enabled:
@@ -157621,7 +157643,9 @@ class SlabContainsCommand(GenericCommand):
             slab_cache_object_size = read_int32_from_memory(kmem_cache + self.kmem_cache_offset_object_size)
 
             if allocator in ["SLUB", "SLUB_TINY"]:
-                red_left_pad = read_int32_from_memory(kmem_cache + self.kmem_cache_offset_red_left_pad)
+                red_left_pad = 0
+                if self.kmem_cache_offset_red_left_pad is not None:
+                    red_left_pad = read_int32_from_memory(kmem_cache + self.kmem_cache_offset_red_left_pad)
                 color_offset = 0
                 x = read_int_from_memory(page + self.page_offset_inuse_objects_frozen)
                 objects = (x >> 16) & 0x7fff
