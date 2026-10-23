@@ -74333,6 +74333,11 @@ class KernelAddressHeuristicFinder:
         if kversion is None or kversion < "5.2":
             return None
 
+        # insert_vmap_area_augment also references the busy list on ARM.
+        busy_list = None
+        if is_arm32() or is_arm64():
+            busy_list = KernelAddressHeuristicFinder.get_vmap_area_list()
+
         # plan 2 (a function that is handed `&free_vmap_area_list` materializes it directly)
         # The scan of plan 3 has two blind spots this plan does not have: `purge_vmap_area_list`
         # also sits between `vmap_area_list` and `free_vmap_area_list` and is counted whenever it
@@ -74355,7 +74360,7 @@ class KernelAddressHeuristicFinder:
                         KernelAddressHeuristicFinderUtil.arm32_ldr_pc_relative(res),
                     )
                 for x in g:
-                    if is_double_link_list(x, min_len=3):
+                    if x != busy_list and is_double_link_list(x, min_len=3):
                         return x
 
         # plan 3 (available v4.7~; here, always True)
