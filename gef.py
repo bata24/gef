@@ -92114,6 +92114,7 @@ class KernelTask:
         for i in range(0x100):
             found = False
             zcount = 0
+            seen = set()
             for task in task_addrs:
                 v = read_int_from_memory(task + current_arch.ptrsize * i)
                 if v == 0:
@@ -92121,9 +92122,11 @@ class KernelTask:
                     continue
                 if (v & 0x1fff) != 0:
                     break
-                if not is_valid_addr(v):
+                # each task has its own kstack, so a value shared by tasks is something else (e.g. a saved register)
+                if not is_valid_addr(v) or v in seen:
                     zcount += 1
                     continue
+                seen.add(v)
             else:
                 found = True
 
