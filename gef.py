@@ -81734,7 +81734,9 @@ class KernelMM:
             offset_vm_flags = offset_vm_mm + 8 * 2
         elif is_x86_32():
             cr4 = get_register("cr4", use_monitor=True)
-            offset_vm_flags = offset_vm_mm + (8 * 2 if (cr4 >> 5) & 1 else 4 * 2)
+            offset_vm_flags = offset_vm_mm + 4 * 2
+            if (cr4 >> 5) & 1:
+                offset_vm_flags += 4
         elif is_arm32():
             ret = gdb.execute("pagewalk --no-pager --disable-color", to_string=True)
             offset_vm_flags = offset_vm_mm + (8 * 2 if "using long description" in ret else 4 * 2)
