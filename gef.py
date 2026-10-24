@@ -6690,7 +6690,7 @@ class Symbol:
     @staticmethod
     def lookup(address, ksym="cached"):
         """ksym="off": query GDB only.
-        ksym="cached" (default): query GDB first; on a miss in kernel mode, use already parsed kallsyms without scanning.
+        ksym="cached" (default): query GDB first; on a miss for a kernel address, use parsed kallsyms without scanning.
         ksym="prefer": try an exact kallsyms address first (parsing if needed), then use the "cached" policy.
 
         lookup(0x401042, ksym="off") -> ("main", 0x42).
@@ -6711,8 +6711,10 @@ class Symbol:
                 ret = Symbol.lookup_gdb(address)
             except (ValueError, gdb.error):
                 ret = None
-            if ret is None and ksym != "off" and is_in_kernel():
+            if ret is None and ksym != "off":
                 ret = Ksym.get_location_from_peek(address)
+                if ret is not None and not KernelAddressHeuristicFinderUtil.is_kernel_space(address):
+                    ret = None
             return ret
         except (ValueError, gdb.error):
             return None
