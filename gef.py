@@ -79328,6 +79328,16 @@ class KernelPath:
             return offset
 
         # slow path
+        kversion = Kernel.version()
+        if kversion is not None and kversion < "3.1":
+            # i_wb_list, i_lru, i_sb_list and i_dentry immediately precede i_ino.
+            for offset in range(0, 0x400, current_arch.ptrsize):
+                if not all(self.is_linked_list_head(inode + offset + current_arch.ptrsize * i * 2) for i in range(4)):
+                    continue
+                if not self.is_linked_list_head(inode + offset + current_arch.ptrsize * 8):
+                    return offset + current_arch.ptrsize * 8
+            return None
+
         # `i_mapping` points to `&inode->i_data`, i.e. back into the inode itself, and
         # `i_ino` follows it (with `i_security` in between if CONFIG_SECURITY=y). Anchoring
         # there skips i_acl/i_op/i_sb, whose contents differ from one filesystem to another,
