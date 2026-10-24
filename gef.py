@@ -161768,7 +161768,7 @@ class KernelIrqCommand(GenericCommand, BufferingOutput):
             return current_arch.ptrsize * 4, "version"
         return current_arch.ptrsize * 3, "version"
 
-    def resolve_offset_hwirq_chip(self, offset_irq):
+    def resolve_offset_hwirq_chip(self, offset_irq, descs):
         offset_hwirq = GefUtil.offsetof("irq_desc", "irq_data.hwirq")
         offset_chip = GefUtil.offsetof("irq_desc", "irq_data.chip")
         if offset_chip is not None:
@@ -161780,20 +161780,33 @@ class KernelIrqCommand(GenericCommand, BufferingOutput):
             # irq, node, state_use_accessors, chip
             return None, align_to_ptrsize(offset_irq + 4 * 3), "version"
         offset_hwirq = align_to_ptrsize(offset_irq + 4)
-        if kversion < "4.3":
-            # irq, hwirq, node, state_use_accessors, chip
-            return offset_hwirq, align_to_ptrsize(offset_hwirq + ptrsize + 4 * 2), "version"
-        # mask, irq, hwirq, common, chip
-        return offset_hwirq, offset_hwirq + ptrsize * 2, "version"
+        # irq_data.common points back to the descriptor since v4.2 (backported to v4.1.41).
+        # It follows hwirq since v4.3, but node is still between them before that.
+        for offset_common in [offset_hwirq + ptrsize, offset_hwirq + ptrsize * 2]:
+            backlinks = [d for d in descs if read_int_from_memory(d + offset_common, safe=True) == d]
+            if len(backlinks) * 2 > len(descs):
+                # mask, irq, hwirq, [node], common, chip
+                return offset_hwirq, offset_common + ptrsize, "irq_data.common"
+        # irq, hwirq, node, state_use_accessors, chip
+        return offset_hwirq, align_to_ptrsize(offset_hwirq + ptrsize + 4 * 2), "version"
 
-    def resolve_offset_chip_name(self):
+    def resolve_offset_chip_name(self, chips):
         offset = GefUtil.offsetof("irq_chip", "name")
         if offset is not None:
             return offset, "debug info"
-        # parent_device is before name in v4.8 ~ v5.17
+
+        # parent_device is before name in v4.8 ~ v5.17, but a build in the merge window of v5.18 is still v5.17.
+        # Many chips have no name (e.g., GIC since v5.18), so the version decides when no name is found.
         if "4.8" <= Kernel.version() < "5.18":
-            return current_arch.ptrsize, "version"
-        return 0, "version"
+            candidates = [current_arch.ptrsize, 0]
+        else:
+            candidates = [0, current_arch.ptrsize]
+        chips = {x for x in chips if x and is_valid_addr(x)}
+        for offset in candidates:
+            names = [read_int_from_memory(x + offset, safe=True) for x in chips]
+            if any(x and is_valid_addr(x) and read_cstring_from_memory(x, max_length=64, safe=True) for x in names):
+                return offset, "heuristic"
+        return candidates[0], "version"
 
     def resolve_affinity(self):
         """Return (offsetof(irq_desc, affinity cpumask), whether it is a pointer) from the debug information."""
@@ -161828,7 +161841,7 @@ class KernelIrqCommand(GenericCommand, BufferingOutput):
         # irq_desc->{irq,action}
         """
         struct irq_desc {
-            struct irq_common_data {             // v4.3~
+            struct irq_common_data {             // v4.2~
                 unsigned int __private state_use_accessors;
             #ifdef CONFIG_NUMA
                 unsigned int node;
@@ -161849,7 +161862,7 @@ class KernelIrqCommand(GenericCommand, BufferingOutput):
                 u32 mask;                        // v4.3~
                 unsigned int irq;
                 unsigned long hwirq;             // v3.1~
-                struct irq_common_data *common;  // v4.3~
+                struct irq_common_data *common;  // v4.2~
                 struct irq_chip *chip;
                 struct irq_domain *domain;
             #ifdef CONFIG_IRQ_DOMAIN_HIERARCHY
@@ -161873,7 +161886,7 @@ class KernelIrqCommand(GenericCommand, BufferingOutput):
         if layout["offset_irq"] is None:
             return None
 
-        layout["offset_hwirq"], layout["offset_chip"], source = self.resolve_offset_hwirq_chip(layout["offset_irq"])
+        layout["offset_hwirq"], layout["offset_chip"], source = self.resolve_offset_hwirq_chip(layout["offset_irq"], samples)
         chips = [read_int_from_memory(d + layout["offset_chip"], safe=True) for d in samples]
         if not any(x and is_valid_addr(x) for x in chips):
             layout["offset_chip"] = None
@@ -161898,7 +161911,7 @@ class KernelIrqCommand(GenericCommand, BufferingOutput):
         layout["offset_affinity"], layout["affinity_is_pointer"] = self.resolve_affinity()
         self.add_offset_meta("offsetof(irq_desc, affinity)", layout["offset_affinity"], "debug info")
 
-        layout["offset_chip_name"], source = self.resolve_offset_chip_name()
+        layout["offset_chip_name"], source = self.resolve_offset_chip_name(chips)
         self.add_offset_meta("offsetof(irq_chip, name)", layout["offset_chip_name"], source)
 
         # irqaction->{handler,next,name}
