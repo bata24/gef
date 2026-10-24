@@ -70831,7 +70831,18 @@ class KernelAddressHeuristicFinder:
                 elif is_arm32():
                     g = KernelAddressHeuristicFinderUtil.arm32_const_use(res)
                 elif is_riscv64() or is_riscv32():
-                    g = KernelAddressHeuristicFinderUtil.riscv_auipc_use(res)
+                    # A section anchor shared by several variables is built once and the bitmap is at an offset from it
+                    # (`lui s1, 0xc16dc; addi s1, s1, -1712` for cpu_mitigations, then `addi a0, s1, 8`), so try such
+                    # addresses before the ones built directly.
+                    direct = list(KernelAddressHeuristicFinderUtil.riscv_auipc_use(res, include_lui=is_riscv32()))
+                    followed = KernelAddressHeuristicFinderUtil.riscv_auipc_gen(
+                        res, True, True, 0, False, False, word_only=True, follow_addi=True, include_lui=is_riscv32(),
+                    )
+                    g = itertools.chain(
+                        [x for x in followed if x not in direct],
+                        direct,
+                        KernelAddressHeuristicFinderUtil.riscv_gp_relative(res),
+                    )
                 else:
                     g = []
                 for x in KernelAddressHeuristicFinderUtil.filter_in_kernel_image(g):
@@ -75454,7 +75465,7 @@ class KernelAddressHeuristicFinder:
                     )
                 elif is_riscv32() or is_riscv64():
                     g = itertools.chain(
-                        KernelAddressHeuristicFinderUtil.riscv_auipc_addi(res),
+                        KernelAddressHeuristicFinderUtil.riscv_auipc_addi(res, include_lui=is_riscv32()),
                         KernelAddressHeuristicFinderUtil.riscv_gp_relative(res),
                     )
                 direction = TlsCommand.get_direction()
@@ -75517,7 +75528,7 @@ class KernelAddressHeuristicFinder:
                     )
                 elif is_riscv32() or is_riscv64():
                     g = itertools.chain(
-                        KernelAddressHeuristicFinderUtil.riscv_auipc_addi(res),
+                        KernelAddressHeuristicFinderUtil.riscv_auipc_addi(res, include_lui=is_riscv32()),
                         KernelAddressHeuristicFinderUtil.riscv_gp_relative(res),
                     )
                 # x64/x86 embeds &dmabuf_list itself as an immediate,
@@ -75549,7 +75560,7 @@ class KernelAddressHeuristicFinder:
                     )
                 elif is_riscv32() or is_riscv64():
                     g = itertools.chain(
-                        KernelAddressHeuristicFinderUtil.riscv_auipc_addi(res),
+                        KernelAddressHeuristicFinderUtil.riscv_auipc_addi(res, include_lui=is_riscv32()),
                         KernelAddressHeuristicFinderUtil.riscv_gp_relative(res),
                     )
                 direction = TlsCommand.get_direction()
@@ -75653,7 +75664,7 @@ class KernelAddressHeuristicFinder:
                         KernelAddressHeuristicFinderUtil.arm32_ldr_pc_relative(res),
                     )
                 elif is_riscv32() or is_riscv64():
-                    g = KernelAddressHeuristicFinderUtil.riscv_auipc_addi(res)
+                    g = KernelAddressHeuristicFinderUtil.riscv_auipc_addi(res, include_lui=is_riscv32())
                 else:
                     g = []
                 for x in g:
@@ -75707,7 +75718,7 @@ class KernelAddressHeuristicFinder:
                     KernelAddressHeuristicFinderUtil.arm32_ldr_pc_relative(res),
                 )
             elif is_riscv32() or is_riscv64():
-                g = KernelAddressHeuristicFinderUtil.riscv_auipc_addi(res)
+                g = KernelAddressHeuristicFinderUtil.riscv_auipc_addi(res, include_lui=is_riscv32())
             else:
                 g = []
             for x in g:
@@ -196189,8 +196200,10 @@ class KernelLsmCommand(GenericCommand, BufferingOutput):
             # gcc may materialize the address of the whole array and load a head at an offset from it,
             # so take the loaded heads before the addresses themselves
             g = itertools.chain(
-                KernelAddressHeuristicFinderUtil.riscv_auipc_gen(res, False, True, 0, False, False, word_only=True, follow_addi=True),
-                KernelAddressHeuristicFinderUtil.riscv_auipc_addi(res),
+                KernelAddressHeuristicFinderUtil.riscv_auipc_gen(
+                    res, False, True, 0, False, False, word_only=True, follow_addi=True, include_lui=is_riscv32(),
+                ),
+                KernelAddressHeuristicFinderUtil.riscv_auipc_addi(res, include_lui=is_riscv32()),
             )
         else:
             return []
@@ -196369,7 +196382,8 @@ class KernelLsmCommand(GenericCommand, BufferingOutput):
             no_write = r"str\w*|stm\w*|push|cmp|cmn|tst|teq|b|b[a-z]{2}|bx|blx|bl|nop"
         elif is_riscv32() or is_riscv64():
             patterns = {
-                "auipc": r"auipc\s+(\w+),\s*(0x[0-9a-f]+|\d+)",
+                # RV32 MEDLOW builds an absolute address with lui instead
+                "auipc": (r"(?:auipc|lui)" if is_riscv32() else r"auipc") + r"\s+(\w+),\s*(0x[0-9a-f]+|\d+)",
                 "add": r"addi\s+(\w+),\s*(\w+),\s*(-?\d+)",
                 "load": r"(?:ld|lw)\s+(\w+),\s*(-?\d+)\((\w+)\)",
                 "icall": r"jalr\s+(?:\w+,\s*(?:0)?\()?(\w+)\)?$",
@@ -196433,7 +196447,7 @@ class KernelLsmCommand(GenericCommand, BufferingOutput):
                 hi20 = int(m.group(2), 0) & 0xfffff
                 if hi20 & 0x80000:
                     hi20 -= 0x100000
-                bases[m.group(1)] = AddressUtil.normalize_address(pc + (hi20 << 12))
+                bases[m.group(1)] = AddressUtil.normalize_address((pc if mnemonic == "auipc" else 0) + (hi20 << 12))
                 loaded.pop(m.group(1), None)
                 continue
             if "movw" in patterns:
