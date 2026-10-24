@@ -161768,6 +161768,8 @@ class KernelIrqCommand(GenericCommand, BufferingOutput):
         # Every descriptor has a flow handler (handle_bad_irq by default) in the kernel text.
         # It is followed by action, or by preflow_handler (CONFIG_IRQ_PREFLOW_FASTEOI, ~v5.4) and action.
         # Small flag values cannot be told from pointers by is_valid_addr() on 32-bit, so they are not used.
+        # kstat_irqs before it holds per-cpu pointers, which are also in the kernel text when the per-cpu area
+        # is right below it (e.g., ARM32 v3.0, RISC-V v5.4), so each flow handler must be a function itself.
         ptrsize = current_arch.ptrsize
         klayout = Kernel.layout()
         irqs = [read_int32_from_memory(d + offset_irq, safe=True) for d in descs]
@@ -161775,6 +161777,8 @@ class KernelIrqCommand(GenericCommand, BufferingOutput):
             values = [read_int_from_memory(d + offset, safe=True) for d in descs]
             values = [v for v in values if v is not None]
             if not values or not all(klayout.text_base <= v < klayout.text_end for v in values):
+                continue
+            if not all(Ksym.get_name(v) for v in set(values)):
                 continue
             for offset_action in [offset + ptrsize, offset + ptrsize * 2]:
                 actions = [(read_int_from_memory(d + offset_action, safe=True), irq) for d, irq in zip(descs, irqs)]
