@@ -69895,7 +69895,7 @@ class KernelAddressHeuristicFinder:
                         KernelAddressHeuristicFinderUtil.arm32_ldr_pc_relative(res),
                     )
                 elif is_riscv64() or is_riscv32():
-                    g = KernelAddressHeuristicFinderUtil.riscv_auipc_addi(res)
+                    g = KernelAddressHeuristicFinderUtil.riscv_auipc_addi(res, include_lui=is_riscv32())
                 for x in g:
                     if looks_like_init_net(x):
                         if Ksym.get_addr("net_namespace_list") is not None:
@@ -69943,7 +69943,7 @@ class KernelAddressHeuristicFinder:
                         KernelAddressHeuristicFinderUtil.arm32_ldr_pc_relative(res),
                     )
                 elif is_riscv64() or is_riscv32():
-                    g = KernelAddressHeuristicFinderUtil.riscv_auipc_addi(res)
+                    g = KernelAddressHeuristicFinderUtil.riscv_auipc_addi(res, include_lui=is_riscv32())
                 for x in g:
                     if looks_like_init_net(x):
                         return x
@@ -69989,7 +69989,7 @@ class KernelAddressHeuristicFinder:
                 elif is_arm32():
                     g = KernelAddressHeuristicFinderUtil.arm32_movw_movt(res)
                 elif is_riscv64() or is_riscv32():
-                    g = KernelAddressHeuristicFinderUtil.riscv_auipc_addi(res)
+                    g = KernelAddressHeuristicFinderUtil.riscv_auipc_addi(res, include_lui=is_riscv32())
                 for x in g:
                     return x
         return None
@@ -70061,7 +70061,11 @@ class KernelAddressHeuristicFinder:
                         KernelAddressHeuristicFinderUtil.arm32_ldr_pc_relative_ldr(res),
                     )
                 elif is_riscv64() or is_riscv32():
-                    g = KernelAddressHeuristicFinderUtil.riscv_auipc_use(res)
+                    # auipc/lui + addi/lw, or a gp-relative addi after linker relaxation
+                    g = itertools.chain(
+                        KernelAddressHeuristicFinderUtil.riscv_auipc_use(res, include_lui=is_riscv32()),
+                        KernelAddressHeuristicFinderUtil.riscv_gp_relative(res),
+                    )
                 else:
                     g = []
                 for x in g:
@@ -73478,7 +73482,7 @@ class KernelAddressHeuristicFinder:
                         KernelAddressHeuristicFinderUtil.arm32_ldr_pc_relative(res, read_valid=True),
                     )
                 elif is_riscv64() or is_riscv32():
-                    g = KernelAddressHeuristicFinderUtil.riscv_auipc_use(res, read_valid=True)
+                    g = KernelAddressHeuristicFinderUtil.riscv_auipc_use(res, read_valid=True, include_lui=is_riscv32())
                 else:
                     continue
                 for x in g:
@@ -75235,7 +75239,10 @@ class KernelAddressHeuristicFinder:
                 elif is_arm32():
                     g = KernelAddressHeuristicFinderUtil.arm32_movw_movt(res, read_valid=True)
                 elif is_riscv32() or is_riscv64():
-                    g = KernelAddressHeuristicFinderUtil.riscv_auipc_addi(res, read_valid=True)
+                    g = itertools.chain(
+                        KernelAddressHeuristicFinderUtil.riscv_auipc_addi(res, read_valid=True, include_lui=is_riscv32()),
+                        KernelAddressHeuristicFinderUtil.riscv_gp_relative(res),
+                    )
                 else:
                     g = []
                 for x in g:
@@ -75270,7 +75277,7 @@ class KernelAddressHeuristicFinder:
                 elif is_arm32():
                     g = KernelAddressHeuristicFinderUtil.arm32_movw_movt(res)
                 elif is_riscv32() or is_riscv64():
-                    g = KernelAddressHeuristicFinderUtil.riscv_auipc_addi(res)
+                    g = KernelAddressHeuristicFinderUtil.riscv_auipc_addi(res, include_lui=is_riscv32())
                 else:
                     g = []
                 for x in g:
@@ -75393,7 +75400,7 @@ class KernelAddressHeuristicFinder:
                     )
                 elif is_riscv32() or is_riscv64():
                     g = itertools.chain(
-                        KernelAddressHeuristicFinderUtil.riscv_auipc_addi(res),
+                        KernelAddressHeuristicFinderUtil.riscv_auipc_addi(res, include_lui=is_riscv32()),
                         KernelAddressHeuristicFinderUtil.riscv_gp_relative(res),
                     )
                 for x in g:
@@ -164415,11 +164422,16 @@ class Ksym:
 
                 # Non-relocatable 32-bit kernels store absolute addresses in the same table.
                 if address_byte_size == offset_byte_size:
-                    text_base = Kernel.layout(use_iomem=False).text_base
+                    klayout = Kernel.layout(use_iomem=False)
+                    text_base = klayout.text_base
                     if text_base not in kernel_addresses:
                         fmt = "{:s}{:d}I".format(endianness_marker, Ksym.num_symbols)
                         absolute_addresses = struct.unpack(fmt, kallsyms_offsets_data)
-                        if text_base in absolute_addresses:
+                        # RISC-V places the PE/COFF header of the EFI stub at text_base, before _text,
+                        # and kallsyms has no symbol on it, so check the lowest one (sorted by address)
+                        if text_base in absolute_addresses or (
+                            klayout.text_size and text_base <= absolute_addresses[0] < klayout.text_end
+                        ):
                             kernel_addresses = absolute_addresses
 
             # It seems ok.
