@@ -161562,11 +161562,17 @@ class KernelIrqCommand(GenericCommand, BufferingOutput):
                         candidates.append((offset * 4, step * 4))
                         break
 
+        # since v4.3, irq_data.common after irq and hwirq points back to the descriptor,
+        # which small counters next to a tree root cannot mimic like the sequence of irq
+        has_common = "4.3" <= Kernel.version()
         for offset_irq, stride in candidates:
             count = 0
             while count < self.MAX_NR_IRQS:
-                irq = read_int32_from_memory(base + stride * count + offset_irq, safe=True)
+                desc = base + stride * count
+                irq = read_int32_from_memory(desc + offset_irq, safe=True)
                 if irq != count:
+                    break
+                if has_common and read_int_from_memory(desc + offset_irq + 4 + current_arch.ptrsize, safe=True) != desc:
                     break
                 count += 1
             if count >= 4:
