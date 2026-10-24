@@ -83520,6 +83520,7 @@ class KernelIpcs:
         return
 
     @Cache.cache_this_session(cache_None=False, per_inferior=True, until_new_objfile=True)
+    @Decorator.switch_to_intel_syntax
     def initialize(self, init_ipc_ns):
         self.meta = []
 
@@ -83691,6 +83692,25 @@ class KernelIpcs:
             if read_int_from_memory(address, safe=True) == address and read_int_from_memory(address + ptr, safe=True) == address:
                 wait_lists.append(offset)
         if offset_xa_head is None and self.tree_kind == "idr":
+            offset_top = None
+            addr = Ksym.get_addr("ipc_rmid")
+            idr_remove = Ksym.get_addr("idr_remove")
+            if addr and idr_remove:
+                res = KernelAddressHeuristicFinderUtil.disassemble_until_next_symbol(addr, 60)
+                call = re.search(r"\b(?:callq?|blx?|b)\s+{:#x}\b".format(idr_remove), res)
+                if call:
+                    res = res[:call.start()]
+                    if is_x86():
+                        pattern = r"\b(?:lea|add)\s+(?:rdi|eax),(?:\[\w+\+)?(0x[0-9a-f]+)"
+                    elif is_arm32() or is_arm64():
+                        pattern = r"\badd\s+(?:r0|x0),\s*\w+,\s*#(0x[0-9a-f]+|\d+)"
+                    else:
+                        pattern = r"(?!)"
+                    matches = re.findall(pattern, res)
+                    if matches:
+                        offset_top = int(matches[-1], 0)
+                        if Ksym.get_addr("idr_find_slowpath"):
+                            offset_top += ptr
             for first in wait_lists:
                 for second in wait_lists:
                     size = second - first
@@ -83702,6 +83722,8 @@ class KernelIpcs:
                     else:
                         hint = 0
                     for offset in range(first + ptr * 2 + hint, size - ptr * 2, ptr):
+                        if offset_top is not None and offset != offset_top:
+                            continue
                         if self.validate_legacy_idr(init_ipc_ns, offset, size):
                             offset_xa_head, sizeof_ipc_ids = offset, size
                             break
