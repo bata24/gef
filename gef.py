@@ -78961,12 +78961,12 @@ class KernelPath:
             return None
 
         try:
-            mode = read_int16_from_memory(inode + self.offset_i_mode)
+            read_int16_from_memory(inode + self.offset_i_mode)
             super_block = read_int_from_memory(inode + self.offset_i_sb)
             read_int_from_memory(inode + self.offset_i_ino)
         except (gdb.MemoryError, OverflowError):
             return None
-        if mode == 0 or not is_valid_addr(super_block):
+        if not is_valid_addr(super_block):
             return None
 
         self.meta.append(("info", "offsetof(inode, i_mode): {:#x}".format(self.offset_i_mode)))
@@ -99658,25 +99658,6 @@ class KernelVfsCommand(GenericCommand, BufferingOutput):
                 self.kfs = kfs
             self.meta.extend(Kernel.export_meta(self, kfs.meta, demote_err=True))
 
-        if address is not None and not fd_mode and kind == "auto" and not self.kpath.initialized:
-            try:
-                if not self.kpath.initialize(file=address) and not self.kpath.initialize(dentry=address):
-                    if not self.kpath.initialize_inode_offsets(address) or not self.is_inode(address):
-                        self.meta.append((self.quiet_err, "Could not resolve the VFS object layout"))
-                        return None
-            except (gdb.MemoryError, OverflowError, RuntimeError):
-                self.meta.append((self.quiet_err, "Could not resolve the VFS object layout"))
-                return None
-
-        if address is not None and not fd_mode and kind != "inode" and not self.kpath.initialized:
-            self.meta.append((self.quiet_err, "Could not resolve the VFS object layout"))
-            return None
-        if fd_mode and not self.kpath.initialized:
-            self.meta.append((self.quiet_err, "Could not resolve the VFS object layout"))
-            return None
-
-        self.meta.extend(Kernel.export_meta(self, self.kpath.meta))
-
         self.offset_s_dev = current_arch.ptrsize * 2
         # loff_t uses 8-byte alignment on ARM32, unlike the i386 ABI.
         loff_t_align = 4
@@ -99697,6 +99678,26 @@ class KernelVfsCommand(GenericCommand, BufferingOutput):
             self.offset_s_type = offset_s_type
         self.meta.append((self.quiet_info, "offsetof(super_block, s_dev): {:#x}".format(self.offset_s_dev)))
         self.meta.append((self.quiet_info, "offsetof(super_block, s_type): {:#x}".format(self.offset_s_type)))
+
+        if address is not None and not fd_mode and kind == "auto" and not self.kpath.initialized:
+            try:
+                if not self.kpath.initialize(file=address) and not self.kpath.initialize(dentry=address):
+                    if not self.kpath.initialize_inode_offsets(address) or not self.is_inode(address):
+                        self.meta.append((self.quiet_err, "Could not resolve the VFS object layout"))
+                        return None
+                    kind = "inode"
+            except (gdb.MemoryError, OverflowError, RuntimeError):
+                self.meta.append((self.quiet_err, "Could not resolve the VFS object layout"))
+                return None
+
+        if address is not None and not fd_mode and kind != "inode" and not self.kpath.initialized:
+            self.meta.append((self.quiet_err, "Could not resolve the VFS object layout"))
+            return None
+        if fd_mode and not self.kpath.initialized:
+            self.meta.append((self.quiet_err, "Could not resolve the VFS object layout"))
+            return None
+
+        self.meta.extend(Kernel.export_meta(self, self.kpath.meta))
         return True
 
     def get_task_by_pid(self, pid):
@@ -99746,7 +99747,12 @@ class KernelVfsCommand(GenericCommand, BufferingOutput):
             read_int_from_memory(inode + self.kpath.offset_i_ino)
         except (gdb.MemoryError, OverflowError):
             return False
-        return mode & 0o170000 in self.FILE_TYPES and is_valid_addr(super_block)
+        if not is_valid_addr(super_block):
+            return False
+        file_type = mode & 0o170000
+        if file_type == 0:
+            return self.get_fstype_name(super_block) == "anon_inodefs"
+        return file_type in self.FILE_TYPES
 
     def is_file(self, file):
         kpath = self.kpath
