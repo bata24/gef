@@ -153137,7 +153137,7 @@ class KernelSlub:
                 struct task_struct *owner;
             #endif
                 u8 acquired;
-            } local_trylock_t lock;
+            } local_trylock_t lock; // spinlock_t if CONFIG_PREEMPT_RT=y
             struct slab_sheaf *main;
             struct slab_sheaf *spare;
             struct slab_sheaf *rcu_free;
@@ -153145,6 +153145,9 @@ class KernelSlub:
         """
 
         # slow path
+        # The lock size depends on the config, and the owner of an unlocked lock is NULL.
+        # So search the first sheaf whose `cache` points back to the kmem_cache.
+        # The bootstrap sheaf (v7.0~, for kmem_cache, kmem_cache_node, etc.) has NULL `cache`, so try other caches.
         kmem_caches = self.parse_kmem_caches_for_initialize()
         for kmem_cache in kmem_caches:
             kmem_cache_top = kmem_cache - self.kmem_cache_offset_list
@@ -153155,22 +153158,14 @@ class KernelSlub:
                 if not is_valid_addr(slub_percpu_sheaves):
                     continue
 
-                # CONFIG_DEBUG_LOCK_ALLOC=n
-                acquired = read_int_from_memory(slub_percpu_sheaves)
-                main = read_int_from_memory(slub_percpu_sheaves + current_arch.ptrsize)
-                if acquired in [0, 1] and is_valid_addr(main):
-                    self.slub_percpu_sheaves_offset_main = current_arch.ptrsize
-                    return
-
-                # CONFIG_DEBUG_LOCK_ALLOC=y
-                for i in range(5, 8):
-                    v = read_int_from_memory(slub_percpu_sheaves + current_arch.ptrsize * i)
-                    if is_valid_addr(v): # owner
-                        acquired = read_int_from_memory(slub_percpu_sheaves + current_arch.ptrsize * (i + 1))
-                        main = read_int_from_memory(slub_percpu_sheaves + current_arch.ptrsize * (i + 2))
-                        if acquired in [0, 1] and is_valid_addr(main):
-                            self.slub_percpu_sheaves_offset_main = current_arch.ptrsize * (i + 2)
-                            return
+                for i in range(0x20):
+                    sheaf = read_int_from_memory(slub_percpu_sheaves + current_arch.ptrsize * i, safe=True)
+                    if not is_valid_addr(sheaf):
+                        continue
+                    # slab_sheaf->cache
+                    if read_int_from_memory(sheaf + current_arch.ptrsize * 2, safe=True) == kmem_cache_top:
+                        self.slub_percpu_sheaves_offset_main = current_arch.ptrsize * i
+                        return
         return
 
     def resolve_kmem_cache_node_offset_barn(self):
@@ -154761,6 +154756,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
         kversion = Kernel.version()
         if not kversion:
             self.quiet_err("Failed to resolve kernel version")
+            return False
 
         # dump target
         self.dump_target_active = False
@@ -154790,7 +154786,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
             self.dump_target_node = True
             if args.skip_sheaf:
                 self.dump_target_cpu_sheaves = False
-        return
+        return True
 
     def get_kmem_caches(self, target_names):
         return Kernel.slub().get_kmem_caches(target_names)
@@ -154834,7 +154830,8 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
         if not args.skip_page2virt:
             self.warmup_page2virt()
 
-        self.setup(args)
+        if not self.setup(args):
+            return
         self.maps = None
         self.out = []
         self.slubwalk(args.cache_name, args.cpu)
