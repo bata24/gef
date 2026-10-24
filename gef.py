@@ -80803,8 +80803,8 @@ class KernelCred:
     so they are handed over to `initialize()`. The other members are resolved here.
 
     struct cred {
-        atomic_t usage;      // ~v6.1.68, v6.2~v6.6.7
-        atomic_long_t usage; // v6.1.69~v6.1.187, v6.6.8~
+        atomic_t usage;
+        atomic_long_t usage; // v4.14.334~, v4.19.303~, v5.4.265~, v5.10.205~, v5.15.144~, v6.1.69~, v6.6.8~
     #ifdef CONFIG_DEBUG_CREDENTIALS // ~v6.6.7
         atomic_t subscribers;
         void *put_addr;
@@ -81093,8 +81093,8 @@ class KernelCred:
     def get_offset_uid(self, init_cred):
         """
         struct cred {
-            atomic_t usage; // ~v6.1.68, v6.2~v6.6.7
-            atomic_long_t usage; // v6.1.69~v6.1.187, v6.6.8~
+            atomic_t usage;
+            atomic_long_t usage; // stable backports; see sizes_usage below
         #ifdef CONFIG_DEBUG_CREDENTIALS // ~v6.6.7
             atomic_t subscribers; // ~v6.6.7
             void *put_addr; // ~v6.6.7
@@ -81139,10 +81139,14 @@ class KernelCred:
         kversion = Kernel.version()
         if kversion is None:
             return None
-        if kversion < "6.1.69" or ("6.2" <= kversion < "6.6.8"):
-            sizes_usage = [4, current_arch.ptrsize] # atomic_t
-        else:
+        if (
+            "4.14.334" <= kversion < "4.15" or "4.19.303" <= kversion < "4.20" or
+            "5.4.265" <= kversion < "5.5" or "5.10.205" <= kversion < "5.11" or
+            "5.15.144" <= kversion < "5.16" or "6.1.69" <= kversion < "6.2" or "6.6.8" <= kversion
+        ):
             sizes_usage = [current_arch.ptrsize, 4] # atomic_long_t
+        else:
+            sizes_usage = [4, current_arch.ptrsize] # atomic_t
         sizes_usage = list(dict.fromkeys(sizes_usage))
 
         # CONFIG_DEBUG_CREDENTIALS=y (~v6.6.7) is identified by the magic just before uid.
