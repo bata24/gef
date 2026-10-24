@@ -182770,7 +182770,10 @@ class PageTableArm32(PageTable):
         self.quiet_info_add_out("PL0 base: {:#x}".format(pl0_base))
         EPD0 = (TTBCR >> 7) & 1
         self.quiet_info_add_out("EPD0: {:d}".format(EPD0))
-        if not self.use_cached_mapping(
+        if EPD0:
+            self.warn_add_out("EPD0=1: TTBR0 table walk skipped; TLB state unknown")
+            self.ttbr0_mappings = []
+        elif not self.use_cached_mapping(
             "ttbr0_mappings", TTBR0_EL1=TTBR0_EL1, TTBCR=TTBCR, suffix=self.suffix,
             SCTLR=self.get_system_register("SCTLR"),
         ):
@@ -182779,7 +182782,7 @@ class PageTableArm32(PageTable):
             self.flags_strings_cache = None
             self.merge_mappings()
             self.ttbr0_mappings = self.mappings.copy()
-        self.make_out(self.ttbr0_mappings, walk_disabled=bool(EPD0))
+        self.make_out(self.ttbr0_mappings)
 
         # pagewalk TTBR1_EL1
         self.out.append(titlify("$TTBR1_EL1{}".format(self.suffix), color="bold", msg_color="bold"))
@@ -182811,7 +182814,10 @@ class PageTableArm32(PageTable):
             self.quiet_info_add_out("PL1 range start: {:#x}".format(pl1_range_start))
             EPD1 = (TTBCR >> 23) & 1
             self.quiet_info_add_out("EPD1: {:d}".format(EPD1))
-            if not self.use_cached_mapping(
+            if EPD1:
+                self.warn_add_out("EPD1=1: TTBR1 table walk skipped; TLB state unknown")
+                self.ttbr1_mappings = []
+            elif not self.use_cached_mapping(
                 "ttbr1_mappings", TTBR1_EL1=TTBR1_EL1, TTBCR=TTBCR, suffix=self.suffix,
                 SCTLR=self.get_system_register("SCTLR"),
             ):
@@ -182824,7 +182830,7 @@ class PageTableArm32(PageTable):
                 ]
                 self.merge_mappings()
                 self.ttbr1_mappings = self.mappings.copy()
-            self.make_out(self.ttbr1_mappings, walk_disabled=bool(EPD1))
+            self.make_out(self.ttbr1_mappings)
         else:
             self.quiet_info_add_out("$TTBR1_EL1{} is unused".format(self.suffix))
         return
