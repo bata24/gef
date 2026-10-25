@@ -480,7 +480,7 @@ For a comprehensive list and additional details, see [docs/SUPPORTED-MODE.md](do
             - `sed -i -e 's/ throw *(std::bad_alloc)//g' -e 's/^void operator delete(void \*ptr)$/void operator delete(void *ptr) noexcept/' -e 's/^void operator delete\[\](void \*ptr)$/void operator delete[](void *ptr) noexcept/' new_delete.cpp`
         - Build with `make`
         - Run your test program with `LD_PRELOAD=/PATH/TO/libssmalloc.so ./a.out`.
-- `jemalloc-heap-dump`: dumps jemalloc v5.0 ~ v5.4 arenas, slabs and tcache (x64 only).
+- `jemalloc-heap-dump`: dumps jemalloc v3.0~ arenas, slabs and tcache (x64 only).
     - ![](images/jemalloc-heap-dump.png)
     - How to test (x64):
         - Install `libjemalloc2` (e.g. `apt install libjemalloc2`), or get and extract the upstream source from https://github.com/jemalloc/jemalloc/releases
