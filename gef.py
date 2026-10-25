@@ -185425,13 +185425,10 @@ class KernelVMMapCommand(GenericCommand, BufferingOutput):
             return Color.colorify(line, line_color)
 
     def page_start_align(self, x):
-        return x & get_pagesize_mask_high()
+        return x & -KernelAddressHeuristicFinder.consts().PAGE_SIZE
 
     def page_end_align(self, x):
-        if x & get_pagesize_mask_low():
-            return (x & get_pagesize_mask_high()) + get_pagesize()
-        else:
-            return x
+        return align(x, KernelAddressHeuristicFinder.consts().PAGE_SIZE)
 
     def insert_region(self, to_insert_address, to_insert_size, description, merge=True):
         target_address_start = to_insert_address
@@ -185681,7 +185678,7 @@ class KernelVMMapCommand(GenericCommand, BufferingOutput):
             if KernelAddressHeuristicFinder.consts().CONFIG_FLATMEM:
                 self.quiet_info("Resolving mem_map")
                 mem_map = KernelAddressHeuristicFinder.consts().mem_map
-                mem_map &= get_pagesize_mask_high()
+                mem_map = self.page_start_align(mem_map)
                 # already there
                 if mem_map in self.regions:
                     self.regions[mem_map].add_description("mem_map(=page[])")
@@ -185884,7 +185881,8 @@ class KernelVMMapCommand(GenericCommand, BufferingOutput):
         kstack_size = Kernel.task().get_kstack_size()
         if kstack_size is None:
             kstacks = sorted(set(kstacks))
-            kstack_size = min((b - a for a, b in zip(kstacks, kstacks[1:])), default=get_pagesize() * 2)
+            kstack_size = min((b - a for a, b in zip(kstacks, kstacks[1:])),
+                              default=KernelAddressHeuristicFinder.consts().PAGE_SIZE * 2)
 
         # kstack
         for line in res.splitlines():
@@ -186143,7 +186141,7 @@ class KernelVMMapCommand(GenericCommand, BufferingOutput):
                     description = "kernel module ({:s})".format(module_name)
                 else:
                     description = "kernel module ({:s} {:s})".format(module_name, region_name)
-                self.insert_region(module_base, align_to_pagesize(module_size), description)
+                self.insert_region(module_base, self.page_end_align(module_size), description)
         return
 
     def resolve_vdso(self):
@@ -186176,13 +186174,13 @@ class KernelVMMapCommand(GenericCommand, BufferingOutput):
         if is_arm64() or is_arm32():
             vdso_start = KernelAddressHeuristicFinder.get_vdso_start()
             if vdso_start:
-                vdso_size = get_pagesize()
+                vdso_size = KernelAddressHeuristicFinder.consts().PAGE_SIZE
                 self.insert_region(vdso_start, vdso_size, "vdso_start")
 
         if is_arm64():
             vdso32_start = KernelAddressHeuristicFinder.get_vdso32_start()
             if vdso32_start:
-                vdso_size = get_pagesize()
+                vdso_size = KernelAddressHeuristicFinder.consts().PAGE_SIZE
                 self.insert_region(vdso32_start, vdso_size, "vdso32_start")
         return
 
@@ -186228,7 +186226,7 @@ class KernelVMMapCommand(GenericCommand, BufferingOutput):
             return
         self.quiet_info("Detecting zero page")
 
-        page_size = get_pagesize()
+        page_size = KernelAddressHeuristicFinder.consts().PAGE_SIZE
         z10 = b"\0" * 0x10
         cc10 = b"\xcc" * 0x10
         ff10 = b"\xff" * 0x10
