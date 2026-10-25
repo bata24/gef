@@ -172126,6 +172126,427 @@ class SsmallocHeapDumpCommand(GenericCommand, BufferingOutput):
         return
 
 
+@register_command
+class SfmallocHeapDumpCommand(GenericCommand, BufferingOutput):
+    """SFMalloc heap free-list viewer (x64 only)."""
+
+    _cmdline_ = "sfmalloc-heap-dump"
+    _category_ = "05-c. Heap - Other"
+
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("-hh", "--help-simple", action="store_true", help="show help without ASCII diagram.")
+    parser.add_argument("--tlh", type=AddressUtil.parse_address, help="use specific address for l_tlh.")
+    parser.add_argument("-a", "--all", action="store_true", help="dump l_tlh of all threads.")
+    parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
+    parser.add_argument("-v", "--verbose", action="store_true", help="display also empty lists.")
+    _syntax_ = parser.format_help()
+
+    _note_ = [
+        "Simplified SFMalloc structure:",
+        "",
+        "+-tlh_t(l_tlh)-------------+         +-block-+   +-block-+",
+        "| blk_list[cl]             |    +--->| next  |-->| next  |-->NULL",
+        "|   free_blk_list          |----+    +-------+   +-------+",
+        "|   ptr_to_unused          |-------->[unused blocks]",
+        "|   cnt_free, cnt_unused   |",
+        "|   pbh_list               |-------->pbh_t <-> pbh_t <-> ...",
+        "| free_pb_list[pages-1]    |-------->pbh_t <-> pbh_t <-> ... (free page blocks)",
+        "| sp_list                  |-------->sph_t <-> sph_t <-> ...",
+        "| hazard_ptr               |",
+        "| pb_cache.block[way].data |-------->page block --> page block --> NULL",
+        "| thread_id                |",
+        "+--------------------------+",
+        "",
+        "+-superpage------------------------------------------+",
+        "| page 0     : sph_t | pbh_t[1] | ... | pbh_t[63]    |",
+        "| page 1..63 : page blocks (pbh_t[i] covers page i~) |",
+        "+----------------------------------------------------+",
+        "",
+        "+-sph_t--------------+       +-pbh_t--------------+        +-block-+   +-block-+",
+        "| next, prev         |       | next, prev         |   +--->| next  |-->| next  |-->NULL",
+        "| start_page         |       | start_page, length |   |    +-------+   +-------+",
+        "| omark.owner_id     |       | index, sizeclass   |   |",
+        "| remote_pb_list     |--+    | status             |   |    +-block-+   +-block-+",
+        "+--------------------+  |    | free_list          |---+ +->| next  |-->| next  |-->NULL",
+        "                        |    | unallocated        |     |  +-------+   +-------+",
+        "                        |    | remote_list.head   |-----+ (block index)",
+        "                        |    +--------------------+",
+        "                        |",
+        "                        +--->page block --> page block --> NULL",
+        "",
+        "* `l_tlh` is resolved from symbols; without them, the static TLS below the thread pointer is scanned.",
+        "* `--tlh` can be used when the scan rejects a corrupted `l_tlh`.",
+        "* Superpages of exited threads are not reachable from any `l_tlh` and are not displayed.",
+        "* Allocation pops `free_blk_list` first, then advances `ptr_to_unused`, then refills from `pbh_list`.",
+        "* `remote_list` holds blocks freed by other threads; its head is a block index in the page block.",
+        "* `free_pb_list[i]` holds free page blocks of i+1 pages.",
+        "* `pb_cache` keeps up to two freed page blocks for each page count (larger than 0x8000 bytes).",
+        "* Page blocks freed by other threads are linked to `remote_pb_list` of the owner's superpage.",
+        "* Offsets follow the upstream x86_64 build with the default sf_malloc_ctrl.h.",
+    ]
+    _note_ = "\n".join(_note_)
+
+    # sf_malloc_def.h
+    PAGE_SHIFT = 12
+    NUM_CLASSES = 60
+    NUM_PAGE_CLASSES = 62
+    SUPERPAGE_LEN = NUM_PAGE_CLASSES + 1
+    NUM_PB_CACHE_WAY = 8
+    class_to_size = [
+        0x8, 0x10, 0x20, 0x30, 0x40, 0x50, 0x60, 0x70, 0x80, 0x90,
+        0xa0, 0xb0, 0xc0, 0xd0, 0xe0, 0xf0, 0x100, 0x120, 0x140, 0x160,
+        0x180, 0x1c0, 0x200, 0x240, 0x280, 0x2c0, 0x300, 0x340, 0x400, 0x480,
+        0x500, 0x580, 0x600, 0x680, 0x800, 0x900, 0xa00, 0xc00, 0xd00, 0x1000,
+        0x1100, 0x1200, 0x1400, 0x1800, 0x1a00, 0x1b00, 0x2000, 0x2200, 0x2800, 0x2900,
+        0x3000, 0x3700, 0x4000, 0x4500, 0x5000, 0x5300, 0x6000, 0x6100, 0x7000, 0x8000,
+    ]
+    status_names = {
+        0: "ON_FREE_LIST",
+        1: "IN_USE",
+        2: "AGAINST_FALSE_SHARING",
+    }
+
+    # x86_64 layout
+    sizeof_tlh = 0xa18
+    sizeof_blk_list = 0x20
+    sizeof_pbh = 0x40
+    sizeof_sph = 0x30
+    offset_tlh_free_pb_list = 0x780
+    offset_tlh_sp_list = 0x970
+    offset_tlh_hazard_ptr = 0x978
+    offset_tlh_pb_cache = 0x980
+    offset_tlh_pb_cache_tag = 0xa00
+    offset_tlh_thread_id = 0xa10
+
+    def read_tlh(self, addr, data=None):
+        """
+        typedef struct {
+            struct {
+                void* free_blk_list;
+                void* ptr_to_unused;
+                uint32_t cnt_free;
+                uint32_t cnt_unused;
+                pbh_t* pbh_list;
+            } blk_list[NUM_CLASSES];
+            pbh_t* free_pb_list[NUM_PAGE_CLASSES];
+            sph_t* sp_list;
+            hazard_ptr_t* hazard_ptr;
+            struct {
+                struct {
+                    void* data;
+                    size_t length;
+                } block[NUM_PB_CACHE_WAY];
+                char8_t tag; // page count of each way
+                uint8_t state;
+            } pb_cache;
+            uint32_t thread_id;
+        } tlh_t; // total: 0xa18 bytes
+        """
+        if data is None:
+            data = read_memory(addr, self.sizeof_tlh)
+        words = slice_unpack(data[:self.offset_tlh_thread_id], 8)
+        dic = {}
+        dic["addr"] = addr
+        dic["blk_list"] = []
+        for cl in range(self.NUM_CLASSES):
+            free_blk_list, ptr_to_unused, cnt, pbh_list = words[cl * 4:cl * 4 + 4]
+            dic["blk_list"].append((free_blk_list, ptr_to_unused, cnt & 0xffff_ffff, cnt >> 32, pbh_list))
+        i = self.offset_tlh_free_pb_list // 8
+        dic["free_pb_list"] = words[i:i + self.NUM_PAGE_CLASSES]
+        dic["sp_list"] = words[self.offset_tlh_sp_list // 8]
+        dic["hazard_ptr"] = words[self.offset_tlh_hazard_ptr // 8]
+        dic["pb_cache"] = []
+        for way in range(self.NUM_PB_CACHE_WAY):
+            i = self.offset_tlh_pb_cache // 8 + way * 2
+            dic["pb_cache"].append((words[i], words[i + 1], data[self.offset_tlh_pb_cache_tag + way]))
+        dic["thread_id"] = u32(data[self.offset_tlh_thread_id:self.offset_tlh_thread_id + 4])
+        tlh = GefUtil.dict_to_namedtuple("Tlh", dic)
+        return tlh
+
+    def read_sph(self, addr):
+        """
+        typedef struct sph {
+            struct sph* next;
+            struct sph* prev;
+            size_t start_page;
+            volatile ownermark_t {
+                uint32_t owner_id;
+                uint32_t finish_mark;
+            } omark;
+            void* remote_pb_list;
+            uint32_t hazard_mark;
+        } sph_t; // total: 0x30 bytes
+        """
+        data = read_memory(addr, self.sizeof_sph)
+        dic = {}
+        dic["addr"] = addr
+        dic["next"], dic["prev"], dic["start_page"] = struct.unpack_from("<3Q", data)
+        dic["owner_id"], dic["finish_mark"] = struct.unpack_from("<2I", data, 0x18)
+        dic["remote_pb_list"] = struct.unpack_from("<Q", data, 0x20)[0]
+        sph = GefUtil.dict_to_namedtuple("Sph", dic)
+        return sph
+
+    def read_pbh(self, addr):
+        """
+        struct pbh {
+            pbh_t* next;
+            pbh_t* prev;
+            size_t start_page;
+            uint8_t length; // number of pages
+            uint8_t index; // position in superpage
+            uint8_t sizeclass;
+            uint8_t status;
+            uint32_t cnt_free;
+            uint32_t cnt_unused;
+            uint16_t page_color;
+            uint16_t block_color;
+            void* free_list;
+            void* unallocated;
+            volatile remote_list_t {
+                uint32_t head; // block index
+                uint32_t cnt;
+            } remote_list;
+        }; // total: 0x40 bytes
+        """
+        data = read_memory(addr, self.sizeof_pbh)
+        dic = {}
+        dic["addr"] = addr
+        dic["next"], dic["prev"], dic["start_page"] = struct.unpack_from("<3Q", data)
+        dic["length"], dic["index"], dic["sizeclass"], dic["status"] = struct.unpack_from("<4B", data, 0x18)
+        dic["cnt_free"], dic["cnt_unused"] = struct.unpack_from("<2I", data, 0x1c)
+        dic["free_list"], dic["unallocated"] = struct.unpack_from("<2Q", data, 0x28)
+        dic["remote_head"], dic["remote_cnt"] = struct.unpack_from("<2I", data, 0x38)
+        pbh = GefUtil.dict_to_namedtuple("Pbh", dic)
+        return pbh
+
+    def is_sph(self, addr):
+        # the superpage header is placed at the page just before its first page
+        if addr == 0 or addr & 0xfff:
+            return False
+        start_page = read_int_from_memory(addr + 0x10, safe=True)
+        return start_page == (addr >> self.PAGE_SHIFT) + 1
+
+    def is_pbh(self, addr):
+        # pbh_t[index] is placed in the superpage header and describes the page `index` of the superpage
+        index = read_int8_from_memory(addr + 0x19, safe=True)
+        if not index or index > self.SUPERPAGE_LEN:
+            return False
+        sph = addr - self.sizeof_pbh * index
+        if not self.is_sph(sph):
+            return False
+        return read_int_from_memory(addr + 0x10) == (sph >> self.PAGE_SHIFT) + index
+
+    def is_tlh(self, tlh):
+        # a live thread holds an active hazard pointer
+        if tlh.thread_id == 0 or tlh.hazard_ptr % 0x40 or not is_valid_addr(tlh.hazard_ptr):
+            return False
+        if read_int32_from_memory(tlh.hazard_ptr + 0x10) != 1: # hazard_ptr_t.active
+            return False
+        if tlh.sp_list and not (self.is_sph(tlh.sp_list) and self.read_sph(tlh.sp_list).owner_id == tlh.thread_id):
+            return False
+        for free_blk_list, ptr_to_unused, cnt_free, cnt_unused, pbh_list in tlh.blk_list:
+            if (free_blk_list == 0) != (cnt_free == 0) or (ptr_to_unused == 0) != (cnt_unused == 0):
+                return False
+            if pbh_list and not self.is_pbh(pbh_list):
+                return False
+        return all(pbh == 0 or self.is_pbh(pbh) for pbh in tlh.free_pb_list)
+
+    def get_tlh_heuristic(self):
+        tls = current_arch.get_tls()
+        if not tls:
+            return None
+        # l_tlh (initial-exec TLS model) is placed in the static TLS below the thread pointer
+        section = ProcessMap.process_lookup_address(tls - 1)
+        if section is None:
+            return None
+        start = max(section.page_start, tls - 0x10000)
+        data = read_memory(start, tls - start)
+        for addr in range((tls - self.sizeof_tlh) & ~0x3f, start - 1, -0x40):
+            offset = addr - start
+            tlh = self.read_tlh(addr, data[offset:offset + self.sizeof_tlh])
+            if self.is_tlh(tlh):
+                return tlh
+        return None
+
+    def get_tlh(self):
+        try:
+            tlh = self.read_tlh(AddressUtil.parse_address("&l_tlh"))
+            if self.is_tlh(tlh):
+                return tlh
+        except gdb.error:
+            pass
+        return self.get_tlh_heuristic()
+
+    def get_tlh_list(self):
+        if self.args.tlh is not None:
+            return [(gdb.selected_thread().num, self.read_tlh(self.args.tlh))]
+
+        if self.args.all:
+            threads = None
+        else:
+            threads = [gdb.selected_thread()]
+        tlh_list = []
+        with ContextManager.threads(threads) as threads:
+            for thread in threads:
+                tlh = self.get_tlh()
+                if tlh:
+                    tlh_list.append((thread.num, tlh))
+        return tlh_list
+
+    def get_ring(self, head, is_valid):
+        nodes = []
+        cur = head
+        while cur:
+            if not is_valid(cur):
+                return nodes, "{:#x} (corrupted)".format(cur)
+            nodes.append(cur)
+            cur = read_int_from_memory(cur)
+            if cur == head:
+                break
+            if cur in nodes:
+                return nodes, "{:#x} (loop detected)".format(cur)
+        return nodes, None
+
+    def dump_freelist(self, title, head, num=None):
+        freed_address_color = Config.get("theme.heap_chunk_address_freed")
+        corrupted_msg_color = Config.get("theme.heap_corrupted_msg")
+
+        self.out.append(title)
+        cur = head
+        seen = set()
+        while cur:
+            if cur in seen:
+                self.out.append(" -> {:s}".format(Color.colorify("{:#x} (loop detected)".format(cur), corrupted_msg_color)))
+                return
+            seen.add(cur)
+            next_cur = read_int_from_memory(cur, safe=True)
+            if next_cur is None:
+                self.out.append(" -> {:s}".format(Color.colorify("{:#x} (corrupted)".format(cur), corrupted_msg_color)))
+                return
+            self.out.append(" -> {:s}".format(Color.colorify_hex(cur, freed_address_color)))
+            cur = next_cur
+        if num is None or num == len(seen):
+            self.out.append(" -> 0x0 (num: {:#x})".format(len(seen)))
+        else:
+            self.out.append(" -> 0x0 (num: {:#x}, expected: {:#x})".format(len(seen), num))
+        return
+
+    def dump_error(self, error):
+        corrupted_msg_color = Config.get("theme.heap_corrupted_msg")
+        if error:
+            self.out.append(" -> {:s}".format(Color.colorify(error, corrupted_msg_color)))
+        return
+
+    def dump_pbh(self, addr, size):
+        pbh = self.read_pbh(addr)
+        start = pbh.start_page << self.PAGE_SHIFT
+        self.out.append("pbh @{:#x} (pages: {:#x}-{:#x}, status: {:s}, cnt_free: {:#x}, cnt_unused: {:#x})".format(
+            pbh.addr, start, start + (pbh.length << self.PAGE_SHIFT),
+            self.status_names.get(pbh.status, "UNKNOWN"), pbh.cnt_free, pbh.cnt_unused,
+        ))
+        if pbh.free_list or self.args.verbose:
+            self.dump_freelist("free_list:", pbh.free_list, pbh.cnt_free)
+        if pbh.unallocated or self.args.verbose:
+            self.out.append("unallocated: {:#x} (num: {:#x})".format(pbh.unallocated, pbh.cnt_unused))
+        if pbh.remote_cnt or self.args.verbose:
+            head = 0
+            if pbh.remote_cnt:
+                head = start + size * pbh.remote_head
+            self.dump_freelist("remote_list (head: {:#x}):".format(pbh.remote_head), head, pbh.remote_cnt)
+        return
+
+    def dump_blk_list(self, tlh):
+        for cl, (free_blk_list, ptr_to_unused, cnt_free, cnt_unused, pbh_list) in enumerate(tlh.blk_list):
+            if not self.args.verbose and not (free_blk_list or ptr_to_unused or pbh_list):
+                continue
+            size = self.class_to_size[cl]
+            self.out.append(titlify("blk_list[{:#x}] (size: {:#x}) @ {:#x}".format(
+                cl, size, tlh.addr + self.sizeof_blk_list * cl,
+            )))
+            self.dump_freelist("free_blk_list:", free_blk_list, cnt_free)
+            self.out.append("ptr_to_unused: {:#x} (num: {:#x})".format(ptr_to_unused, cnt_unused))
+            nodes, error = self.get_ring(pbh_list, self.is_pbh)
+            for pbh in nodes:
+                self.dump_pbh(pbh, size)
+            self.dump_error(error)
+        return
+
+    def dump_free_pb_list(self, tlh):
+        freed_address_color = Config.get("theme.heap_chunk_address_freed")
+
+        self.out.append(titlify("free_pb_list @ {:#x}".format(tlh.addr + self.offset_tlh_free_pb_list)))
+        for i, head in enumerate(tlh.free_pb_list):
+            if not self.args.verbose and not head:
+                continue
+            self.out.append("free_pb_list[{:#x}] (pages: {:#x}):".format(i, i + 1))
+            nodes, error = self.get_ring(head, self.is_pbh)
+            for addr in nodes:
+                pbh = self.read_pbh(addr)
+                start = pbh.start_page << self.PAGE_SHIFT
+                self.out.append(" -> pbh @{:#x} (pages: {:s}-{:#x})".format(
+                    addr, Color.colorify_hex(start, freed_address_color), start + (pbh.length << self.PAGE_SHIFT),
+                ))
+            self.dump_error(error)
+        return
+
+    def dump_pb_cache(self, tlh):
+        self.out.append(titlify("pb_cache @ {:#x}".format(tlh.addr + self.offset_tlh_pb_cache)))
+        for way, (data, length, tag) in enumerate(tlh.pb_cache):
+            if not self.args.verbose and not data:
+                continue
+            self.dump_freelist("block[{:#x}] (pages: {:#x}):".format(way, tag), data, length)
+        return
+
+    def dump_sp_list(self, tlh):
+        self.out.append(titlify("sp_list @ {:#x}".format(tlh.addr + self.offset_tlh_sp_list)))
+        nodes, error = self.get_ring(tlh.sp_list, self.is_sph)
+        for addr in nodes:
+            sph = self.read_sph(addr)
+            start = sph.start_page << self.PAGE_SHIFT
+            self.out.append("sph @{:#x} (pages: {:#x}-{:#x}, owner_id: {:#x})".format(
+                addr, start, start + (self.SUPERPAGE_LEN << self.PAGE_SHIFT), sph.owner_id,
+            ))
+            if sph.remote_pb_list or self.args.verbose:
+                self.dump_freelist("remote_pb_list:", sph.remote_pb_list)
+        self.dump_error(error)
+        return
+
+    def dump_tlh(self, thread_num, tlh):
+        self.out.append(titlify("l_tlh @ {:#x} (Thread Id:{:d})".format(tlh.addr, thread_num), color="bold", msg_color="bold"))
+        self.out.append("thread_id: {:#x}, hazard_ptr: {:#x}".format(tlh.thread_id, tlh.hazard_ptr))
+        self.dump_blk_list(tlh)
+        self.dump_free_pb_list(tlh)
+        self.dump_pb_cache(tlh)
+        self.dump_sp_list(tlh)
+        return
+
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @Decorator.only_if_specific_arch(arch=("x86_64",))
+    def do_invoke(self, args):
+        try:
+            tlh_list = self.get_tlh_list()
+        except gdb.error:
+            if args.tlh is None:
+                err("Cannot read l_tlh")
+            else:
+                err("Cannot read l_tlh at {:#x}".format(args.tlh))
+            return
+        if not tlh_list:
+            err("Could not find l_tlh")
+            return
+
+        self.out = []
+        for thread_num, tlh in tlh_list:
+            try:
+                self.dump_tlh(thread_num, tlh)
+            except gdb.error:
+                self.err_add_out("Cannot read l_tlh at {:#x}".format(tlh.addr))
+        self.print_output()
+        return
+
+
 class JemallocBase:
     """Common helpers of the jemalloc heap parsers.
     Each parser resolves the structures of its version and returns them in a common form:

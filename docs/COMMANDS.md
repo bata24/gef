@@ -7676,6 +7676,71 @@ Simplified scalloc structure:
 * Layouts use debug types when available, otherwise the upstream field order and target pointer size.
 ```
 
+## `sfmalloc-heap-dump`
+
+SFMalloc heap free-list viewer (x64 only).
+
+
+### Syntax
+
+```text
+usage: sfmalloc-heap-dump [-h] [-hh] [--tlh TLH] [-a] [-n] [-v]
+
+options:
+  -h, --help          show this help message and exit
+  -hh, --help-simple  show help without ASCII diagram.
+  --tlh TLH           use specific address for l_tlh.
+  -a, --all           dump l_tlh of all threads.
+  -n, --no-pager      do not use the pager.
+  -v, --verbose       display also empty lists.
+```
+
+### Notes
+
+```text
+Simplified SFMalloc structure:
+
++-tlh_t(l_tlh)-------------+         +-block-+   +-block-+
+| blk_list[cl]             |    +--->| next  |-->| next  |-->NULL
+|   free_blk_list          |----+    +-------+   +-------+
+|   ptr_to_unused          |-------->[unused blocks]
+|   cnt_free, cnt_unused   |
+|   pbh_list               |-------->pbh_t <-> pbh_t <-> ...
+| free_pb_list[pages-1]    |-------->pbh_t <-> pbh_t <-> ... (free page blocks)
+| sp_list                  |-------->sph_t <-> sph_t <-> ...
+| hazard_ptr               |
+| pb_cache.block[way].data |-------->page block --> page block --> NULL
+| thread_id                |
++--------------------------+
+
++-superpage------------------------------------------+
+| page 0     : sph_t | pbh_t[1] | ... | pbh_t[63]    |
+| page 1..63 : page blocks (pbh_t[i] covers page i~) |
++----------------------------------------------------+
+
++-sph_t--------------+       +-pbh_t--------------+        +-block-+   +-block-+
+| next, prev         |       | next, prev         |   +--->| next  |-->| next  |-->NULL
+| start_page         |       | start_page, length |   |    +-------+   +-------+
+| omark.owner_id     |       | index, sizeclass   |   |
+| remote_pb_list     |--+    | status             |   |    +-block-+   +-block-+
++--------------------+  |    | free_list          |---+ +->| next  |-->| next  |-->NULL
+                        |    | unallocated        |     |  +-------+   +-------+
+                        |    | remote_list.head   |-----+ (block index)
+                        |    +--------------------+
+                        |
+                        +--->page block --> page block --> NULL
+
+* `l_tlh` is resolved from symbols; without them, the static TLS below the thread pointer is scanned.
+* `--tlh` can be used when the scan rejects a corrupted `l_tlh`.
+* Superpages of exited threads are not reachable from any `l_tlh` and are not displayed.
+* Allocation pops `free_blk_list` first, then advances `ptr_to_unused`, then refills from `pbh_list`.
+* `remote_list` holds blocks freed by other threads; its head is a block index in the page block.
+* `free_pb_list[i]` holds free page blocks of i+1 pages.
+* `pb_cache` keeps up to two freed page blocks for each page count (larger than 0x8000 bytes).
+* Page blocks freed by other threads are linked to `remote_pb_list` of the owner's superpage.
+* Offsets follow the upstream x86_64 build with the default sf_malloc_ctrl.h.
+```
+
 ## `snmalloc-heap-dump`
 
 snmalloc (as of June 2025) heap free-list viewer (x64 only).

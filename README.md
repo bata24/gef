@@ -486,6 +486,12 @@ For a comprehensive list and additional details, see [docs/SUPPORTED-MODE.md](do
         - Install `libjemalloc2` (e.g. `apt install libjemalloc2`), or get and extract the upstream source from https://github.com/jemalloc/jemalloc/releases
         - Build with `./configure && make build_lib_shared`.
         - Run your test program with `LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libjemalloc.so.2 ./a.out` (or `/PATH/TO/lib/libjemalloc.so.2`).
+- `sfmalloc-heap-dump`: dumps sfmalloc free-list (x64 only).
+    - ![](images/sfmalloc-heap-dump.png)
+    - How to test (x64):
+        - Get and extract the upstream source from https://github.com/jeffhammond/sfmalloc
+        - Build with `cd sfmalloc && make CXX='g++ -std=gnu++03' DEFS='-D_REENTRANT -include stddef.h'`.
+        - Run your test program with `LD_PRELOAD=/PATH/TO/libsfmalloc.so ./a.out`.
 - `optee-bget-dump`: dumps bget allocator of OPTEE-Trusted-App.
     - ![](images/optee-bget-dump.png)
 - `v8`: displays v8 (Chromium and `d8`) tagged object.
