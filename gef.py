@@ -73069,8 +73069,8 @@ class KernelAddressHeuristicFinder:
 
         kversion = Kernel.version()
 
-        # plan 2 (available v4.2 or later)
-        if kversion and "4.2" <= kversion:
+        # plan 2 (available v3.16 or later)
+        if kversion and "3.16" <= kversion:
             addr = Ksym.get_addr("arch_setup_additional_pages")
             if addr:
                 res = gdb.execute("x/40i {:#x}".format(addr), to_string=True)
@@ -73110,8 +73110,8 @@ class KernelAddressHeuristicFinder:
 
         kversion = Kernel.version()
 
-        # plan 2 (available v4.2 or later)
-        if kversion and "4.2" <= kversion:
+        # plan 2 (available v3.16 or later)
+        if kversion and "3.16" <= kversion:
             addr = Ksym.get_addr("compat_arch_setup_additional_pages")
             if addr:
                 # Both vdso_image_32 and vdso_image_x32 are loaded here; their branch
@@ -73354,18 +73354,23 @@ class KernelAddressHeuristicFinder:
                         x = read_int_from_memory(vdso_info + current_arch.ptrsize)
                         return x
 
-        # plan 3 (from .rodata)
+        # plan 3 (from .rodata or .data)
         klayout = Kernel.layout()
-        if klayout.ro_base and klayout.ro_size:
-            ro_data = read_memory(klayout.ro_base, klayout.ro_size)
+        machine = Elf.EM_ARM
+        if is_arm64():
+            machine = Elf.EM_AARCH64
+        elf_type = struct.pack("<HH", Elf.ET_DYN, machine)
+        for base, size in ((klayout.ro_base, klayout.ro_size), (klayout.rw_base, klayout.rw_size)):
+            if not base or not size:
+                continue
+            data = read_memory(base, size)
             pos = -1
             while True:
-                # search for aligned ELF header from .rodata
-                pos = ro_data.find(b"\x7fELF", pos + 1)
+                pos = data.find(b"\x7fELF", pos + 1)
                 if pos == -1:
                     break
-                if pos % get_pagesize() == 0:
-                    return klayout.ro_base + pos
+                if (base + pos) % get_pagesize() == 0 and data[pos + 0x10:pos + 0x14] == elf_type:
+                    return base + pos
         return None
 
     @staticmethod
