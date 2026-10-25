@@ -1531,13 +1531,8 @@ class Color:
         if Config.get("gef.disable_color") is True:
             return True
         if Color.NO_COLOR is None:
-            if os.environ.get("NO_COLOR", None):
-                Color.NO_COLOR = True
-            else:
-                Color.NO_COLOR = False
-        if Color.NO_COLOR:
-            return True
-        return False
+            Color.NO_COLOR = bool(os.environ.get("NO_COLOR"))
+        return bool(Color.NO_COLOR)
 
     @staticmethod
     def colorify(text, attrs):
@@ -2585,7 +2580,7 @@ class Elf:
                 break
         else:
             # multiple SHT_NULLs are treated as abnormal
-            if sum([x.sh_type == Elf.Shdr.SHT_NULL for x in self.shdrs]) > 1:
+            if sum(x.sh_type == Elf.Shdr.SHT_NULL for x in self.shdrs) > 1:
                 self.shdrs = []
 
         if self.fd is not None:
@@ -3864,17 +3859,17 @@ class Instruction:
         if text is None:
             return text
 
-        if len(text) == 0:
+        if not text:
             return text
 
         text = re.sub(r"\bstd::__1::", "", text)
 
-        old_text = text[::]
+        old_text = text
         while True:
             text = re.sub(r"\([^(]+?\)", "__MARKER_GEF__", text)
             if text == old_text:
                 break
-            old_text = text[::]
+            old_text = text
         text = re.sub("__MARKER_GEF__", "(...)", text)
 
         m = re.match(r"^(\s*\<)(.*)(\>\s*)$", text)
@@ -3887,7 +3882,7 @@ class Instruction:
             text = re.sub(r"\<[^<]+?\>", "__MARKER_GEF__", text)
             if text == old_text:
                 break
-            old_text = text[::]
+            old_text = text
         text = re.sub("__MARKER_GEF__", "<...>", text)
         if text_0:
             text = text_0 + text
@@ -4767,7 +4762,7 @@ class GlibcHeap:
             else:
                 tcache_perthread_struct_size_real = TCACHE_MAX_BINS * (2 + current_arch.ptrsize)
 
-            for _k, v in GlibcHeap.get_binsize_table()["tcache"].items():
+            for v in GlibcHeap.get_binsize_table()["tcache"].values():
                 if v.get("size", 0) > tcache_perthread_struct_size_real:
                     return v["size"]
             return None
@@ -5473,8 +5468,7 @@ class GlibcHeap:
                         m = "tcache[idx={:d},sz={:#x}-{:#x}][{:s}/{:d}]".format(
                             tcache_idx, sz_min, sz_max, pos, len(tcache_list),
                         )
-                    new_list = bins_dict_for_address.get(address, []) + [m]
-                    bins_dict_for_address[address] = new_list
+                    bins_dict_for_address.setdefault(address, []).append(m)
 
             fastbins_table = GlibcHeap.get_binsize_table()["fastbins"]
             for fastbin_idx, fastbin_list in fastbins_lists.items():
@@ -5488,20 +5482,18 @@ class GlibcHeap:
                         m = "fastbins[idx={:d},sz={:#x}][{:s}/{:d}]".format(fastbin_idx, sz, pos, len(fastbin_list))
                     else:
                         m = "fastbins[idx={:d}][{:s}/{:d}]".format(fastbin_idx, pos, len(fastbin_list))
-                    new_list = bins_dict_for_address.get(address, []) + [m]
-                    bins_dict_for_address[address] = new_list
+                    bins_dict_for_address.setdefault(address, []).append(m)
 
             # dict[base_address] = ["bins info1", "bins info2", ...]
             bins_dict_for_base_address = {}
-            for _, unsortedbin_list in unsortedbin_lists.items():
+            for unsortedbin_list in unsortedbin_lists.values():
                 position_table = GefUtil.make_position_table(unsortedbin_list)
                 for base_address in set(unsortedbin_list):
                     if not isinstance(base_address, int):
                         continue
                     pos = position_table[base_address]
                     m = "unsortedbins[{:s}/{:d}]".format(pos, len(unsortedbin_list))
-                    new_list = bins_dict_for_base_address.get(base_address, []) + [m]
-                    bins_dict_for_base_address[base_address] = new_list
+                    bins_dict_for_base_address.setdefault(base_address, []).append(m)
 
             for smallbin_idx, smallbin_list in smallbins_lists.items():
                 position_table = GefUtil.make_position_table(smallbin_list)
@@ -5511,8 +5503,7 @@ class GlibcHeap:
                     pos = position_table[base_address]
                     sz = GlibcHeap.get_binsize_table()["small_bins"][smallbin_idx]["size"]
                     m = "smallbins[idx={:d},sz={:#x}][{:s}/{:d}]".format(smallbin_idx, sz, pos, len(smallbin_list))
-                    new_list = bins_dict_for_base_address.get(base_address, []) + [m]
-                    bins_dict_for_base_address[base_address] = new_list
+                    bins_dict_for_base_address.setdefault(base_address, []).append(m)
 
             for largebin_idx, largebin_list in largebins_lists.items():
                 position_table = GefUtil.make_position_table(largebin_list)
@@ -5525,8 +5516,7 @@ class GlibcHeap:
                     m = "largebins[idx={:d},sz={:#x}-{:#x}][{:s}/{:d}]".format(
                         largebin_idx, sz_min, sz_max, pos, len(largebin_list),
                     )
-                    new_list = bins_dict_for_base_address.get(base_address, []) + [m]
-                    bins_dict_for_base_address[base_address] = new_list
+                    bins_dict_for_base_address.setdefault(base_address, []).append(m)
             return addr_lists, bins_dict_for_address, bins_dict_for_base_address
 
         def reset_cache(self): # noqa: V105
@@ -7319,8 +7309,7 @@ class Disasm:
                 break
 
         nb_insn = max(1, nb_insn)
-        for insn in get_insns(addr, nb_insn):
-            yield insn
+        yield from get_insns(addr, nb_insn)
         return None
 
     @staticmethod
@@ -8319,9 +8308,9 @@ class ARM(Architecture):
             taken, reason = carry and not zero, "C && !Z"
         elif mnemo.endswith(("ls", "ls.n", "ls.w")):
             taken, reason = not carry or zero, "!C || Z"
-        elif mnemo.endswith(("cs", "cs.n", "cs.w")) or mnemo.endswith(("hs", "hs.n", "hs.w")):
+        elif mnemo.endswith(("cs", "cs.n", "cs.w", "hs", "hs.n", "hs.w")):
             taken, reason = carry, "C"
-        elif mnemo.endswith(("cc", "cc.n", "cc.w")) or mnemo.endswith(("lo", "lo.n", "lo.w")):
+        elif mnemo.endswith(("cc", "cc.n", "cc.w", "lo", "lo.n", "lo.w")):
             taken, reason = not carry, "!C"
         elif mnemo.endswith(("al", "al.n", "al.w", "nv")):
             taken, reason = True, "Always True"
@@ -12145,10 +12134,7 @@ class CRIS(Architecture):
             "cc", "cs", "ne", "eq", "vc", "vs", "pl", "mi",
             "ls", "hi", "ge", "lt", "gt", "le", "wf"
         ]
-        for cc in conditions:
-            if insn.mnemonic in [f"b{cc}"]:
-                return True
-        return False
+        return any(insn.mnemonic == f"b{cc}" for cc in conditions)
 
     def is_branch_taken(self, insn):
         mnemo = insn.mnemonic
@@ -17861,7 +17847,7 @@ class HighlightAddCommand(GenericCommand):
             err("Empty match")
             return
         for a in args.color:
-            if a not in Color.colors.keys():
+            if a not in Color.colors:
                 err("Invalid color")
                 return
         if Config.get("highlight.regex"):
@@ -24408,14 +24394,13 @@ class KillThreadsCommand(GenericCommand):
 
         # kill
         if args.commit:
-            with ContextManager.gdb_parameter("scheduler-locking", "on"):
-                with ContextManager.threads(target_threads) as threads:
-                    # kill
-                    for _thread in threads:
-                        try:
-                            gdb.execute("call (void)pthread_exit(0)")
-                        except (gdb.error, RuntimeError):
-                            pass
+            with ContextManager.gdb_parameter("scheduler-locking", "on"), ContextManager.threads(target_threads) as threads:
+                # kill
+                for _thread in threads:
+                    try:
+                        gdb.execute("call (void)pthread_exit(0)")
+                    except (gdb.error, RuntimeError):
+                        pass
         else:
             warn('This dry run mode skips killing; add "--commit" to proceed')
         return
@@ -29580,7 +29565,7 @@ class GlibcHeapBinsSimpleCommand(GenericCommand):
 
             # unsorted bin ---------------------------------------------------------------------------------------------------
             gef_print(titlify("unsorted bin"))
-            for _, chunks in arena.get_unsortedbin_list().items():
+            for chunks in arena.get_unsortedbin_list().values():
                 m = []
                 for c in chunks:
                     if isinstance(c, str):
@@ -32917,9 +32902,8 @@ class AsmListCommand(GenericCommand):
                 if hex_code in seen_patterns:
                     continue
                 # disasm
-                try:
-                    asm = cs.disasm(code, 0).__next__()
-                except StopIteration:
+                asm = next(cs.disasm(code, 0), None)
+                if asm is None:
                     continue
                 opstr = asm.mnemonic + " " + asm.op_str
                 # add
@@ -39930,7 +39914,7 @@ class ContextCommand(GenericCommand):
                 continue
 
             redirect = ContextCommand.get_redirect(section, ignore_redirect)
-            order_in_pane[redirect] = order_in_pane.get(redirect, []) + [section]
+            order_in_pane.setdefault(redirect, []).append(section)
 
         order_info = {}
         for redirect, order in order_in_pane.items():
@@ -40193,7 +40177,7 @@ class ContextRegistersCommand(GenericCommand):
                     if ("$" + reg) in line.split(":")[0]:
                         gef_print(line, redirect=redirect)
                         if reg in to_save_regs:
-                            printed_extra_regs["xmm"] = printed_extra_regs.get("xmm", []) + [reg]
+                            printed_extra_regs.setdefault("xmm", []).append(reg)
                         break
 
         # avx register
@@ -40207,7 +40191,7 @@ class ContextRegistersCommand(GenericCommand):
                     if ("$" + reg) in line.split(":")[0]:
                         gef_print(line, redirect=redirect)
                         if reg in to_save_regs:
-                            printed_extra_regs["ymm"] = printed_extra_regs.get("ymm", []) + [reg]
+                            printed_extra_regs.setdefault("ymm", []).append(reg)
                         break
 
         # mmx register
@@ -40221,7 +40205,7 @@ class ContextRegistersCommand(GenericCommand):
                     if ("$" + reg) in line.split(":")[0]:
                         gef_print(line, redirect=redirect)
                         if reg in to_save_regs:
-                            printed_extra_regs["mmx"] = printed_extra_regs.get("mmx", []) + [reg]
+                            printed_extra_regs.setdefault("mmx", []).append(reg)
                         break
 
         # fpu register
@@ -40236,7 +40220,7 @@ class ContextRegistersCommand(GenericCommand):
                         if ("$" + re.sub(r"[()]", "", reg)) in line.split(":")[0]:
                             gef_print(line, redirect=redirect)
                             if reg in to_save_regs:
-                                printed_extra_regs["fpu"] = printed_extra_regs.get("fpu", []) + [reg]
+                                printed_extra_regs.setdefault("fpu", []).append(reg)
                             break
 
         self.previous_extra_regs = printed_extra_regs
@@ -40921,10 +40905,8 @@ class ContextMemoryAccessCommand(GenericCommand):
         if not (is_x86() or is_arm32() or is_arm32_cortex_m() or is_arm64()):
             return
 
-        inst_iter = Disasm.gef_disassemble(current_arch.pc, 1)
-        try:
-            insn_here = inst_iter.__next__()
-        except StopIteration:
+        insn_here = next(Disasm.gef_disassemble(current_arch.pc, 1), None)
+        if insn_here is None:
             return
 
         if insn_here.operands == []:
@@ -41004,10 +40986,8 @@ class ContextMemoryAccessCommand(GenericCommand):
         if not is_x86():
             return
 
-        inst_iter = Disasm.gef_disassemble(current_arch.pc, 1)
-        try:
-            insn_here = inst_iter.__next__()
-        except StopIteration:
+        insn_here = next(Disasm.gef_disassemble(current_arch.pc, 1), None)
+        if insn_here is None:
             return
 
         if insn_here.operands == []:
@@ -41041,10 +41021,8 @@ class ContextMemoryAccessCommand(GenericCommand):
         if not is_x86():
             return
 
-        inst_iter = Disasm.gef_disassemble(current_arch.pc, 1)
-        try:
-            insn_here = inst_iter.__next__()
-        except StopIteration:
+        insn_here = next(Disasm.gef_disassemble(current_arch.pc, 1), None)
+        if insn_here is None:
             return
 
         if insn_here.operands == []:
@@ -45266,13 +45244,11 @@ class PatternCreateCommand(GenericCommand):
                         yield alphabet[a[j]]
             else:
                 a[t] = a[t - p]
-                for c in db(t + 1, p):
-                    yield c
+                yield from db(t + 1, p)
 
                 for j in range(a[t - p] + 1, k):
                     a[t] = j
-                    for c in db(t + 1, t):
-                        yield c
+                    yield from db(t + 1, t)
 
         return db(1, 1)
 
@@ -48607,8 +48583,7 @@ class GotCommand(GenericCommand, BufferingOutput):
                 address += self.base_address
 
             # save
-            array = output.get(type, [])
-            output[type] = array + [[address, name, section_name, type, reloc_arg]]
+            output.setdefault(type, []).append([address, name, section_name, type, reloc_arg])
 
         # flatten
         a = output.get("JUMP_SLOT", [])
@@ -48680,8 +48655,7 @@ class GotCommand(GenericCommand, BufferingOutput):
             # save
             # Since DT_REL (used at i386) has no r_addend, the information of identification does not exist.
             # So there are multiple "*ABS*" entries, keep them in a list.
-            array = output.get(func_name, [])
-            output[func_name] = array + [address]
+            output.setdefault(func_name, []).append(address)
         return output
 
     def get_plt_addresses_arch_specific(self):
@@ -59752,8 +59726,7 @@ class Syscall:
             # nr_table
             syscall_table.nr_table[nr] = entry
             # name_table
-            if name not in syscall_table.name_table:
-                syscall_table.name_table[name] = entry
+            syscall_table.name_table.setdefault(name, entry)
         return syscall_table
 
     @classmethod
@@ -62339,10 +62312,7 @@ class MagicCommand(GenericCommand):
         if not self.args.filter:
             return True
 
-        for filt in self.args.filter:
-            if filt in sym:
-                return True
-        return False
+        return any(filt in sym for filt in self.args.filter)
 
     def resolve_and_print(self, sym, base):
         if not self.should_be_print(sym):
@@ -62556,10 +62526,7 @@ class KernelMagicCommand(GenericCommand):
 
         if isinstance(sym, str):
             sym = [sym]
-        for filt in self.args.filter:
-            if any(filt in name for name in sym):
-                return True
-        return False
+        return any(filt in name for filt in self.args.filter for name in sym)
 
     def resolve_and_print_kernel(self, sym, base, maps, external_func=None, to_string=False, value_only=False):
 
@@ -82640,11 +82607,8 @@ class KernelSocket:
 
         # callbacks follow all queues except sk_data_ready
         callbacks = self.find_callbacks(sk)
-        limit = [off for label, _, _, off, _ in callbacks if label not in ["sk_data_ready", "sk_destruct"]]
-        if limit:
-            limit = min(limit)
-        else:
-            limit = None
+        limit = min((off for label, _, _, off, _ in callbacks if label not in ["sk_data_ready", "sk_destruct"]),
+                    default=None)
 
         # queues
         queues, size, source = self.find_queues(sk, limit)
@@ -82953,7 +82917,7 @@ class KernelSocket:
         if not proto_name:
             return None
         n = proto_name.lower()
-        if "v6" in n or n.endswith("6_prot") or n.endswith("6_proto"):
+        if "v6" in n or n.endswith(("6_prot", "6_proto")):
             return 10  # AF_INET6
         if "unix" in n:
             return 1   # AF_UNIX
@@ -87312,8 +87276,7 @@ class KernelModule:
                 #   Maybe we could skip the initial fields by using bin_attribute.size?
                 if not KernelAddressHeuristicFinderUtil.is_kernel_space(word):
                     continue
-                if offset not in offset_map:
-                    offset_map[offset] = {}
+                offset_map.setdefault(offset, {})
                 if word not in offset_map[offset]:
                     offset_map[offset][word] = 1
                 else:
@@ -87329,7 +87292,7 @@ class KernelModule:
         max_len = 0
         offset_address = None
         for offset, words in offset_map.items():
-            for _val, count in words.items():
+            for count in words.values():
                 # If multiple identical pointers are found, they are not `address` and `private`.
                 if count > 1:
                     break
@@ -91573,10 +91536,7 @@ class KernelTask:
 
         # get regs value
         regs_data = slice_unpack(regs_data, current_arch.ptrsize)
-        regs = {}
-        for name, value in zip(regs_name, regs_data):
-            regs[name] = value
-        return regs
+        return dict(zip(regs_name, regs_data))
 
     @staticmethod
     def is_user_regs(regs):
@@ -93062,9 +93022,8 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
 
         filters = iter(self.ktask.kseccomp.iter_filters(task_info))
         for i in ProgressBar(range(task_info.filter_count), desc="filter", disable=self.args.quiet):
-            try:
-                filter_info = next(filters)
-            except StopIteration:
+            filter_info = next(filters, None)
+            if filter_info is None:
                 break
             self.out.append("")
             self.out.append(
@@ -95787,8 +95746,7 @@ class KernelBlockDevicesCommand(GenericCommand, BufferingOutput):
 
             def gen():
                 cs = "abcdefghijklmnopqrstuvwxyz"
-                for c in cs:
-                    yield c
+                yield from cs
                 for c1 in cs:
                     for c2 in cs:
                         yield c1 + c2
@@ -103953,8 +103911,7 @@ class KernelSearchCodePtrCommand(GenericCommand, BufferingOutput):
             return True
 
         valid = False
-        if depth not in self.invalid_addrs:
-            self.invalid_addrs[depth] = set()
+        self.invalid_addrs.setdefault(depth, set())
 
         for offset in range(0, max_range + current_arch.ptrsize, current_arch.ptrsize):
             # align to 32bit / 64bit
@@ -104571,8 +104528,7 @@ class KernelDmesgLegacyRing(KernelDmesgRing):
         offsets.setdefault("len", 8)
         offsets.setdefault("text_len", 10)
         caller_hint = offsets.get("caller_id") is not None or Ksym.get_addr("print_caller") is not None
-        if "caller_id" not in offsets:
-            offsets["caller_id"] = 16
+        offsets.setdefault("caller_id", 16)
         candidates = ((16, 4), (16, 8), (20, 4), (24, 8))
         scored = []
         for header_size, alignment in candidates:
@@ -106572,7 +106528,7 @@ class GdtInfoCommand(GenericCommand, BufferingOutput):
                 ti = (v >> 2) & 0b1
                 index = int(v >> 3)
                 if v & ~0b11 != 0 and ti == ldt:
-                    regs[index] = regs.get(index, []) + [k]
+                    regs.setdefault(index, []).append(k)
         return regs
 
     def print_entries(self, entries, segm_desc=None, skip_null=False, ldt=False):
@@ -151524,7 +151480,7 @@ class DiffOutputColordiffCommand(DiffOutputCommand):
     def make_diff(self, path1, path2):
         option = Config.get("diffo.colordiff_option")
         cmd = [self.colordiff] + shlex.split(option) + ["--", path1, path2]
-        result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True)
+        result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
         return result.stdout.rstrip("\n")
 
     @Decorator.parse_args
@@ -151588,7 +151544,7 @@ class DiffOutputGitDiffCommand(DiffOutputCommand):
 
     def make_diff(self, path1, path2):
         cmd = [self.git, "diff", "--no-index", "--color=always", "--", path1, path2]
-        result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True)
+        result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
         return result.stdout.rstrip("\n")
 
     @Decorator.parse_args
@@ -152561,15 +152517,15 @@ class KernelSlub:
                     found = False
 
                 # Occurrences of non-negative small integers are stochastically rare
-                elif sum([0 < x < 0x10_0000 for x in seen]) >= 3:
+                elif sum(0 < x < 0x10_0000 for x in seen) >= 3:
                     found = False
 
                 # Occurrences of big integers are stochastically rare
-                elif sum([0xffff_0000_0000_0000 < x <= 0xffff_ffff_ffff_ffff for x in seen]) >= 3:
+                elif sum(0xffff_0000_0000_0000 < x <= 0xffff_ffff_ffff_ffff for x in seen) >= 3:
                     found = False
 
                 # Occurrences of 0xXXXX000 are stochastically rare
-                elif sum([x and (x & 0xfff) == 0 for x in seen]) >= 3:
+                elif sum(x and (x & 0xfff) == 0 for x in seen) >= 3:
                     found = False
 
             if found:
@@ -153770,8 +153726,7 @@ class KernelSlub:
         if not self.sheaves_enabled:
             return
 
-        if "node_barn" not in kmem_cache:
-            kmem_cache["node_barn"] = []
+        kmem_cache.setdefault("node_barn", [])
 
         def read_link_list(addr):
             seen = []
@@ -153894,8 +153849,7 @@ class KernelSlub:
         if not self.sheaves_enabled:
             return
 
-        if "cpu_sheaves" not in kmem_cache:
-            kmem_cache["cpu_sheaves"] = {}
+        kmem_cache.setdefault("cpu_sheaves", {})
 
         # cpu_sheaves
         kmem_cache["cpu_sheaves"][cpu] = {}
@@ -158584,12 +158538,9 @@ class KmemCacheAliasCommand(GenericCommand, BufferingOutput):
                     phys_id = name
                 else:
                     phys_id = info["alias"]
-            if phys_id not in merged_groups:
-                merged_groups[phys_id] = []
-
             entry = info.copy()
             entry["logical_name"] = info["name"]
-            merged_groups[phys_id].append(entry)
+            merged_groups.setdefault(phys_id, []).append(entry)
 
         # list keys
         if self.args.names:
@@ -160275,7 +160226,7 @@ class KernelPipeCommand(GenericCommand, BufferingOutput):
 
         inodes = {}
         for file, inode in pipe_files:
-            inodes[inode] = inodes.get(inode, []) + [file]
+            inodes.setdefault(inode, []).append(file)
 
         for inode, files in inodes.items():
             if self.args.inode_filter and inode not in self.args.inode_filter:
@@ -161393,10 +161344,7 @@ class KernelDeviceIOCommand(GenericCommand, BufferingOutput):
                 self.out.extend("Incomplete: {:s}".format(reason) for reason in self.incomplete)
                 continue
 
-            if resources:
-                name_width = max(len(res[3]) for res in resources)
-            else:
-                name_width = 4
+            name_width = max((len(res[3]) for res in resources), default=4)
             if title == "I/O-port":
                 fmt = "{:18s} {:17s} {:{:d}s} {:s}"
                 legend = ["resource", "I/O address", "name", name_width, "flags"]
@@ -163070,7 +163018,7 @@ class KtypesLoadCommand(KtypesCommand):
                 file.write(content)
             cmd = options + [source_path, "-o", temp_obj]
             info(" ".join(shlex.quote(arg) for arg in cmd))
-            result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True)
+            result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
             if result.returncode != 0:
                 err("Failed to compile kernel types: {:s}".format(result.stdout.strip()))
                 return None
@@ -163194,10 +163142,8 @@ class Ksym:
 
         @staticmethod
         def remove():
-            try:
+            with contextlib.suppress(FileNotFoundError):
                 os.remove(Ksym.Config.name())
-            except FileNotFoundError:
-                pass
             return
 
         @staticmethod
@@ -164683,7 +164629,7 @@ class Ksym:
                     ranges.append((low, high))
 
                 if current_arch.arch == "RISCV":
-                    head = min(kallsyms_map.get("_start", [start]))
+                    head = min(kallsyms_map.get("_start", []), default=start)
                     head_end = start
                     if "_end" not in kallsyms_map and low is not None and high is not None and low < high:
                         head_end = min(head_end, low)
@@ -168842,7 +168788,7 @@ class CageCommand(GenericCommand, BufferingOutput):
         if trusted_space_high is None and candidates:
             trusted_space_high = candidates[6]
         # Traverse in reverse order; the output is reversed below.
-        for entry in maps[::-1]:
+        for entry in reversed(maps):
             # location filtering
             if args.location is not None:
                 if args.location < entry.page_start or entry.page_end <= args.location:
@@ -170724,8 +170670,8 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
             self.out.append("SlotSpanMetadata* global_empty_slot_span_ring_[{:4d}]:".format(
                 ring_len,
             ))
-            for i in range(len(root.global_empty_slot_span_ring_)):
-                colored_slot_span = self.C(root.global_empty_slot_span_ring_[i])
+            for i, slot_span in enumerate(root.global_empty_slot_span_ring_):
+                colored_slot_span = self.C(slot_span)
                 self.out.append("    global_empty_slot_span_ring_[{:4d}]:                         {:s}".format(
                     i, colored_slot_span,
                 ))
@@ -172243,8 +172189,7 @@ class JemallocBase:
 
     def table_entry(self, table):
         # the entry of the newest version that is not newer than the target
-        older = [x for x in table if x <= self.version]
-        return table[max(older) if older else min(table)]
+        return table[max((x for x in table if x <= self.version), default=min(table))]
 
     def read_bin_info(self, fields):
         """Return [(reg_interval, fields...)] of arena_bin_info[] (v3/v4) if debug types are available, or None."""
@@ -174959,7 +174904,7 @@ class UclibcNgVisualHeapCommand(UclibcNgHeapDumpCommand, BufferingOutput):
                 else:
                     sz = str(sz)
                 m = "fastbins[idx={:d},sz={:s}][{:s}/{:d}]".format(fastbin_idx, sz, pos, len(fastbin_list))
-                self.bins_dict_for_address[address] = self.bins_dict_for_address.get(address, []) + [m]
+                self.bins_dict_for_address.setdefault(address, []).append(m)
         for smallbin_idx, smallbin_list in self.bins_info["small_bins"].items():
             position_table = GefUtil.make_position_table(smallbin_list)
             for address in smallbin_list:
@@ -174973,7 +174918,7 @@ class UclibcNgVisualHeapCommand(UclibcNgHeapDumpCommand, BufferingOutput):
                     else:
                         sz = size
                     m = "smallbins[idx={:d},sz={:s}][{:s}/{:d}]".format(smallbin_idx, sz, pos, len(smallbin_list))
-                self.bins_dict_for_address[address] = self.bins_dict_for_address.get(address, []) + [m]
+                self.bins_dict_for_address.setdefault(address, []).append(m)
         for largebin_idx, largebin_list in self.bins_info["large_bins"].items():
             position_table = GefUtil.make_position_table(largebin_list)
             for address in largebin_list:
@@ -174986,7 +174931,7 @@ class UclibcNgVisualHeapCommand(UclibcNgHeapDumpCommand, BufferingOutput):
                 m = "largebins[idx={:d},sz={:s}][{:s}/{:d}]".format(
                     self.NSMALLBINS + largebin_idx, sz, pos, len(largebin_list),
                 )
-                self.bins_dict_for_address[address] = self.bins_dict_for_address.get(address, []) + [m]
+                self.bins_dict_for_address.setdefault(address, []).append(m)
         return
 
     def get_bins_info(self, malloc_state, address):
@@ -176621,7 +176566,7 @@ class OpteeTaDumpMemoryCommand(OpteeTaDumpCommand):
                 # goto next
                 current = read_int_from_memory(current + offsetof_link)
 
-            width = max([len(taa.hint) for taa in taa_ctx_list] + [0])
+            width = max((len(taa.hint) for taa in taa_ctx_list), default=0)
             fmt = "{:10s}  {:36s}  {:{:d}s}  {:10s}  {:10s}  {:s}"
             legend = ["tee_ta_ctx", "uuid", "hint", width, "ops", "ref_count", "flags"]
             self.out.append(GefUtil.make_legend(fmt.format(*legend)))
@@ -180693,7 +180638,7 @@ class PageTable(BufferingOutput):
         if self.args.trace == []:
             return False
         for tr in self.args.trace:
-            if va_start <= tr and tr < va_end:
+            if va_start <= tr < va_end:
                 return False
         return True
 
@@ -185601,13 +185546,10 @@ class KernelVMMapCommand(GenericCommand, BufferingOutput):
             return
 
         # filtering
-        new_regions = {}
-        for key, r in self.regions.items():
-            if any(r.addr_start <= a < r.addr_end for a in self.args.address_filter):
-                new_regions[key] = r
-
-        # replace
-        self.regions = new_regions
+        self.regions = {
+            key: r for key, r in self.regions.items()
+            if any(r.addr_start <= a < r.addr_end for a in self.args.address_filter)
+        }
         return
 
     def get_regions(self):
@@ -185919,14 +185861,7 @@ class KernelVMMapCommand(GenericCommand, BufferingOutput):
         kstack_size = Kernel.task().get_kstack_size()
         if kstack_size is None:
             kstacks = sorted(set(kstacks))
-            diffs = []
-            for i in range(len(kstacks) - 1):
-                diff = kstacks[i + 1] - kstacks[i]
-                diffs.append(diff)
-            if len(diffs) == 0:
-                kstack_size = get_pagesize() *2
-            else:
-                kstack_size = min(diffs)
+            kstack_size = min((b - a for a, b in zip(kstacks, kstacks[1:])), default=get_pagesize() * 2)
 
         # kstack
         for line in res.splitlines():
@@ -186278,7 +186213,7 @@ class KernelVMMapCommand(GenericCommand, BufferingOutput):
         ff1000 = b"\xff" * page_size
         cc1000 = b"\xcc" * page_size
 
-        for _key, r in self.regions.copy().items():
+        for r in self.regions.copy().values():
             if r.description != "":
                 continue
             if r.size >= page_size * 0x10:
@@ -195918,14 +195853,12 @@ class KernelRefsCommand(GenericCommand, BufferingOutput):
                     if m > 0:
                         data = read_memory(sub, m, safe=True)
                         if data is not None:
-                            for hit in self.scan_block(sub, data, label):
-                                yield hit
+                            yield from self.scan_block(sub, data, label)
                     sub = next_page
                 bar.update(n)
                 pos += n
                 continue
-            for hit in self.scan_block(pos, data, label):
-                yield hit
+            yield from self.scan_block(pos, data, label)
             bar.update(n)
             pos += n
         return
@@ -196942,11 +196875,7 @@ class KernelLsmCommand(GenericCommand, BufferingOutput):
         # the `lsm` member was added at v4.12, which widens `struct security_hook_list`.
         # Each LSM registers its hooks from one static array, so the distance between the neighboring nodes is the size of the struct.
         sorted_nodes = sorted(nodes_seen)
-        gaps = [b - a for a, b in zip(sorted_nodes, sorted_nodes[1:]) if b > a]
-        if gaps:
-            node_size = min(gaps)
-        else:
-            node_size = None
+        node_size = min((b - a for a, b in zip(sorted_nodes, sorted_nodes[1:]) if b > a), default=None)
         has_lsm = node_size is not None and node_size >= (off_head + 3) * ptrsize
         if self.args.meta and node_size is not None:
             self.quiet_info_add_out("sizeof(security_hook_list): {:#x}{:s}".format(node_size, "" if has_lsm else " (no `lsm` member)"))
@@ -197020,10 +196949,7 @@ class KernelLsmCommand(GenericCommand, BufferingOutput):
 
         addr = Ksym.get_addr("security_ops")
         if addr is None:
-            counter = {}
-            for x in candidates:
-                counter[x] = counter.get(x, 0) + 1
-            for x, _count in sorted(counter.items(), key=lambda kv: -kv[1]):
+            for x, _ in collections.Counter(candidates).most_common():
                 if self.validate_security_ops(x):
                     addr = x
                     break
@@ -200925,10 +200851,7 @@ class FrequencyAnalysisCommand(GenericCommand, BufferingOutput):
         col_labels = "   " + " ".join(f"{x:X}" for x in range(16))
         self.out.append(col_labels)
 
-        if h:
-            vmax = max(h)
-        else:
-            vmax = 0
+        vmax = max(h, default=0)
         for hi in range(16):
             line = [f"{hi:X} "]
             for lo in range(16):
@@ -202232,7 +202155,7 @@ class GefPyObjListCommand(GenericCommand, BufferingOutput):
                         decorators.append("{!s} {:s}.{:s}".format(type(member), gobj, name))
                 if gobj.endswith("Command"):
                     command_classes.append("{!s} {!s}".format(t, gobj))
-                elif gobj.endswith("Breakpoint") or gobj.endswith("Watchpoint"):
+                elif gobj.endswith(("Breakpoint", "Watchpoint")):
                     bp_classes.append("{!s} {!s}".format(t, gobj))
                 elif obj in arch_list:
                     arch_classes.append("{!s} {!s}".format(t, gobj))
