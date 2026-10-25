@@ -492,6 +492,12 @@ For a comprehensive list and additional details, see [docs/SUPPORTED-MODE.md](do
         - Get and extract the upstream source from https://github.com/jeffhammond/sfmalloc
         - Build with `cd sfmalloc && make CXX='g++ -std=gnu++03' DEFS='-D_REENTRANT -include stddef.h'`.
         - Run your test program with `LD_PRELOAD=/PATH/TO/libsfmalloc.so ./a.out`.
+- `rpmalloc-heap-dump`: dumps rpmalloc free-list.
+    - ![](images/rpmalloc-heap-dump.png)
+    - How to test (x64):
+        - Get and extract the upstream source from https://github.com/mjansson/rpmalloc
+        - Build with `cd rpmalloc && git switch main && python3 configure.py && ninja`.
+        - Run your test program with `LD_PRELOAD=/PATH/TO/bin/linux/release/librpmalloc.so ./a.out`.
 - `optee-bget-dump`: dumps bget allocator of OPTEE-Trusted-App.
     - ![](images/optee-bget-dump.png)
 - `v8`: displays v8 (Chromium and `d8`) tagged object.

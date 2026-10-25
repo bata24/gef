@@ -172547,6 +172547,641 @@ class SfmallocHeapDumpCommand(GenericCommand, BufferingOutput):
         return
 
 
+@register_command
+class RpmallocHeapDumpCommand(GenericCommand, BufferingOutput):
+    """rpmalloc heap free-list viewer."""
+
+    _cmdline_ = "rpmalloc-heap-dump"
+    _category_ = "05-c. Heap - Other"
+
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("-hh", "--help-simple", action="store_true", help="show help without ASCII diagram.")
+    parser.add_argument("--heap", type=AddressUtil.parse_address, help="use specific address for heap_t.")
+    parser.add_argument("-a", "--all", action="store_true", help="dump heap_t of all threads.")
+    parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
+    parser.add_argument("-v", "--verbose", action="store_true", help="display also empty lists.")
+    _syntax_ = parser.format_help()
+
+    _note_ = [
+        "Simplified rpmalloc v1.4.x structure:",
+        "",
+        "+-heap_t(_memory_thread_heap)-+         +-block-+   +-block-+",
+        "| owner_thread                |    +--->| next  |-->| next  |-->NULL",
+        "| size_class[cl]              |    |    +-------+   +-------+",
+        "|   free_list                 |----+",
+        "|   partial_span              |-------->span_t <-> span_t <-> ...",
+        "|   cache                     |-------->span_t (free span)",
+        "| span_cache.span[]           |-------->span_t, span_t, ... (free spans)",
+        "| span_free_deferred          |-------->span_t --> span_t --> ... (freed by other threads)",
+        "| span_reserve                |-------->span_t (mapped but unused spans)",
+        "| span_large_cache[i].span[]  |-------->span_t, span_t, ... (free spans of i+2 spans)",
+        "+-----------------------------+",
+        "",
+        "+-span_t (64KiB aligned)-+         +-block-+   +-block-+",
+        "| free_list              |-------->| next  |-->| next  |-->NULL",
+        "| block_count            |         +-------+   +-------+",
+        "| size_class             |",
+        "| free_list_limit        |         +-block-+   +-block-+",
+        "| used_count             |    +--->| next  |-->| next  |-->NULL",
+        "| free_list_deferred     |----+    +-------+   +-------+",
+        "| list_size              |",
+        "| block_size             |",
+        "| span_count             |",
+        "| heap, next, prev       |",
+        "+------------------------+",
+        "| blocks                 |",
+        "+------------------------+",
+        "",
+        "Simplified rpmalloc v2.0.x structure:",
+        "",
+        "+-heap_t(global_thread_heap)-+         +-block-+   +-block-+",
+        "| owner_thread               |    +--->| next  |-->| next  |-->NULL",
+        "| local_free[cl]             |----+    +-------+   +-------+",
+        "| page_available[cl]         |-------->page_t <-> page_t <-> ...",
+        "| page_free[type]            |-------->page_t --> page_t --> ... (free pages)",
+        "| thread_free[type]          |-------->block --> block --> ... (freed by other threads)",
+        "| span_partial[type]         |-------->span_t (has uninitialized pages)",
+        "| span_used[type]            |-------->span_t --> span_t --> ...",
+        "+----------------------------+",
+        "",
+        "+-span_t (256MiB aligned)-+    +-page_t------------+         +-block-+   +-block-+",
+        "| page_t (page 0)         |    | size_class        |    +--->| next  |-->| next  |-->NULL",
+        "| heap                    |    | block_size        |    |    +-------+   +-------+",
+        "| page_address_mask       |    | block_count       |    |",
+        "| page_initialized        |    | block_initialized |    |    +-block-+   +-block-+",
+        "| page_count              |    | block_used        |    | +->| next  |-->| next  |-->NULL",
+        "| page_size               |    | local_free_count  |    | |  +-------+   +-------+",
+        "| next                    |    | local_free        |----+ |",
+        "+-------------------------+    | heap, next, prev  |      |",
+        "| page 1                  |    | thread_free       |------+ (block index | count << 32)",
+        "| ...                     |    +-------------------+",
+        "+-------------------------+    | blocks            |",
+        "                               +-------------------+",
+        "",
+        "* The heap is resolved from `global_thread_heap` (v2) or `_memory_thread_heap` (v1) if symbols are available.",
+        "* Without symbols, the TLS near the thread pointer is scanned for a heap_t owned by the thread.",
+        "* `--heap` can be used when the scan rejects a corrupted heap_t.",
+        "* Heaps of exited threads are not reachable from any thread and are not displayed.",
+        "* v1: allocation pops `size_class[cl].free_list`, then takes the free list of the first partial span.",
+        "* v1: `free_list_deferred` holds blocks freed by other threads, and `list_size` is its length.",
+        "* v2: allocation pops `local_free[cl]`, then takes `local_free` of the first available page.",
+        "* v2: blocks freed by other threads go to `thread_free` of the page, or of the heap if the page is full.",
+        "* Supported versions are v1.4.1-v1.4.5 and v2.0.0-v2.0.1 with the default build configuration.",
+    ]
+    _note_ = "\n".join(_note_)
+
+    # rpmalloc.c (v1.4.x)
+    V1_SIZE_CLASS_COUNT = 126
+    V1_LARGE_CLASS_COUNT = 63
+    V1_SPAN_SIZE = 0x10000
+    V1_SPAN_HEADER_SIZE = 0x80
+    V1_LAYOUTS = [
+        # name, MAX_THREAD_SPAN_CACHE, MAX_THREAD_SPAN_LARGE_CACHE
+        ("v1.4.3-v1.4.5", 400, 100),
+        ("v1.4.1-v1.4.2", 256, 64),
+    ]
+
+    # rpmalloc.c (v2.0.x)
+    V2_SIZE_CLASS_COUNT = 109
+    V2_SPAN_SIZE = 0x1000_0000
+    V2_PAGE_HEADER_SIZE = 0x80
+    V2_HEAP_ALIGNMENT = 0x80
+    V2_PAGE_TYPES = [
+        ("SMALL", 0x10000),
+        ("MEDIUM_SMALL", 0x100000),
+        ("MEDIUM_LARGE", 0x400000),
+        ("LARGE", 0x1000000),
+        ("HUGE", None),
+    ]
+    v2_class_to_size = [
+        0x10, 0x10, 0x20, 0x30, 0x40, 0x50, 0x60, 0x70, 0x80, 0x90,
+        0xa0, 0xb0, 0xc0, 0xd0, 0xe0, 0xf0, 0x100, 0x110, 0x120, 0x130,
+        0x140, 0x150, 0x160, 0x170, 0x180, 0x190, 0x1a0, 0x1b0, 0x1c0, 0x1d0,
+        0x1e0, 0x1f0, 0x200, 0x210, 0x220, 0x230, 0x240, 0x250, 0x260, 0x270,
+        0x280, 0x290, 0x2a0, 0x2b0, 0x2c0, 0x2d0, 0x2e0, 0x2f0, 0x300, 0x310,
+        0x320, 0x330, 0x340, 0x350, 0x360, 0x370, 0x380, 0x390, 0x3a0, 0x3b0,
+        0x3c0, 0x3d0, 0x3e0, 0x3f0, 0x400, 0x500, 0x600, 0x700, 0x800, 0xa00,
+        0xc00, 0xe00, 0x1000, 0x1400, 0x1800, 0x1c00, 0x2000, 0x2800, 0x3000, 0x3800,
+        0x4000, 0x5000, 0x6000, 0x7000, 0x8000, 0xa000, 0xc000, 0xe000, 0x10000, 0x14000,
+        0x18000, 0x1c000, 0x20000, 0x28000, 0x30000, 0x38000, 0x40000, 0x50000, 0x60000, 0x70000,
+        0x80000, 0xa0000, 0xc0000, 0xe0000, 0x100000, 0x140000, 0x180000, 0x1c0000, 0x200000,
+    ]
+
+    def read_span_v1(self, addr):
+        """
+        struct span_t {
+            void* free_list;
+            uint32_t block_count;
+            uint32_t size_class;
+            uint32_t free_list_limit;
+            uint32_t used_count;
+            atomicptr_t free_list_deferred;
+            uint32_t list_size;
+            uint32_t block_size;
+            uint32_t flags;
+            uint32_t span_count;
+            uint32_t total_spans;
+            uint32_t offset_from_master;
+            atomic32_t remaining_spans;
+            uint32_t align_offset;
+            heap_t* heap;
+            span_t* next;
+            span_t* prev;
+        }; // total: 0x58 bytes (x64), 0x44 bytes (x86)
+        """
+        p = "Q" if current_arch.ptrsize == 8 else "I"
+        fmt = Endian.endian_str() + p + "4I" + p + "8I" + p * 3
+        values = struct.unpack(fmt, read_memory(addr, struct.calcsize(fmt)))
+        names = [
+            "free_list", "block_count", "size_class", "free_list_limit", "used_count", "free_list_deferred", "list_size",
+            "block_size", "flags", "span_count", "total_spans", "offset_from_master", "remaining_spans", "align_offset",
+            "heap", "next", "prev",
+        ]
+        dic = {"addr": addr, **dict(zip(names, values))}
+        span = GefUtil.dict_to_namedtuple("SpanV1", dic)
+        return span
+
+    def read_heap_v1(self, addr, layout):
+        """
+        struct heap_t {
+            uintptr_t owner_thread;
+            struct heap_size_class_t {
+                void* free_list;
+                span_t* partial_span;
+                span_t* cache;
+            } size_class[SIZE_CLASS_COUNT];
+            struct span_cache_t {
+                size_t count;
+                span_t* span[MAX_THREAD_SPAN_CACHE];
+            } span_cache;
+            atomicptr_t span_free_deferred;
+            size_t full_span_count;
+            span_t* span_reserve;
+            span_t* span_reserve_master;
+            uint32_t spans_reserved;
+            atomic32_t child_count;
+            heap_t* next_heap;
+            heap_t* next_orphan;
+            int32_t id;
+            int finalize;
+            heap_t* master_heap;
+            struct span_large_cache_t {
+                size_t count;
+                span_t* span[MAX_THREAD_SPAN_LARGE_CACHE];
+            } span_large_cache[LARGE_CLASS_COUNT - 1];
+            ...
+        };
+        """
+        name, max_cache, max_large_cache = layout
+        n = self.V1_SIZE_CLASS_COUNT
+        p = "Q" if current_arch.ptrsize == 8 else "I"
+        fmt = Endian.endian_str() + p * (2 + n * 3 + max_cache) + p * 4 + "2I" + p * 2 + "2i" + p
+        fmt += p * (1 + max_large_cache) * (self.V1_LARGE_CLASS_COUNT - 1)
+        values = struct.unpack(fmt, read_memory(addr, struct.calcsize(fmt)))
+        dic = {}
+        dic["addr"] = addr
+        dic["version"] = name
+        dic["owner_thread"] = values[0]
+        dic["size_class"] = [values[1 + i * 3:4 + i * 3] for i in range(n)]
+        i = 1 + n * 3
+        dic["span_cache"] = (values[i], values[i + 1:i + 1 + max_cache])
+        i += 1 + max_cache
+        (dic["span_free_deferred"], dic["full_span_count"], dic["span_reserve"], dic["span_reserve_master"],
+         dic["spans_reserved"], dic["child_count"], dic["next_heap"], dic["next_orphan"],
+         dic["id"], dic["finalize"], dic["master_heap"]) = values[i:i + 11]
+        i += 11
+        dic["span_large_cache"] = []
+        for _ in range(self.V1_LARGE_CLASS_COUNT - 1):
+            dic["span_large_cache"].append((values[i], values[i + 1:i + 1 + max_large_cache]))
+            i += 1 + max_large_cache
+        dic["max_cache"] = max_cache
+        dic["max_large_cache"] = max_large_cache
+        heap = GefUtil.dict_to_namedtuple("HeapV1", dic)
+        return heap
+
+    def is_heap_v1(self, heap):
+        # heaps are carved after the span_t header of a mapped span
+        sizeof_span = current_arch.ptrsize * 5 + 0x30
+        if heap.id <= 0 or not 0 <= heap.finalize < 0x100 or (heap.addr - sizeof_span) % 0x10:
+            return False
+        if heap.master_heap and (heap.master_heap - sizeof_span) % self.V1_SPAN_SIZE:
+            return False
+        count, spans = heap.span_cache
+        if count > heap.max_cache:
+            return False
+        spans = [heap.span_reserve, heap.span_reserve_master, *spans[:count]]
+        for count, large_spans in heap.span_large_cache:
+            if count > heap.max_large_cache:
+                return False
+            spans += large_spans[:count]
+        for free_list, partial_span, cache in heap.size_class:
+            if free_list and free_list % self.V1_SPAN_SIZE < self.V1_SPAN_HEADER_SIZE:
+                return False
+            spans += [partial_span, cache]
+        return all(span % self.V1_SPAN_SIZE == 0 for span in spans)
+
+    def read_page_v2(self, addr):
+        """
+        struct page_t {
+            uint32_t size_class;
+            uint32_t block_size;
+            uint32_t block_count;
+            uint32_t block_initialized;
+            uint32_t block_used;
+            page_type_t page_type;
+            uint32_t flags; // is_full:1, is_free:1, is_zero:1, ...
+            uint32_t local_free_count;
+            block_t* local_free;
+            heap_t* heap;
+            page_t* next;
+            page_t* prev;
+            atomic_ullong thread_free; // block index in the low 32 bits, list count in the high 32 bits
+        }; // total: 0x48 bytes (x64), 0x38 bytes (x86)
+        """
+        p = "Q" if current_arch.ptrsize == 8 else "I"
+        fmt = Endian.endian_str() + "8I" + p * 4 + "Q"
+        values = struct.unpack(fmt, read_memory(addr, struct.calcsize(fmt)))
+        names = [
+            "size_class", "block_size", "block_count", "block_initialized", "block_used", "page_type", "flags",
+            "local_free_count", "local_free", "heap", "next", "prev", "thread_free",
+        ]
+        dic = {"addr": addr, **dict(zip(names, values))}
+        page = GefUtil.dict_to_namedtuple("PageV2", dic)
+        return page
+
+    def read_span_v2(self, addr):
+        """
+        struct span_t {
+            page_t page;
+            heap_t* heap;
+            uintptr_t page_address_mask;
+            uint32_t page_initialized;
+            uint32_t page_count;
+            uint32_t page_size;
+            page_type_t page_type;
+            uint32_t offset;
+            uint64_t mapped_size;
+            span_t* next;
+        }; // total: 0x80 bytes (x64), 0x60 bytes (x86), 0x68 bytes (ARM)
+        """
+        p = "Q" if current_arch.ptrsize == 8 else "I"
+        # uint64_t is aligned to 4 bytes only on x86-32
+        padding = "" if is_x86_32() else "4x"
+        fmt = Endian.endian_str() + "8I" + p * 4 + "Q" + p * 2 + "5I" + padding + "Q" + p
+        values = struct.unpack(fmt, read_memory(addr, struct.calcsize(fmt)))
+        names = ["heap", "page_address_mask", "page_initialized", "page_count", "page_size", "page_type", "offset"]
+        dic = {"addr": addr, **dict(zip(names, values[13:20]))}
+        dic["next"] = values[-1]
+        span = GefUtil.dict_to_namedtuple("SpanV2", dic)
+        return span
+
+    def read_heap_v2(self, addr):
+        """
+        struct heap_t {
+            uintptr_t owner_thread;
+            block_t* local_free[SIZE_CLASS_COUNT];
+            page_t* page_available[SIZE_CLASS_COUNT];
+            page_t* page_free[4];
+            uint32_t page_free_commit_count[4];
+            atomic_uintptr_t thread_free[4];
+            span_t* span_partial[4];
+            span_t* span_used[5];
+            heap_t* next;
+            heap_t* prev;
+            uint32_t id;
+            uint32_t finalize;
+            uint32_t offset;
+            size_t mapped_size;
+            ...
+        };
+        """
+        n = self.V2_SIZE_CLASS_COUNT
+        p = "Q" if current_arch.ptrsize == 8 else "I"
+        fmt = Endian.endian_str() + p * (1 + n * 2 + 4) + "4I" + p * 15 + "2I"
+        values = struct.unpack(fmt, read_memory(addr, struct.calcsize(fmt)))
+        dic = {}
+        dic["addr"] = addr
+        dic["version"] = "v2.0.0-v2.0.1"
+        dic["owner_thread"] = values[0]
+        dic["local_free"] = values[1:1 + n]
+        dic["page_available"] = values[1 + n:1 + n * 2]
+        i = 1 + n * 2
+        dic["page_free"] = values[i:i + 4]
+        dic["page_free_commit_count"] = values[i + 4:i + 8]
+        dic["thread_free"] = values[i + 8:i + 12]
+        dic["span_partial"] = values[i + 12:i + 16]
+        dic["span_used"] = values[i + 16:i + 21]
+        dic["next"], dic["prev"], dic["id"], dic["finalize"] = values[i + 21:]
+        heap = GefUtil.dict_to_namedtuple("HeapV2", dic)
+        return heap
+
+    def is_heap_v2(self, heap):
+        # heaps are carved from a page aligned mapping by HEAP_ALIGNMENT
+        if heap.id == 0 or heap.finalize >= 0x100 or heap.addr % self.V2_HEAP_ALIGNMENT:
+            return False
+        if any(x % self.V2_HEAP_ALIGNMENT for x in (heap.next, heap.prev)):
+            return False
+        if any(page % 0x10000 for page in heap.page_available + heap.page_free):
+            return False
+        return all(span % self.V2_SPAN_SIZE == 0 for span in heap.span_partial + heap.span_used)
+
+    def read_heap(self, addr):
+        try:
+            heap = self.read_heap_v2(addr)
+            if self.is_heap_v2(heap):
+                return heap
+        except gdb.MemoryError:
+            pass
+        for layout in self.V1_LAYOUTS:
+            try:
+                heap = self.read_heap_v1(addr, layout)
+                if self.is_heap_v1(heap):
+                    return heap
+            except gdb.MemoryError:
+                pass
+        return None
+
+    def get_heap_heuristic(self):
+        tls = current_arch.get_tls()
+        if not tls:
+            return None
+        # the TLS pointer to the heap is placed in the static TLS, below (x86) or above (others) the thread pointer
+        lower = ProcessMap.process_lookup_address(tls - 1)
+        upper = ProcessMap.process_lookup_address(tls)
+        start = max(lower.page_start, tls - 0x10000) if lower else tls
+        end = min(upper.page_end, tls + 0x10000) if upper else tls
+        ptrsize = current_arch.ptrsize
+        words = slice_unpack(read_memory(start, end - start), ptrsize)
+        for addr in sorted(range(start, end, ptrsize), key=lambda x: abs(x - tls)):
+            value = words[(addr - start) // ptrsize]
+            if value == 0 or value == tls or value % ptrsize:
+                continue
+            # heap_t.owner_thread is the thread pointer, or the address of the TLS variable on some architectures
+            if read_int_from_memory(value, safe=True) not in (tls, addr):
+                continue
+            heap = self.read_heap(value)
+            if heap:
+                return heap
+        return None
+
+    def get_heap(self):
+        for name in ("global_thread_heap", "_memory_thread_heap"):
+            try:
+                heap = self.read_heap(read_int_from_memory(AddressUtil.parse_address("&" + name)))
+                if heap:
+                    return heap
+            except gdb.error:
+                pass
+        return self.get_heap_heuristic()
+
+    def get_heap_list(self):
+        if self.args.all:
+            threads = None
+        else:
+            threads = [gdb.selected_thread()]
+        heap_list = []
+        with ContextManager.threads(threads) as threads:
+            for thread in threads:
+                heap = self.get_heap()
+                if heap:
+                    heap_list.append((thread.num, heap))
+        return heap_list
+
+    def get_list(self, head, alignment, read_next):
+        nodes = []
+        cur = head
+        while cur:
+            if cur in nodes:
+                return nodes, "{:#x} (loop detected)".format(cur)
+            if cur % alignment or not is_valid_addr(cur):
+                return nodes, "{:#x} (corrupted)".format(cur)
+            nodes.append(cur)
+            cur = read_next(cur)
+        return nodes, None
+
+    def dump_freelist(self, title, head, num=None):
+        freed_address_color = Config.get("theme.heap_chunk_address_freed")
+        corrupted_msg_color = Config.get("theme.heap_corrupted_msg")
+
+        self.out.append(title)
+        cur = head
+        seen = set()
+        while cur:
+            if cur in seen:
+                self.out.append(" -> {:s}".format(Color.colorify("{:#x} (loop detected)".format(cur), corrupted_msg_color)))
+                return
+            seen.add(cur)
+            next_cur = read_int_from_memory(cur, safe=True)
+            if next_cur is None:
+                self.out.append(" -> {:s}".format(Color.colorify("{:#x} (corrupted)".format(cur), corrupted_msg_color)))
+                return
+            self.out.append(" -> {:s}".format(Color.colorify_hex(cur, freed_address_color)))
+            cur = next_cur
+        if num is None or num == len(seen):
+            self.out.append(" -> 0x0 (num: {:#x})".format(len(seen)))
+        else:
+            self.out.append(" -> 0x0 (num: {:#x}, expected: {:#x})".format(len(seen), num))
+        return
+
+    def dump_error(self, error):
+        corrupted_msg_color = Config.get("theme.heap_corrupted_msg")
+        if error:
+            self.out.append(" -> {:s}".format(Color.colorify(error, corrupted_msg_color)))
+        return
+
+    def dump_span_v1(self, addr):
+        span = self.read_span_v1(addr)
+        start = addr + self.V1_SPAN_HEADER_SIZE
+        fmt = "span @{:#x} (blocks: {:#x}-{:#x}, used_count: {:#x}, free_list_limit: {:#x}, block_count: {:#x})"
+        self.out.append(fmt.format(
+            addr, start, start + span.block_size * span.block_count, span.used_count, span.free_list_limit, span.block_count,
+        ))
+        if span.free_list or self.args.verbose:
+            self.dump_freelist("free_list:", span.free_list)
+        if span.free_list_deferred == (1 << current_arch.ptrsize * 8) - 1:
+            self.out.append("free_list_deferred: (locked by another thread)")
+        elif span.free_list_deferred or self.args.verbose:
+            self.dump_freelist("free_list_deferred:", span.free_list_deferred, span.list_size)
+        return
+
+    def dump_spans_v1(self, title, spans):
+        freed_address_color = Config.get("theme.heap_chunk_address_freed")
+
+        self.out.append(title)
+        for addr in spans:
+            span = self.read_span_v1(addr)
+            self.out.append(" -> span @{:s} (size_class: {:#x}, span_count: {:#x})".format(
+                Color.colorify_hex(addr, freed_address_color), span.size_class, span.span_count,
+            ))
+        return
+
+    def dump_heap_v1(self, heap):
+        ptrsize = current_arch.ptrsize
+        offset_span_cache = ptrsize * (1 + self.V1_SIZE_CLASS_COUNT * 3)
+        offset_span_free_deferred = offset_span_cache + ptrsize * (1 + heap.max_cache)
+        offset_span_reserve = offset_span_free_deferred + ptrsize * 2
+        offset_span_large_cache = offset_span_free_deferred + ptrsize * 7 + 0x10
+
+        self.out.append("version: {:s}, owner_thread: {:#x}, id: {:#x}, finalize: {:#x}, full_span_count: {:#x}".format(
+            heap.version, heap.owner_thread, heap.id, heap.finalize, heap.full_span_count,
+        ))
+        for cl, (free_list, partial_span, cache) in enumerate(heap.size_class):
+            if not self.args.verbose and not (free_list or partial_span or cache):
+                continue
+            if cl < 0x41:
+                size = max(cl, 1) * 0x10
+            else:
+                size = 0x400 + (cl - 0x40) * 0x200
+            self.out.append(titlify("size_class[{:#x}] (size: {:#x}) @ {:#x}".format(
+                cl, size, heap.addr + ptrsize * (1 + cl * 3),
+            )))
+            self.dump_freelist("free_list:", free_list)
+            nodes, error = self.get_list(partial_span, self.V1_SPAN_SIZE, lambda x: self.read_span_v1(x).next)
+            for addr in nodes:
+                self.dump_span_v1(addr)
+            self.dump_error(error)
+            if cache or self.args.verbose:
+                self.out.append("cache: {:#x}".format(cache))
+
+        count, spans = heap.span_cache
+        if count or self.args.verbose:
+            self.out.append(titlify("span_cache @ {:#x}".format(heap.addr + offset_span_cache)))
+            self.dump_spans_v1("span (count: {:#x}):".format(count), spans[:count])
+        for i, (count, spans) in enumerate(heap.span_large_cache):
+            if not self.args.verbose and not count:
+                continue
+            self.out.append(titlify("span_large_cache[{:#x}] (span_count: {:#x}) @ {:#x}".format(
+                i, i + 2, heap.addr + offset_span_large_cache + ptrsize * (1 + heap.max_large_cache) * i,
+            )))
+            self.dump_spans_v1("span (count: {:#x}):".format(count), spans[:count])
+
+        if heap.span_free_deferred or self.args.verbose:
+            self.out.append(titlify("span_free_deferred @ {:#x}".format(heap.addr + offset_span_free_deferred)))
+            nodes, error = self.get_list(heap.span_free_deferred, self.V1_SPAN_SIZE, lambda x: self.read_span_v1(x).free_list)
+            self.dump_spans_v1("span_free_deferred:", nodes)
+            self.dump_error(error)
+        if heap.span_reserve or self.args.verbose:
+            self.out.append(titlify("span_reserve @ {:#x}".format(heap.addr + offset_span_reserve)))
+            self.out.append("span_reserve: {:#x} (spans_reserved: {:#x}, span_reserve_master: {:#x})".format(
+                heap.span_reserve, heap.spans_reserved, heap.span_reserve_master,
+            ))
+        return
+
+    def dump_page_v2(self, addr):
+        page = self.read_page_v2(addr)
+        start = addr + self.V2_PAGE_HEADER_SIZE
+        fmt = "page @{:#x} (blocks: {:#x}-{:#x}, block_used: {:#x}, block_initialized: {:#x}, block_count: {:#x})"
+        self.out.append(fmt.format(
+            addr, start, start + page.block_size * page.block_count, page.block_used, page.block_initialized, page.block_count,
+        ))
+        if page.local_free or self.args.verbose:
+            self.dump_freelist("local_free:", page.local_free, page.local_free_count)
+        index, count = page.thread_free & 0xffff_ffff, page.thread_free >> 32
+        if count or self.args.verbose:
+            head = 0
+            if count:
+                head = start + page.block_size * index
+            self.dump_freelist("thread_free (head: {:#x}):".format(index), head, count)
+        return
+
+    def dump_heap_v2(self, heap):
+        freed_address_color = Config.get("theme.heap_chunk_address_freed")
+        ptrsize = current_arch.ptrsize
+
+        self.out.append("version: {:s}, owner_thread: {:#x}, id: {:#x}, finalize: {:#x}".format(
+            heap.version, heap.owner_thread, heap.id, heap.finalize,
+        ))
+        for cl in range(self.V2_SIZE_CLASS_COUNT):
+            local_free, page_available = heap.local_free[cl], heap.page_available[cl]
+            if not self.args.verbose and not (local_free or page_available):
+                continue
+            self.out.append(titlify("size_class[{:#x}] (size: {:#x}) @ {:#x}".format(
+                cl, self.v2_class_to_size[cl], heap.addr + ptrsize * (1 + cl),
+            )))
+            self.dump_freelist("local_free:", local_free)
+            nodes, error = self.get_list(page_available, 0x10000, lambda x: self.read_page_v2(x).next)
+            for addr in nodes:
+                self.dump_page_v2(addr)
+            self.dump_error(error)
+
+        for i, (name, page_size) in enumerate(self.V2_PAGE_TYPES):
+            span_used = heap.span_used[i]
+            if page_size is None:
+                # huge blocks are linked only to first class heaps
+                if span_used or self.args.verbose:
+                    self.out.append(titlify("page_type[{:#x}] {:s}".format(i, name)))
+                    nodes, error = self.get_list(span_used, self.V2_SPAN_SIZE, lambda x: self.read_span_v2(x).next)
+                    self.out.append("span_used:")
+                    for addr in nodes:
+                        span = self.read_span_v2(addr)
+                        self.out.append(" -> span @{:#x} (size: {:#x})".format(addr, span.page_size * span.page_count))
+                    self.dump_error(error)
+                continue
+            page_free, thread_free, span_partial = heap.page_free[i], heap.thread_free[i], heap.span_partial[i]
+            if not self.args.verbose and not (page_free or thread_free or span_partial or span_used):
+                continue
+            self.out.append(titlify("page_type[{:#x}] {:s} (page_size: {:#x})".format(i, name, page_size)))
+            self.out.append("page_free (commit_count: {:#x}):".format(heap.page_free_commit_count[i]))
+            nodes, error = self.get_list(page_free, 0x10000, lambda x: self.read_page_v2(x).next)
+            for addr in nodes:
+                self.out.append(" -> page @{:s}".format(Color.colorify_hex(addr, freed_address_color)))
+            self.dump_error(error)
+            self.dump_freelist("thread_free:", thread_free)
+            if span_partial:
+                span = self.read_span_v2(span_partial)
+                self.out.append("span_partial: {:#x} (page_initialized: {:#x}, page_count: {:#x})".format(
+                    span_partial, span.page_initialized, span.page_count,
+                ))
+            else:
+                self.out.append("span_partial: 0x0")
+            self.out.append("span_used:")
+            nodes, error = self.get_list(span_used, self.V2_SPAN_SIZE, lambda x: self.read_span_v2(x).next)
+            for addr in nodes:
+                self.out.append(" -> span @{:#x}".format(addr))
+            self.dump_error(error)
+        return
+
+    def dump_heap(self, thread_num, heap):
+        self.out.append(titlify("heap @ {:#x} (Thread Id:{:d})".format(heap.addr, thread_num), color="bold", msg_color="bold"))
+        if heap.version.startswith("v1"):
+            self.dump_heap_v1(heap)
+        else:
+            self.dump_heap_v2(heap)
+        return
+
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    def do_invoke(self, args):
+        if args.heap is not None:
+            heap = self.read_heap(args.heap)
+            if heap is None:
+                if is_valid_addr(args.heap):
+                    err("Failed to parse heap_t at {:#x}".format(args.heap))
+                else:
+                    err("Cannot read heap_t at {:#x}".format(args.heap))
+                return
+            heap_list = [(gdb.selected_thread().num, heap)]
+        else:
+            try:
+                heap_list = self.get_heap_list()
+            except gdb.error:
+                err("Cannot read heap_t")
+                return
+            if not heap_list:
+                err("Could not find heap_t")
+                return
+
+        self.out = []
+        for thread_num, heap in heap_list:
+            try:
+                self.dump_heap(thread_num, heap)
+            except gdb.error:
+                self.err_add_out("Cannot read heap_t at {:#x}".format(heap.addr))
+        self.print_output()
+        return
+
+
 class JemallocBase:
     """Common helpers of the jemalloc heap parsers.
     Each parser resolves the structures of its version and returns them in a common form:

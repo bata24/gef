@@ -7610,6 +7610,94 @@ Simplified musl mallocng structure:
                               +-------------------+      +-------------------+
 ```
 
+## `rpmalloc-heap-dump`
+
+rpmalloc heap free-list viewer.
+
+
+### Syntax
+
+```text
+usage: rpmalloc-heap-dump [-h] [-hh] [--heap HEAP] [-a] [-n] [-v]
+
+options:
+  -h, --help          show this help message and exit
+  -hh, --help-simple  show help without ASCII diagram.
+  --heap HEAP         use specific address for heap_t.
+  -a, --all           dump heap_t of all threads.
+  -n, --no-pager      do not use the pager.
+  -v, --verbose       display also empty lists.
+```
+
+### Notes
+
+```text
+Simplified rpmalloc v1.4.x structure:
+
++-heap_t(_memory_thread_heap)-+         +-block-+   +-block-+
+| owner_thread                |    +--->| next  |-->| next  |-->NULL
+| size_class[cl]              |    |    +-------+   +-------+
+|   free_list                 |----+
+|   partial_span              |-------->span_t <-> span_t <-> ...
+|   cache                     |-------->span_t (free span)
+| span_cache.span[]           |-------->span_t, span_t, ... (free spans)
+| span_free_deferred          |-------->span_t --> span_t --> ... (freed by other threads)
+| span_reserve                |-------->span_t (mapped but unused spans)
+| span_large_cache[i].span[]  |-------->span_t, span_t, ... (free spans of i+2 spans)
++-----------------------------+
+
++-span_t (64KiB aligned)-+         +-block-+   +-block-+
+| free_list              |-------->| next  |-->| next  |-->NULL
+| block_count            |         +-------+   +-------+
+| size_class             |
+| free_list_limit        |         +-block-+   +-block-+
+| used_count             |    +--->| next  |-->| next  |-->NULL
+| free_list_deferred     |----+    +-------+   +-------+
+| list_size              |
+| block_size             |
+| span_count             |
+| heap, next, prev       |
++------------------------+
+| blocks                 |
++------------------------+
+
+Simplified rpmalloc v2.0.x structure:
+
++-heap_t(global_thread_heap)-+         +-block-+   +-block-+
+| owner_thread               |    +--->| next  |-->| next  |-->NULL
+| local_free[cl]             |----+    +-------+   +-------+
+| page_available[cl]         |-------->page_t <-> page_t <-> ...
+| page_free[type]            |-------->page_t --> page_t --> ... (free pages)
+| thread_free[type]          |-------->block --> block --> ... (freed by other threads)
+| span_partial[type]         |-------->span_t (has uninitialized pages)
+| span_used[type]            |-------->span_t --> span_t --> ...
++----------------------------+
+
++-span_t (256MiB aligned)-+    +-page_t------------+         +-block-+   +-block-+
+| page_t (page 0)         |    | size_class        |    +--->| next  |-->| next  |-->NULL
+| heap                    |    | block_size        |    |    +-------+   +-------+
+| page_address_mask       |    | block_count       |    |
+| page_initialized        |    | block_initialized |    |    +-block-+   +-block-+
+| page_count              |    | block_used        |    | +->| next  |-->| next  |-->NULL
+| page_size               |    | local_free_count  |    | |  +-------+   +-------+
+| next                    |    | local_free        |----+ |
++-------------------------+    | heap, next, prev  |      |
+| page 1                  |    | thread_free       |------+ (block index | count << 32)
+| ...                     |    +-------------------+
++-------------------------+    | blocks            |
+                               +-------------------+
+
+* The heap is resolved from `global_thread_heap` (v2) or `_memory_thread_heap` (v1) if symbols are available.
+* Without symbols, the TLS near the thread pointer is scanned for a heap_t owned by the thread.
+* `--heap` can be used when the scan rejects a corrupted heap_t.
+* Heaps of exited threads are not reachable from any thread and are not displayed.
+* v1: allocation pops `size_class[cl].free_list`, then takes the free list of the first partial span.
+* v1: `free_list_deferred` holds blocks freed by other threads, and `list_size` is its length.
+* v2: allocation pops `local_free[cl]`, then takes `local_free` of the first available page.
+* v2: blocks freed by other threads go to `thread_free` of the page, or of the heap if the page is full.
+* Supported versions are v1.4.1-v1.4.5 and v2.0.0-v2.0.1 with the default build configuration.
+```
+
 ## `scalloc-heap-dump`
 
 scalloc heap free-list viewer.
