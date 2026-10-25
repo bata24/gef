@@ -95388,7 +95388,8 @@ class KernelBlockDevicesCommand(GenericCommand, BufferingOutput):
         "",
         "If the debug information has struct block_device, block devices are listed from the inodes of the bdev",
         "pseudo filesystem. Otherwise, the bdev_cache dump, which does not include full slabs, is supplemented with",
-        "block devices referenced by mounted filesystems. The others are found by the layout measured with them,",
+        "block devices referenced by mounted filesystems. If none are found since v5.11, devices_kset and",
+        "gendisk->part0 supply the samples. The others are found by the layout measured with them,",
         "from the block devices in devices_kset (v5.11~) or from the inodes of the bdev pseudo filesystem (~v5.10).",
         "RISC-V is supported only with the debug information.",
         "",
@@ -95578,7 +95579,7 @@ class KernelBlockDevicesCommand(GenericCommand, BufferingOutput):
         # partitions over the minors of the disk are numbered from BLOCK_EXT_MAJOR
         return major == self.BLOCK_EXT_MAJOR
 
-    def resolve_layout(self, samples):
+    def resolve_layout(self, samples, devices=()):
         """Resolve the offsets of bd_dev and bd_disk without the debug information.
 
         [~v5.10]
@@ -95642,6 +95643,12 @@ class KernelBlockDevicesCommand(GenericCommand, BufferingOutput):
                     if self.is_disk_of(gd, u32(data[offset_dev:offset_dev + 4])):
                         votes[offset_dev, offset_disk] = votes.get((offset_dev, offset_disk), 0) + 1
 
+        if not votes and devices:
+            bdevs = self.get_bdev_samples_from_devices(devices)
+            if bdevs:
+                self.resolve_layout(bdevs + samples)
+                return [bdev for bdev in bdevs if self.get_disk_name(bdev, self.get_dev_num(bdev)[0])[0]]
+
         if votes:
             self.offset_bd_dev, self.offset_bd_disk = max(votes, key=lambda k: (votes[k], -layouts.index(k[0]), -k[1]))
         else:
@@ -95661,7 +95668,7 @@ class KernelBlockDevicesCommand(GenericCommand, BufferingOutput):
             self.meta.append((self.quiet_warn, "Could not find offsetof(block_device, bd_disk)"))
         else:
             self.meta.append((self.quiet_info, "offsetof(block_device, bd_disk): {:#x}".format(self.offset_bd_disk)))
-        return
+        return []
 
     def get_partno(self, bdev, dev, gd):
         major, minor = dev >> 20, dev & ((1 << 20) - 1)
@@ -95970,8 +95977,16 @@ class KernelBlockDevicesCommand(GenericCommand, BufferingOutput):
         self.meta.append((self.quiet_info, "bdev source: bdev_cache and mounted filesystems"))
         bdevs = self.get_bdev_list() or []
         candidates = self.get_mounted_bdev_candidates()
+        devices = []
+        if Kernel.version() >= "5.11":
+            kdev = KernelDevice()
+            if kdev.initialize():
+                devices = kdev.devices
+            else:
+                self.meta.extend(Kernel.export_meta(self, kdev.meta, demote_err=True))
+        samples = bdevs + [bdev for bdev, _ in candidates]
         if not dwarf:
-            self.resolve_layout(bdevs + [bdev for bdev, _ in candidates])
+            bdevs.extend(self.resolve_layout(samples, devices))
 
         # the candidates next to s_bdev are verified with s_dev and bd_disk
         for bdev, s_dev in candidates:
@@ -95981,9 +95996,31 @@ class KernelBlockDevicesCommand(GenericCommand, BufferingOutput):
                 continue
             bdevs.append(bdev)
 
-        bdevs.extend(self.get_bdev_list_from_devices(bdevs))
+        bdevs.extend(self.get_bdev_list_from_devices(bdevs, devices))
         bdevs.extend(self.get_bdev_list_from_bd_inode(bdevs))
         return bdevs
+
+    def get_bdev_samples_from_devices(self, devices):
+        """Find whole-disk bdevs through the reciprocal bd_disk and gendisk->part0 pointers."""
+        ptrsize = current_arch.ptrsize
+        samples = set()
+        for device, name, devt, class_name in devices:
+            if class_name != "block":
+                continue
+            for offset in range(-0x800, 0x800, ptrsize):
+                disk = read_int_from_memory(device + offset, safe=True)
+                gd = self.read_gendisk(disk)
+                if gd is None or gd[3] != name or not self.is_disk_of(gd, devt):
+                    continue
+                for part_offset in range(0x30, 0x100, ptrsize):
+                    bdev = read_int_from_memory(disk + part_offset, safe=True)
+                    if bdev and 0 < device - bdev < 0x800 and read_int64_from_memory(bdev, safe=True) == 0:
+                        samples.add(bdev)
+                if samples:
+                    break
+        if samples:
+            self.meta.append((self.quiet_info, "bdev samples: devices_kset and gendisk->part0"))
+        return list(samples)
 
     def get_bdev_list_from_bd_inode(self, samples):
         """Get the bdevs in full slabs before v5.11, which the slab dump cannot reach.
@@ -96046,18 +96083,14 @@ class KernelBlockDevicesCommand(GenericCommand, BufferingOutput):
                 return best[1]
         return []
 
-    def get_bdev_list_from_devices(self, samples):
+    def get_bdev_list_from_devices(self, samples, devices):
         """Get the bdevs in full slabs, which the slab dump cannot reach.
         Since v5.11, struct block_device embeds bd_device, which is in devices_kset as a device of the "block" class.
         Its offset is measured with the bdevs already found."""
         if Kernel.version() < "5.11" or not samples:
             return []
-        kdev = KernelDevice()
-        if not kdev.initialize():
-            self.meta.extend(Kernel.export_meta(self, kdev.meta, demote_err=True))
-            return []
         block_devices = {}
-        for device, _name, devt, class_name in kdev.devices:
+        for device, _, devt, class_name in devices:
             if class_name == "block":
                 block_devices.setdefault(devt, []).append(device)
 
@@ -96072,12 +96105,12 @@ class KernelBlockDevicesCommand(GenericCommand, BufferingOutput):
         self.meta.append((self.quiet_info, "offsetof(block_device, bd_device): {:#x}".format(delta)))
 
         bdevs = []
-        for devt, devices in block_devices.items():
-            for device in devices:
+        for devt, nodes in block_devices.items():
+            for device in nodes:
                 if self.get_dev_num(device - delta)[0] == devt:
                     bdevs.append(device - delta)
         # the kobject of bd_device is named as the kernel names the block device
-        self.device_names = {device - delta: name for device, name, _devt, class_name in kdev.devices if class_name == "block"}
+        self.device_names = {device - delta: name for device, name, devt, class_name in devices if class_name == "block"}
         return bdevs
 
     @Decorator.parse_args
