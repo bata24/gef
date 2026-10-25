@@ -164715,6 +164715,8 @@ class Ksym:
         if i < 0:
             return None
 
+        while i > 0 and Ksym.address_index[i - 1][0] == Ksym.address_index[i][0]:
+            i -= 1
         symbol_addr, symbol_index, limit = Ksym.address_index[i]
         if addr >= limit:
             return None
@@ -164777,7 +164779,7 @@ class Ksym:
             if ret is None:
                 return None
             kallsyms, _kallsyms_map = ret
-            Ksym.name_by_addr = {a: name for a, name, _typ in kallsyms}
+            Ksym.name_by_addr = {a: name for a, name, _typ in reversed(kallsyms)}
         return Ksym.name_by_addr.get(addr)
 
     @staticmethod
