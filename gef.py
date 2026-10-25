@@ -93651,6 +93651,8 @@ class KernelKeyringCommand(GenericCommand, BufferingOutput):
             return None
 
         keyring_type = Ksym.get_addr("key_type_keyring")
+        klayout = Kernel.layout()
+        text_base, text_end = klayout.text_base or 0, klayout.text_end or 0
         candidates = []
         for offset in range(0, 0x120, current_arch.ptrsize):
             type_addr = read_int_from_memory(key + offset, safe=True)
@@ -93661,8 +93663,13 @@ class KernelKeyringCommand(GenericCommand, BufferingOutput):
             name = self.type_name(type_addr)
             if name:
                 symbol = Ksym.get_name(type_addr) or ""
+                # key_type has callbacks after the name, unlike other pointees whose bytes may look like a name.
+                data = read_memory(type_addr, 0x10 * current_arch.ptrsize, safe=True) or b""
+                words = slice_unpack(data, current_arch.ptrsize)[1:]
                 if symbol.startswith("key_type_"):
                     score = 2
+                elif any(text_base <= x < text_end and Ksym.get_name(x) for x in words):
+                    score = 1
                 else:
                     score = 0
                 candidates.append((score, -offset, offset))
@@ -93699,6 +93706,7 @@ class KernelKeyringCommand(GenericCommand, BufferingOutput):
         return None
 
     def find_datalen_offset(self):
+        self.has_state = "4.14" <= self.kversion
         offset = GefUtil.offsetof("key", "datalen")
         if offset is not None:
             return offset
@@ -93707,9 +93715,14 @@ class KernelKeyringCommand(GenericCommand, BufferingOutput):
         try:
             magic4 = read_int32_from_memory(self.sample_key + flags - 4)
             magic8 = read_int32_from_memory(self.sample_key + flags - 8)
+            state = read_int_from_memory(self.sample_key + flags - current_arch.ptrsize)
         except (gdb.MemoryError, OverflowError, TypeError):
-            magic4 = magic8 = 0
-        if "4.14" <= self.kversion:
+            magic4 = magic8 = state = 0
+        # `state` was backported to v4.4.95, v4.9.59, v4.13.10 and distribution kernels (e.g. Ubuntu 4.4.0).
+        # It is 1 for a positive key such as a task keyring, and the padding after it is zero.
+        if state == 1:
+            self.has_state = True
+        if self.has_state:
             # `state` makes the tail uid/gid/perm/quotalen/datalen/state 18
             # bytes long.  unsigned long alignment adds six bytes of padding
             # on 64-bit targets, but only two on 32-bit targets.  KEY_DEBUGGING
@@ -93771,7 +93784,7 @@ class KernelKeyringCommand(GenericCommand, BufferingOutput):
             self.sizeof_expiry = current_arch.ptrsize
 
         self.offset_state = GefUtil.offsetof("key", "state")
-        if self.offset_state is None and "4.14" <= self.kversion:
+        if self.offset_state is None and self.has_state:
             self.offset_state = self.offset_datalen + 2
 
         self.offset_payload = GefUtil.offsetof("key", "payload")
