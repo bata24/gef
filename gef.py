@@ -104550,7 +104550,7 @@ class KernelDmesgOldestRing(KernelDmesgRing):
                 text += read_memory(address, length)
             except gdb.error:
                 partial = True
-        self.out.extend(String.bytes2str(text).splitlines())
+        self.out.extend(text.decode("utf-8", errors="backslashreplace").splitlines())
         return partial
 
 
@@ -104705,7 +104705,7 @@ class KernelDmesgLegacyRing(KernelDmesgRing):
                     text = b""
                 sec = ts_nsec // 1_000_000_000
                 nsec = "{:09d}".format(ts_nsec % 1_000_000_000)[:6]
-                for line in String.bytes2str(text).splitlines():
+                for line in text.decode("utf-8", errors="backslashreplace").splitlines():
                     self.out.append("[{:5d}.{:s}] {:s}".format(sec, nsec, line))
                 pos += rec_len
                 if pos >= buf_len:
@@ -104997,7 +104997,8 @@ class KernelDmesgModernRing(KernelDmesgRing):
                                 partial = True
                                 text_len = min(text_len, available, max(data_size - text_offset, 0))
                             if text_len:
-                                entry = String.bytes2str(read_memory(ring["data"] + text_offset, text_len))
+                                text = read_memory(ring["data"] + text_offset, text_len)
+                                entry = text.decode("utf-8", errors="backslashreplace")
                             else:
                                 entry = ""
                         if caller_id & 0x80000000:
