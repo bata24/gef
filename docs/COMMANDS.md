@@ -7992,8 +7992,8 @@ positional arguments:
 options:
   -h, --help            show this help message and exit
   -U, --exclude-user    exclude userland memory.
-  -i, --include-esp-fixup-stacks
-                        include `%esp fixup stacks` area (sometimes heavy memory use; x64 only).
+  -i, --include-aliased-pages
+                        include aliased pages such as espfix stacks and KASAN shadow (heavy memory use; x64 only).
   -v, --verbose         increase output verbosity. (-v, -vv, -vvv)
   -n, --no-pager        do not use the pager.
   -q, --quiet           quiet execution.
@@ -8132,8 +8132,8 @@ options:
   -v, --vrange VADDR    filter by map included specified virtual address.
   -p, --prange PADDR    filter by map included specified physical address.
   -t, --trace VADDR     show all level pagetables only associated specified address.
-  -i, --include-esp-fixup-stacks
-                        include `%esp fixup stacks` area (sometimes heavy memory use; x64 only).
+  -i, --include-aliased-pages
+                        include aliased pages such as espfix stacks and KASAN shadow (heavy memory use; x64 only).
   -U, --user-pt         print userland pagetables (for KPTI, x64 only, in kernel context).
   --cr3 USER_SPECIFIED_CR3
                         use specified value as cr3.
@@ -9542,7 +9542,8 @@ This command requires CONFIG_RANDSTRUCT=n unless vmlinux with debug information 
 
 If the debug information has struct block_device, block devices are listed from the inodes of the bdev
 pseudo filesystem. Otherwise, the bdev_cache dump, which does not include full slabs, is supplemented with
-block devices referenced by mounted filesystems. The others are found by the layout measured with them,
+block devices referenced by mounted filesystems. If none are found since v5.11, devices_kset and
+gendisk->part0 supply the samples. The others are found by the layout measured with them,
 from the block devices in devices_kset (v5.11~) or from the inodes of the bdev pseudo filesystem (~v5.10).
 RISC-V is supported only with the debug information.
 
@@ -10339,7 +10340,7 @@ Dump the mount tree of each mount namespace.
 ### Syntax
 
 ```text
-usage: kmount [-h] [-hh] [-p PID] [-T TASK] [-a] [-t] [--meta] [-n] [-q]
+usage: kmount [-h] [-hh] [-p PID] [-T TASK] [-a] [-t] [-v] [--meta] [-n] [-q]
 
 options:
   -h, --help          show this help message and exit
@@ -10348,6 +10349,7 @@ options:
   -T, --task TASK     dump the mount namespace of this task_struct.
   -a, --all           dump every mount namespace.
   -t, --tasks         list the tasks of each mount namespace.
+  -v, --verbose       also show mnt_id, peer_group, mnt_master and propagation.
   --meta              display offset information.
   -n, --no-pager      do not use the pager.
   -q, --quiet         enable quiet mode.
@@ -11307,7 +11309,7 @@ options:
   -o, --root-offset ROOT_OFFSET
                         offsetof(the struct, ma_root). it is searched if not given.
   -m, --max-offset MAX_OFFSET
-                        the search range of offsetof(the struct, ma_root). (default: ptrsize*0x20)
+                        the search range of offsetof(the struct, ma_root). (default: ptrsize*0x40)
   -C, --container-of CONTAINER_OF
                         also displays each entry minus this offset, like container_of().
   -n, --no-pager        do not use the pager.
@@ -12933,8 +12935,8 @@ smm-status --quiet
 
 ```text
 The QEMU monitor SMM flag is preferred.
-On older QEMU builds, $pc is compared with the SMRAM range from `monitor info mtree -f`.
-The preview uses the current in-SMM PC, or the detected SMRAM base outside SMM.
+On older QEMU builds, the physical instruction address is compared with the detected SMRAM range.
+The preview uses the physical instruction address in SMRAM, or the detected SMRAM base.
 ```
 
 # 07-a. Misc - Conversion
