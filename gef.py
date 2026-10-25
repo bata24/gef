@@ -186242,22 +186242,31 @@ class KernelVMMapCommand(GenericCommand, BufferingOutput):
             if r.size >= page_size * 0x10:
                 continue
             for addr in range(r.addr_start, r.addr_end, page_size):
+                description = None
                 x = read_memory(addr, 0x10, safe=True)
                 if x is None:
-                    self.insert_region(addr, page_size, "can not access")
+                    description = "can not access"
+                elif x in [z10, ff10, cc10]:
+                    x = read_memory(addr, page_size, safe=True)
+                    if x == z1000:
+                        description = "0x00-filled"
+                    elif x == cc1000:
+                        description = "0xcc-filled"
+                    elif x == ff1000:
+                        description = "0xff-filled"
+                if description is None:
                     continue
 
-                if x not in [z10, ff10, cc10]:
+                addr_end = addr + page_size
+                if addr_end > r.addr_end or self.regions.get(r.addr_start) is not r:
+                    self.insert_region(addr, page_size, description)
                     continue
-                x = read_memory(addr, page_size, safe=True)
-                if x is None:
-                    continue
-                if x == z1000:
-                    self.insert_region(addr, page_size, "0x00-filled")
-                elif x == cc1000:
-                    self.insert_region(addr, page_size, "0xcc-filled")
-                elif x == ff1000:
-                    self.insert_region(addr, page_size, "0xff-filled")
+                if r.addr_start < addr:
+                    self.regions[r.addr_start] = self.Region(r.addr_start, addr, r.perm)
+                self.regions[addr] = self.Region(addr, addr_end, r.perm, description)
+                if addr_end < r.addr_end:
+                    r = self.Region(addr_end, r.addr_end, r.perm)
+                    self.regions[addr_end] = r
         return
 
     def add_legend(self):
