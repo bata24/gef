@@ -164671,14 +164671,24 @@ class Ksym:
                 start = min(starts)
                 end = min((addr for addr in kallsyms_map.get("_end", []) if addr > start), default=None)
                 if end is None:
+                    end = min((addr for addr in kallsyms_map.get("_etext", []) if addr > start), default=None)
+                if end is None:
                     end = max((addr for addr, name, typ in kallsyms
                                if addr >= start and (typ or "").lower() != "a"), default=start) + 1
                 ranges.append((start, end))
 
+                low = next(iter(kallsyms_map.get("_sinittext", [])), None)
+                high = next(iter(kallsyms_map.get("_einittext", [])), None)
+                if low is not None and high is not None and low < high:
+                    ranges.append((low, high))
+
                 if current_arch.arch == "RISCV":
                     head = min(kallsyms_map.get("_start", [start]))
-                    if head < start:
-                        ranges.append((head, start))
+                    head_end = start
+                    if "_end" not in kallsyms_map and low is not None and high is not None and low < high:
+                        head_end = min(head_end, low)
+                    if head < head_end:
+                        ranges.append((head, head_end))
 
             if is_arm32():
                 for base, prefix in ((0xffff0000, "__vectors"), (0xffff1000, "__stubs")):
