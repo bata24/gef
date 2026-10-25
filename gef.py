@@ -93532,7 +93532,7 @@ class KernelKeyringCommand(GenericCommand, BufferingOutput):
     """Display the keyrings referenced by tasks, or inspect an arbitrary struct key."""
 
     _cmdline_ = "kkeyring"
-    _category_ = "06-f. Qemu-system/KGDB Cooperation - Linux Task"
+    _category_ = "06-g. Qemu-system/KGDB Cooperation - Linux Advanced"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("-hh", "--help-simple", action="store_true", help="show help without ASCII diagram.")
