@@ -100701,10 +100701,15 @@ class KernelClockSourceCommand(GenericCommand, BufferingOutput):
             offset = align(after + 4, ptrsize) + ptrsize * 2 # rating, enable, disable
         else:
             offset = align(after + 4, ptrsize) + ptrsize * 3 # rating, vread, enable, disable
-        values = [read_int_from_memory(cs + offset, safe=True) for cs in clocksources]
-        if None in values or not any(values) or any(v >= 0x2000 for v in values):
-            return None
-        return offset
+        candidates = [offset]
+        if self.kversion < "5.7":
+            candidates.append(after + 8) # rating, vdso_clock_mode
+        for offset in candidates:
+            values = [read_int_from_memory(cs + offset, safe=True) for cs in clocksources]
+            if None in values or not any(values) or any(v >= 0x2000 for v in values):
+                continue
+            return offset
+        return None
 
     def validate_type_info_offsets(self, clocksources, sources):
         rating_offset = self.offsets["rating"]
