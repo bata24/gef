@@ -173834,24 +173834,31 @@ class JemallocBase:
     def __init__(self, version):
         self.version = version
         self.messages = []
-        self.sz_index2size = None
         self.writable_maps = None
         self.writable_pages = None
         self.arenas = {}
         self.large = collections.defaultdict(list)
         self.ptrsize = current_arch.ptrsize
-        self.arch = next(x for x in ("x86_64", "x86_32", "ARM64", "ARM32") if ARCH_CHECKERS[x]())
-        if self.arch == "x86_32": # alignment of uint64_t in structures
-            self.u64_align = 4
+        self.sz_index2size = self.symbol_address("sz_index2size_tab") or self.symbol_address("index2size_tab")
+        self.u64_align = gdb.lookup_type("unsigned long long").alignof
+        if is_arm64():
+            self.layout = "ARM64"
+        elif self.ptrsize == 8:
+            self.layout = "x86_64"
+        elif self.u64_align == 4:
+            self.layout = "x86_32"
         else:
-            self.u64_align = 8
+            self.layout = "ARM32"
         self.set_size_classes(self.SMALL_LIMIT)
         return
 
     def set_size_classes(self, limit):
-        # Small size classes of the default build (LG_QUANTUM=3 on ARM32 and 4 on the others).
+        # Small size classes of the default build.
         # They are spaced by the larger of the quantum and a quarter of the power of 2 below.
-        if self.arch == "ARM32":
+        if self.sz_index2size is not None:
+            quantum = read_int_from_memory(self.sz_index2size + self.ptrsize * 2)
+            quantum -= read_int_from_memory(self.sz_index2size + self.ptrsize)
+        elif is_arm32() or is_mips32() or is_mips64() or is_mipsn32():
             quantum = 8
         else:
             quantum = 16
@@ -174137,7 +174144,7 @@ class JemallocV3(JemallocBase):
         self.chunksize = self.symbol_value("chunksize") or 0x400000
         # arena_chunk_t: arena, dirty link, [dirtied (~v3.1)], ndirty, [nruns_avail, nruns_adjac (v3.2~)], map[]
         self.map_offset = GefUtil.offsetof("struct arena_chunk_s", "map") or ptr * (5 if self.version < (3, 2) else 6)
-        self.runcur_offset = GefUtil.offsetof("struct arena_bin_s", "runcur") or self.MUTEX_SIZE[self.arch]
+        self.runcur_offset = GefUtil.offsetof("struct arena_bin_s", "runcur") or self.MUTEX_SIZE[self.layout]
 
         # arena_chunk_map_t is {rb/ql link, [prof_ctx if --enable-prof], bits}.
         elem_size = GefUtil.sizeof("struct arena_chunk_map_s")
@@ -174298,7 +174305,6 @@ class JemallocV4(JemallocBase):
 
     def parse(self, arenas_addr=None): # je_arenas is not used
         ptr = self.ptrsize
-        self.sz_index2size = self.symbol_address("index2size_tab")
         self.cache_bin_size = 0x10 + ptr * 2 # sizeof(tcache_bin_t)
         # tcache_t: link, prof_accumbytes, ev_cnt (v4.0) / gc_ticker (v4.1~), next_gc_bin, tbins[]
         self.tbins_offset = align(ptr * 2 + (0x10 if self.version < (4, 1) else 0x14), self.u64_align)
@@ -174312,7 +174318,7 @@ class JemallocV4(JemallocBase):
             "mapbits": GefUtil.offsetof("struct arena_chunk_s", "map_bits"),
             "tsd_arena": None,
         }
-        table = dict(zip(("bins", "bin", "runcur"), self.table_entry(self.ARENA_TABLE[self.arch])))
+        table = dict(zip(("bins", "bin", "runcur"), self.table_entry(self.ARENA_TABLE[self.layout])))
         table.update(zip(("misc", "run", "mapbits", "tsd_arena"), self.table_entry(self.CHUNK_TABLE[ptr])))
         # the table holds sizeof(arena_chunk_map_misc_t) for 4KB pages
         if self.off["misc"] is not None:
@@ -174523,7 +174529,6 @@ class JemallocV5(JemallocBase):
 
     def resolve_layout(self):
         ptr = self.ptrsize
-        self.sz_index2size = self.symbol_address("sz_index2size_tab")
 
         if self.version < (5, 1):
             bin_type = "struct arena_bin_s"
@@ -174539,7 +174544,10 @@ class JemallocV5(JemallocBase):
         self.from_types = None not in self.off.values()
         if not self.from_types:
             # slabcur, slabs_nonfull (pairing heap: root, [auxcount (v5.3~)]) and slabs_full are adjacent.
-            bins, size, slabcur = self.table_entry(self.ARENA_TABLE[self.arch])
+            bins, size, slabcur = self.table_entry(self.ARENA_TABLE[self.layout])
+            if is_riscv32(): # pthread_mutex_t is 32 bytes instead of 24
+                size += 8
+                slabcur += 8
             nonfull = slabcur + ptr
             full = nonfull + ptr * (2 if self.version >= (5, 3) else 1)
             self.off.update(bins=bins, bin=size, slabcur=slabcur, nonfull=nonfull, full=full)
@@ -174564,7 +174572,7 @@ class JemallocV5(JemallocBase):
 
         # extent_t/edata_t: e_bits, e_addr, e_size_esn, ..., ql_link, ph_link, e_slab_data (bitmap)
         self.e_size = 8 + ptr
-        self.ql_link, self.ph_link, self.slab_bitmap = self.table_entry(self.EXTENT_TABLE[self.arch])
+        self.ql_link, self.ph_link, self.slab_bitmap = self.table_entry(self.EXTENT_TABLE[self.layout])
 
         # cache_bin_t: low_water, ncached, tstats, avail (v5.0~v5.2)
         #              stack_head, tstats, low_bits_low_water, low_bits_full, low_bits_empty (v5.3~)
@@ -174662,14 +174670,14 @@ class JemallocV5(JemallocBase):
 
         votes = collections.Counter()
         for group in hits.values():
-            strides = collections.Counter({self.off["bin"]: 1})
+            strides = collections.Counter()
             for (x1, i1), (x2, i2) in itertools.combinations(group[:64], 2):
                 d, di = x2 - x1, i2 - i1
                 if di < 0:
                     d, di = -d, -di
                 if di and d % di == 0 and 0 < d // di < 0x400 and d // di % self.ptrsize == 0:
                     strides[d // di] += 1
-            for stride, _ in strides.most_common(3):
+            for stride in dict.fromkeys([self.off["bin"]] + [size for size, _ in strides.most_common(3)]):
                 for x, i in group:
                     votes[(x - self.off["slabcur"] - stride * i, stride)] += 1
         return [key for key, count in votes.most_common() if count >= 3]
@@ -174841,12 +174849,13 @@ class JemallocV5(JemallocBase):
                     bins[index][i].append(self.read_slab(kind, extent, i, bin_addr))
         return bins
 
-    def resolve_rtree(self):
+    def resolve_rtree(self, vaddr_bits=None):
         # Default virtual address widths, overridden by rtree_levels when debug symbols are present.
-        if self.ptrsize == 8:
-            self.vaddr_bits = 48
-        else:
-            self.vaddr_bits = 32
+        self.vaddr_bits = vaddr_bits or self.ptrsize * 8
+        levels = self.symbol_address("rtree_levels")
+        if levels is not None:
+            bits, cumbits = slice_unpack(read_memory(levels, 8), 4)
+            self.vaddr_bits = self.ptrsize * 8 - (cumbits - bits)
         page_bits = self.page.bit_length() - 1
         nsb = self.vaddr_bits - page_bits
         if nsb <= 10:
@@ -174861,20 +174870,24 @@ class JemallocV5(JemallocBase):
         for bits in widths:
             cumbits += bits
             self.rtree_levels.append((bits, cumbits))
-        levels = self.symbol_address("rtree_levels")
         if levels is not None:
             values = slice_unpack(read_memory(levels, height * 8), 4)
             self.rtree_levels = list(zip(values[::2], values[1::2]))
-            self.vaddr_bits = self.ptrsize * 8 - (values[1] - values[0])
-        self.leaf_size = GefUtil.sizeof("struct rtree_leaf_elm_s") or (8 if self.ptrsize == 8 or self.version >= (5, 3) else 12)
+        if self.ptrsize * 8 - self.vaddr_bits >= self.szind_mask.bit_length():
+            leaf_size = self.ptrsize
+        else:
+            leaf_size = align(self.ptrsize + (5 if self.version < (5, 3) else 4), self.ptrsize)
+        self.leaf_size = GefUtil.sizeof("struct rtree_leaf_elm_s") or leaf_size
         self.extent_mask = ((1 << self.vaddr_bits) - 1) & ~(0x3f if self.version >= (5, 3) else 1)
+        known = {r["header"]: r["addr"] for bins in self.bins.values() for records in bins.values() for r in records}
         root = self.symbol_address("extents_rtree.root") or self.symbol_address("arena_emap_global.rtree.root")
         if root is not None:
-            return root
+            if all(self.rtree_extent(root, addr) == extent for extent, addr in known.items()):
+                return root
+            return None
 
         # Locate a leaf via a known slab and then its parent via the leaf pointer.
         # Validate the candidate root against independent slab addresses before using it.
-        known = {r["header"]: r["addr"] for bins in self.bins.values() for records in bins.values() for r in records}
         pages = self.read_writable_pages()
         leaves = {}
         leaf_bits = self.rtree_levels[-1][0]
@@ -174932,7 +174945,16 @@ class JemallocV5(JemallocBase):
         return None
 
     def collect_large(self):
-        root = self.resolve_rtree()
+        if self.ptrsize == 4:
+            widths = (32,)
+        elif is_x86_64() or is_arm64():
+            widths = (48, 57, 64)
+        else:
+            widths = (64, 48, 57)
+        for width in widths:
+            root = self.resolve_rtree(width)
+            if root is not None:
+                break
         if root is None:
             self.messages.append("Could not find the rtree; large allocations are unavailable")
             return
@@ -175395,7 +175417,6 @@ class JemallocHeapDumpCommand(GenericCommand, BufferingOutput):
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
-    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
     def do_invoke(self, args):
         if not self.initialize():
             return
