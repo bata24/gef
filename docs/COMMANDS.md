@@ -8072,7 +8072,7 @@ Thread cache list
 
 ## `tlsf-heap-dump`
 
-TLSF (Two-Level Segregated Fit) v2.4.6 free-list viewer (x64 only).
+TLSF (Two-Level Segregated Fit) v2.4.6 free-list viewer.
 
 
 ### Syntax

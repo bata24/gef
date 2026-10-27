@@ -166219,7 +166219,7 @@ class GoHeapDumpCommand(GenericCommand, BufferingOutput):
 
 @register_command
 class TlsfHeapDumpCommand(GenericCommand, BufferingOutput):
-    """TLSF (Two-Level Segregated Fit) v2.4.6 free-list viewer (x64 only)."""
+    """TLSF (Two-Level Segregated Fit) v2.4.6 free-list viewer."""
 
     _cmdline_ = "tlsf-heap-dump"
     _category_ = "05-c. Heap - Other"
@@ -166261,24 +166261,19 @@ class TlsfHeapDumpCommand(GenericCommand, BufferingOutput):
     ]
     _note_ = "\n".join(_note_)
 
-    def __init__(self):
-        super().__init__()
-
+    def initialize(self):
         self.REAL_FLI = 24
         self.MAX_SLI = 32
+        self.block_align = current_arch.ptrsize * 2
 
         self.size_dic = {}
-        for i in range(1, 8):
-            self.size_dic[0, i * 4] = (0x10 * i, 0x10 * (i + 1))
-        for i in range(8):
-            self.size_dic[1, i * 4] = (0x80 + 0x10 * i, 0x80 + 0x10 * (i + 1))
-        for i in range(16):
-            self.size_dic[2, i * 2] = (0x100 + 0x10 * i, 0x100 + 0x10 * (i + 1))
-        for fl in range(3, self.REAL_FLI):
-            base = 0x200 * (2 ** (fl - 3))
-            step = 0x10 * (2 ** (fl - 3))
-            for i in range(self.MAX_SLI):
-                self.size_dic[fl, i] = (base + step * i, base + step * (i + 1))
+        for size in range(self.block_align, 0x80, self.block_align):
+            self.size_dic[0, size // 4] = (size, size + self.block_align)
+        for fl in range(1, self.REAL_FLI):
+            base = 1 << (fl + 6)
+            step = max(self.block_align, base // self.MAX_SLI)
+            for size in range(base, base * 2, step):
+                self.size_dic[fl, (size - base) * self.MAX_SLI // base] = (size, size + step)
         return
 
     def get_pool(self):
@@ -166318,31 +166313,27 @@ class TlsfHeapDumpCommand(GenericCommand, BufferingOutput):
         if sig != 0x2A59FA59:
             return None
 
+        offset_area_head = GefUtil.offsetof("tlsf_t", "area_head")
+        offsets = [offset_area_head]
+        if offset_area_head is None:
+            ptrsize = current_arch.ptrsize
+            lock_size = GefUtil.type_size("pthread_mutex_t")
+            if lock_size is None:
+                if is_arm64():
+                    lock_size = 48
+                elif is_riscv32():
+                    lock_size = 32
+                else:
+                    lock_size = {4: 24, 8: 40}[ptrsize]
+            lock_end = align_to_ptrsize(ptrsize + lock_size)
+            offsets = [ptrsize, ptrsize * 3, lock_end, lock_end + ptrsize * 2]
+
         area_head = None
-        if area_head is None:
-            # !TLSF_USE_LOCKS && !TLSF_STATISTIC
-            x = read_int_from_memory(pool + current_arch.ptrsize)
+        for offset_area_head in offsets:
+            x = read_int_from_memory(pool + offset_area_head)
             if is_valid_addr(x):
                 area_head = x
-                offset_area_head = current_arch.ptrsize
-        if area_head is None:
-            # !TLSF_USE_LOCKS && TLSF_STATISTIC
-            x = read_int_from_memory(pool + current_arch.ptrsize * 3)
-            if is_valid_addr(x):
-                area_head = x
-                offset_area_head = current_arch.ptrsize * 3
-        if area_head is None:
-            # TLSF_USE_LOCKS && !TLSF_STATISTIC
-            x = read_int_from_memory(pool + current_arch.ptrsize * 6)
-            if is_valid_addr(x):
-                area_head = x
-                offset_area_head = current_arch.ptrsize * 6
-        if area_head is None:
-            # TLSF_USE_LOCKS && TLSF_STATISTIC
-            x = read_int_from_memory(pool + current_arch.ptrsize * 8)
-            if is_valid_addr(x):
-                area_head = x
-                offset_area_head = current_arch.ptrsize * 8
+                break
         if area_head is None:
             return None
 
@@ -166377,7 +166368,7 @@ class TlsfHeapDumpCommand(GenericCommand, BufferingOutput):
                 min_size, max_size = self.size_dic.get((i, j), (0, 0))
                 if min_size == max_size == 0:
                     title = "pool->matrix[{:2d}][{:2d}] @{:#x} (chunk_size=???-???)".format(i, j, matrix_addr)
-                elif min_size + 0x10 == max_size:
+                elif min_size + self.block_align == max_size:
                     title = "pool->matrix[{:2d}][{:2d}] @{:#x} (chunk_size={:#x})".format(i, j, matrix_addr, min_size)
                 else:
                     title = "pool->matrix[{:2d}][{:2d}] @{:#x} (chunk_size={:#x}-{:#x})".format(i, j, matrix_addr, min_size, max_size)
@@ -166409,7 +166400,7 @@ class TlsfHeapDumpCommand(GenericCommand, BufferingOutput):
                     msg = " -> {:s} (prev_hdr={:#x}, size={:s}, prev={!s}, next={!s})".format(
                         Color.colorify_hex(current, freed_address_color),
                         prev_hdr,
-                        Color.colorify_hex(size & ~0xf, chunk_size_color),
+                        Color.colorify_hex(size & ~(current_arch.ptrsize - 1), chunk_size_color),
                         ProcessMap.lookup(prev_),
                         ProcessMap.lookup(next_),
                     )
@@ -166420,8 +166411,8 @@ class TlsfHeapDumpCommand(GenericCommand, BufferingOutput):
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
-    @Decorator.only_if_specific_arch(arch=("x86_64",))
     def do_invoke(self, args):
+        self.initialize()
         if args.pool is not None:
             pool_addr = args.pool
             if not is_valid_addr(pool_addr):
