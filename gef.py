@@ -165327,6 +165327,7 @@ class TcmallocHeapDumpCommand(GenericCommand, BufferingOutput):
             err("Unsupported gperftools FreeList.length_ type")
             return None
         self.read_freelist_length = {2: read_int16_from_memory, 4: read_int32_from_memory}[length_size]
+        self.ThreadCache_offset_next_candidates = (self.ThreadCache_offset_next,)
         return True
 
     def initialize_heuristic(self):
@@ -165358,9 +165359,12 @@ class TcmallocHeapDumpCommand(GenericCommand, BufferingOutput):
         else:
             self.ThreadCache_offset_freelist_array = 0
         if self.legacy_layout:
-            self.ThreadCache_offset_next = 0
+            self.ThreadCache_offset_next_candidates = (0,)
         else:
-            self.ThreadCache_offset_next = count * self.sizeof_FreeList + 8 + sampler_size
+            # 2.6-2.15 have tid_ and in_setspecific_ before next_
+            offset = count * self.sizeof_FreeList + 8 + sampler_size
+            self.ThreadCache_offset_next_candidates = (offset, offset + 2 * ptrsize)
+        self.ThreadCache_offset_next = self.ThreadCache_offset_next_candidates[0]
         self.ThreadCache_offset_prev = self.ThreadCache_offset_next + ptrsize
         self.Span_offset_next = 2 * ptrsize
         self.Span_offset_prev = 3 * ptrsize
@@ -165369,11 +165373,13 @@ class TcmallocHeapDumpCommand(GenericCommand, BufferingOutput):
         self.CentralCache_offset_nonempty = 8 * ptrsize
         self.CentralCache_offset_tc_slots_ = 16 * ptrsize
         self.sizeof_TCEntry = 2 * ptrsize
-        cache_align = {"PPC": 16, "MIPS": 128, "S390X": 256}.get(current_arch.arch, 64)
+        # 2.15 and earlier pad CentralFreeList to 64 bytes on all architectures
         if self.legacy_layout:
-            cache_align = 64
+            cache_aligns = (64,)
+        else:
+            cache_aligns = dict.fromkeys(({"PPC": 16, "MIPS": 128, "S390X": 256}.get(current_arch.arch, 64), 64))
         central = self.get_central_cache_()
-        for slots in (64, 0):
+        for slots, cache_align in itertools.product((64, 0), cache_aligns):
             self.CentralCache_freelist_slot_count = slots
             self.CentralCache_offset_used_slots_ = 16 * ptrsize + slots * self.sizeof_TCEntry
             self.sizeof_CentralCache = align(self.CentralCache_offset_used_slots_ + 12, cache_align)
@@ -165428,22 +165434,19 @@ class TcmallocHeapDumpCommand(GenericCommand, BufferingOutput):
                                     break
                             if sizes[-1] != 262144 or len(sizes) < 40:
                                 continue
-                            for legacy in (True, False):
+                            for legacy, count in ((True, len(sizes)), (False, 128), (False, 96)):
                                 if width != (ptrsize if legacy else 4):
                                     continue
                                 if legacy:
-                                    prefix = align(2169 + 4 * len(sizes), ptrsize) - 4 * len(sizes)
+                                    prefix = align(2169 + 4 * count, ptrsize) - 4 * count
                                 else:
-                                    prefix = 2684
+                                    prefix = 2172 + 4 * count
                                 classes = read_memory(table - prefix, 2169)
                                 if classes[1:3] != b"\1\2" or classes[-1] != len(sizes) - 1:
                                     continue
                                 self.legacy_layout = legacy
                                 self.CentralCache_initialized_count = len(sizes)
-                                if legacy:
-                                    self.class_to_size_dic = sizes
-                                else:
-                                    self.class_to_size_dic = sizes + [0] * (128 - len(sizes))
+                                self.class_to_size_dic = sizes + [0] * (count - len(sizes))
                                 return True
                         except gdb.MemoryError:
                             continue
@@ -165552,33 +165555,29 @@ class TcmallocHeapDumpCommand(GenericCommand, BufferingOutput):
         if current_arch.arch == "MIPS":
             return self.get_thread_heap_list_memory_heuristic()
 
+        ptrsize = current_arch.ptrsize
         direction = TlsCommand.get_direction()
         for i in range(1, 65):
             candidate_thread_heaps = []
-            candidate_next = []
-            candidate_prev = []
             with ContextManager.threads() as threads:
                 for _thread in threads:
                     tls = current_arch.get_tls()
                     if tls is None:
                         continue
-                    val = read_int_from_memory(tls + current_arch.ptrsize * i * direction, safe=True)
+                    val = read_int_from_memory(tls + ptrsize * i * direction, safe=True)
                     if not val:
                         continue
                     if not is_valid_addr(val):
                         break
-                    p = read_int_from_memory(val + self.ThreadCache_offset_next, safe=True)
-                    b = read_int_from_memory(val + self.ThreadCache_offset_prev, safe=True)
-                    if p is None or b is None:
-                        break
-                    candidate_next.append(p)
-                    candidate_prev.append(b)
                     candidate_thread_heaps.append(val)
                 else:
-                    if candidate_thread_heaps and (
-                        set(candidate_next) | set(candidate_prev) == set(candidate_thread_heaps) | {0}
-                    ):
-                        return list(dict.fromkeys(candidate_thread_heaps))
+                    for offset in self.ThreadCache_offset_next_candidates:
+                        links = {read_int_from_memory(heap + offset + j, safe=True)
+                                 for heap in candidate_thread_heaps for j in (0, ptrsize)}
+                        if candidate_thread_heaps and links == set(candidate_thread_heaps) | {0}:
+                            self.ThreadCache_offset_next = offset
+                            self.ThreadCache_offset_prev = offset + ptrsize
+                            return list(dict.fromkeys(candidate_thread_heaps))
         return self.get_thread_heap_list_memory_heuristic()
 
     def get_thread_heap_list_memory_heuristic(self):
@@ -165650,30 +165649,39 @@ class TcmallocHeapDumpCommand(GenericCommand, BufferingOutput):
                         else:
                             if legacy and read_int_from_memory(base + 2 * ptrsize, safe=True) != cached_size:
                                 continue
-                            heaps = []
-                            pending = [base]
-                            has_head = has_tail = False
-                            while pending:
-                                current = pending.pop()
-                                if current in heaps:
-                                    continue
-                                next_heap = read_int_from_memory(current + self.ThreadCache_offset_next, safe=True)
-                                prev_heap = read_int_from_memory(current + self.ThreadCache_offset_prev, safe=True)
-                                if next_heap is None or prev_heap is None:
-                                    break
-                                if next_heap and read_int_from_memory(next_heap + self.ThreadCache_offset_prev,
-                                                                     safe=True) != current:
-                                    break
-                                if prev_heap and read_int_from_memory(prev_heap + self.ThreadCache_offset_next,
-                                                                     safe=True) != current:
-                                    break
-                                heaps.append(current)
-                                has_head |= prev_heap == 0
-                                has_tail |= next_heap == 0
-                                pending.extend(heap for heap in (next_heap, prev_heap) if heap)
-                            else:
-                                if has_head and has_tail:
-                                    return heaps
+                            heaps = self.get_linked_thread_heaps(base)
+                            if heaps:
+                                return heaps
+        return None
+
+    def get_linked_thread_heaps(self, base):
+        for offset in self.ThreadCache_offset_next_candidates:
+            self.ThreadCache_offset_next = offset
+            self.ThreadCache_offset_prev = offset + current_arch.ptrsize
+            heaps = []
+            pending = [base]
+            has_head = has_tail = False
+            while pending:
+                current = pending.pop()
+                if current in heaps:
+                    continue
+                next_heap = read_int_from_memory(current + self.ThreadCache_offset_next, safe=True)
+                prev_heap = read_int_from_memory(current + self.ThreadCache_offset_prev, safe=True)
+                if next_heap is None or prev_heap is None:
+                    break
+                if next_heap and read_int_from_memory(next_heap + self.ThreadCache_offset_prev, safe=True) != current:
+                    break
+                if prev_heap and read_int_from_memory(prev_heap + self.ThreadCache_offset_next, safe=True) != current:
+                    break
+                heaps.append(current)
+                has_head |= prev_heap == 0
+                has_tail |= next_heap == 0
+                pending.extend(heap for heap in (next_heap, prev_heap) if heap)
+            else:
+                if has_head and has_tail:
+                    return heaps
+        self.ThreadCache_offset_next = self.ThreadCache_offset_next_candidates[0]
+        self.ThreadCache_offset_prev = self.ThreadCache_offset_next + current_arch.ptrsize
         return None
 
     def dump_thread_heap_freelist_single(self, freelist, idx):
@@ -165731,6 +165739,8 @@ class TcmallocHeapDumpCommand(GenericCommand, BufferingOutput):
             self.out.append(titlify("thread_heaps_ (head) @ {:#x}".format(thread_heap_head)))
 
             thread_heap = read_int_from_memory(thread_heap_head)
+            if thread_heap:
+                self.get_linked_thread_heaps(thread_heap)
             thread_heaps = []
             seen = set()
             while thread_heap:

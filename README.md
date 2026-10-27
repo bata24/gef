@@ -554,7 +554,7 @@ For the usage and options of each command, see [docs/COMMANDS.md](docs/COMMANDS.
         - Fix interpreter by `patchelf --set-interpreter /PATH/TO/x86_64-buildroot-linux-uclibc/sysroot/lib/ld64-uClibc.so.0 a.out`.
 - `uclibc-ng-visual-heap`: is colorized heap viewer for uClibc-ng.
     - ![](images/uclibc-ng-visual-heap.png)
-- `tcmalloc-heap-dump`: dumps TCMalloc (`gperftools-2.16-1` or named `libgoogle-perftools{4,-dev}`) free-list (x64 only).
+- `tcmalloc-heap-dump`: dumps TCMalloc (`gperftools-2.16-1` or named `libgoogle-perftools{4,-dev}`) free-list.
     - ![](images/tcmalloc-heap-dump.png)
     - How to test:
         - Run your test program with `LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libtcmalloc.so ./a.out`.
