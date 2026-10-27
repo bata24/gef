@@ -119,7 +119,7 @@ For the usage and options of each command, see [docs/COMMANDS.md](docs/COMMANDS.
 
 #### Memory Map
 
-<details open>
+<details>
 <summary><code>pagewalk</code>, <code>kvmmap</code></summary>
 
 - `pagewalk`: dumps page tables.
@@ -215,7 +215,7 @@ For the usage and options of each command, see [docs/COMMANDS.md](docs/COMMANDS.
 
 #### Linux Symbol/Type
 
-<details open>
+<details>
 <summary><code>ksymaddr-remote</code>, <code>ksymaddr-remote-apply</code>, <code>vmlinux-to-elf-apply</code>, <code>ktypes</code>, <code>ktypes-load</code>, <code>kload</code>, <code>kmod-load</code></summary>
 
 - `ksymaddr-remote`: displays kallsyms information from scanning kernel memory.
@@ -241,7 +241,7 @@ For the usage and options of each command, see [docs/COMMANDS.md](docs/COMMANDS.
 
 #### Linux Task
 
-<details open>
+<details>
 <summary><code>ktask</code>, <code>ksched</code>, <code>kcred</code></summary>
 
 - `ktask`: displays each task's address.
@@ -342,7 +342,7 @@ For the usage and options of each command, see [docs/COMMANDS.md](docs/COMMANDS.
 
 #### Linux Allocator
 
-<details open>
+<details>
 <summary><code>slub-dump</code>, <code>slab-dump</code>, <code>slob-dump</code>, <code>slub-tiny-dump</code>, <code>slab-contains</code>, <code>kmem-cache-alias</code>, <code>buddy-dump</code>, <code>buddy-contains</code>, <code>vmalloc-dump</code>, <code>kobj</code></summary>
 
 - `slub-dump`: dumps slub free-list.
@@ -1294,6 +1294,9 @@ For the supported architectures, see [docs/QEMU-USER-SUPPORTED-ARCH.md](docs/QEM
 </details>
 
 ### Other
+
+<details>
+<summary><code>gef help</code>, etc.</summary>
 - The category is introduced in `gef help`.
     - ![](images/gef-help.png)
 - Combined into one file (from `gef-extras`). The following are moved from `gef-extras`.
@@ -1303,6 +1306,8 @@ For the supported architectures, see [docs/QEMU-USER-SUPPORTED-ARCH.md](docs/QEM
     - It was updated up to Linux kernel 7.0 for each architecture.
 - Removed some features that I don't use: `$`, `ida-interact`, `gef-remote`, `pie`, `pcustom`, `ksymaddr`, `trace-run`, `shellcode`.
 - Many bug fixes / formatting improvements / usability enhancements (made it easy for me to use).
+
+</details>
 
 ## FAQ
 - See [docs/FAQ.md](docs/FAQ.md).
