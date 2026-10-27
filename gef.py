@@ -171381,6 +171381,7 @@ class ScallocHeapDumpCommand(GenericCommand, BufferingOutput):
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @Decorator.only_if_specific_arch(arch=("x86_64",))
     def do_invoke(self, args):
         if args.object_space is not None and not is_valid_addr(args.object_space):
             err("Cannot read object_space at {:#x}".format(args.object_space))
