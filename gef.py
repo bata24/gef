@@ -166441,7 +166441,7 @@ class TlsfHeapDumpCommand(GenericCommand, BufferingOutput):
 
 @register_command
 class HoardHeapDumpCommand(GenericCommand, BufferingOutput):
-    """Hoard v3.2 (2025/12/31) heap free-list viewer (x64 only)."""
+    """Hoard v3.2 (2025/12/31) heap free-list viewer."""
 
     _cmdline_ = "hoard-heap-dump"
     _category_ = "05-c. Heap - Other"
@@ -166499,7 +166499,7 @@ class HoardHeapDumpCommand(GenericCommand, BufferingOutput):
         for m in ProcessMap.get_process_maps():
             if m.path.startswith(("/", "[")):
                 continue
-            if m.permission != Permission.READ | Permission.WRITE:
+            if not m.permission & Permission.READ or not m.permission & Permission.WRITE:
                 continue
             for p in range(m.page_start, m.page_end, get_pagesize()):
                 if not is_valid_addr(p):
@@ -166519,7 +166519,7 @@ class HoardHeapDumpCommand(GenericCommand, BufferingOutput):
     def get_all_freelist_head_candidate_from_tls(self):
         threads = gdb.selected_inferior().threads()
         if not threads:
-            return
+            return []
 
         direction = TlsCommand.get_direction()
 
@@ -166530,8 +166530,10 @@ class HoardHeapDumpCommand(GenericCommand, BufferingOutput):
                 if tls is None:
                     continue
 
-                for i in range(1, 0x20):
+                for i in range(1, 0x40):
                     head_candidate_addr = tls + current_arch.ptrsize * i * direction
+                    if not is_valid_addr(head_candidate_addr):
+                        continue
                     head_candidate = read_int_from_memory(head_candidate_addr)
                     if not is_single_link_list(head_candidate):
                         continue
@@ -166540,7 +166542,7 @@ class HoardHeapDumpCommand(GenericCommand, BufferingOutput):
 
     def get_freelist_start(self, sb):
         # pattern1: HoardSuperblockHeaderHelper->_freeList
-        freeList = read_int_from_memory(sb + current_arch.ptrsize * 11)
+        freeList = read_int_from_memory(sb + current_arch.ptrsize * 9 + 16)
         if freeList:
             return [freeList]
 
@@ -166548,8 +166550,7 @@ class HoardHeapDumpCommand(GenericCommand, BufferingOutput):
         objectSize = read_int_from_memory(sb + current_arch.ptrsize * 2)
         totalObjects = read_int32_from_memory(sb + current_arch.ptrsize * 3 + 4)
 
-        sizeof_super_block_header = 0x70
-        sb_start = sb + sizeof_super_block_header
+        sb_start = read_int_from_memory(sb + current_arch.ptrsize * 7 + 16)
         sb_end = sb_start + objectSize * totalObjects
 
         heads = self.get_all_freelist_head_candidate_from_tls()
@@ -166559,27 +166560,27 @@ class HoardHeapDumpCommand(GenericCommand, BufferingOutput):
     def dump_super_block(self, sb):
         """
         struct Hoard::HoardSuperblockHeaderHelper<...> {
-            /* offset | size   */
-            /* 0x0000 | 0x0008 */    int (**)(void) _vptr.HoardSuperblockHeaderHelper;
-            /* 0x0008 | 0x0008 */    const size_t _magicNumber;
-            /* 0x0010 | 0x0008 */    const size_t _objectSize;
-            /* 0x0018 | 0x0001 */    const bool _objectSizeIsPowerOfTwo;
-            /* 0x001c | 0x0004 */    const unsigned int _totalObjects;
-            /* 0x0020 | 0x0001 */    class HL::SpinLockType _theLock;
-            /* 0x0028 | 0x0008 */    class Hoard::SmallHeap * _owner;
-            /* 0x0030 | 0x0008 */    Hoard::HoardSuperblockHeaderHelper<...>::BlockType * _prev;
-            /* 0x0038 | 0x0008 */    Hoard::HoardSuperblockHeaderHelper<...>::BlockType * _next;
-            /* 0x0040 | 0x0004 */    unsigned int _reapableObjects;
-            /* 0x0044 | 0x0004 */    unsigned int _objectsFree;
-            /* 0x0048 | 0x0008 */    const char * _start;
-            /* 0x0050 | 0x0008 */    char * _position;
-            /* 0x0058 | 0x0008 */    class FreeSLList _freeList; // or TLS
-        } // total: 0x60 bytes (+ 0x10 bytes padding)
+            /* offset (64-bit | 32-bit) */
+            /* 0x00 | 0x00 */ void **_vptr;
+            /* 0x08 | 0x04 */ const size_t _magicNumber;
+            /* 0x10 | 0x08 */ const size_t _objectSize;
+            /* 0x18 | 0x0c */ const bool _objectSizeIsPowerOfTwo;
+            /* 0x1c | 0x10 */ const unsigned int _totalObjects;
+            /* 0x20 | 0x14 */ HL::SpinLockType _theLock;
+            /* 0x28 | 0x18 */ std::atomic<HeapType *> _owner;
+            /* 0x30 | 0x1c */ BlockType *_prev;
+            /* 0x38 | 0x20 */ BlockType *_next;
+            /* 0x40 | 0x24 */ unsigned int _reapableObjects;
+            /* 0x44 | 0x28 */ unsigned int _objectsFree;
+            /* 0x48 | 0x2c */ const char *_start;
+            /* 0x50 | 0x30 */ char *_position;
+            /* 0x58 | 0x34 */ FreeSLList _freeList; // or TLS
+            /* 0x60 | 0x38 */ AtomicFreeList _delayedFreeList;
+        } // padded header: 0x70 bytes (64-bit), 0x40 bytes (32-bit)
 
         struct FreeSLList::Entry {
-            /* offset | size   */
-            /* 0x0000 | 0x0008 */    class FreeSLList::Entry * next;
-        } // total: 0x8 bytes
+            FreeSLList::Entry *next;
+        }
         """
 
         freed_address_color = Config.get("theme.heap_chunk_address_freed")
@@ -166587,8 +166588,8 @@ class HoardHeapDumpCommand(GenericCommand, BufferingOutput):
 
         sz = read_int_from_memory(sb + current_arch.ptrsize * 2)
         self.out.append(titlify("superblock @{:#x} (chunk_size={:#x})".format(sb, sz)))
-        reap_count = read_int32_from_memory(sb + current_arch.ptrsize * 8)
-        free_count = read_int32_from_memory(sb + current_arch.ptrsize * 8 + 4)
+        reap_count = read_int32_from_memory(sb + current_arch.ptrsize * 7 + 8)
+        free_count = read_int32_from_memory(sb + current_arch.ptrsize * 7 + 12)
 
         if reap_count == free_count == 0:
             self.out.append("Uninitialized")
@@ -166617,7 +166618,6 @@ class HoardHeapDumpCommand(GenericCommand, BufferingOutput):
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
-    @Decorator.only_if_specific_arch(arch=("x86_64",))
     def do_invoke(self, args):
         if args.superblock:
             super_blocks = args.superblock
