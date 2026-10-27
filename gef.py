@@ -173182,6 +173182,594 @@ class RpmallocHeapDumpCommand(GenericCommand, BufferingOutput):
         return
 
 
+@register_command
+class TbbmallocHeapDumpCommand(GenericCommand, BufferingOutput):
+    """oneTBB scalable allocator (tbbmalloc) free-list viewer."""
+
+    _cmdline_ = "tbbmalloc-heap-dump"
+    _category_ = "05-c. Heap - Other"
+
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("-hh", "--help-simple", action="store_true", help="show help without ASCII diagram.")
+    parser.add_argument("--tls", type=AddressUtil.parse_address, help="use specific address for TLSData.")
+    parser.add_argument("-a", "--all", action="store_true", help="dump TLSData of all threads.")
+    parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
+    parser.add_argument("-v", "--verbose", action="store_true", help="display also empty lists.")
+    _syntax_ = parser.format_help()
+
+    _note_ = [
+        "Simplified tbbmalloc structure:",
+        "",
+        "+-TLSData------------+       +-Block (16KiB aligned)-+         +-object-+   +-object-+",
+        "| next, prev         |       | publicFreeList        |-------->| next   |-->| next   |-->NULL or 0x1",
+        "| memPool            |       | nextPrivatizable      |         +--------+   +--------+",
+        "| bin[i]             |       | poolPtr               |",
+        "|   activeBlk        |------>+-----------------------+",
+        "|   mailbox          |--+    | next, previous        |<------->Block <-> Block <-> ...",
+        "| freeSlabBlocks     |  |    | bumpPtr               |         +-object-+   +-object-+",
+        "|   head             |  |    | freeList              |-------->| next   |-->| next   |-->NULL",
+        "| lloc               |  |    | tlsPtr, ownerTid      |         +--------+   +--------+",
+        "|   head             |  |    | allocatedCount        |",
+        "+--------------------+  |    | objectSize, isFull    |",
+        "                        |    +-----------------------+",
+        "                        |    | objects               |",
+        "                        |    +-----------------------+",
+        "                        +--->Block --> Block --> ... (blocks that have publicFreeList)",
+        "",
+        "+-MemoryPool (default pool)-----------------+",
+        "| next, prev                                |",
+        "| extMemPool.backend.freeLargeBlockBins[i]  |-->FreeBlock <-> FreeBlock <-> ...",
+        "| extMemPool.backend.freeSlabAlignedBins[i] |-->FreeBlock <-> FreeBlock <-> ...",
+        "| extMemPool.loc.hugeCache.bin[i].first     |-->LargeMemoryBlock <-> LargeMemoryBlock <-> ...",
+        "| extMemPool.loc.largeCache.bin[i].first    |-->LargeMemoryBlock <-> LargeMemoryBlock <-> ...",
+        "| extMemPool.allLocalCaches.head            |-->TLSData <-> TLSData <-> ...",
+        "| extMemPool.orphanedBlocks.bins[i].top     |-->Block --> Block --> ... (blocks of exited threads)",
+        "| bootStrapBlocks.bootStrapObjectList       |-->TLSData --> TLSData --> ... (freed TLSData)",
+        "+-------------------------------------------+",
+        "",
+        "* TLSData is found by scanning the pthread specific data near the thread pointer, symbols are not used.",
+        "* `--tls` can be used when the scan rejects a corrupted TLSData.",
+        "* Allocation pops `freeList` of the active block, moves `bumpPtr` down, then tries the previous blocks.",
+        "* Next, a block in `mailbox` takes its `publicFreeList`, then an orphaned block or a free slab block is used.",
+        "* `publicFreeList` holds objects freed by other threads. 0x1 terminates the list of an orphaned block.",
+        "* Freed large objects are cached in `lloc` first, then in `loc` of the pool.",
+        "* The first freed large object of each size is not cached in `loc` but returned to the backend.",
+        "* Empty bins of `loc` and the backend are not displayed even with `-v`.",
+        "* Supported versions are TBB 4.4.6 (4.4.1 on 32-bit) - oneTBB 2023.1.0 and the master (2026/10).",
+        "* The default build configuration is assumed.",
+    ]
+    _note_ = "\n".join(_note_)
+
+    # tbbmalloc_internal.h, frontend.cpp
+    SLAB_SIZE = 0x4000
+    NUM_BLOCK_BINS = 29
+    NUM_BLOCK_BIN_LIMIT = 31
+    UNUSABLE = 1
+    # backend.h, large_objects.h
+    BACKEND_BINS = 512
+    LARGE_CACHE_BINS = 1023
+    POOL_LAYOUTS = [
+        # name, hugeCache bins (None: geometric), Backend::backendCleanCnt, FreeBlockPool::lastAccessMiss,
+        # LocalLOCImpl::tail placed before head (None: unknown), orphanedBlocks placed in ExtMemoryPool
+        ("v2021.11.0-", None, True, False, True, True),
+        ("2019_U7-v2021.10.0", None, False, True, None, True),
+        ("2017_U7-2019_U6", 242, False, True, False, True),
+        ("4.4.1-2017_U6", 242, False, True, False, False),
+    ]
+
+    def get_cache_line_size(self):
+        # estimatedCacheLineSize
+        if is_ppc64():
+            return 128
+        return 64
+
+    def bin_to_size(self, index):
+        if index < 8:
+            return (index + 1) * 8
+        if index < 24:
+            group, i = divmod(index - 8, 4)
+            return (0x40 << group) + (0x10 << group) * (i + 1)
+        # fitting sizes hold 9, 6, 4, 3 and 2 objects in a block
+        cache_line = self.get_cache_line_size()
+        n = [9, 6, 4, 3, 2][index - 24]
+        return (self.SLAB_SIZE - cache_line * 2) // n & ~(cache_line - 1)
+
+    def huge_bin_to_size(self, pool, index):
+        if pool.huge_bins == 242:
+            return 0x800000 + index * 0x80000
+        shift = 23 + index // 8
+        return (1 << shift) + ((index % 8) << (shift - 3))
+
+    def read_block(self, addr):
+        """
+        class Block {
+            intptr_t blockState[2];
+            std::atomic<FreeObject*> publicFreeList;
+            std::atomic<Block*> nextPrivatizable;
+            MemoryPool* poolPtr; // 2017_U5-
+            // padding to estimatedCacheLineSize
+            Block* next;
+            Block* previous;
+            FreeObject* bumpPtr;
+            FreeObject* freeList;
+            std::atomic<TLSData*> tlsPtr;
+            ThreadId ownerTid; // pthread_t
+            BackRefIdx backRefIdx; // 8 bytes (x64), 4 bytes (x86)
+            uint16_t allocatedCount;
+            uint16_t objectSize;
+            bool isFull;
+        }; // total: estimatedCacheLineSize * 2
+        """
+        p = "Q" if current_arch.ptrsize == 8 else "I"
+        cache_line = self.get_cache_line_size()
+        data = read_memory(addr, cache_line * 2)
+        values = struct.unpack_from(Endian.endian_str() + p * 5, data)
+        values += struct.unpack_from(Endian.endian_str() + p * 7 + "2H?", data, cache_line)
+        names = [
+            "blockState0", "blockState1", "publicFreeList", "nextPrivatizable", "poolPtr", "next", "previous", "bumpPtr",
+            "freeList", "tlsPtr", "ownerTid", "backRefIdx", "allocatedCount", "objectSize", "isFull",
+        ]
+        dic = {"addr": addr, **dict(zip(names, values))}
+        block = GefUtil.dict_to_namedtuple("Block", dic)
+        return block
+
+    def read_lmb(self, addr):
+        """
+        struct LargeMemoryBlock {
+            intptr_t blockState[2];
+            MemoryPool* pool;
+            LargeMemoryBlock* next;
+            LargeMemoryBlock* prev;
+            LargeMemoryBlock* gPrev;
+            LargeMemoryBlock* gNext;
+            uintptr_t age;
+            size_t objectSize;
+            size_t unalignedSize;
+            BackRefIdx backRefIdx;
+        };
+        """
+        p = "Q" if current_arch.ptrsize == 8 else "I"
+        fmt = Endian.endian_str() + p * 10
+        values = struct.unpack(fmt, read_memory(addr, struct.calcsize(fmt)))
+        names = ["pool", "next", "prev", "gPrev", "gNext", "age", "objectSize", "unalignedSize"]
+        dic = {"addr": addr, **dict(zip(names, values[2:]))}
+        lmb = GefUtil.dict_to_namedtuple("LargeMemoryBlock", dic)
+        return lmb
+
+    def read_pool(self, addr, tls_addr):
+        """
+        class MemoryPool {
+            MemoryPool* next;
+            MemoryPool* prev;
+            struct ExtMemoryPool {
+                class Backend {
+                    ExtMemoryPool* extMemPool;
+                    ...
+                    IndexedBins freeLargeBlockBins; // BitMaskMin<512> bitMask, Bin freeBins[512] (head, tail, tLock)
+                    IndexedBins freeSlabAlignedBins;
+                    std::atomic<intptr_t> backendCleanCnt; // v2021.11.0-
+                } backend;
+                class LargeObjectCache {
+                    size_t hugeSizeThreshold; // 2019_U7-
+                    LargeObjectCacheImpl hugeCache; // [hugeSizeThresholdIdx,] tooLargeLOC, bitMask, CacheBin bin[]
+                    LargeObjectCacheImpl largeCache;
+                    std::atomic<uintptr_t> cacheCurrTime;
+                    ExtMemoryPool* extMemPool;
+                } loc;
+                AllLocalCaches allLocalCaches; // TLSRemote* head, MallocMutex listLock
+                OrphanedBlocks orphanedBlocks; // LifoList bins[numBlockBinLimit] (top, lock), 2017_U7-
+                intptr_t poolId;
+                AllLargeBlocksList lmbList;
+                rawAllocType rawAlloc;
+                rawFreeType rawFree;
+                size_t granularity;
+                bool keepAllMemory, delayRegsReleasing, fixedPool;
+                TLSKey tlsPointerKey;
+                std::atomic<int> softCachesCleanupInProgress; // v2021.11.0-
+                std::atomic<int> hardCachesCleanupInProgress; // v2021.11.0-
+            } extMemPool;
+            OrphanedBlocks orphanedBlocks; // -2017_U6
+            BootStrapBlocks bootStrapBlocks; // bootStrapLock, bootStrapBlock, bootStrapBlockUsed, bootStrapObjectList
+        };
+        """
+        ptrsize = current_arch.ptrsize
+        ext_addr = addr + ptrsize * 2
+        next_pool, prev_pool, backend_ext = (read_int_from_memory(addr + ptrsize * i) for i in range(3))
+        if backend_ext != ext_addr:
+            return None
+
+        def bit_mask_size(n):
+            return (n + ptrsize * 8 - 1) // (ptrsize * 8) * ptrsize
+
+        cache_bin_size = ptrsize * 11
+        indexed_bins_size = bit_mask_size(self.BACKEND_BINS) + self.BACKEND_BINS * ptrsize * 3
+        for name, huge_bins, has_clean_cnt, has_last_access_miss, lloc_tail_first, orphaned_in_ext in self.POOL_LAYOUTS:
+            dic = {"addr": addr, "version": name, "next": next_pool, "prev": prev_pool}
+            dic["has_last_access_miss"] = has_last_access_miss
+            dic["lloc_tail_first"] = lloc_tail_first
+            dic["freeLargeBlockBins"] = ext_addr + ptrsize * 18 + bit_mask_size(self.BACKEND_BINS)
+            dic["freeSlabAlignedBins"] = dic["freeLargeBlockBins"] + indexed_bins_size
+            loc = dic["freeSlabAlignedBins"] + indexed_bins_size + ptrsize * has_clean_cnt
+            impl_header_size = ptrsize
+            if huge_bins is None:
+                huge_bins = 136 if ptrsize == 8 else 64
+                loc += ptrsize
+                impl_header_size += ptrsize
+            dic["huge_bins"] = huge_bins
+            dic["hugeCache"] = loc + impl_header_size + bit_mask_size(huge_bins)
+            large_cache = dic["hugeCache"] + huge_bins * cache_bin_size
+            dic["largeCache"] = large_cache + impl_header_size + bit_mask_size(self.LARGE_CACHE_BINS)
+            alc = dic["largeCache"] + self.LARGE_CACHE_BINS * cache_bin_size + ptrsize * 2
+            # LargeObjectCache::extMemPool is placed just before allLocalCaches
+            if read_int_from_memory(alc - ptrsize, safe=True) != ext_addr:
+                continue
+            orphaned_size = self.NUM_BLOCK_BIN_LIMIT * ptrsize * 2
+            if orphaned_in_ext:
+                dic["orphanedBlocks"] = alc + ptrsize * 2
+                pool_id = dic["orphanedBlocks"] + orphaned_size
+                dic["bootStrapBlocks"] = pool_id + ptrsize * 6 + 8 + 8 * has_clean_cnt
+            else:
+                pool_id = alc + ptrsize * 2
+                dic["orphanedBlocks"] = pool_id + ptrsize * 6 + 8
+                dic["bootStrapBlocks"] = dic["orphanedBlocks"] + orphaned_size
+            # granularity is non-zero in a valid pool
+            if not read_int_from_memory(pool_id + ptrsize * 5):
+                continue
+            tls_list, error = self.get_list(read_int_from_memory(alc), 0x40, read_int_from_memory)
+            if tls_addr not in tls_list:
+                continue
+            dic["allLocalCaches"] = alc
+            dic["tls_list"] = tls_list
+            dic["tls_list_error"] = error
+            dic["poolId"] = read_int_from_memory(pool_id)
+            pool = GefUtil.dict_to_namedtuple("MemoryPool", dic)
+            return pool
+        return None
+
+    def read_tls(self, addr):
+        """
+        class TLSData {
+            TLSRemote* next;
+            TLSRemote* prev;
+            MemoryPool* memPool;
+            Bin bin[numBlockBinLimit]; // Block* activeBlk, std::atomic<Block*> mailbox, MallocMutex mailLock
+            class FreeBlockPool {
+                std::atomic<Block*> head;
+                int size;
+                Backend* backend;
+                bool lastAccessMiss; // -v2021.10.0
+            } freeSlabBlocks;
+            class LocalLOCImpl {
+                LargeMemoryBlock* tail; // head and tail are swapped before v2021.1.1
+                std::atomic<LargeMemoryBlock*> head;
+                size_t totalSize;
+                int numOfBlocks;
+            } lloc;
+            unsigned currCacheIdx;
+            std::atomic<bool> unused;
+        };
+        """
+        ptrsize = current_arch.ptrsize
+        p = "Q" if ptrsize == 8 else "I"
+        padding = "4x" if ptrsize == 8 else ""
+        n = self.NUM_BLOCK_BIN_LIMIT
+        fmt = Endian.endian_str() + p * (3 + n * 3) + p + "i" + padding + p
+        values = struct.unpack(fmt, read_memory(addr, struct.calcsize(fmt)))
+        dic = {"addr": addr}
+        dic["next"], dic["prev"], dic["memPool"] = values[:3]
+        dic["bin"] = [values[3 + i * 3:5 + i * 3] for i in range(n)]
+        dic["freeSlabBlocks"] = addr + ptrsize * (3 + n * 3)
+        dic["freeSlabBlocks_head"], dic["freeSlabBlocks_size"], fsb_backend = values[3 + n * 3:]
+        # FreeBlockPool::backend points to the backend at the head of the ExtMemoryPool
+        if not dic["memPool"] or fsb_backend != dic["memPool"] + ptrsize * 2:
+            return None
+        # TLSData is carved from the end of a slab block
+        block = self.read_block(addr - addr % self.SLAB_SIZE)
+        if not block.objectSize or (self.SLAB_SIZE - addr % self.SLAB_SIZE) % block.objectSize:
+            return None
+        pool = self.read_pool(dic["memPool"], addr)
+        if pool is None:
+            return None
+        dic["pool"] = pool
+
+        dic["lloc"] = addr + struct.calcsize(fmt) + ptrsize * pool.has_last_access_miss
+        fmt = Endian.endian_str() + p * 3 + "i" + padding + "I"
+        lloc0, lloc1, dic["lloc_totalSize"], dic["lloc_numOfBlocks"], dic["currCacheIdx"] = struct.unpack(
+            fmt, read_memory(dic["lloc"], struct.calcsize(fmt)),
+        )
+        dic["lloc_head"] = lloc1 if pool.lloc_tail_first else lloc0
+        if pool.lloc_tail_first is None:
+            # an empty list has a null head, otherwise the list from the head ends at the tail
+            if not lloc0 or not lloc1:
+                dic["lloc_head"] = 0
+            else:
+                nodes, _ = self.get_list(lloc0, ptrsize, lambda x: self.read_lmb(x).next)
+                if nodes[-1:] != [lloc1]:
+                    dic["lloc_head"] = lloc1
+        tls = GefUtil.dict_to_namedtuple("TLSData", dic)
+        return tls
+
+    def get_tls_heuristic(self):
+        tp = current_arch.get_tls()
+        if not tp:
+            return None
+        # pthread_getspecific() data is placed in the struct pthread, below (x86) or above (others) the thread pointer
+        lower = ProcessMap.process_lookup_address(tp - 1)
+        upper = ProcessMap.process_lookup_address(tp)
+        start = max(lower.page_start, tp - 0x10000) if lower else tp
+        end = min(upper.page_end, tp + 0x10000) if upper else tp
+        ptrsize = current_arch.ptrsize
+        words = slice_unpack(read_memory(start, end - start), ptrsize)
+        for addr in sorted(range(start, end, ptrsize), key=lambda x: abs(x - tp)):
+            value = words[(addr - start) // ptrsize]
+            # TLSData objects are 0x40 aligned and are not in the block header
+            if value % 0x40 or value % self.SLAB_SIZE < self.get_cache_line_size() * 2:
+                continue
+            try:
+                tls = self.read_tls(value)
+            except gdb.MemoryError:
+                continue
+            # the default pool is the head of the pool list
+            if tls and tls.pool.prev == 0:
+                return tls
+        return None
+
+    def get_tls_list(self):
+        if self.args.all:
+            threads = None
+        else:
+            threads = [gdb.selected_thread()]
+        tls_list = []
+        with ContextManager.threads(threads) as threads:
+            for thread in threads:
+                tls = self.get_tls_heuristic()
+                if tls:
+                    tls_list.append((thread.num, tls))
+        return tls_list
+
+    def get_list(self, head, alignment, read_next):
+        nodes = []
+        cur = head
+        while cur:
+            if cur in nodes:
+                return nodes, "{:#x} (loop detected)".format(cur)
+            if cur % alignment or not is_valid_addr(cur):
+                return nodes, "{:#x} (corrupted)".format(cur)
+            nodes.append(cur)
+            cur = read_next(cur)
+        return nodes, None
+
+    def dump_freelist(self, title, head, block=None, num=None):
+        freed_address_color = Config.get("theme.heap_chunk_address_freed")
+        corrupted_msg_color = Config.get("theme.heap_corrupted_msg")
+
+        self.out.append(title)
+        header_size = self.get_cache_line_size() * 2
+        cur = head
+        seen = set()
+        while cur and cur != self.UNUSABLE:
+            if cur in seen:
+                self.out.append(" -> {:s}".format(Color.colorify("{:#x} (loop detected)".format(cur), corrupted_msg_color)))
+                return
+            seen.add(cur)
+            next_cur = read_int_from_memory(cur, safe=True)
+            # objects of a block are placed after the block header
+            if block is not None and not block + header_size <= cur < block + self.SLAB_SIZE:
+                next_cur = None
+            if next_cur is None:
+                self.out.append(" -> {:s}".format(Color.colorify("{:#x} (corrupted)".format(cur), corrupted_msg_color)))
+                return
+            self.out.append(" -> {:s}".format(Color.colorify_hex(cur, freed_address_color)))
+            cur = next_cur
+        if num is None or num == len(seen):
+            self.out.append(" -> {:#x} (num: {:#x})".format(cur, len(seen)))
+        else:
+            self.out.append(" -> {:#x} (num: {:#x}, expected: {:#x})".format(cur, len(seen), num))
+        return
+
+    def dump_error(self, error):
+        corrupted_msg_color = Config.get("theme.heap_corrupted_msg")
+        if error:
+            self.out.append(" -> {:s}".format(Color.colorify(error, corrupted_msg_color)))
+        return
+
+    def dump_block(self, addr, label=None):
+        block = self.read_block(addr)
+        info = "objectSize: {:#x}, allocatedCount: {:#x}, isFull: {:d}, bumpPtr: {:#x}".format(
+            block.objectSize, block.allocatedCount, block.isFull, block.bumpPtr,
+        )
+        if label:
+            info = label + ", " + info
+        self.out.append("block @{:#x} ({:s})".format(addr, info))
+        # objects are carved from the end of the block by moving bumpPtr down
+        num = None
+        if block.objectSize:
+            if block.bumpPtr:
+                num = (addr + self.SLAB_SIZE - block.bumpPtr) // block.objectSize - 1
+            else:
+                num = (self.SLAB_SIZE - self.get_cache_line_size() * 2) // block.objectSize
+            num -= block.allocatedCount
+        if block.freeList or num or self.args.verbose:
+            self.dump_freelist("freeList:", block.freeList, addr, num)
+        if block.publicFreeList or self.args.verbose:
+            self.dump_freelist("publicFreeList:", block.publicFreeList, addr)
+        return
+
+    def dump_tls(self, thread_num, tls):
+        freed_address_color = Config.get("theme.heap_chunk_address_freed")
+        ptrsize = current_arch.ptrsize
+
+        title = "TLSData @ {:#x} (Thread Id:{:d})".format(tls.addr, thread_num)
+        self.out.append(titlify(title, color="bold", msg_color="bold"))
+        self.out.append("memPool: {:#x}, currCacheIdx: {:#x}".format(tls.memPool, tls.currCacheIdx))
+        for index in range(self.NUM_BLOCK_BINS):
+            active, mailbox = tls.bin[index]
+            if not self.args.verbose and not (active or mailbox):
+                continue
+            self.out.append(titlify("bin[{:#x}] (size: {:#x}) @ {:#x}".format(
+                index, self.bin_to_size(index), tls.addr + ptrsize * (3 + index * 3),
+            )))
+            if mailbox or self.args.verbose:
+                self.out.append("mailbox:")
+                nodes, error = self.get_list(mailbox, self.SLAB_SIZE, lambda x: self.read_block(x).nextPrivatizable)
+                for addr in nodes:
+                    self.out.append(" -> block @{:#x}".format(addr))
+                self.dump_error(error)
+            if not active:
+                self.out.append("activeBlk: 0x0")
+                continue
+            # allocation moves to the previous blocks, the next blocks are full
+            self.dump_block(active, "active")
+            block = self.read_block(active)
+            nodes, error = self.get_list(block.previous, self.SLAB_SIZE, lambda x: self.read_block(x).previous)
+            for addr in nodes:
+                self.dump_block(addr, "previous")
+            self.dump_error(error)
+            nodes, error = self.get_list(block.next, self.SLAB_SIZE, lambda x: self.read_block(x).next)
+            for addr in nodes:
+                self.dump_block(addr, "next")
+            self.dump_error(error)
+
+        if tls.freeSlabBlocks_head or self.args.verbose:
+            self.out.append(titlify("freeSlabBlocks @ {:#x}".format(tls.freeSlabBlocks)))
+            self.out.append("head (size: {:#x}):".format(tls.freeSlabBlocks_size))
+            nodes, error = self.get_list(tls.freeSlabBlocks_head, self.SLAB_SIZE, lambda x: self.read_block(x).next)
+            for addr in nodes:
+                self.out.append(" -> block @{:s}".format(Color.colorify_hex(addr, freed_address_color)))
+            self.dump_error(error)
+        if tls.lloc_head or self.args.verbose:
+            self.out.append(titlify("lloc @ {:#x}".format(tls.lloc)))
+            self.out.append("head (numOfBlocks: {:#x}, totalSize: {:#x}):".format(tls.lloc_numOfBlocks, tls.lloc_totalSize))
+            self.dump_lmb_list(tls.lloc_head)
+        return
+
+    def dump_lmb_list(self, head):
+        freed_address_color = Config.get("theme.heap_chunk_address_freed")
+        nodes, error = self.get_list(head, current_arch.ptrsize, lambda x: self.read_lmb(x).next)
+        for addr in nodes:
+            lmb = self.read_lmb(addr)
+            self.out.append(" -> lmb @{:s} (unalignedSize: {:#x}, age: {:#x})".format(
+                Color.colorify_hex(addr, freed_address_color), lmb.unalignedSize, lmb.age,
+            ))
+        self.dump_error(error)
+        return
+
+    def dump_cache_bins(self, name, addr, num, to_size):
+        ptrsize = current_arch.ptrsize
+        values = slice_unpack(read_memory(addr, num * ptrsize * 11), ptrsize)
+        for index in range(num):
+            # first, last, oldest, lastCleanedAge, ageThreshold, usedSize, cachedSize, meanHitRange, lastGet, aggregator
+            first, _, _, _, _, used_size, cached_size = values[index * 11:index * 11 + 7]
+            if not first:
+                continue
+            self.out.append(titlify("loc.{:s}.bin[{:#x}] (size: {:#x}) @ {:#x}".format(
+                name, index, to_size(index), addr + ptrsize * 11 * index,
+            )))
+            self.out.append("first (cachedSize: {:#x}, usedSize: {:#x}):".format(cached_size, used_size))
+            self.dump_lmb_list(first)
+        return
+
+    def dump_backend_bins(self, name, addr):
+        freed_address_color = Config.get("theme.heap_chunk_address_freed")
+        ptrsize = current_arch.ptrsize
+        # IndexedBins: BitMaskMin<512> bitMask, Bin freeBins[512] (head, tail, tLock)
+        addr += self.BACKEND_BINS // 8
+        heads = slice_unpack(read_memory(addr, self.BACKEND_BINS * ptrsize * 3), ptrsize)[::3]
+        for index, head in enumerate(heads):
+            if not head:
+                continue
+            if index == self.BACKEND_BINS - 1:
+                size = "{:#x}-".format(0x2000 * self.BACKEND_BINS)
+            else:
+                size = "{:#x}-{:#x}".format(0x2000 * (index + 1), 0x2000 * (index + 2) - 1)
+            self.out.append(titlify("backend.{:s}[{:#x}] (size: {:s}) @ {:#x}".format(
+                name, index, size, addr + ptrsize * 3 * index,
+            )))
+            # FreeBlock: GuardedSize myL, leftL, FreeBlock* prev, next, ...
+            nodes, error = self.get_list(head, ptrsize, lambda x: read_int_from_memory(x + ptrsize * 3))
+            for node in nodes:
+                self.out.append(" -> FreeBlock @{:s} (size: {:#x})".format(
+                    Color.colorify_hex(node, freed_address_color), read_int_from_memory(node),
+                ))
+            self.dump_error(error)
+        return
+
+    def dump_pool(self, pool):
+        ptrsize = current_arch.ptrsize
+
+        self.out.append(titlify("MemoryPool @ {:#x}".format(pool.addr), color="bold", msg_color="bold"))
+        self.out.append("version: {:s}, next: {:#x}, prev: {:#x}, poolId: {:#x}".format(
+            pool.version, pool.next, pool.prev, pool.poolId,
+        ))
+        self.out.append(titlify("allLocalCaches @ {:#x}".format(pool.allLocalCaches)))
+        self.out.append("head:")
+        for addr in pool.tls_list:
+            self.out.append(" -> TLSData @{:#x}".format(addr))
+        self.dump_error(pool.tls_list_error)
+
+        tops = slice_unpack(read_memory(pool.orphanedBlocks, self.NUM_BLOCK_BIN_LIMIT * ptrsize * 2), ptrsize)[::2]
+        for index in range(self.NUM_BLOCK_BINS):
+            if not self.args.verbose and not tops[index]:
+                continue
+            self.out.append(titlify("orphanedBlocks.bins[{:#x}] (size: {:#x}) @ {:#x}".format(
+                index, self.bin_to_size(index), pool.orphanedBlocks + ptrsize * 2 * index,
+            )))
+            self.out.append("top:")
+            nodes, error = self.get_list(tops[index], self.SLAB_SIZE, lambda x: self.read_block(x).next)
+            for addr in nodes:
+                self.dump_block(addr)
+            self.dump_error(error)
+
+        self.dump_cache_bins("largeCache", pool.largeCache, self.LARGE_CACHE_BINS, lambda x: 0x2000 * (x + 1))
+        self.dump_cache_bins("hugeCache", pool.hugeCache, pool.huge_bins, lambda x: self.huge_bin_to_size(pool, x))
+        self.dump_backend_bins("freeSlabAlignedBins", pool.freeSlabAlignedBins)
+        self.dump_backend_bins("freeLargeBlockBins", pool.freeLargeBlockBins)
+
+        head = read_int_from_memory(pool.bootStrapBlocks + ptrsize * 3)
+        if head or self.args.verbose:
+            self.out.append(titlify("bootStrapBlocks @ {:#x}".format(pool.bootStrapBlocks)))
+            self.dump_freelist("bootStrapObjectList:", head)
+        return
+
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    def do_invoke(self, args):
+        if args.tls is not None:
+            try:
+                tls = self.read_tls(args.tls)
+            except gdb.MemoryError:
+                err("Cannot read TLSData at {:#x}".format(args.tls))
+                return
+            if tls is None:
+                err("Failed to parse TLSData at {:#x}".format(args.tls))
+                return
+            tls_list = [(gdb.selected_thread().num, tls)]
+        else:
+            try:
+                tls_list = self.get_tls_list()
+            except gdb.error:
+                err("Cannot read TLSData")
+                return
+            if not tls_list:
+                err("Could not find TLSData")
+                return
+
+        self.out = []
+        for thread_num, tls in tls_list:
+            try:
+                self.dump_tls(thread_num, tls)
+            except gdb.error:
+                self.err_add_out("Cannot read TLSData at {:#x}".format(tls.addr))
+        _, tls = tls_list[0]
+        try:
+            self.dump_pool(tls.pool)
+        except gdb.error:
+            self.err_add_out("Cannot read MemoryPool at {:#x}".format(tls.pool.addr))
+        self.print_output()
+        return
+
+
 class JemallocBase:
     """Common helpers of the jemalloc heap parsers.
     Each parser resolves the structures of its version and returns them in a common form:

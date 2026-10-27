@@ -543,7 +543,7 @@ For the usage and options of each command, see [docs/COMMANDS.md](docs/COMMANDS.
 #### Other
 
 <details>
-<summary><code>uclibc-ng-heap-dump</code>, <code>uclibc-ng-visual-heap</code>, <code>tcmalloc-heap-dump</code>, <code>musl-heap-dump</code>, <code>go-heap-dump</code>, <code>tlsf-heap-dump</code>, <code>hoard-heap-dump</code>, <code>mimalloc-heap-dump</code>, <code>scalloc-heap-dump</code>, <code>snmalloc-heap-dump</code>, <code>ssmalloc-heap-dump</code>, <code>jemalloc-heap-dump</code>, <code>sfmalloc-heap-dump</code>, <code>rpmalloc-heap-dump</code></summary>
+<summary><code>uclibc-ng-heap-dump</code>, <code>uclibc-ng-visual-heap</code>, <code>tcmalloc-heap-dump</code>, <code>musl-heap-dump</code>, <code>go-heap-dump</code>, <code>tlsf-heap-dump</code>, <code>hoard-heap-dump</code>, <code>mimalloc-heap-dump</code>, <code>scalloc-heap-dump</code>, <code>snmalloc-heap-dump</code>, <code>ssmalloc-heap-dump</code>, <code>jemalloc-heap-dump</code>, <code>sfmalloc-heap-dump</code>, <code>rpmalloc-heap-dump</code>, <code>tbbmalloc-heap-dump</code></summary>
 
 - `uclibc-ng-heap-dump`: dumps uClibc-ng heap chunks.
     - Supported on x64 and x86, based on uClibc-ng malloc-standard.
@@ -623,6 +623,12 @@ For the usage and options of each command, see [docs/COMMANDS.md](docs/COMMANDS.
         - Get and extract the upstream source from https://github.com/mjansson/rpmalloc
         - Build with `cd rpmalloc && git switch main && python3 configure.py && ninja`.
         - Run your test program with `LD_PRELOAD=/PATH/TO/bin/linux/release/librpmalloc.so ./a.out`.
+- `tbbmalloc-heap-dump`: dumps tbbmalloc free-list.
+    - ![](images/tbbmalloc-heap-dump.png)
+    - How to test (x64):
+        - Get and extract the upstream source from https://github.com/uxlfoundation/oneTBB
+        - Build with `mkdir build && cd build && cmake .. && make`.
+        - Run your test program with `LD_PRELOAD=/PATH/TO/libtbbmalloc_proxy.so ./a.out`.
 
 </details>
 
