@@ -165926,7 +165926,7 @@ class GoHeapDumpCommand(GenericCommand, BufferingOutput):
         "* `spanClass >> 1` is used as the size class, and the size class is converted to chunk size.",
         "* `freeindex` and `allocBits` distinguish allocated/free objects in an in-use span.",
         "* Large objects use `elemsize`; non-heap spans are shown only with `--verbose`, without object data.",
-        "* Without debug types, the command assumes the Go 1.22.2 layout for the target pointer size.",
+        "* Without debug types, the layout is chosen by the Go version in `.go.buildinfo` (Go 1.18 or later).",
         "* If the runtime.mheap_ symbol is stripped, specify its address with `--mheap`.",
         "* `arenas`, `central`, and walking from `mspan.next` are currently unsupported.",
     ]
@@ -165957,6 +165957,7 @@ class GoHeapDumpCommand(GenericCommand, BufferingOutput):
         self.PageShift = 13
         self.PageSize = 1 << self.PageShift
         ptrsize = current_arch.ptrsize
+        version = self.get_go_version()
 
         # assume 1.22.2 (Ubuntu 24.04)
         """
@@ -165972,7 +165973,14 @@ class GoHeapDumpCommand(GenericCommand, BufferingOutput):
         } // total: 0x16ab8 bytes
         """
 
-        self.offset_allspans = GefUtil.member_offset("runtime.mheap", "allspans") or (0xb4 if ptrsize == 4 else 0x10148)
+        # the members before allspans changed in each of 1.19-1.21
+        allspans_dic = {
+            18: {4: 0x94, 8: 0x10138},
+            19: {4: 0xa4, 8: 0x10140},
+            20: {4: 0x9c, 8: 0x10120},
+        }
+        allspans = allspans_dic.get(version, {4: 0xb4, 8: 0x10148})[ptrsize]
+        self.offset_allspans = GefUtil.member_offset("runtime.mheap", "allspans") or allspans
 
         """
         struct runtime.mspan {
@@ -165992,18 +166000,43 @@ class GoHeapDumpCommand(GenericCommand, BufferingOutput):
             ...
         } // total: 0xa0 bytes
         """
+        # freeindex and nelems are uintptr in 1.21 and earlier, and pinnerBits was added in 1.21
+        if version is None or version >= 22:
+            index_size, nelems, allocBits, spanclass = 2, ptrsize * 6 + 2, ptrsize * 6 + 0x10, ptrsize * 9 + 0x1a
+        elif version == 21:
+            index_size, nelems, allocBits, spanclass = ptrsize, ptrsize * 7, ptrsize * 8 + 8, ptrsize * 11 + 0x12
+        else:
+            index_size, nelems, allocBits, spanclass = ptrsize, ptrsize * 7, ptrsize * 8 + 8, ptrsize * 10 + 0x12
         self.offset_next = GefUtil.member_offset("runtime.mspan", "next") or 0x0
         self.offset_prev = GefUtil.member_offset("runtime.mspan", "prev") or ptrsize
         self.offset_startAddr = GefUtil.member_offset("runtime.mspan", "startAddr") or ptrsize * 3
         self.offset_npages = GefUtil.member_offset("runtime.mspan", "npages") or ptrsize * 4
         self.offset_freeindex = GefUtil.member_offset("runtime.mspan", "freeindex") or ptrsize * 6
-        self.offset_nelems = GefUtil.member_offset("runtime.mspan", "nelems") or ptrsize * 6 + 2
-        self.offset_allocBits = GefUtil.member_offset("runtime.mspan", "allocBits") or ptrsize * 6 + 0x10
-        self.offset_spanclass = GefUtil.member_offset("runtime.mspan", "spanclass") or ptrsize * 9 + 0x1a
-        self.offset_state = GefUtil.member_offset("runtime.mspan", "state") or ptrsize * 9 + 0x1b
-        self.offset_elemsize = GefUtil.member_offset("runtime.mspan", "elemsize") or ptrsize * 9 + 0x20
+        self.offset_nelems = GefUtil.member_offset("runtime.mspan", "nelems") or nelems
+        self.offset_allocBits = GefUtil.member_offset("runtime.mspan", "allocBits") or allocBits
+        self.offset_spanclass = GefUtil.member_offset("runtime.mspan", "spanclass") or spanclass
+        self.offset_state = GefUtil.member_offset("runtime.mspan", "state") or spanclass + 1
+        self.offset_elemsize = GefUtil.member_offset("runtime.mspan", "elemsize") or spanclass + 6
+        index_size = GefUtil.member_type_size("runtime.mspan", "nelems") or index_size
+        self.read_index = {2: read_int16_from_memory, 4: read_int32_from_memory, 8: read_int64_from_memory}[index_size]
 
         return True
+
+    def get_go_version(self):
+        filepath = Path.get_filepath()
+        if filepath is None:
+            return None
+        elf = Elf.get_elf(filepath)
+        if elf is None or not elf.is_valid():
+            return None
+        buildinfo = elf.read_shdr(".go.buildinfo")
+        if buildinfo is None:
+            return None
+        # 1.18 and later store the version string inline
+        m = re.search(rb"go1\.(\d+)", buildinfo)
+        if m is None:
+            return None
+        return int(m.group(1))
 
     def get_mheap_(self):
         return Symbol.resolve_address("'runtime.mheap_'")
@@ -166060,8 +166093,8 @@ class GoHeapDumpCommand(GenericCommand, BufferingOutput):
             chunk_size = self.class_to_size_dic[spanclass]
             if spanclass == 0:
                 chunk_size = read_int_from_memory(mspan + self.offset_elemsize)
-            nelems = read_int16_from_memory(mspan + self.offset_nelems)
-            freeindex = read_int16_from_memory(mspan + self.offset_freeindex)
+            nelems = self.read_index(mspan + self.offset_nelems)
+            freeindex = self.read_index(mspan + self.offset_freeindex)
             if freeindex > nelems:
                 self.out.append("Invalid freeindex in mspan @ {:#x}".format(mspan))
                 return None
@@ -166155,8 +166188,6 @@ class GoHeapDumpCommand(GenericCommand, BufferingOutput):
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
-    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64", "MIPS32", "MIPS64",
-                                          "PPC64", "RISCV64", "S390X", "LOONGARCH64"))
     def do_invoke(self, args):
         if args.mheap is not None and not is_valid_addr(args.mheap):
             err("Cannot read mheap at {:#x}".format(args.mheap))

@@ -7292,7 +7292,7 @@ Simplified Go heap structure:
 * `spanClass >> 1` is used as the size class, and the size class is converted to chunk size.
 * `freeindex` and `allocBits` distinguish allocated/free objects in an in-use span.
 * Large objects use `elemsize`; non-heap spans are shown only with `--verbose`, without object data.
-* Without debug types, the command assumes the Go 1.22.2 layout for the target pointer size.
+* Without debug types, the layout is chosen by the Go version in `.go.buildinfo` (Go 1.18 or later).
 * If the runtime.mheap_ symbol is stripped, specify its address with `--mheap`.
 * `arenas`, `central`, and walking from `mspan.next` are currently unsupported.
 ```
