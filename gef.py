@@ -176067,7 +176067,7 @@ class uClibcNgHeap:
 
 @register_command
 class UclibcNgHeapDumpCommand(GenericCommand, BufferingOutput):
-    """uclibc-ng (libc/stdlib/malloc-standard) heap reusable chunks viewer (x64/x86 only)."""
+    """uclibc-ng (libc/stdlib/malloc-standard) heap reusable chunks viewer."""
 
     _cmdline_ = "uclibc-ng-heap-dump"
     _category_ = "05-c. Heap - Other"
@@ -176087,6 +176087,7 @@ class UclibcNgHeapDumpCommand(GenericCommand, BufferingOutput):
         "- No thread arena. Therefore, chunks do not have the NON_MAIN_ARENA flag.",
         "The structure of malloc-standard has remained largely unchanged from version 1.0 to the latest.",
         "Only libc/stdlib/malloc-standard is supported, not malloc or malloc-simple.",
+        "Without __malloc_state symbols, non-x86 targets require --malloc_state.",
         "Links are plain by default. Use -s for builds with Safe-Linking, including uClibc-ng 1.0.54 and 1.0.58.",
         "Since the final version of uclibc (not uclibc-ng) uses the same structure,",
         "this command should also be usable with uclibc.",
@@ -176215,6 +176216,9 @@ class UclibcNgHeapDumpCommand(GenericCommand, BufferingOutput):
         address = Symbol.resolve_address("__malloc_state")
         if address is not None:
             return address
+        if not is_x86():
+            err("Specify --malloc_state when the __malloc_state symbol is unavailable on this architecture")
+            return None
 
         # slow path
         # Do not use AddressUtil.parse_address("malloc").
@@ -176265,7 +176269,6 @@ class UclibcNgHeapDumpCommand(GenericCommand, BufferingOutput):
                                 return malloc_state
 
         # TODO
-        # - Other architecture
         # - static build + stripped
         return None
 
@@ -176519,7 +176522,6 @@ class UclibcNgHeapDumpCommand(GenericCommand, BufferingOutput):
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
-    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64"))
     def do_invoke(self, args):
         self.out = []
 
@@ -176825,7 +176827,6 @@ class UclibcNgVisualHeapCommand(UclibcNgHeapDumpCommand, BufferingOutput):
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
-    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64"))
     def do_invoke(self, args):
         if args.max_count is not None and args.max_count <= 0:
             err("Invalid maximum count")
