@@ -2,7 +2,7 @@
 
 ![](images/context.png)
 
-## Table of Contents
+# Table of Contents
 - [What Is This?](#what-is-this)
 - [Setup](#setup)
     - [Supported Environment](#supported-environment)
@@ -25,7 +25,7 @@
 - [FAQ](#faq)
 - [Links](#links)
 
-## What Is This?
+# What Is This?
 This is a fork of [GEF](https://github.com/hugsy/gef) that includes three major improvements:
 1. Adds [heuristic commands for kernel debugging](#qemu-systemkgdb-cooperation) __without requiring a symbolized `vmlinux`__ (for `qemu-system`, supports Linux kernel 3.x-7.0.x).
 2. Expands support to [many architectures](docs/QEMU-USER-SUPPORTED-ARCH.md) (for `qemu-user`).
@@ -33,13 +33,13 @@ This is a fork of [GEF](https://github.com/hugsy/gef) that includes three major 
 
 Numerous other commands have been added and enhanced. Enjoy!
 
-## Setup
+# Setup
 
-### Supported Environment
+## Supported Environment
 - Recommended: Ubuntu 24.04-26.04, Debian stable, and Arch Linux.
 - May work, but not recommended: Ubuntu 20.04-23.10.
 
-### Install
+## Install
 __The installer has been refactored. I recommend re-installing.__ (2026-10-17)
 
 - Run the following command:
@@ -71,7 +71,7 @@ __The installer has been refactored. I recommend re-installing.__ (2026-10-17)
         - Most features work fine even without external tools.
         - Extra Python packages are optional; commands requiring them remain unavailable until installed.
 
-### Upgrade
+## Upgrade
 ```bash
 python3 "$HOME/.gef/gef.py" --upgrade
 ```
@@ -81,7 +81,7 @@ python3 "$HOME/.gef/gef.py" --upgrade
     - Restart GDB after upgrading. Old `gef.venv.conf` and `skip-venv-check` files are no longer used.
     - If GDB's Python major or minor version changes, recreate `venv-gef` with a matching Python and reinstall its packages.
 
-### Uninstall
+## Uninstall
 ```bash
 rm -rf "$HOME/.gef"
 rm -f "$HOME/.gef.rc"
@@ -91,10 +91,10 @@ sed -i -e '/from gef import/d' "$HOME/.gdbinit"
 
 If you used `GEF_INSTALL_DIR`, remove that directory instead of `$HOME/.gef`.
 
-### Dependencies
+## Dependencies
 Please refer to [install-uv.sh](install-uv.sh) for installation requirements.
 
-### Supported Modes
+## Supported Modes
 - Standard debugging
 - Attaching to a running process
 - Attaching to a process in an isolated namespace (e.g., attaching from outside a **Docker** container)
@@ -111,13 +111,13 @@ Please refer to [install-uv.sh](install-uv.sh) for installation requirements.
 
 For a comprehensive list and additional details, see [docs/SUPPORTED-MODE.md](docs/SUPPORTED-MODE.md).
 
-## Added / Improved Features
+# Added / Improved Features
 
 For the usage and options of each command, see [docs/COMMANDS.md](docs/COMMANDS.md).
 
-### Qemu-system/KGDB Cooperation
+## Qemu-system/KGDB Cooperation
 
-#### Memory Map
+### Memory Map
 
 <details>
 <summary><code>pagewalk</code>, <code>kvmmap</code></summary>
@@ -146,7 +146,7 @@ For the usage and options of each command, see [docs/COMMANDS.md](docs/COMMANDS.
 
 </details>
 
-#### Register
+### Register
 
 <details>
 <summary><code>qreg</code>, <code>msr</code>, <code>cet</code>, <code>vbar</code>, <code>gdtinfo</code>, <code>idtinfo</code>, <code>read-system-register-for-qemu-arm</code>, <code>read-system-register-for-kgdb</code>, <code>switch-el</code></summary>
@@ -172,7 +172,7 @@ For the usage and options of each command, see [docs/COMMANDS.md](docs/COMMANDS.
 
 </details>
 
-#### Linux Basic
+### Linux Basic
 
 <details>
 <summary><code>kbase</code>, <code>kversion</code>, <code>kcmdline</code>, <code>kcurrent</code>, <code>kchecksec</code>, <code>kmagic</code>, <code>kpercpu</code>, <code>ks-selftest</code></summary>
@@ -192,7 +192,7 @@ For the usage and options of each command, see [docs/COMMANDS.md](docs/COMMANDS.
 
 </details>
 
-#### Virt/Phys/Page
+### Virt/Phys/Page
 
 <details>
 <summary><code>v2p</code>, <code>p2v</code>, <code>xp</code>, <code>page</code>, <code>slab-virtual</code>, <code>pageinfo</code>, <code>highmem-dump</code></summary>
@@ -213,7 +213,7 @@ For the usage and options of each command, see [docs/COMMANDS.md](docs/COMMANDS.
 
 </details>
 
-#### Linux Symbol/Type
+### Linux Symbol/Type
 
 <details>
 <summary><code>ksymaddr-remote</code>, <code>ksymaddr-remote-apply</code>, <code>vmlinux-to-elf-apply</code>, <code>ktypes</code>, <code>ktypes-load</code>, <code>kload</code>, <code>kmod-load</code></summary>
@@ -239,7 +239,7 @@ For the usage and options of each command, see [docs/COMMANDS.md](docs/COMMANDS.
 
 </details>
 
-#### Linux Task
+### Linux Task
 
 <details>
 <summary><code>ktask</code>, <code>ksched</code>, <code>kcred</code></summary>
@@ -265,7 +265,7 @@ For the usage and options of each command, see [docs/COMMANDS.md](docs/COMMANDS.
 
 </details>
 
-#### Linux Advanced
+### Linux Advanced
 
 <details>
 <summary><code>kconfig</code>, <code>ksyscalls</code>, <code>ksysctl</code>, <code>kmod</code>, <code>kops</code>, <code>kcdev</code>, <code>kbdev</code>, <code>kfilesystems</code>, <code>kmount</code>, <code>kclock-source</code>, <code>kdmesg</code>, <code>kpipe</code>, <code>kbpf</code>, <code>ktimer</code>, <code>kpcidev</code>, <code>kipcs</code>, <code>kdevio</code>, <code>kdmabuf</code>, <code>kirq</code>, <code>knetdev</code>, <code>kworkqueue</code>, <code>kwalk</code>, <code>kpath</code>, <code>kvfs</code>, <code>ksock</code>, <code>kskb</code>, <code>klsm</code>, <code>knft</code>, <code>kio-uring</code>, <code>krefs</code>, <code>kkeyring</code></summary>
@@ -340,7 +340,7 @@ For the usage and options of each command, see [docs/COMMANDS.md](docs/COMMANDS.
 
 </details>
 
-#### Linux Allocator
+### Linux Allocator
 
 <details>
 <summary><code>slub-dump</code>, <code>slab-dump</code>, <code>slob-dump</code>, <code>slub-tiny-dump</code>, <code>slab-contains</code>, <code>kmem-cache-alias</code>, <code>buddy-dump</code>, <code>buddy-contains</code>, <code>vmalloc-dump</code>, <code>kobj</code></summary>
@@ -380,7 +380,7 @@ For the usage and options of each command, see [docs/COMMANDS.md](docs/COMMANDS.
 
 </details>
 
-#### Linux Dynamic Inspection
+### Linux Dynamic Inspection
 
 <details>
 <summary><code>ktrace</code>, <code>thunk-tracer</code>, <code>usermodehelper-tracer</code>, <code>kmalloc-tracer</code>, <code>kmalloc-allocated-by</code>, <code>kuaf-watch</code>, <code>kpage-watch</code></summary>
@@ -403,7 +403,7 @@ For the usage and options of each command, see [docs/COMMANDS.md](docs/COMMANDS.
 
 </details>
 
-#### TrustZone
+### TrustZone
 
 <details>
 <summary><code>xsm</code>, <code>wsm</code>, <code>bsm</code>, <code>optee-break-ta</code>, <code>optee-smc-service-dump</code>, <code>optee-ta-dump</code>, <code>optee-shm-list</code>, <code>optee-bget-dump</code></summary>
@@ -434,7 +434,19 @@ For the usage and options of each command, see [docs/COMMANDS.md](docs/COMMANDS.
 
 </details>
 
-#### Other
+### SMM
+
+<details>
+<summary><code>smm-status</code>, <code>smm-dump</code></summary>
+
+- `smm-status`: displays the current SMM status and an SMRAM preview.
+    - ![](images/smm-status.png)
+- `smm-dump`: dumps the detected SMRAM range to a file.
+    - ![](images/smm-dump.png)
+
+</details>
+
+### Other
 
 <details>
 <summary><code>ksearch-code-ptr</code>, <code>kdiff</code>, <code>uefi-ovmf-info</code>, <code>qemu-device-info</code></summary>
@@ -451,21 +463,9 @@ For the usage and options of each command, see [docs/COMMANDS.md](docs/COMMANDS.
 
 </details>
 
-#### SMM
+## Heap Dump Features
 
-<details>
-<summary><code>smm-status</code>, <code>smm-dump</code></summary>
-
-- `smm-status`: displays the current SMM status and an SMRAM preview.
-    - ![](images/smm-status.png)
-- `smm-dump`: dumps the detected SMRAM range to a file.
-    - ![](images/smm-dump.png)
-
-</details>
-
-### Heap Dump Features
-
-#### Glibc
+### Glibc
 
 <details>
 <summary><code>heap arenas</code>, <code>heap top</code>, <code>heap bins-simple</code>, <code>heap parse</code>, <code>heap try-malloc</code>, <code>heap try-free</code>, <code>heap try-realloc</code>, <code>heap try-calloc</code>, <code>heap tcache-index-helper</code>, <code>heap find-fake-fast</code>, <code>heap extract-heap-addr</code>, <code>heap calc-protected-fd</code>, <code>heap visual-heap</code>, <code>heap tracer</code>, <code>heap dump-image</code>, <code>heap snapshot</code>, <code>heap snapshot-compare</code></summary>
@@ -514,7 +514,7 @@ For the usage and options of each command, see [docs/COMMANDS.md](docs/COMMANDS.
 
 </details>
 
-#### Chromium/V8
+### Chromium/V8
 
 <details>
 <summary><code>partition-alloc-dump</code>, <code>v8</code>, <code>cage</code>, <code>v8-list-maps</code>, <code>v8-dump-space</code></summary>
@@ -540,7 +540,7 @@ For the usage and options of each command, see [docs/COMMANDS.md](docs/COMMANDS.
 
 </details>
 
-#### Other
+### Other
 
 <details>
 <summary><code>uclibc-ng-heap-dump</code>, <code>uclibc-ng-visual-heap</code>, <code>tcmalloc-heap-dump</code>, <code>musl-heap-dump</code>, <code>go-heap-dump</code>, <code>tlsf-heap-dump</code>, <code>hoard-heap-dump</code>, <code>mimalloc-heap-dump</code>, <code>scalloc-heap-dump</code>, <code>snmalloc-heap-dump</code>, <code>ssmalloc-heap-dump</code>, <code>jemalloc-heap-dump</code>, <code>sfmalloc-heap-dump</code>, <code>rpmalloc-heap-dump</code>, <code>tbbmalloc-heap-dump</code></summary>
@@ -632,7 +632,7 @@ For the usage and options of each command, see [docs/COMMANDS.md](docs/COMMANDS.
 
 </details>
 
-### Qemu-user Cooperation
+## Qemu-user Cooperation
 
 For the supported architectures, see [docs/QEMU-USER-SUPPORTED-ARCH.md](docs/QEMU-USER-SUPPORTED-ARCH.md).
 
@@ -652,9 +652,9 @@ For the supported architectures, see [docs/QEMU-USER-SUPPORTED-ARCH.md](docs/QEM
 
 </details>
 
-### Debugging Support
+## Debugging Support
 
-#### Context
+### Context
 
 <details>
 <summary><code>context</code>, <code>registers</code>, <code>telescope</code></summary>
@@ -684,7 +684,7 @@ For the supported architectures, see [docs/QEMU-USER-SUPPORTED-ARCH.md](docs/QEM
 
 </details>
 
-#### Breakpoint
+### Breakpoint
 
 <details>
 <summary><code>break-rva</code>, <code>command-break</code>, <code>main-break</code>, <code>load-break</code>, <code>regdump-break</code>, <code>multi-break</code>, <code>break-if-taken</code>, <code>break-if-not-taken</code></summary>
@@ -702,7 +702,7 @@ For the supported architectures, see [docs/QEMU-USER-SUPPORTED-ARCH.md](docs/QEM
 
 </details>
 
-#### Basic Command Extension
+### Basic Command Extension
 
 <details>
 <summary><code>up</code>, <code>down</code>, <code>time</code>, <code>multi-line</code>, <code>stepi-for-kgdb</code></summary>
@@ -717,7 +717,7 @@ For the supported architectures, see [docs/QEMU-USER-SUPPORTED-ARCH.md](docs/QEM
 
 </details>
 
-#### Execution
+### Execution
 
 <details>
 <summary><code>exec-until</code>, <code>call-trace</code>, <code>xuntil</code>, <code>strings-continue</code>, <code>xskip</code></summary>
@@ -734,7 +734,7 @@ For the supported architectures, see [docs/QEMU-USER-SUPPORTED-ARCH.md](docs/QEM
 
 </details>
 
-#### Assemble
+### Assemble
 
 <details>
 <summary><code>ii</code>, <code>dasm</code>, <code>asm-list</code></summary>
@@ -750,7 +750,7 @@ For the supported architectures, see [docs/QEMU-USER-SUPPORTED-ARCH.md](docs/QEM
 
 </details>
 
-#### Context Extension
+### Context Extension
 
 <details>
 <summary><code>extra</code>, <code>comment</code>, <code>smart-cpp-function-name</code></summary>
@@ -761,7 +761,7 @@ For the supported architectures, see [docs/QEMU-USER-SUPPORTED-ARCH.md](docs/QEM
 
 </details>
 
-#### Syscall
+### Syscall
 
 <details>
 <summary><code>mprotect</code>, <code>hijack-fd</code>, <code>call-syscall</code>, <code>mmap</code>, <code>munmap</code>, <code>kill-threads</code>, <code>syscall-search</code>, <code>xtap</code></summary>
@@ -782,7 +782,7 @@ For the supported architectures, see [docs/QEMU-USER-SUPPORTED-ARCH.md](docs/QEM
 
 </details>
 
-#### Emulation
+### Emulation
 
 <details>
 <summary><code>unicorn-emulate</code>, <code>unicorn-emulate-script</code>, <code>angr</code>, <code>future-calls</code></summary>
@@ -801,7 +801,7 @@ For the supported architectures, see [docs/QEMU-USER-SUPPORTED-ARCH.md](docs/QEM
 
 </details>
 
-#### Other
+### Other
 
 <details>
 <summary><code>ropper</code>, <code>format-string-helper</code>, <code>add-symbol-temporary</code>, <code>seccomp</code>, <code>onegadget</code>, <code>rp</code>, <code>follow</code></summary>
@@ -821,9 +821,9 @@ For the supported architectures, see [docs/QEMU-USER-SUPPORTED-ARCH.md](docs/QEM
 
 </details>
 
-### Process Information
+## Process Information
 
-#### General
+### General
 
 <details>
 <summary><code>proc-info</code>, <code>elf-info</code>, <code>fds</code>, <code>proc-dump</code></summary>
@@ -842,7 +842,7 @@ For the supported architectures, see [docs/QEMU-USER-SUPPORTED-ARCH.md](docs/QEM
 
 </details>
 
-#### Base Address
+### Base Address
 
 <details>
 <summary><code>tls</code>, <code>fsbase</code>, <code>gsbase</code>, <code>libc</code>, <code>ld</code>, <code>heapbase</code>, <code>codebase</code></summary>
@@ -856,7 +856,7 @@ For the supported architectures, see [docs/QEMU-USER-SUPPORTED-ARCH.md](docs/QEM
 
 </details>
 
-#### Memory/Section
+### Memory/Section
 
 <details>
 <summary><code>vmmap</code>, <code>xinfo</code></summary>
@@ -878,7 +878,7 @@ For the supported architectures, see [docs/QEMU-USER-SUPPORTED-ARCH.md](docs/QEM
 
 </details>
 
-#### Trivial Information
+### Trivial Information
 
 <details>
 <summary><code>pid</code>, <code>tid</code>, <code>filename</code>, <code>auxv</code>, <code>argv</code>, <code>envp</code>, <code>dumpargs</code>, <code>vdso</code>, <code>vvar</code>, <code>errno</code></summary>
@@ -903,7 +903,7 @@ For the supported architectures, see [docs/QEMU-USER-SUPPORTED-ARCH.md](docs/QEM
 
 </details>
 
-#### Complex Structure Information
+### Complex Structure Information
 
 <details>
 <summary><code>got</code>, <code>got-all</code>, <code>dwarf-exception-handler</code>, <code>dynamic</code>, <code>link-map</code>, <code>dtor-dump</code>, <code>iouring-dump</code>, <code>stdio-dump</code>, <code>fpchain</code>, <code>unwind-info</code>, <code>cpp-vtable</code></summary>
@@ -940,7 +940,7 @@ For the supported architectures, see [docs/QEMU-USER-SUPPORTED-ARCH.md](docs/QEM
 
 </details>
 
-#### Security
+### Security
 
 <details>
 <summary><code>checksec</code>, <code>canary</code>, <code>capability</code>, <code>ptr-mangle</code>, <code>ptr-demangle</code>, <code>search-mangled-ptr</code>, <code>mte-tags</code>, <code>sighands</code></summary>
@@ -975,7 +975,7 @@ For the supported architectures, see [docs/QEMU-USER-SUPPORTED-ARCH.md](docs/QEM
 
 </details>
 
-#### Symbol
+### Symbol
 
 <details>
 <summary><code>magic</code>, <code>symbols</code></summary>
@@ -987,7 +987,7 @@ For the supported architectures, see [docs/QEMU-USER-SUPPORTED-ARCH.md](docs/QEM
 
 </details>
 
-#### Type
+### Type
 
 <details>
 <summary><code>types</code>, <code>dt</code></summary>
@@ -1011,9 +1011,9 @@ For the supported architectures, see [docs/QEMU-USER-SUPPORTED-ARCH.md](docs/QEM
 
 </details>
 
-### Memory
+## Memory
 
-#### Search
+### Search
 
 <details>
 <summary><code>search-pattern</code>, <code>strings</code>, <code>search-cfi-gadgets</code>, <code>find-syscall</code></summary>
@@ -1032,7 +1032,7 @@ For the supported architectures, see [docs/QEMU-USER-SUPPORTED-ARCH.md](docs/QEM
 
 </details>
 
-#### View
+### View
 
 <details>
 <summary><code>hexdump</code>, <code>hexdump-flexible</code>, <code>json</code>, <code>xs</code>, <code>xc</code>, <code>sigreturn</code>, <code>ucontext</code>, <code>jmpbuf</code></summary>
@@ -1059,7 +1059,7 @@ For the supported architectures, see [docs/QEMU-USER-SUPPORTED-ARCH.md](docs/QEM
 
 </details>
 
-#### Compare
+### Compare
 
 <details>
 <summary><code>memcmp</code></summary>
@@ -1069,7 +1069,7 @@ For the supported architectures, see [docs/QEMU-USER-SUPPORTED-ARCH.md](docs/QEM
 
 </details>
 
-#### Patch
+### Patch
 
 <details>
 <summary><code>patch</code>, <code>memset</code>, <code>memcpy</code>, <code>memswap</code>, <code>meminsert</code></summary>
@@ -1087,7 +1087,7 @@ For the supported architectures, see [docs/QEMU-USER-SUPPORTED-ARCH.md](docs/QEM
 
 </details>
 
-#### Calculation
+### Calculation
 
 <details>
 <summary><code>hash</code>, <code>crc</code>, <code>base-n-decode</code>, <code>base-n-encode</code>, <code>morse-decode</code>, <code>morse-encode</code>, <code>strlen</code>, <code>is-mem-zero</code>, <code>seq-length</code></summary>
@@ -1109,7 +1109,7 @@ For the supported architectures, see [docs/QEMU-USER-SUPPORTED-ARCH.md](docs/QEM
 
 </details>
 
-#### Dump/Load
+### Dump/Load
 
 <details>
 <summary><code>smart-memory-dump</code>, <code>load-file</code>, <code>load-file-mmap</code></summary>
@@ -1121,7 +1121,7 @@ For the supported architectures, see [docs/QEMU-USER-SUPPORTED-ARCH.md](docs/QEM
 
 </details>
 
-#### Investigation
+### Investigation
 
 <details>
 <summary><code>binwalk-memory</code>, <code>filetype-memory</code>, <code>sixel-memory</code>, <code>peek-pageframe</code>, <code>peek-pageflags</code>, <code>vdump</code>, <code>freq-analysis</code>, <code>stack-recover</code></summary>
@@ -1146,9 +1146,9 @@ For the supported architectures, see [docs/QEMU-USER-SUPPORTED-ARCH.md](docs/QEM
 
 </details>
 
-### Register
+## Register
 
-#### View
+### View
 
 <details>
 <summary><code>sysreg</code>, <code>pac-keys</code>, <code>fpu</code>, <code>mmx</code>, <code>sse</code>, <code>avx</code>, <code>avx512</code>, <code>cpuid</code></summary>
@@ -1166,7 +1166,7 @@ For the supported architectures, see [docs/QEMU-USER-SUPPORTED-ARCH.md](docs/QEM
 
 </details>
 
-#### Modify
+### Modify
 
 <details>
 <summary><code>edit-flags</code>, <code>xmmset</code>, <code>mmxset</code></summary>
@@ -1183,9 +1183,9 @@ For the supported architectures, see [docs/QEMU-USER-SUPPORTED-ARCH.md](docs/QEM
 
 </details>
 
-### Misc
+## Misc
 
-#### Conversion
+### Conversion
 
 <details>
 <summary><code>u2d</code>, <code>unsigned</code>, <code>convert</code>, <code>addressify</code>, <code>cpp-mangle</code>, <code>cpp-demangle</code></summary>
@@ -1202,7 +1202,7 @@ For the supported architectures, see [docs/QEMU-USER-SUPPORTED-ARCH.md](docs/QEM
 
 </details>
 
-#### Search
+### Search
 
 <details>
 <summary><code>constgrep</code></summary>
@@ -1212,7 +1212,7 @@ For the supported architectures, see [docs/QEMU-USER-SUPPORTED-ARCH.md](docs/QEM
 
 </details>
 
-#### Show Example
+### Show Example
 
 <details>
 <summary><code>ret2dl-hint</code>, <code>srop-hint</code></summary>
@@ -1224,7 +1224,7 @@ For the supported architectures, see [docs/QEMU-USER-SUPPORTED-ARCH.md](docs/QEM
 
 </details>
 
-#### Calculation
+### Calculation
 
 <details>
 <summary><code>distance</code>, <code>crc32rev</code></summary>
@@ -1236,7 +1236,7 @@ For the supported architectures, see [docs/QEMU-USER-SUPPORTED-ARCH.md](docs/QEM
 
 </details>
 
-#### Diff
+### Diff
 
 <details>
 <summary><code>saveo</code>, <code>diffo</code></summary>
@@ -1246,7 +1246,7 @@ For the supported architectures, see [docs/QEMU-USER-SUPPORTED-ARCH.md](docs/QEM
 
 </details>
 
-#### Qemu-system
+### Qemu-system
 
 <details>
 <summary><code>qemu-system-memory-region-dump</code></summary>
@@ -1256,7 +1256,7 @@ For the supported architectures, see [docs/QEMU-USER-SUPPORTED-ARCH.md](docs/QEM
 
 </details>
 
-### GEF Maintenance
+## GEF Maintenance
 
 <details>
 <summary><code>theme</code>, <code>reset-cache</code>, <code>tmux-setup</code>, <code>gef version</code>, <code>gef status</code>, <code>gef reset-breakpoint</code>, <code>gef arch-list</code>, <code>gef pyobj-list</code>, <code>gef avail-comm-list</code>, <code>gef set-arch</code>, <code>gef check-update</code>, <code>gef dump-commands</code>, <code>history</code></summary>
@@ -1293,10 +1293,11 @@ For the supported architectures, see [docs/QEMU-USER-SUPPORTED-ARCH.md](docs/QEM
 
 </details>
 
-### Other
+## Other
 
 <details>
 <summary><code>gef help</code>, etc.</summary>
+
 - The category is introduced in `gef help`.
     - ![](images/gef-help.png)
 - Combined into one file (from `gef-extras`). The following are moved from `gef-extras`.
@@ -1309,10 +1310,10 @@ For the supported architectures, see [docs/QEMU-USER-SUPPORTED-ARCH.md](docs/QEM
 
 </details>
 
-## FAQ
+# FAQ
 - See [docs/FAQ.md](docs/FAQ.md).
 
-## Links
+# Links
 - Why I decided to make this
     - [gefを改造した話](https://hackmd.io/@bata24/rJVtBJsrP)
 - The story behind each command, etc.
