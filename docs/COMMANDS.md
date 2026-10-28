@@ -7857,6 +7857,64 @@ Simplified jemalloc (v3.x/v4.x) structure:
 * v3.x/v4.x huge allocations (outside arena chunks) and jemalloc v2.x or older are not supported.
 ```
 
+## `mesh-heap-dump`
+
+Mesh (as of October 2026) heap free-list viewer.
+
+
+### Syntax
+
+```text
+usage: mesh-heap-dump [-h] [-hh] [--heap HEAP] [-a] [-n] [-v]
+
+options:
+  -h, --help          show this help message and exit
+  -hh, --help-simple  show help without ASCII diagram.
+  --heap HEAP         use specific address for ThreadLocalHeap.
+  -a, --all           dump ThreadLocalHeap of all threads.
+  -n, --no-pager      do not use the pager.
+  -v, --verbose       display also empty lists and free objects of empty miniheaps.
+```
+
+### Notes
+
+```text
+Simplified Mesh structure:
+
++-ThreadLocalHeap--------------+
+| _shuffleVector[cl]           |    +-MiniHeap----+
+|   _start[i]                  |    | _span       |---> span (objects of the size class)
+|   _maxCount                  |    | _freelist   |---> MiniHeap <-> MiniHeap <-> ... (by MiniHeapID)
+|   _off                       |    | _current    |
+|   _objectSize                |    | _flags      |
+|   _attachedMiniheaps[i]      |--->| _nextMeshed |
+|   _list[_off:_maxCount]      |    | _bitmap     | (bit 0: free and not in _list)
+|     {i, bit}                 |    +-------------+
+| _current                     |
+| _global                      |--+
+| _next, _prev                 |  |
++------------------------------+  |
+                                  v
++-GlobalHeap-------------------------+
+| _arenaBegin                        |
+| _mhAllocator._arena                |---> MiniHeap[0], MiniHeap[1], ... (indexed by MiniHeapID)
+| _clean[span_class]                 |---> Span, Span, ... (free spans)
+| _dirty[span_class]                 |---> Span, Span, ... (free spans not yet returned to the OS)
+| _emptyFreelist[cl]                 |---> MiniHeap <-> MiniHeap <-> ... (no object is used)
+| _partialFreelist[cl]               |---> MiniHeap <-> MiniHeap <-> ... (less than 80% is used)
+| _pendingPartialHead[cl]            |---> MiniHeap --> MiniHeap --> ... (by _pendingNext, 2025/12-)
+| _fullList[cl]                      |---> MiniHeap <-> MiniHeap <-> ... (no object is free, -2024/07)
++------------------------------------+
+
+* The ThreadLocalHeap is resolved from `_threadLocalHeap` if symbols are available.
+* Without symbols, the TLS near the thread pointer is scanned for a ThreadLocalHeap with the Mesh size classes.
+* Allocation pops `_list[_off]` and the object is `_start[i] + bit * _objectSize`.
+* When `_list` is exhausted, the free bits of the attached miniheaps are moved to `_list`.
+* Supported versions are Mesh 07b83f6 (2020/03/11) - d2bed33 (2024/07/06) with 4KB pages,
+  and cb40600 (2025/12/01) - fa1542b (2026/10/21) with 4KB or 16KB pages. Mesh does not support 32-bit.
+* `_fullList` (-2024/07) is displayed only with `-v`.
+```
+
 ## `mimalloc-heap-dump`
 
 mimalloc heap free-list viewer.

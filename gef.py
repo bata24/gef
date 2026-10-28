@@ -175710,6 +175710,517 @@ class JemallocV5(JemallocBase):
 
 
 @register_command
+class MeshHeapDumpCommand(GenericCommand, BufferingOutput):
+    """Mesh (as of October 2026) heap free-list viewer."""
+
+    _cmdline_ = "mesh-heap-dump"
+    _category_ = "05-d. Heap - Other"
+
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("-hh", "--help-simple", action="store_true", help="show help without ASCII diagram.")
+    parser.add_argument("--heap", type=AddressUtil.parse_address, help="use specific address for ThreadLocalHeap.")
+    parser.add_argument("-a", "--all", action="store_true", help="dump ThreadLocalHeap of all threads.")
+    parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
+    parser.add_argument("-v", "--verbose", action="store_true",
+                        help="display also empty lists and free objects of empty miniheaps.")
+    _syntax_ = parser.format_help()
+
+    _note_ = [
+        "Simplified Mesh structure:",
+        "",
+        "+-ThreadLocalHeap--------------+",
+        "| _shuffleVector[cl]           |    +-MiniHeap----+",
+        "|   _start[i]                  |    | _span       |---> span (objects of the size class)",
+        "|   _maxCount                  |    | _freelist   |---> MiniHeap <-> MiniHeap <-> ... (by MiniHeapID)",
+        "|   _off                       |    | _current    |",
+        "|   _objectSize                |    | _flags      |",
+        "|   _attachedMiniheaps[i]      |--->| _nextMeshed |",
+        "|   _list[_off:_maxCount]      |    | _bitmap     | (bit 0: free and not in _list)",
+        "|     {i, bit}                 |    +-------------+",
+        "| _current                     |",
+        "| _global                      |--+",
+        "| _next, _prev                 |  |",
+        "+------------------------------+  |",
+        "                                  v",
+        "+-GlobalHeap-------------------------+",
+        "| _arenaBegin                        |",
+        "| _mhAllocator._arena                |---> MiniHeap[0], MiniHeap[1], ... (indexed by MiniHeapID)",
+        "| _clean[span_class]                 |---> Span, Span, ... (free spans)",
+        "| _dirty[span_class]                 |---> Span, Span, ... (free spans not yet returned to the OS)",
+        "| _emptyFreelist[cl]                 |---> MiniHeap <-> MiniHeap <-> ... (no object is used)",
+        "| _partialFreelist[cl]               |---> MiniHeap <-> MiniHeap <-> ... (less than 80% is used)",
+        "| _pendingPartialHead[cl]            |---> MiniHeap --> MiniHeap --> ... (by _pendingNext, 2025/12-)",
+        "| _fullList[cl]                      |---> MiniHeap <-> MiniHeap <-> ... (no object is free, -2024/07)",
+        "+------------------------------------+",
+        "",
+        "* The ThreadLocalHeap is resolved from `_threadLocalHeap` if symbols are available.",
+        "* Without symbols, the TLS near the thread pointer is scanned for a ThreadLocalHeap with the Mesh size classes.",
+        "* Allocation pops `_list[_off]` and the object is `_start[i] + bit * _objectSize`.",
+        "* When `_list` is exhausted, the free bits of the attached miniheaps are moved to `_list`.",
+        "* Supported versions are Mesh 07b83f6 (2020/03/11) - d2bed33 (2024/07/06) with 4KB pages,",
+        "  and cb40600 (2025/12/01) - fa1542b (2026/10/21) with 4KB or 16KB pages. Mesh does not support 32-bit.",
+        "* `_fullList` (-2024/07) is displayed only with `-v`.",
+    ]
+    _note_ = "\n".join(_note_)
+
+    # src/runtime.cc
+    class_to_size = [
+        0x10, 0x10, 0x20, 0x30, 0x40, 0x50, 0x60, 0x70, 0x80, 0xa0, 0xc0, 0xe0, 0x100,
+        0x140, 0x180, 0x1c0, 0x200, 0x280, 0x300, 0x380, 0x400, 0x800, 0x1000, 0x2000, 0x4000,
+    ]
+    NUM_BINS = 25
+    SPAN_CLASS_COUNT = 256
+    LIST_HEAD = 0xffff_ffff
+    LAYOUTS = [
+        # name, sizeof(ShuffleVector), kMaxMiniheapsPerShuffleVector, kMaxShuffleVectorLength, sizeof(sv::Entry)
+        ("2025/12-2026/10", 0x1380, 48, 1024, 4),
+        ("2020/03-2024/07", 0x400, 24, 256, 2),
+    ]
+    FREELIST_NAMES = ["Full", "Partial", "Empty", "Attached"]
+
+    def read_shuffle_vector(self, addr, layout):
+        """
+        class ShuffleVector<PageSize> {
+            uintptr_t _start[48];
+            const char *_arenaBegin;
+            int16_t _maxCount;
+            int16_t _off;
+            uint32_t _objectSize;
+            FixedArray<MiniHeapT, 48> _attachedMiniheaps; // MiniHeapT *_objects[48]; uint32_t _size;
+            MWC _prng;
+            float _objectSizeReciprocal;
+            uint32_t _attachedOff;
+            sv::Entry _list[1024] CACHELINE_ALIGNED; // uint16_t _mhOffset; uint16_t _bitOffset;
+        }; // total: 0x1380 bytes
+
+        // -2024/07
+        class ShuffleVector {
+            uintptr_t _start[24];
+            ... // same as above with 24 _attachedMiniheaps
+            sv::Entry _list[256] CACHELINE_ALIGNED; // uint8_t _mhOffset; uint8_t _bitOffset;
+        }; // total: 0x400 bytes
+        """
+        _, sv_size, n, list_length, entry_size = layout
+        fmt = Endian.endian_str() + "{0:d}QQ2hI{0:d}QI".format(n)
+        values = struct.unpack(fmt, read_memory(addr, struct.calcsize(fmt)))
+        dic = {}
+        dic["addr"] = addr
+        dic["start"] = values[:n]
+        dic["arena_begin"], dic["max_count"], dic["off"], dic["object_size"] = values[n:n + 4]
+        dic["attached"] = values[n + 4:n + 4 + min(values[n * 2 + 4], n)]
+        dic["attached_off"] = read_int32_from_memory(addr + 0x10 * n + 0x44)
+        dic["list"] = addr + sv_size - list_length * entry_size
+        dic["list_length"] = list_length
+        dic["entry_size"] = entry_size
+        sv = GefUtil.dict_to_namedtuple("ShuffleVector", dic)
+        return sv
+
+    def read_heap(self, addr):
+        """
+        class ThreadLocalHeap<PageSize> { // ThreadLocalHeap (-2024/07)
+            ShuffleVectorT _shuffleVector[25] CACHELINE_ALIGNED;
+            const pid_t _current CACHELINE_ALIGNED;
+            GlobalHeapT *_global;
+            ThreadLocalHeap *_next;
+            ThreadLocalHeap *_prev;
+            ...
+        };
+        """
+        if addr % 0x40:
+            return None
+        for layout in self.LAYOUTS:
+            _, sv_size, n, _, _ = layout
+            try:
+                # ThreadLocalHeap is identified by the object sizes of the shuffle vectors
+                sizes = [read_int32_from_memory(addr + sv_size * cl + n * 8 + 0xc) for cl in (1, self.NUM_BINS - 1)]
+                if sizes != [self.class_to_size[1], self.class_to_size[-1]]:
+                    continue
+                svs = [self.read_shuffle_vector(addr + sv_size * cl, layout) for cl in range(self.NUM_BINS)]
+                if [sv.object_size for sv in svs] != self.class_to_size:
+                    continue
+                if len({sv.arena_begin for sv in svs}) != 1 or svs[0].max_count * 0x10 not in (0x1000, 0x4000):
+                    continue
+                fmt = Endian.endian_str() + "i4x3Q"
+                values = struct.unpack(fmt, read_memory(addr + sv_size * self.NUM_BINS, struct.calcsize(fmt)))
+                current, global_heap, next_heap, prev_heap = values
+                if read_int_from_memory(global_heap) == svs[0].arena_begin:
+                    break
+            except gdb.MemoryError:
+                pass
+        else:
+            return None
+        dic = {}
+        dic["addr"] = addr
+        dic["layout"] = layout[0]
+        dic["shuffle_vectors"] = svs
+        dic["current"] = current
+        dic["global_heap"] = global_heap
+        dic["next"] = next_heap
+        dic["prev"] = prev_heap
+        # _maxCount of the 16-byte class is PageSize / 16
+        dic["page_size"] = svs[0].max_count * 0x10
+        heap = GefUtil.dict_to_namedtuple("ThreadLocalHeap", dic)
+        return heap
+
+    def read_global_heap(self, addr, page_size, layout):
+        """
+        class GlobalHeap<PageSize> : public MeshableArena<PageSize> {
+            // MeshableArena<PageSize>
+            void *_arenaBegin;
+            atomic<MiniHeapID> *_mhIndex;
+            CheapHeap<...> _mhAllocator; // char *_arena; void **_freelist; size_t _arenaOff; ssize_t _freelistOff;
+            MWC _fastPrng;
+            Offset _end;
+            internal::vector<Span> _toReset; // Heap *allocator; Span *start; Span *finish; Span *end_of_storage;
+            internal::vector<Span> _clean[256]; // offset 0x80
+            internal::vector<Span> _dirty[256]; // offset 0x2080
+            size_t _dirtyPageCount;
+            ...
+            // GlobalHeap<PageSize>
+            ...
+            atomic_size_t _miniheapCount CACHELINE_ALIGNED; // offset 0x4180
+            std::array<std::pair<MiniHeapListEntryT, size_t>, 25> _emptyFreelist; // MiniHeapID prev, next; size_t count;
+            std::array<std::pair<MiniHeapListEntryT, size_t>, 25> _partialFreelist;
+            std::array<CachelinePaddedAtomicMiniHeapID, 25> _pendingPartialHead; // 0x40 bytes each
+            // std::array<std::pair<MiniHeapListEntry, size_t>, 25> _fullList; (-2024/07, instead of _pendingPartialHead)
+            ...
+        };
+        """
+        data = read_memory(addr, 0x44c0 + 0x40 * self.NUM_BINS)
+        words = slice_unpack(data, 8)
+        dic = {}
+        dic["addr"] = addr
+        dic["layout"] = layout
+        dic["page_size"] = page_size
+        dic["page_shift"] = page_size.bit_length() - 1
+        dic["arena_begin"] = words[0]
+        dic["mh_arena"] = words[0x10 // 8]
+        dic["mh_arena_off"] = words[0x20 // 8]
+        dic["mh_size"] = 0x40 if page_size == 0x1000 else 0xa0
+        dic["clean"] = [words[(0x80 + 0x20 * i) // 8 + 1:(0x80 + 0x20 * i) // 8 + 3] for i in range(self.SPAN_CLASS_COUNT)]
+        dic["dirty"] = [words[(0x2080 + 0x20 * i) // 8 + 1:(0x2080 + 0x20 * i) // 8 + 3] for i in range(self.SPAN_CLASS_COUNT)]
+        dic["dirty_page_count"] = words[0x4080 // 8]
+        dic["miniheap_count"] = words[0x4180 // 8]
+        fmt = Endian.endian_str() + "2IQ"
+        dic["empty"] = [struct.unpack_from(fmt, data, 0x4188 + 0x10 * cl) for cl in range(self.NUM_BINS)]
+        dic["partial"] = [struct.unpack_from(fmt, data, 0x4318 + 0x10 * cl) for cl in range(self.NUM_BINS)]
+        if layout == "2020/03-2024/07":
+            dic["full"] = [struct.unpack_from(fmt, data, 0x44a8 + 0x10 * cl) for cl in range(self.NUM_BINS)]
+            dic["pending"] = [0] * self.NUM_BINS
+        else:
+            dic["full"] = [(0, 0, 0)] * self.NUM_BINS
+            fmt = Endian.endian_str() + "I"
+            dic["pending"] = [struct.unpack_from(fmt, data, 0x44c0 + 0x40 * cl)[0] for cl in range(self.NUM_BINS)]
+        gh = GefUtil.dict_to_namedtuple("GlobalHeap", dic)
+        return gh
+
+    def read_miniheap(self, addr, gh):
+        """
+        class MiniHeap<PageSize> {
+            const Span _span; // uint32_t offset; uint32_t length; (in pages from _arenaBegin)
+            ListEntryType _freelist; // MiniHeapID _prev; MiniHeapID _next;
+            atomic<pid_t> _current;
+            Flags _flags; // sizeClass:6, freelistId:2, svOffset:8, maxCount:11, (pending:1 at bit 27), (meshed:1 at bit 30)
+            MiniHeapID _nextMeshed;
+            MiniHeapID _pendingNext;
+            BitmapType _bitmap; // 0x20 bytes (4KB page), 0x80 bytes (16KB page)
+        }; // total: 0x40 bytes (4KB page), 0xa0 bytes (16KB page)
+
+        // -2024/07
+        class MiniHeap {
+            internal::Bitmap _bitmap; // 0x20 bytes
+            const Span _span;
+            MiniHeapListEntry _freelist;
+            atomic<pid_t> _current;
+            Flags _flags; // sizeClass:6, freelistId:2, svOffset:8, maxCount:9, (meshed:1 at bit 30)
+            const float _objectSizeReciprocal;
+            MiniHeapID _nextMeshed;
+        }; // total: 0x40 bytes
+        """
+        dic = {}
+        dic["addr"] = addr
+        dic["id"] = (addr - gh.mh_arena) // gh.mh_size
+        if gh.layout == "2020/03-2024/07":
+            fmt = Endian.endian_str() + "4Q4IiI4xI"
+            values = struct.unpack(fmt, read_memory(addr, struct.calcsize(fmt)))
+            words = values[:4]
+            (dic["span_offset"], dic["span_length"], dic["prev"], dic["next"], dic["current"], flags,
+             dic["next_meshed"]) = values[4:]
+            dic["pending_next"] = 0
+            dic["max_count"] = (flags >> 16) & 0x1ff
+            dic["pending"] = 0
+        else:
+            fmt = Endian.endian_str() + "4Ii3I{:d}Q".format(gh.page_size // 0x10 // 64)
+            values = struct.unpack(fmt, read_memory(addr, struct.calcsize(fmt)))
+            (dic["span_offset"], dic["span_length"], dic["prev"], dic["next"], dic["current"], flags,
+             dic["next_meshed"], dic["pending_next"]) = values[:8]
+            words = values[8:]
+            dic["max_count"] = (flags >> 16) & 0x7ff
+            dic["pending"] = (flags >> 27) & 1
+        dic["size_class"] = flags & 0x3f
+        dic["freelist_id"] = (flags >> 6) & 0x3
+        dic["sv_offset"] = (flags >> 8) & 0xff
+        dic["meshed"] = (flags >> 30) & 1
+        dic["span_start"] = gh.arena_begin + (dic["span_offset"] << gh.page_shift)
+        if dic["max_count"] == 1:
+            dic["object_size"] = dic["span_length"] << gh.page_shift
+        elif dic["size_class"] < self.NUM_BINS:
+            dic["object_size"] = self.class_to_size[dic["size_class"]]
+        else:
+            dic["object_size"] = 0
+        bitmap = sum(word << (64 * i) for i, word in enumerate(words))
+        dic["free_bits"] = [i for i in range(dic["max_count"]) if not (bitmap >> i) & 1]
+        mh = GefUtil.dict_to_namedtuple("MiniHeap", dic)
+        return mh
+
+    def get_miniheap(self, mhid, gh):
+        if not 0 < mhid < gh.mh_arena_off:
+            return None
+        return self.read_miniheap(gh.mh_arena + mhid * gh.mh_size, gh)
+
+    def get_heap_heuristic(self):
+        tls = current_arch.get_tls()
+        if not tls:
+            return None
+        # _threadLocalHeap is placed in the static TLS, below (x86) or above (others) the thread pointer
+        lower = ProcessMap.process_lookup_address(tls - 1)
+        upper = ProcessMap.process_lookup_address(tls)
+        start = max(lower.page_start, tls - 0x10000) if lower else tls
+        end = min(upper.page_end, tls + 0x10000) if upper else tls
+        ptrsize = current_arch.ptrsize
+        words = slice_unpack(read_memory(start, end - start), ptrsize)
+        for addr in sorted(range(start, end, ptrsize), key=lambda x: abs(x - tls)):
+            value = words[(addr - start) // ptrsize]
+            if value == 0 or value % 0x40:
+                continue
+            heap = self.read_heap(value)
+            if heap:
+                return heap
+        return None
+
+    def get_heap(self):
+        for name in ("ThreadLocalHeap<4096ul>", "ThreadLocalHeap<16384ul>", "ThreadLocalHeap"):
+            try:
+                addr = AddressUtil.parse_address("&'mesh::{:s}::_threadLocalHeap'".format(name))
+                heap = self.read_heap(read_int_from_memory(addr))
+                if heap:
+                    return heap
+            except gdb.error:
+                pass
+        return self.get_heap_heuristic()
+
+    def get_heap_list(self):
+        if self.args.all:
+            threads = None
+        else:
+            threads = [gdb.selected_thread()]
+        heap_list = []
+        with ContextManager.threads(threads) as threads:
+            for thread in threads:
+                heap = self.get_heap()
+                if heap:
+                    heap_list.append((thread.num, heap))
+        return heap_list
+
+    def get_miniheap_list(self, head, gh, read_next):
+        nodes = []
+        seen = set()
+        mhid = head
+        while mhid not in (0, self.LIST_HEAD):
+            if mhid in seen:
+                return nodes, "{:#x} (loop detected)".format(mhid)
+            seen.add(mhid)
+            mh = self.get_miniheap(mhid, gh)
+            if mh is None:
+                return nodes, "{:#x} (corrupted)".format(mhid)
+            nodes.append(mh)
+            mhid = read_next(mh)
+        return nodes, None
+
+    def dump_error(self, error):
+        corrupted_msg_color = Config.get("theme.heap_corrupted_msg")
+        if error:
+            self.out.append(" -> {:s}".format(Color.colorify(error, corrupted_msg_color)))
+        return
+
+    def dump_miniheap(self, prefix, mh, gh, show_free=True):
+        freed_address_color = Config.get("theme.heap_chunk_address_freed")
+
+        span_end = mh.span_start + (mh.span_length << gh.page_shift)
+        msg = "{:s}MiniHeap @{:#x} (id: {:#x}, span: {:#x}-{:#x}, inUse: {:#x}, maxCount: {:#x}, freelistId: {:s}".format(
+            prefix, mh.addr, mh.id, mh.span_start, span_end, mh.max_count - len(mh.free_bits), mh.max_count,
+            self.FREELIST_NAMES[mh.freelist_id],
+        )
+        if mh.current:
+            msg += ", current: {:#x}".format(mh.current)
+        if mh.pending:
+            msg += ", pending"
+        if mh.meshed:
+            msg += ", meshed"
+        if mh.next_meshed:
+            # the spans meshed into this miniheap share its bitmap
+            spans = []
+            mhid = mh.next_meshed
+            while mhid and len(spans) < 0x100:
+                meshed = self.get_miniheap(mhid, gh)
+                if meshed is None:
+                    spans.append("{:#x} (corrupted)".format(mhid))
+                    break
+                spans.append("{:#x}".format(meshed.span_start))
+                mhid = meshed.next_meshed
+            msg += ", nextMeshed: {:#x}, meshed spans: {:s}".format(mh.next_meshed, ", ".join(spans))
+        self.out.append(msg + ")")
+        if show_free:
+            for bit in mh.free_bits:
+                addr = mh.span_start + bit * mh.object_size
+                self.out.append("     -> {:s} (bit: {:#x})".format(Color.colorify_hex(addr, freed_address_color), bit))
+        return
+
+    def dump_shuffle_vector(self, cl, sv, gh):
+        freed_address_color = Config.get("theme.heap_chunk_address_freed")
+        corrupted_msg_color = Config.get("theme.heap_corrupted_msg")
+
+        self.out.append(titlify("_shuffleVector[{:#x}] (size: {:#x}) @ {:#x}".format(cl, sv.object_size, sv.addr)))
+        self.out.append("_list (_off: {:#x}, _maxCount: {:#x}):".format(sv.off, sv.max_count))
+        if 0 <= sv.off <= sv.max_count <= sv.list_length:
+            entries = []
+            if sv.off < sv.max_count:
+                data = read_memory(sv.list + sv.off * sv.entry_size, (sv.max_count - sv.off) * sv.entry_size)
+                entries = slice_unpack(data, sv.entry_size // 2)
+            for mh_offset, bit in zip(entries[::2], entries[1::2]):
+                if mh_offset >= len(sv.attached):
+                    msg = "{{{:#x}, {:#x}}} (corrupted)".format(mh_offset, bit)
+                    self.out.append(" -> {:s}".format(Color.colorify(msg, corrupted_msg_color)))
+                    continue
+                addr = sv.start[mh_offset] + bit * sv.object_size
+                msg = "{:s} ({{{:#x}, {:#x}}})".format(Color.colorify_hex(addr, freed_address_color), mh_offset, bit)
+                self.out.append(" -> {:s}".format(msg))
+            self.out.append(" -> end (num: {:#x})".format(sv.max_count - sv.off))
+        else:
+            self.dump_error("{:#x} (corrupted)".format(sv.off))
+
+        self.out.append("_attachedMiniheaps (_size: {:#x}, _attachedOff: {:#x}):".format(len(sv.attached), sv.attached_off))
+        for i, addr in enumerate(sv.attached):
+            if addr < gh.mh_arena or (addr - gh.mh_arena) % gh.mh_size or (addr - gh.mh_arena) // gh.mh_size >= gh.mh_arena_off:
+                self.dump_error("[{:#x}] {:#x} (corrupted)".format(i, addr))
+                continue
+            self.dump_miniheap(" -> [{:#x}] ".format(i), self.read_miniheap(addr, gh), gh)
+        return
+
+    def dump_heap(self, thread_num, heap, gh):
+        title = "ThreadLocalHeap @ {:#x} (Thread Id:{:d})".format(heap.addr, thread_num)
+        self.out.append(titlify(title, color="bold", msg_color="bold"))
+        self.out.append("layout: {:s}, _current: {:#x}, _global: {:#x}, _next: {:#x}, _prev: {:#x}, page_size: {:#x}".format(
+            heap.layout, heap.current, heap.global_heap, heap.next, heap.prev, heap.page_size,
+        ))
+        for cl, sv in enumerate(heap.shuffle_vectors):
+            if cl == 0 or (not sv.attached and not self.args.verbose):
+                continue
+            self.dump_shuffle_vector(cl, sv, gh)
+        return
+
+    def dump_miniheap_list(self, title, nodes, error, gh, show_free):
+        self.out.append(title)
+        for mh in nodes:
+            self.dump_miniheap(" -> ", mh, gh, show_free)
+        if error:
+            self.dump_error(error)
+        else:
+            self.out.append(" -> end (num: {:#x})".format(len(nodes)))
+        return
+
+    def dump_spans(self, title, spans, gh):
+        freed_address_color = Config.get("theme.heap_chunk_address_freed")
+
+        for i, (start, finish) in enumerate(spans):
+            if start == finish:
+                continue
+            self.out.append("{:s}[{:#x}]:".format(title, i))
+            if finish < start or (finish - start) % 8 or finish - start > 0x10_0000:
+                self.dump_error("{:#x}-{:#x} (corrupted)".format(start, finish))
+                continue
+            values = slice_unpack(read_memory(start, finish - start), 4)
+            for offset, length in zip(values[::2], values[1::2]):
+                addr = gh.arena_begin + (offset << gh.page_shift)
+                self.out.append(" -> {:s}-{:#x} (pages: {:#x})".format(
+                    Color.colorify_hex(addr, freed_address_color), addr + (length << gh.page_shift), length,
+                ))
+        return
+
+    def dump_global_heap(self, gh):
+        self.out.append(titlify("GlobalHeap @ {:#x}".format(gh.addr), color="bold", msg_color="bold"))
+        self.out.append("_arenaBegin: {:#x}, _mhAllocator._arena: {:#x}, _miniheapCount: {:#x}".format(
+            gh.arena_begin, gh.mh_arena, gh.miniheap_count,
+        ))
+        for cl in range(1, self.NUM_BINS):
+            (_, partial_head, _), (_, empty_head, _), (_, full_head, _) = gh.partial[cl], gh.empty[cl], gh.full[cl]
+            pending_head = gh.pending[cl]
+            heads = (partial_head, empty_head, pending_head) + ((full_head,) if self.args.verbose else ())
+            if not self.args.verbose and all(x in (0, self.LIST_HEAD) for x in heads):
+                continue
+            self.out.append(titlify("size_class[{:#x}] (size: {:#x})".format(cl, self.class_to_size[cl])))
+            nodes, error = self.get_miniheap_list(partial_head, gh, lambda mh: mh.next)
+            self.dump_miniheap_list("_partialFreelist:", nodes, error, gh, True)
+            nodes, error = self.get_miniheap_list(empty_head, gh, lambda mh: mh.next)
+            self.dump_miniheap_list("_emptyFreelist:", nodes, error, gh, self.args.verbose)
+            if gh.layout == "2020/03-2024/07":
+                if self.args.verbose:
+                    nodes, error = self.get_miniheap_list(full_head, gh, lambda mh: mh.next)
+                    self.dump_miniheap_list("_fullList:", nodes, error, gh, True)
+            else:
+                nodes, error = self.get_miniheap_list(pending_head, gh, lambda mh: mh.pending_next)
+                self.dump_miniheap_list("_pendingPartialHead:", nodes, error, gh, True)
+
+        self.out.append(titlify("free spans (_dirtyPageCount: {:#x})".format(gh.dirty_page_count)))
+        self.dump_spans("_dirty", gh.dirty, gh)
+        self.dump_spans("_clean", gh.clean, gh)
+        return
+
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @Decorator.only_if_specific_arch(arch=("x86_64", "ARM64"))
+    def do_invoke(self, args):
+        if args.heap is not None:
+            heap = self.read_heap(args.heap)
+            if heap is None:
+                if is_valid_addr(args.heap):
+                    err("Failed to parse ThreadLocalHeap at {:#x}".format(args.heap))
+                else:
+                    err("Cannot read ThreadLocalHeap at {:#x}".format(args.heap))
+                return
+            heap_list = [(gdb.selected_thread().num, heap)]
+        else:
+            try:
+                heap_list = self.get_heap_list()
+            except gdb.error:
+                err("Cannot read ThreadLocalHeap")
+                return
+            if not heap_list:
+                err("Could not find ThreadLocalHeap")
+                return
+
+        self.out = []
+        _, heap = heap_list[0]
+        try:
+            gh = self.read_global_heap(heap.global_heap, heap.page_size, heap.layout)
+        except gdb.MemoryError:
+            err("Cannot read GlobalHeap at {:#x}".format(heap.global_heap))
+            return
+        for thread_num, heap in heap_list:
+            try:
+                self.dump_heap(thread_num, heap, gh)
+            except gdb.error:
+                self.err_add_out("Cannot read ThreadLocalHeap at {:#x}".format(heap.addr))
+        try:
+            self.dump_global_heap(gh)
+        except gdb.error:
+            self.err_add_out("Cannot read GlobalHeap at {:#x}".format(gh.addr))
+        self.print_output()
+        return
+
+
+@register_command
 class JemallocHeapDumpCommand(GenericCommand, BufferingOutput):
     """jemalloc (v3.0~) arena/bin/slab(run)/large/tcache viewer."""
 

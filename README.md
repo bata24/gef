@@ -570,7 +570,7 @@ For the usage and options of each command, see [docs/COMMANDS.md](docs/COMMANDS.
 ### Other
 
 <details>
-<summary><code>tcmalloc-heap-dump</code>, <code>musl-heap-dump</code>, <code>go-heap-dump</code>, <code>tlsf-heap-dump</code>, <code>hoard-heap-dump</code>, <code>mimalloc-heap-dump</code>, <code>scalloc-heap-dump</code>, <code>snmalloc-heap-dump</code>, <code>ssmalloc-heap-dump</code>, <code>jemalloc-heap-dump</code>, <code>sfmalloc-heap-dump</code>, <code>rpmalloc-heap-dump</code>, <code>tbbmalloc-heap-dump</code>, <code>zig-heap-dump</code></summary>
+<summary><code>tcmalloc-heap-dump</code>, <code>musl-heap-dump</code>, <code>go-heap-dump</code>, <code>tlsf-heap-dump</code>, <code>hoard-heap-dump</code>, <code>mimalloc-heap-dump</code>, <code>scalloc-heap-dump</code>, <code>snmalloc-heap-dump</code>, <code>ssmalloc-heap-dump</code>, <code>jemalloc-heap-dump</code>, <code>sfmalloc-heap-dump</code>, <code>rpmalloc-heap-dump</code>, <code>tbbmalloc-heap-dump</code>, <code>zig-heap-dump</code>, <code>mesh-heap-dump</code></summary>
 
 - `tcmalloc-heap-dump`: dumps TCMalloc (`gperftools-2.16-1` or named `libgoogle-perftools{4,-dev}`) free-list.
     - ![](images/tcmalloc-heap-dump.png)
@@ -649,6 +649,14 @@ For the usage and options of each command, see [docs/COMMANDS.md](docs/COMMANDS.
         - Run your test program with `LD_PRELOAD=/PATH/TO/libtbbmalloc_proxy.so ./a.out`.
 - `zig-heap-dump`: dumps Zig Language heap.
     - ![](images/zig-heap-dump.png)
+- `mesh-heap-dump`: dumps Mesh free-list (x64/ARM64 only).
+    - ![](images/mesh-heap-dump.png)
+    - How to test (x64):
+        - Get and extract the upstream source from https://github.com/plasma-umass/Mesh
+        - Build with `make build BAZEL_CONFIG='--config=modern-amd64 --linkopt=-fuse-ld=bfd'`.
+            - The default gold linker is no longer provided by recent binutils, so the bfd linker is used.
+            - To include debug symbols: `make build BAZEL_CONFIG='--config=modern-amd64 --linkopt=-fuse-ld=bfd --copt=-g'`.
+        - Run your test program with `LD_PRELOAD=/PATH/TO/bazel-bin/src/libmesh.so ./a.out`.
 
 </details>
 
