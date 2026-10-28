@@ -166218,6 +166218,594 @@ class GoHeapDumpCommand(GenericCommand, BufferingOutput):
 
 
 @register_command
+class ZigHeapDumpCommand(GenericCommand, BufferingOutput):
+    """Zig GeneralPurposeAllocator/DebugAllocator heap dumper."""
+
+    _cmdline_ = "zig-heap-dump"
+    _category_ = "05-c. Heap - Other"
+
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("-hh", "--help-simple", action="store_true", help="show help without ASCII diagram.")
+    parser.add_argument("--allocator", help="the allocator object, pointer, or address (GDB expression).")
+    parser.add_argument("-b", "--bucket", type=AddressUtil.parse_address, action="append",
+                        help="dump only the specified bucket address (repeatable).")
+    parser.add_argument("-i", "--size-class", type=lambda x: int(x, 0), help="dump only the specified size class index.")
+    parser.add_argument("-H", "--force-heuristic", action="store_true", help="find allocators without debug symbols.")
+    parser.add_argument("-d", "--dump", action="store_true", help="with per-object state and hexdump.")
+    parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
+    parser.add_argument("-v", "--verbose", action="store_true",
+                        help="display object states, empty size classes, and retained entries.")
+    _syntax_ = parser.format_help()
+
+    _note_ = "\n".join([
+        "Simplified Zig heap structure:",
+        "",
+        "+-allocator-----------+      +-BucketHeader--+",
+        "| buckets[size_class] |----->| links / page  |",
+        "| large_allocations   |--+   | counts        |",
+        "+---------------------+  |   +---------------+",
+        "                         |   | used bits     |",
+        "                         |   +---------------+",
+        "                         v",
+        "                   +-HashMap------+",
+        "                   | bytes.ptr    |----> large object",
+        "                   | bytes.len    |",
+        "                   +--------------+",
+        "",
+        "* Allocators are found from debug types, or by validating vtables, buckets, bitmaps, and allocation tables.",
+        "* --allocator overrides detection with a concrete allocator object, pointer, or address (not mem.Allocator).",
+        "* Layout, allocator page size, and configuration are determined automatically.",
+        "* 0.11 uses circular lists, 0.12-0.13 use treaps, and 0.14-0.15 use linked buckets.",
+        "* In 0.14-0.15, bitmaps contain native usize words; earlier bitmaps contain bytes.",
+        "* Dumps distinguish allocated/freed slots. Slots never allocated in the current bucket are omitted.",
+        "* Freed slots are recorded in the bitmap, not linked in a reusable free list.",
+        "* -b selects a bucket address; -i selects a size class index. Both exclude large allocations.",
+        "* Retained freed large entries are shown with --verbose; their data is not read because it may be unmapped.",
+        "* Fully freed, unlinked buckets in 0.14-0.15 cannot be enumerated, even with retain_metadata.",
+        "* ArenaAllocator, FixedBufferAllocator, page_allocator, and smp_allocator are unsupported.",
+    ])
+
+    @staticmethod
+    def type_layout(tp):
+        fields = {}
+        for field in tp.fields():
+            size = field.type.sizeof
+            width = re.fullmatch(r"u(\d+)", str(field.type))
+            if width:
+                # LLVM stores u18 in 3 bytes despite its 4-byte ABI stride.
+                size = (int(width.group(1)) + 7) // 8
+            fields[field.name] = (field.bitpos // 8, size)
+        return fields
+
+    def read_field(self, address, layout, name):
+        offset, size = layout[name]
+        return int.from_bytes(read_memory(address + offset, size), self.byteorder)
+
+    def get_typed_allocators(self):
+        values = []
+        for family in ("DebugAllocator", "GeneralPurposeAllocator"):
+            output = gdb.execute("info variables -t " + family, to_string=True)
+            for line in output.splitlines():
+                match = re.search(r"\s([^\s;]+);$", line)
+                if match:
+                    try:
+                        values.append(gdb.parse_and_eval("'{:s}'".format(match.group(1).lstrip("*"))))
+                    except gdb.error:
+                        continue
+        frame = gdb.selected_frame()
+        while frame is not None:
+            try:
+                block = frame.block()
+                while block is not None and not block.is_static and not block.is_global:
+                    for symbol in block:
+                        if symbol.is_variable or symbol.is_argument:
+                            try:
+                                values.append(frame.read_var(symbol))
+                            except gdb.error:
+                                continue
+                    block = block.superblock
+            except (gdb.error, RuntimeError):
+                pass
+            frame = frame.older()
+        allocators = {}
+        for value in values:
+            try:
+                tp = value.type.strip_typedefs()
+                address = value.address
+                if tp.code == gdb.TYPE_CODE_PTR:
+                    address = value
+                    tp = tp.target().strip_typedefs()
+                if tp.code != gdb.TYPE_CODE_STRUCT or address is None:
+                    continue
+                if not {"backing_allocator", "buckets", "large_allocations"} <= {field.name for field in tp.fields()}:
+                    continue
+                if "DebugAllocator(" not in str(tp) and "GeneralPurposeAllocator(" not in str(tp):
+                    continue
+                address = int(address)
+                if address:
+                    allocators[address] = (gdb.Value(address).cast(tp.pointer()), None)
+            except (gdb.error, ValueError):
+                continue
+        return list(allocators.values())
+
+    def bucket_capacity(self, size_class, frames, safety):
+
+        def metadata_size(slots):
+            size = self.bucket_header_size + (slots + self.ptrsize * 8 - 1) // (self.ptrsize * 8) * self.ptrsize
+            if safety:
+                bits = self.page_size.bit_length() - 2
+                width = 1 << (((bits + 7) // 8 - 1).bit_length())
+                size = align(size, width) + slots * (width + 1)
+            return align(size, self.ptrsize) + frames * self.ptrsize * 2 * slots
+
+        size = 1 << size_class
+        lower = 2
+        upper = (self.page_size - metadata_size(lower)) // size
+        while upper > lower:
+            proposed = lower + (upper - lower) // 2
+            if proposed == lower:
+                break
+            if align(proposed * size, self.ptrsize) + metadata_size(proposed) > self.page_size:
+                upper = proposed - 1
+            else:
+                lower = proposed
+        return lower, metadata_size(lower)
+
+    @staticmethod
+    def is_code_address(address):
+        section = ProcessMap.process_lookup_address(address)
+        return section is not None and bool(section.permission & Permission.EXECUTE)
+
+    def infer_large_config(self, config, frames):
+        metadata = self.read_field(self.table, self.table_fields, "metadata")
+        count = self.read_field(self.table, self.table_fields, "size")
+        if not metadata:
+            if count:
+                return None
+            return config
+        header = metadata - self.table_header_size
+        capacity = self.read_field(header, self.header_fields, "capacity")
+        if not capacity or capacity & (capacity - 1) or not 0 <= count <= capacity <= 1 << 16:
+            return None
+        keys = self.read_field(header, self.header_fields, "keys")
+        values = self.read_field(header, self.header_fields, "values")
+        if keys != align(metadata + capacity, self.ptrsize) or values != keys + capacity * self.ptrsize:
+            return None
+        bits = read_memory(metadata, capacity)
+        indices = [i for i, bit in enumerate(bits) if bit & 0x80]
+        if len(indices) != count:
+            return None
+        if not count:
+            return config
+        section = ProcessMap.process_lookup_address(values)
+        if section is None:
+            return None
+        data = read_memory(values, min(section.page_end - values, capacity * 132 * self.ptrsize, 1 << 20))
+        keys = slice_unpack(read_memory(keys, capacity * self.ptrsize), self.ptrsize)
+        best = None
+        code = {}
+        for frame_count, retain, limit in itertools.product(frames, (False, True), (False, True)):
+            prefix = (2 + limit) * self.ptrsize
+            freed_offset = prefix + frame_count * (1 + retain) * self.ptrsize
+            stride = align(freed_offset + retain * 2, self.ptrsize)
+            traces = freed = 0
+            for index in indices:
+                start = index * stride
+                entry = data[start:start + stride]
+                if len(entry) != stride:
+                    break
+                pointer, size = slice_unpack(entry[:self.ptrsize * 2], self.ptrsize)
+                if pointer != keys[index] or not pointer or not size or pointer + size > 1 << (self.ptrsize * 8):
+                    break
+                if limit and int.from_bytes(entry[self.ptrsize * 2:prefix], self.byteorder) != size:
+                    break
+                if retain and entry[freed_offset] not in (0, 1):
+                    break
+                if retain:
+                    freed += entry[freed_offset]
+                trace_end = freed_offset
+                if retain and not entry[freed_offset]:
+                    trace_end = prefix + frame_count * self.ptrsize
+                words = slice_unpack(entry[prefix:trace_end], self.ptrsize)
+                for word in words:
+                    if word and word not in code:
+                        code[word] = self.is_code_address(word)
+                if any(word and not code[word] for word in words):
+                    break
+                traces += sum(bool(word) for word in words)
+            else:
+                score = (freed, traces, -stride)
+                if best is None or score > best[0]:
+                    best = (score, dict(config, stack_trace_frames=frame_count, retain_metadata=retain, memory_limit=limit))
+        if best is None:
+            return None
+        _, result = best
+        return result
+
+    def get_raw_config(self, address):
+        pages = [131072, 262144, 4096, 8192, 16384, 65536, 32768]
+        pages += [1 << shift for shift in range(8, 25) if 1 << shift not in pages]
+        for layout in ("0.14", "0.12", "0.11"):
+            if layout != "0.14":
+                pages = list(dict.fromkeys([get_pagesize(), 4096, 8192, 16384, 65536]))
+            for page_size in pages:
+                config = {"layout": layout, "page_size": page_size, "stack_trace_frames": 0}
+                try:
+                    self.initialize(gdb.Value(address), config)
+                    self.out = []
+                    buckets = self.parse_buckets()
+                    if self.out:
+                        continue
+                    if layout == "0.11":
+                        for bucket in buckets:
+                            previous = self.read_field(bucket["address"], self.bucket_fields, "prev")
+                            following = self.read_field(bucket["address"], self.bucket_fields, "next")
+                            if not previous or not following or \
+                                    self.read_field(previous, self.bucket_fields, "next") != bucket["address"] or \
+                                    self.read_field(following, self.bucket_fields, "prev") != bucket["address"]:
+                                raise ValueError("Invalid bucket links")
+                    frames = range(33)
+                    if layout == "0.14" and buckets:
+                        canaries = {self.read_field(bucket["address"], self.bucket_fields, "canary") for bucket in buckets}
+                        if len(canaries) != 1 or not next(iter(canaries)):
+                            continue
+                        sample = buckets[0]
+                        frames = []
+                        for count, safety in itertools.product(range(65), (False, True)):
+                            _, metadata_size = self.bucket_capacity(sample["size"].bit_length() - 1, count, safety)
+                            expected = (sample["start"] + page_size - metadata_size) & -self.ptrsize
+                            if sample["address"] == expected:
+                                frames.append(count)
+                        if not frames:
+                            continue
+                    config = self.infer_large_config(config, frames)
+                    if config is None:
+                        continue
+                    self.initialize(gdb.Value(address), config)
+                    entries = self.parse_large_allocations()
+                    if any(bucket["used"] for bucket in buckets) or entries:
+                        return config
+                except (gdb.error, ValueError, OverflowError):
+                    continue
+        return None
+
+    def get_allocators_heuristic(self):
+        allocators = []
+        vtables = {}
+        ptr = current_arch.ptrsize
+        for section in ProcessMap.get_process_maps():
+            if not section.permission & Permission.READ or not section.permission & Permission.WRITE:
+                continue
+            tail = b""
+            for page in range(section.page_start, section.page_end, 65536):
+                data = read_memory(page, min(65536, section.page_end - page), safe=True)
+                if data is None:
+                    tail = b""
+                    continue
+                start = page - len(tail)
+                data = tail + data
+                tail = data[-ptr:]
+                words = slice_unpack(data, ptr)
+                for index, vtable in enumerate(words[1:], 1):
+                    if not vtable or vtable % ptr:
+                        continue
+                    if vtable not in vtables:
+                        target = ProcessMap.process_lookup_address(vtable)
+                        valid = False
+                        if target is not None and target.permission & Permission.READ:
+                            functions = read_memory(vtable, ptr * 3, safe=True)
+                            if functions is not None:
+                                valid = all(self.is_code_address(fn) for fn in slice_unpack(functions, ptr))
+                        vtables[vtable] = valid
+                    if not vtables[vtable]:
+                        continue
+                    address = start + (index - 1) * ptr
+                    config = self.get_raw_config(address)
+                    if config is not None:
+                        allocators.append((gdb.Value(address), config))
+        return allocators
+
+    def initialize(self, value, config=None):
+        self.ptrsize = ptr = current_arch.ptrsize
+        self.byteorder = "big"
+        if Endian.is_little_endian():
+            self.byteorder = "little"
+        tp = value.type.strip_typedefs()
+        if tp.code == gdb.TYPE_CODE_PTR:
+            self.address = int(value)
+            tp = tp.target().strip_typedefs()
+        elif tp.code == gdb.TYPE_CODE_STRUCT:
+            if value.address is None:
+                raise ValueError("Allocator address is unavailable; pass a typed pointer or address")
+            self.address = int(value.address)
+        else:
+            self.address = int(value)
+        self.allocator_type = None
+        if tp.code == gdb.TYPE_CODE_STRUCT:
+            self.allocator_type = tp
+            fields = self.type_layout(tp)
+            if "DebugAllocator(" in str(tp):
+                self.layout = "0.14"
+            elif "GeneralPurposeAllocator(" in str(tp):
+                self.layout = "0.11"
+                if "cur_buckets" in fields:
+                    self.layout = "0.12"
+            else:
+                raise ValueError("Unsupported allocator type; specify a GeneralPurposeAllocator or DebugAllocator")
+            buckets_type = next(field.type for field in tp.fields() if field.name == "buckets")
+            self.bucket_count = buckets_type.sizeof // buckets_type.target().sizeof
+            shift = self.bucket_count
+            if self.layout == "0.14":
+                shift += 1
+            self.page_size = 1 << shift
+            bucket_type = gdb.lookup_type(str(tp) + ".BucketHeader")
+            self.table_type = next(field.type for field in tp.fields() if field.name == "large_allocations")
+            self.bucket_fields = self.type_layout(bucket_type)
+            self.bucket_header_size = bucket_type.sizeof
+            self.table_fields = self.type_layout(self.table_type)
+            self.buckets = self.address + fields["buckets"][0]
+            self.table = self.address + fields["large_allocations"][0]
+        else:
+            if config is None:
+                raise ValueError("Allocator layout is unavailable")
+            self.layout = config["layout"]
+            self.page_size = config["page_size"]
+            frames = config["stack_trace_frames"]
+            retain = config.get("retain_metadata", False)
+            limit = config.get("memory_limit", False)
+            self.bucket_count = self.page_size.bit_length() - 1
+            if self.layout == "0.14":
+                self.bucket_count -= 1
+            index_size = 2
+            if self.page_size >= 65536:
+                index_size = 4
+            self.bucket_fields = {}
+            if self.layout == "0.14":
+                members = [("allocated_count", index_size), ("freed_count", index_size),
+                           ("prev", ptr), ("next", ptr), ("canary", ptr)]
+            elif self.layout == "0.12":
+                members = [("page", ptr), ("alloc_cursor", index_size), ("used_count", index_size)]
+            else:
+                members = [("prev", ptr), ("next", ptr), ("page", ptr),
+                           ("alloc_cursor", index_size), ("used_count", index_size)]
+            members.sort(key=lambda member: -member[1])
+            offset = 0
+            for name, size in members:
+                width = size
+                if name in ("allocated_count", "freed_count", "alloc_cursor", "used_count"):
+                    width = (self.page_size.bit_length() + 7) // 8
+                self.bucket_fields[name] = (offset, width)
+                offset += size
+            self.bucket_header_size = (offset + ptr - 1) // ptr * ptr
+            self.buckets = self.address + ptr * 2
+            self.table = self.buckets + self.bucket_count * ptr
+            if self.layout == "0.12":
+                self.table = self.buckets + self.bucket_count * ptr * 3
+            self.table_fields = {"metadata": (0, ptr), "size": (ptr, 4)}
+            self.header_fields = {"values": (0, ptr), "keys": (ptr, ptr), "capacity": (ptr * 2, 4)}
+            self.table_header_size = (ptr * 2 + 4 + ptr - 1) // ptr * ptr
+            offset = ptr * 2
+            if limit:
+                offset += ptr
+            self.large_fields = {"bytes": (0, ptr * 2)}
+            offset += frames * ptr * (1 + retain)
+            if retain:
+                self.large_fields["freed"] = (offset, 1)
+                offset += 2
+            self.large_size = (offset + ptr - 1) // ptr * ptr
+        return
+
+    def parse_bucket(self, address, size_class):
+        size = 1 << size_class
+        read = self.read_field
+        if self.layout == "0.14":
+            start = address & -self.page_size
+            slots = read(address, self.bucket_fields, "allocated_count")
+            freed = read(address, self.bucket_fields, "freed_count")
+            if slots * size > address - start or freed > slots:
+                raise ValueError("Invalid bucket counters at {:#x}".format(address))
+            used = slots - freed
+            unit = self.ptrsize
+        else:
+            start = read(address, self.bucket_fields, "page")
+            slots = self.page_size // size
+            used = read(address, self.bucket_fields, "used_count")
+            cursor = read(address, self.bucket_fields, "alloc_cursor")
+            if not start or used > cursor or cursor > slots or start % self.page_size:
+                raise ValueError("Invalid bucket counters/page at {:#x}".format(address))
+            slots = cursor
+            unit = 1
+        bits_per_unit = unit * 8
+        bitmap = read_memory(address + self.bucket_header_size, (slots + bits_per_unit - 1) // bits_per_unit * unit)
+        words = [int.from_bytes(bitmap[i:i + unit], self.byteorder) for i in range(0, len(bitmap), unit)]
+        bits = [(words[i // bits_per_unit] >> (i % bits_per_unit)) & 1 for i in range(slots)]
+        if sum(bits) != used:
+            raise ValueError("Invalid allocation bitmap at {:#x}".format(address))
+        return {"address": address, "start": start, "size": size, "slots": slots, "used": used, "bits": bits}
+
+    def parse_buckets(self):
+        buckets = []
+        seen = set()
+        for size_class in range(self.bucket_count):
+            stride = self.ptrsize
+            if self.layout == "0.12":
+                stride *= 2
+            root = read_int_from_memory(self.buckets + size_class * stride)
+            pending = [root]
+            if not root and self.args.verbose and not getattr(self, "scanning", False) and not self.args.bucket and \
+                    (self.args.size_class is None or self.args.size_class == size_class):
+                self.out.append("buckets[{:d}] (chunk_size={:#x}): empty".format(size_class, 1 << size_class))
+            while pending:
+                current = pending.pop()
+                if not current:
+                    continue
+                if current in seen:
+                    self.out.append("Bucket loop/duplicate at {:#x}".format(current))
+                    continue
+                seen.add(current)
+                try:
+                    address = current
+                    if self.layout == "0.12":
+                        address = read_int_from_memory(current)
+                        pending.extend(read_int_from_memory(current + self.ptrsize * i) for i in (3, 4))
+                    elif self.layout == "0.14":
+                        pending.append(self.read_field(current, self.bucket_fields, "prev"))
+                    else:
+                        next_bucket = self.read_field(current, self.bucket_fields, "next")
+                        if next_bucket != root:
+                            pending.append(next_bucket)
+                    buckets.append(self.parse_bucket(address, size_class))
+                except (gdb.MemoryError, ValueError) as error:
+                    self.out.append("Cannot read bucket at {:#x}: {!s}".format(current, error))
+        return buckets
+
+    def parse_large_allocations(self):
+        read = self.read_field
+        metadata = read(self.table, self.table_fields, "metadata")
+        count = read(self.table, self.table_fields, "size")
+        if not metadata:
+            if count:
+                raise ValueError("Invalid large allocation table")
+            return []
+        if self.allocator_type is not None:
+            header_type = gdb.lookup_type(str(self.table_type) + ".Header")
+            self.header_fields = self.type_layout(header_type)
+            self.table_header_size = header_type.sizeof
+            if count:
+                large_type = gdb.lookup_type(str(self.allocator_type) + ".LargeAlloc")
+                self.large_fields = self.type_layout(large_type)
+                self.large_size = large_type.sizeof
+        header = metadata - self.table_header_size
+        capacity = read(header, self.header_fields, "capacity")
+        if not capacity or capacity & (capacity - 1) or count > capacity or capacity > 1 << 24:
+            raise ValueError("Invalid large allocation table capacity")
+        values = read(header, self.header_fields, "values")
+        keys = read(header, self.header_fields, "keys")
+        bitmap = read_memory(metadata, capacity)
+        entries = []
+        occupied = 0
+        for index, bit in enumerate(bitmap):
+            if not bit & 0x80:
+                continue
+            occupied += 1
+            address = values + index * self.large_size
+            data = address + self.large_fields["bytes"][0]
+            start = read_int_from_memory(data)
+            size = read_int_from_memory(data + self.ptrsize)
+            if not start or not size or start + size > 1 << (self.ptrsize * 8):
+                raise ValueError("Invalid large allocation at {:#x}".format(address))
+            if read_int_from_memory(keys + index * self.ptrsize) != start:
+                raise ValueError("Invalid large allocation key at {:#x}".format(address))
+            freed = False
+            if "freed" in self.large_fields:
+                freed = bool(read(address, self.large_fields, "freed"))
+            if not freed or self.args.verbose:
+                entries.append({"address": address, "start": start, "size": size, "freed": freed})
+        if occupied != count:
+            raise ValueError("Invalid large allocation table count")
+        return entries
+
+    def dump_objects(self, start, size, bits, dump=True):
+        for index, used in enumerate(bits):
+            address = start + index * size
+            state = "freed"
+            color = Config.get("theme.heap_chunk_address_freed")
+            if used:
+                state = "allocated"
+                color = Config.get("theme.heap_chunk_address_used")
+            self.out.append(" -> {:s} ({:s})".format(Color.colorify_hex(address, color), state))
+            if not dump:
+                continue
+            data = read_memory(address, size, safe=True)
+            if data is None:
+                self.out.append("Unreadable object data at {:#x}".format(address))
+                continue
+            self.out.extend(hexdump(data, base=address, color=False, show_symbol=False, unit=1).splitlines())
+        return
+
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    def do_invoke(self, args):
+        self.out = []
+        self.scanning = False
+        try:
+            if args.size_class is not None and args.size_class < 0:
+                raise ValueError("Invalid size class index")
+            if args.allocator is not None:
+                value = gdb.parse_and_eval(args.allocator)
+                tp = value.type.strip_typedefs()
+                if tp.code == gdb.TYPE_CODE_PTR:
+                    tp = tp.target().strip_typedefs()
+                config = None
+                if tp.code != gdb.TYPE_CODE_STRUCT:
+                    self.scanning = True
+                    config = self.get_raw_config(int(value))
+                    if config is None:
+                        raise ValueError("Could not detect the allocator layout")
+                allocators = [(value, config)]
+            else:
+                allocators = []
+                if not args.force_heuristic:
+                    allocators = self.get_typed_allocators()
+                if not allocators:
+                    self.scanning = True
+                    allocators = self.get_allocators_heuristic()
+            self.scanning = False
+            self.out = []
+            if not allocators:
+                err("Could not find an active Zig allocator; specify --allocator")
+                return
+        except (gdb.error, ValueError, OverflowError) as error:
+            err("Cannot read Zig allocator: {!s}".format(error))
+            return
+        found = set()
+        for value, config in allocators:
+            try:
+                self.initialize(value, config)
+                pending = self.out
+                self.out = []
+                buckets = self.parse_buckets()
+                messages = self.out
+                self.out = pending
+                if args.bucket:
+                    buckets = [bucket for bucket in buckets if bucket["address"] in args.bucket]
+                    found.update(bucket["address"] for bucket in buckets)
+                if args.size_class is not None:
+                    if args.size_class >= self.bucket_count:
+                        raise ValueError("Invalid size class index")
+                    buckets = [bucket for bucket in buckets if bucket["size"] == 1 << args.size_class]
+                if args.bucket and not buckets:
+                    continue
+                self.out.append(titlify("Zig allocator @ {:#x} (layout={:s}, page_size={:#x})".format(
+                    self.address, self.layout, self.page_size)))
+                self.out.extend(messages)
+                for bucket in sorted(buckets, key=lambda entry: (entry["size"], entry["address"])):
+                    self.out.append("bucket @ {:#x} [page={:#x} class={:d} chunk_size={:#x} allocated={:d} freed={:d}]".format(
+                        bucket["address"], bucket["start"], bucket["size"].bit_length() - 1,
+                        bucket["size"], bucket["used"], bucket["slots"] - bucket["used"]))
+                    if (args.dump or args.verbose) and bucket["used"]:
+                        self.dump_objects(bucket["start"], bucket["size"], bucket["bits"], dump=args.dump)
+                if args.bucket or args.size_class is not None:
+                    continue
+                for entry in self.parse_large_allocations():
+                    state = "allocated"
+                    if entry["freed"]:
+                        state = "freed"
+                    self.out.append("large @ {:#x} [data={:#x} chunk_size={:#x} {:s}]".format(
+                        entry["address"], entry["start"], entry["size"], state))
+                    if (args.dump or args.verbose) and not entry["freed"]:
+                        self.dump_objects(entry["start"], entry["size"], (1,), dump=args.dump)
+            except (gdb.error, ValueError, OverflowError) as error:
+                self.out.append("Cannot read Zig allocator: {!s}".format(error))
+        if args.bucket:
+            for address in set(args.bucket) - found:
+                self.out.append("Bucket not found at {:#x}".format(address))
+        self.print_output()
+        return
+
+
+@register_command
 class TlsfHeapDumpCommand(GenericCommand, BufferingOutput):
     """TLSF (Two-Level Segregated Fit) v2.4.6 free-list viewer."""
 

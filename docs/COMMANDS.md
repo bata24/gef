@@ -7299,7 +7299,7 @@ Simplified Go heap structure:
 
 ## `hoard-heap-dump`
 
-Hoard v3.2 (2025/12/31) heap free-list viewer (x64 only).
+Hoard v3.2 (2025/12/31) heap free-list viewer.
 
 
 ### Syntax
@@ -7831,7 +7831,7 @@ Simplified SFMalloc structure:
 
 ## `snmalloc-heap-dump`
 
-snmalloc (as of June 2025) heap free-list viewer (x64 only).
+snmalloc (as of June 2025) heap free-list viewer.
 
 
 ### Syntax
@@ -7876,7 +7876,6 @@ This command dumps the following four categories:
 - small_fast_free_lists: Free list per small size class (fast path).
 - alloc_classes: Per size class list of active slabs.
 - laden: The set of all slabs and large allocations from this allocator that are full or almost full.
-    - The end of the list may not be dumped correctly.
 - remote_alloc: Message queue for allocations being returned to this allocator.
     - Currently status: WIP.
 ```
@@ -8121,7 +8120,7 @@ Simplified TLSF structure:
 
 ## `uclibc-ng-heap-dump`
 
-uclibc-ng (libc/stdlib/malloc-standard) heap reusable chunks viewer (x64/x86 only).
+uclibc-ng (libc/stdlib/malloc-standard) heap reusable chunks viewer.
 
 
 ### Syntax
@@ -8147,6 +8146,7 @@ The main structural differences between uclibc-ng (malloc-standard) and glibc ar
 - No thread arena. Therefore, chunks do not have the NON_MAIN_ARENA flag.
 The structure of malloc-standard has remained largely unchanged from version 1.0 to the latest.
 Only libc/stdlib/malloc-standard is supported, not malloc or malloc-simple.
+Without __malloc_state symbols, non-x86 targets require --malloc_state.
 Links are plain by default. Use -s for builds with Safe-Linking, including uClibc-ng 1.0.54 and 1.0.58.
 Since the final version of uclibc (not uclibc-ng) uses the same structure,
 this command should also be usable with uclibc.
@@ -8185,9 +8185,65 @@ The main structural differences between uclibc-ng (malloc-standard) and glibc ar
 - No thread arena. Therefore, chunks do not have the NON_MAIN_ARENA flag.
 The structure of malloc-standard has remained largely unchanged from version 1.0 to the latest.
 Only libc/stdlib/malloc-standard is supported, not malloc or malloc-simple.
+Without __malloc_state symbols, non-x86 targets require --malloc_state.
 Links are plain by default. Use -s for builds with Safe-Linking, including uClibc-ng 1.0.54 and 1.0.58.
 Since the final version of uclibc (not uclibc-ng) uses the same structure,
 this command should also be usable with uclibc.
+```
+
+## `zig-heap-dump`
+
+Zig GeneralPurposeAllocator/DebugAllocator heap dumper.
+
+
+### Syntax
+
+```text
+usage: zig-heap-dump [-h] [-hh] [--allocator ALLOCATOR] [-b BUCKET] [-i SIZE_CLASS] [-H] [-d] [-n] [-v]
+
+options:
+  -h, --help            show this help message and exit
+  -hh, --help-simple    show help without ASCII diagram.
+  --allocator ALLOCATOR
+                        the allocator object, pointer, or address (GDB expression).
+  -b, --bucket BUCKET   dump only the specified bucket address (repeatable).
+  -i, --size-class SIZE_CLASS
+                        dump only the specified size class index.
+  -H, --force-heuristic
+                        find allocators without debug symbols.
+  -d, --dump            with per-object state and hexdump.
+  -n, --no-pager        do not use the pager.
+  -v, --verbose         display object states, empty size classes, and retained entries.
+```
+
+### Notes
+
+```text
+Simplified Zig heap structure:
+
++-allocator-----------+      +-BucketHeader--+
+| buckets[size_class] |----->| links / page  |
+| large_allocations   |--+   | counts        |
++---------------------+  |   +---------------+
+                         |   | used bits     |
+                         |   +---------------+
+                         v
+                   +-HashMap------+
+                   | bytes.ptr    |----> large object
+                   | bytes.len    |
+                   +--------------+
+
+* Allocators are found from debug types, or by validating vtables, buckets, bitmaps, and allocation tables.
+* --allocator overrides detection with a concrete allocator object, pointer, or address (not mem.Allocator).
+* Layout, allocator page size, and configuration are determined automatically.
+* 0.11 uses circular lists, 0.12-0.13 use treaps, and 0.14-0.15 use linked buckets.
+* In 0.14-0.15, bitmaps contain native usize words; earlier bitmaps contain bytes.
+* Dumps distinguish allocated/freed slots. Slots never allocated in the current bucket are omitted.
+* Freed slots are recorded in the bitmap, not linked in a reusable free list.
+* -b selects a bucket address; -i selects a size class index. Both exclude large allocations.
+* Retained freed large entries are shown with --verbose; their data is not read because it may be unmapped.
+* Fully freed, unlinked buckets in 0.14-0.15 cannot be enumerated, even with retain_metadata.
+* ArenaAllocator, FixedBufferAllocator, page_allocator, and smp_allocator are unsupported.
 ```
 
 # 06-a. Qemu-system/KGDB Cooperation - Memory Map
