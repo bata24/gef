@@ -514,6 +514,33 @@ For the usage and options of each command, see [docs/COMMANDS.md](docs/COMMANDS.
 
 </details>
 
+### uClibc-ng
+
+<details>
+<summary><code>uclibc-ng-heap-dump</code>, <code>uclibc-ng-visual-heap</code>, <code>uclibc-ng-top</code>, <code>uclibc-ng-arena</code>, <code>uclibc-ng-chunk</code>, <code>uclibc-ng-chunks</code>, <code>uclibc-ng-parse</code>, <code>uclibc-ng-bins-simple</code>, <code>uclibc-ng-dump-image</code>, <code>uclibc-ng-snapshot</code>, <code>uclibc-ng-snapshot-compare</code></summary>
+
+- `uclibc-ng-heap-dump`: dumps uClibc-ng heap chunks.
+    - Based on uClibc-ng malloc-standard, without an architecture restriction.
+        - Tested on x64, x86, ARM, ARM64, MIPS, PPC, RISC-V, Alpha, SPARC64 and OR1K.
+        - Without the `__malloc_state` symbol, architectures other than x64/x86 need `--malloc_state`.
+    - Use `-s` for builds with Safe-Linking (e.g. uClibc-ng 1.0.54 and 1.0.58).
+        - The shift follows `PAGE_SHIFT` of the build (e.g. 13 on Alpha, 16 on ARM64 with 64KB pages).
+    - ![](images/uclibc-ng-heap-dump.png)
+    - How to test (x64):
+        - Download and extract `x86-64--uclibc--stable-2025.08-1.tar.bz2` from https://toolchains.bootlin.com/
+        - Add `/PATH/TO/x86_64-buildroot-linux-uclibc/bin` to `$PATH`, then build as `x86_64-linux-gcc test.c`.
+        - Fix interpreter by `patchelf --set-interpreter /PATH/TO/x86_64-buildroot-linux-uclibc/sysroot/lib/ld64-uClibc.so.0 a.out`.
+- `uclibc-ng-visual-heap`: is colorized heap viewer for uClibc-ng.
+    - ![](images/uclibc-ng-visual-heap.png)
+- `uclibc-ng-top`, `uclibc-ng-arena`, `uclibc-ng-chunk`, `uclibc-ng-chunks`, `uclibc-ng-parse`, `uclibc-ng-bins-simple`,
+  `uclibc-ng-dump-image`, `uclibc-ng-snapshot`, `uclibc-ng-snapshot-compare`: are ports of the same-name `heap` sub-commands.
+    - `uclibc-ng-arena` displays `malloc_state`, which also holds the parameters that glibc keeps in `mp_`.
+    - `-s` means Safe-Linking decoding as in `uclibc-ng-heap-dump`,
+      so `--skip-size` of `uclibc-ng-bins-simple` and `-p` of `uclibc-ng-dump-image` replace the glibc `-s`.
+    - Snapshots have the same format as `heap snapshot`, so `heap snapshot-compare` can also compare them.
+
+</details>
+
 ### Chromium/V8
 
 <details>
@@ -543,17 +570,8 @@ For the usage and options of each command, see [docs/COMMANDS.md](docs/COMMANDS.
 ### Other
 
 <details>
-<summary><code>uclibc-ng-heap-dump</code>, <code>uclibc-ng-visual-heap</code>, <code>tcmalloc-heap-dump</code>, <code>musl-heap-dump</code>, <code>go-heap-dump</code>, <code>tlsf-heap-dump</code>, <code>hoard-heap-dump</code>, <code>mimalloc-heap-dump</code>, <code>scalloc-heap-dump</code>, <code>snmalloc-heap-dump</code>, <code>ssmalloc-heap-dump</code>, <code>jemalloc-heap-dump</code>, <code>sfmalloc-heap-dump</code>, <code>rpmalloc-heap-dump</code>, <code>tbbmalloc-heap-dump</code>, <code>zig-heap-dump</code></summary>
+<summary><code>tcmalloc-heap-dump</code>, <code>musl-heap-dump</code>, <code>go-heap-dump</code>, <code>tlsf-heap-dump</code>, <code>hoard-heap-dump</code>, <code>mimalloc-heap-dump</code>, <code>scalloc-heap-dump</code>, <code>snmalloc-heap-dump</code>, <code>ssmalloc-heap-dump</code>, <code>jemalloc-heap-dump</code>, <code>sfmalloc-heap-dump</code>, <code>rpmalloc-heap-dump</code>, <code>tbbmalloc-heap-dump</code>, <code>zig-heap-dump</code></summary>
 
-- `uclibc-ng-heap-dump`: dumps uClibc-ng heap chunks.
-    - Supported on x64 and x86, based on uClibc-ng malloc-standard.
-    - ![](images/uclibc-ng-heap-dump.png)
-    - How to test (x64):
-        - Download and extract `x86-64--uclibc--stable-2025.08-1.tar.bz2` from https://toolchains.bootlin.com/
-        - Add `/PATH/TO/x86_64-buildroot-linux-uclibc/bin` to `$PATH`, then build as `x86_64-linux-gcc test.c`.
-        - Fix interpreter by `patchelf --set-interpreter /PATH/TO/x86_64-buildroot-linux-uclibc/sysroot/lib/ld64-uClibc.so.0 a.out`.
-- `uclibc-ng-visual-heap`: is colorized heap viewer for uClibc-ng.
-    - ![](images/uclibc-ng-visual-heap.png)
 - `tcmalloc-heap-dump`: dumps TCMalloc (`gperftools-2.16-1` or named `libgoogle-perftools{4,-dev}`) free-list.
     - ![](images/tcmalloc-heap-dump.png)
     - How to test:

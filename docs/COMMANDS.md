@@ -29,8 +29,9 @@
 - [04-a. Register - View](#04-a-register---view)
 - [04-b. Register - Modify](#04-b-register---modify)
 - [05-a. Heap - Glibc](#05-a-heap---glibc)
-- [05-b. Heap - Chromium/V8](#05-b-heap---chromiumv8)
-- [05-c. Heap - Other](#05-c-heap---other)
+- [05-b. Heap - uClibc-ng](#05-b-heap---uclibc-ng)
+- [05-c. Heap - Chromium/V8](#05-c-heap---chromiumv8)
+- [05-d. Heap - Other](#05-d-heap---other)
 - [06-a. Qemu-system/KGDB Cooperation - Memory Map](#06-a-qemu-systemkgdb-cooperation---memory-map)
 - [06-b. Qemu-system/KGDB Cooperation - Register](#06-b-qemu-systemkgdb-cooperation---register)
 - [06-c. Qemu-system/KGDB Cooperation - Linux Basic](#06-c-qemu-systemkgdb-cooperation---linux-basic)
@@ -41,8 +42,8 @@
 - [06-h. Qemu-system/KGDB Cooperation - Linux Allocator](#06-h-qemu-systemkgdb-cooperation---linux-allocator)
 - [06-i. Qemu-system/KGDB Cooperation - Linux Dynamic Inspection](#06-i-qemu-systemkgdb-cooperation---linux-dynamic-inspection)
 - [06-j. Qemu-system/KGDB Cooperation - TrustZone](#06-j-qemu-systemkgdb-cooperation---trustzone)
-- [06-k. Qemu-system/KGDB Cooperation - Other](#06-k-qemu-systemkgdb-cooperation---other)
-- [06-l. Qemu-system/KGDB Cooperation - SMM](#06-l-qemu-systemkgdb-cooperation---smm)
+- [06-k. Qemu-system/KGDB Cooperation - SMM](#06-k-qemu-systemkgdb-cooperation---smm)
+- [06-l. Qemu-system/KGDB Cooperation - Other](#06-l-qemu-systemkgdb-cooperation---other)
 - [07-a. Misc - Conversion](#07-a-misc---conversion)
 - [07-b. Misc - Search](#07-b-misc---search)
 - [07-c. Misc - Generation](#07-c-misc---generation)
@@ -6991,7 +6992,394 @@ options:
   -n, --no-pager        do not use the pager.
 ```
 
-# 05-b. Heap - Chromium/V8
+# 05-b. Heap - uClibc-ng
+## `uclibc-ng-arena`
+
+Display information on the malloc_state for uClibc-ng.
+
+
+### Syntax
+
+```text
+usage: uclibc-ng-arena [-h] [--malloc_state MALLOC_STATE] [-n]
+
+options:
+  -h, --help            show this help message and exit
+  --malloc_state MALLOC_STATE
+                        use specific address for malloc_state.
+  -n, --no-pager        do not use the pager.
+```
+
+### Notes
+
+```text
+The main structural differences between uclibc-ng (malloc-standard) and glibc are:
+- No tcache. There are fastbins, an unsorted bin, small bins, and large bins.
+- No thread arena. Therefore, chunks do not have the NON_MAIN_ARENA flag.
+The structure of malloc-standard has remained largely unchanged from version 1.0 to the latest.
+Only libc/stdlib/malloc-standard is supported, not malloc or malloc-simple.
+Without __malloc_state symbols, non-x86 targets require --malloc_state.
+Links are plain by default. Use -s for builds with Safe-Linking, including uClibc-ng 1.0.54 and 1.0.58.
+Safe-Linking shifts by PAGE_SHIFT: 13 on alpha/cris/or1k/sparc64, the page size on aarch64/arc, 12 otherwise.
+Since the final version of uclibc (not uclibc-ng) uses the same structure,
+this command should also be usable with uclibc.
+```
+
+## `uclibc-ng-bins-simple`
+
+Simply display information on the bins for uClibc-ng.
+
+
+### Syntax
+
+```text
+usage: uclibc-ng-bins-simple [-h] [--malloc_state MALLOC_STATE] [--skip-size] [-s] [-v]
+
+options:
+  -h, --help            show this help message and exit
+  --malloc_state MALLOC_STATE
+                        use specific address for malloc_state.
+  --skip-size           skip size information.
+  -s, --safe-linking-decode
+                        decode Safe-Linking fastbin links during traversal and display (default: plain links).
+  -v, --verbose         display empty bins.
+```
+
+### Notes
+
+```text
+The main structural differences between uclibc-ng (malloc-standard) and glibc are:
+- No tcache. There are fastbins, an unsorted bin, small bins, and large bins.
+- No thread arena. Therefore, chunks do not have the NON_MAIN_ARENA flag.
+The structure of malloc-standard has remained largely unchanged from version 1.0 to the latest.
+Only libc/stdlib/malloc-standard is supported, not malloc or malloc-simple.
+Without __malloc_state symbols, non-x86 targets require --malloc_state.
+Links are plain by default. Use -s for builds with Safe-Linking, including uClibc-ng 1.0.54 and 1.0.58.
+Safe-Linking shifts by PAGE_SHIFT: 13 on alpha/cris/or1k/sparc64, the page size on aarch64/arc, 12 otherwise.
+Since the final version of uclibc (not uclibc-ng) uses the same structure,
+this command should also be usable with uclibc.
+```
+
+## `uclibc-ng-chunk`
+
+Display information on a heap chunk for uClibc-ng.
+
+
+### Syntax
+
+```text
+usage: uclibc-ng-chunk [-h] [--malloc_state MALLOC_STATE] [-b] [-s] LOCATION
+
+positional arguments:
+  LOCATION              the address to interpret as a chunk.
+
+options:
+  -h, --help            show this help message and exit
+  --malloc_state MALLOC_STATE
+                        use specific address for malloc_state.
+  -b, --as-base         use LOCATION as chunk base address (chunk_base_address = chunk_address - ptrsize * 2).
+  -s, --safe-linking-decode
+                        decode Safe-Linking fastbin links during traversal and display (default: plain links).
+```
+
+### Notes
+
+```text
+The main structural differences between uclibc-ng (malloc-standard) and glibc are:
+- No tcache. There are fastbins, an unsorted bin, small bins, and large bins.
+- No thread arena. Therefore, chunks do not have the NON_MAIN_ARENA flag.
+The structure of malloc-standard has remained largely unchanged from version 1.0 to the latest.
+Only libc/stdlib/malloc-standard is supported, not malloc or malloc-simple.
+Without __malloc_state symbols, non-x86 targets require --malloc_state.
+Links are plain by default. Use -s for builds with Safe-Linking, including uClibc-ng 1.0.54 and 1.0.58.
+Safe-Linking shifts by PAGE_SHIFT: 13 on alpha/cris/or1k/sparc64, the page size on aarch64/arc, 12 otherwise.
+Since the final version of uclibc (not uclibc-ng) uses the same structure,
+this command should also be usable with uclibc.
+```
+
+## `uclibc-ng-chunks`
+
+Display information on all heap chunks for uClibc-ng.
+
+
+### Syntax
+
+```text
+usage: uclibc-ng-chunks [-h] [--malloc_state MALLOC_STATE] [-b NB_BYTE] [-o PEEK_OFFSET] [-s] [-n] [LOCATION]
+
+positional arguments:
+  LOCATION              the address interpreted as the beginning of a contiguous chunk. (default: heap base)
+
+options:
+  -h, --help            show this help message and exit
+  --malloc_state MALLOC_STATE
+                        use specific address for malloc_state.
+  -b, --nb-byte NB_BYTE
+                        hexdump N first byte(s) inside the chunk data.
+  -o, --peek-offset PEEK_OFFSET
+                        the offset to start dumping from when using --nb-byte.
+  -s, --safe-linking-decode
+                        decode Safe-Linking fastbin links during traversal and display (default: plain links).
+  -n, --no-pager        do not use the pager.
+```
+
+### Notes
+
+```text
+The main structural differences between uclibc-ng (malloc-standard) and glibc are:
+- No tcache. There are fastbins, an unsorted bin, small bins, and large bins.
+- No thread arena. Therefore, chunks do not have the NON_MAIN_ARENA flag.
+The structure of malloc-standard has remained largely unchanged from version 1.0 to the latest.
+Only libc/stdlib/malloc-standard is supported, not malloc or malloc-simple.
+Without __malloc_state symbols, non-x86 targets require --malloc_state.
+Links are plain by default. Use -s for builds with Safe-Linking, including uClibc-ng 1.0.54 and 1.0.58.
+Safe-Linking shifts by PAGE_SHIFT: 13 on alpha/cris/or1k/sparc64, the page size on aarch64/arc, 12 otherwise.
+Since the final version of uclibc (not uclibc-ng) uses the same structure,
+this command should also be usable with uclibc.
+```
+
+## `uclibc-ng-dump-image`
+
+Visualize chunks on a heap as composition image for uClibc-ng.
+
+
+### Syntax
+
+```text
+usage: uclibc-ng-dump-image [-h] [--malloc_state MALLOC_STATE] [-c MAX_COUNT] [-t] [-p] [-S SCALE] [-s] [-n] [LOCATION]
+
+positional arguments:
+  LOCATION              the address interpreted as the beginning of a contiguous chunk. (default: heap base)
+
+options:
+  -h, --help            show this help message and exit
+  --malloc_state MALLOC_STATE
+                        use specific address for malloc_state.
+  -c MAX_COUNT          maximum number of chunks to parse; use when the number of chunks is very large.
+  -t, --include-top     include top chunk.
+  -p, --save-as-png     save as png.
+  -S, --scale SCALE     magnification to enlarge or reduce the image.
+  -s, --safe-linking-decode
+                        decode Safe-Linking fastbin links during traversal and display (default: plain links).
+  -n, --no-pager        do not use the pager.
+```
+
+### Notes
+
+```text
+[4mIn-use chunks[0m are displayed alternately in [38;2;125;125;125mdark gray[0m and [38;2;212;217;223mlight gray[0m.
+[4mFreed chunks[0m are displayed alternately in [38;2;238;120;0mmuted red[0m and [38;2;255;243;82mmuted yellow[0m.
+In both cases, the color is determined by whether the chunk's position from the beginning
+is odd-numbered or even-numbered.
+
+The `convert` command limits height to 32000px; output may shrink based on heap size.
+```
+
+## `uclibc-ng-heap-dump`
+
+uclibc-ng (libc/stdlib/malloc-standard) heap reusable chunks viewer.
+
+
+### Syntax
+
+```text
+usage: uclibc-ng-heap-dump [-h] [--malloc_state MALLOC_STATE] [-n] [-v] [-s]
+
+options:
+  -h, --help            show this help message and exit
+  --malloc_state MALLOC_STATE
+                        use specific address for malloc_context.
+  -n, --no-pager        do not use the pager.
+  -v, --verbose         also dump an empty active index.
+  -s, --safe-linking-decode
+                        decode Safe-Linking fastbin links during traversal and display (default: plain links).
+```
+
+### Notes
+
+```text
+The main structural differences between uclibc-ng (malloc-standard) and glibc are:
+- No tcache. There are fastbins, an unsorted bin, small bins, and large bins.
+- No thread arena. Therefore, chunks do not have the NON_MAIN_ARENA flag.
+The structure of malloc-standard has remained largely unchanged from version 1.0 to the latest.
+Only libc/stdlib/malloc-standard is supported, not malloc or malloc-simple.
+Without __malloc_state symbols, non-x86 targets require --malloc_state.
+Links are plain by default. Use -s for builds with Safe-Linking, including uClibc-ng 1.0.54 and 1.0.58.
+Safe-Linking shifts by PAGE_SHIFT: 13 on alpha/cris/or1k/sparc64, the page size on aarch64/arc, 12 otherwise.
+Since the final version of uclibc (not uclibc-ng) uses the same structure,
+this command should also be usable with uclibc.
+```
+
+## `uclibc-ng-parse`
+
+Display information on all heap chunks as Pwngdb style for uClibc-ng.
+
+
+### Syntax
+
+```text
+usage: uclibc-ng-parse [-h] [--malloc_state MALLOC_STATE] [-s] [-n]
+
+options:
+  -h, --help            show this help message and exit
+  --malloc_state MALLOC_STATE
+                        use specific address for malloc_state.
+  -s, --safe-linking-decode
+                        decode Safe-Linking fastbin links during traversal and display (default: plain links).
+  -n, --no-pager        do not use the pager.
+```
+
+### Notes
+
+```text
+The main structural differences between uclibc-ng (malloc-standard) and glibc are:
+- No tcache. There are fastbins, an unsorted bin, small bins, and large bins.
+- No thread arena. Therefore, chunks do not have the NON_MAIN_ARENA flag.
+The structure of malloc-standard has remained largely unchanged from version 1.0 to the latest.
+Only libc/stdlib/malloc-standard is supported, not malloc or malloc-simple.
+Without __malloc_state symbols, non-x86 targets require --malloc_state.
+Links are plain by default. Use -s for builds with Safe-Linking, including uClibc-ng 1.0.54 and 1.0.58.
+Safe-Linking shifts by PAGE_SHIFT: 13 on alpha/cris/or1k/sparc64, the page size on aarch64/arc, 12 otherwise.
+Since the final version of uclibc (not uclibc-ng) uses the same structure,
+this command should also be usable with uclibc.
+```
+
+## `uclibc-ng-snapshot`
+
+Take a snapshot of heap for uClibc-ng.
+
+
+### Syntax
+
+```text
+usage: uclibc-ng-snapshot [-h] [--malloc_state MALLOC_STATE] [-s]
+
+options:
+  -h, --help            show this help message and exit
+  --malloc_state MALLOC_STATE
+                        use specific address for malloc_state.
+  -s, --safe-linking-decode
+                        decode Safe-Linking fastbin links during traversal and display (default: plain links).
+```
+
+### Notes
+
+```text
+The snapshot can be compared by `uclibc-ng-snapshot-compare` or `heap snapshot-compare`.
+```
+
+## `uclibc-ng-snapshot-compare`
+
+Compare current heap with a previously saved uclibc-ng-snapshot.
+
+
+### Syntax
+
+```text
+usage: uclibc-ng-snapshot-compare [-h] [--malloc_state MALLOC_STATE] [-e] [-f] [-s] [-n] [-q] [FILE_PATH] [FILE_PATH2]
+
+positional arguments:
+  FILE_PATH             the filepath to compare (default: last dumped file).
+  FILE_PATH2            the filepath to compare.
+
+options:
+  -h, --help            show this help message and exit
+  --malloc_state MALLOC_STATE
+                        use specific address for malloc_state.
+  -e, --extra           display extra chunk info.
+  -f, --full            display after `top` chunk.
+  -s, --safe-linking-decode
+                        decode Safe-Linking fastbin links during traversal and display (default: plain links).
+  -n, --no-pager        do not use the pager.
+  -q, --quiet           quiet execution.
+```
+
+### Examples
+
+```gdb
+uclibc-ng-snapshot-compare /path/to/snapshot1                     # compare the current memory and file1
+uclibc-ng-snapshot-compare /path/to/snapshot1 /path/to/snapshot2  # compare file1 and file2
+```
+
+### Notes
+
+```text
+Please specify the file obtained by the `uclibc-ng-snapshot` command.
+Usually, it is saved in /tmp/gef/uclibc-ng-heap-ss-...
+```
+
+## `uclibc-ng-top`
+
+Display heap top chunk for uClibc-ng.
+
+
+### Syntax
+
+```text
+usage: uclibc-ng-top [-h] [--malloc_state MALLOC_STATE]
+
+options:
+  -h, --help            show this help message and exit
+  --malloc_state MALLOC_STATE
+                        use specific address for malloc_state.
+```
+
+### Notes
+
+```text
+The main structural differences between uclibc-ng (malloc-standard) and glibc are:
+- No tcache. There are fastbins, an unsorted bin, small bins, and large bins.
+- No thread arena. Therefore, chunks do not have the NON_MAIN_ARENA flag.
+The structure of malloc-standard has remained largely unchanged from version 1.0 to the latest.
+Only libc/stdlib/malloc-standard is supported, not malloc or malloc-simple.
+Without __malloc_state symbols, non-x86 targets require --malloc_state.
+Links are plain by default. Use -s for builds with Safe-Linking, including uClibc-ng 1.0.54 and 1.0.58.
+Safe-Linking shifts by PAGE_SHIFT: 13 on alpha/cris/or1k/sparc64, the page size on aarch64/arc, 12 otherwise.
+Since the final version of uclibc (not uclibc-ng) uses the same structure,
+this command should also be usable with uclibc.
+```
+
+## `uclibc-ng-visual-heap`
+
+Visualize chunks on a heap for uClibc-ng.
+
+
+### Syntax
+
+```text
+usage: uclibc-ng-visual-heap [-h] [--malloc_state MALLOC_STATE] [-c MAX_COUNT] [-f] [-d] [-s] [-n] [LOCATION]
+
+positional arguments:
+  LOCATION              the address interpreted as the beginning of a contiguous chunk. (default: [heap] of vmmap)
+
+options:
+  -h, --help            show this help message and exit
+  --malloc_state MALLOC_STATE
+                        use specific address for malloc_context.
+  -c MAX_COUNT          Maximum count to parse. It is used when there is a very large amount of chunks.
+  -f, --full            display the same line without omitting.
+  -d, --dark-color      use the dark color if chunk is allocated.
+  -s, --safe-linking-decode
+                        decode Safe-Linking fastbin links during traversal and display (default: plain links).
+  -n, --no-pager        do not use the pager.
+```
+
+### Notes
+
+```text
+The main structural differences between uclibc-ng (malloc-standard) and glibc are:
+- No tcache. There are fastbins, an unsorted bin, small bins, and large bins.
+- No thread arena. Therefore, chunks do not have the NON_MAIN_ARENA flag.
+The structure of malloc-standard has remained largely unchanged from version 1.0 to the latest.
+Only libc/stdlib/malloc-standard is supported, not malloc or malloc-simple.
+Without __malloc_state symbols, non-x86 targets require --malloc_state.
+Links are plain by default. Use -s for builds with Safe-Linking, including uClibc-ng 1.0.54 and 1.0.58.
+Safe-Linking shifts by PAGE_SHIFT: 13 on alpha/cris/or1k/sparc64, the page size on aarch64/arc, 12 otherwise.
+Since the final version of uclibc (not uclibc-ng) uses the same structure,
+this command should also be usable with uclibc.
+```
+
+# 05-c. Heap - Chromium/V8
 ## `cage`
 
 Display v8 (Chromium and d8) ubercage area.
@@ -7226,7 +7614,7 @@ For Chromium: this command needs `--no-sandbox` to bypass `seccomp`.
 Also, since it uses V8 commands internally, `_v8_internal_Print_Object` must be resolvable.
 ```
 
-# 05-c. Heap - Other
+# 05-d. Heap - Other
 ## `go-heap-dump`
 
 Go mheap dumper.
@@ -8116,79 +8504,6 @@ Simplified TLSF structure:
 * `fl_bitmap` and `sl_bitmap[]` show which free-list classes are non-empty.
 * `matrix[fl][sl]` points to a doubly linked free-list of `bhdr_t` chunks.
 * Allocated chunks are not linked from `matrix[][]`, so this command dumps free chunks only.
-```
-
-## `uclibc-ng-heap-dump`
-
-uclibc-ng (libc/stdlib/malloc-standard) heap reusable chunks viewer.
-
-
-### Syntax
-
-```text
-usage: uclibc-ng-heap-dump [-h] [--malloc_state MALLOC_STATE] [-n] [-v] [-s]
-
-options:
-  -h, --help            show this help message and exit
-  --malloc_state MALLOC_STATE
-                        use specific address for malloc_context.
-  -n, --no-pager        do not use the pager.
-  -v, --verbose         also dump an empty active index.
-  -s, --safe-linking-decode
-                        decode Safe-Linking fastbin links during traversal and display (default: plain links).
-```
-
-### Notes
-
-```text
-The main structural differences between uclibc-ng (malloc-standard) and glibc are:
-- No tcache. There are fastbins, an unsorted bin, small bins, and large bins.
-- No thread arena. Therefore, chunks do not have the NON_MAIN_ARENA flag.
-The structure of malloc-standard has remained largely unchanged from version 1.0 to the latest.
-Only libc/stdlib/malloc-standard is supported, not malloc or malloc-simple.
-Without __malloc_state symbols, non-x86 targets require --malloc_state.
-Links are plain by default. Use -s for builds with Safe-Linking, including uClibc-ng 1.0.54 and 1.0.58.
-Since the final version of uclibc (not uclibc-ng) uses the same structure,
-this command should also be usable with uclibc.
-```
-
-## `uclibc-ng-visual-heap`
-
-Visualize chunks on a heap for uClibc-ng.
-
-
-### Syntax
-
-```text
-usage: uclibc-ng-visual-heap [-h] [--malloc_state MALLOC_STATE] [-c MAX_COUNT] [-f] [-d] [-s] [-n] [LOCATION]
-
-positional arguments:
-  LOCATION              the address interpreted as the beginning of a contiguous chunk. (default: [heap] of vmmap)
-
-options:
-  -h, --help            show this help message and exit
-  --malloc_state MALLOC_STATE
-                        use specific address for malloc_context.
-  -c MAX_COUNT          Maximum count to parse. It is used when there is a very large amount of chunks.
-  -f, --full            display the same line without omitting.
-  -d, --dark-color      use the dark color if chunk is allocated.
-  -s, --safe-linking-decode
-                        decode Safe-Linking fastbin links during traversal and display (default: plain links).
-  -n, --no-pager        do not use the pager.
-```
-
-### Notes
-
-```text
-The main structural differences between uclibc-ng (malloc-standard) and glibc are:
-- No tcache. There are fastbins, an unsorted bin, small bins, and large bins.
-- No thread arena. Therefore, chunks do not have the NON_MAIN_ARENA flag.
-The structure of malloc-standard has remained largely unchanged from version 1.0 to the latest.
-Only libc/stdlib/malloc-standard is supported, not malloc or malloc-simple.
-Without __malloc_state symbols, non-x86 targets require --malloc_state.
-Links are plain by default. Use -s for builds with Safe-Linking, including uClibc-ng 1.0.54 and 1.0.58.
-Since the final version of uclibc (not uclibc-ng) uses the same structure,
-this command should also be usable with uclibc.
 ```
 
 ## `zig-heap-dump`
@@ -13027,7 +13342,70 @@ xsm /16xw --off 0x11e3d0     # the offset from secure memory area
 xsm /16xw --virt 0x783ae3d0  # secure memory ASLR is supported
 ```
 
-# 06-k. Qemu-system/KGDB Cooperation - Other
+# 06-k. Qemu-system/KGDB Cooperation - SMM
+## `smm-dump`
+
+Dump the detected SMRAM range to a file.
+
+
+### Syntax
+
+```text
+usage: smm-dump [-h] [-f] [-c]
+
+options:
+  -h, --help    show this help message and exit
+  -f, --force   try to dump even when the current CPU is not in SMM.
+  -c, --commit  actually perform the dump.
+```
+
+### Examples
+
+```gdb
+smm-dump
+smm-dump --commit
+smm-dump --commit --force
+```
+
+### Notes
+
+```text
+An in-SMM dump uses the current CPU's SMM address space.
+A forced dump outside SMM is best-effort because chipset access controls may return masked bytes.
+```
+
+## `smm-status`
+
+Display the current SMM status and an SMRAM preview.
+
+
+### Syntax
+
+```text
+usage: smm-status [-h] [-q] [-n]
+
+options:
+  -h, --help      show this help message and exit
+  -q, --quiet     print only in_smm, not_in_smm, or unknown.
+  -n, --no-pager  do not use the pager.
+```
+
+### Examples
+
+```gdb
+smm-status
+smm-status --quiet
+```
+
+### Notes
+
+```text
+The QEMU monitor SMM flag is preferred.
+On older QEMU builds, the physical instruction address is compared with the detected SMRAM range.
+The preview uses the physical instruction address in SMRAM, or the detected SMRAM base.
+```
+
+# 06-l. Qemu-system/KGDB Cooperation - Other
 ## `kdiff`
 
 Compare kernel information at two points in time.
@@ -13146,69 +13524,6 @@ options:
   --end END           physical search range end (exclusive).
   --pei-bits {32,64}  override PEI table pointer width.
   --dxe-bits {32,64}  override DXE table pointer width.
-```
-
-# 06-l. Qemu-system/KGDB Cooperation - SMM
-## `smm-dump`
-
-Dump the detected SMRAM range to a file.
-
-
-### Syntax
-
-```text
-usage: smm-dump [-h] [-f] [-c]
-
-options:
-  -h, --help    show this help message and exit
-  -f, --force   try to dump even when the current CPU is not in SMM.
-  -c, --commit  actually perform the dump.
-```
-
-### Examples
-
-```gdb
-smm-dump
-smm-dump --commit
-smm-dump --commit --force
-```
-
-### Notes
-
-```text
-An in-SMM dump uses the current CPU's SMM address space.
-A forced dump outside SMM is best-effort because chipset access controls may return masked bytes.
-```
-
-## `smm-status`
-
-Display the current SMM status and an SMRAM preview.
-
-
-### Syntax
-
-```text
-usage: smm-status [-h] [-q] [-n]
-
-options:
-  -h, --help      show this help message and exit
-  -q, --quiet     print only in_smm, not_in_smm, or unknown.
-  -n, --no-pager  do not use the pager.
-```
-
-### Examples
-
-```gdb
-smm-status
-smm-status --quiet
-```
-
-### Notes
-
-```text
-The QEMU monitor SMM flag is preferred.
-On older QEMU builds, the physical instruction address is compared with the detected SMRAM range.
-The preview uses the physical instruction address in SMRAM, or the detected SMRAM base.
 ```
 
 # 07-a. Misc - Conversion

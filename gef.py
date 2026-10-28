@@ -31388,7 +31388,10 @@ class GlibcHeapDumpImageCommand(GenericCommand):
 
         line_nums = [chunk_size_to_line_number(c) for c in chunks]
         used_or_freed = [c.is_real_used() for c in chunks]
+        return GlibcHeapDumpImageCommand.make_raw_image(line_nums, used_or_freed)
 
+    @staticmethod
+    def make_raw_image(line_nums, used_or_freed):
         total = sum(line_nums)
         if total <= 0:
             return None
@@ -31903,41 +31906,7 @@ class GlibcHeapSnapshotCompareCommand(GenericCommand, BufferingOutput):
             self.out.append(line)
         return
 
-    @Decorator.parse_args
-    @Decorator.only_if_gdb_running
-    @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
-    @Decorator.require_arch_set
-    def do_invoke(self, args):
-        if args.file_path is not None and args.file_path2 is not None:
-            ret1 = GlibcHeapSnapshotCommand.read_snapshot(self.args.file_path)
-            ret2 = GlibcHeapSnapshotCommand.read_snapshot(self.args.file_path2)
-            file_path1 = os.path.basename(self.args.file_path)
-            file_path2 = os.path.basename(self.args.file_path2)
-        else:
-            # parse arena
-            arena = GlibcHeap.get_arena(args.arena_addr)
-
-            if arena is None:
-                err("No valid arena")
-                return
-
-            if arena.heap_base is None or not is_valid_addr(arena.heap_base):
-                err("Heap is not initialized")
-                return
-
-            ret1 = GlibcHeapSnapshotCommand.dump_heap(arena)
-            file_path1 = "Current memory"
-
-            if args.file_path is None:
-                if not hasattr(GlibcHeapSnapshotCommand, "last_dumped_filepath"):
-                    err("Invalid filepath")
-                    return
-                ret2 = GlibcHeapSnapshotCommand.read_snapshot(GlibcHeapSnapshotCommand.last_dumped_filepath)
-                file_path2 = os.path.basename(GlibcHeapSnapshotCommand.last_dumped_filepath)
-            else:
-                ret2 = GlibcHeapSnapshotCommand.read_snapshot(self.args.file_path)
-                file_path2 = os.path.basename(self.args.file_path)
-
+    def compare_snapshots(self, ret1, file_path1, ret2, file_path2):
         if ret1 is None or ret2 is None:
             return
         raw1, info1 = ret1
@@ -31982,6 +31951,44 @@ class GlibcHeapSnapshotCompareCommand(GenericCommand, BufferingOutput):
         # doit
         self.compare(memoryview(raw1), info1, memoryview(raw2), info2)
         self.print_output(check_terminal_size=True)
+        return
+
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @Decorator.require_arch_set
+    def do_invoke(self, args):
+        if args.file_path is not None and args.file_path2 is not None:
+            ret1 = GlibcHeapSnapshotCommand.read_snapshot(self.args.file_path)
+            ret2 = GlibcHeapSnapshotCommand.read_snapshot(self.args.file_path2)
+            file_path1 = os.path.basename(self.args.file_path)
+            file_path2 = os.path.basename(self.args.file_path2)
+        else:
+            # parse arena
+            arena = GlibcHeap.get_arena(args.arena_addr)
+
+            if arena is None:
+                err("No valid arena")
+                return
+
+            if arena.heap_base is None or not is_valid_addr(arena.heap_base):
+                err("Heap is not initialized")
+                return
+
+            ret1 = GlibcHeapSnapshotCommand.dump_heap(arena)
+            file_path1 = "Current memory"
+
+            if args.file_path is None:
+                if not hasattr(GlibcHeapSnapshotCommand, "last_dumped_filepath"):
+                    err("Invalid filepath")
+                    return
+                ret2 = GlibcHeapSnapshotCommand.read_snapshot(GlibcHeapSnapshotCommand.last_dumped_filepath)
+                file_path2 = os.path.basename(GlibcHeapSnapshotCommand.last_dumped_filepath)
+            else:
+                ret2 = GlibcHeapSnapshotCommand.read_snapshot(self.args.file_path)
+                file_path2 = os.path.basename(self.args.file_path)
+
+        self.compare_snapshots(ret1, file_path1, ret2, file_path2)
         return
 
 
@@ -103929,7 +103936,7 @@ class KernelSearchCodePtrCommand(GenericCommand, BufferingOutput):
     """Search the code pointer in kernel data area."""
 
     _cmdline_ = "ksearch-code-ptr"
-    _category_ = "06-k. Qemu-system/KGDB Cooperation - Other"
+    _category_ = "06-l. Qemu-system/KGDB Cooperation - Other"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("-d", "--depth", type=int, default=1, help="depth of reference. (default: %(default)s)")
@@ -104067,7 +104074,7 @@ class KernelDiffCommand(GenericCommand, BufferingOutput):
     """Compare kernel information at two points in time."""
 
     _cmdline_ = "kdiff"
-    _category_ = "06-k. Qemu-system/KGDB Cooperation - Other"
+    _category_ = "06-l. Qemu-system/KGDB Cooperation - Other"
 
     target_commands = {
         "task": "ktask --quiet --no-pager --print-all-id --print-thread",
@@ -165225,7 +165232,7 @@ class TcmallocHeapDumpCommand(GenericCommand, BufferingOutput):
     """tcmalloc (google-perftools/gperftools) free-list viewer."""
 
     _cmdline_ = "tcmalloc-heap-dump"
-    _category_ = "05-c. Heap - Other"
+    _category_ = "05-d. Heap - Other"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("-hh", "--help-simple", action="store_true", help="show help without ASCII diagram.")
@@ -165870,7 +165877,7 @@ class GoHeapDumpCommand(GenericCommand, BufferingOutput):
     """Go mheap dumper."""
 
     _cmdline_ = "go-heap-dump"
-    _category_ = "05-c. Heap - Other"
+    _category_ = "05-d. Heap - Other"
 
     # TODO: arena, central, mspan.next
 
@@ -166222,7 +166229,7 @@ class ZigHeapDumpCommand(GenericCommand, BufferingOutput):
     """Zig GeneralPurposeAllocator/DebugAllocator heap dumper."""
 
     _cmdline_ = "zig-heap-dump"
-    _category_ = "05-c. Heap - Other"
+    _category_ = "05-d. Heap - Other"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("-hh", "--help-simple", action="store_true", help="show help without ASCII diagram.")
@@ -166810,7 +166817,7 @@ class TlsfHeapDumpCommand(GenericCommand, BufferingOutput):
     """TLSF (Two-Level Segregated Fit) v2.4.6 free-list viewer."""
 
     _cmdline_ = "tlsf-heap-dump"
-    _category_ = "05-c. Heap - Other"
+    _category_ = "05-d. Heap - Other"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("-hh", "--help-simple", action="store_true", help="show help without ASCII diagram.")
@@ -167032,7 +167039,7 @@ class HoardHeapDumpCommand(GenericCommand, BufferingOutput):
     """Hoard v3.2 (2025/12/31) heap free-list viewer."""
 
     _cmdline_ = "hoard-heap-dump"
-    _category_ = "05-c. Heap - Other"
+    _category_ = "05-d. Heap - Other"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("-hh", "--help-simple", action="store_true", help="show help without ASCII diagram.")
@@ -167233,7 +167240,7 @@ class MimallocHeapDumpCommand(GenericCommand, BufferingOutput):
     """mimalloc heap free-list viewer."""
 
     _cmdline_ = "mimalloc-heap-dump"
-    _category_ = "05-c. Heap - Other"
+    _category_ = "05-d. Heap - Other"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("-hh", "--help-simple", action="store_true", help="show help without ASCII diagram.")
@@ -168274,7 +168281,7 @@ class SnmallocHeapDumpCommand(GenericCommand, BufferingOutput):
     """snmalloc (as of June 2025) heap free-list viewer."""
 
     _cmdline_ = "snmalloc-heap-dump"
-    _category_ = "05-c. Heap - Other"
+    _category_ = "05-d. Heap - Other"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("-hh", "--help-simple", action="store_true", help="show help without ASCII diagram.")
@@ -168834,7 +168841,7 @@ class CageCommand(GenericCommand, BufferingOutput):
     """Display v8 (Chromium and d8) ubercage area."""
 
     _cmdline_ = "cage"
-    _category_ = "05-b. Heap - Chromium/V8"
+    _category_ = "05-c. Heap - Chromium/V8"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("location", metavar="LOCATION", nargs="?", type=AddressUtil.parse_address,
@@ -169584,7 +169591,7 @@ class V8ListMapsCommand(GenericCommand, BufferingOutput):
     """List v8 (Chromium and d8) built-in maps."""
 
     _cmdline_ = "v8-list-maps"
-    _category_ = "05-b. Heap - Chromium/V8"
+    _category_ = "05-c. Heap - Chromium/V8"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("-hh", "--help-simple", action="store_true", help="show help without ASCII diagram.")
@@ -169853,7 +169860,7 @@ class V8DumpSpaceCommand(GenericCommand, BufferingOutput):
     """Dump v8 (Chromium and d8) heap objects in each space."""
 
     _cmdline_ = "v8-dump-space"
-    _category_ = "05-b. Heap - Chromium/V8"
+    _category_ = "05-c. Heap - Chromium/V8"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     spaces = ["old_space", "new_space", "ro_space", "trusted_space", "all", "o", "n", "r", "t", "a"]
@@ -170377,7 +170384,7 @@ class V8Command(GenericCommand):
     """Print v8 tagged object, or load more commands from internet."""
 
     _cmdline_ = "v8"
-    _category_ = "05-b. Heap - Chromium/V8"
+    _category_ = "05-c. Heap - Chromium/V8"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     group = parser.add_mutually_exclusive_group(required=True)
@@ -170527,7 +170534,7 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
     """PartitionAlloc free-list viewer for chromium stable."""
 
     _cmdline_ = "partition-alloc-dump"
-    _category_ = "05-b. Heap - Chromium/V8"
+    _category_ = "05-c. Heap - Chromium/V8"
 
     max_chain_length = 0x10000
 
@@ -171681,7 +171688,7 @@ class ScallocHeapDumpCommand(GenericCommand, BufferingOutput):
     """scalloc heap free-list viewer."""
 
     _cmdline_ = "scalloc-heap-dump"
-    _category_ = "05-c. Heap - Other"
+    _category_ = "05-d. Heap - Other"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("-hh", "--help-simple", action="store_true", help="show help without ASCII diagram.")
@@ -171998,7 +172005,7 @@ class SsmallocHeapDumpCommand(GenericCommand, BufferingOutput):
     """SSMalloc heap free-list viewer (x64 only)."""
 
     _cmdline_ = "ssmalloc-heap-dump"
-    _category_ = "05-c. Heap - Other"
+    _category_ = "05-d. Heap - Other"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("-hh", "--help-simple", action="store_true", help="show help without ASCII diagram.")
@@ -172772,7 +172779,7 @@ class SfmallocHeapDumpCommand(GenericCommand, BufferingOutput):
     """SFMalloc heap free-list viewer (x64 only)."""
 
     _cmdline_ = "sfmalloc-heap-dump"
-    _category_ = "05-c. Heap - Other"
+    _category_ = "05-d. Heap - Other"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("-hh", "--help-simple", action="store_true", help="show help without ASCII diagram.")
@@ -173193,7 +173200,7 @@ class RpmallocHeapDumpCommand(GenericCommand, BufferingOutput):
     """rpmalloc heap free-list viewer."""
 
     _cmdline_ = "rpmalloc-heap-dump"
-    _category_ = "05-c. Heap - Other"
+    _category_ = "05-d. Heap - Other"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("-hh", "--help-simple", action="store_true", help="show help without ASCII diagram.")
@@ -173828,7 +173835,7 @@ class TbbmallocHeapDumpCommand(GenericCommand, BufferingOutput):
     """oneTBB scalable allocator (tbbmalloc) free-list viewer."""
 
     _cmdline_ = "tbbmalloc-heap-dump"
-    _category_ = "05-c. Heap - Other"
+    _category_ = "05-d. Heap - Other"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("-hh", "--help-simple", action="store_true", help="show help without ASCII diagram.")
@@ -175707,7 +175714,7 @@ class JemallocHeapDumpCommand(GenericCommand, BufferingOutput):
     """jemalloc (v3.0~) arena/bin/slab(run)/large/tcache viewer."""
 
     _cmdline_ = "jemalloc-heap-dump"
-    _category_ = "05-c. Heap - Other"
+    _category_ = "05-d. Heap - Other"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("-hh", "--help-simple", action="store_true", help="show help without ASCII diagram.")
@@ -176044,7 +176051,7 @@ class MuslHeapDumpCommand(GenericCommand, BufferingOutput):
 
     # See https://h-noson.hatenablog.jp/entry/2021/05/03/161933#-177pts-mooosl
     _cmdline_ = "musl-heap-dump"
-    _category_ = "05-c. Heap - Other"
+    _category_ = "05-d. Heap - Other"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     modes = ["ctx", "unused"]
@@ -176641,7 +176648,7 @@ class uClibcNgHeap:
             if not safe_linking:
                 return value
             # Unmask ("reveal") the Safe-Linking pointer
-            return value ^ (self.address >> 12)
+            return value ^ (self.address >> uClibcNgHeap.get_page_shift())
 
         @property
         def fwd(self):
@@ -176665,6 +176672,9 @@ class uClibcNgHeap:
         def has_m_bit(self):
             return read_int_from_memory(self.size_addr) & 0x02
 
+        def get_prev_chunk_size(self):
+            return read_int_from_memory(self.chunk_base_address)
+
         def flags_as_string(self):
             flags = []
             if self.has_p_bit():
@@ -176673,14 +176683,22 @@ class uClibcNgHeap:
                 flags.append(Color.colorify("IS_MMAPPED", Config.get("theme.heap_chunk_flag_is_mmapped")))
             return "|".join(flags)
 
-        def to_str(self, is_fastbin=False, safe_linking=False):
+        def to_str(self, is_fastbin=False, safe_linking=False, is_used=False, is_top=False):
             chunk_c = Color.colorify("Chunk", Config.get("theme.heap_chunk_label"))
             size_c = Color.colorify_hex(self.get_chunk_size(), Config.get("theme.heap_chunk_size"))
-            base_c = Color.colorify_hex(self.chunk_base_address, Config.get("theme.heap_chunk_address_freed"))
-            addr_c = Color.colorify_hex(self.address, Config.get("theme.heap_chunk_address_freed"))
+            if is_used:
+                address_color = Config.get("theme.heap_chunk_address_used")
+            else:
+                address_color = Config.get("theme.heap_chunk_address_freed")
+            base_c = Color.colorify_hex(self.chunk_base_address, address_color)
+            addr_c = Color.colorify_hex(self.address, address_color)
             flags = self.flags_as_string()
 
-            if is_fastbin:
+            if is_used or is_top:
+                msg = "{:s}(base={:s}, addr={:s}, size={:s}, flags={:s})".format(
+                    chunk_c, base_c, addr_c, size_c, flags,
+                )
+            elif is_fastbin:
                 decoded_fd = ProcessMap.lookup(self.get_fwd_ptr(safe_linking))
                 fd = self.get_fwd_ptr()
                 msg = "{:s}(base={:s}, addr={:s}, size={:s}, flags={:s}, fd={:#x}(={!s}))".format(
@@ -176694,13 +176712,41 @@ class uClibcNgHeap:
                 )
             return msg
 
+        def str_detail(self, is_freed):
+            msg = []
+            msg.append("  Chunk size: {:#x}".format(self.get_chunk_size()))
+            msg.append("  Usable size: {:#x}".format(max(self.get_chunk_size() - 2 * self.ptrsize, 0)))
+            if self.has_p_bit():
+                msg.append("  Previous chunk size: ??? (PREV_INUSE flag: On)")
+            else:
+                msg.append("  Previous chunk size: {:#x}".format(self.get_prev_chunk_size()))
+            for name, flag in (("PREV_INUSE", self.has_p_bit()), ("IS_MMAPPED", self.has_m_bit())):
+                if flag:
+                    msg.append("  {:s} flag: {:s}".format(name, Color.greenify("On")))
+                else:
+                    msg.append("  {:s} flag: {:s}".format(name, Color.redify("Off")))
+            if is_freed:
+                msg.append("")
+                msg.append("  Forward pointer: {:#x}".format(read_int_from_memory(self.address)))
+                msg.append("  Backward pointer: {:#x}".format(self.get_bkw_ptr()))
+            return "\n".join(msg)
+
+    @staticmethod
+    def get_page_shift():
+        # PAGE_SHIFT in bits/uClibc_page.h; aarch64 and arc select it to match the kernel page size
+        if is_alpha() or is_cris() or is_or1k() or is_sparc64():
+            return 13
+        if is_arm64() or is_arc32() or is_arc64():
+            return get_pagesize().bit_length() - 1
+        return 12
+
 
 @register_command
 class UclibcNgHeapDumpCommand(GenericCommand, BufferingOutput):
     """uclibc-ng (libc/stdlib/malloc-standard) heap reusable chunks viewer."""
 
     _cmdline_ = "uclibc-ng-heap-dump"
-    _category_ = "05-c. Heap - Other"
+    _category_ = "05-b. Heap - uClibc-ng"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("--malloc_state", type=AddressUtil.parse_address,
@@ -176719,6 +176765,7 @@ class UclibcNgHeapDumpCommand(GenericCommand, BufferingOutput):
         "Only libc/stdlib/malloc-standard is supported, not malloc or malloc-simple.",
         "Without __malloc_state symbols, non-x86 targets require --malloc_state.",
         "Links are plain by default. Use -s for builds with Safe-Linking, including uClibc-ng 1.0.54 and 1.0.58.",
+        "Safe-Linking shifts by PAGE_SHIFT: 13 on alpha/cris/or1k/sparc64, the page size on aarch64/arc, 12 otherwise.",
         "Since the final version of uclibc (not uclibc-ng) uses the same structure,",
         "this command should also be usable with uclibc.",
     ]
@@ -177049,6 +177096,139 @@ class UclibcNgHeapDumpCommand(GenericCommand, BufferingOutput):
 
         return GefUtil.dict_to_namedtuple("MallocState", malloc_state)
 
+    def init_bins_info(self, malloc_state):
+        self.bins_info = {
+            "fastbins": {},
+            "small_bins": {},
+            "large_bins": {},
+        }
+        # fastbins
+        for i in range(self.NFASTBINS):
+            addr, n, size = malloc_state.fastbins[i]
+            seen = []
+            seen_addresses = set()
+            while n and n not in seen_addresses:
+                seen.append(n)
+                seen_addresses.add(n)
+                try:
+                    chunk = uClibcNgHeap.uClibcChunk(n, from_base=True)
+                    n = chunk.get_fwd_ptr(self.args.safe_linking_decode)
+                except gdb.MemoryError:
+                    break
+            self.bins_info["fastbins"][i] = seen
+        # smallbins / unsortedbin
+        for i in range(len(malloc_state.smallbins)):
+            addr, n, p, size = malloc_state.smallbins[i]
+            seen = []
+            seen_addresses = set()
+            while n and addr - current_arch.ptrsize * 2 != n and n not in seen_addresses:
+                seen.append(n)
+                seen_addresses.add(n)
+                try:
+                    chunk = uClibcNgHeap.uClibcChunk(n, from_base=True)
+                    n = chunk.fwd
+                except gdb.MemoryError:
+                    break
+            self.bins_info["small_bins"][i] = seen
+        # largebins
+        for i in range(len(malloc_state.largebins)):
+            addr, n, p, size = malloc_state.largebins[i]
+            seen = []
+            seen_addresses = set()
+            while n and addr - current_arch.ptrsize * 2 != n and n not in seen_addresses:
+                seen.append(n)
+                seen_addresses.add(n)
+                try:
+                    chunk = uClibcNgHeap.uClibcChunk(n, from_base=True)
+                    n = chunk.fwd
+                except gdb.MemoryError:
+                    break
+            self.bins_info["large_bins"][i] = seen
+
+        # make table
+        # dict[address] = ["bins info1", "bins info2", ...]
+        self.bins_dict_for_address = {}
+        for fastbin_idx, fastbin_list in self.bins_info["fastbins"].items():
+            position_table = GefUtil.make_position_table(fastbin_list)
+            for address in fastbin_list:
+                pos = position_table[address]
+                sz = self.fast_size_table[fastbin_idx][is_32bit()]
+                if isinstance(sz, int):
+                    sz = "{:#x}".format(sz)
+                else:
+                    sz = str(sz)
+                m = "fastbins[idx={:d},sz={:s}][{:s}/{:d}]".format(fastbin_idx, sz, pos, len(fastbin_list))
+                self.bins_dict_for_address.setdefault(address, []).append(m)
+        for smallbin_idx, smallbin_list in self.bins_info["small_bins"].items():
+            position_table = GefUtil.make_position_table(smallbin_list)
+            for address in smallbin_list:
+                pos = position_table[address]
+                if smallbin_idx == self.UNSORTED_BIN:
+                    m = "unsortedbins[{:s}/{:d}]".format(pos, len(smallbin_list))
+                else:
+                    size = self.size_table[smallbin_idx][is_32bit()]
+                    if isinstance(size, tuple):
+                        sz = "{:#x}-{:#x}".format(size[0], size[1])
+                    else:
+                        sz = size
+                    m = "smallbins[idx={:d},sz={:s}][{:s}/{:d}]".format(smallbin_idx, sz, pos, len(smallbin_list))
+                self.bins_dict_for_address.setdefault(address, []).append(m)
+        for largebin_idx, largebin_list in self.bins_info["large_bins"].items():
+            position_table = GefUtil.make_position_table(largebin_list)
+            for address in largebin_list:
+                pos = position_table[address]
+                size = self.size_table[self.NSMALLBINS + largebin_idx][is_32bit()]
+                if isinstance(size, tuple):
+                    sz = "{:#x}-{:#x}".format(size[0], size[1])
+                else:
+                    sz = size
+                m = "largebins[idx={:d},sz={:s}][{:s}/{:d}]".format(
+                    self.NSMALLBINS + largebin_idx, sz, pos, len(largebin_list),
+                )
+                self.bins_dict_for_address.setdefault(address, []).append(m)
+        return
+
+    def get_bins_info(self, malloc_state, address):
+        info = list(self.bins_dict_for_address.get(address, []))
+        if address == malloc_state.top:
+            info.append("top")
+        return info
+
+    def chunk_to_str(self, malloc_state, chunk):
+        info = self.bins_dict_for_address.get(chunk.chunk_base_address)
+        if info:
+            is_fastbin = info[0].startswith("fastbins[")
+            return chunk.to_str(is_fastbin=is_fastbin, safe_linking=self.args.safe_linking_decode)
+        if chunk.chunk_base_address == malloc_state.top:
+            return chunk.to_str(is_top=True)
+        return chunk.to_str(is_used=True)
+
+    def iter_chunks(self, malloc_state, dump_start):
+        pbar = ProgressBar(total=max(malloc_state.top - dump_start, 0))
+        addr = dump_start
+        try:
+            while True:
+                if addr > malloc_state.top:
+                    self.err_add_out("Corrupted: chunk > top")
+                    break
+                chunk = uClibcNgHeap.uClibcChunk(addr, from_base=True)
+                try:
+                    size = chunk.size
+                except gdb.MemoryError:
+                    self.err_add_out("Corrupted: cannot read the chunk at {:#x}".format(addr))
+                    break
+                yield chunk
+                if addr == malloc_state.top:
+                    break
+                if size < current_arch.ptrsize * 4 or size % (current_arch.ptrsize * 2):
+                    self.err_add_out("Corrupted: invalid chunk size")
+                    break
+                addr += size
+                pbar.update(size)
+        finally:
+            pbar.close()
+        return
+
     def dump_malloc_state(self, malloc_state):
         chunk_size_color = Config.get("theme.heap_chunk_size")
 
@@ -177173,7 +177353,7 @@ class UclibcNgVisualHeapCommand(UclibcNgHeapDumpCommand, BufferingOutput):
     """Visualize chunks on a heap for uClibc-ng."""
 
     _cmdline_ = "uclibc-ng-visual-heap"
-    _category_ = "05-c. Heap - Other"
+    _category_ = "05-b. Heap - uClibc-ng"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("location", metavar="LOCATION", nargs="?", type=AddressUtil.parse_address,
@@ -177205,104 +177385,6 @@ class UclibcNgVisualHeapCommand(UclibcNgHeapDumpCommand, BufferingOutput):
     def __init__(self):
         super().__init__(complete=gdb.COMPLETE_LOCATION)
         return
-
-    def init_bins_info(self, malloc_state):
-        self.bins_info = {
-            "fastbins": {},
-            "small_bins": {},
-            "large_bins": {},
-        }
-        # fastbins
-        for i in range(self.NFASTBINS):
-            addr, n, size = malloc_state.fastbins[i]
-            seen = []
-            seen_addresses = set()
-            while n and n not in seen_addresses:
-                seen.append(n)
-                seen_addresses.add(n)
-                try:
-                    chunk = uClibcNgHeap.uClibcChunk(n, from_base=True)
-                    n = chunk.get_fwd_ptr(self.args.safe_linking_decode)
-                except gdb.MemoryError:
-                    break
-            self.bins_info["fastbins"][i] = seen
-        # smallbins / unsortedbin
-        for i in range(len(malloc_state.smallbins)):
-            addr, n, p, size = malloc_state.smallbins[i]
-            seen = []
-            seen_addresses = set()
-            while n and addr - current_arch.ptrsize * 2 != n and n not in seen_addresses:
-                seen.append(n)
-                seen_addresses.add(n)
-                try:
-                    chunk = uClibcNgHeap.uClibcChunk(n, from_base=True)
-                    n = chunk.fwd
-                except gdb.MemoryError:
-                    break
-            self.bins_info["small_bins"][i] = seen
-        # largebins
-        for i in range(len(malloc_state.largebins)):
-            addr, n, p, size = malloc_state.largebins[i]
-            seen = []
-            seen_addresses = set()
-            while n and addr - current_arch.ptrsize * 2 != n and n not in seen_addresses:
-                seen.append(n)
-                seen_addresses.add(n)
-                try:
-                    chunk = uClibcNgHeap.uClibcChunk(n, from_base=True)
-                    n = chunk.fwd
-                except gdb.MemoryError:
-                    break
-            self.bins_info["large_bins"][i] = seen
-
-        # make table
-        # dict[address] = ["bins info1", "bins info2", ...]
-        self.bins_dict_for_address = {}
-        for fastbin_idx, fastbin_list in self.bins_info["fastbins"].items():
-            position_table = GefUtil.make_position_table(fastbin_list)
-            for address in fastbin_list:
-                pos = position_table[address]
-                sz = self.fast_size_table[fastbin_idx][is_32bit()]
-                if isinstance(sz, int):
-                    sz = "{:#x}".format(sz)
-                else:
-                    sz = str(sz)
-                m = "fastbins[idx={:d},sz={:s}][{:s}/{:d}]".format(fastbin_idx, sz, pos, len(fastbin_list))
-                self.bins_dict_for_address.setdefault(address, []).append(m)
-        for smallbin_idx, smallbin_list in self.bins_info["small_bins"].items():
-            position_table = GefUtil.make_position_table(smallbin_list)
-            for address in smallbin_list:
-                pos = position_table[address]
-                if smallbin_idx == self.UNSORTED_BIN:
-                    m = "unsortedbins[{:s}/{:d}]".format(pos, len(smallbin_list))
-                else:
-                    size = self.size_table[smallbin_idx][is_32bit()]
-                    if isinstance(size, tuple):
-                        sz = "{:#x}-{:#x}".format(size[0], size[1])
-                    else:
-                        sz = size
-                    m = "smallbins[idx={:d},sz={:s}][{:s}/{:d}]".format(smallbin_idx, sz, pos, len(smallbin_list))
-                self.bins_dict_for_address.setdefault(address, []).append(m)
-        for largebin_idx, largebin_list in self.bins_info["large_bins"].items():
-            position_table = GefUtil.make_position_table(largebin_list)
-            for address in largebin_list:
-                pos = position_table[address]
-                size = self.size_table[self.NSMALLBINS + largebin_idx][is_32bit()]
-                if isinstance(size, tuple):
-                    sz = "{:#x}-{:#x}".format(size[0], size[1])
-                else:
-                    sz = size
-                m = "largebins[idx={:d},sz={:s}][{:s}/{:d}]".format(
-                    self.NSMALLBINS + largebin_idx, sz, pos, len(largebin_list),
-                )
-                self.bins_dict_for_address.setdefault(address, []).append(m)
-        return
-
-    def get_bins_info(self, malloc_state, address):
-        info = list(self.bins_dict_for_address.get(address, []))
-        if address == malloc_state.top:
-            info.append("top")
-        return info
 
     def generate_visual_chunk(self, malloc_state, chunk, idx):
 
@@ -177349,7 +177431,7 @@ class UclibcNgVisualHeapCommand(UclibcNgHeapDumpCommand, BufferingOutput):
 
                     fd = d1
                     if decode_fd and chunk.address == addr:
-                        fd ^= addr >> 12
+                        fd ^= addr >> uClibcNgHeap.get_page_shift()
 
                     offset1 = addr - chunk.chunk_base_address
                     offset2 = addr - malloc_state.heap_base
@@ -177485,6 +177567,700 @@ class UclibcNgVisualHeapCommand(UclibcNgHeapDumpCommand, BufferingOutput):
         Cache.reset_gef_caches(all=True)
         self.generate_visual_heap(malloc_state, dump_start, args.max_count)
         self.print_output()
+        return
+
+
+@register_command
+class UclibcNgTopCommand(UclibcNgHeapDumpCommand):
+    """Display heap top chunk for uClibc-ng."""
+
+    _cmdline_ = "uclibc-ng-top"
+    _category_ = "05-b. Heap - uClibc-ng"
+
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("--malloc_state", type=AddressUtil.parse_address,
+                        help="use specific address for malloc_state.")
+    _syntax_ = parser.format_help()
+
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    def do_invoke(self, args):
+        try:
+            malloc_state = self.read_malloc_state(args.malloc_state)
+        except gdb.MemoryError:
+            err("Could not read malloc_state")
+            return
+        if malloc_state is None:
+            err("Could not find malloc_state")
+            return
+
+        if malloc_state.heap_base is None or not is_valid_addr(malloc_state.heap_base):
+            err("Could not find the heap base")
+            return
+
+        info("malloc_state.top: {:#x}".format(malloc_state.top))
+        chunk = uClibcNgHeap.uClibcChunk(malloc_state.top, from_base=True)
+        gef_print(chunk.to_str(is_top=True))
+        gef_print(chunk.str_detail(False))
+        return
+
+
+@register_command
+class UclibcNgChunkCommand(UclibcNgHeapDumpCommand):
+    """Display information on a heap chunk for uClibc-ng."""
+
+    _cmdline_ = "uclibc-ng-chunk"
+    _category_ = "05-b. Heap - uClibc-ng"
+
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("location", metavar="LOCATION", type=AddressUtil.parse_address,
+                        help="the address to interpret as a chunk.")
+    parser.add_argument("--malloc_state", type=AddressUtil.parse_address,
+                        help="use specific address for malloc_state.")
+    parser.add_argument("-b", "--as-base", action="store_true",
+                        help="use LOCATION as chunk base address (chunk_base_address = chunk_address - ptrsize * 2).")
+    parser.add_argument("-s", "--safe-linking-decode", action="store_true",
+                        help="decode Safe-Linking fastbin links during traversal and display (default: plain links).")
+    _syntax_ = parser.format_help()
+
+    def __init__(self):
+        super().__init__(complete=gdb.COMPLETE_LOCATION)
+        return
+
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    def do_invoke(self, args):
+        try:
+            malloc_state = self.read_malloc_state(args.malloc_state)
+        except gdb.MemoryError:
+            err("Could not read malloc_state")
+            return
+        if malloc_state is None:
+            err("Could not find malloc_state")
+            return
+
+        self.init_bins_info(malloc_state)
+        chunk = uClibcNgHeap.uClibcChunk(args.location, from_base=args.as_base)
+        try:
+            gef_print(self.chunk_to_str(malloc_state, chunk))
+            gef_print(chunk.str_detail(chunk.chunk_base_address in self.bins_dict_for_address))
+        except gdb.MemoryError:
+            err("Invalid address")
+            return
+
+        info = self.get_bins_info(malloc_state, chunk.chunk_base_address)
+        if info:
+            freelist_hint_color = Config.get("theme.heap_freelist_hint")
+            gef_print("  Found freelist/top: {:s}".format(Color.colorify(", ".join(info), freelist_hint_color)))
+        else:
+            gef_print("  Found freelist/top: None")
+        return
+
+
+@register_command
+class UclibcNgChunksCommand(UclibcNgHeapDumpCommand, BufferingOutput):
+    """Display information on all heap chunks for uClibc-ng."""
+
+    _cmdline_ = "uclibc-ng-chunks"
+    _category_ = "05-b. Heap - uClibc-ng"
+
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("location", metavar="LOCATION", nargs="?", type=AddressUtil.parse_address,
+                        help="the address interpreted as the beginning of a contiguous chunk. (default: heap base)")
+    parser.add_argument("--malloc_state", type=AddressUtil.parse_address,
+                        help="use specific address for malloc_state.")
+    parser.add_argument("-b", "--nb-byte", type=AddressUtil.parse_address, default=0,
+                        help="hexdump N first byte(s) inside the chunk data.")
+    parser.add_argument("-o", "--peek-offset", type=AddressUtil.parse_address, default=0,
+                        help="the offset to start dumping from when using --nb-byte.")
+    parser.add_argument("-s", "--safe-linking-decode", action="store_true",
+                        help="decode Safe-Linking fastbin links during traversal and display (default: plain links).")
+    parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
+    _syntax_ = parser.format_help()
+
+    def __init__(self):
+        super().__init__(complete=gdb.COMPLETE_LOCATION)
+        return
+
+    def print_heap_chunks(self, malloc_state, dump_start):
+        freelist_hint_color = Config.get("theme.heap_freelist_hint")
+        for chunk in self.iter_chunks(malloc_state, dump_start):
+            line = self.chunk_to_str(malloc_state, chunk)
+            info = self.get_bins_info(malloc_state, chunk.chunk_base_address)
+            if info:
+                line += Color.colorify("  <-  {:s}".format(", ".join(info)), freelist_hint_color)
+            self.out.append(line)
+
+            # peek nbyte
+            if self.args.nb_byte and chunk.chunk_base_address != malloc_state.top:
+                peek_addr = chunk.chunk_base_address + self.args.peek_offset
+                peeked_data = read_memory(peek_addr, self.args.nb_byte, safe=True)
+                if peeked_data is None:
+                    self.err_add_out("Cannot read {:#x} bytes at {:#x}".format(self.args.nb_byte, peek_addr))
+                else:
+                    self.out.append(hexdump(peeked_data, 0x10, base=peek_addr))
+        return
+
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    def do_invoke(self, args):
+        if args.nb_byte < 0:
+            err("Invalid number of bytes to peek")
+            return
+
+        try:
+            malloc_state = self.read_malloc_state(args.malloc_state)
+        except gdb.MemoryError:
+            err("Could not read malloc_state")
+            return
+        if malloc_state is None:
+            err("Could not find malloc_state")
+            return
+
+        if malloc_state.heap_base is None or not is_valid_addr(malloc_state.heap_base):
+            err("Could not find the heap base")
+            return
+
+        self.init_bins_info(malloc_state)
+
+        if args.location is None:
+            dump_start = malloc_state.heap_base
+        else:
+            dump_start = args.location
+
+        self.out = []
+        self.print_heap_chunks(malloc_state, dump_start)
+        self.print_output(check_terminal_size=True)
+        return
+
+
+@register_command
+class UclibcNgParseCommand(UclibcNgHeapDumpCommand, BufferingOutput):
+    """Display information on all heap chunks as Pwngdb style for uClibc-ng."""
+
+    _cmdline_ = "uclibc-ng-parse"
+    _category_ = "05-b. Heap - uClibc-ng"
+
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("--malloc_state", type=AddressUtil.parse_address,
+                        help="use specific address for malloc_state.")
+    parser.add_argument("-s", "--safe-linking-decode", action="store_true",
+                        help="decode Safe-Linking fastbin links during traversal and display (default: plain links).")
+    parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
+    _syntax_ = parser.format_help()
+
+    def make_line(self, malloc_state, chunk, width, prev_width):
+        info = self.bins_dict_for_address.get(chunk.chunk_base_address)
+        if info:
+            color = Config.get("theme.heap_chunk_address_freed")
+            status = "Freed"
+            if info[0].startswith("fastbins["):
+                fd_str = "{:<#{:d}x}".format(chunk.get_fwd_ptr(self.args.safe_linking_decode), width)
+                bk_str = "{:<{:d}s}".format("-", width)
+            else:
+                fd_str = "{:<#{:d}x}".format(chunk.fd, width)
+                bk_str = "{:<#{:d}x}".format(chunk.bk, width)
+        else:
+            if chunk.chunk_base_address == malloc_state.top:
+                color = Config.get("theme.heap_chunk_address_freed")
+                status = "Top"
+            else:
+                color = Config.get("theme.heap_chunk_address_used")
+                status = "Used"
+            fd_str = "{:<{:d}s}".format("-", width)
+            bk_str = "{:<{:d}s}".format("-", width)
+
+        if chunk.has_p_bit():
+            prev_size_str = "({:#x})".format(chunk.get_prev_chunk_size())
+        else:
+            prev_size_str = "{:#x}".format(chunk.get_prev_chunk_size())
+
+        return "{:s}  {:<{:d}s}  {:<#{:d}x}  {:s}  {:s}  {:s}  {:s}".format(
+            Color.colorify("{:<#{:d}x}".format(chunk.chunk_base_address, width), color),
+            prev_size_str,
+            prev_width,
+            chunk.size,
+            width,
+            Color.colorify("{:{:d}s}".format(status, width), color),
+            fd_str,
+            bk_str,
+            ", ".join(self.get_bins_info(malloc_state, chunk.chunk_base_address)),
+        )
+
+    def parse_heap(self, malloc_state, dump_start):
+        if is_64bit():
+            width = 14
+            prev_width = 20
+        else:
+            width = 10
+            prev_width = 12
+        fmt = "{:{:d}s}  {:{:d}s}  {:{:d}s}  {:{:d}s}  {:{:d}s}  {:{:d}s}  {:s}"
+        legend = ["addr", width, "prev_size", prev_width, "size", width, "status", width, "fd", width, "bk", width, "hint"]
+        self.out.append(GefUtil.make_legend(fmt.format(*legend)))
+
+        for chunk in self.iter_chunks(malloc_state, dump_start):
+            self.out.append(self.make_line(malloc_state, chunk, width, prev_width))
+        return
+
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    def do_invoke(self, args):
+        try:
+            malloc_state = self.read_malloc_state(args.malloc_state)
+        except gdb.MemoryError:
+            err("Could not read malloc_state")
+            return
+        if malloc_state is None:
+            err("Could not find malloc_state")
+            return
+
+        if malloc_state.heap_base is None or not is_valid_addr(malloc_state.heap_base):
+            err("Could not find the heap base")
+            return
+
+        self.init_bins_info(malloc_state)
+        self.out = []
+        self.parse_heap(malloc_state, malloc_state.heap_base)
+        self.print_output(check_terminal_size=True)
+        return
+
+
+@register_command
+class UclibcNgBinsSimpleCommand(UclibcNgHeapDumpCommand):
+    """Simply display information on the bins for uClibc-ng."""
+
+    _cmdline_ = "uclibc-ng-bins-simple"
+    _category_ = "05-b. Heap - uClibc-ng"
+
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("--malloc_state", type=AddressUtil.parse_address,
+                        help="use specific address for malloc_state.")
+    parser.add_argument("--skip-size", action="store_true", help="skip size information.")
+    parser.add_argument("-s", "--safe-linking-decode", action="store_true",
+                        help="decode Safe-Linking fastbin links during traversal and display (default: plain links).")
+    parser.add_argument("-v", "--verbose", action="store_true", help="display empty bins.")
+    _syntax_ = parser.format_help()
+
+    def bins_simple(self, malloc_state):
+
+        def get_size(c):
+            if self.args.skip_size:
+                return ""
+            try:
+                return " (sz:{:#x})".format(uClibcNgHeap.uClibcChunk(c, from_base=True).size)
+            except gdb.MemoryError:
+                return ""
+
+        gef_print(titlify("malloc_state: {:s}".format(
+            Symbol.format(malloc_state.address, show_address=True, nocolor=True)),
+            color="bold", msg_color="bold",
+        ))
+
+        # fastbins
+        gef_print(titlify("fastbins"))
+        for i, chunks in self.bins_info["fastbins"].items():
+            if chunks or self.args.verbose:
+                m = " -> ".join(Symbol.format(c, show_address=True) for c in chunks)
+                size = self.fast_size_table[i][is_32bit()]
+                if isinstance(size, int):
+                    gef_print("{:#x} [{:d}]: {:s}".format(size, i, m).rstrip())
+                else:
+                    gef_print("[{:d}]: {:s}".format(i, m).rstrip())
+
+        # unsorted bin
+        gef_print(titlify("unsorted bin"))
+        chunks = self.bins_info["small_bins"][self.UNSORTED_BIN]
+        if chunks or self.args.verbose:
+            m = " <-> ".join("{:s}{:s}".format(Symbol.format(c, show_address=True), get_size(c)) for c in chunks)
+            gef_print("any [{:d}]: {:s}".format(self.UNSORTED_BIN, m).rstrip())
+
+        # small bins
+        gef_print(titlify("small bins"))
+        for i, chunks in self.bins_info["small_bins"].items():
+            size = self.size_table[i][is_32bit()]
+            if not isinstance(size, tuple):
+                continue
+            if chunks or self.args.verbose:
+                m = " <-> ".join(Symbol.format(c, show_address=True) for c in chunks)
+                gef_print("{:#x} [{:d}]: {:s}".format(size[0], i, m).rstrip())
+
+        # large bins
+        gef_print(titlify("large bins"))
+        for i, chunks in self.bins_info["large_bins"].items():
+            if chunks or self.args.verbose:
+                m = " <-> ".join("{:s}{:s}".format(Symbol.format(c, show_address=True), get_size(c)) for c in chunks)
+                size_min, size_max = self.size_table[self.NSMALLBINS + i][is_32bit()]
+                gef_print("{:#x}-{:#x} [{:d}]: {:s}".format(size_min, size_max, self.NSMALLBINS + i, m).rstrip())
+
+        # top / last_remainder
+        gef_print(titlify("malloc_state"))
+        top = malloc_state.top
+        gef_print("top: {:s}{:s}".format(Symbol.format(top, show_address=True), get_size(top)))
+        lm = malloc_state.last_remainder
+        gef_print("last_remainder: {:s}{:s}".format(Symbol.format(lm, show_address=True), get_size(lm)))
+        return
+
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    def do_invoke(self, args):
+        try:
+            malloc_state = self.read_malloc_state(args.malloc_state)
+        except gdb.MemoryError:
+            err("Could not read malloc_state")
+            return
+        if malloc_state is None:
+            err("Could not find malloc_state")
+            return
+
+        self.init_bins_info(malloc_state)
+        self.bins_simple(malloc_state)
+        return
+
+
+@register_command
+class UclibcNgArenaCommand(UclibcNgHeapDumpCommand, BufferingOutput):
+    """Display information on the malloc_state for uClibc-ng."""
+
+    _cmdline_ = "uclibc-ng-arena"
+    _category_ = "05-b. Heap - uClibc-ng"
+
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("--malloc_state", type=AddressUtil.parse_address,
+                        help="use specific address for malloc_state.")
+    parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
+    _syntax_ = parser.format_help()
+
+    def parse_malloc_state(self, malloc_state):
+        try:
+            cmd = "p ((struct malloc_state*) {:#x})[0]".format(malloc_state.address)
+            title = titlify("[malloc_state - parsed via debuginfo] --- {:s}".format(cmd))
+            result = gdb.execute(cmd, to_string=True)
+            self.out.append(title)
+            self.out.extend(result.splitlines())
+        except gdb.error:
+            title = titlify("[malloc_state - parsed heuristically] --- {:#x}".format(malloc_state.address))
+            self.out.append(title)
+            self.out.append("$1 = {")
+            self.out.append("  max_fast = {:#x},".format(malloc_state.max_fast))
+            self.out.append("  fastbins = {")
+            for i, (_, n, _) in enumerate(malloc_state.fastbins):
+                self.out.append("    [{:#x}] = {:#x},".format(i, n))
+            self.out.append("  },")
+            self.out.append("  top = {:#x},".format(malloc_state.top))
+            self.out.append("  last_remainder = {:#x},".format(malloc_state.last_remainder))
+            self.out.append("  bins = {")
+            for i, (_, n, p, _) in enumerate(malloc_state.smallbins + malloc_state.largebins):
+                self.out.append("    [{:#x}] = {:#x},".format(i * 2, n))
+                self.out.append("    [{:#x}] = {:#x},".format(i * 2 + 1, p))
+            self.out.append("  },")
+            self.out.append("  binmap = {")
+            for i, x in enumerate(malloc_state.binmap):
+                self.out.append("    [{:#x}] = {:#x},".format(i, x))
+            self.out.append("  },")
+            self.out.append("  trim_threshold = {:#x},".format(malloc_state.trim_threshold))
+            self.out.append("  top_pad = {:#x},".format(malloc_state.top_pad))
+            self.out.append("  mmap_threshold = {:#x},".format(malloc_state.mmap_threshold))
+            self.out.append("  n_mmaps = {:#x},".format(malloc_state.n_mmaps))
+            self.out.append("  n_mmaps_max = {:#x},".format(malloc_state.n_mmaps_max))
+            self.out.append("  max_n_mmaps = {:#x},".format(malloc_state.max_n_mmaps))
+            self.out.append("  pagesize = {:#x},".format(malloc_state.pagesize))
+            self.out.append("  morecore_properties = {:#x},".format(malloc_state.morecore_properties))
+            self.out.append("  mmapped_mem = {:#x},".format(malloc_state.mmaped_mem))
+            self.out.append("  sbrked_mem = {:#x},".format(malloc_state.sbrked_mem))
+            self.out.append("  max_sbrked_mem = {:#x},".format(malloc_state.max_sbrked_mem))
+            self.out.append("  max_mmapped_mem = {:#x},".format(malloc_state.max_mmaped_mem))
+            self.out.append("  max_total_mem = {:#x},".format(malloc_state.max_total_mem))
+            self.out.append("}")
+        return
+
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    def do_invoke(self, args):
+        try:
+            malloc_state = self.read_malloc_state(args.malloc_state)
+        except gdb.MemoryError:
+            err("Could not read malloc_state")
+            return
+        if malloc_state is None:
+            err("Could not find malloc_state")
+            return
+
+        self.out = []
+        self.parse_malloc_state(malloc_state)
+
+        # colorize
+        if not Color.disable_color():
+            for i in range(len(self.out)):
+                self.out[i] = re.sub("  ([a-zA-Z_]+) =", "  \033[36m\\1\033[0m =", self.out[i])
+                self.out[i] = re.sub(" = (0x[0-9a-f]+)", " = \033[34m\\1\033[0m", self.out[i])
+
+        self.print_output()
+        return
+
+
+@register_command
+class UclibcNgSnapshotCommand(UclibcNgHeapDumpCommand):
+    """Take a snapshot of heap for uClibc-ng."""
+
+    _cmdline_ = "uclibc-ng-snapshot"
+    _category_ = "05-b. Heap - uClibc-ng"
+
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("--malloc_state", type=AddressUtil.parse_address,
+                        help="use specific address for malloc_state.")
+    parser.add_argument("-s", "--safe-linking-decode", action="store_true",
+                        help="decode Safe-Linking fastbin links during traversal and display (default: plain links).")
+    _syntax_ = parser.format_help()
+
+    _note_ = [
+        "The snapshot can be compared by `uclibc-ng-snapshot-compare` or `heap snapshot-compare`.",
+    ]
+    _note_ = "\n".join(_note_)
+
+    def dump_heap(self, malloc_state):
+        heap_base = malloc_state.heap_base
+        section = ProcessMap.lookup(heap_base).section
+        if section is None:
+            err("Failed to get memory range")
+            return None
+
+        raw = read_memory(heap_base, section.page_end - heap_base, safe=True)
+        if raw is None:
+            err("Failed to dump memory")
+            return None
+
+        self.init_bins_info(malloc_state)
+        chunks = []
+        for chunk in self.iter_chunks(malloc_state, heap_base):
+            addr = chunk.chunk_base_address
+            chunks.append({
+                "start_offset": addr - heap_base,
+                "size": chunk.size,
+                "end_offset": addr - heap_base + chunk.size - current_arch.ptrsize * 2,
+                "used": addr != malloc_state.top and addr not in self.bins_dict_for_address,
+                "extra": ",".join(self.get_bins_info(malloc_state, addr)),
+            })
+
+        meta = {
+            "heap_base": heap_base,
+            "dump_start": heap_base,
+            "top": malloc_state.top,
+            "ptrsize": current_arch.ptrsize,
+            "endian": "little" if Endian.is_little_endian() else "big",
+            "chunks": chunks,
+        }
+        return raw, meta
+
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    def do_invoke(self, args):
+        try:
+            malloc_state = self.read_malloc_state(args.malloc_state)
+        except gdb.MemoryError:
+            err("Could not read malloc_state")
+            return
+        if malloc_state is None:
+            err("Could not find malloc_state")
+            return
+
+        if malloc_state.heap_base is None or not is_valid_addr(malloc_state.heap_base):
+            err("Could not find the heap base")
+            return
+
+        self.out = []
+        ret = self.dump_heap(malloc_state)
+        for line in self.out:
+            gef_print(line)
+        if ret is None:
+            return
+        raw, meta = ret
+
+        raw_fd, raw_filepath = GefUtil.mkstemp(
+            prefix="uclibc-ng-heap-ss",
+            dt=datetime.datetime.now().strftime("%H%M%S"),
+            suffix=".raw",
+        )
+        with os.fdopen(raw_fd, "wb") as f:
+            f.write(raw)
+        base, _ = os.path.splitext(raw_filepath)
+        with open(base + ".json", "w") as f:
+            json.dump(meta, f)
+
+        UclibcNgSnapshotCommand.last_dumped_filepath = raw_filepath
+        info("Snapshot successful: {:s}".format(raw_filepath))
+        return
+
+
+@register_command
+class UclibcNgSnapshotCompareCommand(UclibcNgSnapshotCommand, GlibcHeapSnapshotCompareCommand):
+    """Compare current heap with a previously saved uclibc-ng-snapshot."""
+
+    _cmdline_ = "uclibc-ng-snapshot-compare"
+    _category_ = "05-b. Heap - uClibc-ng"
+
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("--malloc_state", type=AddressUtil.parse_address,
+                        help="use specific address for malloc_state.")
+    parser.add_argument("file_path", metavar="FILE_PATH", nargs="?",
+                        help="the filepath to compare (default: last dumped file).")
+    parser.add_argument("file_path2", metavar="FILE_PATH2", nargs="?", help="the filepath to compare.")
+    parser.add_argument("-e", "--extra", action="store_true", help="display extra chunk info.")
+    parser.add_argument("-f", "--full", action="store_true", help="display after `top` chunk.")
+    parser.add_argument("-s", "--safe-linking-decode", action="store_true",
+                        help="decode Safe-Linking fastbin links during traversal and display (default: plain links).")
+    parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
+    parser.add_argument("-q", "--quiet", action="store_true", help="quiet execution.")
+    _syntax_ = parser.format_help()
+
+    _example_ = [
+        "{0:s} /path/to/snapshot1                     # compare the current memory and file1",
+        "{0:s} /path/to/snapshot1 /path/to/snapshot2  # compare file1 and file2",
+    ]
+    _example_ = "\n".join(_example_).format(_cmdline_)
+
+    _note_ = [
+        "Please specify the file obtained by the `uclibc-ng-snapshot` command.",
+        "Usually, it is saved in /tmp/gef/uclibc-ng-heap-ss-...",
+    ]
+    _note_ = "\n".join(_note_)
+
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    def do_invoke(self, args):
+        if args.file_path is not None and args.file_path2 is not None:
+            ret1 = GlibcHeapSnapshotCommand.read_snapshot(args.file_path)
+            ret2 = GlibcHeapSnapshotCommand.read_snapshot(args.file_path2)
+            file_path1 = os.path.basename(args.file_path)
+            file_path2 = os.path.basename(args.file_path2)
+        else:
+            try:
+                malloc_state = self.read_malloc_state(args.malloc_state)
+            except gdb.MemoryError:
+                err("Could not read malloc_state")
+                return
+            if malloc_state is None:
+                err("Could not find malloc_state")
+                return
+
+            if malloc_state.heap_base is None or not is_valid_addr(malloc_state.heap_base):
+                err("Could not find the heap base")
+                return
+
+            self.out = []
+            ret1 = self.dump_heap(malloc_state)
+            for line in self.out:
+                gef_print(line)
+            file_path1 = "Current memory"
+
+            if args.file_path is None:
+                if not hasattr(UclibcNgSnapshotCommand, "last_dumped_filepath"):
+                    err("Invalid filepath")
+                    return
+                ret2 = GlibcHeapSnapshotCommand.read_snapshot(UclibcNgSnapshotCommand.last_dumped_filepath)
+                file_path2 = os.path.basename(UclibcNgSnapshotCommand.last_dumped_filepath)
+            else:
+                ret2 = GlibcHeapSnapshotCommand.read_snapshot(args.file_path)
+                file_path2 = os.path.basename(args.file_path)
+
+        self.compare_snapshots(ret1, file_path1, ret2, file_path2)
+        return
+
+
+@register_command
+class UclibcNgDumpImageCommand(UclibcNgHeapDumpCommand, GlibcHeapDumpImageCommand):
+    """Visualize chunks on a heap as composition image for uClibc-ng."""
+
+    _cmdline_ = "uclibc-ng-dump-image"
+    _category_ = "05-b. Heap - uClibc-ng"
+    _aliases_ = [] # re-overwrite
+
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("location", metavar="LOCATION", nargs="?", type=AddressUtil.parse_address,
+                        help="the address interpreted as the beginning of a contiguous chunk. (default: heap base)")
+    parser.add_argument("--malloc_state", type=AddressUtil.parse_address,
+                        help="use specific address for malloc_state.")
+    parser.add_argument("-c", dest="max_count", type=AddressUtil.parse_address,
+                        help="maximum number of chunks to parse; use when the number of chunks is very large.")
+    parser.add_argument("-t", "--include-top", action="store_true", help="include top chunk.")
+    parser.add_argument("-p", "--save-as-png", action="store_true", help="save as png.")
+    parser.add_argument("-S", "--scale", type=float, default=1.0, help="magnification to enlarge or reduce the image.")
+    parser.add_argument("-s", "--safe-linking-decode", action="store_true",
+                        help="decode Safe-Linking fastbin links during traversal and display (default: plain links).")
+    parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
+    _syntax_ = parser.format_help()
+
+    _note_ = GlibcHeapDumpImageCommand._note_
+
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    def do_invoke(self, args):
+        try:
+            GefUtil.which("convert") # imagemagick
+        except FileNotFoundError as e:
+            err("{}".format(e))
+            return
+
+        if args.max_count is not None and args.max_count <= 0:
+            err("Invalid maximum count")
+            return
+
+        try:
+            malloc_state = self.read_malloc_state(args.malloc_state)
+        except gdb.MemoryError:
+            err("Could not read malloc_state")
+            return
+        if malloc_state is None:
+            err("Could not find malloc_state")
+            return
+
+        if malloc_state.heap_base is None or not is_valid_addr(malloc_state.heap_base):
+            err("Could not find the heap base")
+            return
+
+        self.init_bins_info(malloc_state)
+
+        if args.location is None:
+            dump_start = malloc_state.heap_base
+        else:
+            dump_start = args.location
+
+        # parse chunks
+        self.out = []
+        line_nums = []
+        used_or_freed = []
+        for chunk in self.iter_chunks(malloc_state, dump_start):
+            addr = chunk.chunk_base_address
+            if addr == malloc_state.top and not args.include_top:
+                break
+            line_nums.append(max((chunk.size - current_arch.ptrsize * 4) // (current_arch.ptrsize * 2) + 1, 1))
+            used_or_freed.append(addr != malloc_state.top and addr not in self.bins_dict_for_address)
+            if args.max_count and args.max_count <= len(line_nums):
+                break
+
+        # make image
+        image_path = self.make_raw_image(line_nums, used_or_freed)
+        if image_path:
+            # show
+            cmd = self.make_command_line(image_path)
+            ret = GefUtil.os_system(cmd)
+            os.unlink(image_path)
+
+            if ret != 0:
+                err("Failed to convert")
+            elif args.save_as_png:
+                info("Saved as {!r}".format(image_path[:-4] + ".png"))
+
+        for line in self.out:
+            gef_print(line)
         return
 
 
@@ -181852,7 +182628,7 @@ class SmmStatusCommand(GenericCommand, BufferingOutput):
     """Display the current SMM status and an SMRAM preview."""
 
     _cmdline_ = "smm-status"
-    _category_ = "06-l. Qemu-system/KGDB Cooperation - SMM"
+    _category_ = "06-k. Qemu-system/KGDB Cooperation - SMM"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("-q", "--quiet", action="store_true", help="print only in_smm, not_in_smm, or unknown.")
@@ -181959,7 +182735,7 @@ class SmmDumpCommand(GenericCommand):
     """Dump the detected SMRAM range to a file."""
 
     _cmdline_ = "smm-dump"
-    _category_ = "06-l. Qemu-system/KGDB Cooperation - SMM"
+    _category_ = "06-k. Qemu-system/KGDB Cooperation - SMM"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("-f", "--force", action="store_true", help="try to dump even when the current CPU is not in SMM.")
@@ -190513,7 +191289,7 @@ class QemuDeviceInfoCommand(GenericCommand, BufferingOutput):
     """Dump device information for qemu-escape."""
 
     _cmdline_ = "qemu-device-info"
-    _category_ = "06-k. Qemu-system/KGDB Cooperation - Other"
+    _category_ = "06-l. Qemu-system/KGDB Cooperation - Other"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     selection_group = parser.add_mutually_exclusive_group()
@@ -196448,7 +197224,7 @@ class UefiOvmfInfoCommand(GenericCommand):
     # https://github.com/tianocore/edk2/blob/master/MdeModulePkg/Universal/BdsDxe/BdsEntry.c
     # https://uefi.org/sites/default/files/resources/UEFI_Spec_2_8_final.pdf
     _cmdline_ = "uefi-ovmf-info"
-    _category_ = "06-k. Qemu-system/KGDB Cooperation - Other"
+    _category_ = "06-l. Qemu-system/KGDB Cooperation - Other"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("--start", type=AddressUtil.parse_address, help="physical search range start (inclusive).")
