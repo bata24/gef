@@ -17519,8 +17519,13 @@ class BufferingOutput:
 #     parser = argparse.ArgumentParser(prog=_cmdline_)
 #     _syntax_ = parser.format_help()
 #
-#     _example_ = "..."
-#     _note_ = "..."
+#     _example_ = "\n".join([
+#         "{0:s} ...",
+#     ]).format(_cmdline_)
+#
+#     _note_ = "\n".join([
+#         "...",
+#     ])
 #
 #     def __init__(self):
 #         super().__init__(complete=gdb.COMPLETE_FILENAME)
@@ -17545,17 +17550,15 @@ class GefThemeCommand(GenericCommand, BufferingOutput):
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
     _syntax_ = parser.format_help()
 
-    _example_ = [
+    _example_ = "\n".join([
         "{0:s}                         # show all theme settings",
         "{0:s} address_code            # show specified theme setting",
         "{0:s} address_code bold cyan  # set new theme",
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
-    _note_ = [
+    _note_ = "\n".join([
         'GDB 17 do not allow multiple color specifications (such as "bold red"). This bug had fixed in GDB 18.',
-    ]
-    _note_ = "\n".join(_note_)
+    ])
 
     def __init__(self, *args, **kwargs):
         super().__init__()
@@ -17831,15 +17834,13 @@ class HighlightAddCommand(GenericCommand):
     parser.add_argument("color", metavar="COLOR", nargs="+", help="the color used to highlight.")
     _syntax_ = parser.format_help()
 
-    _example_ = [
+    _example_ = "\n".join([
         '{0:s} "call   rcx" bold yellow',
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
-    _note_ = [
+    _note_ = "\n".join([
         "use config `gef config highlight.regex true` if need regex.",
-    ]
-    _note_ = "\n".join(_note_)
+    ])
 
     @Decorator.parse_args
     def do_invoke(self, args):
@@ -17875,10 +17876,9 @@ class HighlightRemoveCommand(GenericCommand):
     parser.add_argument("match", metavar="MATCH", help="the keyword phrase to remove from highlight.")
     _syntax_ = parser.format_help()
 
-    _example_ = [
+    _example_ = "\n".join([
         '{0:s} "call   rcx"',
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
     @Decorator.parse_args
     def do_invoke(self, args):
@@ -17974,7 +17974,7 @@ class NextiForQemuUserCommand(GenericCommand):
                         help="Unsupported. Run this command without COUNT to step once.")
     _syntax_ = parser.format_help()
 
-    _note_ = [
+    _note_ = "\n".join([
         "Only when qemu-user with specific architecture, the `ni` command is redirected to `nexti-for-qemu-user`.",
         "This setting is done only once, when `hook_stop_handler` is called for the first time.",
         "COUNT arguments are not supported.",
@@ -17982,8 +17982,7 @@ class NextiForQemuUserCommand(GenericCommand):
         "Target architecture:",
         "  OpenRISC 1000: branch operations don't work well, so GEF uses breakpoints to simulate.",
         "  CRIS: si/ni commands don't work well. so GEF uses breakpoints to simulate.",
-    ]
-    _note_ = "\n".join(_note_)
+    ])
 
     def ni_set_bp_for_branch(self, group):
         target = None
@@ -18095,7 +18094,7 @@ class StepiForQemuUserCommand(GenericCommand):
                         help="Unsupported. Run this command without COUNT to step once.")
     _syntax_ = parser.format_help()
 
-    _note_ = [
+    _note_ = "\n".join([
         "Only when qemu-user with specific architecture, the `si` command is redirected to `stepi-for-qemu-user`.",
         "This setting is done only once, when `hook_stop_handler` is called for the first time.",
         "COUNT arguments are not supported.",
@@ -18103,8 +18102,7 @@ class StepiForQemuUserCommand(GenericCommand):
         "Target architecture:",
         "  OpenRISC 1000: branch operations don't work well, so GEF uses breakpoints to simulate.",
         "  CRIS: si/ni commands don't work well. so GEF uses breakpoints to simulate.",
-    ]
-    _note_ = "\n".join(_note_)
+    ])
 
     def si_set_bp_for_branch(self, group):
         target = None
@@ -18217,13 +18215,12 @@ class ContinueForQemuUserCommand(GenericCommand):
                         help="Ignore the current breakpoint N-1 times.")
     _syntax_ = parser.format_help()
 
-    _note_ = [
+    _note_ = "\n".join([
         "Only when qemu-user or pin, the `c` command is redirected to `continue-for-qemu-user`.",
         "This setting is done only once, when hook_stop_handler is called for the first time.",
         "Nested `c` command causes a problem, so in that case gef executes the original continue command instead.",
         "Internally, SIGINT is monitored in a forked child process.",
-    ]
-    _note_ = "\n".join(_note_)
+    ])
 
     nested = False
 
@@ -18318,12 +18315,11 @@ class StepiForKGDBCommand(GenericCommand):
     parser = argparse.ArgumentParser(prog=_cmdline_)
     _syntax_ = parser.format_help()
 
-    _note_ = [
+    _note_ = "\n".join([
         "Only for AArch64 + kgdb.",
         "Temporarily masks IRQ before `stepi`, then restores the original state",
         "unless the stepped instruction intentionally modified DAIF.I or entered an exception.",
-    ]
-    _note_ = "\n".join(_note_)
+    ])
 
     @staticmethod
     def get_exception_registers():
@@ -18725,13 +18721,12 @@ class DisplayTypeCommand(GenericCommand, BufferingOutput):
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
     _syntax_ = parser.format_help()
 
-    _example_ = [
+    _example_ = "\n".join([
         '{0:s} "struct malloc_state"       # shortcut for `ptype /ox struct malloc_state`',
         '{0:s} "struct malloc_state" $rsp  # shortcut for `p ((struct malloc_state*) $rsp)[0]`',
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
-    _note_ = [
+    _note_ = "\n".join([
         "This command is designed for several purposes.",
         "1. When displaying very large struct, you may want to go through a pager because the results will not fit on one screen.",
         "   However, using a pager, the color information disappears. This command calls the pager with preserving colors.",
@@ -18744,8 +18739,7 @@ class DisplayTypeCommand(GenericCommand, BufferingOutput):
         "5. When debugging a binary written in the Golang, the `p ((TYPE*) ADDRESS)[0]` command will be broken.",
         "   This is because the Golang helper script is automatically loaded and overwrites the behavior of `p` command.",
         "   This command creates the display results on the python side, so we can display it without any problems.",
-    ]
-    _note_ = "\n".join(_note_)
+    ])
 
     def dump_type(self, tp, args_type):
         if tp.code == gdb.TYPE_CODE_STRUCT:
@@ -18921,17 +18915,15 @@ class PrintFormatCommand(GenericCommand):
                         help="the address of data to dump.")
     _syntax_ = parser.format_help()
 
-    _example_ = [
+    _example_ = "\n".join([
         "{0:s} -f py -b 8 -l 256 $rsp",
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
-    _note_ = [
+    _note_ = "\n".join([
         '"hexn" means hex with new-line.',
         '"hexs" means hex with separator.',
         "JavaScript uses BigInt for 64-bit values.",
-    ]
-    _note_ = "\n".join(_note_)
+    ])
 
     def __init__(self):
         super().__init__(complete=gdb.COMPLETE_LOCATION)
@@ -19994,14 +19986,13 @@ class CppVtableCommand(GenericCommand, BufferingOutput):
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
     _syntax_ = parser.format_help()
 
-    _example_ = [
+    _example_ = "\n".join([
         "{0:s} 0x55555556b2a0",
         "{0:s} '&object'",
         "{0:s} '(Base2 *)&object' -c 8",
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
-    _note_ = [
+    _note_ = "\n".join([
         "Uses the Itanium C++ ABI with pointer-sized virtual function entries (Linux GCC/Clang).",
         "No debug information is required; RTTI is decoded from target memory.",
         "Stripped functions are shown by address; class names are recovered from RTTI.",
@@ -20009,8 +20000,7 @@ class CppVtableCommand(GenericCommand, BufferingOutput):
         "RTTI supplies inheritance and secondary tables, including virtual base offsets.",
         "Without RTTI, only the specified subobject's table is displayed.",
         "Function enumeration stops at non-code entries or --count; the ABI stores no table length.",
-    ]
-    _note_ = "\n".join(_note_)
+    ])
 
     def read_vtable(self, address):
         vptr = read_int_from_memory(address)
@@ -20252,13 +20242,12 @@ class IouringDumpCommand(GenericCommand, BufferingOutput):
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
     _syntax_ = parser.format_help()
 
-    _example_ = [
+    _example_ = "\n".join([
         "{0:s}                                      # dump mmapped rings and search IORING_SETUP_NO_MMAP rings",
         "{0:s} -r 0x7ffff7fb2000 -s 0x7ffff7fb1000  # dump IORING_SETUP_NO_MMAP rings at the specified address",
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
-    _note_ = [
+    _note_ = "\n".join([
         "The layout of the rings is recognized from their metadata, not from the kernel version.",
         "  Linux v5.1-v5.3: IORING_OFF_SQ_RING and IORING_OFF_CQ_RING map struct io_sq_ring and struct io_cq_ring.",
         "  Linux v5.4-    : both offsets map the same struct io_rings (IORING_FEAT_SINGLE_MMAP).",
@@ -20266,8 +20255,7 @@ class IouringDumpCommand(GenericCommand, BufferingOutput):
         "Then, on x86/ARM/AArch64, they are copied to a temporary mapping in the inferior if the mapping is readable.",
         "The rings set up with IORING_SETUP_NO_MMAP (Linux v6.5-) are in user memory, not in an io_uring mapping.",
         "They are searched in writable memory. Their SQEs are guessed from the liburing layout, or specify --sqes.",
-    ]
-    _note_ = "\n".join(_note_)
+    ])
 
     IORING_OFF_SQ_RING = 0x0000_0000
     IORING_OFF_CQ_RING = 0x0800_0000
@@ -22021,16 +22009,14 @@ class HijackFdCommand(GenericCommand):
     parser.add_argument("-q", "--quiet", action="store_true", help="quiet execution.")
     _syntax_ = parser.format_help()
 
-    _example_ = [
+    _example_ = "\n".join([
         "{0:s} 2 /tmp/gef/stderr.txt",
         "{0:s} 2 localhost:8000  # determined as the socket by the presence of `:`.",
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
-    _note_ = [
+    _note_ = "\n".join([
         "`socketcall` is not supported; on i386 with Linux < 4.3 (or old qemu-user), the socket redirection fails with ENOSYS.",
-    ]
-    _note_ = "\n".join(_note_)
+    ])
 
     def call_syscall(self, syscall_name, args):
         args = " ".join([hex(x) if x >= 0 else str(x) for x in args])
@@ -22238,15 +22224,14 @@ class XtapCommand(GenericCommand):
                         help="limit the number of bytes to hexdump per transfer.")
     _syntax_ = parser.format_help()
 
-    _example_ = [
+    _example_ = "\n".join([
         "{0:s} 0               # tap stdin",
         "{0:s} 4               # tap fd 4 (e.g. a socket)",
         "{0:s} 0 1 2           # tap stdin/stdout/stderr",
         "{0:s} 4 --max 0x40    # tap fd 4, dump at most 0x40 bytes per transfer",
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
-    _note_ = [
+    _note_ = "\n".join([
         "Hooked syscalls:",
         "  read-like: read, recvfrom, recvmsg, recvmmsg, recvmmsg_time64, pread64, preadv, preadv2, readv",
         "  write-like: write, sendto, sendmsg, sendmmsg, pwrite64, pwritev, pwritev2, writev",
@@ -22255,8 +22240,7 @@ class XtapCommand(GenericCommand):
         "- Auto-continues; stops on a user breakpoint, signal, or Ctrl+C.",
         "- qemu-user is unsupported: its gdbstub does not update the return-value register",
         "  at syscall-return, so read-like sizes are wrong. Use a native target.",
-    ]
-    _note_ = "\n".join(_note_)
+    ])
 
     syscall_spec = {
         "read":             ("in",  "buf"),
@@ -22643,15 +22627,14 @@ class ScanSectionCommand(GenericCommand):
     parser.add_argument("needle", metavar="NEEDLE", nargs="?", help="what to search for.")
     _syntax_ = parser.format_help()
 
-    _example_ = [
+    _example_ = "\n".join([
         "{0:s} stack binary                        # scan binary address from stack",
         "{0:s} stack libc                          # scan libc address from stack",
         "{0:s} stack heap                          # scan heap address from stack",
         "{0:s} heap libc                           # scan libc address from heap",
         "{0:s} 0x555555772000-0x555555774000 libc  # support address range",
         "{0:s} any any",
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
     def scan(self, haystack, needle):
         needle_sections = []
@@ -22747,13 +22730,12 @@ class FindSyscallCommand(GenericCommand, BufferingOutput):
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
     _syntax_ = parser.format_help()
 
-    _example_ = [
+    _example_ = "\n".join([
         "{0:s} libc                   # search syscall from libc .text",
         "{0:s} binary                 # 'binary' means the area executable itself (usermode only)",
         "{0:s} 0x400000-0x404000      # search syscall from specific range",
         "{0:s} 0x400000 0x4000        # another valid format",
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
     def print_section(self, section):
         if isinstance(section, Address):
@@ -23007,7 +22989,7 @@ class SearchPatternCommand(GenericCommand):
                         help="search range size. valid only when a start address is specified.")
     _syntax_ = parser.format_help()
 
-    _example_ = [
+    _example_ = "\n".join([
         "{0:s} ABCD                        # search for 'ABCD' from whole memory",
         '{0:s} "\\\\x41\\\\x42\\\\x43\\\\x44"      # double-escaped string is also valid',
         '{0:s} --hex "41 42 43 44"         # another valid format',
@@ -23020,17 +23002,15 @@ class SearchPatternCommand(GenericCommand):
         "{0:s} AAAA 0x400000 0x4000        # another valid format",
         "{0:s} AAAA heap --aligned 16      # search for 'AAAA' with 16-byte alignment",
         "{0:s} AAAA -p r?-                 # search for 'AAAA' from r-- or rw-, but not from r-x or rwx",
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
-    _note_ = [
+    _note_ = "\n".join([
         "To efficiently search large memory regions, the search is usually performed internally by dividing",
         "the region into chunks. The chunk size is 0x10 pages for qemu-system, and 0x400 pages for others.",
         "",
         "However, when the --hex-regex option is enabled, this chunked search is disabled,",
         "because it is difficult to implement regular expression searches that span multiple chunks.",
-    ]
-    _note_ = "\n".join(_note_)
+    ])
 
     def get_acceptable_addr(self, start_addr, locations):
         """Return the lowest address from `start_addr` that a match can start at."""
@@ -24079,15 +24059,14 @@ class EditFlagsCommand(GenericCommand):
     parser.add_argument("-v", "--verbose", action="store_true", help="show the bit information of the flag register.")
     _syntax_ = parser.format_help()
 
-    _example_ = [
+    _example_ = "\n".join([
         "{0:s}             # show the flag register",
         "{0:s} zero+       # set ZERO flag",
         "{0:s} direction-  # unset DIRECTION flag",
         "{0:s} sign~       # toggle SIGN flag",
         "{0:s} z+ c-       # a unique prefix of the flag name is also accepted",
         "{0:s} -v          # verbose output",
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
     def edit_flags(self, flag_names):
         for flag in flag_names:
@@ -24353,10 +24332,9 @@ class KillThreadsCommand(GenericCommand):
     parser.add_argument("-c", "--commit", action="store_true", help="commit to kill.")
     _syntax_ = parser.format_help()
 
-    _example_ = [
+    _example_ = "\n".join([
         '{0:s} 2 3   # kill threads that `Thread Id` is 2 or 3',
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
@@ -24419,10 +24397,9 @@ class CallSyscallCommand(GenericCommand):
                         help="arguments of system call.")
     _syntax_ = parser.format_help()
 
-    _example_ = [
+    _example_ = "\n".join([
         '{0:s} write 1 "*(void**)($rsp+0x18)" 15',
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
@@ -24493,11 +24470,10 @@ class MmapMemoryCommand(GenericCommand):
                         help="the permission to allocate. `_` is interpreted as `-`. (default: %(default)s)")
     _syntax_ = parser.format_help()
 
-    _example_ = [
+    _example_ = "\n".join([
         "{0:s} 0x10000 0x1000 r-x",
         "{0:s} 0 0x1000 _wx        # '_' means '-'",
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
     def __init__(self):
         super().__init__(complete=gdb.COMPLETE_LOCATION)
@@ -24616,17 +24592,15 @@ class MunmapMemoryCommand(GenericCommand):
                         help="the size to unmap.")
     _syntax_ = parser.format_help()
 
-    _example_ = [
+    _example_ = "\n".join([
         "{0:s} $sp                    # unmap whole stack area",
         "{0:s} 0x7ffffffde000 0x1000  # unmap specified area",
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
-    _note_ = [
+    _note_ = "\n".join([
         "By default, the entire map containing the specified address is freed.",
         "If a size is specified, the area from the specified address to that size will be unmapped.",
-    ]
-    _note_ = "\n".join(_note_)
+    ])
 
     def __init__(self):
         super().__init__(complete=gdb.COMPLETE_LOCATION)
@@ -24697,18 +24671,16 @@ class MprotectCommand(GenericCommand):
                         help="the size to change the permission (0x1000 align).")
     _syntax_ = parser.format_help()
 
-    _example_ = [
+    _example_ = "\n".join([
         "{0:s} $sp rwx",
         "{0:s} 0x7ffff7e1b000 ___           # '_' means '-'",
         "{0:s} 0x7ffff7e1b000 ___ -s 0x1000 # change only first 0x1000 bytes",
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
-    _note_ = [
+    _note_ = "\n".join([
         "By default, the permissions will be changed for the entire map including the specified address.",
         "If a size is specified, the permissions will only be changed for the range of the specified address up to the size.",
-    ]
-    _note_ = "\n".join(_note_)
+    ])
 
     def __init__(self):
         super().__init__(complete=gdb.COMPLETE_LOCATION)
@@ -24789,11 +24761,10 @@ class ReadSystemRegisterForKgdbCommand(GenericCommand):
     group.add_argument("-l", "--list", action="store_true", help="show the supported register names.")
     _syntax_ = parser.format_help()
 
-    _example_ = [
+    _example_ = "\n".join([
         "{0:s} cr0",
         "{0:s} TTBR0_EL1",
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
     def __init__(self):
         super().__init__(complete="use_user_complete")
@@ -25052,16 +25023,14 @@ class ReadSystemRegisterForQemuArmCommand(GenericCommand):
     parser.add_argument("reg_name", metavar="REGISTER_NAME", help="register name to read a value.")
     _syntax_ = parser.format_help()
 
-    _example_ = [
+    _example_ = "\n".join([
         "{0:s} TTBR0",
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
-    _note_ = [
+    _note_ = "\n".join([
         "Attempting to read a non-existing register raises an undefined exception.",
         "Context-dependent EL0 timer aliases CNTHPS_*, CNTHV_* and CNTHVS_* are not accepted.",
-    ]
-    _note_ = "\n".join(_note_)
+    ])
 
     # thanks to https://github.com/gdelugre/ida-arm-system-highlight
     # Extracted from the XML specifications for v8.7-A (2021-06).
@@ -27139,14 +27108,13 @@ class UnicornEmulateCommand(GenericCommand):
     parser.add_argument("-q", "--quiet", action="store_true", help="quiet execution.")
     _syntax_ = parser.format_help()
 
-    _example_ = [
+    _example_ = "\n".join([
         "{0:s} -g 10               # from $pc to the point where 10 instructions are executed",
         "{0:s} -n 5                # from $pc to 5 later instructions (assume it is no branch)",
         "{0:s} -t 0x805678a4       # from $pc to specified address",
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
-    _note_ = [
+    _note_ = "\n".join([
         "This command emulates entirely inside gef, without generating an external script or dumping memory to files.",
         "Memory is mapped on demand from the inferior, so Linux kernel emulation is supported (like future-calls).",
         "Kernel emulation is only supported on x86, x86-64, ARM32, and ARM64.",
@@ -27155,8 +27123,7 @@ class UnicornEmulateCommand(GenericCommand):
         "unicorn does not support some instructions. (e.g., xsavec, xrstor, vpbroadcastb, vldr, etc.)",
         "unicorn does not emulate ARM kernel-provided-user-helpers like $pc=0xffff0fe0, 0xffff0fc0, etc.",
         "see: https://www.kernel.org/doc/Documentation/arm/kernel_user_helpers.txt",
-    ]
-    _note_ = "\n".join(_note_)
+    ])
 
     def __init__(self):
         super().__init__(complete=gdb.COMPLETE_LOCATION)
@@ -27294,20 +27261,18 @@ class UnicornEmulateScriptCommand(GenericCommand):
     parser.add_argument("-q", "--quiet", action="store_true", help="quiet execution.")
     _syntax_ = parser.format_help()
 
-    _example_ = [
+    _example_ = "\n".join([
         "{0:s} -g 10               # from $pc to the point where 10 gadgets are executed",
         "{0:s} -n 5                # from $pc to 5 later instructions (assume it is no branch)",
         "{0:s} -t 0x805678a4 -s    # from $pc to specified address with saving script",
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
-    _note_ = [
+    _note_ = "\n".join([
         "unicorn does not support emulating syscall.",
         "unicorn does not support some instructions. (e.g., xsavec, xrstor, vpbroadcastb, vldr, etc.)",
         "unicorn does not emulate ARM kernel-provided-user-helpers like $pc=0xffff0fe0, 0xffff0fc0, etc.",
         "see: https://www.kernel.org/doc/Documentation/arm/kernel_user_helpers.txt",
-    ]
-    _note_ = "\n".join(_note_)
+    ])
 
     def __init__(self):
         super().__init__(complete=gdb.COMPLETE_LOCATION)
@@ -28359,14 +28324,13 @@ class AngrCommand(GenericCommand):
                         help="hook `__stack_chk_fail@plt` by just `return`.")
     _syntax_ = parser.format_help()
 
-    _example_ = [
+    _example_ = "\n".join([
         "{0:s} -f 0x400607 -a 0x400613 -s $rdi 30",
         "{0:s} -f 0x400607 -a 0x400613 -s $rdi 30 -t Aa0                 # sym0:[A-Za-z0-9]+",
         "{0:s} -f 0x400607 -a 0x400613 -s $rdi 30 -t ? -s $rdx 20 -t Az  # sym0:[0x00-0xff]+, sym1:[A-Z\\0]+",
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
-    _note_ = [
+    _note_ = "\n".join([
         "If there is a stack canary check, angr may fail to find the solution.",
         "This occurs when execution begins inside a function but terminates outside of it.",
         "To avoid it, you need to replace these instructions (e.g., `sub rdx, fs:28h; jnz loc_XXX`) with `nop`s.",
@@ -28375,8 +28339,7 @@ class AngrCommand(GenericCommand):
         "The -H option is designed to handle this issue automatically.",
         "But it assumes that there is a `ret` after `call __stack_chk_fail@plt`.",
         "Note that it will fail if there is a `ret` before `call __stack_chk_fail@plt`.",
-    ]
-    _note_ = "\n".join(_note_)
+    ])
 
     def get_valid_plt(self):
         """Parse and return a dictionary of valid PLT entries from `got` command output."""
@@ -28632,10 +28595,9 @@ class StubCommand(GenericCommand):
                         help="address/symbol to stub out.")
     _syntax_ = parser.format_help()
 
-    _example_ = [
+    _example_ = "\n".join([
         "{0:s} -r 0 fork",
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
     def __init__(self):
         super().__init__(complete=gdb.COMPLETE_LOCATION)
@@ -28675,18 +28637,15 @@ class CapstoneDisassembleCommand(GenericCommand):
         "X86" : ["16", "32", "64"],
     }
 
-    _example_ = [
+    _example_ = "\n".join([
         "{0:s} -l 50 $pc                             # dump from $pc up to 50 lines later",
         "{0:s} -l 50 $pc arch=ARM mode=ARM endian=1  # specify arch, mode and endian (1:big endian)",
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
-    _note_ = [
-        "Available architectures and modes:"
-    ]
-    for arch in valid_arch_modes:
-        _note_.append(" - {:8s} {}".format(arch, " / ".join(valid_arch_modes[arch])))
-    _note_ = "\n".join(_note_)
+    _note_ = "\n".join([
+        "Available architectures and modes:",
+        *[" - {:8s} {}".format(arch, " / ".join(modes)) for arch, modes in valid_arch_modes.items()],
+    ])
 
     def __init__(self):
         super().__init__(complete=gdb.COMPLETE_LOCATION)
@@ -28790,7 +28749,7 @@ class GlibcHeapCommand(GenericCommand):
     subparsers.add_parser("snapshot-compare")
     _syntax_ = parser.format_help()
 
-    _note_ = [
+    _note_ = "\n".join([
         "Supports up to glibc 2.43.",
         "- 2.15+: GEF treats malloc_par.pagesize as absent (always None).",
         "- 2.19+: malloc_state.next_free is handled.",
@@ -28811,8 +28770,7 @@ class GlibcHeapCommand(GenericCommand):
         "",
         "Under qemu-user, multi-threaded mips/mipsn32/mips64/m68k targets may produce unreliable TLS/heap results",
         "because ExecAsm/ExecSyscall can fail after thread switches.",
-    ]
-    _note_ = "\n".join(_note_)
+    ])
 
     def __init__(self):
         super().__init__(prefix=True)
@@ -29167,14 +29125,13 @@ class GlibcHeapChunksCommand(GenericCommand, BufferingOutput):
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
     _syntax_ = parser.format_help()
 
-    _example_ = [
+    _example_ = "\n".join([
         "{0:s}",
         "{0:s} -a 0x7ffff0000020",
         "{0:s} -a 1",
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
-    _note_ = [
+    _note_ = "\n".join([
         "about the annotation:",
         '  - "tcache[idx=7,sz=0x90][1/2]"',
         "    - idx: 0-origin index.",
@@ -29187,8 +29144,7 @@ class GlibcHeapChunksCommand(GenericCommand, BufferingOutput):
         "    - sz : the size range of the chunk including metadata.",
         "    - 8/ : a position in the free-list. largebins are FIFO, so the last chunk will be used first.",
         "    -  /8: parsed free-list length including corrupted chunks.",
-    ]
-    _note_ = "\n".join(_note_)
+    ])
 
     def __init__(self):
         super().__init__(complete=gdb.COMPLETE_LOCATION)
@@ -29315,12 +29271,11 @@ class GlibcHeapParseCommand(GenericCommand, BufferingOutput):
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
     _syntax_ = parser.format_help()
 
-    _example_ = [
+    _example_ = "\n".join([
         "{0:s}",
         "{0:s} -a 0x7ffff0000020",
         "{0:s} -a 1",
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
     _note_ = GlibcHeapChunksCommand._note_
 
@@ -29476,19 +29431,17 @@ class GlibcHeapBinsSimpleCommand(GenericCommand):
     parser.add_argument("--all", action="store_true", help="dump all arenas.")
     _syntax_ = parser.format_help()
 
-    _example_ = [
+    _example_ = "\n".join([
         "{0:s}",
         "{0:s} -a 0x7ffff0000020 -v",
         "{0:s} -a 1 -v",
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
-    _note_ = [
+    _note_ = "\n".join([
         "The meaning of the tcache expression:",
         "  e.g.; 0x80 [6] (1): 0x55555557e480",
         "    0x80: size; [6]: tcache index; (1): tcache_perthread_struct.count[i]",
-    ]
-    _note_ = "\n".join(_note_)
+    ])
 
     def bins_simple(self, arenas):
 
@@ -29914,12 +29867,11 @@ class GlibcHeapBinsCommand(GenericCommand, GlibcHeapBinsDump, BufferingOutput):
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
     _syntax_ = parser.format_help()
 
-    _example_ = [
+    _example_ = "\n".join([
         "{0:s}",
         "{0:s} -a 0x7ffff0000020 -v",
         "{0:s} -a 1 -v",
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
     def __init__(self):
         super().__init__(prefix=True)
@@ -30316,14 +30268,13 @@ class GlibcHeapTryFreeCommand(GenericCommand):
     parser.add_argument("-v", "--verbose", action="store_true", help="show internal state.")
     _syntax_ = parser.format_help()
 
-    _example_ = [
+    _example_ = "\n".join([
         "{0:s} 0x555555579930",
         "{0:s} -a 0x7ffff7cadd30 0x555555579930    # need free address when no symbol",
         '{0:s} -c "visual-heap" 0x555555579930     # execute visual-heap',
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
-    _note_ = [
+    _note_ = "\n".join([
         "It may work even if NOT Glibc (untested).",
         "It may be detected as a failure even though it actually succeeded.",
         "  - Any system call was called",
@@ -30332,8 +30283,7 @@ class GlibcHeapTryFreeCommand(GenericCommand):
         "They are emulated to the best extent possible, but the emulation may be incomplete.",
         "  - The address returned by mmap can differ from the actual one; this is an emulation limitation.",
         "The failure message may not be detected because it is searched for heuristically.",
-    ]
-    _note_ = "\n".join(_note_)
+    ])
 
     def __init__(self):
         super().__init__(complete=gdb.COMPLETE_LOCATION)
@@ -30642,12 +30592,11 @@ class GlibcHeapTryMallocCommand(GlibcHeapTryFreeCommand):
     parser.add_argument("-v", "--verbose", action="store_true", help="show internal state.")
     _syntax_ = parser.format_help()
 
-    _example_ = [
+    _example_ = "\n".join([
         "{0:s} 0x120",
         "{0:s} -a 0x7ffff7cad650 0x120    # need malloc address when no symbol",
         '{0:s} -c "visual-heap" 0x120     # execute visual-heap',
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
@@ -30678,12 +30627,11 @@ class GlibcHeapTryReallocCommand(GlibcHeapTryFreeCommand):
     parser.add_argument("-v", "--verbose", action="store_true", help="show internal state.")
     _syntax_ = parser.format_help()
 
-    _example_ = [
+    _example_ = "\n".join([
         "{0:s} 0x555555579930 0x120",
         "{0:s} -a 0x7ffff7cae0a0 0x555555579930 0x120    # need realloc address when no symbol",
         '{0:s} -c "visual-heap" 0x555555579930 0x120     # execute visual-heap',
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
@@ -30714,12 +30662,11 @@ class GlibcHeapTryCallocCommand(GlibcHeapTryFreeCommand):
     parser.add_argument("-v", "--verbose", action="store_true", help="show internal state.")
     _syntax_ = parser.format_help()
 
-    _example_ = [
+    _example_ = "\n".join([
         "{0:s} 0x10 1",
         "{0:s} -a 0x7ffff7cae7a0 0x10 1    # need calloc address when no symbol",
         '{0:s} -c "visual-heap" 0x10 1     # execute visual-heap',
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
@@ -30839,10 +30786,9 @@ class GlibcHeapFindFakeFastCommand(GenericCommand, BufferingOutput):
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
     _syntax_ = parser.format_help()
 
-    _note_ = [
+    _note_ = "\n".join([
         "It is not possible to find candidates that straddle the two regions.",
-    ]
-    _note_ = "\n".join(_note_)
+    ])
 
     def print_result(self, m, pos, size_candidate):
         """Display the result of a memory search, including address, flags, and a memory dump with colored highlights."""
@@ -30997,10 +30943,9 @@ class GlibcHeapExtractHeapAddrCommand(GenericCommand):
                        help="shows the source instead of displaying extracted value.")
     _syntax_ = parser.format_help()
 
-    _example_ = [
+    _example_ = "\n".join([
         "{0:s} 0x000055500000C7F9",
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
     def reveal(self, fd):
         # https://smallkirby.hatenablog.com/entry/safeunlinking
@@ -31047,11 +30992,10 @@ class GlibcHeapCalcProtectedFdCommand(GenericCommand):
                         help="use LOCATION as chunk base address (chunk_base_address = chunk_address - ptrsize * 2).")
     _syntax_ = parser.format_help()
 
-    _example_ = [
+    _example_ = "\n".join([
         "{0:s} 0 0x5555555594e0",
         "{0:s} 0 0x5555555594e0 -b",
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
@@ -31305,7 +31249,7 @@ class GlibcHeapDumpImageCommand(GenericCommand):
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
     _syntax_ = parser.format_help()
 
-    _note_ = [
+    _note_ = "\n".join([
         Color.colorify("In-use chunks", "underline") + " are displayed alternately in " + \
         Color.colorify("dark gray", "gray") + " and " + Color.colorify("light gray", "cloud") + ".",
         Color.colorify("Freed chunks", "underline") + " are displayed alternately in " + \
@@ -31314,8 +31258,7 @@ class GlibcHeapDumpImageCommand(GenericCommand):
         "is odd-numbered or even-numbered.",
         "",
         "The `convert` command limits height to 32000px; output may shrink based on heap size.",
-    ]
-    _note_ = "\n".join(_note_)
+    ])
 
     def __init__(self):
         super().__init__(complete=gdb.COMPLETE_LOCATION)
@@ -31714,17 +31657,15 @@ class GlibcHeapSnapshotCompareCommand(GenericCommand, BufferingOutput):
     parser.add_argument("-q", "--quiet", action="store_true", help="quiet execution.")
     _syntax_ = parser.format_help()
 
-    _example_ = [
+    _example_ = "\n".join([
         "{0:s} /path/to/snapshot1                     # compare the current memory and file1",
         "{0:s} /path/to/snapshot1 /path/to/snapshot2  # compare file1 and file2",
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
-    _note_ = [
+    _note_ = "\n".join([
         "Please specify the file obtained by the `heap snapshot` command.",
         "Usually, it is saved in /tmp/gef/heap-snashot-arenaN-...",
-    ]
-    _note_ = "\n".join(_note_)
+    ])
 
     def __init__(self):
         super().__init__(complete=gdb.COMPLETE_FILENAME)
@@ -32007,11 +31948,10 @@ class RegistersCommand(GenericCommand):
     parser.add_argument("-s", "--simple", action="store_true", help="skip dereference.")
     _syntax_ = parser.format_help()
 
-    _example_ = [
+    _example_ = "\n".join([
         "{0:s}",
         "{0:s} $eax $eip $esp",
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
     def get_all_registers(self):
         if is_x86():
@@ -32199,13 +32139,12 @@ class RopperCommand(GenericCommand):
                         help="An array of arguments to pass as is to the ropper command. (default: %(default)s)")
     _syntax_ = parser.format_help()
 
-    _example_ = [
+    _example_ = "\n".join([
         "{0:s}",
         "{0:s} -h                  # show detail of options",
         '{0:s} --jmp "rax,rcx"     # filter by jmp registers',
         '{0:s} --search "pop r?x"  # filter by pop registers',
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
     _help_ = None
     _help_examples_ = None
@@ -32309,13 +32248,12 @@ class RpCommand(GenericCommand, BufferingOutput):
                         help="run rp, create a temporary file, but don't display it.")
     _syntax_ = parser.format_help()
 
-    _example_ = [
+    _example_ = "\n".join([
         '{0:s} --bin -f "pop r[abcd]x"',
         '{0:s} --libc -f "(xchg|mov) [re]sp, \\\\w+" -f "ret"',
         "{0:s} --bin -a                                      # show more gadgets",
         "{0:s} --kernel                                      # only under qemu-system",
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
     def __init__(self):
         super().__init__(complete=gdb.COMPLETE_FILENAME)
@@ -32482,7 +32420,7 @@ class AssembleCommand(GenericCommand):
     parser.add_argument("instruction", metavar="INSTRUCTION", nargs="+", help="the code to assemble.")
     _syntax_ = parser.format_help()
 
-    _example_ = [
+    _example_ = "\n".join([
         '{0:s} -a X86 -m 64 "mov rax, qword ptr [rax] ; inc rax ;"',
         '{0:s} -a X86 -m 32 "mov eax, dword ptr [eax] ; inc eax ;"',
         '{0:s} -a X86 -m 16 "mov ax, word ptr [ax] ; inc ax"',
@@ -32502,8 +32440,7 @@ class AssembleCommand(GenericCommand):
         '{0:s} -a SPARC -m 32PLUS -e "add %g1, %g2, %g3"',
         '{0:s} -a SPARC -m 64 -e "add %g1, %g2, %g3"',
         '{0:s} -a S390X -m 64 -e "a %r0, 4095(%r15,%r1)"',
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
     @Decorator.parse_args
     @ModuleLoader.load_keystone
@@ -32594,7 +32531,7 @@ class DisassembleCommand(GenericCommand):
     parser.add_argument("hex_code", metavar="HEX_CODE", nargs="+", help="the hex code to disassemble.")
     _syntax_ = parser.format_help()
 
-    _example_ = [
+    _example_ = "\n".join([
         '{0:s} -a X86 -m 64 "488b00 48ffc0"',
         '{0:s} -a X86 -m 32 "8b00 40"',
         '{0:s} -a X86 -m 16 "8b00 40"',
@@ -32623,8 +32560,7 @@ class DisassembleCommand(GenericCommand):
         '{0:s} -a ALPHA -m 64 -e "27bd000b" # capstone v6.x~',
         '{0:s} -a HPPA -m 32 -e "0fc01299" # capstone v6.x~',
         '{0:s} -a HPPA -m 64 -e "0fc01299" # capstone v6.x~',
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
     @Decorator.parse_args
     @ModuleLoader.load_capstone
@@ -32717,14 +32653,13 @@ class AsmListCommand(GenericCommand):
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
     _syntax_ = parser.format_help()
 
-    _example_ = [
+    _example_ = "\n".join([
         "{0:s} -a X86 -m 64",
         "{0:s} -a X86 -m 32",
         "{0:s} -a X86 -m 16",
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
-    _note_ = [
+    _note_ = "\n".join([
         "- F0 (LOCK prefix) is ignored",
         "- F2/F3 (REPNE/REP prefix) are ignored",
         "- 2E/36/3E/26/64/65 (CS/SS/DS/ES/FS/GS override prefix) are ignored",
@@ -32735,8 +32670,7 @@ class AsmListCommand(GenericCommand):
         "- C4/C5 (VEX prefix) are ignored",
         "- 8F (XOP prefix) is ignored",
         "- 62 (EVEX prefix) is ignored",
-    ]
-    _note_ = "\n".join(_note_)
+    ])
 
     cache = None
 
@@ -33023,11 +32957,10 @@ class ProcessSearchCommand(GenericCommand, BufferingOutput):
                         help="include kernel thread, socat, grep, gdb, sshd, bash, systemd, etc.")
     _syntax_ = parser.format_help()
 
-    _example_ = [
+    _example_ = "\n".join([
         "{0:s}",
         "{0:s} ./a.out",
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
     def get_processes(self):
         output = GefUtil.gef_execute_external([GefUtil.which("ps"), "auxww"], as_list=True)
@@ -33130,14 +33063,13 @@ class ElfInfoCommand(GenericCommand):
     parser.add_argument("-v", "--verbose", action="store_true", help="dump the content of each section.")
     _syntax_ = parser.format_help()
 
-    _example_ = [
+    _example_ = "\n".join([
         "{0:s}                    # parse binary itself",
         "{0:s} -f /bin/ls         # parse binary",
         "{0:s} -f /bin/ls -r      # parse remote binary",
         "{0:s} -a 0x555555554000  # parse memory",
         "{0:s} -e -f /bin/ls      # show `readelf -a FILE | less`",
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
     def __init__(self, *args, **kwargs):
         super().__init__(complete=gdb.COMPLETE_FILENAME)
@@ -33707,11 +33639,10 @@ class ChecksecCommand(GenericCommand):
     parser.add_argument("-f", "--file", help="the file path to parse.")
     _syntax_ = parser.format_help()
 
-    _example_ = [
+    _example_ = "\n".join([
         "{0:s} -f /bin/ls",
         "{0:s} -r",
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
     def __init__(self):
         super().__init__(complete=gdb.COMPLETE_FILENAME)
@@ -36414,15 +36345,16 @@ class ExploitableCommand(GenericCommand):
                         help="show every signal/heuristic detail that fed the risk rating.")
     _syntax_ = parser.format_help()
 
-    _example_ = "{:s}".format(_cmdline_)
+    _example_ = "\n".join([
+        "{:s}",
+    ]).format(_cmdline_)
 
-    _note_ = [
+    _note_ = "\n".join([
         "Inspects the current stop (a fatal signal) and gives an MSEC !exploitable-style",
         "rating: EXPLOITABLE / PROBABLY_EXPLOITABLE / PROBABLY_NOT_EXPLOITABLE / UNKNOWN.",
         "It is a heuristic triage hint (signal, $_siginfo fault address, $pc mapping, and",
         "faulting instruction class), not a proof. Userland x86/x86-64 only.",
-    ]
-    _note_ = "\n".join(_note_)
+    ])
 
     RISK = {
         "exploitable": "EXPLOITABLE",
@@ -39055,15 +38987,14 @@ class DwarfExceptionHandlerInfoCommand(GenericCommand, BufferingOutput):
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
     _syntax_ = parser.format_help()
 
-    _example_ = [
+    _example_ = "\n".join([
         "{0:s}                  # parse loaded binary",
         "{0:s} -r               # parse remote binary",
         "{0:s} -f /usr/bin/apt  # parse specified binary",
         "{0:s} -x               # with hexdump",
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
-    _note_ = [
+    _note_ = "\n".join([
         "Simplified DWARF exception structure:",
         "",
         "[OLD IMPLEMENTATION]",
@@ -39122,8 +39053,7 @@ class DwarfExceptionHandlerInfoCommand(GenericCommand, BufferingOutput):
         "                                  | ...                   |   |",
         "                                  +-----------------------+   |",
         "                                                              +----> personality_routine(=__gxx_personality_v0@libstdc++.so)",
-    ]
-    _note_ = "\n".join(_note_)
+    ])
 
     @Decorator.parse_args
     @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
@@ -39158,13 +39088,12 @@ class UnwindInfoCommand(GenericCommand):
                         help="decode the selected CIE and FDE.")
     _syntax_ = parser.format_help()
 
-    _example_ = [
+    _example_ = "\n".join([
         "{0:s}",
         "{0:s} $pc",
         "{0:s} -v $pc",
         "{0:s} 0x55555555529a",
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
     def find_handler(self, pc):
         section = ProcessMap.process_lookup_address(pc)
@@ -39313,11 +39242,10 @@ class MultiBreakCommand(GenericCommand):
                         help="the address(es) to set breakpoint.")
     _syntax_ = parser.format_help()
 
-    _note_ = [
+    _note_ = "\n".join([
         "This command is intended to improve the readability of history",
         "by allowing you to set multiple breakpoints on a single line.",
-    ]
-    _note_ = "\n".join(_note_)
+    ])
 
     @Decorator.parse_args
     def do_invoke(self, args):
@@ -39621,10 +39549,9 @@ class CommandBreakCommand(GenericCommand):
     parser.add_argument("command", metavar="COMMAND", type=str, help="the command executed if breakpoint is hit.")
     _syntax_ = parser.format_help()
 
-    _example_ = [
+    _example_ = "\n".join([
         '{0:s} 0x55555555aab9 "hexdump -n $sp+0x120"',
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
     @Decorator.parse_args
     def do_invoke(self, args):
@@ -39685,11 +39612,10 @@ class RegisterDumpBreakCommand(GenericCommand):
     parser.add_argument("-r", "--regs", action="append", help="the register name dumped if breakpoint is hit.")
     _syntax_ = parser.format_help()
 
-    _example_ = [
+    _example_ = "\n".join([
         "{0:s} 0x55555555aab9 -r rax",
         '{0:s} 0x55555555aab9 -t "state changed" -r rax',
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
     @Decorator.parse_args
     @Decorator.require_arch_set
@@ -39808,12 +39734,11 @@ class ContextCommand(GenericCommand):
     parser.add_argument("-i", "--ignore-redirect", action="store_true", help="ignore redirect settings.")
     _syntax_ = parser.format_help()
 
-    _note_ = [
+    _note_ = "\n".join([
         'If "on" or "off" is specified, that operation takes precedence.',
         "`context XXX YYY` invokes the `context-XXX` command and then the `context-YYY` command, in that order.",
         "There are various configuration options that modify the behavior of context. You can list them with gef config context.",
-    ]
-    _note_ = "\n".join(_note_)
+    ])
 
     context_hidden = False
 
@@ -41904,11 +41829,10 @@ class MemoryWatchCommand(GenericCommand):
                         help="the size of unit. (default: %(default)s)")
     _syntax_ = parser.format_help()
 
-    _example_ = [
+    _example_ = "\n".join([
         "{0:s} 0x603000 0x100 byte",
         "{0:s} $sp",
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
     mem_watches = {}
 
@@ -41937,11 +41861,10 @@ class MemoryUnwatchCommand(GenericCommand):
                         help="the memory address to deregister for display in `context memory`.")
     _syntax_ = parser.format_help()
 
-    _example_ = [
+    _example_ = "\n".join([
         "{0:s} 0x603000",
         "{0:s} $sp",
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
     def __init__(self):
         super().__init__(complete=gdb.COMPLETE_LOCATION)
@@ -42218,11 +42141,10 @@ class HexdumpFlexibleCommand(GenericCommand, BufferingOutput):
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
     _syntax_ = parser.format_help()
 
-    _example_ = [
+    _example_ = "\n".join([
         '{0:s} "2Q2I2H2B" $rsp 4  # "Show qword*2, dword*2, short*2, byte*2" from $rsp and repeat 4 times',
         '{0:s} "4Q-2Q" $rsp 4     # "Show qword*4 and skip qword*2" from $rsp and repeat 4 times',
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
     def extract_each_type(self, fmt):
         out = []
@@ -42345,7 +42267,7 @@ class LoadFileCommand(GenericCommand):
                         help="the size of the data to load.")
     _syntax_ = parser.format_help()
 
-    _note_ = [
+    _note_ = "\n".join([
         "+-memory------+",
         "|             |             +-file_start--+",
         "|             |             | ^           |",
@@ -42362,8 +42284,7 @@ class LoadFileCommand(GenericCommand):
         "|             |",
         "+-------------+",
         "If there is not enough space, the load will fail halfway.",
-    ]
-    _note_ = "\n".join(_note_)
+    ])
 
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
@@ -42425,7 +42346,7 @@ class LoadFileMmapCommand(GenericCommand):
                         help="the size of the data to load.")
     _syntax_ = parser.format_help()
 
-    _note_ = [
+    _note_ = "\n".join([
         "+-mmap_start--+",
         "|             |             +-file_start--+",
         "|             |             | ^           |",
@@ -42441,8 +42362,7 @@ class LoadFileMmapCommand(GenericCommand):
         "|             |             +-file_end----+",
         "|             |",
         "+-mmap_end----+",
-    ]
-    _note_ = "\n".join(_note_)
+    ])
 
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
@@ -42850,11 +42770,10 @@ class PatchQwordCommand(PatchCommand):
     parser.add_argument("values", metavar="QWORD", nargs="+", help="the value to patch.")
     _syntax_ = parser.format_help()
 
-    _example_ = [
+    _example_ = "\n".join([
         "{0:s}    $rip 0x4142434445464748  # write `HGFEDCBA` to [rip]",
         "{0:s} -e $rip 0x4142434445464748  # write `ABCDEFGH` to [rip]",
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
     def __init__(self):
         super().__init__(prefix=False, complete=gdb.COMPLETE_LOCATION)
@@ -42879,11 +42798,10 @@ class PatchDwordCommand(PatchCommand):
     parser.add_argument("values", metavar="DWORD", nargs="+", help="the value to patch.")
     _syntax_ = parser.format_help()
 
-    _example_ = [
+    _example_ = "\n".join([
         "{0:s}    $rip 0x41424344  # write `DCBA` to [rip]",
         "{0:s} -e $rip 0x41424344  # write `ABCD` to [rip]",
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
     def __init__(self):
         super().__init__(prefix=False, complete=gdb.COMPLETE_LOCATION)
@@ -42908,11 +42826,10 @@ class PatchWordCommand(PatchCommand):
     parser.add_argument("values", metavar="WORD", nargs="+", help="the value to patch.")
     _syntax_ = parser.format_help()
 
-    _example_ = [
+    _example_ = "\n".join([
         "{0:s}    $rip 0x4142  # write `BA` to [rip]",
         "{0:s} -e $rip 0x4142  # write `AB` to [rip]",
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
     def __init__(self):
         super().__init__(prefix=False, complete=gdb.COMPLETE_LOCATION)
@@ -42937,11 +42854,10 @@ class PatchByteCommand(PatchCommand):
     parser.add_argument("values", metavar="BYTE", nargs="+", help="the value to patch.")
     _syntax_ = parser.format_help()
 
-    _example_ = [
+    _example_ = "\n".join([
         "{0:s}    $rip 0x41 0x41 0x41 0x41 0x41",
         "{0:s} -e $rip 0x41 0x41 0x41 0x41 0x41  # -e is ignored",
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
     def __init__(self):
         super().__init__(prefix=False, complete=gdb.COMPLETE_LOCATION)
@@ -42967,11 +42883,10 @@ class PatchStringCommand(PatchCommand):
                         help="the number of bytes to patch. (default: %(default)s)")
     _syntax_ = parser.format_help()
 
-    _example_ = [
+    _example_ = "\n".join([
         '{0:s} $sp "AAAABBBB"',
         '{0:s} $sp "\\\\x41\\\\x41\\\\x41\\\\x41\\\\x42\\\\x42\\\\x42\\\\x42"',
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
     def __init__(self):
         super().__init__(prefix=False, complete=gdb.COMPLETE_LOCATION)
@@ -43024,10 +42939,9 @@ class PatchHexCommand(PatchCommand):
                         help="the number of bytes to patch. (default: %(default)s)")
     _syntax_ = parser.format_help()
 
-    _example_ = [
+    _example_ = "\n".join([
         '{0:s} $sp "4141414142424242"',
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
     def __init__(self):
         super().__init__(prefix=False, complete=gdb.COMPLETE_LOCATION)
@@ -43081,10 +42995,9 @@ class PatchPatternCommand(PatchCommand):
                         help="the number of bytes to patch. (default: %(default)s)")
     _syntax_ = parser.format_help()
 
-    _example_ = [
+    _example_ = "\n".join([
         "{0:s} $sp 128",
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
     def __init__(self):
         super().__init__(prefix=False, complete=gdb.COMPLETE_LOCATION)
@@ -43137,10 +43050,9 @@ class PatchNopCommand(PatchCommand):
                        help="the number of instructions to patch. (default: %(default)s)")
     _syntax_ = parser.format_help()
 
-    _example_ = [
+    _example_ = "\n".join([
         "{0:s} $pc -i 2",
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
     def __init__(self):
         super().__init__(prefix=False, complete=gdb.COMPLETE_LOCATION)
@@ -43251,10 +43163,9 @@ class PatchInfloopCommand(PatchCommand):
                         help="the memory address to patch. (default: current_arch.pc)")
     _syntax_ = parser.format_help()
 
-    _example_ = [
+    _example_ = "\n".join([
         "{0:s} $pc",
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
     def __init__(self):
         super().__init__(prefix=False, complete=gdb.COMPLETE_LOCATION)
@@ -43318,10 +43229,9 @@ class PatchTrapCommand(PatchCommand):
                         help="the memory address to patch. (default: current_arch.pc)")
     _syntax_ = parser.format_help()
 
-    _example_ = [
+    _example_ = "\n".join([
         "{0:s} $pc",
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
     def __init__(self):
         super().__init__(prefix=False, complete=gdb.COMPLETE_LOCATION)
@@ -43388,10 +43298,9 @@ class PatchRetCommand(PatchCommand):
                        help="use MOV PC, LR for ARM CPUs without interworking support.")
     _syntax_ = parser.format_help()
 
-    _example_ = [
+    _example_ = "\n".join([
         "{0:s} $pc",
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
     def __init__(self):
         super().__init__(prefix=False, complete=gdb.COMPLETE_LOCATION)
@@ -43485,10 +43394,9 @@ class PatchSyscallCommand(PatchCommand):
                         help="the memory address to patch. (default: current_arch.pc)")
     _syntax_ = parser.format_help()
 
-    _example_ = [
+    _example_ = "\n".join([
         "{0:s} $pc",
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
     def __init__(self):
         super().__init__(prefix=False, complete=gdb.COMPLETE_LOCATION)
@@ -43593,11 +43501,10 @@ class PatchRevertCommand(PatchCommand):
     group.add_argument("--all", action="store_true", help="revert all patches.")
     _syntax_ = parser.format_help()
 
-    _example_ = [
+    _example_ = "\n".join([
         "{0:s} 0  # do nothing (keep the current state).",
         "{0:s} 2  # roll back to history state [2].",
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
     def __init__(self):
         super().__init__(prefix=False)
@@ -43648,14 +43555,15 @@ class PatchUndoCommand(PatchCommand):
     group.add_argument("--all", action="store_true", help="undo all patch groups.")
     _syntax_ = parser.format_help()
 
-    _example_ = [
+    _example_ = "\n".join([
         "{0:s}        # undo the last patch command.",
         "{0:s} 2      # undo the last two patch commands.",
         "{0:s} --all  # undo all patch commands.",
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
-    _note_ = "A new patch or a successful patch revert discards the redo history for the current target."
+    _note_ = "\n".join([
+        "A new patch or a successful patch revert discards the redo history for the current target.",
+    ])
 
     def __init__(self):
         super().__init__(prefix=False)
@@ -43708,12 +43616,11 @@ class PatchRedoCommand(PatchUndoCommand):
     group.add_argument("--all", action="store_true", help="redo all undone patch groups.")
     _syntax_ = parser.format_help()
 
-    _example_ = [
+    _example_ = "\n".join([
         "{0:s}        # redo the last undone patch command.",
         "{0:s} 2      # redo the next two undone patch commands.",
         "{0:s} --all  # redo all undone patch commands.",
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
 
 @register_command
@@ -43736,10 +43643,9 @@ class PatchRangeReplaceCommand(PatchCommand):
                         help="the replacement bytes; all writes must fit in the range and must not overlap.")
     _syntax_ = parser.format_help()
 
-    _example_ = [
+    _example_ = "\n".join([
         '{0:s} 0x400000 0x401000 "ebfe" "9090"',
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
     def __init__(self):
         super().__init__(prefix=False, complete=gdb.COMPLETE_LOCATION)
@@ -43862,7 +43768,7 @@ class DereferenceCommand(GenericCommand):
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
     _syntax_ = parser.format_help()
 
-    _example_ = [
+    _example_ = "\n".join([
         "{0:s}                         # dereference $sp 64",
         "{0:s} $sp 20                  # specify location and number of elements to display",
         "{0:s} $sp -20                 # display memory backwards",
@@ -43871,15 +43777,13 @@ class DereferenceCommand(GenericCommand):
         "{0:s} --is-addr $sp 20        # display elements which is valid address",
         "{0:s} --slab-contains $sp 20  # with slab-contains result (available under qemu-system)",
         "{0:s} --tag 0 next $sp 20     # with tags",
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
-    _note_ = [
+    _note_ = "\n".join([
         "Use blacklist feature if reading the address causes process crash.",
         'e.g., `gef config dereference.blacklist "[ [0xffffffffc9000000, 0xffffffffc9001000], ]"',
         "then `gef save`.",
-    ]
-    _note_ = "\n".join(_note_)
+    ])
 
     def __init__(self):
         super().__init__(complete=gdb.COMPLETE_LOCATION)
@@ -44541,10 +44445,9 @@ class CommentCommand(GenericCommand):
     subparsers.add_parser("clear")
     _syntax_ = parser.format_help()
 
-    _note_ = [
+    _note_ = "\n".join([
         "Comments are temporary only. Note that it will be deleted when GDB exits.",
-    ]
-    _note_= "\n".join(_note_)
+    ])
 
     def __init__(self, *args, **kwargs):
         prefix = kwargs.get("prefix", True)
@@ -44698,13 +44601,12 @@ class VMMapCommand(GenericCommand, BufferingOutput):
     parser.add_argument("-q", "--quiet", action="store_true", help="do not display register information.")
     _syntax_ = parser.format_help()
 
-    _example_ = [
+    _example_ = "\n".join([
         "{0:s} libc             # show only lines containing the string `libc`",
         "{0:s} binary           # 'binary' means the area executable itself",
         "{0:s} 0x555555577ab0   # show only lines included specified address",
         "{0:s} --outer          # show qemu-user memory map; only valid in qemu-user mode",
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
     def dump_entry(self, entry, print_offset=False):
         # get color
@@ -44911,12 +44813,11 @@ class XFilesCommand(GenericCommand, BufferingOutput):
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
     _syntax_ = parser.format_help()
 
-    _example_ = [
+    _example_ = "\n".join([
         "{0:s} libc",
         "{0:s} got plt",
         "{0:s} IO_vtables",
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
@@ -44966,10 +44867,9 @@ class XInfoCommand(GenericCommand):
                         help="the memory address to show the information. (default: current_arch.pc)")
     _syntax_ = parser.format_help()
 
-    _example_ = [
+    _example_ = "\n".join([
         "{0:s} $pc",
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
     def __init__(self):
         super().__init__(complete=gdb.COMPLETE_LOCATION)
@@ -45111,10 +45011,9 @@ class XorMemoryDisplayCommand(GenericCommand, BufferingOutput):
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
     _syntax_ = parser.format_help()
 
-    _example_ = [
+    _example_ = "\n".join([
         "{0:s} $sp 16 41414141",
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
     def __init__(self):
         super().__init__(complete=gdb.COMPLETE_LOCATION)
@@ -45167,10 +45066,9 @@ class XorMemoryPatchCommand(GenericCommand):
                         help="the data to xor as key.")
     _syntax_ = parser.format_help()
 
-    _example_ = [
+    _example_ = "\n".join([
         "{0:s} $sp 16 41414141",
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
     def __init__(self):
         super().__init__(complete=gdb.COMPLETE_LOCATION)
@@ -45314,12 +45212,11 @@ class PatternSearchCommand(GenericCommand):
                         help="the size of pattern. (default: 0x10000)")
     _syntax_ = parser.format_help()
 
-    _example_ = [
+    _example_ = "\n".join([
         "{0:s} $pc",
         "{0:s} 0x61616164",
         "{0:s} aaab",
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
     def search(self, tag, cyclic_pattern, pattern):
         gef_print(titlify(tag))
@@ -45711,11 +45608,10 @@ class UcontextCommand(GenericCommand):
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
     _syntax_ = parser.format_help()
 
-    _example_ = [
+    _example_ = "\n".join([
         "{0:s} $rdx                 # the 3rd argument of a SA_SIGINFO handler, setcontext, etc.",
         "{0:s} -m 0x7fffffffd9e8    # struct sigcontext",
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
     SS_FLAGS = (
         (0x0000_0001, "SS_ONSTACK"),
@@ -46132,11 +46028,10 @@ class JmpbufCommand(GenericCommand):
     parser.add_argument("-f", "--force-heuristic", action="store_true", help="do not use symbols to detect PTR_MANGLE")
     _syntax_ = parser.format_help()
 
-    _example_ = [
+    _example_ = "\n".join([
         "{0:s} &env                 # jmp_buf env; / sigjmp_buf env;",
         "{0:s} $rdi                 # the 1st argument of setjmp, longjmp, siglongjmp, etc.",
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
     ARCH_DETECT = UcontextCommand.ARCH_DETECT + (
         ("or1k", is_or1k), ("microblaze", is_microblaze), ("arc64", is_arc64), ("arc32", is_arc32), ("csky", is_csky),
@@ -46896,12 +46791,11 @@ class LinkMapCommand(GenericCommand, BufferingOutput):
     parser.add_argument("-v", "--verbose", action="store_true", help="verbose output.")
     _syntax_ = parser.format_help()
 
-    _example_ = [
+    _example_ = "\n".join([
         "{0:s}                    # dump itself",
         "{0:s} -e 0x555555554000  # dump specified address as ELF",
         "{0:s} -l 0x7ffff7ffe2e0  # dump specified address as link_map",
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
     def __init__(self):
         super().__init__(complete=gdb.COMPLETE_LOCATION)
@@ -47082,14 +46976,13 @@ class DynamicCommand(GenericCommand, BufferingOutput):
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
     _syntax_ = parser.format_help()
 
-    _example_ = [
+    _example_ = "\n".join([
         "{0:s}                                         # dump itself",
         "{0:s} -f /usr/lib/x86_64-linux-gnu/libc.so.6  # dump specified binary",
         "{0:s} -e 0x555555554000                       # dump specified address as ELF",
         "{0:s} -d 0x555555575a98                       # dump specified address as dynamic",
         "{0:s} -d 0x555555575a98 --size 0x1c0          # dump specified address with specified size",
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
     DT_TABLE = {
         0: "DT_NULL",
@@ -47516,12 +47409,11 @@ class DestructorDumpCommand(GenericCommand):
                         help="specify the offset of `tls_dtor_list` from TLS base.")
     _syntax_ = parser.format_help()
 
-    _example_ = [
+    _example_ = "\n".join([
         "{0:s}",
         "{0:s} --tdl 0x50                # specify offset of tls_dtor_list",
         "{0:s} --tdl 0xffffffffffffffa8  # specify negative offset",
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
     def C(self, addr):
         base_address_color = Config.get("theme.dereference_base_address")
@@ -48499,12 +48391,11 @@ class GotCommand(GenericCommand, BufferingOutput):
     parser.add_argument("--cppfilt", action="store_true", help="use c++filt to demangle.")
     _syntax_ = parser.format_help()
 
-    _example_ = [
+    _example_ = "\n".join([
         "{0:s} read print                              # filter specified keyword",
         "{0:s} -f /usr/lib/x86_64-linux-gnu/libc.so.6  # specified target binary",
         "{0:s} -f /bin/ls -e 0x4000000000              # use specified address, it is useful under qemu",
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
     def __init__(self, *args, **kwargs):
         super().__init__(complete=gdb.COMPLETE_FILENAME)
@@ -50025,11 +49916,10 @@ class GlibcHeapTracerCommand(GenericCommand):
     parser.add_argument("-r", "--reset", action="store_true", help="remove breakpoints etc.")
     _syntax_ = parser.format_help()
 
-    _note_ = [
+    _note_ = "\n".join([
         "Note that splits and consolidates (which are performed inside `malloc` and `free`) are not tracked.",
         "So this is not a strict trace.",
-    ]
-    _note_ = "\n".join(_note_)
+    ])
 
     heap_states = {}
 
@@ -50181,7 +50071,7 @@ class SyscallSearchCommand(GenericCommand, BufferingOutput):
     parser.add_argument("-v", "--verbose", action="store_true", help="display prototype of syscall.")
     _syntax_ = parser.format_help()
 
-    _example_ = [
+    _example_ = "\n".join([
         '{0:s} -a X86 -m 64       "^writev?"  # amd64',
         '{0:s} -a X86 -m 32       "^writev?"  # i386 on amd64',
         '{0:s} -a X86 -m N32      "^writev?"  # i386 native',
@@ -50214,8 +50104,7 @@ class SyscallSearchCommand(GenericCommand, BufferingOutput):
         '{0:s} -a ARC -m 32       "^writev?"  # arc32',
         '{0:s} -a ARC -m 64       "^writev?"  # arc64',
         '{0:s} -a CSKY            "^writev?"  # csky',
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
     def make_output(self, syscall_table, syscall_num, syscall_name_pattern, skip_x32):
         self.out.append(titlify("arch={:s}, mode={:s}".format(syscall_table.arch, syscall_table.mode)))
@@ -63016,11 +62905,10 @@ class SeccompCommand(GenericCommand):
     group.add_argument("-s", "--force-seccomp-tools", action="store_true", help="force use seccomp-tools.")
     _syntax_ = parser.format_help()
 
-    _note_ = [
+    _note_ = "\n".join([
         "Default: Search `ceccomp` -> `seccomp-tools`, and use found one.",
         "With `-c` or `-s`: Forces GEF to use the specified one.",
-    ]
-    _note_ = "\n".join(_note_)
+    ])
 
     def get_ceccomp_command(self):
         try:
@@ -63156,15 +63044,13 @@ class MmxSetCommand(GenericCommand):
     parser.add_argument("reg_and_value", metavar="REG=VALUE", help="MMX register and value to set.")
     _syntax_ = parser.format_help()
 
-    _example_ = [
+    _example_ = "\n".join([
         "{0:s} $mm0=0x1122334455667788",
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
-    _note_ = [
+    _note_ = "\n".join([
         "Disable `-enable-kvm` option for qemu-system.",
-    ]
-    _note_ = "\n".join(_note_)
+    ])
 
     def execute_movq_mm(self, value, reg):
         REG_CODE = {
@@ -63283,10 +63169,9 @@ class XmmSetCommand(GenericCommand):
     parser.add_argument("reg_and_value", metavar="REG=VALUE", help="XMM/YMM/ZMM register and value to set.")
     _syntax_ = parser.format_help()
 
-    _example_ = [
+    _example_ = "\n".join([
         "{0:s} $ymm0=0x11223344556677889900aabbccddeeff9876543210",
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
@@ -64541,19 +64426,17 @@ class U2dCommand(GenericCommand):
     parser.add_argument("value", metavar="VALUE", help="an integer (decimal/hex) or floating-point value.")
     _syntax_ = parser.format_help()
 
-    _example_ = [
+    _example_ = "\n".join([
         "{0:s} 0xdeadbeef",
         "{0:s} 0.12345",
         "{0:s} 1.2345e-1",
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
-    _note_ = [
+    _note_ = "\n".join([
         "Supports 32-bit float/uint and 64-bit double/ull (not 80-bit or 128-bit).",
         "Integer inputs use their low 64/32 bits; use a decimal point or exponent for floating-point input.",
         "Integer round trips outside the unsigned range are marked <out of range>.",
-    ]
-    _note_ = "\n".join(_note_)
+    ])
 
     def convert_from_float(self, n):
         gef_print(titlify("double -> unsigned long long"))
@@ -64631,10 +64514,9 @@ class UnsignedCommand(GenericCommand):
                         help="the value to convert.")
     _syntax_ = parser.format_help()
 
-    _example_ = [
+    _example_ = "\n".join([
         "{0:s} -- -0xa0",
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
     @Decorator.parse_args
     def do_invoke(self, args):
@@ -64669,12 +64551,11 @@ class AddressifyCommand(GenericCommand):
     parser.add_argument("value", metavar="VALUE", nargs="+", help="the string to convert.")
     _syntax_ = parser.format_help()
 
-    _example_ = [
+    _example_ = "\n".join([
         '{0:s} "00 30 e0 f7 ff 7f"',
         "{0:s} 00 30 e0 f7 ff 7f",
         "{0:s} --byte-order big 7f ff f7 e0 30 00",
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
     @Decorator.parse_args
     def do_invoke(self, args):
@@ -65136,10 +65017,9 @@ class ConvertMemoryCommand(ConvertCommand):
     parser.add_argument("-v", "--verbose", action="store_true", help="enable verbose mode.")
     _syntax_ = parser.format_help()
 
-    _example_ = [
+    _example_ = "\n".join([
         "{0:s} $rsp 0x20",
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
     def __init__(self):
         super().__init__(prefix=False, complete=gdb.COMPLETE_LOCATION)
@@ -65173,12 +65053,11 @@ class ConvertValueCommand(ConvertCommand):
     parser.add_argument("-v", "--verbose", action="store_true", help="enable verbose mode.")
     _syntax_ = parser.format_help()
 
-    _example_ = [
+    _example_ = "\n".join([
         "{0:s} 0xdeadbeef",
         '{0:s} "\\\\x41\\\\x42\\\\x43\\\\x44" -v',
         '{0:s} --hex "41 42 43 44" -v',
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
     def __init__(self):
         super().__init__(prefix=False)
@@ -65211,15 +65090,14 @@ class CppMangleCommand(GenericCommand):
     parser.add_argument("name", metavar="NAME", nargs="+", help="the demangled name to mangle.")
     _syntax_ = parser.format_help()
 
-    _example_ = [
+    _example_ = "\n".join([
         "{0:s} 'ns::Foo::bar(int, char const*) const'",
         "{0:s} 'std::vector<int, std::allocator<int> >::push_back(int const&)'",
         "{0:s} 'vtable for ns::Foo'",
         "{0:s} -t 'ns::Foo*'",
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
-    _note_ = [
+    _note_ = "\n".join([
         "Uses the Itanium C++ ABI (Linux GCC/Clang). NAME is written in the form printed by `cpp-demangle`.",
         "Typedefs and default template arguments are not expanded (e.g., write std::basic_string<...> instead of std::string).",
         "Constructors and destructors are encoded as the complete object variants (C1/D1).",
@@ -65227,8 +65105,7 @@ class CppMangleCommand(GenericCommand):
         "Template parameter references (T_), parameter packs and internal linkage are not recovered from the demangled form,",
         "so function templates and such symbols may differ from the compiler output.",
         "Lambdas, unnamed types and expressions in template arguments are unsupported.",
-    ]
-    _note_ = "\n".join(_note_)
+    ])
 
     OPERATORS = {
         "new": "nw", "new[]": "na", "delete": "dl", "delete[]": "da",
@@ -65741,17 +65618,15 @@ class CppDemangleCommand(GenericCommand):
     parser.add_argument("name", metavar="NAME", nargs="+", help="the mangled name to demangle.")
     _syntax_ = parser.format_help()
 
-    _example_ = [
+    _example_ = "\n".join([
         "{0:s} _ZNK2ns3Foo3barEiPKc",
         "{0:s} _ZTV3Foo _ZTI3Foo",
         "{0:s} -t N2ns3FooE",
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
-    _note_ = [
+    _note_ = "\n".join([
         "Uses the demangler of GDB (`demangle -l c++`).",
-    ]
-    _note_ = "\n".join(_note_)
+    ])
 
     @staticmethod
     def demangle(name, is_type=False):
@@ -90800,11 +90675,10 @@ class KernelAddressHeuristicSelftestCommand(GenericCommand, BufferingOutput):
     parser.add_argument("--failures-only", action="store_true", help="show only failed finders.")
     _syntax_ = parser.format_help()
 
-    _note_ = [
+    _note_ = "\n".join([
         "False means explicitly unsupported; None means not found; '-' means unavailable or not run.",
         "$ks_selftest_failures is nonzero if the test cannot run, otherwise it is the number of failed results.",
-    ]
-    _note_ = "\n".join(_note_)
+    ])
 
     def invoke(self, args, from_tty):
         gdb.set_convenience_variable("ks_selftest_failures", -1)
@@ -92793,14 +92667,13 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
     parser.add_argument("-q", "--quiet", action="store_true", help="enable quiet mode.")
     _syntax_ = parser.format_help()
 
-    _example_ = [
+    _example_ = "\n".join([
         "{0:s} -T 0xffff888012345000  # task address filter",
         "{0:s} -f bash                # comm string filter",
         "{0:s} --all                  # it means -mritFsSN",
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
-    _note_ = [
+    _note_ = "\n".join([
         "This command requires CONFIG_RANDSTRUCT=n unless vmlinux with debug information is loaded.",
         "",
         "Simplified task_struct structure:",
@@ -92855,8 +92728,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
         "",
         "This command will only track tasks that can be tracked from `init_task` or the result of `kcurrent` command.",
         "Other tasks (such as `swapper/1` if thread 1 is running some task) will not be detected.",
-    ]
-    _note_ = "\n".join(_note_)
+    ])
 
     def show_init_task_recovery_hint(self, init_task):
         if init_task is not None:
@@ -93300,15 +93172,14 @@ class KernelCredCommand(GenericCommand, BufferingOutput):
     parser.add_argument("-q", "--quiet", action="store_true", help="enable quiet mode.")
     _syntax_ = parser.format_help()
 
-    _example_ = [
+    _example_ = "\n".join([
         "{0:s} -q",
         "{0:s} 1337",
         "{0:s} 1337 --shared",
         "{0:s} -f 'sh$' -v",
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
-    _note_ = [
+    _note_ = "\n".join([
         "This command requires CONFIG_RANDSTRUCT=n unless vmlinux with debug information is loaded.",
         "",
         "Simplified credential structure:",
@@ -93338,8 +93209,7 @@ class KernelCredCommand(GenericCommand, BufferingOutput):
         "",
         "`real_cred` is the objective credential, `cred` is the subjective one. They differ only",
         "while the task acts on behalf of another (e.g., inside override_creds()).",
-    ]
-    _note_ = "\n".join(_note_)
+    ])
 
     @Cache.cache_this_session(cache_None=False, per_inferior=True, until_new_objfile=True)
     def initialize(self, print_thread):
@@ -93557,15 +93427,14 @@ class KernelKeyringCommand(GenericCommand, BufferingOutput):
     parser.add_argument("-q", "--quiet", action="store_true", help="show result only.")
     _syntax_ = parser.format_help()
 
-    _example_ = [
+    _example_ = "\n".join([
         "{0:s} -p 1337",
         "{0:s} -p 1337 -v",
         "{0:s} -f 'bash$'",
         "{0:s} 0xffff888012345000",
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
-    _note_ = [
+    _note_ = "\n".join([
         "Simplified keyring structures:",
         "",
         "[v3.8~]",
@@ -93627,8 +93496,7 @@ class KernelKeyringCommand(GenericCommand, BufferingOutput):
         "",
         "A keyring leaf may itself be another keyring, so the command walks child keys recursively.",
         "The request-key authorisation key held by an upcall helper is shown as the `request` root.",
-    ]
-    _note_ = "\n".join(_note_)
+    ])
 
     KeyInfo = collections.namedtuple(
         "KeyInfo", "address usage serial type_addr type_name description expiry uid gid perm datalen state flags payload",
@@ -94336,14 +94204,13 @@ class KernelSchedCommand(GenericCommand, BufferingOutput):
     parser.add_argument("-q", "--quiet", action="store_true", help="enable quiet mode.")
     _syntax_ = parser.format_help()
 
-    _example_ = [
+    _example_ = "\n".join([
         "{0:s}            # per-cpu current tasks and a table of every task",
         "{0:s} 1337       # dump the scheduler state of the task whose pid is 1337",
         "{0:s} -f bash    # filter the table by comm",
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
-    _note_ = [
+    _note_ = "\n".join([
         "This command requires CONFIG_RANDSTRUCT=n unless vmlinux with debug information is loaded.",
         "",
         "Without debug information, `state`, the prio cluster and the scheduler class are resolved on",
@@ -94352,8 +94219,7 @@ class KernelSchedCommand(GenericCommand, BufferingOutput):
         "are shown only when debug information is loaded. The running cpu of each current task comes from",
         "`kcurrent`, which reads it from the cpu context rather than from `task_struct`.",
         "The exit state is included when its offset can be resolved; `--meta` reports a warning otherwise.",
-    ]
-    _note_ = "\n".join(_note_)
+    ])
 
     def initialize(self):
         self.meta = []
@@ -94588,7 +94454,7 @@ class KernelLoadCommand(GenericCommand):
     parser.add_argument("-f", "--force", action="store_true", help="load the vmlinux even if it does not match the running kernel.")
     _syntax_ = parser.format_help()
 
-    _note_ = [
+    _note_ = "\n".join([
         "The KASLR offset is resolved in the following order and applied to all sections.",
         "  1. The address of `linux_banner` in memory and in the vmlinux (this also checks that they match)",
         "  2. The address of `_stext` in kallsyms and in the vmlinux",
@@ -94601,8 +94467,7 @@ class KernelLoadCommand(GenericCommand):
         "  - the linux_banner",
         "  - the addresses of sampled global functions in kallsyms",
         "A clear mismatch is not loaded without `--force`.",
-    ]
-    _note_ = "\n".join(_note_)
+    ])
 
     KALLSYMS_SAMPLES = 64
 
@@ -94926,12 +94791,11 @@ class KernelModuleCommand(GenericCommand, BufferingOutput):
     parser.add_argument("-q", "--quiet", action="store_true", help="enable quiet mode.")
     _syntax_ = parser.format_help()
 
-    _example_ = [
+    _example_ = "\n".join([
         "{0:s} -q",
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
-    _note_ = [
+    _note_ = "\n".join([
         "This command requires CONFIG_RANDSTRUCT=n.",
         "",
         "Simplified module structure:",
@@ -94971,8 +94835,7 @@ class KernelModuleCommand(GenericCommand, BufferingOutput):
         "- Added symbols are in the format `module_name.symbol` to avoid collisions.",
         "  When used from the command line, they must be enclosed in single quotes.",
         "  e.g., `p 'virtio_net.__this_module'`",
-    ]
-    _note_ = "\n".join(_note_)
+    ])
 
     def print_symbol(self, entries, symbol_unsort):
         self.out.append(titlify("module symbols"))
@@ -95147,12 +95010,11 @@ class KernelModuleLoadCommand(GenericCommand):
     parser.add_argument("-q", "--quiet", action="store_true", help="enable quiet mode.")
     _syntax_ = parser.format_help()
 
-    _example_ = [
+    _example_ = "\n".join([
         "{0:s} sample /path/to/sample.ko",
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
-    _note_ = [
+    _note_ = "\n".join([
         "This command requires CONFIG_RANDSTRUCT=n, CONFIG_KALLSYMS=y and CONFIG_SYSFS=y (module->sect_attrs).",
         "It is useful if you have a kernel module with debuginfo at hand.",
         "",
@@ -95161,8 +95023,7 @@ class KernelModuleLoadCommand(GenericCommand):
         "- The allocated section names",
         "- The .note.gnu.build-id section in memory, or the symbol addresses of the module kallsyms if it is unavailable",
         "A clear mismatch is rejected unless --force is specified.",
-    ]
-    _note_ = "\n".join(_note_)
+    ])
 
     def get_module_kallsyms(self, module):
         if not self.kmod.initialize_kallsyms(self.module_addrs):
@@ -95385,12 +95246,11 @@ class KernelBlockDevicesCommand(GenericCommand, BufferingOutput):
     parser.add_argument("-q", "--quiet", action="store_true", help="enable quiet mode.")
     _syntax_ = parser.format_help()
 
-    _example_ = [
+    _example_ = "\n".join([
         "{0:s} -q",
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
-    _note_ = [
+    _note_ = "\n".join([
         "This command requires CONFIG_RANDSTRUCT=n unless vmlinux with debug information is loaded.",
         "",
         "If the debug information has struct block_device, block devices are listed from the inodes of the bdev",
@@ -95403,8 +95263,7 @@ class KernelBlockDevicesCommand(GenericCommand, BufferingOutput):
         "The name is built from bd_disk->disk_name and the partition number, in the same way as the kernel.",
         "Before v5.11, bd_disk is set only while the block device is opened.",
         "If it cannot be resolved, the name is guessed from the major/minor number and marked as `(guessed)`.",
-    ]
-    _note_ = "\n".join(_note_)
+    ])
 
     BLOCK_EXT_MAJOR = 259
 
@@ -96200,14 +96059,13 @@ class KernelCharacterDevicesCommand(GenericCommand, BufferingOutput):
     parser.add_argument("-q", "--quiet", action="store_true", help="enable quiet mode.")
     _syntax_ = parser.format_help()
 
-    _example_ = [
+    _example_ = "\n".join([
         "{0:s} -n",
         "{0:s} -n -v",
         "{0:s} -n --nodes",
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
-    _note_ = [
+    _note_ = "\n".join([
         "This command requires CONFIG_RANDSTRUCT=n unless vmlinux with debug information is loaded.",
         "",
         "Simplified cdev structure:",
@@ -96236,8 +96094,7 @@ class KernelCharacterDevicesCommand(GenericCommand, BufferingOutput):
         "`-v` also shows the cdevs registered in the middle of a range (e.g., each tty port).",
         "`--nodes` lists the device nodes from devices_kset with their sysfs names and the cdev that serves each.",
         "Block devices are excluded from them.",
-    ]
-    _note_ = "\n".join(_note_)
+    ])
 
     @staticmethod
     def guess_cdev_path(major, minor):
@@ -97549,23 +97406,20 @@ class KernelOperationsCommand(GenericCommand, BufferingOutput):
     parser.add_argument("-q", "--quiet", action="store_true", help="enable quiet mode.")
     _syntax_ = parser.format_help()
 
-    _example_ = [
+    _example_ = "\n".join([
         "{0:s} file_operations",
         "{0:s} -V 6.6.0 file_operations",
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
-    _note_ = [
+    _note_ = "\n".join([
         "Reading values requires debug information or a known kernel config for conditional members.",
         "Without debug information, CONFIG_RANDSTRUCT=n is required.",
         "",
         "Currently it supports from 3.0 to 7,0-rc7.",
         "",
         "Supported structure:",
-    ]
-    for t_grp in slicer(types, 4):
-        _note_.append("  " + ", ".join(t_grp) + ",")
-    _note_ = "\n".join(_note_)
+        *["  " + ", ".join(t_grp) + "," for t_grp in slicer(types, 4)],
+    ])
 
     def __init__(self):
         super().__init__(complete="use_user_complete")
@@ -98698,14 +98552,13 @@ class KernelSysctlCommand(GenericCommand, BufferingOutput):
     parser.add_argument("-q", "--quiet", action="store_true", help="enable quiet mode.")
     _syntax_ = parser.format_help()
 
-    _example_ = [
+    _example_ = "\n".join([
         "{0:s} --filter modprobe             # filter by parameter name",
         "{0:s} --filter kernel.modprobe -e   # exact match",
         "{0:s} -s                            # skip symlink (improves performance with many .net.* and user.* entries)",
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
-    _note_ = [
+    _note_ = "\n".join([
         "This command requires CONFIG_RANDSTRUCT=n unless vmlinux with debug information is loaded.",
         "ParamValue is decoded as proc_handler (or the known handler it calls) reads it:",
         "strings, integer vectors in hex (decimal with -d), bit ranges of a bitmap, or `raw:` bytes if unknown.",
@@ -98740,8 +98593,7 @@ class KernelSysctlCommand(GenericCommand, BufferingOutput):
         "                                         +------------------+",
         "                                         | ...              |",
         "                                         +------------------+",
-    ]
-    _note_ = "\n".join(_note_)
+    ])
 
     def should_be_print(self, procname):
         if self.args.filter == []:
@@ -98937,7 +98789,7 @@ class KernelFileSystemsCommand(GenericCommand, BufferingOutput):
     parser.add_argument("-q", "--quiet", action="store_true", help="enable quiet mode.")
     _syntax_ = parser.format_help()
 
-    _note_ = [
+    _note_ = "\n".join([
         "This command requires CONFIG_RANDSTRUCT=n unless vmlinux with debug information is loaded.",
         "",
         "Simplified file_systems structure:",
@@ -98961,8 +98813,7 @@ class KernelFileSystemsCommand(GenericCommand, BufferingOutput):
         "       | ...         |   | ...         |         +-->| mnt_instance |",
         "       +-------------+   +-------------+             | ...          |",
         "                                                     +--------------+",
-    ]
-    _note_ = "\n".join(_note_)
+    ])
 
     def initialize(self):
         self.meta = []
@@ -99166,14 +99017,13 @@ class KernelPathCommand(GenericCommand, BufferingOutput):
     parser.add_argument("-q", "--quiet", action="store_true", help="enable quiet mode.")
     _syntax_ = parser.format_help()
 
-    _example_ = [
+    _example_ = "\n".join([
         "{0:s} 0xffff888003b0a000",
         "{0:s} --pid 1 0xffff888003b0a000",
         "{0:s} --all 0xffff888003b0a000",
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
-    _note_ = [
+    _note_ = "\n".join([
         "This command requires CONFIG_RANDSTRUCT=n unless vmlinux with debug information is loaded.",
         "",
         "- Without `--pid/--task`, paths are resolved to the mount-namespace root.",
@@ -99205,8 +99055,7 @@ class KernelPathCommand(GenericCommand, BufferingOutput):
         "| mnt_mounts     |--+                  +------------+",
         "| mnt_child      |  |",
         "+----------------+  +-->child mounts",
-    ]
-    _note_ = "\n".join(_note_)
+    ])
 
     def initialize(self):
         self.meta = []
@@ -99600,14 +99449,13 @@ class KernelVfsCommand(GenericCommand, BufferingOutput):
     parser.add_argument("-q", "--quiet", action="store_true", help="enable quiet mode.")
     _syntax_ = parser.format_help()
 
-    _example_ = [
+    _example_ = "\n".join([
         "{0:s} --pid 1337 --fd 3",
         "{0:s} 0xffff888003b0a000",
         "{0:s} --type inode 0xffff888003b0a000",
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
-    _note_ = [
+    _note_ = "\n".join([
         "This command requires CONFIG_RANDSTRUCT=n unless vmlinux with debug information is loaded.",
         "",
         "ADDRESS is detected as struct file, dentry or inode unless --type is specified.",
@@ -99624,8 +99472,7 @@ class KernelVfsCommand(GenericCommand, BufferingOutput):
         "+----------+    +---------+    | i_sb  |--->| s_type      |",
         "                               +-------+    | s_dev       |",
         "                                            +-------------+",
-    ]
-    _note_ = "\n".join(_note_)
+    ])
 
     FILE_TYPES = {
         0o010000: "p",
@@ -99977,14 +99824,13 @@ class KernelMountCommand(GenericCommand, BufferingOutput):
     parser.add_argument("-q", "--quiet", action="store_true", help="enable quiet mode.")
     _syntax_ = parser.format_help()
 
-    _example_ = [
+    _example_ = "\n".join([
         "{0:s}",
         "{0:s} --pid 1337",
         "{0:s} --all --tasks",
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
-    _note_ = [
+    _note_ = "\n".join([
         "This command requires CONFIG_RANDSTRUCT=n unless vmlinux with debug information is loaded.",
         "",
         "- Walks `mnt_mounts/mnt_child`, so all mounts in the namespace are shown, including bind mounts sharing a `super_block`.",
@@ -100022,8 +99868,7 @@ class KernelMountCommand(GenericCommand, BufferingOutput):
         "            | s_type      |---->| ...              |",
         "            | ...         |     +------------------+",
         "            +-------------+",
-    ]
-    _note_ = "\n".join(_note_)
+    ])
 
     # include/linux/mount.h
     MNT_FLAGS = [
@@ -100572,7 +100417,7 @@ class KernelClockSourceCommand(GenericCommand, BufferingOutput):
     parser.add_argument("-q", "--quiet", action="store_true", help="enable quiet mode.")
     _syntax_ = parser.format_help()
 
-    _note_ = [
+    _note_ = "\n".join([
         "Simplified clocksource structure:",
         "",
         "                        +-clocksource-+",
@@ -100589,8 +100434,7 @@ class KernelClockSourceCommand(GenericCommand, BufferingOutput):
         "  VERIFY_PERCPU (~v7.0) or INLINE (CAN_INLINE_READ; v7.1~), COUPLED (HAS_COUPLED_CLOCK_EVENT), WDTEST, WDTEST_PERCPU.",
         "- The module is shown for a clocksource registered by a loadable module.",
         "- The member offsets come from the debug information (vmlinux or `ktypes-load`) when available.",
-    ]
-    _note_ = "\n".join(_note_)
+    ])
 
     FLAGS = [
         (0x1, "CONT"),
@@ -101011,7 +100855,7 @@ class KernelTimerCommand(GenericCommand, BufferingOutput):
     parser.add_argument("-q", "--quiet", action="store_true", help="enable quiet mode.")
     _syntax_ = parser.format_help()
 
-    _note_ = [
+    _note_ = "\n".join([
         "Simplified timer structure (per-cpu):",
         "",
         "+-timer_bases[0]-----+    +-timer_list--+    +-timer_list--+",
@@ -101056,8 +100900,7 @@ class KernelTimerCommand(GenericCommand, BufferingOutput):
         "- hrtimers are sorted by `expires`, since they are listed in the order of the rbtree.",
         "- The member offsets come from the debug information (vmlinux or `ktypes-load`) when available.",
         "  They are verified by `timer_base.cpu` and `hrtimer_clock_base.cpu_base` and `index`.",
-    ]
-    _note_ = "\n".join(_note_)
+    ])
 
     clockid_dict = {
         0: "CLOCK_REALTIME",
@@ -102142,14 +101985,13 @@ class KernelWorkqueueCommand(GenericCommand, BufferingOutput):
     parser.add_argument("-q", "--quiet", action="store_true", help="enable quiet mode.")
     _syntax_ = parser.format_help()
 
-    _example_ = [
+    _example_ = "\n".join([
         "{0:s}",
         "{0:s} --object 0xffff888012340000",
         "{0:s} --object 0xffff888012340000 --size 0x400",
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
-    _note_ = [
+    _note_ = "\n".join([
         "Simplified workqueue structures (`==>` shows where each column comes from):",
         "",
         "                   +-workqueue_struct-+",
@@ -102191,8 +102033,7 @@ class KernelWorkqueueCommand(GenericCommand, BufferingOutput):
         "- The running work is found from `worker_pool.busy_hash` (`global_cwq` before v3.6).",
         "- `delayed` needs the `ktimer` layout; other states are listed without it.",
         "- The member offsets come from the debug information (vmlinux or `ktypes-load`) when available.",
-    ]
-    _note_ = "\n".join(_note_)
+    ])
 
     BUSY_WORKER_HASH_SIZE = 64
 
@@ -103113,7 +102954,7 @@ class KernelPciDeviceCommand(GenericCommand, BufferingOutput):
     parser.add_argument("-q", "--quiet", action="store_true", help="enable quiet mode.")
     _syntax_ = parser.format_help()
 
-    _note_ = [
+    _note_ = "\n".join([
         "Simplified pcidev structure:",
         "",
         "+----------------+   +-pci_bus--------+",
@@ -103146,8 +102987,7 @@ class KernelPciDeviceCommand(GenericCommand, BufferingOutput):
         "                                           | +-------------+  |",
         "                                           | ...              |",
         "                                           +------------------+",
-    ]
-    _note_ = "\n".join(_note_)
+    ])
 
     def type_offset(self, type_name, member, fallback=None):
         offset = GefUtil.offsetof(type_name, member)
@@ -104114,7 +103954,7 @@ class KernelDiffCommand(GenericCommand, BufferingOutput):
     clear_parser.add_argument("index", metavar="N|all", nargs="+", help="snapshot index or all.")
     _syntax_ = parser.format_help()
 
-    _example_ = [
+    _example_ = "\n".join([
         "{0:s} save                         # append a snapshot",
         "{0:s} list                         # list saved snapshots",
         "{0:s} diff 0 2                     # compare two saved snapshots",
@@ -104124,16 +103964,14 @@ class KernelDiffCommand(GenericCommand, BufferingOutput):
         "{0:s} clear all                    # delete all snapshots",
         "{0:s} save -t task -t syscall      # select targets",
         "{0:s} save -c 'kops file_operations 0xffffffff81000000'",
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
-    _note_ = [
+    _note_ = "\n".join([
         "Snapshots are kept in /tmp/gef/kdiff-UID until `kdiff clear` removes them.",
         "Compare snapshots taken from the same kernel instance.",
         "Without -t, task/module/sysctl/irq/syscall and, on x86, IDT/GDT are compared.",
         "Use -c to include address-specific tables such as `kops file_operations ADDRESS`.",
-    ]
-    _note_ = "\n".join(_note_)
+    ])
 
     def get_commands(self, args, saved_snapshot=None):
         if args.target:
@@ -105063,12 +104901,11 @@ class KernelDmesgCommand(GenericCommand, BufferingOutput):
     parser.add_argument("-q", "--quiet", action="store_true", help="enable quiet mode.")
     _syntax_ = parser.format_help()
 
-    _example_ = [
+    _example_ = "\n".join([
         "{0:s} -q",
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
-    _note_ = [
+    _note_ = "\n".join([
         "The information such as [T1] or [C0] is the caller context ID.",
         "Originally, this information is displayed when CONFIG_PRINTK_CALLER=y.",
         "However it is always displayed because it is useful.",
@@ -105157,8 +104994,7 @@ class KernelDmesgCommand(GenericCommand, BufferingOutput):
         "The buffer is one circular byte array; there are no per-record headers.",
         "log_end is a byte counter; its position in the buffer is log_end % log_buf_len.",
         "log_buf points to active storage, which may differ from the initial __log_buf.",
-    ]
-    _note_ = "\n".join(_note_)
+    ])
 
     def get_vmcoreinfo(self):
         """Read size and offset metadata from the running kernel."""
@@ -105279,15 +105115,14 @@ class StringsCommand(GenericCommand, BufferingOutput):
     parser.add_argument("-q", "--quiet", action="store_true", help="disable the progress bar.")
     _syntax_ = parser.format_help()
 
-    _example_ = [
+    _example_ = "\n".join([
         "{0:s}                                                   # search all userland regions",
         "{0:s} 0x00007ffffffde000 0x00007ffffffff000             # exact specification",
         "{0:s} 0x00007ffffffde000                                # guess the search end location",
         "{0:s} -m 10 0x00007ffffffde000 0x00007ffffffff000       # filter by length",
         "{0:s} -d 1 0x00007ffffffde000 0x00007ffffffff000        # if an address is found, it will be followed up",
         '{0:s} -f "GLIBC" 0x00007ffffffde000 0x00007ffffffff000  # filter by keywords (-f, -e). need double-escape',
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
     def strings(self, data, len_threshold):
         strings_result = []
@@ -105401,17 +105236,15 @@ class KernelSyscallsCommand(GenericCommand, BufferingOutput):
     parser.add_argument("-q", "--quiet", action="store_true", help="enable quiet mode.")
     _syntax_ = parser.format_help()
 
-    _example_ = [
+    _example_ = "\n".join([
         "{0:s}",
         "{0:s} --filter write",
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
-    _note_ = [
+    _note_ = "\n".join([
         "On x86, Linux v6.9 and later dispatch syscalls via switch statements.",
         "This command shows a table for readability; remaining syscall tables are used for tracing, not dispatch.",
-    ]
-    _note_ = "\n".join(_note_)
+    ])
 
     @staticmethod
     def is_plausible_address(addr):
@@ -106146,16 +105979,14 @@ class TlsCommand(GenericCommand, BufferingOutput):
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
     _syntax_ = parser.format_help()
 
-    _example_ = [
+    _example_ = "\n".join([
         "{0:s} -vvv  # repeat `-v` to display more lines",
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
-    _note_ = [
+    _note_ = "\n".join([
         "Under qemu-user, multi-threaded mips/mipsn32/mips64/m68k targets may produce unreliable TLS/heap results",
         "because ExecAsm/ExecSyscall can fail after thread switches.",
-    ]
-    _note_ = "\n".join(_note_)
+    ])
 
     @staticmethod
     def get_direction():
@@ -106288,10 +106119,9 @@ class FsbaseCommand(GenericCommand):
     parser = argparse.ArgumentParser(prog=_cmdline_)
     _syntax_ = parser.format_help()
 
-    _note_ = [
+    _note_ = "\n".join([
         'This command overwrites original "fs (=tui focus)" command.',
-    ]
-    _note_ = "\n".join(_note_)
+    ])
 
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
@@ -106347,7 +106177,7 @@ class GdtInfoCommand(GenericCommand, BufferingOutput):
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
     _syntax_ = parser.format_help()
 
-    _note_ = [
+    _note_ = "\n".join([
         "This command is intended to dump the GDTR and LDTR when working with qemu-system.",
         "When you're debugging a normal userland app you can't read the GDTR or LDTR,",
         "so this is just to show you an example of what information is stored there.",
@@ -106355,8 +106185,7 @@ class GdtInfoCommand(GenericCommand, BufferingOutput):
         "In long-mode compatibility code, QEMU may print only the low 32 bits of the cached LDT base.",
         "The full LDT base is inferred from a matching GDT descriptor; it may differ from the CPU's cached value.",
         "Use --ldt-base with a known full address to override this inference.",
-    ]
-    _note_ = "\n".join(_note_)
+    ])
 
     # arch/x86/include/asm/segment.h
     SEGMENT_DESCRIPTION_64 = {
@@ -106953,12 +106782,11 @@ class IdtInfoCommand(GenericCommand, BufferingOutput):
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
     _syntax_ = parser.format_help()
 
-    _note_ = [
+    _note_ = "\n".join([
         "This command is intended to dump the IDTR when working with qemu-system.",
         "When you're debugging a normal userland app you can't read the IDTR,",
         "so this is just to show you an example of what information is stored there.",
-    ]
-    _note_ = "\n".join(_note_)
+    ])
 
     # arch/x86/include/asm/trapnr.h; X86_TRAP_IRET (32) is not an IDT vector.
     INTERRUPT_DESCRIPTION = {
@@ -107376,15 +107204,13 @@ class MemorySetCommand(GenericCommand):
     parser.add_argument("size", metavar="SIZE", type=AddressUtil.parse_address, help="the size for memset.")
     _syntax_ = parser.format_help()
 
-    _example_ = [
+    _example_ = "\n".join([
         "{0:s} $rsp 0xff 0x20",
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
-    _note_ = [
+    _note_ = "\n".join([
         "If you want to specify a large value for `VALUE`, use the `patch string` command.",
-    ]
-    _note_ = "\n".join(_note_)
+    ])
 
     def __init__(self):
         super().__init__(complete=gdb.COMPLETE_LOCATION)
@@ -107434,7 +107260,7 @@ class MemoryCopyCommand(GenericCommand):
     parser.add_argument("size", metavar="SIZE", type=AddressUtil.parse_address, help="the size for memcpy.")
     _syntax_ = parser.format_help()
 
-    _note_ = [
+    _note_ = "\n".join([
         "memcpy dst src 8",
         "                                 <--size-->",
         "            dst                   src",
@@ -107452,8 +107278,7 @@ class MemoryCopyCommand(GenericCommand):
         "            dst                   src",
         "  Before: [ AAAAAAAA | BBBBBBBB | CCCCCCCC ]",
         "  After : [ CCCCCCCC | AAAAAAAA | BBBBBBBB ]",
-    ]
-    _note_ = "\n".join(_note_)
+    ])
 
     def __init__(self):
         super().__init__(complete=gdb.COMPLETE_LOCATION)
@@ -146077,15 +145902,14 @@ class HashCommand(GenericCommand):
     subparsers.add_parser("known-collision")
     _syntax_ = parser.format_help()
 
-    _note_ = [
+    _note_ = "\n".join([
         "[128b/16B] means 128 bits (16 bytes).",
         'The salt for BLAKE2s and BLAKE2b is blank.',
         'The key for KMAC128 and KMAC256 is blank.',
         'The key for SipHash is "\\0" * 16.',
         'The key for HalfSipHash is "\\0" * 8.',
         "To calculate FSB hash, install `gmpy2` into the Python environment used by GEF.",
-    ]
-    _note_ = "\n".join(_note_)
+    ])
 
     def __init__(self, *args, **kwargs):
         prefix = kwargs.get("prefix", True)
@@ -146728,10 +146552,9 @@ class HashMemoryCommand(HashCommand, BufferingOutput):
     parser.add_argument("-q", "--quiet", action="store_true", help="enable quiet mode.")
     _syntax_ = parser.format_help()
 
-    _example_ = [
+    _example_ = "\n".join([
         "{0:s} $rsp 0x20",
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
     def __init__(self):
         super().__init__(prefix=False, complete=gdb.COMPLETE_LOCATION)
@@ -146926,11 +146749,10 @@ class HashValueCommand(HashCommand, BufferingOutput):
     parser.add_argument("-q", "--quiet", action="store_true", help="enable quiet mode.")
     _syntax_ = parser.format_help()
 
-    _example_ = [
+    _example_ = "\n".join([
         '{0:s} "\\\\x41\\\\x42\\\\x43\\\\x44"',
         '{0:s} --hex "41 42 43 44"',
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
     def __init__(self):
         super().__init__(prefix=False, complete=gdb.COMPLETE_NONE)
@@ -148867,11 +148689,10 @@ class JsonMemoryCommand(JsonCommand):
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
     _syntax_ = parser.format_help()
 
-    _example_ = [
+    _example_ = "\n".join([
         "{0:s} $rdi",
         "{0:s} $rdi --max-read 0x20_0000",
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
     def __init__(self):
         super().__init__(prefix=False, complete=gdb.COMPLETE_LOCATION)
@@ -148935,10 +148756,9 @@ class JsonValueCommand(JsonCommand):
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
     _syntax_ = parser.format_help()
 
-    _example_ = [
+    _example_ = "\n".join([
         '{0:s} \'["foo", {{"bar": ["baz", null, 1.0, 2]}}]\'',
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
     def __init__(self):
         super().__init__(prefix=False)
@@ -149248,10 +149068,9 @@ class CrcCommand(GenericCommand, BufferingOutput):
     subparsers.add_parser("value")
     _syntax_ = parser.format_help()
 
-    _note_ = [
+    _note_ = "\n".join([
         "[32b/04B] means 32 bits (4 bytes).",
-    ]
-    _note_ = "\n".join(_note_)
+    ])
 
     def __init__(self, *args, **kwargs):
         prefix = kwargs.get("prefix", True)
@@ -149300,10 +149119,9 @@ class CrcMemoryCommand(CrcCommand):
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
     _syntax_ = parser.format_help()
 
-    _example_ = [
+    _example_ = "\n".join([
         "{0:s} $rsp 0x20",
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
     def __init__(self):
         super().__init__(prefix=False, complete=gdb.COMPLETE_LOCATION)
@@ -149449,11 +149267,10 @@ class CrcValueCommand(CrcCommand):
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
     _syntax_ = parser.format_help()
 
-    _example_ = [
+    _example_ = "\n".join([
         '{0:s} "\\\\x41\\\\x42\\\\x43\\\\x44"',
         '{0:s} --hex "41 42 43 44"',
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
     def __init__(self):
         super().__init__(prefix=False)
@@ -149535,19 +149352,17 @@ class Crc32revCommand(GenericCommand):
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
     _syntax_ = parser.format_help()
 
-    _example_ = [
+    _example_ = "\n".join([
         "{0:s} --list",
         "{0:s} 0x41414141",
         "{0:s} 0x41414141 --prefix AAAA --suffix BBBB",
         "{0:s} 0x41414141 --prefix flag{{ --suffix-hex 7d00 -b 8 -k 1 A -k 3 A",
         "{0:s} 0x41414141 --preset mpeg2",
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
-    _note_ = [
+    _note_ = "\n".join([
         "wanted_crc == crc(prefix + bridge + suffix).",
-    ]
-    _note_ = "\n".join(_note_)
+    ])
 
     preset_dic = {
         # https://reveng.sourceforge.io/crc-catalogue/all.htm
@@ -150420,7 +150235,9 @@ class BaseNDecodeCommand(GenericCommand, BufferingOutput):
         "base91", "base100", "base122",
     ]
 
-    _note_ = "For integer bases other than base1, each leading zero symbol represents one zero byte."
+    _note_ = "\n".join([
+        "For integer bases other than base1, each leading zero symbol represents one zero byte.",
+    ])
 
     def __init__(self, *args, **kwargs):
         prefix = kwargs.get("prefix", True)
@@ -150455,10 +150272,9 @@ class BaseNDecodeMemoryCommand(BaseNDecodeCommand):
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
     _syntax_ = parser.format_help()
 
-    _example_ = [
+    _example_ = "\n".join([
         "{0:s} $rsp 0x20",
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
     def __init__(self):
         super().__init__(prefix=False, complete=gdb.COMPLETE_LOCATION)
@@ -150502,11 +150318,10 @@ class BaseNDecodeFileCommand(BaseNDecodeCommand):
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
     _syntax_ = parser.format_help()
 
-    _example_ = [
+    _example_ = "\n".join([
         "{0:s} /tmp/data.bin",
         "{0:s} /tmp/data.bin 0x10 0x20",
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
     def __init__(self):
         super().__init__(prefix=False, complete=gdb.COMPLETE_FILENAME)
@@ -150561,11 +150376,10 @@ class BaseNDecodeValueCommand(BaseNDecodeCommand):
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
     _syntax_ = parser.format_help()
 
-    _example_ = [
+    _example_ = "\n".join([
         '{0:s} "\\\\x51\\\\x55\\\\x46\\\\x42"',
         '{0:s} --hex "51 55 46 42"',
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
     def __init__(self):
         super().__init__(prefix=False)
@@ -150621,7 +150435,9 @@ class BaseNEncodeCommand(GenericCommand, BufferingOutput):
         "base91", "base100", "base122",
     ]
 
-    _note_ = "For integer bases other than base1, each leading zero symbol represents one zero byte."
+    _note_ = "\n".join([
+        "For integer bases other than base1, each leading zero symbol represents one zero byte.",
+    ])
 
     def __init__(self, *args, **kwargs):
         prefix = kwargs.get("prefix", True)
@@ -150656,10 +150472,9 @@ class BaseNEncodeMemoryCommand(BaseNEncodeCommand):
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
     _syntax_ = parser.format_help()
 
-    _example_ = [
+    _example_ = "\n".join([
         "{0:s} $rsp 0x20",
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
     def __init__(self):
         super().__init__(prefix=False, complete=gdb.COMPLETE_LOCATION)
@@ -150706,11 +150521,10 @@ class BaseNEncodeFileCommand(BaseNEncodeCommand):
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
     _syntax_ = parser.format_help()
 
-    _example_ = [
+    _example_ = "\n".join([
         "{0:s} /tmp/data.bin",
         "{0:s} /tmp/data.bin 0x10 0x20",
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
     def __init__(self):
         super().__init__(prefix=False, complete=gdb.COMPLETE_FILENAME)
@@ -150768,11 +150582,10 @@ class BaseNEncodeValueCommand(BaseNEncodeCommand):
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
     _syntax_ = parser.format_help()
 
-    _example_ = [
+    _example_ = "\n".join([
         '{0:s} "\\\\x41\\\\x42\\\\x43\\\\x44"',
         '{0:s} --hex "41 42 43 44"',
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
     def __init__(self):
         super().__init__(prefix=False)
@@ -150821,10 +150634,9 @@ class MorseDecodeCommand(GenericCommand):
     subparsers.add_parser("value")
     _syntax_ = parser.format_help()
 
-    _note_ = [
+    _note_ = "\n".join([
         "Uses one space between letters and three spaces between words.",
-    ]
-    _note_ = "\n".join(_note_)
+    ])
 
     def __init__(self, *args, **kwargs):
         prefix = kwargs.get("prefix", True)
@@ -150852,10 +150664,9 @@ class MorseDecodeMemoryCommand(MorseDecodeCommand):
                         help="the size for morse code decoding.")
     _syntax_ = parser.format_help()
 
-    _example_ = [
+    _example_ = "\n".join([
         "{0:s} $rsp 0x20",
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
     def __init__(self):
         super().__init__(prefix=False, complete=gdb.COMPLETE_LOCATION)
@@ -150888,10 +150699,9 @@ class MorseDecodeValueCommand(MorseDecodeCommand):
     parser.add_argument("value", metavar="VALUE", help="the string for morse code decoding.")
     _syntax_ = parser.format_help()
 
-    _example_ = [
+    _example_ = "\n".join([
         '{0:s} -- ".- -... -.-. -.."',
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
     def __init__(self):
         super().__init__(prefix=False)
@@ -150920,10 +150730,9 @@ class MorseEncodeCommand(GenericCommand):
     subparsers.add_parser("value")
     _syntax_ = parser.format_help()
 
-    _note_ = [
+    _note_ = "\n".join([
         "Uses one space between letters and three spaces between words.",
-    ]
-    _note_ = "\n".join(_note_)
+    ])
 
     def __init__(self, *args, **kwargs):
         prefix = kwargs.get("prefix", True)
@@ -150951,10 +150760,9 @@ class MorseEncodeMemoryCommand(MorseEncodeCommand):
                         help="the size for morse code encoding.")
     _syntax_ = parser.format_help()
 
-    _example_ = [
+    _example_ = "\n".join([
         "{0:s} $rsp 0x20",
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
     def __init__(self):
         super().__init__(prefix=False, complete=gdb.COMPLETE_LOCATION)
@@ -150987,10 +150795,9 @@ class MorseEncodeValueCommand(MorseEncodeCommand):
     parser.add_argument("value", metavar="VALUE", help="the string for morse code encoding.")
     _syntax_ = parser.format_help()
 
-    _example_ = [
+    _example_ = "\n".join([
         '{0:s} AAAA',
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
     def __init__(self):
         super().__init__(prefix=False)
@@ -151270,7 +151077,7 @@ class MultiLineCommand(GenericCommand):
     parser.add_argument("cmd", metavar="GDB_CMD;", nargs="+", help="semicolon-separated gdb command.")
     _syntax_ = parser.format_help()
 
-    _example_ = [
+    _example_ = "\n".join([
         "{0:s} x/4xg $rax; x/4xg $rbx",
         "{0:s} x/4xg $rax; -; x/4xg $rbx         # `-`:   newline separator",
         "{0:s} x/4xg $rax; --; x/4xg $rbx        # `--`:  bold white line (`-`) separator",
@@ -151278,8 +151085,7 @@ class MultiLineCommand(GenericCommand):
         "{0:s} x/4xg $rax; -t TAG; x/4xg $rbx    # `-t TAG`:   newline separator with TAG",
         "{0:s} x/4xg $rax; --t TAG; x/4xg $rbx   # `--t TAG`:  bold white line (`-`) separator with TAG",
         "{0:s} x/4xg $rax; ---t TAG; x/4xg $rbx  # `---t TAG`: bold white line (`=`) separator with TAG",
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
     def __init__(self):
         super().__init__(complete=gdb.COMPLETE_COMMAND)
@@ -151416,10 +151222,9 @@ class SaveOutputCommand(GenericCommand):
     parser.add_argument("arg", metavar="ARG", nargs="*", help="arguments of gdb command.")
     _syntax_ = parser.format_help()
 
-    _note_ = [
+    _note_ = "\n".join([
         "Saving the output of external commands is unsupported (e.g., pipe, !ls).",
-    ]
-    _note_ = "\n".join(_note_)
+    ])
 
     def __init__(self):
         super().__init__(prefix=False, complete=gdb.COMPLETE_COMMAND)
@@ -151526,15 +151331,13 @@ class DiffOutputColordiffCommand(DiffOutputCommand):
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
     _syntax_ = parser.format_help()
 
-    _example_ = [
+    _example_ = "\n".join([
         "{0:s} 0 1  # diff between 0 and 1",
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
-    _note_ = [
+    _note_ = "\n".join([
         "You can check the available indexes with `diffo list`.",
-    ]
-    _note_ = "\n".join(_note_)
+    ])
 
     def __init__(self):
         super().__init__(prefix=False)
@@ -151591,15 +151394,13 @@ class DiffOutputGitDiffCommand(DiffOutputCommand):
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
     _syntax_ = parser.format_help()
 
-    _example_ = [
+    _example_ = "\n".join([
         "{0:s} 0 1  # diff between 0 and 1",
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
-    _note_ = [
+    _note_ = "\n".join([
         "You can check the available indexes with `diffo list`.",
-    ]
-    _note_ = "\n".join(_note_)
+    ])
 
     def __init__(self):
         super().__init__(prefix=False)
@@ -151809,11 +151610,10 @@ class ConstGrepCommand(GenericCommand):
                         help="header search directory (e.g. SYSROOT/usr/include; default: host /usr/include).")
     _syntax_ = parser.format_help()
 
-    _example_ = [
+    _example_ = "\n".join([
         "{0:s} '__NR_*'",
         "{0:s} -r /path/to/sysroot/usr/include '__NR_*'",
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
     def read_normalize(self, path):
         if not os.path.isfile(path):
@@ -154115,17 +153915,16 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
                              "node/per_node[0].node) when node is falsely detected.")
     _syntax_ = parser.format_help()
 
-    _example_ = [
+    _example_ = "\n".join([
         "{0:s} kmalloc-256             # <7.0: active pages; 7.0+: cpu sheaves and node slabs",
         "{0:s} kmalloc-256 --cpu 1     # dump kmalloc-256 from cpu 1",
         "{0:s} kmalloc-256 --partial   # <7.0 only: show active pages and partial pages",
         "{0:s} kmalloc-256 --node      # <7.0 only: show active pages, partial pages and node pages",
         "{0:s} --list                  # list slub cache names",
         "{0:s} -vv --offset-node 0xc8  # user specified offsetof(kmem_cache, node)",
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
-    _note_ = [
+    _note_ = "\n".join([
         "Simplified SLUB structure:",
         "",
         "                         +-kmem_cache----------+         +-kmem_cache--+   +-kmem_cache--+",
@@ -154217,8 +154016,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
         "  The top of the stack is represented by `slab_sheaf.size`.",
         "* `--partial`, `--node`, `--only-partial`, and `--only-node` affect only kernel < 7.0.",
         "* To see the CONFIG_SLAB_VIRTUAL ASCII diagram, execute `slub-dump --help-for-slab-virtual`.",
-    ]
-    _note_ = "\n".join(_note_)
+    ])
 
     _note2_ = [
         "* A mitigation called CONFIG_SLAB_VIRTUAL was proposed in September 2023 to prevent cross-cache attacks.",
@@ -155440,13 +155238,12 @@ class SlubTinyDumpCommand(GenericCommand, BufferingOutput):
                         help="[FOR DEVELOPER] used internally in gef, please don't use it.")
     _syntax_ = parser.format_help()
 
-    _example_ = [
+    _example_ = "\n".join([
         "{0:s} kmalloc-256  # dump kmalloc-256",
         "{0:s} --list       # list slub cache names",
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
-    _note_ = [
+    _note_ = "\n".join([
         "Simplified SLUB-TINY structure:",
         "",
         "                         +-kmem_cache----------+     +-kmem_cache--+   +-kmem_cache--+",
@@ -155480,8 +155277,7 @@ class SlubTinyDumpCommand(GenericCommand, BufferingOutput):
         "                       v",
         "                      ...",
         "* SLUB-TINY was introduced in kernel 6.2.",
-    ]
-    _note_ = "\n".join(_note_)
+    ])
 
     def dump_page_print_layout(self, kmem_cache, page, freelist):
         pagesize = KernelAddressHeuristicFinder.consts().PAGE_SIZE
@@ -156577,14 +156373,13 @@ class SlabDumpCommand(GenericCommand, BufferingOutput):
     parser.add_argument("-q", "--quiet", action="store_true", help="enable quiet mode.")
     _syntax_ = parser.format_help()
 
-    _example_ = [
+    _example_ = "\n".join([
         "{0:s} kmalloc-256          # dump kmalloc-256 from all cpus",
         "{0:s} kmalloc-256 --cpu 1  # dump kmalloc-256 from cpu 1",
         "{0:s} --list               # list slab cache names",
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
-    _note_ = [
+    _note_ = "\n".join([
         "Simplified SLAB structure:",
         "\n"
         "                         +-kmem_cache--+         +-kmem_cache--+   +-kmem_cache--+",
@@ -156624,8 +156419,7 @@ class SlabDumpCommand(GenericCommand, BufferingOutput):
         "  The structure name used for SLAB has been changed to `struct slab`.",
         "* Chunks in array_cache are marked as in-use, even though they are actually reusable.",
         "* SLAB was removed in kernel 6.8.",
-    ]
-    _note_ = "\n".join(_note_)
+    ])
 
     def dump_page(self, page, kmem_cache, tag):
         pagesize = KernelAddressHeuristicFinder.consts().PAGE_SIZE
@@ -157276,13 +157070,12 @@ class SlobDumpCommand(GenericCommand, BufferingOutput):
     parser.add_argument("-q", "--quiet", action="store_true", help="enable quiet mode.")
     _syntax_ = parser.format_help()
 
-    _example_ = [
+    _example_ = "\n".join([
         "{0:s} kmalloc-256  # dump kmalloc-256 kmem_cache and all freelists",
         "{0:s} --list       # list slob cache names",
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
-    _note_ = [
+    _note_ = "\n".join([
         "Simplified SLOB structure:",
         "",
         "                         +-kmem_cache--+   +-kmem_cache--+   +-kmem_cache--+",
@@ -157310,8 +157103,7 @@ class SlobDumpCommand(GenericCommand, BufferingOutput):
         "* `struct page` has been split into `struct page` and `struct slab` since kernel 5.17.",
         "  The structure name used for SLOB has been changed to `struct slab`.",
         "* SLOB was removed in kernel 6.4.",
-    ]
-    _note_ = "\n".join(_note_)
+    ])
 
     def dump_freelist(self, tag, page_freelist):
         pagesize = KernelAddressHeuristicFinder.consts().PAGE_SIZE
@@ -157476,7 +157268,7 @@ class SlabContainsCommand(GenericCommand):
     parser.add_argument("-q", "--quiet", action="store_true", help="show result only.")
     _syntax_ = parser.format_help()
 
-    _note_ = [
+    _note_ = "\n".join([
         "Simplified page/slab structure:",
         "",
         "+-kmem_cache-+",
@@ -157497,8 +157289,7 @@ class SlabContainsCommand(GenericCommand):
         "                                                              | ...         |",
         "                                                              +-------------+",
         "* Compound pages and huge pages are not supported.",
-    ]
-    _note_ = "\n".join(_note_)
+    ])
 
     @Cache.cache_this_session(cache_None=False)
     def initialize(self, allocator):
@@ -157849,17 +157640,18 @@ class KobjCommand(GenericCommand):
     parser.add_argument("-q", "--quiet", action="store_true", help="suppress progress messages, show result only.")
     _syntax_ = parser.format_help()
 
-    _example_ = "{0:s} 0xffff888012345678".format(_cmdline_)
+    _example_ = "\n".join([
+        "{0:s} 0xffff888012345678",
+    ]).format(_cmdline_)
 
-    _note_ = [
+    _note_ = "\n".join([
         "Unified resolver combining kvmmap/virt2page/pageinfo/slab-contains/buddy-contains/vmalloc-dump.",
         "The type candidate is inferred from the slab cache name, so `Confidence` is reported honestly:",
         "mergeable caches (kmalloc-*) and unaligned addresses lower it. SLUB may merge dedicated caches,",
         "so use -v to list the caches sharing the same physical kmem_cache via kmem-cache-alias.",
         "GEF's pageinfo-based page classification currently supports v4.18 and later;",
         "slab object resolution works on older kernels too.",
-    ]
-    _note_ = "\n".join(_note_)
+    ])
 
     # Well-known caches whose name differs from the struct, or that are frequently targeted.
     # Dedicated caches whose name already matches the struct fall through to the generic guess.
@@ -158326,11 +158118,10 @@ class KmemCacheAliasCommand(GenericCommand, BufferingOutput):
     parser.add_argument("-q", "--quiet", action="store_true", help="show result only.")
     _syntax_ = parser.format_help()
 
-    _note_ = [
+    _note_ = "\n".join([
         "This command requires CONFIG_SYSFS=y.",
         "CONFIG_SLUB_TINY=y is unsupported because slab sysfs is unavailable.",
-    ]
-    _note_ = "\n".join(_note_)
+    ])
 
     @Cache.cache_this_session(cache_None=False)
     def initialize(self):
@@ -159717,15 +159508,14 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
     parser.add_argument("-q", "--quiet", action="store_true", help="show result only.")
     _syntax_ = parser.format_help()
 
-    _example_ = [
+    _example_ = "\n".join([
         "{0:s} -z DMA32",
         "{0:s} -o 1 -o 2",
         "{0:s} --only-pcp --pcp-index 0 --cpu 0",
         "{0:s} --sort-verbose",
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
-    _note_ = [
+    _note_ = "\n".join([
         "Simplified buddy allocator structure:",
         "",
         "  +-node_data[MAX_NUMNODES]-+",
@@ -159766,8 +159556,7 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
         "  +------------------------------------------+",
         "",
         "You can combine this result with information of in-use space. Try using `kvmmap` command.",
-    ]
-    _note_ = "\n".join(_note_)
+    ])
 
     def format_entry(self, entry):
         chunk_size_color = Config.get("theme.heap_chunk_size")
@@ -159982,7 +159771,7 @@ class BuddyContainsCommand(BuddyDumpCommand):
     parser.add_argument("-q", "--quiet", action="store_true", help="show result only.")
     _syntax_ = parser.format_help()
 
-    _note_ = [
+    _note_ = "\n".join([
         "Given an address, resolves which buddy allocator block contains it.",
         "",
         "A free block of order N is described by its head page only, page->private holds the",
@@ -159992,15 +159781,13 @@ class BuddyContainsCommand(BuddyDumpCommand):
         "Two modes:",
         "  default: walk the free lists like buddy-dump and locate the block.",
         "  -L     : read struct page flags only but cannot report pcp free pages.",
-    ]
-    _note_ = "\n".join(_note_)
+    ])
 
-    _example_ = [
+    _example_ = "\n".join([
         "{0:s} 0xffff96a7c2144000",
         "{0:s} -p 0xffffca7640004040    # ADDRESS is a struct page",
         "{0:s} -L 0xffff96a7c2144000    # Skip free lists",
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
     def get_page(self):
         if self.args.page:
@@ -160229,12 +160016,11 @@ class KernelPipeCommand(GenericCommand, BufferingOutput):
     parser.add_argument("-q", "--quiet", action="store_true", help="show result only.")
     _syntax_ = parser.format_help()
 
-    _example_ = [
+    _example_ = "\n".join([
         "{0:s} -q",
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
-    _note_ = [
+    _note_ = "\n".join([
         "This command requires CONFIG_RANDSTRUCT=n unless vmlinux with debug information is loaded.",
         "A notification pipe (CONFIG_WATCH_QUEUE) can hold more entries than `max`.",
         "",
@@ -160262,8 +160048,7 @@ class KernelPipeCommand(GenericCommand, BufferingOutput):
         "                                      +------------------------+     +-------------+",
         "                                                                     | ...         |",
         "                                                                     +-------------+",
-    ]
-    _note_ = "\n".join(_note_)
+    ])
 
     def get_flags_str(self, flags_value):
         flags_dic = {
@@ -160421,15 +160206,14 @@ class KernelSocketCommand(GenericCommand, BufferingOutput):
     parser.add_argument("-q", "--quiet", action="store_true", help="show result only.")
     _syntax_ = parser.format_help()
 
-    _example_ = [
+    _example_ = "\n".join([
         "{0:s} -q",
         "{0:s} --fd 5",
         "{0:s} -d --fd 5",
         "{0:s} 0xffff888012345000",
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
-    _note_ = [
+    _note_ = "\n".join([
         "This command requires CONFIG_RANDSTRUCT=n unless vmlinux with debug information is loaded.",
         "",
         "Simplified socket structure:",
@@ -160457,8 +160241,7 @@ class KernelSocketCommand(GenericCommand, BufferingOutput):
         "The protocol is shown only when its `struct proto` is verified.",
         "",
         "Use `kskb ADDR` to inspect a single sk_buff in detail.",
-    ]
-    _note_ = "\n".join(_note_)
+    ])
 
     def add_meta(self, name, value, source):
         if not self.args.meta:
@@ -160651,13 +160434,12 @@ class KernelSkbCommand(GenericCommand, BufferingOutput):
     parser.add_argument("-q", "--quiet", action="store_true", help="show result only.")
     _syntax_ = parser.format_help()
 
-    _example_ = [
+    _example_ = "\n".join([
         "{0:s} 0xffff888012345000",
         "{0:s} -d 0xffff888012345000",
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
-    _note_ = [
+    _note_ = "\n".join([
         "Simplified sk_buff structure:",
         "",
         "+-sk_buff----+",
@@ -160690,8 +160472,7 @@ class KernelSkbCommand(GenericCommand, BufferingOutput):
         "The offsets are taken from the debug information if available, otherwise probed from the memory.",
         "frags[] is decoded only with the debug information.",
         "truesize is an accounting value (e.g., 2 for a local TCP pure ACK), not the buffer size.",
-    ]
-    _note_ = "\n".join(_note_)
+    ])
 
     def dump_frags(self, shinfo, nr_frags):
         for item in self.kskb.get_frags(shinfo, nr_frags):
@@ -160852,12 +160633,11 @@ class KernelBpfCommand(GenericCommand, BufferingOutput):
     parser.add_argument("-q", "--quiet", action="store_true", help="show result only.")
     _syntax_ = parser.format_help()
 
-    _example_ = [
+    _example_ = "\n".join([
         "{0:s} -q",
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
-    _note_ = [
+    _note_ = "\n".join([
         "This command requires CONFIG_RANDSTRUCT=n.",
         "",
         "Simplified bpf structure:",
@@ -160893,8 +160673,7 @@ class KernelBpfCommand(GenericCommand, BufferingOutput):
         "                                                         | ...                  |",
         "                                                         | value[max_entries-1] |",
         "                                                         +----------------------+",
-    ]
-    _note_ = "\n".join(_note_)
+    ])
 
     def dump_bpf_progs_func(self, orig_prog, bpf_func, jited_len):
         lines = self.kbpf.disassemble_prog(orig_prog, bpf_func, jited_len, self.kbpf.seccomp_tools_command)
@@ -161063,7 +160842,7 @@ class KernelIpcsCommand(GenericCommand, BufferingOutput):
     parser.add_argument("-q", "--quiet", action="store_true", help="show result only.")
     _syntax_ = parser.format_help()
 
-    _note_ = [
+    _note_ = "\n".join([
         "This command requires CONFIG_RANDSTRUCT=n.",
         "Until v6.17, the IPC namespaces not used by any task (e.g., held only by a file descriptor) are not shown.",
         "",
@@ -161088,8 +160867,7 @@ class KernelIpcsCommand(GenericCommand, BufferingOutput):
         "                                       |     ...       |            | ...          |",
         "                                       | ...           |            +--------------+",
         "                                       +---------------+",
-    ]
-    _note_ = "\n".join(_note_)
+    ])
 
     @staticmethod
     def format_permissions(item):
@@ -161269,7 +161047,7 @@ class KernelDeviceIOCommand(GenericCommand, BufferingOutput):
     parser.add_argument("-q", "--quiet", action="store_true", help="show result only.")
     _syntax_ = parser.format_help()
 
-    _note_ = [
+    _note_ = "\n".join([
         "Simplified ioport structure:",
         "",
         "+-ioport_resource-+       +-------->+-resource--------+",
@@ -161295,8 +161073,7 @@ class KernelDeviceIOCommand(GenericCommand, BufferingOutput):
         "| sibling         |--> resource     | sibling         |",
         "| child           |--> resource     | child           |",
         "+-----------------+                 +-----------------+",
-    ]
-    _note_ = "\n".join(_note_)
+    ])
 
     def dump_resource(self, addr, layout):
         resources = []
@@ -161446,7 +161223,7 @@ class KernelDmaBufCommand(GenericCommand, BufferingOutput):
     parser.add_argument("-q", "--quiet", action="store_true", help="show result only.")
     _syntax_ = parser.format_help()
 
-    _note_ = [
+    _note_ = "\n".join([
         "Simplified DMA-BUF structure:",
         "",
         "                     +-dma_buf-----+      +-dma_buf-----+",
@@ -161476,8 +161253,7 @@ class KernelDmaBufCommand(GenericCommand, BufferingOutput):
         "                                      +--------------+",
         "                                      | ...          |",
         "                                      +--------------+",
-    ]
-    _note_ = "\n".join(_note_)
+    ])
 
     def dump_sgl(self, sg, nents):
         for item in self.kdmabuf.get_sgl(sg, nents):
@@ -161565,7 +161341,7 @@ class KernelIrqCommand(GenericCommand, BufferingOutput):
     parser.add_argument("-q", "--quiet", action="store_true", help="show result only.")
     _syntax_ = parser.format_help()
 
-    _note_ = [
+    _note_ = "\n".join([
         "Each action of a shared IRQ is shown on its own line. `count` is the sum of the per-cpu counts (-v).",
         "The affinity is shown only with the debug information (vmlinux or `ktypes-load`).",
         "",
@@ -161593,8 +161369,7 @@ class KernelIrqCommand(GenericCommand, BufferingOutput):
         "+-irq_desc[NR_IRQS] (CONFIG_SPARSE_IRQ=n)-+          |    +-----------+",
         "| irq_desc[0], irq_desc[1], ...           |----------+",
         "+-----------------------------------------+",
-    ]
-    _note_ = "\n".join(_note_)
+    ])
 
     MAX_ACTIONS = 64
     MAX_NR_IRQS = 0x10000
@@ -162220,7 +161995,7 @@ class KernelNetDeviceCommand(GenericCommand, BufferingOutput):
     parser.add_argument("-q", "--quiet", action="store_true", help="show result only.")
     _syntax_ = parser.format_help()
 
-    _note_ = [
+    _note_ = "\n".join([
         "Simplified net_device structure:",
         "",
         "                     +-net_device--------+    +-net_device--------+",
@@ -162230,8 +162005,7 @@ class KernelNetDeviceCommand(GenericCommand, BufferingOutput):
         "| dev_base_head |--->| dev_list          |--->| dev_list          |--->...",
         "| ...           |    | ...               |    | ...               |",
         "+---------------+    +-------------------+    +-------------------+",
-    ]
-    _note_ = "\n".join(_note_)
+    ])
 
     @Cache.cache_this_session(cache_None=False, per_inferior=True, until_new_objfile=True)
     def initialize(self):
@@ -162396,12 +162170,11 @@ class VmallocDumpCommand(GenericCommand, BufferingOutput):
     parser.add_argument("-q", "--quiet", action="store_true", help="show result only.")
     _syntax_ = parser.format_help()
 
-    _example_ = [
+    _example_ = "\n".join([
         "{0:s} -q",
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
-    _note_ = [
+    _note_ = "\n".join([
         "Simplified vmalloc structure:"
         "",
         "                                       +-vmap_area--+",
@@ -162428,8 +162201,7 @@ class VmallocDumpCommand(GenericCommand, BufferingOutput):
         "`pooled` is a purged area kept in vmap_nodes[i].pool[] for reuse (v6.9~).",
         "`free` is an unallocated range of the vmalloc space, not a history of vfree().",
         "--hexdump-used and --telescope-used skip VM_IOREMAP areas, since reading device registers may have side effects.",
-    ]
-    _note_ = "\n".join(_note_)
+    ])
 
     @Cache.cache_this_session(cache_None=False)
     def initialize(self):
@@ -162905,11 +162677,10 @@ class KtypesCommand(GenericCommand, BufferingOutput):
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
     _syntax_ = parser.format_help()
 
-    _note_ = [
+    _note_ = "\n".join([
         "This command requires CONFIG_DEBUG_INFO_BTF=y.",
         "CONFIG_KALLSYMS_ALL=y is not required.",
-    ]
-    _note_ = "\n".join(_note_)
+    ])
 
     def check_command(self):
         try:
@@ -164961,13 +164732,12 @@ class KsymaddrRemoteCommand(GenericCommand, BufferingOutput):
     parser.add_argument("-q", "--quiet", action="store_true", help="enable quiet mode.")
     _syntax_ = parser.format_help()
 
-    _example_ = [
+    _example_ = "\n".join([
         "{0:s} commit_creds prepare_kernel_cred  # OR search",
         "{0:s} --system-map /boot/System.map commit_creds",
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
-    _note_ = [
+    _note_ = "\n".join([
         "GEF caches offset information for parsing kallsyms to speed up this command.",
         "Each cache is used based on kernel version strings, so kernels of the same version",
         "share one cache even if the CONFIG is different. GEF checks the cached offsets",
@@ -164976,8 +164746,7 @@ class KsymaddrRemoteCommand(GenericCommand, BufferingOutput):
         "`--system-map` and `--vmlinux-file` check the KASLR offset against the exception entry and linux_banner.",
         "With only one anchor, it warns that the kernel build could not be verified.",
         "Absolute symbols and symbols linked outside the kernel image are not relocated.",
-    ]
-    _note_ = "\n".join(_note_)
+    ])
 
     def print_kallsyms(self, kallsyms, keywords, types, smart):
         if is_32bit():
@@ -165244,13 +165013,12 @@ class TcmallocHeapDumpCommand(GenericCommand, BufferingOutput):
     parser.add_argument("-q", "--quiet", action="store_true", help="quiet mode.")
     _syntax_ = parser.format_help()
 
-    _example_ = [
+    _example_ = "\n".join([
         "{0:s}            # print freelist of thread cache for all thread",
         "{0:s} --central  # print freelist of central cache",
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
-    _note_ = [
+    _note_ = "\n".join([
         "Debug types are optional; without them, known gperftools layouts are validated against target memory.",
         "Without symbols, SizeMap and cache addresses are detected from writable memory and TLS.",
         "Google's separate google/tcmalloc allocator is not supported.",
@@ -165283,8 +165051,7 @@ class TcmallocHeapDumpCommand(GenericCommand, BufferingOutput):
         "                                    +---------------------+  |    +---------------------+  |",
         "                                                             v                             v",
         "                                                         free obj -> free obj -> NULL     ...",
-    ]
-    _note_ = "\n".join(_note_)
+    ])
 
     @Cache.cache_this_session(cache_None=False, per_inferior=True, until_new_objfile=True)
     def initialize(self):
@@ -165890,7 +165657,7 @@ class GoHeapDumpCommand(GenericCommand, BufferingOutput):
     parser.add_argument("-v", "--verbose", action="store_true", help="display also empty slots.")
     _syntax_ = parser.format_help()
 
-    _note_ = [
+    _note_ = "\n".join([
         "Simplified Go heap structure:",
         "",
         "+-runtime.mheap_-+",
@@ -165936,8 +165703,7 @@ class GoHeapDumpCommand(GenericCommand, BufferingOutput):
         "* Without debug types, the layout is chosen by the Go version in `.go.buildinfo` (Go 1.18 or later).",
         "* If the runtime.mheap_ symbol is stripped, specify its address with `--mheap`.",
         "* `arenas`, `central`, and walking from `mspan.next` are currently unsupported.",
-    ]
-    _note_ = "\n".join(_note_)
+    ])
 
     class_to_size_dic = [
         0x0,    0x8,    0x10,   0x18,
@@ -166826,7 +166592,7 @@ class TlsfHeapDumpCommand(GenericCommand, BufferingOutput):
     parser.add_argument("-v", "--verbose", action="store_true", help="display also empty slots.")
     _syntax_ = parser.format_help()
 
-    _note_ = [
+    _note_ = "\n".join([
         "Simplified TLSF structure:",
         "",
         "+-TLSF_struct------+",
@@ -166853,8 +166619,7 @@ class TlsfHeapDumpCommand(GenericCommand, BufferingOutput):
         "* `fl_bitmap` and `sl_bitmap[]` show which free-list classes are non-empty.",
         "* `matrix[fl][sl]` points to a doubly linked free-list of `bhdr_t` chunks.",
         "* Allocated chunks are not linked from `matrix[][]`, so this command dumps free chunks only.",
-    ]
-    _note_ = "\n".join(_note_)
+    ])
 
     def initialize(self):
         self.REAL_FLI = 24
@@ -167048,7 +166813,7 @@ class HoardHeapDumpCommand(GenericCommand, BufferingOutput):
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
     _syntax_ = parser.format_help()
 
-    _note_ = [
+    _note_ = "\n".join([
         "Simplified Hoard structure:",
         "",
         "                       +-SmallHeap-+",
@@ -167086,8 +166851,7 @@ class HoardHeapDumpCommand(GenericCommand, BufferingOutput):
         "* `_freeList` is used first; if it is empty, TLS-held freelist heads are searched as candidates.",
         "* Before allocating from the freelist, Hoard consumes unused objects from `position`.",
         "* `reapableObjects` is displayed as the number of unused objects left.",
-    ]
-    _note_ = "\n".join(_note_)
+    ])
 
     def get_super_blocks(self):
         super_blocks = []
@@ -167252,7 +167016,7 @@ class MimallocHeapDumpCommand(GenericCommand, BufferingOutput):
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
     _syntax_ = parser.format_help()
 
-    _note_ = [
+    _note_ = "\n".join([
         "Simplified mimalloc structure:",
         "",
         "+-mi_heap_t(_mi_heap_main / heap_main)-+",
@@ -167300,8 +167064,7 @@ class MimallocHeapDumpCommand(GenericCommand, BufferingOutput):
         "* Use -m with stripped binaries when automatic TLS detection is unavailable.",
         "* All size-class queues, including huge and full pages, are visited once per page owner.",
         "* --meta reports whether the layout comes from debug information or memory heuristics.",
-    ]
-    _note_ = "\n".join(_note_)
+    ])
 
     def read_page_field(self, addr, size):
         if not is_valid_addr(addr):
@@ -168292,7 +168055,7 @@ class SnmallocHeapDumpCommand(GenericCommand, BufferingOutput):
     parser.add_argument("-v", "--verbose", action="store_true", help="display also empty freelists.")
     _syntax_ = parser.format_help()
 
-    _note_ = [
+    _note_ = "\n".join([
         "Simplified snmalloc structure:",
         "",
         "+-Alloc (ThreadAlloc::alloc)-+",
@@ -168319,8 +168082,7 @@ class SnmallocHeapDumpCommand(GenericCommand, BufferingOutput):
         "- laden: The set of all slabs and large allocations from this allocator that are full or almost full.",
         "- remote_alloc: Message queue for allocations being returned to this allocator.",
         "    - Currently status: WIP.",
-    ]
-    _note_ = "\n".join(_note_)
+    ])
 
     def get_current_thread_alloc(self):
         # fast path
@@ -169599,7 +169361,7 @@ class V8ListMapsCommand(GenericCommand, BufferingOutput):
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
     _syntax_ = parser.format_help()
 
-    _note_ = [
+    _note_ = "\n".join([
         "Simplified built-in maps structure:",
         "",
         "                             +-cage-------------+",
@@ -169627,8 +169389,7 @@ class V8ListMapsCommand(GenericCommand, BufferingOutput):
         "",
         "For Chromium: this command needs `--no-sandbox` to bypass `seccomp`.",
         "Also, since it uses V8 commands internally, `_v8_internal_Print_Object` must be resolvable.",
-    ]
-    _note_ = "\n".join(_note_)
+    ])
 
     @staticmethod
     def stdout_syscall(name, args):
@@ -169875,12 +169636,11 @@ class V8DumpSpaceCommand(GenericCommand, BufferingOutput):
                         help="display also object details for all objects (very slow!).")
     _syntax_ = parser.format_help()
 
-    _note_ = [
+    _note_ = "\n".join([
         "It only works with the debug build of d8 or Chromium.",
         "Since many parts are detected heuristically and testing is insufficient,",
         "it is highly likely that it will not work depending on the version of v8.",
-    ]
-    _note_ = "\n".join(_note_)
+    ])
 
     def get_target_regions(self):
         res = gdb.execute("cage --no-pager", to_string=True)
@@ -170551,13 +170311,12 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
     parser.add_argument("--debug", action="store_true", help="[FOR DEVELOPER] enable debug print.")
     _syntax_ = parser.format_help()
 
-    _example_ = [
+    _example_ = "\n".join([
         "{0:s} array_buffer  # walk from array_buffer_root_",
         "{0:s} ab            # same above",
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
-    _note_ = [
+    _note_ = "\n".join([
         "Version numbers do not identify the build layout; the fixed layout is checked against the heap.",
         "Requires 4 KiB system pages, 2 MiB super pages and 32-byte metadata entries.",
         "Settings must occupy 0x40, 0x80 or 0xc0 bytes; metadata placement is checked against the extents.",
@@ -170633,8 +170392,7 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
         "     +----------------------+      +----------------------+ +----------------------+",
         "",
         "                                   * super_page_for_meta - metadata_offset_ == super_page_for_chunk",
-    ]
-    _note_ = "\n".join(_note_)
+    ])
 
     def __init__(self):
         super().__init__(complete="use_user_complete")
@@ -171697,7 +171455,7 @@ class ScallocHeapDumpCommand(GenericCommand, BufferingOutput):
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
     _syntax_ = parser.format_help()
 
-    _note_ = [
+    _note_ = "\n".join([
         "Simplified scalloc structure:",
         "",
         "+-Arena(object_space)-+",
@@ -171741,8 +171499,7 @@ class ScallocHeapDumpCommand(GenericCommand, BufferingOutput):
         "* Pointers must fit in 48 bits (with bit 47 sign-extended on 64-bit targets).",
         "* Upstream scalloc targets x86-64; other architectures require a compatible allocator port.",
         "* Layouts use debug types when available, otherwise the upstream field order and target pointer size.",
-    ]
-    _note_ = "\n".join(_note_)
+    ])
 
     def initialize(self):
         ptr = current_arch.ptrsize
@@ -172021,7 +171778,7 @@ class SsmallocHeapDumpCommand(GenericCommand, BufferingOutput):
     parser.add_argument("-v", "--verbose", action="store_true", help="display also empty freelists.")
     _syntax_ = parser.format_help()
 
-    _note_ = [
+    _note_ = "\n".join([
         "Simplified SSMalloc structure:",
         "",
         "+-lheap_t(local heap)------------------+",
@@ -172055,8 +171812,7 @@ class SsmallocHeapDumpCommand(GenericCommand, BufferingOutput):
         "* `lheap_t.background[size_cls]` is a doubly linked list of non-full dchunks.",
         "* `dchunk_t.free_head` is locally freed objects.",
         "* Allocation from a `dchunk_t` pops `free_head` first; if it is empty, allocation advances `free_mem`.",
-    ]
-    _note_ = "\n".join(_note_)
+    ])
 
     # SSMalloc/include-x86_64/cpu.h
     PAGE_SIZE = 0x1000
@@ -172789,7 +172545,7 @@ class SfmallocHeapDumpCommand(GenericCommand, BufferingOutput):
     parser.add_argument("-v", "--verbose", action="store_true", help="display also empty lists.")
     _syntax_ = parser.format_help()
 
-    _note_ = [
+    _note_ = "\n".join([
         "Simplified SFMalloc structure:",
         "",
         "+-tlh_t(l_tlh)-------------+         +-block-+   +-block-+",
@@ -172831,8 +172587,7 @@ class SfmallocHeapDumpCommand(GenericCommand, BufferingOutput):
         "* `pb_cache` keeps up to two freed page blocks for each page count (larger than 0x8000 bytes).",
         "* Page blocks freed by other threads are linked to `remote_pb_list` of the owner's superpage.",
         "* Offsets follow the upstream x86_64 build with the default sf_malloc_ctrl.h.",
-    ]
-    _note_ = "\n".join(_note_)
+    ])
 
     # sf_malloc_def.h
     PAGE_SHIFT = 12
@@ -173210,7 +172965,7 @@ class RpmallocHeapDumpCommand(GenericCommand, BufferingOutput):
     parser.add_argument("-v", "--verbose", action="store_true", help="display also empty lists.")
     _syntax_ = parser.format_help()
 
-    _note_ = [
+    _note_ = "\n".join([
         "Simplified rpmalloc v1.4.x structure:",
         "",
         "+-heap_t(_memory_thread_heap)-+         +-block-+   +-block-+",
@@ -173275,8 +173030,7 @@ class RpmallocHeapDumpCommand(GenericCommand, BufferingOutput):
         "* v2: allocation pops `local_free[cl]`, then takes `local_free` of the first available page.",
         "* v2: blocks freed by other threads go to `thread_free` of the page, or of the heap if the page is full.",
         "* Supported versions are v1.4.1-v1.4.5 and v2.0.0-v2.0.1 with the default build configuration.",
-    ]
-    _note_ = "\n".join(_note_)
+    ])
 
     # rpmalloc.c (v1.4.x)
     V1_SIZE_CLASS_COUNT = 126
@@ -173845,7 +173599,7 @@ class TbbmallocHeapDumpCommand(GenericCommand, BufferingOutput):
     parser.add_argument("-v", "--verbose", action="store_true", help="display also empty lists.")
     _syntax_ = parser.format_help()
 
-    _note_ = [
+    _note_ = "\n".join([
         "Simplified tbbmalloc structure:",
         "",
         "+-TLSData------------+       +-Block (16KiB aligned)-+         +-object-+   +-object-+",
@@ -173885,8 +173639,7 @@ class TbbmallocHeapDumpCommand(GenericCommand, BufferingOutput):
         "* Empty bins of `loc` and the backend are not displayed even with `-v`.",
         "* Supported versions are TBB 4.4.6 (4.4.1 on 32-bit) - oneTBB 2023.1.0 and the master (2026/10).",
         "* The default build configuration is assumed.",
-    ]
-    _note_ = "\n".join(_note_)
+    ])
 
     # tbbmalloc_internal.h, frontend.cpp
     SLAB_SIZE = 0x4000
@@ -175725,7 +175478,7 @@ class MeshHeapDumpCommand(GenericCommand, BufferingOutput):
                         help="display also empty lists and free objects of empty miniheaps.")
     _syntax_ = parser.format_help()
 
-    _note_ = [
+    _note_ = "\n".join([
         "Simplified Mesh structure:",
         "",
         "+-ThreadLocalHeap--------------+",
@@ -175760,8 +175513,7 @@ class MeshHeapDumpCommand(GenericCommand, BufferingOutput):
         "* Supported versions are Mesh 07b83f6 (2020/03/11) - d2bed33 (2024/07/06) with 4KB pages,",
         "  and cb40600 (2025/12/01) - fa1542b (2026/10/21) with 4KB or 16KB pages. Mesh does not support 32-bit.",
         "* `_fullList` (-2024/07) is displayed only with `-v`.",
-    ]
-    _note_ = "\n".join(_note_)
+    ])
 
     # src/runtime.cc
     class_to_size = [
@@ -176245,15 +175997,14 @@ class JemallocHeapDumpCommand(GenericCommand, BufferingOutput):
     parser.add_argument("--meta", action="store_true", help="display offset information.")
     _syntax_ = parser.format_help()
 
-    _example_ = [
+    _example_ = "\n".join([
         "{0:s}                    # dump small and large allocations of all arenas",
         "{0:s} -t -i 0            # dump arena[0] and the tcaches bound to it",
         "{0:s} -t -b 1            # dump bin[1] (size=0x10) of all arenas and tcaches",
         "{0:s} -x 0x7ffff701d008  # show which region the address belongs to",
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
-    _note_ = [
+    _note_ = "\n".join([
         "Simplified jemalloc (v5.x) structure:",
         "",
         "+-je_arenas[]-+    +-arena_t-----------------+",
@@ -176323,8 +176074,7 @@ class JemallocHeapDumpCommand(GenericCommand, BufferingOutput):
         "  v5.3.1~: when large size classes are disabled, the size class index is an upper bound;",
         "  the displayed allocation size comes from the extent itself.",
         "* v3.x/v4.x huge allocations (outside arena chunks) and jemalloc v2.x or older are not supported.",
-    ]
-    _note_ = "\n".join(_note_)
+    ])
 
     def detect_version(self):
         if self.args.jemalloc_version:
@@ -176575,7 +176325,7 @@ class MuslHeapDumpCommand(GenericCommand, BufferingOutput):
     parser.add_argument("-v", "--verbose", action="store_true", help="also dump an empty active index.")
     _syntax_ = parser.format_help()
 
-    _note_ = [
+    _note_ = "\n".join([
         "Supports musl mallocng (1.2.1 and later), not the legacy malloc implementation.",
         "Without the __malloc_context symbol, specify --malloc-context; x86 also has heuristic detection.",
         "Only groups on active[48] are listed; individually mapped large allocations are not enumerated.",
@@ -176615,8 +176365,7 @@ class MuslHeapDumpCommand(GenericCommand, BufferingOutput):
         "                              |  chunk[2]         |      |  chunk[2]         |",
         "                              |  ...              |      |  ...              |",
         "                              +-------------------+      +-------------------+",
-    ]
-    _note_ = "\n".join(_note_)
+    ])
 
     def __init__(self):
         super().__init__(complete="use_user_complete")
@@ -177268,7 +177017,7 @@ class UclibcNgHeapDumpCommand(GenericCommand, BufferingOutput):
                         help="decode Safe-Linking fastbin links during traversal and display (default: plain links).")
     _syntax_ = parser.format_help()
 
-    _note_ = [
+    _note_ = "\n".join([
         "The main structural differences between uclibc-ng (malloc-standard) and glibc are:",
         "- No tcache. There are fastbins, an unsorted bin, small bins, and large bins.",
         "- No thread arena. Therefore, chunks do not have the NON_MAIN_ARENA flag.",
@@ -177279,8 +177028,7 @@ class UclibcNgHeapDumpCommand(GenericCommand, BufferingOutput):
         "Safe-Linking shifts by PAGE_SHIFT: 13 on alpha/cris/or1k/sparc64, the page size on aarch64/arc, 12 otherwise.",
         "Since the final version of uclibc (not uclibc-ng) uses the same structure,",
         "this command should also be usable with uclibc.",
-    ]
-    _note_ = "\n".join(_note_)
+    ])
 
     UNSORTED_BIN = 1
 
@@ -178529,10 +178277,9 @@ class UclibcNgSnapshotCommand(UclibcNgHeapDumpCommand):
                         help="decode Safe-Linking fastbin links during traversal and display (default: plain links).")
     _syntax_ = parser.format_help()
 
-    _note_ = [
+    _note_ = "\n".join([
         "The snapshot can be compared by `uclibc-ng-snapshot-compare` or `heap snapshot-compare`.",
-    ]
-    _note_ = "\n".join(_note_)
+    ])
 
     def dump_heap(self, malloc_state):
         heap_base = malloc_state.heap_base
@@ -178630,17 +178377,15 @@ class UclibcNgSnapshotCompareCommand(UclibcNgSnapshotCommand, GlibcHeapSnapshotC
     parser.add_argument("-q", "--quiet", action="store_true", help="quiet execution.")
     _syntax_ = parser.format_help()
 
-    _example_ = [
+    _example_ = "\n".join([
         "{0:s} /path/to/snapshot1                     # compare the current memory and file1",
         "{0:s} /path/to/snapshot1 /path/to/snapshot2  # compare file1 and file2",
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
-    _note_ = [
+    _note_ = "\n".join([
         "Please specify the file obtained by the `uclibc-ng-snapshot` command.",
         "Usually, it is saved in /tmp/gef/uclibc-ng-heap-ss-...",
-    ]
-    _note_ = "\n".join(_note_)
+    ])
 
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
@@ -178971,10 +178716,9 @@ class XphysAddrCommand(GenericCommand):
     parser.add_argument("location", metavar="ADDRESS", type=AddressUtil.parse_address, help="dump target address.")
     _syntax_ = parser.format_help()
 
-    _example_ = [
+    _example_ = "\n".join([
         "{0:s} /16xg 0x11223344",
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
     @staticmethod
     def print_fmt_i(target, data, count):
@@ -179132,12 +178876,11 @@ class XSecureMemAddrCommand(GenericCommand):
     parser.add_argument("-v", "--verbose", action="store_true", help="verbose output.")
     _syntax_ = parser.format_help()
 
-    _example_ = [
+    _example_ = "\n".join([
         "{0:s} /16xw --phys 0xe11e3d0   # absolute (physical/non-ASLR) address of secure memory",
         "{0:s} /16xw --off 0x11e3d0     # the offset from secure memory area",
         "{0:s} /16xw --virt 0x783ae3d0  # secure memory ASLR is supported",
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
     @staticmethod
     def get_sm_offset(sm, args):
@@ -179276,13 +179019,12 @@ class WSecureMemAddrCommand(GenericCommand):
     parser.add_argument("-v", "--verbose", action="store_true", help="verbose output.")
     _syntax_ = parser.format_help()
 
-    _example_ = [
+    _example_ = "\n".join([
         "{0:s} dword 0x41414141 --phys 0xe11e3d0     # absolute (physical/non-ASLR) address of secure memory",
         '{0:s} string "AA\\\\x41\\\\x41" --off 0x11e3d0  # the offset of secure memory',
         '{0:s} hex "4141 4141" --off 0x11e3d0        # hex string is supported (invalid character is ignored)',
         "{0:s} byte 0x41 --virt 0x783ae3d0           # secure memory ASLR is supported",
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
     def __init__(self):
         super().__init__(complete="use_user_complete")
@@ -179375,10 +179117,9 @@ class BreakSecureMemAddrCommand(GenericCommand):
     parser.add_argument("-v", "--verbose", action="store_true", help="verbose output.")
     _syntax_ = parser.format_help()
 
-    _example_ = [
+    _example_ = "\n".join([
         "{0:s} 0xe1008d8",
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
     def aarch64_get_maps_el3(self):
         maps = AddrMap.get_maps(command="pagewalk 3 --quiet --no-pager --no-merge --disable-color")
@@ -179502,13 +179243,12 @@ class OpteeBreakTaAddrCommand(GenericCommand):
     parser.add_argument("-v", "--verbose", action="store_true", help="show memory map if stopped at __thread_enter_user_mode.")
     _syntax_ = parser.format_help()
 
-    _example_ = [
+    _example_ = "\n".join([
         "{0:s} 0x2784",
         "{0:s} -f /path/to/deadbeef-dead-dead-dead-deaddeadbeef.ta",
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
-    _note_ = [
+    _note_ = "\n".join([
         "It is not straightforward to set a breakpoint on a Trusted Application (TA) while you are still",
         "in the normal world, because at that moment the TA has not yet been loaded into the secure world.",
         "",
@@ -179525,8 +179265,7 @@ class OpteeBreakTaAddrCommand(GenericCommand):
         "Use --ta-base when ldelf is absent or shared libraries add mappings. Offsets are relative to this mapping.",
         "After two unsuccessful selections, execution stops and the internal breakpoint is disabled.",
         "The internal breakpoint is deleted after arming the target once; --persistent keeps tracking TA entries.",
-    ]
-    _note_ = "\n".join(_note_)
+    ])
 
     def __init__(self):
         super().__init__(complete=gdb.COMPLETE_FILENAME)
@@ -179944,7 +179683,7 @@ class OpteeTaDumpMemoryCommand(OpteeTaDumpCommand):
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
     _syntax_ = parser.format_help()
 
-    _note_ = [
+    _note_ = "\n".join([
         "Walk the global TEE context list (`tee_ctxes`) and print `struct tee_ta_ctx` currently linked to it.",
         "- A context is added to this list the first time its TA is successfully loaded.",
         "  (that is: after `ldelf` has relocated the ELF and handed the entry point back to the OP-TEE core)",
@@ -179955,8 +179694,7 @@ class OpteeTaDumpMemoryCommand(OpteeTaDumpCommand):
         "  have been created because the core keeps them resident.",
         "- ref_count shows the number of sessions currently open for that TA (the live open-session reference counter),",
         "  not a cumulative load count.",
-    ]
-    _note_ = "\n".join(_note_)
+    ])
 
     def __init__(self):
         super().__init__(prefix=False)
@@ -180692,12 +180430,11 @@ class OpteeBgetDumpCommand(GenericCommand, BufferingOutput):
     parser.add_argument("-v", "--verbose", action="store_true", help="verbose output.")
     _syntax_ = parser.format_help()
 
-    _example_ = [
+    _example_ = "\n".join([
         "{0:s} 0x2a408",
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
-    _note_ = [
+    _note_ = "\n".join([
         "TA ABI is independent of the TEE core ABI. Use --ta-bits 32 for an AArch32 TA on an AArch64 core.",
         "Without --ta-bits, the ABI is taken from the current user execution state; core stops require it explicitly.",
         "Use --ta-base to select a mapping when ldelf is absent or more than two executable mappings are present.",
@@ -180726,8 +180463,7 @@ class OpteeBgetDumpCommand(GenericCommand, BufferingOutput):
         "| size_t pool_len              |",
         "| (struct malloc_stats mstats) |",
         "+------------------------------+",
-    ]
-    _note_ = "\n".join(_note_)
+    ])
 
     def read_word(self, addr):
         return GefUtil.get_unpack(self.ptrsize)(read_memory(addr, self.ptrsize))
@@ -181097,15 +180833,13 @@ class CpuidCommand(GenericCommand, BufferingOutput):
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
     _syntax_ = parser.format_help()
 
-    _example_ = [
+    _example_ = "\n".join([
         "{0:s}",
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
-    _note_ = [
+    _note_ = "\n".join([
         "Disable `-enable-kvm` option for qemu-system.",
-    ]
-    _note_ = "\n".join(_note_)
+    ])
 
     @staticmethod
     def execute_cpuid(num, subnum=0):
@@ -181961,18 +181695,16 @@ class MsrCommand(GenericCommand):
     parser.add_argument("-q", "--quiet", action="store_true", help="quiet mode.")
     _syntax_ = parser.format_help()
 
-    _example_ = [
+    _example_ = "\n".join([
         "{0:s}                   # show frequently used MSRs",
         "{0:s} 0xc0000080        # read msr",
         "{0:s} MSR_EFER          # another valid format",
         "{0:s} 0xc0000080 0xd01  # write msr",
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
-    _note_ = [
+    _note_ = "\n".join([
         "Disable `-enable-kvm` option for qemu-system.",
-    ]
-    _note_ = "\n".join(_note_)
+    ])
 
     msr_table = [
         # frequently used x86-64 MSRs
@@ -183146,18 +182878,16 @@ class SmmStatusCommand(GenericCommand, BufferingOutput):
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
     _syntax_ = parser.format_help()
 
-    _example_ = [
+    _example_ = "\n".join([
         "{0:s}",
         "{0:s} --quiet",
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
-    _note_ = [
+    _note_ = "\n".join([
         "The QEMU monitor SMM flag is preferred.",
         "On older QEMU builds, the physical instruction address is compared with the detected SMRAM range.",
         "The preview uses the physical instruction address in SMRAM, or the detected SMRAM base.",
-    ]
-    _note_ = "\n".join(_note_)
+    ])
 
     @staticmethod
     def format_status(status):
@@ -183253,18 +182983,16 @@ class SmmDumpCommand(GenericCommand):
     parser.add_argument("-c", "--commit", action="store_true", help="actually perform the dump.")
     _syntax_ = parser.format_help()
 
-    _example_ = [
+    _example_ = "\n".join([
         "{0:s}",
         "{0:s} --commit",
         "{0:s} --commit --force",
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
-    _note_ = [
+    _note_ = "\n".join([
         "An in-SMM dump uses the current CPU's SMM address space.",
         "A forced dump outside SMM is best-effort because chipset access controls may return masked bytes.",
-    ]
-    _note_ = "\n".join(_note_)
+    ])
 
     def dump_smram(self, smram, in_smm):
         base, size, label = smram
@@ -183743,10 +183471,9 @@ class Virt2PhysCommand(GenericCommand):
                         help="the address of data to translate.")
     _syntax_ = parser.format_help()
 
-    _example_ = [
+    _example_ = "\n".join([
         "{0:s} 0xffffffff855041e0",
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
@@ -183786,10 +183513,9 @@ class Phys2VirtCommand(GenericCommand):
                         help="verbose output (for arm64 secure memory).")
     _syntax_ = parser.format_help()
 
-    _example_ = [
+    _example_ = "\n".join([
         "{0:s} 0x55041e0",
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
@@ -189974,7 +189700,7 @@ class PageCommand(GenericCommand):
     subparsers.add_parser("from_phys")
     _syntax_ = parser.format_help()
 
-    _note_ = [
+    _note_ = "\n".join([
         "These conversions do not verify RAM presence or the memory hotplug state.",
         "",
         "Simplified page structure:",
@@ -190054,8 +189780,7 @@ class PageCommand(GenericCommand):
         "                                    +------------------------------+",
         "",
         "* CONFIG_SPARSEMEM_EXTREME is supported on arm64.",
-    ]
-    _note_ = "\n".join(_note_)
+    ])
 
     def __init__(self, *args, **kwargs):
         prefix = kwargs.get("prefix", True)
@@ -190354,10 +190079,9 @@ class PageToVirtCommand(PageCommand, BufferingOutput):
     parser.add_argument("-r", "--rescan", action="store_true", help="do not use cache.")
     _syntax_ = parser.format_help()
 
-    _note_ = [
+    _note_ = "\n".join([
         "One page may correspond to multiple virtual addresses.",
-    ]
-    _note_ = "\n".join(_note_)
+    ])
 
     def __init__(self):
         super().__init__(prefix=False, complete=gdb.COMPLETE_LOCATION)
@@ -190560,7 +190284,7 @@ class SlabVirtualCommand(GenericCommand):
     parser.add_argument("-q", "--quiet", action="store_true", help="quiet execution.")
     _syntax_ = parser.format_help()
 
-    _note_ = [
+    _note_ = "\n".join([
         "This command works only in CONFIG_SLAB_VIRTUAL=y (implemented at https://github.com/thejh/linux).",
         "Used in the Google Kernel CTF mitigation instance.",
         "",
@@ -190611,8 +190335,7 @@ class SlabVirtualCommand(GenericCommand):
         "                     +------------+",
         "                     | ...        |",
         "                     +------------+ SLAB_END_ADDR (=0xffffff0000000000)",
-    ]
-    _note_ = "\n".join(_note_)
+    ])
 
     @Cache.cache_this_session(cache_None=False)
     def initialize(self):
@@ -191695,11 +191418,10 @@ class HighMemDumpCommand(GenericCommand, BufferingOutput):
     parser.add_argument("-q", "--quiet", action="store_true", help="show result only.")
     _syntax_ = parser.format_help()
 
-    _note_ = [
+    _note_ = "\n".join([
         "This command dumps page_address_htable, which exists only if CONFIG_HIGHMEM=y.",
         "It has the mappings made by kmap(), but not the ones made by kmap_atomic(), kmap_local_page() and vmap().",
-    ]
-    _note_ = "\n".join(_note_)
+    ])
 
     PA_HASH_ORDER = 7
 
@@ -191814,21 +191536,19 @@ class QemuDeviceInfoCommand(GenericCommand, BufferingOutput):
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
     _syntax_ = parser.format_help()
 
-    _example_ = [
+    _example_ = "\n".join([
         "{0:s} -l                           # List devices and owner-linked entry counts",
         "{0:s} -d cydf-vga                  # Select exact device name",
         "{0:s} -d net0                      # Select exact device id",
         "{0:s} -d /machine/peripheral/net0  # Select exact QOM path",
         "{0:s} -d net0 -N                   # Skip nm symbols",
         "{0:s} -d net0 -A                   # Show all nm symbols",
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
-    _note_ = [
+    _note_ = "\n".join([
         "qemu-system must be running on the local host.",
         "Use `qemu-system-memory-region-dump` for more detailed physical memory-region information.",
-    ]
-    _note_ = "\n".join(_note_)
+    ])
 
     def parse_device_spec(self, argument):
         """Parse a QEMU -device argument into its driver, id, and properties.
@@ -192797,13 +192517,12 @@ class StringsContinueCommand(GenericCommand):
                         help="minimum C-string length to display. (default: %(default)s)")
     _syntax_ = parser.format_help()
 
-    _note_ = [
+    _note_ = "\n".join([
         "Context output is hidden while stepping.",
         "Only registers whose values change are inspected after the initial stop.",
         "Stops on a user breakpoint, a signal, inferior exit, or Ctrl+C.",
         "Duplicate strings are suppressed for each invocation.",
-    ]
-    _note_ = "\n".join(_note_)
+    ])
 
     def dump_new_strings(self, seen, previous_registers, min_length, max_length):
         string_color = Config.get("theme.dereference_string")
@@ -193017,7 +192736,7 @@ class ExecUntilCommand(GenericCommand):
     subparsers.add_parser("region-change")
     _syntax_ = parser.format_help()
 
-    _example_ = [
+    _example_ = "\n".join([
         "{0:s} call                                 # execute until call instruction",
         "{0:s} jmp                                  # execute until jmp instruction",
         "{0:s} syscall                              # execute until syscall instruction",
@@ -193031,8 +192750,7 @@ class ExecUntilCommand(GenericCommand):
         "{0:s} libc-code                            # execute until libc code",
         "{0:s} secure-world                         # execute until secure world (ARM/ARM64 only)",
         "{0:s} region-change                        # execute until different region (e.g., binary itself -> libc)",
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
     def __init__(self, *args, **kwargs):
         prefix = kwargs.get("prefix", True)
@@ -193447,12 +193165,11 @@ class ExecUntilMemaccessCommand(ExecUntilCommand):
     _syntax_ = parser.format_help()
     _example_ = None
 
-    _note_ = [
+    _note_ = "\n".join([
         "Classifies potential data accesses by instruction family for each architecture.",
         "Implicit stack accesses (e.g., push, pop, call, and ret on x86) are included.",
         "Address computations (e.g., lea on x86) and register-indirect branches are excluded.",
-    ]
-    _note_ = "\n".join(_note_)
+    ])
 
     def __init__(self):
         super().__init__(prefix=False)
@@ -193562,12 +193279,11 @@ class ExecUntilKeywordReCommand(ExecUntilCommand):
                         help="filter by specified regex keyword.")
     _syntax_ = parser.format_help()
 
-    _example_ = [
+    _example_ = "\n".join([
         '{0:s} "call +r[ab]x"                         # execute until specified keyword',
         '{0:s} "(push|pop) +(r[a-d]x|r[ds]i|r[sb]p)"  # another example',
         '{0:s} "mov +rax, QWORD PTR \\\\["              # another example (need double escape)',
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
     def __init__(self):
         super().__init__(prefix=False)
@@ -193608,12 +193324,11 @@ class ExecUntilCondCommand(ExecUntilCommand):
     parser.add_argument("condition", metavar="CONDITION", help="filter by condition.")
     _syntax_ = parser.format_help()
 
-    _example_ = [
+    _example_ = "\n".join([
         '{0:s} "$rax==0xdead && $rbx==0xcafe"  # execute until specified condition is filled',
         '{0:s} "*(int*)$rbx==0x12"             # memory access is supported',
         '{0:s} "$ALL_REG==0x34"                # compare with all regs. e.g., `($rax==0x34||$rbx==0x34||...)`',
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
     def __init__(self):
         super().__init__(prefix=False)
@@ -194068,11 +193783,10 @@ class UsermodehelperTracerCommand(GenericCommand):
     parser = argparse.ArgumentParser(prog=_cmdline_)
     _syntax_ = parser.format_help()
 
-    _note_ = [
+    _note_ = "\n".join([
         "Linux 6.14 removed automatic binfmt module loading for unrecognized executable formats.",
         "Executing a file containing four 0xff bytes no longer triggers a usermode helper via that path.",
-    ]
-    _note_ = "\n".join(_note_)
+    ])
 
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
@@ -194529,19 +194243,17 @@ class KmallocTracerCommand(GenericCommand):
     parser.add_argument("--meta", action="store_true", help="display offset information.")
     _syntax_ = parser.format_help()
 
-    _example_ = [
+    _example_ = "\n".join([
         "{0:s}       # simple output",
         "{0:s} -dtv  # useful output",
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
-    _note_ = [
+    _note_ = "\n".join([
         "Disable `-enable-kvm` option for qemu-system (#PF may occur).",
         "Append `tsc=unstable` option for kernel cmdline.",
         "Tracing `kmem_cache_alloc` type is not supported.",
         "This command requires CONFIG_RANDSTRUCT=n.",
-    ]
-    _note_ = "\n".join(_note_)
+    ])
 
     @staticmethod
     def create_option_info(args, target_task=None):
@@ -195101,19 +194813,17 @@ class KmallocAllocatedByCommand(GenericCommand):
     parser.add_argument("--meta", action="store_true", help="display offset information.")
     _syntax_ = parser.format_help()
 
-    _example_ = [
+    _example_ = "\n".join([
         "{0:s}       # simple output",
         "{0:s} -dtv  # useful output",
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
-    _note_ = [
+    _note_ = "\n".join([
         "Disable `-enable-kvm` option for qemu-system (#PF may occur).",
         "Disable `-smp N` option for qemu-system (write memory error may occur).",
         "Append `tsc=unstable` option for kernel cmdline.",
         "This command requires CONFIG_RANDSTRUCT=n.",
-    ]
-    _note_ = "\n".join(_note_)
+    ])
 
     def setup_syscall(self, syscall_name, args):
         entry = self.syscall_table[syscall_name]
@@ -196703,22 +196413,20 @@ class KuafWatchCommand(GenericCommand):
     parser.add_argument("-t", "--backtrace", action="store_true", help="display a backtrace for each event.")
     _syntax_ = parser.format_help()
 
-    _example_ = [
+    _example_ = "\n".join([
         "{0:s} 0xffff888012345600                     # watch one object's alloc/free/reuse",
         "{0:s} 0xffff888012345600 0xffff888012345700  # watch several objects at once",
         "{0:s} --cache kmalloc-256                    # watch every object of a cache",
         "{0:s} 0xffff888012345600 -s                  # break at the first reuse",
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
-    _note_ = [
+    _note_ = "\n".join([
         "Disable `-enable-kvm` option for qemu-system (#PF may occur).",
         "Append `tsc=unstable` option for kernel cmdline.",
         "This is a higher-level view built on the same allocator breakpoints as kmalloc-tracer.",
         "In --cache mode the slab cache of every alloc/free is resolved, which is slower than single-object mode.",
         "This command requires CONFIG_RANDSTRUCT=n.",
-    ]
-    _note_ = "\n".join(_note_)
+    ])
 
     def resolve_offsets(self):
         self.offset_pid = None
@@ -197159,16 +196867,15 @@ class KpageWatchCommand(GenericCommand):
     parser.add_argument("-t", "--backtrace", action="store_true", help="display a backtrace for each event.")
     _syntax_ = parser.format_help()
 
-    _example_ = [
+    _example_ = "\n".join([
         "{0:s} 0xffff888012345600                           # watch the page backing this virtual address",
         "{0:s} 0xffff888012345600 0xffff888012346000        # watch several pages at once",
         "{0:s} -p 0xffffea000048d140 -p 0xffffea000048d180  # watch by struct page address",
         "{0:s} --pfn 0x12345 --pfn 0x12346                  # watch by PFN",
         "{0:s} 0xffff888012345600 -s                        # stop at the first reuse",
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
-    _note_ = [
+    _note_ = "\n".join([
         "Disable `-enable-kvm` option for qemu-system (#PF may occur).",
         "Append `tsc=unstable` option for kernel cmdline.",
         "ADDRESS, --page and --pfn can be mixed; each resolves to one watched PFN.",
@@ -197176,8 +196883,7 @@ class KpageWatchCommand(GenericCommand):
         "Only events reached while continuing are recorded; the history before the command started is not.",
         "On SLAB the slab-assign hook may be missing (its helpers are inlined); page alloc/free and slab-release are still shown.",
         "This command requires CONFIG_RANDSTRUCT=n.",
-    ]
-    _note_ = "\n".join(_note_)
+    ])
 
     def resolve_offsets(self):
         self.name_offset = None
@@ -197676,15 +197382,16 @@ class KernelTraceCommand(GenericCommand):
     parser.add_argument("--asmlinkage", action="store_true", help="use the i386 stack ABI for selected functions.")
     _syntax_ = parser.format_help()
 
-    _example_ = "{0:s} commit_creds prepare_kernel_cred".format(_cmdline_)
+    _example_ = "\n".join([
+        "{0:s} commit_creds prepare_kernel_cred",
+    ]).format(_cmdline_)
 
-    _note_ = [
+    _note_ = "\n".join([
         "All definitions of each exact function name are included; duplicate addresses are skipped.",
         "Arguments are six guessed machine words; function prototypes and pt_regs syscall arguments are not decoded.",
         "Tracing continues until interrupted or stopped by another breakpoint; tracing breakpoints are then removed.",
         "Tail calls and non-local exits may have no observed return.",
-    ]
-    _note_ = "\n".join(_note_)
+    ])
 
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
@@ -198348,10 +198055,9 @@ class AddSymbolTemporaryCommand(GenericCommand):
     parser.add_argument("-q", "--quiet", action="store_true", help="enable quiet mode.")
     _syntax_ = parser.format_help()
 
-    _example_ = [
+    _example_ = "\n".join([
         "{0:s} your_func_name $rip $rip+0x20",
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
@@ -198511,7 +198217,7 @@ class KernelWalkCommand(GenericCommand, BufferingOutput):
     subparsers.add_parser("maple")
     _syntax_ = parser.format_help()
 
-    _note_ = [
+    _note_ = "\n".join([
         "Which sub-command holds the index-to-pointer mapping depends on the kernel version:",
         "",
         "  ~v4.19: radix_tree -> `kwalk radix`",
@@ -198557,8 +198263,7 @@ class KernelWalkCommand(GenericCommand, BufferingOutput):
         "| ma_root           |--+   |   ...           |",
         "+-------------------+      |   slot[]        |--> entry or sub-node",
         "                           +-----------------+",
-    ]
-    _note_ = "\n".join(_note_)
+    ])
 
     def __init__(self, *args, **kwargs):
         prefix = kwargs.get("prefix", True)
@@ -198628,22 +198333,20 @@ class KernelWalkListCommand(KernelWalkCommand):
     KernelWalkCommand.add_common_arguments(parser)
     _syntax_ = parser.format_help()
 
-    _example_ = [
+    _example_ = "\n".join([
         "{0:s} 0xffff9c60800597e0                      # walk list_head.next",
         "{0:s} -o 8 0xffff9c60800597e0                 # walk list_head.prev",
         "{0:s} --container-of 0x10 0xffff9c60800597e0  # also show each entry as container_of()",
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
-    _note_ = [
+    _note_ = "\n".join([
         "`-o` is the offset of the pointer to follow, so it is 0 for list_head.next,",
         "the pointer size for list_head.prev, and offsetof(the struct, next) for a",
         "singly linked list of the structs.",
         "ADDRESS is the starting node or head; the first displayed entry is the pointer",
         "read from ADDRESS+OFFSET, not ADDRESS itself. NULL and a returning sentinel head",
         "are therefore also shown as the final entry.",
-    ]
-    _note_ = "\n".join(_note_)
+    ])
 
     def __init__(self):
         super().__init__(prefix=False, complete=gdb.COMPLETE_LOCATION)
@@ -198715,17 +198418,15 @@ class KernelWalkRbtreeCommand(KernelWalkCommand):
     KernelWalkCommand.add_common_arguments(parser)
     _syntax_ = parser.format_help()
 
-    _example_ = [
+    _example_ = "\n".join([
         "{0:s} 0xffff9c6081b3d7a0        # dump the rb_nodes under the rb_root",
         "{0:s} -r 0xffff9c6081b3d7a8     # dump the rb_nodes under the rb_node",
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
-    _note_ = [
+    _note_ = "\n".join([
         "The entries are dumped in pre-order, not sorted by key.",
         "struct rb_root_cached starts with a struct rb_root, so pass its address as is.",
-    ]
-    _note_ = "\n".join(_note_)
+    ])
 
     def __init__(self):
         super().__init__(prefix=False, complete=gdb.COMPLETE_LOCATION)
@@ -198773,18 +198474,16 @@ class KernelWalkRadixTreeCommand(KernelWalkCommand):
     KernelWalkCommand.add_common_arguments(parser)
     _syntax_ = parser.format_help()
 
-    _example_ = [
+    _example_ = "\n".join([
         "{0:s} 0xffffffff82640e60        # dump the entries of irq_desc_tree",
         "{0:s} -o 8 0xffffffff82640e60   # skip searching offsetof(the struct, rnode)",
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
-    _note_ = [
+    _note_ = "\n".join([
         "The radix_tree_root is renamed to xarray at v4.20, so use `kwalk xarray` for v4.20 and later.",
         "A tree holding only one item keeps it in rnode without the tag, which is indistinguishable",
         "from any other pointer. Pass `--rnode-offset` explicitly for such a tree.",
-    ]
-    _note_ = "\n".join(_note_)
+    ])
 
     def __init__(self):
         super().__init__(prefix=False, complete=gdb.COMPLETE_LOCATION)
@@ -198850,19 +198549,17 @@ class KernelWalkXArrayCommand(KernelWalkCommand):
     KernelWalkCommand.add_common_arguments(parser)
     _syntax_ = parser.format_help()
 
-    _example_ = [
+    _example_ = "\n".join([
         "{0:s} 0xffffffff82640e60        # dump the entries of irq_desc_tree",
         "{0:s} -o 8 0xffffffff82640e60   # skip searching offsetof(the struct, xa_head)",
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
-    _note_ = [
+    _note_ = "\n".join([
         "The xarray is introduced at v4.20, so use `kwalk radix` for v4.19 and earlier.",
         "struct idr starts with a struct radix_tree_root (or xarray), so pass its address as is.",
         "An empty tree or one holding a single entry stored directly in xa_head cannot be",
         "auto-detected, because no internal node proves the offset; pass `--head-offset` for it.",
-    ]
-    _note_ = "\n".join(_note_)
+    ])
 
     def __init__(self):
         super().__init__(prefix=False, complete=gdb.COMPLETE_LOCATION)
@@ -198922,18 +198619,16 @@ class KernelWalkMapleTreeCommand(KernelWalkCommand):
     KernelWalkCommand.add_common_arguments(parser)
     _syntax_ = parser.format_help()
 
-    _example_ = [
+    _example_ = "\n".join([
         "{0:s} 0xffff972801b78a00          # dump the vm_area_structs of mm_struct.mm_mt",
         "{0:s} -o 0x48 0xffff972801b78a00  # skip searching offsetof(the struct, ma_root)",
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
-    _note_ = [
+    _note_ = "\n".join([
         "The maple_tree is introduced at v6.1 for mm_struct.mm_mt, and v6.5 for sparse_irqs.",
         "A tree holding a single entry stored directly in ma_root cannot be auto-detected;",
         "pass `--root-offset` for it. With the offset given, the single entry is shown correctly.",
-    ]
-    _note_ = "\n".join(_note_)
+    ])
 
     def __init__(self):
         super().__init__(prefix=False, complete=gdb.COMPLETE_LOCATION)
@@ -198998,17 +198693,16 @@ class KernelPerCpuCommand(GenericCommand, BufferingOutput):
     parser.add_argument("-q", "--quiet", action="store_true", help="show result only.")
     _syntax_ = parser.format_help()
 
-    _example_ = [
+    _example_ = "\n".join([
         "{0:s}                        # show the per-cpu area of each cpu",
         "{0:s} runqueues              # show per_cpu(runqueues, cpu) of each cpu",
         "{0:s} --online runqueues     # show per_cpu(runqueues, cpu) of each online cpu",
         "{0:s} -o 0x120 runqueues     # add an offset to the resolved symbol",
         "{0:s} 0xffff888100600120     # tell which cpu and which variable the address belongs to",
         "{0:s} -l                     # list all the static per-cpu symbols",
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
-    _note_ = [
+    _note_ = "\n".join([
         "per_cpu(var, cpu) is based on the static per-cpu symbol representation and the",
         "per-cpu offset selected for the detected kernel layout. Older x86-64 kernels use",
         "a zero-based representation; x86-64 v6.15 and later use relative offsets as well.",
@@ -199023,8 +198717,7 @@ class KernelPerCpuCommand(GenericCommand, BufferingOutput):
         "The cpu-id upper bound comes from `nr_cpu_ids` or the possible cpu mask; it is",
         "estimated from `__per_cpu_offset[]` if both are unknown. Each cpu is tagged with the masks,",
         "which are recovered from `init_cpu_*()`/`set_cpu_online()` without the symbols.",
-    ]
-    _note_ = "\n".join(_note_)
+    ])
 
     @staticmethod
     def format_cpus(cpus):
@@ -199287,17 +198980,16 @@ class KernelRefsCommand(GenericCommand, BufferingOutput):
     parser.add_argument("-q", "--quiet", action="store_true", help="show result only.")
     _syntax_ = parser.format_help()
 
-    _example_ = [
+    _example_ = "\n".join([
         "{0:s} 0xffff888012345600                        # scan the static data of the kernel image",
         "{0:s} -p 0xffff888012345600                     # scan the per-cpu areas too",
         "{0:s} -c filp 0xffff888012345600                # scan the slab pages of the filp cache",
         "{0:s} -o 0xffff888045670000 0xffff888012345600  # scan one slab object (e.g. a task_struct)",
         "{0:s} -r 0xffff888012340000+0x1000 0xffff888012345600",
         "{0:s} -t 0x100 0xffff888012345600               # also catch the interior pointers",
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
-    _note_ = [
+    _note_ = "\n".join([
         "- Full-memory scans are too slow over a gdb stub, so the default search is limited to kernel static data,",
         "  where global object references commonly live.",
         "- Hits are annotated with their likely context: the preceding kallsyms symbol, per-cpu variable and CPU,",
@@ -199308,8 +199000,7 @@ class KernelRefsCommand(GenericCommand, BufferingOutput):
         "- Overlapping virtual ranges are scanned once. Physical aliases are reported at each virtual address.",
         "- The slab cache of a hit is resolved on x86 and ARM only.",
         "- Use `kobj ADDRESS` to identify the referenced object.",
-    ]
-    _note_ = "\n".join(_note_)
+    ])
 
     def get_image_symbols(self):
         """Return the kallsyms entries as a sorted ([addr, ...], [name, ...])."""
@@ -199631,16 +199322,15 @@ class KernelLsmCommand(GenericCommand, BufferingOutput):
     parser.add_argument("-q", "--quiet", action="store_true", help="show result only.")
     _syntax_ = parser.format_help()
 
-    _example_ = [
+    _example_ = "\n".join([
         "{0:s}                   # list every hook point that has a callback",
         "{0:s} file_open         # list the callbacks of the hook points matching `file_open`",
         "{0:s} -a                # list every hook point including the empty ones",
         "{0:s} --task            # list the security blob and the LSM labels of each task",
         "{0:s} --task -p 1337    # decode the blobs of the task, its cred and its open files and inodes",
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
-    _note_ = [
+    _note_ = "\n".join([
         "The layout of the LSM framework changed twice, and all three are supported:",
         "",
         "  ~v4.1  : a single `struct security_operations` pointed to by `security_ops`",
@@ -199691,8 +199381,7 @@ class KernelLsmCommand(GenericCommand, BufferingOutput):
         "",
         "SELinux, Smack, AppArmor, TOMOYO and Landlock parts are decoded. This mode requires",
         "CONFIG_RANDSTRUCT=n unless vmlinux with debug information is loaded.",
-    ]
-    _note_ = "\n".join(_note_)
+    ])
 
     SCK_PREFIX = "__SCK__lsm_static_call_"
     SCT_PREFIX = "__SCT__lsm_static_call_"
@@ -201479,15 +201168,14 @@ class KernelIoUringCommand(GenericCommand, BufferingOutput):
     parser.add_argument("-q", "--quiet", action="store_true", help="show result only.")
     _syntax_ = parser.format_help()
 
-    _example_ = [
+    _example_ = "\n".join([
         "{0:s}",
         "{0:s} --pid 1337 --fd 4",
         "{0:s} --type ctx 0xffff888012340000",
         "{0:s} --type request 0xffff888056780000 -v",
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
-    _note_ = [
+    _note_ = "\n".join([
         "`iouring-dump` dumps userland io_uring mappings; this command follows kernel objects.",
         "io_uring first appeared in Linux v5.1. Older kernels are detected without scanning.",
         "DWARF is used when available. Without it, ring discovery uses open fd paths and validated ring metadata.",
@@ -201513,8 +201201,7 @@ class KernelIoUringCommand(GenericCommand, BufferingOutput):
         "  |                                   +-- file / buffer node",
         "  |                                   +-- callback / linked request",
         "  +-- submitter / sq thread ------> task_struct",
-    ]
-    _note_ = "\n".join(_note_)
+    ])
 
     MAX_FDS = 0x10000
     MAX_RESOURCES = 0x10000
@@ -202413,7 +202100,7 @@ class KernelNftablesCommand(GenericCommand, BufferingOutput):
     parser.add_argument("-q", "--quiet", action="store_true", help="show result only.")
     _syntax_ = parser.format_help()
 
-    _example_ = [
+    _example_ = "\n".join([
         "{0:s}                          # dump the whole nftables object graph",
         "{0:s} -R                       # dump the graph without rules and expressions",
         "{0:s} -E                       # dump the graph without set elements",
@@ -202422,10 +202109,9 @@ class KernelNftablesCommand(GenericCommand, BufferingOutput):
         "{0:s} -T filter -H 12 -v       # show rule handle 12 and its decoded expressions",
         "{0:s} --net 4026531840         # show only the network namespace net:[4026531840]",
         "{0:s} 0xffff888012345600       # find which nftables object owns this address",
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
-    _note_ = [
+    _note_ = "\n".join([
         "Walks table -> chain -> rule -> expr and table -> set -> element / object / flowtable.",
         "The mainline location of the table list changed over time:",
         "",
@@ -202466,8 +202152,7 @@ class KernelNftablesCommand(GenericCommand, BufferingOutput):
         "and the rule genmask/userdata from the rule header even on stripped kernels. The chain, base",
         "chain hook, set, object and flowtable attributes and the expression private data are printed",
         "only when type information (e.g., vmlinux and nf_tables.ko debug info) is loaded.",
-    ]
-    _note_ = "\n".join(_note_)
+    ])
 
     FAMILY_NAMES = {"inet": 1, "ip": 2, "ipv4": 2, "arp": 3, "netdev": 5, "bridge": 7, "ip6": 10, "ipv6": 10}
 
@@ -203076,11 +202761,10 @@ class PeekPageFrameCommand(GenericCommand, BufferingOutput):
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
     _syntax_ = parser.format_help()
 
-    _example_ = [
+    _example_ = "\n".join([
         "{0:s} 0x555555555060                       # read pagemap of single address",
         "{0:s} -f 0x7ffffffdd000 -t 0x7ffffffff000  # read pagemap of an address range",
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
     ENTRY_SIZE = 8
 
@@ -203313,10 +202997,9 @@ class PeekPageFlagsCommand(GenericCommand, BufferingOutput):
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
     _syntax_ = parser.format_help()
 
-    _example_ = [
+    _example_ = "\n".join([
         "{0:s} 0x6b2ae3",
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
     _note_ = "\n".join([
         "PFNs always refer to the local host, including during remote debugging.",
@@ -204113,12 +203796,11 @@ class XRefTelescopeCommand(SearchPatternCommand, BufferingOutput):
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
     _syntax_ = parser.format_help()
 
-    _example_ = [
+    _example_ = "\n".join([
         "{0:s} AAAA 2                    # search string with depth level 2",
         '{0:s} "\\\\x41\\\\x41\\\\x41\\\\x41" 2  # use double-escape string',
         "{0:s} 0x555555554000 2          # search value",
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
     def xref_telescope(self, pattern, depth, history):
         """Recursively search for a pattern within the whole userland memory."""
@@ -204217,10 +203899,9 @@ class BytearrayCommand(GenericCommand):
     parser.add_argument("-d", dest="dump", action="store_true", help="dump to /tmp/gef/bytearray.{txt,bin}.")
     _syntax_ = parser.format_help()
 
-    _example_ = [
+    _example_ = "\n".join([
         "{0:s} -b 414243 -b 51-53 -b 61..63",
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
     def expand_hex(self, x):
         """4142..45 -> 4142434445"""
@@ -204474,13 +204155,12 @@ class FrequencyAnalysisCommand(GenericCommand, BufferingOutput):
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
     _syntax_ = parser.format_help()
 
-    _example_ = [
+    _example_ = "\n".join([
         "{0:s} $rax 0x1000               # ragne: $rax ~ $rax + 0x1000",
         "{0:s} $rax                      # range: $rax ~ end of the region to which $rax belongs",
         "{0:s} $rax 0x1000 -a            # use ascii compatible result",
         "{0:s} $rax 0x1000 -e 00 -e 01   # exclude some characters",
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
     def hist256(self, data):
         h = [0] * 256
@@ -204612,15 +204292,14 @@ class VisualDumpCommand(GenericCommand):
                         help="auto inclement step width. (default: %(default)s)")
     _syntax_ = parser.format_help()
 
-    _example_ = [
+    _example_ = "\n".join([
         "{0:s} $rsp 0x1000                                 # width =~ sqrt(len(content))",
         "{0:s} -w 0x100 $rsp 0x1000                        # use fixed width",
         "{0:s} -c r $rsp 0x1000                            # change color: gray -> red",
         "{0:s} -c r -n $rsp 0x1000                         # change color: gray -> red and negate",
         "{0:s} -A $rsp 0x1000                              # bruteforce the width",
         "{0:s} -A -Ab 0x100 -Ae 0x200 -As 0x10 $rsp 0x1000 # bruteforce the width (w=0x100; w<0x200; w+=0x10)",
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
     def make_command_line(self, img_width, img_height, tmp_path):
         command_options = [
@@ -205503,12 +205182,11 @@ class GefMissingCommand(GenericCommand):
     parser = argparse.ArgumentParser(prog=_cmdline_)
     _syntax_ = parser.format_help()
 
-    _note_ = [
+    _note_ = "\n".join([
         "This command only detects commands that could not be loaded when GEF started.",
         "To speed up startup, some commands lazy load required modules and dependencies.",
         "These command cannot be detected.",
-    ]
-    _note_ = "\n".join(_note_)
+    ])
 
     @Decorator.parse_args
     def do_invoke(self, args):
@@ -206650,7 +206328,7 @@ class GefTmuxSetupCommand(GenericCommand):
     parser.add_argument("-r", "--reset", action="store_true", help="reset all panes.")
     _syntax_ = parser.format_help()
 
-    _note_ = [
+    _note_ = "\n".join([
         "- `screen` is no longer supported.",
         "",
         "- `tmux` settings are predefined and cannot be customized in this command.",
@@ -206660,8 +206338,7 @@ class GefTmuxSetupCommand(GenericCommand):
         "- There is experimental support for `zellij` using a similar script.",
         "- Try starting `zellij-wrapper.py` in your shell (before starting `zellij` and `gdb`).",
         "- It can be found in https://github.com/bata24/gef/blob/dev/dev/zellij/zellij-wrapper.py.",
-    ]
-    _note_ = "\n".join(_note_)
+    ])
 
     @staticmethod
     def get_redirect_configs():
@@ -206875,10 +206552,9 @@ class AliasesAddCommand(AliasesCommand):
     parser.add_argument("-r", "--repeat", action="store_true", help="enforce repeat feature (before ALIAS).")
     _syntax_ = parser.format_help()
 
-    _example_ = [
+    _example_ = "\n".join([
         "{0:s} scope telescope",
-    ]
-    _example_ = "\n".join(_example_).format(_cmdline_)
+    ]).format(_cmdline_)
 
     def __init__(self):
         super().__init__(prefix=False)
