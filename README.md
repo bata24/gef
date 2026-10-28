@@ -582,7 +582,7 @@ For the usage and options of each command, see [docs/COMMANDS.md](docs/COMMANDS.
         - Get and extract the upstream source from https://musl.libc.org/
         - Build with `./configure && make install`.
         - Then build with `/usr/local/musl/bin/musl-gcc test.c`.
-- `go-heap-dump`: dumps Go Language v1.24.4 mheap (x64 only).
+- `go-heap-dump`: dumps Go Language v1.18~ mheap.
     - ![](images/go-heap-dump.png)
 - `tlsf-heap-dump`: dumps TLSF (Two-Level Segregated Fit) v2.4.6 free-list (x64 only).
     - ![](images/tlsf-heap-dump.png)
