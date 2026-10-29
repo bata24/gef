@@ -176589,6 +176589,660 @@ class StreamflowHeapDumpCommand(GenericCommand, BufferingOutput):
 
 
 @register_command
+class SupermallocHeapDumpCommand(GenericCommand, BufferingOutput):
+    """SuperMalloc heap free-list viewer (x64 only)."""
+
+    _cmdline_ = "supermalloc-heap-dump"
+    _category_ = "05-d. Heap - Other"
+
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("-hh", "--help-simple", action="store_true", help="show help without ASCII diagram.")
+    parser.add_argument("--cache", type=AddressUtil.parse_address, help="use specific address for cache_for_thread.")
+    parser.add_argument("-a", "--all", action="store_true", help="dump cache_for_thread of all threads.")
+    parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
+    parser.add_argument("-v", "--verbose", action="store_true", help="display also empty lists.")
+    _syntax_ = parser.format_help()
+
+    _note_ = "\n".join([
+        "Simplified SuperMalloc structure:",
+        "",
+        "+-cache_for_thread (TLS)-+  +-cache_for_cpu[cpu]-+  +-global_cache.gb[bin]-+",
+        "| cb[bin].co[2]          |  | cb[bin].co[2]      |  | n_nonempty_caches    |",
+        "|   bytecount            |  |   bytecount        |  | co[8]                |",
+        "|   head, tail           |  |   head, tail       |  |   bytecount          |",
+        "+------------------------+  +--------------------+  |   head, tail         |",
+        "                                                    +----------------------+",
+        "   +-object-+   +-object-+",
+        "-->| next   |-->| next   |-->NULL",
+        "   +--------+   +--------+",
+        "",
+        "+-dsbi--------------------------+         +-per_folio (in chunk header)-+",
+        "| lists.b[offset(bin) + nfree]  |-------->| next, prev                  |<->per_folio<->...",
+        "| fullest_offset[bin]           |         | inuse_bitmap[32]            |",
+        "+-------------------------------+         +-----------------------------+",
+        "",
+        "+-free_large_objects[bin - 40]-+         +-chunk (2MiB aligned)----------+",
+        "| head                         |-------->| cell[] (next or footprint)    |",
+        "+------------------------------+         | objects[]                     |",
+        "                                         +-------------------------------+",
+        "",
+        "+-free_chunks[k]-+       +-chunk_infos[chunk number]-+",
+        "| chunk number   |------>| next chunk number         |-->...",
+        "+----------------+       +---------------------------+",
+        "",
+        "* Allocation pops cache_for_thread first, then cache_for_cpu of the current CPU, then global_cache.",
+        "* When the caches are empty, small objects come from the fullest folio, and large ones from free_large_objects.",
+        "* Freed objects go to cache_for_thread of the freeing thread, and overflow to cache_for_cpu and global_cache.",
+        "  Only objects overflowing all caches return to folios or free_large_objects.",
+        "* A chunk is 2MiB and holds objects of one bin. chunk_infos records the bin of each chunk.",
+        "* dsbi links folios by the number of free objects. The last list holds empty folios released by madvise().",
+        "* Objects larger than 0xff000 bytes use whole chunks. Free ones are linked to free_chunks[log2(chunks)].",
+        "* malloc() of large objects returns the object + a random multiple of 0x40 within a page.",
+        "* The official build uses LTO, so static variables are not resolved even with DWARF.",
+        "  They are found from the operands of `lea` and GOT loads in the module, and checked with chunk_infos.",
+        "* Without symbols, chunk_infos is found as a pointer to the 512MiB table in the writable data of modules,",
+        "  and cache_for_thread is found in the static TLS. Empty structures cannot be found without symbols.",
+        "* `--cache` can be used when the scan rejects a corrupted `cache_for_thread`.",
+        "* Supported version is the latest commit (2017/10/25) on x86_64 only, as upstream.",
+    ])
+
+    # malloc_internal.h
+    PAGE_SIZE = 0x1000
+    CHUNK_SIZE = 0x200000
+    N_CHUNK_INFOS = 1 << 27
+    SIZEOF_PER_FOLIO = 0x140
+    # generated_constants.h
+    BIN_NUMBER_LIMIT = 74
+    FIRST_LARGE_BIN = 40
+    FIRST_HUGE_BIN = 47
+    # cache.cc
+    CPU_LIMIT = 128
+    GLOBAL_CACHE_DEPTH = 8
+    SIZEOF_CACHE_FOR_BIN = 0x40
+    SIZEOF_CACHE_FOR_CPU = SIZEOF_CACHE_FOR_BIN * FIRST_HUGE_BIN
+    SIZEOF_GLOBAL_CACHE_FOR_BIN = 0x140
+    # huge_malloc.cc
+    LOG_MAX_CHUNKNUMBER = 27
+    # generated_constants.cc: object_size, folio_size, objects_per_folio, folios_per_chunk, overhead_pages_per_chunk
+    static_bin_info = [
+        (0x8, 0x1000, 512, 472, 40), (0xa, 0x5000, 2048, 100, 8), (0xc, 0x3000, 1024, 166, 14),
+        (0xe, 0x7000, 2048, 72, 6), (0x10, 0x1000, 256, 472, 40), (0x14, 0x5000, 1024, 100, 8),
+        (0x18, 0x3000, 512, 166, 14), (0x1c, 0x7000, 1024, 72, 6), (0x20, 0x1000, 128, 472, 40),
+        (0x28, 0x5000, 512, 100, 8), (0x30, 0x3000, 256, 166, 14), (0x38, 0x7000, 512, 72, 6),
+        (0x40, 0x1000, 64, 472, 40), (0x50, 0x5000, 256, 100, 8), (0x60, 0x3000, 128, 166, 14),
+        (0x70, 0x7000, 256, 72, 6), (0x80, 0x1000, 32, 472, 40), (0xa0, 0x5000, 128, 100, 8),
+        (0xc0, 0x3000, 64, 166, 14), (0xe0, 0x7000, 128, 72, 6), (0x100, 0x1000, 16, 472, 40),
+        (0x140, 0x5000, 64, 100, 8), (0x1c0, 0x7000, 64, 72, 6), (0x200, 0x1000, 8, 472, 40),
+        (0x240, 0x9000, 64, 56, 5), (0x2c0, 0xb000, 64, 46, 4), (0x3c0, 0xf000, 64, 33, 3),
+        (0x400, 0x1000, 4, 472, 40), (0x4c0, 0x13000, 64, 26, 3), (0x5c0, 0x17000, 64, 22, 2),
+        (0x7c0, 0x1f000, 64, 16, 2), (0x800, 0x1000, 2, 472, 40), (0xac0, 0x2b000, 64, 11, 1),
+        (0xf40, 0x3d000, 64, 8, 1), (0x1000, 0x1000, 1, 472, 40), (0x14c0, 0x53000, 64, 6, 1),
+        (0x1c40, 0x71000, 64, 4, 1), (0x2000, 0x2000, 1, 246, 20), (0x2740, 0x9d000, 64, 3, 1),
+        (0x37c0, 0xdf000, 64, 2, 1), (0x4000, 0x4000, 1, 127, 1), (0x8000, 0x8000, 1, 63, 1),
+        (0x10000, 0x10000, 1, 31, 1), (0x20000, 0x20000, 1, 15, 1), (0x3f000, 0x3f000, 1, 8, 1),
+        (0x7f000, 0x7f000, 1, 4, 1), (0xff000, 0xff000, 1, 2, 1),
+    ]
+
+    def initialize(self):
+        self.chunk_info_cache = {}
+        self.static_candidates = None
+        # dynamic_small_bin_offset(): lists.b[] has objects_per_folio + 2 slots for each small bin
+        self.dsbi_offset = [0]
+        for _, _, objects_per_folio, _, _ in self.static_bin_info[:self.FIRST_LARGE_BIN]:
+            self.dsbi_offset.append(self.dsbi_offset[-1] + objects_per_folio + 2)
+        return
+
+    def get_bin_number(self, addr):
+        # chunk_infos[chunk number] is (bin + 1) | flags | size << 8 for allocated chunks
+        chunk_number = addr // self.CHUNK_SIZE % self.N_CHUNK_INFOS
+        if chunk_number not in self.chunk_info_cache:
+            addr = self.chunk_infos + chunk_number * 4
+            self.chunk_info_cache[chunk_number] = read_int32_from_memory(addr, safe=True)
+        bin_and_size = self.chunk_info_cache[chunk_number]
+        if not bin_and_size or not bin_and_size & 0x7f:
+            return None
+        return (bin_and_size & 0x7f) - 1
+
+    def is_object(self, addr, bin_number):
+        # objects are placed folio by folio after the chunk header
+        if bin_number >= self.FIRST_HUGE_BIN or self.get_bin_number(addr) != bin_number:
+            return False
+        object_size, folio_size, objects_per_folio, folios_per_chunk, overhead_pages = self.static_bin_info[bin_number]
+        offset = addr % self.CHUNK_SIZE - overhead_pages * self.PAGE_SIZE
+        if offset < 0 or offset // folio_size >= folios_per_chunk:
+            return False
+        offset %= folio_size
+        return offset % object_size == 0 and offset // object_size < objects_per_folio
+
+    def is_header_entry(self, bin_number, size, addr):
+        # per_folio (small) and large_object_list_cell (large) are arrays at the head of the chunk
+        if self.get_bin_number(addr) != bin_number:
+            return False
+        offset = addr % self.CHUNK_SIZE
+        return offset % size == 0 and offset // size < self.static_bin_info[bin_number][3]
+
+    def read_per_folio(self, addr):
+        """
+        struct per_folio {
+            per_folio* next __attribute__((aligned(64)));
+            per_folio* prev;
+            uint64_t inuse_bitmap[32]; // the bit is set if the object is in use
+        }; // total: 0x140 bytes
+        """
+        values = struct.unpack("<34Q", read_memory(addr, 34 * 8))
+        bitmap = sum(word << (64 * i) for i, word in enumerate(values[2:]))
+        return values[0], values[1], bitmap
+
+    def read_caches(self, addr, count):
+        """
+        struct CacheForCpu {
+            struct CacheForBin {
+                struct cached_objects {
+                    uint64_t bytecount __attribute__((aligned(32)));
+                    linked_list* head;
+                    linked_list* tail;
+                } co[2];
+            } cb[first_huge_bin_number] __attribute__((aligned(64)));
+        } cache_for_cpu[cpulimit]; // 0xbc0 bytes each (cache_for_thread is a single CacheForCpu)
+        """
+        words = slice_unpack(read_memory(addr, self.SIZEOF_CACHE_FOR_CPU * count), 8)
+        caches = []
+        for cpu in range(count):
+            cache = []
+            for bin_number in range(self.FIRST_HUGE_BIN):
+                i = (cpu * self.FIRST_HUGE_BIN + bin_number) * 8
+                cache.append((words[i:i + 3], words[i + 4:i + 7]))
+            caches.append(cache)
+        return caches
+
+    def read_global_cache(self, addr):
+        """
+        struct GlobalCache {
+            struct GlobalCacheForBin {
+                uint8_t n_nonempty_caches __attribute__((aligned(64)));
+                cached_objects co[global_cache_depth];
+            } gb[first_huge_bin_number];
+        } global_cache; // 0x140 bytes each
+        """
+        data = read_memory(addr, self.SIZEOF_GLOBAL_CACHE_FOR_BIN * self.FIRST_HUGE_BIN)
+        global_cache = []
+        for bin_number in range(self.FIRST_HUGE_BIN):
+            offset = self.SIZEOF_GLOBAL_CACHE_FOR_BIN * bin_number
+            co = [struct.unpack_from("<3Q", data, offset + 0x20 + 0x20 * i) for i in range(self.GLOBAL_CACHE_DEPTH)]
+            global_cache.append((data[offset], co))
+        return global_cache
+
+    def read_dsbi(self, addr):
+        """
+        static struct {
+            struct dynamic_small_bin_info {
+                per_folio* b[11920]; // b0[514], b1[2050], ... for each small bin
+            } lists __attribute__((aligned(4096)));
+            uint16_t fullest_offset[first_large_bin_number];
+        } dsbi;
+        """
+        n = self.dsbi_offset[-1]
+        data = read_memory(addr, n * 8 + self.FIRST_LARGE_BIN * 2)
+        lists = struct.unpack_from("<{:d}Q".format(n), data)
+        fullest_offset = struct.unpack_from("<{:d}H".format(self.FIRST_LARGE_BIN), data, n * 8)
+        return lists, fullest_offset
+
+    def read_free_large_objects(self, addr):
+        # large_object_list_cell* free_large_objects[first_huge_bin_number - first_large_bin_number];
+        n = self.FIRST_HUGE_BIN - self.FIRST_LARGE_BIN
+        return struct.unpack("<{:d}Q".format(n), read_memory(addr, n * 8))
+
+    def read_free_chunks(self, addr):
+        # chunknumber_t free_chunks[log_max_chunknumber];
+        n = self.LOG_MAX_CHUNKNUMBER
+        return struct.unpack("<{:d}I".format(n), read_memory(addr, n * 4))
+
+    def is_cached_objects(self, bin_number, bytecount, head, tail):
+        # an empty list has no bytes, and a list of the bin holds its objects
+        if head == 0:
+            return bytecount == 0
+        if bytecount % self.static_bin_info[bin_number][0]:
+            return False
+        return self.is_object(head, bin_number) and self.is_object(tail, bin_number)
+
+    def is_caches(self, addr, count):
+        try:
+            caches = self.read_caches(addr, count)
+        except gdb.MemoryError:
+            return False
+        found = False
+        for cache in caches:
+            for bin_number, co in enumerate(cache):
+                for bytecount, head, tail in co:
+                    if not self.is_cached_objects(bin_number, bytecount, head, tail):
+                        return False
+                    found |= head != 0
+        return found
+
+    def is_global_cache(self, addr):
+        try:
+            global_cache = self.read_global_cache(addr)
+        except gdb.MemoryError:
+            return False
+        found = False
+        for bin_number, (n, co) in enumerate(global_cache):
+            if n > self.GLOBAL_CACHE_DEPTH:
+                return False
+            # lists after n_nonempty_caches are stale
+            for bytecount, head, tail in co[:n]:
+                if head == 0 or not self.is_cached_objects(bin_number, bytecount, head, tail):
+                    return False
+            found |= n != 0
+        return found
+
+    def is_dsbi(self, addr):
+        if addr % self.PAGE_SIZE:
+            return False
+        try:
+            lists, fullest_offset = self.read_dsbi(addr)
+        except gdb.MemoryError:
+            return False
+        found = False
+        for bin_number in range(self.FIRST_LARGE_BIN):
+            objects_per_folio = self.static_bin_info[bin_number][2]
+            if fullest_offset[bin_number] > objects_per_folio:
+                return False
+            offset = self.dsbi_offset[bin_number]
+            # lists.b[offset(bin) + nfree] holds folios with nfree free objects, and the last one holds empty folios
+            for nfree, head in enumerate(lists[offset:offset + objects_per_folio + 2]):
+                if head == 0:
+                    continue
+                if not self.is_header_entry(bin_number, self.SIZEOF_PER_FOLIO, head):
+                    return False
+                _, prev, bitmap = self.read_per_folio(head)
+                if prev or bin(bitmap).count("1") != objects_per_folio - min(nfree, objects_per_folio):
+                    return False
+                found = True
+        return found
+
+    def is_free_large_objects(self, addr):
+        try:
+            heads = self.read_free_large_objects(addr)
+        except gdb.MemoryError:
+            return False
+        found = False
+        for i, head in enumerate(heads):
+            if head and not self.is_header_entry(self.FIRST_LARGE_BIN + i, 8, head):
+                return False
+            found |= head != 0
+        return found
+
+    def is_free_chunk(self, k, chunk_number):
+        # free_chunks[k] holds blocks of 2^k chunks aligned to their size, which are left mapped
+        if chunk_number % (1 << k):
+            return False
+        section = ProcessMap.process_lookup_address(chunk_number * self.CHUNK_SIZE)
+        return section is not None and not section.path and section.is_writable()
+
+    def is_free_chunks(self, addr):
+        try:
+            heads = self.read_free_chunks(addr)
+        except gdb.MemoryError:
+            return False
+        for k, head in enumerate(heads):
+            if head and not self.is_free_chunk(k, head):
+                return False
+        return any(heads)
+
+    def get_data_regions(self):
+        # .data and .bss of each module are a writable file mapping and the following anonymous mappings
+        regions = []
+        for m in ProcessMap.get_process_maps():
+            if not m.is_writable():
+                continue
+            if m.path.startswith("/"):
+                regions.append([m.path, m.page_start, m.page_end])
+            elif m.path == "" and regions and regions[-1][2] == m.page_start and m.size < 0x1000000:
+                regions[-1][2] = m.page_end
+        return regions
+
+    def is_chunk_infos(self, table):
+        # chunk_infos points to the table of 512MiB, mapped as a 2MiB aligned block
+        section = ProcessMap.process_lookup_address(table)
+        if section is None or section.path or section.page_end - table < self.N_CHUNK_INFOS * 4:
+            return False
+        # chunks are mapped with the same flags as the table and often merged with it, so check what it records
+        for m in ProcessMap.get_process_maps():
+            if m.path or not m.is_writable():
+                continue
+            for chunk in range(m.page_start + (-m.page_start) % self.CHUNK_SIZE, m.page_end, self.CHUNK_SIZE):
+                if table <= chunk < table + self.N_CHUNK_INFOS * 4:
+                    continue
+                bin_and_size = read_int32_from_memory(table + chunk // self.CHUNK_SIZE % self.N_CHUNK_INFOS * 4, safe=True)
+                # (bin + 1) | 0x80 (size in pages) | size << 8
+                if bin_and_size and 1 <= bin_and_size & 0x7f <= self.BIN_NUMBER_LIMIT and bin_and_size & 0x80:
+                    return True
+        return False
+
+    def get_chunk_infos(self):
+        try:
+            addr = AddressUtil.parse_address("&chunk_infos")
+            return addr, read_int_from_memory(addr)
+        except gdb.error:
+            pass
+        for _, start, end in self.get_data_regions():
+            try:
+                words = slice_unpack(read_memory(start, end - start), 8)
+            except gdb.MemoryError:
+                continue
+            for i, value in enumerate(words):
+                if value and value % self.CHUNK_SIZE == 0 and self.is_chunk_infos(value):
+                    return start + i * 8, value
+        return None
+
+    def get_static_candidates(self):
+        # operands of `lea reg64, [rip + disp32]` for static variables, and of `mov reg64, [rip + disp32]`
+        # loading the GOT entries of exported ones, in the module holding chunk_infos
+        regions = [x for x in self.get_data_regions() if x[1] <= self.chunk_infos_addr < x[2]]
+        path, start, end = regions[0] if regions else (None, 0, 0)
+        candidates = set()
+        for m in ProcessMap.get_process_maps():
+            if m.path != path or not m.is_executable():
+                continue
+            code = read_memory(m.page_start, m.size)
+            for match in re.finditer(rb"[\x48\x4c][\x8b\x8d][\x05\x0d\x15\x1d\x25\x2d\x35\x3d]", code):
+                target = m.page_start + match.end() + 4 + struct.unpack_from("<i", code, match.end())[0]
+                if code[match.start() + 1] == 0x8b:
+                    section = ProcessMap.process_lookup_address(target)
+                    if section is None or section.path != path:
+                        continue
+                    target = read_int_from_memory(target)
+                if start <= target < end:
+                    candidates.add(target)
+        return sorted(candidates)
+
+    def find_static(self, name, is_valid):
+        try:
+            return AddressUtil.parse_address("&" + name)
+        except gdb.error:
+            pass
+        # the official build uses LTO and static variables are not resolved even with DWARF
+        if self.static_candidates is None:
+            self.static_candidates = self.get_static_candidates()
+        for addr in self.static_candidates:
+            if is_valid(addr):
+                return addr
+        return None
+
+    def get_thread_cache_heuristic(self):
+        tls = current_arch.get_tls()
+        if not tls:
+            return None
+        # cache_for_thread is placed in the static TLS below the thread pointer
+        section = ProcessMap.process_lookup_address(tls - 1)
+        if section is None:
+            return None
+        start = max(section.page_start, tls - 0x10000)
+        words = slice_unpack(read_memory(start, tls - start), 8)
+        for addr in sorted(range(start, tls, 8), key=lambda x: tls - x):
+            value = words[(addr - start) // 8]
+            # the slot is the head or the tail of cb[bin].co[0] or cb[bin].co[1]
+            if value == 0 or addr % self.SIZEOF_CACHE_FOR_BIN not in (0x8, 0x10, 0x28, 0x30):
+                continue
+            bin_number = self.get_bin_number(value)
+            if bin_number is None or not self.is_object(value, bin_number):
+                continue
+            cache = addr - addr % self.SIZEOF_CACHE_FOR_BIN - self.SIZEOF_CACHE_FOR_BIN * bin_number
+            if self.is_caches(cache, 1):
+                return cache
+        return None
+
+    def get_thread_cache(self):
+        try:
+            return AddressUtil.parse_address("&cache_for_thread")
+        except gdb.error:
+            pass
+        return self.get_thread_cache_heuristic()
+
+    def get_thread_cache_list(self):
+        if self.args.cache is not None:
+            return [(gdb.selected_thread().num, self.args.cache)]
+
+        if self.args.all:
+            threads = None
+        else:
+            threads = [gdb.selected_thread()]
+        cache_list = []
+        with ContextManager.threads(threads) as threads:
+            for thread in threads:
+                cache = self.get_thread_cache()
+                if cache is not None:
+                    cache_list.append((thread.num, cache))
+        return cache_list
+
+    def get_list(self, head, is_valid):
+        # the lists are linked by the first word (objects, per_folio and large_object_list_cell)
+        nodes = []
+        cur = head
+        while cur:
+            if cur in nodes:
+                return nodes, "{:#x} (loop detected)".format(cur)
+            next_cur = read_int_from_memory(cur, safe=True)
+            if next_cur is None or not is_valid(cur):
+                return nodes, "{:#x} (corrupted)".format(cur)
+            nodes.append(cur)
+            cur = next_cur
+        return nodes, None
+
+    def get_chunk_list(self, k, head):
+        # free chunks are linked by chunk_infos[chunk number].next
+        nodes = []
+        cur = head
+        while cur:
+            if cur in nodes:
+                return nodes, "{:#x} (loop detected)".format(cur * self.CHUNK_SIZE)
+            next_cur = read_int32_from_memory(self.chunk_infos + cur * 4, safe=True)
+            if next_cur is None or not self.is_free_chunk(k, cur):
+                return nodes, "{:#x} (corrupted)".format(cur * self.CHUNK_SIZE)
+            nodes.append(cur)
+            cur = next_cur
+        return nodes, None
+
+    def dump_error(self, error):
+        corrupted_msg_color = Config.get("theme.heap_corrupted_msg")
+        if error:
+            self.out.append(" -> {:s}".format(Color.colorify(error, corrupted_msg_color)))
+        return
+
+    def dump_objects(self, title, head, bin_number, num):
+        freed_address_color = Config.get("theme.heap_chunk_address_freed")
+
+        self.out.append(title)
+        nodes, error = self.get_list(head, functools.partial(self.is_object, bin_number=bin_number))
+        for addr in nodes:
+            self.out.append(" -> {:s}".format(Color.colorify_hex(addr, freed_address_color)))
+        if error:
+            self.dump_error(error)
+        elif num == len(nodes):
+            self.out.append(" -> 0x0 (num: {:#x})".format(len(nodes)))
+        else:
+            self.out.append(" -> 0x0 (num: {:#x}, expected: {:#x})".format(len(nodes), num))
+        return
+
+    def dump_cache(self, title, addr, cache):
+        for bin_number, co in enumerate(cache):
+            if not self.args.verbose and not any(head for _, head, _ in co):
+                continue
+            size = self.static_bin_info[bin_number][0]
+            self.out.append(titlify("{:s}.cb[{:#x}] (size: {:#x}) @ {:#x}".format(
+                title, bin_number, size, addr + self.SIZEOF_CACHE_FOR_BIN * bin_number,
+            )))
+            for i, (bytecount, head, _) in enumerate(co):
+                if head or self.args.verbose:
+                    msg = "co[{:#x}] (bytecount: {:#x}):".format(i, bytecount)
+                    self.dump_objects(msg, head, bin_number, bytecount // size)
+        return
+
+    def dump_thread_cache(self, thread_num, addr):
+        title = "cache_for_thread @ {:#x} (Thread Id:{:d})".format(addr, thread_num)
+        self.out.append(titlify(title, color="bold", msg_color="bold"))
+        self.dump_cache("cache_for_thread", addr, self.read_caches(addr, 1)[0])
+        return
+
+    def dump_cache_for_cpu(self, addr):
+        self.out.append(titlify("cache_for_cpu @ {:#x}".format(addr), color="bold", msg_color="bold"))
+        for cpu, cache in enumerate(self.read_caches(addr, self.CPU_LIMIT)):
+            # -v displays empty lists of used CPUs only
+            if any(head for co in cache for _, head, _ in co):
+                self.dump_cache("cache_for_cpu[{:#x}]".format(cpu), addr + self.SIZEOF_CACHE_FOR_CPU * cpu, cache)
+        return
+
+    def dump_global_cache(self, addr):
+        self.out.append(titlify("global_cache @ {:#x}".format(addr), color="bold", msg_color="bold"))
+        for bin_number, (n, co) in enumerate(self.read_global_cache(addr)):
+            if not n and not self.args.verbose:
+                continue
+            size = self.static_bin_info[bin_number][0]
+            self.out.append(titlify("global_cache.gb[{:#x}] (size: {:#x}, n_nonempty_caches: {:#x}) @ {:#x}".format(
+                bin_number, size, n, addr + self.SIZEOF_GLOBAL_CACHE_FOR_BIN * bin_number,
+            )))
+            for i, (bytecount, head, _) in enumerate(co):
+                if i < n or self.args.verbose:
+                    title = "co[{:#x}] (bytecount: {:#x}):".format(i, bytecount)
+                    self.dump_objects(title, head, bin_number, bytecount // size)
+        return
+
+    def dump_dsbi(self, addr):
+        freed_address_color = Config.get("theme.heap_chunk_address_freed")
+
+        self.out.append(titlify("dsbi @ {:#x}".format(addr), color="bold", msg_color="bold"))
+        lists, fullest_offset = self.read_dsbi(addr)
+        for bin_number in range(self.FIRST_LARGE_BIN):
+            object_size, folio_size, objects_per_folio, _, overhead_pages = self.static_bin_info[bin_number]
+            offset = self.dsbi_offset[bin_number]
+            heads = lists[offset:offset + objects_per_folio + 2]
+            if not self.args.verbose and not any(heads):
+                continue
+            self.out.append(titlify("dsbi.lists.b{:d} (size: {:#x}, fullest_offset: {:#x}) @ {:#x}".format(
+                bin_number, object_size, fullest_offset[bin_number], addr + offset * 8,
+            )))
+            is_valid = functools.partial(self.is_header_entry, bin_number, self.SIZEOF_PER_FOLIO)
+            for nfree, head in enumerate(heads):
+                if not head:
+                    continue
+                nodes, error = self.get_list(head, is_valid)
+                if nfree == 0:
+                    title = "full folios"
+                elif nfree > objects_per_folio:
+                    title = "uncommitted folios"
+                else:
+                    title = "folios with {:#x} free objects".format(nfree)
+                # full and uncommitted folios have nothing to show but their number
+                if not self.args.verbose and nfree in (0, objects_per_folio + 1):
+                    self.out.append("{:s} (num: {:#x})".format(title, len(nodes)))
+                    self.dump_error(error)
+                    continue
+                self.out.append(title + ":")
+                for per_folio in nodes:
+                    # per_folio[n] in the chunk header describes the n-th folio after the header pages
+                    chunk = per_folio - per_folio % self.CHUNK_SIZE
+                    index = (per_folio - chunk) // self.SIZEOF_PER_FOLIO
+                    start = chunk + overhead_pages * self.PAGE_SIZE + folio_size * index
+                    _, _, bitmap = self.read_per_folio(per_folio)
+                    msg = "per_folio @{:#x} (objects: {:#x}-{:#x}, in use: {:#x}/{:#x}".format(
+                        per_folio, start, start + object_size * objects_per_folio, bin(bitmap).count("1"), objects_per_folio,
+                    )
+                    # the lowest clear bit is the next object to allocate
+                    free_index = (~bitmap & (bitmap + 1)).bit_length() - 1
+                    if free_index < objects_per_folio:
+                        msg += ", next: {:s}".format(Color.colorify_hex(start + object_size * free_index, freed_address_color))
+                    self.out.append(" -> {:s})".format(msg))
+                self.dump_error(error)
+        return
+
+    def dump_free_large_objects(self, addr):
+        freed_address_color = Config.get("theme.heap_chunk_address_freed")
+
+        self.out.append(titlify("free_large_objects @ {:#x}".format(addr), color="bold", msg_color="bold"))
+        for i, head in enumerate(self.read_free_large_objects(addr)):
+            if not head and not self.args.verbose:
+                continue
+            bin_number = self.FIRST_LARGE_BIN + i
+            size = self.static_bin_info[bin_number][0]
+            self.out.append(titlify("free_large_objects[{:#x}] (size: {:#x}) @ {:#x}".format(i, size, addr + 8 * i)))
+            nodes, error = self.get_list(head, functools.partial(self.is_header_entry, bin_number, 8))
+            for cell in nodes:
+                # the n-th cell of the chunk header describes the n-th object after the header page
+                chunk = cell - cell % self.CHUNK_SIZE
+                obj = chunk + self.PAGE_SIZE + (cell - chunk) // 8 * size
+                self.out.append(" -> {:s} (cell: {:#x})".format(Color.colorify_hex(obj, freed_address_color), cell))
+            self.dump_error(error)
+            if not error:
+                self.out.append(" -> 0x0 (num: {:#x})".format(len(nodes)))
+        return
+
+    def dump_free_chunks(self, addr):
+        freed_address_color = Config.get("theme.heap_chunk_address_freed")
+
+        self.out.append(titlify("free_chunks @ {:#x}".format(addr), color="bold", msg_color="bold"))
+        for k, head in enumerate(self.read_free_chunks(addr)):
+            if not head and not self.args.verbose:
+                continue
+            self.out.append(titlify("free_chunks[{:#x}] (size: {:#x}) @ {:#x}".format(k, self.CHUNK_SIZE << k, addr + 4 * k)))
+            nodes, error = self.get_chunk_list(k, head)
+            for chunk_number in nodes:
+                chunk = Color.colorify_hex(chunk_number * self.CHUNK_SIZE, freed_address_color)
+                self.out.append(" -> {:s} (chunk number: {:#x})".format(chunk, chunk_number))
+            self.dump_error(error)
+            if not error:
+                self.out.append(" -> 0x0 (num: {:#x})".format(len(nodes)))
+        return
+
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @Decorator.only_if_specific_arch(arch=("x86_64",))
+    def do_invoke(self, args):
+        self.initialize()
+        try:
+            chunk_infos = self.get_chunk_infos()
+        except gdb.error:
+            err("Cannot read chunk_infos")
+            return
+        if chunk_infos is None:
+            err("Could not find chunk_infos")
+            return
+        self.chunk_infos_addr, self.chunk_infos = chunk_infos
+
+        self.out = []
+        self.out.append("chunk_infos @ {:#x}: {:#x}".format(self.chunk_infos_addr, self.chunk_infos))
+        try:
+            cache_list = self.get_thread_cache_list()
+        except gdb.error:
+            cache_list = []
+        if not cache_list:
+            self.err_add_out("Could not find cache_for_thread")
+        for thread_num, cache in cache_list:
+            try:
+                self.dump_thread_cache(thread_num, cache)
+            except gdb.error:
+                self.err_add_out("Cannot read cache_for_thread at {:#x}".format(cache))
+
+        for name, is_valid, dump in [
+            ("cache_for_cpu", functools.partial(self.is_caches, count=self.CPU_LIMIT), self.dump_cache_for_cpu),
+            ("global_cache", self.is_global_cache, self.dump_global_cache),
+            ("dsbi", self.is_dsbi, self.dump_dsbi),
+            ("free_large_objects", self.is_free_large_objects, self.dump_free_large_objects),
+            ("free_chunks", self.is_free_chunks, self.dump_free_chunks),
+        ]:
+            try:
+                addr = self.find_static(name, is_valid)
+                if addr is None:
+                    self.err_add_out("Could not find {:s}".format(name))
+                else:
+                    dump(addr)
+            except gdb.error as exception:
+                self.err_add_out("Cannot read {:s}: {!s}".format(name, exception))
+        self.print_output()
+        return
+
+
+@register_command
 class JemallocHeapDumpCommand(GenericCommand, BufferingOutput):
     """jemalloc (v3.0~) arena/bin/slab(run)/large/tcache viewer."""
 

@@ -570,7 +570,7 @@ For the usage and options of each command, see [docs/COMMANDS.md](docs/COMMANDS.
 ### Other
 
 <details>
-<summary><code>tcmalloc-heap-dump</code>, <code>musl-heap-dump</code>, <code>go-heap-dump</code>, <code>tlsf-heap-dump</code>, <code>hoard-heap-dump</code>, <code>mimalloc-heap-dump</code>, <code>scalloc-heap-dump</code>, <code>snmalloc-heap-dump</code>, <code>ssmalloc-heap-dump</code>, <code>jemalloc-heap-dump</code>, <code>sfmalloc-heap-dump</code>, <code>rpmalloc-heap-dump</code>, <code>tbbmalloc-heap-dump</code>, <code>zig-heap-dump</code>, <code>mesh-heap-dump</code>, <code>streamflow-heap-dump</code></summary>
+<summary><code>tcmalloc-heap-dump</code>, <code>musl-heap-dump</code>, <code>go-heap-dump</code>, <code>tlsf-heap-dump</code>, <code>hoard-heap-dump</code>, <code>mimalloc-heap-dump</code>, <code>scalloc-heap-dump</code>, <code>snmalloc-heap-dump</code>, <code>ssmalloc-heap-dump</code>, <code>jemalloc-heap-dump</code>, <code>sfmalloc-heap-dump</code>, <code>rpmalloc-heap-dump</code>, <code>tbbmalloc-heap-dump</code>, <code>zig-heap-dump</code>, <code>mesh-heap-dump</code>, <code>streamflow-heap-dump</code>, <code>supermalloc-heap-dump</code></summary>
 
 - `tcmalloc-heap-dump`: dumps TCMalloc (`gperftools-2.16-1` or named `libgoogle-perftools{4,-dev}`) free-list.
     - ![](images/tcmalloc-heap-dump.png)
@@ -669,6 +669,12 @@ For the usage and options of each command, see [docs/COMMANDS.md](docs/COMMANDS.
             - Common commands such as `/bin/ls` do not work. When `realloc()` of StreamFlow shrinks an object,
               it copies the old size into the new object, so they abort with `buffer overflow detected`
               (or corrupt the heap if `_FORTIFY_SOURCE` is disabled).
+- `supermalloc-heap-dump`: dumps SuperMalloc free-list (x64 only).
+    - ![](images/supermalloc-heap-dump.png)
+    - How to test (x64):
+        - Get and extract the upstream source from https://github.com/kuszmaul/SuperMalloc
+        - Build with `cd SuperMalloc/release && make`.
+        - Run your test program with `LD_PRELOAD=/PATH/TO/release/lib/libsupermalloc.so ./a.out`.
 
 </details>
 

@@ -8463,6 +8463,70 @@ Simplified StreamFlow structure:
 * Supported architectures are x86, x86_64 and PPC64, as upstream.
 ```
 
+## `supermalloc-heap-dump`
+
+SuperMalloc heap free-list viewer (x64 only).
+
+
+### Syntax
+
+```text
+usage: supermalloc-heap-dump [-h] [-hh] [--cache CACHE] [-a] [-n] [-v]
+
+options:
+  -h, --help          show this help message and exit
+  -hh, --help-simple  show help without ASCII diagram.
+  --cache CACHE       use specific address for cache_for_thread.
+  -a, --all           dump cache_for_thread of all threads.
+  -n, --no-pager      do not use the pager.
+  -v, --verbose       display also empty lists.
+```
+
+### Notes
+
+```text
+Simplified SuperMalloc structure:
+
++-cache_for_thread (TLS)-+  +-cache_for_cpu[cpu]-+  +-global_cache.gb[bin]-+
+| cb[bin].co[2]          |  | cb[bin].co[2]      |  | n_nonempty_caches    |
+|   bytecount            |  |   bytecount        |  | co[8]                |
+|   head, tail           |  |   head, tail       |  |   bytecount          |
++------------------------+  +--------------------+  |   head, tail         |
+                                                    +----------------------+
+   +-object-+   +-object-+
+-->| next   |-->| next   |-->NULL
+   +--------+   +--------+
+
++-dsbi--------------------------+         +-per_folio (in chunk header)-+
+| lists.b[offset(bin) + nfree]  |-------->| next, prev                  |<->per_folio<->...
+| fullest_offset[bin]           |         | inuse_bitmap[32]            |
++-------------------------------+         +-----------------------------+
+
++-free_large_objects[bin - 40]-+         +-chunk (2MiB aligned)----------+
+| head                         |-------->| cell[] (next or footprint)    |
++------------------------------+         | objects[]                     |
+                                         +-------------------------------+
+
++-free_chunks[k]-+       +-chunk_infos[chunk number]-+
+| chunk number   |------>| next chunk number         |-->...
++----------------+       +---------------------------+
+
+* Allocation pops cache_for_thread first, then cache_for_cpu of the current CPU, then global_cache.
+* When the caches are empty, small objects come from the fullest folio, and large ones from free_large_objects.
+* Freed objects go to cache_for_thread of the freeing thread, and overflow to cache_for_cpu and global_cache.
+  Only objects overflowing all caches return to folios or free_large_objects.
+* A chunk is 2MiB and holds objects of one bin. chunk_infos records the bin of each chunk.
+* dsbi links folios by the number of free objects. The last list holds empty folios released by madvise().
+* Objects larger than 0xff000 bytes use whole chunks. Free ones are linked to free_chunks[log2(chunks)].
+* malloc() of large objects returns the object + a random multiple of 0x40 within a page.
+* The official build uses LTO, so static variables are not resolved even with DWARF.
+  They are found from the operands of `lea` and GOT loads in the module, and checked with chunk_infos.
+* Without symbols, chunk_infos is found as a pointer to the 512MiB table in the writable data of modules,
+  and cache_for_thread is found in the static TLS. Empty structures cannot be found without symbols.
+* `--cache` can be used when the scan rejects a corrupted `cache_for_thread`.
+* Supported version is the latest commit (2017/10/25) on x86_64 only, as upstream.
+```
+
 ## `tbbmalloc-heap-dump`
 
 oneTBB scalable allocator (tbbmalloc) free-list viewer.
