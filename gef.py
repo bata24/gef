@@ -175973,6 +175973,622 @@ class MeshHeapDumpCommand(GenericCommand, BufferingOutput):
 
 
 @register_command
+class StreamflowHeapDumpCommand(GenericCommand, BufferingOutput):
+    """StreamFlow heap free-list viewer (x64/x86/PPC64 only)."""
+
+    _cmdline_ = "streamflow-heap-dump"
+    _category_ = "05-d. Heap - Other"
+
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("-hh", "--help-simple", action="store_true", help="show help without ASCII diagram.")
+    parser.add_argument("--heap", type=AddressUtil.parse_address, help="use specific address for local_heap.")
+    parser.add_argument("-a", "--all", action="store_true", help="dump local_heap of all threads.")
+    parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
+    parser.add_argument("-v", "--verbose", action="store_true", help="display also empty lists.")
+    _syntax_ = parser.format_help()
+
+    _note_ = "\n".join([
+        "Simplified StreamFlow structure:",
+        "",
+        "+-local_heap[cl] (TLS)-----------+",
+        "| active_pageblocks (head, tail) |-------->pageblock <-> pageblock <-> ...",
+        "+--------------------------------+",
+        "+-local_inactive_pageblocks[i]---+",
+        "| queue, count (TLS)             |-------->pageblock --> pageblock --> ... (completely free)",
+        "+--------------------------------+",
+        "+-global_partial_pageblocks[cl]--+",
+        "| queue.both.top, count          |-------->pageblock --> pageblock --> ... (left by exited threads)",
+        "+--------------------------------+",
+        "+-superpage_list-----------------+",
+        "| head, tail                     |-------->superpage <-> superpage <-> ...",
+        "+--------------------------------+",
+        "",
+        "+-pageblock (0x1000 aligned)-+         +-object-+   +-object-+",
+        "| sph                        |    +--->| next   |-->| next   |-->0",
+        "| next, prev                 |    |    +--------+   +--------+",
+        "| freed                      |----+ (1-based object index)",
+        "| unallocated                |-------->[unused objects]",
+        "| owning_heap                |",
+        "| object_size                |         +-object-+   +-object-+",
+        "| num_free_objects           |    +--->| next   |-->| next   |-->0",
+        "| mem_pool_size              |    |    +--------+   +--------+",
+        "| owning_thread              |    |",
+        "| garbage_head (next, count) |----+ (freed by other threads)",
+        "| mem_pool                   |",
+        "+----------------------------+",
+        "| objects                    |",
+        "+----------------------------+",
+        "",
+        "+-superpage (0x400 aligned)-+         +-chunk-+   +-chunk-+",
+        "| page_pool                 |    +--->| next  |-->| next  |-->NULL",
+        "| next, prev                |    |    | prev  |<--| prev  |",
+        "| buddy[order].free_list    |----+    +-------+   +-------+",
+        "| largest_free_order        |",
+        "+---------------------------+",
+        "",
+        "* `local_heap` and `local_inactive_pageblocks` are resolved from symbols; without them, the static TLS is scanned.",
+        "* Without symbols, `superpage_list` is resolved from a superpage, and the writable data of its module is scanned",
+        "  for `global_partial_pageblocks`, which is found only when it holds a pageblock.",
+        "* `--heap` can be used when the scan rejects a corrupted `local_heap`.",
+        "* Allocation pops `freed` of the first pageblock, then advances `unallocated`.",
+        "* `garbage_head` holds objects freed by other threads, and is moved to `freed` when no free object is left.",
+        "* Pageblocks of exited threads go to `global_partial_pageblocks` if partially used; full ones are not listed.",
+        "* Objects larger than 0x40c0 bytes are carved from superpages by the buddy system,",
+        "  or mmapped if larger than a superpage.",
+        "* The HEADERS build prepends a header of sizeof(void*) to each object, and malloc() returns the address after it.",
+        "* `queue.both.top` keeps only 46 bits, so StreamFlow itself truncates pageblocks above 0x400000000000",
+        "  (usual on x86_64).",
+        "* Supported architectures are x86, x86_64 and PPC64, as upstream.",
+    ])
+
+    # streamflow.h
+    PAGE_SIZE = 0x1000
+    CACHE_LINE_SIZE = 0x80
+    SUPERPAGE_ALIGNMENT = 0x400
+    OBJECT_SIZE_CLASSES = 256
+    PAGEBLOCK_SIZE_CLASSES = 5
+    MIN_PAGEBLOCK_SIZE = 0x4000
+    MAX_PAGEBLOCK_SIZE = 0x40000
+    MAX_PRIVATE_INACTIVE = 4
+    # streamflow.c: reverse[]
+    class_to_size = [
+        0x4, 0x8, 0xc, 0x10, 0x14, 0x18, 0x1c, 0x20, 0x24, 0x28,
+        0x2c, 0x30, 0x34, 0x38, 0x3c, 0x40, 0x48, 0x50, 0x58, 0x60,
+        0x68, 0x70, 0x78, 0x80, 0x90, 0xa0, 0xb0, 0xc0, 0xe0, 0x100,
+        0x140, 0x1c0, 0x2c0, 0x3c0, 0x4c0, 0x5c0, 0x6c0, 0x7c0, 0x8c0, 0x9c0,
+        0xac0, 0xbc0, 0xcc0, 0xdc0, 0xec0, 0xfc0, 0x10c0, 0x11c0, 0x12c0, 0x13c0,
+        0x14c0, 0x15c0, 0x16c0, 0x17c0, 0x18c0, 0x19c0, 0x1ac0, 0x1bc0, 0x1cc0, 0x1dc0,
+        0x1ec0, 0x1fc0, 0x20c0, 0x21c0, 0x22c0, 0x23c0, 0x24c0, 0x25c0, 0x26c0, 0x27c0,
+        0x28c0, 0x29c0, 0x2ac0, 0x2bc0, 0x2cc0, 0x2dc0, 0x2ec0, 0x2fc0, 0x30c0, 0x31c0,
+        0x32c0, 0x33c0, 0x34c0, 0x35c0, 0x36c0, 0x37c0, 0x38c0, 0x39c0, 0x3ac0, 0x3bc0,
+        0x3cc0, 0x3dc0, 0x3ec0, 0x3fc0, 0x40c0,
+    ]
+
+    def initialize(self):
+        # streamflow.h: SUPERPAGE_SIZE, BUDDY_ORDER_MAX, BUDDY_BITMAP_SIZE
+        if is_x86_32():
+            self.SUPERPAGE_SIZE, self.BUDDY_ORDER_MAX, self.BUDDY_BITMAP_SIZE = 0x400000, 11, 148
+        elif is_x86_64():
+            self.SUPERPAGE_SIZE, self.BUDDY_ORDER_MAX, self.BUDDY_BITMAP_SIZE = 0x800000, 12, 560
+        else:
+            self.SUPERPAGE_SIZE, self.BUDDY_ORDER_MAX, self.BUDDY_BITMAP_SIZE = 0x1000000, 13, 560
+        ptrsize = current_arch.ptrsize
+        self.sizeof_heap = ptrsize * 2
+        self.sizeof_counting_queue = ptrsize * 2
+        # unsigned long long is aligned to 4 bytes only on x86-32
+        if is_x86_32():
+            self.sizeof_counting_lf_lifo_queue = 0x8c
+        else:
+            self.sizeof_counting_lf_lifo_queue = 0x90
+        self.offset_superpage_buddy = ptrsize * 6
+        self.offset_superpage_bitmaps = self.offset_superpage_buddy + ptrsize * 3 * self.BUDDY_ORDER_MAX
+        return
+
+    def read_pageblock(self, addr):
+        """
+        struct pageblock {
+            struct superpage* sph;
+            struct pageblock* next;
+            struct pageblock* prev;
+            unsigned short freed; // 1-based object index
+            unsigned short unallocated; // 1-based object index
+            struct heap* owning_heap;
+            int object_size;
+            int num_free_objects;
+            int mem_pool_size;
+            union {
+                struct {
+                    volatile unsigned int owning_thread;
+                    volatile struct queue_node {
+                        unsigned short next; // 1-based object index
+                        unsigned short count;
+                    } garbage_head;
+                };
+                volatile unsigned long long together;
+            };
+            char* mem_pool;
+        }; // total: 0x48 bytes (64-bit), 0x2c bytes (x86)
+        """
+        if current_arch.ptrsize == 8:
+            fmt = Endian.endian_str() + "3Q2H4xQ3i4xI2HQ"
+        else:
+            fmt = Endian.endian_str() + "3I2HI3iI2HI"
+        values = struct.unpack(fmt, read_memory(addr, struct.calcsize(fmt)))
+        names = [
+            "sph", "next", "prev", "freed", "unallocated", "owning_heap", "object_size", "num_free_objects",
+            "mem_pool_size", "owning_thread", "garbage_next", "garbage_count", "mem_pool",
+        ]
+        dic = {"addr": addr, **dict(zip(names, values))}
+        pageblock = GefUtil.dict_to_namedtuple("Pageblock", dic)
+        return pageblock
+
+    def read_superpage(self, addr):
+        """
+        struct superpage {
+            void* page_pool;
+            struct superpage* next;
+            struct superpage* prev;
+            lock_t* lock;
+            struct double_list* list;
+            struct quickieblock* quickie;
+            struct buddy_order {
+                struct double_list {
+                    struct double_list_elem* head; // {void* __padding; double_list_elem* next; double_list_elem* prev;}
+                    struct double_list_elem* tail;
+                } free_list;
+                char* bitmap;
+            } buddy[BUDDY_ORDER_MAX];
+            char bitmaps[BUDDY_BITMAP_SIZE];
+            unsigned short largest_free_order;
+        } __attribute__((aligned(1 << SUPERPAGE_BITS))); // total: 0x400 bytes
+        """
+        offset_largest_free_order = self.offset_superpage_bitmaps + self.BUDDY_BITMAP_SIZE
+        data = read_memory(addr, offset_largest_free_order + 2)
+        words = slice_unpack(data[:self.offset_superpage_bitmaps], current_arch.ptrsize)
+        dic = {}
+        dic["addr"] = addr
+        dic["page_pool"], dic["next"], dic["prev"], dic["lock"], dic["list"], dic["quickie"] = words[:6]
+        dic["buddy"] = [words[6 + i * 3:9 + i * 3] for i in range(self.BUDDY_ORDER_MAX)]
+        dic["largest_free_order"] = u16(data[offset_largest_free_order:])
+        superpage = GefUtil.dict_to_namedtuple("Superpage", dic)
+        return superpage
+
+    def read_local_heap(self, addr):
+        # heap_t local_heap[OBJECT_SIZE_CLASSES]: {struct double_list {head; tail;} active_pageblocks;}
+        words = slice_unpack(read_memory(addr, self.sizeof_heap * self.OBJECT_SIZE_CLASSES), current_arch.ptrsize)
+        return [words[i * 2:i * 2 + 2] for i in range(self.OBJECT_SIZE_CLASSES)]
+
+    def read_local_inactive(self, addr):
+        # counting_queue_t local_inactive_pageblocks[PAGEBLOCK_SIZE_CLASSES]: {struct queue_elem_t* queue; unsigned int count;}
+        if current_arch.ptrsize == 8:
+            fmt = Endian.endian_str() + "QI4x" * self.PAGEBLOCK_SIZE_CLASSES
+        else:
+            fmt = Endian.endian_str() + "II" * self.PAGEBLOCK_SIZE_CLASSES
+        values = struct.unpack(fmt, read_memory(addr, struct.calcsize(fmt)))
+        return [values[i * 2:i * 2 + 2] for i in range(self.PAGEBLOCK_SIZE_CLASSES)]
+
+    def read_global_partial(self, addr):
+        """
+        struct counting_lf_lifo_queue {
+            lf_lifo_queue_t {
+                unsigned long long _pad0[8];
+                top_aba_t {
+                    volatile unsigned long long top:46, ocount:18;
+                } both;
+                unsigned long long _pad1[8];
+            } queue;
+            unsigned int count;
+        } global_partial_pageblocks[OBJECT_SIZE_CLASSES]; // 0x90 bytes each (0x8c bytes on x86)
+        """
+        size = self.sizeof_counting_lf_lifo_queue
+        data = read_memory(addr, size * self.OBJECT_SIZE_CLASSES)
+        fmt = Endian.endian_str() + "64xQ64xI"
+        queues = []
+        for cl in range(self.OBJECT_SIZE_CLASSES):
+            both, count = struct.unpack_from(fmt, data, size * cl)
+            padding = data[size * cl:size * cl + 0x40] + data[size * cl + 0x48:size * cl + 0x88]
+            queues.append((self.decode_top(both), count, any(padding)))
+        return queues
+
+    def decode_top(self, both):
+        if Endian.is_big_endian():
+            return both >> 18
+        return both & ((1 << 46) - 1)
+
+    def is_superpage(self, addr):
+        # buddy[0].bitmap points to the bitmaps in the superpage header
+        if addr == 0 or addr % self.SUPERPAGE_ALIGNMENT:
+            return False
+        bitmap = read_int_from_memory(addr + self.offset_superpage_buddy + current_arch.ptrsize * 2, safe=True)
+        return bitmap == addr + self.offset_superpage_bitmaps
+
+    def is_pageblock(self, addr):
+        # the objects start at the cache line after the header of a power-of-2 sized pageblock
+        if addr == 0 or addr % self.PAGE_SIZE:
+            return False
+        try:
+            pageblock = self.read_pageblock(addr)
+        except gdb.MemoryError:
+            return False
+        if pageblock.mem_pool != addr + self.CACHE_LINE_SIZE or pageblock.object_size not in self.class_to_size:
+            return False
+        size = pageblock.mem_pool_size + self.CACHE_LINE_SIZE
+        if size & (size - 1) or not self.MIN_PAGEBLOCK_SIZE <= size <= self.MAX_PAGEBLOCK_SIZE:
+            return False
+        # pageblocks are carved from the page pool of the superpage
+        if not self.is_superpage(pageblock.sph):
+            return False
+        page_pool = read_int_from_memory(pageblock.sph)
+        return page_pool <= addr < page_pool + self.SUPERPAGE_SIZE
+
+    def is_chunk(self, page_pool, size, addr):
+        # chunks of the buddy system are aligned to their size from the page pool
+        return page_pool <= addr < page_pool + self.SUPERPAGE_SIZE and (addr - page_pool) % size == 0
+
+    def is_local_heap(self, addr):
+        try:
+            heap = self.read_local_heap(addr)
+        except gdb.MemoryError:
+            return False
+        # local_heap[cl] holds pageblocks of the size class cl, and an empty list has neither head nor tail
+        for cl, (head, tail) in enumerate(heap):
+            if (head == 0) != (tail == 0):
+                return False
+            if head == 0:
+                continue
+            if cl >= len(self.class_to_size):
+                return False
+            for pageblock in (head, tail):
+                if not self.is_pageblock(pageblock) or self.read_pageblock(pageblock).object_size != self.class_to_size[cl]:
+                    return False
+        return True
+
+    def is_local_inactive(self, addr):
+        try:
+            queues = self.read_local_inactive(addr)
+        except gdb.MemoryError:
+            return False
+        # local_inactive_pageblocks[i] holds up to MAX_PRIVATE_INACTIVE pageblocks of MIN_PAGEBLOCK_SIZE << i bytes
+        for i, (queue, count) in enumerate(queues):
+            if count > self.MAX_PRIVATE_INACTIVE:
+                return False
+            nodes, error = self.get_list(queue, self.is_pageblock)
+            if error or len(nodes) != count:
+                return False
+            for node in nodes:
+                if self.read_pageblock(node).mem_pool_size + self.CACHE_LINE_SIZE != self.MIN_PAGEBLOCK_SIZE << i:
+                    return False
+        return True
+
+    def is_global_partial(self, addr):
+        try:
+            queues = self.read_global_partial(addr)
+        except gdb.MemoryError:
+            return False
+        # the queues are padded with zeros, and global_partial_pageblocks[cl] holds pageblocks of the size class cl
+        for cl, (top, _, padding) in enumerate(queues):
+            if padding:
+                return False
+            if top == 0:
+                continue
+            if cl >= len(self.class_to_size) or not self.is_pageblock(top):
+                return False
+            if self.read_pageblock(top).object_size != self.class_to_size[cl]:
+                return False
+        return True
+
+    def get_local_heap_heuristic(self):
+        tls = current_arch.get_tls()
+        if not tls:
+            return None
+        # local_heap is placed in the static TLS, below (x86) or above (PPC64) the thread pointer
+        lower = ProcessMap.process_lookup_address(tls - 1)
+        upper = ProcessMap.process_lookup_address(tls)
+        start = max(lower.page_start, tls - 0x10000) if lower else tls
+        end = min(upper.page_end, tls + 0x10000) if upper else tls
+        ptrsize = current_arch.ptrsize
+        words = slice_unpack(read_memory(start, end - start), ptrsize)
+        for addr in sorted(range(start, end, ptrsize), key=lambda x: abs(x - tls)):
+            value = words[(addr - start) // ptrsize]
+            if not self.is_pageblock(value):
+                continue
+            # the slot is the head or the tail of local_heap[cl]
+            cl = self.class_to_size.index(self.read_pageblock(value).object_size)
+            for local_heap in (addr - self.sizeof_heap * cl, addr - self.sizeof_heap * cl - ptrsize):
+                if self.is_local_heap(local_heap):
+                    return local_heap
+        return None
+
+    def get_local_heap(self):
+        try:
+            local_heap = AddressUtil.parse_address("&local_heap")
+            if self.is_local_heap(local_heap):
+                return local_heap
+        except gdb.error:
+            pass
+        return self.get_local_heap_heuristic()
+
+    def get_local_heap_list(self, all_threads):
+        if all_threads:
+            threads = None
+        else:
+            threads = [gdb.selected_thread()]
+        heap_list = []
+        with ContextManager.threads(threads) as threads:
+            for thread in threads:
+                local_heap = self.get_local_heap()
+                if local_heap is not None:
+                    heap_list.append((thread.num, local_heap))
+        return heap_list
+
+    def get_local_inactive(self, local_heap):
+        try:
+            if AddressUtil.parse_address("&local_heap") == local_heap:
+                return AddressUtil.parse_address("&local_inactive_pageblocks")
+        except gdb.error:
+            pass
+        # GCC places it just before local_heap with optimization, and just after local_heap without
+        candidates = []
+        for addr in (local_heap - self.sizeof_counting_queue * self.PAGEBLOCK_SIZE_CLASSES,
+                     local_heap + self.sizeof_heap * self.OBJECT_SIZE_CLASSES):
+            if self.is_local_inactive(addr):
+                candidates.append(addr)
+        # an empty array cannot be told from zero-filled memory, so prefer the one holding pageblocks
+        for addr in candidates:
+            if any(queue for queue, _ in self.read_local_inactive(addr)):
+                return addr
+        if candidates:
+            return candidates[0]
+        return None
+
+    def get_superpage_list(self):
+        try:
+            return AddressUtil.parse_address("&superpage_list")
+        except gdb.error:
+            pass
+        # superpage headers point to superpage_list, and pageblocks point to their superpage header
+        for _, local_heap in self.get_local_heap_list(all_threads=True):
+            for head, _ in self.read_local_heap(local_heap):
+                if self.is_pageblock(head):
+                    return self.read_superpage(self.read_pageblock(head).sph).list
+        return None
+
+    def get_global_partial_heuristic(self, superpage_list, superpages):
+        # it is placed in the .data/.bss of the module holding superpage_list
+        maps = ProcessMap.get_process_maps()
+        index = next((i for i, m in enumerate(maps) if m.page_start <= superpage_list < m.page_end), None)
+        if index is None:
+            return None
+        start = end = index
+        while start > 0 and maps[start - 1].page_end == maps[start].page_start:
+            if not maps[start - 1].is_writable() or maps[start - 1].path.startswith("["):
+                break
+            start -= 1
+        while end + 1 < len(maps) and maps[end + 1].page_start == maps[end].page_end:
+            if not maps[end + 1].is_writable() or maps[end + 1].path.startswith("["):
+                break
+            end += 1
+        start, end = maps[start].page_start, maps[end].page_end
+        data = read_memory(start, end - start)
+        page_pools = [read_int_from_memory(superpage) for superpage in superpages]
+        zero_page = bytes(self.PAGE_SIZE)
+        fmt = Endian.endian_str() + "Q"
+        for page in range(0, len(data), self.PAGE_SIZE):
+            if data[page:page + self.PAGE_SIZE] == zero_page:
+                continue
+            for offset in range(page, min(page + self.PAGE_SIZE, len(data) - 7), current_arch.ptrsize):
+                top = self.decode_top(struct.unpack_from(fmt, data, offset)[0])
+                if not any(x <= top < x + self.SUPERPAGE_SIZE for x in page_pools) or not self.is_pageblock(top):
+                    continue
+                # the slot is queue.both of global_partial_pageblocks[cl]
+                cl = self.class_to_size.index(self.read_pageblock(top).object_size)
+                addr = start + offset - 0x40 - self.sizeof_counting_lf_lifo_queue * cl
+                if self.is_global_partial(addr):
+                    return addr
+        return None
+
+    def get_list(self, head, is_valid):
+        # the lists are linked by the second pointer (pageblock, superpage, double_list_elem and queue_elem_t)
+        nodes = []
+        cur = head
+        while cur:
+            if cur in nodes:
+                return nodes, "{:#x} (loop detected)".format(cur)
+            next_cur = read_int_from_memory(cur + current_arch.ptrsize, safe=True)
+            if next_cur is None or not is_valid(cur):
+                return nodes, "{:#x} (corrupted)".format(cur)
+            nodes.append(cur)
+            cur = next_cur
+        return nodes, None
+
+    def dump_index_list(self, title, pageblock, head, num):
+        freed_address_color = Config.get("theme.heap_chunk_address_freed")
+        corrupted_msg_color = Config.get("theme.heap_corrupted_msg")
+
+        self.out.append(title)
+        capacity = pageblock.mem_pool_size // pageblock.object_size
+        cur = head
+        seen = set()
+        while cur:
+            addr = pageblock.mem_pool + (cur - 1) * pageblock.object_size
+            if cur in seen:
+                self.out.append(" -> {:s}".format(Color.colorify("{:#x} (loop detected)".format(addr), corrupted_msg_color)))
+                return
+            seen.add(cur)
+            # queue_node_t.next of the object is the index of the next object
+            next_cur = read_int16_from_memory(addr, safe=True)
+            if cur > capacity or next_cur is None:
+                self.out.append(" -> {:s}".format(Color.colorify("{:#x} (corrupted)".format(addr), corrupted_msg_color)))
+                return
+            self.out.append(" -> {:s}".format(Color.colorify_hex(addr, freed_address_color)))
+            cur = next_cur
+        if num == len(seen):
+            self.out.append(" -> 0x0 (num: {:#x})".format(len(seen)))
+        else:
+            self.out.append(" -> 0x0 (num: {:#x}, expected: {:#x})".format(len(seen), num))
+        return
+
+    def dump_error(self, error):
+        corrupted_msg_color = Config.get("theme.heap_corrupted_msg")
+        if error:
+            self.out.append(" -> {:s}".format(Color.colorify(error, corrupted_msg_color)))
+        return
+
+    def dump_pageblock(self, addr):
+        pageblock = self.read_pageblock(addr)
+        capacity = pageblock.mem_pool_size // pageblock.object_size
+        self.out.append("pageblock @{:#x} (objects: {:#x}-{:#x}, owning_thread: {:#x}, num_free_objects: {:#x})".format(
+            addr, pageblock.mem_pool, pageblock.mem_pool + pageblock.object_size * capacity,
+            pageblock.owning_thread, pageblock.num_free_objects,
+        ))
+        unallocated, unallocated_num = 0, 0
+        if pageblock.unallocated:
+            unallocated = pageblock.mem_pool + (pageblock.unallocated - 1) * pageblock.object_size
+            unallocated_num = capacity - pageblock.unallocated + 1
+        if pageblock.freed or self.args.verbose:
+            title = "freed (head: {:#x}):".format(pageblock.freed)
+            self.dump_index_list(title, pageblock, pageblock.freed, pageblock.num_free_objects - unallocated_num)
+        if pageblock.unallocated or self.args.verbose:
+            self.out.append("unallocated: {:#x} (index: {:#x}, num: {:#x})".format(
+                unallocated, pageblock.unallocated, unallocated_num,
+            ))
+        if pageblock.garbage_count or self.args.verbose:
+            title = "garbage_head (head: {:#x}):".format(pageblock.garbage_next)
+            self.dump_index_list(title, pageblock, pageblock.garbage_next, pageblock.garbage_count)
+        return
+
+    def dump_pageblocks(self, title, head):
+        freed_address_color = Config.get("theme.heap_chunk_address_freed")
+
+        self.out.append(title)
+        nodes, error = self.get_list(head, self.is_pageblock)
+        for addr in nodes:
+            self.out.append(" -> pageblock @{:s} (object_size: {:#x})".format(
+                Color.colorify_hex(addr, freed_address_color), self.read_pageblock(addr).object_size,
+            ))
+        self.dump_error(error)
+        return
+
+    def dump_local_heap(self, thread_num, local_heap):
+        title = "local_heap @ {:#x} (Thread Id:{:d})".format(local_heap, thread_num)
+        self.out.append(titlify(title, color="bold", msg_color="bold"))
+        heap = self.read_local_heap(local_heap)
+        for cl, size in enumerate(self.class_to_size):
+            head, _ = heap[cl]
+            if not head and not self.args.verbose:
+                continue
+            self.out.append(titlify("local_heap[{:#x}] (size: {:#x}) @ {:#x}".format(
+                cl, size, local_heap + self.sizeof_heap * cl,
+            )))
+            nodes, error = self.get_list(head, self.is_pageblock)
+            for addr in nodes:
+                self.dump_pageblock(addr)
+            self.dump_error(error)
+
+        local_inactive = self.get_local_inactive(local_heap)
+        if local_inactive is None:
+            self.err_add_out("Could not find local_inactive_pageblocks")
+            return
+        for i, (queue, count) in enumerate(self.read_local_inactive(local_inactive)):
+            if not queue and not self.args.verbose:
+                continue
+            self.out.append(titlify("local_inactive_pageblocks[{:#x}] (pageblock_size: {:#x}) @ {:#x}".format(
+                i, self.MIN_PAGEBLOCK_SIZE << i, local_inactive + self.sizeof_counting_queue * i,
+            )))
+            self.dump_pageblocks("queue (count: {:#x}):".format(count), queue)
+        return
+
+    def dump_global_partial(self, global_partial):
+        self.out.append(titlify("global_partial_pageblocks @ {:#x}".format(global_partial), color="bold", msg_color="bold"))
+        queues = self.read_global_partial(global_partial)
+        for cl, size in enumerate(self.class_to_size):
+            top, count, _ = queues[cl]
+            if not top and not self.args.verbose:
+                continue
+            self.out.append(titlify("global_partial_pageblocks[{:#x}] (size: {:#x}, count: {:#x}) @ {:#x}".format(
+                cl, size, count, global_partial + self.sizeof_counting_lf_lifo_queue * cl,
+            )))
+            nodes, error = self.get_list(top, self.is_pageblock)
+            for addr in nodes:
+                self.dump_pageblock(addr)
+            self.dump_error(error)
+        return
+
+    def dump_superpage_list(self, superpage_list, superpages, error):
+        freed_address_color = Config.get("theme.heap_chunk_address_freed")
+
+        self.out.append(titlify("superpage_list @ {:#x}".format(superpage_list), color="bold", msg_color="bold"))
+        for addr in superpages:
+            superpage = self.read_superpage(addr)
+            page_pool = superpage.page_pool
+            self.out.append("superpage @{:#x} (page_pool: {:#x}-{:#x}, largest_free_order: {:#x})".format(
+                addr, page_pool, page_pool + self.SUPERPAGE_SIZE, superpage.largest_free_order,
+            ))
+            for order, (head, _, _) in enumerate(superpage.buddy):
+                if not head and not self.args.verbose:
+                    continue
+                size = self.PAGE_SIZE << order
+                self.out.append("buddy[{:#x}] (size: {:#x}):".format(order, size))
+                chunks, chunk_error = self.get_list(head, functools.partial(self.is_chunk, page_pool, size))
+                for chunk in chunks:
+                    self.out.append(" -> {:s}".format(Color.colorify_hex(chunk, freed_address_color)))
+                self.dump_error(chunk_error)
+        self.dump_error(error)
+        return
+
+    def dump_global(self):
+        superpage_list = self.get_superpage_list()
+        if superpage_list is None:
+            self.err_add_out("Could not find superpage_list")
+            return
+        superpages, error = self.get_list(read_int_from_memory(superpage_list), self.is_superpage)
+
+        try:
+            global_partial = AddressUtil.parse_address("&global_partial_pageblocks")
+        except gdb.error:
+            global_partial = self.get_global_partial_heuristic(superpage_list, superpages)
+        if global_partial is None:
+            self.err_add_out("Could not find global_partial_pageblocks")
+        else:
+            self.dump_global_partial(global_partial)
+
+        self.dump_superpage_list(superpage_list, superpages, error)
+        return
+
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "PPC64"))
+    def do_invoke(self, args):
+        self.initialize()
+        self.out = []
+
+        if args.heap is not None:
+            heap_list = [(gdb.selected_thread().num, args.heap)]
+        else:
+            try:
+                heap_list = self.get_local_heap_list(args.all)
+            except gdb.error:
+                err("Cannot read local_heap")
+                return
+            if not heap_list:
+                self.err_add_out("Could not find local_heap")
+
+        for thread_num, local_heap in heap_list:
+            try:
+                self.dump_local_heap(thread_num, local_heap)
+            except gdb.error:
+                self.err_add_out("Cannot read local_heap at {:#x}".format(local_heap))
+
+        try:
+            self.dump_global()
+        except gdb.error as exception:
+            self.err_add_out("Cannot read the global data: {!s}".format(exception))
+        self.print_output()
+        return
+
+
+@register_command
 class JemallocHeapDumpCommand(GenericCommand, BufferingOutput):
     """jemalloc (v3.0~) arena/bin/slab(run)/large/tcache viewer."""
 

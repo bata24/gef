@@ -8388,6 +8388,81 @@ Simplified SSMalloc structure:
 * Allocation from a `dchunk_t` pops `free_head` first; if it is empty, allocation advances `free_mem`.
 ```
 
+## `streamflow-heap-dump`
+
+StreamFlow heap free-list viewer (x64/x86/PPC64 only).
+
+
+### Syntax
+
+```text
+usage: streamflow-heap-dump [-h] [-hh] [--heap HEAP] [-a] [-n] [-v]
+
+options:
+  -h, --help          show this help message and exit
+  -hh, --help-simple  show help without ASCII diagram.
+  --heap HEAP         use specific address for local_heap.
+  -a, --all           dump local_heap of all threads.
+  -n, --no-pager      do not use the pager.
+  -v, --verbose       display also empty lists.
+```
+
+### Notes
+
+```text
+Simplified StreamFlow structure:
+
++-local_heap[cl] (TLS)-----------+
+| active_pageblocks (head, tail) |-------->pageblock <-> pageblock <-> ...
++--------------------------------+
++-local_inactive_pageblocks[i]---+
+| queue, count (TLS)             |-------->pageblock --> pageblock --> ... (completely free)
++--------------------------------+
++-global_partial_pageblocks[cl]--+
+| queue.both.top, count          |-------->pageblock --> pageblock --> ... (left by exited threads)
++--------------------------------+
++-superpage_list-----------------+
+| head, tail                     |-------->superpage <-> superpage <-> ...
++--------------------------------+
+
++-pageblock (0x1000 aligned)-+         +-object-+   +-object-+
+| sph                        |    +--->| next   |-->| next   |-->0
+| next, prev                 |    |    +--------+   +--------+
+| freed                      |----+ (1-based object index)
+| unallocated                |-------->[unused objects]
+| owning_heap                |
+| object_size                |         +-object-+   +-object-+
+| num_free_objects           |    +--->| next   |-->| next   |-->0
+| mem_pool_size              |    |    +--------+   +--------+
+| owning_thread              |    |
+| garbage_head (next, count) |----+ (freed by other threads)
+| mem_pool                   |
++----------------------------+
+| objects                    |
++----------------------------+
+
++-superpage (0x400 aligned)-+         +-chunk-+   +-chunk-+
+| page_pool                 |    +--->| next  |-->| next  |-->NULL
+| next, prev                |    |    | prev  |<--| prev  |
+| buddy[order].free_list    |----+    +-------+   +-------+
+| largest_free_order        |
++---------------------------+
+
+* `local_heap` and `local_inactive_pageblocks` are resolved from symbols; without them, the static TLS is scanned.
+* Without symbols, `superpage_list` is resolved from a superpage, and the writable data of its module is scanned
+  for `global_partial_pageblocks`, which is found only when it holds a pageblock.
+* `--heap` can be used when the scan rejects a corrupted `local_heap`.
+* Allocation pops `freed` of the first pageblock, then advances `unallocated`.
+* `garbage_head` holds objects freed by other threads, and is moved to `freed` when no free object is left.
+* Pageblocks of exited threads go to `global_partial_pageblocks` if partially used; full ones are not listed.
+* Objects larger than 0x40c0 bytes are carved from superpages by the buddy system,
+  or mmapped if larger than a superpage.
+* The HEADERS build prepends a header of sizeof(void*) to each object, and malloc() returns the address after it.
+* `queue.both.top` keeps only 46 bits, so StreamFlow itself truncates pageblocks above 0x400000000000
+  (usual on x86_64).
+* Supported architectures are x86, x86_64 and PPC64, as upstream.
+```
+
 ## `tbbmalloc-heap-dump`
 
 oneTBB scalable allocator (tbbmalloc) free-list viewer.

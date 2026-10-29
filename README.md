@@ -570,7 +570,7 @@ For the usage and options of each command, see [docs/COMMANDS.md](docs/COMMANDS.
 ### Other
 
 <details>
-<summary><code>tcmalloc-heap-dump</code>, <code>musl-heap-dump</code>, <code>go-heap-dump</code>, <code>tlsf-heap-dump</code>, <code>hoard-heap-dump</code>, <code>mimalloc-heap-dump</code>, <code>scalloc-heap-dump</code>, <code>snmalloc-heap-dump</code>, <code>ssmalloc-heap-dump</code>, <code>jemalloc-heap-dump</code>, <code>sfmalloc-heap-dump</code>, <code>rpmalloc-heap-dump</code>, <code>tbbmalloc-heap-dump</code>, <code>zig-heap-dump</code>, <code>mesh-heap-dump</code></summary>
+<summary><code>tcmalloc-heap-dump</code>, <code>musl-heap-dump</code>, <code>go-heap-dump</code>, <code>tlsf-heap-dump</code>, <code>hoard-heap-dump</code>, <code>mimalloc-heap-dump</code>, <code>scalloc-heap-dump</code>, <code>snmalloc-heap-dump</code>, <code>ssmalloc-heap-dump</code>, <code>jemalloc-heap-dump</code>, <code>sfmalloc-heap-dump</code>, <code>rpmalloc-heap-dump</code>, <code>tbbmalloc-heap-dump</code>, <code>zig-heap-dump</code>, <code>mesh-heap-dump</code>, <code>streamflow-heap-dump</code></summary>
 
 - `tcmalloc-heap-dump`: dumps TCMalloc (`gperftools-2.16-1` or named `libgoogle-perftools{4,-dev}`) free-list.
     - ![](images/tcmalloc-heap-dump.png)
@@ -657,6 +657,18 @@ For the usage and options of each command, see [docs/COMMANDS.md](docs/COMMANDS.
             - The default gold linker is no longer provided by recent binutils, so the bfd linker is used.
             - To include debug symbols: `make build BAZEL_CONFIG='--config=modern-amd64 --linkopt=-fuse-ld=bfd --copt=-g'`.
         - Run your test program with `LD_PRELOAD=/PATH/TO/bazel-bin/src/libmesh.so ./a.out`.
+- `streamflow-heap-dump`: dumps StreamFlow free-list (x64/x86/PPC64 only).
+    - ![](images/streamflow-heap-dump.png)
+    - How to test (x64):
+        - Get and extract the upstream source from https://github.com/scotts/streamflow
+        - Create an empty `numa.h` with `cd streamflow && touch numa.h`, because only the NUMA build uses libnuma.
+        - Build with `make libstreamflow.so CXX='g++ -std=gnu++98 -include stddef.h' GCC_OPT='-O3 -ggdb -fpermissive -I. -fno-builtin'`.
+            - The original source is rejected by recent compilers, so the old C++ standard and `-fpermissive` are used.
+            - Without `-fno-builtin`, GCC may turn `malloc()` + `memset()` in `calloc()` into a recursive `calloc()` call.
+        - Run your test program with `LD_PRELOAD=/PATH/TO/libstreamflow.so ./a.out`.
+            - Common commands such as `/bin/ls` do not work. When `realloc()` of StreamFlow shrinks an object,
+              it copies the old size into the new object, so they abort with `buffer overflow detected`
+              (or corrupt the heap if `_FORTIFY_SOURCE` is disabled).
 
 </details>
 
