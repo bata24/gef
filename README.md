@@ -570,7 +570,7 @@ For the usage and options of each command, see [docs/COMMANDS.md](docs/COMMANDS.
 ### Other
 
 <details>
-<summary><code>tcmalloc-heap-dump</code>, <code>musl-heap-dump</code>, <code>go-heap-dump</code>, <code>tlsf-heap-dump</code>, <code>hoard-heap-dump</code>, <code>mimalloc-heap-dump</code>, <code>scalloc-heap-dump</code>, <code>snmalloc-heap-dump</code>, <code>ssmalloc-heap-dump</code>, <code>jemalloc-heap-dump</code>, <code>sfmalloc-heap-dump</code>, <code>rpmalloc-heap-dump</code>, <code>tbbmalloc-heap-dump</code>, <code>zig-heap-dump</code>, <code>mesh-heap-dump</code>, <code>streamflow-heap-dump</code>, <code>supermalloc-heap-dump</code></summary>
+<summary><code>tcmalloc-heap-dump</code>, <code>musl-heap-dump</code>, <code>go-heap-dump</code>, <code>tlsf-heap-dump</code>, <code>hoard-heap-dump</code>, <code>mimalloc-heap-dump</code>, <code>scalloc-heap-dump</code>, <code>snmalloc-heap-dump</code>, <code>ssmalloc-heap-dump</code>, <code>jemalloc-heap-dump</code>, <code>sfmalloc-heap-dump</code>, <code>rpmalloc-heap-dump</code>, <code>tbbmalloc-heap-dump</code>, <code>zig-heap-dump</code>, <code>mesh-heap-dump</code>, <code>streamflow-heap-dump</code>, <code>supermalloc-heap-dump</code>, <code>dlmalloc-heap-dump</code></summary>
 
 - `tcmalloc-heap-dump`: dumps TCMalloc (`gperftools-2.16-1` or named `libgoogle-perftools{4,-dev}`) free-list.
     - ![](images/tcmalloc-heap-dump.png)
@@ -675,6 +675,14 @@ For the usage and options of each command, see [docs/COMMANDS.md](docs/COMMANDS.
         - Get and extract the upstream source from https://github.com/kuszmaul/SuperMalloc
         - Build with `cd SuperMalloc/release && make`.
         - Run your test program with `LD_PRELOAD=/PATH/TO/release/lib/libsupermalloc.so ./a.out`.
+- `dlmalloc-heap-dump`: dumps dlmalloc (Doug Lea's malloc) v2.8.x free-list.
+    - ![](images/dlmalloc-heap-dump.png)
+    - How to test (x64):
+        - Get the upstream source from https://gee.cs.oswego.edu/pub/misc/malloc.c
+        - Build with `gcc -O2 -g -fno-builtin -shared -fPIC malloc.c -o libdlmalloc.so`.
+            - Without `-fno-builtin` (and `_FORTIFY_SOURCE`), GCC may turn `malloc()` + `memset()` in `calloc()`
+              into a recursive `calloc()` call.
+        - Run your test program with `LD_PRELOAD=/PATH/TO/libdlmalloc.so ./a.out`.
 
 </details>
 

@@ -177243,6 +177243,373 @@ class SupermallocHeapDumpCommand(GenericCommand, BufferingOutput):
 
 
 @register_command
+class DlmallocHeapDumpCommand(GenericCommand, BufferingOutput):
+    """dlmalloc heap free-list viewer."""
+
+    _cmdline_ = "dlmalloc-heap-dump"
+    _category_ = "05-d. Heap - Other"
+
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("-hh", "--help-simple", action="store_true", help="show help without ASCII diagram.")
+    parser.add_argument("--mstate", type=AddressUtil.parse_address,
+                        help="use specific address for malloc_state (e.g. the return value of create_mspace()).")
+    parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
+    parser.add_argument("-v", "--verbose", action="store_true", help="display also empty bins.")
+    _syntax_ = parser.format_help()
+
+    _note_ = "\n".join([
+        "Simplified dlmalloc structure:",
+        "",
+        "+-malloc_state (_gm_ or mspace)-+         +-chunk-----+   +-chunk-----+",
+        "| smallmap, treemap             |         | prev_foot |   | prev_foot |",
+        "| dvsize, topsize               |         | head      |   | head      |",
+        "| least_addr, dv, top           |    +--->| fd        |-->| fd        |-->smallbins[i]",
+        "| magic                         |    |    | bk        |<--| bk        |",
+        "| smallbins[i] (fd, bk)         |----+    +-----------+   +-----------+",
+        "| treebins[i]                   |----+",
+        "| footprint, max_footprint      |    |    +-tree chunk-+   +-tree chunk-+",
+        "| mflags                        |    +--->| prev_foot  |   | prev_foot  |",
+        "| seg                           |         | head       |   | head       |",
+        "|   base, size, next, sflags    |         | fd, bk     |<->| fd, bk     |<->... (same size)",
+        "+-------------------------------+         | child[0]   |-->tree chunk (next bit is 0)",
+        "                                          | child[1]   |-->tree chunk (next bit is 1)",
+        "                                          | parent     |",
+        "                                          | index      |",
+        "                                          +------------+",
+        "",
+        "* Free chunks smaller than 0x100 bytes are in smallbins by exact size, and the others are in treebins.",
+        "  An emptied smallbin keeps stale fd and bk, so smallbins are listed by smallmap.",
+        "* Each treebin is a bitwise trie of sizes. Chunks of the same size are chained to the node of the trie by fd/bk.",
+        "* dv is the remainder of the last chunk split for a small request, and is used before top.",
+        "* Chunks larger than the mmap threshold (0x40000 by default) are mmapped directly and are not listed.",
+        "* Addresses are of chunks. malloc() returns the chunk + sizeof(size_t) * 2.",
+        "* Without symbols, `_gm_` is found in the writable data of modules, as smallbins[0] and [1] are never used",
+        "  and point to themselves. Use `--mstate` for mspaces (the return value of create_mspace()),",
+        "  or when the scan rejects a corrupted malloc_state.",
+        "* The offset of smallbins depends on `release_checks` (2.8.4~), and that of seg depends on",
+        "  `footprint_limit` (2.8.5~) and the lock (USE_LOCKS), so seg is found by the segment holding top.",
+        "* Supported versions are 2.8.0 to 2.8.6 (the latest). 2.7.x and older use a different structure.",
+    ])
+
+    NSMALLBINS = 32
+    NTREEBINS = 32
+    TREEBIN_SHIFT = 8
+    # the lock between mflags and seg is up to pthread_mutex_t (0x30 bytes on ARM64)
+    SEG_SEARCH_RANGE = 0x40
+
+    def get_segments(self, addr):
+        """
+        struct malloc_segment {
+            char* base;
+            size_t size;
+            struct malloc_segment* next;
+            flag_t sflags;                                  // unsigned int
+        };
+        """
+        ptrsize = current_arch.ptrsize
+        segments = []
+        while addr:
+            if addr in [x[0] for x in segments]:
+                return segments, "{:#x} (loop detected)".format(addr)
+            try:
+                base, size, next_seg = slice_unpack(read_memory(addr, ptrsize * 3), ptrsize)
+                sflags = read_int32_from_memory(addr + ptrsize * 3)
+            except gdb.MemoryError:
+                return segments, "{:#x} (corrupted)".format(addr)
+            segments.append((addr, base, size, sflags))
+            addr = next_seg
+        return segments, None
+
+    def read_mstate(self, addr):
+        """
+        struct malloc_state {
+            binmap_t smallmap;                              // unsigned int
+            binmap_t treemap;
+            size_t dvsize;
+            size_t topsize;
+            char* least_addr;
+            mchunkptr dv;
+            mchunkptr top;
+            size_t trim_check;
+            size_t release_checks;                          // 2.8.4~
+            size_t magic;
+            mchunkptr smallbins[(NSMALLBINS + 1) * 2];
+            tbinptr treebins[NTREEBINS];
+            size_t footprint;
+            size_t max_footprint;
+            size_t footprint_limit;                         // 2.8.5~
+            flag_t mflags;                                  // unsigned int
+            MLOCK_T mutex;                                  // USE_LOCKS only
+            msegment seg;
+            void* extp;                                     // 2.8.4~
+            size_t exts;                                    // 2.8.4~
+        };
+        """
+        ptrsize = current_arch.ptrsize
+        # up to max_footprint; seg is read while searching
+        nwords = 8 + (self.NSMALLBINS + 1) * 2 + self.NTREEBINS + 2
+        data = read_memory(addr, 8 + nwords * ptrsize)
+        smallmap, treemap = slice_unpack(data[:8], 4)
+        words = slice_unpack(data[8:], ptrsize)
+        # smallbins[0] and [1] are never used, so their fd and bk point to themselves
+        for sb in (8, 7):
+            bin0 = addr + 8 + ptrsize * sb
+            if words[sb + 2] == words[sb + 3] == bin0 and words[sb + 4] == words[sb + 5] == bin0 + ptrsize * 2:
+                break
+        else:
+            return None
+        tb = sb + (self.NSMALLBINS + 1) * 2
+        ms = {
+            "address": addr,
+            "smallmap": smallmap,
+            "treemap": treemap,
+            "dvsize": words[0],
+            "topsize": words[1],
+            "least_addr": words[2],
+            "dv": words[3],
+            "top": words[4],
+            "trim_check": words[5],
+            "release_checks": None,
+            "magic": words[sb - 1],
+            "smallbins": [(bin0 + ptrsize * 2 * i, words[sb + 2 + i * 2]) for i in range(self.NSMALLBINS)],
+            "treebins": [(addr + 8 + ptrsize * (tb + i), words[tb + i]) for i in range(self.NTREEBINS)],
+            "footprint": words[tb + self.NTREEBINS],
+            "max_footprint": words[tb + self.NTREEBINS + 1],
+            "seg": None,
+        }
+        if sb == 8:
+            ms["release_checks"] = words[6]
+        # footprint_limit (2.8.5~) and the lock (USE_LOCKS) may precede seg, so search it by the segment holding top.
+        # 2.8.3~ pushes a new segment to the head, and 2.8.0~2.8.2 insert it next to the head
+        start = tb + self.NTREEBINS + 3
+        for i in range(start, start + self.SEG_SEARCH_RANGE // ptrsize + 1):
+            seg = addr + 8 + ptrsize * i
+            segments, _ = self.get_segments(seg)
+            for _, base, size, sflags in segments:
+                # least_addr is the lowest base of segments, and sflags has USE_MMAP_BIT and EXTERN_BIT only
+                if sflags & ~9 or not ms["least_addr"] <= base < base + size <= 1 << (ptrsize * 8):
+                    break
+                if base <= ms["top"] < base + size:
+                    ms["seg"] = seg
+                    return ms
+        return ms
+
+    def is_mstate(self, ms):
+        # magic has 0b1000 in the low bits, and the heads of top and dv have their sizes with PINUSE_BIT
+        if ms is None or ms["seg"] is None or ms["magic"] & 0xf != 8:
+            return False
+        if ms["dv"] == 0:
+            if ms["dvsize"]:
+                return False
+        elif read_int_from_memory(ms["dv"] + current_arch.ptrsize, safe=True) != ms["dvsize"] | 1:
+            return False
+        return read_int_from_memory(ms["top"] + current_arch.ptrsize, safe=True) == ms["topsize"] | 1
+
+    def find_mstate(self):
+        ptrsize = current_arch.ptrsize
+        # .data and .bss of each module are a writable file mapping and the following anonymous mappings
+        regions = []
+        for m in ProcessMap.get_process_maps():
+            if not m.is_writable():
+                continue
+            if m.path.startswith("/"):
+                regions.append([m.page_start, m.page_end])
+            elif m.path == "" and regions and regions[-1][1] == m.page_start and m.size < 0x1000000:
+                regions[-1][1] = m.page_end
+        for start, end in regions:
+            try:
+                words = slice_unpack(read_memory(start, end - start), ptrsize)
+            except gdb.MemoryError:
+                continue
+            for i in range(len(words) - 5):
+                bin0 = start + ptrsize * i
+                if not words[i + 2] == words[i + 3] == bin0 or not words[i + 4] == words[i + 5] == bin0 + ptrsize * 2:
+                    continue
+                # smallbins follow 7 fields (2.8.0~2.8.3) or 8 fields with release_checks (2.8.4~)
+                for nfields in (7, 8):
+                    try:
+                        ms = self.read_mstate(bin0 - 8 - ptrsize * nfields)
+                    except gdb.MemoryError:
+                        continue
+                    if self.is_mstate(ms):
+                        return ms
+        return None
+
+    def read_chunk(self, ms, addr, nwords):
+        """
+        struct malloc_tree_chunk {
+            size_t prev_foot;
+            size_t head;
+            struct malloc_tree_chunk* fd;
+            struct malloc_tree_chunk* bk;
+            struct malloc_tree_chunk* child[2];             // tree chunks only
+            struct malloc_tree_chunk* parent;
+            bindex_t index;
+        };
+        """
+        # ok_address() of dlmalloc checks least_addr
+        if addr % 8 or addr < ms["least_addr"]:
+            return None
+        try:
+            return slice_unpack(read_memory(addr, current_arch.ptrsize * nwords), current_arch.ptrsize)
+        except gdb.MemoryError:
+            return None
+
+    def chunk_to_str(self, addr, chunk):
+        freed_address_color = Config.get("theme.heap_chunk_address_freed")
+        chunk_size_color = Config.get("theme.heap_chunk_size")
+        size = Color.colorify_hex(chunk[1] & ~7, chunk_size_color)
+        return "{:s} (size: {:s})".format(Color.colorify_hex(addr, freed_address_color), size)
+
+    def dump_mstate(self, ms):
+        chunk_size_color = Config.get("theme.heap_chunk_size")
+        corrupted_msg_color = Config.get("theme.heap_corrupted_msg")
+
+        self.out.append(titlify("malloc_state @ {:#x}".format(ms["address"]), color="bold", msg_color="bold"))
+        for name in ("top", "dv"):
+            size = Color.colorify_hex(ms[name + "size"], chunk_size_color)
+            self.out.append("{:s}: {:#x} (size: {:s})".format(name, ms[name], size))
+        self.out.append("smallmap: {:#x}, treemap: {:#x}".format(ms["smallmap"], ms["treemap"]))
+        self.out.append("least_addr: {:#x}, footprint: {:#x}, max_footprint: {:#x}, magic: {:#x}".format(
+            ms["least_addr"], ms["footprint"], ms["max_footprint"], ms["magic"],
+        ))
+        msg = "trim_check: {:#x}".format(ms["trim_check"])
+        if ms["release_checks"] is not None:
+            msg += ", release_checks: {:#x}".format(ms["release_checks"])
+        self.verbose_add_out(msg)
+        if ms["seg"] is None:
+            self.err_add_out("Could not find seg holding top")
+            return
+        self.out.append("segments:")
+        segments, error = self.get_segments(ms["seg"])
+        for addr, base, size, sflags in segments:
+            msg = "{:#x}-{:#x} (size: {:#x}, sflags: {:#x}".format(base, base + size, size, sflags)
+            flags = [name for bit, name in ((1, "USE_MMAP_BIT"), (8, "EXTERN_BIT")) if sflags & bit]
+            if flags:
+                msg += " ({:s})".format("|".join(flags))
+            self.out.append(" -> {:s}) @ {:#x}".format(msg, addr))
+        if error:
+            self.out.append(" -> {:s}".format(Color.colorify(error, corrupted_msg_color)))
+        return
+
+    def dump_smallbins(self, ms):
+        corrupted_msg_color = Config.get("theme.heap_corrupted_msg")
+
+        for i, (bin_addr, fd) in enumerate(ms["smallbins"]):
+            # an emptied bin keeps stale fd and bk, and only smallmap tells it
+            marked = ms["smallmap"] >> i & 1
+            if not marked and not self.args.verbose:
+                continue
+            lines = []
+            seen = set()
+            cur = bin_addr
+            if marked:
+                cur = fd
+            while cur != bin_addr:
+                if cur in seen:
+                    lines.append(" -> {:s}".format(Color.colorify("{:#x} (loop detected)".format(cur), corrupted_msg_color)))
+                    break
+                chunk = self.read_chunk(ms, cur, 4)
+                if chunk is None:
+                    lines.append(" -> {:s}".format(Color.colorify("{:#x} (corrupted)".format(cur), corrupted_msg_color)))
+                    break
+                seen.add(cur)
+                lines.append(" -> {:s}".format(self.chunk_to_str(cur, chunk)))
+                cur = chunk[2]
+            self.out.append(titlify("smallbins[{:#x}] (size: {:#x}, num: {:#x}) @ {:#x}".format(
+                i, i << 3, len(seen), bin_addr,
+            )))
+            self.out.extend(lines)
+        return
+
+    def dump_treebins(self, ms):
+        corrupted_msg_color = Config.get("theme.heap_corrupted_msg")
+
+        for i, (bin_addr, root) in enumerate(ms["treebins"]):
+            if not root and not self.args.verbose:
+                continue
+            lines = []
+            seen = set()
+            # depth-first, where each node of the trie is followed by the chunks of the same size
+            stack = []
+            if root:
+                stack.append((root, 0, None))
+            while stack:
+                addr, depth, child = stack.pop()
+                if child is None:
+                    prefix = " -> "
+                else:
+                    prefix = "    " * depth + "child[{:d}] -> ".format(child)
+                if addr in seen:
+                    lines.append(prefix + Color.colorify("{:#x} (loop detected)".format(addr), corrupted_msg_color))
+                    continue
+                chunk = self.read_chunk(ms, addr, 7)
+                if chunk is None:
+                    lines.append(prefix + Color.colorify("{:#x} (corrupted)".format(addr), corrupted_msg_color))
+                    continue
+                seen.add(addr)
+                lines.append(prefix + self.chunk_to_str(addr, chunk))
+                prefix = "    " * (depth + 1) + "+ "
+                cur = chunk[2]
+                while cur != addr:
+                    if cur in seen:
+                        lines.append(prefix + Color.colorify("{:#x} (loop detected)".format(cur), corrupted_msg_color))
+                        break
+                    member = self.read_chunk(ms, cur, 4)
+                    if member is None:
+                        lines.append(prefix + Color.colorify("{:#x} (corrupted)".format(cur), corrupted_msg_color))
+                        break
+                    seen.add(cur)
+                    lines.append(prefix + self.chunk_to_str(cur, member))
+                    cur = member[2]
+                for j in (1, 0):
+                    if chunk[4 + j]:
+                        stack.append((chunk[4 + j], depth + 1, j))
+            # minsize_for_tree_index()
+            sizes = [(1 << (j // 2 + self.TREEBIN_SHIFT)) | (j % 2 << (j // 2 + self.TREEBIN_SHIFT - 1)) for j in (i, i + 1)]
+            upper = ""
+            if i + 1 < self.NTREEBINS:
+                upper = "{:#x}".format(sizes[1])
+            self.out.append(titlify("treebins[{:#x}] (size: {:#x}-{:s}, num: {:#x}) @ {:#x}".format(
+                i, sizes[0], upper, len(seen), bin_addr,
+            )))
+            self.out.extend(lines)
+        return
+
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    def do_invoke(self, args):
+        addr = args.mstate
+        if addr is None:
+            try:
+                addr = AddressUtil.parse_address("&_gm_")
+            except gdb.error:
+                pass
+        if addr is None:
+            ms = self.find_mstate()
+            if ms is None:
+                err("Could not find malloc_state")
+                return
+        else:
+            try:
+                ms = self.read_mstate(addr)
+            except gdb.MemoryError:
+                err("Cannot read malloc_state at {:#x}".format(addr))
+                return
+            if ms is None:
+                err("Failed to parse malloc_state at {:#x}".format(addr))
+                return
+
+        self.out = []
+        self.dump_mstate(ms)
+        self.dump_smallbins(ms)
+        self.dump_treebins(ms)
+        self.print_output()
+        return
+
+
+@register_command
 class JemallocHeapDumpCommand(GenericCommand, BufferingOutput):
     """jemalloc (v3.0~) arena/bin/slab(run)/large/tcache viewer."""
 

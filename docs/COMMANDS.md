@@ -7615,6 +7615,60 @@ Also, since it uses V8 commands internally, `_v8_internal_Print_Object` must be 
 ```
 
 # 05-d. Heap - Other
+## `dlmalloc-heap-dump`
+
+dlmalloc heap free-list viewer.
+
+
+### Syntax
+
+```text
+usage: dlmalloc-heap-dump [-h] [-hh] [--mstate MSTATE] [-n] [-v]
+
+options:
+  -h, --help          show this help message and exit
+  -hh, --help-simple  show help without ASCII diagram.
+  --mstate MSTATE     use specific address for malloc_state (e.g. the return value of create_mspace()).
+  -n, --no-pager      do not use the pager.
+  -v, --verbose       display also empty bins.
+```
+
+### Notes
+
+```text
+Simplified dlmalloc structure:
+
++-malloc_state (_gm_ or mspace)-+         +-chunk-----+   +-chunk-----+
+| smallmap, treemap             |         | prev_foot |   | prev_foot |
+| dvsize, topsize               |         | head      |   | head      |
+| least_addr, dv, top           |    +--->| fd        |-->| fd        |-->smallbins[i]
+| magic                         |    |    | bk        |<--| bk        |
+| smallbins[i] (fd, bk)         |----+    +-----------+   +-----------+
+| treebins[i]                   |----+
+| footprint, max_footprint      |    |    +-tree chunk-+   +-tree chunk-+
+| mflags                        |    +--->| prev_foot  |   | prev_foot  |
+| seg                           |         | head       |   | head       |
+|   base, size, next, sflags    |         | fd, bk     |<->| fd, bk     |<->... (same size)
++-------------------------------+         | child[0]   |-->tree chunk (next bit is 0)
+                                          | child[1]   |-->tree chunk (next bit is 1)
+                                          | parent     |
+                                          | index      |
+                                          +------------+
+
+* Free chunks smaller than 0x100 bytes are in smallbins by exact size, and the others are in treebins.
+  An emptied smallbin keeps stale fd and bk, so smallbins are listed by smallmap.
+* Each treebin is a bitwise trie of sizes. Chunks of the same size are chained to the node of the trie by fd/bk.
+* dv is the remainder of the last chunk split for a small request, and is used before top.
+* Chunks larger than the mmap threshold (0x40000 by default) are mmapped directly and are not listed.
+* Addresses are of chunks. malloc() returns the chunk + sizeof(size_t) * 2.
+* Without symbols, `_gm_` is found in the writable data of modules, as smallbins[0] and [1] are never used
+  and point to themselves. Use `--mstate` for mspaces (the return value of create_mspace()),
+  or when the scan rejects a corrupted malloc_state.
+* The offset of smallbins depends on `release_checks` (2.8.4~), and that of seg depends on
+  `footprint_limit` (2.8.5~) and the lock (USE_LOCKS), so seg is found by the segment holding top.
+* Supported versions are 2.8.0 to 2.8.6 (the latest). 2.7.x and older use a different structure.
+```
+
 ## `go-heap-dump`
 
 Go mheap dumper.
