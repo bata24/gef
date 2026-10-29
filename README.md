@@ -570,7 +570,7 @@ For the usage and options of each command, see [docs/COMMANDS.md](docs/COMMANDS.
 ### Other
 
 <details>
-<summary><code>tcmalloc-heap-dump</code>, <code>musl-heap-dump</code>, <code>go-heap-dump</code>, <code>tlsf-heap-dump</code>, <code>hoard-heap-dump</code>, <code>mimalloc-heap-dump</code>, <code>scalloc-heap-dump</code>, <code>snmalloc-heap-dump</code>, <code>ssmalloc-heap-dump</code>, <code>jemalloc-heap-dump</code>, <code>sfmalloc-heap-dump</code>, <code>rpmalloc-heap-dump</code>, <code>tbbmalloc-heap-dump</code>, <code>zig-heap-dump</code>, <code>mesh-heap-dump</code>, <code>streamflow-heap-dump</code>, <code>supermalloc-heap-dump</code>, <code>dlmalloc-heap-dump</code></summary>
+<summary><code>tcmalloc-heap-dump</code>, <code>musl-heap-dump</code>, <code>go-heap-dump</code>, <code>tlsf-heap-dump</code>, <code>hoard-heap-dump</code>, <code>mimalloc-heap-dump</code>, <code>scalloc-heap-dump</code>, <code>snmalloc-heap-dump</code>, <code>ssmalloc-heap-dump</code>, <code>jemalloc-heap-dump</code>, <code>sfmalloc-heap-dump</code>, <code>rpmalloc-heap-dump</code>, <code>tbbmalloc-heap-dump</code>, <code>zig-heap-dump</code>, <code>mesh-heap-dump</code>, <code>streamflow-heap-dump</code>, <code>supermalloc-heap-dump</code>, <code>dlmalloc-heap-dump</code>, <code>scudo-heap-dump</code></summary>
 
 - `tcmalloc-heap-dump`: dumps TCMalloc (`gperftools-2.16-1` or named `libgoogle-perftools{4,-dev}`) free-list.
     - ![](images/tcmalloc-heap-dump.png)
@@ -683,6 +683,15 @@ For the usage and options of each command, see [docs/COMMANDS.md](docs/COMMANDS.
             - Without `-fno-builtin` (and `_FORTIFY_SOURCE`), GCC may turn `malloc()` + `memset()` in `calloc()`
               into a recursive `calloc()` call.
         - Run your test program with `LD_PRELOAD=/PATH/TO/libdlmalloc.so ./a.out`.
+- `scudo-heap-dump`: dumps Scudo (the standalone allocator of LLVM 11~) free-list.
+    - ![](images/scudo-heap-dump.png)
+    - How to test (x64):
+        - Get and extract the upstream source from
+          https://github.com/llvm/llvm-project/releases/download/llvmorg-21.1.8/compiler-rt-21.1.8.src.tar.xz
+        - Build with `cd compiler-rt-21.1.8.src/lib/scudo/standalone && clang++ -std=c++17 -O2 -fPIC -shared`
+          `-ftls-model=initial-exec -nostdinc++ -nostdlib++ -fno-exceptions -fno-rtti -I . -I include *.cpp -o libscudo.so`.
+        - Or use `libclang_rt.scudo_standalone-x86_64.so` of the distribution (e.g. `libclang-rt-21-dev` of Ubuntu).
+        - Run your test program with `LD_PRELOAD=/PATH/TO/libscudo.so ./a.out`.
 
 </details>
 

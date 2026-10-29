@@ -8264,6 +8264,72 @@ Simplified scalloc structure:
 * Layouts use debug types when available, otherwise the upstream field order and target pointer size.
 ```
 
+## `scudo-heap-dump`
+
+Scudo (the standalone allocator of LLVM) heap free-list viewer.
+
+
+### Syntax
+
+```text
+usage: scudo-heap-dump [-h] [-hh] [-a] [-n] [-v]
+
+options:
+  -h, --help          show this help message and exit
+  -hh, --help-simple  show help without ASCII diagram.
+  -a, --all           dump the local caches of all threads.
+  -n, --no-pager      do not use the pager.
+  -v, --verbose       display also empty lists.
+```
+
+### Notes
+
+```text
+Simplified Scudo structure (64-bit):
+
++-TSD (thread_local)-----------+
+| Cache                        |
+|   PerClassArray[ClassId]     |
+|     Count, MaxCount          |
+|     ClassSize                |
+|     Chunks[Count]            |---> free block (the last one is used first)
+|   Stats                      |
+|   Allocator                  |--+
++------------------------------+  |
+                                  |
++-Allocator (static)------------+ |
+| Cookie                        | |
+| Stats                         | |
+| Primary                       |<+
+|   RegionInfoArray[ClassId]    |   +-BatchGroup----------+   +-Batch---------+
+|     RegionBeg                 |   | Next                |   | Next          |---> Batch ...
+|     FreeList (BlockList)      |-->| CompactPtrGroupBase |   | Count         |
+|     MappedUser, AllocatedUser |   | Batches             |-->| Blocks[Count] |---> free block
+| Secondary                     |   +---------------------+   +---------------+
+|   Cache.Entries[]             |---> cached large block (CommitBase, CommitSize, BlockBegin)
+| Quarantine                    |
+| TSDRegistry                   |
++-------------------------------+
+
+* The blocks of each size class are carved from its region (64-bit), or from the regions of 1 << RegionSizeLog
+  bytes recorded in PossibleRegions (32-bit). The class 0 holds the batches of the free lists.
+* Freed blocks go to Chunks of the local cache first. When Count reaches MaxCount, a half of them are moved
+  to the free list of the primary as a batch. Before LLVM 16, the free list is a list of TransferBatch.
+* A block in Chunks and Blocks is a compact pointer, (block - RegionBeg) >> CompactPtrScale (64-bit),
+  since LLVM 17. It is the block itself before, unless the config compacts it, and on 32-bit.
+* malloc() returns the block + 0x10 (64-bit) or + 0x8 (32-bit), unless the alignment is larger than it.
+  The chunk header is just before the returned pointer.
+* Freed blocks larger than the largest class are cached in the entries of the secondary. The layout of the
+  entries varies among versions, so valid entries are found by the relations of their fields.
+  BlockBegin + 0x10 (64-bit) or + 0x8 (32-bit) is returned on reuse (Block + 0x40 or + 0x20 before LLVM 13).
+* The quarantine (disabled by default) is not displayed.
+* Symbols are not used. The TSD is found by scanning the TLS near the thread pointer for the pointer to
+  Primary, which ends the local cache. For the shared TSDs, the TLS has a pointer to a TSD of the registry.
+* Supported versions are LLVM 11 to 23 and main (2026/10). Officially, Scudo supports x86 and x86_64,
+  ARM32, ARM64, MIPS32, MIPS64 and PPC64 (LLVM 13~), LoongArch64 (LLVM 16~), RISC-V64 (LLVM 17~)
+  and S390X (LLVM 22~).
+```
+
 ## `sfmalloc-heap-dump`
 
 SFMalloc heap free-list viewer (x64 only).

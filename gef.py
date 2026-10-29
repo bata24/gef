@@ -177610,6 +177610,777 @@ class DlmallocHeapDumpCommand(GenericCommand, BufferingOutput):
 
 
 @register_command
+class ScudoHeapDumpCommand(GenericCommand, BufferingOutput):
+    """Scudo (the standalone allocator of LLVM) heap free-list viewer."""
+
+    _cmdline_ = "scudo-heap-dump"
+    _category_ = "05-d. Heap - Other"
+
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("-hh", "--help-simple", action="store_true", help="show help without ASCII diagram.")
+    parser.add_argument("-a", "--all", action="store_true", help="dump the local caches of all threads.")
+    parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
+    parser.add_argument("-v", "--verbose", action="store_true", help="display also empty lists.")
+    _syntax_ = parser.format_help()
+
+    _note_ = "\n".join([
+        "Simplified Scudo structure (64-bit):",
+        "",
+        "+-TSD (thread_local)-----------+",
+        "| Cache                        |",
+        "|   PerClassArray[ClassId]     |",
+        "|     Count, MaxCount          |",
+        "|     ClassSize                |",
+        "|     Chunks[Count]            |---> free block (the last one is used first)",
+        "|   Stats                      |",
+        "|   Allocator                  |--+",
+        "+------------------------------+  |",
+        "                                  |",
+        "+-Allocator (static)------------+ |",
+        "| Cookie                        | |",
+        "| Stats                         | |",
+        "| Primary                       |<+",
+        "|   RegionInfoArray[ClassId]    |   +-BatchGroup----------+   +-Batch---------+",
+        "|     RegionBeg                 |   | Next                |   | Next          |---> Batch ...",
+        "|     FreeList (BlockList)      |-->| CompactPtrGroupBase |   | Count         |",
+        "|     MappedUser, AllocatedUser |   | Batches             |-->| Blocks[Count] |---> free block",
+        "| Secondary                     |   +---------------------+   +---------------+",
+        "|   Cache.Entries[]             |---> cached large block (CommitBase, CommitSize, BlockBegin)",
+        "| Quarantine                    |",
+        "| TSDRegistry                   |",
+        "+-------------------------------+",
+        "",
+        "* The blocks of each size class are carved from its region (64-bit), or from the regions of 1 << RegionSizeLog",
+        "  bytes recorded in PossibleRegions (32-bit). The class 0 holds the batches of the free lists.",
+        "* Freed blocks go to Chunks of the local cache first. When Count reaches MaxCount, a half of them are moved",
+        "  to the free list of the primary as a batch. Before LLVM 16, the free list is a list of TransferBatch.",
+        "* A block in Chunks and Blocks is a compact pointer, (block - RegionBeg) >> CompactPtrScale (64-bit),",
+        "  since LLVM 17. It is the block itself before, unless the config compacts it, and on 32-bit.",
+        "* malloc() returns the block + 0x10 (64-bit) or + 0x8 (32-bit), unless the alignment is larger than it.",
+        "  The chunk header is just before the returned pointer.",
+        "* Freed blocks larger than the largest class are cached in the entries of the secondary. The layout of the",
+        "  entries varies among versions, so valid entries are found by the relations of their fields.",
+        "  BlockBegin + 0x10 (64-bit) or + 0x8 (32-bit) is returned on reuse (Block + 0x40 or + 0x20 before LLVM 13).",
+        "* The quarantine (disabled by default) is not displayed.",
+        "* Symbols are not used. The TSD is found by scanning the TLS near the thread pointer for the pointer to",
+        "  Primary, which ends the local cache. For the shared TSDs, the TLS has a pointer to a TSD of the registry.",
+        "* Supported versions are LLVM 11 to 23 and main (2026/10). Officially, Scudo supports x86 and x86_64,",
+        "  ARM32, ARM64, MIPS32, MIPS64 and PPC64 (LLVM 13~), LoongArch64 (LLVM 16~), RISC-V64 (LLVM 17~)",
+        "  and S390X (LLVM 22~).",
+    ])
+
+    # LocalStats *Next, *Prev; atomic_uptr StatsArray[3];
+    LOCAL_STATS_WORDS = 5
+    # MaxNumCachedHint of the size class map is u16, but larger ones are unlikely
+    MAX_NUM_CACHED_HINT = 0x80
+    TSD_SEARCH_RANGE = 0x10000
+    # MapAllocatorCache with 256 entries (AndroidConfig)
+    SECONDARY_SEARCH_RANGE = 0x4040
+    MAX_REGION_INFO_SIZE = 0x200
+    # RegionSizeLog of the 64-bit configs is 27~32
+    MIN_REGION_SIZE = 1 << 18
+    PRIMARY64_LAYOUTS = [
+        # LLVM version, offsetof(RegionBeg), offsetof(FreeList), offsetof(MappedUser), offsetof(AllocatedUser)
+        ("24~", 0x10, 0x18, 0x50, 0x58),
+        ("18~23", 0x10, 0x20, 0x58, 0x60),
+        ("17", 0x8, 0x18, 0x60, 0x68),
+        ("13~16", 0x20, 0x8, 0x40, 0x48),
+        ("11~12", 0x38, 0x8, 0x40, 0x48),
+    ]
+    PRIMARY32_LAYOUTS = [
+        # LLVM version, has Options, offsetof(FreeList), offsetof(CurrentRegion), offsetof(AllocatedUser), sizeof(ByteMapMutex)
+        ("17~", True, 0x4, 0x18, 0x24, 4),
+        ("12~16", True, 0x4, 0x10, 0x24, 0),
+        ("11", False, 0x4, 0x10, 0x28, 0),
+    ]
+    # the first one is the latest
+    BATCH_LAYOUTS = ["21~", "20", "16~19", "11~15"]
+
+    def cache_line_size(self):
+        # SCUDO_CACHE_LINE_SIZE
+        if is_ppc64():
+            return 128
+        return 64
+
+    def read_cache(self, field, data, start):
+        """
+        class SizeClassAllocatorLocalCache<SizeClassAllocator> {
+            struct alignas(SCUDO_CACHE_LINE_SIZE) PerClass { // not aligned (-15)
+                u16 Count; // u32 (-15)
+                u16 MaxCount; // u32 (-15)
+                uptr ClassSize; // 0 for BatchClassId (16-)
+                CompactPtrT Chunks[2 * SizeClassMap::MaxNumCachedHint]; // void * (-12)
+            } PerClassArray[NumClasses];
+            LocalStats Stats; // LocalStats *Next, *Prev; atomic_uptr StatsArray[3];
+            SizeClassAllocator *Allocator;
+        };
+        """
+        ptrsize = current_arch.ptrsize
+        cl = self.cache_line_size()
+        # data is the memory from start, which has the local cache ending with the field
+        stats = field - ptrsize * self.LOCAL_STATS_WORDS
+        for fmt in ("H", "I"):
+            if fmt == "H":
+                header = ptrsize * 2
+            else:
+                header = 8 + ptrsize
+            strides = set()
+            for esize in {4, ptrsize}:
+                for hint in range(1, self.MAX_NUM_CACHED_HINT + 1):
+                    if fmt == "H":
+                        strides.add(align(header + hint * 2 * esize, cl))
+                    else:
+                        strides.add(align(header + hint * 2 * esize, ptrsize))
+            for stride in sorted(strides):
+                # walk back from the largest class until the class 0 (BatchClassId)
+                entries = []
+                capacity = (stride - header) // 4
+                while True:
+                    offset = stats - start - (len(entries) + 1) * stride
+                    if offset < 0:
+                        entries = None
+                        break
+                    count, max_count = struct.unpack_from(Endian.endian_str() + fmt * 2, data, offset)
+                    class_size = slice_unpack(data[offset + header - ptrsize:offset + header], ptrsize)[0]
+                    if entries and not 0 < class_size < entries[-1][3]:
+                        break
+                    if not 0 < max_count <= capacity or max_count % 2 or count > max_count or class_size == 0:
+                        entries = None
+                        break
+                    entries.append((start + offset, count, max_count, class_size))
+                if not entries or len(entries) < 2 or not 0 < max_count <= capacity or count > max_count:
+                    continue
+                if fmt == "H" and (start + offset) % cl:
+                    continue
+                entries.append((start + offset, count, max_count, class_size))
+                dic = {}
+                dic["addr"] = start + offset
+                dic["header"] = header
+                dic["entries"] = entries[::-1]
+                dic["num_classes"] = len(entries)
+                # the class sizes of BatchClassId and the others
+                dic["class_sizes"] = [x[3] for x in dic["entries"]]
+                dic["stats"] = stats
+                dic["primary"] = slice_unpack(data[field - start:field - start + ptrsize], ptrsize)[0]
+                cache = GefUtil.dict_to_namedtuple("LocalCache", dic)
+                return cache
+        return None
+
+    def read_primary64(self, cache):
+        """
+        class SizeClassAllocator64<Config> {
+            ...
+            alignas(SCUDO_CACHE_LINE_SIZE) RegionInfo RegionInfoArray[NumClasses];
+        };
+
+        struct RegionInfo { // 24~
+            HybridMutex FLLock;
+            ConditionVariableT FLLockCV;
+            HybridMutex MMLock;
+            uptr RegionBeg;
+            BlocksInfo FreeListInfo; // SinglyLinkedList<BatchGroupT> BlockList; uptr PoppedBlocks, PushedBlocks;
+            PagesInfo MemMapInfo; // MemMapT MemMap; uptr MappedUser; uptr AllocatedUser;
+            ReleaseToOsInfo ReleaseInfo;
+            bool Exhausted;
+            ...
+            char Padding[...]; // up to the cache line
+        };
+        """
+        cl = self.cache_line_size()
+        n = cache.num_classes
+        array = cache.primary + cl
+        section = ProcessMap.process_lookup_address(array)
+        if section is None:
+            return None
+        data = read_memory(array, min(section.page_end - array, n * self.MAX_REGION_INFO_SIZE))
+        for layout, rb_offset, fl_offset, mu_offset, au_offset in self.PRIMARY64_LAYOUTS:
+            for stride in range(cl, self.MAX_REGION_INFO_SIZE + 1, cl):
+                if stride < au_offset + 8 or stride * n > len(data):
+                    continue
+                region_beg = [u64(data[stride * i + rb_offset:stride * i + rb_offset + 8]) for i in range(n)]
+                # each region starts at a random offset of 1~16 pages, and RegionInfoArray is shuffled (17-)
+                bases = sorted(region_beg)
+                diff = bases[1] - bases[0]
+                if diff <= 0:
+                    continue
+                region_size = 1 << round(math.log2(diff))
+                if region_size < self.MIN_REGION_SIZE:
+                    continue
+                if not all(abs(x - bases[0] - region_size * i) < region_size // 4 for i, x in enumerate(bases)):
+                    continue
+                classes = []
+                for i in range(n):
+                    free_list = struct.unpack_from(Endian.endian_str() + "3Q", data, stride * i + fl_offset)
+                    mapped_user, allocated_user = struct.unpack_from(Endian.endian_str() + "2Q", data, stride * i + mu_offset)
+                    classes.append(GefUtil.dict_to_namedtuple("RegionInfo", {
+                        "addr": array + stride * i, "region_beg": region_beg[i], "mapped_user": mapped_user,
+                        "allocated_user": allocated_user, "free_list": free_list,
+                    }))
+                if not all(x.allocated_user <= x.mapped_user <= region_size and (x.free_list[0] == 0) == (x.free_list[1] == 0)
+                           for x in classes):
+                    continue
+                if not all(is_valid_addr(x.region_beg) for x in classes if x.mapped_user):
+                    continue
+                # batches are blocks of the class 0
+                region0 = classes[0]
+                if not all(region0.region_beg <= x.free_list[1] < region0.region_beg + region0.allocated_user
+                           for x in classes if x.free_list[1]):
+                    continue
+                dic = {}
+                dic["addr"] = cache.primary
+                dic["ptrsize"] = 8
+                dic["layout"] = layout
+                dic["num_classes"] = n
+                dic["region_size"] = region_size
+                dic["secondary"] = array + stride * n
+                dic["classes"] = classes
+                dic["class_sizes"] = cache.class_sizes
+                primary = GefUtil.dict_to_namedtuple("Primary", dic)
+                return primary
+        return None
+
+    def read_primary32(self, cache):
+        """
+        class SizeClassAllocator32<Config> {
+            AtomicOptions Options; // (12-)
+            SizeClassInfo SizeClassInfoArray[NumClasses];
+            HybridMutex ByteMapMutex; // (17-)
+            ByteMap PossibleRegions; // u8 Map[1 << (32 - RegionSizeLog)]; (ClassId + 1 of each region)
+            ...
+        };
+
+        struct alignas(SCUDO_CACHE_LINE_SIZE) SizeClassInfo { // 17~
+            HybridMutex Mutex;
+            BlocksInfo FreeListInfo; // SinglyLinkedList<BatchGroupT> BlockList; uptr PoppedBlocks, PushedBlocks;
+            uptr CurrentRegion;
+            uptr CurrentRegionAllocated;
+            u32 RandState;
+            uptr AllocatedUser;
+            ...
+        };
+        """
+        cl = self.cache_line_size()
+        n = cache.num_classes
+        for layout, has_options, fl_offset, cr_offset, au_offset, mutex_size in self.PRIMARY32_LAYOUTS:
+            array = cache.primary + (cl if has_options else 0)
+            for stride in range(cl, self.MAX_REGION_INFO_SIZE + 1, cl):
+                try:
+                    data = read_memory(array, stride * n + mutex_size)
+                except gdb.MemoryError:
+                    continue
+                classes = []
+                for i in range(n):
+                    free_list = struct.unpack_from(Endian.endian_str() + "3I", data, stride * i + fl_offset)
+                    current_region, current_region_allocated = struct.unpack_from(
+                        Endian.endian_str() + "2I", data, stride * i + cr_offset,
+                    )
+                    allocated_user = struct.unpack_from(Endian.endian_str() + "I", data, stride * i + au_offset)[0]
+                    classes.append((array + stride * i, current_region, current_region_allocated, allocated_user, free_list))
+                if not any(x[1] for x in classes):
+                    continue
+                for region_size_log in range(16, 25):
+                    region_size = 1 << region_size_log
+                    try:
+                        byte_map = read_memory(array + stride * n + mutex_size, 1 << (32 - region_size_log))
+                    except gdb.MemoryError:
+                        continue
+                    if max(byte_map) > n:
+                        continue
+                    # each region is recorded with its ClassId + 1, and batches are blocks of the class 0
+                    if not all(
+                        x[1] % region_size == 0 and x[2] <= region_size
+                        and (x[1] == 0 or byte_map[x[1] >> region_size_log] == i + 1)
+                        and (x[4][0] == 0) == (x[4][1] == 0) and (x[4][1] == 0 or byte_map[x[4][1] >> region_size_log] == 1)
+                        for i, x in enumerate(classes)
+                    ):
+                        continue
+                    regions = [[] for _ in range(n)]
+                    for i, class_id in enumerate(byte_map):
+                        if class_id:
+                            regions[class_id - 1].append(i << region_size_log)
+                    dic = {}
+                    dic["addr"] = cache.primary
+                    dic["ptrsize"] = 4
+                    dic["layout"] = layout
+                    dic["num_classes"] = n
+                    dic["region_size"] = region_size
+                    dic["byte_map"] = byte_map
+                    # MinRegionIndex and MaxRegionIndex (-11), ReleaseToOsIntervalMs, RegionsStashMutex,
+                    # NumberOfStashedRegions, RegionsStash[4]
+                    tail = 4 * (9 if layout == "11" else 7)
+                    dic["secondary"] = align(array + stride * n + mutex_size + len(byte_map) + tail, cl)
+                    dic["classes"] = [GefUtil.dict_to_namedtuple("SizeClassInfo", {
+                        "addr": x[0], "current_region": x[1], "current_region_allocated": x[2], "allocated_user": x[3],
+                        "free_list": x[4], "regions": regions[i],
+                    }) for i, x in enumerate(classes)]
+                    dic["class_sizes"] = cache.class_sizes
+                    primary = GefUtil.dict_to_namedtuple("Primary", dic)
+                    return primary
+        return None
+
+    def read_primary(self, cache):
+        try:
+            if current_arch.ptrsize == 8:
+                return self.read_primary64(cache)
+            return self.read_primary32(cache)
+        except gdb.MemoryError:
+            return None
+
+    def is_block(self, primary, class_id, block):
+        if primary.ptrsize == 8:
+            region_info = primary.classes[class_id]
+            offset = block - region_info.region_beg
+            if not 0 <= offset < region_info.allocated_user:
+                return False
+        else:
+            if not 0 <= block < 1 << 32 or primary.byte_map[block // primary.region_size] != class_id + 1:
+                return False
+            offset = block % primary.region_size
+        # the class size of BatchClassId is 0 (16-)
+        size = primary.class_sizes[class_id]
+        return size == 0 or offset % size == 0
+
+    def decode(self, primary, mode, class_id, value):
+        _, scale = mode
+        if scale is None:
+            return value
+        return primary.classes[class_id].region_beg + (value << scale)
+
+    def read_chunks(self, cache, mode):
+        esize, _ = mode
+        chunks = []
+        for addr, count, _, _ in cache.entries:
+            chunks.append(slice_unpack(read_memory(addr + cache.header, count * esize), esize))
+        return chunks
+
+    def read_batch(self, primary, mode, layout, addr, num_cached):
+        """
+        struct Batch<SizeClassAllocator> { // 21~
+            Batch *Next;
+            u16 Count;
+            CompactPtrT Blocks[];
+        };
+
+        struct TransferBatch<SizeClassAllocator> { // 16~20
+            TransferBatch *Next;
+            CompactPtrT Batch[MaxNumCachedHint];
+            u16 Count;
+        };
+
+        struct TransferBatch { // -15
+            TransferBatch *Next;
+            u32 Count;
+            CompactPtrT Batch[MaxNumCachedHint]; // void * (-12)
+        };
+        """
+        ptrsize = primary.ptrsize
+        esize, _ = mode
+        next_batch = read_int_from_memory(addr)
+        if layout in ("16~19", "20"):
+            blocks = addr + ptrsize
+            count = read_int16_from_memory(blocks + num_cached * esize)
+        elif layout == "21~":
+            count = read_int16_from_memory(addr + ptrsize)
+            blocks = align(addr + ptrsize + 2, esize)
+        else:
+            count = read_int32_from_memory(addr + ptrsize)
+            blocks = align(addr + ptrsize + 4, esize)
+        if not 0 < count <= num_cached:
+            return next_batch, count, None
+        return next_batch, count, slice_unpack(read_memory(blocks, count * esize), esize)
+
+    def read_free_list(self, primary, mode, layout, class_id, num_cached):
+        """
+        struct BatchGroup<SizeClassAllocator> { // 20~
+            BatchGroup *Next;
+            uptr CompactPtrGroupBase;
+            uptr BytesInBGAtLastCheckpoint;
+            SinglyLinkedList<Batch<SizeClassAllocator>> Batches; // uptr Size; Batch *First, *Last;
+            u16 MaxCachedPerBatch;
+        };
+
+        struct BatchGroup { // 16~19
+            BatchGroup *Next;
+            uptr CompactPtrGroupBase; // GroupId (16)
+            u16 MaxCachedPerBatch;
+            uptr PushedBlocks;
+            uptr BytesInBGAtLastCheckpoint; // PushedBlocksAtLastCheckpoint (16)
+            SinglyLinkedList<TransferBatch> Batches;
+        };
+        """
+        ptrsize = primary.ptrsize
+        size, first, _ = primary.classes[class_id].free_list
+        if layout == "11~15":
+            groups = [(None, None, size, first)]
+        else:
+            groups = []
+            seen = set()
+            cur = first
+            while cur and len(groups) <= size:
+                if cur in seen or not self.is_block(primary, 0, cur):
+                    groups.append((cur, None, 0, 0))
+                    break
+                seen.add(cur)
+                next_group, group_base = slice_unpack(read_memory(cur, ptrsize * 2), ptrsize)
+                offset = ptrsize * 5 if layout == "16~19" else ptrsize * 3
+                batches_size, batches_first = slice_unpack(read_memory(cur + offset, ptrsize * 2), ptrsize)
+                groups.append((cur, group_base, batches_size, batches_first))
+                cur = next_group
+        result = []
+        for group, group_base, batches_size, batches_first in groups:
+            batches = []
+            if group_base is not None or group is None:
+                seen = set()
+                cur = batches_first
+                while cur and len(batches) <= batches_size:
+                    if cur in seen or not self.is_block(primary, 0, cur):
+                        batches.append((cur, 0, None))
+                        break
+                    seen.add(cur)
+                    next_batch, count, values = self.read_batch(primary, mode, layout, cur, num_cached)
+                    blocks = None
+                    if values is not None:
+                        blocks = [self.decode(primary, mode, class_id, x) for x in values]
+                    batches.append((cur, count, blocks))
+                    cur = next_batch
+            result.append((group, group_base, batches_size, batches))
+        return result
+
+    def get_layout(self, primary, caches, num_cached):
+        # CompactPtrT (the size of each block) and CompactPtrScale (None for raw pointers), and the layout of batches
+        if primary.ptrsize == 8:
+            modes = [(8, None), (8, 0), (4, 4), (8, 4)]
+        else:
+            modes = [(4, None)]
+        candidates = []
+        for mode in modes:
+            blocks = []
+            for cache in caches:
+                for class_id, values in enumerate(self.read_chunks(cache, mode)):
+                    blocks += [(class_id, self.decode(primary, mode, class_id, x)) for x in values]
+            for layout in self.BATCH_LAYOUTS:
+                invalid = 0
+                free_list_blocks = []
+                for class_id in range(primary.num_classes):
+                    try:
+                        result = self.read_free_list(primary, mode, layout, class_id, num_cached)
+                    except gdb.MemoryError:
+                        invalid += 1
+                        continue
+                    for group, group_base, batches_size, batches in result:
+                        if group is not None and group_base is None or len(batches) != batches_size:
+                            invalid += 1
+                        for _, _, x in batches:
+                            if x is None:
+                                invalid += 1
+                            else:
+                                free_list_blocks += [(class_id, y) for y in x]
+                valid = sum(self.is_block(primary, class_id, x) for class_id, x in blocks + free_list_blocks)
+                invalid += len(blocks + free_list_blocks) - valid
+                candidates.append((invalid, -valid, mode, layout))
+        _, _, mode, layout = min(candidates, key=lambda x: x[:2])
+        return mode, layout
+
+    def read_cookie(self, primary, cache):
+        # Cookie and QuarantineMaxChunkSize are followed by Stats (GlobalStats), and then Primary (12-)
+        ptrsize = primary.ptrsize
+        cl = self.cache_line_size()
+        global_stats_size = ptrsize * (self.LOCAL_STATS_WORDS + 4)
+        allocator = primary.addr - align(8 + global_stats_size, cl)
+        try:
+            # the list of LocalStats has the stats of the local cache
+            stats_list = allocator + 8 + ptrsize * (self.LOCAL_STATS_WORDS + 1)
+            size, first = slice_unpack(read_memory(stats_list, ptrsize * 2), ptrsize)
+            cur = first
+            for _ in range(min(size, 0x1000)):
+                if cur == cache.stats:
+                    return read_int32_from_memory(allocator)
+                cur = read_int_from_memory(cur)
+        except gdb.MemoryError:
+            pass
+        return None
+
+    def read_secondary_cache(self, primary):
+        """
+        class MapAllocatorCache<Config> { // 13~
+            ...
+            CachedBlock Entries[EntriesArraySize]; // uptr CommitBase, CommitSize, (MapBase, MapSize (-16),) BlockBegin; ...
+            CachedBlock Quarantine[QuarantineSize];
+            ...
+        };
+
+        class MapAllocatorCache<...> { // -12
+            ...
+            CachedBlock Entries[EntriesArraySize]; // uptr Block, BlockEnd, MapBase, MapSize; ...
+            ...
+        };
+        """
+        ptrsize = primary.ptrsize
+        start = primary.secondary
+        section = ProcessMap.process_lookup_address(start)
+        if section is None:
+            return []
+        end = min(section.page_end, start + self.SECONDARY_SEARCH_RANGE)
+        words = slice_unpack(read_memory(start, end - start), ptrsize)
+        # the layout of the cache varies, so valid entries are searched by the relations of the fields
+        page_size = get_pagesize()
+        entries = []
+        i = 0
+        while i < len(words) - 5:
+            a, b, c, d, e = words[i:i + 5]
+            entry = None
+            if a and b and a % page_size == 0 and b % page_size == 0:
+                if c <= a and a + b <= c + d and a < e < a + b and c % page_size == 0:
+                    # CommitBase, CommitSize, MapBase, MapSize, BlockBegin (13-16)
+                    entry = (start + i * ptrsize, a, b, e, ("CommitSize", "BlockBegin"))
+                elif a < c < a + b:
+                    # CommitBase, CommitSize, BlockBegin (17-)
+                    entry = (start + i * ptrsize, a, b, c, ("CommitSize", "BlockBegin"))
+            if entry is None and c and d and c % page_size == 0 and d % page_size == 0 and c <= a < b <= c + d:
+                # Block (the header), BlockEnd, MapBase, MapSize (-12)
+                entry = (start + i * ptrsize, c, d, a, ("MapSize", "Block"))
+            if entry and is_valid_addr(entry[1]) and is_valid_addr(entry[1] + entry[2] - 1):
+                entries.append(entry)
+                i += 4
+            else:
+                i += 1
+        return entries
+
+    def is_cache_head(self, data):
+        # Count and MaxCount of PerClassArray[0] are u16 (16-) or u32
+        for fmt in ("H", "I"):
+            count, max_count = struct.unpack_from(Endian.endian_str() + fmt * 2, data)
+            if 0 < max_count <= self.MAX_NUM_CACHED_HINT * 2 and count <= max_count:
+                return True
+        return False
+
+    def find_caches(self, start, data):
+        # the local cache ends with the pointer to Primary, which is aligned to the cache line
+        ptrsize = current_arch.ptrsize
+        cl = self.cache_line_size()
+        caches = []
+        for i, value in enumerate(slice_unpack(data, ptrsize)):
+            if not value or value % cl or not is_valid_addr(value):
+                continue
+            cache = self.read_cache(start + i * ptrsize, data, start)
+            if cache:
+                caches.append(cache)
+        return caches
+
+    def get_thread_cache(self):
+        tp = current_arch.get_tls()
+        if not tp:
+            return None, None
+        # the static TLS is placed below (x86) or above (others) the thread pointer
+        lower = ProcessMap.process_lookup_address(tp - 1)
+        upper = ProcessMap.process_lookup_address(tp)
+        start = max(lower.page_start, tp - 0x10000) if lower else tp
+        end = min(upper.page_end, tp + 0x10000) if upper else tp
+        data = read_memory(start, end - start)
+        ptrsize = current_arch.ptrsize
+        cl = self.cache_line_size()
+        # the exclusive TSD is in the TLS. A block in Chunks (-16) may look like the end of a smaller cache at the same
+        # address, so larger ones are preferred
+        caches = self.find_caches(start, data)
+        candidates = [(abs(x.addr - tp), -x.num_classes, x) for x in caches]
+        # the shared TSD is in the registry, and the TLS has the pointer to it with flags in the lower bits.
+        # The window may include the registry, when the TLS follows .bss (static binaries)
+        tsd_caches = {}
+        for i, value in enumerate(slice_unpack(data, ptrsize)):
+            addr = start + i * ptrsize
+            tsd = value & ~(cl - 1)
+            if not tsd or value - tsd >= 4 or any(x.addr <= addr < x.stats for x in caches):
+                continue
+            if tsd not in tsd_caches:
+                tsd_caches[tsd] = []
+                section = ProcessMap.process_lookup_address(tsd)
+                if start <= tsd < end:
+                    tsd_caches[tsd] = caches
+                elif section and section.is_writable() and tsd + cl * 2 <= section.page_end:
+                    try:
+                        # PerClassArray[0] (BatchClassId) is at the head (-16) or after the mutex and the precedence (17-)
+                        head = read_memory(tsd, cl * 2)
+                        if any(self.is_cache_head(head[x:x + cl]) for x in (0, cl)):
+                            tsd_data = read_memory(tsd, min(section.page_end, tsd + self.TSD_SEARCH_RANGE) - tsd)
+                            tsd_caches[tsd] = self.find_caches(tsd, tsd_data)
+                    except gdb.MemoryError:
+                        pass
+            # TSD has the local cache at the head (-16) or after the mutex and the precedence (17-)
+            for cache in tsd_caches[tsd]:
+                if cache.addr in (tsd, tsd + cl):
+                    candidates.append((abs(addr - tp), -cache.num_classes, cache))
+        for _, _, cache in sorted(candidates, key=lambda x: x[:2]):
+            primary = self.read_primary(cache)
+            if primary:
+                return cache, primary
+        return None, None
+
+    def get_cache_list(self):
+        if self.args.all:
+            threads = None
+        else:
+            threads = [gdb.selected_thread()]
+        cache_list = []
+        primary = None
+        with ContextManager.threads(threads) as threads:
+            for thread in threads:
+                try:
+                    cache, p = self.get_thread_cache()
+                except gdb.MemoryError:
+                    continue
+                if cache is None:
+                    continue
+                if primary is None:
+                    primary = p
+                if cache.primary == primary.addr:
+                    cache_list.append((thread.num, cache))
+        return cache_list, primary
+
+    def block_to_str(self, block, valid):
+        freed_address_color = Config.get("theme.heap_chunk_address_freed")
+        corrupted_msg_color = Config.get("theme.heap_corrupted_msg")
+        if valid:
+            return Color.colorify_hex(block, freed_address_color)
+        return Color.colorify("{:#x} (corrupted)".format(block), corrupted_msg_color)
+
+    def dump_cache(self, thread_num, cache, primary, mode):
+        title = "Local cache @ {:#x} (Thread Id:{:d})".format(cache.addr, thread_num)
+        self.out.append(titlify(title, color="bold", msg_color="bold"))
+        for class_id, ((addr, count, max_count, _), values) in enumerate(zip(cache.entries, self.read_chunks(cache, mode))):
+            if count == 0 and not self.args.verbose:
+                continue
+            size = primary.class_sizes[class_id]
+            if class_id == 0:
+                size_str = "BatchClass"
+            else:
+                size_str = "size: {:#x}".format(size)
+            self.out.append("PerClassArray[{:#x}] ({:s}, Count: {:#x}, MaxCount: {:#x}) @ {:#x}".format(
+                class_id, size_str, count, max_count, addr,
+            ))
+            # Chunks are popped from the last one
+            for value in values[::-1]:
+                block = self.decode(primary, mode, class_id, value)
+                self.out.append(" -> {:s}".format(self.block_to_str(block, self.is_block(primary, class_id, block))))
+        return
+
+    def dump_free_list(self, primary, mode, layout, class_id, num_cached):
+        corrupted_msg_color = Config.get("theme.heap_corrupted_msg")
+        batch_name = "Batch" if layout == "21~" else "TransferBatch"
+
+        result = self.read_free_list(primary, mode, layout, class_id, num_cached)
+        lines = []
+        num_blocks = 0
+        for group, group_base, batches_size, batches in result:
+            prefix = " -> "
+            if group is not None:
+                if group_base is None:
+                    lines.append(prefix + Color.colorify("{:#x} (corrupted)".format(group), corrupted_msg_color))
+                    continue
+                lines.append("{:s}BatchGroup @ {:#x} (CompactPtrGroupBase: {:#x}, Batches.Size: {:#x})".format(
+                    prefix, group, group_base, batches_size,
+                ))
+                prefix = "     -> "
+            for batch, count, blocks in batches:
+                if blocks is None:
+                    if count:
+                        msg = "{:#x} (Count: {:#x}, corrupted)".format(batch, count)
+                    else:
+                        msg = "{:#x} (corrupted)".format(batch)
+                    lines.append(prefix + Color.colorify(msg, corrupted_msg_color))
+                    continue
+                lines.append("{:s}{:s} @ {:#x} (Count: {:#x})".format(prefix, batch_name, batch, count))
+                for block in blocks:
+                    valid = self.is_block(primary, class_id, block)
+                    lines.append(" " * len(prefix) + "    -> " + self.block_to_str(block, valid))
+                num_blocks += len(blocks)
+        return lines, num_blocks
+
+    def dump_primary(self, primary, mode, layout, num_cached):
+        for class_id, info in enumerate(primary.classes):
+            if not info.free_list[0] and not self.args.verbose:
+                continue
+            size = primary.class_sizes[class_id]
+            if class_id == 0:
+                size_str = "BatchClass"
+            else:
+                size_str = "size: {:#x}".format(size)
+            if primary.ptrsize == 8:
+                title = "RegionInfoArray[{:#x}] ({:s}) @ {:#x}".format(class_id, size_str, info.addr)
+                self.out.append(titlify(title))
+                self.out.append("RegionBeg: {:#x}, MappedUser: {:#x}, AllocatedUser: {:#x}".format(
+                    info.region_beg, info.mapped_user, info.allocated_user,
+                ))
+            else:
+                title = "SizeClassInfoArray[{:#x}] ({:s}) @ {:#x}".format(class_id, size_str, info.addr)
+                self.out.append(titlify(title))
+                self.out.append("CurrentRegion: {:#x}, CurrentRegionAllocated: {:#x}, AllocatedUser: {:#x}".format(
+                    info.current_region, info.current_region_allocated, info.allocated_user,
+                ))
+                self.out.append("regions: {:s}".format(", ".join("{:#x}".format(x) for x in info.regions)))
+            try:
+                lines, num_blocks = self.dump_free_list(primary, mode, layout, class_id, num_cached)
+            except gdb.MemoryError:
+                self.err_add_out("Cannot read the free list")
+                continue
+            self.out.append("FreeList (Size: {:#x}, num: {:#x}):".format(info.free_list[0], num_blocks))
+            self.out.extend(lines)
+        return
+
+    def dump_secondary(self, primary):
+        freed_address_color = Config.get("theme.heap_chunk_address_freed")
+
+        entries = self.read_secondary_cache(primary)
+        if not entries and not self.args.verbose:
+            return
+        self.out.append(titlify("Secondary @ {:#x}".format(primary.secondary)))
+        self.out.append("Cache (num: {:#x}):".format(len(entries)))
+        for addr, base, size, block, (size_name, block_name) in entries:
+            self.out.append(" -> {:s}-{:#x} ({:s}: {:#x}, {:s}: {:#x}) @ {:#x}".format(
+                Color.colorify_hex(base, freed_address_color), base + size, size_name, size, block_name, block, addr,
+            ))
+        return
+
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @Decorator.only_if_specific_arch(arch=(
+        "x86_32", "x86_64", "ARM32", "ARM64", "MIPS32", "MIPS64", "PPC64", "LOONGARCH64", "RISCV64", "S390X",
+    ))
+    def do_invoke(self, args):
+        cache_list, primary = self.get_cache_list()
+        if primary is None:
+            err("Could not find the local cache")
+            return
+
+        # MaxNumCachedHint is the size of a batch, and MaxCount of small classes is twice it
+        num_cached = max(x[2] for x in cache_list[0][1].entries[1:]) // 2
+        mode, layout = self.get_layout(primary, [cache for _, cache in cache_list], num_cached)
+
+        self.out = []
+        title = "Primary @ {:#x} (SizeClassAllocator{:d})".format(primary.addr, primary.ptrsize * 8)
+        self.out.append(titlify(title, color="bold", msg_color="bold"))
+        msg = "NumClasses: {:#x}, RegionSize: {:#x}, layout: LLVM {:s} (Batch: {:s})".format(
+            primary.num_classes, primary.region_size, primary.layout, layout,
+        )
+        self.out.append(msg)
+        cookie = self.read_cookie(primary, cache_list[0][1])
+        if cookie is not None:
+            self.out.append("Cookie: {:#010x}".format(cookie))
+        for thread_num, cache in cache_list:
+            try:
+                self.dump_cache(thread_num, cache, primary, mode)
+            except gdb.MemoryError:
+                self.err_add_out("Cannot read the local cache at {:#x}".format(cache.addr))
+        self.dump_primary(primary, mode, layout, num_cached)
+        try:
+            self.dump_secondary(primary)
+        except gdb.MemoryError:
+            self.err_add_out("Cannot read the secondary at {:#x}".format(primary.secondary))
+        self.print_output()
+        return
+
+
+@register_command
 class JemallocHeapDumpCommand(GenericCommand, BufferingOutput):
     """jemalloc (v3.0~) arena/bin/slab(run)/large/tcache viewer."""
 
