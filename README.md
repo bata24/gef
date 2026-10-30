@@ -570,7 +570,7 @@ For the usage and options of each command, see [docs/COMMANDS.md](docs/COMMANDS.
 ### Other
 
 <details>
-<summary><code>tcmalloc-heap-dump</code>, <code>musl-heap-dump</code>, <code>go-heap-dump</code>, <code>tlsf-heap-dump</code>, <code>hoard-heap-dump</code>, <code>mimalloc-heap-dump</code>, <code>scalloc-heap-dump</code>, <code>snmalloc-heap-dump</code>, <code>ssmalloc-heap-dump</code>, <code>jemalloc-heap-dump</code>, <code>sfmalloc-heap-dump</code>, <code>rpmalloc-heap-dump</code>, <code>tbbmalloc-heap-dump</code>, <code>zig-heap-dump</code>, <code>mesh-heap-dump</code>, <code>streamflow-heap-dump</code>, <code>supermalloc-heap-dump</code>, <code>dlmalloc-heap-dump</code>, <code>scudo-heap-dump</code></summary>
+<summary><code>tcmalloc-heap-dump</code>, <code>musl-heap-dump</code>, <code>go-heap-dump</code>, <code>tlsf-heap-dump</code>, <code>hoard-heap-dump</code>, <code>mimalloc-heap-dump</code>, <code>scalloc-heap-dump</code>, <code>snmalloc-heap-dump</code>, <code>ssmalloc-heap-dump</code>, <code>jemalloc-heap-dump</code>, <code>sfmalloc-heap-dump</code>, <code>rpmalloc-heap-dump</code>, <code>tbbmalloc-heap-dump</code>, <code>zig-heap-dump</code>, <code>mesh-heap-dump</code>, <code>streamflow-heap-dump</code>, <code>supermalloc-heap-dump</code>, <code>dlmalloc-heap-dump</code>, <code>scudo-heap-dump</code>, <code>mozjemalloc-heap-dump</code></summary>
 
 - `tcmalloc-heap-dump`: dumps TCMalloc (`gperftools-2.16-1` or named `libgoogle-perftools{4,-dev}`) free-list.
     - ![](images/tcmalloc-heap-dump.png)
@@ -692,6 +692,15 @@ For the usage and options of each command, see [docs/COMMANDS.md](docs/COMMANDS.
           `-ftls-model=initial-exec -nostdinc++ -nostdlib++ -fno-exceptions -fno-rtti -I . -I include *.cpp -o libscudo.so`.
         - Or use `libclang_rt.scudo_standalone-x86_64.so` of the distribution (e.g. `libclang-rt-21-dev` of Ubuntu).
         - Run your test program with `LD_PRELOAD=/PATH/TO/libscudo.so ./a.out`.
+- `mozjemalloc-heap-dump`: dumps mozjemalloc (the allocator of Firefox 58~) arenas, runs, large and huge allocations.
+    - ![](images/mozjemalloc-heap-dump.png)
+    - How to test (x64):
+        - Get and extract the official JS shell, e.g.
+          https://archive.mozilla.org/pub/firefox/releases/159.0/jsshell/jsshell-linux-x86_64.zip
+        - Save the following as `test.js`. It allocates 100 buffers of 0x300 bytes and frees half of them with `gc()`.
+          `a=[];for(i=0;i<100;i++)a.push(new ArrayBuffer(0x300));for(i=0;i<100;i+=2)a[i]=null;gc();print(1)`
+        - Run `LD_LIBRARY_PATH=. gdb --args ./js -f test.js`, `catch syscall write`, `run`,
+          and then `mozjemalloc-heap-dump -v -b 32` (bin[32] is 0x300 bytes).
 
 </details>
 

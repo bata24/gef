@@ -8043,6 +8043,84 @@ Simplified mimalloc structure:
 * --meta reports whether the layout comes from debug information or memory heuristics.
 ```
 
+## `mozjemalloc-heap-dump`
+
+mozjemalloc (Firefox 58~) arena/bin/run/large/huge viewer.
+
+
+### Syntax
+
+```text
+usage: mozjemalloc-heap-dump [-h] [-hh] [-a ARENA] [-b BIN_INDEX] [-x ADDRESS] [-n] [-q] [-v] [--meta]
+
+options:
+  -h, --help            show this help message and exit
+  -hh, --help-simple    show help without ASCII diagram.
+  -a, --arena ARENA     dump only the specified arena_t.
+  -b, --bin-index BIN_INDEX
+                        dump only the specified bin (small size class).
+  -x, --address ADDRESS
+                        show the arena, run, region and state of this address.
+  -n, --no-pager        do not use the pager.
+  -q, --quiet           quiet mode.
+  -v, --verbose         also dump the state of each region and free runs.
+  --meta                display offset information.
+```
+
+### Examples
+
+```gdb
+mozjemalloc-heap-dump                    # dump the bins, large and huge allocations of all arenas
+mozjemalloc-heap-dump -b 3 -v            # dump bin[3] of all arenas with the state of each region
+mozjemalloc-heap-dump -x 0x7ffff7615480  # show which region the address belongs to
+```
+
+### Notes
+
+```text
+Simplified mozjemalloc structure:
+
++-arena_t---------------------+       +-chunk (1MiB aligned)---------------------------+
+| mBins[]                     |<------| arena_chunk_t                                  |
+|  arena_bin_t                |       |  mArena                                        |
+|   mCurrentRun (~Firefox133) |---+   |  mPageMap[] (bits of each page)                |
+|   mNonFullRuns              |---+   |   small: run address | ALLOCATED               |
+|   mSizeClass                |   |   |   large: size | LARGE | ALLOCATED (1st page)   |
+|   mRunNumRegions            |   |   |   free : size (1st and last page)              |
+|   mRunFirstRegionOffset     |   |   | run                                            |
+| ...                         |   +-->|  arena_run_t                                   |
++-----------------------------+       |   mRunListElem (Firefox134~)                   |
+                                      |   mBin, mNumFree, mRegionsMask[] (bit=1: free) |
+                                      |  region[0], region[1], ...                     |
+                                      | large allocation                               |
+                                      | free pages                                     |
+                                      +------------------------------------------------+
+
++-huge (static)-+    +-extent_node_t-+
+| mRoot         |--->| mLinkByAddr   |--> extent_node_t, ...
++---------------+    | mAddr         |--> huge allocation (chunks)
+                     | mSize         |
+                     | mArena        |
+                     +---------------+
+
+* Small allocations are regions of runs, large ones are runs of pages, and huge ones are chunks.
+* Firefox 58~133: mNonFullRuns is a tree of mPageMap[] entries in address order, and mCurrentRun is used first.
+  Firefox 134~: mNonFullRuns is a list of arena_run_t, and its head is used first.
+* Full runs are not linked from the bin. GEF finds them in the page map and displays them as `full run`.
+* The region in a run is picked randomly since Firefox 78 (69~77: arenas with ARENA_FLAG_RANDOMIZE_SMALL),
+  so the next region is not predictable.
+* GEF finds the chunks by the arena pointer at each 1MiB-aligned address of the writable anonymous memory,
+  and checks the arena by the size classes in mBins[]. Debug symbols are not needed.
+  Arenas without chunks or huge allocations are not displayed.
+* The offset of the page map, the page size and the layout of arena_run_t (with mMagic if
+  MOZ_DIAGNOSTIC_ASSERT_ENABLED) and arena_bin_t are derived from memory.
+* `huge` is found in the writable data of modules, as the tree of extent_node_t whose total size
+  is in huge_allocated near it.
+* PHC (Probabilistic Heap Checker) may take its pages as a huge allocation and make them inaccessible.
+  Allocations of PHC in them are not displayed.
+* Firefox 57 and older use other structures, and are not supported.
+```
+
 ## `musl-heap-dump`
 
 musl mallocng heap reusable chunks viewer.

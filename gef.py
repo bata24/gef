@@ -178715,6 +178715,619 @@ class JemallocHeapDumpCommand(GenericCommand, BufferingOutput):
 
 
 @register_command
+class MozjemallocHeapDumpCommand(GenericCommand, BufferingOutput):
+    """mozjemalloc (Firefox 58~) arena/bin/run/large/huge viewer."""
+
+    _cmdline_ = "mozjemalloc-heap-dump"
+    _category_ = "05-d. Heap - Other"
+
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("-hh", "--help-simple", action="store_true", help="show help without ASCII diagram.")
+    parser.add_argument("-a", "--arena", type=AddressUtil.parse_address, help="dump only the specified arena_t.")
+    parser.add_argument("-b", "--bin-index", type=int, help="dump only the specified bin (small size class).")
+    parser.add_argument("-x", "--address", type=AddressUtil.parse_address,
+                        help="show the arena, run, region and state of this address.")
+    parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
+    parser.add_argument("-q", "--quiet", action="store_true", help="quiet mode.")
+    parser.add_argument("-v", "--verbose", action="store_true", help="also dump the state of each region and free runs.")
+    parser.add_argument("--meta", action="store_true", help="display offset information.")
+    _syntax_ = parser.format_help()
+
+    _example_ = "\n".join([
+        "{0:s}                    # dump the bins, large and huge allocations of all arenas",
+        "{0:s} -b 3 -v            # dump bin[3] of all arenas with the state of each region",
+        "{0:s} -x 0x7ffff7615480  # show which region the address belongs to",
+    ]).format(_cmdline_)
+
+    _note_ = "\n".join([
+        "Simplified mozjemalloc structure:",
+        "",
+        "+-arena_t---------------------+       +-chunk (1MiB aligned)---------------------------+",
+        "| mBins[]                     |<------| arena_chunk_t                                  |",
+        "|  arena_bin_t                |       |  mArena                                        |",
+        "|   mCurrentRun (~Firefox133) |---+   |  mPageMap[] (bits of each page)                |",
+        "|   mNonFullRuns              |---+   |   small: run address | ALLOCATED               |",
+        "|   mSizeClass                |   |   |   large: size | LARGE | ALLOCATED (1st page)   |",
+        "|   mRunNumRegions            |   |   |   free : size (1st and last page)              |",
+        "|   mRunFirstRegionOffset     |   |   | run                                            |",
+        "| ...                         |   +-->|  arena_run_t                                   |",
+        "+-----------------------------+       |   mRunListElem (Firefox134~)                   |",
+        "                                      |   mBin, mNumFree, mRegionsMask[] (bit=1: free) |",
+        "                                      |  region[0], region[1], ...                     |",
+        "                                      | large allocation                               |",
+        "                                      | free pages                                     |",
+        "                                      +------------------------------------------------+",
+        "",
+        "+-huge (static)-+    +-extent_node_t-+",
+        "| mRoot         |--->| mLinkByAddr   |--> extent_node_t, ...",
+        "+---------------+    | mAddr         |--> huge allocation (chunks)",
+        "                     | mSize         |",
+        "                     | mArena        |",
+        "                     +---------------+",
+        "",
+        "* Small allocations are regions of runs, large ones are runs of pages, and huge ones are chunks.",
+        "* Firefox 58~133: mNonFullRuns is a tree of mPageMap[] entries in address order, and mCurrentRun is used first.",
+        "  Firefox 134~: mNonFullRuns is a list of arena_run_t, and its head is used first.",
+        "* Full runs are not linked from the bin. GEF finds them in the page map and displays them as `full run`.",
+        "* The region in a run is picked randomly since Firefox 78 (69~77: arenas with ARENA_FLAG_RANDOMIZE_SMALL),",
+        "  so the next region is not predictable.",
+        "* GEF finds the chunks by the arena pointer at each 1MiB-aligned address of the writable anonymous memory,",
+        "  and checks the arena by the size classes in mBins[]. Debug symbols are not needed.",
+        "  Arenas without chunks or huge allocations are not displayed.",
+        "* The offset of the page map, the page size and the layout of arena_run_t (with mMagic if",
+        "  MOZ_DIAGNOSTIC_ASSERT_ENABLED) and arena_bin_t are derived from memory.",
+        "* `huge` is found in the writable data of modules, as the tree of extent_node_t whose total size",
+        "  is in huge_allocated near it.",
+        "* PHC (Probabilistic Heap Checker) may take its pages as a huge allocation and make them inaccessible.",
+        "  Allocations of PHC in them are not displayed.",
+        "* Firefox 57 and older use other structures, and are not supported.",
+    ])
+
+    CHUNK_SIZE = 0x100000
+    RUN_MAGIC = 0x384adf93
+    # arena_t including mBins[] is smaller than this
+    ARENA_SCAN_SIZE = 0x2000
+
+    def read_words(self, addr, size):
+        data = read_memory(addr, size, safe=True)
+        if data is None:
+            return None
+        return slice_unpack(data, self.ptrsize)
+
+    @staticmethod
+    def is_next_size_class(prev, size):
+        # tiny (~Firefox 145), quantum (0x10), quantum-wide (0x100, Firefox 95~) and sub-page (power of 2) classes
+        if prev < 0x10:
+            return size == prev * 2
+        if prev < 0x200:
+            return size == prev + 0x10
+        if prev < 0x1000:
+            return size in (prev + 0x100, prev * 2)
+        return size == prev * 2 and size <= 0x8000
+
+    def find_bins(self, arena):
+        """Return (address of mBins[], sizeof(arena_bin_t), offsetof(arena_bin_t, mRunNumRegions), [mSizeClass])
+        of arena_t, or None if it is not an arena."""
+        if arena in self.bins_cache:
+            return self.bins_cache[arena]
+        self.bins_cache[arena] = None
+        section = ProcessMap.process_lookup_address(arena)
+        if arena % self.ptrsize or section is None or not section.is_writable():
+            return None
+        # the base allocator may map arenas in adjacent mappings
+        end = section.page_end
+        for m in ProcessMap.get_process_maps():
+            if m.page_start == end and m.is_readable():
+                end = m.page_end
+        data = read_memory(arena, min(self.ARENA_SCAN_SIZE, end - arena), safe=True)
+        if data is None:
+            return None
+        words = slice_unpack(data, self.ptrsize)
+
+        def is_bin(k, offset):
+            # mSizeClass is words[k], and arena_bin_t starts 2 pointers before it
+            pos = (k - 2) * self.ptrsize + offset
+            if k < 2 or pos + 12 > len(data):
+                return False
+            nregs, nelms, reg0 = slice_unpack(data[pos:pos + 12], 4)
+            return nregs and nelms == (nregs + 31) // 32 and (reg0 + nregs * words[k]) % 0x400 == 0
+
+        for i, value in enumerate(words):
+            if value != 0x10:
+                continue
+            for stride in range(2, 0x20):
+                if [words[i + stride * k] for k in range(1, 4) if i + stride * k < len(words)] != [0x20, 0x30, 0x40]:
+                    continue
+                # mSizeClass follows mCurrentRun and mNonFullRuns (~Firefox 133), or mNonFullRuns (Firefox 134~).
+                # mRunNumRegions, mRunNumRegionsMask and mRunFirstRegionOffset follow mSizeClass and mRunSize
+                # (~Firefox 109), or mSizeClass (Firefox 110~).
+                for offset in (self.ptrsize * 4, self.ptrsize * 3):
+                    if not all(is_bin(i + stride * k, offset) for k in range(4)):
+                        continue
+                    # tiny classes (sizeof(void*) ~ 8, ~Firefox 145) precede the quantum classes
+                    start = i
+                    while start >= stride and self.ptrsize <= words[start - stride] < 0x10:
+                        if not self.is_next_size_class(words[start - stride], words[start]):
+                            break
+                        if not is_bin(start - stride, offset):
+                            break
+                        start -= stride
+                    sizes = [words[start]]
+                    for k in range(start + stride, len(words), stride):
+                        if not self.is_next_size_class(sizes[-1], words[k]) or not is_bin(k, offset):
+                            break
+                        sizes.append(words[k])
+                    bins_addr = arena + (start - 2) * self.ptrsize
+                    self.bins_cache[arena] = (bins_addr, stride * self.ptrsize, offset, sizes)
+                    return self.bins_cache[arena]
+        return None
+
+    def read_bins(self, arena):
+        bins_addr, stride, offset, sizes = self.find_bins(arena)
+        data = read_memory(bins_addr, stride * len(sizes))
+        bins = []
+        for i, size in enumerate(sizes):
+            base = stride * i
+            first, second = slice_unpack(data[base:base + self.ptrsize * 2], self.ptrsize)
+            nregs, nelms, reg0 = slice_unpack(data[base + offset:base + offset + 12], 4)
+            bins.append({"addr": bins_addr + base, "size": size, "nregs": nregs, "nelms": nelms, "reg0": reg0,
+                         "run_size": reg0 + nregs * size, "first": first, "second": second})
+        return bins
+
+    def scan_chunks(self):
+        chunks = []
+        for m in ProcessMap.get_process_maps():
+            if not m.is_writable() or (m.path and not m.path.startswith("[anon:")):
+                continue
+            for chunk in range(m.page_start + (-m.page_start) % self.CHUNK_SIZE, m.page_end, self.CHUNK_SIZE):
+                arena = read_int_from_memory(chunk, safe=True)
+                if arena and self.find_bins(arena):
+                    chunks.append((chunk, arena))
+        return chunks
+
+    def decode_map(self, chunk, map_offset, page):
+        """Return [(page index, number of pages, bits)] of mPageMap[], or None if it is inconsistent.
+        arena_chunk_map_t is {link (2 pointers), bits}."""
+        npages = self.CHUNK_SIZE // page
+        words = self.read_words(chunk + map_offset, npages * self.ptrsize * 3)
+        if words is None:
+            return None
+        mapbits = words[2::3]
+        runs = []
+        i = 0
+        while i < npages:
+            bits = mapbits[i]
+            size = bits & ~(page - 1)
+            if bits & 0x3 == 0x1: # small run: every page has the run address
+                n = 1
+                while i + n < npages and mapbits[i + n] == bits:
+                    n += 1
+                if size != chunk + i * page:
+                    return None
+            elif bits & 0x3 == 0x3: # large run: the first page has the size, and the others have only flags
+                n = size // page
+                if n == 0 or any(x != 0x3 for x in mapbits[i + 1:i + n]):
+                    return None
+            elif size: # free run: the first and the last pages have the size
+                n = size // page
+                if i + n > npages or mapbits[i + n - 1] & ~(page - 1) != size:
+                    return None
+            else: # header or guard page
+                n = 1
+            if i + n > npages:
+                return None
+            runs.append((i, n, bits))
+            i += n
+        return runs
+
+    def find_map_layout(self):
+        """Return (offsetof(arena_chunk_t, mPageMap), page size) decoding the most small runs."""
+        best, best_count = None, 0
+        for page in (0x400, 0x800, 0x1000, 0x2000, 0x4000, 0x8000, 0x10000):
+            for map_offset in range(self.ptrsize * 2, self.ptrsize * 9, self.ptrsize):
+                count = 0
+                for chunk, _ in self.chunks[:8]:
+                    runs = self.decode_map(chunk, map_offset, page)
+                    if runs is not None:
+                        count += sum(1 for _, _, bits in runs if bits & 0x3 == 0x1)
+                if count > best_count:
+                    best, best_count = (map_offset, page), count
+        return best
+
+    def make_run_layout(self, diag, has_list):
+        # arena_run_t: [mMagic, mNumFree (MOZ_DIAGNOSTIC_ASSERT_ENABLED)], [mRunListElem (Firefox 134~)],
+        #              mBin, mRegionsMinElement, [mNumFree], mRegionsMask[]
+        offset = 8 if diag else 0
+        layout = {"diag": diag, "list": None}
+        if has_list:
+            layout["list"] = offset
+            offset += self.ptrsize * 2
+        layout["bin"] = align(offset, self.ptrsize)
+        minelm = layout["bin"] + self.ptrsize
+        layout["nfree"] = 4 if diag else minelm + 4
+        layout["mask"] = minelm + 4 if diag else minelm + 8
+        return layout
+
+    def read_free_regions(self, addr, b):
+        words = slice_unpack(read_memory(addr, b["nelms"] * 4), 4)
+        return {i for i in range(b["nregs"]) if (words[i // 32] >> (i % 32)) & 1}
+
+    def read_run(self, arena, run, npages, layout):
+        """Return the record of the small run, or an error message."""
+        bins = self.arena_bins[arena]
+        if layout["diag"] and read_int32_from_memory(run, safe=True) != self.RUN_MAGIC:
+            return "run @ {:#x}: invalid mMagic".format(run)
+        bin_addr = read_int_from_memory(run + layout["bin"], safe=True)
+        index, remainder = divmod((bin_addr or 0) - bins[0]["addr"], self.bin_stride)
+        if remainder or not 0 <= index < len(bins):
+            return "run @ {:#x}: invalid mBin {:#x}".format(run, bin_addr or 0)
+        b = bins[index]
+        if b["run_size"] != npages * self.page:
+            return "run @ {:#x}: {:#x} pages for bin[{:d}]".format(run, npages, index)
+        try:
+            free = self.read_free_regions(run + layout["mask"], b)
+        except gdb.MemoryError:
+            return "run @ {:#x}: cannot read mRegionsMask".format(run)
+        return {"run": run, "arena": arena, "index": index, "bin": b, "addr": run + b["reg0"],
+                "nfree": read_int32_from_memory(run + layout["nfree"]), "free": free}
+
+    def find_run_layout(self, small_runs):
+        best, best_count = None, 0
+        for diag in (False, True):
+            for has_list in (False, True):
+                layout = self.make_run_layout(diag, has_list)
+                count = 0
+                for arena, run, npages in small_runs[:0x40]:
+                    record = self.read_run(arena, run, npages, layout)
+                    if isinstance(record, dict) and record["nfree"] == len(record["free"]):
+                        count += 1
+                if count > best_count:
+                    best, best_count = layout, count
+        return best
+
+    def map_element_to_run(self, node):
+        # mNonFullRuns (~Firefox 133) links the page map entry of the first page of each run
+        chunk = node & ~(self.CHUNK_SIZE - 1)
+        index, remainder = divmod(node - chunk - self.map_offset, self.ptrsize * 3)
+        if remainder or not 0 <= index < self.CHUNK_SIZE // self.page:
+            return None
+        return chunk + index * self.page
+
+    def walk_tree(self, root, link, is_valid):
+        """Return the nodes of RedBlackTree in order and an error message.
+        RedBlackTreeNode {mLeft, mRightAndColor} is at `link` of each node. The lowest bit of mRightAndColor is a color."""
+        nodes = []
+        seen = set()
+        stack = []
+        cur = root
+        while stack or cur:
+            while cur:
+                if cur in seen:
+                    return nodes, "{:#x} (loop detected)".format(cur)
+                seen.add(cur)
+                left = read_int_from_memory(cur + link, safe=True)
+                if left is None or not is_valid(cur):
+                    return nodes, "{:#x} (corrupted)".format(cur)
+                stack.append(cur)
+                cur = left
+            cur = stack.pop()
+            nodes.append(cur)
+            cur = read_int_from_memory(cur + link + self.ptrsize) & ~1
+        return nodes, None
+
+    def walk_list(self, head, is_valid):
+        # DoublyLinkedListElement is {mNext, mPrev}
+        nodes = []
+        cur = head
+        while cur:
+            if cur in nodes:
+                return nodes, "{:#x} (loop detected)".format(cur)
+            if not is_valid(cur):
+                return nodes, "{:#x} (corrupted)".format(cur)
+            nodes.append(cur)
+            cur = read_int_from_memory(cur + self.run_layout["list"])
+        return nodes, None
+
+    def link_runs(self, b, records):
+        """Set the kind of the runs of the bin, and return them in the order of use and an error message."""
+        by_run = {r["run"]: r for r in records}
+        for r in records:
+            r["kind"] = "full run" if r["nfree"] == 0 else "unlinked run"
+        if self.run_layout["list"] is None:
+            def is_valid(node):
+                return self.map_element_to_run(node) in by_run
+
+            current = by_run.get(b["first"])
+            if current:
+                current["kind"] = "current run"
+            nodes, error = self.walk_tree(b["second"], 0, is_valid)
+            if b["first"] and current is None:
+                error = "mCurrentRun {:#x} (corrupted)".format(b["first"])
+            linked = [by_run[self.map_element_to_run(x)] for x in nodes]
+            linked = ([current] if current else []) + [r for r in linked if r is not current]
+        else:
+            nodes, error = self.walk_list(b["first"], by_run.__contains__)
+            linked = [by_run[x] for x in nodes]
+        for r in linked:
+            if r["kind"] != "current run":
+                r["kind"] = "run"
+        others = sorted((r for r in records if r not in linked), key=lambda r: r["run"])
+        return linked + others, error
+
+    def is_extent_node(self, node):
+        # extent_node_t: mLinkBySize or mArenaId, mLinkByAddr, mAddr, mSize, mArena
+        words = self.read_words(node, self.ptrsize * 7) if node % self.ptrsize == 0 else None
+        if words is None:
+            return False
+        addr, size, arena = words[4:7]
+        return addr and addr % self.CHUNK_SIZE == 0 and size and size % self.page == 0 and self.find_bins(arena)
+
+    def find_huge(self):
+        """Return the address of `huge` and its extent_node_t, or (None, [])."""
+        maps = ProcessMap.get_process_maps()
+        anon = sorted((m.page_start, m.page_end) for m in maps if m.is_writable() and not m.path.startswith("/"))
+        starts = [start for start, _ in anon]
+        # .data and .bss of each module are a writable file mapping and the following anonymous mappings
+        regions = []
+        for m in maps:
+            if not m.is_writable():
+                continue
+            if m.path.startswith("/"):
+                regions.append([m.page_start, m.page_end])
+            elif not m.path and regions and regions[-1][1] == m.page_start and m.size < 0x1000000:
+                regions[-1][1] = m.page_end
+        best, best_distance = (None, []), None
+        for start, end in regions:
+            words = self.read_words(start, end - start)
+            if words is None:
+                continue
+            for k, value in enumerate(words):
+                index = bisect.bisect_right(starts, value) - 1
+                if index < 0 or value >= anon[index][1] or not self.is_extent_node(value):
+                    continue
+                # mLinkByAddr
+                nodes, error = self.walk_tree(value, self.ptrsize * 2, self.is_extent_node)
+                if error:
+                    continue
+                values = [self.read_words(node + self.ptrsize * 4, self.ptrsize * 3) for node in nodes]
+                if any(x[0] >= y[0] for x, y in zip(values, values[1:])):
+                    continue
+                # huge_allocated in the same module is the total of mSize. It rejects the free list of extent_node_t,
+                # whose stale links may still form a tree.
+                total = sum(x[1] for x in values)
+                distance = min((abs(i - k) for i, x in enumerate(words) if x == total), default=None)
+                if distance is not None and (best_distance is None or distance < best_distance):
+                    best = start + k * self.ptrsize, [(node,) + tuple(x) for node, x in zip(nodes, values)]
+                    best_distance = distance
+        return best
+
+    def initialize(self):
+        self.ptrsize = current_arch.ptrsize
+        self.bins_cache = {}
+        self.chunks = self.scan_chunks()
+        if not self.chunks:
+            err("Could not find any arena chunk")
+            return False
+        layout = self.find_map_layout()
+        if layout is None:
+            err("Could not decode the page map of the chunks")
+            return False
+        self.map_offset, self.page = layout
+
+        arena = self.chunks[0][1]
+        bins_addr, self.bin_stride, self.nregs_offset, _ = self.find_bins(arena)
+        self.bins_addr_offset = bins_addr - arena
+
+        self.arena_bins = {}
+        self.decoded = {}
+        small_runs = []
+        for chunk, arena in self.chunks:
+            if arena not in self.arena_bins:
+                self.arena_bins[arena] = self.read_bins(arena)
+            self.decoded[chunk] = self.decode_map(chunk, self.map_offset, self.page)
+            for i, n, bits in self.decoded[chunk] or []:
+                if bits & 0x3 == 0x1:
+                    small_runs.append((arena, chunk + i * self.page, n))
+        self.run_layout = self.find_run_layout(small_runs)
+        if self.run_layout is None:
+            err("Could not find the layout of arena_run_t")
+            return False
+        self.huge_addr, self.huge = self.find_huge()
+
+        if self.args.meta:
+            self.quiet_info("offsetof(arena_chunk_t, mPageMap): {:#x}".format(self.map_offset))
+            self.quiet_info("sizeof(arena_chunk_map_t): {:#x}".format(self.ptrsize * 3))
+            self.quiet_info("page size: {:#x}".format(self.page))
+            self.quiet_info("offsetof(arena_t, mBins): {:#x}".format(self.bins_addr_offset))
+            self.quiet_info("sizeof(arena_bin_t): {:#x}".format(self.bin_stride))
+            self.quiet_info("offsetof(arena_bin_t, mRunNumRegions): {:#x}".format(self.nregs_offset))
+            if self.run_layout["list"] is not None:
+                self.quiet_info("offsetof(arena_run_t, mRunListElem): {:#x}".format(self.run_layout["list"]))
+            for name, key in (("mBin", "bin"), ("mNumFree", "nfree"), ("mRegionsMask", "mask")):
+                self.quiet_info("offsetof(arena_run_t, {:s}): {:#x}".format(name, self.run_layout[key]))
+            if self.huge_addr is not None:
+                self.quiet_info("huge: {:#x}".format(self.huge_addr))
+        return True
+
+    def collect(self):
+        """Classify the runs of each arena by the page map."""
+        self.records = collections.defaultdict(lambda: collections.defaultdict(list))
+        self.large = collections.defaultdict(list)
+        self.free_runs = collections.defaultdict(list)
+        self.errors = collections.defaultdict(list)
+        for chunk, arena in self.chunks:
+            # the first word of a huge allocation may happen to point to an arena
+            if any(addr <= chunk < addr + size for _, addr, size, _ in self.huge):
+                continue
+            if self.decoded[chunk] is None:
+                self.errors[arena].append("Cannot decode the page map of the chunk {:#x}".format(chunk))
+                continue
+            for i, n, bits in self.decoded[chunk]:
+                addr = chunk + i * self.page
+                if bits & 0x3 == 0x1:
+                    record = self.read_run(arena, addr, n, self.run_layout)
+                    if isinstance(record, dict):
+                        self.records[arena][record["index"]].append(record)
+                    else:
+                        self.errors[arena].append(record)
+                elif bits & 0x3 == 0x3:
+                    self.large[arena].append((addr, n * self.page))
+                elif bits & ~(self.page - 1):
+                    self.free_runs[arena].append((addr, n * self.page))
+        self.ordered = collections.defaultdict(dict)
+        for arena, records in self.records.items():
+            for index, runs in records.items():
+                self.ordered[arena][index] = self.link_runs(self.arena_bins[arena][index], runs)
+        return
+
+    def region_state(self, record, i):
+        if i in record["free"]:
+            return "free"
+        return "used"
+
+    def dump_run(self, record):
+        freed_address_color = Config.get("theme.heap_chunk_address_freed")
+        used_address_color = Config.get("theme.heap_chunk_address_used")
+        corrupted_msg_color = Config.get("theme.heap_corrupted_msg")
+
+        b = record["bin"]
+        msg = "    {:s} @ {:#x}: regions={:#x}-{:#x} nfree={:d}/{:d}".format(
+            record["kind"], record["run"], record["addr"], record["addr"] + b["nregs"] * b["size"],
+            len(record["free"]), b["nregs"],
+        )
+        if record["nfree"] != len(record["free"]):
+            msg += Color.colorify(" (mNumFree={:d} does not match the bitmap)".format(record["nfree"]), corrupted_msg_color)
+        if record["kind"] == "unlinked run":
+            msg += Color.colorify(" (not linked from the bin)", corrupted_msg_color)
+        self.out.append(msg)
+        if self.args.verbose:
+            for i in range(b["nregs"]):
+                addr = record["addr"] + b["size"] * i
+                state = self.region_state(record, i)
+                color = freed_address_color if state == "free" else used_address_color
+                self.out.append("        region[{:d}] {:s} {:s}".format(i, Color.colorify_hex(addr, color), state))
+        return
+
+    def dump_arena(self, arena):
+        chunk_size_color = Config.get("theme.heap_chunk_size")
+        freed_address_color = Config.get("theme.heap_chunk_address_freed")
+        used_address_color = Config.get("theme.heap_chunk_address_used")
+        corrupted_msg_color = Config.get("theme.heap_corrupted_msg")
+
+        self.out.append(titlify("arena @ {:#x}".format(arena), color="bold", msg_color="bold"))
+        if self.args.verbose:
+            chunks = [chunk for chunk, x in self.chunks if x == arena]
+            self.out.append("chunks: {:s}".format(", ".join("{:#x}".format(x) for x in chunks)))
+        for msg in self.errors[arena]:
+            self.err_add_out(msg)
+        for index, (runs, error) in sorted(self.ordered[arena].items()):
+            if self.args.bin_index is not None and index != self.args.bin_index:
+                continue
+            b = self.arena_bins[arena][index]
+            self.out.append("bin[{:d}] @ {:#x} (size={:s}, run_size={:#x}, nregs={:d}):".format(
+                index, b["addr"], Color.colorify_hex(b["size"], chunk_size_color), b["run_size"], b["nregs"],
+            ))
+            for record in runs:
+                self.dump_run(record)
+            if error:
+                self.out.append("    -> {:s}".format(Color.colorify(error, corrupted_msg_color)))
+        if self.args.bin_index is not None:
+            return
+        for addr, size in sorted(self.large[arena]):
+            self.out.append("large @ {:s}: size={:s}".format(
+                Color.colorify_hex(addr, used_address_color), Color.colorify_hex(size, chunk_size_color),
+            ))
+        for node, addr, size, owner in self.huge:
+            if owner == arena:
+                self.out.append("huge @ {:s}: size={:s} (extent_node_t @ {:#x})".format(
+                    Color.colorify_hex(addr, used_address_color), Color.colorify_hex(size, chunk_size_color), node,
+                ))
+        if self.args.verbose:
+            for addr, size in sorted(self.free_runs[arena]):
+                self.out.append("free run @ {:s}: size={:s}".format(
+                    Color.colorify_hex(addr, freed_address_color), Color.colorify_hex(size, chunk_size_color),
+                ))
+        return
+
+    def locate_address(self, target):
+        for arena, ordered in sorted(self.ordered.items()):
+            for index, (runs, _) in sorted(ordered.items()):
+                for record in runs:
+                    b = record["bin"]
+                    if not record["run"] <= target < record["run"] + b["run_size"]:
+                        continue
+                    self.out.append("address:    {:#x}".format(target))
+                    self.out.append("arena:      {:#x}".format(arena))
+                    self.out.append("size class: bin[{:d}] (size={:#x})".format(index, b["size"]))
+                    self.out.append("run:        {:#x}-{:#x} ({:s})".format(
+                        record["run"], record["run"] + b["run_size"], record["kind"],
+                    ))
+                    region, offset = divmod(target - record["addr"], b["size"])
+                    if target < record["addr"]:
+                        self.out.append("region:     none (run header)")
+                        return
+                    self.out.append("region:     region[{:d}/{:d}] @ {:#x} (+{:#x})".format(
+                        region, b["nregs"], record["addr"] + b["size"] * region, offset,
+                    ))
+                    self.out.append("state:      {:s}".format(self.region_state(record, region)))
+                    return
+        for kind, table in (("large", self.large), ("free run", self.free_runs)):
+            for arena, entries in sorted(table.items()):
+                for addr, size in entries:
+                    if addr <= target < addr + size:
+                        self.out.append("address:    {:#x}".format(target))
+                        self.out.append("arena:      {:#x}".format(arena))
+                        self.out.append("{:11s} {:#x}-{:#x} (+{:#x})".format(kind + ":", addr, addr + size, target - addr))
+                        return
+        for node, addr, size, arena in self.huge:
+            if addr <= target < addr + size:
+                self.out.append("address:    {:#x}".format(target))
+                self.out.append("arena:      {:#x}".format(arena))
+                self.out.append("huge:       {:#x}-{:#x} (extent_node_t @ {:#x}, +{:#x})".format(
+                    addr, addr + size, node, target - addr,
+                ))
+                return
+        self.out.append("{:#x} is not found in any run, large or huge allocation".format(target))
+        return
+
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    def do_invoke(self, args):
+        if not self.initialize():
+            return
+        if args.meta:
+            return
+        if args.arena is not None and self.find_bins(args.arena) is None:
+            err("Not an arena_t: {:#x}".format(args.arena))
+            return
+        nbins = len(self.find_bins(self.chunks[0][1])[3])
+        if args.bin_index is not None and not 0 <= args.bin_index < nbins:
+            err("bin index must be 0 to {:d}".format(nbins - 1))
+            return
+
+        self.collect()
+        self.out = []
+        if args.address is not None:
+            self.locate_address(args.address)
+            self.print_output()
+            return
+
+        arenas = {arena for _, arena in self.chunks} | {arena for _, _, _, arena in self.huge}
+        self.quiet_info_add_out("found {:d} arena(s) and {:d} chunk(s), page size: {:#x}".format(
+            len(arenas), len(self.chunks), self.page,
+        ))
+        if self.huge_addr is None:
+            self.quiet_info_add_out("huge allocations are not found")
+        for arena in sorted(arenas):
+            if args.arena is not None and arena != args.arena:
+                continue
+            self.dump_arena(arena)
+        self.print_output()
+        return
+
+
+@register_command
 class MuslHeapDumpCommand(GenericCommand, BufferingOutput):
     """musl mallocng heap reusable chunks viewer."""
 
