@@ -907,6 +907,10 @@ class Config:
         cfg.optionxform = str # noqa: V101
         cfg.read(filepath)
 
+        if cfg.has_section("user-defined-aliases"):
+            for key in cfg.options("user-defined-aliases"):
+                cfg.getboolean("user-defined-aliases.repeat", key, fallback=False)
+
         for section in cfg.sections():
             if section == "user-defined-aliases.repeat":
                 continue
@@ -7190,7 +7194,7 @@ class Disasm:
         It is also called directly from some commands such as Disasm.capstone_disassemble."""
 
         def cs_insn_to_gef_insn(cs_insn):
-            return Instruction(cs_insn.address, cs_insn.mnemonic, cs_insn.op_str, cs_insn.bytes)
+            return Instruction(cs_insn.address, cs_insn.mnemonic, cs_insn.op_str, bytes(cs_insn.bytes))
 
         capstone = sys.modules["capstone"]
         arch, mode = UnicornKeystoneCapstone.get_capstone_arch(
@@ -7227,7 +7231,11 @@ class Disasm:
         skip = kwargs.get("skip", 0)
         arch_inst_length = current_arch.instruction_length or 1
         used_bytes = 0
-        code_remain = bytes.fromhex(kwargs.get("code", ""))
+        code_remain = kwargs.get("code", b"")
+        if isinstance(code_remain, str):
+            code_remain = bytes.fromhex(code_remain)
+        else:
+            code_remain = bytes(code_remain)
         dont_read = "code" in kwargs
 
         # A loop to read the required memory until the specified length is reached
@@ -13135,7 +13143,7 @@ def read_int64_from_memory(addr, safe=False, signed=False):
         raise
 
 
-def read_cstring_from_memory(addr, max_length=None, safe=False):
+def read_cstring_from_memory(addr, max_length=None, safe=False, allow_non_ascii=False):
     """Return a C-string read from memory, or None on error when safe is True."""
     try:
         if max_length is None:
@@ -13165,11 +13173,14 @@ def read_cstring_from_memory(addr, max_length=None, safe=False):
                     return None
                 break
 
-        # check if ascii
+        # decode the C string
         res = res.split(b"\x00")[0]
-        ustr = String.bytes2str(res)
+        if allow_non_ascii:
+            ustr = res.decode("utf-8", "backslashreplace")
+        else:
+            ustr = String.bytes2str(res)
 
-        if ustr and any(x not in String.STRING_PRINTABLE for x in ustr):
+        if not allow_non_ascii and ustr and any(x not in String.STRING_PRINTABLE for x in ustr):
             return None
 
         if len(ustr) > max_length:
@@ -15333,9 +15344,12 @@ class Path:
             response = gdb.execute("info proc", to_string=True)
         except gdb.error:
             return None
-        for x in response.splitlines():
-            if x.startswith("exe = "):
-                return x.split(" = ")[1].replace("'", "")
+        match = re.search(r"(?ms)^exe = (.*?)(?=^\w+ = |\Z)", response)
+        if match:
+            path = match.group(1).rstrip("\n")
+            if path.startswith("'") and path.endswith("'"):
+                return path[1:-1]
+            return path
         return None
 
     @staticmethod
@@ -16065,6 +16079,16 @@ class ProcessMap:
     def lookup(addr):
         """Try to find the address in the process address space. Return an Address object with caching."""
         return Address(addr)
+
+    @staticmethod
+    def get_section_load_base_address(section):
+        base_address = section.page_start
+        if section.path and section.offset:
+            load_base = section.page_start - section.offset
+            if any(entry.path == section.path and entry.offset == 0 and entry.page_start == load_base
+                   for entry in ProcessMap.get_process_maps()):
+                base_address = load_base
+        return base_address
 
     @staticmethod
     @Cache.cache_until_next(per_inferior=True)
@@ -17104,6 +17128,8 @@ class Auxv:
             for line in result.splitlines():
                 tmp = line.split()
                 auxv_type = tmp[1]
+                if auxv_type == "???":
+                    auxv_type = "AT_UNKNOWN_{:x}".format(int(tmp[0], 0))
                 if auxv_type in ("AT_PLATFORM", "AT_EXECFN", "AT_BASE_PLATFORM"):
                     m = re.match("^.+?(0x[0-9a-f]+)", line)
                     if m is None: # `set print address off`
@@ -17726,6 +17752,7 @@ class HighlightCommand(GenericCommand):
         if not HighlightCommand.highlight_table:
             return text
 
+        text = str(text)
         regex = Config.get("highlight.regex")
         for match, color in HighlightCommand.highlight_table.items():
             if not match:
@@ -17853,13 +17880,9 @@ class HighlightAddCommand(GenericCommand):
                 return
         if Config.get("highlight.regex"):
             try:
-                pattern = re.compile(args.match)
-            except re.error as e:
+                re.compile(args.match)
+            except (re.error, OverflowError) as e:
                 err("Invalid regex: {}".format(e))
-                return
-            matches = [match.group(0) for sample in ("", "abc xyz") for match in pattern.finditer(sample)]
-            if matches and not any(matches):
-                err("Empty match")
                 return
         HighlightCommand.highlight_table[args.match] = " ".join(args.color)
         return
@@ -18758,11 +18781,11 @@ class DisplayTypeCommand(GenericCommand, BufferingOutput):
         ]
         for name, field in tp.items():
             if tp.code in [gdb.TYPE_CODE_STRUCT, gdb.TYPE_CODE_UNION]:
-                if hasattr(field, "bitpos") and hasattr(field.type, "sizeof"):
+                if getattr(field, "bitpos", None) is not None and hasattr(field.type, "sizeof"):
                     offsz_str = "/* {:#06x} | {:#06x} */".format(field.bitpos // 8, field.type.sizeof)
                 elif hasattr(field.type, "sizeof"):
                     offsz_str = "/*        | {:#06x} */".format(field.type.sizeof)
-                elif hasattr(field, "bitpos"):
+                elif getattr(field, "bitpos", None) is not None:
                     offsz_str = "/* {:#06x} |        */".format(field.bitpos // 8)
                 else:
                     offsz_str = "/*        |        */"
@@ -18818,8 +18841,9 @@ class DisplayTypeCommand(GenericCommand, BufferingOutput):
             return
 
         # remove pointer
-        while str(tp).endswith("*"):
-            tp = tp.target()
+        tp = tp.strip_typedefs()
+        while tp.code == gdb.TYPE_CODE_PTR:
+            tp = tp.target().strip_typedefs()
 
         # check if valid type
         if tp.code not in [gdb.TYPE_CODE_STRUCT, gdb.TYPE_CODE_UNION, gdb.TYPE_CODE_ENUM]:
@@ -19030,7 +19054,7 @@ class CanaryCommand(GenericCommand):
     _syntax_ = parser.format_help()
 
     @staticmethod
-    @Cache.cache_this_session(cache_None=False, until_new_objfile=True)
+    @Cache.cache_this_session(cache_None=False, per_inferior=True, until_new_objfile=True)
     def gef_read_canary():
         """Read the current stack canary and return its value and location."""
         if is_in_kernel():
@@ -19132,6 +19156,8 @@ class CanaryCommand(GenericCommand):
     @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware"))
     @Decorator.require_arch_set
     def do_invoke(self, args):
+        # Refresh on explicit `canary`; keep implicit reads cached across stops for slow targets such as Pin.
+        Cache.clear_cache_for(CanaryCommand.gef_read_canary)
         self.dump_canary()
         return
 
@@ -19336,6 +19362,9 @@ class SignalHandlersCommand(GenericCommand, BufferingOutput):
     @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
     @Decorator.require_arch_set
     def do_invoke(self, args):
+        if is_core_file():
+            err("sighands cannot query signal handlers from a core file")
+            return
         syscall_number = self.get_rt_sigaction_number()
         if syscall_number is None:
             err("Could not find the rt_sigaction system call")
@@ -19463,6 +19492,10 @@ class AuxvCommand(GenericCommand):
 
         for k, v in auxval.items():
             num = reverse_AT_CONSTS.get(k, "?")
+            name = k
+            if k.startswith("AT_UNKNOWN_"):
+                num = "{:#04x}".format(int(k.removeprefix("AT_UNKNOWN_"), 16))
+                name = "???"
             additional_message = ""
             if k == "AT_NULL":
                 additional_message = " (End of vector)"
@@ -19494,7 +19527,7 @@ class AuxvCommand(GenericCommand):
                 v = str(ProcessMap.lookup(v))
             else:
                 v = hex(v)
-            gef_print("{:6s} {:22s} {:s}{:s}".format(num, k + ":", v, additional_message))
+            gef_print("{:6s} {:22s} {:s}{:s}".format(num, name + ":", v, additional_message))
         return
 
 
@@ -19547,7 +19580,7 @@ class ArgvCommand(GenericCommand, BufferingOutput):
                 self.out.append("...")
                 break
 
-            s = repr(read_cstring_from_memory(addr, get_pagesize()))
+            s = repr(read_cstring_from_memory(addr, get_pagesize(), allow_non_ascii=True))
             if len(s) > max_size:
                 s = s[:max_size] + "[...]"
             s = Color.yellowify(s)
@@ -19571,11 +19604,11 @@ class ArgvCommand(GenericCommand, BufferingOutput):
         else:
             max_size = 128
 
-        lines = open(filename, "rb").read()
-        lines = String.bytes2str(lines)
+        data = open(filename, "rb").read()
+        lines = data.decode("utf-8", "backslashreplace")
         if lines.endswith("\0"):
             lines = lines[:-1]
-        for i, elem in enumerate(lines.split("\0") if lines else []):
+        for i, elem in enumerate(lines.split("\0") if data else []):
             if not self.args.verbose and i >= 100:
                 self.out.append("...")
                 break
@@ -19690,7 +19723,7 @@ class EnvpCommand(GenericCommand, BufferingOutput):
                 self.out.append("...")
                 break
 
-            s = repr(read_cstring_from_memory(addr, get_pagesize()))
+            s = repr(read_cstring_from_memory(addr, get_pagesize(), allow_non_ascii=True))
             if len(s) > max_size:
                 s = s[:max_size] + "[...]"
             s = Color.yellowify(s)
@@ -19714,11 +19747,11 @@ class EnvpCommand(GenericCommand, BufferingOutput):
         else:
             max_size = 128
 
-        lines = open(filename, "rb").read()
-        lines = String.bytes2str(lines)
+        data = open(filename, "rb").read()
+        lines = data.decode("utf-8", "backslashreplace")
         if lines.endswith("\0"):
             lines = lines[:-1]
-        for i, elem in enumerate(lines.split("\0") if lines else []):
+        for i, elem in enumerate(lines.split("\0") if data else []):
             if not self.args.verbose and i >= 100:
                 self.out.append("...")
                 break
@@ -19817,14 +19850,14 @@ class DumpArgsCommand(GenericCommand):
         gdb.execute("info args")
 
         gef_print(titlify("guessed arguments (current value)"))
-        ret = gdb.execute("info args", to_string=True).strip()
         if args.count is not None:
             count = args.count
-        elif "No symbol table info available" in ret:
-            count = len(current_arch.function_parameters)
         else:
-            count = len(ret.splitlines())
-
+            function = gdb.selected_frame().function()
+            if function is None:
+                count = len(current_arch.function_parameters)
+            else:
+                count = len(function.type.fields())
         if args.out_of_function:
             entry_sp = None
         else:
@@ -19875,7 +19908,13 @@ class VdsoCommand(GenericCommand, BufferingOutput):
             return
         shdr = elf.get_shdr(".text")
 
-        text_start = entry.page_start + shdr.sh_addr
+        # QEMU user-mode VDSOs may use absolute sh_addr and p_vaddr values.
+        # Subtract the PT_LOAD image base so those addresses are not rebased twice.
+        load_bases = [phdr.p_vaddr - phdr.p_offset for phdr in elf.phdrs if phdr.p_type == Elf.Phdr.PT_LOAD]
+        if not load_bases:
+            err("Failed to parse")
+            return
+        text_start = entry.page_start + shdr.sh_addr - min(load_bases)
         text_size = shdr.sh_size
         text_end = text_start + text_size
 
@@ -19883,7 +19922,11 @@ class VdsoCommand(GenericCommand, BufferingOutput):
         try:
             __import__("capstone")
             result_lines = []
-            for insn in Disasm.capstone_disassemble(text_start, text_size):
+            code = read_memory(text_start, text_size, safe=True)
+            if code is None:
+                err("Memory read error")
+                return
+            for insn in Disasm.capstone_disassemble(text_start, text_size, code=code):
                 if insn.address >= text_end:
                     break
                 if insn.address == current_arch.pc:
@@ -19892,7 +19935,12 @@ class VdsoCommand(GenericCommand, BufferingOutput):
                     result_lines.append("    {:s}".format(insn.colored_text(10, highlight=False)))
         except ImportError:
             gen = Disasm.gdb_disassemble(text_start, end_pc=text_end - 1)
-            result_lines = [str(x) for x in gen]
+            result_lines = []
+            for insn in gen:
+                if insn.address == current_arch.pc:
+                    result_lines.append(" -> {!s}".format(insn))
+                else:
+                    result_lines.append("    {!s}".format(insn))
 
         self.out = []
         for line in result_lines:
@@ -20812,25 +20860,26 @@ class ProcInfoCommand(GenericCommand):
 
     def get_state_of(self, pid):
         try:
-            status = open("/proc/{:d}/status".format(pid), "r").read()
+            status = open("/proc/{:d}/status".format(pid), "r", newline="").read()
         except (FileNotFoundError, OSError):
             return {}
         res = {}
-        for line in status.splitlines():
+        for line in status.split("\n"):
+            if ":" not in line:
+                continue
             key, value = line.split(":", 1)
             res[key.strip()] = value.strip()
         return res
 
     def get_stat_of(self, pid):
         try:
-            stat = open("/proc/{:d}/stat".format(pid), "r").read()
+            stat = open("/proc/{:d}/stat".format(pid), "r", newline="").read()
         except (FileNotFoundError, OSError):
             return []
-        try:
-            name = re.search(r"\((.+)\)", stat).group(1)
-        except AttributeError:
-            name = "???"
-        other = re.sub(r"\(.+\) ", "", stat).split()
+        lpos = stat.find("(")
+        rpos = stat.rfind(")")
+        name = stat[lpos + 1:rpos]
+        other = (stat[:lpos] + stat[rpos + 1:]).split()
         res = [int(other[0]), name, other[1]] + [int(x) for x in other[2:]]
         return res
 
@@ -21090,6 +21139,7 @@ class ProcInfoCommand(GenericCommand):
             }
         elif proto in ["udp", "udp6"]:
             dic = {
+                0x01: "ESTABLISHED",
                 0x07: "LISTEN",
             }
         elif proto in ["unix"]:
@@ -21209,6 +21259,9 @@ class ProcInfoCommand(GenericCommand):
                 if proto in ["tcp", "tcp6", "udp", "udp6", "raw", "raw6"]:
                     _, local, remote, state, _, _, _, _, _, inode, *_ = proto_entry
                 elif proto == "unix":
+                    if (len(proto_entry) < 7 or not proto_entry[6].isdigit()
+                            or not re.fullmatch(r"[0-9a-fA-F]+:", proto_entry[0])):
+                        continue
                     _, _, _, flags, _, state, inode, *path = proto_entry
                     if path:
                         path = path[0]
@@ -21258,7 +21311,11 @@ class ProcInfoCommand(GenericCommand):
         path = "/proc/{:d}/fd".format(pid)
 
         gef_print("{:30s}  ->  {:s}".format("Num of FD slots", self.get_state_of(pid)["FDSize"]))
-        items = os.listdir(path)
+        try:
+            items = os.listdir(path)
+        except OSError as e:
+            warn("Could not list file descriptors: {!s}".format(e))
+            return
         if not items:
             gef_print("No FD opened")
             return
@@ -21271,6 +21328,7 @@ class ProcInfoCommand(GenericCommand):
                 content = os.readlink(fullpath)
             except (FileNotFoundError, OSError):
                 continue # closed by another running thread
+            content = os.fsencode(content).decode("utf-8", "backslashreplace")
             if content.startswith("socket:["):
                 inode = int(content.replace("socket:", "")[1:-1])
                 extra = extra_info.get(inode, "")
@@ -21311,7 +21369,11 @@ class FileDescriptorsCommand(GenericCommand):
             return
         path = "/proc/{:d}/fd".format(pid)
 
-        items = os.listdir(path)
+        try:
+            items = os.listdir(path)
+        except OSError as e:
+            warn("Could not list file descriptors: {!s}".format(e))
+            return
         if not items:
             err("No FD opened")
             return
@@ -21322,6 +21384,7 @@ class FileDescriptorsCommand(GenericCommand):
                 content = os.readlink(fullpath)
             except (FileNotFoundError, OSError):
                 continue # closed by another running thread
+            content = os.fsencode(content).decode("utf-8", "backslashreplace")
             gef_print("{:32s}  ->  {:s}".format(fullpath, content))
         return
 
@@ -21375,8 +21438,10 @@ class ProcDumpCommand(GenericCommand, BufferingOutput):
         return
 
     def dump_syscall(self, path):
-        data = String.bytes2str(open(path, "rb").read())
-        self.out.append(data.strip())
+        data = String.bytes2str(open(path, "rb").read()).strip()
+        self.out.append(data)
+        if data == "running":
+            return
 
         self.out.append("----- parsed -----")
 
@@ -21590,6 +21655,17 @@ class ProcDumpCommand(GenericCommand, BufferingOutput):
         if pid is None:
             err("Could not find the local pid")
             return
+        parsers = {
+            "environ": self.dump_environ, "cmdline": self.dump_cmdline, "context": self.dump_cmdline,
+            "auxv": self.dump_auxv, "syscall": self.dump_syscall, "stat": self.dump_stat,
+            "statm": self.dump_statm, "rt_acct": self.dump_rt_acct, "status": self.dump_status,
+        }
+        parsers.update(dict.fromkeys(("mounts", "mountinfo", "mountstats", "net/unix", "net/protocols"), self.dump_mounts))
+        parsers.update(dict.fromkeys(("net/raw", "net/tcp", "net/udp", "net/icmp", "net/raw6", "net/tcp6",
+                                      "net/udp6", "net/icmp6", "net/udplite", "net/udplite6"), self.dump_raw))
+        parsers["net/dev"] = self.dump_dev
+        parsers.update(dict.fromkeys(("net/igmp", "net/fib_trie", "net/wireless"), self.dump_igmp))
+        parsers.update(dict.fromkeys(("net/netstat", "net/snmp"), self.dump_netstat))
         for root, dirs, files in os.walk("/proc/{:d}/".format(pid)):
             files = sorted(files)
 
@@ -21598,69 +21674,18 @@ class ProcDumpCommand(GenericCommand, BufferingOutput):
 
             for f in files:
                 path = os.path.join(root, f)
+                relative = os.path.relpath(path, "/proc/{:d}".format(pid))
                 self.out.append(titlify(path))
 
-                if os.path.islink(path):
-                    self.out.append(Color.colorify("{:s} -> {:s}".format(path, os.readlink(path)), "blue"))
-                    continue
-
-                if f in ["pagemap", "mem"]:
-                    self.out.append("{:s} skipped".format(Color.colorify("[*]", "bold yellow"))) # too large
-                    continue
-
-                if f == "environ":
-                    self.dump_environ(path)
-                    continue
-
-                if f in ["cmdline", "context"]:
-                    self.dump_cmdline(path)
-                    continue
-
-                if f == "auxv":
-                    self.dump_auxv(path)
-                    continue
-
-                if f == "syscall":
-                    self.dump_syscall(path)
-                    continue
-
-                if f == "stat":
-                    self.dump_stat(path)
-                    continue
-
-                if f == "statm":
-                    self.dump_statm(path)
-                    continue
-
-                if f == "rt_acct":
-                    self.dump_rt_acct(path)
-                    continue
-
-                if f == "status":
-                    self.dump_status(path)
-                    continue
-
-                if f in ["mounts", "mountinfo", "mountstats", "unix", "protocols"]:
-                    self.dump_mounts(path)
-                    continue
-
-                if f in ["raw", "tcp", "udp", "icmp", "raw6", "tcp6", "udp6", "icmp6", "udplite", "udplite6"]:
-                    self.dump_raw(path)
-                    continue
-
-                if f == "dev":
-                    self.dump_dev(path)
-                    continue
-
-                if f in ["igmp", "fib_trie", "wireless"]:
-                    self.dump_igmp(path)
-                    continue
-
-                if f in ["netstat", "snmp"]:
-                    self.dump_netstat(path)
-                    continue
-
-                self.dump_default(path)
+                try:
+                    if os.path.islink(path):
+                        self.out.append(Color.colorify("{:s} -> {:s}".format(path, os.readlink(path)), "blue"))
+                    elif relative in ("pagemap", "mem"):
+                        self.out.append("{:s} skipped".format(Color.colorify("[*]", "bold yellow"))) # too large
+                    else:
+                        parsers.get(relative, self.dump_default)(path)
+                except (OSError, subprocess.CalledProcessError) as e:
+                    self.out.append("{:s} Failed to read: {!s}".format(Color.colorify("[!]", "bold red"), e))
         return
 
     @Decorator.parse_args
@@ -21671,6 +21696,7 @@ class ProcDumpCommand(GenericCommand, BufferingOutput):
     def do_invoke(self, args):
         self.out = []
         self.proc_dump()
+        self.out = [line.replace("\0", "\\x00") for line in self.out]
         self.print_output(check_terminal_size=True)
         return
 
@@ -21761,24 +21787,24 @@ class CapabilityCommand(GenericCommand, BufferingOutput):
                 continue
 
             caps = {}
-            m = re.search(r"CapInh:\s+(.+)", status)
+            m = re.search(r"^CapInh:[ \t]+([0-9a-fA-F]+)$", status, re.MULTILINE)
             if m:
                 caps["cap_inh"] = int(m.group(1), 16)
-            m = re.search(r"CapPrm:\s+(.+)", status)
+            m = re.search(r"^CapPrm:[ \t]+([0-9a-fA-F]+)$", status, re.MULTILINE)
             if m:
                 caps["cap_prm"] = int(m.group(1), 16)
-            m = re.search(r"CapEff:\s+(.+)", status)
+            m = re.search(r"^CapEff:[ \t]+([0-9a-fA-F]+)$", status, re.MULTILINE)
             if m:
                 caps["cap_eff"] = int(m.group(1), 16)
-            m = re.search(r"CapBnd:\s+(.+)", status)
+            m = re.search(r"^CapBnd:[ \t]+([0-9a-fA-F]+)$", status, re.MULTILINE)
             if m:
                 caps["cap_bnd"] = int(m.group(1), 16)
-            m = re.search(r"CapAmb:\s+(.+)", status)
+            m = re.search(r"^CapAmb:[ \t]+([0-9a-fA-F]+)$", status, re.MULTILINE)
             if m:
                 caps["cap_amb"] = int(m.group(1), 16)
 
             if "cap_prm" in caps:
-                msg = "Capability set that Effective and Inheritable are allowed to have"
+                msg = "Upper bound for Effective; Inheritable is independent"
                 self.out.append("Permitted  : {:#018x} - {:s}".format(caps["cap_prm"], msg))
                 if self.args.verbose:
                     self.print_cap_details("cap_prm", caps["cap_prm"])
@@ -21849,7 +21875,7 @@ class CapabilityCommand(GenericCommand, BufferingOutput):
             if self.args.verbose:
                 self.print_cap_details("cap_prm", caps["cap_prm"])
         if "cap_inh" in caps:
-            msg = "Capability set that is ANDed with thread cap_inh to determine cap_inh after execve(2)"
+            msg = "ANDed with thread Inheritable to contribute to Permitted after execve(2)"
             self.out.append("Inheritable: {:#018x} - {:s}".format(caps["cap_inh"], msg))
             if self.args.verbose:
                 self.print_cap_details("cap_inh", caps["cap_inh"])
@@ -21924,10 +21950,15 @@ class SmartMemoryDumpCommand(GenericCommand):
         dt = GefUtil.now_str()
         if self.args.commit:
             # unique even within the same second
-            dirpath = tempfile.mkdtemp(dir=GEF_TEMP_DIR, prefix="mem-dump-{:s}-".format(dt))
+            try:
+                dirpath = tempfile.mkdtemp(dir=GEF_TEMP_DIR, prefix="mem-dump-{:s}-".format(dt))
+            except OSError as e:
+                err("Failed to create dump directory in {:s}: {!s}".format(GEF_TEMP_DIR, e))
+                return
         else:
             dirpath = os.path.join(GEF_TEMP_DIR, "mem-dump-{:s}-XXXXXXXX".format(dt))
         width = current_arch.ptrsize * 2
+        name_limit = os.pathconf(GEF_TEMP_DIR, "PC_NAME_MAX")
         total_size = 0
 
         for entry in maps:
@@ -21944,9 +21975,15 @@ class SmartMemoryDumpCommand(GenericCommand):
                 perm = str(entry.permission)
                 path = GefUtil.mapping_path_to_filename(entry.path)
 
-            dumpfile_name = "{:s}{:0{:d}x}-{:0{:d}x}_{:s}_{:s}{:s}.raw".format(
-                prefix, start, width, end, width, perm, path, suffix,
-            )
+            name_start = "{:s}{:0{:d}x}-{:0{:d}x}_{:s}_".format(prefix, start, width, end, width, perm)
+            name_end = "{:s}.raw".format(suffix)
+            available = name_limit - len(os.fsencode(name_start + name_end))
+            if available < 0:
+                warn("Prefix and suffix are too long; skipped: {:s}".format(name_start + name_end))
+                continue
+            while len(os.fsencode(path)) > available:
+                path = path[:-1]
+            dumpfile_name = name_start + path + name_end
             filepath = os.path.join(dirpath, dumpfile_name)
 
             # filtering
@@ -22111,7 +22148,11 @@ class HijackFdCommand(GenericCommand):
         if not 1 <= port <= 65535:
             err("Invalid port: {:s}".format(port_text))
             return None
-        address = socket.gethostbyname(host)
+        try:
+            address = socket.gethostbyname(host)
+        except (OSError, UnicodeError) as e:
+            err("Could not resolve {:s}: {!s}".format(host, e))
+            return None
 
         # call socket
         sock_fd = self.call_syscall("socket", [self.AF_INET, self.SOCK_STREAM, 0])
@@ -22178,6 +22219,9 @@ class HijackFdCommand(GenericCommand):
     @Decorator.exclude_specific_arch(arch=("CRIS",))
     @Decorator.require_arch_set
     def do_invoke(self, args):
+        if not 0 <= args.old_fd <= 0x7fff_ffff:
+            err("Invalid FD")
+            return
         self.AF_INET = 2
         self.SOCK_STREAM = 1
         self.O_APPEND = 0o2000
@@ -22640,14 +22684,14 @@ class ScanSectionCommand(GenericCommand):
         needle_sections = []
         haystack_sections = []
 
-        if haystack and "0x" in haystack:
+        if haystack and "0x" in haystack.lower():
             try:
                 start, end = AddressUtil.parse_string_range(haystack)
                 haystack_sections.append((start, end, ""))
             except ValueError:
                 pass
 
-        if needle and "0x" in needle:
+        if needle and "0x" in needle.lower():
             try:
                 start, end = AddressUtil.parse_string_range(needle)
                 needle_sections.append((start, end))
@@ -22853,9 +22897,9 @@ class FindSyscallCommand(GenericCommand, BufferingOutput):
         for section in maps_generator:
             # too big
             if self.args.max_region_size != 0:
-                if section.size >= self.args.max_region_size:
+                if section.size > self.args.max_region_size:
                     self.quiet_info_add_out(
-                        "{:#x}-{:#x} is skipped due to size ({:#x}) >= MAX_REGION_SIZE ({:#x})".format(
+                        "{:#x}-{:#x} is skipped due to size ({:#x}) > MAX_REGION_SIZE ({:#x})".format(
                             section.page_start, section.page_end,
                             section.size, self.args.max_region_size,
                         )
@@ -23208,15 +23252,17 @@ class SearchPatternCommand(GenericCommand):
             extra = " (phys)"
         else:
             extra = ""
+        self.found_count = 0
         for pattern in patterns:
             if not pattern:
                 continue
+            if self.check_limit():
+                break
 
             info("Searching for '{:s}' in {:#x}-{:#x}{:s}".format(
                 Color.yellowify(pattern), start, end, extra,
             ))
 
-            self.found_count = 0
             ret = self.search_pattern_by_address(pattern, start, end)
             for found_loc in ret:
                 self.print_loc(found_loc)
@@ -23244,9 +23290,9 @@ class SearchPatternCommand(GenericCommand):
 
             # too big
             if self.args.max_region_size != 0:
-                if section.size >= self.args.max_region_size:
+                if section.size > self.args.max_region_size:
                     self.quiet_info(
-                        "{:#x}-{:#x} is skipped due to size ({:#x}) >= MAX_REGION_SIZE ({:#x})".format(
+                        "{:#x}-{:#x} is skipped due to size ({:#x}) > MAX_REGION_SIZE ({:#x})".format(
                             section.page_start, section.page_end,
                             section.size, self.args.max_region_size,
                         )
@@ -23297,9 +23343,12 @@ class SearchPatternCommand(GenericCommand):
             extra = " (phys)"
         else:
             extra = ""
+        self.found_count = 0
         for pattern in patterns:
             if not pattern:
                 continue
+            if self.check_limit():
+                break
 
             if section_name is None:
                 area = "whole memory"
@@ -23310,7 +23359,6 @@ class SearchPatternCommand(GenericCommand):
             info("Searching for '{:s}' in {:s}{:s}".format(
                 Color.yellowify(pattern), area, extra,
             ))
-            self.found_count = 0
             self.search_pattern_by_section(pattern, section_name)
         return
 
@@ -23386,6 +23434,9 @@ class SearchPatternCommand(GenericCommand):
                 return
 
         # check parameters
+        if args.aligned <= 0:
+            err("Invalid alignment")
+            return
         if args.interval and args.interval <= 0:
             err("Invalid interval value")
             return
@@ -23409,6 +23460,9 @@ class SearchPatternCommand(GenericCommand):
             except ValueError:
                 self.usage()
                 return
+            if end < start:
+                err("Invalid range")
+                return
             self.process_by_address(patterns, start, end)
 
         elif args.section and re.match(r"(0x)?[0-9a-fA-F]+-(0x)?[0-9a-fA-F]+", args.section):
@@ -23417,6 +23471,9 @@ class SearchPatternCommand(GenericCommand):
                 start, end = AddressUtil.parse_string_range(args.section)
             except ValueError:
                 self.usage()
+                return
+            if end < start:
+                err("Invalid range")
                 return
             self.process_by_address(patterns, start, end)
 
@@ -24069,6 +24126,7 @@ class EditFlagsCommand(GenericCommand):
     ]).format(_cmdline_)
 
     def edit_flags(self, flag_names):
+        operations = []
         for flag in flag_names:
             if len(flag) < 2:
                 err("Too short length of the name")
@@ -24078,7 +24136,6 @@ class EditFlagsCommand(GenericCommand):
                 err("Invalid action for flag '{:s}'".format(flag))
                 return
 
-        for flag in flag_names:
             action = flag[-1]
             name = flag[:-1].lower()
 
@@ -24106,12 +24163,15 @@ class EditFlagsCommand(GenericCommand):
                 candidates = sorted({x for x in current_arch.flags_table.values() if x.startswith(name)})
                 if not candidates:
                     err("Invalid flag name '{:s}'".format(flag[:-1]))
-                    continue
+                    return
                 if len(candidates) > 1:
                     err("Ambiguous flag name '{:s}' ({:s})".format(flag[:-1], ", ".join(candidates)))
-                    continue
+                    return
                 name = candidates[0]
 
+            operations.append((name, action))
+
+        for name, action in operations:
             for off in current_arch.flags_table:
                 if current_arch.flags_table[off] != name:
                     continue
@@ -24510,7 +24570,7 @@ class MmapMemoryCommand(GenericCommand):
 
         # location
         page_size = get_pagesize()
-        if args.location is not None:
+        if args.location:
             auxval = Auxv.get_auxiliary_values()
             if not auxval or "AT_PAGESZ" not in auxval:
                 err("Could not get the page size from auxv; omit LOCATION to let the kernel choose the address")
@@ -24555,7 +24615,7 @@ class MmapMemoryCommand(GenericCommand):
         elif is_hppa32() or is_hppa64():
             flags = 0x12
             map_fixed = 0x04
-        if args.location is not None:
+        if args.location:
             flags |= map_fixed
         if is_mips32() or is_mips64() or is_mipsn32():
             flags |= 0x800 # MAP_DENYWRITE (why?)
@@ -24615,6 +24675,10 @@ class MunmapMemoryCommand(GenericCommand):
     @Decorator.exclude_specific_arch(arch=("CRIS",))
     @Decorator.require_arch_set
     def do_invoke(self, args):
+        if is_core_file():
+            err("Cannot unmap memory in a core file")
+            return
+
         # location
         sect = ProcessMap.process_lookup_address(args.location)
         if sect is None:
@@ -24717,7 +24781,7 @@ class MprotectCommand(GenericCommand):
             if args.size % page_size:
                 err("Size is not a multiple of {:#x}".format(page_size))
                 return
-            if args.size < 0 or AddressUtil.get_vmem_end() <= args.size:
+            if args.size <= 0 or AddressUtil.get_vmem_end() <= args.size:
                 err("Invalid size")
                 return
             # not estimation
@@ -28538,6 +28602,9 @@ class AngrCommand(GenericCommand):
                 err("The --type option must be specified for all symbols")
                 return
             for t in args.type:
+                if not t:
+                    err("Symbolic type must not be empty")
+                    return
                 for tc in t:
                     if tc not in "Aa0s?z":
                         err("Invalid symbolic type: {:s}".format(tc))
@@ -28816,17 +28883,7 @@ class GlibcHeapTopCommand(GenericCommand):
             return
 
         # get top
-        if args.arena_addr:
-            res = gdb.execute("heap arena --no-pager --arena-addr {:#x}".format(args.arena_addr), to_string=True)
-        else:
-            res = gdb.execute("heap arena --no-pager", to_string=True)
-
-        m = re.search(r"top = (0x\S+),", Color.remove_color(res))
-        if not m:
-            err("Could not find top address")
-            return
-
-        top = int(m.group(1), 16)
+        top = arena.top
         info("arena.top: {:#x}".format(top))
         top += current_arch.ptrsize * 2
         gef_print(GlibcHeap.GlibcChunk(arena, top).psprint())
@@ -30802,20 +30859,14 @@ class GlibcHeapFindFakeFastCommand(GenericCommand, BufferingOutput):
         # flag with coloring
         flag = []
 
-        color = ""
         if size_candidate & 0b100:
-            color = Config.get("theme.heap_chunk_flag_non_main_arena")
-        flag += [Color.colorify("NON_MAIN_ARENA", color)]
+            flag.append(Color.colorify("NON_MAIN_ARENA", Config.get("theme.heap_chunk_flag_non_main_arena")))
 
-        color = ""
         if size_candidate & 0b10:
-            color = Config.get("theme.heap_chunk_flag_is_mmapped")
-        flag += [Color.colorify("IS_MMAPED", color)]
+            flag.append(Color.colorify("IS_MMAPED", Config.get("theme.heap_chunk_flag_is_mmapped")))
 
-        color = ""
         if size_candidate & 0b1:
-            color = Config.get("theme.heap_chunk_flag_prev_inuse")
-        flag += [Color.colorify("PREV_INUSE", color)]
+            flag.append(Color.colorify("PREV_INUSE", Config.get("theme.heap_chunk_flag_prev_inuse")))
 
         self.out.append("    [{:s}]".format(" ".join(flag)))
 
@@ -31005,7 +31056,7 @@ class GlibcHeapCalcProtectedFdCommand(GenericCommand):
         loc = args.location
         if args.as_base:
             loc += current_arch.ptrsize * 2
-        ptr = (loc >> 12) ^ args.fd
+        ptr = AddressUtil.normalize_address((loc >> 12) ^ args.fd, memalign_size=current_arch.ptrsize)
         gef_print("Protected fd pointer: {:#x}".format(ptr))
         return
 
@@ -31423,6 +31474,10 @@ class GlibcHeapDumpImageCommand(GenericCommand):
     @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
     @Decorator.require_arch_set
     def do_invoke(self, args):
+        if not math.isfinite(args.scale) or args.scale <= 0:
+            err("Invalid scale")
+            return
+
         try:
             GefUtil.which("convert") # imagemagick
         except FileNotFoundError as e:
@@ -31459,10 +31514,11 @@ class GlibcHeapDumpImageCommand(GenericCommand):
         # make image
         image_path = self.generate_image(chunks)
         if image_path:
-            # show
-            cmd = self.make_command_line(image_path)
-            ret = GefUtil.os_system(cmd)
-            os.unlink(image_path)
+            try:
+                cmd = self.make_command_line(image_path)
+                ret = GefUtil.os_system(cmd)
+            finally:
+                os.unlink(image_path)
 
             if ret != 0:
                 err("Failed to convert")
@@ -32448,9 +32504,13 @@ class AssembleCommand(GenericCommand):
         if (args.arch, args.mode) == (None, None):
             if is_alive() and current_arch:
                 big_endian = args.big_endian or Endian.is_big_endian()
-                arch, mode = UnicornKeystoneCapstone.get_keystone_arch(
-                    arch=current_arch.arch, mode=current_arch.mode, endian=big_endian,
-                )
+                try:
+                    arch, mode = UnicornKeystoneCapstone.get_keystone_arch(
+                        arch=current_arch.arch, mode=current_arch.mode, endian=big_endian,
+                    )
+                except AttributeError:
+                    err("Unsupported architecture: {:s}:{:s}".format(current_arch.arch, current_arch.mode))
+                    return
                 arch_mode_s = ":".join([current_arch.arch, current_arch.mode])
                 if big_endian:
                     endian_s = "big"
@@ -32506,7 +32566,7 @@ class AssembleCommand(GenericCommand):
             gdb.execute("patch hex {:#x} {:s}".format(location, raw.hex()))
             return
 
-        if args.hex:
+        if args.hex and not args.as_shellcode:
             res = raw.hex()
         else:
             res = "".join("\\x{:02x}".format(byte) for byte in raw)
@@ -32568,9 +32628,13 @@ class DisassembleCommand(GenericCommand):
         if (args.arch, args.mode) == (None, None):
             if is_alive() and current_arch:
                 big_endian = args.big_endian or Endian.is_big_endian()
-                arch, mode = UnicornKeystoneCapstone.get_capstone_arch(
-                    arch=current_arch.arch, mode=current_arch.mode, endian=big_endian,
-                )
+                try:
+                    arch, mode = UnicornKeystoneCapstone.get_capstone_arch(
+                        arch=current_arch.arch, mode=current_arch.mode, endian=big_endian,
+                    )
+                except AttributeError:
+                    err("Unsupported architecture: {:s}:{:s}".format(current_arch.arch, current_arch.mode))
+                    return
                 arch_mode_s = ":".join([current_arch.arch, current_arch.mode])
                 if big_endian:
                     endian_s = "big"
@@ -32856,10 +32920,15 @@ class AsmListCommand(GenericCommand):
 
     @Decorator.parse_args
     @ModuleLoader.load_capstone
-    @Decorator.require_arch_set
     def do_invoke(self, args):
         if (args.arch, args.mode) == (None, None):
             if is_alive():
+                if current_arch is None:
+                    err("Unsupported architecture")
+                    return
+                if current_arch.arch != "X86":
+                    err("Unsupported other than x86/x64")
+                    return
                 big_endian = args.big_endian or Endian.is_big_endian()
                 arch, mode = UnicornKeystoneCapstone.get_capstone_arch(
                     arch=current_arch.arch, mode=current_arch.mode, endian=big_endian,
@@ -33004,7 +33073,12 @@ class ProcessSearchCommand(GenericCommand, BufferingOutput):
 
             if not args.verbose:
                 if command.startswith("[") and command.endswith("]"): # kernel thread
-                    continue
+                    try:
+                        with open("/proc/{:s}/cmdline".format(process["pid"]), "rb") as fd:
+                            if not fd.read(1):
+                                continue
+                    except OSError:
+                        pass
 
                 skip_list = [
                     # common
@@ -33581,7 +33655,7 @@ class ElfInfoCommand(GenericCommand):
                 err("Memory read error")
                 return
 
-            if elf is None or not elf.is_valid():
+            if elf is None or not elf.is_valid() or elf.e_class not in (Elf.ELF_32_BITS, Elf.ELF_64_BITS):
                 err("Failed to parse ELF")
             else:
                 self.elf_info(elf)
@@ -33615,8 +33689,11 @@ class ElfInfoCommand(GenericCommand):
                 return
 
             # self parse pattern
-            elf = Elf.get_elf(local_filepath)
-            if elf is None or not elf.is_valid():
+            try:
+                elf = Elf(local_filepath)
+            except Exception:
+                elf = None
+            if elf is None or not elf.is_valid() or elf.e_class not in (Elf.ELF_32_BITS, Elf.ELF_64_BITS):
                 err("Failed to parse ELF")
             else:
                 data = open(local_filepath, "rb").read()
@@ -39828,6 +39905,11 @@ class ContextCommand(GenericCommand):
             gdb.execute(cmd)
         return
 
+    @staticmethod
+    def report_error(error, redirect):
+        err(str(error), redirect=None if isinstance(error, OSError) else redirect)
+        return
+
     def i386_auto_switch(self):
         if not Config.get("context.enable_auto_switch_for_i8086"):
             return
@@ -39839,21 +39921,24 @@ class ContextCommand(GenericCommand):
 
     @Cache.cache_this_session
     def get_order_in_each_pane(self, current_layout, ignore_redirect):
-        order_in_pane = {}
+        order_info = []
+        seen = set()
         for section in current_layout:
-            # target layout is disabled
             if section[0] == "-":
+                order_info.append(None)
                 continue
 
             redirect = ContextCommand.get_redirect(section, ignore_redirect)
-            order_in_pane.setdefault(redirect, []).append(section)
+            order_info.append([redirect not in seen, False, redirect])
+            seen.add(redirect)
 
-        order_info = {}
-        for redirect, order in order_in_pane.items():
-            for i, section in enumerate(order):
-                is_head = i == 0
-                is_tail = i == len(order) - 1
-                order_info[section] = [is_head, is_tail, redirect]
+        seen.clear()
+        for entry in reversed(order_info):
+            if entry is None:
+                continue
+            redirect = entry[2]
+            entry[1] = redirect not in seen
+            seen.add(redirect)
         return order_info
 
     def clear_screen(self, redirect):
@@ -39920,7 +40005,7 @@ class ContextCommand(GenericCommand):
             self.i386_auto_switch()
 
         # do each layout
-        for section in current_layout:
+        for section, pane_info in zip(current_layout, order_info):
             # If a process is terminated while the context command is executing,
             # the output will be distorted, so it is a good idea to check by every loop.
             if not is_alive():
@@ -39930,18 +40015,23 @@ class ContextCommand(GenericCommand):
             if section[0] == "-":
                 continue
 
-            is_head, is_tail, redirect = order_info[section]
+            is_head, is_tail, redirect = pane_info
 
-            # clear screen
-            if is_head:
-                self.clear_screen(redirect)
-
-            # call each context sub command
             try:
+                # clear screen
+                if is_head:
+                    self.clear_screen(redirect)
+
+                # call each context sub command
                 gdb.execute("context-{:s} {:s}".format(section, opts))
+                # last line
+                if is_tail:
+                    ContextCommand.context_title("", redirect)
+            except OSError as e:
+                ContextCommand.report_error(e, redirect)
             except gdb.error:
                 exc_type, exc_value, exc_traceback = sys.exc_info()
-                gef_print(exc_value, redirect=redirect)
+                ContextCommand.report_error(exc_value, redirect)
 
             # for time measurement
             #from cProfile import Profile
@@ -39952,9 +40042,6 @@ class ContextCommand(GenericCommand):
             #stats.sort_stats("tottime")
             #stats.print_stats(10)
 
-            # last line
-            if is_tail:
-                ContextCommand.context_title("", redirect)
         return
 
 
@@ -39975,12 +40062,12 @@ class ContextLegendCommand(GenericCommand):
         return
 
     @staticmethod
-    @Cache.cache_this_session
+    @Cache.cache_until_next
     def get_context_legend():
         if is_qemu_system() or is_kgdb() or is_vmware():
             return None
 
-        if Config.get("gef.disable_color"):
+        if Color.disable_color():
             return None
 
         legend = "[ Legend: {:s} ]".format(
@@ -40010,7 +40097,7 @@ class ContextLegendCommand(GenericCommand):
         try:
             self.context_legend(redirect)
         except Exception as e:
-            err(str(e), redirect=redirect)
+            ContextCommand.report_error(e, redirect)
         return
 
 
@@ -40311,7 +40398,7 @@ class ContextRegistersCommand(GenericCommand):
         try:
             self.context_registers(redirect)
         except Exception as e:
-            err(str(e), redirect=redirect)
+            ContextCommand.report_error(e, redirect)
         return
 
 
@@ -40397,7 +40484,7 @@ class ContextStackCommand(GenericCommand):
         try:
             self.context_stack(redirect)
         except Exception as e:
-            err(str(e), redirect=redirect)
+            ContextCommand.report_error(e, redirect)
         return
 
 
@@ -40791,7 +40878,7 @@ class ContextCodeCommand(GenericCommand):
             try:
                 ContextCommand.execute_command("x/8i $pc", redirect)
             except Exception:
-                err(str(e), redirect=redirect) # use first Exception string
+                ContextCommand.report_error(e, redirect) # use first Exception string
         return
 
 
@@ -40817,6 +40904,7 @@ class ContextMemoryAccessCommand(GenericCommand):
     RE_MATCH_REG1 = re.compile(r"r\d+d?")
     RE_MATCH_REG2 = re.compile(r"r\d+")
     RE_MATCH_REG3 = re.compile(r"[xw]\d+")
+    RE_LEA = re.compile(r"lea[qlw]?")
 
     def get_x86_memory_expression(self, code, codesize):
         code = code.replace("+", " + ")
@@ -40843,7 +40931,7 @@ class ContextMemoryAccessCommand(GenericCommand):
 
         if insn_here.operands == []:
             return
-        if insn_here.mnemonic == "nop":
+        if insn_here.mnemonic == "nop" or (is_x86() and self.RE_LEA.fullmatch(insn_here.mnemonic)):
             return
 
         insn = ",".join(insn_here.operands)
@@ -40924,6 +41012,8 @@ class ContextMemoryAccessCommand(GenericCommand):
 
         if insn_here.operands == []:
             return
+        if self.RE_LEA.fullmatch(insn_here.mnemonic):
+            return
 
         insn = ",".join(insn_here.operands)
         insn = re.sub(r"<.+>", "", insn)
@@ -40959,6 +41049,8 @@ class ContextMemoryAccessCommand(GenericCommand):
 
         if insn_here.operands == []:
             return
+        if self.RE_LEA.fullmatch(insn_here.mnemonic):
+            return
 
         insn = ",".join(insn_here.operands)
         insn = re.sub(r"<.+>", "", insn)
@@ -40986,9 +41078,9 @@ class ContextMemoryAccessCommand(GenericCommand):
         try:
             self.context_memory_access(redirect)
         except Exception as e:
-            if not self.is_context_title_written:
+            if not self.is_context_title_written and not isinstance(e, OSError):
                 ContextCommand.context_title("memory access", redirect)
-            err(str(e), redirect=redirect)
+            ContextCommand.report_error(e, redirect)
         return
 
 
@@ -41233,7 +41325,7 @@ class ContextArgumentsCommand(GenericCommand):
         try:
             self.context_args(redirect)
         except Exception as e:
-            err(str(e), redirect=redirect)
+            ContextCommand.report_error(e, redirect)
         return
 
 
@@ -41402,7 +41494,7 @@ class ContextSourceCommand(GenericCommand):
         try:
             self.context_source(redirect)
         except Exception as e:
-            err(str(e), redirect=redirect)
+            ContextCommand.report_error(e, redirect)
         return
 
 
@@ -41443,7 +41535,7 @@ class ContextMemoryWatchCommand(GenericCommand):
         try:
             self.context_memory_watch(redirect)
         except Exception as e:
-            err(str(e), redirect=redirect)
+            ContextCommand.report_error(e, redirect)
         return
 
 
@@ -41490,7 +41582,7 @@ class ContextTraceCommand(GenericCommand):
             current_frame = current_frame.older()
             frames.append(current_frame)
 
-        nb_lines_before = Config.get("context_trace.nb_lines_before")
+        nb_lines_before = min(max(Config.get("context_trace.nb_lines_before"), 0), nb_lines - 1)
         level = max(len(frames) - nb_lines_before - 1, 0)
         current_frame = frames[level]
 
@@ -41581,7 +41673,7 @@ class ContextTraceCommand(GenericCommand):
         try:
             self.context_trace(redirect)
         except Exception as e:
-            err(str(e), redirect=redirect)
+            ContextCommand.report_error(e, redirect)
         return
 
 
@@ -41711,7 +41803,7 @@ class ContextThreadsCommand(GenericCommand):
         try:
             self.context_threads(redirect)
         except Exception as e:
-            err(str(e), redirect=redirect)
+            ContextCommand.report_error(e, redirect)
         return
 
 
@@ -41769,7 +41861,7 @@ class ContextExtraCommand(GenericCommand):
             try:
                 ContextCommand.execute_command(command, redirect)
             except Exception as e:
-                err(str(e), redirect=redirect)
+                ContextCommand.report_error(e, redirect)
         return
 
     @Decorator.parse_args
@@ -41778,7 +41870,7 @@ class ContextExtraCommand(GenericCommand):
         try:
             self.context_extra(redirect)
         except Exception as e:
-            err(str(e), redirect=redirect)
+            ContextCommand.report_error(e, redirect)
         return
 
 
@@ -42313,15 +42405,25 @@ class LoadFileCommand(GenericCommand):
     @staticmethod
     def load_file(args, data_size):
         written = 0
+        page_size = get_pagesize()
         try:
             with open(args.file_path, "rb") as fd:
                 fd.seek(args.file_offset)
                 while written < data_size:
-                    data = fd.read(min(0x1000, data_size - written))
+                    address = args.location + written
+                    chunk_size = min(0x1000, data_size - written, page_size - address % page_size)
+                    data = fd.read(chunk_size)
                     if not data:
                         warn("EOF after {:d} of {:d} bytes".format(written, data_size))
                         break
-                    write_memory(args.location + written, data)
+                    try:
+                        write_memory(address, data)
+                    except Exception as exception:
+                        err("Load failed at {:#x}: {!s}".format(address, exception))
+                        info("Loaded at least {:d} of {:d} bytes at {:#x} (failed write may be partial)".format(
+                            written, data_size, args.location,
+                        ))
+                        return
                     written += len(data)
         except (OSError, gdb.error) as exception:
             err("Load failed at {:#x}: {!s}".format(args.location + written, exception))
@@ -44108,8 +44210,8 @@ class DereferenceCommand(GenericCommand):
                     tags_dict = self.tags_dict
                     max_tag_width = self.max_tag_width
                     reader = self.read_int_from_memory
-                    cmd = "dereference --depth {:d} --no-pager {:#x} {:#x}".format(
-                        self.args.depth - 1, v, self.args.depth_nb_lines,
+                    cmd = "dereference --depth {:d} --depth-nb-lines {:d} --no-pager {:#x} {:#x}".format(
+                        self.args.depth - 1, self.args.depth_nb_lines, v, self.args.depth_nb_lines,
                     )
                     ret = gdb.execute(cmd, to_string=True)
                     self.args = args # revert
@@ -44890,7 +44992,7 @@ class XInfoCommand(GenericCommand):
             ))
 
             if addr.section.path and addr.section.path.startswith("/"):
-                base_start = ProcessMap.lookup(ProcessMap.get_section_base_address(addr.section.path))
+                base_start = ProcessMap.lookup(ProcessMap.get_section_load_base_address(addr.section))
                 gef_print("Offset (from base):    {!s} + {:#x}".format(
                     base_start, addr.value - base_start.section.page_start,
                 ))
@@ -46888,7 +46990,7 @@ class LinkMapCommand(GenericCommand, BufferingOutput):
 
     @staticmethod
     def get_link_map(filename_or_addr=None, silent=False):
-        if not filename_or_addr:
+        if filename_or_addr is None:
             # fast path
             try:
                 link_map = AddressUtil.parse_address("(void*) _rtld_global")
@@ -47280,7 +47382,7 @@ class DynamicCommand(GenericCommand, BufferingOutput):
 
     @staticmethod
     def get_dynamic(filename_or_addr=None, silent=False):
-        if not filename_or_addr:
+        if filename_or_addr is None:
             # fast path
             try:
                 dynamic = Symbol.resolve_address("_DYNAMIC")
@@ -47341,6 +47443,8 @@ class DynamicCommand(GenericCommand, BufferingOutput):
 
         phdr = elf.get_phdr(Elf.Phdr.PT_DYNAMIC)
         if phdr is None:
+            if not silent:
+                err("Could not find _DYNAMIC")
             return None
 
         if isinstance(filename_or_addr, str):
@@ -47369,15 +47473,18 @@ class DynamicCommand(GenericCommand, BufferingOutput):
         if args.dynamic_address is not None:
             dynamic = ProcessMap.lookup(args.dynamic_address)
         else:
+            elf_source = args.elf_address if args.elf_address is not None else args.filename
             try:
-                dynamic = self.get_dynamic(args.elf_address or args.filename)
+                dynamic = self.get_dynamic(elf_source)
             except gdb.error:
                 err("Failed to get _DYNAMIC")
+                return
+            if dynamic is None:
                 return
 
             if dynamic_size is None:
                 try:
-                    elf = Elf.get_elf(args.elf_address or args.filename)
+                    elf = Elf.get_elf(elf_source)
                     dynamic_size = elf.get_phdr(Elf.Phdr.PT_DYNAMIC).p_memsz
                 except Exception:
                     dynamic_size = None
@@ -47686,7 +47793,7 @@ class DestructorDumpCommand(GenericCommand):
         tls_dtor_list = None
 
         # user specified
-        if offset_tls_dtor_list:
+        if offset_tls_dtor_list is not None:
             tls_dtor_list = AddressUtil.normalize_address(current_arch.get_tls() + offset_tls_dtor_list)
 
         # method 1 (directly)
@@ -48998,7 +49105,7 @@ class GotAllCommand(GenericCommand, BufferingOutput):
         for m in ProcessMap.get_process_maps():
             if not m.path:
                 continue
-            if m.path.startswith(("[", "<")) or m.path.endswith(("]", ">")):
+            if m.path.startswith(("[", "<")):
                 continue
             if m.path in processed:
                 continue
@@ -50139,6 +50246,8 @@ class SyscallSearchCommand(GenericCommand, BufferingOutput):
 
         target_arch = args.arch
         target_mode = args.mode
+        if target_arch is None and target_mode is not None and current_arch is not None:
+            target_arch = current_arch.arch
         # force fixing
         if target_arch and target_mode is None:
             arch_need_not_mode = ["SH4", "ALPHA", "OR1K", "NIOS2", "MICROBLAZE", "XTENSA", "CRIS", "CSKY"]
@@ -50196,6 +50305,10 @@ class SyscallSearchCommand(GenericCommand, BufferingOutput):
             if target_arch.upper() in ["M68K"]:
                 target_arch = "M68K"
                 target_mode = "32"
+
+        if target_arch and target_mode is None and current_arch is not None:
+            if target_arch.upper() == current_arch.arch:
+                target_arch, target_mode = current_arch.arch, current_arch.mode
 
         if target_arch == "X86" and target_mode == "x32":
             target_mode = "64"
@@ -62224,6 +62337,10 @@ class MagicCommand(GenericCommand):
 
         addr = ProcessMap.lookup(addr)
         perm = addr.section.permission
+        base_section = ProcessMap.lookup(base).section
+        if base_section and addr.section.path != base_section.path:
+            gef_print("{:45s} {!s} [{!s}] (different object)".format(sym, addr, perm))
+            return
         if is_ascii_string(addr.value):
             val = read_cstring_from_memory(addr.value)
             gef_print("{:45s} {!s} [{!s}] ({:+#011x}) -> {:s}".format(
@@ -62254,7 +62371,11 @@ class MagicCommand(GenericCommand):
         if vtable is None:
             return
 
-        gdb.execute("dereference {:#x} 22 --no-pager".format(vtable))
+        try:
+            jump_size = gdb.lookup_type("struct _IO_jump_t").sizeof
+        except gdb.error:
+            jump_size = current_arch.ptrsize * 21
+        gdb.execute("dereference {:#x} {:d} --no-pager".format(vtable, jump_size // current_arch.ptrsize))
         return
 
     def magic(self):
@@ -63246,7 +63367,7 @@ class SseCommand(GenericCommand):
         red = lambda x: Color.colorify("{:s}".format(x), "bold red")
         for i, reg in regs:
             if i == 8:
-                gef_print("* xmm8-15 are introduced by AVX")
+                gef_print("* xmm8-15 are introduced by x86-64 mode")
             reghex = GefUtil.bytes_to_ascii(reg.to_bytes(16, "little"))
             regname = "$xmm{:<2d}".format(i)
             gef_print("{:s} : {:#034x}  |  {:s}  |".format(red(regname), reg, reghex))
@@ -64346,7 +64467,7 @@ class ErrnoCommand(GenericCommand, BufferingOutput):
                 warn("No debugging session active")
                 return
             try:
-                val = AddressUtil.parse_address("*__errno_location()")
+                val = AddressUtil.parse_address("*(int *)__errno_location()")
             except gdb.error:
                 err("Failed to get *__errno_location()")
                 return
@@ -64403,11 +64524,7 @@ class DistanceCommand(GenericCommand):
             err("Could not find the base address")
             return
 
-        if addr_a.section.path:
-            base_address = ProcessMap.get_section_base_address(addr_a.section.path)
-        else:
-            base_address = addr_a.section.page_start
-
+        base_address = ProcessMap.get_section_load_base_address(addr_a.section)
         offset = args.address_a - base_address
         gef_print("Address: {:#x}".format(args.address_a))
         gef_print("Base:    {:#x}".format(base_address))
@@ -64491,6 +64608,9 @@ class U2dCommand(GenericCommand):
         try:
             n = int(args.value, 0)
         except ValueError:
+            if re.fullmatch(r"[+-]?0(?:_?[0-9])+", args.value):
+                self.convert_from_int(int(args.value, 10))
+                return
             try:
                 n = float(args.value)
             except ValueError:
@@ -64968,16 +65088,18 @@ class ConvertCommand(GenericCommand, BufferingOutput):
             pass
         return
 
-    def convert(self, value, args):
-        self.pack(value)
-        self.pack_hex(value)
+    def convert(self, value, args, numeric_value=None):
+        if numeric_value is None:
+            numeric_value = value
+        self.pack(numeric_value)
+        self.pack_hex(numeric_value)
         self.unpack(value)
         self.tohex(value)
         self.unhex(value)
-        self.byteswap(value)
-        self.bit_reverse(value)
-        self.integer(value)
-        self.signed(value)
+        self.byteswap(numeric_value)
+        self.bit_reverse(numeric_value)
+        self.integer(numeric_value)
+        self.signed(numeric_value)
         self.string(value)
         self.url_encode(value)
         self.url_decode(value)
@@ -65071,8 +65193,15 @@ class ConvertValueCommand(ConvertCommand):
                 return
         else:
             value = args.value
+        numeric_value = value
+        if re.fullmatch(r"[+-]?0(?:_?[0-9])+", value):
+            try:
+                numeric_value = str(int(value, 10))
+            except ValueError:
+                err("Invalid numeric value")
+                return
         self.out = []
-        self.convert(value, args)
+        self.convert(value, args, numeric_value)
         self.print_output()
         return
 
@@ -105190,6 +105319,9 @@ class StringsCommand(GenericCommand, BufferingOutput):
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     def do_invoke(self, args):
+        if args.depth < 0:
+            err("Invalid depth")
+            return
         if args.location is None:
             if is_qemu_system() or is_kgdb() or is_in_kernel():
                 err("Searching all regions is only supported in userland")
@@ -106090,7 +106222,7 @@ class TlsCommand(GenericCommand, BufferingOutput):
             self.print_all_tls()
             return
 
-        if args.thread_id:
+        if args.thread_id is not None:
             tls = self.get_specific_tls(args.thread_id)
         else:
             tls = current_arch.get_tls()
@@ -151358,12 +151490,11 @@ class DiffOutputColordiffCommand(DiffOutputCommand):
             return
 
         saved_files = self.get_saved_files()
-        try:
-            f1 = saved_files[args.n1]
-            f2 = saved_files[args.n2]
-        except IndexError:
+        if not (0 <= args.n1 < len(saved_files) and 0 <= args.n2 < len(saved_files)):
             err("Out of index error")
             return
+        f1 = saved_files[args.n1]
+        f2 = saved_files[args.n2]
 
         if not os.path.exists(f1):
             err("Could not find {:s}".format(f1))
@@ -151420,12 +151551,11 @@ class DiffOutputGitDiffCommand(DiffOutputCommand):
             return
 
         saved_files = self.get_saved_files()
-        try:
-            f1 = saved_files[args.n1]
-            f2 = saved_files[args.n2]
-        except IndexError:
+        if not (0 <= args.n1 < len(saved_files) and 0 <= args.n2 < len(saved_files)):
             err("Out of index error")
             return
+        f1 = saved_files[args.n1]
+        f2 = saved_files[args.n2]
 
         if not os.path.exists(f1):
             err("Could not find {:s}".format(f1))
@@ -151500,7 +151630,11 @@ class DiffOutputClearCommand(DiffOutputCommand):
                 if path.endswith((".txt", ".cmd")):
                     os.unlink(path)
         elif args.n:
-            for i, path in enumerate(self.get_saved_files()):
+            saved_files = self.get_saved_files()
+            if any(i < 0 or i >= len(saved_files) for i in args.n):
+                err("Out of index error")
+                return
+            for i, path in enumerate(saved_files):
                 if i in args.n:
                     os.unlink(path)
                     os.unlink(path[:-4] + ".cmd")
@@ -151627,13 +151761,7 @@ class ConstGrepCommand(GenericCommand):
             return None
         content = content.replace(b"\\\n", b"GEF_MARKER")
         content = content.replace(b"\t", b" ")
-        for i in range(0x80, 0x100):
-            content = content.replace(bytes([i]), b"")
-        try:
-            content = content.decode("UTF-8")
-        except UnicodeDecodeError:
-            err("Decode error: " + path)
-            return None
+        content = content.decode("UTF-8", errors="replace")
         return content
 
     @Decorator.parse_args
@@ -181480,6 +181608,10 @@ class UclibcNgDumpImageCommand(UclibcNgHeapDumpCommand, GlibcHeapDumpImageComman
     @Decorator.only_if_gdb_running
     @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
     def do_invoke(self, args):
+        if not math.isfinite(args.scale) or args.scale <= 0:
+            err("Invalid scale")
+            return
+
         try:
             GefUtil.which("convert") # imagemagick
         except FileNotFoundError as e:
@@ -181526,10 +181658,11 @@ class UclibcNgDumpImageCommand(UclibcNgHeapDumpCommand, GlibcHeapDumpImageComman
         # make image
         image_path = self.make_raw_image(line_nums, used_or_freed)
         if image_path:
-            # show
-            cmd = self.make_command_line(image_path)
-            ret = GefUtil.os_system(cmd)
-            os.unlink(image_path)
+            try:
+                cmd = self.make_command_line(image_path)
+                ret = GefUtil.os_system(cmd)
+            finally:
+                os.unlink(image_path)
 
             if ret != 0:
                 err("Failed to convert")
@@ -206943,6 +207076,10 @@ class BytearrayCommand(GenericCommand):
             if pos < 2 or len(x) - 4 < pos:
                 return False
 
+            if not re.fullmatch(r"[0-9a-f]{2}", x[pos - 2:pos]):
+                return False
+            if not re.fullmatch(r"[0-9a-f]{2}", x[pos + 2:pos + 4]):
+                return False
             xa, xb = int(x[pos - 2:pos], 16), int(x[pos + 2:pos + 4], 16)
             if xa >= xb:
                 return False
@@ -207636,7 +207773,7 @@ class BincompareCommand(GenericCommand, BufferingOutput):
                     file_data = fd.read(args.size)
                 else:
                     file_data = fd.read()
-        except OSError as e:
+        except (OSError, ValueError, OverflowError) as e:
             err("Cannot read file '{:s}': {!s}".format(args.filename, e))
             return
         file_size = len(file_data)
@@ -207760,7 +207897,8 @@ class SymbolsCommand(GenericCommand, BufferingOutput):
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     def do_invoke(self, args):
-        if args.use_cache and hasattr(self, "cache") and self.cache:
+        cache_source = (gdb.selected_inferior().num, tuple(gdb.objfiles()))
+        if args.use_cache and getattr(self, "cache_source", None) == cache_source and self.cache:
             self.out = self.cache[::]
             self.print_output()
             return
@@ -207769,6 +207907,7 @@ class SymbolsCommand(GenericCommand, BufferingOutput):
         self.get_symbols()
         self.print_output()
         self.cache = self.out[::]
+        self.cache_source = cache_source
         return
 
 
@@ -207860,7 +207999,8 @@ class TypesCommand(GenericCommand, BufferingOutput):
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     def do_invoke(self, args):
-        if args.use_cache and hasattr(self, "cache") and self.cache:
+        cache_source = (gdb.selected_inferior().num, tuple(gdb.objfiles()))
+        if args.use_cache and getattr(self, "cache_source", None) == cache_source and self.cache:
             self.out = self.cache[::]
             self.print_output()
             return
@@ -207869,6 +208009,7 @@ class TypesCommand(GenericCommand, BufferingOutput):
         self.get_types()
         self.print_output()
         self.cache = self.out[::]
+        self.cache_source = cache_source
         return
 
 
@@ -208181,7 +208322,11 @@ class GefRestoreCommand(GenericCommand):
             self.quiet_info("Could not find {:s}, GEF uses default settings".format(GEF_RC))
             return
 
-        Config.load(GEF_RC)
+        try:
+            Config.load(GEF_RC)
+        except (configparser.Error, ValueError) as e:
+            err("Invalid configuration in {:s}: {!s}".format(GEF_RC, e))
+            return
 
         # ensure that the temporary directory always exists
         abspath = os.path.expanduser(GEF_TEMP_DIR)
@@ -208483,12 +208628,12 @@ class GefPyObjListCommand(GenericCommand, BufferingOutput):
         read_write_mems = []
         others = []
 
-        for gobj in dir(sys.modules["__main__"]): # for global object
+        for gobj in dir(sys.modules[__name__]): # for global object
             # skip specific
             if gobj in skip_name_list:
                 continue
 
-            obj = getattr(sys.modules["__main__"], gobj)
+            obj = getattr(sys.modules[__name__], gobj)
             t = type(obj)
 
             # skip specific type
@@ -209426,10 +209571,10 @@ class GefTmuxSetupCommand(GenericCommand):
             GefTmuxSetupCommand.reset_panes()
 
         # split
-        ok("tmux session found, splitting window...")
         pane_id, pane_tty = subprocess.check_output([
             tmux, "splitw", "-h", "-F#{pane_id}:#{pane_tty}", "-P",
-        ]).decode("utf-8").strip().split(":")
+        ], stderr=subprocess.PIPE).decode("utf-8").strip().split(":")
+        ok("tmux session found, window split")
 
         # add destructor
         import atexit
@@ -209464,7 +209609,11 @@ class GefTmuxSetupCommand(GenericCommand):
                 warn("Not in a tmux session")
             return
 
-        self.tmux_setup()
+        try:
+            self.tmux_setup()
+        except subprocess.CalledProcessError as exception:
+            detail = (exception.stderr or exception.output or b"").decode("utf-8", errors="replace").strip()
+            err("Failed to set up tmux: {:s}".format(detail or str(exception)))
         return
 
 
@@ -210648,6 +210797,9 @@ class GefUtil:
     @staticmethod
     def fromhex_ignore_invalid(value, to_str=False):
         """Convert a hex string to bytes or string, ignoring invalid characters."""
+        prefix = re.match(r"^[^0-9a-fA-F]*0[xX]", value)
+        if prefix:
+            value = value[prefix.end():]
         sanitized_value = ""
         for c in value.lower():
             if c in "0123456789abcdef":
