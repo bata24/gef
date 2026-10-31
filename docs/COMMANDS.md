@@ -78,7 +78,7 @@ options:
 ### Notes
 
 ```text
-If "on" or "off" is specified, that operation takes precedence.
+Use "on" or "off" alone; they cannot be combined with pane names.
 `context XXX YYY` invokes the `context-XXX` command and then the `context-YYY` command, in that order.
 There are various configuration options that modify the behavior of context. You can list them with gef config context.
 ```
@@ -1255,7 +1255,7 @@ positional arguments:
 
 options:
   -h, --help           show this help message and exit
-  -l, --length LENGTH  the length to disassemble. (default: context.nb_lines_code)
+  -l, --length LENGTH  the length to disassemble. (default: capstone_disassemble.nb_lines_code_default)
 ```
 
 ### Examples
@@ -1832,6 +1832,13 @@ options:
 kill-threads 2 3   # kill threads that `Thread Id` is 2 or 3
 ```
 
+### Notes
+
+```text
+-e alone selects all non-current threads except excluded IDs.
+-a takes precedence over explicit THREAD_IDs; -e still excludes IDs.
+```
+
 ## `mmap`
 
 Allocate a new memory.
@@ -2281,12 +2288,14 @@ Invoke `one_gadget`.
 ### Syntax
 
 ```text
-usage: onegadget [-h] [-s]
+usage: onegadget [-h] [-s] [-o FORMAT]
 
 options:
   -h, --help            show this help message and exit
   -s, --apply-smart-filter
                         filter valid gadgets for the current register and memory values (x64 only).
+  -o, --output-format FORMAT
+                        pass the output format to one_gadget (e.g. raw).
 ```
 
 ## `ropper`
@@ -3432,6 +3441,12 @@ options:
   -n, --no-pager  do not use the pager.
 ```
 
+### Notes
+
+```text
+Reads dispositions by running rt_sigaction in the inferior; seccomp may block or terminate it.
+```
+
 # 02-g. Process Information - Symbol
 ## `magic`
 
@@ -3584,14 +3599,15 @@ Find memory addresses mapped across different regions.
 ### Syntax
 
 ```text
-usage: scan-section [-h] [HAYSTACK] [NEEDLE]
+usage: scan-section [-h] [-s STRIDE] [HAYSTACK] [NEEDLE]
 
 positional arguments:
-  HAYSTACK    where to search for the needle.
-  NEEDLE      what to search for.
+  HAYSTACK             where to search for the needle.
+  NEEDLE               what to search for.
 
 options:
-  -h, --help  show this help message and exit
+  -h, --help           show this help message and exit
+  -s, --stride STRIDE  number of bytes between pointer candidates (default: pointer size).
 ```
 
 ### Examples
@@ -6141,6 +6157,12 @@ edit-flags direction-  # unset DIRECTION flag
 edit-flags sign~       # toggle SIGN flag
 edit-flags z+ c-       # a unique prefix of the flag name is also accepted
 edit-flags -v          # verbose output
+```
+
+### Notes
+
+```text
+Place -v before or after all flag names; it cannot appear between flag names.
 ```
 
 ## `mmxset`
@@ -14300,6 +14322,8 @@ print-format -f py -b 8 -l 256 $rsp
 "hexn" means hex with new-line.
 "hexs" means hex with separator.
 JavaScript uses BigInt for 64-bit values.
+Assembly output uses NASM directives (db/dw/dd/dq).
+On big-endian targets, use -f asm -b 8 to preserve the original byte order.
 ```
 
 # 07-d. Misc - Show Example
@@ -15017,4 +15041,5 @@ theme address_code bold cyan  # set new theme
 
 ```text
 GDB 17 do not allow multiple color specifications (such as "bold red"). This bug had fixed in GDB 18.
+--color-sample explicitly emits ANSI colors even when gef.disable_color or NO_COLOR is set.
 ```
