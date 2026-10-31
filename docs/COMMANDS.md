@@ -7188,9 +7188,9 @@ usage: uclibc-ng-heap-dump [-h] [--malloc_state MALLOC_STATE] [-n] [-v] [-s]
 options:
   -h, --help            show this help message and exit
   --malloc_state MALLOC_STATE
-                        use specific address for malloc_context.
+                        use specific address for malloc_state.
   -n, --no-pager        do not use the pager.
-  -v, --verbose         also dump an empty active index.
+  -v, --verbose         also dump empty bins and malloc_state fields.
   -s, --safe-linking-decode
                         decode Safe-Linking fastbin links during traversal and display (default: plain links).
 ```
@@ -7350,12 +7350,12 @@ Visualize chunks on a heap for uClibc-ng.
 usage: uclibc-ng-visual-heap [-h] [--malloc_state MALLOC_STATE] [-c MAX_COUNT] [-f] [-d] [-s] [-n] [LOCATION]
 
 positional arguments:
-  LOCATION              the address interpreted as the beginning of a contiguous chunk. (default: [heap] of vmmap)
+  LOCATION              the address of the first contiguous chunk (default: malloc_state.heap_base).
 
 options:
   -h, --help            show this help message and exit
   --malloc_state MALLOC_STATE
-                        use specific address for malloc_context.
+                        use specific address for malloc_state.
   -c MAX_COUNT          Maximum count to parse. It is used when there is a very large amount of chunks.
   -f, --full            display the same line without omitting.
   -d, --dark-color      use the dark color if chunk is allocated.
@@ -7795,6 +7795,7 @@ Simplified Hoard structure:
 * This command scans anonymous writable mappings and detects superblocks by vtable and magic.
 * `--superblock` can be used to specify superblocks manually.
 * `_freeList` is used first; if it is empty, TLS-held freelist heads are searched as candidates.
+* Cross-thread frees waiting in `_delayedFreeList` are displayed separately.
 * Before allocating from the freelist, Hoard consumes unused objects from `position`.
 * `reapableObjects` is displayed as the number of unused objects left.
 ```
@@ -8141,7 +8142,7 @@ options:
   -i, --active-idx {0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47}
                         the active index of dump target.
   -n, --no-pager        do not use the pager.
-  -v, --verbose         also dump an empty active index.
+  -v, --verbose         also dump slots in groups with a single freed slot.
 ```
 
 ### Notes

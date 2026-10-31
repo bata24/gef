@@ -3957,6 +3957,18 @@ class GenericType:
 class GlibcHeap:
     """Manage glibc heap-specific settings."""
 
+    @staticmethod
+    def valid_debug_type(name, layout, members):
+        try:
+            debug_type = GefUtil.cached_lookup_type(name)
+            fields = {field.name: field.bitpos // 8 for field in debug_type.fields()
+                      if field.name is not None and field.bitpos is not None}
+            if all(fields.get(member) == getattr(layout, "addrof_" + member) for member in members):
+                return debug_type
+        except (AttributeError, gdb.error, RuntimeError, TypeError):
+            pass
+        return None
+
     class HeapInfo(GenericType):
         """GEF representation of heap_info."""
 
@@ -4693,7 +4705,7 @@ class GlibcHeap:
 
     # It must be a static method because it is also used to calculate the Heapbase.
     @staticmethod
-    def search_for_tcache_from_tls(arena_addr):
+    def search_for_tcache_from_tls(arena_addr, thread_tls=None):
         if get_libc_version() < (2, 26):
             return None
         if not current_arch.tls_supported:
@@ -4732,6 +4744,8 @@ class GlibcHeap:
         """
 
         def get_all_tls():
+            if thread_tls is not None:
+                return [thread_tls]
             threads = gdb.selected_inferior().threads()
             threads = sorted(threads, key=lambda th: th.num)
             tls_list = []
@@ -4744,20 +4758,27 @@ class GlibcHeap:
                         tls_list.append(tls)
             return tls_list
 
-        def get_suitable_tls_addr(arena_addr):
+        def get_suitable_tls_addrs(arena_addr):
             tls_list = get_all_tls()
             if not tls_list:
-                return None
-            for i in range(1, 500):
-                for direction in [1, -1]:
-                    for tls in tls_list:
+                return []
+            matches = []
+            for tls in tls_list:
+                found = None
+                for i in range(1, 500):
+                    for direction in [1, -1]:
                         tls_addr_i = tls + (current_arch.ptrsize * i) * direction
                         if not is_valid_addr(tls_addr_i):
                             continue
                         x = read_int_from_memory(tls_addr_i)
                         if is_valid_addr(x) and x == arena_addr:
-                            return tls_addr_i
-            return None
+                            found = tls_addr_i
+                            break
+                    if found is not None:
+                        break
+                if found is not None:
+                    matches.append(found)
+            return matches
 
         def get_tcache_perthread_struct_size():
             TCACHE_MAX_BINS = GlibcHeap.GlibcArena.TCACHE_MAX_BINS()
@@ -4791,10 +4812,11 @@ class GlibcHeap:
                         continue
             return None
 
-        tls = get_suitable_tls_addr(arena_addr)
-        if tls is None:
-            return None
-        return search_tcache_perthread_struct(arena_addr, tls)
+        for tls in get_suitable_tls_addrs(arena_addr):
+            tcache = search_tcache_perthread_struct(arena_addr, tls)
+            if tcache is not None:
+                return tcache
+        return None
 
     class GlibcArena:
         """Glibc arena class."""
@@ -4851,14 +4873,21 @@ class GlibcHeap:
                 self.__is_main_arena = bool(arena_addr == GlibcHeap.search_for_main_arena())
 
             # get type
-            try:
-                arena = gdb.parse_and_eval("*{:#x}".format(self.__addr))
-                malloc_state_t = GefUtil.cached_lookup_type("struct malloc_state")
-                self.__arena = arena.cast(malloc_state_t)
-                self.__size = malloc_state_t.sizeof
-            except RuntimeError:
+            malloc_state_t = GlibcHeap.valid_debug_type(
+                "struct malloc_state", GlibcHeap.MallocStateStruct(0),
+                ("mutex", "flags", "top", "bins", "next", "system_mem"),
+            )
+            if malloc_state_t is None:
                 self.__arena = GlibcHeap.MallocStateStruct(self.__addr)
                 self.__size = self.__arena.sizeof
+            else:
+                try:
+                    arena = gdb.parse_and_eval("*{:#x}".format(self.__addr))
+                    self.__arena = arena.cast(malloc_state_t)
+                    self.__size = malloc_state_t.sizeof
+                except RuntimeError:
+                    self.__arena = GlibcHeap.MallocStateStruct(self.__addr)
+                    self.__size = self.__arena.sizeof
 
             # This structure (GlibcArena) is created every time you run a heap-related command.
             # Therefore, it is safe to cache the current value.
@@ -4918,6 +4947,8 @@ class GlibcHeap:
 
         @property
         def tcache_perthread_struct(self):
+            if hasattr(self, "tcache_override"):
+                return self.tcache_override
             return self.addrof_tcachebins_base()
 
         @Cache.cache_until_next
@@ -5222,16 +5253,24 @@ class GlibcHeap:
 
         def get_next(self):
             """Return the next arena object if available; otherwise returns None."""
+            addr_next = None
             try:
                 addr_next = int(self.next)
                 if addr_next == 0:
                     return None
                 if addr_next == GlibcHeap.get_main_arena().addr:
                     return None
+                if not is_valid_addr(addr_next):
+                    warn("Cannot read next arena at {:#x}".format(addr_next))
+                    return None
                 next_arena = GlibcHeap.GlibcArena(addr_next)
                 str(next_arena) # check memory error
                 return next_arena
-            except gdb.error:
+            except (gdb.error, AttributeError, RuntimeError):
+                if addr_next is None:
+                    warn("Cannot read next arena pointer")
+                else:
+                    warn("Cannot read next arena at {:#x}".format(addr_next))
                 return None
 
         def __str__(self):
@@ -5772,7 +5811,7 @@ class GlibcHeap:
             return not self.arena.is_chunk_in_freelists(self)
 
         def is_top(self):
-            return self.arena.top == self.chunk_base_address
+            return self.arena is not None and self.arena.top == self.chunk_base_address
 
         def str_chunk_size_flag(self):
             msg = []
@@ -5887,8 +5926,14 @@ class GlibcHeap:
             addr, (addr_c_f, addr_c_u), addr_sym = get_sym_chunk(self.address)
             flags = self.flags_as_string()
 
+            # mmap chunks do not belong to an arena.
+            if self.has_m_bit():
+                msg = "{:s}(base={:s}{:s}, addr={:s}{:s}, size={:s}, flags={:s})".format(
+                    chunk_c, base_c_u, base_sym, addr_c_u, addr_sym, size_c, flags,
+                )
+
             # large bins
-            if self.arena.is_chunk_in_largebins(self):
+            elif self.arena.is_chunk_in_largebins(self):
                 fd, fd_sym = get_sym(self.fd)
                 bk, bk_sym = get_sym(self.bk)
                 err = get_err([fd, bk])
@@ -25917,7 +25962,7 @@ class UnicornEmulator:
             cs_arch, cs_mode = UnicornKeystoneCapstone.get_capstone_arch()
             if is_arm32():
                 # unicorn can handle thumb automatically, capstone can't; handle it manually
-                self.cs_arm = capstone.Cs(cs_arch, cs_mode)
+                self.cs_arm = capstone.Cs(cs_arch, (cs_mode & ~capstone.CS_MODE_THUMB) | capstone.CS_MODE_ARM)
                 self.cs_thumb = capstone.Cs(cs_arch, (cs_mode & ~capstone.CS_MODE_ARM) | capstone.CS_MODE_THUMB)
                 self.cs = None
             else:
@@ -25950,6 +25995,7 @@ class UnicornEmulator:
             # instruction trace counter and tracked memory changes (for the diff dump)
             self.count = 0
             self.changed_mem = {}
+            self.synthetic_pages = set()
             self.mem_write_callback = kwargs.get("mem_write_callback")
             self.failed = None        # set by run(): the reason string when emulation stops abnormally (else None)
             self.last_syscall = None  # set by handle_syscall(): the first syscall number encountered (else None)
@@ -26037,6 +26083,9 @@ class UnicornEmulator:
             if is_arm32() or is_arm64():
                 self.write_reg("$cpsr", self.read_gdb_register("$cpsr"))
             if is_arm32():
+                fpexc = self.read_gdb_register("$fpexc")
+                if fpexc is not None:
+                    self.emu.reg_write(self.unicorn.arm_const.UC_ARM_REG_FPEXC, fpexc)
                 current = None
                 if is_in_kernel() or is_qemu_system() or is_kgdb() or is_vmware():
                     try:
@@ -26679,14 +26728,26 @@ class UnicornEmulator:
                 return False
             a6 = self.emu.reg_read(self.regs[entry.arg_regs[5]])
 
-            regions = [(None, 0, None)] + list(self.emu.mem_regions())
-            regions = regions[::-1]
+            sections = ProcessMap.get_process_maps()
+            regions = [(section.page_start, section.page_end - 1) for section in sections]
+            regions += [(start, end) for start, end, perm in self.emu.mem_regions()]
+            regions.sort()
+            occupied = [(0, 0)]
+            for start, end in regions:
+                if start <= occupied[-1][1] + 1:
+                    occupied[-1] = (occupied[-1][0], max(occupied[-1][1], end))
+                else:
+                    occupied.append((start, end))
+            stack_starts = {section.page_start for section in sections if "[stack" in (section.path or "")}
             map_start = None
-            for (mr1, mr2) in zip(regions[:-1], regions[1:]):
-                if is_64bit() and mr1[0] >= 0x8000_0000_0000_0000: # avoid around [vsyscall]
+            for index in range(len(occupied) - 1, 0, -1):
+                lower, upper = occupied[index - 1], occupied[index]
+                if is_64bit() and upper[0] >= 0x8000_0000_0000_0000: # avoid around [vsyscall]
                     continue
-                if mr1[0] - (mr2[1] + 1) >= a2:
-                    map_start = mr1[0] - a2
+                if upper[0] in stack_starts:
+                    continue
+                if upper[0] - (lower[1] + 1) >= a2:
+                    map_start = upper[0] - a2
                     break
             if map_start is None:
                 return False # not found space
@@ -26697,6 +26758,7 @@ class UnicornEmulator:
                 return False
             for page in range(map_start & self.page_mask, map_start + a2, self.page_size):
                 self.mapped.add(page)
+                self.synthetic_pages.add(page)
             gef_print("  --> syscall={:d} (emulated)".format(sysno))
             gef_print("    --> {:#x} = mmap({:#x}, {:#x}, {:#x}, {:#x}, {:#x}, {:#x})".format(
                 map_start, a1, a2, a3, a4, a5, a6,
@@ -26719,6 +26781,7 @@ class UnicornEmulator:
                 return False
             for page in range(a1 & self.page_mask, a1 + a2, self.page_size):
                 self.mapped.discard(page)
+                self.synthetic_pages.discard(page)
             gef_print("  --> syscall={:d} (emulated)".format(sysno))
             gef_print("    --> munmap({:#x}, {:#x})".format(a1, a2))
             return True
@@ -28789,10 +28852,7 @@ class GlibcHeapCommand(GenericCommand):
     _category_ = "05-a. Heap - Glibc"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
-    if (sys.version_info.major, sys.version_info.minor) >= (3, 7):
-        subparsers = parser.add_subparsers(title="command", required=True)
-    else:
-        subparsers = parser.add_subparsers(title="command")
+    subparsers = parser.add_subparsers(title="command")
     subparsers.add_parser("arena")
     subparsers.add_parser("arenas")
     subparsers.add_parser("bins")
@@ -28845,9 +28905,6 @@ class GlibcHeapCommand(GenericCommand):
         return
 
     @Decorator.parse_args
-    @Decorator.only_if_gdb_running
-    @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
-    @Decorator.require_arch_set
     def do_invoke(self, args):
         self.usage()
         return
@@ -28951,6 +29008,10 @@ class GlibcHeapArenaCommand(GenericCommand, BufferingOutput):
         """Parse and append a formatted representation of the given arena's structure
         to the output list."""
         try:
+            layout = GlibcHeap.MallocStateStruct(0)
+            if GlibcHeap.valid_debug_type("struct malloc_state", layout,
+                                          ("mutex", "flags", "top", "bins", "next", "system_mem")) is None:
+                raise gdb.error("Invalid malloc_state layout")
             cmd = "p ((struct malloc_state*) {:#x})[0]".format(arena.addr)
             title = titlify("[arena - parsed via debuginfo] --- {:s}".format(cmd))
             result = gdb.execute(cmd, to_string=True)
@@ -29001,6 +29062,10 @@ class GlibcHeapArenaCommand(GenericCommand, BufferingOutput):
                 return
 
         try:
+            layout = GlibcHeap.MallocPar(0)
+            if GlibcHeap.valid_debug_type("struct malloc_par", layout,
+                                          ("trim_threshold", "top_pad", "mmap_threshold", "sbrk_base")) is None:
+                raise gdb.error("Invalid malloc_par layout")
             cmd = "p ((struct malloc_par*) {:#x})[0]".format(mp)
             title = titlify("[mp_ - parsed via debuginfo] --- {:s}".format(cmd))
             result = gdb.execute(cmd, to_string=True)
@@ -29051,6 +29116,10 @@ class GlibcHeapArenaCommand(GenericCommand, BufferingOutput):
         heap_info = arena.addr & get_pagesize_mask_high()
 
         try:
+            layout = GlibcHeap.HeapInfo(0)
+            if GlibcHeap.valid_debug_type("struct _heap_info", layout,
+                                          ("ar_ptr", "prev", "size", "mprotect_size")) is None:
+                raise gdb.error("Invalid heap_info layout")
             cmd = "p ((struct _heap_info*) {:#x})[0]".format(heap_info)
             title = titlify("[heap_info - parsed via debuginfo] --- {:s}".format(cmd))
             result = gdb.execute(cmd, to_string=True)
@@ -29124,6 +29193,17 @@ class GlibcHeapChunkCommand(GenericCommand):
     @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
     @Decorator.require_arch_set
     def do_invoke(self, args):
+        # An mmap chunk can exist before the first arena allocation.
+        chunk = GlibcHeap.GlibcChunk(None, args.location, from_base=args.as_base)
+        try:
+            if chunk.has_m_bit():
+                gef_print(chunk.psprint())
+                gef_print("  Found freelist/top: None")
+                return
+        except gdb.MemoryError:
+            err("Invalid address")
+            return
+
         # parse arena
         arena = GlibcHeap.get_arena(args.arena_addr)
 
@@ -29136,10 +29216,7 @@ class GlibcHeapChunkCommand(GenericCommand):
             return
 
         # get chunk
-        if args.as_base:
-            chunk = GlibcHeap.GlibcChunk(arena, args.location, from_base=True)
-        else:
-            chunk = GlibcHeap.GlibcChunk(arena, args.location)
+        chunk.arena = arena
 
         # dump
         try:
@@ -29254,9 +29331,11 @@ class GlibcHeapChunksCommand(GenericCommand, BufferingOutput):
             # peek nbyte
             if peek_nb:
                 peek_addr = current_chunk.chunk_base_address + peek_offset
-                peeked_data = read_memory(peek_addr, peek_nb)
-                h = hexdump(peeked_data, 0x10, base=peek_addr)
-                self.out.append(h)
+                peeked_data = read_memory(peek_addr, peek_nb, safe=True)
+                if peeked_data is None:
+                    self.err_add_out("Cannot read peek data at {:#x}".format(peek_addr))
+                else:
+                    self.out.append(hexdump(peeked_data, 0x10, base=peek_addr))
 
             # goto next
             pbar.update(current_chunk.size)
@@ -29529,7 +29608,12 @@ class GlibcHeapBinsSimpleCommand(GenericCommand):
             if libc_version < (2, 26):
                 info("No tcache in this version of libc")
             else:
-                for i, chunks in arena.get_tcache_list().items():
+                if arena.tcache_perthread_struct is None:
+                    info("Not found tcache_perthread_struct")
+                    tcache_lists = {}
+                else:
+                    tcache_lists = arena.get_tcache_list()
+                for i, chunks in tcache_lists.items():
                     m = []
                     for c in chunks:
                         if isinstance(c, str):
@@ -29608,9 +29692,12 @@ class GlibcHeapBinsSimpleCommand(GenericCommand):
                     else:
                         m.append("{:s}{:s}".format(Symbol.format(c, show_address=True), get_size(arena, c)))
                 if m or self.args.verbose:
-                    size_min = GlibcHeap.get_binsize_table()["large_bins"][i]["size_min"]
-                    size_max = GlibcHeap.get_binsize_table()["large_bins"][i]["size_max"]
-                    gef_print("{:#x}-{:#x} [{:d}]: {:s}".format(size_min, size_max, i, " <-> ".join(m)).rstrip())
+                    bin_size = GlibcHeap.get_binsize_table()["large_bins"].get(i)
+                    if bin_size is None:
+                        label = "unused"
+                    else:
+                        label = "{:#x}-{:#x}".format(bin_size["size_min"], bin_size["size_max"])
+                    gef_print("{:s} [{:d}]: {:s}".format(label, i, " <-> ".join(m)).rstrip())
 
             gef_print(titlify("arena"))
             # top ------------------------------------------------------------------------------------------------------------
@@ -29730,6 +29817,7 @@ class GlibcHeapBinsDump:
     def print_fastbin(self, arena, verbose=False, index_filter=None):
         """Pretty-print fastbin lists for the given arena, checking for loops and incorrect indices."""
         if get_libc_version() >= (2, 43):
+            self.info_add_out("No fastbins in this version of libc")
             return
 
         def fastbin_index(sz):
@@ -29854,6 +29942,22 @@ class GlibcHeapBinsDump:
                 if chunk.fwd is None or chunk.bck is None:
                     raise gdb.MemoryError("Cannot access the links")
                 mb.append(" -> {!s}".format(chunk))
+                if bin_name == "large_bins":
+                    fd_nextsize = chunk.fd_nextsize
+                    bk_nextsize = chunk.bk_nextsize
+                    if bool(fd_nextsize) != bool(bk_nextsize):
+                        mb[-1] += Color.colorify(" [Corrupted nextsize links]", corrupted_msg_color)
+                    elif fd_nextsize and bk_nextsize:
+                        try:
+                            if not is_valid_addr(fd_nextsize) or not is_valid_addr(bk_nextsize):
+                                raise gdb.MemoryError("Cannot access nextsize links")
+                            fd_chunk = GlibcHeap.GlibcChunk(arena, fd_nextsize, from_base=True)
+                            bk_chunk = GlibcHeap.GlibcChunk(arena, bk_nextsize, from_base=True)
+                            if (fd_chunk.bk_nextsize != chunk.chunk_base_address
+                                    or bk_chunk.fd_nextsize != chunk.chunk_base_address):
+                                raise gdb.MemoryError("Invalid nextsize links")
+                        except gdb.MemoryError:
+                            mb[-1] += Color.colorify(" [Corrupted nextsize links]", corrupted_msg_color)
             except gdb.MemoryError:
                 mb.append(Color.colorify(
                     " -> {:#x} [Corrupted chunk]".format(chunk.chunk_base_address),
@@ -30049,7 +30153,30 @@ class GlibcHeapTcachebinsCommand(GenericCommand, GlibcHeapBinsDump, BufferingOut
 
         # doit
         self.out = []
-        for arena in arenas:
+        if args.all:
+            seen = set()
+            with ContextManager.threads() as threads:
+                for thread in threads:
+                    tls = current_arch.get_tls()
+                    if tls is None:
+                        continue
+                    for arena in arenas:
+                        tcache = GlibcHeap.search_for_tcache_from_tls(arena.addr, tls)
+                        if tcache is None or tcache in seen:
+                            continue
+                        seen.add(tcache)
+                        arena.tcache_override = tcache
+                        try:
+                            self.out.append(titlify("thread {:d}, arena: {:s}".format(
+                                thread.num, Symbol.format(arena.addr, show_address=True, nocolor=True)),
+                                color="bold", msg_color="bold",
+                            ))
+                            self.print_tcache(arena, args.verbose, args.index_filter)
+                        finally:
+                            del arena.tcache_override
+            if not seen:
+                self.err_add_out("Not found tcache_perthread_struct in any thread")
+        else:
             self.out.append(titlify("arena: {:s}".format(
                 Symbol.format(arena.addr, show_address=True, nocolor=True)),
                 color="bold", msg_color="bold",
@@ -30467,7 +30594,7 @@ class GlibcHeapTryFreeCommand(GenericCommand):
 
         if emulator.failed and "UC_ERR_INSN_INVALID" in emulator.failed:
             return "Maybe try to execute unicorn unsupported instruction"
-        return "???"
+        return emulator.failed or "???"
 
     def get_syscall(self, emulator):
         """From the emulator state, get information about the system call that was called."""
@@ -30559,6 +30686,10 @@ class GlibcHeapTryFreeCommand(GenericCommand):
         if caller_address is None:
             err("Could not find `{:s}`".format(name))
             return
+        if any(value is not None and not -(1 << 63) <= value < (1 << 64)
+               for value in (caller_address, arg1, arg2)):
+            err("Argument exceeds GDB integer width")
+            return
 
         # make patch info
         # The arguments of free, malloc, realloc, and calloc are at most 2
@@ -30601,8 +30732,18 @@ class GlibcHeapTryFreeCommand(GenericCommand):
                 if success and self.args.command:
                     # temporarily reflects changes in memory
                     patches = self.changed_mem_patches(emulator)
+                    skipped = 0
                     for addr, value in patches.items():
+                        section = ProcessMap.lookup(addr).section
+                        if (section is None or not section.is_writable() or addr + len(value) > section.page_end
+                                or any(page in emulator.synthetic_pages for page in range(
+                                    addr & emulator.page_mask, addr + len(value), emulator.page_size,
+                                ))):
+                            skipped += 1
+                            continue
                         PatchCommand.PatchInfo(addr, value, tag=tag).patch(silent=not self.args.verbose)
+                    if skipped:
+                        warn("Skipped {:d} emulated memory change(s) outside the original writable mappings".format(skipped))
                     # do command
                     for cmd in self.args.command:
                         try:
@@ -30611,13 +30752,16 @@ class GlibcHeapTryFreeCommand(GenericCommand):
                         except Exception:
                             exc_type, exc_value, exc_traceback = sys.exc_info()
                             gef_print(exc_value)
+        except gdb.error as e:
+            err("Emulation setup failed: {!s}".format(e))
         finally:
             # revert (registers, memories, thread locking)
             for regname, regvalue in patch_info.regs_old.items():
                 if self.args.verbose:
                     info("set {:s}={:#x}".format(regname, regvalue))
                 gdb.execute("set {:s}={:#x}".format(regname, regvalue))
-            PatchCommand.PatchInfo.revert_to_tag(tag, silent=not self.args.verbose)
+            if tag in PatchCommand.PatchInfo.get_tag_set():
+                PatchCommand.PatchInfo.revert_to_tag(tag, silent=not self.args.verbose)
             if self.args.verbose:
                 info("patch revert ok")
         return
@@ -31767,7 +31911,7 @@ class GlibcHeapSnapshotCompareCommand(GenericCommand, BufferingOutput):
             return
 
     def compare(self, raw1, info1, raw2, info2):
-        ptrsize = current_arch.ptrsize
+        ptrsize = self.compare_ptrsize
         double_ptrsize = ptrsize * 2
         hex_width = double_ptrsize + 2
 
@@ -31804,7 +31948,7 @@ class GlibcHeapSnapshotCompareCommand(GenericCommand, BufferingOutput):
         end_offset_list1 = {c["end_offset"] for c in info1["chunks"] if c["size"] != 0}
         end_offset_list2 = {c["end_offset"] for c in info2["chunks"] if c["size"] != 0}
         if self.args.extra:
-            prefix_blank = " " * (AddressUtil.get_format_address_width() + 18)
+            prefix_blank = " " * (ptrsize * 2 + 20)
             fwidth = (double_ptrsize + 2) * 2 + 7 + double_ptrsize
             extra_dict1 = {c["start_offset"]: c["extra"] for c in info1["chunks"]}
             extra_dict2 = {c["start_offset"]: c["extra"] for c in info2["chunks"]}
@@ -31822,6 +31966,15 @@ class GlibcHeapSnapshotCompareCommand(GenericCommand, BufferingOutput):
                     continue
                 used_dict.add(ch["start_offset"], ch["start_offset"] + ch["size"], ch["used"])
 
+        if self.compare_endian == "little":
+            fmt = "<"
+        else:
+            fmt = ">"
+        if ptrsize == 4:
+            fmt += "I"
+        else:
+            fmt += "Q"
+
         # process block
         for pos in ProgressBar(range(0, max_size, double_ptrsize), disable=self.args.quiet):
             # skip or not
@@ -31836,8 +31989,10 @@ class GlibcHeapSnapshotCompareCommand(GenericCommand, BufferingOutput):
             is_line_same = True
 
             # unpack
-            values1 = slice_unpack(raw16_1, ptrsize)
-            values2 = slice_unpack(raw16_2, ptrsize)
+            values1 = [struct.unpack(fmt, raw16_1[i:i + ptrsize])[0]
+                       for i in range(0, len(raw16_1) - ptrsize + 1, ptrsize)]
+            values2 = [struct.unpack(fmt, raw16_2[i:i + ptrsize])[0]
+                       for i in range(0, len(raw16_2) - ptrsize + 1, ptrsize)]
 
             # check size, underline, used
             is_size1 = pos in start_offset_list1
@@ -31893,7 +32048,10 @@ class GlibcHeapSnapshotCompareCommand(GenericCommand, BufferingOutput):
                     self.out.append(line.rstrip())
 
             # make line
-            addr = ProcessMap.lookup(info1["heap_base"] + pos)
+            if is_alive():
+                addr = ProcessMap.lookup(info1["heap_base"] + pos)
+            else:
+                addr = "{:#0{:d}x}".format(info1["heap_base"] + pos, ptrsize * 2 + 2)
             line = "{:s}{!s}|{:+#08x}|{:+06d}: {:s} | {:s} | {:s} | {:s} |".format(
                 " " if is_line_same else "+",
                 addr, pos, pos // double_ptrsize,
@@ -31908,11 +32066,8 @@ class GlibcHeapSnapshotCompareCommand(GenericCommand, BufferingOutput):
             return
         raw1, info1 = ret1
         raw2, info2 = ret2
-        if Endian.is_little_endian():
-            endian = "little"
-        else:
-            endian = "big"
-        for info in (info1, info2):
+        formats = []
+        for raw, info in ((raw1, info1), (raw2, info2)):
             if not isinstance(info, dict):
                 err("Invalid snapshot metadata")
                 return
@@ -31925,35 +32080,64 @@ class GlibcHeapSnapshotCompareCommand(GenericCommand, BufferingOutput):
                         ptrsize = width // 2
                     else:
                         ptrsize = None
-            except (KeyError, IndexError, TypeError):
+                endian = info.get("endian")
+                if endian is None and is_alive():
+                    if Endian.is_little_endian():
+                        endian = "little"
+                    else:
+                        endian = "big"
+                chunks = info["chunks"]
+                if (ptrsize not in (4, 8) or endian not in ("little", "big")
+                        or type(info["heap_base"]) is not int or type(info["top"]) is not int
+                        or not 0 <= info["top"] - info["heap_base"] <= len(raw)
+                        or not isinstance(chunks, list)):
+                    raise ValueError
+                for chunk in chunks:
+                    if (not isinstance(chunk, dict)
+                            or any(type(chunk[key]) is not int for key in ("start_offset", "end_offset", "size"))
+                            or type(chunk["used"]) is not bool or not isinstance(chunk["extra"], str)
+                            or chunk["start_offset"] < 0 or chunk["size"] < 0):
+                        raise ValueError
+            except (KeyError, IndexError, TypeError, ValueError):
                 err("Invalid snapshot metadata")
                 return
-            if ptrsize != current_arch.ptrsize or info.get("endian", endian) != endian:
+            formats.append((ptrsize, endian))
+        if formats[0] != formats[1]:
+            err("Snapshot architecture mismatch")
+            return
+        self.compare_ptrsize, self.compare_endian = formats[0]
+        if is_alive():
+            if Endian.is_little_endian():
+                current_endian = "little"
+            else:
+                current_endian = "big"
+            if self.compare_ptrsize != current_arch.ptrsize or self.compare_endian != current_endian:
                 err("Snapshot architecture mismatch")
                 return
-        if len(raw1) % current_arch.ptrsize or len(raw2) % current_arch.ptrsize:
+        if len(raw1) % self.compare_ptrsize or len(raw2) % self.compare_ptrsize:
             err("Invalid snapshot size")
             return
 
         # legend
         self.out = []
-        fwidth = (current_arch.ptrsize * 2 + 2) * 2 + 7 + (current_arch.ptrsize * 2)
+        fwidth = (self.compare_ptrsize * 2 + 2) * 2 + 7 + (self.compare_ptrsize * 2)
         fmt = " {:{:d}s} {:8s} {:6s}  {:{:d}s} {:{:d}s}"
         legend = [
-            "Address", AddressUtil.get_format_address_width(), "Offset", "Line",
+            "Address", self.compare_ptrsize * 2 + 2, "Offset", "Line",
             file_path1, fwidth, file_path2, fwidth,
         ]
         self.out.append(GefUtil.make_legend(fmt.format(*legend)))
 
         # doit
-        self.compare(memoryview(raw1), info1, memoryview(raw2), info2)
+        try:
+            self.compare(memoryview(raw1), info1, memoryview(raw2), info2)
+        except (KeyError, TypeError, ValueError):
+            err("Invalid snapshot metadata")
+            return
         self.print_output(check_terminal_size=True)
         return
 
     @Decorator.parse_args
-    @Decorator.only_if_gdb_running
-    @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
-    @Decorator.require_arch_set
     def do_invoke(self, args):
         if args.file_path is not None and args.file_path2 is not None:
             ret1 = GlibcHeapSnapshotCommand.read_snapshot(self.args.file_path)
@@ -31961,6 +32145,15 @@ class GlibcHeapSnapshotCompareCommand(GenericCommand, BufferingOutput):
             file_path1 = os.path.basename(self.args.file_path)
             file_path2 = os.path.basename(self.args.file_path2)
         else:
+            if not is_alive():
+                warn("No debugging session active")
+                return
+            if is_qemu_system() or is_kgdb() or is_vmware() or is_wine():
+                warn("This command is not supported in the current GDB mode")
+                return
+            if current_arch is None:
+                err("Unsupported architecture")
+                return
             # parse arena
             arena = GlibcHeap.get_arena(args.arena_addr)
 
@@ -49503,7 +49696,7 @@ class TraceMallocRetBreakpoint(gdb.Breakpoint):
         gef_print(line)
 
         if self.output_filename:
-            open(self.output_filename, "a").write(line + "\n")
+            open(self.output_filename, "a").write(Color.remove_color(line) + "\n")
         return
 
     def check_inconsistency(self, allocated):
@@ -49720,7 +49913,7 @@ class TraceReallocRetBreakpoint(gdb.Breakpoint):
         gef_print(line)
 
         if self.output_filename:
-            open(self.output_filename, "a").write(line + "\n")
+            open(self.output_filename, "a").write(Color.remove_color(line) + "\n")
         return
 
     def check_double_free(self, to_free):
@@ -49907,7 +50100,7 @@ class TraceFreeBreakpoint(gdb.Breakpoint):
         gef_print(line)
 
         if self.output_filename:
-            open(self.output_filename, "a").write(line + "\n")
+            open(self.output_filename, "a").write(Color.remove_color(line) + "\n")
         return
 
     def check_double_free(self, to_free):
@@ -50158,6 +50351,8 @@ class GlibcHeapTracerCommand(GenericCommand):
             self.output_filename = ""
 
         self.setup()
+        if self.output_filename:
+            info("Heap trace log: {:s}".format(os.path.abspath(self.output_filename)))
         return
 
 
@@ -62140,7 +62335,17 @@ class HeapBaseCommand(GenericCommand):
         # auto estimation
         heap_base = HeapBaseCommand.heap_base()
         if heap_base is None:
+            gdb.set_convenience_variable("heapbase", None)
             err("Could not find the heap")
+            if is_remote_debug() and get_libc_version(silent=True) is None:
+                filepath = Path.get_filepath()
+                if filepath is not None:
+                    elf = Elf.get_elf(filepath)
+                    if elf is not None and elf.is_valid() and elf.is_static():
+                        err(
+                            "For a static remote glibc binary, specify its version, "
+                            "e.g. `gef config libc.assume_version (2,39)`"
+                        )
             return
 
         # print
@@ -165595,7 +165800,7 @@ class TcmallocHeapDumpCommand(GenericCommand, BufferingOutput):
         length = self.read_freelist_length(freelist + self.FreeList_offset_length)
         real_length = 0
         error = False
-        if chunk != 0: # freelist exists
+        if chunk != 0 or length: # freelist exists or its length is corrupted
             seen = set()
             out = []
             while chunk != 0:
@@ -166098,7 +166303,11 @@ class GoHeapDumpCommand(GenericCommand, BufferingOutput):
             return
 
         if args.mspan is not None:
-            mspans = [self.parse_mspan(args.mspan)]
+            try:
+                mspans = [self.parse_mspan(args.mspan)]
+            except gdb.MemoryError as error:
+                self.out.append("Cannot read mspan at {:#x}: {!s}".format(args.mspan, error))
+                mspans = []
         elif args.mheap is not None:
             try:
                 mspans = self.parse_mheap(args.mheap)
@@ -166589,6 +166798,8 @@ class ZigHeapDumpCommand(GenericCommand, BufferingOutput):
             if not bit & 0x80:
                 continue
             occupied += 1
+            if occupied > count:
+                raise ValueError("Invalid large allocation table count")
             address = values + index * self.large_size
             data = address + self.large_fields["bytes"][0]
             start = read_int_from_memory(data)
@@ -166880,10 +167091,15 @@ class TlsfHeapDumpCommand(GenericCommand, BufferingOutput):
 
                     seen.add(current)
 
-                    prev_hdr = read_int_from_memory(current + current_arch.ptrsize * 0)
-                    size = read_int_from_memory(current + current_arch.ptrsize * 1)
-                    prev_ = read_int_from_memory(current + current_arch.ptrsize * 2)
-                    next_ = read_int_from_memory(current + current_arch.ptrsize * 3)
+                    try:
+                        prev_hdr = read_int_from_memory(current + current_arch.ptrsize * 0)
+                        size = read_int_from_memory(current + current_arch.ptrsize * 1)
+                        prev_ = read_int_from_memory(current + current_arch.ptrsize * 2)
+                        next_ = read_int_from_memory(current + current_arch.ptrsize * 3)
+                    except gdb.MemoryError:
+                        msg = " -> {:s} (corrupted)".format(Color.colorify_hex(current, corrupted_msg_color))
+                        self.out.append(msg)
+                        break
 
                     msg = " -> {:s} (prev_hdr={:#x}, size={:s}, prev={!s}, next={!s})".format(
                         Color.colorify_hex(current, freed_address_color),
@@ -166977,6 +167193,7 @@ class HoardHeapDumpCommand(GenericCommand, BufferingOutput):
         "* This command scans anonymous writable mappings and detects superblocks by vtable and magic.",
         "* `--superblock` can be used to specify superblocks manually.",
         "* `_freeList` is used first; if it is empty, TLS-held freelist heads are searched as candidates.",
+        "* Cross-thread frees waiting in `_delayedFreeList` are displayed separately.",
         "* Before allocating from the freelist, Hoard consumes unused objects from `position`.",
         "* `reapableObjects` is displayed as the number of unused objects left.",
     ])
@@ -167077,16 +167294,21 @@ class HoardHeapDumpCommand(GenericCommand, BufferingOutput):
         self.out.append(titlify("superblock @{:#x} (chunk_size={:#x})".format(sb, sz)))
         reap_count = read_int32_from_memory(sb + current_arch.ptrsize * 7 + 8)
         free_count = read_int32_from_memory(sb + current_arch.ptrsize * 7 + 12)
+        total_count = read_int32_from_memory(sb + current_arch.ptrsize * 3 + 4)
 
-        if reap_count == free_count == 0:
+        if total_count == reap_count == free_count == 0:
             self.out.append("Uninitialized")
             return
 
         self.out.append("Before allocating from freelist, you must use up all unused blocks")
         self.out.append("There are {:s} unused blocks left".format(Color.colorify_hex(reap_count, "bold")))
 
-        for current in self.get_freelist_start(sb):
-            self.out.append("freelist @{:#x}:".format(current))
+        freelists = [("freelist", head) for head in self.get_freelist_start(sb)]
+        delayed = read_int_from_memory(sb + current_arch.ptrsize * 10 + 16)
+        if delayed:
+            freelists.append(("delayed freelist", delayed))
+        for name, current in freelists:
+            self.out.append("{:s} @{:#x}:".format(name, current))
             seen = set()
             while True:
                 if current in seen:
@@ -167096,10 +167318,15 @@ class HoardHeapDumpCommand(GenericCommand, BufferingOutput):
                 if current and not is_valid_addr(current):
                     self.out.append(Color.colorify(" -> {:#x} (corrupted) ".format(current), corrupted_msg_color))
                     break
-                self.out.append(" -> {:s}".format(Color.colorify_hex(current, freed_address_color)))
                 if current == 0:
+                    self.out.append(" -> {:s}".format(Color.colorify_hex(current, freed_address_color)))
                     break
-                current = read_int_from_memory(current)
+                next_chunk = read_int_from_memory(current, safe=True)
+                if next_chunk is None:
+                    self.out.append(Color.colorify(" -> {:#x} (corrupted) ".format(current), corrupted_msg_color))
+                    break
+                self.out.append(" -> {:s}".format(Color.colorify_hex(current, freed_address_color)))
+                current = next_chunk
         return
 
     @Decorator.parse_args
@@ -167913,21 +168140,24 @@ class MimallocHeapDumpCommand(GenericCommand, BufferingOutput):
             return None
         for i in range(1, 10):
             offset = current_arch.ptrsize * i
-            if not is_valid_addr(tls - offset):
+            candidate = read_int_from_memory(tls - offset, safe=True)
+            if not candidate or not is_valid_addr(candidate):
                 continue
 
-            mi_heap_main = read_int_from_memory(tls - offset)
-            if not is_valid_addr(mi_heap_main):
-                continue
-
-            tld_main = read_int_from_memory(mi_heap_main)
-            if not is_valid_addr(tld_main):
-                continue
-
-            thread_id = read_int_from_memory(tld_main)
-            if not is_valid_addr(thread_id):
-                continue
-            return mi_heap_main
+            # v3.2 TLS holds a mi_theap_t whose second field points back to its heap.
+            owner = read_int_from_memory(candidate + current_arch.ptrsize, safe=True)
+            for mi_heap_main in (owner, candidate):
+                if not mi_heap_main or not is_valid_addr(mi_heap_main):
+                    continue
+                try:
+                    if not self.initialize(mi_heap_main):
+                        continue
+                    if mi_heap_main != candidate and \
+                            (not self.uses_theap or not self.is_theap_of_heap(candidate, mi_heap_main)):
+                        continue
+                except gdb.MemoryError:
+                    continue
+                return mi_heap_main
         return None
 
     def dump_list(self, head, current, key0, key1, bs, capacity):
@@ -168401,7 +168631,10 @@ class SnmallocHeapDumpCommand(GenericCommand, BufferingOutput):
             if cur == end:
                 seen.append(0)
                 break
-            cur = read_int_from_memory(cur)
+            next_cur = read_int_from_memory(cur, safe=True)
+            if next_cur is None:
+                return seen, Color.colorify("(corrupted)", corrupted_msg_color)
+            cur = next_cur
         return seen, None
 
     def parse_double_link_list(self, head):
@@ -171835,6 +172068,10 @@ class ScallocHeapDumpCommand(GenericCommand, BufferingOutput):
 
     def dump_spans(self, arena):
         self.out.append(titlify("Arena ({:s}) @{:#x}".format(arena.name, arena.addr)))
+        if (not arena.start <= arena.current <= arena.end or arena.end - arena.start != arena.len
+                or (arena.current - arena.start) % 0x20_0000):
+            self.err_add_out("Corrupted Arena at {:#x}".format(arena.addr))
+            return None
         current = arena.start
         span = None
         while current < arena.current:
@@ -172317,22 +172554,21 @@ class SsmallocHeapDumpCommand(GenericCommand, BufferingOutput):
         seen_addresses = set()
         while cur != 0:
             if not is_valid_addr(cur):
-                seen.append(cur)
-                return seen, Color.colorify("(corrupted)", corrupted_msg_color)
+                return seen, Color.colorify("{:#x} (corrupted)".format(cur), corrupted_msg_color)
             if cur in seen_addresses:
-                seen.append(cur)
                 return seen, Color.colorify("(loop detected)", corrupted_msg_color)
+            next_cur = read_int_from_memory(cur + self.offset_dchunk_next, safe=True)
+            prev = read_int_from_memory(cur + self.offset_dchunk_prev, safe=True)
+            if next_cur is None or prev is None:
+                return seen, Color.colorify("{:#x} (corrupted)".format(cur), corrupted_msg_color)
+            expected_prev = 0
+            if seen:
+                expected_prev = seen[-1]
+            if prev != expected_prev:
+                return seen, Color.colorify("{:#x} (corrupted: invalid prev)".format(cur), corrupted_msg_color)
             seen.append(cur)
             seen_addresses.add(cur)
-            cur = read_int_from_memory(cur + self.offset_dchunk_next)
-
-        for i, chunk in enumerate(seen):
-            prev = read_int_from_memory(chunk + self.offset_dchunk_prev)
-            if i == 0:
-                if prev != 0:
-                    return seen, Color.colorify("(corrupted: invalid prev)", corrupted_msg_color)
-            elif prev != seen[i - 1]:
-                return seen, Color.colorify("(corrupted: invalid prev)", corrupted_msg_color)
+            cur = next_cur
         return seen, None
 
     def append_freelist(self, title, addr, free_list, error=None, expected_count=None):
@@ -172378,8 +172614,14 @@ class SsmallocHeapDumpCommand(GenericCommand, BufferingOutput):
     def dump_dchunk(self, dchunk_addr, title=None, dump_remote=True):
         if dchunk_addr == 0:
             return False
-
-        dchunk = self.read_dchunk(dchunk_addr)
+        if dchunk_addr % current_arch.ptrsize or not is_valid_addr(dchunk_addr):
+            self.out.append("{:#x} (corrupted)".format(dchunk_addr))
+            return False
+        try:
+            dchunk = self.read_dchunk(dchunk_addr)
+        except gdb.MemoryError:
+            self.out.append("{:#x} (corrupted)".format(dchunk_addr))
+            return False
         if dchunk.size_cls == self.DUMMY_CLASS:
             if self.args.verbose:
                 self.out.append("{:s} @ {:#x}: dummy_chunk".format(title or "dchunk", dchunk_addr))
@@ -172930,8 +173172,13 @@ class SfmallocHeapDumpCommand(GenericCommand, BufferingOutput):
         while cur:
             if not is_valid(cur):
                 return nodes, "{:#x} (corrupted)".format(cur)
+            next_cur = read_int_from_memory(cur, safe=True)
+            if not next_cur or not is_valid(next_cur):
+                return nodes, "{:#x} (corrupted)".format(cur)
+            if read_int_from_memory(next_cur + current_arch.ptrsize, safe=True) != cur:
+                return nodes, "{:#x} (corrupted: invalid prev)".format(next_cur)
             nodes.append(cur)
-            cur = read_int_from_memory(cur)
+            cur = next_cur
             if cur == head:
                 break
             if cur in nodes:
@@ -173477,7 +173724,7 @@ class RpmallocHeapDumpCommand(GenericCommand, BufferingOutput):
                     heap_list.append((thread.num, heap))
         return heap_list
 
-    def get_list(self, head, alignment, read_next):
+    def get_list(self, head, alignment, read_next, is_valid=None):
         nodes = []
         cur = head
         while cur:
@@ -173485,6 +173732,8 @@ class RpmallocHeapDumpCommand(GenericCommand, BufferingOutput):
                 return nodes, "{:#x} (loop detected)".format(cur)
             if cur % alignment or not is_valid_addr(cur):
                 return nodes, "{:#x} (corrupted)".format(cur)
+            if is_valid is not None and not is_valid(cur):
+                return nodes, "{:#x} (corrupted: size_class or heap mismatch)".format(cur)
             nodes.append(cur)
             cur = read_next(cur)
         return nodes, None
@@ -173566,7 +173815,10 @@ class RpmallocHeapDumpCommand(GenericCommand, BufferingOutput):
                 cl, size, heap.addr + ptrsize * (1 + cl * 3),
             )))
             self.dump_freelist("free_list:", free_list)
-            nodes, error = self.get_list(partial_span, self.V1_SPAN_SIZE, lambda x: self.read_span_v1(x).next)
+            nodes, error = self.get_list(
+                partial_span, self.V1_SPAN_SIZE, lambda x: self.read_span_v1(x).next,
+                lambda x, cl=cl: (self.read_span_v1(x).size_class, self.read_span_v1(x).heap) == (cl, heap.addr),
+            )
             for addr in nodes:
                 self.dump_span_v1(addr)
             self.dump_error(error)
@@ -173629,7 +173881,10 @@ class RpmallocHeapDumpCommand(GenericCommand, BufferingOutput):
                 cl, self.v2_class_to_size[cl], heap.addr + ptrsize * (1 + cl),
             )))
             self.dump_freelist("local_free:", local_free)
-            nodes, error = self.get_list(page_available, 0x10000, lambda x: self.read_page_v2(x).next)
+            nodes, error = self.get_list(
+                page_available, 0x10000, lambda x: self.read_page_v2(x).next,
+                lambda x, cl=cl: (self.read_page_v2(x).size_class, self.read_page_v2(x).heap) == (cl, heap.addr),
+            )
             for addr in nodes:
                 self.dump_page_v2(addr)
             self.dump_error(error)
@@ -174074,6 +174329,9 @@ class TbbmallocHeapDumpCommand(GenericCommand, BufferingOutput):
 
         self.out.append(title)
         header_size = self.get_cache_line_size() * 2
+        object_size = 0
+        if block is not None:
+            object_size = self.read_block(block).objectSize
         cur = head
         seen = set()
         while cur and cur != self.UNUSABLE:
@@ -174084,6 +174342,8 @@ class TbbmallocHeapDumpCommand(GenericCommand, BufferingOutput):
             next_cur = read_int_from_memory(cur, safe=True)
             # objects of a block are placed after the block header
             if block is not None and not block + header_size <= cur < block + self.SLAB_SIZE:
+                next_cur = None
+            if block is not None and (not object_size or (block + self.SLAB_SIZE - cur) % object_size):
                 next_cur = None
             if next_cur is None:
                 self.out.append(" -> {:s}".format(Color.colorify("{:#x} (corrupted)".format(cur), corrupted_msg_color)))
@@ -174973,6 +175233,7 @@ class JemallocV5(JemallocBase):
     }
 
     def parse(self, arenas_addr=None):
+        specified_arenas = arenas_addr is not None
         self.resolve_layout()
         if arenas_addr is None:
             arenas_addr = self.symbol_address("arenas")
@@ -174991,7 +175252,11 @@ class JemallocV5(JemallocBase):
         for index in range(narenas):
             arena = read_int_from_memory(arenas_addr + self.ptrsize * index)
             if arena:
+                if specified_arenas and self.arena_index(arena, self.off["bins"], min_count=0) not in (-1, index):
+                    return "Invalid je_arenas: {:#x} (invalid arena[{:d}])".format(arenas_addr, index)
                 self.arenas[index] = arena
+        if specified_arenas and not self.arenas:
+            return "Invalid je_arenas: {:#x} (no valid arenas)".format(arenas_addr)
         self.messages.append("je_arenas: {:#x} (narenas={:d})".format(arenas_addr, narenas))
 
         self.page = self.resolve_page()
@@ -175940,8 +176205,16 @@ class MeshHeapDumpCommand(GenericCommand, BufferingOutput):
         if mh.next_meshed:
             # the spans meshed into this miniheap share its bitmap
             spans = []
+            seen = {mh.id}
             mhid = mh.next_meshed
-            while mhid and len(spans) < 0x100:
+            while mhid:
+                if mhid in seen:
+                    spans.append("{:#x} (loop detected)".format(mhid))
+                    break
+                if len(spans) >= 0x100:
+                    spans.append("{:#x} (limit reached)".format(mhid))
+                    break
+                seen.add(mhid)
                 meshed = self.get_miniheap(mhid, gh)
                 if meshed is None:
                     spans.append("{:#x} (corrupted)".format(mhid))
@@ -175968,7 +176241,12 @@ class MeshHeapDumpCommand(GenericCommand, BufferingOutput):
                 data = read_memory(sv.list + sv.off * sv.entry_size, (sv.max_count - sv.off) * sv.entry_size)
                 entries = slice_unpack(data, sv.entry_size // 2)
             for mh_offset, bit in zip(entries[::2], entries[1::2]):
-                if mh_offset >= len(sv.attached):
+                mh = None
+                if mh_offset < len(sv.attached):
+                    addr = sv.attached[mh_offset]
+                    if addr >= gh.mh_arena and (addr - gh.mh_arena) % gh.mh_size == 0:
+                        mh = self.get_miniheap((addr - gh.mh_arena) // gh.mh_size, gh)
+                if mh is None or bit >= mh.max_count:
                     msg = "{{{:#x}, {:#x}}} (corrupted)".format(mh_offset, bit)
                     self.out.append(" -> {:s}".format(Color.colorify(msg, corrupted_msg_color)))
                     continue
@@ -176550,7 +176828,7 @@ class StreamflowHeapDumpCommand(GenericCommand, BufferingOutput):
                 return
             self.out.append(" -> {:s}".format(Color.colorify_hex(addr, freed_address_color)))
             cur = next_cur
-        if num == len(seen):
+        if num is None or num == len(seen):
             self.out.append(" -> 0x0 (num: {:#x})".format(len(seen)))
         else:
             self.out.append(" -> 0x0 (num: {:#x}, expected: {:#x})".format(len(seen), num))
@@ -176570,16 +176848,27 @@ class StreamflowHeapDumpCommand(GenericCommand, BufferingOutput):
             pageblock.owning_thread, pageblock.num_free_objects,
         ))
         unallocated, unallocated_num = 0, 0
-        if pageblock.unallocated:
+        expected = pageblock.num_free_objects
+        if pageblock.unallocated > capacity + 1:
+            unallocated_num = None
+            expected = None
+        elif pageblock.unallocated:
             unallocated = pageblock.mem_pool + (pageblock.unallocated - 1) * pageblock.object_size
             unallocated_num = capacity - pageblock.unallocated + 1
+            expected -= unallocated_num
+            if expected < 0:
+                self.dump_error("num_free_objects: {:#x} (corrupted)".format(pageblock.num_free_objects))
+                expected = None
         if pageblock.freed or self.args.verbose:
             title = "freed (head: {:#x}):".format(pageblock.freed)
-            self.dump_index_list(title, pageblock, pageblock.freed, pageblock.num_free_objects - unallocated_num)
+            self.dump_index_list(title, pageblock, pageblock.freed, expected)
         if pageblock.unallocated or self.args.verbose:
-            self.out.append("unallocated: {:#x} (index: {:#x}, num: {:#x})".format(
-                unallocated, pageblock.unallocated, unallocated_num,
-            ))
+            if unallocated_num is None:
+                self.out.append("unallocated: (index: {:#x}, corrupted)".format(pageblock.unallocated))
+            else:
+                self.out.append("unallocated: {:#x} (index: {:#x}, num: {:#x})".format(
+                    unallocated, pageblock.unallocated, unallocated_num,
+                ))
         if pageblock.garbage_count or self.args.verbose:
             title = "garbage_head (head: {:#x}):".format(pageblock.garbage_next)
             self.dump_index_list(title, pageblock, pageblock.garbage_next, pageblock.garbage_count)
@@ -177177,7 +177466,7 @@ class SupermallocHeapDumpCommand(GenericCommand, BufferingOutput):
             self.out.append(" -> {:s}".format(Color.colorify(error, corrupted_msg_color)))
         return
 
-    def dump_objects(self, title, head, bin_number, num):
+    def dump_objects(self, title, head, bin_number, num, tail=None):
         freed_address_color = Config.get("theme.heap_chunk_address_freed")
 
         self.out.append(title)
@@ -177190,6 +177479,10 @@ class SupermallocHeapDumpCommand(GenericCommand, BufferingOutput):
             self.out.append(" -> 0x0 (num: {:#x})".format(len(nodes)))
         else:
             self.out.append(" -> 0x0 (num: {:#x}, expected: {:#x})".format(len(nodes), num))
+        if error is None and head and tail is not None:
+            last = nodes[-1]
+            if tail != last:
+                self.dump_error("{:#x} (corrupted: tail does not match {:#x})".format(tail, last))
         return
 
     def dump_cache(self, title, addr, cache):
@@ -177200,10 +177493,10 @@ class SupermallocHeapDumpCommand(GenericCommand, BufferingOutput):
             self.out.append(titlify("{:s}.cb[{:#x}] (size: {:#x}) @ {:#x}".format(
                 title, bin_number, size, addr + self.SIZEOF_CACHE_FOR_BIN * bin_number,
             )))
-            for i, (bytecount, head, _) in enumerate(co):
+            for i, (bytecount, head, tail) in enumerate(co):
                 if head or self.args.verbose:
                     msg = "co[{:#x}] (bytecount: {:#x}):".format(i, bytecount)
-                    self.dump_objects(msg, head, bin_number, bytecount // size)
+                    self.dump_objects(msg, head, bin_number, bytecount // size, tail)
         return
 
     def dump_thread_cache(self, thread_num, addr):
@@ -177229,10 +177522,10 @@ class SupermallocHeapDumpCommand(GenericCommand, BufferingOutput):
             self.out.append(titlify("global_cache.gb[{:#x}] (size: {:#x}, n_nonempty_caches: {:#x}) @ {:#x}".format(
                 bin_number, size, n, addr + self.SIZEOF_GLOBAL_CACHE_FOR_BIN * bin_number,
             )))
-            for i, (bytecount, head, _) in enumerate(co):
+            for i, (bytecount, head, tail) in enumerate(co):
                 if i < n or self.args.verbose:
                     title = "co[{:#x}] (bytecount: {:#x}):".format(i, bytecount)
-                    self.dump_objects(title, head, bin_number, bytecount // size)
+                    self.dump_objects(title, head, bin_number, bytecount // size, tail)
         return
 
     def dump_dsbi(self, addr):
@@ -177630,6 +177923,7 @@ class DlmallocHeapDumpCommand(GenericCommand, BufferingOutput):
                 continue
             lines = []
             seen = set()
+            previous = bin_addr
             cur = bin_addr
             if marked:
                 cur = fd
@@ -177638,12 +177932,15 @@ class DlmallocHeapDumpCommand(GenericCommand, BufferingOutput):
                     lines.append(" -> {:s}".format(Color.colorify("{:#x} (loop detected)".format(cur), corrupted_msg_color)))
                     break
                 chunk = self.read_chunk(ms, cur, 4)
-                if chunk is None:
+                if chunk is None or chunk[1] & ~7 != i << 3 or chunk[3] != previous:
                     lines.append(" -> {:s}".format(Color.colorify("{:#x} (corrupted)".format(cur), corrupted_msg_color)))
                     break
                 seen.add(cur)
                 lines.append(" -> {:s}".format(self.chunk_to_str(cur, chunk)))
+                previous = cur
                 cur = chunk[2]
+            if marked and cur == bin_addr and read_int_from_memory(bin_addr + current_arch.ptrsize * 3, safe=True) != previous:
+                lines.append(" -> {:s}".format(Color.colorify("{:#x} (corrupted bk)".format(bin_addr), corrupted_msg_color)))
             self.out.append(titlify("smallbins[{:#x}] (size: {:#x}, num: {:#x}) @ {:#x}".format(
                 i, i << 3, len(seen), bin_addr,
             )))
@@ -177656,6 +177953,8 @@ class DlmallocHeapDumpCommand(GenericCommand, BufferingOutput):
         for i, (bin_addr, root) in enumerate(ms["treebins"]):
             if not root and not self.args.verbose:
                 continue
+            # minsize_for_tree_index()
+            sizes = [(1 << (j // 2 + self.TREEBIN_SHIFT)) | (j % 2 << (j // 2 + self.TREEBIN_SHIFT - 1)) for j in (i, i + 1)]
             lines = []
             seen = set()
             # depth-first, where each node of the trie is followed by the chunks of the same size
@@ -177672,7 +177971,7 @@ class DlmallocHeapDumpCommand(GenericCommand, BufferingOutput):
                     lines.append(prefix + Color.colorify("{:#x} (loop detected)".format(addr), corrupted_msg_color))
                     continue
                 chunk = self.read_chunk(ms, addr, 7)
-                if chunk is None:
+                if chunk is None or chunk[1] & ~7 < sizes[0] or (i + 1 < self.NTREEBINS and chunk[1] & ~7 >= sizes[1]):
                     lines.append(prefix + Color.colorify("{:#x} (corrupted)".format(addr), corrupted_msg_color))
                     continue
                 seen.add(addr)
@@ -177684,7 +177983,7 @@ class DlmallocHeapDumpCommand(GenericCommand, BufferingOutput):
                         lines.append(prefix + Color.colorify("{:#x} (loop detected)".format(cur), corrupted_msg_color))
                         break
                     member = self.read_chunk(ms, cur, 4)
-                    if member is None:
+                    if member is None or member[1] & ~7 != chunk[1] & ~7:
                         lines.append(prefix + Color.colorify("{:#x} (corrupted)".format(cur), corrupted_msg_color))
                         break
                     seen.add(cur)
@@ -177693,8 +177992,6 @@ class DlmallocHeapDumpCommand(GenericCommand, BufferingOutput):
                 for j in (1, 0):
                     if chunk[4 + j]:
                         stack.append((chunk[4 + j], depth + 1, j))
-            # minsize_for_tree_index()
-            sizes = [(1 << (j // 2 + self.TREEBIN_SHIFT)) | (j % 2 << (j // 2 + self.TREEBIN_SHIFT - 1)) for j in (i, i + 1)]
             upper = ""
             if i + 1 < self.NTREEBINS:
                 upper = "{:#x}".format(sizes[1])
@@ -178267,7 +178564,17 @@ class ScudoHeapDumpCommand(GenericCommand, BufferingOutput):
             if entry is None and c and d and c % page_size == 0 and d % page_size == 0 and c <= a < b <= c + d:
                 # Block (the header), BlockEnd, MapBase, MapSize (-12)
                 entry = (start + i * ptrsize, c, d, a, ("MapSize", "Block"))
-            if entry and is_valid_addr(entry[1]) and is_valid_addr(entry[1] + entry[2] - 1):
+            if entry and (not is_valid_addr(entry[1]) or not is_valid_addr(entry[1] + entry[2] - 1)):
+                entry = None
+            if entry is None and a and b and b % page_size == 0:
+                # MapBase/MapSize and BlockBegin identify entries even when CommitBase is corrupted.
+                if (c and d and c % page_size == 0 and d % page_size == 0 and b <= d and c < e < c + d
+                        and is_valid_addr(c) and is_valid_addr(e)):
+                    entry = (start + i * ptrsize, a, b, e, ("CommitSize", "BlockBegin"))
+                elif (d and e and d % page_size == 0 and e % page_size == 0 and b <= e and d < c < d + e
+                        and is_valid_addr(d) and is_valid_addr(c)):
+                    entry = (start + i * ptrsize, a, b, c, ("CommitSize", "BlockBegin"))
+            if entry:
                 entries.append(entry)
                 i += 4
             else:
@@ -178463,8 +178770,12 @@ class ScudoHeapDumpCommand(GenericCommand, BufferingOutput):
         self.out.append(titlify("Secondary @ {:#x}".format(primary.secondary)))
         self.out.append("Cache (num: {:#x}):".format(len(entries)))
         for addr, base, size, block, (size_name, block_name) in entries:
-            self.out.append(" -> {:s}-{:#x} ({:s}: {:#x}, {:s}: {:#x}) @ {:#x}".format(
-                Color.colorify_hex(base, freed_address_color), base + size, size_name, size, block_name, block, addr,
+            corrupted = ""
+            if (base % get_pagesize() or size % get_pagesize() or not base <= block < base + size
+                    or not is_valid_addr(base) or not is_valid_addr(base + size - 1)):
+                corrupted = Color.colorify(" (corrupted)", Config.get("theme.heap_corrupted_msg"))
+            self.out.append(" -> {:s}-{:#x} ({:s}: {:#x}, {:s}: {:#x}) @ {:#x}{:s}".format(
+                Color.colorify_hex(base, freed_address_color), base + size, size_name, size, block_name, block, addr, corrupted,
             ))
         return
 
@@ -179147,12 +179458,16 @@ class MozjemallocHeapDumpCommand(GenericCommand, BufferingOutput):
         # DoublyLinkedListElement is {mNext, mPrev}
         nodes = []
         cur = head
+        previous = 0
         while cur:
             if cur in nodes:
                 return nodes, "{:#x} (loop detected)".format(cur)
             if not is_valid(cur):
                 return nodes, "{:#x} (corrupted)".format(cur)
+            if read_int_from_memory(cur + self.run_layout["list"] + self.ptrsize, safe=True) != previous:
+                return nodes, "{:#x} (corrupted mPrev)".format(cur)
             nodes.append(cur)
+            previous = cur
             cur = read_int_from_memory(cur + self.run_layout["list"])
         return nodes, None
 
@@ -179471,7 +179786,7 @@ class MuslHeapDumpCommand(GenericCommand, BufferingOutput):
                         help="use a specific mallocng context address.")
     parser.add_argument("-i", "--active-idx", type=int, choices=range(48), help="the active index of dump target.")
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
-    parser.add_argument("-v", "--verbose", action="store_true", help="also dump an empty active index.")
+    parser.add_argument("-v", "--verbose", action="store_true", help="also dump slots in groups with a single freed slot.")
     _syntax_ = parser.format_help()
 
     _note_ = "\n".join([
@@ -179991,6 +180306,9 @@ class MuslHeapDumpCommand(GenericCommand, BufferingOutput):
                         self.dump_chunk(group, dic[state[-i - 1]])
                     self.out.append("")
 
+                if meta.next and read_int_from_memory(meta.next, safe=True) != current:
+                    self.out.append("Broken meta list: next.prev does not point to {:#x}".format(current))
+                    break
                 seen.add(current)
                 current = meta.next
             if not current:
@@ -180159,9 +180477,9 @@ class UclibcNgHeapDumpCommand(GenericCommand, BufferingOutput):
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("--malloc_state", type=AddressUtil.parse_address,
-                        help="use specific address for malloc_context.")
+                        help="use specific address for malloc_state.")
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
-    parser.add_argument("-v", "--verbose", action="store_true", help="also dump an empty active index.")
+    parser.add_argument("-v", "--verbose", action="store_true", help="also dump empty bins and malloc_state fields.")
     parser.add_argument("-s", "--safe-linking-decode", action="store_true",
                         help="decode Safe-Linking fastbin links during traversal and display (default: plain links).")
     _syntax_ = parser.format_help()
@@ -180504,6 +180822,27 @@ class UclibcNgHeapDumpCommand(GenericCommand, BufferingOutput):
 
         return GefUtil.dict_to_namedtuple("MallocState", malloc_state)
 
+    def read_fastbin(self, address):
+        nodes = []
+        seen = set()
+        while address:
+            if address in seen:
+                return nodes, "{:#x} (loop detected)".format(address)
+            if address % (current_arch.ptrsize * 2):
+                return nodes, "{:#x} (unaligned chunk)".format(address)
+            chunk = uClibcNgHeap.uClibcChunk(address, from_base=True)
+            try:
+                size = chunk.size
+                next_address = chunk.get_fwd_ptr(self.args.safe_linking_decode)
+            except gdb.MemoryError:
+                return nodes, "{:#x} (unreadable chunk)".format(address)
+            if next_address is None or size < current_arch.ptrsize * 4 or size % (current_arch.ptrsize * 2):
+                return nodes, "{:#x} (invalid chunk)".format(address)
+            seen.add(address)
+            nodes.append(address)
+            address = next_address
+        return nodes, None
+
     def init_bins_info(self, malloc_state):
         self.bins_info = {
             "fastbins": {},
@@ -180513,17 +180852,12 @@ class UclibcNgHeapDumpCommand(GenericCommand, BufferingOutput):
         # fastbins
         for i in range(self.NFASTBINS):
             addr, n, size = malloc_state.fastbins[i]
-            seen = []
-            seen_addresses = set()
-            while n and n not in seen_addresses:
-                seen.append(n)
-                seen_addresses.add(n)
-                try:
-                    chunk = uClibcNgHeap.uClibcChunk(n, from_base=True)
-                    n = chunk.get_fwd_ptr(self.args.safe_linking_decode)
-                except gdb.MemoryError:
-                    break
+            seen, error = self.read_fastbin(n)
             self.bins_info["fastbins"][i] = seen
+            if error:
+                self.bins_dict_for_address = {}
+                err("Corrupted fastbins[{:d}]: {:s}; chunk allocation states are unknown".format(i, error))
+                return False
         # smallbins / unsortedbin
         for i in range(len(malloc_state.smallbins)):
             addr, n, p, size = malloc_state.smallbins[i]
@@ -180594,7 +180928,7 @@ class UclibcNgHeapDumpCommand(GenericCommand, BufferingOutput):
                     self.NSMALLBINS + largebin_idx, sz, pos, len(largebin_list),
                 )
                 self.bins_dict_for_address.setdefault(address, []).append(m)
-        return
+        return True
 
     def get_bins_info(self, malloc_state, address):
         info = list(self.bins_dict_for_address.get(address, []))
@@ -180659,14 +180993,14 @@ class UclibcNgHeapDumpCommand(GenericCommand, BufferingOutput):
                 ))
 
             if n != 0:
-                seen = set()
-                while is_valid_addr(n) and n not in seen:
-                    seen.add(n)
+                nodes, error = self.read_fastbin(n)
+                for n in nodes:
                     chunk = uClibcNgHeap.uClibcChunk(n, from_base=True)
                     self.out.append(" -> {}".format(
                         chunk.to_str(is_fastbin=True, safe_linking=self.args.safe_linking_decode),
                     ))
-                    n = chunk.get_fwd_ptr(self.args.safe_linking_decode)
+                if error:
+                    self.err_add_out("Corrupted fastbins[{:d}]: {:s}".format(i, error))
 
         self.verbose_add_out("top:                 {!s}".format(ProcessMap.lookup(malloc_state.top)))
         self.verbose_add_out("last_remainder:      {!s}".format(ProcessMap.lookup(malloc_state.last_remainder)))
@@ -180765,9 +181099,9 @@ class UclibcNgVisualHeapCommand(UclibcNgHeapDumpCommand, BufferingOutput):
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("location", metavar="LOCATION", nargs="?", type=AddressUtil.parse_address,
-                        help="the address interpreted as the beginning of a contiguous chunk. (default: [heap] of vmmap)")
+                        help="the address of the first contiguous chunk (default: malloc_state.heap_base).")
     parser.add_argument("--malloc_state", type=AddressUtil.parse_address,
-                        help="use specific address for malloc_context.")
+                        help="use specific address for malloc_state.")
     parser.add_argument("-c", dest="max_count", type=AddressUtil.parse_address,
                         help="Maximum count to parse. It is used when there is a very large amount of chunks.")
     parser.add_argument("-f", "--full", action="store_true",
@@ -180882,6 +181216,9 @@ class UclibcNgVisualHeapCommand(UclibcNgHeapDumpCommand, BufferingOutput):
         sect = ProcessMap.process_lookup_address(dump_start)
         if sect:
             end = sect.page_end
+            for mapping in sorted(ProcessMap.get_process_maps(), key=lambda m: m.page_start):
+                if mapping.page_start == end and mapping.is_readable():
+                    end = mapping.page_end
         else:
             # If qemu-user 8.1 or higher, the process_lookup_address to obtain the section list uses
             # info proc mappings internally.
@@ -180964,7 +181301,8 @@ class UclibcNgVisualHeapCommand(UclibcNgHeapDumpCommand, BufferingOutput):
             err("Could not find the heap base")
             return
 
-        self.init_bins_info(malloc_state)
+        if not self.init_bins_info(malloc_state):
+            return
 
         if args.location is None:
             dump_start = malloc_state.heap_base
@@ -181049,7 +181387,8 @@ class UclibcNgChunkCommand(UclibcNgHeapDumpCommand):
             err("Could not find malloc_state")
             return
 
-        self.init_bins_info(malloc_state)
+        if not self.init_bins_info(malloc_state):
+            return
         chunk = uClibcNgHeap.uClibcChunk(args.location, from_base=args.as_base)
         try:
             gef_print(self.chunk_to_str(malloc_state, chunk))
@@ -181132,7 +181471,8 @@ class UclibcNgChunksCommand(UclibcNgHeapDumpCommand, BufferingOutput):
             err("Could not find the heap base")
             return
 
-        self.init_bins_info(malloc_state)
+        if not self.init_bins_info(malloc_state):
+            return
 
         if args.location is None:
             dump_start = malloc_state.heap_base
@@ -181230,7 +181570,8 @@ class UclibcNgParseCommand(UclibcNgHeapDumpCommand, BufferingOutput):
             err("Could not find the heap base")
             return
 
-        self.init_bins_info(malloc_state)
+        if not self.init_bins_info(malloc_state):
+            return
         self.out = []
         self.parse_heap(malloc_state, malloc_state.heap_base)
         self.print_output(check_terminal_size=True)
@@ -181325,7 +181666,8 @@ class UclibcNgBinsSimpleCommand(UclibcNgHeapDumpCommand):
             err("Could not find malloc_state")
             return
 
-        self.init_bins_info(malloc_state)
+        if not self.init_bins_info(malloc_state):
+            return
         self.bins_simple(malloc_state)
         return
 
@@ -181442,7 +181784,8 @@ class UclibcNgSnapshotCommand(UclibcNgHeapDumpCommand):
             err("Failed to dump memory")
             return None
 
-        self.init_bins_info(malloc_state)
+        if not self.init_bins_info(malloc_state):
+            return
         chunks = []
         for chunk in self.iter_chunks(malloc_state, heap_base):
             addr = chunk.chunk_base_address
@@ -181537,8 +181880,6 @@ class UclibcNgSnapshotCompareCommand(UclibcNgSnapshotCommand, GlibcHeapSnapshotC
     ])
 
     @Decorator.parse_args
-    @Decorator.only_if_gdb_running
-    @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
     def do_invoke(self, args):
         if args.file_path is not None and args.file_path2 is not None:
             ret1 = GlibcHeapSnapshotCommand.read_snapshot(args.file_path)
@@ -181546,6 +181887,12 @@ class UclibcNgSnapshotCompareCommand(UclibcNgSnapshotCommand, GlibcHeapSnapshotC
             file_path1 = os.path.basename(args.file_path)
             file_path2 = os.path.basename(args.file_path2)
         else:
+            if not is_alive():
+                warn("No debugging session active")
+                return
+            if is_qemu_system() or is_kgdb() or is_vmware() or is_wine():
+                warn("This command is not supported in the current GDB mode")
+                return
             try:
                 malloc_state = self.read_malloc_state(args.malloc_state)
             except gdb.MemoryError:
@@ -181635,7 +181982,8 @@ class UclibcNgDumpImageCommand(UclibcNgHeapDumpCommand, GlibcHeapDumpImageComman
             err("Could not find the heap base")
             return
 
-        self.init_bins_info(malloc_state)
+        if not self.init_bins_info(malloc_state):
+            return
 
         if args.location is None:
             dump_start = malloc_state.heap_base
