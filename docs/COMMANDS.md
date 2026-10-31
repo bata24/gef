@@ -570,6 +570,7 @@ Only when qemu-user or pin, the `c` command is redirected to `continue-for-qemu-
 This setting is done only once, when hook_stop_handler is called for the first time.
 Nested `c` command causes a problem, so in that case gef executes the original continue command instead.
 Internally, SIGINT is monitored in a forked child process.
+The monitor sends at most one SIGTRAP during each continue.
 ```
 
 ## `down`
@@ -1781,7 +1782,7 @@ Redirect the file descriptor during execution.
 ### Syntax
 
 ```text
-usage: hijack-fd [-h] [-q] OLD_FD NEW_OUTPUT
+usage: hijack-fd [-h] [--file | --socket] [-q] OLD_FD NEW_OUTPUT
 
 positional arguments:
   OLD_FD       file descriptor number to redirect.
@@ -1789,6 +1790,8 @@ positional arguments:
 
 options:
   -h, --help   show this help message and exit
+  --file       treat NEW_OUTPUT as a file path.
+  --socket     treat NEW_OUTPUT as a host:port socket.
   -q, --quiet  quiet execution.
 ```
 
@@ -2264,20 +2267,21 @@ options:
 
 ## `format-string-helper`
 
-The helper to search for exploitable format strings.
+Continue until a writable format string or another stop, then remove helper breakpoints.
 
 - Alias: `fmtstr-helper`
 
 ### Syntax
 
 ```text
-usage: format-string-helper [-h] [-r] [-v]
+usage: format-string-helper [-h] [-r] [-v] [--setup-only]
 
 options:
   -h, --help            show this help message and exit
   -r, --remove-breakpoint
                         remove the format-string-helper related breakpoints.
   -v, --verbose         display target functions of breakpoint.
+  --setup-only          set current breakpoints without continuing or automatic cleanup.
 ```
 
 ## `onegadget`
@@ -2365,7 +2369,10 @@ Invoke `ceccomp` or `seccomp-tools`.
 ### Syntax
 
 ```text
-usage: seccomp [-h] [-c | -s]
+usage: seccomp [-h] [-c | -s] ...
+
+positional arguments:
+  argv                  arguments for a new target process (after --).
 
 options:
   -h, --help            show this help message and exit
@@ -2379,6 +2386,7 @@ options:
 ```text
 Default: Search `ceccomp` -> `seccomp-tools`, and use found one.
 With `-c` or `-s`: Forces GEF to use the specified one.
+The tool starts a new process; use `-- ARGS` for filters depending on startup arguments.
 ```
 
 # 02-a. Process Information - General
@@ -2800,10 +2808,12 @@ Display current debugged filename.
 ### Syntax
 
 ```text
-usage: filename [-h]
+usage: filename [-h] [--symbol | --runtime]
 
 options:
   -h, --help  show this help message and exit
+  --symbol    show the local symbol file path.
+  --runtime   show the running executable path.
 ```
 
 ## `pid`
@@ -3273,10 +3283,12 @@ Display the canary value of the current process.
 ### Syntax
 
 ```text
-usage: canary [-h]
+usage: canary [-h] [-m MAX_SCAN_SIZE]
 
 options:
-  -h, --help  show this help message and exit
+  -h, --help            show this help message and exit
+  -m, --max-scan-size MAX_SCAN_SIZE
+                        maximum number of bytes to scan for canary copies (0: unlimited).
 ```
 
 ## `capability`
@@ -3416,13 +3428,17 @@ Search for mangled values in RW memory.
 ### Syntax
 
 ```text
-usage: search-mangled-ptr [-h] [-f] [-v]
+usage: search-mangled-ptr [-h] [-f] [-v] [-s START] [-l LENGTH] [-m MAX_RESULTS]
 
 options:
   -h, --help            show this help message and exit
   -f, --force-heuristic
                         do not use symbols to detect PTR_MANGLE
   -v, --verbose         shows the section currently being searched.
+  -s, --start START     start address of the search.
+  -l, --length LENGTH   length of the search.
+  -m, --max-results MAX_RESULTS
+                        stop after this many matches (0: unlimited).
 ```
 
 ## `sighands`
@@ -3629,12 +3645,16 @@ Search for CFI-valid, controllable gadgets in the executable area.
 ### Syntax
 
 ```text
-usage: search-cfi-gadgets [-h] [-r] [-n]
+usage: search-cfi-gadgets [-h] [-r] [-n] [-s START] [-l LENGTH] [-m MAX_SCAN_SIZE]
 
 options:
-  -h, --help      show this help message and exit
-  -r, --rescan    do not use cache.
-  -n, --no-pager  do not use the pager.
+  -h, --help            show this help message and exit
+  -r, --rescan          do not use cache.
+  -n, --no-pager        do not use the pager.
+  -s, --start START     start address of the search.
+  -l, --length LENGTH   length of the search.
+  -m, --max-scan-size MAX_SCAN_SIZE
+                        maximum number of bytes to scan (0: unlimited).
 ```
 
 ## `search-pattern`
