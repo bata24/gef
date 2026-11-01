@@ -2769,6 +2769,12 @@ options:
                         assume here is out of the function.
 ```
 
+### Notes
+
+```text
+Guesses use default integer argument locations; function ABI and argument types are not considered.
+```
+
 ## `envp`
 
 Display initial envp from __environ@ld, or modified envp managed by libc.

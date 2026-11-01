@@ -17157,8 +17157,8 @@ class Auxv:
     """A collection of utility functions that are related to ELF Auxiliary Vectors."""
 
     @staticmethod
-    def get_auxiliary_walk(offset=0):
-        """Find AUXV by walking stack."""
+    def get_auxiliary_walk(offset=0, return_start=False):
+        """Find AUXV by walking stack, or return its start address."""
 
         if Config.get("context.disable_auxv"):
             return None
@@ -17194,6 +17194,24 @@ class Auxv:
             # something is wrong, maybe stack is pivoted
             return None
 
+        max_checks = 16384
+        if is_pin() or is_qemu_user():
+            max_checks = 1024
+
+        if current_arch.stack_grow_down:
+            # Ignore zero padding at the top of a downward-growing stack.
+            start = current
+            for index in range(max_checks):
+                current = start - index * current_arch.ptrsize * 2
+                a = read_int_from_memory(current, safe=True)
+                b = read_int_from_memory(current + current_arch.ptrsize, safe=True)
+                if a is None or b is None:
+                    return None
+                if a or b:
+                    break
+            else:
+                return None
+
         # find auxv end
         while True:
             a = read_int_from_memory(current, safe=True)
@@ -17205,9 +17223,6 @@ class Auxv:
             current -= current_arch.ptrsize * 2
 
         # Skip dummy nulls with a limit; remote memory reads can be expensive.
-        max_checks = 16384
-        if is_pin() or is_qemu_user():
-            max_checks = 1024
         start = current
         for index in range(max_checks):
             current = start - index * current_arch.ptrsize * 2
@@ -17217,7 +17232,18 @@ class Auxv:
             if a == 7: # AT_BASE
                 break
         else:
-            return None
+            if not (is_qemu_user() and current_arch.stack_grow_down):
+                return None
+            start = current_arch.sp + current_arch.ptrsize * 2 + offset
+            for index in range(max_checks):
+                current = start + index * current_arch.ptrsize * 2
+                a = read_int_from_memory(current, safe=True)
+                if a is None:
+                    return None
+                if a == 7: # AT_BASE
+                    break
+            else:
+                return None
 
         # find auxv start
         while True:
@@ -17231,6 +17257,7 @@ class Auxv:
                 break
             current -= current_arch.ptrsize * 2
         current += current_arch.ptrsize * 2
+        auxv_start = current
 
         # parse auxv
         res = {}
@@ -17257,7 +17284,57 @@ class Auxv:
         if "AT_NULL" not in res:
             return None
 
+        if return_start:
+            return auxv_start
         return res
+
+    @staticmethod
+    def get_initial_arrays():
+        """Return argv and envp array addresses from the initial stack."""
+        if current_arch is None:
+            return None
+
+        size = current_arch.ptrsize
+        for offset in (0, size):
+            auxv_start = Auxv.get_auxiliary_walk(offset, return_start=True)
+            if auxv_start is not None:
+                break
+        else:
+            return None
+
+        if read_int_from_memory(auxv_start - size, safe=True) != 0:
+            return None
+
+        cursor = auxv_start - size * 2
+        checks = 0
+        while checks < 16384:
+            pointer = read_int_from_memory(cursor, safe=True)
+            if pointer is None:
+                return None
+            if pointer == 0:
+                argv_end = cursor
+                break
+            if not is_valid_addr(pointer):
+                return None
+            cursor -= size
+            checks += 1
+        else:
+            return None
+
+        cursor = argv_end - size
+        for count in range(16384):
+            pointer = read_int_from_memory(cursor, safe=True)
+            if pointer is None:
+                return None
+            if pointer == count:
+                return cursor + size, argv_end + size
+            # Downward stack strings are above auxv, even if argc was overwritten.
+            if current_arch.stack_grow_down and count and pointer < auxv_start:
+                return cursor + size, argv_end + size
+            if not is_valid_addr(pointer):
+                return None
+            cursor -= size
+        return None
 
     # Auxv.get_auxiliary_values (under qemu-user mode) is very slow,
     # Because it may call Auxv.get_auxiliary_walk that repeats read_memory many times to find the auxv value.
@@ -19844,12 +19921,12 @@ class ArgvCommand(GenericCommand, BufferingOutput):
             self.out.append(titlify("ARGV from _dl_argv"))
             self.info_add_out("_dl_argv @ {}".format(ProcessMap.lookup(paddr)))
             self.print_from_mem(addr)
-            return
+            return True
         elif addr == 0:
             self.err_add_out("_dl_argv is 0x0")
         else:
             self.err_add_out("Could not find _dl_argv")
-        return
+        return False
 
     def dump_libc_argv(self):
         paddr = self.get_address_from_symbol("&__libc_argv")
@@ -19858,11 +19935,12 @@ class ArgvCommand(GenericCommand, BufferingOutput):
             self.out.append(titlify("ARGV from __libc_argv"))
             self.info_add_out("__libc_argv @ {}".format(ProcessMap.lookup(paddr)))
             self.print_from_mem(addr)
+            return True
         elif addr == 0:
             self.err_add_out("__libc_argv is 0x0")
         else:
             self.err_add_out("Could not find __libc_argv")
-        return
+        return False
 
     def dump_proc_cmdline(self):
         if is_remote_debug() or is_core_file():
@@ -19887,8 +19965,14 @@ class ArgvCommand(GenericCommand, BufferingOutput):
             self.out.append(titlify("ARGV from {:#x}".format(args.array)))
             self.print_from_mem(args.array)
         else:
-            self.dump_dl_argv()
-            self.dump_libc_argv()
+            found_dl = self.dump_dl_argv()
+            found_libc = self.dump_libc_argv()
+            if not found_dl and not found_libc:
+                arrays = Auxv.get_initial_arrays()
+                if arrays is not None:
+                    self.out.clear()
+                    self.out.append(titlify("ARGV from initial stack"))
+                    self.print_from_mem(arrays[0])
             self.dump_proc_cmdline()
         self.print_output(check_terminal_size=True)
         return
@@ -19991,11 +20075,12 @@ class EnvpCommand(GenericCommand, BufferingOutput):
         if paddr and addr:
             self.info_add_out("__environ @ {}".format(ProcessMap.lookup(paddr)))
             self.print_from_mem(addr)
+            return True
         elif addr == 0:
             self.err_add_out("___environ is 0x0")
         else:
             self.err_add_out("Could not find __environ")
-        return
+        return False
 
     def dump_last_environ(self):
         paddr = self.get_address_from_symbol("&last_environ")
@@ -20005,11 +20090,12 @@ class EnvpCommand(GenericCommand, BufferingOutput):
             if paddr and addr:
                 self.info_add_out("last_environ @ {}".format(ProcessMap.lookup(paddr)))
                 self.print_from_mem(addr)
+                return True
             elif addr == 0:
                 self.err_add_out("last_environ is 0x0")
             else:
                 self.err_add_out("Could not find last_environ")
-            return
+            return False
 
         self.out.append(titlify("ENVP from __environ_array_list (for putenv, etc.)"))
         objfile = None
@@ -20039,7 +20125,7 @@ class EnvpCommand(GenericCommand, BufferingOutput):
             paddr = self.get_address_from_symbol("&__environ_array_list")
         if paddr is None:
             self.err_add_out("Could not find last_environ or __environ_array_list")
-            return
+            return False
 
         node = read_int_from_memory(paddr, safe=True)
         if node:
@@ -20047,12 +20133,12 @@ class EnvpCommand(GenericCommand, BufferingOutput):
             if addr:
                 self.info_add_out("__environ_array_list @ {}".format(ProcessMap.lookup(paddr)))
                 self.print_from_mem(addr)
-                return
+                return True
         if node == 0:
             self.err_add_out("__environ_array_list is 0x0")
         else:
             self.err_add_out("Could not read __environ_array_list")
-        return
+        return False
 
     def dump_proc_environ(self):
         if is_remote_debug() or is_core_file():
@@ -20077,8 +20163,18 @@ class EnvpCommand(GenericCommand, BufferingOutput):
             self.out.append(titlify("ENVP from {:#x}".format(args.array)))
             self.print_from_mem(args.array)
         else:
-            self.dump_environ()
-            self.dump_last_environ()
+            found_environ = self.dump_environ()
+            arrays = None
+            if not found_environ:
+                arrays = Auxv.get_initial_arrays()
+                if arrays is not None:
+                    self.out.clear()
+                    self.out.append(titlify("ENVP from initial stack"))
+                    self.print_from_mem(arrays[1])
+            last_start = len(self.out)
+            found_last = self.dump_last_environ()
+            if arrays is not None and not found_last:
+                del self.out[last_start:]
             self.dump_proc_environ()
         self.print_output(check_terminal_size=True)
         return
@@ -20098,6 +20194,10 @@ class DumpArgsCommand(GenericCommand):
     parser.add_argument("-o", "--out-of-function", action="store_true",
                         help="assume here is out of the function.")
     _syntax_ = parser.format_help()
+
+    _note_ = "\n".join([
+        "Guesses use default integer argument locations; function ABI and argument types are not considered.",
+    ])
 
     @staticmethod
     def get_entry_sp():
@@ -20121,6 +20221,7 @@ class DumpArgsCommand(GenericCommand):
         gdb.execute("info args")
 
         gef_print(titlify("guessed arguments (current value)"))
+        info(self._note_)
         if args.count is not None:
             count = args.count
         else:
