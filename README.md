@@ -570,7 +570,7 @@ For the usage and options of each command, see [docs/COMMANDS.md](docs/COMMANDS.
 ### Other
 
 <details>
-<summary><code>tcmalloc-heap-dump</code>, <code>musl-heap-dump</code>, <code>go-heap-dump</code>, <code>tlsf-heap-dump</code>, <code>hoard-heap-dump</code>, <code>mimalloc-heap-dump</code>, <code>scalloc-heap-dump</code>, <code>snmalloc-heap-dump</code>, <code>ssmalloc-heap-dump</code>, <code>jemalloc-heap-dump</code>, <code>sfmalloc-heap-dump</code>, <code>rpmalloc-heap-dump</code>, <code>tbbmalloc-heap-dump</code>, <code>zig-heap-dump</code>, <code>mesh-heap-dump</code>, <code>streamflow-heap-dump</code>, <code>supermalloc-heap-dump</code>, <code>dlmalloc-heap-dump</code>, <code>scudo-heap-dump</code>, <code>mozjemalloc-heap-dump</code>, <code>bmalloc-heap-dump</code>, <code>libpas-heap-dump</code></summary>
+<summary><code>tcmalloc-heap-dump</code>, <code>musl-heap-dump</code>, <code>go-heap-dump</code>, <code>tlsf-heap-dump</code>, <code>hoard-heap-dump</code>, <code>mimalloc-heap-dump</code>, <code>scalloc-heap-dump</code>, <code>snmalloc-heap-dump</code>, <code>ssmalloc-heap-dump</code>, <code>jemalloc-heap-dump</code>, <code>sfmalloc-heap-dump</code>, <code>rpmalloc-heap-dump</code>, <code>tbbmalloc-heap-dump</code>, <code>zig-heap-dump</code>, <code>mesh-heap-dump</code>, <code>streamflow-heap-dump</code>, <code>supermalloc-heap-dump</code>, <code>dlmalloc-heap-dump</code>, <code>scudo-heap-dump</code>, <code>mozjemalloc-heap-dump</code>, <code>bmalloc-heap-dump</code>, <code>libpas-heap-dump</code>, <code>zend-heap-dump</code></summary>
 
 - `tcmalloc-heap-dump`: dumps TCMalloc (`gperftools-2.16-1` or named `libgoogle-perftools{4,-dev}`) free-list.
     - ![](images/tcmalloc-heap-dump.png)
@@ -731,6 +731,21 @@ For the usage and options of each command, see [docs/COMMANDS.md](docs/COMMANDS.
           appear under their small size classes and in the large free ranges, and the pending ones in the log.
         - For other architectures, build statically with a cross `g++` (e.g. `aarch64-linux-gnu-g++ -static`) and run it
           under `qemu-aarch64 -g 1234` with `gdb-multiarch`.
+- `zend-heap-dump`: dumps Zend MM (the PHP allocator of PHP 7.0~) free lists, chunks and huge blocks.
+    - ![](images/zend-heap-dump.png)
+    - How to test:
+        - Install `php-cli` (e.g. `apt install php-cli`), or get and extract the upstream source from
+          https://www.php.net/downloads and build with `./configure --disable-all --enable-cli && make`
+          (the binary is `sapi/cli/php`).
+        - Save the following as `test.php`. It allocates 100 strings of 0x100 bytes and frees half of them.
+          `<?php $a=[];for($i=0;$i<100;$i++)$a[]=str_repeat("A",0x100);for($i=0;$i<100;$i+=2)unset($a[$i]);echo 1;`
+        - Run `gdb --args php -n test.php`, `catch syscall write`, `run`, and then `zend-heap-dump`.
+          The freed strings appear in `free_slot[16]` (size: 0x140).
+        - For other architectures, build statically with a cross compiler, e.g.
+          `./configure --host=aarch64-linux-gnu --disable-all --enable-cli && make EXTRA_LDFLAGS_PROGRAM=-all-static`,
+          and run it under `qemu-aarch64 -g 1234` with `gdb-multiarch`.
+            - For a big-endian target, also pass `ac_cv_c_bigendian_php=yes` to `configure`. It cannot tell the byte order
+              when cross compiling, and leaves `WORDS_BIGENDIAN` undefined.
 
 </details>
 

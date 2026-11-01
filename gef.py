@@ -182175,6 +182175,464 @@ class LibpasHeapDumpCommand(GenericCommand, BufferingOutput):
 
 
 @register_command
+class ZendHeapDumpCommand(GenericCommand, BufferingOutput):
+    """Zend MM (the PHP allocator, PHP 7.0~) heap viewer."""
+
+    _cmdline_ = "zend-heap-dump"
+    _category_ = "05-d. Heap - Other"
+
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("-hh", "--help-simple", action="store_true", help="show help without ASCII diagram.")
+    parser.add_argument("--heap", type=AddressUtil.parse_address,
+                        help="dump only the specified zend_mm_heap (e.g. alloc_globals.mm_heap).")
+    parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
+    parser.add_argument("-v", "--verbose", action="store_true", help="also dump empty bins and the page runs of each chunk.")
+    parser.add_argument("--meta", action="store_true", help="display offset information.")
+    _syntax_ = parser.format_help()
+
+    _example_ = "\n".join([
+        "{0:s}                        # dump the free lists, chunks and huge blocks of all heaps",
+        "{0:s} -v                     # also dump the page runs of each chunk",
+        "{0:s} --heap 0x7ffff5600040  # dump only the specified heap",
+    ]).format(_cmdline_)
+
+    _note_ = "\n".join([
+        "Simplified Zend MM structure:",
+        "",
+        "+-zend_mm_chunk (2MiB aligned)------------+",
+        "| heap                                    |--+",
+        "| next, prev (list of chunks)             |  |",
+        "| heap_slot (zend_mm_heap, main chunk)    |<-+",
+        "|   size, peak                            |     +-free slot------+   +-free slot------+",
+        "|   shadow_key (PHP 8.4~)                 |     | next_free_slot |-->| next_free_slot |--> ...",
+        "|   free_slot[30] (by bin)                |---->| ...            |   | ...            |",
+        "|   real_size, real_peak, limit           |     | shadow (8.4~)  |   | shadow (8.4~)  |",
+        "|   huge_list                             |--+  +----------------+   +----------------+",
+        "|   main_chunk, cached_chunks             |  |",
+        "| free_map (1 bit for each page, 1: used) |  |  +-zend_mm_huge_list-+",
+        "| map[512] (4 bytes for each page)        |  +->| ptr               |--> huge block (2MiB aligned)",
+        "|   SRUN: bin (1st page of a small run)   |     | size              |",
+        "|   NRUN: bin and page offset             |     | next              |--> ...",
+        "|   LRUN: pages (1st page of a large run) |     +-------------------+",
+        "| page[1] .. page[511] (4KiB each)        |",
+        "+-----------------------------------------+",
+        "",
+        "* Small sizes (up to 3072 bytes) are slots of 30 bins, and each run of a bin has 1 to 7 pages.",
+        "* Large sizes (up to 2MiB - 4KiB) are runs of pages, and huge sizes are mmapped and linked to huge_list.",
+        "* Free slots are linked only from free_slot[bin]; a run does not track its free slots.",
+        "* PHP 8.4~ keeps an encoded copy of next_free_slot at the end of each free slot, and GEF checks it.",
+        "* GEF finds the main chunks by scanning memory (chunk->heap points into itself), so debug symbols are not needed.",
+        "* The offsets of free_slot, main_chunk and free_map are derived from memory, so PHP 7.0 to 8.6 all work.",
+        "* With USE_ZEND_ALLOC=0, PHP uses the system malloc and there is nothing to dump.",
+        "* PHP 5.x and older use another structure, and are not supported.",
+    ])
+
+    CHUNK_SIZE = 0x200000
+    PAGE_SIZE = 0x1000
+    PAGES = 512
+    # heap_slot follows the 64-byte chunk header
+    HEAP_OFFSET = 0x40
+    IS_LRUN = 0x40000000
+    IS_SRUN = 0x80000000
+    # ZEND_MM_BINS_INFO: (size, elements, pages)
+    BINS = [
+        (8, 512, 1), (16, 256, 1), (24, 170, 1), (32, 128, 1), (40, 102, 1), (48, 85, 1), (56, 73, 1), (64, 64, 1),
+        (80, 51, 1), (96, 42, 1), (112, 36, 1), (128, 32, 1), (160, 25, 1), (192, 21, 1), (224, 18, 1), (256, 16, 1),
+        (320, 64, 5), (384, 32, 3), (448, 9, 1), (512, 8, 1), (640, 32, 5), (768, 16, 3), (896, 9, 2), (1024, 8, 2),
+        (1280, 16, 5), (1536, 8, 3), (1792, 16, 7), (2048, 8, 4), (2560, 8, 5), (3072, 4, 3),
+    ]
+    LIST_LIMIT = 0x100000
+
+    def read_words(self, addr, count):
+        data = read_memory(addr, self.ptrsize * count, safe=True)
+        if data is None:
+            return None
+        return slice_unpack(data, self.ptrsize)
+
+    def decode_runs(self, data, map_offset):
+        """Return [(first page, number of pages, map entry)] of the chunk, where free pages have None, or None if broken.
+        free_map (zend_ulong[]) is followed by map (uint32_t[512])."""
+        bits = self.ptrsize * 8
+        free_map = slice_unpack(data[map_offset:map_offset + 64], self.ptrsize)
+        used = [free_map[i // bits] >> (i % bits) & 1 for i in range(self.PAGES)]
+        info = slice_unpack(data[map_offset + 64:map_offset + 64 + self.PAGES * 4], 4)
+        runs = []
+        i = 0
+        while i < self.PAGES:
+            if not used[i]:
+                n = 1
+                while i + n < self.PAGES and not used[i + n]:
+                    n += 1
+                runs.append((i, n, None))
+                i += n
+                continue
+            if info[i] & 0xc0000000 == self.IS_SRUN:
+                b = info[i] & 0x1f
+                if b >= len(self.BINS):
+                    return None
+                n = self.BINS[b][2]
+                # the following pages of a small run have NRUN with the bin and the page offset
+                for j in range(1, min(n, self.PAGES - i)):
+                    if info[i + j] & 0xc1ff001f != self.IS_SRUN | self.IS_LRUN | j << 16 | b:
+                        return None
+            elif info[i] & 0xc0000000 == self.IS_LRUN:
+                n = info[i] & 0x3ff
+            else:
+                return None
+            if n == 0 or i + n > self.PAGES or not all(used[i:i + n]):
+                return None
+            runs.append((i, n, info[i]))
+            i += n
+        return runs
+
+    def find_map_offset(self, data, start):
+        # free_map follows heap_slot, whose size depends on the version and the alignment of the arch
+        for offset in range(start, self.PAGE_SIZE - 64 - self.PAGES * 4 + 1, self.ptrsize):
+            # the chunk header is the large run of the first page
+            if slice_unpack(data[offset + 64:offset + 68], 4)[0] != self.IS_LRUN | 1:
+                continue
+            if self.decode_runs(data, offset) is not None:
+                return offset
+        return None
+
+    def walk_chunks(self, head, heap_addr=None):
+        """Return the chunks linked by next, and the error.
+        The chunks of a heap are a circular list, and the cached chunks are a list that ends with NULL."""
+        chunks = []
+        cur = head
+        while cur and cur not in chunks and len(chunks) < self.LIST_LIMIT:
+            words = self.read_words(cur, 2)
+            if cur % self.CHUNK_SIZE or words is None or (heap_addr is not None and words[0] != heap_addr):
+                return chunks, "{:#x} (corrupted)".format(cur)
+            chunks.append(cur)
+            cur = words[1]
+        if (heap_addr is None and cur == 0) or (heap_addr is not None and cur == head):
+            return chunks, None
+        if cur in chunks:
+            return chunks, "{:#x} (loop detected)".format(cur)
+        return chunks, "{:#x} (corrupted)".format(cur)
+
+    def read_heap(self, chunk):
+        """
+        struct _zend_mm_heap {
+            int use_custom_heap;
+            zend_mm_storage *storage;
+            size_t size;
+            size_t peak;
+            uintptr_t shadow_key;                           // 8.4~
+            zend_mm_free_slot *free_slot[ZEND_MM_BINS];
+            size_t real_size;
+            size_t real_peak;
+            size_t limit;
+            size_t hard_limit;                              // 8.2.x~ (since 2026/10)
+            zend_long hard_limit_percent;                   // 8.2.x~ (since 2026/10)
+            int overflow;
+            bool fallible;                                  // 8.2.x~ (since 2026/10)
+            zend_mm_huge_list *huge_list;
+            zend_mm_chunk *main_chunk;
+            zend_mm_chunk *cached_chunks;
+            int chunks_count;
+            int peak_chunks_count;
+            int cached_chunks_count;
+            ...
+        };
+
+        struct _zend_mm_chunk {
+            zend_mm_heap *heap;
+            zend_mm_chunk *next;
+            zend_mm_chunk *prev;
+            zend_mm_chunk *next_shadow;                     // 8.6~
+            uint32_t free_pages;
+            uint32_t free_tail;
+            uint32_t num;
+            char reserve[...];                              // up to 64 bytes
+            zend_mm_heap heap_slot;
+            zend_mm_page_map free_map;                      // zend_ulong[]
+            zend_mm_page_info map[ZEND_MM_PAGES];           // uint32_t
+        };
+        """
+        ptrsize = self.ptrsize
+        addr = chunk + self.HEAP_OFFSET
+        data = read_memory(chunk, self.PAGE_SIZE, safe=True)
+        if data is None:
+            return None
+        words = slice_unpack(data[self.HEAP_OFFSET:self.HEAP_OFFSET + ptrsize * 48], ptrsize)
+        # main_chunk is the first word pointing back to the chunk; it follows huge_list
+        if chunk not in words[34:]:
+            return None
+        m = words.index(chunk, 34)
+        map_offset = self.find_map_offset(data, self.HEAP_OFFSET + ptrsize * (m + 4))
+        if map_offset is None:
+            return None
+        chunks, chunks_error = self.walk_chunks(chunk, addr)
+        runs = {}
+        for c in chunks:
+            chunk_data = data
+            if c != chunk:
+                chunk_data = read_memory(c, self.PAGE_SIZE, safe=True)
+            runs[c] = None
+            if chunk_data is not None:
+                runs[c] = self.decode_runs(chunk_data, map_offset)
+        # the run of each page
+        owner = {c: [run for run in r for _ in range(run[1])] for c, r in runs.items() if r is not None}
+
+        # free_slot follows shadow_key since 8.4, so the other candidate has shadow_key or real_size as an entry
+        nbins = len(self.BINS)
+        scores = []
+        for f in (4, 5):
+            score = sum(x == 0 or self.is_slot(owner, b, x) for b, x in enumerate(words[f:f + nbins]))
+            scores.append((score, f))
+        _, f = max(scores)
+        shadow_key = None
+        if f == 5:
+            shadow_key = words[4]
+        offset = self.HEAP_OFFSET + ptrsize * (m + 2)
+        counts = slice_unpack(data[offset:offset + 12], 4)
+        return {
+            "address": addr,
+            "use_custom_heap": slice_unpack(data[self.HEAP_OFFSET:self.HEAP_OFFSET + 4], 4)[0],
+            "size": words[2],
+            "peak": words[3],
+            "shadow_key": shadow_key,
+            "free_slot_index": f,
+            "free_slot": words[f:f + nbins],
+            "real_size": words[f + nbins],
+            "real_peak": words[f + nbins + 1],
+            "limit": words[f + nbins + 2],
+            "huge_list": words[m - 1],
+            "main_chunk": chunk,
+            "main_chunk_index": m,
+            "cached_chunks": words[m + 1],
+            "chunks_count": counts[0],
+            "peak_chunks_count": counts[1],
+            "cached_chunks_count": counts[2],
+            "map_offset": map_offset,
+            "chunks": chunks,
+            "chunks_error": chunks_error,
+            "runs": runs,
+            "owner": owner,
+        }
+
+    def is_slot(self, owner, b, addr):
+        chunk = addr & ~(self.CHUNK_SIZE - 1)
+        if chunk not in owner:
+            return False
+        i, _, info = owner[chunk][(addr - chunk) // self.PAGE_SIZE]
+        if info is None or info & 0xc000001f != self.IS_SRUN | b:
+            return False
+        size, elements, _ = self.BINS[b]
+        offset = addr - chunk - i * self.PAGE_SIZE
+        return offset % size == 0 and offset // size < elements
+
+    def decode_shadow(self, heap, holder, shadow):
+        # BSWAPPTR(next) ^ shadow_key (also ^ the shadow address since 8.6), and big-endian does not swap
+        values = []
+        for value in (shadow ^ heap["shadow_key"], shadow ^ heap["shadow_key"] ^ holder):
+            if Endian.is_little_endian():
+                value = byteswap(value, self.ptrsize)
+            values.append(value)
+        return values
+
+    def walk_free_list(self, heap, b):
+        size = self.BINS[b][0]
+        slots = []
+        seen = set()
+        cur = heap["free_slot"][b]
+        while cur:
+            if cur in seen:
+                return slots, "{:#x} (loop detected)".format(cur)
+            if not self.is_slot(heap["owner"], b, cur) or len(slots) >= self.LIST_LIMIT:
+                return slots, "{:#x} (corrupted)".format(cur)
+            next_slot = read_int_from_memory(cur, safe=True)
+            if next_slot is None:
+                return slots, "{:#x} (corrupted)".format(cur)
+            # the shadow of the last slot of a new run is not written
+            if next_slot and heap["shadow_key"] is not None:
+                holder = cur + size - self.ptrsize
+                shadow = read_int_from_memory(holder, safe=True)
+                if shadow is None or next_slot not in self.decode_shadow(heap, holder, shadow):
+                    return slots, "{:#x} (next_free_slot {:#x} does not match the shadow)".format(cur, next_slot)
+            seen.add(cur)
+            slots.append(cur)
+            cur = next_slot
+        return slots, None
+
+    def walk_huge_list(self, heap):
+        """
+        struct _zend_mm_huge_list {
+            void *ptr;
+            size_t size;
+            zend_mm_huge_list *next;
+            zend_mm_huge_list *prev;                        // 8.6~
+            zend_mm_debug_info dbg;                         // ZEND_DEBUG only
+        };
+        """
+        blocks = []
+        seen = set()
+        node = heap["huge_list"]
+        while node:
+            if node in seen:
+                return blocks, "{:#x} (loop detected)".format(node)
+            words = self.read_words(node, 3)
+            # huge blocks are aligned to the chunk size
+            if words is None or words[0] % self.CHUNK_SIZE or not words[1] or words[1] % self.PAGE_SIZE:
+                return blocks, "{:#x} (corrupted)".format(node)
+            if len(blocks) >= self.LIST_LIMIT:
+                return blocks, "{:#x} (corrupted)".format(node)
+            seen.add(node)
+            blocks.append((node, words[0], words[1]))
+            node = words[2]
+        return blocks, None
+
+    def scan_heaps(self):
+        heaps = []
+        for m in ProcessMap.get_process_maps():
+            if not m.is_writable() or (m.path and not m.path.startswith("[anon:")):
+                continue
+            for chunk in range(m.page_start + (-m.page_start) % self.CHUNK_SIZE, m.page_end, self.CHUNK_SIZE):
+                # chunk->heap of the main chunk points to its heap_slot
+                if read_int_from_memory(chunk, safe=True) != chunk + self.HEAP_OFFSET:
+                    continue
+                heap = self.read_heap(chunk)
+                if heap is not None:
+                    heaps.append(heap)
+        return heaps
+
+    def dump_chunks(self, heap, free_counts):
+        chunk_size_color = Config.get("theme.heap_chunk_size")
+        freed_address_color = Config.get("theme.heap_chunk_address_freed")
+        used_address_color = Config.get("theme.heap_chunk_address_used")
+        corrupted_msg_color = Config.get("theme.heap_corrupted_msg")
+
+        self.out.append("chunks:")
+        for chunk in heap["chunks"]:
+            runs = heap["runs"][chunk]
+            if runs is None:
+                self.out.append(" -> {:s}".format(Color.colorify("{:#x} (broken page map)".format(chunk), corrupted_msg_color)))
+                continue
+            free_pages = sum(n for _, n, info in runs if info is None)
+            msg = "free pages: {:#x}/{:#x}".format(free_pages, self.PAGES - 1)
+            if chunk == heap["main_chunk"]:
+                msg = "main chunk, " + msg
+            self.out.append(" -> {:#x} ({:s})".format(chunk, msg))
+            if not self.args.verbose:
+                continue
+            for i, n, info in runs[1:]:
+                addr = chunk + i * self.PAGE_SIZE
+                if info is None:
+                    self.out.append("        free run @ {:s} (pages: {:#x})".format(
+                        Color.colorify_hex(addr, freed_address_color), n,
+                    ))
+                elif info & self.IS_SRUN:
+                    b = info & 0x1f
+                    size, elements, _ = self.BINS[b]
+                    self.out.append("        small run @ {:s} (pages: {:#x}, bin: {:d}, size: {:s}, free: {:#x}/{:#x})".format(
+                        Color.colorify_hex(addr, used_address_color), n, b, Color.colorify_hex(size, chunk_size_color),
+                        free_counts.get(addr, 0), elements,
+                    ))
+                else:
+                    size = Color.colorify_hex(n * self.PAGE_SIZE, chunk_size_color)
+                    self.out.append("        large run @ {:s} (pages: {:#x}, size: {:s})".format(
+                        Color.colorify_hex(addr, used_address_color), n, size,
+                    ))
+        if heap["chunks_error"]:
+            self.out.append(" -> {:s}".format(Color.colorify(heap["chunks_error"], corrupted_msg_color)))
+
+        cached, error = self.walk_chunks(heap["cached_chunks"])
+        if cached or error:
+            self.out.append("cached_chunks:")
+        for chunk in cached:
+            self.out.append(" -> {:#x}".format(chunk))
+        if error:
+            self.out.append(" -> {:s}".format(Color.colorify(error, corrupted_msg_color)))
+        return
+
+    def dump_heap(self, heap):
+        chunk_size_color = Config.get("theme.heap_chunk_size")
+        freed_address_color = Config.get("theme.heap_chunk_address_freed")
+        used_address_color = Config.get("theme.heap_chunk_address_used")
+        corrupted_msg_color = Config.get("theme.heap_corrupted_msg")
+
+        self.out.append(titlify("zend_mm_heap @ {:#x}".format(heap["address"]), color="bold", msg_color="bold"))
+        self.out.append("size: {:#x}, peak: {:#x}, real_size: {:#x}, real_peak: {:#x}, limit: {:#x}".format(
+            heap["size"], heap["peak"], heap["real_size"], heap["real_peak"], heap["limit"],
+        ))
+        self.out.append("chunks_count: {:d}, peak_chunks_count: {:d}, cached_chunks_count: {:d}".format(
+            heap["chunks_count"], heap["peak_chunks_count"], heap["cached_chunks_count"],
+        ))
+        if heap["shadow_key"] is not None:
+            self.out.append("shadow_key: {:#x}".format(heap["shadow_key"]))
+        if heap["use_custom_heap"]:
+            self.warn_add_out("use_custom_heap is {:d}, so allocations bypass this heap".format(heap["use_custom_heap"]))
+
+        lists = [self.walk_free_list(heap, b) for b in range(len(self.BINS))]
+        free_counts = collections.Counter()
+        for slots, _ in lists:
+            for slot in slots:
+                chunk = slot & ~(self.CHUNK_SIZE - 1)
+                i, _, _ = heap["owner"][chunk][(slot - chunk) // self.PAGE_SIZE]
+                free_counts[chunk + i * self.PAGE_SIZE] += 1
+        self.dump_chunks(heap, free_counts)
+
+        for b, (slots, error) in enumerate(lists):
+            if not slots and not error and not self.args.verbose:
+                continue
+            self.out.append(titlify("free_slot[{:d}] (size: {:#x}, num: {:#x}) @ {:#x}".format(
+                b, self.BINS[b][0], len(slots), heap["address"] + self.ptrsize * (heap["free_slot_index"] + b),
+            )))
+            for slot in slots:
+                self.out.append(" -> {:s}".format(Color.colorify_hex(slot, freed_address_color)))
+            if error:
+                self.out.append(" -> {:s}".format(Color.colorify(error, corrupted_msg_color)))
+
+        blocks, error = self.walk_huge_list(heap)
+        if blocks or error or self.args.verbose:
+            self.out.append(titlify("huge_list (num: {:#x}) @ {:#x}".format(
+                len(blocks), heap["address"] + self.ptrsize * (heap["main_chunk_index"] - 1),
+            )))
+        for node, addr, size in blocks:
+            self.out.append(" -> {:s} (size: {:s}, node: {:#x})".format(
+                Color.colorify_hex(addr, used_address_color), Color.colorify_hex(size, chunk_size_color), node,
+            ))
+        if error:
+            self.out.append(" -> {:s}".format(Color.colorify(error, corrupted_msg_color)))
+        return
+
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    def do_invoke(self, args):
+        self.ptrsize = current_arch.ptrsize
+        if args.heap is None:
+            heaps = self.scan_heaps()
+            if not heaps:
+                err("Could not find any zend_mm_heap")
+                return
+        else:
+            if (args.heap - self.HEAP_OFFSET) % self.CHUNK_SIZE:
+                err("zend_mm_heap must be at a 2MiB aligned chunk + {:#x}: {:#x}".format(self.HEAP_OFFSET, args.heap))
+                return
+            heap = self.read_heap(args.heap - self.HEAP_OFFSET)
+            if heap is None:
+                err("Failed to parse zend_mm_heap at {:#x}".format(args.heap))
+                return
+            heaps = [heap]
+
+        if args.meta:
+            heap = heaps[0]
+            self.quiet_info("offsetof(zend_mm_heap, free_slot): {:#x}".format(self.ptrsize * heap["free_slot_index"]))
+            self.quiet_info("offsetof(zend_mm_heap, main_chunk): {:#x}".format(self.ptrsize * heap["main_chunk_index"]))
+            self.quiet_info("offsetof(zend_mm_chunk, free_map): {:#x}".format(heap["map_offset"]))
+            return
+
+        self.out = []
+        for heap in heaps:
+            self.dump_heap(heap)
+        self.print_output()
+        return
+
+
+@register_command
 class UclibcNgHeapDumpCommand(GenericCommand, BufferingOutput):
     """uclibc-ng (libc/stdlib/malloc-standard) heap reusable chunks viewer."""
 

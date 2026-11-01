@@ -9028,6 +9028,66 @@ Simplified TLSF structure:
 * Allocated chunks are not linked from `matrix[][]`, so this command dumps free chunks only.
 ```
 
+## `zend-heap-dump`
+
+Zend MM (the PHP allocator, PHP 7.0~) heap viewer.
+
+
+### Syntax
+
+```text
+usage: zend-heap-dump [-h] [-hh] [--heap HEAP] [-n] [-v] [--meta]
+
+options:
+  -h, --help          show this help message and exit
+  -hh, --help-simple  show help without ASCII diagram.
+  --heap HEAP         dump only the specified zend_mm_heap (e.g. alloc_globals.mm_heap).
+  -n, --no-pager      do not use the pager.
+  -v, --verbose       also dump empty bins and the page runs of each chunk.
+  --meta              display offset information.
+```
+
+### Examples
+
+```gdb
+zend-heap-dump                        # dump the free lists, chunks and huge blocks of all heaps
+zend-heap-dump -v                     # also dump the page runs of each chunk
+zend-heap-dump --heap 0x7ffff5600040  # dump only the specified heap
+```
+
+### Notes
+
+```text
+Simplified Zend MM structure:
+
++-zend_mm_chunk (2MiB aligned)------------+
+| heap                                    |--+
+| next, prev (list of chunks)             |  |
+| heap_slot (zend_mm_heap, main chunk)    |<-+
+|   size, peak                            |     +-free slot------+   +-free slot------+
+|   shadow_key (PHP 8.4~)                 |     | next_free_slot |-->| next_free_slot |--> ...
+|   free_slot[30] (by bin)                |---->| ...            |   | ...            |
+|   real_size, real_peak, limit           |     | shadow (8.4~)  |   | shadow (8.4~)  |
+|   huge_list                             |--+  +----------------+   +----------------+
+|   main_chunk, cached_chunks             |  |
+| free_map (1 bit for each page, 1: used) |  |  +-zend_mm_huge_list-+
+| map[512] (4 bytes for each page)        |  +->| ptr               |--> huge block (2MiB aligned)
+|   SRUN: bin (1st page of a small run)   |     | size              |
+|   NRUN: bin and page offset             |     | next              |--> ...
+|   LRUN: pages (1st page of a large run) |     +-------------------+
+| page[1] .. page[511] (4KiB each)        |
++-----------------------------------------+
+
+* Small sizes (up to 3072 bytes) are slots of 30 bins, and each run of a bin has 1 to 7 pages.
+* Large sizes (up to 2MiB - 4KiB) are runs of pages, and huge sizes are mmapped and linked to huge_list.
+* Free slots are linked only from free_slot[bin]; a run does not track its free slots.
+* PHP 8.4~ keeps an encoded copy of next_free_slot at the end of each free slot, and GEF checks it.
+* GEF finds the main chunks by scanning memory (chunk->heap points into itself), so debug symbols are not needed.
+* The offsets of free_slot, main_chunk and free_map are derived from memory, so PHP 7.0 to 8.6 all work.
+* With USE_ZEND_ALLOC=0, PHP uses the system malloc and there is nothing to dump.
+* PHP 5.x and older use another structure, and are not supported.
+```
+
 ## `zig-heap-dump`
 
 Zig GeneralPurposeAllocator/DebugAllocator heap dumper.
