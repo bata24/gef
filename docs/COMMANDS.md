@@ -8003,6 +8003,63 @@ Simplified jemalloc (v3.x/v4.x) structure:
 * v3.x/v4.x huge allocations (outside arena chunks) and jemalloc v2.x or older are not supported.
 ```
 
+## `libpas-heap-dump`
+
+libpas (the WebKit allocator, a.k.a. bmalloc/fastMalloc since 2.38) heap viewer.
+
+
+### Syntax
+
+```text
+usage: libpas-heap-dump [-h] [-hh] [-c CACHE] [-a] [-l] [-n] [-v] [--meta]
+
+options:
+  -h, --help          show this help message and exit
+  -hh, --help-simple  show help without ASCII diagram.
+  -c, --cache CACHE   use this address as the thread_local_cache.
+  -a, --all           dump the thread_local_cache of all threads.
+  -l, --log           also dump the deallocation log of each cache.
+  -n, --no-pager      do not use the pager.
+  -v, --verbose       also dump empty size classes and fully used pages.
+  --meta              display offset information.
+```
+
+### Examples
+
+```gdb
+libpas-heap-dump        # dump the heaps and the thread_local_cache of the current thread
+libpas-heap-dump -a -l  # dump the cache and deallocation log of all threads
+libpas-heap-dump -v     # also dump empty size classes and fully allocated pages
+```
+
+### Notes
+
+```text
+Simplified libpas structure:
+
++-thread_local_cache (per thread)--+     +-pas_heap (per heap)-----------------+
+| deallocation_log[] (pending free)|     | segregated_heap                     |
+| local_allocators[] (by index)    |     |   basic_size_directory_and_head     |--+
+|   payload_end, remaining (bump)  |     | large_heap                          |  |
+|   object_size, page_ish          |     |   free_heap (cartesian tree)        |--|-> free large ranges
++----------------------------------+     +-------------------------------------+  |
+                                                                                  v
++-pas_segregated_page--------------+  +-pas_segregated_size_directory (size class)-+
+| object_size                      |  | data.views[] -> exclusive_view -> page     |
+| alloc_bits[] (1: used)           |<-| data.full_alloc_bits (1: valid object)     |
++----------------------------------+  | next_for_heap                              |--> ...
+                                      +--------------------------------------------+
+
+* A free object of a size class is a bit set in full_alloc_bits but clear in the page alloc_bits.
+* Large objects live in the large heap; its free ranges are kept in a cartesian tree.
+* The local allocator bump region (payload_end-remaining .. payload_end) is memory not yet handed out.
+* GEF finds the cache by scanning the TLS, so debug symbols are not needed. Use -c when the scan fails.
+* The compact-pointer base and scale are derived from memory, so 2.50-2.54 and main all work.
+* Only small segregated pages (header at the page boundary) are enumerated; medium and marge
+  segregated pages, whose header lives in a page-header table, and bitfit pages are not.
+* Supported on x86_64 and ARM64 only, as upstream (64-bit Linux uses libpas only on these).
+```
+
 ## `mesh-heap-dump`
 
 Mesh (as of October 2026) heap free-list viewer.

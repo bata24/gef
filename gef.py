@@ -181659,6 +181659,421 @@ class BmallocHeapDumpCommand(GenericCommand, BufferingOutput):
 
 
 @register_command
+class LibpasHeapDumpCommand(GenericCommand, BufferingOutput):
+    """libpas (the WebKit allocator, a.k.a. bmalloc/fastMalloc since 2.38) heap viewer."""
+
+    _cmdline_ = "libpas-heap-dump"
+    _category_ = "05-d. Heap - Other"
+
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("-hh", "--help-simple", action="store_true", help="show help without ASCII diagram.")
+    parser.add_argument("-c", "--cache", type=AddressUtil.parse_address, help="use this address as the thread_local_cache.")
+    parser.add_argument("-a", "--all", action="store_true", help="dump the thread_local_cache of all threads.")
+    parser.add_argument("-l", "--log", action="store_true", help="also dump the deallocation log of each cache.")
+    parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
+    parser.add_argument("-v", "--verbose", action="store_true", help="also dump empty size classes and fully used pages.")
+    parser.add_argument("--meta", action="store_true", help="display offset information.")
+    _syntax_ = parser.format_help()
+
+    _example_ = "\n".join([
+        "{0:s}        # dump the heaps and the thread_local_cache of the current thread",
+        "{0:s} -a -l  # dump the cache and deallocation log of all threads",
+        "{0:s} -v     # also dump empty size classes and fully allocated pages",
+    ]).format(_cmdline_)
+
+    _note_ = "\n".join([
+        "Simplified libpas structure:",
+        "",
+        "+-thread_local_cache (per thread)--+     +-pas_heap (per heap)-----------------+",
+        "| deallocation_log[] (pending free)|     | segregated_heap                     |",
+        "| local_allocators[] (by index)    |     |   basic_size_directory_and_head     |--+",
+        "|   payload_end, remaining (bump)  |     | large_heap                          |  |",
+        "|   object_size, page_ish          |     |   free_heap (cartesian tree)        |--|-> free large ranges",
+        "+----------------------------------+     +-------------------------------------+  |",
+        "                                                                                  v",
+        "+-pas_segregated_page--------------+  +-pas_segregated_size_directory (size class)-+",
+        "| object_size                      |  | data.views[] -> exclusive_view -> page     |",
+        "| alloc_bits[] (1: used)           |<-| data.full_alloc_bits (1: valid object)     |",
+        "+----------------------------------+  | next_for_heap                              |--> ...",
+        "                                      +--------------------------------------------+",
+        "",
+        "* A free object of a size class is a bit set in full_alloc_bits but clear in the page alloc_bits.",
+        "* Large objects live in the large heap; its free ranges are kept in a cartesian tree.",
+        "* The local allocator bump region (payload_end-remaining .. payload_end) is memory not yet handed out.",
+        "* GEF finds the cache by scanning the TLS, so debug symbols are not needed. Use -c when the scan fails.",
+        "* The compact-pointer base and scale are derived from memory, so 2.50-2.54 and main all work.",
+        "* Only small segregated pages (header at the page boundary) are enumerated; medium and marge",
+        "  segregated pages, whose header lives in a page-header table, and bitfit pages are not.",
+        "* Supported on x86_64 and ARM64 only, as upstream (64-bit Linux uses libpas only on these).",
+    ])
+
+    PAGE_SIZE_SMALL = 0x4000
+    PAGE_SIZE_MEDIUM = 0x20000
+    VIEW_KIND_MASK = 7
+    WORD_BITS = 32
+    LIST_LIMIT = 0x40000
+    TLS_SEARCH_RANGE = 0x10000
+
+    def read_words(self, addr, size):
+        data = read_memory(addr, size, safe=True)
+        if data is None:
+            return None
+        return slice_unpack(data, 4)
+
+    def compact(self, value, overaligned=False):
+        value &= (1 << (self.ptrsize * 8)) - 1
+        if not value:
+            return 0
+        return self.base + value * (self.over if overaligned else 8)
+
+    def tagged(self, value):
+        # a tagged compact pointer stores the raw offset with the kind in the low 3 bits
+        offset = value & ~self.VIEW_KIND_MASK
+        return self.base + offset if offset else 0
+
+    def is_tlc(self, tlc):
+        """A thread_local_cache points to a node whose cache field points back to it."""
+        if tlc <= 0 or tlc % self.ptrsize:
+            return False
+        node = read_int_from_memory(tlc + self.c_node, safe=True)
+        if not node or not is_valid_addr(node):
+            return False
+        return read_int_from_memory(node + 24, safe=True) == tlc
+
+    def is_size_directory(self, d, index):
+        if not d or d % 4 or not is_valid_addr(d):
+            return False
+        heap = read_int_from_memory(d + 16, safe=True)
+        return read_int32_from_memory(d + 36, safe=True) == index and heap is not None and is_valid_addr(heap)
+
+    def find_tlc(self, tls):
+        lower = ProcessMap.process_lookup_address(tls - 1)
+        upper = ProcessMap.process_lookup_address(tls)
+        start = max(lower.page_start, tls - self.TLS_SEARCH_RANGE) if lower else tls
+        end = min(upper.page_end, tls + self.TLS_SEARCH_RANGE) if upper else tls
+        data = read_memory(start, end - start, safe=True)
+        if data is None:
+            return None
+        words = slice_unpack(data, self.ptrsize)
+        for addr in sorted(range(start, end, self.ptrsize), key=lambda x: abs(x - tls)):
+            value = words[(addr - start) // self.ptrsize]
+            if value and self.is_tlc(value):
+                return value
+        return None
+
+    def each_allocator(self, tlc):
+        """Yield (index, allocator, size_directory) for each live local allocator of the cache."""
+        upper_bound = read_int32_from_memory(tlc + self.c_upper_bound, safe=True) or 0
+        for i in range(min(upper_bound, self.LIST_LIMIT)):
+            allocator = tlc + self.c_allocators + i * self.ptrsize
+            view = read_int_from_memory(allocator + self.a_view, safe=True)
+            if view is None:
+                continue
+            directory = view & ~self.VIEW_KIND_MASK
+            if self.is_size_directory(directory, i):
+                yield i, allocator, directory
+
+    def derive_layout(self, tlc):
+        """Derive the compact-heap base and the overaligned scale from the first live local allocator."""
+        first_dir = None
+        for _, _, directory in self.each_allocator(tlc):
+            first_dir = directory
+            break
+        if first_dir is None:
+            return False
+        heap = read_int_from_memory(first_dir + 16, safe=True)
+        alloc_table = read_int_from_memory(heap + 16, safe=True)
+        dir_table = read_int_from_memory(heap + 24, safe=True)
+        bound = read_int32_from_memory(heap + 44, safe=True) or 0
+        allocator_index = read_int32_from_memory(first_dir + 36, safe=True)
+        self.base = 0
+        self.over = 8
+        for i in range(min(bound, self.LIST_LIMIT)):
+            if read_int32_from_memory(alloc_table + i * 4, safe=True) == allocator_index:
+                self.base = first_dir - (read_int32_from_memory(dir_table + i * 4, safe=True) or 0) * 8
+                break
+        if not self.base:
+            return False
+        # an exclusive view of this directory points its 3-byte directory field back at it
+        for value in self.directory_views(first_dir):
+            view = self.tagged(value)
+            if not view:
+                continue
+            back = (read_int_from_memory(view + 8, safe=True) or 0) & ((1 << 24) - 1)
+            for scale in (8, 16):
+                if self.base + back * scale == first_dir:
+                    self.over = scale
+            break
+        return True
+
+    def directory_free_layout(self, directory, object_size):
+        """Return (full_alloc_bits, minalign_shift, word_count) of a size class, or None."""
+        data = self.compact(read_int32_from_memory(directory + self.sd_data, safe=True) or 0)
+        if not data:
+            return None
+        offset = (read_int32_from_memory(data + 9, safe=True) or 0) & ((1 << 32) - 1)
+        if offset < 8:
+            return None
+        full = self.base + offset
+        head = self.read_words(full, 16)
+        if head is None:
+            return None
+        value = 0
+        for i, word in enumerate(head):
+            value |= word << (self.WORD_BITS * i)
+        first = []
+        while value and len(first) < 2:
+            low = value & -value
+            first.append(low.bit_length() - 1)
+            value ^= low
+        shift = 4
+        if len(first) >= 2 and first[1] > first[0]:
+            align = object_size // (first[1] - first[0])
+            shift = max(align.bit_length() - 1, 4)
+        # only small pages keep their header (and alloc_bits) at the page boundary; medium and marge
+        # pages store it in a page-header table that cannot be located without symbols
+        if shift != 4:
+            return None
+        word_count = (self.PAGE_SIZE_SMALL >> shift) // self.WORD_BITS
+        return full, shift, word_count
+
+    def page_free_objects(self, boundary, full, shift, word_count):
+        valid = self.read_words(full, 4 * word_count)
+        used = self.read_words(boundary + self.p_alloc_bits, 4 * word_count)
+        if valid is None or used is None:
+            return None
+        frees = []
+        for wi in range(word_count):
+            free = valid[wi] & ~used[wi] & ((1 << self.WORD_BITS) - 1)
+            while free:
+                low = free & -free
+                bit = wi * self.WORD_BITS + low.bit_length() - 1
+                frees.append(boundary + (bit << shift))
+                free ^= low
+        return frees
+
+    def directory_views(self, directory):
+        """The first view is stored inline in the directory; the rest go into the data.views vector."""
+        views = []
+        first = read_int32_from_memory(directory, safe=True) or 0
+        if first:
+            views.append(first)
+        data = self.compact(read_int32_from_memory(directory + self.d_data, safe=True) or 0)
+        if data:
+            arr = self.compact(read_int32_from_memory(data + self.dd_views, safe=True) or 0)
+            size = read_int32_from_memory(data + self.dd_views + 4, safe=True) or 0
+            for k in range(min(size, self.LIST_LIMIT)):
+                value = read_int32_from_memory(arr + k * 4, safe=True)
+                if value is None:
+                    break
+                views.append(value)
+        return views
+
+    def dump_segregated_directory(self, directory):
+        freed_color = Config.get("theme.heap_chunk_address_freed")
+        size_color = Config.get("theme.heap_chunk_size")
+
+        object_size = (read_int32_from_memory(directory + 24, safe=True) or 0) & ((1 << 27) - 1)
+        layout = self.directory_free_layout(directory, object_size)
+        if layout is None:
+            return
+        full, shift, word_count = layout
+        lines = []
+        for k, value in enumerate(self.directory_views(directory)):
+            if value & self.VIEW_KIND_MASK > 1:  # only exclusive views (kind 0 or 1) own a page
+                continue
+            boundary = read_int_from_memory(self.tagged(value), safe=True)
+            if not boundary or not is_valid_addr(boundary) or boundary in self.active_pages:
+                continue
+            frees = self.page_free_objects(boundary, full, shift, word_count)
+            if frees is None or (not frees and not self.args.verbose):
+                continue
+            lines.append("    view[{:#x}] page @ {:s} ({:d} free):".format(
+                k, Color.colorify_hex(boundary, size_color), len(frees)))
+            for addr in frees:
+                lines.append("        {:s}".format(Color.colorify_hex(addr, freed_color)))
+        if lines:
+            self.out.append(titlify("size class {:#x} (directory @ {:#x})".format(object_size, directory)))
+            self.out.extend(lines)
+        return
+
+    def walk_large_tree(self, root, ranges, seen, depth=0):
+        if not root or depth > 128 or root in seen:
+            return
+        seen.add(root)
+        left = self.compact((read_int_from_memory(root + 3, safe=True) or 0) & ((1 << 24) - 1), overaligned=True)
+        right = self.compact((read_int_from_memory(root + 6, safe=True) or 0) & ((1 << 24) - 1), overaligned=True)
+        self.walk_large_tree(left, ranges, seen, depth + 1)
+        begin = (read_int_from_memory(root + 16, safe=True) or 0) & ((1 << 48) - 1)
+        end = (read_int_from_memory(root + 24, safe=True) or 0) & ((1 << 48) - 1)
+        if begin and end > begin:
+            ranges.append((begin, end))
+        self.walk_large_tree(right, ranges, seen, depth + 1)
+        return
+
+    def dump_large_heap(self, heap):
+        freed_color = Config.get("theme.heap_chunk_address_freed")
+        size_color = Config.get("theme.heap_chunk_size")
+
+        large = heap + (48 if self.over == 16 else 72)
+        root = self.compact((read_int_from_memory(large, safe=True) or 0) & ((1 << 24) - 1), overaligned=True)
+        ranges = []
+        self.walk_large_tree(root, ranges, set())
+        if not ranges:
+            return
+        self.out.append(titlify("large free ranges (heap @ {:#x})".format(heap)))
+        for begin, end in sorted(ranges):
+            self.out.append("    {:s}-{:#x} (size={:s})".format(
+                Color.colorify_hex(begin, freed_color), end, Color.colorify_hex(end - begin, size_color)))
+        return
+
+    def dump_heap(self, heap):
+        head = self.compact(read_int32_from_memory(heap + 32, safe=True) or 0)
+        seen = set()
+        directory = head
+        while directory and directory not in seen and len(seen) < self.LIST_LIMIT:
+            seen.add(directory)
+            self.dump_segregated_directory(directory)
+            directory = self.compact(read_int32_from_memory(directory + self.d_next, safe=True) or 0)
+        self.dump_large_heap(heap)
+        return
+
+    def page_boundary(self, page_ish, shift):
+        page_size = self.PAGE_SIZE_SMALL if shift <= 4 else self.PAGE_SIZE_MEDIUM
+        return page_ish & ~(page_size - 1)
+
+    def active_page_set(self, cache_list):
+        """The pages a local allocator is bump/free-bits allocating from are owned, not in a view vector."""
+        pages = {}
+        for _, tlc in cache_list:
+            for _, allocator, directory in self.each_allocator(tlc):
+                page_ish = read_int_from_memory(allocator + self.a_page_ish, safe=True) or 0
+                if not page_ish:
+                    continue
+                object_size = (read_int32_from_memory(directory + 24, safe=True) or 0) & ((1 << 27) - 1)
+                layout = self.directory_free_layout(directory, object_size)
+                if layout is None:
+                    continue
+                pages[self.page_boundary(page_ish, layout[1])] = (directory, layout)
+        return pages
+
+    def dump_cache(self, thread_num, tlc):
+        used_color = Config.get("theme.heap_chunk_address_used")
+        freed_color = Config.get("theme.heap_chunk_address_freed")
+
+        self.out.append(titlify("thread_local_cache @ {:#x} (Thread Id {:d})".format(tlc, thread_num),
+                                color="bold", msg_color="bold"))
+        for i, allocator, directory in self.each_allocator(tlc):
+            object_size = read_int32_from_memory(allocator + self.a_object_size, safe=True) or 0
+            remaining = read_int32_from_memory(allocator + self.a_remaining, safe=True) or 0
+            payload_end = read_int_from_memory(allocator + self.a_payload_end, safe=True) or 0
+            page_ish = read_int_from_memory(allocator + self.a_page_ish, safe=True) or 0
+            msg = "    size class {:#x} (index {:#x}):".format(object_size, i)
+            if remaining and object_size:
+                begin = payload_end - remaining
+                msg += " bump {:s}-{:#x} ({:#x} objects)".format(
+                    Color.colorify_hex(begin, used_color), payload_end, remaining // object_size)
+            frees = None
+            if page_ish:
+                layout = self.directory_free_layout(directory, object_size)
+                if layout is not None:
+                    boundary = self.page_boundary(page_ish, layout[1])
+                    frees = self.page_free_objects(boundary, layout[0], layout[1], layout[2])
+            if not remaining and not frees and not self.args.verbose:
+                continue
+            self.out.append(msg)
+            for addr in frees or []:
+                self.out.append("        {:s}".format(Color.colorify_hex(addr, freed_color)))
+
+        if self.args.log:
+            index = read_int32_from_memory(tlc + self.c_log_index, safe=True) or 0
+            self.out.append("    deallocation log (count={:#x}):".format(index))
+            entries = self.read_words(tlc, index * self.ptrsize * 2)
+            for lo, hi in zip((entries or [])[::2], (entries or [])[1::2]):
+                obj = (lo | (hi << self.WORD_BITS)) & ((1 << 48) - 1)
+                self.out.append("        {:s}".format(Color.colorify_hex(obj, freed_color)))
+        return
+
+    def collect_heaps(self, tlc):
+        heaps = []
+        for _, _, directory in self.each_allocator(tlc):
+            segregated = read_int_from_memory(directory + 16, safe=True)
+            parent = read_int_from_memory(segregated + 8, safe=True) if segregated else None
+            if parent and parent not in heaps and is_valid_addr(parent):
+                heaps.append(parent)
+        return heaps
+
+    def initialize(self):
+        self.ptrsize = current_arch.ptrsize
+        self.c_log_index = 800
+        self.c_node = 816
+        self.c_upper_bound = 852
+        self.c_allocators = 864
+        self.a_payload_end = 8
+        self.a_remaining = 16
+        self.a_object_size = 20
+        self.a_page_ish = 24
+        self.a_view = 48
+        self.d_data = 4
+        self.d_next = 44
+        self.dd_views = 44
+        self.sd_data = 40
+        self.p_alloc_bits = 44
+        return True
+
+    def get_cache_list(self):
+        if self.args.cache is not None:
+            if not self.is_tlc(self.args.cache):
+                return None, "Not a thread_local_cache: {:#x}".format(self.args.cache)
+            return [(gdb.selected_thread().num, self.args.cache)], None
+        threads = None if self.args.all else [gdb.selected_thread()]
+        result = []
+        with ContextManager.threads(threads) as threads:
+            for thread in threads:
+                tls = current_arch.get_tls()
+                tlc = self.find_tlc(tls) if tls else None
+                if tlc is not None:
+                    result.append((thread.num, tlc))
+        if not result:
+            return None, "Could not find any thread_local_cache in the TLS"
+        return result, None
+
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @Decorator.only_if_specific_arch(arch=("x86_64", "ARM64"))
+    def do_invoke(self, args):
+        self.initialize()
+        cache_list, error = self.get_cache_list()
+        if cache_list is None:
+            err(error)
+            return
+
+        if not self.derive_layout(cache_list[0][1]):
+            err("Could not derive the compact-heap base; the cache may have no live allocator")
+            return
+
+        if args.meta:
+            self.quiet_info("base: {:#x}".format(self.base))
+            self.quiet_info("overaligned compact-pointer scale: {:d}".format(self.over))
+            return
+
+        self.out = []
+        self.active_pages = set(self.active_page_set(cache_list))
+        heaps = []
+        for _, tlc in cache_list:
+            for heap in self.collect_heaps(tlc):
+                if heap not in heaps:
+                    heaps.append(heap)
+        for heap in heaps:
+            self.dump_heap(heap)
+        for thread_num, tlc in cache_list:
+            self.dump_cache(thread_num, tlc)
+        self.print_output()
+        return
+
+
+@register_command
 class UclibcNgHeapDumpCommand(GenericCommand, BufferingOutput):
     """uclibc-ng (libc/stdlib/malloc-standard) heap reusable chunks viewer."""
 

@@ -570,7 +570,7 @@ For the usage and options of each command, see [docs/COMMANDS.md](docs/COMMANDS.
 ### Other
 
 <details>
-<summary><code>tcmalloc-heap-dump</code>, <code>musl-heap-dump</code>, <code>go-heap-dump</code>, <code>tlsf-heap-dump</code>, <code>hoard-heap-dump</code>, <code>mimalloc-heap-dump</code>, <code>scalloc-heap-dump</code>, <code>snmalloc-heap-dump</code>, <code>ssmalloc-heap-dump</code>, <code>jemalloc-heap-dump</code>, <code>sfmalloc-heap-dump</code>, <code>rpmalloc-heap-dump</code>, <code>tbbmalloc-heap-dump</code>, <code>zig-heap-dump</code>, <code>mesh-heap-dump</code>, <code>streamflow-heap-dump</code>, <code>supermalloc-heap-dump</code>, <code>dlmalloc-heap-dump</code>, <code>scudo-heap-dump</code>, <code>mozjemalloc-heap-dump</code>, <code>bmalloc-heap-dump</code></summary>
+<summary><code>tcmalloc-heap-dump</code>, <code>musl-heap-dump</code>, <code>go-heap-dump</code>, <code>tlsf-heap-dump</code>, <code>hoard-heap-dump</code>, <code>mimalloc-heap-dump</code>, <code>scalloc-heap-dump</code>, <code>snmalloc-heap-dump</code>, <code>ssmalloc-heap-dump</code>, <code>jemalloc-heap-dump</code>, <code>sfmalloc-heap-dump</code>, <code>rpmalloc-heap-dump</code>, <code>tbbmalloc-heap-dump</code>, <code>zig-heap-dump</code>, <code>mesh-heap-dump</code>, <code>streamflow-heap-dump</code>, <code>supermalloc-heap-dump</code>, <code>dlmalloc-heap-dump</code>, <code>scudo-heap-dump</code>, <code>mozjemalloc-heap-dump</code>, <code>bmalloc-heap-dump</code>, <code>libpas-heap-dump</code></summary>
 
 - `tcmalloc-heap-dump`: dumps TCMalloc (`gperftools-2.16-1` or named `libgoogle-perftools{4,-dev}`) free-list.
     - ![](images/tcmalloc-heap-dump.png)
@@ -713,6 +713,24 @@ For the usage and options of each command, see [docs/COMMANDS.md](docs/COMMANDS.
           `clang++ -std=c++20 -O0 -g -mcx16 -Ibmalloc -I. -DBENABLE_LIBPAS=0 -DBUSE_LIBPAS=0 -DBMALLOC_STANDALONE
           /PATH/TO/tests/heap-test.cpp bmalloc/*.o -lpthread -ldl -latomic`.
         - Run `gdb ./a.out`.
+- `libpas-heap-dump`: dumps libpas (the WebKit allocator that replaced the old bmalloc), the per-thread caches,
+  the small size-class free objects and the large free ranges.
+    - ![](images/libpas-heap-dump.png)
+    - How to test:
+        - libpas is part of WebKit; a release branch works too (`webkitglib/2.50` .. `webkitglib/2.54`, or `main`):
+          `git clone --filter=blob:none --sparse https://github.com/WebKit/WebKit.git && cd WebKit`,
+          `git sparse-checkout set Source/bmalloc`.
+        - Build libpas with the bmalloc glue as a static library (clang; GCC also works with `-latomic`):
+          `cd Source/bmalloc`, then for every `libpas/src/libpas/*.c` and `bmalloc/*.cpp` named in `CMakeLists.txt`
+          except `Zone.cpp` (Darwin only): `clang++ -std=c++20 -O2 -g -Ibmalloc -I. -Ilibpas/src/libpas -D_GNU_SOURCE
+          -DPAS_BMALLOC=1 -DNDEBUG -DBUILDING_bmalloc -c <file>` (compile the `.c` files the same way), and
+          `ar rcs libbmalloc.a *.o`.
+        - Build the test program against it:
+          `clang++ -O0 -g /PATH/TO/tests/libpas-heap-test.cpp libbmalloc.a -o libpas-heap-test -lpthread -latomic`.
+        - Run `gdb ./libpas-heap-test`, `break stop_here`, `run`, and then `libpas-heap-dump -l`. The freed objects
+          appear under their small size classes and in the large free ranges, and the pending ones in the log.
+        - For other architectures, build statically with a cross `g++` (e.g. `aarch64-linux-gnu-g++ -static`) and run it
+          under `qemu-aarch64 -g 1234` with `gdb-multiarch`.
 
 </details>
 
