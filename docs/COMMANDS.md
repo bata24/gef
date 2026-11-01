@@ -1806,6 +1806,7 @@ hijack-fd 2 localhost:8000  # determined as the socket by the presence of `:`.
 
 ```text
 `socketcall` is not supported; on i386 with Linux < 4.3 (or old qemu-user), the socket redirection fails with ENOSYS.
+IPv6 socket destinations accept `::1:PORT` and `[::1]:PORT`.
 ```
 
 ## `kill-threads`
@@ -2027,6 +2028,7 @@ xtap 4 --max 0x40    # tap fd 4, dump at most 0x40 bytes per transfer
 Hooked syscalls:
   read-like: read, recvfrom, recvmsg, recvmmsg, recvmmsg_time64, pread64, preadv, preadv2, readv
   write-like: write, sendto, sendmsg, sendmmsg, pwrite64, pwritev, pwritev2, writev
+  i386: socketcall suboperations for socket transfers
 
 - Relies on `catch syscall`.
 - Auto-continues; stops on a user breakpoint, signal, or Ctrl+C.
@@ -2721,7 +2723,10 @@ Display the program's argv array.
 ### Syntax
 
 ```text
-usage: argv [-h] [-v] [-i] [-n]
+usage: argv [-h] [-v] [-i] [-n] [ARRAY]
+
+positional arguments:
+  ARRAY                 address of the argv array.
 
 options:
   -h, --help            show this help message and exit
@@ -2766,13 +2771,16 @@ options:
 
 ## `envp`
 
-Display initial envp from __environ@ld, or modified envp from last_environ@libc.
+Display initial envp from __environ@ld, or modified envp managed by libc.
 
 
 ### Syntax
 
 ```text
-usage: envp [-h] [-v] [-i] [-n]
+usage: envp [-h] [-v] [-i] [-n] [ARRAY]
+
+positional arguments:
+  ARRAY                 address of the envp array.
 
 options:
   -h, --help            show this help message and exit

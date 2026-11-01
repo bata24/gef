@@ -6464,6 +6464,22 @@ class String:
             return "".join(chr(xx) for xx in x)
         raise TypeError("bytes2str: expected bytes or str, but {!s}".format(type(x)))
 
+    @staticmethod
+    def repr_os_path(path):
+        quote = "'"
+        if "'" in path and '"' not in path:
+            quote = '"'
+        chars = []
+        for char in path:
+            code = ord(char)
+            if 0xdc80 <= code <= 0xdcff:
+                chars.append("\\x{:02x}".format(code - 0xdc00))
+            elif char == quote:
+                chars.append("\\" + quote)
+            else:
+                chars.append(repr(char)[1:-1])
+        return quote + "".join(chars) + quote
+
     @staticmethod # noqa: V105
     def bits2bytes(a, endian="big"):
         """Helper function for bits -> bytes."""
@@ -19742,6 +19758,8 @@ class ArgvCommand(GenericCommand, BufferingOutput):
     parser.add_argument("-i", "--increase-limit", action="store_true",
                         help="increase rounding limit from 128 bytes to 4096 bytes.")
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
+    parser.add_argument("array", metavar="ARRAY", nargs="?", type=AddressUtil.parse_address,
+                        help="address of the argv array.")
     _syntax_ = parser.format_help()
 
     def get_address_from_symbol(self, symbol):
@@ -19865,16 +19883,20 @@ class ArgvCommand(GenericCommand, BufferingOutput):
     @Decorator.require_arch_set
     def do_invoke(self, args):
         self.out = []
-        self.dump_dl_argv()
-        self.dump_libc_argv()
-        self.dump_proc_cmdline()
+        if args.array is not None:
+            self.out.append(titlify("ARGV from {:#x}".format(args.array)))
+            self.print_from_mem(args.array)
+        else:
+            self.dump_dl_argv()
+            self.dump_libc_argv()
+            self.dump_proc_cmdline()
         self.print_output(check_terminal_size=True)
         return
 
 
 @register_command
 class EnvpCommand(GenericCommand, BufferingOutput):
-    """Display initial envp from __environ@ld, or modified envp from last_environ@libc."""
+    """Display initial envp from __environ@ld, or modified envp managed by libc."""
 
     _cmdline_ = "envp"
     _category_ = "02-d. Process Information - Trivial Information"
@@ -19885,6 +19907,8 @@ class EnvpCommand(GenericCommand, BufferingOutput):
     parser.add_argument("-i", "--increase-limit", action="store_true",
                         help="increase rounding limit from 128 bytes to 4096 bytes.")
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
+    parser.add_argument("array", metavar="ARRAY", nargs="?", type=AddressUtil.parse_address,
+                        help="address of the envp array.")
     _syntax_ = parser.format_help()
 
     def get_address_from_symbol(self, symbol):
@@ -19974,16 +19998,60 @@ class EnvpCommand(GenericCommand, BufferingOutput):
         return
 
     def dump_last_environ(self):
-        self.out.append(titlify("ENVP from last_environ (for putenv, etc.)"))
         paddr = self.get_address_from_symbol("&last_environ")
-        addr = self.get_address_from_symbol("*(void**)&last_environ")
-        if paddr and addr:
-            self.info_add_out("last_environ @ {}".format(ProcessMap.lookup(paddr)))
-            self.print_from_mem(addr)
-        elif addr == 0:
-            self.err_add_out("last_environ is 0x0")
+        if paddr is not None:
+            self.out.append(titlify("ENVP from last_environ (for putenv, etc.)"))
+            addr = self.get_address_from_symbol("*(void**)&last_environ")
+            if paddr and addr:
+                self.info_add_out("last_environ @ {}".format(ProcessMap.lookup(paddr)))
+                self.print_from_mem(addr)
+            elif addr == 0:
+                self.err_add_out("last_environ is 0x0")
+            else:
+                self.err_add_out("Could not find last_environ")
+            return
+
+        self.out.append(titlify("ENVP from __environ_array_list (for putenv, etc.)"))
+        objfile = None
+        for candidate in gdb.objfiles():
+            name = os.path.basename(candidate.filename or "")
+            if re.fullmatch(r"libc\.so\.6|libc-2\.\d+\.so", name):
+                objfile = candidate
+                break
+
+        if objfile is not None:
+            symbol = objfile.lookup_global_symbol("__environ_array_list")
+            if symbol is None:
+                paddr = None
+            else:
+                paddr = int(symbol.value().address)
+                if os.path.basename(gdb.solib_name(paddr) or "") != name:
+                    # Older GDB versions can resolve the hidden libc symbol to the loader's copy.
+                    symbols = KernelLoadCommand.get_elf_symbols(
+                        Elf(symbol.symtab.objfile.filename), ("__environ_array_list", "setenv"),
+                    )
+                    setenv = self.get_address_from_symbol("&setenv")
+                    if setenv and os.path.basename(gdb.solib_name(setenv) or "") == name and len(symbols) == 2:
+                        paddr = setenv + symbols["__environ_array_list"] - symbols["setenv"]
+                    else:
+                        paddr = None
         else:
-            self.err_add_out("Could not find last_environ")
+            paddr = self.get_address_from_symbol("&__environ_array_list")
+        if paddr is None:
+            self.err_add_out("Could not find last_environ or __environ_array_list")
+            return
+
+        node = read_int_from_memory(paddr, safe=True)
+        if node:
+            addr = read_int_from_memory(node, safe=True)
+            if addr:
+                self.info_add_out("__environ_array_list @ {}".format(ProcessMap.lookup(paddr)))
+                self.print_from_mem(addr)
+                return
+        if node == 0:
+            self.err_add_out("__environ_array_list is 0x0")
+        else:
+            self.err_add_out("Could not read __environ_array_list")
         return
 
     def dump_proc_environ(self):
@@ -20005,9 +20073,13 @@ class EnvpCommand(GenericCommand, BufferingOutput):
     @Decorator.require_arch_set
     def do_invoke(self, args):
         self.out = []
-        self.dump_environ()
-        self.dump_last_environ()
-        self.dump_proc_environ()
+        if args.array is not None:
+            self.out.append(titlify("ENVP from {:#x}".format(args.array)))
+            self.print_from_mem(args.array)
+        else:
+            self.dump_environ()
+            self.dump_last_environ()
+            self.dump_proc_environ()
         self.print_output(check_terminal_size=True)
         return
 
@@ -21564,13 +21636,13 @@ class ProcInfoCommand(GenericCommand):
                 content = os.readlink(fullpath)
             except (FileNotFoundError, OSError):
                 continue # closed by another running thread
-            content = os.fsencode(content).decode("utf-8", "backslashreplace")
+            display = String.repr_os_path(content)
             if content.startswith("socket:["):
                 inode = int(content.replace("socket:", "")[1:-1])
                 extra = extra_info.get(inode, "")
-                gef_print("{:30s}  ->  {!r}  {:s}".format(fullpath, content, extra))
+                gef_print("{:30s}  ->  {:s}  {:s}".format(fullpath, display, extra))
             else:
-                gef_print("{:30s}  ->  {!r}".format(fullpath, content))
+                gef_print("{:30s}  ->  {:s}".format(fullpath, display))
         return
 
     @Decorator.parse_args
@@ -21620,8 +21692,8 @@ class FileDescriptorsCommand(GenericCommand):
                 content = os.readlink(fullpath)
             except (FileNotFoundError, OSError):
                 continue # closed by another running thread
-            content = os.fsencode(content).decode("utf-8", "backslashreplace")
-            gef_print("{:32s}  ->  {!r}".format(fullpath, content))
+            display = String.repr_os_path(content)
+            gef_print("{:32s}  ->  {:s}".format(fullpath, display))
         return
 
     @Decorator.parse_args
@@ -22067,6 +22139,9 @@ class CapabilityCommand(GenericCommand, BufferingOutput):
                 self.out.append("Bounding   : {:#018x} - {:s}".format(caps["cap_bnd"], msg))
                 if self.args.verbose:
                     self.print_cap_details("cap_bnd", caps["cap_bnd"])
+        if tids:
+            self.out.append("Namespace scope: Effective bits alone do not prove access to another namespace.")
+            self.out.append("See `proc-info` for USER/NET namespace separation.")
         return
 
     def print_capability_from_file(self):
@@ -22295,6 +22370,7 @@ class HijackFdCommand(GenericCommand):
 
     _note_ = "\n".join([
         "`socketcall` is not supported; on i386 with Linux < 4.3 (or old qemu-user), the socket redirection fails with ENOSYS.",
+        "IPv6 socket destinations accept `::1:PORT` and `[::1]:PORT`.",
     ])
 
     def call_syscall(self, syscall_name, args):
@@ -22397,14 +22473,20 @@ class HijackFdCommand(GenericCommand):
         if not 1 <= port <= 65535:
             err("Invalid port: {:s}".format(port_text))
             return None
+        if host.startswith("[") and host.endswith("]"):
+            host = host[1:-1]
         try:
-            address = socket.gethostbyname(host)
+            addresses = socket.getaddrinfo(host, port, socket.AF_UNSPEC, socket.SOCK_STREAM)
         except (OSError, UnicodeError) as e:
             err("Could not resolve {:s}: {!s}".format(host, e))
             return None
+        address_info = next((entry for entry in addresses if entry[0] == socket.AF_INET), addresses[0])
+        family = address_info[0]
+        endpoint = address_info[4]
+        address = endpoint[0]
 
         # call socket
-        sock_fd = self.call_syscall("socket", [self.AF_INET, self.SOCK_STREAM, 0])
+        sock_fd = self.call_syscall("socket", [family, self.SOCK_STREAM, 0])
         if AddressUtil.is_msb_on(sock_fd):
             err("Failed to create socket")
             return None
@@ -22413,12 +22495,16 @@ class HijackFdCommand(GenericCommand):
             self.quiet_info("Created socket fd #{:d}".format(sock_fd))
 
             # call connect (Also supports big endian)
-            sockaddr_in = p16(self.AF_INET) + struct.pack("<H", socket.htons(port)) + socket.inet_aton(address)
-            with self.write_stack(sockaddr_in) as stack_addr:
+            sockaddr = p16(family) + struct.pack("!H", port)
+            if family == socket.AF_INET6:
+                sockaddr += struct.pack("!I", endpoint[2]) + socket.inet_pton(family, address) + p32(endpoint[3])
+            else:
+                sockaddr += socket.inet_pton(family, address) + bytes(8)
+            with self.write_stack(sockaddr) as stack_addr:
                 if stack_addr is None:
                     return None
                 self.quiet_info("Trying to connect to {:s}".format(Color.boldify(self.args.new_output)))
-                connect_result = self.call_syscall("connect", [sock_fd, stack_addr, 16])
+                connect_result = self.call_syscall("connect", [sock_fd, stack_addr, len(sockaddr)])
 
             if AddressUtil.is_msb_on(connect_result):
                 err("Failed to connect to {:s}:{:d}".format(address, port))
@@ -22528,6 +22614,7 @@ class XtapCommand(GenericCommand):
         "Hooked syscalls:",
         "  read-like: read, recvfrom, recvmsg, recvmmsg, recvmmsg_time64, pread64, preadv, preadv2, readv",
         "  write-like: write, sendto, sendmsg, sendmmsg, pwrite64, pwritev, pwritev2, writev",
+        "  i386: socketcall suboperations for socket transfers",
         "",
         "- Relies on `catch syscall`.",
         "- Auto-continues; stops on a user breakpoint, signal, or Ctrl+C.",
@@ -22553,6 +22640,17 @@ class XtapCommand(GenericCommand):
         "pwritev2":         ("out", "iovec"),
         "sendmsg":          ("out", "msghdr"),
         "sendmmsg":         ("out", "mmsghdr"),
+    }
+
+    socketcall_ops = {
+        9:  ("send", "sendto"),
+        10: ("recv", "recvfrom"),
+        11: ("sendto", "sendto"),
+        12: ("recvfrom", "recvfrom"),
+        16: ("sendmsg", "sendmsg"),
+        17: ("recvmsg", "recvmsg"),
+        19: ("recvmmsg", "recvmmsg"),
+        20: ("sendmmsg", "sendmmsg"),
     }
 
     def read_iovec_array(self, vec_addr, vlen):
@@ -22672,7 +22770,10 @@ class XtapCommand(GenericCommand):
 
     def setup_catchpoints(self):
         """Set a catch syscall for every supported+available syscall. Returns count set."""
-        for name in self.syscall_spec:
+        names = list(self.syscall_spec)
+        if is_x86_32():
+            names.append("socketcall")
+        for name in names:
             # only attempt syscalls the running target actually knows
             if self.syscall_table and name not in self.syscall_table.name_table:
                 warn("syscall '{:s}' is unknown on this target, skipped".format(name))
@@ -22789,16 +22890,29 @@ class XtapCommand(GenericCommand):
             tid = gdb.selected_thread().num
         except Exception:
             tid = 0
-        entry = self.syscall_table.name_table[name]
-        arg_regs = entry.arg_regs
-        fd = self.entry_fd(arg_regs)
+        if name == "socketcall":
+            operation = self.socketcall_ops.get(get_register("$ebx"))
+            if operation is None:
+                self.pending_by_thread.pop(tid, None)
+                return
+            arg_addr = get_register("$ecx")
+            arg_values = [read_int_from_memory(arg_addr + i * 4, safe=True) for i in range(3)]
+            fd = arg_values[0]
+            display_name, data_name = operation
+        else:
+            entry = self.syscall_table.name_table[name]
+            arg_regs = entry.arg_regs
+            fd = self.entry_fd(arg_regs)
+            arg_values = [get_register(reg) for reg in arg_regs]
+            display_name = data_name = name
         if fd not in self.target_fds:
             self.pending_by_thread.pop(tid, None)
             return
         # snapshot args now (they may be clobbered by exit) and wait for the return,
         # since even write-like syscalls may transfer less than requested
-        arg_values = [get_register(r) for r in arg_regs]
-        self.pending_by_thread[tid] = {"name": name, "fd": fd, "arg_values": arg_values}
+        self.pending_by_thread[tid] = {
+            "name": name, "fd": fd, "arg_values": arg_values, "display_name": display_name, "data_name": data_name,
+        }
         return
 
     def handle_return(self, name, write_stdout):
@@ -22812,14 +22926,16 @@ class XtapCommand(GenericCommand):
         entry = self.syscall_table.name_table[name]
         retval = get_register(entry.ret_regs[0])
         retval = u2i(retval, current_arch.ptrsize * 8)
-        direction = self.syscall_spec[name][0]
+        display_name = pending["display_name"]
+        data_name = pending["data_name"]
+        direction = self.syscall_spec[data_name][0]
         fd = pending["fd"]
         if direction == "in":
             arrow = "<-"
         else:
             arrow = "->"
-        for label, data in self.extract_exit_data(name, pending["arg_values"], retval):
-            head = "[fd {:d}] {:s} {:s} {:s}".format(fd, name, arrow, label)
+        for label, data in self.extract_exit_data(data_name, pending["arg_values"], retval):
+            head = "[fd {:d}] {:s} {:s} {:s}".format(fd, display_name, arrow, label)
             lines = [titlify(head)]
             if data:
                 lines.append(hexdump(data, base=0))
@@ -106775,6 +106891,96 @@ class ExecAsm:
         return
 
     def exec_code(self, check_complete=False):
+
+        def run_injected_code():
+            with contextlib.ExitStack() as output:
+                if not self.debug:
+                    gdb.flush() # do not discard the buffered output of the user
+                    output.enter_context(ContextManager.redirect_output(stderr=False))
+                    output.callback(gdb.flush) # discard the buffered stop messages while executing
+                output.enter_context(ContextManager.suspend_stop_handler())
+                with EventHooking.temporary("stop", self.stops.append):
+                    self.modify_regs()
+                    self.modify_code(d["pc"])
+                    if check_complete and self.regs and any(get_register(reg) != value for reg, value in self.regs.items()):
+                        return None
+                    if stop_signal:
+                        self.queue_signal(stop_signal[0], "0")
+                    if self.debug:
+                        gdb.execute("context")
+                    if self.use_bp:
+                        self.execute_with_bp()
+                    else:
+                        try:
+                            gdb.execute("stepi {:d}".format(self.step), to_string=True)
+                        except gdb.MemoryError:
+                            if check_complete:
+                                return None
+                    if not self.thread.is_valid():
+                        return None
+                    if self.debug:
+                        gdb.execute("context")
+                    if check_complete and not self.is_complete():
+                        return None
+                    return self.get_state()
+
+        def restore_breakpoint_stop():
+            if not self.stops or not original_stop or original_stop["reason"] != "BREAKPOINT":
+                return
+            if gdb.parameter("non-stop") or not original_stop["selected_thread"] or stop_signal:
+                return
+            restored_pc = current_arch.pc
+            if is_arm32() or is_arm32_cortex_m():
+                if current_arch.is_thumb():
+                    restored_pc -= 1
+            if restored_pc != d["pc"]:
+                return
+
+            active_bps = [bp for bp in gdb.breakpoints() or []
+                          if bp.enabled and d["pc"] in GefUtil.get_breakpoint_addresses(bp)]
+            for active_bp in active_bps:
+                active_bp.enabled = False
+            bp = None
+            try:
+                bp = gdb.Breakpoint("*{:#x}".format(d["pc"]), gdb.BP_BREAKPOINT, internal=True)
+                with ContextManager.suspend_stop_handler():
+                    gdb.execute("c", to_string=True)
+            finally:
+                if bp is not None:
+                    bp.delete()
+                for active_bp in active_bps:
+                    if active_bp.is_valid():
+                        active_bp.enabled = True
+            restored_pc = current_arch.pc
+            if is_arm32() or is_arm32_cortex_m():
+                if current_arch.is_thumb():
+                    restored_pc -= 1
+            if restored_pc != d["pc"]:
+                raise gdb.error("Could not restore breakpoint stop")
+            return
+
+        def restore_execution_state():
+            if not self.thread.is_valid():
+                if is_alive():
+                    target = "Thread"
+                else:
+                    target = "Inferior"
+                raise ExecAsm.ExecutionExitedError(
+                    "{:s} exited while executing injected instructions".format(target)) from None
+            if check_complete and gdb.selected_thread() != self.thread:
+                self.thread.switch()
+            if stop_signal:
+                self.queue_signal(*stop_signal)
+                ExecAsm.queued_signals[stop_signal[0]] = stop_signal[1]
+            elif self.stops and isinstance(self.stops[-1], gdb.SignalEvent):
+                event = self.stops[-1]
+                if getattr(event, "inferior_thread", None) in (None, self.thread):
+                    self.queue_signal(self.thread, "0")
+            self.revert_state(d)
+            restore_breakpoint_stop()
+            ExecAsm.stop_reasons[context] = stop_reason
+            return
+
         with ContextManager.selected_thread():
             if not gdb.selected_thread().is_stopped():
                 raise gdb.error("Cannot execute instructions in a running thread")
@@ -106790,70 +106996,22 @@ class ExecAsm:
             stop_reason = ExecAsm.stop_reasons.get(context)
             if stop_reason is None:
                 stop_reason = {"info": gdb.execute("info program", to_string=True), "siginfo": {}}
+            original_stop = GefUtil.get_stop_reason()
             if self.thread not in stop_reason["siginfo"]:
                 stop_reason["siginfo"][self.thread] = GefUtil.get_siginfo()
             stop_signal = self.get_stop_signal()
 
             # do not deliver the pending stop signal or let other threads pass it while executing
             with ContextManager.gdb_parameter("scheduler-locking", "on"):
-                # exec
                 try:
-                    with contextlib.ExitStack() as output:
-                        if not self.debug:
-                            gdb.flush() # do not discard the buffered output of the user
-                            output.enter_context(ContextManager.redirect_output(stderr=False))
-                            output.callback(gdb.flush) # discard the buffered stop messages while executing
-                        output.enter_context(ContextManager.suspend_stop_handler())
-                        with EventHooking.temporary("stop", self.stops.append):
-                            self.modify_regs()
-                            self.modify_code(d["pc"])
-                            if check_complete and self.regs and any(get_register(reg) != value for reg, value in self.regs.items()):
-                                return None
-                            if stop_signal:
-                                self.queue_signal(stop_signal[0], "0")
-                            if self.debug:
-                                gdb.execute("context")
-                            if self.use_bp:
-                                self.execute_with_bp()
-                            else:
-                                try:
-                                    gdb.execute("stepi {:d}".format(self.step), to_string=True)
-                                except gdb.MemoryError:
-                                    if check_complete:
-                                        return None
-                            if self.thread.is_valid():
-                                if self.debug:
-                                    gdb.execute("context")
-
-                                # get result
-                                if check_complete and not self.is_complete():
-                                    return None
-                                ret = self.get_state()
+                    ret = run_injected_code()
                 except gdb.error:
                     if not check_complete:
                         raise
-                    return None
+                    ret = None
                 finally:
-                    if not self.thread.is_valid():
-                        if is_alive():
-                            target = "Thread"
-                        else:
-                            target = "Inferior"
-                        raise ExecAsm.ExecutionExitedError(
-                            "{:s} exited while executing injected instructions".format(target)) from None
-                    if check_complete and gdb.selected_thread() != self.thread:
-                        self.thread.switch()
-                    if stop_signal:
-                        self.queue_signal(*stop_signal)
-                        ExecAsm.queued_signals[stop_signal[0]] = stop_signal[1]
-                    elif self.stops and isinstance(self.stops[-1], gdb.SignalEvent):
-                        event = self.stops[-1]
-                        if getattr(event, "inferior_thread", None) in (None, self.thread):
-                            self.queue_signal(self.thread, "0")
-                    self.revert_state(d)
-                    ExecAsm.stop_reasons[context] = stop_reason
-
-            return ret
+                    restore_execution_state()
+        return ret
 
     def is_complete(self):
         gdb.newest_frame().select()
