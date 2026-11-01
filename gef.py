@@ -167076,12 +167076,8 @@ class ZigHeapDumpCommand(GenericCommand, BufferingOutput):
         "",
         "* Allocators are found from debug types, or by validating vtables, buckets, bitmaps, and allocation tables.",
         "* --allocator overrides detection with a concrete allocator object, pointer, or address (not mem.Allocator).",
-        "* Layout, allocator page size, and configuration are determined automatically.",
         "* 0.11 uses circular lists, 0.12-0.13 use treaps, and 0.14-0.15 use linked buckets.",
-        "* In 0.14-0.15, bitmaps contain native usize words; earlier bitmaps contain bytes.",
-        "* Dumps distinguish allocated/freed slots. Slots never allocated in the current bucket are omitted.",
-        "* Freed slots are recorded in the bitmap, not linked in a reusable free list.",
-        "* -b selects a bucket address; -i selects a size class index. Both exclude large allocations.",
+        "* Freed slots are recorded in the bitmap, not in a free list. Slots never allocated are omitted.",
         "* Retained freed large entries are shown with --verbose; their data is not read because it may be unmapped.",
         "* Fully freed, unlinked buckets in 0.14-0.15 cannot be enumerated, even with retain_metadata.",
         "* ArenaAllocator, FixedBufferAllocator, page_allocator, and smp_allocator are unsupported.",
@@ -173104,15 +173100,6 @@ class SsmallocHeapDumpCommand(GenericCommand, BufferingOutput):
             return 0
         return class_to_size_list[size_cls]
 
-    def decode_aba_address(self, value):
-        return value & self.ABA_ADDR_MASK
-
-    def decode_aba_count(self, value):
-        return value >> self.ABA_ADDR_BIT
-
-    def get_state_name(self, state):
-        return self.state_names.get(state, "Unknown")
-
     def is_chunk_aligned(self, addr):
         if addr == 0:
             return False
@@ -173205,8 +173192,8 @@ class SsmallocHeapDumpCommand(GenericCommand, BufferingOutput):
         dic["block_size"] = read_int32_from_memory(addr + self.offset_dchunk_block_size)
         dic["free_mem"] = read_int_from_memory(addr + self.offset_dchunk_free_mem)
         dic["remote_head_raw"] = read_int_from_memory(addr + self.offset_dchunk_remote_free_head)
-        dic["remote_head"] = self.decode_aba_address(dic["remote_head_raw"])
-        dic["remote_count"] = self.decode_aba_count(dic["remote_head_raw"])
+        dic["remote_head"] = dic["remote_head_raw"] & self.ABA_ADDR_MASK
+        dic["remote_count"] = dic["remote_head_raw"] >> self.ABA_ADDR_BIT
         dchunk = GefUtil.dict_to_namedtuple("Dchunk", dic)
         return dchunk
 
@@ -173242,7 +173229,7 @@ class SsmallocHeapDumpCommand(GenericCommand, BufferingOutput):
         corrupted_msg_color = Config.get("theme.heap_corrupted_msg")
 
         if decode_head:
-            cur = self.decode_aba_address(head)
+            cur = head & self.ABA_ADDR_MASK
         else:
             cur = head
         seen = []
@@ -173367,7 +173354,7 @@ class SsmallocHeapDumpCommand(GenericCommand, BufferingOutput):
         self.out.append(titlify("{:s} @ {:#x}".format(title or "dchunk", dchunk.addr)))
         self.out.append("owner: {!s}, state: {:s}, numa_node: {:#x}".format(
             ProcessMap.lookup(dchunk.owner),
-            self.get_state_name(dchunk.state),
+            self.state_names.get(dchunk.state, "Unknown"),
             dchunk.numa_node,
         ))
         self.out.append("size_cls: {:#x}, size: {:#x}, block_size: {:#x}, free_blk_cnt: {:#x}, blk_cnt: {:#x}".format(
@@ -174739,16 +174726,13 @@ class TbbmallocHeapDumpCommand(GenericCommand, BufferingOutput):
         "| bootStrapBlocks.bootStrapObjectList       |-->TLSData --> TLSData --> ... (freed TLSData)",
         "+-------------------------------------------+",
         "",
-        "* TLSData is found by scanning the pthread specific data near the thread pointer, symbols are not used.",
-        "* `--tls` can be used when the scan rejects a corrupted TLSData.",
+        "* TLSData is found by scanning the TLS, symbols are not used. Use `--tls` if the scan rejects a corrupted one.",
         "* Allocation pops `freeList` of the active block, moves `bumpPtr` down, then tries the previous blocks.",
         "* Next, a block in `mailbox` takes its `publicFreeList`, then an orphaned block or a free slab block is used.",
         "* `publicFreeList` holds objects freed by other threads. 0x1 terminates the list of an orphaned block.",
-        "* Freed large objects are cached in `lloc` first, then in `loc` of the pool.",
-        "* The first freed large object of each size is not cached in `loc` but returned to the backend.",
+        "* Freed large objects are cached in `lloc` first, then in `loc` (except the first one of each size).",
         "* Empty bins of `loc` and the backend are not displayed even with `-v`.",
         "* Supported versions are TBB 4.4.6 (4.4.1 on 32-bit) - oneTBB 2023.1.0 and the master (2026/10).",
-        "* The default build configuration is assumed.",
     ])
 
     # tbbmalloc_internal.h, frontend.cpp
@@ -176626,8 +176610,7 @@ class MeshHeapDumpCommand(GenericCommand, BufferingOutput):
         "| _fullList[cl]                      |---> MiniHeap <-> MiniHeap <-> ... (no object is free, -2024/07)",
         "+------------------------------------+",
         "",
-        "* The ThreadLocalHeap is resolved from `_threadLocalHeap` if symbols are available.",
-        "* Without symbols, the TLS near the thread pointer is scanned for a ThreadLocalHeap with the Mesh size classes.",
+        "* The ThreadLocalHeap is resolved from `_threadLocalHeap`, or found by scanning the TLS without symbols.",
         "* Allocation pops `_list[_off]` and the object is `_start[i] + bit * _objectSize`.",
         "* When `_list` is exhausted, the free bits of the attached miniheaps are moved to `_list`.",
         "* Supported versions are Mesh 07b83f6 (2020/03/11) - d2bed33 (2024/07/06) with 4KB pages,",
@@ -177159,18 +177142,13 @@ class StreamflowHeapDumpCommand(GenericCommand, BufferingOutput):
         "| largest_free_order        |",
         "+---------------------------+",
         "",
-        "* `local_heap` and `local_inactive_pageblocks` are resolved from symbols; without them, the static TLS is scanned.",
-        "* Without symbols, `superpage_list` is resolved from a superpage, and the writable data of its module is scanned",
-        "  for `global_partial_pageblocks`, which is found only when it holds a pageblock.",
-        "* `--heap` can be used when the scan rejects a corrupted `local_heap`.",
+        "* `local_heap` and `local_inactive_pageblocks` are resolved from symbols, else from the static TLS (or `--heap`).",
+        "* Without symbols, `global_partial_pageblocks` is found only when it holds a pageblock.",
         "* Allocation pops `freed` of the first pageblock, then advances `unallocated`.",
-        "* `garbage_head` holds objects freed by other threads, and is moved to `freed` when no free object is left.",
-        "* Pageblocks of exited threads go to `global_partial_pageblocks` if partially used; full ones are not listed.",
-        "* Objects larger than 0x40c0 bytes are carved from superpages by the buddy system,",
-        "  or mmapped if larger than a superpage.",
-        "* The HEADERS build prepends a header of sizeof(void*) to each object, and malloc() returns the address after it.",
-        "* `queue.both.top` keeps only 46 bits, so StreamFlow itself truncates pageblocks above 0x400000000000",
-        "  (usual on x86_64).",
+        "* `garbage_head` is moved to `freed` when no free object is left. Full pageblocks of exited threads are not listed.",
+        "* Objects larger than 0x40c0 bytes come from the buddy system of superpages, or mmap if larger than a superpage.",
+        "* The HEADERS build prepends a sizeof(void*) header to each object, and malloc() returns the address after it.",
+        "* `queue.both.top` keeps only 46 bits, so StreamFlow itself truncates pageblocks above 0x400000000000.",
         "* Supported architectures are x86, x86_64 and PPC64, as upstream.",
     ])
 
@@ -177776,17 +177754,12 @@ class SupermallocHeapDumpCommand(GenericCommand, BufferingOutput):
         "",
         "* Allocation pops cache_for_thread first, then cache_for_cpu of the current CPU, then global_cache.",
         "* When the caches are empty, small objects come from the fullest folio, and large ones from free_large_objects.",
-        "* Freed objects go to cache_for_thread of the freeing thread, and overflow to cache_for_cpu and global_cache.",
-        "  Only objects overflowing all caches return to folios or free_large_objects.",
-        "* A chunk is 2MiB and holds objects of one bin. chunk_infos records the bin of each chunk.",
-        "* dsbi links folios by the number of free objects. The last list holds empty folios released by madvise().",
+        "* Frees fill the caches in the same order, and only the overflow returns to folios or free_large_objects.",
+        "* The last list of dsbi holds empty folios released by madvise().",
         "* Objects larger than 0xff000 bytes use whole chunks. Free ones are linked to free_chunks[log2(chunks)].",
         "* malloc() of large objects returns the object + a random multiple of 0x40 within a page.",
-        "* The official build uses LTO, so static variables are not resolved even with DWARF.",
-        "  They are found from the operands of `lea` and GOT loads in the module, and checked with chunk_infos.",
-        "* Without symbols, chunk_infos is found as a pointer to the 512MiB table in the writable data of modules,",
-        "  and cache_for_thread is found in the static TLS. Empty structures cannot be found without symbols.",
-        "* `--cache` can be used when the scan rejects a corrupted `cache_for_thread`.",
+        "* The official build uses LTO, so static variables are found from `lea` and GOT loads, not from DWARF.",
+        "* Without symbols, they are found by scanning, and empty ones cannot be found. `--cache` overrides the scan.",
         "* Supported version is the latest commit (2017/10/25) on x86_64 only, as upstream.",
     ])
 
@@ -178426,16 +178399,12 @@ class DlmallocHeapDumpCommand(GenericCommand, BufferingOutput):
         "                                          +------------+",
         "",
         "* Free chunks smaller than 0x100 bytes are in smallbins by exact size, and the others are in treebins.",
-        "  An emptied smallbin keeps stale fd and bk, so smallbins are listed by smallmap.",
-        "* Each treebin is a bitwise trie of sizes. Chunks of the same size are chained to the node of the trie by fd/bk.",
+        "* An emptied smallbin keeps stale fd and bk, so smallbins are listed by smallmap.",
         "* dv is the remainder of the last chunk split for a small request, and is used before top.",
         "* Chunks larger than the mmap threshold (0x40000 by default) are mmapped directly and are not listed.",
         "* Addresses are of chunks. malloc() returns the chunk + sizeof(size_t) * 2.",
-        "* Without symbols, `_gm_` is found in the writable data of modules, as smallbins[0] and [1] are never used",
-        "  and point to themselves. Use `--mstate` for mspaces (the return value of create_mspace()),",
-        "  or when the scan rejects a corrupted malloc_state.",
-        "* The offset of smallbins depends on `release_checks` (2.8.4~), and that of seg depends on",
-        "  `footprint_limit` (2.8.5~) and the lock (USE_LOCKS), so seg is found by the segment holding top.",
+        "* Without symbols, `_gm_` is found by smallbins[0] and [1], which are never used and point to themselves.",
+        "* Use `--mstate` for mspaces, or when the scan rejects a corrupted malloc_state.",
         "* Supported versions are 2.8.0 to 2.8.6 (the latest). 2.7.x and older use a different structure.",
     ])
 
@@ -178802,20 +178771,13 @@ class ScudoHeapDumpCommand(GenericCommand, BufferingOutput):
         "| TSDRegistry                   |",
         "+-------------------------------+",
         "",
-        "* The blocks of each size class are carved from its region (64-bit), or from the regions of 1 << RegionSizeLog",
-        "  bytes recorded in PossibleRegions (32-bit). The class 0 holds the batches of the free lists.",
-        "* Freed blocks go to Chunks of the local cache first. When Count reaches MaxCount, a half of them are moved",
-        "  to the free list of the primary as a batch. Before LLVM 16, the free list is a list of TransferBatch.",
-        "* A block in Chunks and Blocks is a compact pointer, (block - RegionBeg) >> CompactPtrScale (64-bit),",
-        "  since LLVM 17. It is the block itself before, unless the config compacts it, and on 32-bit.",
-        "* malloc() returns the block + 0x10 (64-bit) or + 0x8 (32-bit), unless the alignment is larger than it.",
-        "  The chunk header is just before the returned pointer.",
-        "* Freed blocks larger than the largest class are cached in the entries of the secondary. The layout of the",
-        "  entries varies among versions, so valid entries are found by the relations of their fields.",
-        "  BlockBegin + 0x10 (64-bit) or + 0x8 (32-bit) is returned on reuse (Block + 0x40 or + 0x20 before LLVM 13).",
+        "* The blocks of each size class are carved from its region (64-bit), or from PossibleRegions (32-bit).",
+        "* When Count reaches MaxCount, a half of Chunks are moved to the free list of the primary as a batch.",
+        "  Before LLVM 16, the free list is a list of TransferBatch.",
+        "* Since LLVM 17, a block in Chunks and Blocks is (block - RegionBeg) >> CompactPtrScale on 64-bit.",
+        "* malloc() returns the block + 0x10 (64-bit) or + 0x8 (32-bit), just after the chunk header.",
         "* The quarantine (disabled by default) is not displayed.",
-        "* Symbols are not used. The TSD is found by scanning the TLS near the thread pointer for the pointer to",
-        "  Primary, which ends the local cache. For the shared TSDs, the TLS has a pointer to a TSD of the registry.",
+        "* Symbols are not used. The TSD is found by scanning the TLS for the pointer to Primary.",
         "* Supported versions are LLVM 11 to 23 and main (2026/10). Officially, Scudo supports x86 and x86_64,",
         "  ARM32, ARM64, MIPS32, MIPS64 and PPC64 (LLVM 13~), LoongArch64 (LLVM 16~), RISC-V64 (LLVM 17~)",
         "  and S390X (LLVM 22~).",
@@ -179630,23 +179592,12 @@ class JemallocHeapDumpCommand(GenericCommand, BufferingOutput):
         "+------------------------------------------------------------+",
         "",
         "* Objects cached in tcache are marked as used in the slab/run bitmap.",
-        "* Full slabs/runs are not linked from the bin. GEF finds them by scanning the",
-        "  writable memory (v5.x shows them as `unlinked`).",
-        "* The offsets vary with the version and the build config.",
-        "  GEF uses debug types if available, else built-in values for the version and",
-        "  the architecture, and derives the arena layout from memory if they disagree.",
-        "* v5.x: if symbols are not available, GEF scans the writable memory for je_arenas.",
-        "* v3.x/v4.x: GEF finds the chunks by scanning memory and reads their arena,",
-        "  so je_arenas is not needed.",
-        "* The page size of jemalloc (--with-lg-page) may differ from that of the system.",
-        "  v3.x/v4.x: GEF uses chunk_npages if debug symbols are available,",
-        "  else derives it from the runs in the chunk page map.",
-        "  v5.x: GEF derives it from the slabs (ARM64 uses 64KB by default since v5.3.1).",
-        "* Large allocations: v3.x/v4.x read the chunk page map; v5.x reads the rtree.",
-        "  v4.x displays the run range: cache-oblivious allocation addresses are randomized within its first page.",
-        "  v4.x/v5.x assume cache-oblivious padding unless debug symbols specify otherwise.",
-        "  v5.3.1~: when large size classes are disabled, the size class index is an upper bound;",
-        "  the displayed allocation size comes from the extent itself.",
+        "* Full slabs/runs are not linked from the bin. GEF finds them by scanning memory (v5.x shows them as `unlinked`).",
+        "* Offsets come from debug types, else built-in values for the version and arch, corrected from memory if needed.",
+        "* Without symbols, v5.x finds je_arenas by scanning memory; v3.x/v4.x read the arena of the chunks they find.",
+        "* jemalloc's page size (--with-lg-page, 64KB on ARM64 since v5.3.1) may differ from the system's; GEF detects it.",
+        "* Large allocations are read from the chunk page map (v3.x/v4.x) or the rtree (v5.x).",
+        "* v4.x shows the run range of a large allocation, as cache-oblivious addresses are randomized in its first page.",
         "* v3.x/v4.x huge allocations (outside arena chunks) and jemalloc v2.x or older are not supported.",
     ])
 
@@ -179931,21 +179882,14 @@ class MozjemallocHeapDumpCommand(GenericCommand, BufferingOutput):
         "                     | mArena        |",
         "                     +---------------+",
         "",
-        "* Small allocations are regions of runs, large ones are runs of pages, and huge ones are chunks.",
         "* Firefox 58~133: mNonFullRuns is a tree of mPageMap[] entries in address order, and mCurrentRun is used first.",
         "  Firefox 134~: mNonFullRuns is a list of arena_run_t, and its head is used first.",
         "* Full runs are not linked from the bin. GEF finds them in the page map and displays them as `full run`.",
-        "* The region in a run is picked randomly since Firefox 78 (69~77: arenas with ARENA_FLAG_RANDOMIZE_SMALL),",
-        "  so the next region is not predictable.",
-        "* GEF finds the chunks by the arena pointer at each 1MiB-aligned address of the writable anonymous memory,",
-        "  and checks the arena by the size classes in mBins[]. Debug symbols are not needed.",
+        "* The region in a run is picked randomly since Firefox 78, so the next region is not predictable.",
+        "* GEF finds the chunks by scanning memory, so debug symbols are not needed.",
         "  Arenas without chunks or huge allocations are not displayed.",
-        "* The offset of the page map, the page size and the layout of arena_run_t (with mMagic if",
-        "  MOZ_DIAGNOSTIC_ASSERT_ENABLED) and arena_bin_t are derived from memory.",
-        "* `huge` is found in the writable data of modules, as the tree of extent_node_t whose total size",
-        "  is in huge_allocated near it.",
-        "* PHC (Probabilistic Heap Checker) may take its pages as a huge allocation and make them inaccessible.",
-        "  Allocations of PHC in them are not displayed.",
+        "* The page map, the page size and the layouts of arena_run_t and arena_bin_t are derived from memory.",
+        "* PHC may take its pages as a huge allocation; allocations of PHC in them are not displayed.",
         "* Firefox 57 and older use other structures, and are not supported.",
     ])
 
