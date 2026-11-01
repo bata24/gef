@@ -12234,7 +12234,7 @@ class CRIS(Architecture):
             return False
 
     def is_call(self, insn):
-        return insn.mnemonic in ["jsr", "jsrc"]
+        return insn.mnemonic in ["bsr", "jsr", "jsrc"]
 
     def is_jump(self, insn):
         if self.is_conditional_branch(insn):
@@ -12312,6 +12312,16 @@ class CRIS(Architecture):
         except gdb.error:
             pass
         return ra
+
+    def get_pending_branch(self):
+        # CRIS has variable-length instructions and no $ppc register.
+        try:
+            insn = get_insn_prev()
+        except gdb.error:
+            return None
+        if insn and (self.is_jump(insn) or self.is_call(insn) or self.is_ret(insn)):
+            return insn
+        return None
 
 
 class LOONGARCH64(Architecture):
@@ -18276,11 +18286,14 @@ class NextiForQemuUserCommand(GenericCommand):
             return False
 
         # native `nexti` falls through the delay slot even if the pending branch is taken
-        if is_or1k():
+        if is_or1k() or is_cris():
             pending = current_arch.get_pending_branch()
             if pending is not None:
                 if not current_arch.is_call(pending):
-                    target = ContextCodeCommand.get_branch_addr(pending)
+                    if current_arch.is_ret(pending):
+                        target = current_arch.get_ra(pending, frame)
+                    else:
+                        target = ContextCodeCommand.get_branch_addr(pending)
                     if target is not None:
                         SimpleInternalTemporaryBreakpoint(loc=target, group=group)
                 return True
@@ -18400,10 +18413,13 @@ class StepiForQemuUserCommand(GenericCommand):
             return False
 
         # native `stepi` falls through the delay slot even if the pending branch is taken
-        if is_or1k():
+        if is_or1k() or is_cris():
             pending = current_arch.get_pending_branch()
             if pending is not None:
-                target = ContextCodeCommand.get_branch_addr(pending)
+                if current_arch.is_ret(pending):
+                    target = current_arch.get_ra(pending, frame)
+                else:
+                    target = ContextCodeCommand.get_branch_addr(pending)
                 if target is not None:
                     SimpleInternalTemporaryBreakpoint(loc=target, group=group)
                 return True
