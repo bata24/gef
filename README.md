@@ -570,7 +570,7 @@ For the usage and options of each command, see [docs/COMMANDS.md](docs/COMMANDS.
 ### Other
 
 <details>
-<summary><code>tcmalloc-heap-dump</code>, <code>musl-heap-dump</code>, <code>go-heap-dump</code>, <code>tlsf-heap-dump</code>, <code>hoard-heap-dump</code>, <code>mimalloc-heap-dump</code>, <code>scalloc-heap-dump</code>, <code>snmalloc-heap-dump</code>, <code>ssmalloc-heap-dump</code>, <code>jemalloc-heap-dump</code>, <code>sfmalloc-heap-dump</code>, <code>rpmalloc-heap-dump</code>, <code>tbbmalloc-heap-dump</code>, <code>zig-heap-dump</code>, <code>mesh-heap-dump</code>, <code>streamflow-heap-dump</code>, <code>supermalloc-heap-dump</code>, <code>dlmalloc-heap-dump</code>, <code>scudo-heap-dump</code>, <code>mozjemalloc-heap-dump</code></summary>
+<summary><code>tcmalloc-heap-dump</code>, <code>musl-heap-dump</code>, <code>go-heap-dump</code>, <code>tlsf-heap-dump</code>, <code>hoard-heap-dump</code>, <code>mimalloc-heap-dump</code>, <code>scalloc-heap-dump</code>, <code>snmalloc-heap-dump</code>, <code>ssmalloc-heap-dump</code>, <code>jemalloc-heap-dump</code>, <code>sfmalloc-heap-dump</code>, <code>rpmalloc-heap-dump</code>, <code>tbbmalloc-heap-dump</code>, <code>zig-heap-dump</code>, <code>mesh-heap-dump</code>, <code>streamflow-heap-dump</code>, <code>supermalloc-heap-dump</code>, <code>dlmalloc-heap-dump</code>, <code>scudo-heap-dump</code>, <code>mozjemalloc-heap-dump</code>, <code>bmalloc-heap-dump</code></summary>
 
 - `tcmalloc-heap-dump`: dumps TCMalloc (`gperftools-2.16-1` or named `libgoogle-perftools{4,-dev}`) free-list.
     - ![](images/tcmalloc-heap-dump.png)
@@ -699,8 +699,20 @@ For the usage and options of each command, see [docs/COMMANDS.md](docs/COMMANDS.
           https://archive.mozilla.org/pub/firefox/releases/159.0/jsshell/jsshell-linux-x86_64.zip
         - Save the following as `test.js`. It allocates 100 buffers of 0x300 bytes and frees half of them with `gc()`.
           `a=[];for(i=0;i<100;i++)a.push(new ArrayBuffer(0x300));for(i=0;i<100;i+=2)a[i]=null;gc();print(1)`
-        - Run `LD_LIBRARY_PATH=. gdb --args ./js -f test.js`, `catch syscall write`, `run`,
-          and then `mozjemalloc-heap-dump -v -b 32` (bin[32] is 0x300 bytes).
+        - Run `LD_LIBRARY_PATH=. gdb --args ./js -f test.js`, `catch syscall write`, `run`.
+- `bmalloc-heap-dump`: dumps the old WebKit bmalloc (before it was replaced by mimalloc in 2026/01) free lists and Cache.
+    - ![](images/bmalloc-heap-dump.png)
+    - How to test:
+        - bmalloc is part of WebKit, so check out the last commit that still has the old allocator and build it alone:
+          `git clone --filter=blob:none --sparse https://github.com/WebKit/WebKit.git && cd WebKit`,
+          `git checkout 0a23246677 && git sparse-checkout set Source/bmalloc && cd Source/bmalloc`.
+        - Compile its core as a freestanding library with libpas disabled (GCC needs `-O2`, not `-O0`/`-O1`):
+          `for f in $(ls bmalloc/*.cpp | grep -vE 'TZone|mbmalloc|Zone'); do clang++ -std=c++20 -O2 -g -mcx16
+          -Ibmalloc -I. -DBENABLE_LIBPAS=0 -DBUSE_LIBPAS=0 -c $f -o $f.o; done`.
+        - Build the test program (`g_config` is normally provided by WTF, so `-DBMALLOC_STANDALONE` defines it here):
+          `clang++ -std=c++20 -O0 -g -mcx16 -Ibmalloc -I. -DBENABLE_LIBPAS=0 -DBUSE_LIBPAS=0 -DBMALLOC_STANDALONE
+          /PATH/TO/tests/heap-test.cpp bmalloc/*.o -lpthread -ldl -latomic`.
+        - Run `gdb ./a.out`.
 
 </details>
 

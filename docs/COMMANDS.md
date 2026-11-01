@@ -7657,6 +7657,62 @@ Also, since it uses V8 commands internally, `_v8_internal_Print_Object` must be 
 ```
 
 # 05-d. Heap - Other
+## `bmalloc-heap-dump`
+
+bmalloc (the old WebKit allocator, before it was replaced by mimalloc) heap viewer.
+
+
+### Syntax
+
+```text
+usage: bmalloc-heap-dump [-h] [-hh] [-c CACHE] [-a] [-l] [-n] [-v] [--meta]
+
+options:
+  -h, --help          show this help message and exit
+  -hh, --help-simple  show help without ASCII diagram.
+  -c, --cache CACHE   use this address as the per-thread Cache.
+  -a, --all           dump the Cache of all threads.
+  -l, --log           also dump the deallocation log of each Cache.
+  -n, --no-pager      do not use the pager.
+  -v, --verbose       also dump empty free lists and the free line cache.
+  --meta              display offset information.
+```
+
+### Examples
+
+```gdb
+bmalloc-heap-dump         # dump the free lists of the heaps and the Cache of the current thread
+bmalloc-heap-dump -a -l   # dump the Cache and deallocation log of all threads
+bmalloc-heap-dump -v       # also dump empty lists and the per-size-class free line cache
+```
+
+### Notes
+
+```text
+Simplified bmalloc structure:
+
++-Cache (per thread, per HeapKind)-+       +-Heap (per HeapKind)------------------+
+| Deallocator                      |       | m_lineCache[sizeClass]               |-> SmallPage <-> ... (free lines)
+|  m_heap                          |-----> | m_freePages[pageClass]               |-> Chunk <-> ... (free page spans)
+|  m_objectLog[] (pending frees)   |       | m_chunkCache[pageClass]              |-> Chunk <-> ...
+|  m_lineCache[sizeClass]          |       | m_largeAllocated (Map ptr->size)     |-> live large objects
+| Allocator                        |       | m_largeFree (Vector<LargeRange>)     |-> free large ranges
+|  m_bumpAllocators[sizeClass]     |       +--------------------------------------+
+|   m_ptr, m_remaining, m_size     |
+|  m_bumpRangeCaches[sizeClass]    |       +-Chunk (1MiB aligned)-----------------+
+|   {begin, objectCount}           |       | m_refCount, m_freePages              |
+|  m_heap                          |       | m_lines[chunkSize/256]               |
++----------------------------------+       | m_pages[chunkSize/4096] (SmallPage)  |
+                                           +--------------------------------------+
+
+* Small objects (<=32KiB) are carved from the lines of chunks, and large ones from the large heap.
+* Allocation takes m_remaining objects from m_ptr, then refills from m_bumpRangeCaches and the Heap.
+* GEF finds the Cache by scanning the TLS, so debug symbols are not needed. Use -c when the scan fails.
+* The offset of the Heap free lists depends on the C++ runtime, so it is derived from memory.
+* bmalloc was replaced by mimalloc in 2026/01 (305908@main); this targets the layout before that.
+* No architecture is excluded, as upstream. libpas is not covered.
+```
+
 ## `dlmalloc-heap-dump`
 
 dlmalloc heap free-list viewer.

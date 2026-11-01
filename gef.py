@@ -181140,6 +181140,367 @@ class uClibcNgHeap:
 
 
 @register_command
+class BmallocHeapDumpCommand(GenericCommand, BufferingOutput):
+    """bmalloc (the old WebKit allocator, before it was replaced by mimalloc) heap viewer."""
+
+    _cmdline_ = "bmalloc-heap-dump"
+    _category_ = "05-d. Heap - Other"
+
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("-hh", "--help-simple", action="store_true", help="show help without ASCII diagram.")
+    parser.add_argument("-c", "--cache", type=AddressUtil.parse_address, help="use this address as the per-thread Cache.")
+    parser.add_argument("-a", "--all", action="store_true", help="dump the Cache of all threads.")
+    parser.add_argument("-l", "--log", action="store_true", help="also dump the deallocation log of each Cache.")
+    parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
+    parser.add_argument("-v", "--verbose", action="store_true", help="also dump empty free lists and the free line cache.")
+    parser.add_argument("--meta", action="store_true", help="display offset information.")
+    _syntax_ = parser.format_help()
+
+    _example_ = "\n".join([
+        "{0:s}         # dump the free lists of the heaps and the Cache of the current thread",
+        "{0:s} -a -l   # dump the Cache and deallocation log of all threads",
+        "{0:s} -v       # also dump empty lists and the per-size-class free line cache",
+    ]).format(_cmdline_)
+
+    _note_ = "\n".join([
+        "Simplified bmalloc structure:",
+        "",
+        "+-Cache (per thread, per HeapKind)-+       +-Heap (per HeapKind)------------------+",
+        "| Deallocator                      |       | m_lineCache[sizeClass]               |-> SmallPage <-> ... (free lines)",
+        "|  m_heap                          |-----> | m_freePages[pageClass]               |-> Chunk <-> ... (free page spans)",
+        "|  m_objectLog[] (pending frees)   |       | m_chunkCache[pageClass]              |-> Chunk <-> ...",
+        "|  m_lineCache[sizeClass]          |       | m_largeAllocated (Map ptr->size)     |-> live large objects",
+        "| Allocator                        |       | m_largeFree (Vector<LargeRange>)     |-> free large ranges",
+        "|  m_bumpAllocators[sizeClass]     |       +--------------------------------------+",
+        "|   m_ptr, m_remaining, m_size     |",
+        "|  m_bumpRangeCaches[sizeClass]    |       +-Chunk (1MiB aligned)-----------------+",
+        "|   {begin, objectCount}           |       | m_refCount, m_freePages              |",
+        "|  m_heap                          |       | m_lines[chunkSize/256]               |",
+        "+----------------------------------+       | m_pages[chunkSize/4096] (SmallPage)  |",
+        "                                           +--------------------------------------+",
+        "",
+        "* Small objects (<=32KiB) are carved from the lines of chunks, and large ones from the large heap.",
+        "* Allocation takes m_remaining objects from m_ptr, then refills from m_bumpRangeCaches and the Heap.",
+        "* GEF finds the Cache by scanning the TLS, so debug symbols are not needed. Use -c when the scan fails.",
+        "* The offset of the Heap free lists depends on the C++ runtime, so it is derived from memory.",
+        "* bmalloc was replaced by mimalloc in 2026/01 (305908@main); this targets the layout before that.",
+        "* No architecture is excluded, as upstream. libpas is not covered.",
+    ])
+
+    CHUNK_SIZE = 0x100000
+    SMALL_PAGE_SIZE = 0x1000
+    SMALL_LINE_SIZE = 0x100
+    SIZE_CLASS_COUNT = 112
+    PAGE_CLASS_COUNT = 16
+    MASK_SIZE_CLASS_COUNT = 64
+    DEALLOCATOR_LOG_CAPACITY = 512
+    BUMP_RANGE_CACHE_CAPACITY = 3
+    NUM_HEAPS_MAX = 8
+    LIST_LOOP_MAX = 0x10000
+    HEAP_TABLE_SCAN = 0x2000
+    LINE_CACHE_MAX_OFFSET = 0x400
+
+    @classmethod
+    def object_size(cls, sc):
+        # Sizes.h: objectSize(sizeClass)
+        if sc < cls.MASK_SIZE_CLASS_COUNT:
+            return (sc + 1) * 8
+        base, offset = divmod(sc - cls.MASK_SIZE_CLASS_COUNT, 8)
+        return (512 << base) + (offset + 1) * (64 << base)
+
+    def read_words(self, addr, size):
+        data = read_memory(addr, size, safe=True)
+        if data is None:
+            return None
+        return slice_unpack(data, self.ptrsize)
+
+    def is_heap(self, heap):
+        section = ProcessMap.process_lookup_address(heap)
+        if heap % self.ptrsize or section is None or not section.is_writable():
+            return False
+        kind = read_int32_from_memory(heap, safe=True)
+        return kind is not None and 0 <= kind < self.NUM_HEAPS_MAX
+
+    def is_cache(self, cache):
+        """A Cache begins with the Heap pointer (Deallocator::m_heap), repeats it in the Allocator, and ends
+        the Allocator with a pointer back to the Cache (Allocator::m_deallocator)."""
+        if cache <= 0 or cache % self.ptrsize:
+            return False
+        if read_int_from_memory(cache + self.c_alloc_dealloc, safe=True) != cache:
+            return False
+        heap = read_int_from_memory(cache, safe=True)
+        return heap is not None and heap == read_int_from_memory(cache + self.c_alloc_heap, safe=True) and self.is_heap(heap)
+
+    def find_cache_base(self, tls):
+        lower = ProcessMap.process_lookup_address(tls - 1)
+        upper = ProcessMap.process_lookup_address(tls)
+        start = max(lower.page_start, tls - self.LIST_LOOP_MAX) if lower else tls
+        end = min(upper.page_end, tls + self.LIST_LOOP_MAX) if upper else tls
+        words = self.read_words(start, end - start)
+        if words is None:
+            return None
+        for addr in sorted(range(start, end, self.ptrsize), key=lambda x: abs(x - tls)):
+            value = words[(addr - start) // self.ptrsize]
+            if value and self.is_cache(value):
+                return value
+        return None
+
+    def get_cache_list(self):
+        if self.args.cache is not None:
+            base = self.args.cache
+            if not self.is_cache(base):
+                return None, "Not a Cache: {:#x}".format(base)
+            return [(gdb.selected_thread().num, base)], None
+        threads = None if self.args.all else [gdb.selected_thread()]
+        result = []
+        with ContextManager.threads(threads) as threads:
+            for thread in threads:
+                tls = current_arch.get_tls()
+                base = self.find_cache_base(tls) if tls else None
+                if base is not None:
+                    result.append((thread.num, base))
+        if not result:
+            return None, "Could not find any Cache in the TLS"
+        return result, None
+
+    def locate_heap_tables(self, heap):
+        """Find offsetof(Heap, m_lineCache) as the start of the block of List sentinels, then the tables that
+        follow it. An empty List points its m_root (prev, next) to itself."""
+        total = self.SIZE_CLASS_COUNT + 2 * self.PAGE_CLASS_COUNT
+        words = self.read_words(heap, self.HEAP_TABLE_SCAN)
+        if words is None:
+            return None
+        # m_lineCache follows the condition_variable, so it is near the start; a later equal block would be
+        # the empty lineCache of the next Heap, so the search stops before it.
+        best_off, best_count = None, 0
+        for off in range(2 * self.ptrsize, self.LINE_CACHE_MAX_OFFSET, self.ptrsize):
+            count = 0
+            for i in range(total):
+                node = heap + off + i * self.list_node
+                index = off // self.ptrsize + i * 2
+                if words[index] == node and words[index + 1] == node:
+                    count += 1
+            if count > best_count:
+                best_off, best_count = off, count
+        if best_count < self.SIZE_CLASS_COUNT // 2:
+            return None
+        line = best_off
+        free_pages = line + self.SIZE_CLASS_COUNT * self.list_node
+        chunk_cache = free_pages + self.PAGE_CLASS_COUNT * self.list_node
+        large_allocated = chunk_cache + self.PAGE_CLASS_COUNT * self.list_node
+        large_free = large_allocated + self.map_size
+        return {"line": line, "free_pages": free_pages, "chunk_cache": chunk_cache,
+                "large_allocated": large_allocated, "large_free": large_free}
+
+    def walk_list(self, sentinel):
+        """Return the nodes of a circular List (its m_root is at `sentinel`) and an error message.
+        ListNode is {prev, next}; the list is empty when next points back to the sentinel."""
+        nodes = []
+        node = read_int_from_memory(sentinel + self.ptrsize, safe=True)
+        while node is not None and node != sentinel:
+            if node in nodes:
+                return nodes, "{:#x} (loop detected)".format(node)
+            if len(nodes) >= self.LIST_LOOP_MAX or not is_valid_addr(node):
+                return nodes, "{:#x} (corrupted)".format(node)
+            nodes.append(node)
+            node = read_int_from_memory(node + self.ptrsize, safe=True)
+        return nodes, None
+
+    def read_large_free(self, heap, tables):
+        header = self.read_words(heap + tables["large_free"], 3 * self.ptrsize)
+        ranges = []
+        if header is None:
+            return ranges
+        buf, size, _ = header
+        for i in range(min(size, self.LIST_LOOP_MAX)):
+            words = self.read_words(buf + i * self.large_range, 5 * self.ptrsize)
+            if words is None:
+                break
+            ranges.append((words[0], words[1], words[2], words[3]))
+        return ranges
+
+    def read_large_allocated(self, heap, tables):
+        # m_largeAllocated is {m_keyCount (4), m_tableMask (4), m_table (Vector of {key, value} buckets)}
+        base = heap + tables["large_allocated"]
+        key_count = read_int32_from_memory(base, safe=True) or 0
+        header = self.read_words(base + 8, 3 * self.ptrsize)
+        entries = []
+        if header is None:
+            return key_count, entries
+        buf, size, _ = header
+        for i in range(min(size, self.LIST_LOOP_MAX)):
+            pair = self.read_words(buf + i * 2 * self.ptrsize, 2 * self.ptrsize)
+            if pair and pair[0]:
+                entries.append((pair[0], pair[1]))
+        return key_count, entries
+
+    def read_bump_allocators(self, cache):
+        result = []
+        for i in range(self.SIZE_CLASS_COUNT):
+            base = cache + self.c_bumpallocs + i * self.bump_alloc
+            ptr = read_int_from_memory(base, safe=True)
+            size = read_int32_from_memory(base + self.ptrsize, safe=True) or 0
+            remaining = read_int32_from_memory(base + self.ptrsize + 4, safe=True) or 0
+            result.append((ptr, size, remaining))
+        return result
+
+    def read_bump_ranges(self, cache, index):
+        base = cache + self.c_bumpranges + index * self.bump_range_cache
+        size = read_int_from_memory(base)
+        ranges = []
+        for i in range(min(size, self.BUMP_RANGE_CACHE_CAPACITY)):
+            entry = base + self.ptrsize + i * self.bump_range
+            begin = read_int_from_memory(entry, safe=True)
+            count = read_int16_from_memory(entry + self.ptrsize)
+            ranges.append((begin, count))
+        return ranges
+
+    def dump_heap(self, heap, tables):
+        chunk_size_color = Config.get("theme.heap_chunk_size")
+        used_address_color = Config.get("theme.heap_chunk_address_used")
+        freed_address_color = Config.get("theme.heap_chunk_address_freed")
+
+        kind = read_int32_from_memory(heap)
+        self.out.append(titlify("Heap @ {:#x} (kind {:d})".format(heap, kind), color="bold", msg_color="bold"))
+
+        key_count, allocated = self.read_large_allocated(heap, tables)
+        self.out.append("large allocated (m_largeAllocated, count={:#x}):".format(key_count))
+        for addr, size in sorted(allocated):
+            self.out.append("    {:s}: size={:s}".format(
+                Color.colorify_hex(addr, used_address_color), Color.colorify_hex(size, chunk_size_color),
+            ))
+
+        ranges = self.read_large_free(heap, tables)
+        self.out.append("large free (m_largeFree, count={:#x}):".format(len(ranges)))
+        for begin, size, start_phys, total_phys in sorted(ranges):
+            self.out.append("    {:s}-{:#x}: size={:s} (physical start={:#x}, total={:#x})".format(
+                Color.colorify_hex(begin, freed_address_color), begin + size,
+                Color.colorify_hex(size, chunk_size_color), start_phys, total_phys,
+            ))
+
+        corrupted_msg_color = Config.get("theme.heap_corrupted_msg")
+        for name, key in (("free page spans (m_freePages)", "free_pages"),
+                          ("cached chunks (m_chunkCache)", "chunk_cache")):
+            lines = []
+            for pc in range(self.PAGE_CLASS_COUNT):
+                sentinel = heap + tables[key] + pc * self.list_node
+                nodes, error = self.walk_list(sentinel)
+                if not nodes and not error and not self.args.verbose:
+                    continue
+                page_size = (pc + 1) * self.SMALL_PAGE_SIZE
+                chunks = " ".join(Color.colorify_hex(x, freed_address_color) for x in nodes)
+                lines.append("    pageClass[{:#x}] (pageSize={:#x}): {:s}".format(pc, page_size, chunks or "(empty)"))
+                if error:
+                    lines.append("        -> {:s}".format(Color.colorify(error, corrupted_msg_color)))
+            if lines:
+                self.out.append("{:s}:".format(name))
+                self.out.extend(lines)
+
+        if self.args.verbose:
+            self.out.append("free line cache (m_lineCache):")
+            for sc in range(self.SIZE_CLASS_COUNT):
+                sentinel = heap + tables["line"] + sc * self.list_node
+                nodes, error = self.walk_list(sentinel)
+                if not nodes and not error:
+                    continue
+                pages = " ".join(Color.colorify_hex(x, freed_address_color) for x in nodes)
+                self.out.append("    sizeClass[{:#x}] (size={:#x}): {:s}".format(sc, self.object_size(sc), pages))
+                if error:
+                    self.out.append("        -> {:s}".format(Color.colorify(error, Config.get("theme.heap_corrupted_msg"))))
+        return
+
+    def dump_cache(self, thread_num, cache):
+        chunk_size_color = Config.get("theme.heap_chunk_size")
+        used_address_color = Config.get("theme.heap_chunk_address_used")
+        freed_address_color = Config.get("theme.heap_chunk_address_freed")
+
+        heap = read_int_from_memory(cache, safe=True)
+        self.out.append(titlify("Cache @ {:#x} (Thread Id {:d}, Heap {:#x})".format(cache, thread_num, heap),
+                                color="bold", msg_color="bold"))
+        bumps = self.read_bump_allocators(cache)
+        for sc, (ptr, size, remaining) in enumerate(bumps):
+            ranges = self.read_bump_ranges(cache, sc)
+            if not ptr and not ranges:
+                continue
+            msg = "    sizeClass[{:#x}] (size={:s}):".format(sc, Color.colorify_hex(size, chunk_size_color))
+            if ptr and remaining:
+                msg += " bump {:s} x{:#x}".format(Color.colorify_hex(ptr, used_address_color), remaining)
+            for begin, count in ranges:
+                msg += ", range {{{:s}, {:#x}}}".format(Color.colorify_hex(begin, used_address_color), count)
+            self.out.append(msg)
+
+        if self.args.log:
+            log_size = read_int_from_memory(cache + self.c_objlog_size)
+            self.out.append("    deallocation log (count={:#x}):".format(log_size))
+            entries = self.read_words(cache + self.c_objlog_buf, min(log_size, self.DEALLOCATOR_LOG_CAPACITY) * self.ptrsize)
+            for addr in entries or []:
+                self.out.append("        {:s}".format(Color.colorify_hex(addr, freed_address_color)))
+        return
+
+    def initialize(self):
+        self.ptrsize = current_arch.ptrsize
+        self.list_node = 2 * self.ptrsize
+        self.bump_alloc = self.ptrsize + 8
+        self.bump_range = 2 * self.ptrsize
+        self.bump_range_cache = self.ptrsize + self.BUMP_RANGE_CACHE_CAPACITY * self.bump_range
+        self.large_range = align(5 * self.ptrsize + 4, self.ptrsize)
+        self.map_size = 8 + 3 * self.ptrsize
+        self.c_objlog_size = self.ptrsize
+        self.c_objlog_buf = 2 * self.ptrsize
+        self.c_linecache = (2 + self.DEALLOCATOR_LOG_CAPACITY) * self.ptrsize
+        dealloc_size = self.c_linecache + self.SIZE_CLASS_COUNT * self.list_node
+        self.c_bumpallocs = dealloc_size
+        self.c_bumpranges = dealloc_size + self.SIZE_CLASS_COUNT * self.bump_alloc
+        self.c_alloc_heap = self.c_bumpranges + self.SIZE_CLASS_COUNT * self.bump_range_cache
+        self.c_alloc_dealloc = self.c_alloc_heap + self.ptrsize
+        self.cache_size = self.c_alloc_dealloc + self.ptrsize
+        return True
+
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    def do_invoke(self, args):
+        self.initialize()
+        if args.meta:
+            self.quiet_info("sizeof(Cache): {:#x}".format(self.cache_size))
+            self.quiet_info("offsetof(Cache, m_bumpAllocators): {:#x}".format(self.c_bumpallocs))
+            self.quiet_info("offsetof(Cache, m_bumpRangeCaches): {:#x}".format(self.c_bumpranges))
+            self.quiet_info("sizeof(LargeRange): {:#x}".format(self.large_range))
+            return
+
+        cache_list, error = self.get_cache_list()
+        if cache_list is None:
+            err(error)
+            return
+
+        self.out = []
+        self.heaps = {}
+        self.caches = []
+        for thread_num, base in cache_list:
+            kinds = []
+            for k in range(self.NUM_HEAPS_MAX):
+                cache = base + k * self.cache_size
+                if not self.is_cache(cache):
+                    break
+                kinds.append(cache)
+                heap = read_int_from_memory(cache, safe=True)
+                if heap not in self.heaps:
+                    self.heaps[heap] = self.locate_heap_tables(heap)
+                    if self.heaps[heap] is None:
+                        self.err_add_out("Could not locate the free lists of the Heap at {:#x}".format(heap))
+            self.caches.append((thread_num, kinds))
+
+        for heap, tables in sorted(self.heaps.items()):
+            if tables is not None:
+                self.dump_heap(heap, tables)
+        for thread_num, kinds in self.caches:
+            for cache in kinds:
+                self.dump_cache(thread_num, cache)
+        self.print_output()
+        return
+
+
+@register_command
 class UclibcNgHeapDumpCommand(GenericCommand, BufferingOutput):
     """uclibc-ng (libc/stdlib/malloc-standard) heap reusable chunks viewer."""
 
