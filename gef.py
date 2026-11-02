@@ -66897,6 +66897,8 @@ class KernelAddressHeuristicFinderUtil:
         # VMSPLIT_1G and VMSPLIT_2G_OPT place the kernel space below the MSB
         if not is_32bit():
             return False
+        if is_riscv32():
+            return v >= 0xc000_0000
         constants = KernelAddressHeuristicFinder.consts()
         if constants:
             task_size = constants.TASK_SIZE
@@ -71969,6 +71971,11 @@ class KernelAddressHeuristicFinder:
                     g = KernelAddressHeuristicFinderUtil.aarch64_adrp_add(res, skip=1)
                 elif is_arm32():
                     g = KernelAddressHeuristicFinderUtil.arm32_movw_movt(res)
+                elif is_riscv64() or is_riscv32():
+                    g = itertools.chain(
+                        KernelAddressHeuristicFinderUtil.riscv_auipc_use(res, include_lui=is_riscv32()),
+                        KernelAddressHeuristicFinderUtil.riscv_gp_relative(res),
+                    )
                 for x in KernelAddressHeuristicFinderUtil.filter_in_kernel_image(g):
                     if is_double_link_list(x):
                         return x
@@ -71985,6 +71992,11 @@ class KernelAddressHeuristicFinder:
                     g = KernelAddressHeuristicFinderUtil.aarch64_adrp_add_add(res)
                 elif is_arm32():
                     g = KernelAddressHeuristicFinderUtil.arm32_movw_movt_add(res)
+                elif is_riscv64() or is_riscv32():
+                    g = itertools.chain(
+                        KernelAddressHeuristicFinderUtil.riscv_auipc_use(res, include_lui=is_riscv32()),
+                        KernelAddressHeuristicFinderUtil.riscv_gp_relative(res),
+                    )
                 for x in KernelAddressHeuristicFinderUtil.filter_in_kernel_image(g):
                     if is_double_link_list(x):
                         return x
@@ -72002,6 +72014,11 @@ class KernelAddressHeuristicFinder:
                     g = KernelAddressHeuristicFinderUtil.aarch64_adrp_add(res)
                 elif is_arm32():
                     g = KernelAddressHeuristicFinderUtil.arm32_movw_movt(res)
+                elif is_riscv64() or is_riscv32():
+                    g = itertools.chain(
+                        KernelAddressHeuristicFinderUtil.riscv_auipc_use(res, include_lui=is_riscv32()),
+                        KernelAddressHeuristicFinderUtil.riscv_gp_relative(res),
+                    )
                 for x in KernelAddressHeuristicFinderUtil.filter_in_kernel_image(g):
                     if is_double_link_list(x):
                         return x
@@ -72022,6 +72039,11 @@ class KernelAddressHeuristicFinder:
                         KernelAddressHeuristicFinderUtil.arm32_movw_movt(res),
                         KernelAddressHeuristicFinderUtil.arm32_ldr_pc_relative(res),
                     )
+                elif is_riscv64() or is_riscv32():
+                    g = itertools.chain(
+                        KernelAddressHeuristicFinderUtil.riscv_auipc_use(res, include_lui=is_riscv32()),
+                        KernelAddressHeuristicFinderUtil.riscv_gp_relative(res),
+                    )
                 for x in KernelAddressHeuristicFinderUtil.filter_in_kernel_image(g):
                     if is_double_link_list(x):
                         return x
@@ -72040,6 +72062,11 @@ class KernelAddressHeuristicFinder:
                 g = []
             elif is_arm32():
                 g = KernelAddressHeuristicFinderUtil.arm32_ldr_pc_relative(res, skip=1)
+            elif is_riscv64() or is_riscv32():
+                g = itertools.chain(
+                    KernelAddressHeuristicFinderUtil.riscv_auipc_use(res, include_lui=is_riscv32()),
+                    KernelAddressHeuristicFinderUtil.riscv_gp_relative(res),
+                )
             for x in KernelAddressHeuristicFinderUtil.filter_in_kernel_image(g):
                 if is_double_link_list(x):
                     return x
@@ -72061,6 +72088,11 @@ class KernelAddressHeuristicFinder:
                             KernelAddressHeuristicFinderUtil.arm32_movw_movt(res),
                             KernelAddressHeuristicFinderUtil.arm32_ldr_pc_relative(res),
                         )
+                    elif is_riscv64() or is_riscv32():
+                        g = itertools.chain(
+                            KernelAddressHeuristicFinderUtil.riscv_auipc_use(res, include_lui=is_riscv32()),
+                            KernelAddressHeuristicFinderUtil.riscv_gp_relative(res),
+                        )
                     for x in KernelAddressHeuristicFinderUtil.filter_in_kernel_image(g):
                         if is_double_link_list(x):
                             return x
@@ -72078,6 +72110,11 @@ class KernelAddressHeuristicFinder:
                     g = KernelAddressHeuristicFinderUtil.aarch64_adrp_add(res)
                 elif is_arm32():
                     g = KernelAddressHeuristicFinderUtil.arm32_movw_movt(res)
+                elif is_riscv64() or is_riscv32():
+                    g = itertools.chain(
+                        KernelAddressHeuristicFinderUtil.riscv_auipc_use(res, include_lui=is_riscv32()),
+                        KernelAddressHeuristicFinderUtil.riscv_gp_relative(res),
+                    )
                 for slab_mutex in KernelAddressHeuristicFinderUtil.filter_in_kernel_image(g):
                     for i in range(16):
                         x = slab_mutex + current_arch.ptrsize * i
@@ -77192,6 +77229,86 @@ class Kernel:
         return [(level_map[level], line) for level, line in meta]
 
     @staticmethod
+    def slab_page_size():
+        if not (is_x86_64() or is_x86_32() or is_arm64() or is_arm32()) and (is_riscv64() or is_riscv32()):
+            return 0x1000
+        return KernelAddressHeuristicFinder.consts().PAGE_SIZE
+
+    @staticmethod
+    def get_riscv_page_layout():
+        allocator = Kernel.get_slab_type()
+        names = ["kmalloc-8", "kmalloc-16", "kmalloc-32", "kmalloc-64", "kmalloc-128", "kmalloc-256"]
+        if allocator == "SLUB":
+            resolver = Kernel.slub()
+            if not resolver.initialize():
+                return None
+            caches = resolver.walk_caches(names, list(range(resolver.ncpus)), simple=True,
+                                          skip_page2virt=True, cpu_sheaves=False)[1:]
+        elif allocator == "SLUB_TINY":
+            resolver = Kernel.slub_tiny()
+            if not resolver.initialize():
+                return None
+            caches = resolver.walk_caches(names, simple=True, skip_page2virt=True)[1:]
+        elif allocator == "SLAB":
+            resolver = Kernel.slab()
+            if not resolver.initialize():
+                return None
+            caches = resolver.walk_caches(names, [], simple=True)[1:]
+        elif allocator == "SLOB":
+            resolver = Kernel.slob()
+            if not resolver.initialize():
+                return None
+            caches, freelists = resolver.walk_caches([], simple=True)
+        else:
+            return None
+
+        pages = []
+        if allocator == "SLOB":
+            for page_list in freelists.values():
+                pages.extend(page_list)
+        for cache in caches:
+            if allocator == "SLUB":
+                for cpu in cache.get("kmem_cache_cpu", {}).values():
+                    pages.append(cpu.get("active_page", {}))
+                    pages.extend(cpu.get("partial_pages", []))
+                for node in cache.get("nodes_partial", []) + cache.get("nodes_full", []):
+                    pages.extend(node)
+            elif allocator == "SLUB_TINY":
+                for node in cache.get("nodes", []):
+                    pages.extend(node)
+            elif allocator == "SLAB":
+                for node in cache.get("nodes", []):
+                    for page_list in node.values():
+                        pages.extend(page_list)
+
+        pairs = set()
+        pagesize = Kernel.slab_page_size()
+        for page in pages:
+            virt = page.get("virt_addr") or page.get("s_mem_base")
+            if not page.get("address") or not virt:
+                continue
+            phys = AddrMap.v2p(virt & -pagesize)
+            if phys is not None:
+                pairs.add((page["address"], phys // pagesize))
+                if len(pairs) >= 32:
+                    break
+
+        best = None
+        for (page1, pfn1), (page2, pfn2) in itertools.combinations(pairs, 2):
+            if pfn1 == pfn2:
+                continue
+            size, remainder = divmod(page2 - page1, pfn2 - pfn1)
+            if remainder or not 24 <= size <= 256 or size % current_arch.ptrsize:
+                continue
+            base = page1 - pfn1 * size
+            matches = sum(page == base + pfn * size for page, pfn in pairs)
+            if matches >= 2 and (best is None or matches > best[0]):
+                best = (matches, base, size)
+        if best is None:
+            return None
+        return best[1:]
+
+    @staticmethod
     @Cache.cache_this_session(cache_None=False, per_inferior=True)
     def get_slab_type():
         if not is_alive():
@@ -77214,7 +77331,11 @@ class Kernel:
                 # If CONFIG_SLUB_TINY=y, calculate_sheaf_capacity is a small function that returns 0.
                 calculate_sheaf_capacity_size = Ksym.get_func_size("calculate_sheaf_capacity")
                 if calculate_sheaf_capacity_size is None:
-                    return "SLUB"
+                    # In newer builds, the constant result can eliminate this function entirely.
+                    configs = __gef_command_instances__["kconfig"].get_configs()
+                    if configs:
+                        return "SLUB_TINY" if configs.get("CONFIG_SLUB_TINY") == "y" else "SLUB"
+                    return "SLUB_TINY"
                 if calculate_sheaf_capacity_size <= 0x20:
                     return "SLUB_TINY"
                 else:
@@ -77344,7 +77465,9 @@ class Kernel:
     @Cache.cache_until_next(per_inferior=True)
     def get_slab_object(addr):
         """Return the dict of the slab object that contains `addr` resolved as `slab-contains`, or None."""
-        if Kernel.get_slab_type() not in ["SLUB", "SLUB_TINY", "SLAB"] or not (is_x86() or is_arm32() or is_arm64()):
+        if Kernel.get_slab_type() not in ["SLUB", "SLUB_TINY", "SLAB"] or not (
+            is_x86_64() or is_x86_32() or is_x86_16() or is_arm64() or is_arm32() or is_riscv64() or is_riscv32()
+        ):
             return None
         obj = __gef_command_instances__["slab-contains"].get_slab_object(addr)
         if obj["error"]:
@@ -77359,7 +77482,9 @@ class Kernel:
         resolver_factory = {
             "SLUB": Kernel.slub, "SLUB_TINY": Kernel.slub_tiny, "SLAB": Kernel.slab, "SLOB": Kernel.slob,
         }.get(allocator)
-        if resolver_factory is None or not (is_x86() or is_arm32() or is_arm64()):
+        if resolver_factory is None or not (
+            is_x86_64() or is_x86_32() or is_x86_16() or is_arm64() or is_arm32() or is_riscv64() or is_riscv32()
+        ):
             return allocator, None
         try:
             return allocator, resolver_factory().get_kmem_caches(target_names)
@@ -153507,7 +153632,7 @@ class KernelSlub:
     @staticmethod
     @Cache.cache_this_session(per_inferior=True)
     def warmup_page2virt():
-        if is_x86() or is_arm32() or is_arm64():
+        if is_x86_64() or is_x86_32() or is_x86_16() or is_arm64() or is_arm32() or is_riscv64() or is_riscv32():
             gdb.execute("page2virt 0", to_string=True)
         return
 
@@ -154587,7 +154712,7 @@ class KernelSlub:
         return AddressUtil.normalize_address(kmem_cache_cpu)
 
     def page2virt(self, page, kmem_cache, freelist_fastpath=(), *, skip_page2virt=False):
-        pagesize = KernelAddressHeuristicFinder.consts().PAGE_SIZE
+        pagesize = Kernel.slab_page_size()
         if self.slab_virtual_enabled:
             ret = gdb.execute("slab-virtual --quiet to_virt {:#x}".format(page["address"]), to_string=True)
             r = re.search(r"Virt: (\S+)", ret)
@@ -154627,7 +154752,7 @@ class KernelSlub:
 
     def page2virt_by_freelist(self, page, kmem_cache, freelist_fastpath=()):
         # set up for heuristic search from freelist
-        pagesize = KernelAddressHeuristicFinder.consts().PAGE_SIZE
+        pagesize = Kernel.slab_page_size()
         freelist = list(freelist_fastpath) + page["freelist"]
         freelist = [x for x in freelist if isinstance(x, int) and x != 0] # ignore str and 0
         if not freelist:
@@ -154799,7 +154924,7 @@ class KernelSlub:
         return freelist
 
     def walk_caches_active_page(self, cpu, kmem_cache, *, simple=False, skip_page2virt=False):
-        pagesize = KernelAddressHeuristicFinder.consts().PAGE_SIZE
+        pagesize = Kernel.slab_page_size()
         active_page = {}
         active_page["address"] = page = read_int_from_memory(
             kmem_cache["kmem_cache_cpu"][cpu]["address"] + self.kmem_cache_cpu_offset_page,
@@ -154828,7 +154953,7 @@ class KernelSlub:
         return
 
     def walk_caches_partial_page(self, cpu, kmem_cache, *, simple=False, skip_page2virt=False):
-        pagesize = KernelAddressHeuristicFinder.consts().PAGE_SIZE
+        pagesize = Kernel.slab_page_size()
         kmem_cache["kmem_cache_cpu"][cpu]["partial_pages"] = []
         if self.kmem_cache_cpu_offset_partial is None:
             return
@@ -154868,7 +154993,7 @@ class KernelSlub:
         return
 
     def walk_node_list(self, kmem_cache, kmem_cache_node, offset_list, *, simple=False, skip_page2virt=False):
-        pagesize = KernelAddressHeuristicFinder.consts().PAGE_SIZE
+        pagesize = Kernel.slab_page_size()
         node_page_list = []
         node_page_head = kmem_cache_node + offset_list
         if not is_valid_addr(node_page_head):
@@ -155077,7 +155202,7 @@ class KernelSlub:
         return objects
 
     def get_page_sheaf_objects(self, kmem_cache, page):
-        pagesize = KernelAddressHeuristicFinder.consts().PAGE_SIZE
+        pagesize = Kernel.slab_page_size()
         if page["virt_addr"] is None:
             return []
 
@@ -155445,7 +155570,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
     _note2_ = "\n".join(_note2_)
 
     def dump_page_print_layout(self, tag, kmem_cache, page, freelist, freelist_fastpath, freelist_sheaf):
-        pagesize = KernelAddressHeuristicFinder.consts().PAGE_SIZE
+        pagesize = Kernel.slab_page_size()
         used_address_color = Config.get("theme.heap_chunk_address_used")
         freed_address_color = Config.get("theme.heap_chunk_address_freed")
 
@@ -155517,7 +155642,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
         return
 
     def dump_page_print_freelist(self, tag, kmem_cache, page, freelist, freelist_fastpath):
-        pagesize = KernelAddressHeuristicFinder.consts().PAGE_SIZE
+        pagesize = Kernel.slab_page_size()
         freed_address_color = Config.get("theme.heap_chunk_address_freed")
 
         def print_freelist(freelist):
@@ -155929,7 +156054,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
 
     @Cache.cache_this_session
     def warmup_page2virt(self):
-        if is_x86() or is_arm32() or is_arm64():
+        if is_x86_64() or is_x86_32() or is_x86_16() or is_arm64() or is_arm32() or is_riscv64() or is_riscv32():
             args = self.args # backup
             KernelSlub.warmup_page2virt()
             # self.args will be overwritten. this is workaround.
@@ -155983,7 +156108,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
-    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
+    @Decorator.only_if_specific_arch(arch=("x86_64", "x86_32", "ARM64", "ARM32", "RISCV64", "RISCV32"))
     @Decorator.only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
         if args.hexdump_used < 0 or args.hexdump_freed < 0:
@@ -156224,7 +156349,15 @@ class KernelSlubTiny:
 
         # slow path
         kmem_caches = self.parse_kmem_caches_for_initialize()
-        candidate = (-1, -1) # (count, candidate_offset)
+        kmalloc_sizes = []
+        for kmem_cache in kmem_caches:
+            name_addr = read_int_from_memory(kmem_cache - current_arch.ptrsize)
+            if not is_valid_addr(name_addr):
+                continue
+            match = re.fullmatch(r"kmalloc-(\d+)", read_cstring_from_memory(name_addr))
+            if match:
+                kmalloc_sizes.append((kmem_cache, int(match.group(1))))
+        candidate = (-1, -1, -1) # (flags_count, kmalloc_matches, candidate_offset)
         for candidate_offset in range(current_arch.ptrsize * 2, 0x70, current_arch.ptrsize):
             # backward search for `flags`
             if not self.is_valid_flags_distance(candidate_offset):
@@ -156234,11 +156367,13 @@ class KernelSlubTiny:
                 val = read_int_from_memory(kmem_cache - candidate_offset)
                 if val & 0x4000_0000: # __CMPXCHG_DOUBLE
                     count += 1
-            if candidate[0] < count:
-                candidate = (count, candidate_offset)
+            # SLUB_TINY may set this flag in no caches; kmalloc object sizes break the tie.
+            offset_object_size = current_arch.ptrsize * 2 - candidate_offset + 4
+            matches = sum(read_int32_from_memory(cache + offset_object_size) == size for cache, size in kmalloc_sizes)
+            candidate = max(candidate, (count, matches, candidate_offset))
 
         # `flags` is not the head of the structure since v6.18, so add it back
-        self.kmem_cache_offset_list = candidate[1] + self.kmem_cache_offset_flags
+        self.kmem_cache_offset_list = candidate[2] + self.kmem_cache_offset_flags
         return
 
     def is_valid_flags_distance(self, distance):
@@ -156341,7 +156476,7 @@ class KernelSlubTiny:
         return read_cstring_from_memory(name_addr)
 
     def page2virt(self, page, kmem_cache, *, skip_page2virt=False):
-        pagesize = KernelAddressHeuristicFinder.consts().PAGE_SIZE
+        pagesize = Kernel.slab_page_size()
         if not skip_page2virt:
             ret = gdb.execute("page2virt {:#x}".format(page["address"]), to_string=True)
             r = re.search(r"Virt: (\S+)", ret)
@@ -156430,7 +156565,7 @@ class KernelSlubTiny:
         return freelist
 
     def walk_caches_node_page(self, kmem_cache, *, simple=False, skip_page2virt=False):
-        pagesize = KernelAddressHeuristicFinder.consts().PAGE_SIZE
+        pagesize = Kernel.slab_page_size()
         kmem_cache["nodes"] = []
         kmem_cache["node_addresses"] = []
         kmem_cache["node_ids"] = []
@@ -156600,7 +156735,7 @@ class SlubTinyDumpCommand(GenericCommand, BufferingOutput):
     ])
 
     def dump_page_print_layout(self, kmem_cache, page, freelist):
-        pagesize = KernelAddressHeuristicFinder.consts().PAGE_SIZE
+        pagesize = Kernel.slab_page_size()
         used_address_color = Config.get("theme.heap_chunk_address_used")
         freed_address_color = Config.get("theme.heap_chunk_address_freed")
 
@@ -156837,7 +156972,7 @@ class SlubTinyDumpCommand(GenericCommand, BufferingOutput):
 
     @Cache.cache_this_session
     def warmup_page2virt(self):
-        if is_x86() or is_arm32() or is_arm64():
+        if is_x86_64() or is_x86_32() or is_x86_16() or is_arm64() or is_arm32() or is_riscv64() or is_riscv32():
             args = self.args # backup
             KernelSlub.warmup_page2virt()
             # self.args will be overwritten. this is workaround.
@@ -156850,7 +156985,7 @@ class SlubTinyDumpCommand(GenericCommand, BufferingOutput):
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware"))
-    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
+    @Decorator.only_if_specific_arch(arch=("x86_64", "x86_32", "ARM64", "ARM32", "RISCV64", "RISCV32"))
     @Decorator.only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
         if args.hexdump_used < 0 or args.hexdump_freed < 0:
@@ -157504,7 +157639,7 @@ class KernelSlab:
         return freelist
 
     def walk_node_list(self, node_page_head, current_node_page, kmem_cache, *, simple=False):
-        pagesize = KernelAddressHeuristicFinder.consts().PAGE_SIZE
+        pagesize = Kernel.slab_page_size()
         kversion = Kernel.version()
         node_page_list = []
         seen = set() # avoid infinity loop
@@ -157581,7 +157716,7 @@ class KernelSlab:
                     pass
                 if index_type is not None:
                     kmem_cache["freelist_idx_size"] = int(index_type.sizeof)
-                elif KernelAddressHeuristicFinder.consts().PAGE_SIZE >> 8 <= min_size:
+                elif Kernel.slab_page_size() >> 8 <= min_size:
                     kmem_cache["freelist_idx_size"] = 1
                 else:
                     kmem_cache["freelist_idx_size"] = 2
@@ -157742,7 +157877,7 @@ class SlabDumpCommand(GenericCommand, BufferingOutput):
     ])
 
     def dump_page(self, page, kmem_cache, tag):
-        pagesize = KernelAddressHeuristicFinder.consts().PAGE_SIZE
+        pagesize = Kernel.slab_page_size()
         heap_page_color = Config.get("theme.heap_page_address")
         label_inactive_color = Config.get("theme.heap_label_inactive")
         used_address_color = Config.get("theme.heap_chunk_address_used")
@@ -157758,7 +157893,7 @@ class SlabDumpCommand(GenericCommand, BufferingOutput):
 
         # print virtual address
         colored_s_mem_base = Color.colorify_hex(page["s_mem_base"], heap_page_color)
-        mask = KernelAddressHeuristicFinder.consts().PAGE_SIZE - 1
+        mask = Kernel.slab_page_size() - 1
         self.out.append("        virtual address (s_mem & ~{:#x}): {:s}".format(mask, colored_s_mem_base))
 
         # print info
@@ -157993,7 +158128,7 @@ class SlabDumpCommand(GenericCommand, BufferingOutput):
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware"))
-    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
+    @Decorator.only_if_specific_arch(arch=("x86_64", "x86_32", "ARM64", "ARM32", "RISCV64", "RISCV32"))
     @Decorator.only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
         if args.hexdump_used < 0 or args.hexdump_freed < 0:
@@ -158193,10 +158328,12 @@ class KernelSlob:
             arguments = ("$rdi", "$rsi", "$rdx", "$rcx")
         elif is_x86_32():
             arguments = ("$eax", "$edx", "$ecx")
-        elif is_arm32():
-            arguments = ("$r0", "$r1", "$r2", "$r3")
         elif is_arm64():
             arguments = ("$x0", "$x1", "$x2", "$x3")
+        elif is_arm32():
+            arguments = ("$r0", "$r1", "$r2", "$r3")
+        elif is_riscv64() or is_riscv32():
+            arguments = ("$a0", "$a1", "$a2", "$a3")
         else:
             return None
 
@@ -158262,7 +158399,7 @@ class KernelSlob:
         if simple:
             return []
 
-        pagesize = KernelAddressHeuristicFinder.consts().PAGE_SIZE
+        pagesize = Kernel.slab_page_size()
         if pagesize <= 32767:
             unit = 2
         else:
@@ -158299,7 +158436,7 @@ class KernelSlob:
         return freelist
 
     def walk_page_freelist(self, head, *, simple=False):
-        pagesize = KernelAddressHeuristicFinder.consts().PAGE_SIZE
+        pagesize = Kernel.slab_page_size()
         seen = {head}
         page_freelist = []
         current = read_int_from_memory(head)
@@ -158426,7 +158563,7 @@ class SlobDumpCommand(GenericCommand, BufferingOutput):
     ])
 
     def dump_freelist(self, tag, page_freelist):
-        pagesize = KernelAddressHeuristicFinder.consts().PAGE_SIZE
+        pagesize = Kernel.slab_page_size()
         chunk_size_color = Config.get("theme.heap_chunk_size")
         label_active_color = Config.get("theme.heap_label_active")
         heap_page_color = Config.get("theme.heap_page_address")
@@ -158540,7 +158677,7 @@ class SlobDumpCommand(GenericCommand, BufferingOutput):
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware"))
-    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
+    @Decorator.only_if_specific_arch(arch=("x86_64", "x86_32", "ARM64", "ARM32", "RISCV64", "RISCV32"))
     @Decorator.only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
         self.quiet_info("Wait for memory scan")
@@ -158780,7 +158917,7 @@ class SlabContainsCommand(GenericCommand):
     def get_slab_object(self, address):
         """Return the dict of the slab object that contains `address`.
         `error` is set if it is not resolved, and the other members are set as far as they are resolved."""
-        pagesize = KernelAddressHeuristicFinder.consts().PAGE_SIZE
+        pagesize = Kernel.slab_page_size()
         allocator = Kernel.get_slab_type()
         if allocator == "SLAB" and Kernel.version() < "3.13":
             return Kernel.slab().get_legacy_slab_object(address)
@@ -158922,7 +159059,7 @@ class SlabContainsCommand(GenericCommand):
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
-    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
+    @Decorator.only_if_specific_arch(arch=("x86_64", "x86_32", "ARM64", "ARM32", "RISCV64", "RISCV32"))
     @Decorator.only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
         self.quiet_info("Wait for memory scan")
@@ -196350,6 +196487,16 @@ class PageCommand(GenericCommand):
     def initialize():
         info("Wait for memory scan")
 
+        if not (is_x86_64() or is_x86_32() or is_arm64() or is_arm32()) and (is_riscv64() or is_riscv32()):
+            layout = Kernel.get_riscv_page_layout()
+            if layout is None:
+                err("Could not resolve the RISC-V page array")
+                return None
+            PageCommand.PAGE_SHIFT = 12
+            PageCommand.mode = "RISCV_LINEAR"
+            PageCommand.page_base, PageCommand.sizeof_struct_page = layout
+            return True
+
         if KernelAddressHeuristicFinder.consts() is None:
             err("Failed to resolve kernel version")
             return None
@@ -196532,6 +196679,12 @@ class PageCommand(GenericCommand):
             else:
                 return None
 
+        elif is_riscv64() or is_riscv32():
+            delta = page - self.page_base
+            if delta < 0 or delta % self.sizeof_struct_page:
+                return None
+            pfn = delta // self.sizeof_struct_page
+
         else:
             return None
 
@@ -196604,6 +196757,9 @@ class PageCommand(GenericCommand):
             else:
                 return None
 
+        elif is_riscv64() or is_riscv32():
+            page = AddressUtil.normalize_address(self.page_base + pfn * self.sizeof_struct_page)
+
         else:
             return None
 
@@ -196615,7 +196771,7 @@ class PageCommand(GenericCommand):
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
-    @Decorator.only_if_specific_arch(arch=("x86_64", "x86_32", "ARM64", "ARM32"))
+    @Decorator.only_if_specific_arch(arch=("x86_64", "x86_32", "ARM64", "ARM32", "RISCV64", "RISCV32"))
     @Decorator.only_if_in_kernel
     def do_invoke(self, args):
         self.usage(simple=True)
@@ -196647,7 +196803,7 @@ class PageToVirtCommand(PageCommand, BufferingOutput):
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
-    @Decorator.only_if_specific_arch(arch=("x86_64", "x86_32", "ARM64", "ARM32"))
+    @Decorator.only_if_specific_arch(arch=("x86_64", "x86_32", "ARM64", "ARM32", "RISCV64", "RISCV32"))
     @Decorator.only_if_in_kernel
     def do_invoke(self, args):
         if args.rescan:
@@ -196698,7 +196854,7 @@ class PageFromVirtCommand(PageCommand, BufferingOutput):
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
-    @Decorator.only_if_specific_arch(arch=("x86_64", "x86_32", "ARM64", "ARM32"))
+    @Decorator.only_if_specific_arch(arch=("x86_64", "x86_32", "ARM64", "ARM32", "RISCV64", "RISCV32"))
     @Decorator.only_if_in_kernel
     def do_invoke(self, args):
         if args.rescan:
@@ -196752,7 +196908,7 @@ class PageToPhysCommand(PageCommand, BufferingOutput):
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
-    @Decorator.only_if_specific_arch(arch=("x86_64", "x86_32", "ARM64", "ARM32"))
+    @Decorator.only_if_specific_arch(arch=("x86_64", "x86_32", "ARM64", "ARM32", "RISCV64", "RISCV32"))
     @Decorator.only_if_in_kernel
     def do_invoke(self, args):
         if args.rescan:
@@ -196797,7 +196953,7 @@ class PhysToPageCommand(PageCommand, BufferingOutput):
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
-    @Decorator.only_if_specific_arch(arch=("x86_64", "x86_32", "ARM64", "ARM32"))
+    @Decorator.only_if_specific_arch(arch=("x86_64", "x86_32", "ARM64", "ARM32", "RISCV64", "RISCV32"))
     @Decorator.only_if_in_kernel
     def do_invoke(self, args):
         if args.rescan:
@@ -205591,7 +205747,7 @@ class KernelRefsCommand(GenericCommand, BufferingOutput):
 
     def collect_cache_ranges(self, name):
         """Return the slab page ranges of the kmem_cache `name`."""
-        pagesize = KernelAddressHeuristicFinder.consts().PAGE_SIZE
+        pagesize = Kernel.slab_page_size()
         allocator, kmem_caches = Kernel.get_slab_caches([name])
         if kmem_caches is None:
             self.err_add_out("Could not parse the kmem_caches (allocator: {!s})".format(allocator))

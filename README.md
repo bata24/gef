@@ -346,7 +346,7 @@ For the usage and options of each command, see [docs/COMMANDS.md](docs/COMMANDS.
 <summary><code>slub-dump</code>, <code>slab-dump</code>, <code>slob-dump</code>, <code>slub-tiny-dump</code>, <code>slab-contains</code>, <code>kmem-cache-alias</code>, <code>buddy-dump</code>, <code>buddy-contains</code>, <code>vmalloc-dump</code>, <code>kobj</code></summary>
 
 - `slub-dump`: dumps slub free-list.
-    - Supported on x64/x86/ARM64/ARM + `SLUB` + no-symbol + kASLR.
+    - Supported on x64/x86/ARM64/ARM + `SLUB` + no-symbol + kASLR, and RISC-V 64/32 + `SLUB` + no-symbol.
     - Supported regardless of whether `CONFIG_SLAB_FREELIST_HARDENED` is `y` or `n`.
     - Supported regardless of whether `CONFIG_SLAB_VIRTUAL` is `y` or `n` (x64 only).
     - It supports dumping partial pages (`-v`) and NUMA node pages (`-vv`).
@@ -355,15 +355,16 @@ For the usage and options of each command, see [docs/COMMANDS.md](docs/COMMANDS.
     - It supports `sheaf/barn` mechanism for linux 6.18~.
     - ![](images/slub-dump-sheaves.png)
 - `slab-dump`: dumps slab free-list.
-    - Supported on x64/x86/ARM64/ARM + `SLAB` + no-symbol + kASLR.
+    - Supported on x64/x86/ARM64/ARM + `SLAB` + no-symbol + kASLR, and RISC-V 64/32 + `SLAB` + no-symbol.
     - ![](images/slab-dump.png)
 - `slob-dump`: dumps slob free-list.
-    - Supported on x64/x86/ARM64/ARM + `SLOB` + no-symbol + kASLR.
+    - Supported on x64/x86/ARM64/ARM + `SLOB` + no-symbol + kASLR, and RISC-V 64/32 + `SLOB` + no-symbol.
     - ![](images/slob-dump.png)
 - `slub-tiny-dump`: dumps slub-tiny free-list.
-    - Supported on x64/x86/ARM64/ARM + `SLUB-TINY` + no-symbol + kASLR.
+    - Supported on x64/x86/ARM64/ARM + `SLUB-TINY` + no-symbol + kASLR, and RISC-V 64/32 + `SLUB-TINY` + no-symbol.
     - ![](images/slub-tiny-dump.png)
 - `slab-contains`: resolves the slab cache (`kmem_cache`) that a certain address (object) belongs to (for `SLUB`/`SLUB-TINY`/`SLAB`).
+    - Supports RISC-V 32/64 without a symbolized `vmlinux`.
     - ![](images/slab-contains.png)
     - For `SLUB`/`SLUB-TINY`, if all chunks belonging to a certain `page` are in use, they will not be displayed by `slub-dump`/`slub-tiny-dump` command.
     - Even with such an address (object), this command may be able to resolve `kmem_cache`.
