@@ -570,7 +570,7 @@ For the usage and options of each command, see [docs/COMMANDS.md](docs/COMMANDS.
 ### Other
 
 <details>
-<summary><code>tcmalloc-heap-dump</code>, <code>musl-heap-dump</code>, <code>go-heap-dump</code>, <code>tlsf-heap-dump</code>, <code>hoard-heap-dump</code>, <code>mimalloc-heap-dump</code>, <code>scalloc-heap-dump</code>, <code>snmalloc-heap-dump</code>, <code>ssmalloc-heap-dump</code>, <code>jemalloc-heap-dump</code>, <code>sfmalloc-heap-dump</code>, <code>rpmalloc-heap-dump</code>, <code>tbbmalloc-heap-dump</code>, <code>zig-heap-dump</code>, <code>mesh-heap-dump</code>, <code>streamflow-heap-dump</code>, <code>supermalloc-heap-dump</code>, <code>dlmalloc-heap-dump</code>, <code>scudo-heap-dump</code>, <code>mozjemalloc-heap-dump</code>, <code>bmalloc-heap-dump</code>, <code>libpas-heap-dump</code>, <code>zend-heap-dump</code></summary>
+<summary><code>tcmalloc-heap-dump</code>, <code>musl-heap-dump</code>, <code>go-heap-dump</code>, <code>tlsf-heap-dump</code>, <code>hoard-heap-dump</code>, <code>mimalloc-heap-dump</code>, <code>scalloc-heap-dump</code>, <code>snmalloc-heap-dump</code>, <code>ssmalloc-heap-dump</code>, <code>jemalloc-heap-dump</code>, <code>sfmalloc-heap-dump</code>, <code>rpmalloc-heap-dump</code>, <code>tbbmalloc-heap-dump</code>, <code>zig-heap-dump</code>, <code>mesh-heap-dump</code>, <code>streamflow-heap-dump</code>, <code>supermalloc-heap-dump</code>, <code>dlmalloc-heap-dump</code>, <code>scudo-heap-dump</code>, <code>mozjemalloc-heap-dump</code>, <code>bmalloc-heap-dump</code>, <code>libpas-heap-dump</code>, <code>zend-heap-dump</code>, <code>obmalloc-heap-dump</code></summary>
 
 - `tcmalloc-heap-dump`: dumps TCMalloc (`gperftools-2.16-1` or named `libgoogle-perftools{4,-dev}`) free-list.
     - ![](images/tcmalloc-heap-dump.png)
@@ -680,8 +680,7 @@ For the usage and options of each command, see [docs/COMMANDS.md](docs/COMMANDS.
     - How to test (x64):
         - Get the upstream source from https://gee.cs.oswego.edu/pub/misc/malloc.c
         - Build with `gcc -O2 -g -fno-builtin -shared -fPIC malloc.c -o libdlmalloc.so`.
-            - Without `-fno-builtin` (and `_FORTIFY_SOURCE`), GCC may turn `malloc()` + `memset()` in `calloc()`
-              into a recursive `calloc()` call.
+            - Without `-fno-builtin` (and `_FORTIFY_SOURCE`), GCC may turn `malloc()` + `memset()` in `calloc()` into a recursive `calloc()` call.
         - Run your test program with `LD_PRELOAD=/PATH/TO/libdlmalloc.so ./a.out`.
 - `scudo-heap-dump`: dumps Scudo (the standalone allocator of LLVM 11~) free-list.
     - ![](images/scudo-heap-dump.png)
@@ -699,7 +698,7 @@ For the usage and options of each command, see [docs/COMMANDS.md](docs/COMMANDS.
           https://archive.mozilla.org/pub/firefox/releases/159.0/jsshell/jsshell-linux-x86_64.zip
         - Save the following as `test.js`. It allocates 100 buffers of 0x300 bytes and frees half of them with `gc()`.
           `a=[];for(i=0;i<100;i++)a.push(new ArrayBuffer(0x300));for(i=0;i<100;i+=2)a[i]=null;gc();print(1)`
-        - Run `LD_LIBRARY_PATH=. gdb --args ./js -f test.js`, `catch syscall write`, `run`.
+        - Run `LD_LIBRARY_PATH=. gdb --args ./js -f test.js`, `catch syscall write` and then `run`.
 - `bmalloc-heap-dump`: dumps the old WebKit bmalloc (before it was replaced by mimalloc in 2026/01) free lists and Cache.
     - ![](images/bmalloc-heap-dump.png)
     - How to test:
@@ -711,7 +710,7 @@ For the usage and options of each command, see [docs/COMMANDS.md](docs/COMMANDS.
           -Ibmalloc -I. -DBENABLE_LIBPAS=0 -DBUSE_LIBPAS=0 -c $f -o $f.o; done`.
         - Build the test program (`g_config` is normally provided by WTF, so `-DBMALLOC_STANDALONE` defines it here):
           `clang++ -std=c++20 -O0 -g -mcx16 -Ibmalloc -I. -DBENABLE_LIBPAS=0 -DBUSE_LIBPAS=0 -DBMALLOC_STANDALONE
-          /PATH/TO/tests/heap-test.cpp bmalloc/*.o -lpthread -ldl -latomic`.
+          /PATH/TO/tests/test.cpp bmalloc/*.o -lpthread -ldl -latomic`.
         - Run `gdb ./a.out`.
 - `libpas-heap-dump`: dumps libpas (the WebKit allocator that replaced the old bmalloc), the per-thread caches,
   the small size-class free objects and the large free ranges.
@@ -723,29 +722,25 @@ For the usage and options of each command, see [docs/COMMANDS.md](docs/COMMANDS.
         - Build libpas with the bmalloc glue as a static library (clang; GCC also works with `-latomic`):
           `cd Source/bmalloc`, then for every `libpas/src/libpas/*.c` and `bmalloc/*.cpp` named in `CMakeLists.txt`
           except `Zone.cpp` (Darwin only): `clang++ -std=c++20 -O2 -g -Ibmalloc -I. -Ilibpas/src/libpas -D_GNU_SOURCE
-          -DPAS_BMALLOC=1 -DNDEBUG -DBUILDING_bmalloc -c <file>` (compile the `.c` files the same way), and
-          `ar rcs libbmalloc.a *.o`.
-        - Build the test program against it:
-          `clang++ -O0 -g /PATH/TO/tests/libpas-heap-test.cpp libbmalloc.a -o libpas-heap-test -lpthread -latomic`.
-        - Run `gdb ./libpas-heap-test`, `break stop_here`, `run`, and then `libpas-heap-dump -l`. The freed objects
-          appear under their small size classes and in the large free ranges, and the pending ones in the log.
-        - For other architectures, build statically with a cross `g++` (e.g. `aarch64-linux-gnu-g++ -static`) and run it
-          under `qemu-aarch64 -g 1234` with `gdb-multiarch`.
+          -DPAS_BMALLOC=1 -DNDEBUG -DBUILDING_bmalloc -c <file>` (compile the `.c` files the same way), and `ar rcs libbmalloc.a *.o`.
+        - Build the test program against it: `clang++ -O0 -g /PATH/TO/tests/test.cpp libbmalloc.a -lpthread -latomic`.
+        - Run `gdb ./a.out`.
 - `zend-heap-dump`: dumps Zend MM (the PHP allocator of PHP 7.0~) free lists, chunks and huge blocks.
     - ![](images/zend-heap-dump.png)
     - How to test:
         - Install `php-cli` (e.g. `apt install php-cli`), or get and extract the upstream source from
-          https://www.php.net/downloads and build with `./configure --disable-all --enable-cli && make`
-          (the binary is `sapi/cli/php`).
+          https://www.php.net/downloads and build with `./configure --disable-all --enable-cli && make` (the binary is `sapi/cli/php`).
         - Save the following as `test.php`. It allocates 100 strings of 0x100 bytes and frees half of them.
           `<?php $a=[];for($i=0;$i<100;$i++)$a[]=str_repeat("A",0x100);for($i=0;$i<100;$i+=2)unset($a[$i]);echo 1;`
-        - Run `gdb --args php -n test.php`, `catch syscall write`, `run`, and then `zend-heap-dump`.
-          The freed strings appear in `free_slot[16]` (size: 0x140).
-        - For other architectures, build statically with a cross compiler, e.g.
-          `./configure --host=aarch64-linux-gnu --disable-all --enable-cli && make EXTRA_LDFLAGS_PROGRAM=-all-static`,
-          and run it under `qemu-aarch64 -g 1234` with `gdb-multiarch`.
-            - For a big-endian target, also pass `ac_cv_c_bigendian_php=yes` to `configure`. It cannot tell the byte order
-              when cross compiling, and leaves `WORDS_BIGENDIAN` undefined.
+        - Run `gdb --args php -n test.php`, `catch syscall write` then `run`.
+- `obmalloc-heap-dump`: dumps obmalloc (pymalloc, the small object allocator of CPython) arenas, pools and free blocks.
+    - ![](images/obmalloc-heap-dump.png)
+    - How to test:
+        - Install `python3` (e.g. `apt install python3`), or get and extract the upstream source from
+          https://www.python.org/downloads/source/ and build with `./configure && make python`.
+        - Save the following as `test.py`. It allocates 1000 bytes objects of 0x40 bytes and frees half of them.
+          `import os,signal;a=[b"A"*n for n in [0x40]*1000];del a[::2];os.kill(os.getpid(),signal.SIGTRAP)`
+        - Run `gdb --args python3 test.py` then `run`.
 
 </details>
 

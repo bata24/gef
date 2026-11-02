@@ -8335,6 +8335,69 @@ Simplified musl mallocng structure:
                               +-------------------+      +-------------------+
 ```
 
+## `obmalloc-heap-dump`
+
+obmalloc (pymalloc, the small object allocator of CPython) heap viewer.
+
+
+### Syntax
+
+```text
+usage: obmalloc-heap-dump [-h] [-hh] [--usedpools USEDPOOLS] [-n] [-v] [--meta]
+
+options:
+  -h, --help            show this help message and exit
+  -hh, --help-simple    show help without ASCII diagram.
+  --usedpools USEDPOOLS
+                        dump only the specified usedpools (e.g. interp->obmalloc->pools.used).
+  -n, --no-pager        do not use the pager.
+  -v, --verbose         also dump empty size classes and all pools of each arena.
+  --meta                display offset information.
+```
+
+### Examples
+
+```gdb
+obmalloc-heap-dump                             # dump the arenas and the used pools with their free blocks
+obmalloc-heap-dump -v                          # also dump all pools of each arena
+obmalloc-heap-dump --usedpools 0x5555559e64e0  # dump only the specified usedpools
+```
+
+### Notes
+
+```text
+Simplified obmalloc structure:
+
++-usedpools[2*classes]-+     +-pool_header (POOL_SIZE aligned)-+
+| [2*i]   nextpool     |---->| ref.count (allocated blocks)    |     +-block-+   +-block-+
+| [2*i+1] prevpool     |     | freeblock                       |---->| next  |-->| next  |--> NULL
++----------------------+     | nextpool                        |--+  +-------+   +-------+
+                             | prevpool                        |  |
+                             | arenaindex, szidx               |  |  +-pool_header-+
+                             | nextoffset, maxnextoffset       |  +->| nextpool    |--> ... --> the fake pool
+                             | blocks of the size class        |     | ...         |
+                             +---------------------------------+     +-------------+
+
++-arenas[maxarenas]----+
+| address              |
+| pool_address         |
+| nfreepools           |
+| ntotalpools          |     +-pool_header-+   +-pool_header-+
+| freepools            |---->| nextpool    |-->| nextpool    |--> NULL
+| nextarena, prevarena |     | ...         |   | ...         |
++----------------------+     +-------------+   +-------------+
+
+* A small request (up to 512 bytes, 256 bytes in old versions) is a block of a size class, ALIGNMENT bytes apart.
+* A pool (4KiB, 16KiB on 64-bit 3.10~) has blocks of a class, and an arena (256KiB, 1MiB on 64-bit 3.10~) has pools.
+* usedpools[2*i] links the pools of class i with free blocks, circularly through the fake pool 2 words before it.
+  A full pool is unlinked from it, and an empty pool is linked to freepools of its arena.
+* The blocks from nextoffset to maxnextoffset have never been used, and are not linked to freeblock.
+* GEF finds usedpools in .data and .bss, arenas from the arenaindex of the used pools, and the sizes from them,
+  so debug symbols are not needed. pool_header and arena_object have not changed since 2.5.
+* Isolated subinterpreters (3.12~) have their own obmalloc on the heap. Use --usedpools for them.
+* The free-threaded build (3.13~) and PYTHONMALLOC=malloc do not use obmalloc.
+```
+
 ## `rpmalloc-heap-dump`
 
 rpmalloc heap free-list viewer.

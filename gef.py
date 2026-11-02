@@ -181464,7 +181464,7 @@ class BmallocHeapDumpCommand(GenericCommand, BufferingOutput):
 
     CHUNK_SIZE = 0x100000
     SMALL_PAGE_SIZE = 0x1000
-    SMALL_LINE_SIZE = 0x100
+    SMALL_LINE_SIZE = 0x100 # noqa: F841
     SIZE_CLASS_COUNT = 112
     PAGE_CLASS_COUNT = 16
     MASK_SIZE_CLASS_COUNT = 64
@@ -182644,6 +182644,498 @@ class ZendHeapDumpCommand(GenericCommand, BufferingOutput):
         self.out = []
         for heap in heaps:
             self.dump_heap(heap)
+        self.print_output()
+        return
+
+
+@register_command
+class ObmallocHeapDumpCommand(GenericCommand, BufferingOutput):
+    """obmalloc (pymalloc, the small object allocator of CPython) heap viewer."""
+
+    _cmdline_ = "obmalloc-heap-dump"
+    _category_ = "05-d. Heap - Other"
+
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("-hh", "--help-simple", action="store_true", help="show help without ASCII diagram.")
+    parser.add_argument("--usedpools", type=AddressUtil.parse_address,
+                        help="dump only the specified usedpools (e.g. interp->obmalloc->pools.used).")
+    parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
+    parser.add_argument("-v", "--verbose", action="store_true",
+                        help="also dump empty size classes and all pools of each arena.")
+    parser.add_argument("--meta", action="store_true", help="display offset information.")
+    _syntax_ = parser.format_help()
+
+    _example_ = "\n".join([
+        "{0:s}                             # dump the arenas and the used pools with their free blocks",
+        "{0:s} -v                          # also dump all pools of each arena",
+        "{0:s} --usedpools 0x5555559e64e0  # dump only the specified usedpools",
+    ]).format(_cmdline_)
+
+    _note_ = "\n".join([
+        "Simplified obmalloc structure:",
+        "",
+        "+-usedpools[2*classes]-+     +-pool_header (POOL_SIZE aligned)-+",
+        "| [2*i]   nextpool     |---->| ref.count (allocated blocks)    |     +-block-+   +-block-+",
+        "| [2*i+1] prevpool     |     | freeblock                       |---->| next  |-->| next  |--> NULL",
+        "+----------------------+     | nextpool                        |--+  +-------+   +-------+",
+        "                             | prevpool                        |  |",
+        "                             | arenaindex, szidx               |  |  +-pool_header-+",
+        "                             | nextoffset, maxnextoffset       |  +->| nextpool    |--> ... --> the fake pool",
+        "                             | blocks of the size class        |     | ...         |",
+        "                             +---------------------------------+     +-------------+",
+        "",
+        "+-arenas[maxarenas]----+",
+        "| address              |",
+        "| pool_address         |",
+        "| nfreepools           |",
+        "| ntotalpools          |     +-pool_header-+   +-pool_header-+",
+        "| freepools            |---->| nextpool    |-->| nextpool    |--> NULL",
+        "| nextarena, prevarena |     | ...         |   | ...         |",
+        "+----------------------+     +-------------+   +-------------+",
+        "",
+        "* A small request (up to 512 bytes, 256 bytes in old versions) is a block of a size class, ALIGNMENT bytes apart.",
+        "* A pool (4KiB, 16KiB on 64-bit 3.10~) has blocks of a class, and an arena (256KiB, 1MiB on 64-bit 3.10~) has pools.",
+        "* usedpools[2*i] links the pools of class i with free blocks, circularly through the fake pool 2 words before it.",
+        "  A full pool is unlinked from it, and an empty pool is linked to freepools of its arena.",
+        "* The blocks from nextoffset to maxnextoffset have never been used, and are not linked to freeblock.",
+        "* GEF finds usedpools in .data and .bss, arenas from the arenaindex of the used pools, and the sizes from them,",
+        "  so debug symbols are not needed. pool_header and arena_object have not changed since 2.5.",
+        "* Isolated subinterpreters (3.12~) have their own obmalloc on the heap. Use --usedpools for them.",
+        "* The free-threaded build (3.13~) and PYTHONMALLOC=malloc do not use obmalloc.",
+    ])
+
+    POOL_SIZES = (0x1000, 0x4000)
+    INITIAL_ARENA_OBJECTS = 16
+    LIST_LIMIT = 0x100000
+
+    def read_words(self, addr, count):
+        data = read_memory(addr, self.ptrsize * count, safe=True)
+        if data is None:
+            return None
+        return slice_unpack(data, self.ptrsize)
+
+    def read_pool(self, addr):
+        """
+        struct pool_header {
+            union { block *_padding; uint count; } ref;
+            block *freeblock;
+            struct pool_header *nextpool;
+            struct pool_header *prevpool;
+            uint arenaindex;
+            uint szidx;
+            uint nextoffset;
+            uint maxnextoffset;
+        };
+        """
+        ptrsize = self.ptrsize
+        data = read_memory(addr, ptrsize * 4 + 16, safe=True)
+        if data is None:
+            return None
+        _, freeblock, nextpool, prevpool = slice_unpack(data[:ptrsize * 4], ptrsize)
+        arenaindex, szidx, nextoffset, maxnextoffset = slice_unpack(data[ptrsize * 4:], 4)
+        return {
+            "address": addr,
+            # count is the head of the union also on big-endian
+            "count": slice_unpack(data[:4], 4)[0],
+            "freeblock": freeblock,
+            "nextpool": nextpool,
+            "prevpool": prevpool,
+            "arenaindex": arenaindex,
+            "szidx": szidx,
+            "nextoffset": nextoffset,
+            "maxnextoffset": maxnextoffset,
+        }
+
+    def parse_arenas(self, data, pool_size):
+        """
+        struct arena_object {
+            uintptr_t address;
+            block* pool_address;
+            uint nfreepools;
+            uint ntotalpools;
+            struct pool_header* freepools;
+            struct arena_object* nextarena;
+            struct arena_object* prevarena;
+        };
+        """
+        ptrsize = self.ptrsize
+        size = ptrsize * 5 + 8
+        arenas = []
+        for i in range(0, len(data) - size + 1, size):
+            address, pool_address = slice_unpack(data[i:i + ptrsize * 2], ptrsize)
+            nfreepools, ntotalpools = slice_unpack(data[i + ptrsize * 2:i + ptrsize * 2 + 8], 4)
+            freepools, nextarena, prevarena = slice_unpack(data[i + ptrsize * 2 + 8:i + size], ptrsize)
+            arenas.append({
+                "address": address,
+                "pool_address": pool_address,
+                "nfreepools": nfreepools,
+                "ntotalpools": ntotalpools,
+                "freepools": freepools,
+                "nextarena": nextarena,
+                "prevarena": prevarena,
+                # the first pool-aligned address in the arena
+                "first": address + (-address) % pool_size,
+            })
+        return arenas
+
+    def is_arena(self, addr, arena, pool_size, arena_size):
+        size = self.ptrsize * 5 + 8
+        # an unused arena object is linked to unused_arena_objects
+        if arena["address"] == 0:
+            return arena["nextarena"] == 0 or (arena["nextarena"] > addr and (arena["nextarena"] - addr) % size == 0)
+        # the pools from the first pool-aligned address
+        ntotalpools = arena_size // pool_size - (arena["address"] % pool_size != 0)
+        if arena["ntotalpools"] != ntotalpools or arena["nfreepools"] > ntotalpools:
+            return False
+        offset = arena["pool_address"] - arena["first"]
+        return 0 <= offset <= ntotalpools * pool_size and offset % pool_size == 0
+
+    def read_arenas(self, addr, pool_size, arena_size):
+        """Return the arena objects, or None.
+        maxarenas is the largest of 16, 32, 64, ... with which all arena objects are valid,
+        since the unused ones are linked to unused_arena_objects and only its tail has NULL."""
+        size = self.ptrsize * 5 + 8
+        arenas = []
+        tails = 0
+        n = self.INITIAL_ARENA_OBJECTS
+        while n <= self.LIST_LIMIT:
+            data = read_memory(addr + size * len(arenas), size * (n - len(arenas)), safe=True)
+            if data is None:
+                break
+            new = self.parse_arenas(data, pool_size)
+            tails += sum(arena["address"] == 0 and arena["nextarena"] == 0 for arena in new)
+            if tails > 1 or not all(self.is_arena(addr, arena, pool_size, arena_size) for arena in new):
+                break
+            arenas += new
+            n *= 2
+        end = addr + size * len(arenas)
+        if not arenas or any(arena["address"] == 0 and arena["nextarena"] >= end for arena in arenas):
+            return None
+        return arenas
+
+    def contains(self, arena, pool):
+        return arena["address"] and arena["first"] <= pool["address"] < arena["pool_address"]
+
+    def is_writable(self, addr):
+        index = bisect.bisect_right(self.starts, addr) - 1
+        return index >= 0 and addr < self.maps[index][1]
+
+    def find_arenas(self, candidates, pools, pool_size):
+        """Return the address of arenas, the arena objects and ARENA_SIZE, or (None, [], None).
+        The arena object at the arenaindex of each used pool contains the pool."""
+        size = self.ptrsize * 5 + 8
+        tried = set()
+        for value in candidates:
+            if value in tried or value % 4:
+                continue
+            tried.add(value)
+            if not self.is_writable(value):
+                continue
+            data = read_memory(value + size * pools[0]["arenaindex"], size, safe=True)
+            if data is None:
+                continue
+            arena = self.parse_arenas(data, pool_size)[0]
+            # 256KiB, 1MiB or 2MiB
+            arena_size = (arena["ntotalpools"] + (arena["address"] % pool_size != 0)) * pool_size
+            if not self.contains(arena, pools[0]) or arena_size < 0x40000 or arena_size & (arena_size - 1):
+                continue
+            arenas = self.read_arenas(value, pool_size, arena_size)
+            if arenas is None:
+                continue
+            if all(p["arenaindex"] < len(arenas) and self.contains(arenas[p["arenaindex"]], p) for p in pools):
+                return value, arenas, arena_size
+        return None, [], None
+
+    def walk_pools(self, state, i):
+        """Return the pools linked from usedpools[2*i], and the error.
+        The list is circular through the fake pool, which is 2 words before usedpools[2*i]."""
+        header = state["address"] + self.ptrsize * (2 * i - 2)
+        pools = []
+        seen = set()
+        prev = header
+        cur = state["used"][2 * i]
+        while cur != header:
+            if cur in seen:
+                return pools, "{:#x} (loop detected)".format(cur)
+            pool = None
+            if cur % state["pool_size"] == 0 and len(pools) < self.LIST_LIMIT:
+                pool = self.read_pool(cur)
+            if pool is None or pool["szidx"] != i or pool["prevpool"] != prev:
+                return pools, "{:#x} (corrupted)".format(cur)
+            seen.add(cur)
+            pools.append(pool)
+            prev = cur
+            cur = pool["nextpool"]
+        if state["used"][2 * i + 1] != prev:
+            return pools, "{:#x} (usedpools[{:d}] is not the last pool)".format(state["used"][2 * i + 1], 2 * i + 1)
+        return pools, None
+
+    def is_class(self, addr, words, i, pool_size):
+        first, last = words[2 * i:2 * i + 2]
+        # an empty size class points to its fake pool
+        if first == last == addr + self.ptrsize * (2 * i - 2):
+            return True
+        return first and last and first % pool_size == 0 and last % pool_size == 0
+
+    def read_state(self, addr, region_start, region_words):
+        """Return the size classes of usedpools at addr with their pools and arenas, or None."""
+        ptrsize = self.ptrsize
+        # 32 or 64 size classes
+        words = self.read_words(addr, 128) or self.read_words(addr, 64)
+        if words is None:
+            return None
+        # the layout is derived from the first pool of a used size class
+        layout = None
+        for i in range(len(words) // 2):
+            first = words[2 * i]
+            pool = None
+            if first % 0x1000 == 0:
+                pool = self.read_pool(first)
+            if pool is None or pool["prevpool"] != addr + ptrsize * (2 * i - 2) or pool["szidx"] != i:
+                continue
+            for shift in (3, 4):
+                pool_size = pool["maxnextoffset"] + ((i + 1) << shift)
+                if pool_size in self.POOL_SIZES and first % pool_size == 0:
+                    layout = (shift, pool_size)
+            if layout is not None:
+                break
+        if layout is None:
+            return None
+        shift, pool_size = layout
+
+        # 8 bytes apart up to 256 or 512 bytes, or 16 bytes apart up to 512 bytes
+        for nclasses in {3: (64, 32), 4: (32,)}[shift]:
+            if len(words) >= nclasses * 2 and all(self.is_class(addr, words, i, pool_size) for i in range(nclasses)):
+                break
+        else:
+            return None
+
+        state = {
+            "address": addr,
+            "nclasses": nclasses,
+            "shift": shift,
+            "pool_size": pool_size,
+            # sizeof(struct pool_header) rounded up to ALIGNMENT
+            "overhead": align(ptrsize * 4 + 16, 1 << shift),
+            "used": words[:nclasses * 2],
+        }
+        state["lists"] = [self.walk_pools(state, i) for i in range(nclasses)]
+        pools = [pool for pools, _ in state["lists"] for pool in pools]
+
+        # mgmt.arenas follows pools.used since 3.12, and arenas is a static variable in .bss before that
+        candidates = list(self.read_words(addr + ptrsize * nclasses * 2, 1) or ())
+        if region_start is not None and region_start <= addr:
+            candidates += region_words
+        arenas_addr, arenas, arena_size = self.find_arenas(candidates, pools, pool_size)
+        state["arenas_addr"] = arenas_addr
+        state["arenas"] = arenas
+        state["arena_size"] = arena_size
+        return state
+
+    def get_data_regions(self):
+        # .data and .bss of each module are a writable file mapping and the following anonymous mappings
+        regions = []
+        for m in ProcessMap.get_process_maps():
+            if not m.is_writable():
+                continue
+            if m.path.startswith("/"):
+                regions.append([m.page_start, m.page_end])
+            elif m.path == "" and regions and regions[-1][1] == m.page_start and m.size < 0x1000000:
+                regions[-1][1] = m.page_end
+        return regions
+
+    def scan_states(self):
+        ptrsize = self.ptrsize
+        states = []
+        tried = set()
+        for start, end in self.get_data_regions():
+            words = self.read_words(start, (end - start) // ptrsize)
+            if words is None:
+                continue
+            for k in range(len(words) - 1):
+                first = words[k]
+                # the first and the last pools of a used size class are aligned to the pool size,
+                # and the first one points back to the class
+                if not first or first % 0x1000 or not words[k + 1] or words[k + 1] % 0x1000:
+                    continue
+                if not self.is_writable(first):
+                    continue
+                pool = self.read_pool(first)
+                if pool is None or pool["prevpool"] != start + ptrsize * (k - 2) or pool["szidx"] >= 64:
+                    continue
+                addr = start + ptrsize * (k - 2 * pool["szidx"])
+                if addr in tried:
+                    continue
+                tried.add(addr)
+                state = self.read_state(addr, start, words)
+                if state is not None:
+                    states.append(state)
+        return states
+
+    def walk_free_blocks(self, state, pool):
+        """Return the blocks linked from freeblock, and the error."""
+        size = (pool["szidx"] + 1) << state["shift"]
+        blocks = []
+        seen = set()
+        cur = pool["freeblock"]
+        while cur:
+            if cur in seen:
+                return blocks, "{:#x} (loop detected)".format(cur)
+            # a linked block is below nextoffset
+            offset = cur - pool["address"]
+            if not state["overhead"] <= offset < pool["nextoffset"] or (offset - state["overhead"]) % size:
+                return blocks, "{:#x} (corrupted)".format(cur)
+            next_block = read_int_from_memory(cur, safe=True)
+            if next_block is None or len(blocks) >= self.LIST_LIMIT:
+                return blocks, "{:#x} (corrupted)".format(cur)
+            seen.add(cur)
+            blocks.append(cur)
+            cur = next_block
+        return blocks, None
+
+    def walk_freepools(self, state, index):
+        """Return the empty pools linked from freepools of arenas[index], and the error."""
+        arena = state["arenas"][index]
+        pools = []
+        seen = set()
+        cur = arena["freepools"]
+        while cur:
+            if cur in seen:
+                return pools, "{:#x} (loop detected)".format(cur)
+            pool = None
+            offset = cur - arena["first"]
+            if 0 <= offset < arena["pool_address"] - arena["first"] and offset % state["pool_size"] == 0:
+                pool = self.read_pool(cur)
+            if pool is None or pool["count"] or pool["arenaindex"] != index or len(pools) >= self.LIST_LIMIT:
+                return pools, "{:#x} (corrupted)".format(cur)
+            seen.add(cur)
+            pools.append(pool)
+            cur = pool["nextpool"]
+        return pools, None
+
+    def dump_arenas(self, state):
+        chunk_size_color = Config.get("theme.heap_chunk_size")
+        freed_address_color = Config.get("theme.heap_chunk_address_freed")
+        used_address_color = Config.get("theme.heap_chunk_address_used")
+        corrupted_msg_color = Config.get("theme.heap_corrupted_msg")
+
+        pool_size = state["pool_size"]
+        used = {pool["address"] for pools, _ in state["lists"] for pool in pools}
+        self.out.append("arenas:")
+        for index, arena in enumerate(state["arenas"]):
+            if not arena["address"]:
+                continue
+            self.out.append(" -> arenas[{:d}] @ {:#x} (free pools: {:#x}/{:#x}, pool_address: {:#x})".format(
+                index, arena["address"], arena["nfreepools"], arena["ntotalpools"], arena["pool_address"],
+            ))
+            pools, error = self.walk_freepools(state, index)
+            for pool in pools:
+                size = Color.colorify_hex((pool["szidx"] + 1) << state["shift"], chunk_size_color)
+                self.out.append("        empty pool @ {:s} (size: {:s})".format(
+                    Color.colorify_hex(pool["address"], freed_address_color), size,
+                ))
+            if error:
+                self.out.append("        {:s}".format(Color.colorify(error, corrupted_msg_color)))
+            if not self.args.verbose:
+                continue
+            empty = {pool["address"] for pool in pools}
+            for addr in range(arena["first"], arena["pool_address"], pool_size):
+                pool = self.read_pool(addr)
+                if pool is None:
+                    msg = Color.colorify("{:#x} (unreadable)".format(addr), corrupted_msg_color)
+                    self.out.append("        {:s}".format(msg))
+                    continue
+                size = (pool["szidx"] + 1) << state["shift"]
+                if addr in empty:
+                    kind, color = "empty", freed_address_color
+                elif addr in used:
+                    kind, color = "used", used_address_color
+                else:
+                    kind, color = "full", used_address_color
+                self.out.append("        pool @ {:s} (size: {:s}, count: {:#x}/{:#x}, {:s})".format(
+                    Color.colorify_hex(addr, color), Color.colorify_hex(size, chunk_size_color),
+                    pool["count"], (pool_size - state["overhead"]) // size, kind,
+                ))
+        return
+
+    def dump_state(self, state):
+        freed_address_color = Config.get("theme.heap_chunk_address_freed")
+        used_address_color = Config.get("theme.heap_chunk_address_used")
+        corrupted_msg_color = Config.get("theme.heap_corrupted_msg")
+
+        self.out.append(titlify("usedpools @ {:#x}".format(state["address"]), color="bold", msg_color="bold"))
+        if state["arenas_addr"] is None:
+            self.warn_add_out("Could not find arenas")
+        else:
+            self.out.append("arenas: {:#x}, maxarenas: {:#x}, POOL_SIZE: {:#x}, ARENA_SIZE: {:#x}".format(
+                state["arenas_addr"], len(state["arenas"]), state["pool_size"], state["arena_size"],
+            ))
+            self.dump_arenas(state)
+
+        for i, (pools, error) in enumerate(state["lists"]):
+            if not pools and not error and not self.args.verbose:
+                continue
+            size = (i + 1) << state["shift"]
+            self.out.append(titlify("usedpools[{:d}] (size: {:#x}, num: {:#x}) @ {:#x}".format(
+                2 * i, size, len(pools), state["address"] + self.ptrsize * 2 * i,
+            )))
+            capacity = (state["pool_size"] - state["overhead"]) // size
+            for pool in pools:
+                untouched = 0
+                if pool["nextoffset"] <= pool["maxnextoffset"]:
+                    untouched = (pool["maxnextoffset"] - pool["nextoffset"]) // size + 1
+                self.out.append("pool @ {:s} (arenaindex: {:#x}, count: {:#x}/{:#x}, untouched: {:#x})".format(
+                    Color.colorify_hex(pool["address"], used_address_color), pool["arenaindex"], pool["count"],
+                    capacity, untouched,
+                ))
+                blocks, block_error = self.walk_free_blocks(state, pool)
+                for block in blocks:
+                    self.out.append(" -> {:s}".format(Color.colorify_hex(block, freed_address_color)))
+                if block_error:
+                    self.out.append(" -> {:s}".format(Color.colorify(block_error, corrupted_msg_color)))
+            if error:
+                self.out.append(Color.colorify(error, corrupted_msg_color))
+        return
+
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    def do_invoke(self, args):
+        self.ptrsize = current_arch.ptrsize
+        self.maps = sorted((m.page_start, m.page_end) for m in ProcessMap.get_process_maps() if m.is_writable())
+        self.starts = [start for start, _ in self.maps]
+        if args.usedpools is None:
+            states = self.scan_states()
+            if not states:
+                err("Could not find usedpools of obmalloc")
+                return
+        else:
+            region_start, region_words = None, ()
+            for start, end in self.get_data_regions():
+                if start <= args.usedpools < end:
+                    region_start, region_words = start, self.read_words(start, (end - start) // self.ptrsize) or ()
+            state = self.read_state(args.usedpools, region_start, region_words)
+            if state is None:
+                err("Failed to parse usedpools at {:#x}".format(args.usedpools))
+                return
+            states = [state]
+
+        if args.meta:
+            for state in states:
+                self.quiet_info("usedpools: {:#x}".format(state["address"]))
+                self.quiet_info("number of size classes: {:d}".format(state["nclasses"]))
+                self.quiet_info("ALIGNMENT: {:#x}".format(1 << state["shift"]))
+                self.quiet_info("POOL_SIZE: {:#x}".format(state["pool_size"]))
+                self.quiet_info("POOL_OVERHEAD: {:#x}".format(state["overhead"]))
+                if state["arenas_addr"] is not None:
+                    self.quiet_info("ARENA_SIZE: {:#x}".format(state["arena_size"]))
+                    self.quiet_info("arenas: {:#x}".format(state["arenas_addr"]))
+                    self.quiet_info("maxarenas: {:#x}".format(len(state["arenas"])))
+            return
+
+        self.out = []
+        for state in states:
+            self.dump_state(state)
         self.print_output()
         return
 
