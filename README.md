@@ -570,7 +570,7 @@ For the usage and options of each command, see [docs/COMMANDS.md](docs/COMMANDS.
 ### Other
 
 <details>
-<summary><code>tcmalloc-heap-dump</code>, <code>musl-heap-dump</code>, <code>go-heap-dump</code>, <code>tlsf-heap-dump</code>, <code>hoard-heap-dump</code>, <code>mimalloc-heap-dump</code>, <code>scalloc-heap-dump</code>, <code>snmalloc-heap-dump</code>, <code>ssmalloc-heap-dump</code>, <code>jemalloc-heap-dump</code>, <code>sfmalloc-heap-dump</code>, <code>rpmalloc-heap-dump</code>, <code>tbbmalloc-heap-dump</code>, <code>zig-heap-dump</code>, <code>mesh-heap-dump</code>, <code>streamflow-heap-dump</code>, <code>supermalloc-heap-dump</code>, <code>dlmalloc-heap-dump</code>, <code>scudo-heap-dump</code>, <code>mozjemalloc-heap-dump</code>, <code>bmalloc-heap-dump</code>, <code>libpas-heap-dump</code>, <code>zend-heap-dump</code>, <code>obmalloc-heap-dump</code></summary>
+<summary><code>tcmalloc-heap-dump</code>, <code>musl-heap-dump</code>, <code>go-heap-dump</code>, <code>tlsf-heap-dump</code>, <code>hoard-heap-dump</code>, <code>mimalloc-heap-dump</code>, <code>scalloc-heap-dump</code>, <code>snmalloc-heap-dump</code>, <code>ssmalloc-heap-dump</code>, <code>jemalloc-heap-dump</code>, <code>sfmalloc-heap-dump</code>, <code>rpmalloc-heap-dump</code>, <code>tbbmalloc-heap-dump</code>, <code>zig-heap-dump</code>, <code>mesh-heap-dump</code>, <code>streamflow-heap-dump</code>, <code>supermalloc-heap-dump</code>, <code>dlmalloc-heap-dump</code>, <code>scudo-heap-dump</code>, <code>mozjemalloc-heap-dump</code>, <code>bmalloc-heap-dump</code>, <code>libpas-heap-dump</code>, <code>zend-heap-dump</code>, <code>obmalloc-heap-dump</code>, <code>newlib-heap-dump</code></summary>
 
 - `tcmalloc-heap-dump`: dumps TCMalloc (`gperftools-2.16-1` or named `libgoogle-perftools{4,-dev}`) free-list.
     - ![](images/tcmalloc-heap-dump.png)
@@ -741,6 +741,16 @@ For the usage and options of each command, see [docs/COMMANDS.md](docs/COMMANDS.
         - Save the following as `test.py`. It allocates 1000 bytes objects of 0x40 bytes and frees half of them.
           `import os,signal;a=[b"A"*n for n in [0x40]*1000];del a[::2];os.kill(os.getpid(),signal.SIGTRAP)`
         - Run `gdb --args python3 test.py` then `run`.
+- `newlib-heap-dump`: dumps the free chunks of newlib (the C library for bare-metal and embedded systems),
+  for both the default malloc (based on dlmalloc 2.6.4) and the nano malloc.
+    - ![](images/newlib-heap-dump.png)
+    - How to test:
+        - Get and extract the Arm GNU Toolchain for `arm-none-eabi` from https://developer.arm.com/downloads/-/arm-gnu-toolchain-downloads.
+        - Save the following 2 lines as `test.c`. It allocates 100 chunks of 0x40 bytes and frees half of them.
+          `#include <stdlib.h>`
+          `int main(){void*a[100];for(int i=0;i<100;i++)a[i]=malloc(64);for(int i=1;i<100;i+=2)free(a[i]);__builtin_trap();}`
+        - Build with `arm-none-eabi-gcc --specs=rdimon.specs -g test.c` (add `--specs=nano.specs` for the nano malloc).
+        - Run `qemu-arm -g 1234 ./a.out` and `gdb-multiarch ./a.out -ex 'target remote :1234'` then `c`.
 
 </details>
 

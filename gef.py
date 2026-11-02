@@ -183141,6 +183141,332 @@ class ObmallocHeapDumpCommand(GenericCommand, BufferingOutput):
 
 
 @register_command
+class NewlibHeapDumpCommand(GenericCommand, BufferingOutput):
+    """newlib heap free-list viewer (the default malloc and the nano malloc)."""
+
+    _cmdline_ = "newlib-heap-dump"
+    _category_ = "05-d. Heap - Other"
+
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("-hh", "--help-simple", action="store_true", help="show help without ASCII diagram.")
+    parser.add_argument("--av", type=AddressUtil.parse_address, help="use specific address for __malloc_av_.")
+    parser.add_argument("--free-list", type=AddressUtil.parse_address,
+                        help="use specific address for __malloc_free_list (the nano malloc).")
+    parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
+    parser.add_argument("-v", "--verbose", action="store_true", help="display also empty bins.")
+    _syntax_ = parser.format_help()
+
+    _note_ = "\n".join([
+        "Simplified newlib malloc structure:",
+        "",
+        "+-__malloc_av_------------------+         +-chunk-----+   +-chunk-----+",
+        "| [0]            (unused)       |         | prev_size |   | prev_size |",
+        "| [1]            binblocks      |         | size      |   | size      |",
+        "| [2]            top            |    +--->| fd        |-->| fd        |-->bins[i]",
+        "| [3]            (unused)       |    |    | bk        |<--| bk        |",
+        "| [2*i+2,2*i+3]  bins[i] fd, bk |----+    +-----------+   +-----------+",
+        "+-------------------------------+",
+        "",
+        "Simplified newlib-nano malloc structure:",
+        "",
+        "+-__malloc_free_list-+     +-chunk-+   +-chunk-+",
+        "| head               |---->| size  |   | size  |",
+        "+--------------------+     | next  |-->| next  |--> NULL",
+        "                           +-------+   +-------+",
+        "",
+        "* newlib uses a malloc based on dlmalloc 2.6.4, or the nano malloc if built with --enable-newlib-nano-malloc.",
+        "* bins[i] is the fake chunk at &__malloc_av_[2*i], and an empty bin points to itself.",
+        "  bins[1] is last_remainder, which holds the remainder of the last split. top is the last chunk of the heap.",
+        "* Free chunks smaller than 0x200 bytes are in bins by exact size, and the larger ones are sorted by size.",
+        "* The free list of the nano malloc is sorted by address, and adjacent free chunks are merged.",
+        "* Addresses are of chunks. malloc() returns the chunk + 2 words, or the chunk + 1 word (8-byte aligned) on nano.",
+        "* Without symbols, GEF finds __malloc_av_ by the empty bins in the writable segments of the ELF (also bare-metal),",
+        "  and __malloc_free_list by walking the chunks from __malloc_sbrk_start next to it, unless the list is empty.",
+        "* Use --av or --free-list when gdb has not loaded the ELF.",
+    ])
+
+    NAV = 128
+    # bin_index(): (the size limit, the shift, the first index) of each spacing
+    BIN_SPACINGS = ((0x200, 3, 0), (0xa00, 6, 56), (0x2a00, 9, 91), (0xaa00, 12, 110), (0x2aa00, 15, 119), (0xaaa00, 18, 124))
+    HEAP_LIMIT = 0x10000000
+
+    def bin_index(self, size):
+        for limit, shift, base in self.BIN_SPACINGS:
+            if size < limit:
+                return base + (size >> shift)
+        return self.NAV - 2
+
+    def get_bin_sizes(self):
+        # the last bin has no upper limit, and bins[127] is never used
+        sizes = {}
+        start = 0
+        for limit, shift, base in self.BIN_SPACINGS:
+            for i in range(self.bin_index(start), self.bin_index(limit - 1) + 1):
+                low = sizes.get(i, (max(start, (i - base) << shift), None))[0]
+                sizes[i] = (low, min(limit, (i - base + 1) << shift))
+            start = limit
+        sizes[self.NAV - 2] = (sizes[self.NAV - 2][0], None)
+        return sizes
+
+    def parse_av(self, addr, words):
+        """
+        mbinptr __malloc_av_[NAV * 2 + 2];                  // bin_at(i) == &__malloc_av_[2 * i]
+
+        struct malloc_chunk {
+            INTERNAL_SIZE_T prev_size;                      // size_t
+            INTERNAL_SIZE_T size;
+            struct malloc_chunk* fd;
+            struct malloc_chunk* bk;
+        };
+        """
+        ptrsize = current_arch.ptrsize
+        # bin_at(0)->bk is never used and points to itself
+        if words[3] != addr:
+            return None
+        bins = [(addr + ptrsize * 2 * i, words[i * 2 + 2], words[i * 2 + 3]) for i in range(1, self.NAV - 1)]
+        return {"address": addr, "binblocks": words[1], "top": words[2], "bins": bins}
+
+    def read_free_list(self, head):
+        """
+        typedef struct malloc_chunk {
+            long size;
+            struct malloc_chunk * next;
+        } chunk;
+        """
+        ptrsize = current_arch.ptrsize
+        # CHUNK_OFFSET + MALLOC_PADDING + MALLOC_MINSIZE
+        minchunk = ptrsize + max(8, ptrsize)
+        chunks = []
+        seen = set()
+        cur = head
+        while cur:
+            if cur in seen:
+                return chunks, "{:#x} (loop detected)".format(cur)
+            # sorted by address, and adjacent free chunks are merged
+            if chunks and cur <= chunks[-1][0] + chunks[-1][1]:
+                return chunks, "{:#x} (corrupted)".format(cur)
+            data = read_memory(cur, ptrsize * 2, safe=True)
+            if data is None or cur % ptrsize:
+                return chunks, "{:#x} (corrupted)".format(cur)
+            size, next_chunk = slice_unpack(data, ptrsize)
+            if size < minchunk or size % ptrsize or size >= 0x80000000:
+                return chunks, "{:#x} (corrupted)".format(cur)
+            chunks.append((cur, size))
+            seen.add(cur)
+            cur = next_chunk
+        return chunks, None
+
+    def is_heap_start(self, sbrk_start, chunks):
+        # the chunks are carved from sbrk_start in order, so the free chunks are reached by their sizes
+        ptrsize = current_arch.ptrsize
+        cur = align_to_ptrsize(sbrk_start)
+        data, base = b"", cur
+        for addr, size in chunks:
+            # a free chunk is in the heap
+            if addr + size > sbrk_start + self.HEAP_LIMIT or not is_valid_addr(addr + size - 1):
+                return False
+            while cur < addr:
+                if cur + ptrsize > base + len(data):
+                    base = cur
+                    data = read_memory(cur, min(0x10000, addr - cur + ptrsize), safe=True)
+                    if data is None:
+                        return False
+                size = slice_unpack(data[cur - base:cur - base + ptrsize], ptrsize)[0]
+                if size == 0 or size % ptrsize:
+                    return False
+                cur += size
+            if cur != addr:
+                return False
+        return True
+
+    def get_data_regions(self):
+        # newlib is linked statically, so its variables are in the writable segments of the ELF, also on bare-metal
+        filepath = Path.get_filepath() or Path.get_remote_filepath()
+        if filepath is None or not os.access(filepath, os.R_OK):
+            return []
+        elf = Elf.get_elf(filepath)
+        if elf is None or not elf.is_valid():
+            return []
+        ptrsize = current_arch.ptrsize
+        regions = []
+        for phdr in elf.phdrs:
+            if phdr.p_type != Elf.Phdr.PT_LOAD or not phdr.p_flags & Elf.Phdr.PF_W or phdr.p_memsz < ptrsize:
+                continue
+            data = read_memory(phdr.p_vaddr, phdr.p_memsz - phdr.p_memsz % ptrsize, safe=True)
+            if data is not None:
+                regions.append((phdr.p_vaddr, slice_unpack(data, ptrsize)))
+        return regions
+
+    def find_av(self, regions):
+        ptrsize = current_arch.ptrsize
+        nwords = self.NAV * 2 + 2
+        for start, words in regions:
+            for i in range(len(words) - nwords + 1):
+                addr = start + ptrsize * i
+                if words[i + 3] != addr:
+                    continue
+                # empty bins and the unused bins[127] point to themselves, and the others to aligned chunks
+                # (__malloc_av_ itself may be aligned to 4 bytes or less)
+                last = addr + ptrsize * 2 * (self.NAV - 1)
+                if words[i + nwords - 2] != last or words[i + nwords - 1] != last:
+                    continue
+                av = self.parse_av(addr, words[i:i + nwords])
+                if all(fd == bk == bin_addr or (bin_addr not in (fd, bk) and fd and bk and fd % 8 == bk % 8 == 0)
+                       for bin_addr, fd, bk in av["bins"]):
+                    return av
+        return None
+
+    def find_free_list(self, regions):
+        ptrsize = current_arch.ptrsize
+        found = None
+        for start, words in regions:
+            for i in range(len(words) - 1):
+                # __malloc_free_list and __malloc_sbrk_start are defined together in either order
+                for j, k in ((i, i + 1), (i + 1, i)):
+                    head, sbrk_start = words[j], words[k]
+                    if not 0 < sbrk_start <= head < sbrk_start + self.HEAP_LIMIT or head % ptrsize:
+                        continue
+                    # they have the same value while the first free chunk is at sbrk_start, and the walk proves little
+                    if found and head == sbrk_start:
+                        continue
+                    chunks, error = self.read_free_list(head)
+                    if error is None and self.is_heap_start(sbrk_start, chunks):
+                        if head != sbrk_start:
+                            return start + ptrsize * j, start + ptrsize * k, False
+                        found = (start + ptrsize * j, start + ptrsize * k, True)
+        return found
+
+    def chunk_to_str(self, addr, size):
+        freed_address_color = Config.get("theme.heap_chunk_address_freed")
+        chunk_size_color = Config.get("theme.heap_chunk_size")
+        size = Color.colorify_hex(size, chunk_size_color)
+        return "{:s} (size: {:s})".format(Color.colorify_hex(addr, freed_address_color), size)
+
+    def dump_av(self, av):
+        corrupted_msg_color = Config.get("theme.heap_corrupted_msg")
+        chunk_size_color = Config.get("theme.heap_chunk_size")
+        ptrsize = current_arch.ptrsize
+
+        self.out.append(titlify("__malloc_av_ @ {:#x}".format(av["address"]), color="bold", msg_color="bold"))
+        # top is initial_top (bin_at(0)) until the first sbrk
+        if av["top"] == av["address"]:
+            self.out.append("top: {:#x} (initial_top)".format(av["top"]))
+        else:
+            size = read_int_from_memory(av["top"] + ptrsize, safe=True)
+            if size is None:
+                self.out.append("top: {:s}".format(Color.colorify("{:#x} (corrupted)".format(av["top"]), corrupted_msg_color)))
+            else:
+                self.out.append("top: {:#x} (size: {:s})".format(av["top"], Color.colorify_hex(size & ~3, chunk_size_color)))
+        self.out.append("binblocks: {:#x}".format(av["binblocks"]))
+
+        sizes = self.get_bin_sizes()
+        for i, (bin_addr, fd, bk) in enumerate(av["bins"], 1):
+            if fd == bin_addr and not self.args.verbose:
+                continue
+            lines = []
+            seen = set()
+            previous = bin_addr
+            cur = fd
+            while cur != bin_addr:
+                if cur in seen:
+                    lines.append(" -> {:s}".format(Color.colorify("{:#x} (loop detected)".format(cur), corrupted_msg_color)))
+                    break
+                chunk = None
+                if cur % 8 == 0:
+                    chunk = read_memory(cur, ptrsize * 4, safe=True)
+                if chunk is not None:
+                    chunk = slice_unpack(chunk, ptrsize)
+                # last_remainder holds a chunk of any size
+                if chunk is None or chunk[3] != previous or (i > 1 and self.bin_index(chunk[1] & ~3) != i):
+                    lines.append(" -> {:s}".format(Color.colorify("{:#x} (corrupted)".format(cur), corrupted_msg_color)))
+                    break
+                seen.add(cur)
+                lines.append(" -> {:s}".format(self.chunk_to_str(cur, chunk[1] & ~3)))
+                previous = cur
+                cur = chunk[2]
+            if cur == bin_addr and bk != previous:
+                lines.append(" -> {:s}".format(Color.colorify("{:#x} (corrupted bk)".format(bin_addr), corrupted_msg_color)))
+            if i == 1:
+                title = "bins[{:#x}] last_remainder (num: {:#x}) @ {:#x}".format(i, len(seen), bin_addr)
+            else:
+                low, high = sizes[i]
+                size = "{:#x}".format(low)
+                if i >= 64:
+                    size += "-"
+                    if high is not None:
+                        size += "{:#x}".format(high)
+                title = "bins[{:#x}] (size: {:s}, num: {:#x}) @ {:#x}".format(i, size, len(seen), bin_addr)
+            self.out.append(titlify(title))
+            self.out.extend(lines)
+        return
+
+    def dump_free_list(self, addr, sbrk_addr, swappable):
+        corrupted_msg_color = Config.get("theme.heap_corrupted_msg")
+
+        self.out.append(titlify("__malloc_free_list @ {:#x}".format(addr), color="bold", msg_color="bold"))
+        if sbrk_addr is not None:
+            msg = "sbrk_start: {:#x} @ {:#x}".format(read_int_from_memory(sbrk_addr), sbrk_addr)
+            if swappable:
+                msg += " (may be swapped with __malloc_free_list, which has the same value)"
+            self.out.append(msg)
+        chunks, error = self.read_free_list(read_int_from_memory(addr))
+        self.out.append(titlify("free_list (num: {:#x})".format(len(chunks))))
+        for chunk_addr, size in chunks:
+            self.out.append(" -> {:s}".format(self.chunk_to_str(chunk_addr, size)))
+        if error:
+            self.out.append(" -> {:s}".format(Color.colorify(error, corrupted_msg_color)))
+        return
+
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.exclude_specific_gdb_mode(mode=("wine", "kgdb"))
+    def do_invoke(self, args):
+        ptrsize = current_arch.ptrsize
+        av_addr, free_list, sbrk_addr, swappable = args.av, args.free_list, None, False
+        if av_addr is None and free_list is None:
+            # the symbols are global, since newlib defines them in separate objects
+            try:
+                av_addr = AddressUtil.parse_address("&__malloc_av_")
+            except gdb.error:
+                try:
+                    free_list = AddressUtil.parse_address("&__malloc_free_list")
+                    sbrk_addr = AddressUtil.parse_address("&__malloc_sbrk_start")
+                except gdb.error:
+                    pass
+
+        av = None
+        if av_addr is not None:
+            data = read_memory(av_addr, ptrsize * (self.NAV * 2 + 2), safe=True)
+            if data is None:
+                err("Cannot read __malloc_av_ at {:#x}".format(av_addr))
+                return
+            av = self.parse_av(av_addr, slice_unpack(data, ptrsize))
+            if av is None:
+                err("Failed to parse __malloc_av_ at {:#x}".format(av_addr))
+                return
+        elif free_list is not None:
+            if not is_valid_addr(free_list):
+                err("Cannot read __malloc_free_list at {:#x}".format(free_list))
+                return
+        else:
+            regions = self.get_data_regions()
+            av = self.find_av(regions)
+            if av is None:
+                free_list, sbrk_addr, swappable = self.find_free_list(regions) or (None, None, False)
+            if av is None and free_list is None:
+                err("Could not find __malloc_av_ or __malloc_free_list")
+                return
+
+        self.out = []
+        if av is not None:
+            self.dump_av(av)
+        else:
+            self.dump_free_list(free_list, sbrk_addr, swappable)
+        self.print_output()
+        return
+
+
+@register_command
 class UclibcNgHeapDumpCommand(GenericCommand, BufferingOutput):
     """uclibc-ng (libc/stdlib/malloc-standard) heap reusable chunks viewer."""
 

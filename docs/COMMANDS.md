@@ -8335,6 +8335,57 @@ Simplified musl mallocng structure:
                               +-------------------+      +-------------------+
 ```
 
+## `newlib-heap-dump`
+
+newlib heap free-list viewer (the default malloc and the nano malloc).
+
+
+### Syntax
+
+```text
+usage: newlib-heap-dump [-h] [-hh] [--av AV] [--free-list FREE_LIST] [-n] [-v]
+
+options:
+  -h, --help            show this help message and exit
+  -hh, --help-simple    show help without ASCII diagram.
+  --av AV               use specific address for __malloc_av_.
+  --free-list FREE_LIST
+                        use specific address for __malloc_free_list (the nano malloc).
+  -n, --no-pager        do not use the pager.
+  -v, --verbose         display also empty bins.
+```
+
+### Notes
+
+```text
+Simplified newlib malloc structure:
+
++-__malloc_av_------------------+         +-chunk-----+   +-chunk-----+
+| [0]            (unused)       |         | prev_size |   | prev_size |
+| [1]            binblocks      |         | size      |   | size      |
+| [2]            top            |    +--->| fd        |-->| fd        |-->bins[i]
+| [3]            (unused)       |    |    | bk        |<--| bk        |
+| [2*i+2,2*i+3]  bins[i] fd, bk |----+    +-----------+   +-----------+
++-------------------------------+
+
+Simplified newlib-nano malloc structure:
+
++-__malloc_free_list-+     +-chunk-+   +-chunk-+
+| head               |---->| size  |   | size  |
++--------------------+     | next  |-->| next  |--> NULL
+                           +-------+   +-------+
+
+* newlib uses a malloc based on dlmalloc 2.6.4, or the nano malloc if built with --enable-newlib-nano-malloc.
+* bins[i] is the fake chunk at &__malloc_av_[2*i], and an empty bin points to itself.
+  bins[1] is last_remainder, which holds the remainder of the last split. top is the last chunk of the heap.
+* Free chunks smaller than 0x200 bytes are in bins by exact size, and the larger ones are sorted by size.
+* The free list of the nano malloc is sorted by address, and adjacent free chunks are merged.
+* Addresses are of chunks. malloc() returns the chunk + 2 words, or the chunk + 1 word (8-byte aligned) on nano.
+* Without symbols, GEF finds __malloc_av_ by the empty bins in the writable segments of the ELF (also bare-metal),
+  and __malloc_free_list by walking the chunks from __malloc_sbrk_start next to it, unless the list is empty.
+* Use --av or --free-list when gdb has not loaded the ELF.
+```
+
 ## `obmalloc-heap-dump`
 
 obmalloc (pymalloc, the small object allocator of CPython) heap viewer.
