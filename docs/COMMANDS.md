@@ -7825,7 +7825,7 @@ Simplified Go heap structure:
 | npages      |   |     | npages      |   |
 | nelems      |   |     | nelems      |   |
 | allocBits   |---|--+  | allocBits   |---|--+
-| spanClass   |   |  |  | spanClass   |   |  |
+| elemsize    |   |  |  | elemsize    |   |  |
 +-------------+   |  |  +-------------+   |  |
                   |  v                    |  v
                   | +-gcBits------+       | +-gcBits------+
@@ -7839,10 +7839,12 @@ Simplified Go heap structure:
                 +--------+ +--------+   +--------+ +--------+
 
 * `allspans` is used as the entry point for this command.
-* `spanClass >> 1` is used as the size class, and the size class is converted to chunk size.
+* `elemsize` is used as the chunk size.
 * `freeindex` and `allocBits` distinguish allocated/free objects in an in-use span.
-* Large objects use `elemsize`; non-heap spans are shown only with `--verbose`, without object data.
-* Without debug types, the layout is chosen by the Go version in `.go.buildinfo` (Go 1.18 or later).
+* Non-heap spans are shown only with `--verbose`, without object data.
+* Go 1.7 or later is supported. Go 1.6 or earlier uses free-lists instead of `allocBits`.
+* Without debug types, the layout is chosen by the Go version in `runtime.buildVersion` or `.go.buildinfo`.
+  Fully stripped binaries of Go 1.12 or earlier have neither, so they are assumed to be the latest layout.
 * If the runtime.mheap_ symbol is stripped, specify its address with `--mheap`.
 * `arenas`, `central`, and walking from `mspan.next` are currently unsupported.
 ```
