@@ -204,6 +204,7 @@ For the usage and options of each command, see [docs/COMMANDS.md](docs/COMMANDS.
 - `page`: displays the transformation between a `struct page` and its virtual/physical address.
     - ![](images/page.png)
     - There are shortcuts: `virt2page`, `page2virt`, `phys2page` and `page2phys`.
+    - On RISC-V 32/64, it infers the page array from live slab pages without a symbolized `vmlinux`.
 - `slab-virtual`: displays the transformation between slab-meta and its slab-data/`struct page` address (for `CONFIG_SLAB_VIRTUAL=y`).
     - ![](images/slab-virtual.png)
 - `pageinfo`: dumps `struct page->{flags,page_type}`.
