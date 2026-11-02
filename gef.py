@@ -167928,7 +167928,7 @@ class ZigHeapDumpCommand(GenericCommand, BufferingOutput):
 
 @register_command
 class TlsfHeapDumpCommand(GenericCommand, BufferingOutput):
-    """TLSF (Two-Level Segregated Fit) v2.4.6 free-list viewer."""
+    """TLSF (Two-Level Segregated Fit) v2.2.0 (2006/06/30) ~ v2.4.6 (2009/09/10) free-list viewer."""
 
     _cmdline_ = "tlsf-heap-dump"
     _category_ = "05-d. Heap - Other"
@@ -167967,12 +167967,15 @@ class TlsfHeapDumpCommand(GenericCommand, BufferingOutput):
         "* `fl_bitmap` and `sl_bitmap[]` show which free-list classes are non-empty.",
         "* `matrix[fl][sl]` points to a doubly linked free-list of `bhdr_t` chunks.",
         "* Allocated chunks are not linked from `matrix[][]`, so this command dumps free chunks only.",
+        "* `lock` (v2.3~) and `used_size`/`max_size` (v2.4.2~) are build options. v2.3.x always has `used_size` only.",
+        "* `area_head` exists since v2.4. v2.2.x is 32-bit only and aligns chunks to 4 bytes.",
     ])
 
-    def initialize(self):
-        self.REAL_FLI = 24
-        self.MAX_SLI = 32
-        self.block_align = current_arch.ptrsize * 2
+    REAL_FLI = 24
+    MAX_SLI = 32
+
+    def initialize(self, block_align):
+        self.block_align = block_align
 
         self.size_dic = {}
         for size in range(self.block_align, 0x80, self.block_align):
@@ -168002,16 +168005,17 @@ class TlsfHeapDumpCommand(GenericCommand, BufferingOutput):
         typedef struct TLSF_struct {
             u32_t tlsf_signature;
 
-        #if TLSF_USE_LOCKS
+        #if TLSF_USE_LOCKS // v2.3~
             pthread_mutex_t lock;
         #endif
 
-        #if TLSF_STATISTIC
+        #if TLSF_STATISTIC // v2.4.2~
             size_t used_size;
             size_t max_size;
         #endif
 
-            area_info_t *area_head;
+            size_t used_size; // v2.3.x
+            area_info_t *area_head; // v2.4~
             u32_t fl_bitmap;
             u32_t sl_bitmap[REAL_FLI];
             bhdr_t *matrix[REAL_FLI][MAX_SLI];
@@ -168021,10 +168025,10 @@ class TlsfHeapDumpCommand(GenericCommand, BufferingOutput):
         if sig != 0x2A59FA59:
             return None
 
-        offset_area_head = GefUtil.offsetof("tlsf_t", "area_head")
-        offsets = [offset_area_head]
-        if offset_area_head is None:
-            ptrsize = current_arch.ptrsize
+        ptrsize = current_arch.ptrsize
+        offset_fl_bitmap = GefUtil.offsetof("tlsf_t", "fl_bitmap")
+        offsets = [offset_fl_bitmap]
+        if offset_fl_bitmap is None:
             lock_size = GefUtil.type_size("pthread_mutex_t")
             if lock_size is None:
                 if is_arm64():
@@ -168034,34 +168038,53 @@ class TlsfHeapDumpCommand(GenericCommand, BufferingOutput):
                 else:
                     lock_size = {4: 24, 8: 40}[ptrsize]
             lock_end = align_to_ptrsize(ptrsize + lock_size)
-            offsets = [ptrsize, ptrsize * 3, lock_end, lock_end + ptrsize * 2]
+            offsets = [ptrsize * 2, ptrsize * 4, lock_end + ptrsize, lock_end + ptrsize * 3]
+            if ptrsize == 4:
+                offsets.append(4) # v2.2.x
 
+        # pick the layout whose bitmaps agree with the most matrix entries
+        best = None
+        for offset_fl_bitmap in offsets:
+            fl_bitmap = read_int32_from_memory(pool + offset_fl_bitmap)
+
+            sl_bitmap = read_memory(pool + offset_fl_bitmap + 4, 4 * self.REAL_FLI)
+            sl_bitmap = slice_unpack(sl_bitmap, 4)
+
+            offset_matrix = align_to_ptrsize(offset_fl_bitmap + 4 + 4 * self.REAL_FLI)
+            matrix = read_memory(pool + offset_matrix, ptrsize * self.REAL_FLI * self.MAX_SLI)
+            matrix = slice_unpack(matrix, ptrsize)
+            matrix = slicer(matrix, self.MAX_SLI)
+
+            errors = int(fl_bitmap >> self.REAL_FLI != 0)
+            for fl in range(self.REAL_FLI):
+                errors += bool(fl_bitmap >> fl & 1) != bool(sl_bitmap[fl])
+                for sl in range(self.MAX_SLI):
+                    errors += bool(sl_bitmap[fl] >> sl & 1) != bool(matrix[fl][sl])
+            if best is None or errors < best[0]:
+                best = (errors, offset_fl_bitmap, fl_bitmap, sl_bitmap, offset_matrix, matrix)
+        _, offset_fl_bitmap, fl_bitmap, sl_bitmap, offset_matrix, matrix = best
+
+        # v2.4~: area_head points to the buffer of a used block whose size is 2 pointers
         area_head = None
-        for offset_area_head in offsets:
-            x = read_int_from_memory(pool + offset_area_head)
-            if is_valid_addr(x):
+        if offset_fl_bitmap > 4:
+            x = read_int_from_memory(pool + offset_fl_bitmap - ptrsize)
+            if GefUtil.cached_lookup_type("tlsf_t") is not None:
+                if GefUtil.offsetof("tlsf_t", "area_head") is not None:
+                    area_head = x
+            elif x % ptrsize == 0 and is_valid_addr(x - ptrsize) and read_int_from_memory(x - ptrsize) == ptrsize * 2:
                 area_head = x
-                break
-        if area_head is None:
-            return None
 
-        offset_fl_bitmap = offset_area_head + current_arch.ptrsize
-        fl_bitmap = read_int32_from_memory(pool + offset_fl_bitmap)
+        block_align = ptrsize * 2
+        if offset_fl_bitmap == 4: # v2.2.x
+            block_align = 4
 
-        offset_sl_bitmap = offset_fl_bitmap + 4
-        sl_bitmap = read_memory(pool + offset_sl_bitmap, 4 * self.REAL_FLI)
-        sl_bitmap = slice_unpack(sl_bitmap, 4)
-
-        offset_matrix = align_to_ptrsize(offset_sl_bitmap + 4 * self.REAL_FLI)
-        matrix = read_memory(pool + offset_matrix, current_arch.ptrsize * self.REAL_FLI * self.MAX_SLI)
-        matrix = slice_unpack(matrix, current_arch.ptrsize)
-        matrix = slicer(matrix, self.MAX_SLI)
-
-        matrix_addr = [pool + offset_matrix + current_arch.ptrsize * i for i in range(self.REAL_FLI * self.MAX_SLI)]
+        matrix_addr = [pool + offset_matrix + ptrsize * i for i in range(self.REAL_FLI * self.MAX_SLI)]
         matrix_addr = slicer(matrix_addr, self.MAX_SLI)
 
-        Pool = collections.namedtuple("Pool", ["addr", "sig", "area_head", "fl_bitmap", "sl_bitmap", "matrix", "matrix_addr"])
-        return Pool(pool, sig, area_head, fl_bitmap, sl_bitmap, matrix, matrix_addr)
+        Pool = collections.namedtuple("Pool", [
+            "addr", "sig", "area_head", "fl_bitmap", "sl_bitmap", "matrix", "matrix_addr", "block_align",
+        ])
+        return Pool(pool, sig, area_head, fl_bitmap, sl_bitmap, matrix, matrix_addr, block_align)
 
     def dump_pool(self, pool):
         freed_address_color = Config.get("theme.heap_chunk_address_freed")
@@ -168069,7 +168092,8 @@ class TlsfHeapDumpCommand(GenericCommand, BufferingOutput):
         chunk_size_color = Config.get("theme.heap_chunk_size")
 
         self.out.append("pool: {:#x}".format(pool.addr))
-        self.out.append("pool->area_head: {:#x}".format(pool.area_head))
+        if pool.area_head is not None:
+            self.out.append("pool->area_head: {:#x}".format(pool.area_head))
         for i, j in itertools.product(range(self.REAL_FLI), range(self.MAX_SLI)):
             if self.args.verbose or pool.matrix[i][j]:
                 matrix_addr = pool.matrix_addr[i][j]
@@ -168102,7 +168126,10 @@ class TlsfHeapDumpCommand(GenericCommand, BufferingOutput):
 
                     try:
                         prev_hdr = read_int_from_memory(current + current_arch.ptrsize * 0)
-                        size = read_int_from_memory(current + current_arch.ptrsize * 1)
+                        if pool.area_head is None: # ~v2.3.x: u32_t size
+                            size = read_int32_from_memory(current + current_arch.ptrsize * 1)
+                        else:
+                            size = read_int_from_memory(current + current_arch.ptrsize * 1)
                         prev_ = read_int_from_memory(current + current_arch.ptrsize * 2)
                         next_ = read_int_from_memory(current + current_arch.ptrsize * 3)
                     except gdb.MemoryError:
@@ -168125,7 +168152,6 @@ class TlsfHeapDumpCommand(GenericCommand, BufferingOutput):
     @Decorator.only_if_gdb_running
     @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
     def do_invoke(self, args):
-        self.initialize()
         if args.pool is not None:
             pool_addr = args.pool
             if not is_valid_addr(pool_addr):
@@ -168146,6 +168172,7 @@ class TlsfHeapDumpCommand(GenericCommand, BufferingOutput):
             err("Failed to parse pool")
             return
 
+        self.initialize(pool.block_align)
         self.out = []
         self.dump_pool(pool)
         self.print_output()

@@ -9097,7 +9097,7 @@ Thread cache list
 
 ## `tlsf-heap-dump`
 
-TLSF (Two-Level Segregated Fit) v2.4.6 free-list viewer.
+TLSF (Two-Level Segregated Fit) v2.2.0 (2006/06/30) ~ v2.4.6 (2009/09/10) free-list viewer.
 
 
 ### Syntax
@@ -9142,6 +9142,8 @@ Simplified TLSF structure:
 * `fl_bitmap` and `sl_bitmap[]` show which free-list classes are non-empty.
 * `matrix[fl][sl]` points to a doubly linked free-list of `bhdr_t` chunks.
 * Allocated chunks are not linked from `matrix[][]`, so this command dumps free chunks only.
+* `lock` (v2.3~) and `used_size`/`max_size` (v2.4.2~) are build options. v2.3.x always has `used_size` only.
+* `area_head` exists since v2.4. v2.2.x is 32-bit only and aligns chunks to 4 bytes.
 ```
 
 ## `zend-heap-dump`

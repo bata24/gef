@@ -584,7 +584,7 @@ For the usage and options of each command, see [docs/COMMANDS.md](docs/COMMANDS.
         - Then build with `/usr/local/musl/bin/musl-gcc test.c`.
 - `go-heap-dump`: dumps Go Language v1.7~ mheap.
     - ![](images/go-heap-dump.png)
-- `tlsf-heap-dump`: dumps TLSF (Two-Level Segregated Fit) v2.4.6 free-list (x64 only).
+- `tlsf-heap-dump`: dumps TLSF (Two-Level Segregated Fit) v2.2.0 (2006/06/30) ~ v2.4.6 (2009/09/10) free-list (x64 only).
     - ![](images/tlsf-heap-dump.png)
     - How to test (x64):
         - Get and extract the upstream source from http://www.gii.upv.es/tlsf/
