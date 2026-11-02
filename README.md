@@ -589,7 +589,7 @@ For the usage and options of each command, see [docs/COMMANDS.md](docs/COMMANDS.
     - How to test (x64):
         - Get and extract the upstream source from http://www.gii.upv.es/tlsf/
         - Build with `cd TLSF-2.4.6/src && make && cd ../examples && make` then use `test1` etc.
-- `hoard-heap-dump`: dumps Hoard v3.2 (2025/12/31) free-list (x64 only).
+- `hoard-heap-dump`: dumps Hoard v3.10 (2013/10/18) ~ v3.2 (2025/12/31) free-list (x64 only).
     - ![](images/hoard-heap-dump.png)
     - How to test (x64):
         - Get and extract the upstream source from https://github.com/emeryberger/Hoard

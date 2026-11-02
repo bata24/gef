@@ -168128,7 +168128,7 @@ class TlsfHeapDumpCommand(GenericCommand, BufferingOutput):
 
 @register_command
 class HoardHeapDumpCommand(GenericCommand, BufferingOutput):
-    """Hoard v3.2 (2025/12/31) heap free-list viewer."""
+    """Hoard v3.10 (2013/10/18) ~ v3.2 (2025/12/31) heap free-list viewer."""
 
     _cmdline_ = "hoard-heap-dump"
     _category_ = "05-d. Heap - Other"
@@ -168176,7 +168176,7 @@ class HoardHeapDumpCommand(GenericCommand, BufferingOutput):
         "* This command scans anonymous writable mappings and detects superblocks by vtable and magic.",
         "* `--superblock` can be used to specify superblocks manually.",
         "* `_freeList` is used first; if it is empty, TLS-held freelist heads are searched as candidates.",
-        "* Cross-thread frees waiting in `_delayedFreeList` are displayed separately.",
+        "* Cross-thread frees waiting in `_delayedFreeList` (v3.2 only) are displayed separately.",
         "* Before allocating from the freelist, Hoard consumes unused objects from `position`.",
         "* `reapableObjects` is displayed as the number of unused objects left.",
     ])
@@ -168262,7 +168262,7 @@ class HoardHeapDumpCommand(GenericCommand, BufferingOutput):
             /* 0x48 | 0x2c */ const char *_start;
             /* 0x50 | 0x30 */ char *_position;
             /* 0x58 | 0x34 */ FreeSLList _freeList; // or TLS
-            /* 0x60 | 0x38 */ AtomicFreeList _delayedFreeList;
+            /* 0x60 | 0x38 */ AtomicFreeList _delayedFreeList; // v3.2 only, zero padding before v3.2
         } // padded header: 0x70 bytes (64-bit), 0x40 bytes (32-bit)
 
         struct FreeSLList::Entry {

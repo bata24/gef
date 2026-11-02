@@ -7849,7 +7849,7 @@ Simplified Go heap structure:
 
 ## `hoard-heap-dump`
 
-Hoard v3.2 (2025/12/31) heap free-list viewer.
+Hoard v3.10 (2013/10/18) ~ v3.2 (2025/12/31) heap free-list viewer.
 
 
 ### Syntax
@@ -7903,7 +7903,7 @@ Simplified Hoard structure:
 * This command scans anonymous writable mappings and detects superblocks by vtable and magic.
 * `--superblock` can be used to specify superblocks manually.
 * `_freeList` is used first; if it is empty, TLS-held freelist heads are searched as candidates.
-* Cross-thread frees waiting in `_delayedFreeList` are displayed separately.
+* Cross-thread frees waiting in `_delayedFreeList` (v3.2 only) are displayed separately.
 * Before allocating from the freelist, Hoard consumes unused objects from `position`.
 * `reapableObjects` is displayed as the number of unused objects left.
 ```
