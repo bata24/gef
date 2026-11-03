@@ -172782,7 +172782,7 @@ class V8DumpSpaceCommand(GenericCommand, BufferingOutput):
             ...
           ...
         """
-        # fixed length pattern (map has instance size)
+        # Map size includes in-object properties; external properties have their own array.
         instance_size = read_int8_from_memory(map_addr + 4)
         if instance_size > 0:
             return instance_size * 4, None
@@ -172800,7 +172800,6 @@ class V8DumpSpaceCommand(GenericCommand, BufferingOutput):
             major = cache["version_major"]
 
         # Object sizes are manually specified by referencing src/objects.h etc.
-        # TODO: inline property <-> external property
         if instance_name == "ARRAY_LIST_TYPE":
             length = read_int32_from_memory(addr + 4)
             length >>= 1
@@ -173015,9 +173014,7 @@ class V8DumpSpaceCommand(GenericCommand, BufferingOutput):
             length = read_int32_from_memory(addr + 8)
             length = align(length * 2, 4)
             return 12, length
-        elif instance_name == "SIMPLE_NAME_DICTIONARY_TYPE":
-            pass # TODO
-        elif instance_name == "SIMPLE_NUMBER_DICTIONARY_TYPE":
+        elif instance_name in ("SIMPLE_NAME_DICTIONARY_TYPE", "SIMPLE_NUMBER_DICTIONARY_TYPE"):
             length = read_int32_from_memory(addr + 4)
             length >>= 1
             return 8, length * 4
@@ -173071,9 +173068,21 @@ class V8DumpSpaceCommand(GenericCommand, BufferingOutput):
         elif instance_name == "WASM_DISPATCH_TABLE_TYPE": # ???
             return 0x1c, 0
         elif instance_name == "WASM_NULL_TYPE":
-            pass # TODO
+            if is_valid_addr(addr + 4) and self.is_map(read_int32_from_memory(addr + 4), cage_base):
+                return 4, 0
+            next_addr = addr + 0x10004
+            # GDB may read PROT_NONE pages, so check mapping permissions.
+            section = ProcessMap.lookup(next_addr).section
+            if section and section.permission & Permission.READ:
+                return 4, 0x10000
+            if section is None and is_valid_addr(next_addr):
+                return 4, 0x10000
+            return 4, 0x20000
         elif instance_name == "WASM_TYPE_INFO_TYPE":
-            pass # TODO
+            # Older layouts have the Smi length at +16; newer layouts have a tagged supertype there.
+            length_offset = 12 if read_int32_from_memory(addr + 16) & 1 else 16
+            length = read_int32_from_memory(addr + length_offset)
+            return length_offset + 4, (length >> 1) * 4
         elif instance_name == "WEAK_ARRAY_LIST_TYPE":
             length = read_int32_from_memory(addr + 4)
             length >>= 1
