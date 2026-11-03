@@ -136,8 +136,8 @@ For the usage and options of each command, see [docs/COMMANDS.md](docs/COMMANDS.
         - ![](images/pagewalk-arm64-secure.png)
         - Pseudo memory map without detailed flags and permissions can be output even in the normal world (when OP-TEE).
         - ![](images/pagewalk-arm64-secure-pseudo.png)
-    - ARM (Supported: Cortex-A only, LPAE/Non-LPAE, PL0/PL1)
-        - ARM v7 base. PL2 is NOT supported.
+    - ARM (Supported: Cortex-A only, LPAE/Non-LPAE, PL0/PL1/PL2)
+        - ARM v7 base.
         - ![](images/pagewalk-arm.png)
         - Secure memory scanning is also supported, and you don't have to break in the secure world (unlike ARM64).
         - ![](images/pagewalk-arm-secure.png)

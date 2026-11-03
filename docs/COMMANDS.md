@@ -9302,14 +9302,17 @@ command:
 
 ## `pagewalk arm`
 
-Dump page tables for ARM32 Cortex-A. PL2 pagewalk is unsupported.
+Dump page tables for ARM32 Cortex-A PL1 or PL2.
 
 - Alias: `pagewalk arm32`
 
 ### Syntax
 
 ```text
-usage: pagewalk arm [-h] [-S | -s] [-L] [-N] [-P] [-Q] [-f REGEX] [-v VADDR] [-p PADDR] [-t VADDR] [--optee] [-D] [-c] [-n] [-q]
+usage: pagewalk arm [-h] [-S | -s] [-L] [-N] [-P] [-Q] [-f REGEX] [-v VADDR] [-p PADDR] [-t VADDR] [--optee] [-D] [-c] [-n] [-q] [TARGET_PL]
+
+positional arguments:
+  TARGET_PL             target privilege level (default: current PL)
 
 options:
   -h, --help            show this help message and exit

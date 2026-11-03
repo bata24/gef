@@ -14730,7 +14730,7 @@ def to_unsigned_long(v):
 
 # Don't use cache.
 # This is because there is a command that performs step execution internally.
-def get_register(regname, use_mbed_exec=False, use_monitor=False):
+def get_register(regname, use_mbed_exec=False, use_monitor=False, full_width=False):
     """Return a register's value."""
 
     if regname[0] in ["%", "@"]:
@@ -14749,6 +14749,8 @@ def get_register(regname, use_mbed_exec=False, use_monitor=False):
             value = gdb.parse_and_eval(regname)
 
         if value.type.code == gdb.TYPE_CODE_INT:
+            if full_width:
+                return int(value) & ((1 << (value.type.sizeof * 8)) - 1)
             return to_unsigned_long(value)
         elif value.type.name == "vec128":
             if hasattr(value, "bytes"):
@@ -190967,13 +190969,13 @@ class PageTable(BufferingOutput):
                     if perm == "RWX":
                         color = Config.get("theme.address_rwx")
             elif is_arm32():
-                if re.search(r"PL[01]/R--", self.flags):
+                if re.search(r"PL[012]/R--", self.flags):
                     color = Config.get("theme.address_readonly")
-                elif re.search(r"PL1/..X", self.flags):
+                elif re.search(r"PL[12]/..X", self.flags):
                     color = Config.get("theme.address_code")
-                elif "PL1/RW-" in self.flags:
+                elif re.search(r"PL[12]/RW-", self.flags):
                     color = Config.get("theme.address_writable")
-                if "PL1/RWX" in self.flags:
+                if re.search(r"PL[12]/RWX", self.flags):
                     color = Config.get("theme.address_rwx")
             elif is_arm64():
                 if re.search(r"EL[1-3]/R--", self.flags):
@@ -192512,9 +192514,9 @@ class PageTableX64(PageTable):
 
 
 class PageTableArm32(PageTable):
-    """Dump pagetable for ARM Cortex-A. PL2 pagewalk is unsupported."""
+    """Dump pagetables for ARM Cortex-A PL1 and PL2."""
 
-    mapping_cache_fields = ("ttbr0_mappings", "ttbr1_mappings")
+    mapping_cache_fields = ("ttbr0_mappings", "ttbr1_mappings", "httbr_mappings")
 
     def get_system_register(self, name):
         aliases = {"SCTLR": "SCTLR_EL1", "TTBCR": "TCR_EL1", "ID_MMFR0": "ID_MMFR0_EL1"}
@@ -192709,6 +192711,16 @@ class PageTableArm32(PageTable):
         NS = "NS" in flag_info
         NS |= "NSTable2" in flag_info
         NS |= "NSTable1" in flag_info
+
+        if getattr(self, "PL2", False):
+            writable = not (AP & 0b10)
+            executable = not (XN or (writable and self.WXN))
+            flags.append("PL2/R{}{}".format("W" if writable else "-", "X" if executable else "-"))
+            if not self.args.simple and "AF" in flag_info:
+                flags.append("ACCESSED")
+            flag_string = " ".join(flags)
+            self.flags_strings_cache[flag_info_key] = flag_string
+            return flag_string
 
         # AP[2:1] access permissions model
         if AP == 0b00:
@@ -193065,7 +193077,7 @@ class PageTableArm32(PageTable):
 
                 # calc flags
                 flags = []
-                if has_next_level(entry):
+                if has_next_level(entry) and not (getattr(self, "PL2", False) and getattr(self, "HPD", False)):
                     if ((entry >> 59) & 1) == 1:
                         flags.append("PXNTable1")
                     if ((entry >> 60) & 1) == 1:
@@ -193157,7 +193169,7 @@ class PageTableArm32(PageTable):
 
                 # calc flags
                 flags = parent_flags.copy()
-                if has_next_level(entry):
+                if has_next_level(entry) and not (getattr(self, "PL2", False) and getattr(self, "HPD", False)):
                     if ((entry >> 59) & 1) == 1:
                         flags.append("PXNTable2")
                     if ((entry >> 60) & 1) == 1:
@@ -193469,8 +193481,59 @@ class PageTableArm32(PageTable):
             self.quiet_info_add_out("$TTBR1_EL1{} is unused".format(self.suffix))
         return
 
+    def pagewalk_pl2(self):
+        self.out.append(titlify("$HTTBR", color="bold", msg_color="bold"))
+
+        HTTBR = get_register("$HTTBR", full_width=True)
+        if HTTBR is None:
+            HTTBR = get_register("$TTBR0_EL2", full_width=True)
+        HTCR = get_register("$HTCR")
+        if HTCR is None:
+            HTCR = get_register("$TCR_EL2")
+        HSCTLR = get_register("$HSCTLR")
+        if HSCTLR is None:
+            HSCTLR = get_register("$SCTLR_EL2")
+        if HTTBR is None or HTCR is None or HSCTLR is None:
+            self.err_add_out("Could not find PL2 system registers (HTTBR, HTCR, HSCTLR)")
+            return
+
+        if not (HSCTLR & 1):
+            self.quiet_info_add_out("PL2 translation is unused")
+            self.httbr_mappings = []
+            return
+
+        self.N = HTCR & 0b111
+        self.HPD = bool(HTCR & (1 << 24))
+        self.WXN = bool(HSCTLR & (1 << 19))
+        x = 14 - self.N if self.N > 1 else 5 - self.N
+        base = HTTBR & 0xff_ffff_ffff & ~((1 << x) - 1)
+        self.quiet_info_add_out("$HTTBR: {:#x}".format(HTTBR))
+        self.quiet_info_add_out("$HTCR: {:#x}".format(HTCR))
+        self.quiet_info_add_out("PL2 base: {:#x}".format(base))
+        if not self.use_cached_mapping("httbr_mappings", HTTBR=HTTBR, HTCR=HTCR, HSCTLR=HSCTLR):
+            self.flags_strings_cache = {}
+            self.do_pagewalk_long(base)
+            self.flags_strings_cache = None
+            self.merge_mappings()
+            self.httbr_mappings = self.mappings.copy()
+        self.make_out(self.httbr_mappings)
+        return
+
     def pagewalk(self, args):
         self.prepare_pagewalk(args)
+        target_pl = getattr(args, "target_pl", None)
+        if target_pl is None:
+            cpsr = get_register("$cpsr")
+            target_pl = 2 if cpsr is not None and cpsr & 31 == 0x1a else 1
+        self.PL2 = target_pl == 2
+        if self.PL2:
+            self.SECURE = False
+            self.suffix = ""
+            self.PXN = False
+            self.pagewalk_pl2()
+            self.save_mapping_cache()
+            return
+
         # check use the register with`_S` suffix or not, and Seucre mode or not
         if self.args.force_prefix_s is None:
             # auto detect
@@ -195743,13 +195806,15 @@ class PagewalkX64Command(PagewalkCommand):
 
 @register_command
 class PagewalkArmCommand(PagewalkCommand):
-    """Dump page tables for ARM32 Cortex-A. PL2 pagewalk is unsupported."""
+    """Dump page tables for ARM32 Cortex-A PL1 or PL2."""
 
     _cmdline_ = "pagewalk arm"
     _category_ = "06-a. Qemu-system/KGDB Cooperation - Memory Map"
     _aliases_ = ["pagewalk arm32"]
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("target_pl", metavar="TARGET_PL", nargs="?", type=int, choices=(1, 2),
+                        help="target privilege level (default: current PL)")
     group = parser.add_mutually_exclusive_group()
     group.add_argument("-S", dest="force_prefix_s", action="store_const", const=True,
                        help="use TTBRn_ELm_S to parse start.")
@@ -195781,6 +195846,9 @@ class PagewalkArmCommand(PagewalkCommand):
     def do_invoke(self, args):
         self.page_table = PageTableArm32()
         if args.optee and is_qemu_system():
+            if args.target_pl == 2:
+                err("Unsupported --optee option for PL2")
+                return
             self.page_table.arm32_optee_exact_pagewalk(args)
             return
 
