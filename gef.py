@@ -173031,18 +173031,14 @@ class V8DumpSpaceCommand(GenericCommand, BufferingOutput):
             length = read_int32_from_memory(addr + 4)
             length >>= 1
             return 8, length * 4
-        elif instance_name == "SEQ_ONE_BYTE_STRING_TYPE":
+        elif instance_name in ("SEQ_ONE_BYTE_STRING_TYPE", "SHARED_SEQ_ONE_BYTE_STRING_TYPE"):
             length = read_int32_from_memory(addr + 8)
             length = align(length, 4)
             return 12, length
-        elif instance_name == "SEQ_TWO_BYTE_STRING_TYPE":
+        elif instance_name in ("SEQ_TWO_BYTE_STRING_TYPE", "SHARED_SEQ_TWO_BYTE_STRING_TYPE"):
             length = read_int32_from_memory(addr + 8)
             length = align(length * 2, 4)
             return 12, length
-        elif instance_name == "SHARED_SEQ_ONE_BYTE_STRING_TYPE":
-            pass # TODO
-        elif instance_name == "SHARED_SEQ_TWO_BYTE_STRING_TYPE":
-            pass # TODO
         elif instance_name == "SIMPLE_NAME_DICTIONARY_TYPE":
             pass # TODO
         elif instance_name == "SIMPLE_NUMBER_DICTIONARY_TYPE":
@@ -173050,13 +173046,20 @@ class V8DumpSpaceCommand(GenericCommand, BufferingOutput):
             length >>= 1
             return 8, length * 4
         elif instance_name == "SLOPPY_ARGUMENTS_ELEMENTS_TYPE":
-            pass # TODO
+            length = read_int32_from_memory(addr + 4) >> 1
+            return 16, length * 4
         elif instance_name == "SMALL_ORDERED_HASH_MAP_TYPE":
-            pass # TODO
+            buckets = read_int8_from_memory(addr + 6)
+            length = align(buckets * (2 * 2 * 4 + 3), 4)
+            return 8, length
         elif instance_name == "SMALL_ORDERED_HASH_SET_TYPE":
-            pass # TODO
+            buckets = read_int8_from_memory(addr + 6)
+            length = align(buckets * (2 * 4 + 3), 4)
+            return 8, length
         elif instance_name == "SMALL_ORDERED_NAME_DICTIONARY_TYPE":
-            pass # TODO
+            buckets = read_int8_from_memory(addr + 10)
+            length = align(buckets * (2 * 3 * 4 + 3), 4)
+            return 12, length
         elif instance_name == "SWISS_NAME_DICTIONARY_TYPE":
             length = read_int32_from_memory(addr + 8)
             data_table_len = length * 2 * 4
@@ -173081,11 +173084,14 @@ class V8DumpSpaceCommand(GenericCommand, BufferingOutput):
             length >>= 1
             return 8, length * 4
         elif instance_name == "TURBOSHAFT_FLOAT64_SET_TYPE_TYPE":
-            pass # TODO
+            length = read_int32_from_memory(addr + 8)
+            return 12, length * 8
         elif instance_name == "TURBOSHAFT_WORD32_SET_TYPE_TYPE":
-            pass # TODO
+            length = read_int32_from_memory(addr + 4)
+            return 8, length * 4
         elif instance_name == "TURBOSHAFT_WORD64_SET_TYPE_TYPE":
-            pass # TODO
+            length = read_int32_from_memory(addr + 4)
+            return 8, length * 8
         elif instance_name == "WASM_DISPATCH_TABLE_TYPE": # ???
             return 0x1c, 0
         elif instance_name == "WASM_NULL_TYPE":
