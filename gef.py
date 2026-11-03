@@ -195100,7 +195100,7 @@ class PageTableArm64(PageTable):
     mapping_cache_fields = (
         "ttbr0el1_mappings", "ttbr1el1_mappings",
         "ttbr0el2_mappings", "ttbr1el2_mappings",
-        "vttbrel2_mappings", "ttbr0el3_mappings",
+        "vttbrel2_mappings", "vsttbrel2_mappings", "ttbr0el3_mappings",
     )
 
     # If you want to dump the secure world memory map, you need to break in the secure world.
@@ -195108,7 +195108,7 @@ class PageTableArm64(PageTable):
     # It is difficult to know the correct value of the secure world's system registers while in the normal world,
     # as the secure monitor saves all system registers to memory when the world changes.
 
-    def read_mem_wrapper(self, addr, size=8):
+    def read_mem_wrapper(self, addr, size=8, non_secure=False):
         """
         When pagewalking EL0/EL1 of the guest OS, gdb pagewalks the physical memory according to $TTBR0_ELx.
         However, even if you try to read the physical memory, access to the address will fail
@@ -195122,10 +195122,14 @@ class PageTableArm64(PageTable):
                 return read_memory(addr, size)
 
         # translate via EL2 mappings
-        if self.EL2_VM and self.args.target_el == 1 and self.el2_mappings is not None:
+        if getattr(self, "EL2_SECURE", False) and not non_secure:
+            stage2_mappings = self.el2_secure_mappings
+        else:
+            stage2_mappings = self.el2_mappings
+        if self.EL2_VM and self.args.target_el == 1 and stage2_mappings is not None:
 
             def search_pa(addr):
-                for entry_info in self.el2_mappings:
+                for entry_info in stage2_mappings:
                     va = entry_info.vaddr
                     entry = entry_info.paddr
                     sz = entry_info.total_size
@@ -195152,12 +195156,26 @@ class PageTableArm64(PageTable):
     def translate_stage2_mappings(self, mappings):
         stage2 = sorted(self.el2_mappings or [])
         starts = [entry.vaddr for entry in stage2]
+        if getattr(self, "EL2_SECURE", False):
+            secure_stage2 = sorted(self.el2_secure_mappings or [])
+            secure_starts = [entry.vaddr for entry in secure_stage2]
         translated = []
         for entry in mappings:
+            if getattr(self, "EL2_SECURE", False) and "NS" not in entry.flags.split():
+                selected_stage2 = secure_stage2
+                selected_starts = secure_starts
+            else:
+                selected_stage2 = stage2
+                selected_starts = starts
+            if not selected_stage2 and getattr(self, "EL2_SECURE", False) and "NS" in entry.flags.split():
+                if not getattr(self, "missing_ns_stage2_warned", False):
+                    self.warn_add_out("Could not resolve the non-secure stage2 mappings; NS mappings are omitted")
+                    self.missing_ns_stage2_warned = True
+                continue
             end = entry.paddr + entry.total_size
-            index = max(0, bisect.bisect_right(starts, entry.paddr) - 1)
-            while index < len(stage2) and stage2[index].vaddr < end:
-                next_entry = stage2[index]
+            index = max(0, bisect.bisect_right(selected_starts, entry.paddr) - 1)
+            while index < len(selected_stage2) and selected_stage2[index].vaddr < end:
+                next_entry = selected_stage2[index]
                 index += 1
                 start = max(entry.paddr, next_entry.vaddr)
                 size = min(end, next_entry.vaddr + next_entry.total_size) - start
@@ -195509,8 +195527,8 @@ class PageTableArm64(PageTable):
                               |                            |
     """
 
-    def parse_bit_range(self, granule_bits, region_bits):
-        if self.FEAT_LVA:
+    def parse_bit_range(self, granule_bits, region_bits, is_stage2=False):
+        if self.FEAT_LVA or (is_stage2 and self.FEAT_LPA2 and self.TCR_ELx_DS):
             IA_LVA_MAX = 52
         else:
             IA_LVA_MAX = 48
@@ -195613,6 +195631,13 @@ class PageTableArm64(PageTable):
         is_16k_granule = granule_bits == 14
         is_64k_granule = granule_bits == 16
 
+        def read_table(addr, size, parent_flags):
+            if is_stage2:
+                return self.read_memory(addr, size)
+            if getattr(self, "EL2_SECURE", False) and any(flag.startswith("NSTable") for flag in parent_flags):
+                return self.read_mem_wrapper(addr, size, non_secure=True)
+            return self.read_mem_wrapper(addr, size)
+
         def has_next_level(entry): # for Level0, 1, 2 but not Level3
             return (entry & 0b11) == 0b11
 
@@ -195630,7 +195655,7 @@ class PageTableArm64(PageTable):
             LEVELM1 = []
             COUNT = 0
             for va_base, table_base, parent_flags in ProgressBar(TABLE_BASE, desc="LEVEL -1", disable=self.args.quiet):
-                entries = self.read_mem_wrapper(table_base, 8 * entries_per_table)
+                entries = read_table(table_base, 8 * entries_per_table, parent_flags)
                 entries = slice_unpack(entries, 8)
                 COUNT += len(entries)
                 for i, entry in enumerate(entries):
@@ -195646,8 +195671,7 @@ class PageTableArm64(PageTable):
                     flags = parent_flags.copy()
                     if has_next_level(entry):
                         if is_stage2:
-                            # VTTBR_EL2 does not have level -1
-                            raise ValueError("VTTBR_EL2 does not have level -1")
+                            pass
                         elif is_2VAranges:
                             if ((entry >> 59) & 1) == 1:
                                 flags.append("PXNTable-1")
@@ -195720,7 +195744,7 @@ class PageTableArm64(PageTable):
             GB512 = []
             COUNT = 0
             for va_base, table_base, parent_flags in ProgressBar(LEVELM1, desc="LEVEL 0", disable=self.args.quiet):
-                entries = self.read_mem_wrapper(table_base, 8 * entries_per_table)
+                entries = read_table(table_base, 8 * entries_per_table, parent_flags)
                 entries = slice_unpack(entries, 8)
                 COUNT += len(entries)
                 for i, entry in enumerate(entries):
@@ -195887,7 +195911,7 @@ class PageTableArm64(PageTable):
             GB64 = []
             COUNT = 0
             for va_base, table_base, parent_flags in ProgressBar(LEVEL0, desc="LEVEL 1", disable=self.args.quiet):
-                entries = self.read_mem_wrapper(table_base, 8 * entries_per_table)
+                entries = read_table(table_base, 8 * entries_per_table, parent_flags)
                 entries = slice_unpack(entries, 8)
                 COUNT += len(entries)
                 for i, entry in enumerate(entries):
@@ -196065,7 +196089,7 @@ class PageTableArm64(PageTable):
             MB512 = []
             COUNT = 0
             for va_base, table_base, parent_flags in ProgressBar(LEVEL1, desc="LEVEL 2", disable=self.args.quiet):
-                entries = self.read_mem_wrapper(table_base, 8 * entries_per_table)
+                entries = read_table(table_base, 8 * entries_per_table, parent_flags)
                 entries = slice_unpack(entries, 8)
                 COUNT += len(entries)
                 for i, entry in enumerate(entries):
@@ -196244,7 +196268,7 @@ class PageTableArm64(PageTable):
             flag_cache = {}
 
             for va_base, table_base, parent_flags in ProgressBar(LEVEL2, desc="LEVEL 3", disable=self.args.quiet):
-                entries = self.read_mem_wrapper(table_base, 8 * entries_per_table)
+                entries = read_table(table_base, 8 * entries_per_table, parent_flags)
                 entries = slice_unpack(entries, 8)
                 COUNT += len(entries)
                 for i, entry in enumerate(entries):
@@ -196503,6 +196527,8 @@ class PageTableArm64(PageTable):
             "ttbr0el1_mappings", TTBR0_EL1=TTBR0_EL1, TCR_EL1=TCR_EL1,
             SCTLR=get_register("$SCTLR_EL1"), HCR_EL2=get_register("$HCR_EL2"),
             VTTBR_EL2=get_register("$VTTBR_EL2"), VTCR_EL2=get_register("$VTCR_EL2"),
+            VSTTBR_EL2=get_register("$VSTTBR_EL2"), VSTCR_EL2=get_register("$VSTCR_EL2"),
+            SECURE=getattr(self, "EL2_SECURE", False),
         ):
             self.flags_strings_cache = {}
             self.do_pagewalk(translation_base_addr, granule_bits, va_start, va_bits, start_level, is_2VAranges=True)
@@ -196554,6 +196580,8 @@ class PageTableArm64(PageTable):
             "ttbr1el1_mappings", TTBR1_EL1=TTBR1_EL1, TCR_EL1=TCR_EL1,
             SCTLR=get_register("$SCTLR_EL1"), HCR_EL2=get_register("$HCR_EL2"),
             VTTBR_EL2=get_register("$VTTBR_EL2"), VTCR_EL2=get_register("$VTCR_EL2"),
+            VSTTBR_EL2=get_register("$VSTTBR_EL2"), VSTCR_EL2=get_register("$VSTCR_EL2"),
+            SECURE=getattr(self, "EL2_SECURE", False),
         ):
             self.flags_strings_cache = {}
             self.do_pagewalk(translation_base_addr, granule_bits, va_start, va_bits, start_level, is_2VAranges=True)
@@ -196563,23 +196591,32 @@ class PageTableArm64(PageTable):
         self.make_out(self.ttbr1el1_mappings, walk_disabled=bool(EPD1))
         return
 
-    def pagewalk_VTTBR_EL2(self):
+    def pagewalk_VTTBR_EL2(self, secure=False):
+        if secure:
+            base_name = "VSTTBR_EL2"
+            control_name = "VSTCR_EL2"
+            cache_field = "vsttbrel2_mappings"
+        else:
+            base_name = "VTTBR_EL2"
+            control_name = "VTCR_EL2"
+            cache_field = "vttbrel2_mappings"
         if not self.silent:
-            self.out.append(titlify("$VTTBR_EL2", color="bold", msg_color="bold"))
+            self.out.append(titlify("${:s}".format(base_name), color="bold", msg_color="bold"))
 
-        VTTBR_EL2 = get_register("$VTTBR_EL2")
+        table_base = get_register("${:s}".format(base_name))
+        control = get_register("${:s}".format(control_name))
         VTCR_EL2 = get_register("$VTCR_EL2")
-        if VTTBR_EL2 == 0:
+        if not table_base or control is None or VTCR_EL2 is None:
             if not self.silent:
-                self.warn_add_out("Maybe unused VTTBR_EL2")
+                self.warn_add_out("Maybe unused {:s}".format(base_name))
             return
 
         self.TCR_ELx_DS = ((VTCR_EL2 >> 32) & 1) == 1
-        SL2 = (VTCR_EL2 >> 33) & 0b1
+        SL2 = (control >> 33) & 0b1
         PS = (VTCR_EL2 >> 16) & 0b111
-        TG0 = (VTCR_EL2 >> 14) & 0b11
-        SL0 = (VTCR_EL2 >> 6) & 0b11
-        T0SZ = VTCR_EL2 & 0b111111
+        TG0 = (control >> 14) & 0b11
+        SL0 = (control >> 6) & 0b11
+        T0SZ = control & 0b111111
 
         granule_bits = self.get_granule_bits(TG0, "TG0")
         if granule_bits is None:
@@ -196651,35 +196688,39 @@ class PageTableArm64(PageTable):
                     self.err_add_out("Unsupported stage2 start level")
                 return
 
-        translation_base_addr = self.get_translation_base_addr(PS, VTTBR_EL2, granule_bits)
+        translation_base_addr = self.get_translation_base_addr(PS, table_base, granule_bits)
         if translation_base_addr is None:
             return
 
         if not self.silent:
-            self.quiet_info_add_out("$VTTBR_EL2: {:#x}".format(VTTBR_EL2))
-            self.quiet_info_add_out("$VTCR_EL2: {:#x}".format(VTCR_EL2))
+            self.quiet_info_add_out("${:s}: {:#x}".format(base_name, table_base))
+            self.quiet_info_add_out("${:s}: {:#x}".format(control_name, control))
+            if secure:
+                self.quiet_info_add_out("$VTCR_EL2: {:#x}".format(VTCR_EL2))
             self.quiet_info_add_out("Physical Address Size: {:d} bits".format(pa_size))
             self.quiet_info_add_out("EL2 Starting Level: {:d}".format(SL0))
             self.quiet_info_add_out("EL2 Region: {:#018x} - {:#018x} ({:d} bits)".format(va_start, va_end - 1, va_bits))
             self.quiet_info_add_out("EL2 Page Size: {:d}KB (per page)".format(page_size))
 
-        self.parse_bit_range(granule_bits, va_bits)
-        if self.silent or not self.use_cached_mapping(
-            "vttbrel2_mappings", VTTBR_EL2=VTTBR_EL2, VTCR_EL2=VTCR_EL2,
-            SCTLR=get_register("$SCTLR_EL2"), HCR_EL2=get_register("$HCR_EL2"),
-        ):
+        self.parse_bit_range(granule_bits, va_bits, is_stage2=True)
+        cache_registers = {
+            base_name: table_base, control_name: control, "VTCR_EL2": VTCR_EL2,
+            "SCTLR": get_register("$SCTLR_EL2"), "HCR_EL2": get_register("$HCR_EL2"),
+            "SECURE": getattr(self, "EL2_SECURE", False),
+        }
+        if self.silent or not self.use_cached_mapping(cache_field, **cache_registers):
             self.flags_strings_cache = {}
             self.do_pagewalk(translation_base_addr, granule_bits, va_start, va_bits, stage2_start_level, is_stage2=True)
             self.flags_strings_cache = None
             if not self.silent:
                 self.merge_mappings()
-                self.vttbrel2_mappings = self.mappings.copy()
+                setattr(self, cache_field, self.mappings.copy())
         else:
             # the caller reads self.mappings to build el2_mappings, so restore it from the cache
-            self.mappings = self.vttbrel2_mappings.copy()
+            self.mappings = getattr(self, cache_field).copy()
 
         if not self.silent:
-            self.make_out(self.vttbrel2_mappings)
+            self.make_out(getattr(self, cache_field))
         return
 
     def pagewalk_TTBR0_EL2(self):
@@ -196952,8 +196993,8 @@ class PageTableArm64(PageTable):
         self.silent = False
         self.mappings = None
         self.el2_mappings = None
-
-        # TODO: implementation for VSTTBR_EL2, VSTCR_EL2 pattern
+        self.el2_secure_mappings = None
+        self.EL2_SECURE = bool(is_in_secure())
 
         # do pagewalk
         if self.args.target_el < 1 or 3 < self.args.target_el:
@@ -196963,12 +197004,23 @@ class PageTableArm64(PageTable):
             if self.EL2_VM:
                 # el2_mapping is needed because read_mem() uses PA, but not IPA
                 self.silent = True
+                if self.EL2_SECURE:
+                    self.pagewalk_VTTBR_EL2(secure=True)
+                    if not self.mappings:
+                        self.silent = False
+                        self.err_add_out("Could not resolve the secure stage2 mappings")
+                        return
+                    self.el2_secure_mappings = self.mappings.copy()
+                    self.mappings = None
                 self.pagewalk_VTTBR_EL2()
                 self.silent = False
-                if not self.mappings:
+                if not self.mappings and not self.EL2_SECURE:
                     self.err_add_out("Could not resolve the stage2 mappings")
                     return
-                self.el2_mappings = self.mappings.copy()
+                if self.mappings:
+                    self.el2_mappings = self.mappings.copy()
+                else:
+                    self.el2_mappings = []
                 self.mappings = None
             if self.args.only_TTBR0_EL1:
                 self.pagewalk_TTBR0_EL1()
@@ -196980,6 +197032,8 @@ class PageTableArm64(PageTable):
         if self.args.target_el == 1 and not self.EL1_M:
             self.quiet_info_add_out("EL1/0 translation is unused")
         if self.args.target_el == 2 and self.EL2_VM:
+            if self.EL2_SECURE:
+                self.pagewalk_VTTBR_EL2(secure=True)
             self.pagewalk_VTTBR_EL2()
         if self.args.target_el == 2 and not self.EL2_VM:
             self.quiet_info_add_out("EL2(as stage2) translation is unused")
