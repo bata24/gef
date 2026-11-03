@@ -7075,6 +7075,7 @@ The main structural differences between uclibc-ng (malloc-standard) and glibc ar
 The structure of malloc-standard has remained largely unchanged from version 1.0 to the latest.
 Only libc/stdlib/malloc-standard is supported, not malloc or malloc-simple.
 Without __malloc_state symbols, non-x86 targets require --malloc_state.
+Static x86 ET_EXEC builds can also be detected without symbols.
 Links are plain by default. Use -s for builds with Safe-Linking, including uClibc-ng 1.0.54 and 1.0.58.
 Safe-Linking shifts by PAGE_SHIFT: 13 on alpha/cris/or1k/sparc64, the page size on aarch64/arc, 12 otherwise.
 Since the final version of uclibc (not uclibc-ng) uses the same structure,
@@ -7110,6 +7111,7 @@ The main structural differences between uclibc-ng (malloc-standard) and glibc ar
 The structure of malloc-standard has remained largely unchanged from version 1.0 to the latest.
 Only libc/stdlib/malloc-standard is supported, not malloc or malloc-simple.
 Without __malloc_state symbols, non-x86 targets require --malloc_state.
+Static x86 ET_EXEC builds can also be detected without symbols.
 Links are plain by default. Use -s for builds with Safe-Linking, including uClibc-ng 1.0.54 and 1.0.58.
 Safe-Linking shifts by PAGE_SHIFT: 13 on alpha/cris/or1k/sparc64, the page size on aarch64/arc, 12 otherwise.
 Since the final version of uclibc (not uclibc-ng) uses the same structure,
@@ -7147,6 +7149,7 @@ The main structural differences between uclibc-ng (malloc-standard) and glibc ar
 The structure of malloc-standard has remained largely unchanged from version 1.0 to the latest.
 Only libc/stdlib/malloc-standard is supported, not malloc or malloc-simple.
 Without __malloc_state symbols, non-x86 targets require --malloc_state.
+Static x86 ET_EXEC builds can also be detected without symbols.
 Links are plain by default. Use -s for builds with Safe-Linking, including uClibc-ng 1.0.54 and 1.0.58.
 Safe-Linking shifts by PAGE_SHIFT: 13 on alpha/cris/or1k/sparc64, the page size on aarch64/arc, 12 otherwise.
 Since the final version of uclibc (not uclibc-ng) uses the same structure,
@@ -7188,6 +7191,7 @@ The main structural differences between uclibc-ng (malloc-standard) and glibc ar
 The structure of malloc-standard has remained largely unchanged from version 1.0 to the latest.
 Only libc/stdlib/malloc-standard is supported, not malloc or malloc-simple.
 Without __malloc_state symbols, non-x86 targets require --malloc_state.
+Static x86 ET_EXEC builds can also be detected without symbols.
 Links are plain by default. Use -s for builds with Safe-Linking, including uClibc-ng 1.0.54 and 1.0.58.
 Safe-Linking shifts by PAGE_SHIFT: 13 on alpha/cris/or1k/sparc64, the page size on aarch64/arc, 12 otherwise.
 Since the final version of uclibc (not uclibc-ng) uses the same structure,
@@ -7260,6 +7264,7 @@ The main structural differences between uclibc-ng (malloc-standard) and glibc ar
 The structure of malloc-standard has remained largely unchanged from version 1.0 to the latest.
 Only libc/stdlib/malloc-standard is supported, not malloc or malloc-simple.
 Without __malloc_state symbols, non-x86 targets require --malloc_state.
+Static x86 ET_EXEC builds can also be detected without symbols.
 Links are plain by default. Use -s for builds with Safe-Linking, including uClibc-ng 1.0.54 and 1.0.58.
 Safe-Linking shifts by PAGE_SHIFT: 13 on alpha/cris/or1k/sparc64, the page size on aarch64/arc, 12 otherwise.
 Since the final version of uclibc (not uclibc-ng) uses the same structure,
@@ -7294,6 +7299,7 @@ The main structural differences between uclibc-ng (malloc-standard) and glibc ar
 The structure of malloc-standard has remained largely unchanged from version 1.0 to the latest.
 Only libc/stdlib/malloc-standard is supported, not malloc or malloc-simple.
 Without __malloc_state symbols, non-x86 targets require --malloc_state.
+Static x86 ET_EXEC builds can also be detected without symbols.
 Links are plain by default. Use -s for builds with Safe-Linking, including uClibc-ng 1.0.54 and 1.0.58.
 Safe-Linking shifts by PAGE_SHIFT: 13 on alpha/cris/or1k/sparc64, the page size on aarch64/arc, 12 otherwise.
 Since the final version of uclibc (not uclibc-ng) uses the same structure,
@@ -7389,6 +7395,7 @@ The main structural differences between uclibc-ng (malloc-standard) and glibc ar
 The structure of malloc-standard has remained largely unchanged from version 1.0 to the latest.
 Only libc/stdlib/malloc-standard is supported, not malloc or malloc-simple.
 Without __malloc_state symbols, non-x86 targets require --malloc_state.
+Static x86 ET_EXEC builds can also be detected without symbols.
 Links are plain by default. Use -s for builds with Safe-Linking, including uClibc-ng 1.0.54 and 1.0.58.
 Safe-Linking shifts by PAGE_SHIFT: 13 on alpha/cris/or1k/sparc64, the page size on aarch64/arc, 12 otherwise.
 Since the final version of uclibc (not uclibc-ng) uses the same structure,
@@ -7429,6 +7436,7 @@ The main structural differences between uclibc-ng (malloc-standard) and glibc ar
 The structure of malloc-standard has remained largely unchanged from version 1.0 to the latest.
 Only libc/stdlib/malloc-standard is supported, not malloc or malloc-simple.
 Without __malloc_state symbols, non-x86 targets require --malloc_state.
+Static x86 ET_EXEC builds can also be detected without symbols.
 Links are plain by default. Use -s for builds with Safe-Linking, including uClibc-ng 1.0.54 and 1.0.58.
 Safe-Linking shifts by PAGE_SHIFT: 13 on alpha/cris/or1k/sparc64, the page size on aarch64/arc, 12 otherwise.
 Since the final version of uclibc (not uclibc-ng) uses the same structure,
@@ -8744,7 +8752,7 @@ options:
   -hh, --help-simple  show help without ASCII diagram.
   -a, --all           dump all thread_alloc.
   -l, --laden         dump laden (large or inactive slabs).
-  -r, --remote        dump remote_alloc (WIP).
+  -r, --remote        dump remote_alloc message queue.
   -n, --no-pager      do not use the pager.
   -v, --verbose       display also empty freelists.
 ```
@@ -8777,7 +8785,7 @@ This command dumps the following four categories:
 - alloc_classes: Per size class list of active slabs.
 - laden: The set of all slabs and large allocations from this allocator that are full or almost full.
 - remote_alloc: Message queue for allocations being returned to this allocator.
-    - Currently status: WIP.
+    - Entries are message links; batched objects are not expanded. The queue retains its tail.
 ```
 
 ## `ssmalloc-heap-dump`

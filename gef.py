@@ -72724,11 +72724,9 @@ class KernelAddressHeuristicFinder:
             if is_x86_64():
                 g = KernelAddressHeuristicFinderUtil.x64_qword_ptr_rip_base(res)
             elif is_x86_32():
-                # TODO
-                g = []
+                g = KernelAddressHeuristicFinderUtil.x86_noptr_ds(res)
             elif is_arm64():
-                # TODO
-                g = []
+                g = KernelAddressHeuristicFinderUtil.aarch64_adrp_add(res)
             elif is_arm32():
                 g = KernelAddressHeuristicFinderUtil.arm32_ldr_pc_relative(res, skip=1)
             elif is_riscv64() or is_riscv32():
@@ -75792,24 +75790,26 @@ class KernelAddressHeuristicFinder:
         # plan 3 (available v3.5 or later)
         if kversion and "3.5" <= kversion:
             for addr in Ksym.get_addrs("do_syslog", match="split"):
-                res = KernelAddressHeuristicFinderUtil.disassemble_until_next_symbol(addr, 300)
+                res = KernelAddressHeuristicFinderUtil.disassemble_until_next_symbol(addr, 1000)
                 if is_x86_64():
                     g = KernelAddressHeuristicFinderUtil.x64_dword_ptr_rip_base(res)
                 elif is_x86_32():
                     g = KernelAddressHeuristicFinderUtil.x86_noptr_ds(res)
                 elif is_arm64():
-                    # TODO
-                    g = []
+                    g = KernelAddressHeuristicFinderUtil.aarch64_adrp_ldr(res, allow_add=True)
                 elif is_arm32():
-                    # TODO
-                    g = []
+                    g = itertools.chain(
+                        KernelAddressHeuristicFinderUtil.arm32_movw_movt_ldr(res),
+                        KernelAddressHeuristicFinderUtil.arm32_ldr_pc_relative_ldr(res),
+                    )
                 elif is_riscv64() or is_riscv32():
                     g = KernelAddressHeuristicFinderUtil.riscv_load(res)
                 else:
                     return None
                 for x in g:
                     v = read_int32_from_memory(x)
-                    if v and (v & 0xfff) == 0:
+                    # log_buf_len is initialized and resized as a power of two.
+                    if v and (v & 0xfff) == 0 and (v & (v - 1)) == 0:
                         return x
         return None
 
@@ -75878,12 +75878,11 @@ class KernelAddressHeuristicFinder:
                         KernelAddressHeuristicFinderUtil.x64_lea_reg_const(res),
                     )
                 elif is_x86_32():
-                    # TODO
-                    g = []
+                    g = KernelAddressHeuristicFinderUtil.x86_dword_ptr_array4_base(res)
                 elif is_arm64():
                     g = KernelAddressHeuristicFinderUtil.aarch64_adrp_add(res)
                 elif is_arm32():
-                    # TODO
+                    # Upstream ARM32 uses contig_page_data rather than a NUMA node_data array.
                     g = []
                 elif is_riscv32() or is_riscv64():
                     g = itertools.chain(
@@ -171102,7 +171101,7 @@ class SnmallocHeapDumpCommand(GenericCommand, BufferingOutput):
     parser.add_argument("-hh", "--help-simple", action="store_true", help="show help without ASCII diagram.")
     parser.add_argument("-a", "--all", action="store_true", help="dump all thread_alloc.")
     parser.add_argument("-l", "--laden", action="store_true", help="dump laden (large or inactive slabs).")
-    parser.add_argument("-r", "--remote", action="store_true", help="dump remote_alloc (WIP).")
+    parser.add_argument("-r", "--remote", action="store_true", help="dump remote_alloc message queue.")
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
     parser.add_argument("-v", "--verbose", action="store_true", help="display also empty freelists.")
     _syntax_ = parser.format_help()
@@ -171133,7 +171132,7 @@ class SnmallocHeapDumpCommand(GenericCommand, BufferingOutput):
         "- alloc_classes: Per size class list of active slabs.",
         "- laden: The set of all slabs and large allocations from this allocator that are full or almost full.",
         "- remote_alloc: Message queue for allocations being returned to this allocator.",
-        "    - Currently status: WIP.",
+        "    - Entries are message links; batched objects are not expanded. The queue retains its tail.",
     ])
 
     def get_current_thread_alloc(self):
@@ -171609,16 +171608,29 @@ class SnmallocHeapDumpCommand(GenericCommand, BufferingOutput):
 
         offset_front = 0x40
         remote_alloc = thread_alloc + self.offset_remote_alloc
-        head = read_int_from_memory(remote_alloc + offset_front)
-        obj_list, error = self.parse_single_link_list(head)
-
-        if obj_list == [0] and error is None:
+        tail = read_int_from_memory(remote_alloc, safe=True)
+        head = read_int_from_memory(remote_alloc + offset_front, safe=True)
+        if head is None or tail is None:
+            self.err_add_out("Cannot read remote queue @ {:#x}".format(remote_alloc))
+            return
+        if not head and not tail:
             self.out.append("Nothing to dump")
             return
+        if not head or not tail:
+            self.warn_add_out("Remote queue update in progress")
+            return
 
+        obj_list, error = self.parse_single_link_list(head, end=tail)
         for obj in obj_list:
-            # TODO: WIP
-            self.out.append(" -> {:#x}".format(obj))
+            if not obj:
+                continue
+            self.out.append(" -> Message link @ {:#x}".format(obj))
+            if obj == tail:
+                self.out[-1] += " (retained tail)"
+        if error:
+            self.err_add_out(error)
+        elif tail not in obj_list:
+            self.warn_add_out("Remote queue update in progress or truncated")
         return
 
     @Decorator.parse_args
@@ -185449,6 +185461,7 @@ class UclibcNgHeapDumpCommand(GenericCommand, BufferingOutput):
         "The structure of malloc-standard has remained largely unchanged from version 1.0 to the latest.",
         "Only libc/stdlib/malloc-standard is supported, not malloc or malloc-simple.",
         "Without __malloc_state symbols, non-x86 targets require --malloc_state.",
+        "Static x86 ET_EXEC builds can also be detected without symbols.",
         "Links are plain by default. Use -s for builds with Safe-Linking, including uClibc-ng 1.0.54 and 1.0.58.",
         "Safe-Linking shifts by PAGE_SHIFT: 13 on alpha/cris/or1k/sparc64, the page size on aarch64/arc, 12 otherwise.",
         "Since the final version of uclibc (not uclibc-ng) uses the same structure,",
@@ -185587,7 +185600,7 @@ class UclibcNgHeapDumpCommand(GenericCommand, BufferingOutput):
         # You can definitely get the address of malloc by finding the libc path and looking for the GOT of libc itself.
         libc = ProcessMap.process_lookup_path("libuClibc-")
         if libc is None:
-            return None
+            return self.find_malloc_state()
         ret = gdb.execute("got --no-pager --quiet --file {:s} <malloc>".format(
             GefUtil.quote_gdb_argument(libc.path),
         ), to_string=True)
@@ -185629,8 +185642,52 @@ class UclibcNgHeapDumpCommand(GenericCommand, BufferingOutput):
                             if max_fast != 0 and (max_fast & ~0x3) <= 0xb0:
                                 return malloc_state
 
-        # TODO
-        # - static build + stripped
+        return None
+
+    def find_malloc_state(self):
+        filepath = Path.get_filepath() or Path.get_remote_filepath()
+        elf = Elf.get_elf(filepath)
+        if elf is None or not elf.is_valid() or elf.e_type != Elf.ET_EXEC:
+            return None
+        loads = [phdr for phdr in elf.phdrs if phdr.p_type == Elf.Phdr.PT_LOAD]
+        if not loads:
+            return None
+        ptrsize = current_arch.ptrsize
+        nfast = 10
+        if ptrsize == 8:
+            nfast = 11
+        bins_offset = nfast + 3
+        nwords = bins_offset + 96 * 2
+        for phdr in loads:
+            if not phdr.p_flags & Elf.Phdr.PF_W:
+                continue
+            base = phdr.p_vaddr
+            end = base + phdr.p_memsz - phdr.p_memsz % ptrsize
+            for start in range(base, end, 0x10000):
+                data = read_memory(start, min(end - start, 0x10000 + (nwords - 1) * ptrsize), safe=True)
+                if data is None:
+                    continue
+                words = slice_unpack(data, ptrsize)
+                for i in range(len(words) - nwords + 1):
+                    if not 8 <= words[i] & ~3 <= 0xb0 or not is_valid_addr(words[i + nfast + 1]):
+                        continue
+                    bins = i + bins_offset
+                    if words[bins] or words[bins + 1]:
+                        continue
+                    # bin_at(i) is two words before bins[2*i]; bins[0:2] are unused.
+                    for index in range(1, 96):
+                        head = start + (bins + index * 2 - 2) * ptrsize
+                        fd, bk = words[bins + index * 2:bins + index * 2 + 2]
+                        if fd == bk == head:
+                            continue
+                        if not fd or not bk or fd % (2 * ptrsize) or bk % (2 * ptrsize):
+                            break
+                        if read_int_from_memory(fd + 3 * ptrsize, safe=True) != head:
+                            break
+                        if read_int_from_memory(bk + 2 * ptrsize, safe=True) != head:
+                            break
+                    else:
+                        return start + i * ptrsize
         return None
 
     def read_malloc_state(self, specified_malloc_state_ptr):
