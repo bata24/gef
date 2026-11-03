@@ -77711,6 +77711,10 @@ class KernelAddressHeuristicFinder:
     @staticmethod
     @Decorator.switch_to_intel_syntax
     def get_slub_tlbflush_queue():
+        # CONFIG_SLAB_VIRTUAL has no implementation outside x86_64.
+        if not is_x86_64():
+            return None
+
         # plan 1 (directly)
         if KernelAddressHeuristicFinder.USE_DIRECTLY:
             x = Ksym.get_addr("slub_tlbflush_queue")
@@ -77721,25 +77725,17 @@ class KernelAddressHeuristicFinder:
         addr = Ksym.get_addr("slub_tlbflush_worker")
         if addr:
             res = gdb.execute("x/30i {:#x}".format(addr), to_string=True)
-            if is_x86_64():
-                g = KernelAddressHeuristicFinderUtil.x64_qword_ptr_rip_base(res)
-            elif is_x86_32():
-                # TODO
-                g = []
-            elif is_arm64():
-                # TODO
-                g = []
-            elif is_arm32():
-                # TODO
-                g = []
-
-            for x in g:
+            for x in KernelAddressHeuristicFinderUtil.x64_qword_ptr_rip_base(res):
                 return x
         return None
 
     @staticmethod
     @Decorator.switch_to_intel_syntax
     def get_slub_addr_base():
+        # CONFIG_SLAB_VIRTUAL has no implementation outside x86_64.
+        if not is_x86_64():
+            return None
+
         # plan 1 (directly)
         if KernelAddressHeuristicFinder.USE_DIRECTLY:
             x = Ksym.get_addr("slub_addr_base")
@@ -77766,19 +77762,7 @@ class KernelAddressHeuristicFinder:
                 0xffffffff8901e758 <alloc_slab_pv_page+648>: mov    rax,QWORD PTR [rip+0x15432c1] <- this
                 gef>
                 """
-                if is_x86_64():
-                    g = KernelAddressHeuristicFinderUtil.x64_qword_ptr_rip_base(res)
-                elif is_x86_32():
-                    # TODO
-                    g = []
-                elif is_arm64():
-                    # TODO
-                    g = []
-                elif is_arm32():
-                    # TODO
-                    g = []
-
-                for x in g:
+                for x in KernelAddressHeuristicFinderUtil.x64_qword_ptr_rip_base(res):
                     v = read_int_from_memory(x)
                     if v in [0xffff_ffff_ffff_ffff, 0xffff_ffff_ffff_feff, 1]:
                         continue
@@ -77790,25 +77774,17 @@ class KernelAddressHeuristicFinder:
             addr = Ksym.get_addr("vaddr_ranges_debug_start")
             if addr:
                 res = gdb.execute("x/20i {:#x}".format(addr), to_string=True)
-                if is_x86_64():
-                    g = KernelAddressHeuristicFinderUtil.x64_qword_ptr_rip_base(res)
-                elif is_x86_32():
-                    # TODO
-                    g = []
-                elif is_arm64():
-                    # TODO
-                    g = []
-                elif is_arm32():
-                    # TODO
-                    g = []
-
-                for x in g:
+                for x in KernelAddressHeuristicFinderUtil.x64_qword_ptr_rip_base(res):
                     return x
         return None
 
     @staticmethod
     @Decorator.switch_to_intel_syntax
     def get_slub_addr_current():
+        # CONFIG_SLAB_VIRTUAL has no implementation outside x86_64.
+        if not is_x86_64():
+            return None
+
         if Kernel.version() < "6.6":
             return None
 
@@ -77828,19 +77804,7 @@ class KernelAddressHeuristicFinder:
             if not addr:
                 continue
             res = gdb.execute("x/{:d}i {:#x}".format(instruction_count, addr), to_string=True)
-            if is_x86_64():
-                g = KernelAddressHeuristicFinderUtil.x64_qword_ptr_rip_base(res, skip=skip)
-            elif is_x86_32():
-                # TODO
-                g = []
-            elif is_arm64():
-                # TODO
-                g = []
-            elif is_arm32():
-                # TODO
-                g = []
-
-            for x in g:
+            for x in KernelAddressHeuristicFinderUtil.x64_qword_ptr_rip_base(res, skip=skip):
                 return x
         return None
 
