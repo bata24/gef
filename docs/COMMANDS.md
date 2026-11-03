@@ -10724,7 +10724,6 @@ pseudo filesystem. Otherwise, the bdev_cache dump, which does not include full s
 block devices referenced by mounted filesystems. If none are found since v5.11, devices_kset and
 gendisk->part0 supply the samples. The others are found by the layout measured with them,
 from the block devices in devices_kset (v5.11~) or from the inodes of the bdev pseudo filesystem (~v5.10).
-RISC-V is supported only with the debug information.
 
 The name is built from bd_disk->disk_name and the partition number, in the same way as the kernel.
 Before v5.11, bd_disk is set only while the block device is opened.
@@ -13518,7 +13517,7 @@ or linked to vmap_purge_list (v5.4~v5.10), purge_vmap_area_list (v5.11~v6.8) or 
 # 06-i. Qemu-system/KGDB Cooperation - Linux Dynamic Inspection
 ## `kmalloc-allocated-by`
 
-Call predefined system-calls and print kmalloc-N chunks allocated and freed (x64 only).
+Call predefined system-calls and print kmalloc-N chunks allocated and freed.
 
 
 ### Syntax

@@ -141,6 +141,7 @@ For the usage and options of each command, see [docs/COMMANDS.md](docs/COMMANDS.
         - ![](images/pagewalk-arm.png)
         - Secure memory scanning is also supported, and you don't have to break in the secure world (unlike ARM64).
         - ![](images/pagewalk-arm-secure.png)
+    - RISCV64 / RISCV32
 - `kvmmap`: prints kernel memory map.
     - ![](images/kvmmap.png)
 

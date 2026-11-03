@@ -57,7 +57,7 @@
     - Debugger stub (Qemu-system) host
         - x64
     - Debuggee (Qemu-system guest)
-        - x86, x64, ARM and ARM64
+        - x86, x64, ARM, ARM64, RISCV32 and RISCV64
         - i8086 (16-bit) is supported experimentally.
 - Notes
     - Most commands should work fine unless `CONFIG_RANDSTRUCT=y`.

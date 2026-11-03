@@ -14795,7 +14795,7 @@ def get_register(regname, use_mbed_exec=False, use_monitor=False):
         if r:
             return int(r.group(1), 16)
 
-    if use_mbed_exec and is_kgdb() and (is_x86_64() or is_arm64()):
+    if use_mbed_exec and is_kgdb() and (is_x86_64() or is_arm64() or is_riscv32() or is_riscv64()):
         if ReadSystemRegisterForKgdbCommand.is_supported_reg(regname):
             try:
                 r = gdb.execute("read-system-register-for-kgdb {:s}".format(regname), to_string=True)
@@ -14960,7 +14960,7 @@ def is_kgdb():
         return True
     if not is_alive():
         return None
-    return bool((is_x86_64() or is_arm64()) and is_over_serial())
+    return bool((is_x86_64() or is_arm64() or is_riscv32() or is_riscv64()) and is_over_serial())
 
 
 @Cache.cache_this_session
@@ -25565,6 +25565,25 @@ class ReadSystemRegisterForKgdbCommand(GenericCommand):
                 "insn": [[f"$x{i}", bytes([0x00 + i]) + b"\x41\x38\xd5"] for i in range(30)], # mrs x0, SP_EL0
             },
         },
+        "riscv": {
+            name: {
+                "sym": symbols,
+                "insn": [
+                    [RISCV.all_registers[rd], ((csr << 20) | (2 << 12) | (rd << 7) | 0x73).to_bytes(4, "little")]
+                    for rd in range(1, 32)
+                ],
+            }
+            for name, csr, symbols in (
+                ("sstatus", 0x100, ["do_idle", "parse_args", "__handle_irq_event_percpu"]),
+                ("sscratch", 0x140, ["handle_exception"]),
+                ("sepc", 0x141, ["handle_exception"]),
+                ("scause", 0x142, ["handle_exception"]),
+                ("stval", 0x143, ["handle_exception"]),
+                ("satp", 0x180, ["suspend_save_csrs", "cpu_suspend", "do_page_fault"]),
+                ("stvec", 0x105, ["suspend_save_csrs", "cpu_suspend"]),
+                ("sie", 0x104, ["suspend_save_csrs", "cpu_suspend"]),
+            )
+        },
     }
 
     @staticmethod
@@ -25576,6 +25595,8 @@ class ReadSystemRegisterForKgdbCommand(GenericCommand):
             dic = ReadSystemRegisterForKgdbCommand.REGISTER_DICT["x64"]
         elif is_arm64():
             dic = ReadSystemRegisterForKgdbCommand.REGISTER_DICT["arm64"]
+        elif is_riscv32() or is_riscv64():
+            dic = ReadSystemRegisterForKgdbCommand.REGISTER_DICT["riscv"]
         else:
             return []
 
@@ -25603,6 +25624,8 @@ class ReadSystemRegisterForKgdbCommand(GenericCommand):
             dic = ReadSystemRegisterForKgdbCommand.REGISTER_DICT["x64"]
         elif is_arm64():
             dic = ReadSystemRegisterForKgdbCommand.REGISTER_DICT["arm64"]
+        elif is_riscv32() or is_riscv64():
+            dic = ReadSystemRegisterForKgdbCommand.REGISTER_DICT["riscv"]
         else:
             return None
 
@@ -25623,6 +25646,8 @@ class ReadSystemRegisterForKgdbCommand(GenericCommand):
             return None
         if is_arm64():
             alignment = 4
+        elif is_riscv32() or is_riscv64():
+            alignment = 2
         else:
             alignment = 1
 
@@ -25634,7 +25659,7 @@ class ReadSystemRegisterForKgdbCommand(GenericCommand):
                 address = Ksym.get_addr(symbol)
             if address is None:
                 continue
-            data = read_memory(address, 0x100, safe=True)
+            data = read_memory(address, 0x300 if is_riscv32() or is_riscv64() else 0x100, safe=True)
             if data is None:
                 continue
             if not data:
@@ -25679,7 +25704,7 @@ class ReadSystemRegisterForKgdbCommand(GenericCommand):
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.only_if_specific_gdb_mode(mode=("kgdb",))
-    @Decorator.only_if_specific_arch(arch=("x86_64", "ARM64"))
+    @Decorator.only_if_specific_arch(arch=("x86_64", "ARM64", "RISCV32", "RISCV64"))
     def do_invoke(self, args):
         if current_arch is None:
             err("current_arch is not set")
@@ -35422,6 +35447,8 @@ class KernelChecksecCommand(GenericCommand):
                 "kaslr_get_random_long", "init_trampoline_kaslr", "kernel_randomize_memory", # x86 4.8~
                 "kaslr_early_init", "__pi_kaslr_early_init", "kaslr_init", # ARM64 4.6~
             ]
+            if is_riscv32() or is_riscv64():
+                kaslr_only_symbols.extend(("__pi_get_kaslr_seed", "__pi_set_nokaslr_from_cmdline"))
             found = [sym for sym in kaslr_only_symbols if Ksym.get_addr(sym) is not None]
             if found:
                 build = True
@@ -35559,6 +35586,9 @@ class KernelChecksecCommand(GenericCommand):
         return
 
     def check_kpti(self):
+        if is_riscv32() or is_riscv64():
+            gef_print("{:<40s}: {:s}".format("KPTI", Color.colorify("Unsupported", "bold red")))
+            return
         kversion = Kernel.version()
         if is_arm64():
             cfg = "CONFIG_UNMAP_KERNEL_AT_EL0 (KPTI)"
@@ -37142,6 +37172,14 @@ class KernelChecksecCommand(GenericCommand):
                 supported_syscall.append("arm64")
             if KernelAddressHeuristicFinder.get_sys_call_table_arm64_compat():
                 supported_syscall.append("arm32(compat)")
+        elif is_riscv32():
+            if KernelAddressHeuristicFinder.get_sys_call_table_riscv():
+                supported_syscall.append("riscv32(native)")
+        elif is_riscv64():
+            if KernelAddressHeuristicFinder.get_sys_call_table_riscv():
+                supported_syscall.append("riscv64(native)")
+            if KernelAddressHeuristicFinder.get_sys_call_table_riscv(compat=True):
+                supported_syscall.append("riscv32(compat)")
 
         if supported_syscall:
             gef_print("{:<40s}: {:s}".format(cfg, ", ".join(supported_syscall)))
@@ -37255,7 +37293,7 @@ class KernelChecksecCommand(GenericCommand):
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
-    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
+    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64"))
     @Decorator.only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
         # Over KGDB, scanning memory for kallsyms is too slow, so the symbols of vmlinux are required.
@@ -63864,7 +63902,7 @@ class KernelMagicCommand(GenericCommand):
         self.resolve_and_print_kernel(
             "VMALLOC_END", None, maps, KernelAddressHeuristicFinder.get_VMALLOC_END, value_only=True,
         )
-        if is_x86_64() or is_arm64():
+        if is_x86_64() or is_arm64() or is_riscv32() or is_riscv64():
             self.resolve_and_print_kernel(
                 "VMEMMAP_START (struct page[])", None, maps, KernelAddressHeuristicFinder.get_VMEMMAP_START,
             )
@@ -63898,7 +63936,7 @@ class KernelMagicCommand(GenericCommand):
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
-    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
+    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64"))
     @Decorator.only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
         self.magic_kernel()
@@ -68090,6 +68128,11 @@ class KernelAddressHeuristicFinderUtil:
                     KernelAddressHeuristicFinderUtil.arm32_movw_movt(res),
                     KernelAddressHeuristicFinderUtil.arm32_ldr_pc_relative(res),
                 )
+            elif is_riscv64() or is_riscv32():
+                g = itertools.chain(
+                    KernelAddressHeuristicFinderUtil.riscv_auipc_use(res, include_lui=is_riscv32()),
+                    KernelAddressHeuristicFinderUtil.riscv_gp_relative(res),
+                )
             else:
                 return []
             candidates += list(g)
@@ -70364,6 +70407,111 @@ class KernelConstsArm64(KernelConstsBase):
         return self.memstart_addr
 
 
+class KernelConstsRiscv(KernelConstsBase):
+    """RISC-V kernel memory boundaries from the active page-table mode."""
+
+    sizeof_struct_page = None
+    MODULES_VADDR = None
+    MODULES_END = None
+
+    @property
+    def PAGE_SHIFT(self):
+        return 12
+
+    @property
+    def PAGE_SIZE(self):
+        return 1 << self.PAGE_SHIFT
+
+    @property
+    def VA_BITS(self):
+        if is_riscv32():
+            return 32
+        satp = get_register("$satp")
+        if satp is None:
+            return None
+        return {8: 39, 9: 48, 10: 57}.get((satp >> 60) & 15)
+
+    @property
+    def PAGE_OFFSET(self):
+        if is_riscv32():
+            configs = Kernel.config().get_configs() or {}
+            value = configs.get("CONFIG_PAGE_OFFSET")
+            return int(value, 0) if value else 0xc000_0000
+        if self.kversion < "5.17":
+            configs = Kernel.config().get_configs() or {}
+            value = configs.get("CONFIG_PAGE_OFFSET")
+            return int(value, 0) if value else None
+        if self.VA_BITS == 57:
+            return 0xff60_0000_0000_0000
+        if self.VA_BITS == 48:
+            return 0xffff_af80_0000_0000
+        if self.VA_BITS == 39:
+            if self.kversion < "6.11":
+                return 0xffff_ffd8_0000_0000
+            return 0xffff_ffd6_0000_0000
+        return None
+
+    @property
+    def KERN_VIRT_SIZE(self):
+        if self.kversion < "5.17":
+            if self.PAGE_OFFSET is None:
+                return None
+            return (1 << (current_arch.ptrsize * 8)) - self.PAGE_OFFSET
+        if self.VA_BITS is None:
+            return None
+        return 1 << (self.VA_BITS - 2)
+
+    @property
+    def PAGE_OFFSET_END(self):
+        if self.PAGE_OFFSET is None or self.KERN_VIRT_SIZE is None:
+            return None
+        return self.PAGE_OFFSET + self.KERN_VIRT_SIZE
+
+    @property
+    def VMALLOC_START(self):
+        if self.PAGE_OFFSET is None or self.KERN_VIRT_SIZE is None:
+            return None
+        return self.PAGE_OFFSET - (self.KERN_VIRT_SIZE >> 1)
+
+    @property
+    def VMALLOC_END(self):
+        if self.PAGE_OFFSET is None:
+            return None
+        return self.PAGE_OFFSET - (self.kversion < "5.17")
+
+    @property
+    def VMEMMAP_START(self):
+        if self.kversion < "5.4" or self.VMALLOC_START is None or self.VA_BITS is None:
+            return None
+        page = Kernel.page()
+        if not page.initialize():
+            return None
+        size = 1 << (self.VA_BITS - self.PAGE_SHIFT - 1 + self.order_base_2(page.sizeof_struct_page))
+        return self.VMALLOC_START - size
+
+    @property
+    def VMEMMAP_END(self):
+        if self.kversion < "5.4" or self.VMALLOC_START is None:
+            return None
+        return self.VMALLOC_START - (self.kversion < "5.17")
+
+    @property
+    def FIXADDR_TOP(self):
+        if self.VMEMMAP_START is None:
+            return None
+        return self.VMEMMAP_START - (16 << 20)
+
+    @property
+    def FIXADDR_START(self):
+        top = self.FIXADDR_TOP
+        if top is None:
+            return None
+        size = (2 if is_riscv64() else 4) << 20
+        if self.kversion >= "6.3":
+            size += 4 << 20
+        return top - size
+
+
 class KernelAddressHeuristicFinder:
     """A class that heuristically finds a specific symbol in the kernel."""
 
@@ -70414,6 +70562,8 @@ class KernelAddressHeuristicFinder:
             return KernelConstsArm64()
         elif is_arm32():
             return KernelConstsArm32()
+        elif is_riscv32() or is_riscv64():
+            return KernelConstsRiscv()
         return None
 
     @staticmethod
@@ -71218,6 +71368,11 @@ class KernelAddressHeuristicFinder:
                     # Older ARM32 kernels load a section anchor 8 bytes before chrdevs.
                     (x + 8 for x in KernelAddressHeuristicFinderUtil.arm32_ldr_pc_relative(res)),
                 )
+            elif is_riscv64() or is_riscv32():
+                return itertools.chain(
+                    KernelAddressHeuristicFinderUtil.riscv_auipc_use(res, include_lui=is_riscv32()),
+                    KernelAddressHeuristicFinderUtil.riscv_gp_relative(res),
+                )
             return []
 
         # plan 1 (directly)
@@ -71296,6 +71451,11 @@ class KernelAddressHeuristicFinder:
                         KernelAddressHeuristicFinderUtil.arm32_movw_movt_ldr(res),
                         KernelAddressHeuristicFinderUtil.arm32_ldr_pc_relative_ldr(res),
                     )
+                elif is_riscv64() or is_riscv32():
+                    g = itertools.chain(
+                        KernelAddressHeuristicFinderUtil.riscv_auipc_use(res, include_lui=is_riscv32()),
+                        KernelAddressHeuristicFinderUtil.riscv_gp_relative(res),
+                    )
                 for x in g:
                     return x
         return None
@@ -71355,6 +71515,11 @@ class KernelAddressHeuristicFinder:
                 g = itertools.chain(
                     KernelAddressHeuristicFinderUtil.arm32_movw_movt_ldr(res),
                     KernelAddressHeuristicFinderUtil.arm32_ldr_pc_relative_ldr(res),
+                )
+            elif is_riscv64() or is_riscv32():
+                g = itertools.chain(
+                    KernelAddressHeuristicFinderUtil.riscv_auipc_use(res, include_lui=is_riscv32()),
+                    KernelAddressHeuristicFinderUtil.riscv_gp_relative(res),
                 )
             else:
                 g = []
@@ -71639,6 +71804,53 @@ class KernelAddressHeuristicFinder:
                 sys_call_table_offset = ro_data.find(seq_to_find)
                 if sys_call_table_offset >= 0:
                     return klayout.ro_base + sys_call_table_offset
+        return None
+
+    @staticmethod
+    @Cache.cache_this_session(per_inferior=True, until_new_objfile=True)
+    def get_sys_call_table_riscv(compat=False):
+        if not (is_riscv32() or is_riscv64()) or compat and not is_riscv64():
+            return None
+
+        name = "compat_sys_call_table" if compat else "sys_call_table"
+        if KernelAddressHeuristicFinder.USE_DIRECTLY:
+            address = Ksym.get_addr(name)
+            if address:
+                return address
+
+        if is_kgdb():
+            return None
+
+        if compat:
+            sequences = (
+                ("compat_sys_io_setup", "sys_io_destroy", "compat_sys_io_submit", "sys_io_cancel"),
+                ("__riscv_compat_sys_io_setup", "__riscv_sys_io_destroy",
+                 "__riscv_compat_sys_io_submit", "__riscv_sys_io_cancel"),
+            )
+        else:
+            sequences = (
+                ("sys_io_setup", "sys_io_destroy", "sys_io_submit", "sys_io_cancel"),
+                ("__riscv_sys_io_setup", "__riscv_sys_io_destroy",
+                 "__riscv_sys_io_submit", "__riscv_sys_io_cancel"),
+            )
+
+        layout = Kernel.layout()
+        pack = p32 if is_riscv32() else p64
+        for sequence in sequences:
+            addresses = [Ksym.get_addr(symbol) for symbol in sequence]
+            if None in addresses:
+                continue
+            pattern = b"".join(pack(address) for address in addresses)
+            for base, size in ((layout.ro_base, layout.ro_size), (layout.rw_base, layout.rw_size)):
+                if base is None or size is None:
+                    continue
+                try:
+                    data = read_memory(base, size)
+                except gdb.MemoryError:
+                    continue
+                offset = data.find(pattern)
+                if offset >= 0:
+                    return base + offset
         return None
 
     @staticmethod
@@ -72143,6 +72355,11 @@ class KernelAddressHeuristicFinder:
                     KernelAddressHeuristicFinderUtil.arm32_movw_movt_ldr(res),
                     KernelAddressHeuristicFinderUtil.arm32_ldr_pc_relative(res),
                 )
+            elif is_riscv32() or is_riscv64():
+                g = itertools.chain(
+                    KernelAddressHeuristicFinderUtil.riscv_auipc_use(res, include_lui=is_riscv32()),
+                    KernelAddressHeuristicFinderUtil.riscv_gp_relative(res),
+                )
             for x in g:
                 if is_valid_addr(x):
                     y = read_int_from_memory(x)
@@ -72516,7 +72733,7 @@ class KernelAddressHeuristicFinder:
     @staticmethod
     @Decorator.switch_to_intel_syntax
     def get_VMEMMAP_START():
-        if is_x86_64() or is_arm64():
+        if is_x86_64() or is_arm64() or is_riscv32() or is_riscv64():
             return KernelAddressHeuristicFinder.consts().VMEMMAP_START
         return None
 
@@ -72585,7 +72802,7 @@ class KernelAddressHeuristicFinder:
     @staticmethod
     @Decorator.switch_to_intel_syntax
     def get_VMEMMAP_END():
-        if is_x86_64() or is_arm64():
+        if is_x86_64() or is_arm64() or is_riscv32() or is_riscv64():
             return KernelAddressHeuristicFinder.consts().VMEMMAP_END
         return None
 
@@ -73486,6 +73703,8 @@ class KernelAddressHeuristicFinder:
                     g = KernelAddressHeuristicFinderUtil.aarch64_adrp_add_add(res)
                 elif is_arm32():
                     g = KernelAddressHeuristicFinderUtil.arm32_ldr_reg_const(res, "r0")
+                elif is_riscv32() or is_riscv64():
+                    g = KernelAddressHeuristicFinderUtil.riscv_auipc_addi(res, include_lui=is_riscv32())
                 for x in g:
                     if not is_valid_addr(x):
                         continue
@@ -73510,6 +73729,8 @@ class KernelAddressHeuristicFinder:
                     g = KernelAddressHeuristicFinderUtil.aarch64_adrp_ldrb(res)
                 elif is_arm32():
                     g = KernelAddressHeuristicFinderUtil.arm32_movw_movt(res)
+                elif is_riscv32() or is_riscv64():
+                    g = KernelAddressHeuristicFinderUtil.riscv_load(res, mnemonic="lbu", include_lui=is_riscv32())
                 for x in g:
                     # `enforcing` and the following `initialized` are bool, so reject other globals.
                     if (read_int8_from_memory(x, safe=True) in [0, 1]
@@ -73546,6 +73767,8 @@ class KernelAddressHeuristicFinder:
                     g = KernelAddressHeuristicFinderUtil.arm32_movw_movt_ldr(res, mnemonic="ldrb")
                 elif is_arm32():
                     g = KernelAddressHeuristicFinderUtil.arm32_movw_movt_ldr(res)
+                elif is_riscv32() or is_riscv64():
+                    g = KernelAddressHeuristicFinderUtil.riscv_load(res, mnemonic="lbu" if kversion < "5.1" else "lw")
                 for x in g:
                     return x
 
@@ -73565,6 +73788,8 @@ class KernelAddressHeuristicFinder:
                 g = KernelAddressHeuristicFinderUtil.arm32_movw_movt_ldr(res, mnemonic="ldrb")
             elif is_arm32():
                 g = KernelAddressHeuristicFinderUtil.arm32_movw_movt_ldr(res)
+            elif is_riscv32() or is_riscv64():
+                g = KernelAddressHeuristicFinderUtil.riscv_load(res, mnemonic="lbu" if kversion and kversion < "5.1" else "lw")
             for x in g:
                 return x
         return None
@@ -73601,6 +73826,8 @@ class KernelAddressHeuristicFinder:
                 g = KernelAddressHeuristicFinderUtil.aarch64_adrp_ldr(res, skip=1)
             elif is_arm32():
                 g = KernelAddressHeuristicFinderUtil.arm32_movw_movt(res, skip=1)
+            elif is_riscv32() or is_riscv64():
+                g = KernelAddressHeuristicFinderUtil.riscv_load(res, skip=1)
             for x in g:
                 if KernelAddressHeuristicFinderUtil.is_in_freed_init_region(x):
                     continue
@@ -73848,6 +74075,11 @@ class KernelAddressHeuristicFinder:
                     KernelAddressHeuristicFinderUtil.arm32_movw_movt_str(res),
                     KernelAddressHeuristicFinderUtil.arm32_ldr_pc_relative_str(res),
                 )
+            elif is_riscv32() or is_riscv64():
+                g = KernelAddressHeuristicFinderUtil.riscv_auipc_gen(
+                    res, False, True, 0, False, False,
+                    load_mnemonic="sd" if is_riscv64() else "sw", include_lui=is_riscv32(),
+                )
             for x in g:
                 return x
 
@@ -73867,6 +74099,8 @@ class KernelAddressHeuristicFinder:
                     g = KernelAddressHeuristicFinderUtil.aarch64_adrp_ldr(res)
                 elif is_arm32():
                     g = KernelAddressHeuristicFinderUtil.arm32_movw_movt(res)
+                elif is_riscv32() or is_riscv64():
+                    g = KernelAddressHeuristicFinderUtil.riscv_load(res, mnemonic="ld" if is_riscv64() else "lw")
                 for x in g:
                     return x
         return None
@@ -73910,6 +74144,14 @@ class KernelAddressHeuristicFinder:
                 stored = itertools.chain(
                     KernelAddressHeuristicFinderUtil.arm32_movw_movt_str(res),
                     KernelAddressHeuristicFinderUtil.arm32_ldr_pc_relative_str(res),
+                )
+            elif is_riscv32() or is_riscv64():
+                g = KernelAddressHeuristicFinderUtil.riscv_load(
+                    res, mnemonic="ld" if is_riscv64() else "lw", include_lui=is_riscv32(),
+                )
+                stored = KernelAddressHeuristicFinderUtil.riscv_auipc_gen(
+                    res, False, True, 0, False, False,
+                    load_mnemonic="sd" if is_riscv64() else "sw", include_lui=is_riscv32(),
                 )
             stored = set(stored)
             for x in g:
@@ -74054,6 +74296,8 @@ class KernelAddressHeuristicFinder:
                     g = KernelAddressHeuristicFinderUtil.aarch64_adrp_ldr(res, skip=1)
                 elif is_arm32():
                     g = KernelAddressHeuristicFinderUtil.arm32_movw_movt(res, skip=1)
+                elif is_riscv32() or is_riscv64():
+                    g = ()
                 for x in g:
                     return x
         return None
@@ -75145,6 +75389,11 @@ class KernelAddressHeuristicFinder:
                 elif is_arm32():
                     # TODO
                     g = []
+                elif is_riscv32() or is_riscv64():
+                    g = itertools.chain(
+                        KernelAddressHeuristicFinderUtil.riscv_auipc_addi(res, include_lui=is_riscv32()),
+                        KernelAddressHeuristicFinderUtil.riscv_gp_relative(res),
+                    )
                 for x in g:
                     """
                     node_data[]: 0xffffdfab1c1be0b8
@@ -75219,6 +75468,11 @@ class KernelAddressHeuristicFinder:
                     g = itertools.chain(
                         KernelAddressHeuristicFinderUtil.arm32_movw_movt(res),
                         KernelAddressHeuristicFinderUtil.arm32_ldr_pc_relative(res)
+                    )
+                elif is_riscv32() or is_riscv64():
+                    g = itertools.chain(
+                        KernelAddressHeuristicFinderUtil.riscv_auipc_addi(res, include_lui=is_riscv32()),
+                        KernelAddressHeuristicFinderUtil.riscv_gp_relative(res),
                     )
                 for x in g:
                     # the candidate itself may be unreadable (e.g. a sign-extended small constant)
@@ -75320,6 +75574,8 @@ class KernelAddressHeuristicFinder:
                     """
                 elif is_arm32():
                     g = KernelAddressHeuristicFinderUtil.arm32_movw_movt(res)
+                elif is_riscv32() or is_riscv64():
+                    g = ()
                 for x in g:
                     if is_x86():
                         if kversion < "5.2":
@@ -75352,6 +75608,11 @@ class KernelAddressHeuristicFinder:
                         KernelAddressHeuristicFinderUtil.arm32_movw_movt(res),
                         KernelAddressHeuristicFinderUtil.arm32_ldr_pc_relative(res),
                     )
+                elif is_riscv32() or is_riscv64():
+                    g = itertools.chain(
+                        KernelAddressHeuristicFinderUtil.riscv_auipc_use(res, include_lui=is_riscv32()),
+                        KernelAddressHeuristicFinderUtil.riscv_gp_relative(res),
+                    )
                 for x in g:
                     if is_double_link_list(x):
                         return x
@@ -75370,6 +75631,11 @@ class KernelAddressHeuristicFinder:
                         g = KernelAddressHeuristicFinderUtil.aarch64_adrp_add_add(res, read_valid=True)
                     elif is_arm32():
                         g = KernelAddressHeuristicFinderUtil.arm32_ldr_pc_relative(res)
+                    elif is_riscv32() or is_riscv64():
+                        g = itertools.chain(
+                            KernelAddressHeuristicFinderUtil.riscv_auipc_use(res, include_lui=is_riscv32()),
+                            KernelAddressHeuristicFinderUtil.riscv_gp_relative(res),
+                        )
                     for x in g:
                         if is_double_link_list(x):
                             return x
@@ -75389,6 +75655,11 @@ class KernelAddressHeuristicFinder:
                     g = itertools.chain(
                         KernelAddressHeuristicFinderUtil.arm32_movw_movt(res),
                         KernelAddressHeuristicFinderUtil.arm32_ldr_pc_relative(res),
+                    )
+                elif is_riscv32() or is_riscv64():
+                    g = itertools.chain(
+                        KernelAddressHeuristicFinderUtil.riscv_auipc_use(res, include_lui=is_riscv32()),
+                        KernelAddressHeuristicFinderUtil.riscv_gp_relative(res),
                     )
                 for x in g:
                     if is_double_link_list(x):
@@ -75477,6 +75748,11 @@ class KernelAddressHeuristicFinder:
                     KernelAddressHeuristicFinderUtil.arm32_movw_movt(res),
                     KernelAddressHeuristicFinderUtil.arm32_ldr_pc_relative(res),
                 )
+            elif is_riscv32() or is_riscv64():
+                g = itertools.chain(
+                    KernelAddressHeuristicFinderUtil.riscv_auipc_use(res, include_lui=is_riscv32()),
+                    KernelAddressHeuristicFinderUtil.riscv_gp_relative(res),
+                )
             for head in itertools.chain(direct_heads, indirect_heads(g)):
                 if is_double_link_list(head, min_len=5):
                     return head
@@ -75493,6 +75769,55 @@ class KernelAddressHeuristicFinder:
 
         kversion = Kernel.version()
         if kversion is None or kversion < "5.2":
+            return None
+
+        if is_riscv32() or is_riscv64():
+            if "5.4" <= kversion:
+                list_offset = current_arch.ptrsize * 5
+            else:
+                list_offset = current_arch.ptrsize * 7
+            page_size = Kernel.slab_page_size()
+            last = (1 << (current_arch.ptrsize * 8)) - 1
+
+            def valid_free_list(head):
+                if not is_double_link_list(head, min_len=1):
+                    return False
+                entry = read_int_from_memory(head, safe=True)
+                previous_end = None
+                for count in range(3):
+                    if entry == head:
+                        break
+                    va_start = read_int_from_memory(entry - list_offset, safe=True)
+                    va_end = read_int_from_memory(entry - list_offset + current_arch.ptrsize, safe=True)
+                    if va_start is None or va_end is None or va_start >= va_end:
+                        return False
+                    if count and va_start < previous_end:
+                        return False
+                    if (va_start != 1 and va_start % page_size) or (va_end != last and va_end % page_size):
+                        return False
+                    previous_end = va_end
+                    entry = read_int_from_memory(entry, safe=True)
+                return True
+
+            purge_list = KernelAddressHeuristicFinder.get_purge_vmap_area_list()
+            for name in ("__purge_vmap_area_lazy", "alloc_vmap_area", "free_vmap_area_noflush"):
+                for addr in Ksym.get_addrs(name, match="split"):
+                    res = KernelAddressHeuristicFinderUtil.disassemble_until_next_symbol(addr, 1000)
+                    g = itertools.chain(
+                        KernelAddressHeuristicFinderUtil.riscv_auipc_use(res, include_lui=is_riscv32()),
+                        KernelAddressHeuristicFinderUtil.riscv_gp_relative(res),
+                    )
+                    for x in g:
+                        if x != purge_list and valid_free_list(x):
+                            return x
+            if "6.9" <= kversion:
+                for addr in Ksym.get_addrs("free_vmap_area_noflush", match="split"):
+                    res = KernelAddressHeuristicFinderUtil.disassemble_until_next_symbol(addr, 300)
+                    for base in KernelAddressHeuristicFinderUtil.riscv_auipc_use(res):
+                        for i in range(1, 32):
+                            x = base + current_arch.ptrsize * i
+                            if valid_free_list(x):
+                                return x
             return None
 
         # insert_vmap_area_augment also references the busy list on ARM.
@@ -75591,6 +75916,34 @@ class KernelAddressHeuristicFinder:
         if kversion is None or not "4.7" <= kversion < "5.11":
             return None
 
+        if is_riscv32() or is_riscv64():
+            if "5.4" <= kversion:
+                offset_purge_list = current_arch.ptrsize * 7
+            elif "5.2" <= kversion:
+                offset_purge_list = current_arch.ptrsize * 9
+            else:
+                offset_purge_list = current_arch.ptrsize * 8
+            for name in ("__purge_vmap_area_lazy", "free_vmap_area_noflush"):
+                for addr in Ksym.get_addrs(name, match="split"):
+                    res = KernelAddressHeuristicFinderUtil.disassemble_until_next_symbol(addr, 300)
+                    g = itertools.chain(
+                        KernelAddressHeuristicFinderUtil.riscv_auipc_use(res, include_lui=is_riscv32()),
+                        KernelAddressHeuristicFinderUtil.riscv_gp_relative(res),
+                    )
+                    for x in g:
+                        node = read_int_from_memory(x, safe=True)
+                        if node is None or not is_single_link_list(x):
+                            continue
+                        if node == 0:
+                            if name == "__purge_vmap_area_lazy":
+                                return x
+                            continue
+                        va_start = read_int_from_memory(node - offset_purge_list, safe=True)
+                        va_end = read_int_from_memory(node - offset_purge_list + current_arch.ptrsize, safe=True)
+                        if va_start is not None and va_end is not None and va_start < va_end:
+                            return x
+            return None
+
         llist_add_batch = Ksym.get_addr("llist_add_batch")
         if llist_add_batch is None:
             return None
@@ -75669,6 +76022,19 @@ class KernelAddressHeuristicFinder:
 
         kversion = Kernel.version()
         if kversion is None or not "5.11" <= kversion < "6.9":
+            return None
+
+        if is_riscv32() or is_riscv64():
+            for name in ("free_vmap_area_noflush", "__purge_vmap_area_lazy"):
+                for addr in Ksym.get_addrs(name, match="split"):
+                    res = KernelAddressHeuristicFinderUtil.disassemble_until_next_symbol(addr, 300)
+                    g = itertools.chain(
+                        KernelAddressHeuristicFinderUtil.riscv_auipc_use(res, include_lui=is_riscv32()),
+                        KernelAddressHeuristicFinderUtil.riscv_gp_relative(res),
+                    )
+                    for x in g:
+                        if is_double_link_list(x):
+                            return x
             return None
 
         # plan 2 (available v5.11~v6.8)
@@ -77008,6 +77374,8 @@ class Kernel:
         """Read the return address at a normal function entry."""
         if is_x86():
             return read_int_from_memory(current_arch.sp)
+        if is_riscv32() or is_riscv64():
+            return get_register("$ra")
         if is_arm64():
             return get_register("$x30")
         if is_arm32():
@@ -77227,6 +77595,16 @@ class Kernel:
         return KernelBuddy.get_instance(migrate_pcptypes)
 
     @staticmethod
+    def buddy_contains(migrate_pcptypes=3):
+        """Return the buddy block resolver."""
+        return KernelBuddyContains.get_instance(migrate_pcptypes)
+
+    @staticmethod
+    def vmalloc():
+        """Return the vmalloc area resolver."""
+        return KernelVmalloc.get_instance()
+
+    @staticmethod
     def export_meta(command, meta, demote_err=False):
         """Convert the meta lines recorded by a kernel resolver into the (printer, line) pairs of `command`."""
         if demote_err:
@@ -77343,6 +77721,10 @@ class Kernel:
                     configs = Kernel.config().get_configs()
                     if configs:
                         return "SLUB_TINY" if configs.get("CONFIG_SLUB_TINY") == "y" else "SLUB"
+                    # A normal SLUB build may also omit the symbol. Check the live sheaf layout.
+                    resolver = Kernel.slub()
+                    if resolver.initialize() and resolver.sheaves_enabled:
+                        return "SLUB"
                     return "SLUB_TINY"
                 if calculate_sheaf_capacity_size <= 0x20:
                     return "SLUB_TINY"
@@ -92237,6 +92619,11 @@ class KernelAddressHeuristicSelftestCommand(GenericCommand, BufferingOutput):
         "$ks_selftest_failures is nonzero if the test cannot run, otherwise it is the number of failed results.",
     ])
 
+    unsupported_riscv = {
+        "get_apparmor_enabled", "get_apparmor_initialized", "get_mmap_min_addr",
+        "get_n_tty_ops", "get_selinux_state", "get_slab_kset", "get_tty_ldiscs",
+    }
+
     def invoke(self, args, from_tty):
         gdb.set_convenience_variable("ks_selftest_failures", -1)
         return super().invoke(args, from_tty)
@@ -92262,6 +92649,7 @@ class KernelAddressHeuristicSelftestCommand(GenericCommand, BufferingOutput):
             "get_sys_call_table_arm32": "sys_call_table",
             "get_sys_call_table_arm64": "sys_call_table",
             "get_sys_call_table_arm64_compat": "compat_sys_call_table",
+            "get_sys_call_table_riscv": "sys_call_table",
             "get_per_cpu_offset": "__per_cpu_offset",
             "get_PAGE_OFFSET_base": "page_offset_base",
             "get_current_clocksource": "curr_clocksource",
@@ -92308,7 +92696,7 @@ class KernelAddressHeuristicSelftestCommand(GenericCommand, BufferingOutput):
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
-    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
+    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64"))
     @Decorator.only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
         self.quiet_info("Wait for kallsyms and heuristic scans")
@@ -92326,6 +92714,9 @@ class KernelAddressHeuristicSelftestCommand(GenericCommand, BufferingOutput):
                 return
 
             for name, finder in self.finders():
+                if (is_riscv32() or is_riscv64()) and name in self.unsupported_riscv:
+                    direct_results[name] = (None, None, False, ())
+                    continue
                 symbol_name = self.direct_symbol_name(name)
                 if symbol_name is not None:
                     symbol_address = Ksym.get_addr(symbol_name)
@@ -94921,7 +95312,7 @@ class KernelCredCommand(GenericCommand, BufferingOutput):
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
-    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
+    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64"))
     @Decorator.only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
         self.quiet_info("Wait for memory scan")
@@ -95678,7 +96069,7 @@ class KernelKeyringCommand(GenericCommand, BufferingOutput):
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
-    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
+    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64"))
     @Decorator.only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
         self.quiet_info("Wait for memory scan")
@@ -96815,7 +97206,6 @@ class KernelBlockDevicesCommand(GenericCommand, BufferingOutput):
         "block devices referenced by mounted filesystems. If none are found since v5.11, devices_kset and",
         "gendisk->part0 supply the samples. The others are found by the layout measured with them,",
         "from the block devices in devices_kset (v5.11~) or from the inodes of the bdev pseudo filesystem (~v5.10).",
-        "RISC-V is supported only with the debug information.",
         "",
         "The name is built from bd_disk->disk_name and the partition number, in the same way as the kernel.",
         "Before v5.11, bd_disk is set only while the block device is opened.",
@@ -97392,10 +97782,6 @@ class KernelBlockDevicesCommand(GenericCommand, BufferingOutput):
             if bdevs is not None:
                 self.meta.append((self.quiet_info, "bdev source: blockdev_superblock->s_inodes"))
                 return bdevs
-
-        if is_riscv32() or is_riscv64():
-            self.meta.append((self.quiet_err, "Unsupported: RISC-V without the debug information of struct block_device"))
-            return None
 
         self.meta.append((self.quiet_info, "bdev source: bdev_cache and mounted filesystems"))
         bdevs = self.get_bdev_list() or []
@@ -98769,7 +99155,7 @@ class KernelCharacterDevicesCommand(GenericCommand, BufferingOutput):
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware"))
-    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
+    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64"))
     @Decorator.only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
         self.quiet_info("Wait for memory scan")
@@ -99995,7 +100381,7 @@ class KernelOperationsCommand(GenericCommand, BufferingOutput):
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
-    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
+    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64"))
     @Decorator.only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
         # parse version
@@ -100524,7 +100910,7 @@ class KernelFileSystemsCommand(GenericCommand, BufferingOutput):
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
-    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
+    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64"))
     @Decorator.only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
         self.quiet_info("Wait for memory scan")
@@ -101093,9 +101479,9 @@ class KernelVfsCommand(GenericCommand, BufferingOutput):
             self.meta.extend(Kernel.export_meta(self, kfs.meta, demote_err=True))
 
         self.offset_s_dev = current_arch.ptrsize * 2
-        # loff_t uses 8-byte alignment on ARM32, unlike the i386 ABI.
+        # loff_t uses 8-byte alignment on ARM32 and RISCV32, unlike the i386 ABI.
         loff_t_align = 4
-        if is_64bit() or is_arm32():
+        if is_64bit() or is_arm32() or is_riscv32():
             loff_t_align = 8
         s_maxbytes_end = current_arch.ptrsize * 3 + 8
         offset_s_maxbytes = align(s_maxbytes_end, loff_t_align)
@@ -101302,7 +101688,7 @@ class KernelVfsCommand(GenericCommand, BufferingOutput):
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
-    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
+    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64"))
     @Decorator.only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
         self.quiet_info("Wait for memory scan")
@@ -105234,7 +105620,7 @@ class KernelSearchCodePtrCommand(GenericCommand, BufferingOutput):
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware"))
-    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
+    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64"))
     @Decorator.only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
         if args.max_range and args.max_range % current_arch.ptrsize:
@@ -105248,7 +105634,9 @@ class KernelSearchCodePtrCommand(GenericCommand, BufferingOutput):
         self.quiet_info("Wait for memory scan")
 
         self.klayout = Kernel.layout()
-        if not self.klayout.is_complete or self.klayout.rwx:
+        riscv_data_range = (self.klayout.is_complete and (is_riscv32() or is_riscv64()) and
+                            self.klayout.ro_end <= self.klayout.rw_base < self.klayout.rw_end)
+        if not self.klayout.is_complete or (self.klayout.rwx and not riscv_data_range):
             err("Unsupported environment which has RWX data area")
             return
 
@@ -105281,6 +105669,14 @@ class KernelSearchCodePtrCommand(GenericCommand, BufferingOutput):
             else:
                 chunks = [(start, data)]
             for chunk_start, chunk in chunks:
+                if is_riscv32() or is_riscv64():
+                    chunk_end = chunk_start + len(chunk)
+                    aligned_start = align(chunk_start, current_arch.ptrsize)
+                    aligned_end = chunk_end - chunk_end % current_arch.ptrsize
+                    if aligned_start >= aligned_end:
+                        continue
+                    chunk = chunk[aligned_start - chunk_start:aligned_end - chunk_start]
+                    chunk_start = aligned_start
                 for i, rw_d in enumerate(slice_unpack(chunk, current_arch.ptrsize)):
                     rw_data.append((chunk_start + i * current_arch.ptrsize, rw_d))
         if not rw_data:
@@ -105570,7 +105966,7 @@ class KernelDiffCommand(GenericCommand, BufferingOutput):
 
     @Decorator.only_if_gdb_running
     @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware"))
-    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
+    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64"))
     @Decorator.only_if_in_kernel_or_kpti_disabled
     def save_current_snapshot(self, args):
         commands = self.get_commands(args)
@@ -105591,7 +105987,7 @@ class KernelDiffCommand(GenericCommand, BufferingOutput):
 
     @Decorator.only_if_gdb_running
     @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware"))
-    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
+    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64"))
     @Decorator.only_if_in_kernel_or_kpti_disabled
     def compare_with_current(self, args, index):
         ret = self.get_snapshot_by_index(index)
@@ -106659,6 +107055,9 @@ class KernelSyscallsCommand(GenericCommand, BufferingOutput):
             "x86_x32": ["__x64_sys_ni_syscall", "sys_ni_syscall"],
             "arm64": ["__arm64_sys_ni_syscall", "sys_ni_syscall"],
             "arm64_32": ["__arm64_sys_ni_syscall", "sys_ni_syscall"],
+            "riscv32": ["__riscv_sys_ni_syscall", "sys_ni_syscall"],
+            "riscv64": ["__riscv_sys_ni_syscall", "sys_ni_syscall"],
+            "riscv64_32": ["__riscv_sys_ni_syscall", "sys_ni_syscall"],
         }.get(abi, ["sys_ni_syscall"])
         ni_syscalls = {}
         for name in ni_syscall_names:
@@ -106696,6 +107095,8 @@ class KernelSyscallsCommand(GenericCommand, BufferingOutput):
         except (gdb.error, gdb.MemoryError):
             return None
         if "+" in symbol:
+            return None
+        if (is_riscv32() or is_riscv64()) and not re.match(r"<(?:__riscv_)?(?:compat_)?sys_", symbol):
             return None
 
         insn, insn2 = self.get_insn_pair(syscall_function_addr)
@@ -106952,12 +107353,27 @@ class KernelSyscallsCommand(GenericCommand, BufferingOutput):
                 "compat_sys_call_table (arm32)", "arm64_32", KernelAddressHeuristicFinder.get_sys_call_table_arm64_compat,
                 Syscall.get_syscall_table("ARM", "32"),
             )
+        elif is_riscv32():
+            self.dump_one_syscall_table(
+                "sys_call_table (riscv32)", "riscv32", KernelAddressHeuristicFinder.get_sys_call_table_riscv,
+                Syscall.get_syscall_table("RISCV", "32"),
+            )
+        elif is_riscv64():
+            self.dump_one_syscall_table(
+                "sys_call_table (riscv64)", "riscv64", KernelAddressHeuristicFinder.get_sys_call_table_riscv,
+                Syscall.get_syscall_table("RISCV", "64"),
+            )
+            self.dump_one_syscall_table(
+                "compat_sys_call_table (riscv32)", "riscv64_32",
+                lambda: KernelAddressHeuristicFinder.get_sys_call_table_riscv(compat=True),
+                Syscall.get_syscall_table("RISCV", "32"),
+            )
         return
 
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
-    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
+    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64"))
     @Decorator.only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
         self.out = []
@@ -159174,7 +159590,7 @@ class KobjCommand(GenericCommand):
         try:
             consts = F.consts()
             add(consts.MODULES_VADDR, consts.MODULES_END, "modules", "module")
-            if is_x86_64() or is_arm64():
+            if is_x86_64() or is_arm64() or is_riscv32() or is_riscv64():
                 add(F.get_VMEMMAP_START(), F.get_VMEMMAP_END(), "vmemmap (struct page array)", "vmemmap")
             add(F.get_VMALLOC_START(), F.get_VMALLOC_END(), "vmalloc", "vmalloc")
             add(F.get_PAGE_OFFSET(), F.get_PAGE_OFFSET_END(), "direct-map (physmap)", "physmap")
@@ -159377,7 +159793,10 @@ class KobjCommand(GenericCommand):
         self.emit("Allocator", "n/a (page descriptor array)")
         consts = KernelAddressHeuristicFinder.consts()
         start = KernelAddressHeuristicFinder.get_VMEMMAP_START()
-        if consts is not None:
+        if is_riscv32() or is_riscv64():
+            page = Kernel.page()
+            stride = page.sizeof_struct_page if page.initialize() else None
+        elif consts is not None:
             stride = consts.sizeof_struct_page
         else:
             stride = None
@@ -159491,7 +159910,7 @@ class KobjCommand(GenericCommand):
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
-    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
+    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64"))
     @Decorator.only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
         if Kernel.version() is None:
@@ -159987,7 +160406,7 @@ class KmemCacheAliasCommand(GenericCommand, BufferingOutput):
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
-    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
+    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64"))
     @Decorator.only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
         self.quiet_info("Wait for memory scan")
@@ -160293,6 +160712,9 @@ class KernelBuddy:
         result = {"virt": None, "phys": None if skip_phys else phys}
         if phys is None or entry["is_highmem"]:
             return result
+        if is_riscv32() or is_riscv64():
+            result["virt"] = Kernel.page2virt(entry["page"])
+            return result
 
         consts = KernelAddressHeuristicFinder.consts()
         page_offset = KernelAddressHeuristicFinder.get_PAGE_OFFSET()
@@ -160319,43 +160741,19 @@ class KernelBuddy:
         result["virt"] = virt
         return result
 
-    @staticmethod
-    def find_block(nodes, page, sizeof_struct_page):
-
-        def contains(entry):
-            if entry is None:
-                return False
-            npages = entry["size"] // KernelAddressHeuristicFinder.consts().PAGE_SIZE
-            return entry["page"] <= page < entry["page"] + npages * sizeof_struct_page
-
-        for node in nodes:
-            for zone in node["zones"]:
-                for cpu_num, lists in zone.get("per_cpu_pageset", {}).items():
-                    for pcp_list in lists:
-                        for entry in pcp_list["entries"]:
-                            if contains(entry):
-                                return {
-                                    "kind": "pcp", "entry": entry, "node": node, "zone": zone,
-                                    "cpu_num": cpu_num, "list": pcp_list,
-                                }
-                for free_area in zone.get("free_area", []):
-                    for free_list in free_area["free_lists"]:
-                        for entry in free_list["entries"]:
-                            if contains(entry):
-                                return {
-                                    "kind": "free_area", "entry": entry, "node": node, "zone": zone,
-                                    "free_area": free_area, "list": free_list,
-                                }
-        return None
-
     @Cache.cache_this_session
     def get_pageblock_order(self): # for 5.14 ~ 6.10
         kversion = Kernel.version()
         if not ("5.14" <= kversion < "6.10"):
             return None
 
-        PMD_SHIFT = KernelAddressHeuristicFinder.consts().PMD_SHIFT
-        PAGE_SHIFT = KernelAddressHeuristicFinder.consts().PAGE_SHIFT
+        if is_riscv32():
+            PMD_SHIFT = 22
+        elif is_riscv64():
+            PMD_SHIFT = 21
+        else:
+            PMD_SHIFT = KernelAddressHeuristicFinder.consts().PMD_SHIFT
+        PAGE_SHIFT = Kernel.slab_page_size().bit_length() - 1
         HPAGE_SHIFT = PMD_SHIFT
         HUGETLB_PAGE_ORDER = HPAGE_SHIFT - PAGE_SHIFT
 
@@ -160380,37 +160778,6 @@ class KernelBuddy:
                 return min(HUGETLB_PAGE_ORDER, MAX_PAGE_ORDER)
             else:
                 return MAX_PAGE_ORDER
-
-    def get_buddy_order(self, page):
-        order = read_int_from_memory(page + PageInfoCommand.get_page_layout()["private"], safe=True)
-        if order is None:
-            return None
-        if order >= self.MAX_ORDER:
-            return None
-        return order
-
-    def is_page_buddy(self, page):
-        slot6_raw = read_int32_from_memory(page + PageInfoCommand.get_page_layout()["mapcount"], safe=True)
-        if slot6_raw is None:
-            return False
-        slot6_kind = PageInfoCommand.get_slot6_kind(slot6_raw)
-        return PageInfoCommand.is_buddy_free(slot6_raw, slot6_kind)
-
-    def find_head_page(self, page, pfn, sizeof_struct_page):
-        for order in range(self.MAX_ORDER):
-            # Go back order by order to find the head or not if the page is not in the buddy
-            head_pfn = pfn & ~((1 << order) - 1)
-            head_page = page - (pfn - head_pfn) * sizeof_struct_page
-
-            # Just for good measures
-            if not is_valid_addr(head_page):
-                continue
-            if not self.is_page_buddy(head_page):
-                continue
-            if self.get_buddy_order(head_page) != order:
-                continue
-            return head_page, head_pfn, order
-        return None, None, None
 
     def walk_node(self, node, options):
         zones = []
@@ -160462,7 +160829,7 @@ class KernelBuddy:
         return result
 
     def walk_free_area(self, free_area, order, is_highmem, options):
-        size = KernelAddressHeuristicFinder.consts().PAGE_SIZE * (2 ** order)
+        size = Kernel.slab_page_size() * (2 ** order)
         sizeof_list_head = current_arch.ptrsize * 2
         lists = []
         for mtype in ProgressBar(range(self.MIGRATE_TYPES), desc="mtype", disable=options["quiet"]):
@@ -160882,18 +161249,179 @@ class KernelBuddy:
             if kversion < "6.10":
                 order = self.get_pageblock_order()
             else:
-                HPAGE_PMD_SHIFT = KernelAddressHeuristicFinder.consts().PMD_SHIFT
-                PAGE_SHIFT = KernelAddressHeuristicFinder.consts().PAGE_SHIFT
+                if is_riscv32():
+                    HPAGE_PMD_SHIFT = 22
+                elif is_riscv64():
+                    HPAGE_PMD_SHIFT = 21
+                else:
+                    HPAGE_PMD_SHIFT = KernelAddressHeuristicFinder.consts().PMD_SHIFT
+                PAGE_SHIFT = Kernel.slab_page_size().bit_length() - 1
                 HPAGE_PMD_ORDER = HPAGE_PMD_SHIFT - PAGE_SHIFT
                 order = HPAGE_PMD_ORDER
 
-        size = KernelAddressHeuristicFinder.consts().PAGE_SIZE * (2 ** order)
+        size = Kernel.slab_page_size() * (2 ** order)
         entries = []
         if not (options["mtype_filter"] and mtype not in options["mtype_filter"]) and not (
             options["order_filter"] and order not in options["order_filter"]
         ):
             entries = self.walk_list(list_i, size, is_highmem, options["count"], cpu_num)
         return {"index": i, "order": order, "size": size, "mtype": mtype, "mtype_name": mtype_str, "entries": entries}
+
+
+class KernelBuddyContains:
+    """Resolve the buddy block containing a page or virtual address."""
+
+    @classmethod
+    @Cache.cache_this_session(per_inferior=True, until_new_objfile=True)
+    def get_instance(cls, migrate_pcptypes=3):
+        return cls(migrate_pcptypes)
+
+    def __init__(self, migrate_pcptypes=3):
+        self.buddy = Kernel.buddy(migrate_pcptypes)
+        self.sizeof_struct_page = None
+
+    def initialize(self):
+        self.sizeof_struct_page = None
+        if not self.buddy.initialize():
+            return None
+        if is_riscv32() or is_riscv64():
+            page_resolver = Kernel.page()
+            if page_resolver.initialize():
+                self.sizeof_struct_page = page_resolver.sizeof_struct_page
+        else:
+            self.sizeof_struct_page = KernelAddressHeuristicFinder.consts().sizeof_struct_page
+        return self.sizeof_struct_page is not None
+
+    def get_page(self, address, page_address=False):
+        if page_address:
+            if not is_valid_addr(address):
+                return {"page": None, "error": "Invalid page address"}
+            if Kernel.page2phys(address) is None:
+                return {"page": None, "error": "Invalid or unaligned struct page address"}
+            return {"page": address, "error": None}
+
+        page = Kernel.virt2page(address & get_pagesize_mask_high())
+        if page is None:
+            return {"page": None, "error": "Failed to resolve page from virt"}
+        return {"page": page, "error": None}
+
+    def resolve_target(self, address, page_address=False):
+        target = self.get_page(address, page_address)
+        if target["error"]:
+            return target
+        page = target["page"]
+        virt = Kernel.page2virt(page)
+        page_size = Kernel.slab_page_size()
+        if page_address:
+            offset = 0
+        else:
+            offset = address & (page_size - 1)
+        phys = Kernel.page2phys(page)
+        if phys is None:
+            return {"page": page, "error": "Failed to resolve phys from page"}
+        target.update(virt=virt, phys=phys, pfn=phys >> (page_size.bit_length() - 1), offset=offset)
+        return target
+
+    def get_page_block(self, address, page_address=False):
+        if self.sizeof_struct_page is None and not self.initialize():
+            return {"page": None, "error": "Failed to initialize"}
+        target = self.resolve_target(address, page_address)
+        if target["error"]:
+            return target
+        page, pfn = target["page"], target["pfn"]
+        if self.is_page_buddy(page):
+            order = self.get_buddy_order(page)
+            if order is None:
+                target.update(status="invalid_order", head_page=None, head_pfn=None, order=None)
+                return target
+            head_page, head_pfn = page, pfn
+        else:
+            head_page, head_pfn, order = self.find_head_page(page, pfn)
+        if head_page is None:
+            status = "unknown"
+        elif head_page != page:
+            status = "tail"
+        else:
+            status = "head"
+        target.update(status=status, head_page=head_page, head_pfn=head_pfn, order=order)
+        return target
+
+    def get_free_list_block(self, address, page_address=False, quiet=True):
+        if self.sizeof_struct_page is None and not self.initialize():
+            return {"page": None, "error": "Failed to initialize"}
+        target = self.get_page(address, page_address)
+        if target["error"]:
+            return target
+        nodes = self.buddy.get_nodes(quiet=quiet)
+        if nodes is None:
+            target["error"] = "Failed to initialize"
+            return target
+        block = self.find_block(nodes, target["page"], self.sizeof_struct_page)
+        if block:
+            status = "free"
+        elif self.buddy.list_scan_incomplete:
+            status = "unknown"
+        else:
+            status = "in-use"
+        target.update(block=block, status=status)
+        return target
+
+    @staticmethod
+    def find_block(nodes, page, sizeof_struct_page):
+        page_size = Kernel.slab_page_size()
+
+        def contains(entry):
+            if entry is None:
+                return False
+            npages = entry["size"] // page_size
+            return entry["page"] <= page < entry["page"] + npages * sizeof_struct_page
+
+        for node in nodes:
+            for zone in node["zones"]:
+                for cpu_num, lists in zone.get("per_cpu_pageset", {}).items():
+                    for pcp_list in lists:
+                        for entry in pcp_list["entries"]:
+                            if contains(entry):
+                                return {
+                                    "kind": "pcp", "entry": entry, "node": node, "zone": zone,
+                                    "cpu_num": cpu_num, "list": pcp_list,
+                                }
+                for free_area in zone.get("free_area", []):
+                    for free_list in free_area["free_lists"]:
+                        for entry in free_list["entries"]:
+                            if contains(entry):
+                                return {
+                                    "kind": "free_area", "entry": entry, "node": node, "zone": zone,
+                                    "free_area": free_area, "list": free_list,
+                                }
+        return None
+
+    def get_buddy_order(self, page):
+        order = read_int_from_memory(page + PageInfoCommand.get_page_layout()["private"], safe=True)
+        if order is None or order >= self.buddy.MAX_ORDER:
+            return None
+        return order
+
+    @staticmethod
+    def is_page_buddy(page):
+        slot6_raw = read_int32_from_memory(page + PageInfoCommand.get_page_layout()["mapcount"], safe=True)
+        if slot6_raw is None:
+            return False
+        slot6_kind = PageInfoCommand.get_slot6_kind(slot6_raw)
+        return PageInfoCommand.is_buddy_free(slot6_raw, slot6_kind)
+
+    def find_head_page(self, page, pfn):
+        for order in range(self.buddy.MAX_ORDER):
+            head_pfn = pfn & ~((1 << order) - 1)
+            head_page = page - (pfn - head_pfn) * self.sizeof_struct_page
+            if not is_valid_addr(head_page):
+                continue
+            if not self.is_page_buddy(head_page):
+                continue
+            if self.get_buddy_order(head_page) != order:
+                continue
+            return head_page, head_pfn, order
+        return None, None, None
 
 
 @register_command
@@ -161106,7 +161634,7 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
-    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
+    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64"))
     @Decorator.only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
         if any(order < 0 for order in args.order_filter or []):
@@ -161221,45 +161749,11 @@ class BuddyContainsCommand(BuddyDumpCommand):
         "{0:s} -L 0xffff96a7c2144000    # Skip free lists",
     ]).format(_cmdline_)
 
-    def get_page(self):
-        if self.args.page:
-            page = self.args.address
-            if not is_valid_addr(page):
-                self.quiet_err("Invalid page address")
-                return None
-            if Kernel.page2phys(page) is None:
-                self.quiet_err("Invalid or unaligned struct page address")
-                return None
-        else:
-            virt = self.args.address
-            page = Kernel.virt2page(virt & get_pagesize_mask_high())
-            if page is None:
-                self.quiet_err("Failed to resolve page from virt")
-                return None
-        return page
-
-    def resolve_target(self):
-        page = self.get_page()
-        if page is None:
-            return None
-
-        virt = Kernel.page2virt(page)
-        if self.args.page:
-            offset = 0
-        else:
-            offset = self.args.address & (KernelAddressHeuristicFinder.consts().PAGE_SIZE - 1)
-
-        phys = Kernel.page2phys(page)
-        if phys is None:
-            self.quiet_err("Failed to resolve phys from page")
-            return None
-        return page, virt, phys, offset
-
     def print_block_info(self, head_page, head_pfn, order):
         chunk_size_color = Config.get("theme.heap_chunk_size")
         freed_address_color = Config.get("theme.heap_chunk_address_freed")
-        PAGE_SIZE = KernelAddressHeuristicFinder.consts().PAGE_SIZE
-        PAGE_SHIFT = KernelAddressHeuristicFinder.consts().PAGE_SHIFT
+        PAGE_SIZE = Kernel.slab_page_size()
+        PAGE_SHIFT = PAGE_SIZE.bit_length() - 1
 
         size = PAGE_SIZE << order
         head_phys = head_pfn << PAGE_SHIFT
@@ -161279,9 +161773,12 @@ class BuddyContainsCommand(BuddyDumpCommand):
         gef_print("    page:{:s}  size:{:s}  virt:{:s}  phys:{:s}".format(page_str, size_str, virt_str, phys_str))
         return
 
-    def parse_page(self, page, pfn, phys, virt, offset_in_page):
+    def parse_page(self, result):
         used_address_color = Config.get("theme.heap_chunk_address_used")
-        PAGE_SIZE = KernelAddressHeuristicFinder.consts().PAGE_SIZE
+        PAGE_SIZE = Kernel.slab_page_size()
+        page, pfn = result["page"], result["pfn"]
+        phys, virt, offset_in_page = result["phys"], result["virt"], result["offset"]
+        head_page, head_pfn, order = result["head_page"], result["head_pfn"], result["order"]
 
         self.quiet_print("page: {:#x}".format(page))
         if virt is not None:
@@ -161290,23 +161787,18 @@ class BuddyContainsCommand(BuddyDumpCommand):
         if offset_in_page:
             self.quiet_print("remarks: {:s} to page (offset: +{:#x})".format(Color.redify("unaligned"), offset_in_page))
 
-        if self.kbuddy.is_page_buddy(page):
-            order = self.kbuddy.get_buddy_order(page)
-            if order is None:
-                self.quiet_print("status: {:s}".format(Color.colorify("unknown", used_address_color)))
-                gef_print("remarks: PG_buddy is set but buddy order is invalid or unreadable.")
-                return
-            head_page, head_pfn = page, pfn
-        else:
-            head_page, head_pfn, order = self.kbuddy.find_head_page(page, pfn, self.sizeof_struct_page)
+        if result["status"] == "invalid_order":
+            self.quiet_print("status: {:s}".format(Color.colorify("unknown", used_address_color)))
+            gef_print("remarks: PG_buddy is set but buddy order is invalid or unreadable.")
+            return
 
         # Not in buddy ?
-        if head_page is None:
+        if result["status"] == "unknown":
             self.quiet_print("status: {:s}".format(Color.colorify("unknown", used_address_color)))
             gef_print("remarks: no PG_buddy head page found, run buddy-contains without skipping free lists.")
 
         # Part of a larger block
-        elif head_page != page:
+        elif result["status"] == "tail":
             self.quiet_print("status: {:s}".format(
                 Color.colorify("in buddy (part of a larger block)", "bold green"),
             ))
@@ -161321,15 +161813,13 @@ class BuddyContainsCommand(BuddyDumpCommand):
             self.print_block_info(head_page, head_pfn, order)
         return
 
-    def parse_free_lists(self, page):
+    def parse_free_lists(self, result):
         used_address_color = Config.get("theme.heap_chunk_address_used")
-        PAGE_SIZE = KernelAddressHeuristicFinder.consts().PAGE_SIZE
-
-        lists = self.kbuddy.get_nodes(quiet=self.args.quiet)
-        found = self.kbuddy.find_block(lists, page, self.sizeof_struct_page)
+        PAGE_SIZE = Kernel.slab_page_size()
+        page, found = result["page"], result["block"]
 
         if found is None:
-            if self.kbuddy.list_scan_incomplete:
+            if result["status"] == "unknown":
                 self.quiet_print("status: {:s}".format(Color.colorify("unknown", used_address_color)))
                 gef_print("remarks: allocator list scan was incomplete due to unreadable or cyclic list data.")
             else:
@@ -161352,33 +161842,31 @@ class BuddyContainsCommand(BuddyDumpCommand):
         gef_print(self.format_entry(entry).rstrip())
 
         if entry["page"] != page:
-            index = (page - entry["page"]) // self.sizeof_struct_page
+            index = (page - entry["page"]) // self.kcontains.sizeof_struct_page
             gef_print("remarks: this page is page[{:d}] of the block, +{:#x} bytes from base".format(
                 index, index * PAGE_SIZE,
             ))
         return
 
     def buddy_contains(self):
-        PAGE_SHIFT = KernelAddressHeuristicFinder.consts().PAGE_SHIFT
-
         if self.args.skip_free_list:
-            ret = self.resolve_target()
-            if ret is None:
+            result = self.kcontains.get_page_block(self.args.address, self.args.page)
+            if result["error"]:
+                self.quiet_err(result["error"])
                 return
-            page, virt, phys, offset_in_page = ret
-            pfn = phys >> PAGE_SHIFT
-            self.parse_page(page, pfn, phys, virt, offset_in_page)
+            self.parse_page(result)
         else:
-            page = self.get_page()
-            if page is None:
+            result = self.kcontains.get_free_list_block(self.args.address, self.args.page, quiet=self.args.quiet)
+            if result["error"]:
+                self.quiet_err(result["error"])
                 return
-            self.parse_free_lists(page)
+            self.parse_free_lists(result)
         return
 
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
-    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
+    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64"))
     @Decorator.only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
         kversion = Kernel.version()
@@ -161399,7 +161887,8 @@ class BuddyContainsCommand(BuddyDumpCommand):
                 self.quiet_err("Unsupported architecture")
                 return
 
-        self.kbuddy = Kernel.buddy(args.MIGRATE_PCPTYPES)
+        self.kcontains = Kernel.buddy_contains(args.MIGRATE_PCPTYPES)
+        self.kbuddy = self.kcontains.buddy
         if args.rescan:
             Cache.clear_cache_for(self.kbuddy.initialize)
 
@@ -161419,8 +161908,7 @@ class BuddyContainsCommand(BuddyDumpCommand):
         # migratetype_names
         self.kbuddy.resolve_migratetype_names()
 
-        self.sizeof_struct_page = KernelAddressHeuristicFinder.consts().sizeof_struct_page
-        if self.sizeof_struct_page is None:
+        if not self.kcontains.initialize():
             self.quiet_err("Could not find sizeof(struct page)")
             return
 
@@ -161569,7 +162057,7 @@ class KernelPipeCommand(GenericCommand, BufferingOutput):
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware"))
-    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
+    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64"))
     @Decorator.only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
         self.quiet_info("Wait for memory scan")
@@ -162193,7 +162681,7 @@ class KernelBpfCommand(GenericCommand, BufferingOutput):
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware"))
-    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
+    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64"))
     @Decorator.only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
         self.kbpf = Kernel.bpf()
@@ -163560,7 +164048,7 @@ class KernelNetDeviceCommand(GenericCommand, BufferingOutput):
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware"))
-    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
+    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64"))
     @Decorator.only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
         self.quiet_info("Wait for memory scan")
@@ -163581,59 +164069,13 @@ class KernelNetDeviceCommand(GenericCommand, BufferingOutput):
         return
 
 
-@register_command
-class VmallocDumpCommand(GenericCommand, BufferingOutput):
-    """Dump vmalloc used list and freed list."""
+class KernelVmalloc:
+    """Resolve vmalloc area lists and return their ranges."""
 
-    _cmdline_ = "vmalloc-dump"
-    _category_ = "06-h. Qemu-system/KGDB Cooperation - Linux Allocator"
-
-    parser = argparse.ArgumentParser(prog=_cmdline_)
-    parser.add_argument("-hh", "--help-simple", action="store_true", help="show help without ASCII diagram.")
-    parser.add_argument("--only-used", action="store_true", help="display only used area.")
-    parser.add_argument("--only-freed", action="store_true", help="display only free area.")
-    parser.add_argument("--meta", action="store_true", help="display offset information.")
-    parser.add_argument("--hexdump-used", metavar="SIZE", type=lambda x: int(x, 16), default=0,
-                        help="hexdump `used chunks` if layout is resolved.")
-    parser.add_argument("--telescope-used", metavar="SIZE", type=lambda x: int(x, 16), default=0,
-                        help="telescope `used chunks` if layout is resolved.")
-    parser.add_argument("-r", "--rescan", action="store_true", help="do not use cache.")
-    parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
-    parser.add_argument("-q", "--quiet", action="store_true", help="show result only.")
-    _syntax_ = parser.format_help()
-
-    _example_ = "\n".join([
-        "{0:s} -q",
-    ]).format(_cmdline_)
-
-    _note_ = "\n".join([
-        "Simplified vmalloc structure:"
-        "",
-        "                                       +-vmap_area--+",
-        "                                       | va_start   |",
-        "                                       | va_end     |",
-        "+---------------------------------+    | ...        |",
-        "| vmap_area_list (~v6.8)          |--->| list       |--->...",
-        "| vmap_nodes[i].busy.head (v6.9~) |    | ...        |",
-        "+---------------------------------+    | vm         |---->+-vm_struct--+",
-        "                                       | ...        |     | ...        |",
-        "                                       +------------+     | flags      |",
-        "                                                          | ...        |",
-        "                                                          +------------+",
-        "                           +-vmap_area--+",
-        "                           | va_start   |",
-        "(v5.2~)                    | va_end     |",
-        "+---------------------+    | ...        |",
-        "| free_vmap_area_list |--->| list       |--->...",
-        "+---------------------+    | ...        |",
-        "                           +------------+",
-        "",
-        "`unpurged` is an area freed lazily but not purged yet. It is still linked to vmap_area_list (~v5.3),",
-        "or linked to vmap_purge_list (v5.4~v5.10), purge_vmap_area_list (v5.11~v6.8) or vmap_nodes[i].lazy.head (v6.9~).",
-        "`pooled` is a purged area kept in vmap_nodes[i].pool[] for reuse (v6.9~).",
-        "`free` is an unallocated range of the vmalloc space, not a history of vfree().",
-        "--hexdump-used and --telescope-used skip VM_IOREMAP areas, since reading device registers may have side effects.",
-    ])
+    @classmethod
+    @Cache.cache_this_session(per_inferior=True, until_new_objfile=True)
+    def get_instance(cls):
+        return cls()
 
     @Cache.cache_this_session(cache_None=False)
     def initialize(self):
@@ -163856,54 +164298,67 @@ class VmallocDumpCommand(GenericCommand, BufferingOutput):
             return False
         return read_int_from_memory(next_entry + ptrsize, safe=True) == head
 
-    def print_meta(self):
+    def get_areas(self, only_used=False, only_freed=False):
+        if not self.initialize():
+            return None
+        areas = []
+        errors = []
+
         kversion = Kernel.version()
 
-        if kversion is not None:
-            if self.vmap_area_lists:
-                for name, head in self.vmap_area_lists:
-                    self.quiet_info("{:s}: {:#x}".format(name, head))
-            else:
-                if kversion < "6.9":
-                    name = "vmap_area_list"
-                else:
-                    name = "vmap_nodes[0].busy.head"
-                self.quiet_err("Could not find {:s}".format(name))
-
-        if self.sizeof_vmap_node:
-            self.quiet_info("sizeof(vmap_node): {:#x}".format(self.sizeof_vmap_node))
-
-        if kversion and "4.7" <= kversion < "5.11":
-            if self.vmap_purge_list:
-                self.quiet_info("vmap_purge_list: {:#x}".format(self.vmap_purge_list))
-            else:
-                self.quiet_err("Could not find vmap_purge_list")
-
-        if kversion and "5.11" <= kversion:
-            if self.lazy_lists:
-                for name, head in self.lazy_lists:
-                    self.quiet_info("{:s}: {:#x}".format(name, head))
-            else:
+        # parse used list
+        if not only_freed:
+            unpurged, error = self.parse_vmap_purge_list()
+            if error:
+                errors.append("vmap_purge_list: the walk stopped ({:s})".format(error))
+            elif kversion and "4.7" <= kversion < "5.4" and not self.vmap_purge_list:
+                errors.append("Could not find vmap_purge_list; lazily freed areas may be shown as in-use")
+            elif kversion and "5.4" <= kversion < "5.11" and not self.vmap_purge_list:
+                errors.append("Could not find vmap_purge_list; lazily freed areas are not shown")
+            elif kversion and "5.11" <= kversion and not self.lazy_lists:
                 if kversion < "6.9":
                     name = "purge_vmap_area_list"
                 else:
                     name = "vmap_nodes[0].lazy.head"
-                self.quiet_err("Could not find {:s}".format(name))
+                errors.append("Could not find {:s}; lazily freed areas are not shown".format(name))
 
-        if kversion and "5.2" <= kversion:
-            if self.free_vmap_area_list:
-                self.quiet_info("free_vmap_area_list: {:#x}".format(self.free_vmap_area_list))
-            else:
-                self.quiet_err("Could not find free_vmap_area_list")
+            if not self.vmap_area_lists:
+                if kversion and kversion < "6.9":
+                    name = "vmap_area_list"
+                else:
+                    name = "vmap_nodes[0].busy.head"
+                errors.append("Could not find {:s}".format(name))
 
-        self.quiet_info("offsetof(vmap_area, list): {:#x}".format(self.offset_list))
-        self.quiet_info("offsetof(vmap_area, vm): {:#x}".format(self.offset_vm))
-        if kversion and kversion < "5.4":
-            self.quiet_info("offsetof(vmap_area, flags): {:#x}".format(self.offset_va_flags))
-        if kversion and kversion < "5.11":
-            self.quiet_info("offsetof(vmap_area, purge_list): {:#x}".format(self.offset_purge_list))
-        self.quiet_info("offsetof(vm_struct, flags): {:#x}".format(self.offset_flags))
-        return
+            # v5.4~v5.10 link lazily freed areas only to vmap_purge_list
+            if kversion and "5.4" <= kversion < "5.11":
+                parsed, error = self.parse_vmap_areas(unpurged, "unpurged")
+                areas += parsed
+                if error:
+                    errors.append("vmap_purge_list: the walk stopped ({:s})".format(error))
+
+            lists = [(name, head, "in-use") for name, head in self.vmap_area_lists]
+            lists += [(name, head, "unpurged") for name, head in self.lazy_lists]
+            lists += [(name, head, "pooled") for name, head in self.get_vmap_nodes_pool_heads()]
+            for name, head, state in lists:
+                parsed, error = self.parse_vmap_area_list(head, state, unpurged)
+                areas += parsed
+                if error:
+                    errors.append("{:s}: the walk stopped ({:s})".format(name, error))
+
+        # parse free list
+        if not only_used:
+            if kversion and "5.2" <= kversion:
+                if self.free_vmap_area_list:
+                    parsed, error = self.parse_vmap_area_list(self.free_vmap_area_list, "free")
+                    areas += parsed
+                    if error:
+                        errors.append("free_vmap_area_list: the walk stopped ({:s})".format(error))
+                else:
+                    errors.append("Could not find free_vmap_area_list")
+            elif only_freed:
+                errors.append("free_vmap_area_list does not exist before v5.2")
+
+        return {"areas": sorted(areas, key=lambda area: area[1]), "errors": errors}
 
     def parse_vmap_purge_list(self):
         unpurged = set()
@@ -163962,6 +164417,110 @@ class VmallocDumpCommand(GenericCommand, BufferingOutput):
             areas.append(["in-use", va_start, va_end, va_size, flags])
         return areas, None
 
+
+@register_command
+class VmallocDumpCommand(GenericCommand, BufferingOutput):
+    """Dump vmalloc used list and freed list."""
+
+    _cmdline_ = "vmalloc-dump"
+    _category_ = "06-h. Qemu-system/KGDB Cooperation - Linux Allocator"
+
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("-hh", "--help-simple", action="store_true", help="show help without ASCII diagram.")
+    parser.add_argument("--only-used", action="store_true", help="display only used area.")
+    parser.add_argument("--only-freed", action="store_true", help="display only free area.")
+    parser.add_argument("--meta", action="store_true", help="display offset information.")
+    parser.add_argument("--hexdump-used", metavar="SIZE", type=lambda x: int(x, 16), default=0,
+                        help="hexdump `used chunks` if layout is resolved.")
+    parser.add_argument("--telescope-used", metavar="SIZE", type=lambda x: int(x, 16), default=0,
+                        help="telescope `used chunks` if layout is resolved.")
+    parser.add_argument("-r", "--rescan", action="store_true", help="do not use cache.")
+    parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
+    parser.add_argument("-q", "--quiet", action="store_true", help="show result only.")
+    _syntax_ = parser.format_help()
+
+    _example_ = "\n".join([
+        "{0:s} -q",
+    ]).format(_cmdline_)
+
+    _note_ = "\n".join([
+        "Simplified vmalloc structure:"
+        "",
+        "                                       +-vmap_area--+",
+        "                                       | va_start   |",
+        "                                       | va_end     |",
+        "+---------------------------------+    | ...        |",
+        "| vmap_area_list (~v6.8)          |--->| list       |--->...",
+        "| vmap_nodes[i].busy.head (v6.9~) |    | ...        |",
+        "+---------------------------------+    | vm         |---->+-vm_struct--+",
+        "                                       | ...        |     | ...        |",
+        "                                       +------------+     | flags      |",
+        "                                                          | ...        |",
+        "                                                          +------------+",
+        "                           +-vmap_area--+",
+        "                           | va_start   |",
+        "(v5.2~)                    | va_end     |",
+        "+---------------------+    | ...        |",
+        "| free_vmap_area_list |--->| list       |--->...",
+        "+---------------------+    | ...        |",
+        "                           +------------+",
+        "",
+        "`unpurged` is an area freed lazily but not purged yet. It is still linked to vmap_area_list (~v5.3),",
+        "or linked to vmap_purge_list (v5.4~v5.10), purge_vmap_area_list (v5.11~v6.8) or vmap_nodes[i].lazy.head (v6.9~).",
+        "`pooled` is a purged area kept in vmap_nodes[i].pool[] for reuse (v6.9~).",
+        "`free` is an unallocated range of the vmalloc space, not a history of vfree().",
+        "--hexdump-used and --telescope-used skip VM_IOREMAP areas, since reading device registers may have side effects.",
+    ])
+
+    def print_meta(self):
+        kversion = Kernel.version()
+
+        if kversion is not None:
+            if self.kvmalloc.vmap_area_lists:
+                for name, head in self.kvmalloc.vmap_area_lists:
+                    self.quiet_info("{:s}: {:#x}".format(name, head))
+            else:
+                if kversion < "6.9":
+                    name = "vmap_area_list"
+                else:
+                    name = "vmap_nodes[0].busy.head"
+                self.quiet_err("Could not find {:s}".format(name))
+
+        if self.kvmalloc.sizeof_vmap_node:
+            self.quiet_info("sizeof(vmap_node): {:#x}".format(self.kvmalloc.sizeof_vmap_node))
+
+        if kversion and "4.7" <= kversion < "5.11":
+            if self.kvmalloc.vmap_purge_list:
+                self.quiet_info("vmap_purge_list: {:#x}".format(self.kvmalloc.vmap_purge_list))
+            else:
+                self.quiet_err("Could not find vmap_purge_list")
+
+        if kversion and "5.11" <= kversion:
+            if self.kvmalloc.lazy_lists:
+                for name, head in self.kvmalloc.lazy_lists:
+                    self.quiet_info("{:s}: {:#x}".format(name, head))
+            else:
+                if kversion < "6.9":
+                    name = "purge_vmap_area_list"
+                else:
+                    name = "vmap_nodes[0].lazy.head"
+                self.quiet_err("Could not find {:s}".format(name))
+
+        if kversion and "5.2" <= kversion:
+            if self.kvmalloc.free_vmap_area_list:
+                self.quiet_info("free_vmap_area_list: {:#x}".format(self.kvmalloc.free_vmap_area_list))
+            else:
+                self.quiet_err("Could not find free_vmap_area_list")
+
+        self.quiet_info("offsetof(vmap_area, list): {:#x}".format(self.kvmalloc.offset_list))
+        self.quiet_info("offsetof(vmap_area, vm): {:#x}".format(self.kvmalloc.offset_vm))
+        if kversion and kversion < "5.4":
+            self.quiet_info("offsetof(vmap_area, flags): {:#x}".format(self.kvmalloc.offset_va_flags))
+        if kversion and kversion < "5.11":
+            self.quiet_info("offsetof(vmap_area, purge_list): {:#x}".format(self.kvmalloc.offset_purge_list))
+        self.quiet_info("offsetof(vm_struct, flags): {:#x}".format(self.kvmalloc.offset_flags))
+        return
+
     def dump_areas(self, areas):
         fmt = "{:4s} {:8s} {:37s} {:18s} {:s}"
         legend = ["#", "state", "virtual address", "size", "flags"]
@@ -164012,15 +164571,16 @@ class VmallocDumpCommand(GenericCommand, BufferingOutput):
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
-    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
+    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64"))
     @Decorator.only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
         self.quiet_info("Wait for memory scan")
+        self.kvmalloc = Kernel.vmalloc()
 
         if args.rescan:
-            Cache.clear_cache_for(self.initialize)
+            Cache.clear_cache_for(self.kvmalloc.initialize)
 
-        ret = self.initialize()
+        ret = self.kvmalloc.initialize()
         if args.meta or not ret:
             self.print_meta()
         if not ret:
@@ -164029,68 +164589,13 @@ class VmallocDumpCommand(GenericCommand, BufferingOutput):
         if args.meta:
             return
 
+        result = self.kvmalloc.get_areas(args.only_used, args.only_freed)
+        if result is None:
+            return
         self.out = []
-        areas = []
-        errors = []
-
-        kversion = Kernel.version()
-
-        # parse used list
-        if not args.only_freed:
-            unpurged, error = self.parse_vmap_purge_list()
-            if error:
-                errors.append("vmap_purge_list: the walk stopped ({:s})".format(error))
-            elif kversion and "4.7" <= kversion < "5.4" and not self.vmap_purge_list:
-                errors.append("Could not find vmap_purge_list; lazily freed areas may be shown as in-use")
-            elif kversion and "5.4" <= kversion < "5.11" and not self.vmap_purge_list:
-                errors.append("Could not find vmap_purge_list; lazily freed areas are not shown")
-            elif kversion and "5.11" <= kversion and not self.lazy_lists:
-                if kversion < "6.9":
-                    name = "purge_vmap_area_list"
-                else:
-                    name = "vmap_nodes[0].lazy.head"
-                errors.append("Could not find {:s}; lazily freed areas are not shown".format(name))
-
-            if not self.vmap_area_lists:
-                if kversion and kversion < "6.9":
-                    name = "vmap_area_list"
-                else:
-                    name = "vmap_nodes[0].busy.head"
-                errors.append("Could not find {:s}".format(name))
-
-            # v5.4~v5.10 link lazily freed areas only to vmap_purge_list
-            if kversion and "5.4" <= kversion < "5.11":
-                parsed, error = self.parse_vmap_areas(unpurged, "unpurged")
-                areas += parsed
-                if error:
-                    errors.append("vmap_purge_list: the walk stopped ({:s})".format(error))
-
-            lists = [(name, head, "in-use") for name, head in self.vmap_area_lists]
-            lists += [(name, head, "unpurged") for name, head in self.lazy_lists]
-            lists += [(name, head, "pooled") for name, head in self.get_vmap_nodes_pool_heads()]
-            for name, head, state in lists:
-                parsed, error = self.parse_vmap_area_list(head, state, unpurged)
-                areas += parsed
-                if error:
-                    errors.append("{:s}: the walk stopped ({:s})".format(name, error))
-
-        # parse free list
-        if not args.only_used:
-            if kversion and "5.2" <= kversion:
-                if self.free_vmap_area_list:
-                    parsed, error = self.parse_vmap_area_list(self.free_vmap_area_list, "free")
-                    areas += parsed
-                    if error:
-                        errors.append("free_vmap_area_list: the walk stopped ({:s})".format(error))
-                else:
-                    errors.append("Could not find free_vmap_area_list")
-            elif args.only_freed:
-                errors.append("free_vmap_area_list does not exist before v5.2")
-
-        areas = sorted(areas, key=lambda x:x[1])
-        self.dump_areas(areas)
+        self.dump_areas(result["areas"])
         if not args.quiet:
-            for error in errors:
+            for error in result["errors"]:
                 self.err_add_out(error)
 
         self.print_output()
@@ -166367,7 +166872,8 @@ class VmlinuxToElfApplyCommand(GenericCommand):
         digest.update("{:x}".format(klayout.text_base).encode())
         h = digest.hexdigest()
         saved_mem_file = os.path.join(GEF_TEMP_DIR, "dump-memory-{:s}.raw".format(h))
-        symboled_vmlinux_file = os.path.join(GEF_TEMP_DIR, "dump-memory-{:s}.elf".format(h))
+        elf_suffix = "-riscv1" if is_riscv32() or is_riscv64() else ""
+        symboled_vmlinux_file = os.path.join(GEF_TEMP_DIR, "dump-memory-{:s}{:s}.elf".format(h, elf_suffix))
         os.replace(dumped_mem_file, saved_mem_file)
         dumped_mem_file = saved_mem_file
         gef_print("Dumped to {:s}".format(dumped_mem_file))
@@ -166381,6 +166887,8 @@ class VmlinuxToElfApplyCommand(GenericCommand):
         cmd = "{:s} {:s} {:s} --base-address={:#x}".format(
             shlex.quote(vmlinux2elf), shlex.quote(dumped_mem_file), shlex.quote(symboled_vmlinux_file), klayout.text_base,
         )
+        if is_riscv32() or is_riscv64():
+            cmd += " --e-machine=243 --bit-size={:d}".format(current_arch.ptrsize * 8)
         warn("Execute `{:s}`".format(cmd))
         if GefUtil.os_system(cmd):
             if os.path.exists(symboled_vmlinux_file):
@@ -166392,13 +166900,39 @@ class VmlinuxToElfApplyCommand(GenericCommand):
         if not os.path.exists(symboled_vmlinux_file) or os.path.getsize(symboled_vmlinux_file) == 0:
             return None
 
+        if is_riscv32() or is_riscv64():
+            ret = Ksym.get_kallsyms()
+            if ret is None:
+                os.unlink(symboled_vmlinux_file)
+                err("Could not read kallsyms")
+                return None
+            kallsyms = ret[0]
+            try:
+                objcopy = GefUtil.which(Config.get("gef.objcopy_command"))
+                subprocess.check_output([objcopy, "--strip-all", symboled_vmlinux_file])
+                commands = []
+                for address, name, symbol_type in kallsyms:
+                    if address < klayout.text_base:
+                        continue
+                    kind = "function" if symbol_type in ("T", "t", "W", None) else "object"
+                    binding = "local" if symbol_type and symbol_type.islower() else "global"
+                    commands.extend(("--add-symbol", "{:s}=.kernel:{:#x},{:s},{:s}".format(
+                        name, address - klayout.text_base, binding, kind,
+                    )))
+                for batch in slicer(commands, 20000):
+                    subprocess.check_output([objcopy] + list(batch) + [symboled_vmlinux_file])
+            except (FileNotFoundError, subprocess.CalledProcessError) as exception:
+                os.unlink(symboled_vmlinux_file)
+                err("Failed to embed RISC-V symbols: {:s}".format(str(exception)))
+                return None
+
         # Success
         return symboled_vmlinux_file
 
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware"))
-    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
+    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64"))
     @Decorator.only_if_in_kernel
     def do_invoke(self, args):
         info("Wait for memory scan")
@@ -190027,12 +190561,31 @@ class AddrMap:
         return next((entry for entry in maps if entry.contains_physical(address)), None)
 
     @staticmethod
+    def riscv_bare():
+        if not (is_riscv32() or is_riscv64()):
+            return False
+        if get_register("priv") == 3:
+            return True
+        satp = get_register("satp")
+        if satp is None:
+            return False
+        if is_riscv64():
+            return satp >> 60 == 0
+        return satp >> 31 == 0
+
+    @staticmethod
     def v2p(address, force_secure=None, maps=None):
         """Translate a virtual address to a physical address."""
 
+        if maps is None and force_secure is None and AddrMap.riscv_bare():
+            if 0 <= address < (1 << (current_arch.ptrsize * 8)):
+                return address
+            return None
+
         # QEMU can translate the active address space without a full page-table walk.
+        # On RISC-V, the monitor CPU can differ from the selected GDB thread.
         # Secure-world translations and explicitly supplied maps must use their selected tables.
-        if maps is None and force_secure is None:
+        if maps is None and force_secure is None and not (is_riscv32() or is_riscv64()):
             try:
                 ret = gdb.execute("monitor gva2gpa {:#x}".format(address), to_string=True)
                 match = re.search(r"gpa: (0x[0-9a-fA-F]+|0)\b", ret)
@@ -190069,6 +190622,11 @@ class AddrMap:
                 if vaddr is not None:
                     results.append((vaddr, entry))
             return results
+
+        if maps is None and force_secure is None and AddrMap.riscv_bare():
+            size = 1 << (current_arch.ptrsize * 8)
+            maps = [AddrMap.Entry(0, size, 0, size)]
+            return p2v_from_map()
 
         # Without x86 paging (CR0.PG=0), a 32-bit linear address is the physical address, as `gva2gpa` in `v2p` returns.
         if maps is None and force_secure is None and is_x86():
@@ -190147,7 +190705,7 @@ class Virt2PhysCommand(GenericCommand):
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
-    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
+    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64"))
     def do_invoke(self, args):
         force_secure = None
         if is_arm32() or is_arm64():
@@ -190189,7 +190747,7 @@ class Phys2VirtCommand(GenericCommand):
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
-    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
+    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64"))
     def do_invoke(self, args):
         force_secure = None
         if is_arm32() or is_arm64():
@@ -195689,7 +196247,7 @@ class KernelVMMapCommand(GenericCommand, BufferingOutput):
         return
 
     def resolve_vmemmap(self):
-        if is_x86_64() or is_arm64():
+        if is_x86_64() or is_arm64() or is_riscv32() or is_riscv64():
             self.quiet_info("Resolving vmemmap")
             VMEMMAP_START = KernelAddressHeuristicFinder.get_VMEMMAP_START()
             VMEMMAP_END = KernelAddressHeuristicFinder.get_VMEMMAP_END()
@@ -196204,6 +196762,13 @@ class KernelVMMapCommand(GenericCommand, BufferingOutput):
             if vdso32_start:
                 vdso_size = KernelAddressHeuristicFinder.consts().PAGE_SIZE
                 self.insert_region(vdso32_start, vdso_size, "vdso32_start")
+
+        if is_riscv32() or is_riscv64():
+            for start_name, end_name in (("vdso_start", "vdso_end"), ("compat_vdso_start", "compat_vdso_end")):
+                start = Ksym.get_addr(start_name)
+                end = Ksym.get_addr(end_name)
+                if start and end and start < end:
+                    self.insert_region_range(start, end, start_name)
         return
 
     def resolve_device_physmem(self):
@@ -196299,7 +196864,7 @@ class KernelVMMapCommand(GenericCommand, BufferingOutput):
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware"))
-    @Decorator.only_if_specific_arch(arch=("x86_64", "x86_32", "ARM64", "ARM32"))
+    @Decorator.only_if_specific_arch(arch=("x86_64", "x86_32", "ARM64", "ARM32", "RISCV64", "RISCV32"))
     @Decorator.only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
         if self.args.include_aliased_pages and not is_x86_64():
@@ -200501,7 +201066,7 @@ class UsermodehelperTracerCommand(GenericCommand):
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware"))
-    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
+    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64"))
     @Decorator.only_if_in_kernel
     def do_invoke(self, args):
         info("Resolving the function addresses")
@@ -201421,7 +201986,7 @@ class KmallocTracerCommand(GenericCommand):
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.only_if_specific_gdb_mode(mode=("qemu-system",))
-    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
+    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64"))
     @Decorator.only_if_in_kernel
     @Decorator.only_if_kvm_disabled
     def do_invoke(self, args):
@@ -201488,21 +202053,27 @@ class KmallocAllocatedBy_UserlandHardwareBreakpoint(gdb.Breakpoint):
         self.target_task = task
         self.sp = None
         self.matched = False
-        current_task = KernelAddressHeuristicFinder.get_current_task()
-        if current_task is None:
-            raise gdb.GdbError("Could not resolve current_task")
-        percpu = Kernel.per_cpu()
-        if percpu.per_cpu_offset is not None:
-            current_task = AddressUtil.normalize_address(current_task + percpu.offsets[0])
-        self.current_task_phys = AddrMap.v2p(current_task)
-        if self.current_task_phys is None:
-            raise gdb.GdbError("Could not translate current_task")
+        if is_riscv32() or is_riscv64():
+            self.current_task_phys = None
+        else:
+            current_task = KernelAddressHeuristicFinder.get_current_task()
+            if current_task is None:
+                raise gdb.GdbError("Could not resolve current_task")
+            percpu = Kernel.per_cpu()
+            if percpu.per_cpu_offset is not None:
+                current_task = AddressUtil.normalize_address(current_task + percpu.offsets[0])
+            self.current_task_phys = AddrMap.v2p(current_task)
+            if self.current_task_phys is None:
+                raise gdb.GdbError("Could not translate current_task")
         super().__init__("*{:#x}".format(loc), gdb.BP_HARDWARE_BREAKPOINT, internal=False)
         self.silent = True
         return
 
     def stop(self):
         Cache.reset_gef_caches()
+        if is_riscv32() or is_riscv64():
+            self.matched = KernelAddressHeuristicFinder.get_current_task_for_current_thread() == self.target_task
+            return self.matched and (self.sp is None or current_arch.sp == self.sp)
         data = read_physmem(self.current_task_phys, 8)
         self.matched = data is not None and u64(data) == self.target_task
         return data is None or (self.matched and (self.sp is None or current_arch.sp == self.sp))
@@ -201510,7 +202081,7 @@ class KmallocAllocatedBy_UserlandHardwareBreakpoint(gdb.Breakpoint):
 
 @register_command
 class KmallocAllocatedByCommand(GenericCommand):
-    """Call predefined system-calls and print kmalloc-N chunks allocated and freed (x64 only)."""
+    """Call predefined system-calls and print kmalloc-N chunks allocated and freed."""
 
     _cmdline_ = "kmalloc-allocated-by"
     _category_ = "06-i. Qemu-system/KGDB Cooperation - Linux Dynamic Inspection"
@@ -201539,9 +202110,11 @@ class KmallocAllocatedByCommand(GenericCommand):
         entry = self.syscall_table[syscall_name]
         if len(args) != len(entry.args_full):
             raise gdb.GdbError("Argument count mismatch for {:s}".format(syscall_name))
-        if current_arch.pc != self.syscall_pc + 2 or current_arch.ptrsize != 8:
-            raise gdb.GdbError("Not at the expected 64-bit syscall return")
-        if read_memory(self.syscall_pc, 2) != b"\x0f\x05":
+        riscv = is_riscv32() or is_riscv64()
+        insn = current_arch.syscall_insn if riscv else b"\x0f\x05"
+        if current_arch.pc != self.syscall_pc + len(insn) or (not riscv and current_arch.ptrsize != 8):
+            raise gdb.GdbError("Not at the expected {:s}syscall return".format("" if riscv else "64-bit "))
+        if read_memory(self.syscall_pc, len(insn)) != insn:
             raise gdb.GdbError("Expected a syscall instruction before the return address")
         sp = current_arch.sp
         values = []
@@ -201563,13 +202136,15 @@ class KmallocAllocatedByCommand(GenericCommand):
             write_memory(address, data)
         for reg, value in zip(current_arch.syscall_parameters, values + [0] * (6 - len(values))):
             gdb.execute("set {:s}={:#x}".format(reg, value), to_string=True)
-        gdb.execute("set $rax={:#x}".format(entry.nr), to_string=True)
+        syscall_register = current_arch.syscall_register if riscv else "$rax"
+        gdb.execute("set {:s}={:#x}".format(syscall_register, entry.nr), to_string=True)
         gdb.execute("set $pc={:#x}".format(self.syscall_pc), to_string=True)
         return
 
     def continue_syscall(self, syscall_name):
         gdb.execute("continue")
-        if (not self.hwbp.matched or current_arch.pc != self.syscall_pc + 2
+        insn_size = 4 if is_riscv32() or is_riscv64() else 2
+        if (not self.hwbp.matched or current_arch.pc != self.syscall_pc + insn_size
                 or current_arch.sp != self.scratch_start):
             raise gdb.GdbError("Syscall interrupted before returning to the test process")
         self.tested_syscall.add(syscall_name)
@@ -201577,9 +202152,10 @@ class KmallocAllocatedByCommand(GenericCommand):
 
     def dump_untested_syscall(self):
         valid_syscall = []
+        abi = "riscv" + current_arch.mode if is_riscv32() or is_riscv64() else "x86_64"
         for line in self.ksyscalls_ret.splitlines():
             tag, _, valid, name, *__ = Color.remove_color(line).split()
-            if tag != "x86_64":
+            if tag != abi:
                 continue
             if valid != "valid":
                 continue
@@ -202884,6 +203460,59 @@ class KmallocAllocatedByCommand(GenericCommand):
         self.dump_untested_syscall()
         return
 
+    def test_syscall_riscv(self, breakpoints):
+        def issue(name, args):
+            gef_print(titlify("{:s}({:s});".format(name, ", ".join(str(arg)[:32] for arg in args))))
+            self.setup_syscall(name, args)
+            for bp in breakpoints:
+                bp.enabled = True
+            try:
+                result = self.continue_syscall(name)
+            finally:
+                for bp in breakpoints:
+                    bp.enabled = False
+            gef_print("ret: {:#x}".format(result))
+            signed = u2i(result, current_arch.bit_length)
+            if -4095 <= signed < 0:
+                gdb.execute("errno {:#x}".format(result))
+            return signed
+
+        cases = [
+            ("getpid", []),
+            ("uname", [bytes(0x200)]),
+            ("getrandom", [bytes(0x20), 0x20, 0]),
+            ("openat", [-100, b"/dev/null\0", 0, 0]),
+            ("eventfd2", [0, 0]),
+            ("epoll_create1", [0]),
+            ("timerfd_create", [1, 0]),
+            ("inotify_init1", [0]),
+            ("memfd_create", [b"gef-kmalloc\0", 0]),
+            ("socket", [1, 1, 0]),
+            ("pipe2", [bytes(8), 0]),
+        ]
+        self.scheduled_syscall = {name for name, args in cases}
+        self.scheduled_syscall.add("close")
+        self.tested_syscall = set()
+        self.skipped_syscall = set()
+        for name, args in cases:
+            if name not in self.syscall_table:
+                self.skipped_syscall.add(name)
+                continue
+            result = issue(name, args)
+            if result < 0:
+                continue
+            if name == "pipe2":
+                fds = (read_int32_from_memory(current_arch.sp), read_int32_from_memory(current_arch.sp + 4))
+            elif name in ("openat", "eventfd2", "epoll_create1", "timerfd_create", "inotify_init1",
+                          "memfd_create", "socket"):
+                fds = (result,)
+            else:
+                fds = ()
+            for fd in fds:
+                issue("close", [fd])
+        self.dump_untested_syscall()
+        return
+
     def cleanup(self, hwbp, option_info):
         for bp in gdb.breakpoints() or ():
             if bp != hwbp and getattr(bp, "option", None) is not option_info:
@@ -202895,7 +203524,7 @@ class KmallocAllocatedByCommand(GenericCommand):
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.only_if_specific_gdb_mode(mode=("qemu-system",))
-    @Decorator.only_if_specific_arch(arch=("x86_64",))
+    @Decorator.only_if_specific_arch(arch=("x86_64", "RISCV32", "RISCV64"))
     @Decorator.only_if_in_kernel
     @Decorator.only_if_kvm_disabled
     @Decorator.only_if_smp_disabled
@@ -202956,17 +203585,18 @@ class KmallocAllocatedByCommand(GenericCommand):
         # create option_info
         option_info = KmallocTracerCommand.create_option_info(args, target_task)
 
-        # get rip for breakpoint
-        # get rsp for checking process
-        r1 = re.search(r"rip\s*: (0x\S+)", res)
-        r2 = re.search(r"rsp\s*: (0x\S+)", res)
+        # get the saved user PC for the breakpoint and SP for process matching
+        riscv = is_riscv32() or is_riscv64()
+        pc_name, sp_name = ("epc", "sp") if riscv else ("rip", "rsp")
+        r1 = re.search(r"{:s}\s*: (0x\S+)".format(pc_name), res)
+        r2 = re.search(r"{:s}\s*: (0x\S+)".format(sp_name), res)
         if not r1 or not r2:
-            err("Failed to get rip and rsp")
+            err("Failed to get {:s} and {:s}".format(pc_name, sp_name))
             return
         rip_of_sleep = int(r1.group(1), 16)
         rsp_of_sleep = int(r2.group(1), 16)
-        info("The sleep's $rip: {:#x}, rsp: {:#x} (after return from nanosleep syscall)".format(
-            rip_of_sleep, rsp_of_sleep,
+        info("The sleep's ${:s}: {:#x}, {:s}: {:#x} (after return from nanosleep syscall)".format(
+            pc_name, rip_of_sleep, sp_name, rsp_of_sleep,
         ))
 
         hwbp = None
@@ -202980,23 +203610,32 @@ class KmallocAllocatedByCommand(GenericCommand):
 
                 if not hwbp.matched or current_arch.pc != rip_of_sleep:
                     raise gdb.GdbError("Not stopped at the expected sleep syscall return")
-                if get_register("$cs") & 3 != 3 or current_arch.ptrsize != 8:
-                    raise gdb.GdbError("Expected a 64-bit userspace syscall return")
-                self.syscall_pc = rip_of_sleep - 2
+                if riscv:
+                    if is_in_kernel():
+                        raise gdb.GdbError("Expected a userspace syscall return")
+                    self.syscall_pc = rip_of_sleep - 4
+                else:
+                    if get_register("$cs") & 3 != 3 or current_arch.ptrsize != 8:
+                        raise gdb.GdbError("Expected a 64-bit userspace syscall return")
+                    self.syscall_pc = rip_of_sleep - 2
                 self.scratch_start = current_arch.sp
                 self.scratch_end = current_arch.sp
                 self.tested_syscall = set()
-                self.setup_syscall("mmap", [0, 0x10000, 3, 0x8022, -1, 0])
-                scratch = self.continue_syscall("mmap")
-                if u2i(scratch) < 0:
+                mmap_name = "mmap2" if is_riscv32() else "mmap"
+                self.setup_syscall(mmap_name, [0, 0x10000, 3, 0x8022, -1, 0])
+                scratch = self.continue_syscall(mmap_name)
+                if (-4095 <= u2i(scratch, current_arch.bit_length) < 0 if riscv else u2i(scratch) < 0):
                     raise gdb.GdbError("Could not allocate syscall scratch memory")
                 self.scratch_start = scratch + 0x8000
                 self.scratch_end = scratch + 0x10000
-                gdb.execute("set $rsp={:#x}".format(self.scratch_start), to_string=True)
-                gdb.execute("set $rip={:#x}".format(rip_of_sleep), to_string=True)
+                gdb.execute("set {:s}={:#x}".format("$sp" if riscv else "$rsp", self.scratch_start), to_string=True)
+                gdb.execute("set {:s}={:#x}".format("$pc" if riscv else "$rip", rip_of_sleep), to_string=True)
                 hwbp.sp = self.scratch_start
 
-                self.test_syscall(breakpoints)
+                if riscv:
+                    self.test_syscall_riscv(breakpoints)
+                else:
+                    self.test_syscall(breakpoints)
                 info("Syscall test is complete, cleaning up...")
                 self.setup_syscall("exit", [0])
             finally:
@@ -203231,7 +203870,7 @@ class KuafWatchCommand(GenericCommand):
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.only_if_specific_gdb_mode(mode=("qemu-system",))
-    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
+    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64"))
     @Decorator.only_if_in_kernel
     @Decorator.only_if_kvm_disabled
     def do_invoke(self, args):
@@ -203343,6 +203982,13 @@ class KpageWatchAllocBreakpoint(gdb.Breakpoint):
             return False
         order = KmallocTracerCommand.get_ith_parameter(self.index_of_order_arg)
         caller_pc = KmallocTracerCommand.get_return_address()
+        if is_riscv32() or is_riscv64():
+            # A non-local exit can leave a return breakpoint at this reused stack slot.
+            call_context = Kernel.get_call_context(task_addr)
+            for bp in GefUtil.get_owned_breakpoints(self.watcher):
+                if (isinstance(bp, KpageWatchAllocRetBreakpoint) and bp.enabled
+                        and bp.call_context == call_context and bp.caller_pc == caller_pc):
+                    bp.delete()
         KpageWatchAllocRetBreakpoint(caller_pc, self.sym, order, caller_pc, task_addr, self.watcher)
         return False
 
@@ -203702,6 +204348,8 @@ class KpageWatchCommand(GenericCommand):
 
     def direct_map_virt(self, page, phys):
         # the same resolution as buddy-dump: physmap + phys, or page2virt when it falls outside the direct map
+        if is_riscv32() or is_riscv64():
+            return Kernel.page2virt(page)
         consts = KernelAddressHeuristicFinder.consts()
         page_offset = KernelAddressHeuristicFinder.get_PAGE_OFFSET()
         if is_arm64():
@@ -203868,7 +204516,7 @@ class KpageWatchCommand(GenericCommand):
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.only_if_specific_gdb_mode(mode=("qemu-system",))
-    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
+    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64"))
     @Decorator.only_if_in_kernel
     @Decorator.only_if_kvm_disabled
     def do_invoke(self, args):
@@ -204106,7 +204754,7 @@ class KernelTraceCommand(GenericCommand):
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware"))
-    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
+    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64"))
     @Decorator.only_if_in_kernel
     @Decorator.only_if_kvm_disabled
     def do_invoke(self, args):
