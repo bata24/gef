@@ -575,15 +575,16 @@ For the usage and options of each command, see [docs/COMMANDS.md](docs/COMMANDS.
 <details>
 <summary><code>tcmalloc-heap-dump</code>, <code>musl-heap-dump</code>, <code>go-heap-dump</code>, <code>tlsf-heap-dump</code>, <code>hoard-heap-dump</code>, <code>mimalloc-heap-dump</code>, <code>scalloc-heap-dump</code>, <code>snmalloc-heap-dump</code>, <code>ssmalloc-heap-dump</code>, <code>jemalloc-heap-dump</code>, <code>sfmalloc-heap-dump</code>, <code>rpmalloc-heap-dump</code>, <code>tbbmalloc-heap-dump</code>, <code>zig-heap-dump</code>, <code>mesh-heap-dump</code>, <code>streamflow-heap-dump</code>, <code>supermalloc-heap-dump</code>, <code>dlmalloc-heap-dump</code>, <code>scudo-heap-dump</code>, <code>mozjemalloc-heap-dump</code>, <code>bmalloc-heap-dump</code>, <code>libpas-heap-dump</code>, <code>zend-heap-dump</code>, <code>obmalloc-heap-dump</code>, <code>newlib-heap-dump</code></summary>
 
-- `tcmalloc-heap-dump`: dumps TCMalloc (`gperftools-2.16-1` or named `libgoogle-perftools{4,-dev}`) free-list.
+- `tcmalloc-heap-dump`: dumps TCMalloc (gperftools, formerly google-perftools, v0.1~) free-list.
     - ![](images/tcmalloc-heap-dump.png)
     - How to test:
         - Run your test program with `LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libtcmalloc.so ./a.out`.
-- `musl-heap-dump`: dumps Musl-Libc v1.2.5 heap chunks (x64/x86 only).
+- `musl-heap-dump`: dumps Musl-Libc v0.5.0~ heap chunks (mallocng of v1.2.1~, and the legacy malloc).
     - ![](images/musl-heap-dump.png)
     - How to test:
         - Get and extract the upstream source from https://musl.libc.org/
         - Build with `./configure && make install`.
+            - For the legacy malloc, use v1.2.0 or earlier, or build with `./configure --with-malloc=oldmalloc && make install`.
         - Then build with `/usr/local/musl/bin/musl-gcc test.c`.
 - `go-heap-dump`: dumps Go Language v1.7~ mheap.
     - ![](images/go-heap-dump.png)
@@ -612,7 +613,8 @@ For the usage and options of each command, see [docs/COMMANDS.md](docs/COMMANDS.
         - Build with `gyp --depth . scalloc.gyp && make`.
         - Enable overcommit with `echo 1 > /proc/sys/vm/overcommit_memory`.
         - Run your test program with `LD_PRELOAD=/PATH/TO/libscalloc.so ./a.out`.
-- `snmalloc-heap-dump`: dumps snmalloc free-list (x64 only).
+- `snmalloc-heap-dump`: dumps snmalloc free-list.
+    - Use `-r` to display remote message links and the retained tail.
     - ![](images/snmalloc-heap-dump.png)
     - How to test (x64):
         - Get and extract the upstream source from https://github.com/microsoft/snmalloc

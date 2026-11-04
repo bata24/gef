@@ -9093,6 +9093,8 @@ Debug types are optional; without them, known gperftools layouts are validated a
 Without symbols, SizeMap and cache addresses are detected from writable memory and TLS.
 Google's separate google/tcmalloc allocator is not supported.
 --central shows transfer-cache chains, not all free objects in spans.
+Versions up to 0.5 have no transfer cache.
+Versions up to 0.99.2 name these TCMalloc_ThreadCache, central_cache, thread_heaps and class_to_size.
 
 Simplified tcmalloc/gperftools heap structure:
 

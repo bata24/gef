@@ -168140,6 +168140,11 @@ class TcmallocHeapDumpCommand(GenericCommand, BufferingOutput):
     _cmdline_ = "tcmalloc-heap-dump"
     _category_ = "05-d. Heap - Other"
 
+    ThreadCacheLayout = collections.namedtuple(
+        "ThreadCacheLayout",
+        "offset_list offset_size offset_next length_size sizeof_FreeList has_max_length has_object_size",
+    )
+
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("-hh", "--help-simple", action="store_true", help="show help without ASCII diagram.")
     parser.add_argument("-c", "--central", action="store_true",
@@ -168160,6 +168165,8 @@ class TcmallocHeapDumpCommand(GenericCommand, BufferingOutput):
         "Without symbols, SizeMap and cache addresses are detected from writable memory and TLS.",
         "Google's separate google/tcmalloc allocator is not supported.",
         "--central shows transfer-cache chains, not all free objects in spans.",
+        "Versions up to 0.5 have no transfer cache.",
+        "Versions up to 0.99.2 name these TCMalloc_ThreadCache, central_cache, thread_heaps and class_to_size.",
         "",
         "Simplified tcmalloc/gperftools heap structure:",
         "",
@@ -168193,20 +168200,33 @@ class TcmallocHeapDumpCommand(GenericCommand, BufferingOutput):
     @Cache.cache_this_session(cache_None=False, per_inferior=True, until_new_objfile=True)
     def initialize(self):
         self.has_debug_layout = True
+        # 0.99.2 and earlier have no namespace
+        self.has_old_names = GefUtil.member_offset("TCMalloc_ThreadCache", "next_") is not None
+        if self.has_old_names:
+            thread_cache = "TCMalloc_ThreadCache"
+            freelist = "TCMalloc_ThreadCache_FreeList"
+            central_freelist = "TCMalloc_Central_FreeList"
+            span = "Span"
+            tc_entry = "TCEntry"
+            central_cache = "central_cache"
+        else:
+            thread_cache = "tcmalloc::ThreadCache"
+            freelist = "tcmalloc::ThreadCache::FreeList"
+            central_freelist = "tcmalloc::CentralFreeList"
+            span = "tcmalloc::Span"
+            tc_entry = "tcmalloc::CentralFreeList::TCEntry"
+            central_cache = "'tcmalloc::Static::central_cache_'"
         fields = (
-            ("ThreadCache_offset_next", "tcmalloc::ThreadCache", "next_"),
-            ("ThreadCache_offset_prev", "tcmalloc::ThreadCache", "prev_"),
-            ("ThreadCache_offset_freelist_array", "tcmalloc::ThreadCache", "list_"),
-            ("FreeList_offset_list", "tcmalloc::ThreadCache::FreeList", "list_"),
-            ("FreeList_offset_length", "tcmalloc::ThreadCache::FreeList", "length_"),
-            ("CentralCache_offset_size_class_", "tcmalloc::CentralFreeList", "size_class_"),
-            ("CentralCache_offset_tc_slots_", "tcmalloc::CentralFreeList", "tc_slots_"),
-            ("CentralCache_offset_used_slots_", "tcmalloc::CentralFreeList", "used_slots_"),
-            ("CentralCache_offset_empty", "tcmalloc::CentralFreeList", "empty_"),
-            ("CentralCache_offset_nonempty", "tcmalloc::CentralFreeList", "nonempty_"),
-            ("Span_offset_next", "tcmalloc::Span", "next"),
-            ("Span_offset_prev", "tcmalloc::Span", "prev"),
-            ("TCEntry_offset_head", "tcmalloc::CentralFreeList::TCEntry", "head"),
+            ("ThreadCache_offset_next", thread_cache, "next_"),
+            ("ThreadCache_offset_prev", thread_cache, "prev_"),
+            ("ThreadCache_offset_freelist_array", thread_cache, "list_"),
+            ("FreeList_offset_list", freelist, "list_"),
+            ("FreeList_offset_length", freelist, "length_"),
+            ("CentralCache_offset_size_class_", central_freelist, "size_class_"),
+            ("CentralCache_offset_empty", central_freelist, "empty_"),
+            ("CentralCache_offset_nonempty", central_freelist, "nonempty_"),
+            ("Span_offset_next", span, "next"),
+            ("Span_offset_prev", span, "prev"),
         )
         for attribute, type_name, member in fields:
             offset = GefUtil.member_offset(type_name, member)
@@ -168215,10 +168235,9 @@ class TcmallocHeapDumpCommand(GenericCommand, BufferingOutput):
                 return self.initialize_heuristic()
             setattr(self, attribute, offset)
 
-        freelists = GefUtil.lookup_field("tcmalloc::ThreadCache", "list_").type.strip_typedefs()
-        slots = GefUtil.lookup_field("tcmalloc::CentralFreeList", "tc_slots_").type.strip_typedefs()
+        freelists = GefUtil.lookup_field(thread_cache, "list_").type.strip_typedefs()
         try:
-            central = gdb.parse_and_eval("'tcmalloc::Static::central_cache_'").type.strip_typedefs()
+            central = gdb.parse_and_eval(central_cache).type.strip_typedefs()
         except gdb.error:
             central = None
         if central is None or central.code != gdb.TYPE_CODE_ARRAY:
@@ -168228,17 +168247,35 @@ class TcmallocHeapDumpCommand(GenericCommand, BufferingOutput):
         self.ThreadCache_freelist_slot_count = int(freelists.sizeof) // self.sizeof_FreeList
         self.sizeof_CentralCache = int(central.target().sizeof)
         self.CentralCache_array_count = int(central.sizeof) // self.sizeof_CentralCache
-        self.sizeof_TCEntry = int(slots.target().sizeof)
-        self.CentralCache_freelist_slot_count = int(slots.sizeof) // self.sizeof_TCEntry
-        # GDB may interpret a zero-length array's upper bound as UINT32_MAX.
-        if self.CentralCache_offset_tc_slots_ == self.CentralCache_offset_used_slots_:
-            self.CentralCache_freelist_slot_count = 0
-        length_size = GefUtil.member_type_size("tcmalloc::ThreadCache::FreeList", "length_")
+        self.CentralCache_offset_tc_slots_ = GefUtil.member_offset(central_freelist, "tc_slots_")
+        self.CentralCache_offset_used_slots_ = GefUtil.member_offset(central_freelist, "used_slots_")
+        self.CentralCache_freelist_slot_count = 0
+        if self.CentralCache_offset_tc_slots_ is not None:
+            slots = GefUtil.lookup_field(central_freelist, "tc_slots_").type.strip_typedefs()
+            self.sizeof_TCEntry = int(slots.target().sizeof)
+            self.TCEntry_offset_head = GefUtil.member_offset(tc_entry, "head")
+            # GDB may interpret a zero-length array's upper bound as UINT32_MAX.
+            if self.CentralCache_offset_tc_slots_ != self.CentralCache_offset_used_slots_:
+                self.CentralCache_freelist_slot_count = int(slots.sizeof) // self.sizeof_TCEntry
+        length_size = GefUtil.member_type_size(freelist, "length_")
         if length_size not in (2, 4):
             err("Unsupported gperftools FreeList.length_ type")
             return None
         self.read_freelist_length = {2: read_int16_from_memory, 4: read_int32_from_memory}[length_size]
-        self.ThreadCache_offset_next_candidates = (self.ThreadCache_offset_next,)
+        has_object_size = GefUtil.member_offset(freelist, "size_") is not None
+        if has_object_size:
+            offset_size = None
+        else:
+            offset_size = GefUtil.member_offset(thread_cache, "size_")
+        self.ThreadCache_layouts = [self.ThreadCacheLayout(
+            self.ThreadCache_offset_freelist_array,
+            offset_size,
+            self.ThreadCache_offset_next,
+            length_size,
+            self.sizeof_FreeList,
+            GefUtil.member_offset(freelist, "max_length_") is not None,
+            has_object_size,
+        )]
         return True
 
     def initialize_heuristic(self):
@@ -168246,74 +168283,122 @@ class TcmallocHeapDumpCommand(GenericCommand, BufferingOutput):
             err("Could not find gperftools SizeMap")
             return None
         ptrsize = current_arch.ptrsize
+        self.FreeList_offset_list = self.TCEntry_offset_head = 0
+        self.FreeList_offset_length = ptrsize
+        count = len(self.class_to_size_dic)
+        self.ThreadCache_freelist_slot_count = self.CentralCache_array_count = count
+        self.ThreadCache_layouts = self.get_thread_cache_layouts(count)
+        self.set_thread_cache_layout(self.ThreadCache_layouts[0])
+        self.Span_offset_next = 2 * ptrsize
+        self.Span_offset_prev = 3 * ptrsize
+        self.sizeof_TCEntry = 2 * ptrsize
+        return True
+
+    def get_thread_cache_layouts(self, count):
+        ptrsize = current_arch.ptrsize
+        layout = self.ThreadCacheLayout
         if ptrsize == 8:
             length_size = 4
         else:
             length_size = 2
-        self.FreeList_offset_list = self.TCEntry_offset_head = 0
-        self.FreeList_offset_length = ptrsize
-        self.read_freelist_length = {2: read_int16_from_memory, 4: read_int32_from_memory}[length_size]
-        if self.legacy_layout:
-            self.sizeof_FreeList = align(ptrsize + 4 * length_size, ptrsize)
-        else:
-            self.sizeof_FreeList = align(ptrsize + 4 * length_size + 4, ptrsize)
-        count = len(self.class_to_size_dic)
-        self.ThreadCache_freelist_slot_count = self.CentralCache_array_count = count
-        if self.legacy_layout:
+        wide = align(ptrsize + 4 * length_size, ptrsize)
+        narrow = align(ptrsize + 2 * length_size, ptrsize)
+        if not self.legacy_layout:
             if is_x86_32():
-                sampler_size = 12
-            else:
                 sampler_size = 16
-        elif is_x86_32():
-            sampler_size = 16
-        else:
-            sampler_size = 24
-        if self.legacy_layout:
-            self.ThreadCache_offset_freelist_array = 4 * ptrsize + sampler_size
-        else:
-            self.ThreadCache_offset_freelist_array = 0
-        if self.legacy_layout:
-            self.ThreadCache_offset_next_candidates = (0,)
-        else:
+            else:
+                sampler_size = 24
+            sizeof_FreeList = align(ptrsize + 4 * length_size + 4, ptrsize)
+            offset = count * sizeof_FreeList + 8 + sampler_size
             # 2.6-2.15 have tid_ and in_setspecific_ before next_
-            offset = count * self.sizeof_FreeList + 8 + sampler_size
-            self.ThreadCache_offset_next_candidates = (offset, offset + 2 * ptrsize)
-        self.ThreadCache_offset_next = self.ThreadCache_offset_next_candidates[0]
-        self.ThreadCache_offset_prev = self.ThreadCache_offset_next + ptrsize
-        self.Span_offset_next = 2 * ptrsize
-        self.Span_offset_prev = 3 * ptrsize
-        self.CentralCache_offset_size_class_ = ptrsize
-        self.CentralCache_offset_empty = 2 * ptrsize
-        self.CentralCache_offset_nonempty = 8 * ptrsize
-        self.CentralCache_offset_tc_slots_ = 16 * ptrsize
-        self.sizeof_TCEntry = 2 * ptrsize
+            return [layout(0, None, next_, length_size, sizeof_FreeList, True, True)
+                    for next_ in (offset, offset + 2 * ptrsize)]
+        if is_x86_32():
+            sampler_size = 12
+        else:
+            sampler_size = 16
+        # 1.6-2.5
+        layouts = [layout(4 * ptrsize + sampler_size, 2 * ptrsize, 0, length_size, wide, True, False)]
+        if self.kMaxSize == 262144:
+            return layouts
+        if count == 61:
+            # 1.1-1.5 and 1.0
+            layouts.append(layout(5 * ptrsize, 2 * ptrsize, 0, length_size, wide, True, False))
+            layouts.append(layout(6 * ptrsize, 4 * ptrsize, 0, length_size, narrow, False, False))
+            return layouts
+        layouts = []
+        if count == 68:
+            # 0.95-0.99.2
+            offset = 4 * ptrsize + count * narrow + ptrsize
+            layouts.append(layout(4 * ptrsize, 2 * ptrsize, offset, length_size, narrow, False, False))
+        # 0.94.1 and earlier have uint16_t lengths on all architectures
+        sizeof_FreeList = align(ptrsize + 4, ptrsize)
+        offset = 3 * ptrsize + count * sizeof_FreeList + align(4, ptrsize) + ptrsize
+        layouts.append(layout(3 * ptrsize, 0, offset, 2, sizeof_FreeList, False, False))
+        return layouts
+
+    def set_thread_cache_layout(self, layout):
+        self.ThreadCache_offset_freelist_array = layout.offset_list
+        self.ThreadCache_offset_next = layout.offset_next
+        self.ThreadCache_offset_prev = layout.offset_next + current_arch.ptrsize
+        self.sizeof_FreeList = layout.sizeof_FreeList
+        self.read_freelist_length = {2: read_int16_from_memory, 4: read_int32_from_memory}[layout.length_size]
+        return
+
+    def get_central_cache_layouts(self):
+        ptrsize = current_arch.ptrsize
+        count = self.CentralCache_array_count
+        if self.kMaxSize == 32768:
+            layouts = [(ptrsize, 15 * ptrsize, count, 8, 64)]
+            if count == 170:
+                # 0.5 and earlier have no transfer cache; 0.3 and earlier use pthread_mutex_t on x86_64
+                layouts.append((ptrsize, 15 * ptrsize, None, 0, 64))
+                layouts.append((5 * ptrsize, 19 * ptrsize, None, 0, 64))
+            return layouts
         # 2.15 and earlier pad CentralFreeList to 64 bytes on all architectures
         if self.legacy_layout:
             cache_aligns = (64,)
         else:
             cache_aligns = dict.fromkeys(({"PPC": 16, "MIPS": 128, "S390X": 256}.get(current_arch.arch, 64), 64))
+        return [(ptrsize, 16 * ptrsize, slots, 12, cache_align)
+                for slots, cache_align in itertools.product((64, 0), cache_aligns)]
+
+    def get_central_cache_validated(self):
+        ptrsize = current_arch.ptrsize
         central = self.get_central_cache_()
-        for slots, cache_align in itertools.product((64, 0), cache_aligns):
-            self.CentralCache_freelist_slot_count = slots
-            self.CentralCache_offset_used_slots_ = 16 * ptrsize + slots * self.sizeof_TCEntry
-            self.sizeof_CentralCache = align(self.CentralCache_offset_used_slots_ + 12, cache_align)
-            if central is None:
-                central = self.get_central_cache_heuristic()
-            if central is None:
+        if central is None:
+            self.quiet_info("Use heuristic search for central_cache_")
+        for offset_size_class, offset_slots, slots, trailer_size, cache_align in self.get_central_cache_layouts():
+            self.CentralCache_offset_size_class_ = offset_size_class
+            self.CentralCache_offset_empty = offset_size_class + ptrsize
+            self.CentralCache_offset_nonempty = offset_size_class + 7 * ptrsize
+            self.CentralCache_offset_tc_slots_ = offset_slots
+            if slots is None:
+                self.CentralCache_freelist_slot_count = 0
+                self.CentralCache_offset_used_slots_ = None
+                self.sizeof_CentralCache = align(offset_slots, cache_align)
+            else:
+                self.CentralCache_freelist_slot_count = slots
+                self.CentralCache_offset_used_slots_ = offset_slots + slots * self.sizeof_TCEntry
+                self.sizeof_CentralCache = align(self.CentralCache_offset_used_slots_ + trailer_size, cache_align)
+            address = central
+            if address is None:
+                address = self.get_central_cache_heuristic()
+            if address is None:
                 continue
-            if all(read_int_from_memory(central + i * self.sizeof_CentralCache + ptrsize, safe=True) == i
+            if all(read_int_from_memory(address + i * self.sizeof_CentralCache + offset_size_class, safe=True) == i
                    for i in range(self.CentralCache_initialized_count)):
-                break
-        else:
-            err("Could not validate gperftools central-cache layout")
-            return None
-        return True
+                return address
+        return None
 
     def get_size_classes_heuristic(self):
         ptrsize = current_arch.ptrsize
         address = Symbol.resolve_address("'tcmalloc::Static::sizemap_'")
+        if address is None:
+            address = Symbol.resolve_address("class_to_size")
         if address is not None:
-            regions = [(address, address + 8192)]
+            page = address & ~(get_pagesize() - 1)
+            regions = [(page, page + 3 * get_pagesize())]
         else:
             regions = [(m.page_start, m.page_end) for m in ProcessMap.get_process_maps()
                        if m.permission == Permission.READ | Permission.WRITE and "[heap]" not in m.path]
@@ -168338,14 +168423,33 @@ class TcmallocHeapDumpCommand(GenericCommand, BufferingOutput):
                         table = origin + match.start()
                         sizes = [0]
                         try:
-                            raw = read_memory(table, 128 * width)
-                            for offset in range(width, len(raw), width):
-                                size = unpack(raw[offset:offset + width])
+                            for i in range(1, 170):
+                                raw = read_memory(table + i * width, width, safe=True)
+                                if raw is None:
+                                    break
+                                size = unpack(raw)
                                 if size <= sizes[-1] or size > 262144:
                                     break
                                 sizes.append(size)
                                 if size == 262144:
                                     break
+                            if sizes[-1] != 262144 and 32768 in sizes:
+                                # 1.7 and earlier
+                                sizes = sizes[:sizes.index(32768) + 1]
+                                if width != ptrsize or len(sizes) not in (61, 68, 169):
+                                    continue
+                                if len(sizes) == 61:
+                                    classes = read_memory(table - (align(377 + 4 * 61, ptrsize) - 4 * 61), 377)
+                                    if classes[1:3] != b"\1\2" or classes[-1] != 60:
+                                        continue
+                                self.legacy_layout = True
+                                self.kMaxSize = 32768
+                                self.CentralCache_initialized_count = len(sizes)
+                                self.class_to_size_dic = sizes
+                                if len(sizes) == 169:
+                                    # 0.8 and earlier leave a slot of kNumClasses unused
+                                    self.class_to_size_dic = sizes + [0]
+                                return True
                             if sizes[-1] != 262144 or len(sizes) < 40:
                                 continue
                             for legacy, count in ((True, len(sizes)), (False, 128), (False, 96)):
@@ -168363,6 +168467,7 @@ class TcmallocHeapDumpCommand(GenericCommand, BufferingOutput):
                                 if classes[1:3] != b"\1\2" or classes[-1] != len(sizes) - 1:
                                     continue
                                 self.legacy_layout = legacy
+                                self.kMaxSize = 262144
                                 self.CentralCache_initialized_count = len(sizes)
                                 self.class_to_size_dic = sizes + [0] * (count - len(sizes))
                                 return True
@@ -168374,7 +168479,10 @@ class TcmallocHeapDumpCommand(GenericCommand, BufferingOutput):
         if not self.has_debug_layout:
             return True
         try:
-            sizes = gdb.parse_and_eval("'tcmalloc::Static::sizemap_'")["class_to_size_"]
+            if self.has_old_names:
+                sizes = gdb.parse_and_eval("class_to_size")
+            else:
+                sizes = gdb.parse_and_eval("'tcmalloc::Static::sizemap_'")["class_to_size_"]
             size_type = sizes.type.strip_typedefs()
             count = int(size_type.sizeof) // int(size_type.target().sizeof)
             self.class_to_size_dic = [int(sizes[i]) for i in range(count)]
@@ -168399,11 +168507,12 @@ class TcmallocHeapDumpCommand(GenericCommand, BufferingOutput):
     def get_central_cache_(self):
         if self.args.force_heuristic:
             return None
-        return Symbol.resolve_address("'tcmalloc::Static::central_cache_'")
+        address = Symbol.resolve_address("'tcmalloc::Static::central_cache_'")
+        if address is None:
+            address = Symbol.resolve_address("central_cache")
+        return address
 
     def get_central_cache_heuristic(self):
-        self.quiet_info("Use heuristic search for central_cache_")
-
         offset_next1 = self.CentralCache_offset_empty + self.Span_offset_next
         offset_prev1 = self.CentralCache_offset_empty + self.Span_offset_prev
         offset_next2 = self.CentralCache_offset_nonempty + self.Span_offset_next
@@ -168465,7 +168574,10 @@ class TcmallocHeapDumpCommand(GenericCommand, BufferingOutput):
     def get_thread_heaps_(self):
         if self.args.force_heuristic:
             return None
-        return Symbol.resolve_address("'tcmalloc::ThreadCache::thread_heaps_'")
+        address = Symbol.resolve_address("'tcmalloc::ThreadCache::thread_heaps_'")
+        if address is None:
+            address = Symbol.resolve_address("thread_heaps")
+        return address
 
     def get_thread_heap_list_heuristic(self):
         """thread_heap_ itself cannot be found, so it returns the detected list."""
@@ -168489,41 +168601,19 @@ class TcmallocHeapDumpCommand(GenericCommand, BufferingOutput):
                         break
                     candidate_thread_heaps.append(val)
                 else:
-                    for offset in self.ThreadCache_offset_next_candidates:
+                    for offset in dict.fromkeys(layout.offset_next for layout in self.ThreadCache_layouts):
                         links = {read_int_from_memory(heap + offset + j, safe=True)
                                  for heap in candidate_thread_heaps for j in (0, ptrsize)}
                         if candidate_thread_heaps and links == set(candidate_thread_heaps) | {0}:
-                            self.ThreadCache_offset_next = offset
-                            self.ThreadCache_offset_prev = offset + ptrsize
-                            return list(dict.fromkeys(candidate_thread_heaps))
+                            heaps = self.get_linked_thread_heaps(candidate_thread_heaps[0])
+                            if heaps:
+                                return heaps
         return self.get_thread_heap_list_memory_heuristic()
 
     def get_thread_heap_list_memory_heuristic(self):
         ptrsize = current_arch.ptrsize
-        legacy = self.ThreadCache_offset_next == 0
-        if ptrsize == 8:
-            length_size = 4
-        else:
-            length_size = 2
-        unpack = GefUtil.get_unpack(ptrsize)
-        length_unpack = GefUtil.get_unpack(length_size)
-        if length_size == 4:
-            length_pack = p32
-        else:
-            length_pack = p16
-        size_offset = ptrsize + 4 * length_size
         count = self.ThreadCache_freelist_slot_count
-        stride = self.sizeof_FreeList
-        array_size = count * stride
-        pattern = bytes(ptrsize + 2 * length_size) + length_pack(1) + bytes(length_size)
-        if legacy:
-            pattern = pattern * 3
-        else:
-            pattern = p32(8)
-        if legacy:
-            indices = range(count - 2)
-        else:
-            indices = (1,)
+        window = max(layout.offset_list + count * layout.sizeof_FreeList for layout in self.ThreadCache_layouts)
         seen = set()
         for region in ProcessMap.get_process_maps():
             if region.permission != Permission.READ | Permission.WRITE:
@@ -168536,46 +168626,83 @@ class TcmallocHeapDumpCommand(GenericCommand, BufferingOutput):
                     tail = b""
                     continue
                 data = tail + data
-                tail = data[-array_size - self.ThreadCache_offset_freelist_array:]
-                for match in re.finditer(re.escape(pattern), data):
-                    for index in indices:
-                        base = origin + match.start() - self.ThreadCache_offset_freelist_array - index * stride
-                        if not legacy:
-                            base -= size_offset
-                        if base < region.page_start or base % ptrsize or base in seen:
+                tail = data[-window:]
+                for layout in self.ThreadCache_layouts:
+                    array_size = count * layout.sizeof_FreeList
+                    for start in self.get_freelist_array_candidates(layout, data):
+                        base = origin + start - layout.offset_list
+                        if base < region.page_start or base % ptrsize or (base, layout) in seen:
                             continue
-                        start = base + self.ThreadCache_offset_freelist_array - origin
                         if start < 0 or start + array_size > len(data):
                             continue
-                        if legacy:
-                            maximum = base + 3 * ptrsize - origin
-                            if maximum < 0 or not unpack(data[maximum:maximum + ptrsize]):
+                        seen.add((base, layout))
+                        cached_size = self.get_cached_size(layout, data[start:start + array_size])
+                        if cached_size is None:
+                            continue
+                        if layout.offset_size is not None:
+                            if read_int_from_memory(base + layout.offset_size, safe=True) != cached_size:
                                 continue
-                        seen.add(base)
-                        lists = data[start:start + array_size]
-                        cached_size = 0
-                        for i, size in enumerate(self.class_to_size_dic[:self.CentralCache_initialized_count]):
-                            entry = lists[i * stride:(i + 1) * stride]
-                            head = unpack(entry[:ptrsize])
-                            length = length_unpack(entry[ptrsize:ptrsize + length_size])
-                            maximum = length_unpack(entry[ptrsize + 2 * length_size:ptrsize + 3 * length_size])
-                            if not maximum or bool(head) != bool(length):
-                                break
-                            if not legacy and u32(entry[size_offset:size_offset + 4]) != size:
-                                break
-                            cached_size += length * size
-                        else:
-                            if legacy and read_int_from_memory(base + 2 * ptrsize, safe=True) != cached_size:
-                                continue
-                            heaps = self.get_linked_thread_heaps(base)
-                            if heaps:
-                                return heaps
+                            if not layout.has_max_length:
+                                if not cached_size:
+                                    continue
+                            elif layout.offset_list:
+                                # ThreadCache::max_size_
+                                if not read_int_from_memory(base + 3 * ptrsize, safe=True):
+                                    continue
+                        heaps = self.get_linked_thread_heaps(base, [layout])
+                        if heaps:
+                            return heaps
         return None
 
-    def get_linked_thread_heaps(self, base):
-        for offset in self.ThreadCache_offset_next_candidates:
-            self.ThreadCache_offset_next = offset
-            self.ThreadCache_offset_prev = offset + current_arch.ptrsize
+    def get_freelist_array_candidates(self, layout, data):
+        ptrsize = current_arch.ptrsize
+        length_size = layout.length_size
+        stride = layout.sizeof_FreeList
+        if layout.has_object_size:
+            # FreeList::object_size_ of class 1
+            size_offset = ptrsize + 4 * length_size
+            return [match.start() - size_offset - stride for match in re.finditer(re.escape(p32(8)), data)]
+        if layout.has_max_length:
+            # FreeList::max_length_ of an empty list is 1
+            if length_size == 4:
+                length_pack = p32
+            else:
+                length_pack = p16
+            pattern = (bytes(ptrsize + 2 * length_size) + length_pack(1) + bytes(length_size)) * 3
+            return [match.start() - i * stride for match in re.finditer(re.escape(pattern), data)
+                    for i in range(self.ThreadCache_freelist_slot_count - 2)]
+        # list_[0] is never used, and zero bytes of tid_ or in_setspecific_ may precede it
+        starts = (align(match.start(), ptrsize) for match in re.finditer(b"\\x00{%d,}" % stride, data))
+        return [start + i * ptrsize for start in starts for i in range(2)]
+
+    def get_cached_size(self, layout, lists):
+        """Return the bytes held by a free-list array, or None if the array is inconsistent."""
+        ptrsize = current_arch.ptrsize
+        length_size = layout.length_size
+        stride = layout.sizeof_FreeList
+        unpack = GefUtil.get_unpack(ptrsize)
+        length_unpack = GefUtil.get_unpack(length_size)
+        size_offset = ptrsize + 4 * length_size
+        cached_size = 0
+        for i, size in enumerate(self.class_to_size_dic[:self.CentralCache_initialized_count]):
+            entry = lists[i * stride:(i + 1) * stride]
+            head = unpack(entry[:ptrsize])
+            length = length_unpack(entry[ptrsize:ptrsize + length_size])
+            if bool(head) != bool(length):
+                return None
+            if layout.has_max_length and not length_unpack(entry[ptrsize + 2 * length_size:ptrsize + 3 * length_size]):
+                return None
+            if layout.has_object_size and u32(entry[size_offset:size_offset + 4]) != size:
+                return None
+            cached_size += length * size
+        return cached_size
+
+    def get_linked_thread_heaps(self, base, layouts=None):
+        if layouts is None:
+            layouts = self.ThreadCache_layouts
+        fallback = None
+        for layout in layouts:
+            self.set_thread_cache_layout(layout)
             heaps = []
             pending = [base]
             has_head = has_tail = False
@@ -168597,10 +168724,24 @@ class TcmallocHeapDumpCommand(GenericCommand, BufferingOutput):
                 pending.extend(heap for heap in (next_heap, prev_heap) if heap)
             else:
                 if has_head and has_tail:
-                    return heaps
-        self.ThreadCache_offset_next = self.ThreadCache_offset_next_candidates[0]
-        self.ThreadCache_offset_prev = self.ThreadCache_offset_next + current_arch.ptrsize
+                    if layout.offset_size is None or any(self.has_cached_size(heap, layout) for heap in heaps):
+                        return heaps
+                    if fallback is None:
+                        fallback = (layout, heaps)
+        if fallback is not None:
+            layout, heaps = fallback
+            self.set_thread_cache_layout(layout)
+            return heaps
+        self.set_thread_cache_layout(layouts[0])
         return None
+
+    def has_cached_size(self, heap, layout):
+        array_size = self.ThreadCache_freelist_slot_count * layout.sizeof_FreeList
+        lists = read_memory(heap + layout.offset_list, array_size, safe=True)
+        if lists is None:
+            return False
+        size = read_int_from_memory(heap + layout.offset_size, safe=True)
+        return bool(size) and size == self.get_cached_size(layout, lists)
 
     def dump_thread_heap_freelist_single(self, freelist, idx):
         freed_address_color = Config.get("theme.heap_chunk_address_freed")
@@ -168725,13 +168866,20 @@ class TcmallocHeapDumpCommand(GenericCommand, BufferingOutput):
         return
 
     def dump_central_cache(self):
-        central_cache_ = self.get_central_cache_()
-        if central_cache_ is None:
-            central_cache_ = self.get_central_cache_heuristic()
+        if self.has_debug_layout:
+            central_cache_ = self.get_central_cache_()
             if central_cache_ is None:
-                err("Could not find tcmalloc::Static::central_cache_")
-                return
+                self.quiet_info("Use heuristic search for central_cache_")
+                central_cache_ = self.get_central_cache_heuristic()
+        else:
+            central_cache_ = self.get_central_cache_validated()
+        if central_cache_ is None:
+            err("Could not find tcmalloc::Static::central_cache_")
+            return
         self.out.append(titlify("central_cache_ @ {:#x}".format(central_cache_)))
+        if self.CentralCache_offset_used_slots_ is None:
+            self.out.append("This version has no transfer cache")
+            return
 
         heap_key = self.get_heap_key()
         if heap_key != 0:
