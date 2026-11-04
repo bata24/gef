@@ -8280,13 +8280,13 @@ Simplified mozjemalloc structure:
 
 ## `musl-heap-dump`
 
-musl mallocng heap reusable chunks viewer.
+musl heap reusable chunks viewer (mallocng and the legacy malloc).
 
 
 ### Syntax
 
 ```text
-usage: musl-heap-dump [-h] [--malloc-context MALLOC_CONTEXT] [-i {0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47}] [-n] [-v] [{ctx,unused}]
+usage: musl-heap-dump [-h] [--malloc-context MALLOC_CONTEXT] [--mal MAL] [-i IDX] [-n] [-v] [{ctx,unused}]
 
 positional arguments:
   {ctx,unused}          dump mode (default: unused).
@@ -8295,18 +8295,20 @@ options:
   -h, --help            show this help message and exit
   --malloc-context MALLOC_CONTEXT
                         use a specific mallocng context address.
-  -i, --active-idx {0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47}
-                        the active index of dump target.
+  --mal MAL             use a specific address of mal (the legacy malloc).
+  -i, --active-idx IDX  the active index (mallocng, 0-47) or the bin index (the legacy malloc, 0-63) of dump target.
   -n, --no-pager        do not use the pager.
-  -v, --verbose         also dump slots in groups with a single freed slot.
+  -v, --verbose         also dump slots in groups with a single freed slot, or empty bins (the legacy malloc).
 ```
 
 ### Notes
 
 ```text
-Supports musl mallocng (1.2.1 and later), not the legacy malloc implementation.
+Supports mallocng (1.2.1~) and the legacy malloc (0.5.0~1.2.0, or 1.2.1~ built with --with-malloc=oldmalloc).
 Without the __malloc_context symbol, specify --malloc-context; x86 also has heuristic detection.
 Only groups on active[48] are listed; individually mapped large allocations are not enumerated.
+Without the mal symbol, GEF finds mal by a non-empty bin in the writable segments, or specify --mal.
+Only free chunks on bins[64] of the legacy malloc are listed.
 
 Simplified musl mallocng structure:
 
@@ -8343,6 +8345,24 @@ Simplified musl mallocng structure:
                               |  chunk[2]         |      |  chunk[2]         |
                               |  ...              |      |  ...              |
                               +-------------------+      +-------------------+
+
+Simplified musl legacy malloc structure:
+
++-mal---------------+
+| brk (~1.1.10)     |
+| heap (~1.1.10)    |    +-chunk--------------+      +-chunk--------------+
+| binmap            |    | psize (0.7.11~)    |      | psize (0.7.11~)    |
+| bins[0]           |    | csize              |      | csize              |
+|   lock[2]         |    | next (user memory) |----->| next (user memory) |----> fake chunk of bins[0]
+|   head            |--->| prev               |<-----| prev               |
+|   tail            |    +--------------------+      +--------------------+
+| bins[1]           |
+| ...               |
+| bins[63]          |
++-------------------+
+
+* A chunk pointer is &psize, or &csize until 0.7.10. The fake chunk of a bin overlaps the bin so that
+  fake->next is head and fake->prev is tail, and a chunk in a bin links to it at both ends of the list.
 ```
 
 ## `newlib-heap-dump`

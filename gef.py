@@ -182608,7 +182608,7 @@ class MozjemallocHeapDumpCommand(GenericCommand, BufferingOutput):
 
 @register_command
 class MuslHeapDumpCommand(GenericCommand, BufferingOutput):
-    """musl mallocng heap reusable chunks viewer."""
+    """musl heap reusable chunks viewer (mallocng and the legacy malloc)."""
 
     # See https://h-noson.hatenablog.jp/entry/2021/05/03/161933#-177pts-mooosl
     _cmdline_ = "musl-heap-dump"
@@ -182620,15 +182620,20 @@ class MuslHeapDumpCommand(GenericCommand, BufferingOutput):
                         help="dump mode (default: %(default)s).")
     parser.add_argument("--malloc-context", type=AddressUtil.parse_address,
                         help="use a specific mallocng context address.")
-    parser.add_argument("-i", "--active-idx", type=int, choices=range(48), help="the active index of dump target.")
+    parser.add_argument("--mal", type=AddressUtil.parse_address, help="use a specific address of mal (the legacy malloc).")
+    parser.add_argument("-i", "--active-idx", metavar="IDX", type=int,
+                        help="the active index (mallocng, 0-47) or the bin index (the legacy malloc, 0-63) of dump target.")
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
-    parser.add_argument("-v", "--verbose", action="store_true", help="also dump slots in groups with a single freed slot.")
+    parser.add_argument("-v", "--verbose", action="store_true",
+                        help="also dump slots in groups with a single freed slot, or empty bins (the legacy malloc).")
     _syntax_ = parser.format_help()
 
     _note_ = "\n".join([
-        "Supports musl mallocng (1.2.1 and later), not the legacy malloc implementation.",
+        "Supports mallocng (1.2.1~) and the legacy malloc (0.5.0~1.2.0, or 1.2.1~ built with --with-malloc=oldmalloc).",
         "Without the __malloc_context symbol, specify --malloc-context; x86 also has heuristic detection.",
         "Only groups on active[48] are listed; individually mapped large allocations are not enumerated.",
+        "Without the mal symbol, GEF finds mal by a non-empty bin in the writable segments, or specify --mal.",
+        "Only free chunks on bins[64] of the legacy malloc are listed.",
         "",
         "Simplified musl mallocng structure:",
         "",
@@ -182665,6 +182670,24 @@ class MuslHeapDumpCommand(GenericCommand, BufferingOutput):
         "                              |  chunk[2]         |      |  chunk[2]         |",
         "                              |  ...              |      |  ...              |",
         "                              +-------------------+      +-------------------+",
+        "",
+        "Simplified musl legacy malloc structure:",
+        "",
+        "+-mal---------------+",
+        "| brk (~1.1.10)     |",
+        "| heap (~1.1.10)    |    +-chunk--------------+      +-chunk--------------+",
+        "| binmap            |    | psize (0.7.11~)    |      | psize (0.7.11~)    |",
+        "| bins[0]           |    | csize              |      | csize              |",
+        "|   lock[2]         |    | next (user memory) |----->| next (user memory) |----> fake chunk of bins[0]",
+        "|   head            |--->| prev               |<-----| prev               |",
+        "|   tail            |    +--------------------+      +--------------------+",
+        "| bins[1]           |",
+        "| ...               |",
+        "| bins[63]          |",
+        "+-------------------+",
+        "",
+        "* A chunk pointer is &psize, or &csize until 0.7.10. The fake chunk of a bin overlaps the bin so that",
+        "  fake->next is head and fake->prev is tail, and a chunk in a bin links to it at both ends of the list.",
     ])
 
     def __init__(self):
@@ -182676,7 +182699,7 @@ class MuslHeapDumpCommand(GenericCommand, BufferingOutput):
 
     def get_malloc_context_heuristic(self):
         if not is_x86():
-            err("Specify --malloc-context when the __malloc_context symbol is unavailable on this architecture")
+            err("Specify --malloc-context or --mal when the symbols are unavailable on this architecture")
             return None
         try:
             # search for malloc
@@ -182810,15 +182833,13 @@ class MuslHeapDumpCommand(GenericCommand, BufferingOutput):
                         continue
                     self.info_add_out("__malloc_context: {:#x}".format(malloc_context))
                     return malloc_context
-            err("Could not find &__malloc_context; specify --malloc-context")
+            err("Could not find &__malloc_context or mal; specify --malloc-context or --mal")
             return None
         except Exception:
-            err("Could not find &__malloc_context; specify --malloc-context")
+            err("Could not find &__malloc_context or mal; specify --malloc-context or --mal")
             return None
 
-    def get_malloc_context(self):
-        if self.args.malloc_context is not None:
-            return self.args.malloc_context
+    def get_malloc_context_symbol(self):
         if is_sh4():
             symbols = ("__malloc_context", "_malloc_context")
         else:
@@ -182827,6 +182848,14 @@ class MuslHeapDumpCommand(GenericCommand, BufferingOutput):
             address = Symbol.resolve_address(symbol)
             if address is not None:
                 return address
+        return None
+
+    def get_malloc_context(self):
+        if self.args.malloc_context is not None:
+            return self.args.malloc_context
+        address = self.get_malloc_context_symbol()
+        if address is not None:
+            return address
         self.info_add_out("Could not find the symbol, GEF will use heuristic search")
         return self.get_malloc_context_heuristic()
 
@@ -183164,11 +183193,315 @@ class MuslHeapDumpCommand(GenericCommand, BufferingOutput):
                 self.out.append("Meta list loop @ {:#x}".format(current))
         return
 
+    def bin_index(self, size):
+        x = size // (current_arch.ptrsize * 4) - 1
+        if x <= 32:
+            return x
+        if x > 0x1c00:
+            return 63
+        return (struct.unpack("<I", struct.pack("<f", x))[0] >> 21) - 496
+
+    def get_bin_sizes(self):
+        lows, highs = {}, {}
+        for x in range(1, 0x1c03):
+            size = x * current_arch.ptrsize * 4
+            i = self.bin_index(size)
+            lows.setdefault(i, size)
+            highs[i] = size
+        sizes = {}
+        for i, low in lows.items():
+            if i == 63:
+                sizes[i] = "{:#x}-".format(low)
+            elif low == highs[i]:
+                sizes[i] = "{:#x}".format(low)
+            else:
+                sizes[i] = "{:#x}-{:#x}".format(low, highs[i])
+        return sizes
+
+    def read_bins(self, addr):
+        ptrsize = current_arch.ptrsize
+        nwords = (8 + ptrsize * 2) // ptrsize
+        words = slice_unpack(read_memory(addr, ptrsize * nwords * 64), ptrsize)
+        return [(words[nwords * i + nwords - 2], words[nwords * i + nwords - 1]) for i in range(64)]
+
+    def get_next_offset(self, head_addr, head, tail):
+        # returns offsetof(struct chunk, next) if the bin is linked correctly
+        ptrsize = current_arch.ptrsize
+        for offset in (ptrsize * 2, ptrsize):
+            fake = head_addr - offset
+            if head == tail == fake:
+                return offset
+            # user memory is aligned to 4 words
+            if (head + offset) % (ptrsize * 4) or (tail + offset) % (ptrsize * 4):
+                continue
+            if read_int_from_memory(head + offset + ptrsize, safe=True) != fake:
+                continue
+            if read_int_from_memory(tail + offset, safe=True) == fake:
+                return offset
+        return None
+
+    def get_mal_layout(self, addr):
+        # returns (the size of brk and heap, offsetof(struct chunk, next)) that most bins agree with
+        ptrsize = current_arch.ptrsize
+        stride = 8 + ptrsize * 2
+        counts = {}
+        for prefix in (ptrsize * 2, 0):
+            bins_addr = addr + prefix + 8
+            try:
+                bins = self.read_bins(bins_addr)
+            except gdb.MemoryError:
+                continue
+            for i, (head, tail) in enumerate(bins):
+                if head and tail:
+                    offset = self.get_next_offset(bins_addr + stride * i + 8, head, tail)
+                    if offset is not None:
+                        counts[prefix, offset] = counts.get((prefix, offset), 0) + 1
+        if not counts:
+            return None
+        return max(counts, key=counts.get)
+
+    def is_mal(self, addr):
+        if self.get_mal_layout(addr) is not None:
+            return True
+        # no chunk has been freed yet
+        size = (8 + current_arch.ptrsize * 2) * 64
+        return any(read_memory(addr + prefix + 8, size, safe=True) == bytes(size) for prefix in (current_arch.ptrsize * 2, 0))
+
+    def is_bins(self, bins_addr, binmap, next_offset):
+        stride = 8 + current_arch.ptrsize * 2
+        try:
+            bins = self.read_bins(bins_addr)
+        except gdb.MemoryError:
+            return False
+        for i, (head, tail) in enumerate(bins):
+            fake = bins_addr + stride * i + 8 - next_offset
+            if bool(head) != bool(tail) or (head == fake) != (tail == fake):
+                return False
+            if head and head != fake and not binmap >> i & 1:
+                return False
+        return True
+
+    def find_mal(self):
+        ptrsize = current_arch.ptrsize
+        stride = 8 + ptrsize * 2
+        # .data and .bss of each module are the writable file mappings and the mappings that follow the module
+        # (.bss may have no file mapping before it, may hold the static TLS, or may be merged with [heap] while ASLR is off)
+        regions = []
+        module_end = None
+        for m in ProcessMap.get_process_maps():
+            if not m.path.startswith("/") and (m.page_start != module_end or m.size >= 0x1000000):
+                continue
+            module_end = m.page_end
+            if not m.is_writable():
+                continue
+            if regions and regions[-1][1] == m.page_start:
+                regions[-1][1] = m.page_end
+            else:
+                regions.append([m.page_start, m.page_end])
+        for start, end in regions:
+            try:
+                words = slice_unpack(read_memory(start, end - start), ptrsize)
+            except gdb.MemoryError:
+                continue
+            for i in range(len(words) - 1):
+                head, tail = words[i], words[i + 1]
+                if not head or not tail:
+                    continue
+                head_addr = start + ptrsize * i
+                next_offset = self.get_next_offset(head_addr, head, tail)
+                if next_offset is None or head == head_addr - next_offset:
+                    continue
+                # the size of the chunk tells the index of the bin
+                size = read_int_from_memory(head + next_offset - ptrsize, safe=True)
+                if size is None:
+                    continue
+                index = self.bin_index(size)
+                if not 0 <= index < 64:
+                    continue
+                bins_addr = head_addr - 8 - stride * index
+                binmap = read_int64_from_memory(bins_addr - 8, safe=True)
+                if binmap is None or not binmap >> index & 1:
+                    continue
+                if not self.is_bins(bins_addr, binmap, next_offset):
+                    continue
+                # brk is the end of the heap, where the sentinel chunk has csize = C_INUSE
+                brk = read_int_from_memory(bins_addr - 8 - ptrsize * 2, safe=True)
+                heap = read_int_from_memory(bins_addr - 8 - ptrsize, safe=True)
+                if brk and heap and heap < brk and read_int_from_memory(brk - ptrsize, safe=True) == 1:
+                    return bins_addr - 8 - ptrsize * 2
+                return bins_addr - 8
+        return None
+
+    def get_mal(self):
+        if self.args.mal is not None:
+            return self.args.mal
+        if self.args.malloc_context is not None or self.get_malloc_context_symbol() is not None:
+            return None
+        address = Symbol.resolve_address("mal")
+        if address is not None and self.is_mal(address):
+            return address
+        return self.find_mal()
+
+    def read_mal(self, addr):
+        ptrsize = current_arch.ptrsize
+        stride = 8 + ptrsize * 2
+        mal = {}
+        mal["addr"] = current = addr
+        """
+        struct chunk {
+            size_t psize;                                   // 0.7.11~
+            size_t csize;
+            struct chunk *next;
+            struct chunk *prev;
+        };
+
+        struct bin {
+            volatile int lock[2];
+            struct chunk *head;
+            struct chunk *tail;
+        };
+
+        static struct {
+            uintptr_t brk;                                  // ~1.1.10
+            size_t *heap;                                   // ~1.1.10
+            volatile uint64_t binmap;
+            struct bin bins[64];
+            volatile int brk_lock[2];                       // ~1.1.10
+            volatile int free_lock[2];                      // split_merge_lock in oldmalloc (1.2.1~)
+            unsigned mmap_step;                             // 1.0.5~1.1.10
+        } mal;
+        """
+        layout = self.get_mal_layout(addr)
+        if layout is not None:
+            prefix, mal["next_offset"] = layout
+        else:
+            # no bin is linked correctly
+            prefix, mal["next_offset"] = 0, ptrsize * 2
+            if read_int_from_memory(addr) and read_int_from_memory(addr + ptrsize):
+                prefix = ptrsize * 2
+
+        mal["brk"] = mal["heap"] = mal["brk_lock"] = None
+        if prefix:
+            mal["brk"] = read_int_from_memory(current)
+            current += ptrsize
+            mal["heap"] = read_int_from_memory(current)
+            current += ptrsize
+        mal["binmap"] = read_int64_from_memory(current)
+        current += 8
+        mal["bins_addr"] = current
+        mal["bins"] = self.read_bins(current)
+        mal["locks"] = [(read_int32_from_memory(current + stride * i), read_int32_from_memory(current + stride * i + 4))
+                        for i in range(64)]
+        current += stride * 64
+        if prefix:
+            mal["brk_lock"] = (read_int32_from_memory(current), read_int32_from_memory(current + 4))
+            current += 8
+        mal["free_lock"] = (read_int32_from_memory(current), read_int32_from_memory(current + 4))
+        return GefUtil.dict_to_namedtuple("Mal", mal)
+
+    def dump_mal(self, mal):
+        self.out.append(titlify("mal: {:#x}".format(mal.addr)))
+        if mal.brk is not None:
+            self.out.append("  uintptr_t brk:                      {!s}".format(ProcessMap.lookup(mal.brk)))
+            self.out.append("  size_t* heap:                       {!s}".format(ProcessMap.lookup(mal.heap)))
+        self.out.append("  uint64_t binmap:                    {:#x}".format(mal.binmap))
+        self.out.append("  struct bin bins[64]:")
+        sizes = self.get_bin_sizes()
+        for i, ((head, tail), lock) in enumerate(zip(mal.bins, mal.locks)):
+            self.out.append("     bins[{:2d}] (for chunk_size={:>17s}): lock:{:#x},{:#x} head:{:#x} tail:{:#x}".format(
+                i, sizes[i], lock[0], lock[1], head, tail,
+            ))
+        if mal.brk_lock is not None:
+            self.out.append("  int brk_lock[2]:                    {:#x},{:#x}".format(*mal.brk_lock))
+        self.out.append("  int free_lock[2]:                   {:#x},{:#x}".format(*mal.free_lock))
+        return
+
+    def dump_bins(self, mal):
+        corrupted_msg_color = Config.get("theme.heap_corrupted_msg")
+        freed_address_color = Config.get("theme.heap_chunk_address_freed")
+        chunk_size_color = Config.get("theme.heap_chunk_size")
+        ptrsize = current_arch.ptrsize
+
+        self.out.append(titlify("mal @ {:#x}".format(mal.addr), color="bold", msg_color="bold"))
+        self.out.append("binmap: {:#x}".format(mal.binmap))
+        sizes = self.get_bin_sizes()
+        for i, (head, tail) in enumerate(mal.bins):
+            if self.args.active_idx is not None and i != self.args.active_idx:
+                continue
+
+            fake = mal.bins_addr + (8 + ptrsize * 2) * i + 8 - mal.next_offset
+            lines = []
+            seen = set()
+            previous = fake
+            cur = head
+            while cur and cur != fake:
+                if cur in seen:
+                    lines.append(" -> {:s}".format(Color.colorify("{:#x} (loop detected)".format(cur), corrupted_msg_color)))
+                    break
+                user = cur + mal.next_offset
+                data = read_memory(user - ptrsize * 2, ptrsize * 4, safe=True)
+                if data is None:
+                    lines.append(" -> {:s}".format(Color.colorify("{:#x} (unreadable)".format(cur), corrupted_msg_color)))
+                    break
+                psize, csize, next_chunk, prev_chunk = slice_unpack(data, ptrsize)
+                errors = []
+                if prev_chunk != previous:
+                    errors.append("corrupted prev")
+                if csize & 1:
+                    errors.append("C_INUSE is set")
+                if self.bin_index(csize) != i:
+                    errors.append("wrong bin")
+                if read_int_from_memory(user + (csize & ~1) - ptrsize * 2, safe=True) != csize:
+                    errors.append("corrupted footer")
+                line = " -> {:s} (size: {:s}, user: {:#x}, psize: {:#x}, next: {:#x}, prev: {:#x})".format(
+                    Color.colorify_hex(cur, freed_address_color), Color.colorify_hex(csize & ~1, chunk_size_color),
+                    user, psize, next_chunk, prev_chunk,
+                )
+                if errors:
+                    line += " {:s}".format(Color.colorify("({:s})".format(", ".join(errors)), corrupted_msg_color))
+                lines.append(line)
+                seen.add(cur)
+                previous = cur
+                cur = next_chunk
+            if head and not cur:
+                lines.append(" -> {:s}".format(Color.colorify("NULL (corrupted next)", corrupted_msg_color)))
+            elif cur == fake and tail != previous:
+                lines.append(" -> {:s}".format(Color.colorify("tail is {:#x} (corrupted)".format(tail), corrupted_msg_color)))
+            if bool(seen) != bool(mal.binmap >> i & 1):
+                lines.append(Color.colorify("binmap does not match this bin", corrupted_msg_color))
+
+            if not lines and not self.args.verbose and self.args.active_idx is None:
+                continue
+            self.out.append(titlify("bins[{:2d}] (size: {:s}, num: {:#x}) @ {:#x}".format(i, sizes[i], len(seen), fake)))
+            self.out.extend(lines)
+        return
+
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
     def do_invoke(self, args):
         self.out = []
+
+        mal_addr = self.get_mal()
+        if mal_addr is not None:
+            if args.active_idx is not None and not 0 <= args.active_idx < 64:
+                err("The bin index of the legacy malloc must be 0-63")
+                return
+            try:
+                mal = self.read_mal(mal_addr)
+            except gdb.MemoryError:
+                err("Could not read mal")
+                return
+            if args.command == "ctx":
+                self.dump_mal(mal)
+            elif args.command == "unused":
+                self.dump_bins(mal)
+            self.print_output()
+            return
+
+        if args.active_idx is not None and not 0 <= args.active_idx < 48:
+            err("The active index of mallocng must be 0-47")
+            return
 
         try:
             ctx = self.read_ctx()
