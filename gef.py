@@ -164846,11 +164846,16 @@ class KernelNetDeviceCommand(GenericCommand, BufferingOutput):
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("-hh", "--help-simple", action="store_true", help="show help without ASCII diagram.")
     parser.add_argument("--meta", action="store_true", help="display offset information.")
+    parser.add_argument("-v", "--verbose", action="store_true", help="display driver and queue details.")
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
     parser.add_argument("-q", "--quiet", action="store_true", help="show result only.")
     _syntax_ = parser.format_help()
 
     _note_ = "\n".join([
+        "Fields whose layout cannot be verified are shown as '-'.",
+        "Without type information, the address column may be &net_device.name rather than net_device.",
+        "Use -v to show operations and queue details.",
+        "",
         "Simplified net_device structure:",
         "",
         "                     +-net_device--------+    +-net_device--------+",
@@ -164965,26 +164970,236 @@ class KernelNetDeviceCommand(GenericCommand, BufferingOutput):
 
         return True
 
-    def dump_net(self):
-        fmt = "{:18s} {:s}"
+    def infer_offsets(self, entries):
+        """Find net_device fields from list and hash links when no type layout is loaded."""
+        offsets = {}
+        ptrsize = current_arch.ptrsize
+        lo = None
+        for entry in entries:
+            if read_cstring_from_memory(entry, 0x10) == "lo":
+                lo = entry
+                break
+        if lo is None or len(entries) < 2:
+            return offsets
+
+        type_candidates = []
+        for offset in range(self.distance_dev_list_name + ptrsize * 2, self.distance_dev_list_name + 0x380, 2):
+            if read_int16_from_memory(lo + offset, safe=True) != 772:
+                continue
+            values = [read_int16_from_memory(entry + offset, safe=True) for entry in entries]
+            if all(value is not None and value < 0xfffe for value in values):
+                type_candidates.append(offset)
+        if len(type_candidates) == 1:
+            offsets["type"] = type_candidates[0]
+
+        flags_candidates = []
+        lo_index = entries.index(lo)
+        for offset in range(-0x180, self.distance_dev_list_name + 0x300, 4):
+            values = [read_int32_from_memory(entry + offset, safe=True) for entry in entries]
+            other_values = values[:lo_index] + values[lo_index + 1:]
+            if (all(value is not None and value < 0x80000 for value in values)
+                    and values[lo_index] & 8
+                    and all(not (value & 8) for value in other_values)
+                    and any(value & (0x2 | 0x10 | 0x80 | 0x1000) for value in other_values)):
+                flags_candidates.append(offset)
+        if len(flags_candidates) == 1:
+            offsets["flags"] = flags_candidates[0]
+
+        if "flags" in offsets:
+            flag_offset = offsets["flags"]
+            if Kernel.version() < "6.8":
+                bounds = range(flag_offset + 4, min(flag_offset + 0x100, offsets.get("type", flag_offset + 0x100)), 4)
+            else:
+                bounds = range(flag_offset - 0x100, flag_offset, 4)
+            mtu_candidates = []
+            for offset in bounds:
+                values = [read_int32_from_memory(entry + offset, safe=True) for entry in entries]
+                if (all(value is not None and 68 <= value <= 65536 for value in values)
+                        and len(set(values)) > 1):
+                    mtu_candidates.append(offset)
+            if len(mtu_candidates) == 1:
+                offsets["mtu"] = mtu_candidates[0]
+
+        state_candidates = {self.distance_dev_list_name - ptrsize}
+        if "flags" in offsets:
+            state_candidates.add(offsets["flags"] - ptrsize)
+        valid_states = []
+        for state_offset in state_candidates:
+            values = [read_int_from_memory(entry + state_offset, safe=True) for entry in entries]
+            if all(value is not None and value < 0x40 and value & 2 for value in values):
+                valid_states.append(state_offset)
+        if len(valid_states) == 1:
+            offsets["state"] = valid_states[0]
+
+        index_candidates = []
+        fmt = Endian.arrow_str() + ("Q" if ptrsize == 8 else "I")
+        for net_offset in range(0, ptrsize * 0x100, ptrsize):
+            array = read_int_from_memory(self.init_net + net_offset, safe=True)
+            if not array or array % ptrsize:
+                continue
+            data = read_memory(array, 256 * ptrsize, safe=True)
+            if data is None:
+                continue
+            buckets = [(i, struct.unpack_from(fmt, data, i * ptrsize)[0]) for i in range(256)]
+            first = []
+            for i, node in buckets:
+                if node:
+                    first.append((i, node))
+            if not 0 < len(first) <= len(entries):
+                continue
+            for entry in entries:
+                delta = first[0][1] - entry
+                expected = {item + delta for item in entries}
+                seen = set()
+                bucket_by_entry = {}
+                for bucket, node in first:
+                    while node and node in expected and node not in seen:
+                        pprev = read_int_from_memory(node + ptrsize, safe=True)
+                        if pprev is None or read_int_from_memory(pprev, safe=True) != node:
+                            break
+                        seen.add(node)
+                        bucket_by_entry[node - delta] = bucket
+                        node = read_int_from_memory(node, safe=True)
+                    if node:
+                        break
+                if seen != expected:
+                    continue
+                if Kernel.version() < "6.8":
+                    start, stop = self.distance_dev_list_name, self.distance_dev_list_name + 0x300
+                else:
+                    start, stop = -0x200, 0
+                for offset in range(start, stop, 4):
+                    values = [read_int32_from_memory(item + offset, safe=True) for item in entries]
+                    if (all(value is not None and 0 < value < 0x80000000 for value in values)
+                            and len(set(values)) == len(entries)
+                            and all(value & 255 == bucket_by_entry[item] for item, value in zip(entries, values))):
+                        index_candidates.append((offset, tuple(values)))
+        if index_candidates and len({values for offset, values in index_candidates}) == 1:
+            offsets["ifindex"] = min(offset for offset, values in index_candidates)
+
+        ops_candidates = []
+        for offset in range(-0x180, 0x600, ptrsize):
+            ptr = read_int_from_memory(lo + offset, safe=True)
+            if not ptr:
+                continue
+            xmit = read_int_from_memory(ptr + ptrsize * 4, safe=True)
+            name = Ksym.get_name(xmit) if xmit is not None else None
+            if name is None or "xmit" not in name:
+                continue
+            pointers = [read_int_from_memory(entry + offset, safe=True) for entry in entries]
+            if all(pointer and read_int_from_memory(pointer + ptrsize * 4, safe=True) for pointer in pointers):
+                ops_candidates.append(offset)
+        if len(ops_candidates) == 1:
+            offsets["netdev_ops"] = ops_candidates[0]
+
+        addr_candidates = []
+        for offset in range(-0x180, 0x700, ptrsize):
+            pointers = [read_int_from_memory(entry + offset, safe=True) for entry in entries]
+            if not all(pointer and pointer % ptrsize == 0 and KernelAddressHeuristicFinderUtil.is_kernel_space(pointer)
+                       and not entry - 0x200 <= pointer < entry + 0x1000 for entry, pointer in zip(entries, pointers)):
+                continue
+            for distance in range(ptrsize * 2, 0x60, ptrsize):
+                heads = []
+                for entry, pointer in zip(entries, pointers):
+                    node = pointer - distance
+                    head = read_int_from_memory(node, safe=True)
+                    if (head is None or head != read_int_from_memory(node + ptrsize, safe=True)
+                            or not entry - 0x180 <= head < entry + 0x700
+                            or read_int_from_memory(head, safe=True) != node
+                            or read_int_from_memory(head + ptrsize, safe=True) != node):
+                        break
+                    heads.append(head - entry)
+                if len(heads) == len(entries) and len(set(heads)) == 1:
+                    if "type" in offsets and offsets["type"] < heads[0] < offsets["type"] + 0x200:
+                        addr_candidates.append((offset, heads[0]))
+        if addr_candidates and len({head for offset, head in addr_candidates}) == 1:
+            offsets["dev_addr"] = max(offset for offset, head in addr_candidates)
+        return offsets
+
+    def dump_net(self, verbose=False):
         if self.offset_name is not None:
             address_label = "net_device"
         else:
             address_label = "&net_device.name"
-        legend = [address_label, "name"]
-        self.out.append(GefUtil.make_legend(fmt.format(*legend)))
-
-        # `struct net_device` is a very complex struct, and detecting the offset of its members is very difficult.
-        # My best effort is to detect only names and addresses.
+        legend = [address_label, "name", "ifindex", "mtu", "flags", "operstate", "admin", "carrier", "type", "hwaddr"]
+        if verbose:
+            legend.extend(("netdev_ops", "rx_handler", "txq", "rxq", "napi"))
 
         head = self.init_net + self.offset_dev_base_head
-        for name_addr in KernelListHead(head, self.distance_dev_list_name).iter_entries():
+        entries = list(KernelListHead(head, self.distance_dev_list_name).iter_entries())
+        offsets = self.infer_offsets(entries) if self.offset_name is None else {}
+        rows = []
+        for name_addr in entries:
             name = read_cstring_from_memory(name_addr, 0x10)
             if self.offset_name is not None:
                 netdev = name_addr - self.offset_name
             else:
                 netdev = name_addr
-            self.out.append("{:#018x} {:s}".format(netdev, name))
+
+            device = GefUtil.typed_struct(netdev, "struct net_device") if self.offset_name is not None else None
+            fields = {member: GefUtil.field_int(device, member) for member in (
+                "ifindex", "mtu", "flags", "operstate", "state", "type", "addr_len", "dev_addr",
+                "netdev_ops", "rx_handler", "real_num_tx_queues", "real_num_rx_queues",
+            )}
+            if device is None:
+                for member, offset in offsets.items():
+                    address = name_addr + offset
+                    if member == "type":
+                        fields[member] = read_int16_from_memory(address, safe=True)
+                    elif member in ("ifindex", "mtu", "flags"):
+                        fields[member] = read_int32_from_memory(address, safe=True)
+                    else:
+                        fields[member] = read_int_from_memory(address, safe=True)
+                if fields["type"] == 1:
+                    fields["addr_len"] = 6
+            state = fields["state"]
+            addr_len = fields["addr_len"]
+            hwaddr = None
+            if fields["dev_addr"] and addr_len and 0 < addr_len <= 32:
+                data = read_memory(fields["dev_addr"], addr_len, safe=True)
+                if data is not None:
+                    hwaddr = ":".join("{:02x}".format(byte) for byte in data)
+            parts = ["{:#018x}".format(netdev), name]
+            for member in ("ifindex", "mtu", "flags", "operstate"):
+                value = fields[member]
+                if value is None:
+                    shown = "-"
+                elif member == "flags":
+                    shown = "{:#x}".format(value)
+                else:
+                    shown = str(value)
+                parts.append(shown)
+            flags = fields["flags"]
+            admin = "-"
+            if flags is not None:
+                admin = "up" if flags & 1 else "down"
+            carrier = "-"
+            if state is not None:
+                carrier = "down" if state & 4 else "up"
+            parts.extend((admin, carrier))
+            kind = fields["type"]
+            parts.append("-" if kind is None else str(kind))
+            parts.append(hwaddr or "-")
+
+            if verbose:
+                for member in ("netdev_ops", "rx_handler"):
+                    value = fields[member]
+                    parts.append("-" if value is None else "{:#x}".format(value))
+                for member in ("real_num_tx_queues", "real_num_rx_queues"):
+                    value = fields[member]
+                    parts.append("-" if value is None else str(value))
+                napi_head = name_addr + self.distance_dev_list_name + current_arch.ptrsize * 2
+                napi = KernelListHead(napi_head).parse()
+                parts.append("-" if napi is None else str(len(napi)))
+            rows.append(parts)
+        widths = [len(label) for label in legend]
+        for row in rows:
+            for index, value in enumerate(row):
+                widths[index] = max(widths[index], len(value))
+        header = "  ".join(label.ljust(width) for label, width in zip(legend, widths))
+        self.out.append(GefUtil.make_legend(header.rstrip()))
+        for row in rows:
+            self.out.append("  ".join(value.ljust(width) for value, width in zip(row, widths)).rstrip())
         return
 
     @Decorator.parse_args
@@ -165006,7 +165221,7 @@ class KernelNetDeviceCommand(GenericCommand, BufferingOutput):
             return
 
         self.out = []
-        self.dump_net()
+        self.dump_net(args.verbose)
         self.print_output(check_terminal_size=True)
         return
 

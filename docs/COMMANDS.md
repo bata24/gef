@@ -11726,12 +11726,13 @@ Dump net device information.
 ### Syntax
 
 ```text
-usage: knetdev [-h] [-hh] [--meta] [-n] [-q]
+usage: knetdev [-h] [-hh] [--meta] [-v] [-n] [-q]
 
 options:
   -h, --help          show this help message and exit
   -hh, --help-simple  show help without ASCII diagram.
   --meta              display offset information.
+  -v, --verbose       display driver and queue details.
   -n, --no-pager      do not use the pager.
   -q, --quiet         show result only.
 ```
@@ -11739,6 +11740,10 @@ options:
 ### Notes
 
 ```text
+Fields whose layout cannot be verified are shown as '-'.
+Without type information, the address column may be &net_device.name rather than net_device.
+Use -v to show operations and queue details.
+
 Simplified net_device structure:
 
                      +-net_device--------+    +-net_device--------+
