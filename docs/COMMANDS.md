@@ -2644,16 +2644,25 @@ Display a comprehensive layout of the virtual memory mapping.
 ### Syntax
 
 ```text
-usage: vmmap [-h] [--outer] [-n] [-q] [FILTER]
+usage: vmmap [-h] [--outer] [-n] [-q] [-w] [-x] [-A LINES_AFTER] [-B LINES_BEFORE] [-C CONTEXT] [--gaps] [FILTER]
 
 positional arguments:
-  FILTER          filter string.
+  FILTER                filter string.
 
 options:
-  -h, --help      show this help message and exit
-  --outer         display qemu-user's memory map instead of emulated process's memory map.
-  -n, --no-pager  do not use the pager.
-  -q, --quiet     do not display register information.
+  -h, --help            show this help message and exit
+  --outer               display qemu-user's memory map instead of emulated process's memory map.
+  -n, --no-pager        do not use the pager.
+  -q, --quiet           do not display register information.
+  -w, --writable        display writable maps only.
+  -x, --executable      display executable maps only.
+  -A, --lines-after LINES_AFTER
+                        show this many maps after each match.
+  -B, --lines-before LINES_BEFORE
+                        show this many maps before each match.
+  -C, --context CONTEXT
+                        show this many maps before and after each match.
+  --gaps                display unmapped gaps between maps.
 ```
 
 ### Examples

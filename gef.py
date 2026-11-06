@@ -46042,6 +46042,12 @@ class VMMapCommand(GenericCommand, BufferingOutput):
     parser.add_argument("filter", metavar="FILTER", nargs="?", help="filter string.")
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
     parser.add_argument("-q", "--quiet", action="store_true", help="do not display register information.")
+    parser.add_argument("-w", "--writable", action="store_true", help="display writable maps only.")
+    parser.add_argument("-x", "--executable", action="store_true", help="display executable maps only.")
+    parser.add_argument("-A", "--lines-after", type=int, help="show this many maps after each match.")
+    parser.add_argument("-B", "--lines-before", type=int, help="show this many maps before each match.")
+    parser.add_argument("-C", "--context", type=int, help="show this many maps before and after each match.")
+    parser.add_argument("--gaps", action="store_true", help="display unmapped gaps between maps.")
     _syntax_ = parser.format_help()
 
     _example_ = "\n".join([
@@ -46174,6 +46180,33 @@ class VMMapCommand(GenericCommand, BufferingOutput):
             err("No address mapping information found")
             return
 
+        before = args.lines_before
+        after = args.lines_after
+        if args.context is not None:
+            if before is None:
+                before = args.context
+            if after is None:
+                after = args.context
+        before = before or 0
+        after = after or 0
+        if before < 0 or after < 0 or (args.context is not None and args.context < 0):
+            err("Context line counts must not be negative")
+            return
+
+        if args.gaps or before or after:
+            vmmap = sorted(vmmap, key=lambda section: section.page_start)
+        if args.gaps:
+            entries = []
+            last_end = None
+            for entry in sorted(vmmap, key=lambda section: section.page_start):
+                if last_end is not None and last_end < entry.page_start:
+                    entries.append(Section(page_start=last_end, page_end=entry.page_start,
+                                           permission=Permission(value=Permission.NONE), path="[gap]"))
+                entries.append(entry)
+                if last_end is None or entry.page_end > last_end:
+                    last_end = entry.page_end
+            vmmap = entries
+
         # color legend
         self.out = []
         if not Config.get("gef.disable_color"):
@@ -46202,38 +46235,54 @@ class VMMapCommand(GenericCommand, BufferingOutput):
             except ValueError:
                 pass
 
-        # show each entry
-        for entry in vmmap:
-            # no filter
+        matches = {}
+        for index, entry in enumerate(vmmap):
+            if entry.path != "[gap]":
+                if args.writable and not entry.is_writable():
+                    continue
+                if args.executable and not entry.is_executable():
+                    continue
+
             if not args.filter:
-                self.dump_entry(entry)
+                matches[index] = False
                 continue
 
-            # includes address
             if filter_addr1 is not None:
                 if entry.page_start <= filter_addr1 < entry.page_end:
-                    self.dump_entry(entry, print_offset=filter_addr1 - entry.page_start)
+                    matches[index] = filter_addr1 - entry.page_start
                     filter_addr1 = None # It never matches a different region
                     continue
 
-            # range match
             if filter_addr2 is not None:
                 if entry.page_start <= filter_addr2 < entry.page_end:
-                    self.dump_entry(entry, print_offset=filter_addr2 - entry.page_start)
+                    matches[index] = filter_addr2 - entry.page_start
                     filter_addr2 = None # It never matches a different region
                     continue
 
-            # `binary` case
             if args.filter == "binary":
                 filepath = Path.get_filepath(append_proc_root_prefix=False)
                 if filepath and entry.path in (filepath, filepath + " (deleted)"):
-                    self.dump_entry(entry)
+                    matches[index] = False
                     continue
 
-            # A simple match to the filter string
             if args.filter in entry.path:
-                self.dump_entry(entry)
-                continue
+                matches[index] = False
+
+        displayed = set(matches)
+        if before or after:
+            map_indices = [index for index, entry in enumerate(vmmap) if entry.path != "[gap]"]
+            map_positions = {index: position for position, index in enumerate(map_indices)}
+            for index in matches:
+                if index not in map_positions:
+                    continue
+                position = map_positions[index]
+                start = map_indices[max(0, position - before)]
+                end = map_indices[min(len(map_indices) - 1, position + after)]
+                displayed.update(range(start, end + 1))
+
+        for index, entry in enumerate(vmmap):
+            if index in displayed:
+                self.dump_entry(entry, print_offset=matches.get(index, False))
 
         # warning message
         if is_qemu_user() and not args.outer:
