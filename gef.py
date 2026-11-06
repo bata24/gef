@@ -46596,6 +46596,7 @@ class PatternCommand(GenericCommand):
 
     _cmdline_ = "pattern"
     _category_ = "07-c. Misc - Generation"
+    _aliases_ = ["cyclic"]
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     if (sys.version_info.major, sys.version_info.minor) >= (3, 7):
@@ -46702,7 +46703,8 @@ class PatternSearchCommand(GenericCommand):
     parser.add_argument("-c", "--charset", help="the charset of pattern. (default: abc..z)")
     parser.add_argument("-w", "--width", type=int, choices=(1, 2, 4, 8),
                         help="the integer search width in bytes. (default: target pointer size)")
-    parser.add_argument("pattern", metavar="PATTERN", help="the pattern to offset search.")
+    parser.add_argument("-d", "--detect", action="store_true", help="detect patterns in registers and their targets.")
+    parser.add_argument("pattern", metavar="PATTERN", nargs="?", help="the pattern to offset search.")
     parser.add_argument("size", metavar="SIZE", type=AddressUtil.parse_address, nargs="?",
                         help="the size of pattern. (default: 0x10000)")
     _syntax_ = parser.format_help()
@@ -46713,7 +46715,9 @@ class PatternSearchCommand(GenericCommand):
         "{0:s} aaab",
     ]).format(_cmdline_)
 
-    def search(self, tag, cyclic_pattern, pattern):
+    def search(self, tag, cyclic_pattern, pattern, only_matches=False):
+        if only_matches and pattern not in cyclic_pattern and pattern[::-1] not in cyclic_pattern:
+            return
         gef_print(titlify(tag))
 
         def search_pattern(pattern):
@@ -46736,17 +46740,24 @@ class PatternSearchCommand(GenericCommand):
             return
 
         # little endian
-        search_pattern(pattern)
+        if not only_matches or pattern in cyclic_pattern:
+            search_pattern(pattern)
 
         # big endian
         inv_pattern = pattern[::-1]
-        if pattern != inv_pattern:
+        if pattern != inv_pattern and (not only_matches or inv_pattern in cyclic_pattern):
             search_pattern(inv_pattern)
         return
 
     @Decorator.parse_args
     def do_invoke(self, args):
-        if not args.pattern:
+        if args.detect and not is_alive():
+            err("No debugging session active")
+            return
+        if args.detect and args.pattern is not None:
+            err("PATTERN cannot be used with --detect")
+            return
+        if not args.detect and not args.pattern:
             err("Empty pattern")
             return
 
@@ -46765,6 +46776,18 @@ class PatternSearchCommand(GenericCommand):
 
         def pack(value):
             return (value & mask).to_bytes(width, "little")
+
+        if args.detect:
+            for regname in current_arch.all_registers:
+                regvalue = get_register(regname)
+                if regvalue is None:
+                    continue
+                value = pack(regvalue)
+                self.search("As value (without dereference): {}".format(regname), cyclic_pattern, value, only_matches=True)
+                target = read_memory(regvalue, width, safe=True)
+                if target is not None:
+                    self.search("As symbol (with dereference): {}".format(regname), cyclic_pattern, target, only_matches=True)
+            return
 
         # 1. check if it's a symbol (like "$sp")
         if is_alive():
