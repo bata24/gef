@@ -183072,9 +183072,12 @@ class MuslHeapDumpCommand(GenericCommand, BufferingOutput):
     _category_ = "05-d. Heap - Other"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
-    modes = ["ctx", "unused"]
+    modes = ["ctx", "unused", "find"]
     parser.add_argument("command", choices=modes, nargs="?", default="unused",
                         help="dump mode (default: %(default)s).")
+    parser.add_argument("address", nargs="?", type=AddressUtil.parse_address,
+                        help="an address inside the mallocng slot to find.")
+    parser.add_argument("-hh", "--help-simple", action="store_true", help="show help without ASCII diagram.")
     parser.add_argument("--malloc-context", type=AddressUtil.parse_address,
                         help="use a specific mallocng context address.")
     parser.add_argument("--mal", type=AddressUtil.parse_address, help="use a specific address of mal (the legacy malloc).")
@@ -183088,7 +183091,9 @@ class MuslHeapDumpCommand(GenericCommand, BufferingOutput):
     _note_ = "\n".join([
         "Supports mallocng (1.2.1~) and the legacy malloc (0.5.0~1.2.0, or 1.2.1~ built with --with-malloc=oldmalloc).",
         "Without the __malloc_context symbol, specify --malloc-context; x86 also has heuristic detection.",
-        "Only groups on active[48] are listed; individually mapped large allocations are not enumerated.",
+        "By default, unused lists only groups on active[48]; individually mapped large allocations are not enumerated.",
+        "Use find ADDRESS to inspect the innermost slot containing its start, user address, or another address inside it.",
+        "Find scans meta areas, so it can locate full groups and individually mapped large allocations.",
         "Without the mal symbol, GEF finds mal by a non-empty bin in the writable segments, or specify --mal.",
         "Only free chunks on bins[64] of the legacy malloc are listed.",
         "",
@@ -183515,6 +183520,72 @@ class MuslHeapDumpCommand(GenericCommand, BufferingOutput):
             return meta.maplen * 4096 - 16
         return self.class_to_size(meta.sizeclass)
 
+    def read_meta_area(self, addr, ctx):
+        ptrsize = current_arch.ptrsize
+        offset = (12 + ptrsize + ptrsize - 1) // ptrsize * ptrsize
+        check = read_int64_from_memory(addr)
+        next_area = read_int_from_memory(addr + 8)
+        nslots = read_int32_from_memory(addr + 8 + ptrsize)
+        capacity = (4096 - offset) // (4 * ptrsize + 8)
+        if check != ctx.secret or not 0 <= nslots <= capacity:
+            raise ValueError("Invalid mallocng meta area @ {:#x}".format(addr))
+        return GefUtil.dict_to_namedtuple("MetaArea", {
+            "addr": addr, "next": next_area, "nslots": nslots, "slots": addr + offset,
+            "meta_size": 4 * ptrsize + 8,
+        })
+
+    def iter_meta_areas(self, ctx):
+        current = ctx.meta_area_head
+        seen = set()
+        while current and current not in seen:
+            area = self.read_meta_area(current, ctx)
+            yield area
+            seen.add(current)
+            current = area.next
+
+    def iter_area_metas(self, area, ctx):
+        count = area.nslots
+        if area.addr == ctx.meta_area_tail:
+            count -= ctx.avail_meta_count
+        for index in range(max(count, 0)):
+            address = area.slots + area.meta_size * index
+            meta = self.read_meta(address)
+            if not meta.mem or meta.sizeclass not in range(48) and meta.sizeclass != 63:
+                continue
+            if meta.last_idx > 31 or meta.avail_mask & meta.freed_mask:
+                continue
+            if read_int_from_memory(meta.mem, safe=True) != address:
+                continue
+            yield meta
+
+    def find_slot(self, ctx, address):
+        matches = []
+        for area in self.iter_meta_areas(ctx):
+            for meta in self.iter_area_metas(area, ctx):
+                stride = self.get_stride(meta)
+                for index in range(meta.last_idx + 1):
+                    start = meta.mem + 16 + stride * index
+                    if not start <= address < start + stride:
+                        continue
+                    matches.append((stride, meta, index))
+        if not matches:
+            return None
+        return min(matches, key=lambda item: item[0])[1:]
+
+    def dump_selected_slot(self, meta, index):
+        stride = self.get_stride(meta)
+        start = meta.mem + 16 + stride * index
+        state = self.make_state(meta)[-index - 1]
+        self.out.append(titlify("slot[{:d}] @ {:#x}".format(index, start)))
+        self.out.append("state:{:s} stride:{:#x}".format(state, stride))
+        self.out.append("group:{:#x} meta:{:#x}".format(meta.mem, meta.addr))
+        try:
+            group = self.read_group(meta, stride * index)
+            self.out.append("user:{:#x} reserved:{:#x} slot_offset:{:#x}".format(
+                group.user_addr, group.reserved, group.slot_offset))
+        except (gdb.MemoryError, ValueError):
+            self.out.append("Slot header is unavailable")
+
     def read_group(self, meta, offset):
         stride = self.get_stride(meta)
         group = {}
@@ -183939,8 +184010,20 @@ class MuslHeapDumpCommand(GenericCommand, BufferingOutput):
     def do_invoke(self, args):
         self.out = []
 
+        if args.command == "find" and args.address is None:
+            err("An address is required for find")
+            return
+        if args.command == "find" and args.active_idx is not None:
+            err("--active-idx is only available in ctx and unused modes")
+            return
+        if args.command != "find" and args.address is not None:
+            err("An address is only accepted in find mode")
+            return
         mal_addr = self.get_mal()
         if mal_addr is not None:
+            if args.command == "find":
+                err("This mode requires mallocng; the selected allocator is the legacy malloc")
+                return
             if args.active_idx is not None and not 0 <= args.active_idx < 64:
                 err("The bin index of the legacy malloc must be 0-63")
                 return
@@ -183956,7 +184039,7 @@ class MuslHeapDumpCommand(GenericCommand, BufferingOutput):
             self.print_output()
             return
 
-        if args.active_idx is not None and not 0 <= args.active_idx < 48:
+        if args.command in ("ctx", "unused") and args.active_idx is not None and not 0 <= args.active_idx < 48:
             err("The active index of mallocng must be 0-47")
             return
 
@@ -183970,10 +184053,21 @@ class MuslHeapDumpCommand(GenericCommand, BufferingOutput):
         if ctx.init_done not in (0, 1):
             err("Invalid mallocng context")
             return
-        if args.command == "ctx":
-            self.dump_ctx(ctx)
-        elif args.command == "unused":
-            self.dump_meta(ctx)
+
+        try:
+            if args.command == "ctx":
+                self.dump_ctx(ctx)
+            elif args.command == "unused":
+                self.dump_meta(ctx)
+            else:
+                match = self.find_slot(ctx, args.address)
+                if match is None:
+                    raise ValueError("No mallocng slot found for {:#x}".format(args.address))
+                meta, index = match
+                self.dump_selected_slot(meta, index)
+        except (gdb.MemoryError, ValueError) as error:
+            err(str(error))
+            return
 
         self.print_output()
         return

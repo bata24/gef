@@ -8299,13 +8299,15 @@ musl heap reusable chunks viewer (mallocng and the legacy malloc).
 ### Syntax
 
 ```text
-usage: musl-heap-dump [-h] [--malloc-context MALLOC_CONTEXT] [--mal MAL] [-i IDX] [-n] [-v] [{ctx,unused}]
+usage: musl-heap-dump [-h] [-hh] [--malloc-context MALLOC_CONTEXT] [--mal MAL] [-i IDX] [-n] [-v] [{ctx,unused,find}] [address]
 
 positional arguments:
-  {ctx,unused}          dump mode (default: unused).
+  {ctx,unused,find}     dump mode (default: unused).
+  address               an address inside the mallocng slot to find.
 
 options:
   -h, --help            show this help message and exit
+  -hh, --help-simple    show help without ASCII diagram.
   --malloc-context MALLOC_CONTEXT
                         use a specific mallocng context address.
   --mal MAL             use a specific address of mal (the legacy malloc).
@@ -8319,7 +8321,9 @@ options:
 ```text
 Supports mallocng (1.2.1~) and the legacy malloc (0.5.0~1.2.0, or 1.2.1~ built with --with-malloc=oldmalloc).
 Without the __malloc_context symbol, specify --malloc-context; x86 also has heuristic detection.
-Only groups on active[48] are listed; individually mapped large allocations are not enumerated.
+By default, unused lists only groups on active[48]; individually mapped large allocations are not enumerated.
+Use find ADDRESS to inspect the innermost slot containing its start, user address, or another address inside it.
+Find scans meta areas, so it can locate full groups and individually mapped large allocations.
 Without the mal symbol, GEF finds mal by a non-empty bin in the writable segments, or specify --mal.
 Only free chunks on bins[64] of the legacy malloc are listed.
 
