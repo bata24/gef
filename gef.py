@@ -33594,7 +33594,9 @@ class AssembleCommand(GenericCommand):
     parser.add_argument("-l", dest="overwrite_location", metavar="LOCATION",
                         type=AddressUtil.parse_address, help="write to memory address.")
     parser.add_argument("-H", "--hex", action="store_true", help="show in hex style.")
-    parser.add_argument("instruction", metavar="INSTRUCTION", nargs="+", help="the code to assemble.")
+    group = parser.add_mutually_exclusive_group(required=True)
+    group.add_argument("-i", "--infile", metavar="FILE", help="read assembly from a file.")
+    group.add_argument("instruction", metavar="INSTRUCTION", nargs="*", help="the code to assemble.")
     _syntax_ = parser.format_help()
 
     _example_ = "\n".join([
@@ -33617,6 +33619,7 @@ class AssembleCommand(GenericCommand):
         '{0:s} -a SPARC -m 32PLUS -e "add %g1, %g2, %g3"',
         '{0:s} -a SPARC -m 64 -e "add %g1, %g2, %g3"',
         '{0:s} -a S390X -m 64 -e "a %r0, 4095(%r15,%r1)"',
+        '{0:s} -i code.asm',
     ]).format(_cmdline_)
 
     @Decorator.parse_args
@@ -33672,7 +33675,15 @@ class AssembleCommand(GenericCommand):
                 self.usage()
                 return
 
-        insns = " ".join(args.instruction).strip()
+        if args.infile is not None:
+            try:
+                with open(args.infile, encoding="utf-8") as file:
+                    insns = file.read().strip()
+            except (OSError, UnicodeError) as e:
+                err("Cannot read file {:s}: {:s}".format(args.infile, str(e)))
+                return
+        else:
+            insns = " ".join(args.instruction).strip()
         if args.overwrite_location is not None:
             location = args.overwrite_location
         else:
@@ -33709,7 +33720,9 @@ class DisassembleCommand(GenericCommand):
     parser.add_argument("-a", dest="arch", help="specify the architecture. (default: current_arch.arch)")
     parser.add_argument("-m", dest="mode", help="specify the mode. (default: current_arch.mode)")
     parser.add_argument("-e", dest="big_endian", action="store_true", help="use big-endian.")
-    parser.add_argument("hex_code", metavar="HEX_CODE", nargs="+", help="the hex code to disassemble.")
+    group = parser.add_mutually_exclusive_group(required=True)
+    group.add_argument("-i", "--infile", metavar="FILE", help="read hex code from a file.")
+    group.add_argument("hex_code", metavar="HEX_CODE", nargs="*", help="the hex code to disassemble.")
     _syntax_ = parser.format_help()
 
     _example_ = "\n".join([
@@ -33741,6 +33754,7 @@ class DisassembleCommand(GenericCommand):
         '{0:s} -a ALPHA -m 64 -e "27bd000b" # capstone v6.x~',
         '{0:s} -a HPPA -m 32 -e "0fc01299" # capstone v6.x~',
         '{0:s} -a HPPA -m 64 -e "0fc01299" # capstone v6.x~',
+        '{0:s} -i code.hex',
     ]).format(_cmdline_)
 
     @Decorator.parse_args
@@ -33795,8 +33809,16 @@ class DisassembleCommand(GenericCommand):
                 self.usage()
                 return
 
-        insns = " ".join(args.hex_code)
-        insns = insns.replace(" ", "").replace("\t", "")
+        if args.infile is not None:
+            try:
+                with open(args.infile, encoding="utf-8") as file:
+                    insns = file.read()
+            except (OSError, UnicodeError) as e:
+                err("Cannot read file {:s}: {:s}".format(args.infile, str(e)))
+                return
+        else:
+            insns = " ".join(args.hex_code)
+        insns = "".join(insns.split())
         try:
             insns = binascii.unhexlify(insns)
         except binascii.Error:

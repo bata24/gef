@@ -1156,19 +1156,20 @@ Assemble inline code using Keystone.
 ### Syntax
 
 ```text
-usage: asm [-h] [-a ARCH] [-m MODE] [-e] [-s] [-l LOCATION] [-H] INSTRUCTION [INSTRUCTION ...]
+usage: asm [-h] [-a ARCH] [-m MODE] [-e] [-s] [-l LOCATION] [-H] (-i FILE | INSTRUCTION ...)
 
 positional arguments:
-  INSTRUCTION  the code to assemble.
+  INSTRUCTION        the code to assemble.
 
 options:
-  -h, --help   show this help message and exit
-  -a ARCH      specify the architecture. (default: current_arch.arch)
-  -m MODE      specify the mode. (default: current_arch.mode)
-  -e           use big-endian.
-  -s           output like shellcode style.
-  -l LOCATION  write to memory address.
-  -H, --hex    show in hex style.
+  -h, --help         show this help message and exit
+  -a ARCH            specify the architecture. (default: current_arch.arch)
+  -m MODE            specify the mode. (default: current_arch.mode)
+  -e                 use big-endian.
+  -s                 output like shellcode style.
+  -l LOCATION        write to memory address.
+  -H, --hex          show in hex style.
+  -i, --infile FILE  read assembly from a file.
 ```
 
 ### Examples
@@ -1193,6 +1194,7 @@ asm -a SPARC -m 32 -e "add %g1, %g2, %g3"
 asm -a SPARC -m 32PLUS -e "add %g1, %g2, %g3"
 asm -a SPARC -m 64 -e "add %g1, %g2, %g3"
 asm -a S390X -m 64 -e "a %r0, 4095(%r15,%r1)"
+asm -i code.asm
 ```
 
 ## `asm-list`
@@ -1286,16 +1288,17 @@ Disassemble inline code using Capstone.
 ### Syntax
 
 ```text
-usage: dasm [-h] [-a ARCH] [-m MODE] [-e] HEX_CODE [HEX_CODE ...]
+usage: dasm [-h] [-a ARCH] [-m MODE] [-e] (-i FILE | HEX_CODE ...)
 
 positional arguments:
-  HEX_CODE    the hex code to disassemble.
+  HEX_CODE           the hex code to disassemble.
 
 options:
-  -h, --help  show this help message and exit
-  -a ARCH     specify the architecture. (default: current_arch.arch)
-  -m MODE     specify the mode. (default: current_arch.mode)
-  -e          use big-endian.
+  -h, --help         show this help message and exit
+  -a ARCH            specify the architecture. (default: current_arch.arch)
+  -m MODE            specify the mode. (default: current_arch.mode)
+  -e                 use big-endian.
+  -i, --infile FILE  read hex code from a file.
 ```
 
 ### Examples
@@ -1329,6 +1332,7 @@ dasm -a ALPHA -m 64    "0b00bd27" # capstone v6.x~
 dasm -a ALPHA -m 64 -e "27bd000b" # capstone v6.x~
 dasm -a HPPA -m 32 -e "0fc01299" # capstone v6.x~
 dasm -a HPPA -m 64 -e "0fc01299" # capstone v6.x~
+dasm -i code.hex
 ```
 
 ## `ii`
