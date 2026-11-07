@@ -9338,13 +9338,13 @@ The base command to dump page tables.
 ### Syntax
 
 ```text
-usage: pagewalk [-h] {x64,x86,arm,arm64,riscv} ...
+usage: pagewalk [-h] {x64,x86,arm,arm64,riscv,mips,ppc,s390x} ...
 
 options:
   -h, --help            show this help message and exit
 
 command:
-  {x64,x86,arm,arm64,riscv}
+  {x64,x86,arm,arm64,riscv,mips,ppc,s390x}
 ```
 
 ## `pagewalk arm`
@@ -9415,6 +9415,62 @@ options:
   -q, --quiet           show result only.
 ```
 
+## `pagewalk mips`
+
+Dump Linux page tables for MIPS 32/64, whose layout is read from the TLB refill handler.
+
+- Alias: `pagewalk mips32`, `pagewalk mips64`
+
+### Syntax
+
+```text
+usage: pagewalk mips [-h] [-L] [-N] [-P] [-Q] [-f REGEX] [-v VADDR] [-p PADDR] [-t VADDR] [-D] [-c] [-n] [-q]
+
+options:
+  -h, --help            show this help message and exit
+  -L, --print-each-level
+                        show all level pagetables.
+  -N, --no-merge        do not merge similar/consecutive address.
+  -P, --sort-by-phys    sort by physical address.
+  -Q, --simple          merge with ignoring physical address consecutivness.
+  -f, --filter REGEX    filter by REGEX pattern.
+  -v, --vrange VADDR    filter by map included specified virtual address.
+  -p, --prange PADDR    filter by map included specified physical address.
+  -t, --trace VADDR     show all level pagetables only associated specified address.
+  -D, --disable-color   disable RWX colored output
+  -c, --use-cache       use previous result.
+  -n, --no-pager        do not use the pager.
+  -q, --quiet           show result only.
+```
+
+## `pagewalk ppc`
+
+Dump page tables for PowerPC 32/64.
+
+- Alias: `pagewalk ppc32`, `pagewalk ppc64`
+
+### Syntax
+
+```text
+usage: pagewalk ppc [-h] [-L] [-N] [-P] [-Q] [-f REGEX] [-v VADDR] [-p PADDR] [-t VADDR] [-D] [-c] [-n] [-q]
+
+options:
+  -h, --help            show this help message and exit
+  -L, --print-each-level
+                        show all level pagetables.
+  -N, --no-merge        do not merge similar/consecutive address.
+  -P, --sort-by-phys    sort by physical address.
+  -Q, --simple          merge with ignoring physical address consecutivness.
+  -f, --filter REGEX    filter by REGEX pattern.
+  -v, --vrange VADDR    filter by map included specified virtual address.
+  -p, --prange PADDR    filter by map included specified physical address.
+  -t, --trace VADDR     show all level pagetables only associated specified address.
+  -D, --disable-color   disable RWX colored output
+  -c, --use-cache       use previous result.
+  -n, --no-pager        do not use the pager.
+  -q, --quiet           show result only.
+```
+
 ## `pagewalk riscv`
 
 Dump page tables for RISC-V 32/64.
@@ -9425,6 +9481,34 @@ Dump page tables for RISC-V 32/64.
 
 ```text
 usage: pagewalk riscv [-h] [-L] [-N] [-P] [-Q] [-f REGEX] [-v VADDR] [-p PADDR] [-t VADDR] [-D] [-c] [-n] [-q]
+
+options:
+  -h, --help            show this help message and exit
+  -L, --print-each-level
+                        show all level pagetables.
+  -N, --no-merge        do not merge similar/consecutive address.
+  -P, --sort-by-phys    sort by physical address.
+  -Q, --simple          merge with ignoring physical address consecutivness.
+  -f, --filter REGEX    filter by REGEX pattern.
+  -v, --vrange VADDR    filter by map included specified virtual address.
+  -p, --prange PADDR    filter by map included specified physical address.
+  -t, --trace VADDR     show all level pagetables only associated specified address.
+  -D, --disable-color   disable RWX colored output
+  -c, --use-cache       use previous result.
+  -n, --no-pager        do not use the pager.
+  -q, --quiet           show result only.
+```
+
+## `pagewalk s390x`
+
+Dump page tables for s390x.
+
+- Alias: `pagewalk s390`
+
+### Syntax
+
+```text
+usage: pagewalk s390x [-h] [-L] [-N] [-P] [-Q] [-f REGEX] [-v VADDR] [-p PADDR] [-t VADDR] [-D] [-c] [-n] [-q]
 
 options:
   -h, --help            show this help message and exit

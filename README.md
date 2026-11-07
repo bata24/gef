@@ -142,6 +142,11 @@ For the usage and options of each command, see [docs/COMMANDS.md](docs/COMMANDS.
         - Secure memory scanning is also supported, and you don't have to break in the secure world (unlike ARM64).
         - ![](images/pagewalk-arm-secure.png)
     - RISCV64 / RISCV32
+    - MIPS32 / MIPS64 (Supported: Linux only, 2-Level/3-Level/4-Level, 4KB/16KB/64KB page)
+        - 64-bit PTE on MIPS32 (XPA or 36-bit physical address) is NOT supported.
+    - PPC32 / PPC64 (Supported: POWER Radix/Hash, G3/G4, e500, 44x, 4KB/64KB page)
+        - POWER Hash, and the page tables of e500 and 44x, are Linux only.
+        - G3/G4 shows BAT and the hash table, so the pages not loaded in it are not shown.
 - `kvmmap`: prints kernel memory map.
     - ![](images/kvmmap.png)
 

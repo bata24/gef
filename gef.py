@@ -13662,6 +13662,69 @@ class QemuMonitor:
     """A collection of utility functions that are related to qemu-monitor."""
 
     @staticmethod
+    def set_mips_architecture():
+        """qemu-system-mips* sends no target description, so `target remote` fails at the first register access.
+        Set the endian, the architecture and the ABI before it, from the size of the registers and CP0 Config0."""
+        if not is_remote_debug():
+            return
+        res = gdb.execute("show architecture", to_string=True)
+        if "auto" not in res or "mips" in res:
+            return
+        try:
+            match = re.search(r'received: "(.*)"', gdb.execute("maintenance packet g", to_string=True))
+            if match is None or len(match.group(1)) not in (292 * 2, 584 * 2):
+                return
+            registers = gdb.execute("monitor info registers", to_string=True)
+            match_config0 = re.search(r"CP0 Status.*Config0 0x([0-9a-f]+)", registers, re.S)
+            if match_config0 is None:
+                return
+            config0 = int(match_config0.group(1), 16)
+            endian = "little"
+            if (config0 >> 15) & 1:
+                endian = "big"
+            release = {1: "r2", 2: "r6"}.get((config0 >> 10) & 0b111, "")
+            arch = "mips:isa32" + release
+            if len(match.group(1)) == 584 * 2:
+                arch = "mips:isa64" + release
+            gdb.execute("set endian {:s}".format(endian), to_string=True)
+            gdb.execute("set architecture {:s}".format(arch), to_string=True)
+            if arch.startswith("mips:isa64"):
+                gdb.execute("set mips abi n64", to_string=True)
+        except gdb.error:
+            return
+        info("Detected {:s}, {:s} endian".format(arch, endian))
+        return
+
+    @staticmethod
+    def set_ppc_endian():
+        """qemu-system-ppc* sends the registers in the byte order of MSR.LE, but its target description does not tell it,
+        and gdb assumes that of the host. Set the endian before the first access to the registers."""
+        if not is_remote_debug() or "powerpc" not in gdb.execute("show architecture", to_string=True):
+            return
+        res = gdb.execute("show endian", to_string=True)
+        if "automatically" not in res:
+            return
+        try:
+            registers = gdb.execute("monitor info registers", to_string=True)
+        except gdb.error:
+            return
+        match = re.search(r"\bMSR ([0-9a-f]+)", registers)
+        if match is None:
+            return
+        msr = int(match.group(1), 16)
+        endian = "big"
+        if msr & 1: # LE
+            endian = "little"
+        elif "HSRR0" in registers and ((msr >> 5) & 1) == 0: # IR
+            # POWER starts in big endian with the MMU off, and a little-endian kernel switches it later.
+            return
+        if "currently {:s} endian".format(endian) in res:
+            return
+        gdb.execute("set endian {:s}".format(endian), to_string=True)
+        info("Detected {:s} endian".format(endian))
+        return
+
+    @staticmethod
     @Cache.cache_until_next(per_inferior=True)
     def get_mtree_regions(address_space=None):
         """Return the regions of `monitor info mtree -f` as a list of (start, end, attr, name).
@@ -16377,6 +16440,7 @@ class EventHandler:
     """A collection of handler functions that are called when the specified events occur."""
 
     __gef_check_once__ = True # the flag to process only once at startup
+    __gef_check_target_once__ = True # the flag to detect MIPS and PPC only once, since the first stop is too late
     __gef_check_disabled_bp__ = False # the flag to remove unnecessary breakpoints
     continue_hooks_enabled = False
     kpti_transition_active = False
@@ -16392,6 +16456,7 @@ class EventHandler:
             ("exited", EventHandler.exit_handler),
             ("gdb_exiting", EventHandler.gdb_exiting_handler),
             ("connection_removed", EventHandler.connection_removed_handler),
+            ("new_thread", EventHandler.detect_target_handler),
             ("memory_changed", EventHandler.state_changed_handler),
             ("register_changed", EventHandler.state_changed_handler),
         ]
@@ -16461,6 +16526,14 @@ class EventHandler:
     @staticmethod
     def new_thread_handler(_event):
         gdb.post_event(EventHandler.update_continue_hooks)
+        return
+
+    @staticmethod
+    def detect_target_handler(_event):
+        if EventHandler.__gef_check_target_once__:
+            EventHandler.__gef_check_target_once__ = False
+            QemuMonitor.set_mips_architecture()
+            QemuMonitor.set_ppc_endian()
         return
 
     @staticmethod
@@ -192527,7 +192600,7 @@ class AddrMap:
             return bool(self.permission & Permission.EXECUTE)
 
         def is_userland(self):
-            if is_x86() or is_riscv32() or is_riscv64():
+            if is_x86() or is_riscv32() or is_riscv64() or is_mips32() or is_mips64() or is_ppc32() or is_ppc64():
                 return "USER" in self.flags
             if is_arm32():
                 return "PL0/---" not in self.flags and self.vstart != 0xffff_0000
@@ -192540,6 +192613,8 @@ class AddrMap:
                 return "KERN" in self.flags
             if is_riscv32() or is_riscv64():
                 return "KERN" in self.flags and "KERN/---" not in self.flags
+            if is_mips32() or is_mips64() or is_ppc32() or is_ppc64():
+                return "USER" not in self.flags
             if is_arm32():
                 return "PL0/---" in self.flags or self.vstart == 0xffff_0000
             if is_arm64():
@@ -193163,7 +193238,7 @@ class PageTable(BufferingOutput):
                     color = Config.get("theme.address_writable")
                 if self.flags.startswith("RWX "):
                     color = Config.get("theme.address_rwx")
-            elif is_riscv32() or is_riscv64():
+            elif is_riscv32() or is_riscv64() or is_mips32() or is_mips64() or is_ppc32() or is_ppc64():
                 match = re.search(r"KERN/([RWX-]{3})", self.flags)
                 if match:
                     perm = match.group(1)
@@ -194056,6 +194131,1305 @@ class PageTableRiscv(PageTable):
                     self.pagewalk_L2()
                     self.pagewalk_L1()
                     self.merge_mappings()
+
+        self.flags_strings_cache = {}
+        self.save_mapping_cache()
+        self.make_out(self.mappings)
+        return
+
+
+class PageTableMips(PageTable):
+    """Dump Linux page tables for mips32/64.
+    MIPS has no architected page table, and the only definition of the layout is the TLB refill handler generated at boot.
+    Other OSes are not recognized, so only the unmapped segments are shown for them."""
+
+    mapping_cache_fields = ("mappings",)
+    levels = None
+
+    def kseg0_base(self):
+        return 0xffff_ffff_8000_0000 & ((1 << (current_arch.ptrsize * 8)) - 1)
+
+    def read_cp0(self, insn):
+        ret = ExecAsm([insn.to_bytes(4, "little")]).exec_code(check_complete=True)
+        if ret is None:
+            return None
+        return ret["reg"][current_arch.all_registers[(insn >> 16) & 0x1f]]
+
+    def run_refill_handler(self, code, ebase, start, find_swapper=False):
+        """Follow the handler from start. k1 holds the table pointer, k0 holds the table index and then the PTE.
+        If find_swapper, return k1 after the first taken branch. Otherwise, set the layout and return True.
+        Return None for an instruction that the handlers generated by Linux do not use on this path."""
+
+        def sign_extend32(value):
+            value &= 0xffff_ffff
+            if value & 0x8000_0000:
+                value |= 0xffff_ffff_0000_0000
+            return value & reg_mask
+
+        k0, k1 = 26, 27
+        reg_mask = (1 << (current_arch.ptrsize * 8)) - 1
+        regs = dict.fromkeys(range(32))
+        regs[0] = 0
+        levels = []
+        index_shift = index_mask = None
+        pte_shift = huge_mask = 0
+        has_rixi = False
+        pc = start
+        delayed = None
+        for _ in range(len(code)):
+            position = (pc - ebase) // 4
+            if not 0 <= position < len(code):
+                return None
+            insn = code[position]
+            op = insn >> 26
+            rs = (insn >> 21) & 0x1f
+            rt = (insn >> 16) & 0x1f
+            rd = (insn >> 11) & 0x1f
+            sa = (insn >> 6) & 0x1f
+            funct = insn & 0x3f
+            imm = insn & 0xffff
+            simm = u2i(imm, 16)
+            branch = None
+
+            if op == 0x10 and rs in (0, 1): # (d)mfc0
+                if rt == k0 and rd == 8: # BadVAddr
+                    regs[k0], index_shift, index_mask = "va", 0, None
+                elif rt == k0 and rd in (4, 20): # Context, XContext
+                    regs[k0], index_shift, index_mask = "ctx", 0, None
+                else:
+                    regs[rt] = self.read_cp0(insn)
+                    if regs[rt] is None:
+                        return None
+
+            elif op == 0x10 and rs in (4, 5) and rt == k0 and rd == 2: # (d)mtc0 k0, EntryLo0
+                upper = [level for level in levels if level[0] == "va"]
+                if regs[k0] != "pte" or len(upper) != len(levels) - 1 or not upper or levels[-1][0] != "ctx":
+                    return None
+                if self.pgd is None or pte_shift < 5:
+                    return None
+                entry_log2 = {4: 2, 8: 3}[current_arch.ptrsize]
+                self.levels = []
+                for _, shift, mask in upper:
+                    if mask is None:
+                        self.levels.append((shift + entry_log2, 1 << (32 - shift - entry_log2)))
+                    else:
+                        self.levels.append((shift + entry_log2, (mask >> entry_log2) + 1))
+                # build_adjust_context(): the shift of Context depends on PAGE_SHIFT and the size of pte_t
+                self.page_shift = levels[-1][1] + entry_log2 + 9
+                self.levels.append((self.page_shift, 1 << (self.levels[-1][0] - self.page_shift)))
+                self.global_shift = pte_shift
+                self.huge_mask = huge_mask
+                self.has_rixi = has_rixi
+                return True
+
+            elif op == 0 and funct in (0x00, 0x02, 0x38, 0x3a, 0x3c, 0x3e): # sll, srl/rotr, dsll, dsrl/drotr, dsll32, dsrl32
+                if rd != 0: # otherwise nop, ehb
+                    if rd not in (k0, k1):
+                        return None
+                    amount = sa
+                    if funct in (0x3c, 0x3e):
+                        amount += 32
+                    left = funct in (0x00, 0x38, 0x3c)
+                    rotate = not left and rs == 1
+                    src = regs[rt]
+                    if src in ("va", "ctx") and rd == k0:
+                        if left:
+                            index_shift -= amount
+                        else:
+                            index_shift += amount
+                    elif src in ("va", "ctx"):
+                        regs[rd] = None # the check of the high bits of the address
+                    elif src == "pte":
+                        pte_shift += amount
+                        has_rixi = has_rixi or rotate
+                    elif isinstance(src, int):
+                        width = 64
+                        if funct in (0x00, 0x02):
+                            width = 32
+                        value = src & ((1 << width) - 1)
+                        if left:
+                            value <<= amount
+                        elif rotate:
+                            value = (value >> amount) | (value << (width - amount))
+                        else:
+                            value >>= amount
+                        regs[rd] = value & ((1 << width) - 1)
+                        if width == 32:
+                            regs[rd] = sign_extend32(regs[rd])
+                    else:
+                        return None
+
+            elif op == 0 and funct in (0x21, 0x2d) and rd in (k0, k1): # addu, daddu
+                if isinstance(regs[rs], int) and isinstance(regs[rt], int):
+                    regs[rd] = (regs[rs] + regs[rt]) & reg_mask
+                    if funct == 0x21:
+                        regs[rd] = sign_extend32(regs[rd])
+                elif rd == k1 and regs[k0] in ("va", "ctx"):
+                    if isinstance(regs[k1], int):
+                        self.pgd = regs[k1]
+                    elif regs[k1] != "next":
+                        return None
+                    levels.append((regs[k0], index_shift, index_mask))
+                    regs[k1] = "slot"
+                else:
+                    return None
+
+            elif op == 0x0c and rt in (k0, k1): # andi
+                src = regs[rs]
+                if src in ("va", "ctx"):
+                    index_mask = imm
+                elif src == "pte": # build_is_huge_pte()
+                    huge_mask = imm
+                    regs[rt] = None
+                elif isinstance(src, int):
+                    regs[rt] = src & imm
+                else:
+                    return None
+
+            elif op == 0x0d and rt in (k0, k1) and isinstance(regs[rs], int): # ori
+                regs[rt] = regs[rs] | imm
+
+            elif op == 0x0f and rt in (k0, k1): # lui
+                regs[rt] = sign_extend32(imm << 16)
+
+            elif op in (0x09, 0x19) and rt in (k0, k1) and isinstance(regs[rs], int): # addiu, daddiu
+                regs[rt] = (regs[rs] + simm) & reg_mask
+                if op == 0x09:
+                    regs[rt] = sign_extend32(regs[rt])
+
+            elif op == 0x1f and funct == 0x07 and rt in (k0, k1) and isinstance(regs[rt], int): # dins
+                field = ((1 << (rd - sa + 1)) - 1) << sa
+                regs[rt] = (regs[rt] & ~field) | ((regs[rs] << sa) & field)
+
+            elif op in (0x23, 0x37) and rt in (k0, k1): # lw, ld
+                if isinstance(regs[rs], int): # pgd_current[]
+                    regs[rt] = read_int_from_memory((regs[rs] + simm) & reg_mask)
+                elif regs[rs] != "slot":
+                    return None
+                elif rt == k0 and simm == 0:
+                    regs[k0] = "pte"
+                    pte_shift = 0
+                elif rt == k1 and simm == 0:
+                    regs[k1] = "next"
+                elif rt == k1 and simm == current_arch.ptrsize and regs[k0] == "pte":
+                    regs[k1] = None
+                else:
+                    return None # pte_t of mips32 with 64-bit physical address
+
+            elif op in (0x04, 0x05) or (op == 0x01 and rt in (0, 1)): # beq, bne, bltz, bgez
+                target = (pc + 4 + (simm << 2)) & reg_mask
+                if op == 0x04 and rs == 0 and rt == 0: # b
+                    branch = target
+                elif op == 0x01 and rt == 0 and rs == k0: # bltz k0: a kernel address
+                    if find_swapper:
+                        branch = target
+                    else:
+                        self.vmalloc_path = target
+                elif op == 0x05 and rs == k1 and regs[k1] is None and not find_swapper: # bnez k1: out of xuseg
+                    self.vmalloc_path = target
+
+            else:
+                return None
+
+            if delayed is not None:
+                if find_swapper:
+                    return regs[k1]
+                pc = delayed
+            else:
+                pc = (pc + 4) & reg_mask
+            delayed = branch
+        return None
+
+    def parse_refill_handler(self):
+        """Must be called in virtual memory mode, unlike pagewalk()."""
+        self.pgd = self.swapper_pgd = self.vmalloc_path = None
+        self.kseg0_cca = None
+        pc = current_arch.pc
+        sr = get_register("$sr")
+        try:
+            is_after_wait = u32(read_memory(pc - 4, 4)) == 0x4200_0020
+        except gdb.MemoryError:
+            is_after_wait = False
+
+        # gdb cannot access kseg0 in user mode, and cannot write to $pc if its page is not in the TLB at the moment.
+        # So work at the unused cache error vector with Status.EXL, which means kernel mode, no interrupts, and EPC left as is.
+        # Setting only Status.CU0 hangs qemu-system at (d)mfc0.
+        gdb.newest_frame().select()
+        gdb.execute("set $pc = {:#x}".format(self.kseg0_base() + 0x100), to_string=True)
+        try:
+            # A CPU halted by `wait` needs an enabled interrupt to wake up.
+            if is_after_wait:
+                ExecAsm([current_arch.nop_insn]).exec_code()
+            gdb.execute("set $sr = {:#x}".format(sr | 0b10), to_string=True)
+            return self.parse_refill_handler_in_kernel_mode()
+        finally:
+            gdb.newest_frame().select()
+            gdb.execute("set $pc = {:#x}".format(pc), to_string=True)
+            gdb.execute("set $sr = {:#x}".format(sr), to_string=True)
+
+    def parse_refill_handler_in_kernel_mode(self):
+        config0 = self.read_cp0(0x401a_8000) # mfc0 k0, $16, 0
+        if config0 is None:
+            return False
+        self.kseg0_cca = config0 & 0b111
+
+        # qemu-system-mips64 can run a MIPS32 CPU, which raises an exception at dmfc0.
+        if is_mips64() and ((config0 >> 13) & 0b11) == 0:
+            return False
+
+        # EBase exists since Release 2
+        ebase = self.kseg0_base()
+        if (config0 >> 10) & 0b111:
+            if is_mips64():
+                ebase = self.read_cp0(0x403a_7801) # dmfc0 k0, $15, 1
+            else:
+                ebase = self.read_cp0(0x401a_7801) # mfc0 k0, $15, 1
+            if ebase is None:
+                return False
+            ebase &= ~0xfff
+        self.ebase = ebase
+
+        try:
+            code = slice_unpack(read_memory(ebase, 0x200), 4)
+        except gdb.MemoryError:
+            return False
+
+        vector = ebase
+        if is_mips64():
+            vector += 0x80
+        if not self.run_refill_handler(code, ebase, vector):
+            return False
+        if self.vmalloc_path is not None:
+            self.swapper_pgd = self.run_refill_handler(code, ebase, self.vmalloc_path, find_swapper=True)
+            if self.swapper_pgd is None:
+                self.levels = None
+                return False
+        return True
+
+    def to_phys(self, vaddr):
+        """Page-table pointers are unmapped kernel addresses."""
+        kseg0 = self.kseg0_base()
+        if kseg0 <= vaddr < kseg0 + 0x4000_0000:
+            return vaddr & 0x1fff_ffff
+        if is_mips64() and vaddr >> 62 == 0b10: # xkphys
+            self.xkphys.add(vaddr >> 59)
+            return vaddr & ((1 << 59) - 1)
+        return None
+
+    def offset_to_va(self, offset, in_swapper):
+        if not in_swapper:
+            return offset
+        # On mips64, kernel addresses use only their low bits as the index: xkseg for vmalloc,
+        # and the last 4GB of the table for modules and fixmap in the compatibility segments.
+        shift, count = self.levels[0]
+        if offset >= (count << shift) - (1 << 32):
+            return 0xffff_ffff_0000_0000 | (offset & 0xffff_ffff)
+        return 0xc000_0000_0000_0000 | offset
+
+    def walk_table(self, level, table, offset, in_swapper):
+        """Return the number of mappings under the table.
+        Unused entries link to the same invalid_*_table, so an empty table is read only once."""
+        if table in self.empty_tables:
+            return 0
+        shift, count = self.levels[level]
+        is_last = level == len(self.levels) - 1
+        is_huge_level = level == len(self.levels) - 2
+        size = 1 << shift
+        found = 0
+        entries = slice_unpack(self.read_memory(table, count * current_arch.ptrsize), current_arch.ptrsize)
+        for i, entry in enumerate(entries):
+            if entry == 0:
+                continue
+            # pgd_alloc() copies the kernel part of swapper_pg_dir beyond TASK_SIZE64. They are shown as kernel addresses.
+            if level == 0 and not in_swapper and i < len(self.swapper_entries) and entry == self.swapper_entries[i]:
+                continue
+            new_offset = offset + (i << shift)
+            # kseg0 and kseg1 never reach the refill handler
+            if is_mips32() and 0x8000_0000 <= new_offset < 0xc000_0000:
+                continue
+            new_va = self.offset_to_va(new_offset, in_swapper)
+            addr = table + i * current_arch.ptrsize
+
+            if is_last or (is_huge_level and entry & self.huge_mask):
+                if (entry & 1) == 0: # _PAGE_PRESENT
+                    continue
+                self.leaves.append((new_va, entry, size, in_swapper))
+                found += 1
+                if size >= 0x10_0000:
+                    entry_type = "{:d}MB-PAGE".format(size >> 20)
+                else:
+                    entry_type = "{:d}KB-PAGE".format(size >> 10)
+                is_leaf = True
+            else:
+                next_table = self.to_phys(entry)
+                if next_table is None:
+                    continue
+                below = self.walk_table(level + 1, next_table, new_offset, in_swapper)
+                if below == 0:
+                    continue
+                found += below
+                entry_type = "TABLE"
+                is_leaf = False
+
+            self.level_counts[level] += 1
+            if self.args.print_each_level:
+                self.level_lines[level].append((addr, entry, new_va, new_va + size, entry_type, is_leaf, in_swapper))
+        if found == 0:
+            self.empty_tables.add(table)
+        return found
+
+    def detect_pte_layout(self):
+        """The software bits are not in the refill handler, and their positions depend on the kernel config:
+            CCC D V G RI XI [S H] M A W P     CONFIG_CPU_HAS_RIXI (RI and XI are unused if the CPU does not have them)
+            CCC D V G [S H] M A W R P         otherwise
+        """
+        g = self.global_shift
+        self.write_shift = 1
+        self.read_shift = g - 1
+        self.read_inverted = True
+        if self.has_rixi:
+            return
+
+        # D is set only with M
+        dirty = [pte for _, pte, _, _ in self.leaves if (pte >> (g + 2)) & 1]
+        if dirty and all((pte >> 4) & 1 for pte in dirty):
+            self.write_shift = 2
+            self.read_shift = 1
+            # Bit 1 was _PAGE_READ on old kernels and is _PAGE_NO_READ now. V is set only on readable pages.
+            self.read_inverted = not any((pte >> (g + 1)) & 1 and (pte >> 1) & 1 for _, pte, _, _ in self.leaves)
+        return
+
+    def format_flags(self, pte, in_swapper, va):
+        g = self.global_shift
+        low_bits = pte & ((1 << (g + 6)) - 1)
+        is_user = not in_swapper and (is_mips64() or va < 0x8000_0000)
+        is_huge = (pte & self.huge_mask) != 0
+        flag_info_key = (low_bits, is_user, is_huge)
+        x = self.flags_strings_cache.get(flag_info_key, None)
+        if x is not None:
+            return x
+
+        readable = ((pte >> self.read_shift) & 1) != self.read_inverted
+        executable = readable
+        if self.has_rixi:
+            executable = ((pte >> (g - 2)) & 1) == 0
+        perm = ""
+        perm += ["-", "R"][readable]
+        perm += ["-", "W"][(pte >> self.write_shift) & 1]
+        perm += ["-", "X"][executable]
+
+        flags = []
+        if is_user:
+            flags.append("USER/" + perm)
+        flags.append("KERN/" + perm)
+        if not self.args.simple:
+            if (pte >> (self.write_shift + 1)) & 1:
+                flags.append("ACCESSED")
+            if (pte >> (self.write_shift + 2)) & 1:
+                flags.append("MODIFIED")
+            if (pte >> (g + 1)) & 1:
+                flags.append("VALID")
+            if (pte >> (g + 2)) & 1:
+                flags.append("DIRTY")
+            if (pte >> g) & 1:
+                flags.append("GLOBAL")
+            if is_huge:
+                flags.append("HUGE")
+            flags.append("CCA={:d}".format((pte >> (g + 3)) & 0b111))
+
+        flag_string = " ".join(flags)
+        self.flags_strings_cache[flag_info_key] = flag_string
+        return flag_string
+
+    def add_unmapped_segments(self):
+        def make_entry(vaddr, size, cca):
+            flags = "KERN/RWX UNMAPPED"
+            if not self.args.simple and cca is not None:
+                flags += " CCA={:d}".format(cca)
+            return PageTable.Entry(vaddr, 0, size, 1, flags)
+
+        kseg0 = self.kseg0_base()
+        self.PTE.append(make_entry(kseg0, 0x2000_0000, self.kseg0_cca))
+        self.PTE.append(make_entry(kseg0 + 0x2000_0000, 0x2000_0000, 2))
+        # All CCAs are aliases, so only those used by the kernel are shown.
+        for top in sorted(self.xkphys):
+            self.PTE.append(make_entry(top << 59, 1 << 59, top & 0b111))
+        return
+
+    def pagewalk(self, args):
+        self.prepare_pagewalk(args)
+        self.PTE = []
+        self.xkphys = set()
+        self.flags_strings_cache = {}
+
+        if self.levels is None:
+            self.warn_add_out("Unsupported TLB refill handler (not Linux, or not initialized yet)")
+            self.add_unmapped_segments()
+            self.mappings = self.PTE
+            self.merge_mappings()
+            self.make_out(self.mappings)
+            return
+
+        self.quiet_info_add_out("TLB refill handler base: {:#x}".format(self.ebase))
+        self.quiet_info_add_out("PGD: {:#x}".format(self.pgd))
+        if self.swapper_pgd is not None:
+            self.quiet_info_add_out("swapper_pg_dir: {:#x}".format(self.swapper_pgd))
+        self.quiet_info_add_out("Page size: {:#x}, Levels: {:d}".format(1 << self.page_shift, len(self.levels)))
+
+        if not self.use_cached_mapping("mappings", pgd=self.pgd):
+            self.mappings = None
+            self.leaves = []
+            self.empty_tables = set()
+            self.level_counts = [0] * len(self.levels)
+            self.level_lines = [[] for _ in self.levels]
+
+            pgd_phys = self.to_phys(self.pgd)
+            swapper_phys = None
+            if self.swapper_pgd is not None:
+                swapper_phys = self.to_phys(self.swapper_pgd)
+            if pgd_phys is None:
+                self.err_add_out("Unexpected PGD address")
+                return
+            # On mips64, user addresses use the current PGD and kernel addresses use swapper_pg_dir.
+            self.swapper_entries = []
+            if swapper_phys is not None:
+                size = self.levels[0][1] * current_arch.ptrsize
+                self.swapper_entries = slice_unpack(self.read_memory(swapper_phys, size), current_arch.ptrsize)
+            if pgd_phys != swapper_phys:
+                self.walk_table(0, pgd_phys, 0, False)
+            if swapper_phys is not None:
+                self.walk_table(0, swapper_phys, 0, True)
+
+            self.detect_pte_layout()
+            for level, lines in enumerate(self.level_lines):
+                self.quiet_add_out(titlify("Level {:d} Entry".format(len(self.levels) - level)))
+                for addr, entry, va, va_end, entry_type, is_leaf, in_swapper in lines:
+                    if self.is_not_trace_target(va, va_end):
+                        continue
+                    flags = ""
+                    if is_leaf:
+                        flags = self.format_flags(entry, in_swapper, va)
+                    fmt = "{:#018x}: {:#018x} (virt:{:#018x}-{:#018x},type:{:s}) {:s}"
+                    line = fmt.format(addr, entry, va, va_end, entry_type, flags).rstrip()
+                    if self.is_not_filter_target(line):
+                        continue
+                    self.out.append(line)
+                if self.args.print_each_level:
+                    self.out.append(titlify(""))
+                self.quiet_info_add_out("L{:d} Entry ({:#x}): {:d}".format(
+                    len(self.levels) - level, 1 << self.levels[level][0], self.level_counts[level],
+                ))
+
+            for va, pte, size, in_swapper in self.leaves:
+                paddr = (pte >> (self.global_shift + 6)) << 12
+                self.PTE.append(PageTable.Entry(va, paddr, size, 1, self.format_flags(pte, in_swapper, va)))
+            self.add_unmapped_segments()
+
+            self.quiet_add_out(titlify("Total"))
+            self.quiet_info_add_out("PT Entry (Total): {:d}".format(len(self.PTE)))
+            self.mappings = self.PTE
+            self.merge_mappings()
+
+        self.flags_strings_cache = {}
+        self.save_mapping_cache()
+        self.make_out(self.mappings)
+        return
+
+
+class PageTablePpc(PageTable):
+    """Dump pagetable for ppc32/64.
+    The MMU differs by CPU family, and registers tell which one it is rather than the architecture of gdb,
+    because qemu-system-ppc64 can also run 32-bit CPUs.
+    - Book3S 64-bit (POWER): radix tree with process table, or hash table with SLB.
+      The hash table of pseries is outside the guest, so Linux page tables are used instead.
+    - Book3S 32-bit (G3, G4): BAT and hash table.
+    - Book E (e500, 44x): TLB. It has no architected page table, so Linux page tables are also used if they are found,
+      whose layout is read from the data TLB error handler.
+    """
+
+    mapping_cache_fields = ("mappings",)
+
+    LINEAR_BASE = 0xc000_0000_0000_0000
+    RPN_MASK = 0x001f_ffff_ffff_f000 # _PAGE_PA_MAX is 53
+    NLB_MASK = 0x001f_ffff_ffff_ff00
+
+    def read_be64(self, paddr, count=1):
+        """Page tables and process tables are always big-endian."""
+        return struct.unpack(">{:d}Q".format(count), self.read_memory(paddr, count * 8))
+
+    def in_ram(self, paddr):
+        return any(start <= paddr < end for start, end in self.ram_ranges)
+
+    def read_tlb_dump(self):
+        """`info tlb` shows the CPU selected in the monitor, not the thread selected in gdb."""
+        gdb.execute("monitor cpu {:d}".format(gdb.selected_thread().num - 1), to_string=True)
+        try:
+            return gdb.execute("monitor info tlb", to_string=True)
+        finally:
+            gdb.execute("monitor cpu 0", to_string=True)
+
+    def add_level_line(self, level, addr, entry, va, va_end, entry_type, flags=""):
+        self.level_counts[level] = self.level_counts.get(level, 0) + 1
+        if self.args.print_each_level:
+            self.level_lines.setdefault(level, []).append((addr, entry, va, va_end, entry_type, flags))
+        return
+
+    def add_leaf(self, level, addr, entry, va, paddr, size, flags):
+        if size >= 0x4000_0000:
+            entry_type = "{:d}GB-PAGE".format(size >> 30)
+        elif size >= 0x10_0000:
+            entry_type = "{:d}MB-PAGE".format(size >> 20)
+        else:
+            entry_type = "{:d}KB-PAGE".format(size >> 10)
+        self.PTE.append(PageTable.Entry(va, paddr, size, 1, flags))
+        self.add_level_line(level, addr, entry, va, va + size, entry_type, flags)
+        return
+
+    def make_level_out(self):
+        for level in sorted(self.level_counts, reverse=True):
+            self.quiet_add_out(titlify("Level {:d} Entry".format(level)))
+            for addr, entry, va, va_end, entry_type, flags in self.level_lines.get(level, []):
+                if self.is_not_trace_target(va, va_end):
+                    continue
+                fmt = "{:#018x}: {:#018x} (virt:{:#018x}-{:#018x},type:{:s}) {:s}"
+                line = fmt.format(addr, entry, va, va_end, entry_type, flags).rstrip()
+                if self.is_not_filter_target(line):
+                    continue
+                self.out.append(line)
+            if self.args.print_each_level:
+                self.out.append(titlify(""))
+            self.quiet_info_add_out("Valid entries: {:d}".format(self.level_counts[level]))
+        return
+
+    def finish_pagewalk(self):
+        self.make_level_out()
+        self.quiet_add_out(titlify("Total"))
+        self.quiet_info_add_out("PT Entry (Total): {:d}".format(len(self.PTE)))
+        self.mappings = self.PTE
+        self.merge_mappings()
+        return
+
+    def format_flags_book3s64(self, pte):
+        flag_info_key = pte & 0x1bf
+        x = self.flags_strings_cache.get(flag_info_key, None)
+        if x is not None:
+            return x
+
+        perm = ""
+        perm += ["-", "R"][(pte >> 2) & 1]
+        perm += ["-", "W"][(pte >> 1) & 1]
+        perm += ["-", "X"][pte & 1]
+
+        flags = []
+        if (pte >> 3) & 1: # privileged
+            flags.append("KERN/" + perm)
+        else:
+            kern_perm = ""
+            kern_perm += ["-", "R"][perm[0] == "R" and not self.kern_deny_read]
+            kern_perm += ["-", "W"][perm[1] == "W" and not self.kern_deny_write]
+            kern_perm += ["-", "X"][perm[2] == "X" and not self.kern_deny_exec]
+            flags.append("USER/" + perm)
+            flags.append("KERN/" + kern_perm)
+
+        if not self.args.simple:
+            if (pte >> 8) & 1:
+                flags.append("ACCESSED")
+            if (pte >> 7) & 1:
+                flags.append("DIRTY")
+            attr = ["", "SAO", "NON-IDEMPOTENT", "TOLERANT"][(pte >> 4) & 0b11]
+            if attr:
+                flags.append(attr)
+
+        flag_string = " ".join(flags)
+        self.flags_strings_cache[flag_info_key] = flag_string
+        return flag_string
+
+    def walk_book3s64(self, table, bits, shift, va, level, layout=None):
+        """Each of 1 << bits entries of the table maps 1 << shift bytes.
+        layout is the size of the following tables, which radix has in NLS of each entry instead."""
+        try:
+            entries = self.read_be64(table, 1 << bits)
+        except gdb.MemoryError:
+            return
+        for i, entry in enumerate(entries):
+            new_va = va | (i << shift)
+            size = 1 << shift
+            addr = table + i * 8
+            if (entry >> 62) & 1: # leaf
+                if entry >> 63: # hash uses V only at the leaves, radix uses it at all levels
+                    paddr = entry & self.RPN_MASK & ~(size - 1)
+                    self.add_leaf(level, addr, entry, new_va, paddr, size, self.format_flags_book3s64(entry))
+                continue
+            if layout is None:
+                if entry >> 63 == 0:
+                    continue
+                next_bits = entry & 0x1f
+                next_layout = None
+            else:
+                if entry == 0 or not layout:
+                    continue
+                next_bits = layout[0]
+                next_layout = layout[1:]
+            next_shift = shift - next_bits
+            if next_bits < 5 or next_shift < 12:
+                continue
+            self.add_level_line(level, addr, entry, new_va, new_va + size, "TABLE")
+            self.walk_book3s64(entry & self.NLB_MASK, next_bits, next_shift, new_va, level - 1, next_layout)
+        return
+
+    def parse_process_table_entry(self, entry):
+        """Return (root table, log2 entries of the root table, the shift of the root table) or None."""
+        rts = (((entry >> 61) & 0b11) << 3) | ((entry >> 5) & 0b111)
+        rpds = entry & 0x1f
+        root = entry & self.NLB_MASK
+        if rts != 52 - 31 or rpds < 5 or root & ((8 << rpds) - 1) or not self.in_ram(root):
+            return None
+        return root, rpds, 52 - rpds
+
+    def translate_radix(self, entry, va):
+        parsed = self.parse_process_table_entry(entry)
+        if parsed is None:
+            return None
+        table, bits, shift = parsed
+        while True:
+            try:
+                pde, = self.read_be64(table + ((va >> shift) & ((1 << bits) - 1)) * 8)
+            except gdb.MemoryError:
+                return None
+            if pde >> 63 == 0:
+                return None
+            if (pde >> 62) & 1:
+                size = 1 << shift
+                return (pde & self.RPN_MASK & ~(size - 1)) | (va & (size - 1))
+            table = pde & self.NLB_MASK
+            bits = pde & 0x1f
+            shift -= bits
+            if bits < 5 or shift < 12:
+                return None
+
+    def find_process_table(self):
+        """The partition table has it, but on pseries it is held by the hypervisor and the guest cannot read it.
+        Linux aligns the process table to its size of 1MB or more, and the entry of PID 0 maps the PACA.
+        Linux allocates it from the top of the memory, so look from there."""
+        ptcr = get_register("$ptcr")
+        if ptcr:
+            lpid = 0
+            if ((get_register("$msr") >> 60) & 1) == 0: # HV
+                lpid = get_register("$lpidr")
+            _, prtb = self.read_be64((ptcr & self.RPN_MASK) + lpid * 16, 2)
+            return prtb & self.RPN_MASK
+
+        paca = get_register("$sprg1")
+        for start, end in reversed(self.ram_ranges):
+            for base in reversed(range(start, end, 0x10_0000)):
+                entry0, entry1 = self.read_be64(base, 2)
+                if entry1 != 0 or self.parse_process_table_entry(entry0) is None:
+                    continue
+                if paca >> 60 != 0xc or self.translate_radix(entry0, paca) == paca & 0x0fff_ffff_ffff_ffff:
+                    return base
+        return None
+
+    def pagewalk_radix(self):
+        pid = get_register("$pidr")
+        # key 0 of AMR and IAMR for the access of the kernel to the pages of the user
+        self.kern_deny_write = get_register("$amr") >> 63
+        self.kern_deny_read = (get_register("$amr") >> 62) & 1
+        self.kern_deny_exec = (get_register("$iamr") >> 62) & 1
+
+        prtb = self.find_process_table()
+        if prtb is None:
+            self.err_add_out("Could not find the process table")
+            self.mappings = None
+            return
+        self.quiet_info_add_out("MMU: Radix, Process table: {:#x}, PID: {:d}".format(prtb, pid))
+
+        if self.use_cached_mapping("mappings", prtb=prtb, pid=pid):
+            return
+
+        # If PID is 0, quadrant 0 is an alias of the kernel.
+        targets = [(0, self.LINEAR_BASE)]
+        if pid != 0:
+            targets.append((pid, 0))
+        for target_pid, base in targets:
+            entry, = self.read_be64(prtb + target_pid * 16)
+            parsed = self.parse_process_table_entry(entry)
+            if parsed is None:
+                self.warn_add_out("Invalid process table entry for PID {:d}: {:#x}".format(target_pid, entry))
+                continue
+            root, bits, shift = parsed
+            self.quiet_info_add_out("PID {:d}: root table {:#x}".format(target_pid, root))
+            self.walk_book3s64(root, bits, shift, base, 4)
+        self.finish_pagewalk()
+        return
+
+    def linear_to_phys(self, vaddr):
+        if vaddr >> 60 != 0xc:
+            return None
+        paddr = vaddr & 0x0fff_ffff_ffff_ffff
+        if not self.in_ram(paddr):
+            return None
+        return paddr
+
+    def find_hash_leaf(self, table, bits, layout, level=0):
+        """Follow the first entry of each level down to a PTE and return it, or None if it is not a page table.
+        Other data can look like a single table, so all levels are needed."""
+        leaf = None
+        try:
+            entries = self.read_be64(table, 1 << bits)
+        except gdb.MemoryError:
+            return None
+        for entry in entries:
+            if entry == 0:
+                continue
+            if (entry >> 62) & 1:
+                if level == 0:
+                    return None
+                if leaf is None and entry >> 63:
+                    leaf = entry
+                continue
+            if not layout or entry & 0xff or not self.in_ram(entry & self.NLB_MASK):
+                return None
+            if leaf is None:
+                leaf = self.find_hash_leaf(entry & self.NLB_MASK, layout[0], layout[1:], level + 1)
+                if leaf is None:
+                    return None
+        return leaf
+
+    def read_members(self, paddr, size):
+        """Read the members of a kernel structure, which may be at the end of the memory."""
+        for start, end in self.ram_ranges:
+            if start <= paddr < end:
+                size = min(size, end - paddr)
+        return slice_unpack(self.read_memory(paddr, size), 8)
+
+    def find_current_task(self, paca):
+        """paca->__current is followed by paca->kstack, which is in the stack of the task."""
+        members = self.read_members(paca, 0x1000)
+        for current, kstack in zip(members, members[1:]):
+            task = self.linear_to_phys(current)
+            if task is None or self.linear_to_phys(kstack) is None:
+                continue
+            for stack in self.read_members(task, 0x200):
+                if self.linear_to_phys(stack) is not None and stack & 0x3fff == 0 and stack <= kstack < stack + 0x1_0000:
+                    return task
+        return None
+
+    def find_active_mm_pgd(self, task, bits, layout):
+        """task->mm is followed by task->active_mm, and mm is NULL if the task is a kernel thread."""
+        members = self.read_members(task, 0x2000)
+        for mm, active_mm in zip(members, members[1:]):
+            mm_phys = self.linear_to_phys(active_mm)
+            if mm_phys is None or mm not in (0, active_mm) or task <= mm_phys < task + 0x2000:
+                continue
+            for pgd in self.read_members(mm_phys, 0x100):
+                pgd_phys = self.linear_to_phys(pgd)
+                if pgd_phys is not None and pgd_phys & 0x7ff == 0 and self.find_hash_leaf(pgd_phys, bits, layout) is not None:
+                    return pgd_phys
+        return None
+
+    def find_swapper_pg_dir(self, paca, page_shift, bits, layout):
+        """swapper_pg_dir is in the bss of the kernel image, which is just below the PACA, and maps privileged pages."""
+        for table in reversed(range(0, min(paca, 0x1000_0000), 1 << page_shift)):
+            leaf = self.find_hash_leaf(table, bits, layout)
+            if leaf is not None and (leaf >> 3) & 1:
+                return table
+        return None
+
+    def pagewalk_hash(self):
+        self.kern_deny_write = self.kern_deny_read = self.kern_deny_exec = 0
+
+        slb = []
+        for esid, vsid in re.findall(r"(?m)^\d+\s+(0x[0-9a-f]+)\s+(0x[0-9a-f]+)", self.read_tlb_dump()):
+            if int(esid, 16) & 0x800_0000: # V
+                slb.append((int(esid, 16) & ~0xfff_ffff, int(vsid, 16)))
+        self.quiet_info_add_out("MMU: Hash")
+
+        # vmalloc is at 0xd000000000000000 until v5.0
+        kernel_base = self.LINEAR_BASE
+        if any(esid >> 60 == 0xd for esid, _ in slb):
+            kernel_base = 0xd000_0000_0000_0000
+
+        page_shift = 12
+        for esid, vsid in slb:
+            # The linear map and vmemmap have their own page sizes.
+            if esid >> 60 in (0xc, 0xf) and esid >> 48 not in (0xc008, 0xc009, 0xc00a, 0xc00b):
+                continue
+            if (vsid & 0x110) == 0x110: # L=1, LP=01
+                page_shift = 16
+        layout = (9, 7, 9) # the sizes of the tables below PGD
+        bits = 9
+        if page_shift == 16:
+            layout = (10, 10, 8)
+            bits = 8
+        shift = page_shift + sum(layout)
+
+        self.quiet_info_add_out("Page size: {:#x}".format(1 << page_shift))
+        paca = self.linear_to_phys(get_register("$sprg1"))
+        if paca is None:
+            self.warn_add_out("Could not find the PACA (not Linux, or not initialized yet)")
+            self.mappings = None
+            return
+
+        task = self.find_current_task(paca)
+        pgd = None
+        if task is not None:
+            pgd = self.find_active_mm_pgd(task, bits, layout)
+        swapper = self.find_swapper_pg_dir(paca, page_shift, bits, layout)
+        if pgd is None:
+            self.warn_add_out("Could not find the PGD of the current task")
+        if swapper is None:
+            self.warn_add_out("Could not find swapper_pg_dir")
+
+        if self.use_cached_mapping("mappings", pgd=pgd or 0, swapper=swapper or 0):
+            return
+
+        if pgd is not None and pgd != swapper:
+            self.quiet_info_add_out("PGD: {:#x}".format(pgd))
+            self.walk_book3s64(pgd, bits, shift, 0, 4, layout)
+        if swapper is not None:
+            self.quiet_info_add_out("swapper_pg_dir: {:#x}".format(swapper))
+            self.walk_book3s64(swapper, bits, shift, kernel_base, 4, layout)
+
+        # The linear map is bolted to the hash table without page tables.
+        for start, end in self.ram_ranges:
+            self.PTE.append(PageTable.Entry(self.LINEAR_BASE + start, start, end - start, 1, "KERN/??? LINEAR"))
+        self.finish_pagewalk()
+
+        pc = current_arch.pc
+        if pc >> 60 == 0 and not any(entry.vaddr <= pc < entry.vaddr + entry.total_size for entry in self.PTE):
+            self.warn_add_out("$pc is not found in the page tables (unsupported layout?)")
+        return
+
+    def run_move_from(self, insns):
+        """Run the instructions like `mfspr r0, X`, each with its own target register, and return the values."""
+        codes = []
+        for i, insn in enumerate(insns):
+            codes.append((insn | ((i + 3) << 21)).to_bytes(4, "little"))
+        ret = ExecAsm(codes, step=len(codes)).exec_code(check_complete=True)
+        if ret is None:
+            return None
+        return [ret["reg"]["$r{:d}".format(i + 3)] for i in range(len(insns))]
+
+    def read_book3s32_registers(self):
+        """Segment registers are not in the registers of gdb, and BAT registers are always 0 in them.
+        Must be called in virtual memory mode, unlike pagewalk().
+        These instructions are privileged, so MSR.PR is cleared while running them."""
+        self.segment_registers = None
+        self.bat_registers = {}
+        if get_register("$ibat0u") is None:
+            return
+        msr = get_register("$msr")
+        is_user = (msr >> 14) & 1
+        if is_user:
+            gdb.execute("set $msr = {:#x}".format(msr & ~(1 << 14)), to_string=True)
+        try:
+            self.segment_registers = self.run_move_from([0x7c00_04a6 | (i << 16) for i in range(16)]) # mfsr
+            # IBATn at 528, DBATn at 536, and IBATn at 560, DBATn at 568 if n >= 4
+            for kind, low, high in (("i", 528, 560), ("d", 536, 568)):
+                sprs = {}
+                for i in range(8):
+                    if get_register("${:s}bat{:d}u".format(kind, i)) is None:
+                        break
+                    if i < 4:
+                        sprs[i] = low + i * 2
+                    else:
+                        sprs[i] = high + (i - 4) * 2
+                insns = []
+                for spr in sprs.values():
+                    for n in (spr, spr + 1):
+                        insns.append(0x7c00_02a6 | ((n & 0x1f) << 16) | ((n >> 5) << 11)) # mfspr
+                values = self.run_move_from(insns)
+                if values is not None:
+                    for position, i in enumerate(sprs):
+                        self.bat_registers[(kind, i)] = values[position * 2:position * 2 + 2]
+        finally:
+            if is_user:
+                gdb.execute("set $msr = {:#x}".format(msr), to_string=True)
+        return
+
+    def format_flags_book3s32(self, user_perm, kern_perm, extra):
+        flags = []
+        if user_perm != "---":
+            flags.append("USER/" + user_perm)
+        flags.append("KERN/" + kern_perm)
+        if not self.args.simple:
+            flags += extra
+        return " ".join(flags)
+
+    def add_bat_entries(self):
+        bats = {}
+        for (kind, _), (upper, lower) in self.bat_registers.items():
+            vs, vp = (upper >> 1) & 1, upper & 1
+            if not vs and not vp:
+                continue
+            block = (upper >> 2) & 0x7ff
+            va = upper & 0xfffe_0000 & ~(block << 17)
+            pa = lower & 0xfffe_0000 & ~(block << 17)
+            size = (block + 1) << 17
+            pp = lower & 0b11
+            perm = set()
+            if pp:
+                perm.add("R")
+                if kind == "d" and pp == 2:
+                    perm.add("W")
+                if kind == "i":
+                    perm.add("X")
+            bat = bats.setdefault((va, pa, size), {"user": set(), "kern": set(), "wimg": 0})
+            if vs:
+                bat["kern"] |= perm
+            if vp:
+                bat["user"] |= perm
+            bat["wimg"] |= (lower >> 3) & 0xf
+
+        def to_str(perm):
+            return "".join(c if c in perm else "-" for c in "RWX")
+
+        for (va, pa, size), bat in sorted(bats.items()):
+            extra = ["BAT", "WIMG={:04b}".format(bat["wimg"])]
+            flags = self.format_flags_book3s32(to_str(bat["user"]), to_str(bat["kern"]), extra)
+            self.PTE.append(PageTable.Entry(va, pa, size, 1, flags))
+        return
+
+    def walk_book3s32_htab(self, htab, groups):
+        def perm_of(key, pp, can_execute):
+            if key == 0:
+                perm = ["RW", "RW", "RW", "R-"][pp]
+            else:
+                perm = ["--", "R-", "RW", "R-"][pp]
+            if can_execute and perm[0] == "R":
+                return perm + "X"
+            return perm + "-"
+
+        segments = {}
+        for i, sr in enumerate(self.segment_registers):
+            if sr >> 31 == 0: # T
+                segments.setdefault(sr & 0xff_ffff, []).append((i, sr))
+
+        words = struct.unpack(">{:d}I".format(groups * 16), self.read_memory(htab, groups * 64))
+        for i in range(0, len(words), 2):
+            word0, word1 = words[i], words[i + 1]
+            if word0 >> 31 == 0: # V
+                continue
+            vsid = (word0 >> 7) & 0xff_ffff
+            if vsid not in segments: # another process
+                continue
+            group = i // 16
+            if (word0 >> 6) & 1: # H
+                group = ~group & (groups - 1)
+            page_index = ((word0 & 0x3f) << 10) | ((group ^ vsid) & 0x3ff)
+            pp = word1 & 0b11
+            wimg = (word1 >> 3) & 0xf
+            extra = []
+            if (word1 >> 8) & 1:
+                extra.append("ACCESSED")
+            if (word1 >> 7) & 1:
+                extra.append("DIRTY")
+            extra.append("WIMG={:04b}".format(wimg))
+            for segment, sr in segments[vsid]:
+                can_execute = ((sr >> 28) & 1) == 0 and (wimg & 1) == 0 # N, G
+                kern_perm = perm_of((sr >> 30) & 1, pp, can_execute)
+                user_perm = perm_of((sr >> 29) & 1, pp, can_execute)
+                flags = self.format_flags_book3s32(user_perm, kern_perm, extra)
+                va = (segment << 28) | (page_index << 12)
+                self.add_leaf(1, htab + i * 4, (word0 << 32) | word1, va, word1 & 0xffff_f000, 0x1000, flags)
+        return
+
+    def pagewalk_book3s32(self):
+        if self.segment_registers is None:
+            self.err_add_out("Could not read segment registers")
+            self.mappings = None
+            return
+        sdr1 = get_register("$sdr1")
+        htab = sdr1 & 0xffff_0000
+        groups = ((sdr1 & 0x1ff) + 1) << 10
+        self.quiet_info_add_out("MMU: Book3S 32-bit, SDR1: {:#x} (HTAB: {:#x}, Size: {:#x})".format(sdr1, htab, groups * 64))
+        for i, sr in enumerate(self.segment_registers):
+            self.quiet_info_add_out("SR{:<2d}: {:#010x}".format(i, sr))
+
+        if self.use_cached_mapping("mappings", sdr1=sdr1, sr=" ".join("{:x}".format(sr) for sr in self.segment_registers)):
+            return
+
+        self.add_bat_entries()
+        if htab:
+            self.walk_book3s32_htab(htab, groups)
+        self.finish_pagewalk()
+        return
+
+    def parse_booke_tlb(self):
+        """Return valid TLB entries of the current address space as a list of dict."""
+        units = {"K": 10, "M": 20, "G": 30, "T": 40}
+        pids = [0]
+        for name in ("$pid", "$pid1", "$pid2"):
+            value = get_register(name)
+            if value is not None:
+                pids.append(value)
+        address_space = (get_register("$msr") >> 4) & 1 # DS
+
+        def make_entry(va, pa, size, tid):
+            size = int(size[:-1]) << units[size[-1].upper()]
+            return {"va": int(va, 16), "pa": int(pa, 16), "size": size, "tid": int(tid)}
+
+        tlb = []
+        output = self.read_tlb_dump()
+        # e500: 0x00000000c0000000 0x0000000000000000  64M 0     0  SRWX U--- --M-- U----
+        for va, pa, size, tid, ts, sv, us, attr in re.findall(
+            r"(?m)^(0x\w+) (0x\w+) +(\d+[KMGT]) (\d+) +(\d) +S(...) U(...) (.....) ", output,
+        ):
+            if int(tid) in pids and int(ts) == address_space:
+                entry = make_entry(va, pa, size, tid)
+                entry.update(kern=sv, user=us, attr=attr)
+                tlb.append(entry)
+        # 44x: 0x00000000c0000000 0x0000000000000000 256M 0     0000007e 00000000
+        for va, pa, size, tid, prot, _ in re.findall(
+            r"(?m)^(0x\w+) (0x\w+) +(\d+[kMG]) (\d+) +([0-9a-f]{8}) ([0-9a-f]{8})\r?$", output,
+        ):
+            if int(tid) in pids:
+                entry = make_entry(va, pa, size, tid)
+                # PAGE_READ, PAGE_WRITE, PAGE_EXEC: the high nibble is for the kernel, the low nibble is for the user
+                prot = int(prot, 16)
+                entry.update(
+                    kern="".join(c if (prot >> (4 + i)) & 1 else "-" for i, c in enumerate("RWX")),
+                    user="".join(c if (prot >> i) & 1 else "-" for i, c in enumerate("RWX")),
+                    attr="",
+                )
+                tlb.append(entry)
+        return tlb
+
+    def booke_to_phys(self, vaddr):
+        """Page tables hold virtual addresses, and the kernel maps them with bolted TLB entries."""
+        for entry in self.tlb:
+            if entry["va"] <= vaddr < entry["va"] + entry["size"]:
+                return entry["pa"] + vaddr - entry["va"]
+        return None
+
+    def parse_booke_tlb_handler(self):
+        """Read the layout of Linux page tables from the code of the data TLB error handler, like:
+            lis     r11, PAGE_OFFSET@h
+            cmplw   cr5, r13, r11
+            blt     cr5, 3f
+            lis     r11, swapper_pg_dir@h
+            ori     r11, r11, swapper_pg_dir@l
+            ...
+        3:  mfspr   r11, SPRN_SPRG_THREAD
+            lwz     r11, PGDIR(r11)
+        4:  rlwinm  r12, r13, 14, 18, 28    # the offset in PGD
+            ...
+            rlwimi  r12, r13, 23, 20, 28    # the offset in PTE table
+        Return a dict, or None if the code is not like this."""
+        vector = (get_register("$ivpr") & 0xffff_0000) | (get_register("$ivor13") & 0xfff0)
+        paddr = self.booke_to_phys(vector)
+        if paddr is None:
+            return None
+        try:
+            words = struct.unpack(">64I", self.read_memory(paddr, 0x100))
+        except gdb.MemoryError:
+            return None
+
+        lis = {}
+        info_dict = {}
+        thread_reg = None
+        for insn in words:
+            op = insn >> 26
+            rt = (insn >> 21) & 0x1f
+            ra = (insn >> 16) & 0x1f
+            imm = insn & 0xffff
+            if op == 15 and ra == 0: # lis
+                lis[rt] = imm << 16
+            elif op == 31 and ((insn >> 1) & 0x3ff) == 32 and (insn >> 11) & 0x1f in lis: # cmplw
+                info_dict.setdefault("page_offset", lis[(insn >> 11) & 0x1f])
+            elif op == 24 and rt == ra and rt in lis and "page_offset" in info_dict: # ori
+                info_dict.setdefault("swapper", lis[rt] | imm)
+            elif op == 14 and ra == 0: # li
+                info_dict.setdefault("required_bits", imm)
+            elif op == 31 and ((insn >> 1) & 0x3ff) == 339: # mfspr
+                if ((insn >> 16) & 0x1f) | (((insn >> 11) & 0x1f) << 5) in (259, 275): # SPRG3
+                    thread_reg = rt
+            elif op == 32 and rt == ra and rt == thread_reg: # lwz
+                info_dict.setdefault("pgdir_offset", imm)
+            elif op in (20, 21): # rlwimi, rlwinm
+                shift = (insn >> 11) & 0x1f
+                mask_begin = (insn >> 6) & 0x1f
+                mask_end = (insn >> 1) & 0x1f
+                # A single bit is the permission to check. Only an index has a width.
+                if shift and mask_end in (28, 29) and mask_begin < mask_end:
+                    entry_size = 1 << (31 - mask_end)
+                    target = 32 - shift + {4: 2, 8: 3}[entry_size]
+                    if "pgdir_shift" not in info_dict:
+                        info_dict["pgdir_shift"] = target
+                        info_dict["pgd_entry_size"] = entry_size
+                    elif "page_shift" not in info_dict:
+                        info_dict["page_shift"] = target
+                        info_dict["pte_entry_size"] = entry_size
+                        break
+        for key in ("page_offset", "swapper", "pgdir_offset", "page_shift"):
+            if key not in info_dict:
+                return None
+        if info_dict["swapper"] < info_dict["page_offset"]:
+            return None
+        return info_dict
+
+    def format_flags_booke(self, pte, va):
+        """The format of PTE depends on the CPU and the version of the kernel."""
+        is_user_range = va < self.handler["page_offset"]
+        flag_info_key = (pte & 0xff_ffff, is_user_range)
+        x = self.flags_strings_cache.get(flag_info_key, None)
+        if x is not None:
+            return x
+
+        def to_perm(r, w, e):
+            return ["-", "R"][bool(r)] + ["-", "W"][bool(w)] + ["-", "X"][bool(e)]
+
+        if not self.is_e500:
+            if self.handler.get("required_bits", 0) & 0x40: # the position of _PAGE_ACCESSED since _PAGE_READ was added
+                kern = to_perm(pte & 8, pte & 2, pte & 4)
+                user = "---"
+                if is_user_range:
+                    user = kern
+                accessed = pte & 0x40
+            else:
+                kern = to_perm(1, pte & 2, pte & 4)
+                user = "---"
+                if pte & 0x40:
+                    user = kern
+                accessed = pte & 8
+            dirty = pte & 0x10
+            attr = (pte >> 7) & 0x1f
+        elif self.handler["pte_entry_size"] == 8:
+            kern = to_perm(pte & 4, pte & 0x10, pte & 0x40)
+            user = to_perm(pte & 8, pte & 0x20, pte & 0x80)
+            accessed = pte & 0x4_0000
+            dirty = pte & 0x1000
+            attr = (pte >> 19) & 0x1f
+        else:
+            kern = to_perm(1, pte & 4, pte & 0x10)
+            user = "---"
+            if pte & 2:
+                user = kern
+            accessed = pte & 0x20
+            dirty = pte & 8
+            attr = (pte >> 6) & 0x1f
+
+        flags = []
+        if user != "---":
+            flags.append("USER/" + user)
+        flags.append("KERN/" + kern)
+        if not self.args.simple:
+            if accessed:
+                flags.append("ACCESSED")
+            if dirty:
+                flags.append("DIRTY")
+            flags.append("WIMGE={:05b}".format(attr))
+
+        flag_string = " ".join(flags)
+        self.flags_strings_cache[flag_info_key] = flag_string
+        return flag_string
+
+    def walk_booke(self, pgd_paddr, start, end):
+        handler = self.handler
+        shift = handler["pgdir_shift"]
+        pgd_size = handler["pgd_entry_size"]
+        pte_size = handler["pte_entry_size"]
+        page_size = 1 << handler["page_shift"]
+        pte_count = 1 << (shift - handler["page_shift"])
+        is_bap = self.is_e500 and pte_size == 8
+        for i in range(start, end):
+            addr = pgd_paddr + i * pgd_size
+            entry = int.from_bytes(self.read_memory(addr, pgd_size), "big")
+            if entry & 0xffff_ffff == 0:
+                continue
+            va = i << shift
+            if is_bap and entry & 0xf00: # huge page
+                self.add_booke_leaf(2, addr, entry, va)
+                continue
+            table = self.booke_to_phys(entry & 0xffff_f800)
+            if table is None:
+                continue
+            self.add_level_line(2, addr, entry, va, va + (1 << shift), "TABLE")
+            data = self.read_memory(table, pte_count * pte_size)
+            for j in range(pte_count):
+                pte = int.from_bytes(data[j * pte_size:(j + 1) * pte_size], "big")
+                if pte & 1:
+                    self.add_booke_leaf(1, table + j * pte_size, pte, va + j * page_size)
+        return
+
+    def add_booke_leaf(self, level, addr, pte, va):
+        handler = self.handler
+        page_shift = handler["page_shift"]
+        size = 1 << page_shift
+        rpn_shift = page_shift
+        if self.is_e500 and handler["pte_entry_size"] == 8:
+            rpn_shift = 24
+            size = 1 << (((pte & 0xf00) >> 7) + 10)
+        # All PTEs of a huge page are the same
+        if va & (size - 1):
+            return
+        paddr = (pte >> rpn_shift) << page_shift
+        self.add_leaf(level, addr, pte, va, paddr, size, self.format_flags_booke(pte, va))
+        return
+
+    def pagewalk_booke(self):
+        self.is_e500 = get_register("$mas0") is not None
+        self.tlb = self.parse_booke_tlb()
+        self.handler = self.parse_booke_tlb_handler()
+        self.quiet_info_add_out("MMU: Book E, PID: {:#x}, TLB entries: {:d}".format(get_register("$pid"), len(self.tlb)))
+        if self.handler is None:
+            self.warn_add_out("The data TLB error handler is unsupported, so only the TLB is shown (not Linux?)")
+        elif self.use_cached_mapping("mappings", pid=get_register("$pid"), sprg3=get_register("$sprg3")):
+            return
+
+        if self.handler is not None:
+            shift = self.handler["pgdir_shift"]
+            split = self.handler["page_offset"] >> shift
+            swapper = self.booke_to_phys(self.handler["swapper"])
+            pgd = None
+            thread = self.booke_to_phys(get_register("$sprg3"))
+            if thread is not None:
+                pgdir, = struct.unpack(">I", self.read_memory(thread + self.handler["pgdir_offset"], 4))
+                pgd = self.booke_to_phys(pgdir)
+            self.quiet_info_add_out("swapper_pg_dir: {:#x}, Page size: {:#x}".format(
+                self.handler["swapper"], 1 << self.handler["page_shift"],
+            ))
+            if pgd is not None and pgd != swapper:
+                self.quiet_info_add_out("PGD: {:#x}".format(pgdir))
+                self.walk_booke(pgd, 0, split)
+            if swapper is not None:
+                self.walk_booke(swapper, split, 1 << (32 - shift))
+
+        # The kernel maps the lowmem with bolted TLB entries without page tables
+        for entry in self.tlb:
+            if any(leaf.contains_virtual(entry["va"]) for leaf in self.PTE):
+                continue
+            flags = []
+            if entry["user"] != "---":
+                flags.append("USER/" + entry["user"])
+            flags.append("KERN/" + entry["kern"])
+            flags.append("TLB")
+            if not self.args.simple and entry["attr"]:
+                flags.append("WIMGE={:s}".format(entry["attr"]))
+            self.PTE.append(PageTable.Entry(entry["va"], entry["pa"], entry["size"], 1, " ".join(flags)))
+        self.finish_pagewalk()
+        return
+
+    def pagewalk(self, args):
+        self.prepare_pagewalk(args)
+        self.PTE = []
+        self.level_lines = {}
+        self.level_counts = {}
+        self.flags_strings_cache = {}
+        regions = QemuMonitor.get_mtree_regions("memory")
+        self.ram_ranges = [(start, end) for start, end, attr, _ in regions if attr.endswith("ram")]
+
+        if get_register("$ibat0u") is not None:
+            self.pagewalk_book3s32()
+        elif get_register("$mas0") is not None or get_register("$mmucr") is not None:
+            self.pagewalk_booke()
+        elif get_register("$ptcr") is not None and (get_register("$lpcr") >> 20) & 1: # HR
+            self.pagewalk_radix()
+        elif get_register("$sprg1") is not None and current_arch.ptrsize == 8:
+            self.pagewalk_hash()
+        else:
+            self.err_add_out("Unsupported MMU")
+            return
 
         self.flags_strings_cache = {}
         self.save_mapping_cache()
@@ -197991,6 +199365,8 @@ class PagewalkCommand(GenericCommand, BufferingOutput):
     subparsers.add_parser("arm")
     subparsers.add_parser("arm64")
     subparsers.add_parser("riscv")
+    subparsers.add_parser("mips")
+    subparsers.add_parser("ppc")
     _syntax_ = parser.format_help()
 
     def __init__(self):
@@ -198007,7 +199383,9 @@ class PagewalkCommand(GenericCommand, BufferingOutput):
 
     @Decorator.only_if_gdb_running
     @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
-    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "x86_16", "ARM32", "ARM64", "RISCV32", "RISCV64"))
+    @Decorator.only_if_specific_arch(
+        arch=("x86_32", "x86_64", "x86_16", "ARM32", "ARM64", "RISCV32", "RISCV64", "MIPS32", "MIPS64", "PPC32", "PPC64"),
+    )
     def invoke_subcommand(self, argv):
         arguments = " ".join(shlex.quote(arg) for arg in argv)
         if is_x86_32() or is_x86_16():
@@ -198020,6 +199398,10 @@ class PagewalkCommand(GenericCommand, BufferingOutput):
             gdb.execute("pagewalk arm64 {}".format(arguments))
         elif is_riscv64() or is_riscv32():
             gdb.execute("pagewalk riscv {}".format(arguments))
+        elif is_mips32() or is_mips64():
+            gdb.execute("pagewalk mips {}".format(arguments))
+        elif is_ppc32() or is_ppc64():
+            gdb.execute("pagewalk ppc {}".format(arguments))
         return
 
 
@@ -198059,6 +199441,96 @@ class PagewalkRiscvCommand(PagewalkCommand):
     @Decorator.only_if_specific_arch(arch=("RISCV32", "RISCV64"))
     def do_invoke(self, args):
         self.page_table = PageTableRiscv()
+
+        with self.page_table:  # context manager for temporary physical-memory mode
+            self.page_table.pagewalk(args)
+        self.out = self.page_table.out
+        self.print_output()
+        return
+
+
+@register_command
+class PagewalkMipsCommand(PagewalkCommand):
+    """Dump Linux page tables for MIPS 32/64, whose layout is read from the TLB refill handler."""
+
+    _cmdline_ = "pagewalk mips"
+    _category_ = "06-a. Qemu-system/KGDB Cooperation - Memory Map"
+    _aliases_ = ["pagewalk mips32", "pagewalk mips64"]
+
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("-L", "--print-each-level", action="store_true", help="show all level pagetables.")
+    parser.add_argument("-N", "--no-merge", action="store_true",
+                        help="do not merge similar/consecutive address.")
+    parser.add_argument("-P", "--sort-by-phys", action="store_true",
+                        help="sort by physical address.")
+    parser.add_argument("-Q", "--simple", action="store_true",
+                        help="merge with ignoring physical address consecutivness.")
+    parser.add_argument("-f", "--filter", metavar="REGEX", action="append", type=re.compile, default=[],
+                        help="filter by REGEX pattern.")
+    parser.add_argument("-v", "--vrange", metavar="VADDR", action="append", type=AddressUtil.parse_address, default=[],
+                        help="filter by map included specified virtual address.")
+    parser.add_argument("-p", "--prange", metavar="PADDR", action="append", type=AddressUtil.parse_address, default=[],
+                        help="filter by map included specified physical address.")
+    parser.add_argument("-t", "--trace", metavar="VADDR", action="append", type=AddressUtil.parse_address, default=[],
+                        help="show all level pagetables only associated specified address.")
+    parser.add_argument("-D", "--disable-color", action="store_true", help="disable RWX colored output")
+    parser.add_argument("-c", "--use-cache", action="store_true", help="use previous result.")
+    parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
+    parser.add_argument("-q", "--quiet", action="store_true", help="show result only.")
+    _syntax_ = parser.format_help()
+
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.only_if_specific_gdb_mode(mode=("qemu-system",))
+    @Decorator.only_if_specific_arch(arch=("MIPS32", "MIPS64"))
+    def do_invoke(self, args):
+        self.page_table = PageTableMips()
+        self.page_table.parse_refill_handler()
+
+        with self.page_table:  # context manager for temporary physical-memory mode
+            self.page_table.pagewalk(args)
+        self.out = self.page_table.out
+        self.print_output()
+        return
+
+
+@register_command
+class PagewalkPpcCommand(PagewalkCommand):
+    """Dump page tables for PowerPC 32/64."""
+
+    _cmdline_ = "pagewalk ppc"
+    _category_ = "06-a. Qemu-system/KGDB Cooperation - Memory Map"
+    _aliases_ = ["pagewalk ppc32", "pagewalk ppc64"]
+
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("-L", "--print-each-level", action="store_true", help="show all level pagetables.")
+    parser.add_argument("-N", "--no-merge", action="store_true",
+                        help="do not merge similar/consecutive address.")
+    parser.add_argument("-P", "--sort-by-phys", action="store_true",
+                        help="sort by physical address.")
+    parser.add_argument("-Q", "--simple", action="store_true",
+                        help="merge with ignoring physical address consecutivness.")
+    parser.add_argument("-f", "--filter", metavar="REGEX", action="append", type=re.compile, default=[],
+                        help="filter by REGEX pattern.")
+    parser.add_argument("-v", "--vrange", metavar="VADDR", action="append", type=AddressUtil.parse_address, default=[],
+                        help="filter by map included specified virtual address.")
+    parser.add_argument("-p", "--prange", metavar="PADDR", action="append", type=AddressUtil.parse_address, default=[],
+                        help="filter by map included specified physical address.")
+    parser.add_argument("-t", "--trace", metavar="VADDR", action="append", type=AddressUtil.parse_address, default=[],
+                        help="show all level pagetables only associated specified address.")
+    parser.add_argument("-D", "--disable-color", action="store_true", help="disable RWX colored output")
+    parser.add_argument("-c", "--use-cache", action="store_true", help="use previous result.")
+    parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
+    parser.add_argument("-q", "--quiet", action="store_true", help="show result only.")
+    _syntax_ = parser.format_help()
+
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.only_if_specific_gdb_mode(mode=("qemu-system",))
+    @Decorator.only_if_specific_arch(arch=("PPC32", "PPC64"))
+    def do_invoke(self, args):
+        self.page_table = PageTablePpc()
+        self.page_table.read_book3s32_registers()
 
         with self.page_table:  # context manager for temporary physical-memory mode
             self.page_table.pagewalk(args)
