@@ -193293,7 +193293,7 @@ class PageTable(BufferingOutput):
                 elif self.flags.startswith("RW- "):
                     color = Config.get("theme.address_writable")
                 if self.flags.startswith("RWX "):
-                    color = Config.get("theme.address_rwx")
+                    color += " " + Config.get("theme.address_rwx")
             elif is_riscv32() or is_riscv64() or is_mips32() or is_mips64() or is_ppc32() or is_ppc64() or \
                     is_s390x() or is_loongarch64():
                 match = re.search(r"KERN/([RWX-]{3})", self.flags)
@@ -193306,7 +193306,7 @@ class PageTable(BufferingOutput):
                     elif perm == "RW-":
                         color = Config.get("theme.address_writable")
                     if perm == "RWX":
-                        color = Config.get("theme.address_rwx")
+                        color += " " + Config.get("theme.address_rwx")
             elif is_arm32():
                 if re.search(r"PL[012]/R--", self.flags):
                     color = Config.get("theme.address_readonly")
@@ -193315,7 +193315,7 @@ class PageTable(BufferingOutput):
                 elif re.search(r"PL[12]/RW-", self.flags):
                     color = Config.get("theme.address_writable")
                 if re.search(r"PL[12]/RWX", self.flags):
-                    color = Config.get("theme.address_rwx")
+                    color += " " + Config.get("theme.address_rwx")
             elif is_arm64():
                 if re.search(r"EL[1-3]/R--", self.flags):
                     color = Config.get("theme.address_readonly")
@@ -193324,7 +193324,7 @@ class PageTable(BufferingOutput):
                 elif re.search(r"EL[1-3]/RW-", self.flags):
                     color = Config.get("theme.address_writable")
                 if re.search(r"EL[1-3]/RWX", self.flags):
-                    color = Config.get("theme.address_rwx")
+                    color += " " + Config.get("theme.address_rwx")
             if color is not None:
                 return Color.colorify(text, color)
             return text
