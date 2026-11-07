@@ -147,6 +147,15 @@ For the usage and options of each command, see [docs/COMMANDS.md](docs/COMMANDS.
     - PPC32 / PPC64 (Supported: POWER Radix/Hash, G3/G4, e500, 44x, 4KB/64KB page)
         - POWER Hash, and the page tables of e500 and 44x, are Linux only.
         - G3/G4 shows BAT and the hash table, so the pages not loaded in it are not shown.
+    - S390X (Supported: 2-Level to 5-Level, 4KB/1MB/2GB page)
+        - The address spaces of the kernel and the user can overlap, and both are shown. The flags tell which one it is.
+        - The permissions are what the CPU sees. Linux write-protects the clean pages even if they are writable.
+        - 1MB/2GB pages need EDAT, which QEMU TCG does not have, so they are not tested with a running CPU.
+    - LOONGARCH64 (Supported: 2-Level to 5-Level, 4KB/16KB/64KB page, huge page, DMW)
+        - The CSRs are read from `monitor info registers`, so only qemu-system is supported.
+        - The permissions are what the CPU sees. Without the hardware page table walker, Linux clears D of the clean pages even if they are writable.
+        - The direct mapping windows are shown with the whole range of the physical address.
+        - The tables whose entries all map the same page, such as KASAN shadow, are skipped. Use `-i` to include them.
 - `kvmmap`: prints kernel memory map.
     - ![](images/kvmmap.png)
 

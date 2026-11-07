@@ -9338,13 +9338,13 @@ The base command to dump page tables.
 ### Syntax
 
 ```text
-usage: pagewalk [-h] {x64,x86,arm,arm64,riscv,mips,ppc,s390x} ...
+usage: pagewalk [-h] {x64,x86,arm,arm64,riscv,mips,ppc,s390x,loongarch} ...
 
 options:
   -h, --help            show this help message and exit
 
 command:
-  {x64,x86,arm,arm64,riscv,mips,ppc,s390x}
+  {x64,x86,arm,arm64,riscv,mips,ppc,s390x,loongarch}
 ```
 
 ## `pagewalk arm`
@@ -9409,6 +9409,36 @@ options:
   --optee               show the secure world memory maps if used OP-TEE.
   -0, --only-TTBR0_EL1  Display only TTBR0_EL1 (if target==EL1)
   -1, --only-TTBR1_EL1  display only TTBR1_EL1 (if target==EL1)
+  -D, --disable-color   disable RWX colored output
+  -c, --use-cache       use previous result.
+  -n, --no-pager        do not use the pager.
+  -q, --quiet           show result only.
+```
+
+## `pagewalk loongarch`
+
+Dump page tables for LoongArch 64.
+
+- Alias: `pagewalk loongarch64`
+
+### Syntax
+
+```text
+usage: pagewalk loongarch [-h] [-L] [-N] [-P] [-Q] [-f REGEX] [-v VADDR] [-p PADDR] [-t VADDR] [-i] [-D] [-c] [-n] [-q]
+
+options:
+  -h, --help            show this help message and exit
+  -L, --print-each-level
+                        show all level pagetables.
+  -N, --no-merge        do not merge similar/consecutive address.
+  -P, --sort-by-phys    sort by physical address.
+  -Q, --simple          merge with ignoring physical address consecutivness.
+  -f, --filter REGEX    filter by REGEX pattern.
+  -v, --vrange VADDR    filter by map included specified virtual address.
+  -p, --prange PADDR    filter by map included specified physical address.
+  -t, --trace VADDR     show all level pagetables only associated specified address.
+  -i, --include-aliased-pages
+                        include aliased pages such as KASAN shadow (heavy memory use).
   -D, --disable-color   disable RWX colored output
   -c, --use-cache       use previous result.
   -n, --no-pager        do not use the pager.

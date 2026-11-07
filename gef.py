@@ -13725,6 +13725,58 @@ class QemuMonitor:
         return
 
     @staticmethod
+    def set_s390x_endian():
+        """qemu-system-s390x is always big endian, but its target description does not tell it,
+        and gdb assumes that of the host. Set the endian before the first access to the registers."""
+        if not is_remote_debug() or "s390" not in gdb.execute("show architecture", to_string=True):
+            return
+        res = gdb.execute("show endian", to_string=True)
+        if "automatically" not in res or "currently big endian" in res:
+            return
+        gdb.execute("set endian big", to_string=True)
+        info("Detected big endian")
+        return
+
+    @staticmethod
+    def set_loongarch_architecture():
+        """gdb rejects the target description of qemu-*-loongarch64, and `target remote` fails at the first register access.
+        Set the architecture before it. gdb has the same registers by itself."""
+        if not is_remote_debug():
+            return
+        res = gdb.execute("show architecture", to_string=True)
+        if "auto" not in res or "Loongarch" in res:
+            return
+        try:
+            res = gdb.execute("maintenance packet qXfer:features:read:target.xml:0,ffb", to_string=True)
+        except gdb.error:
+            return
+        if "<architecture>loongarch64</architecture>" not in res:
+            return
+        gdb.execute("set architecture Loongarch64", to_string=True)
+        info("Detected Loongarch64")
+        return
+
+    @staticmethod
+    def set_sparc64_architecture():
+        """The target description of qemu-system-sparc64 has no architecture, so gdb rejects it,
+        and `target remote` fails at the first register access. Set the architecture and the endian before it."""
+        if not is_remote_debug():
+            return
+        res = gdb.execute("show architecture", to_string=True)
+        if "auto" not in res or "sparc" in res:
+            return
+        try:
+            res = gdb.execute("maintenance packet qXfer:features:read:target.xml:0,ffb", to_string=True)
+        except gdb.error:
+            return
+        if "sparc64-core.xml" not in res:
+            return
+        gdb.execute("set endian big", to_string=True)
+        gdb.execute("set architecture sparc:v9", to_string=True)
+        info("Detected sparc:v9, big endian")
+        return
+
+    @staticmethod
     @Cache.cache_until_next(per_inferior=True)
     def get_mtree_regions(address_space=None):
         """Return the regions of `monitor info mtree -f` as a list of (start, end, attr, name).
@@ -16440,7 +16492,7 @@ class EventHandler:
     """A collection of handler functions that are called when the specified events occur."""
 
     __gef_check_once__ = True # the flag to process only once at startup
-    __gef_check_target_once__ = True # the flag to detect MIPS and PPC only once, since the first stop is too late
+    __gef_check_target_once__ = True # the flag to detect MIPS, PPC and s390x only once, since the first stop is too late
     __gef_check_disabled_bp__ = False # the flag to remove unnecessary breakpoints
     continue_hooks_enabled = False
     kpti_transition_active = False
@@ -16534,6 +16586,9 @@ class EventHandler:
             EventHandler.__gef_check_target_once__ = False
             QemuMonitor.set_mips_architecture()
             QemuMonitor.set_ppc_endian()
+            QemuMonitor.set_s390x_endian()
+            QemuMonitor.set_loongarch_architecture()
+            QemuMonitor.set_sparc64_architecture()
         return
 
     @staticmethod
@@ -192600,7 +192655,8 @@ class AddrMap:
             return bool(self.permission & Permission.EXECUTE)
 
         def is_userland(self):
-            if is_x86() or is_riscv32() or is_riscv64() or is_mips32() or is_mips64() or is_ppc32() or is_ppc64():
+            if is_x86() or is_riscv32() or is_riscv64() or is_mips32() or is_mips64() or is_ppc32() or is_ppc64() or \
+                    is_s390x() or is_loongarch64():
                 return "USER" in self.flags
             if is_arm32():
                 return "PL0/---" not in self.flags and self.vstart != 0xffff_0000
@@ -192613,7 +192669,7 @@ class AddrMap:
                 return "KERN" in self.flags
             if is_riscv32() or is_riscv64():
                 return "KERN" in self.flags and "KERN/---" not in self.flags
-            if is_mips32() or is_mips64() or is_ppc32() or is_ppc64():
+            if is_mips32() or is_mips64() or is_ppc32() or is_ppc64() or is_s390x() or is_loongarch64():
                 return "USER" not in self.flags
             if is_arm32():
                 return "PL0/---" in self.flags or self.vstart == 0xffff_0000
@@ -193238,7 +193294,8 @@ class PageTable(BufferingOutput):
                     color = Config.get("theme.address_writable")
                 if self.flags.startswith("RWX "):
                     color = Config.get("theme.address_rwx")
-            elif is_riscv32() or is_riscv64() or is_mips32() or is_mips64() or is_ppc32() or is_ppc64():
+            elif is_riscv32() or is_riscv64() or is_mips32() or is_mips64() or is_ppc32() or is_ppc64() or \
+                    is_s390x() or is_loongarch64():
                 match = re.search(r"KERN/([RWX-]{3})", self.flags)
                 if match:
                     perm = match.group(1)
@@ -193546,6 +193603,55 @@ class PageTable(BufferingOutput):
             if re_pattern.search(line):
                 return False
         return True
+
+    def execute_monitor(self, command):
+        """The monitor shows the CPU selected in it, not the thread selected in gdb."""
+        gdb.execute("monitor cpu {:d}".format(gdb.selected_thread().num - 1), to_string=True)
+        try:
+            return gdb.execute("monitor {:s}".format(command), to_string=True)
+        finally:
+            gdb.execute("monitor cpu 0", to_string=True)
+
+    def add_level_line(self, level, addr, entry, va, va_end, entry_type, flags=""):
+        self.level_counts[level] = self.level_counts.get(level, 0) + 1
+        if self.args.print_each_level:
+            self.level_lines.setdefault(level, []).append((addr, entry, va, va_end, entry_type, flags))
+        return
+
+    def add_leaf(self, level, addr, entry, va, paddr, size, flags):
+        if size >= 0x4000_0000:
+            entry_type = "{:d}GB-PAGE".format(size >> 30)
+        elif size >= 0x10_0000:
+            entry_type = "{:d}MB-PAGE".format(size >> 20)
+        else:
+            entry_type = "{:d}KB-PAGE".format(size >> 10)
+        self.PTE.append(PageTable.Entry(va, paddr, size, 1, flags))
+        self.add_level_line(level, addr, entry, va, va + size, entry_type, flags)
+        return
+
+    def make_level_out(self):
+        for level in sorted(self.level_counts, reverse=True):
+            self.quiet_add_out(titlify("Level {:d} Entry".format(level)))
+            for addr, entry, va, va_end, entry_type, flags in self.level_lines.get(level, []):
+                if self.is_not_trace_target(va, va_end):
+                    continue
+                fmt = "{:#018x}: {:#018x} (virt:{:#018x}-{:#018x},type:{:s}) {:s}"
+                line = fmt.format(addr, entry, va, va_end, entry_type, flags).rstrip()
+                if self.is_not_filter_target(line):
+                    continue
+                self.out.append(line)
+            if self.args.print_each_level:
+                self.out.append(titlify(""))
+            self.quiet_info_add_out("Valid entries: {:d}".format(self.level_counts[level]))
+        return
+
+    def finish_pagewalk(self):
+        self.make_level_out()
+        self.quiet_add_out(titlify("Total"))
+        self.quiet_info_add_out("PT Entry (Total): {:d}".format(len(self.PTE)))
+        self.mappings = self.PTE
+        self.merge_mappings()
+        return
 
 
 class PageTableRiscv(PageTable):
@@ -194661,53 +194767,7 @@ class PageTablePpc(PageTable):
         return any(start <= paddr < end for start, end in self.ram_ranges)
 
     def read_tlb_dump(self):
-        """`info tlb` shows the CPU selected in the monitor, not the thread selected in gdb."""
-        gdb.execute("monitor cpu {:d}".format(gdb.selected_thread().num - 1), to_string=True)
-        try:
-            return gdb.execute("monitor info tlb", to_string=True)
-        finally:
-            gdb.execute("monitor cpu 0", to_string=True)
-
-    def add_level_line(self, level, addr, entry, va, va_end, entry_type, flags=""):
-        self.level_counts[level] = self.level_counts.get(level, 0) + 1
-        if self.args.print_each_level:
-            self.level_lines.setdefault(level, []).append((addr, entry, va, va_end, entry_type, flags))
-        return
-
-    def add_leaf(self, level, addr, entry, va, paddr, size, flags):
-        if size >= 0x4000_0000:
-            entry_type = "{:d}GB-PAGE".format(size >> 30)
-        elif size >= 0x10_0000:
-            entry_type = "{:d}MB-PAGE".format(size >> 20)
-        else:
-            entry_type = "{:d}KB-PAGE".format(size >> 10)
-        self.PTE.append(PageTable.Entry(va, paddr, size, 1, flags))
-        self.add_level_line(level, addr, entry, va, va + size, entry_type, flags)
-        return
-
-    def make_level_out(self):
-        for level in sorted(self.level_counts, reverse=True):
-            self.quiet_add_out(titlify("Level {:d} Entry".format(level)))
-            for addr, entry, va, va_end, entry_type, flags in self.level_lines.get(level, []):
-                if self.is_not_trace_target(va, va_end):
-                    continue
-                fmt = "{:#018x}: {:#018x} (virt:{:#018x}-{:#018x},type:{:s}) {:s}"
-                line = fmt.format(addr, entry, va, va_end, entry_type, flags).rstrip()
-                if self.is_not_filter_target(line):
-                    continue
-                self.out.append(line)
-            if self.args.print_each_level:
-                self.out.append(titlify(""))
-            self.quiet_info_add_out("Valid entries: {:d}".format(self.level_counts[level]))
-        return
-
-    def finish_pagewalk(self):
-        self.make_level_out()
-        self.quiet_add_out(titlify("Total"))
-        self.quiet_info_add_out("PT Entry (Total): {:d}".format(len(self.PTE)))
-        self.mappings = self.PTE
-        self.merge_mappings()
-        return
+        return self.execute_monitor("info tlb")
 
     def format_flags_book3s64(self, pte):
         flag_info_key = pte & 0x1bf
@@ -195432,6 +195492,329 @@ class PageTablePpc(PageTable):
             return
 
         self.flags_strings_cache = {}
+        self.save_mapping_cache()
+        self.make_out(self.mappings)
+        return
+
+
+class PageTableS390x(PageTable):
+    """Dump pagetable for s390x.
+    An entry does not tell whether it is for the user or for the kernel, but each address space has its own tables.
+    Linux runs in the home space (CR13), and the user runs in the primary space (CR1).
+    While running in the kernel, the tables of the user may be only in the lowcore, so all of them are walked.
+    """
+
+    mapping_cache_fields = ("mappings",)
+
+    # Level 5-3 are region tables, level 2 is a segment table, and level 1 is a page table.
+    SHIFTS = {5: 53, 4: 42, 3: 31, 2: 20, 1: 12}
+
+    def read_be64(self, paddr, count):
+        return struct.unpack(">{:d}Q".format(count), self.read_memory(paddr, count * 8))
+
+    def real_to_absolute(self, real):
+        """A PTE has a real address, whose first two pages are swapped with those at the prefix."""
+        if real < 0x2000:
+            return real + self.prefix
+        if self.prefix <= real < self.prefix + 0x2000:
+            return real - self.prefix
+        return real
+
+    def find_user_asce(self, home):
+        """In the lowcore of Linux, user_asce follows kernel_asce, whose offset depends on the version."""
+        members = self.read_be64(self.prefix + 0x300, 32)
+        for kernel_asce, user_asce in zip(members, members[1:]):
+            if kernel_asce == home:
+                return user_asce
+        return None
+
+    def format_flags(self, protect, noexec):
+        perm = "R"
+        perm += ["W", "-"][protect]
+        perm += ["X", "-"][noexec]
+        if self.is_secondary:
+            return "USER/{:s} KERN/--- SECONDARY".format(perm)
+        if self.is_user:
+            return "USER/{:s} KERN/---".format(perm)
+        return "KERN/{:s}".format(perm)
+
+    def walk(self, table, level, first, last, va, protect):
+        """Walk the entries from `first` to `last` of the table."""
+        try:
+            entries = self.read_be64(table + first * 8, last - first + 1)
+        except gdb.MemoryError:
+            return
+        shift = self.SHIFTS[level]
+        size = 1 << shift
+        for i, entry in enumerate(entries, first):
+            addr = table + i * 8
+            new_va = va | (i << shift)
+            new_protect = (entry >> 9) & 1
+            noexec = self.iep & (entry >> 8) & 1
+
+            if level == 1:
+                if entry & 0xc00: # invalid, or bit 52 which must be 0
+                    continue
+                flags = self.format_flags(protect | new_protect, noexec)
+                self.add_leaf(level, addr, entry, new_va, self.real_to_absolute(entry & ~0xfff), size, flags)
+                continue
+
+            if entry & 0x20 or (entry >> 2) & 0b11 != level - 2: # I, TT
+                continue
+            if level > 2 and not self.edat1: # P of region tables needs EDAT-1
+                new_protect = 0
+            new_protect |= protect
+            if self.edat1 and level <= 3 and entry & 0x400: # FC
+                flags = self.format_flags(new_protect, noexec)
+                self.add_leaf(level, addr, entry, new_va, entry & ~(size - 1), size, flags)
+                continue
+
+            self.add_level_line(level, addr, entry, new_va, new_va + size, "TABLE")
+            if level == 2:
+                self.walk(entry & ~0x7ff, 1, 0, 255, new_va, new_protect)
+            else:
+                # TF and TL tell the part of the table that exists, in units of 4KB
+                next_first = ((entry >> 6) & 0b11) << 9
+                next_last = ((entry & 0b11) << 9) | 0x1ff
+                self.walk(entry & ~0xfff, level - 1, next_first, next_last, new_va, new_protect)
+        return
+
+    def pagewalk_space(self, asce):
+        self.PTE = []
+        self.level_lines = {}
+        self.level_counts = {}
+        self.mappings = []
+        if asce & 0x20: # R
+            self.quiet_info_add_out("Real space designation (the virtual address is used as the real address)")
+            return
+        # DT is 0 for a segment table, and 1-3 for a region table.
+        self.walk(asce & ~0xfff, ((asce >> 2) & 0b11) + 2, 0, ((asce & 0b11) << 9) | 0x1ff, 0, 0)
+        self.finish_pagewalk()
+        return
+
+    def pagewalk(self, args):
+        self.prepare_pagewalk(args)
+        pswm = get_register("$pswm")
+        cr0 = get_register("$cr0")
+        cr1 = get_register("$cr1")
+        cr7 = get_register("$cr7")
+        cr13 = get_register("$cr13")
+        self.prefix = get_register("$prefix")
+        if None in (pswm, cr0, cr1, cr7, cr13, self.prefix):
+            self.err_add_out("Failed to read the control registers")
+            return
+        self.edat1 = (cr0 >> 23) & 1
+        self.iep = (cr0 >> 20) & 1
+        self.quiet_info_add_out("pswm: {:#018x}, cr0: {:#018x}, prefix: {:#x}".format(pswm, cr0, self.prefix))
+
+        user_asce = self.find_user_asce(cr13)
+        spaces = {}
+        for name, asce in (("Home", cr13), ("Primary", cr1), ("Secondary", cr7), ("user_asce", user_asce)):
+            if asce:
+                spaces.setdefault(asce, []).append(name)
+
+        if not self.use_cached_mapping("mappings", cr1=cr1, cr7=cr7, cr13=cr13, user_asce=user_asce or 0):
+            mappings = []
+            for asce, names in spaces.items():
+                self.quiet_add_out(titlify("{:s}: {:#x}".format(", ".join(names), asce)))
+                self.is_user = asce != cr13
+                # It is not visible from the primary space. Old Linux keeps a page for vdso at VA 0 here.
+                self.is_secondary = names == ["Secondary"]
+                self.pagewalk_space(asce)
+                # The address spaces overlap, so the pages of each are merged separately.
+                mappings += self.mappings
+            self.mappings = sorted(mappings)
+
+        self.save_mapping_cache()
+        self.make_out(self.mappings)
+        return
+
+
+class PageTableLoongarch(PageTable):
+    """Dump pagetable for loongarch64.
+    The gdbstub does not have CSRs, so they are read from the monitor.
+    PWCL and PWCH tell the layout of the tables. PGDL is for the lower half of the addresses, and PGDH is for the upper half.
+    The entries of the directories have no valid bit. Linux links the unused ones to the same invalid_*_table.
+    Only the bits that the CPU uses are looked at, so what depends on the OS is not shown.
+    """
+
+    mapping_cache_fields = ("mappings",)
+
+    PA_MASK = 0xffff_ffff_ffff
+    VA_SIGN_BIT = 47 # VALEN - 1
+    MAT_NAMES = {0: "SUC", 1: "CC", 2: "WUC"}
+
+    def parse_csrs(self, output):
+        names = "CRMD|ASID|PGDL|PGDH|PWCL|PWCH|DMW[0-3]"
+        return {name: int(value, 16) for name, value in re.findall(r"\b({:s})\s+([0-9a-f]+)\b".format(names), output)}
+
+    def parse_layout(self, pwcl, pwch):
+        """Return (shift, width) of the levels in use, from the top to the page table."""
+        levels = [
+            ((pwch >> 12) & 0x3f, (pwch >> 18) & 0x3f), # Dir4
+            (pwch & 0x3f, (pwch >> 6) & 0x3f), # Dir3
+            ((pwcl >> 20) & 0x1f, (pwcl >> 25) & 0x1f), # Dir2
+            ((pwcl >> 10) & 0x1f, (pwcl >> 15) & 0x1f), # Dir1
+            (pwcl & 0x1f, (pwcl >> 5) & 0x1f), # PT
+        ]
+        return [(shift, width) for shift, width in levels if width]
+
+    def format_access(self, perm, plv_mask):
+        """USER is PLV3 and KERN is PLV0. Linux uses only them."""
+        flags = []
+        if plv_mask & 0b1000:
+            flags.append("USER/" + perm)
+        elif plv_mask & 0b0100:
+            flags.append("PLV2/" + perm)
+        elif plv_mask & 0b0010:
+            flags.append("PLV1/" + perm)
+        if plv_mask & 0b0001:
+            flags.append("KERN/" + perm)
+        else:
+            flags.append("KERN/---")
+        return flags
+
+    def format_mat(self, mat):
+        return "MAT={:s}".format(self.MAT_NAMES.get(mat, str(mat)))
+
+    def format_flags(self, entry, is_huge):
+        perm = ""
+        perm += ["R", "-"][(entry >> 61) & 1] # NR
+        perm += ["-", "W"][(entry >> self.write_shift) & 1]
+        perm += ["X", "-"][(entry >> 62) & 1] # NX
+        plv = (entry >> 2) & 0b11
+        if entry >> 63: # RPLV
+            plv_mask = 1 << plv
+        else:
+            plv_mask = (2 << plv) - 1
+        flags = self.format_access(perm, plv_mask)
+        if not self.args.simple:
+            # Without the hardware page table walker, V and D are what P and W are with it.
+            if self.hptw and entry & 0b01:
+                flags.append("ACCESSED")
+            if self.hptw and entry & 0b10:
+                flags.append("DIRTY")
+            if (is_huge and (entry >> 12) & 1) or (not is_huge and (entry >> 6) & 1):
+                flags.append("GLOBAL")
+            if is_huge:
+                flags.append("HUGE")
+            flags.append(self.format_mat((entry >> 4) & 0b11))
+        return " ".join(flags)
+
+    def is_aliased_table(self, entries, level):
+        """The KASAN shadow maps the same page with all the entries of the tables, which makes millions of pages.
+        Only the pages are compared, because the unused entries of the directories also link to the same table."""
+        if len(set(entries)) != 1 or not (level == 1 or entries[0] & 0x40):
+            return False
+        return (entries[0] >> self.present_shift) & 1 == 1
+
+    def walk(self, table, depth, first, last, va):
+        """Return the number of the pages under the entries from `first` to `last` of the table.
+        An empty table is read only once, because the unused entries link to the same table."""
+        if (table, depth) in self.empty_tables:
+            return 0
+        shift, _ = self.levels[depth]
+        size = 1 << shift
+        level = len(self.levels) - depth
+        va_start = va | (first << shift)
+        va_end = (va | (last << shift)) + size
+        is_traced = any(va_start <= address < va_end for address in self.args.trace)
+        if table in self.aliased_tables and not is_traced:
+            self.aliased_count += 1
+            return 0
+        try:
+            data = self.read_memory(table + first * 8, (last - first + 1) * 8)
+        except gdb.MemoryError:
+            return 0
+        entries = struct.unpack("<{:d}Q".format(last - first + 1), data)
+        if not self.args.include_aliased_pages and not is_traced and self.is_aliased_table(entries, level):
+            self.aliased_tables.add(table)
+            self.aliased_count += 1
+            return 0
+        aliased_count = self.aliased_count
+        found = 0
+        for i, entry in enumerate(entries, first):
+            new_va = va | (i << shift)
+            addr = table + i * 8
+            if level == 1 or entry & 0x40: # HUGE, which is G at the last level
+                if (entry >> self.present_shift) & 1:
+                    flags = self.format_flags(entry, level > 1)
+                    self.add_leaf(level, addr, entry, new_va, entry & self.PA_MASK & ~(size - 1), size, flags)
+                    found += 1
+            elif entry:
+                # The CPU does not clear the low bits, and a small table is not always page-aligned.
+                _, width = self.levels[depth + 1]
+                below = self.walk(entry & self.PA_MASK, depth + 1, 0, (1 << width) - 1, new_va)
+                if below:
+                    self.add_level_line(level, addr, entry, new_va, new_va + size, "TABLE")
+                    found += below
+        # the range of the top level is partial, and the aliased tables below may be traced
+        if depth and found == 0 and aliased_count == self.aliased_count:
+            self.empty_tables.add((table, depth))
+        return found
+
+    def pagewalk_tables(self, pgdl, pgdh):
+        if not self.levels:
+            return
+        shift, width = self.levels[0]
+        count = 1 << width
+        half = 1 << self.VA_SIGN_BIT
+        if pgdl & self.PA_MASK:
+            self.walk(pgdl & self.PA_MASK & ~0xfff, 0, 0, min(count, half >> shift) - 1, 0)
+        if pgdh & self.PA_MASK:
+            # A table wider than the addresses is indexed with the sign-extended bits. A narrower one ignores the bits above it.
+            top = max(shift + width, self.VA_SIGN_BIT)
+            va = ((1 << 64) - 1) & (-1 << top)
+            self.walk(pgdh & self.PA_MASK & ~0xfff, 0, ((1 << top) - half) >> shift, count - 1, va)
+        return
+
+    def add_direct_mapping_windows(self, csrs):
+        for i in range(4):
+            dmw = csrs["DMW{:d}".format(i)]
+            if dmw & 0b1111 == 0:
+                continue
+            flags = self.format_access("RWX", dmw & 0b1111)
+            flags.append("DMW{:d}".format(i))
+            if not self.args.simple:
+                flags.append(self.format_mat((dmw >> 4) & 0b11))
+            self.PTE.append(PageTable.Entry(dmw & (0xf << 60), 0, self.PA_MASK + 1, 1, " ".join(flags)))
+        return
+
+    def pagewalk(self, args):
+        self.prepare_pagewalk(args)
+        csrs = self.parse_csrs(self.execute_monitor("info registers"))
+        if len(csrs) != 10:
+            self.err_add_out("Failed to read the CSRs")
+            return
+        crmd, pgdl, pgdh, pwcl, pwch = (csrs[name] for name in ("CRMD", "PGDL", "PGDH", "PWCL", "PWCH"))
+        self.quiet_info_add_out("CRMD: {:#x}, ASID: {:#x}, PWCL: {:#x}, PWCH: {:#x}".format(crmd, csrs["ASID"], pwcl, pwch))
+        self.quiet_info_add_out("PGDL: {:#x}, PGDH: {:#x}".format(pgdl, pgdh))
+        if crmd & 0b1_1000 == 0b0_1000: # DA and not PG
+            self.quiet_info_add_out("Direct address translation mode (the virtual address is used as the physical address)")
+            self.make_out([])
+            return
+
+        self.levels = self.parse_layout(pwcl, pwch)
+        self.quiet_info_add_out("Page size: {:#x}, Levels: {:d}".format(1 << (pwcl & 0x1f), len(self.levels)))
+        self.hptw = (pwch >> 24) & 1
+        self.present_shift = 0 # V
+        self.write_shift = 1 # D
+        if self.hptw:
+            self.present_shift = 7 # P
+            self.write_shift = 8 # W
+
+        if not self.use_cached_mapping("mappings", pgdl=pgdl, pgdh=pgdh, pwcl=pwcl, pwch=pwch):
+            self.PTE = []
+            self.level_lines = {}
+            self.level_counts = {}
+            self.empty_tables = set()
+            self.aliased_tables = set()
+            self.aliased_count = 0
+            self.pagewalk_tables(pgdl, pgdh)
+            self.add_direct_mapping_windows(csrs)
+            self.quiet_info_add_out("Aliased tables (skipped): {:d}".format(len(self.aliased_tables)))
+            self.finish_pagewalk()
+
         self.save_mapping_cache()
         self.make_out(self.mappings)
         return
@@ -199367,6 +199750,8 @@ class PagewalkCommand(GenericCommand, BufferingOutput):
     subparsers.add_parser("riscv")
     subparsers.add_parser("mips")
     subparsers.add_parser("ppc")
+    subparsers.add_parser("s390x")
+    subparsers.add_parser("loongarch")
     _syntax_ = parser.format_help()
 
     def __init__(self):
@@ -199384,7 +199769,10 @@ class PagewalkCommand(GenericCommand, BufferingOutput):
     @Decorator.only_if_gdb_running
     @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
     @Decorator.only_if_specific_arch(
-        arch=("x86_32", "x86_64", "x86_16", "ARM32", "ARM64", "RISCV32", "RISCV64", "MIPS32", "MIPS64", "PPC32", "PPC64"),
+        arch=(
+            "x86_32", "x86_64", "x86_16", "ARM32", "ARM64", "RISCV32", "RISCV64", "MIPS32", "MIPS64", "PPC32", "PPC64", "S390X",
+            "LOONGARCH64",
+        ),
     )
     def invoke_subcommand(self, argv):
         arguments = " ".join(shlex.quote(arg) for arg in argv)
@@ -199402,6 +199790,10 @@ class PagewalkCommand(GenericCommand, BufferingOutput):
             gdb.execute("pagewalk mips {}".format(arguments))
         elif is_ppc32() or is_ppc64():
             gdb.execute("pagewalk ppc {}".format(arguments))
+        elif is_s390x():
+            gdb.execute("pagewalk s390x {}".format(arguments))
+        elif is_loongarch64():
+            gdb.execute("pagewalk loongarch {}".format(arguments))
         return
 
 
@@ -199531,6 +199923,96 @@ class PagewalkPpcCommand(PagewalkCommand):
     def do_invoke(self, args):
         self.page_table = PageTablePpc()
         self.page_table.read_book3s32_registers()
+
+        with self.page_table:  # context manager for temporary physical-memory mode
+            self.page_table.pagewalk(args)
+        self.out = self.page_table.out
+        self.print_output()
+        return
+
+
+@register_command
+class PagewalkS390xCommand(PagewalkCommand):
+    """Dump page tables for s390x."""
+
+    _cmdline_ = "pagewalk s390x"
+    _category_ = "06-a. Qemu-system/KGDB Cooperation - Memory Map"
+    _aliases_ = ["pagewalk s390"]
+
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("-L", "--print-each-level", action="store_true", help="show all level pagetables.")
+    parser.add_argument("-N", "--no-merge", action="store_true",
+                        help="do not merge similar/consecutive address.")
+    parser.add_argument("-P", "--sort-by-phys", action="store_true",
+                        help="sort by physical address.")
+    parser.add_argument("-Q", "--simple", action="store_true",
+                        help="merge with ignoring physical address consecutivness.")
+    parser.add_argument("-f", "--filter", metavar="REGEX", action="append", type=re.compile, default=[],
+                        help="filter by REGEX pattern.")
+    parser.add_argument("-v", "--vrange", metavar="VADDR", action="append", type=AddressUtil.parse_address, default=[],
+                        help="filter by map included specified virtual address.")
+    parser.add_argument("-p", "--prange", metavar="PADDR", action="append", type=AddressUtil.parse_address, default=[],
+                        help="filter by map included specified physical address.")
+    parser.add_argument("-t", "--trace", metavar="VADDR", action="append", type=AddressUtil.parse_address, default=[],
+                        help="show all level pagetables only associated specified address.")
+    parser.add_argument("-D", "--disable-color", action="store_true", help="disable RWX colored output")
+    parser.add_argument("-c", "--use-cache", action="store_true", help="use previous result.")
+    parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
+    parser.add_argument("-q", "--quiet", action="store_true", help="show result only.")
+    _syntax_ = parser.format_help()
+
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.only_if_specific_gdb_mode(mode=("qemu-system",))
+    @Decorator.only_if_specific_arch(arch=("S390X",))
+    def do_invoke(self, args):
+        self.page_table = PageTableS390x()
+
+        with self.page_table:  # context manager for temporary physical-memory mode
+            self.page_table.pagewalk(args)
+        self.out = self.page_table.out
+        self.print_output()
+        return
+
+
+@register_command
+class PagewalkLoongarchCommand(PagewalkCommand):
+    """Dump page tables for LoongArch 64."""
+
+    _cmdline_ = "pagewalk loongarch"
+    _category_ = "06-a. Qemu-system/KGDB Cooperation - Memory Map"
+    _aliases_ = ["pagewalk loongarch64"]
+
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("-L", "--print-each-level", action="store_true", help="show all level pagetables.")
+    parser.add_argument("-N", "--no-merge", action="store_true",
+                        help="do not merge similar/consecutive address.")
+    parser.add_argument("-P", "--sort-by-phys", action="store_true",
+                        help="sort by physical address.")
+    parser.add_argument("-Q", "--simple", action="store_true",
+                        help="merge with ignoring physical address consecutivness.")
+    parser.add_argument("-f", "--filter", metavar="REGEX", action="append", type=re.compile, default=[],
+                        help="filter by REGEX pattern.")
+    parser.add_argument("-v", "--vrange", metavar="VADDR", action="append", type=AddressUtil.parse_address, default=[],
+                        help="filter by map included specified virtual address.")
+    parser.add_argument("-p", "--prange", metavar="PADDR", action="append", type=AddressUtil.parse_address, default=[],
+                        help="filter by map included specified physical address.")
+    parser.add_argument("-t", "--trace", metavar="VADDR", action="append", type=AddressUtil.parse_address, default=[],
+                        help="show all level pagetables only associated specified address.")
+    parser.add_argument("-i", "--include-aliased-pages", action="store_true",
+                        help="include aliased pages such as KASAN shadow (heavy memory use).")
+    parser.add_argument("-D", "--disable-color", action="store_true", help="disable RWX colored output")
+    parser.add_argument("-c", "--use-cache", action="store_true", help="use previous result.")
+    parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
+    parser.add_argument("-q", "--quiet", action="store_true", help="show result only.")
+    _syntax_ = parser.format_help()
+
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.only_if_specific_gdb_mode(mode=("qemu-system",))
+    @Decorator.only_if_specific_arch(arch=("LOONGARCH64",))
+    def do_invoke(self, args):
+        self.page_table = PageTableLoongarch()
 
         with self.page_table:  # context manager for temporary physical-memory mode
             self.page_table.pagewalk(args)
