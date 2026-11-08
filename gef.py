@@ -206599,9 +206599,9 @@ class KmallocAllocatedBy_UserlandHardwareBreakpoint(gdb.Breakpoint):
         self.target_task = task
         self.sp = None
         self.matched = False
-        if is_riscv32() or is_riscv64():
-            self.current_task_phys = None
-        else:
+        self.current_task_phys = None
+        self.pgds = None
+        if is_x86_32() or is_x86_64():
             current_task = KernelAddressHeuristicFinder.get_current_task()
             if current_task is None:
                 raise gdb.GdbError("Could not resolve current_task")
@@ -206611,17 +206611,54 @@ class KmallocAllocatedBy_UserlandHardwareBreakpoint(gdb.Breakpoint):
             self.current_task_phys = AddrMap.v2p(current_task)
             if self.current_task_phys is None:
                 raise gdb.GdbError("Could not translate current_task")
+        elif is_arm32() or is_arm64():
+            # The kernel stack is invisible in the user mode, but TTBR0 points to the PGD of the process.
+            # The offset of mm_struct->pgd is unknown, so every kernel pointer in the mm is a candidate.
+            # No pointer in the mm refers to the PGD of another process.
+            mm = read_int_from_memory(task + Kernel.task().offset_mm)
+            self.pgds = set()
+            for value in slice_unpack(read_memory(mm, 0x200), current_arch.ptrsize):
+                if KernelAddressHeuristicFinderUtil.is_kernel_space(value) and is_valid_addr(value):
+                    self.pgds.add(AddrMap.v2p(value))
+            self.pgds.discard(None)
+            if not self.pgds:
+                raise gdb.GdbError("Could not translate mm_struct members")
+        elif is_riscv32() or is_riscv64():
+            pass # stop() reads the current task from sscratch
         super().__init__("*{:#x}".format(loc), gdb.BP_HARDWARE_BREAKPOINT, internal=False)
         self.silent = True
         return
+
+    @staticmethod
+    def get_ttbr0_bases():
+        if is_arm64():
+            ttbr0 = get_register("$TTBR0_EL1", full_width=True)
+            if ttbr0 is None:
+                return set()
+            return {ttbr0 & 0xffff_ffff_fffe} # drop ASID and CnP
+        bases = set()
+        # Linux uses the banked registers of the security state it runs in.
+        for suffix in ("", "_S"):
+            ttbr0 = get_register("$TTBR0_EL1" + suffix, full_width=True)
+            ttbcr = get_register("$TTBCR" + suffix)
+            if ttbr0 is None or ttbcr is None:
+                continue
+            if ttbcr >> 31: # LPAE
+                bases.add(ttbr0 & 0xff_ffff_ffff) # drop ASID
+            else:
+                bases.add(ttbr0 & ~0x3fff) # drop attributes
+        return bases
 
     def stop(self):
         Cache.reset_gef_caches()
         if is_riscv32() or is_riscv64():
             self.matched = KernelAddressHeuristicFinder.get_current_task_for_current_thread() == self.target_task
             return self.matched and (self.sp is None or current_arch.sp == self.sp)
-        data = read_physmem(self.current_task_phys, 8)
-        self.matched = data is not None and u64(data) == self.target_task
+        if self.pgds is not None:
+            self.matched = bool(self.pgds & self.get_ttbr0_bases())
+            return self.matched and (self.sp is None or current_arch.sp == self.sp)
+        data = read_physmem(self.current_task_phys, current_arch.ptrsize)
+        self.matched = data is not None and GefUtil.get_unpack(current_arch.ptrsize)(data) == self.target_task
         return data is None or (self.matched and (self.sp is None or current_arch.sp == self.sp))
 
 
@@ -206656,53 +206693,45 @@ class KmallocAllocatedByCommand(GenericCommand):
         entry = self.syscall_table[syscall_name]
         if len(args) != len(entry.args_full):
             raise gdb.GdbError("Argument count mismatch for {:s}".format(syscall_name))
-        riscv = is_riscv32() or is_riscv64()
-        if riscv:
-            insn = current_arch.syscall_insn
-        else:
-            insn = b"\x0f\x05"
-        if current_arch.pc != self.syscall_pc + len(insn) or (not riscv and current_arch.ptrsize != 8):
-            if riscv:
-                raise gdb.GdbError("Not at the expected {:s}syscall return".format(""))
-            else:
-                raise gdb.GdbError("Not at the expected {:s}syscall return".format("64-bit "))
+        insn = current_arch.syscall_insn
+        if get_register("$pc") != self.syscall_pc + len(insn) or current_arch.ptrsize != self.ptrsize:
+            raise gdb.GdbError("Not at the expected {:d}-bit syscall return".format(self.ptrsize * 8))
         if read_memory(self.syscall_pc, len(insn)) != insn:
             raise gdb.GdbError("Expected a syscall instruction before the return address")
         sp = current_arch.sp
         values = []
         buffers = []
-        for arg in args:
+        for arg, arg_full in zip(args, entry.args_full):
             if isinstance(arg, str):
                 arg = String.str2bytes(arg)
             if isinstance(arg, bytes):
                 buffers.append((sp, arg))
-                values.append(sp)
+                value = sp
                 sp = align(sp + len(arg), 16)
             elif isinstance(arg, int):
-                values.append(arg)
+                value = arg
             else:
                 raise gdb.GdbError("Invalid syscall argument")
+            # ARM32 and RISCV32 pass a 64-bit argument in two registers, and ARM32 EABI aligns them to an even/odd pair
+            if (is_arm32() or is_riscv32()) and re.search(r"\b(loff_t|u64)\b", arg_full) and "*" not in arg_full:
+                if is_arm32():
+                    values += [0] * (len(values) % 2)
+                values += [value & 0xffff_ffff, value >> 32]
+            else:
+                values.append(value)
         if buffers and not self.scratch_start <= current_arch.sp <= sp <= self.scratch_end:
             raise gdb.GdbError("Syscall buffers exceed the scratch mapping")
         for address, data in buffers:
             write_memory(address, data)
         for reg, value in zip(current_arch.syscall_parameters, values + [0] * (6 - len(values))):
             gdb.execute("set {:s}={:#x}".format(reg, value), to_string=True)
-        if riscv:
-            syscall_register = current_arch.syscall_register
-        else:
-            syscall_register = "$rax"
-        gdb.execute("set {:s}={:#x}".format(syscall_register, entry.nr), to_string=True)
+        gdb.execute("set {:s}={:#x}".format(current_arch.syscall_register, entry.nr), to_string=True)
         gdb.execute("set $pc={:#x}".format(self.syscall_pc), to_string=True)
         return
 
     def continue_syscall(self, syscall_name):
         gdb.execute("continue")
-        if is_riscv32() or is_riscv64():
-            insn_size = 4
-        else:
-            insn_size = 2
-        if (not self.hwbp.matched or current_arch.pc != self.syscall_pc + insn_size
+        if (not self.hwbp.matched or get_register("$pc") != self.syscall_pc + len(current_arch.syscall_insn)
                 or current_arch.sp != self.scratch_start):
             raise gdb.GdbError("Syscall interrupted before returning to the test process")
         self.tested_syscall.add(syscall_name)
@@ -206710,10 +206739,16 @@ class KmallocAllocatedByCommand(GenericCommand):
 
     def dump_untested_syscall(self):
         valid_syscall = []
-        if is_riscv32() or is_riscv64():
-            abi = "riscv" + current_arch.mode
-        else:
+        if is_x86_64():
             abi = "x86_64"
+        elif is_x86_32():
+            abi = "x86"
+        elif is_arm64():
+            abi = "arm64"
+        elif is_arm32():
+            abi = "arm32"
+        else:
+            abi = "riscv" + current_arch.mode
         for line in self.ksyscalls_ret.splitlines():
             tag, _, valid, name, *__ = Color.remove_color(line).split()
             if tag != abi:
@@ -206754,6 +206789,101 @@ class KmallocAllocatedByCommand(GenericCommand):
 
     def test_syscall(self, breakpoints):
         test_dir = "/tmp/gef-kmalloc-{:s}".format(os.urandom(8).hex())
+        if current_arch.ptrsize == 8:
+            plong = p64 # long and pointer
+        else:
+            plong = p32
+
+        def lo_hi(x):
+            return [x & 0xffff_ffff, x >> 32]
+
+        def time64(x):
+            # RISCV32 has only the syscalls whose time structures consist of 64-bit members
+            return b"".join(p64(v) for v in slice_unpack(x, current_arch.ptrsize))
+
+        # Each testcase is written for x86_64. If the ABI lacks it, the first alternative it has is used:
+        # e.g., the generic ABI (ARM64, RISC-V) has only the *at variants, the 32-bit ABIs use mmap2,
+        # x86_32 splits 64-bit arguments into two, ARM32 reorders them to align register pairs,
+        # and RISCV32 has only the *_time64 variants of the syscalls taking time structures.
+        AT_FDCWD = -100
+        alternatives = {
+            "open": [("openat", lambda a: [AT_FDCWD] + a)],
+            "mkdir": [("mkdirat", lambda a: [AT_FDCWD] + a)],
+            "mknod": [("mknodat", lambda a: [AT_FDCWD] + a)],
+            "unlink": [("unlinkat", lambda a: [AT_FDCWD] + a + [0])],
+            "rmdir": [("unlinkat", lambda a: [AT_FDCWD] + a + [0x200])], # AT_REMOVEDIR
+            "link": [("linkat", lambda a: [AT_FDCWD, a[0], AT_FDCWD, a[1], 0])],
+            "symlink": [("symlinkat", lambda a: [a[0], AT_FDCWD, a[1]])],
+            "readlink": [("readlinkat", lambda a: [AT_FDCWD] + a)],
+            "rename": [
+                ("renameat", lambda a: [AT_FDCWD, a[0], AT_FDCWD, a[1]]),
+                ("renameat2", lambda a: [AT_FDCWD, a[0], AT_FDCWD, a[1], 0]),
+            ],
+            "chmod": [("fchmodat", lambda a: [AT_FDCWD] + a)],
+            "chown": [("fchownat", lambda a: [AT_FDCWD] + a + [0])],
+            "access": [("faccessat", lambda a: [AT_FDCWD] + a)],
+            "stat": [("newfstatat", lambda a: [AT_FDCWD] + a + [0])],
+            "utime": [
+                ("utimensat", lambda a: [AT_FDCWD] + a + [0]),
+                ("utimensat_time64", lambda a: [AT_FDCWD] + a + [0]),
+            ],
+            "pipe": [("pipe2", lambda a: a + [0])],
+            "poll": [
+                ("ppoll", lambda a: a[:2] + [b"\0" * 16, 0, 8]),
+                ("ppoll_time64", lambda a: a[:2] + [b"\0" * 16, 0, 8]),
+            ],
+            "select": [
+                ("_newselect", lambda a: a),
+                ("pselect6", lambda a: a + [0]),
+                ("pselect6_time64", lambda a: a[:4] + [time64(a[4]), 0]),
+            ],
+            "epoll_wait": [("epoll_pwait", lambda a: a + [0, 8])],
+            "getdents": [("getdents64", lambda a: a)],
+            "getrlimit": [("ugetrlimit", lambda a: a), ("prlimit64", lambda a: [0, a[0], 0, a[1]])],
+            "setrlimit": [("prlimit64", lambda a: [0, a[0], a[1], 0])],
+            "lseek": [("llseek", lambda a: [a[0], 0, a[1], p64(0), a[2]])],
+            "fcntl": [("fcntl64", lambda a: a)],
+            "sendfile": [("sendfile64", lambda a: a)],
+            "truncate": [("truncate64", lambda a: a)],
+            "statfs": [("statfs64", lambda a: [a[0], 88, a[1]])], # sizeof(struct statfs64) on RISCV32
+            "mmap": [("mmap2", lambda a: a)],
+            "semop": [("semtimedop_time64", lambda a: a + [0])],
+            "nanosleep": [("clock_nanosleep_time64", lambda a: [0, 0, time64(a[0]), time64(a[1])])],
+            "clock_gettime": [("clock_gettime64", lambda a: [a[0], time64(a[1])])],
+            "clock_getres": [("clock_getres_time64", lambda a: [a[0], time64(a[1])])],
+            "adjtimex": [("clock_adjtime64", lambda a: [0] + a)],
+            "timerfd_settime": [("timerfd_settime64", lambda a: a[:2] + [time64(a[2]), time64(a[3])])],
+            "timerfd_gettime": [("timerfd_gettime64", lambda a: [a[0], time64(a[1])])],
+            "timer_settime": [("timer_settime64", lambda a: a[:2] + [time64(a[2]), time64(a[3])])],
+            "timer_gettime": [("timer_gettime64", lambda a: [a[0], time64(a[1])])],
+            "futex": [("futex_time64", lambda a: a)],
+            "sched_rr_get_interval": [("sched_rr_get_interval_time64", lambda a: [a[0], time64(a[1])])],
+            "rt_sigtimedwait": [("rt_sigtimedwait_time64", lambda a: a[:2] + [time64(a[2]), a[3]])],
+            "mq_timedsend": [("mq_timedsend_time64", lambda a: a)],
+            "mq_timedreceive": [("mq_timedreceive_time64", lambda a: a[:4] + [time64(a[4])])],
+            "io_getevents": [("io_pgetevents_time64", lambda a: a[:4] + [time64(a[4]), 0])],
+            "fallocate": [("fallocate", lambda a: a[:2] + lo_hi(a[2]) + lo_hi(a[3]))],
+            "readahead": [("readahead", lambda a: a[:1] + lo_hi(a[1]) + a[2:])],
+            "fadvise64": [
+                ("fadvise64", lambda a: a[:1] + lo_hi(a[1]) + a[2:]),
+                ("arm_fadvise64_64", lambda a: [a[0], a[3], a[1], a[2]]),
+                ("fadvise64_64", lambda a: a),
+            ],
+            "sync_file_range": [
+                ("sync_file_range", lambda a: a[:1] + lo_hi(a[1]) + lo_hi(a[2]) + a[3:]),
+                ("arm_sync_file_range", lambda a: [a[0], a[3], a[1], a[2]]),
+            ],
+        }
+
+        def resolve(name, args):
+            candidates = [(name, args)] + [(alt, convert(args)) for alt, convert in alternatives.get(name, [])]
+            for alt, alt_args in candidates:
+                entry = self.syscall_table.get(alt)
+                if entry and len(entry.args_full) == len(alt_args):
+                    return alt, alt_args
+            if any(alt in self.syscall_table for alt, _ in candidates):
+                return name, args # setup_syscall reports the mismatch
+            return None, args
 
         def gen_testcase():
             # It is implemented with a generator because
@@ -206764,7 +206894,7 @@ class KmallocAllocatedByCommand(GenericCommand):
             yield "msgget -> msgsnd -> msgrcv -> msgctl"
             yield ("msqid = msgget(IPC_PRIVATE, IPC_CREAT|0666)", "msgget", [0, 0o1000 | 0o666])
             msgsize = 0x100
-            msg = p64(1) + b"A" * msgsize
+            msg = plong(1) + b"A" * msgsize
             if u2i(ret_history[-1]) >= 0:
                 msqid = ret_history[-1]
                 yield ("msgsnd(msqid, &msg, msgsize, IPC_NOWAIT)", "msgsnd", [msqid, msg, msgsize, 0o4000])
@@ -206793,11 +206923,11 @@ class KmallocAllocatedByCommand(GenericCommand):
 
             yield "mq_open -> mq_timedsend -> mq_timedreceive -> mq_notify -> mq_getsetattr -> mq_unlink -> close"
             MQ_NAME = "gef_mq_{:x}\0".format(current_arch.sp)
-            attr = p64(0)      # mq_flags
-            attr += p64(10)    # mq_maxmsg
-            attr += p64(0x100) # mq_msgsize
-            attr += p64(0)     # mq_curmsgs
-            attr += p64(0) * 4 # __reserved[4]
+            attr = plong(0)      # mq_flags
+            attr += plong(10)    # mq_maxmsg
+            attr += plong(0x100) # mq_msgsize
+            attr += plong(0)     # mq_curmsgs
+            attr += plong(0) * 4 # __reserved[4]
             yield (
                 'fd = mq_open(name, O_RDWR|O_CREAT|O_EXCL|O_NONBLOCK, 0700, &attr)',
                 "mq_open", [MQ_NAME, 0o2 | 0o100 | 0o200 | 0o4000, 0o700, attr],
@@ -206809,22 +206939,22 @@ class KmallocAllocatedByCommand(GenericCommand):
                 yield ("mq_timedsend(fd, &msg, sizeof(msg), 0, NULL)", "mq_timedsend", [fd, msg, len(msg), 0, 0])
                 buf = "\0" * 0x100
                 prio = p32(0)
-                timeout = p64(0)  # tv_sec
-                timeout += p64(0) # tv_nsec
+                timeout = plong(0)  # tv_sec
+                timeout += plong(0) # tv_nsec
                 yield (
                     "mq_timedreceive(fd, &buf, sizeof(buf), &prio, &timeout)",
                     "mq_timedreceive", [fd, buf, len(buf), prio, timeout],
                 )
-                sigevent = p64(0)   # sigev_value
-                sigevent += p32(10) # sigev_signo: SIGUSR1
-                sigevent += p32(1)  # sigev_notify: SIGEV_NONE
-                sigevent += b"\0" * 48
+                sigevent = plong(0)   # sigev_value
+                sigevent += p32(10)   # sigev_signo: SIGUSR1
+                sigevent += p32(1)    # sigev_notify: SIGEV_NONE
+                sigevent = sigevent.ljust(64, b"\0")
                 yield ("mq_notify(fd, &sigevent)", "mq_notify", [fd, sigevent])
-                attr = p64(0)      # mq_flags
-                attr += p64(0)     # mq_maxmsg
-                attr += p64(0)     # mq_msgsize
-                attr += p64(0)     # mq_curmsgs
-                attr += p64(0) * 4 # __reserved[4]
+                attr = plong(0)      # mq_flags
+                attr += plong(0)     # mq_maxmsg
+                attr += plong(0)     # mq_msgsize
+                attr += plong(0)     # mq_curmsgs
+                attr += plong(0) * 4 # __reserved[4]
                 yield ("mq_getsetattr(fd, NULL, &attr)", "mq_getsetattr", [fd, 0, attr])
                 yield ("close(fd)", "close", [fd])
 
@@ -206837,65 +206967,65 @@ class KmallocAllocatedByCommand(GenericCommand):
                 yield ("close(fd)", "close", [fd])
 
             yield "setitimer -> getitimer"
-            new_value = p64(0)  # it_interval.tv_sec
-            new_value += p64(0) # it_interval.tv_nsec
-            new_value += p64(0) # it_value.tv_sec
-            new_value += p64(0) # it_value.tv_nsec
-            old_value = p64(0)  # it_interval.tv_sec
-            old_value += p64(0) # it_interval.tv_nsec
-            old_value += p64(0) # it_value.tv_sec
-            old_value += p64(0) # it_value.tv_nsec
+            new_value = plong(0)  # it_interval.tv_sec
+            new_value += plong(0) # it_interval.tv_usec
+            new_value += plong(0) # it_value.tv_sec
+            new_value += plong(0) # it_value.tv_usec
+            old_value = plong(0)  # it_interval.tv_sec
+            old_value += plong(0) # it_interval.tv_usec
+            old_value += plong(0) # it_value.tv_sec
+            old_value += plong(0) # it_value.tv_usec
             yield ("setitimer(ITIMER_REAL, &new_value, &old_value)", "setitimer", [0, new_value, old_value])
-            curr_value = p64(0)  # it_interval.tv_sec
-            curr_value += p64(0) # it_interval.tv_nsec
-            curr_value += p64(0) # it_value.tv_sec
-            curr_value += p64(0) # it_value.tv_nsec
+            curr_value = plong(0)  # it_interval.tv_sec
+            curr_value += plong(0) # it_interval.tv_usec
+            curr_value += plong(0) # it_value.tv_sec
+            curr_value += plong(0) # it_value.tv_usec
             yield ("getitimer(ITIMER_REAL, &curr_value)", "getitimer", [0, curr_value])
 
             yield "timerfd_create -> timerfd_settime -> timerfd_gettime -> close"
             yield ("fd = timerfd_create(CLOCK_MONOTONIC, 0)", "timerfd_create", [1, 0])
             if u2i(ret_history[-1]) >= 0:
                 fd = ret_history[-1]
-                new_value = p64(0)  # it_interval.tv_sec
-                new_value += p64(0) # it_interval.tv_nsec
-                new_value += p64(0) # it_value.tv_sec
-                new_value += p64(0) # it_value.tv_nsec
-                old_value = p64(0)  # it_interval.tv_sec
-                old_value += p64(0) # it_interval.tv_nsec
-                old_value += p64(0) # it_value.tv_sec
-                old_value += p64(0) # it_value.tv_nsec
+                new_value = plong(0)  # it_interval.tv_sec
+                new_value += plong(0) # it_interval.tv_nsec
+                new_value += plong(0) # it_value.tv_sec
+                new_value += plong(0) # it_value.tv_nsec
+                old_value = plong(0)  # it_interval.tv_sec
+                old_value += plong(0) # it_interval.tv_nsec
+                old_value += plong(0) # it_value.tv_sec
+                old_value += plong(0) # it_value.tv_nsec
                 yield (
                     "timerfd_settime(fd, 0, &new_value, &old_value)",
                     "timerfd_settime", [fd, 0, new_value, old_value],
                 )
-                curr_value = p64(0)  # it_interval.tv_sec
-                curr_value += p64(0) # it_interval.tv_nsec
-                curr_value += p64(0) # it_value.tv_sec
-                curr_value += p64(0) # it_value.tv_nsec
+                curr_value = plong(0)  # it_interval.tv_sec
+                curr_value += plong(0) # it_interval.tv_nsec
+                curr_value += plong(0) # it_value.tv_sec
+                curr_value += plong(0) # it_value.tv_nsec
                 yield ("timerfd_gettime(fd, &curr_value)", "timerfd_gettime", [fd, curr_value])
                 yield ("close(fd)", "close", [fd])
 
-            yield "timer_create -> timer_settime -> timier_gettime -> timer_getoverrun -> timer_delete"
+            yield "timer_create -> timer_settime -> timer_gettime -> timer_getoverrun -> timer_delete"
             timerid = p64(0)
             yield ("timer_create(CLOCK_MONOTONIC, NULL, &timerid)", "timer_create", [1, 0, timerid])
             if u2i(ret_history[-1]) == 0:
                 timerid = read_int_from_memory(current_arch.sp)
-                new_value = p64(0)  # it_interval.tv_sec
-                new_value += p64(0) # it_interval.tv_nsec
-                new_value += p64(0) # it_value.tv_sec
-                new_value += p64(0) # it_value.tv_nsec
-                old_value = p64(0)  # it_interval.tv_sec
-                old_value += p64(0) # it_interval.tv_nsec
-                old_value += p64(0) # it_value.tv_sec
-                old_value += p64(0) # it_value.tv_nsec
+                new_value = plong(0)  # it_interval.tv_sec
+                new_value += plong(0) # it_interval.tv_nsec
+                new_value += plong(0) # it_value.tv_sec
+                new_value += plong(0) # it_value.tv_nsec
+                old_value = plong(0)  # it_interval.tv_sec
+                old_value += plong(0) # it_interval.tv_nsec
+                old_value += plong(0) # it_value.tv_sec
+                old_value += plong(0) # it_value.tv_nsec
                 yield (
                     "timer_settime(timerid, 0, &new_value, &old_value)",
                     "timer_settime", [timerid, 0, new_value, old_value],
                 )
-                curr_value = p64(0)  # it_interval.tv_sec
-                curr_value += p64(0) # it_interval.tv_nsec
-                curr_value += p64(0) # it_value.tv_sec
-                curr_value += p64(0) # it_value.tv_nsec
+                curr_value = plong(0)  # it_interval.tv_sec
+                curr_value += plong(0) # it_interval.tv_nsec
+                curr_value += plong(0) # it_value.tv_sec
+                curr_value += plong(0) # it_value.tv_nsec
                 yield ("timer_gettime(timerid, &curr_value)", "timer_gettime", [timerid, curr_value])
                 yield ("timer_getoverrun(timerid)", "timer_getoverrun", [timerid])
                 yield ("timer_delete(timerid)", "timer_delete", [timerid])
@@ -206905,8 +207035,8 @@ class KmallocAllocatedByCommand(GenericCommand):
             self.skipped_syscall.add("epoll_create")
             if u2i(ret_history[-1]) >= 0:
                 epfd = ret_history[-1]
-                event = p32(1)  # events: EPOLLIN
-                event += p64(0) # data
+                event = p32(1)      # events: EPOLLIN
+                event += b"\0" * 12 # data (packed on x86, aligned to 8 elsewhere)
                 yield ("epoll_ctl(epfd, EPOLL_CTL_ADD, STDIN_FILENO, &event)", "epoll_ctl", [epfd, 1, 0, event])
                 yield ("epoll_wait(epfd, &events, 1, 0)", "epoll_wait", [epfd, event, 1, 0])
                 self.skipped_syscall.add("epoll_pwait")
@@ -206992,12 +207122,12 @@ class KmallocAllocatedByCommand(GenericCommand):
                 vec = "\0" * 0x100
                 yield ("mincore(addr, 0x1000, &vec)", "mincore", [addr, size, vec])
                 yield ("mbind(addr, 0x1000, MPOL_DEFAULT, NULL, 0, 0)", "mbind", [addr, size, 0, 0, 0, 0])
-                pages = p64(addr)
+                pages = plong(addr)
                 status = p64(0)
                 yield ("move_pages(0, 1, &pages, NULL, &status, 0)", "move_pages", [0, 1, pages, 0, status, 0])
                 maxnode = 8
-                old_nodes = p64(2)
-                new_nodes = p64(1)
+                old_nodes = plong(2)
+                new_nodes = plong(1)
                 yield (
                     "migrate_pages(0, 8, old_nodes, new_nodes)",
                     "migrate_pages", [0, maxnode, old_nodes, new_nodes],
@@ -207058,15 +207188,22 @@ class KmallocAllocatedByCommand(GenericCommand):
             yield ("prctl(PR_GET_CHILD_SUBREAPER, &buf)", "prctl", [37, buf, 0, 0, 0])
             yield ("prctl(PR_GET_NO_NEW_PRIVS, 0, 0, 0, 0)", "prctl", [39, 0, 0, 0, 0])
             yield ("prctl(PR_GET_TID_ADDRESS, &buf)", "prctl", [40, p64(0), 0, 0, 0])
+            tid_address = None
+            if u2i(ret_history[-1]) == 0:
+                tid_address = read_int_from_memory(current_arch.sp)
             yield ("prctl(PR_GET_THP_DISABLE, 0, 0, 0, 0)", "prctl", [42, 0, 0, 0, 0])
             yield ("arch_prctl(ARCH_GET_CPUID)", "arch_prctl", [0x1011, 0])
-            buf = p64(0)
-            yield ("arch_prctl(ARCH_GET_GS, &buf)", "arch_prctl", [0x1004, buf])
-            buf = p64(0)
-            yield ("arch_prctl(ARCH_GET_FS, &buf)", "arch_prctl", [0x1003, buf])
-            if u2i(ret_history[-1]) == 0:
-                fsbase = read_int_from_memory(current_arch.sp)
-                yield ("set_tid_address(fsbase)", "set_tid_address", [fsbase])
+            if is_x86_64():
+                buf = p64(0)
+                yield ("arch_prctl(ARCH_GET_GS, &buf)", "arch_prctl", [0x1004, buf])
+                buf = p64(0)
+                yield ("arch_prctl(ARCH_GET_FS, &buf)", "arch_prctl", [0x1003, buf])
+                if u2i(ret_history[-1]) == 0:
+                    fsbase = read_int_from_memory(current_arch.sp)
+                    yield ("set_tid_address(fsbase)", "set_tid_address", [fsbase])
+            elif tid_address is not None:
+                # set the current value again
+                yield ("set_tid_address(tid_address)", "set_tid_address", [tid_address])
 
             yield "futex"
             uaddr = p64(0)
@@ -207090,10 +207227,10 @@ class KmallocAllocatedByCommand(GenericCommand):
             yield ("gettimeofday(&tv, &tz)", "gettimeofday", [tv, tz])
 
             yield "nanosleep"
-            req = p64(0)     # tv_sec
-            req += p64(1000) # tv_nsec
-            rem = p64(0)     # tv_sec
-            rem += p64(0)    # tv_nsec
+            req = plong(0)     # tv_sec
+            req += plong(1000) # tv_nsec
+            rem = plong(0)     # tv_sec
+            rem += plong(0)    # tv_nsec
             yield ("nanosleep(&req, &rem)", "nanosleep", [req, rem])
             self.skipped_syscall.add("clock_nanosleep")
 
@@ -207310,14 +207447,14 @@ class KmallocAllocatedByCommand(GenericCommand):
             yield ("getgroups(0, NULL)", "getgroups", [0, 0])
 
             yield "rt_sigaction -> alarm -> kill -> tkill -> rt_sigtimedwait"
-            act = p64(1)    # sa_handler: SIG_IGN
-            act += p64(0)   # sa_flags
-            act += p64(0)   # sa_restorer
-            act += p64(0xe) # sa_mask: SIGALRM
+            act = plong(1)  # sa_handler: SIG_IGN
+            act += plong(0) # sa_flags
+            act += plong(0) # sa_restorer
+            act += p64(0xe) # sa_mask
             oldact = p64(0)  # sa_handler
             oldact += p64(0) # sa_flags
             oldact += p64(0) # sa_restorer
-            oldact += p64(0) # sa_mask: SIGALRM
+            oldact += p64(0) # sa_mask
             sigsetsize = 8
             yield ("rt_sigaction(SIGALRM, &act, &oldact, sigsetsize)", "rt_sigaction", [14, act, oldact, sigsetsize])
             yield ("alarm(1000)", "alarm", [1000])
@@ -207347,7 +207484,7 @@ class KmallocAllocatedByCommand(GenericCommand):
             )
 
             yield "pidfd_open -> pidfd_getfd -> pidfd_send_signal -> close"
-            yield ("pfdfd = pidfd_open(pid, 0)", "pidfd_open", [pid, 0])
+            yield ("pidfd = pidfd_open(pid, 0)", "pidfd_open", [pid, 0])
             if u2i(ret_history[-1]) >= 0:
                 pidfd = ret_history[-1]
                 yield ("fd = pidfd_getfd(pidfd, STDIN_FILENO, 0)", "pidfd_getfd", [pidfd, 0, 0])
@@ -207403,11 +207540,11 @@ class KmallocAllocatedByCommand(GenericCommand):
                 yield ("close(fd)", "close", [fd])
 
             yield "open -> flock -> lseek -> readahead -> poll -> read -> dup -> close_range"
-            yield ('fd = open("/tmp/xxx", 0_RDONLY)', "open", [TMP_XXX, 0o0, 0])
+            yield ('fd = open("/tmp/xxx", O_RDONLY)', "open", [TMP_XXX, 0o0, 0])
             if u2i(ret_history[-1]) >= 0:
                 fd = ret_history[-1]
                 yield ("flock(fd, LOCK_SH|LOCK_NB)", "flock", [fd, 1 | 4])
-                yield ("lseek(fd, SEEK_SET, 0)", "lseek", [fd, 0, 0])
+                yield ("lseek(fd, 0, SEEK_SET)", "lseek", [fd, 0, 0])
                 yield ("readahead(fd, 0, 0x1000)", "readahead", [fd, 0, 0x1000])
                 fds = p32(fd) # fd
                 fds += p16(0) # events
@@ -207432,7 +207569,7 @@ class KmallocAllocatedByCommand(GenericCommand):
                 yield ("close(fd)", "close", [fd])
 
             yield "open -> mmap -> remap_file_pages -> munmap -> close"
-            yield ('fd = open("/tmp/xxx", 0_RDONLY)', "open", [TMP_XXX, 0o0, 0])
+            yield ('fd = open("/tmp/xxx", O_RDONLY)', "open", [TMP_XXX, 0o0, 0])
             if u2i(ret_history[-1]) >= 0:
                 fd = ret_history[-1]
                 size = get_pagesize()
@@ -207456,7 +207593,7 @@ class KmallocAllocatedByCommand(GenericCommand):
             self.skipped_syscall.add("fchownat")
 
             yield "open -> pipe -> sendfile -> splice -> select -> vmsplice -> close"
-            yield ('fd = open("/tmp/xxx", 0_RDONLY)', "open", [TMP_XXX, 0o0, 0])
+            yield ('fd = open("/tmp/xxx", O_RDONLY)', "open", [TMP_XXX, 0o0, 0])
             if u2i(ret_history[-1]) >= 0:
                 fd = ret_history[-1]
                 pipefd_array = p32(0) * 2 # pipefd[2]
@@ -207476,8 +207613,8 @@ class KmallocAllocatedByCommand(GenericCommand):
                     nfds = pipefd0 + 1
                     yield ("select(nfds, readfds, NULL, NULL, &timeout)", "select", [nfds, readfds, 0, 0, p64(0) * 2])
                     self.skipped_syscall.add("pselect6")
-                    iov = p64(current_arch.sp + 0x10) # iov_base
-                    iov += p64(4)                 # iov_len
+                    iov = plong(current_arch.sp + current_arch.ptrsize * 2) # iov_base
+                    iov += plong(4)                                         # iov_len
                     yield ("vmsplice(pipefd[0], &iov, 1, SPLICE_F_NONBLOCK)", "vmsplice", [pipefd0, iov + b"\0" * 4, 1, 2])
                     yield ("close(pipefd[0])", "close", [pipefd0])
                     yield ("close(pipefd[1])", "close", [pipefd1])
@@ -207509,7 +207646,7 @@ class KmallocAllocatedByCommand(GenericCommand):
 
             yield "open -> sync_file_range -> copy_file_range -> close -> unlink -> close"
             TMP_XXX2 = test_dir + "/xxx2\0"
-            yield ('fd_in = open("/tmp/xxx", 0_RDONLY)', "open", [TMP_XXX, 0o0, 0])
+            yield ('fd_in = open("/tmp/xxx", O_RDONLY)', "open", [TMP_XXX, 0o0, 0])
             if u2i(ret_history[-1]) >= 0:
                 fd_in = ret_history[-1]
                 yield (
@@ -207665,7 +207802,7 @@ class KmallocAllocatedByCommand(GenericCommand):
                 yield ("close(fd)", "close", [fd])
 
             yield "open -> io_setup -> io_submit -> io_getevents -> close -> io_destroy"
-            yield ('fd = open("/tmp/xxx", 0_RDONLY)', "open", [TMP_XXX, 0o0, 0])
+            yield ('fd = open("/tmp/xxx", O_RDONLY)', "open", [TMP_XXX, 0o0, 0])
             if u2i(ret_history[-1]) >= 0:
                 fd = ret_history[-1]
                 ctx_idp = p64(0)
@@ -207684,8 +207821,8 @@ class KmallocAllocatedByCommand(GenericCommand):
                 iocb += p32(0)                      # aio_flags
                 iocb += p32(0)                      # aio_resfd
                 iocb += b"\0" * 0x100               # data buffer <-- aio_buf
-                iocbp = p64(current_arch.sp + 0x30) # iocb
-                iocbp += p64(0) * 5                 # padding
+                iocbp = plong(current_arch.sp + 0x30) # iocb
+                iocbp = iocbp.ljust(0x30, b"\0")     # padding
                 iocbp += iocb
                 yield ("io_submit(ctx_id, 1, &iocbp)", "io_submit", [ctx_id, 1, iocbp])
                 events = p64(0)  # data
@@ -207808,7 +207945,7 @@ class KmallocAllocatedByCommand(GenericCommand):
             self.skipped_syscall.add("ustat")
 
             yield "open -> getdents -> fcntl -> close"
-            yield ('fd = open("/", 0_RDONLY)', "open", ["/\0", 0, 0])
+            yield ('fd = open("/", O_RDONLY)', "open", ["/\0", 0, 0])
             if u2i(ret_history[-1]) >= 0:
                 fd = ret_history[-1]
                 buf = "\0" * 0x200
@@ -207875,17 +208012,18 @@ class KmallocAllocatedByCommand(GenericCommand):
                 yield ('sendto(sv[0], "AAAA", 4, 0, NULL, 0)', "sendto", [sv0, buf, len(buf), 0, 0, 0])
                 buf = "\0" * 4
                 yield ("recvfrom(sv[1], buf, 4, 0, NULL, NULL)", "recvfrom", [sv1, buf, len(buf), 0, 0, 0])
-                msg = p64(0)                       # msg_name
-                msg += p64(0)                      # msg_melen
-                msg += p64(current_arch.sp + 0x40) # msg_iov
-                msg += p64(1)                      # msg_iov_len
-                msg += p64(0)                      # msg_control
-                msg += p64(0)                      # msg_controllen
-                msg += p64(0)                      # msg_flags
-                msg += p64(0)                      # padding
-                msg += p64(current_arch.sp + 0x50) # iov_base
-                msg += p64(4)                      # iov_len
-                msg += b"AAAA"                     # data
+                msg = plong(0)                       # msg_name
+                msg += plong(0)                      # msg_namelen
+                msg += plong(current_arch.sp + 0x40) # msg_iov
+                msg += plong(1)                      # msg_iovlen
+                msg += plong(0)                      # msg_control
+                msg += plong(0)                      # msg_controllen
+                msg += plong(0)                      # msg_flags
+                msg = msg.ljust(0x40, b"\0")         # padding
+                msg += plong(current_arch.sp + 0x50) # iov_base
+                msg += plong(4)                      # iov_len
+                msg = msg.ljust(0x50, b"\0")         # padding
+                msg += b"AAAA"                       # data
                 yield ("sendmsg(sv[0], &msg, 0)", "sendmsg", [sv0, msg, 0])
                 self.skipped_syscall.add("sendmmsg")
                 yield ("recvmsg(sv[1], &msg, 0)", "recvmsg", [sv1, msg, 0])
@@ -207991,7 +208129,6 @@ class KmallocAllocatedByCommand(GenericCommand):
             return None
 
         self.scheduled_syscall = set()
-        self.tested_syscall = set()
         self.skipped_syscall = set()
 
         ret_history = []
@@ -208002,75 +208139,32 @@ class KmallocAllocatedByCommand(GenericCommand):
                 continue
 
             desc, syscall_name, args = testcase
+            name, args = resolve(syscall_name, args)
+            if name is None:
+                # unavailable on this ABI; the dependent testcases see -ENOSYS
+                ret_history.append(-38)
+                continue
             if test_dir not in desc:
                 desc = desc.replace("/tmp/", test_dir + "/")
+            if name != syscall_name:
+                desc = "{:s} (as {:s})".format(desc, name)
             gef_print(titlify("{:s};".format(desc)))
-            self.setup_syscall(syscall_name, args)
+            self.setup_syscall(name, args)
             for bp in breakpoints:
                 bp.enabled = True
-            ret = self.continue_syscall(syscall_name)
+            ret = self.continue_syscall(name)
             gef_print("ret: {:#x}".format(ret))
-            if u2i(ret) < 0:
+            signed_ret = u2i(ret, current_arch.bit_length)
+            if -4095 <= signed_ret < 0:
                 gef_print(Color.colorify("WARNING: r < 0", "bold red underline"))
                 gdb.execute("errno {:#x}".format(ret))
+                # a 32-bit address may have the MSB set, so only an error is made negative
+                ret = signed_ret
             ret_history.append(ret)
 
             for bp in breakpoints:
                 bp.enabled = False
 
-        self.dump_untested_syscall()
-        return
-
-    def test_syscall_riscv(self, breakpoints):
-        def issue(name, args):
-            gef_print(titlify("{:s}({:s});".format(name, ", ".join(str(arg)[:32] for arg in args))))
-            self.setup_syscall(name, args)
-            for bp in breakpoints:
-                bp.enabled = True
-            try:
-                result = self.continue_syscall(name)
-            finally:
-                for bp in breakpoints:
-                    bp.enabled = False
-            gef_print("ret: {:#x}".format(result))
-            signed = u2i(result, current_arch.bit_length)
-            if -4095 <= signed < 0:
-                gdb.execute("errno {:#x}".format(result))
-            return signed
-
-        cases = [
-            ("getpid", []),
-            ("uname", [bytes(0x200)]),
-            ("getrandom", [bytes(0x20), 0x20, 0]),
-            ("openat", [-100, b"/dev/null\0", 0, 0]),
-            ("eventfd2", [0, 0]),
-            ("epoll_create1", [0]),
-            ("timerfd_create", [1, 0]),
-            ("inotify_init1", [0]),
-            ("memfd_create", [b"gef-kmalloc\0", 0]),
-            ("socket", [1, 1, 0]),
-            ("pipe2", [bytes(8), 0]),
-        ]
-        self.scheduled_syscall = {name for name, args in cases}
-        self.scheduled_syscall.add("close")
-        self.tested_syscall = set()
-        self.skipped_syscall = set()
-        for name, args in cases:
-            if name not in self.syscall_table:
-                self.skipped_syscall.add(name)
-                continue
-            result = issue(name, args)
-            if result < 0:
-                continue
-            if name == "pipe2":
-                fds = (read_int32_from_memory(current_arch.sp), read_int32_from_memory(current_arch.sp + 4))
-            elif name in ("openat", "eventfd2", "epoll_create1", "timerfd_create", "inotify_init1",
-                          "memfd_create", "socket"):
-                fds = (result,)
-            else:
-                fds = ()
-            for fd in fds:
-                issue("close", [fd])
         self.dump_untested_syscall()
         return
 
@@ -208085,7 +208179,7 @@ class KmallocAllocatedByCommand(GenericCommand):
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.only_if_specific_gdb_mode(mode=("qemu-system",))
-    @Decorator.only_if_specific_arch(arch=("x86_64", "RISCV32", "RISCV64"))
+    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64"))
     @Decorator.only_if_in_kernel
     @Decorator.only_if_kvm_disabled
     @Decorator.only_if_smp_disabled
@@ -208120,8 +208214,11 @@ class KmallocAllocatedByCommand(GenericCommand):
                 info("offsetof(kmem_cache, name): {:#x}".format(self.extra_info.kmem_cache_offset_name))
                 info("offsetof(kmem_cache, size): {:#x}".format(self.extra_info.kmem_cache_offset_size))
 
-        # get syscall table
-        syscall_table = Syscall.get_syscall_table()
+        # get syscall table (a 32-bit kernel has the native one, not the compat one)
+        if is_x86_32() or is_arm32():
+            syscall_table = Syscall.get_syscall_table(current_arch.arch, "N32")
+        else:
+            syscall_table = Syscall.get_syscall_table()
         if syscall_table is None:
             err("Could not find the syscall table")
             return
@@ -208147,13 +208244,16 @@ class KmallocAllocatedByCommand(GenericCommand):
         option_info = KmallocTracerCommand.create_option_info(args, target_task)
 
         # get the saved user PC for the breakpoint and SP for process matching
-        riscv = is_riscv32() or is_riscv64()
-        if riscv:
+        if is_x86_64():
+            pc_name, sp_name = ("rip", "rsp")
+        elif is_x86_32():
+            pc_name, sp_name = ("eip", "esp")
+        elif is_riscv32() or is_riscv64():
             pc_name, sp_name = ("epc", "sp")
         else:
-            pc_name, sp_name = ("rip", "rsp")
-        r1 = re.search(r"{:s}\s*: (0x\S+)".format(pc_name), res)
-        r2 = re.search(r"{:s}\s*: (0x\S+)".format(sp_name), res)
+            pc_name, sp_name = ("pc", "sp")
+        r1 = re.search(r"\b{:s}\s*: (0x\S+)".format(pc_name), res)
+        r2 = re.search(r"\b{:s}\s*: (0x\S+)".format(sp_name), res)
         if not r1 or not r2:
             err("Failed to get {:s} and {:s}".format(pc_name, sp_name))
             return
@@ -208163,6 +208263,7 @@ class KmallocAllocatedByCommand(GenericCommand):
             pc_name, rip_of_sleep, sp_name, rsp_of_sleep,
         ))
 
+        self.ptrsize = current_arch.ptrsize
         hwbp = None
         with ContextManager.hidden_context():
             try:
@@ -208172,47 +208273,29 @@ class KmallocAllocatedByCommand(GenericCommand):
                 info("Setup is complete. continuing...")
                 gdb.execute("continue")
 
-                if not hwbp.matched or current_arch.pc != rip_of_sleep:
+                if not hwbp.matched or get_register("$pc") != rip_of_sleep:
                     raise gdb.GdbError("Not stopped at the expected sleep syscall return")
-                if riscv:
-                    if is_in_kernel():
-                        raise gdb.GdbError("Expected a userspace syscall return")
-                    self.syscall_pc = rip_of_sleep - 4
-                else:
-                    if get_register("$cs") & 3 != 3 or current_arch.ptrsize != 8:
-                        raise gdb.GdbError("Expected a 64-bit userspace syscall return")
-                    self.syscall_pc = rip_of_sleep - 2
+                if is_in_kernel() or current_arch.ptrsize != self.ptrsize:
+                    raise gdb.GdbError("Expected a {:d}-bit userspace syscall return".format(self.ptrsize * 8))
+                self.syscall_pc = rip_of_sleep - len(current_arch.syscall_insn)
                 self.scratch_start = current_arch.sp
                 self.scratch_end = current_arch.sp
                 self.tested_syscall = set()
-                if is_riscv32():
+                if "mmap2" in self.syscall_table:
                     mmap_name = "mmap2"
                 else:
                     mmap_name = "mmap"
                 self.setup_syscall(mmap_name, [0, 0x10000, 3, 0x8022, -1, 0])
                 scratch = self.continue_syscall(mmap_name)
-                if riscv:
-                    is_negative = -4095 <= u2i(scratch, current_arch.bit_length) < 0
-                else:
-                    is_negative = u2i(scratch) < 0
-                if is_negative:
+                if -4095 <= u2i(scratch, current_arch.bit_length) < 0:
                     raise gdb.GdbError("Could not allocate syscall scratch memory")
                 self.scratch_start = scratch + 0x8000
                 self.scratch_end = scratch + 0x10000
-                if riscv:
-                    gdb.execute("set {:s}={:#x}".format("$sp", self.scratch_start), to_string=True)
-                else:
-                    gdb.execute("set {:s}={:#x}".format("$rsp", self.scratch_start), to_string=True)
-                if riscv:
-                    gdb.execute("set {:s}={:#x}".format("$pc", rip_of_sleep), to_string=True)
-                else:
-                    gdb.execute("set {:s}={:#x}".format("$rip", rip_of_sleep), to_string=True)
+                gdb.execute("set $sp={:#x}".format(self.scratch_start), to_string=True)
+                gdb.execute("set $pc={:#x}".format(rip_of_sleep), to_string=True)
                 hwbp.sp = self.scratch_start
 
-                if riscv:
-                    self.test_syscall_riscv(breakpoints)
-                else:
-                    self.test_syscall(breakpoints)
+                self.test_syscall(breakpoints)
                 info("Syscall test is complete, cleaning up...")
                 self.setup_syscall("exit", [0])
             finally:
