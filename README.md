@@ -142,20 +142,13 @@ For the usage and options of each command, see [docs/COMMANDS.md](docs/COMMANDS.
         - Secure memory scanning is also supported, and you don't have to break in the secure world (unlike ARM64).
         - ![](images/pagewalk-arm-secure.png)
     - RISCV64 / RISCV32
-    - MIPS32 / MIPS64 (Supported: Linux only, 2-Level/3-Level/4-Level, 4KB/16KB/64KB page)
-        - 64-bit PTE on MIPS32 (XPA or 36-bit physical address) is NOT supported.
+    - MIPS32 / MIPS64 (Supported: Linux only, 2-Level to 4-Level, 4KB/16KB/64KB page)
+        - 64-bit PTE on MIPS32 (XPA, etc.) is NOT supported.
     - PPC32 / PPC64 (Supported: POWER Radix/Hash, G3/G4, e500, 44x, 4KB/64KB page)
-        - POWER Hash, and the page tables of e500 and 44x, are Linux only.
-        - G3/G4 shows BAT and the hash table, so the pages not loaded in it are not shown.
+        - POWER Hash, e500 and 44x are Linux only. G3/G4 shows only the pages in the hash table.
     - S390X (Supported: 2-Level to 5-Level, 4KB/1MB/2GB page)
-        - The address spaces of the kernel and the user can overlap, and both are shown. The flags tell which one it is.
-        - The permissions are what the CPU sees. Linux write-protects the clean pages even if they are writable.
-        - 1MB/2GB pages need EDAT, which QEMU TCG does not have, so they are not tested with a running CPU.
-    - LOONGARCH64 (Supported: 2-Level to 5-Level, 4KB/16KB/64KB page, huge page, DMW)
-        - The CSRs are read from `monitor info registers`, so only qemu-system is supported.
-        - The permissions are what the CPU sees. Without the hardware page table walker, Linux clears D of the clean pages even if they are writable.
-        - The direct mapping windows are shown with the whole range of the physical address.
-        - The tables whose entries all map the same page, such as KASAN shadow, are skipped. Use `-i` to include them.
+        - The kernel and user address spaces overlap, so both are shown.
+    - LOONGARCH64 (Supported: 2-Level to 5-Level, 4KB/16KB/64KB page, DMW)
 - `kvmmap`: prints kernel memory map.
     - ![](images/kvmmap.png)
 
@@ -240,7 +233,7 @@ For the usage and options of each command, see [docs/COMMANDS.md](docs/COMMANDS.
 - `ksymaddr-remote-apply`/`vmlinux-to-elf-apply`: applies kallsyms information obtained by `ksymaddr-remote` or `vmlinux-to-elf` to gdb.
     - ![](images/ksymaddr-remote-apply.png)
     - ![](images/vmlinux-to-elf-apply.png)
-    - Once you get a symboled pseudo ELF file, you can reuse and apply it automatically even after rebooting qemu-system.
+    - Once you get a symbolized pseudo ELF file, you can reuse and apply it automatically even after rebooting qemu-system.
     - `vmlinux-to-elf-apply` and `ksymaddr-remote-apply` provide almost the same functionality.
         - `vmlinux-to-elf-apply`: Requires installation of external tools. Create `vmlinux` with symbols.
         - `ksymaddr-remote-apply`: Requires no external tools. Create a blank ELF with embedded symbols only.
@@ -501,7 +494,7 @@ For the usage and options of each command, see [docs/COMMANDS.md](docs/COMMANDS.
             - ![](images/heap-top.png)
         - `heap bins-simple`: displays the heap like pwndbg style.
             - ![](images/heap-bins-simple.png)
-        - `heap parse`: displays the heap like as Pwngdb/angelheap style.
+        - `heap parse`: displays the heap in the style of Pwngdb/angelheap.
             - ![](images/heap-parse.png)
         - `heap try-malloc`
             - ![](images/heap-try-malloc.png)
@@ -519,7 +512,7 @@ For the usage and options of each command, see [docs/COMMANDS.md](docs/COMMANDS.
             - ![](images/heap-extract-heap-addr.png)
         - `heap calc-protected-fd`: calculates a valid value as protected fd.
             - ![](images/heap-calc-protected-fd.png)
-        - `heap visual-heap`: is colorized heap viewer.
+        - `heap visual-heap`: is a colorized heap viewer.
             - ![](images/heap-visual-heap.png)
         - `heap tracer`: has been integrated from `heap-analysis-helper` and rewritten.
             - ![](images/heap-tracer.png)
@@ -547,7 +540,7 @@ For the usage and options of each command, see [docs/COMMANDS.md](docs/COMMANDS.
         - Download and extract `x86-64--uclibc--stable-2025.08-1.tar.bz2` from https://toolchains.bootlin.com/
         - Add `/PATH/TO/x86_64-buildroot-linux-uclibc/bin` to `$PATH`, then build as `x86_64-linux-gcc test.c`.
         - Fix interpreter by `patchelf --set-interpreter /PATH/TO/x86_64-buildroot-linux-uclibc/sysroot/lib/ld64-uClibc.so.0 a.out`.
-- `uclibc-ng-visual-heap`: is colorized heap viewer for uClibc-ng.
+- `uclibc-ng-visual-heap`: is a colorized heap viewer for uClibc-ng.
     - ![](images/uclibc-ng-visual-heap.png)
 - `uclibc-ng-top`, `uclibc-ng-arena`, `uclibc-ng-chunk`, `uclibc-ng-chunks`, `uclibc-ng-parse`, `uclibc-ng-bins-simple`,
   `uclibc-ng-dump-image`, `uclibc-ng-snapshot`, `uclibc-ng-snapshot-compare`: are ports of the same-name `heap` sub-commands.
@@ -718,7 +711,7 @@ For the usage and options of each command, see [docs/COMMANDS.md](docs/COMMANDS.
         - Save the following as `test.js`. It allocates 100 buffers of 0x300 bytes and frees half of them with `gc()`.
           `a=[];for(i=0;i<100;i++)a.push(new ArrayBuffer(0x300));for(i=0;i<100;i+=2)a[i]=null;gc();print(1)`
         - Run `LD_LIBRARY_PATH=. gdb --args ./js -f test.js`, `catch syscall write` and then `run`.
-- `bmalloc-heap-dump`: dumps the old WebKit bmalloc (before it was replaced by mimalloc in 2026/01) free lists and Cache.
+- `bmalloc-heap-dump`: dumps the old WebKit bmalloc (before it was replaced by mimalloc in 2026/01) free lists and per-thread `Cache` objects.
     - ![](images/bmalloc-heap-dump.png)
     - How to test:
         - bmalloc is part of WebKit, so check out the last commit that still has the old allocator and build it alone:

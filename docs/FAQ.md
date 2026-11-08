@@ -32,8 +32,8 @@ This includes the current values of items configurable with `gef config` and use
 ## What is `~/.gdbinit`?
 This is the command file that GDB will execute when it starts up.
 
-By including the following command to load `gef.py`, GEF will be loaded automatically.
-There are two ways to load GEF from `.gdbinit`; either one works.
+Add one of the following commands to `.gdbinit` to load GEF automatically.
+You can import GEF with Python or source `gef.py` directly.
 ```
 # New style
 python sys.path.insert(0, "/home/user/.gef"); from gef import *; Gef.main()
@@ -277,9 +277,9 @@ To use these commands fully, you need to manually install the necessary packages
 
 Notes:
 - To save installation time, the GEF installer does not install `binwalk` by default. This is because it has many package dependencies.
-- The GEF installer does no longer install `bpftool` when run inside a Docker container because `bpftool` is intended to run in the host.
+- The GEF installer no longer installs `bpftool` when run inside a Docker container because `bpftool` is intended to run on the host.
 - The full installers prefer prebuilt `ceccomp` packages and never build it from source. Ubuntu 26.04 and Arch use their native package; APT systems without a native package and with glibc 2.38 or newer try Debian's binary package for the host architecture, skipping it if unavailable. On older systems, neither `ceccomp` nor `seccomp-tools` is installed.
-- The GEF installer does no longer install `vmlinux-to-elf` because in many cases you can use `ks-apply` instead.
+- The GEF installer no longer installs `vmlinux-to-elf` because in many cases you can use `ks-apply` instead.
 
 ## Is there a lighter version with fewer features?
 There is no such version. But you can adjust it yourself.
@@ -324,10 +324,10 @@ This can happen if you are not using the GDB provided by your distribution's pac
 Consider rebuilding GDB from the latest tarball or from the Git repository.
 
 ## How to build GDB?
-- From the latest tarball:
-    - Download latest tarball from https://ftp.gnu.org/gnu/gdb/
+- From a source tarball:
+    - Download a GDB source tarball from https://ftp.gnu.org/gnu/gdb/ (the example below uses 18.1).
     ```
-    tar xf gdb-16.3.tar.xz && cd gdb-16.3
+    tar xf gdb-18.1.tar.xz && cd gdb-18.1
     ./configure --enable-targets=all --with-python=/usr/bin/python3
     make && make install
     ```
@@ -408,7 +408,7 @@ Let's consider debug information and debug symbols separately.
         - If the symbols are already loaded:
             - The `ksymaddr-remote` command will automatically use offsets read from the `vmlinux` file (with rebasing).
         - If the symbols are not loaded yet:
-            - First, load the `vmlinux` symbols using the `file` command.
+            - Load the `vmlinux` symbols using `kload <vmlinux>`.
     - Note:
         - GEF internally uses the addresses resolved with `ksymaddr-remote`, and these results are cached.
         - If `vmlinux` file is already loaded, the results of `ksymaddr-remote` can be replaced with accurate values (with rebasing) and cached.
@@ -429,9 +429,8 @@ You can debug microcontrollers, but the memory map cannot be enumerated via GDB;
 ## Is it possible to debug userland with GEF when using qemu-system?
 Partially, yes.
 
-I think it can be useful when you want to trace before and after a system call.
-However, of course, I do not recommend continually debugging userland with qemu-system.
-This is because many commands are restricted for various reasons.
+This can be useful for tracing execution before and after a system call.
+For extended userland debugging, many commands are restricted.
 Consider setting up `gdbserver` in the guest and connecting from the outside.
 
 Note:
@@ -443,7 +442,7 @@ Use a hardware breakpoint.
 When execution is stopped in the kernel, first ensure you are in the intended process context. If so, you can set a `break *ADDRESS` as usual.
 If execution stopped in the kernel context of a different user process than you expected, or in a kernel thread like `swapper/0`, the virtual address of the process you want is not mapped.
 For this reason, software breakpoints that embed `0xcc` in virtual memory cannot be used in some situations.
-However, hardware breakpoints can be used without any problems.
+Hardware breakpoints avoid this mapping problem when the target supports them.
 
 ## Does GEF support debugging the Android kernel?
 Yes, it is supported, but not fully.
@@ -492,7 +491,7 @@ To permanently disable the pager, use the command `gef config gef.always_no_page
 # About Commands
 
 ## Which command should I start with when debugging the kernel?
-Try `pagewalk` , `ks-apply`, and `kchecksec`.
+Try `pagewalk`, `ks-apply`, and `kchecksec`.
 After that, try `slub-dump`, `ktask` and `ksysctl` as well.
 
 Other commands are less important, so check them with `gef help` if necessary.
@@ -558,7 +557,7 @@ Below is a summary of each.
 - `kt-load`: the alias for `ktypes-load`
 
 ## The kernel-related commands are unstable; sometimes they work fine, sometimes they don't. / The output of `ksymaddr-remote` seems odd.
-This may be due to the GEF's caching mechanism.
+This may be due to GEF's caching mechanism.
 
 GEF resolves kernel symbols using the `ksymaddr-remote` command.
 This command caches the offsets (needed for parsing) under the `/tmp/gef` directory.
@@ -566,7 +565,7 @@ At that time, it uses the kernel version string (its hash) as the cache key.
 
 GEF checks cached offsets against the running kernel and rescans when they do not match.
 The same cache can be shared in a situation like the following:
-- You have built and debug multiple kernels with slightly different build configs (same kernel version)
+- You have built and debugged multiple kernels with slightly different build configs (same kernel version)
 
 If symbol resolution still looks wrong, force a fresh scan before continuing.
 
