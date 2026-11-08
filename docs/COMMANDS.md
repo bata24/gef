@@ -9338,13 +9338,13 @@ The base command to dump page tables.
 ### Syntax
 
 ```text
-usage: pagewalk [-h] {x64,x86,arm,arm64,riscv,mips,ppc,s390x,loongarch} ...
+usage: pagewalk [-h] {x64,x86,arm,arm64,riscv,mips,ppc,s390x,loongarch,sparc} ...
 
 options:
   -h, --help            show this help message and exit
 
 command:
-  {x64,x86,arm,arm64,riscv,mips,ppc,s390x,loongarch}
+  {x64,x86,arm,arm64,riscv,mips,ppc,s390x,loongarch,sparc}
 ```
 
 ## `pagewalk arm`
@@ -9539,6 +9539,34 @@ Dump page tables for s390x.
 
 ```text
 usage: pagewalk s390x [-h] [-L] [-N] [-P] [-Q] [-f REGEX] [-v VADDR] [-p PADDR] [-t VADDR] [-D] [-c] [-n] [-q]
+
+options:
+  -h, --help            show this help message and exit
+  -L, --print-each-level
+                        show all level pagetables.
+  -N, --no-merge        do not merge similar/consecutive address.
+  -P, --sort-by-phys    sort by physical address.
+  -Q, --simple          merge with ignoring physical address consecutivness.
+  -f, --filter REGEX    filter by REGEX pattern.
+  -v, --vrange VADDR    filter by map included specified virtual address.
+  -p, --prange PADDR    filter by map included specified physical address.
+  -t, --trace VADDR     show all level pagetables only associated specified address.
+  -D, --disable-color   disable RWX colored output
+  -c, --use-cache       use previous result.
+  -n, --no-pager        do not use the pager.
+  -q, --quiet           show result only.
+```
+
+## `pagewalk sparc`
+
+Dump page tables for SPARC 32 (SPARC Reference MMU).
+
+- Alias: `pagewalk sparc32`
+
+### Syntax
+
+```text
+usage: pagewalk sparc [-h] [-L] [-N] [-P] [-Q] [-f REGEX] [-v VADDR] [-p PADDR] [-t VADDR] [-D] [-c] [-n] [-q]
 
 options:
   -h, --help            show this help message and exit

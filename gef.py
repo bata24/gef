@@ -13777,6 +13777,30 @@ class QemuMonitor:
         return
 
     @staticmethod
+    def set_sparc32_architecture():
+        """qemu-system-sparc sends no target description, so gdb takes it for i386 and shows broken registers.
+        Set the architecture and the endian before the first access to the registers, from the size of the registers
+        and the format of the monitor."""
+        if not is_remote_debug():
+            return
+        res = gdb.execute("show architecture", to_string=True)
+        if "auto" not in res or "sparc" in res:
+            return
+        try:
+            match = re.search(r'received: "(.*)"', gdb.execute("maintenance packet g", to_string=True))
+            if match is None or len(match.group(1)) != 72 * 4 * 2:
+                return
+            registers = gdb.execute("monitor info registers", to_string=True)
+        except gdb.error:
+            return
+        if not re.search(r"(?m)^psr: [0-9a-f]+ .* wim: ", registers):
+            return
+        gdb.execute("set endian big", to_string=True)
+        gdb.execute("set architecture sparc", to_string=True)
+        info("Detected sparc, big endian")
+        return
+
+    @staticmethod
     @Cache.cache_until_next(per_inferior=True)
     def get_mtree_regions(address_space=None):
         """Return the regions of `monitor info mtree -f` as a list of (start, end, attr, name).
@@ -16589,6 +16613,7 @@ class EventHandler:
             QemuMonitor.set_s390x_endian()
             QemuMonitor.set_loongarch_architecture()
             QemuMonitor.set_sparc64_architecture()
+            QemuMonitor.set_sparc32_architecture()
         return
 
     @staticmethod
@@ -192656,7 +192681,7 @@ class AddrMap:
 
         def is_userland(self):
             if is_x86() or is_riscv32() or is_riscv64() or is_mips32() or is_mips64() or is_ppc32() or is_ppc64() or \
-                    is_s390x() or is_loongarch64():
+                    is_s390x() or is_loongarch64() or is_sparc32():
                 return "USER" in self.flags
             if is_arm32():
                 return "PL0/---" not in self.flags and self.vstart != 0xffff_0000
@@ -192669,7 +192694,7 @@ class AddrMap:
                 return "KERN" in self.flags
             if is_riscv32() or is_riscv64():
                 return "KERN" in self.flags and "KERN/---" not in self.flags
-            if is_mips32() or is_mips64() or is_ppc32() or is_ppc64() or is_s390x() or is_loongarch64():
+            if is_mips32() or is_mips64() or is_ppc32() or is_ppc64() or is_s390x() or is_loongarch64() or is_sparc32():
                 return "USER" not in self.flags
             if is_arm32():
                 return "PL0/---" in self.flags or self.vstart == 0xffff_0000
@@ -193295,7 +193320,7 @@ class PageTable(BufferingOutput):
                 if self.flags.startswith("RWX "):
                     color += " " + Config.get("theme.address_rwx")
             elif is_riscv32() or is_riscv64() or is_mips32() or is_mips64() or is_ppc32() or is_ppc64() or \
-                    is_s390x() or is_loongarch64():
+                    is_s390x() or is_loongarch64() or is_sparc32():
                 match = re.search(r"KERN/([RWX-]{3})", self.flags)
                 if match:
                     perm = match.group(1)
@@ -195813,6 +195838,109 @@ class PageTableLoongarch(PageTable):
             self.pagewalk_tables(pgdl, pgdh)
             self.add_direct_mapping_windows(csrs)
             self.quiet_info_add_out("Aliased tables (skipped): {:d}".format(len(self.aliased_tables)))
+            self.finish_pagewalk()
+
+        self.save_mapping_cache()
+        self.make_out(self.mappings)
+        return
+
+
+class PageTableSparc32(PageTable):
+    """Dump pagetable for sparc32 (SPARC Reference MMU).
+    The gdbstub does not have the MMU registers, so they are read with `lda` on the guest.
+    `monitor info tlb` also shows them, but it sets R of all the PTEs of the context while it shows the mappings.
+    Only the tables of the current context are walked.
+    """
+
+    mapping_cache_fields = ("mappings",)
+
+    # Level 4 is the entry of the context table, and level 3-1 are the tables of 256, 64 and 64 entries.
+    SHIFTS = {4: 32, 3: 24, 2: 18, 1: 12}
+    COUNTS = {3: 256, 2: 64, 1: 64}
+    # (user, supervisor) for each ACC
+    PERMS = [
+        ("R--", "R--"), ("RW-", "RW-"), ("R-X", "R-X"), ("RWX", "RWX"),
+        ("--X", "--X"), ("R--", "RW-"), ("---", "R-X"), ("---", "RWX"),
+    ]
+
+    def read_mmu_registers(self):
+        """Read the control, the context table pointer and the context registers at 0x000, 0x100 and 0x200 of ASI 4.
+        Must be called in virtual memory mode, unlike pagewalk().
+        `lda` is privileged, so PSR.S is set while running it. PSR.ET is cleared not to take an interrupt,
+        whose handler would take the user mode for the kernel mode."""
+        self.mmu_registers = None
+        psr = get_register("$psr")
+        gdb.execute("set $psr = {:#x}".format((psr | 0x80) & ~0x20), to_string=True)
+        try:
+            insns = [
+                0xc480_0080, # lda [%g0] 4, %g2
+                0x8210_2100, # mov 0x100, %g1
+                0xc680_4080, # lda [%g1] 4, %g3
+                0x8210_2200, # mov 0x200, %g1
+                0xc880_4080, # lda [%g1] 4, %g4
+            ]
+            ret = ExecAsm([insn.to_bytes(4, "little") for insn in insns], step=len(insns)).exec_code(check_complete=True)
+        finally:
+            gdb.execute("set $psr = {:#x}".format(psr), to_string=True)
+        if ret is not None:
+            self.mmu_registers = [ret["reg"][name] for name in ("$g2", "$g3", "$g4")]
+        return
+
+    def format_flags(self, pte):
+        user, kern = self.PERMS[(pte >> 2) & 0b111]
+        flags = []
+        if user != "---":
+            flags.append("USER/" + user)
+        flags.append("KERN/" + kern)
+        if not self.args.simple:
+            if pte & 0x20:
+                flags.append("ACCESSED")
+            if pte & 0x40:
+                flags.append("DIRTY")
+            if pte & 0x80:
+                flags.append("CACHEABLE")
+        return " ".join(flags)
+
+    def walk_entry(self, level, addr, entry, va):
+        size = 1 << self.SHIFTS[level]
+        if entry & 0b11 == 2: # PTE
+            paddr = ((entry >> 8) << 12) & ~(size - 1)
+            self.add_leaf(level, addr, entry, va, paddr, size, self.format_flags(entry))
+        elif entry & 0b11 == 1 and level > 1: # PTD
+            self.add_level_line(level, addr, entry, va, va + size, "TABLE")
+            table = (entry & ~0b11) << 4
+            count = self.COUNTS[level - 1]
+            try:
+                entries = struct.unpack(">{:d}I".format(count), self.read_memory(table, count * 4))
+            except gdb.MemoryError:
+                return
+            for i, sub_entry in enumerate(entries):
+                self.walk_entry(level - 1, table + i * 4, sub_entry, va | (i << self.SHIFTS[level - 1]))
+        return
+
+    def pagewalk(self, args):
+        self.prepare_pagewalk(args)
+        if self.mmu_registers is None:
+            self.err_add_out("Failed to read the MMU registers")
+            return
+        control, pointer, context = self.mmu_registers
+        root = (pointer & ~0b11) << 4
+        self.quiet_info_add_out("Control: {:#x}, Context table: {:#x}, Context: {:d}".format(control, root, context))
+        if control & 1 == 0: # E
+            self.quiet_info_add_out("MMU is disabled (the virtual address is used as the physical address)")
+            self.make_out([])
+            return
+
+        if not self.use_cached_mapping("mappings", root=root, context=context):
+            self.PTE = []
+            self.level_lines = {}
+            self.level_counts = {}
+            addr = root + context * 4
+            try:
+                entry, = struct.unpack(">I", self.read_memory(addr, 4))
+                self.walk_entry(4, addr, entry, 0)
+            except gdb.MemoryError:
+                self.err_add_out("Failed to read the context table")
             self.finish_pagewalk()
 
         self.save_mapping_cache()
@@ -199752,6 +199880,7 @@ class PagewalkCommand(GenericCommand, BufferingOutput):
     subparsers.add_parser("ppc")
     subparsers.add_parser("s390x")
     subparsers.add_parser("loongarch")
+    subparsers.add_parser("sparc")
     _syntax_ = parser.format_help()
 
     def __init__(self):
@@ -199771,7 +199900,7 @@ class PagewalkCommand(GenericCommand, BufferingOutput):
     @Decorator.only_if_specific_arch(
         arch=(
             "x86_32", "x86_64", "x86_16", "ARM32", "ARM64", "RISCV32", "RISCV64", "MIPS32", "MIPS64", "PPC32", "PPC64", "S390X",
-            "LOONGARCH64",
+            "LOONGARCH64", "SPARC32",
         ),
     )
     def invoke_subcommand(self, argv):
@@ -199794,6 +199923,8 @@ class PagewalkCommand(GenericCommand, BufferingOutput):
             gdb.execute("pagewalk s390x {}".format(arguments))
         elif is_loongarch64():
             gdb.execute("pagewalk loongarch {}".format(arguments))
+        elif is_sparc32():
+            gdb.execute("pagewalk sparc {}".format(arguments))
         return
 
 
@@ -200013,6 +200144,51 @@ class PagewalkLoongarchCommand(PagewalkCommand):
     @Decorator.only_if_specific_arch(arch=("LOONGARCH64",))
     def do_invoke(self, args):
         self.page_table = PageTableLoongarch()
+
+        with self.page_table:  # context manager for temporary physical-memory mode
+            self.page_table.pagewalk(args)
+        self.out = self.page_table.out
+        self.print_output()
+        return
+
+
+@register_command
+class PagewalkSparc32Command(PagewalkCommand):
+    """Dump page tables for SPARC 32 (SPARC Reference MMU)."""
+
+    _cmdline_ = "pagewalk sparc"
+    _category_ = "06-a. Qemu-system/KGDB Cooperation - Memory Map"
+    _aliases_ = ["pagewalk sparc32"]
+
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("-L", "--print-each-level", action="store_true", help="show all level pagetables.")
+    parser.add_argument("-N", "--no-merge", action="store_true",
+                        help="do not merge similar/consecutive address.")
+    parser.add_argument("-P", "--sort-by-phys", action="store_true",
+                        help="sort by physical address.")
+    parser.add_argument("-Q", "--simple", action="store_true",
+                        help="merge with ignoring physical address consecutivness.")
+    parser.add_argument("-f", "--filter", metavar="REGEX", action="append", type=re.compile, default=[],
+                        help="filter by REGEX pattern.")
+    parser.add_argument("-v", "--vrange", metavar="VADDR", action="append", type=AddressUtil.parse_address, default=[],
+                        help="filter by map included specified virtual address.")
+    parser.add_argument("-p", "--prange", metavar="PADDR", action="append", type=AddressUtil.parse_address, default=[],
+                        help="filter by map included specified physical address.")
+    parser.add_argument("-t", "--trace", metavar="VADDR", action="append", type=AddressUtil.parse_address, default=[],
+                        help="show all level pagetables only associated specified address.")
+    parser.add_argument("-D", "--disable-color", action="store_true", help="disable RWX colored output")
+    parser.add_argument("-c", "--use-cache", action="store_true", help="use previous result.")
+    parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
+    parser.add_argument("-q", "--quiet", action="store_true", help="show result only.")
+    _syntax_ = parser.format_help()
+
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.only_if_specific_gdb_mode(mode=("qemu-system",))
+    @Decorator.only_if_specific_arch(arch=("SPARC32",))
+    def do_invoke(self, args):
+        self.page_table = PageTableSparc32()
+        self.page_table.read_mmu_registers()
 
         with self.page_table:  # context manager for temporary physical-memory mode
             self.page_table.pagewalk(args)

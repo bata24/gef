@@ -149,6 +149,7 @@ For the usage and options of each command, see [docs/COMMANDS.md](docs/COMMANDS.
     - S390X (Supported: 2-Level to 5-Level, 4KB/1MB/2GB page)
         - The kernel and user address spaces overlap, so both are shown.
     - LOONGARCH64 (Supported: 2-Level to 5-Level, 4KB/16KB/64KB page, DMW)
+    - SPARC32 (Supported: SRMMU, 4KB/256KB/16MB page)
 - `kvmmap`: prints kernel memory map.
     - ![](images/kvmmap.png)
 
