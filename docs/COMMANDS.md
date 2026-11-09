@@ -6815,6 +6815,37 @@ options:
                         the address of &tcache.entries[i].
 ```
 
+## `heap timeline`
+
+Record and inspect glibc heap states and emulated allocator calls.
+
+
+### Syntax
+
+```text
+usage: heap timeline [-h] [{start,stop,clear,status,mark}] [values ...]
+
+positional arguments:
+  {start,stop,clear,status,mark}
+  values
+
+options:
+  -h, --help            show this help message and exit
+```
+
+### Examples
+
+```gdb
+heap timeline
+heap timeline status
+```
+
+### Notes
+
+```text
+Start the web viewer when recording begins. Emulate from a selected state in the browser.
+```
+
 ## `heap top`
 
 Display heap top chunk.
@@ -6867,7 +6898,7 @@ Emulate with unicorn to check errors when allocating a zero-initialized chunk.
 ### Syntax
 
 ```text
-usage: heap try-calloc [-h] [-a CALLER_ADDRESS] [-c COMMAND] [-v] SIZE NMEMB
+usage: heap try-calloc [-h] [-a CALLER_ADDRESS] [-c COMMAND] [-B INITIAL_BRK] [-v] SIZE NMEMB
 
 positional arguments:
   SIZE                  the size to be allocated.
@@ -6879,6 +6910,8 @@ options:
                         the memory address of calloc().
   -c, --command COMMAND
                         command to be executed after emulation succeeds, with the memory state temporarily reflected.
+  -B, --initial-brk INITIAL_BRK
+                        [FOR DEVELOPER] used internally in gef, please don't use it.
   -v, --verbose         show internal state.
 ```
 
@@ -6912,7 +6945,7 @@ Emulate with unicorn to check errors when freeing a chunk.
 ### Syntax
 
 ```text
-usage: heap try-free [-h] [-a CALLER_ADDRESS] [-c COMMAND] [-v] ADDRESS
+usage: heap try-free [-h] [-a CALLER_ADDRESS] [-c COMMAND] [-B INITIAL_BRK] [-v] ADDRESS
 
 positional arguments:
   ADDRESS               the memory address to be freed.
@@ -6923,6 +6956,8 @@ options:
                         the memory address of free().
   -c, --command COMMAND
                         command to be executed after emulation succeeds, with the memory state temporarily reflected.
+  -B, --initial-brk INITIAL_BRK
+                        [FOR DEVELOPER] used internally in gef, please don't use it.
   -v, --verbose         show internal state.
 ```
 
@@ -6956,7 +6991,7 @@ Emulate with unicorn to check errors when allocating a chunk.
 ### Syntax
 
 ```text
-usage: heap try-malloc [-h] [-a CALLER_ADDRESS] [-c COMMAND] [-v] SIZE
+usage: heap try-malloc [-h] [-a CALLER_ADDRESS] [-c COMMAND] [-B INITIAL_BRK] [-v] SIZE
 
 positional arguments:
   SIZE                  the size to be allocated.
@@ -6967,6 +7002,8 @@ options:
                         the memory address of malloc().
   -c, --command COMMAND
                         command to be executed after emulation succeeds, with the memory state temporarily reflected.
+  -B, --initial-brk INITIAL_BRK
+                        [FOR DEVELOPER] used internally in gef, please don't use it.
   -v, --verbose         show internal state.
 ```
 
@@ -7000,7 +7037,7 @@ Emulate with unicorn to check errors when re-allocating a chunk.
 ### Syntax
 
 ```text
-usage: heap try-realloc [-h] [-a CALLER_ADDRESS] [-c COMMAND] [-v] ADDRESS SIZE
+usage: heap try-realloc [-h] [-a CALLER_ADDRESS] [-c COMMAND] [-B INITIAL_BRK] [-v] ADDRESS SIZE
 
 positional arguments:
   ADDRESS               the memory address to be re-allocated.
@@ -7012,6 +7049,8 @@ options:
                         the memory address of realloc().
   -c, --command COMMAND
                         command to be executed after emulation succeeds, with the memory state temporarily reflected.
+  -B, --initial-brk INITIAL_BRK
+                        [FOR DEVELOPER] used internally in gef, please don't use it.
   -v, --verbose         show internal state.
 ```
 

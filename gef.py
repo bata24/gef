@@ -111,6 +111,7 @@ import sys
 import tempfile
 import time
 import traceback
+import zlib
 
 
 # argparse translates every string it formats via gettext, but `gettext.find()` does not
@@ -27085,7 +27086,7 @@ class UnicornEmulator:
             self.mmap_entry = None
             self.munmap_entry = None
             self.brk_entry = None
-            self.current_brk = None
+            self.current_brk = kwargs.get("initial_brk")
             if kwargs["emulate_mmap"]:
                 name_table = Syscall.get_syscall_table().name_table
                 if is_x86_32() or is_arm32():
@@ -27094,9 +27095,10 @@ class UnicornEmulator:
                     self.mmap_entry = name_table["mmap"]
                 self.munmap_entry = name_table["munmap"]
                 self.brk_entry = name_table["brk"]
-                self.current_brk = ExecSyscall(
-                    self.brk_entry.nr, [0x0],
-                ).exec_code()["reg"][self.brk_entry.ret_regs[0]]
+                if self.current_brk is None:
+                    self.current_brk = ExecSyscall(
+                        self.brk_entry.nr, [0x0],
+                    ).exec_code()["reg"][self.brk_entry.ret_regs[0]]
             return
 
         def read_gdb_register(self, name):
@@ -31481,6 +31483,8 @@ class GlibcHeapTryFreeCommand(GenericCommand):
                         help="the memory address of free().")
     parser.add_argument("-c", "--command", action="append", default=[],
                         help="command to be executed after emulation succeeds, with the memory state temporarily reflected.")
+    parser.add_argument("-B", "--initial-brk", type=AddressUtil.parse_address,
+                        help="[FOR DEVELOPER] used internally in gef, please don't use it.")
     parser.add_argument("-v", "--verbose", action="store_true", help="show internal state.")
     _syntax_ = parser.format_help()
 
@@ -31752,6 +31756,7 @@ class GlibcHeapTryFreeCommand(GenericCommand):
                 "only_insns": False,
                 "patch_got": True,    # -A
                 "emulate_mmap": True, # -E
+                "initial_brk": getattr(self.args, "initial_brk", None),
             }
             # we read the emulator state directly, so suppress its printed dump unless -v
             emulator = UnicornEmulateCommand.run_in_process(kwargs, suppress_output=not self.args.verbose)
@@ -31794,6 +31799,7 @@ class GlibcHeapTryFreeCommand(GenericCommand):
                 gdb.execute("set {:s}={:#x}".format(regname, regvalue))
             if tag in PatchCommand.PatchInfo.get_tag_set():
                 PatchCommand.PatchInfo.revert_to_tag(tag, silent=not self.args.verbose)
+            Cache.reset_gef_caches()
             if self.args.verbose:
                 info("patch revert ok")
         return
@@ -31822,6 +31828,8 @@ class GlibcHeapTryMallocCommand(GlibcHeapTryFreeCommand):
                         help="the memory address of malloc().")
     parser.add_argument("-c", "--command", action="append", default=[],
                         help="command to be executed after emulation succeeds, with the memory state temporarily reflected.")
+    parser.add_argument("-B", "--initial-brk", type=AddressUtil.parse_address,
+                        help="[FOR DEVELOPER] used internally in gef, please don't use it.")
     parser.add_argument("-v", "--verbose", action="store_true", help="show internal state.")
     _syntax_ = parser.format_help()
 
@@ -31857,6 +31865,8 @@ class GlibcHeapTryReallocCommand(GlibcHeapTryFreeCommand):
                         help="the memory address of realloc().")
     parser.add_argument("-c", "--command", action="append", default=[],
                         help="command to be executed after emulation succeeds, with the memory state temporarily reflected.")
+    parser.add_argument("-B", "--initial-brk", type=AddressUtil.parse_address,
+                        help="[FOR DEVELOPER] used internally in gef, please don't use it.")
     parser.add_argument("-v", "--verbose", action="store_true", help="show internal state.")
     _syntax_ = parser.format_help()
 
@@ -31892,6 +31902,8 @@ class GlibcHeapTryCallocCommand(GlibcHeapTryFreeCommand):
                         help="the memory address of calloc().")
     parser.add_argument("-c", "--command", action="append", default=[],
                         help="command to be executed after emulation succeeds, with the memory state temporarily reflected.")
+    parser.add_argument("-B", "--initial-brk", type=AddressUtil.parse_address,
+                        help="[FOR DEVELOPER] used internally in gef, please don't use it.")
     parser.add_argument("-v", "--verbose", action="store_true", help="show internal state.")
     _syntax_ = parser.format_help()
 
@@ -32720,19 +32732,20 @@ class GlibcHeapSnapshotCommand(GenericCommand):
     _syntax_ = parser.format_help()
 
     @staticmethod
-    def dump_heap(arena):
-        # data
-        try:
-            section = ProcessMap.lookup(arena.heap_base).section
-            region_size = section.page_end - arena.heap_base
-        except Exception:
-            err("Failed to get memory range")
-            return None
+    def dump_heap(arena, metadata_only=False):
+        raw = b""
+        if not metadata_only:
+            try:
+                section = ProcessMap.lookup(arena.heap_base).section
+                region_size = section.page_end - arena.heap_base
+            except Exception:
+                err("Failed to get memory range")
+                return None
 
-        raw = read_memory(arena.heap_base, region_size, safe=True)
-        if raw is None:
-            err("Failed to dump memory")
-            return None
+            raw = read_memory(arena.heap_base, region_size, safe=True)
+            if raw is None:
+                err("Failed to dump memory")
+                return None
 
         # info
         try:
@@ -32867,6 +32880,1744 @@ class GlibcHeapSnapshotCommand(GenericCommand):
             path = self.take_snapshot(arena, i)
             if path:
                 info("Snapshot successful: {:s}".format(path))
+        return
+
+
+class GlibcHeapTimelineEntryBreakpoint(gdb.Breakpoint):
+    """Track allocator calls and install return breakpoints."""
+
+    def __init__(self, name, address, state):
+        super().__init__("*{:#x}".format(address), gdb.BP_BREAKPOINT, internal=True)
+        self.silent = True
+        self.name = name
+        self.state = state
+        return
+
+    def stop(self):
+        if not self.state["enabled"] or gdb.selected_inferior() != self.state["inferior"]:
+            return False
+        tid = Pid.get_tid()
+        if tid in self.state["active"]:
+            return False
+        try:
+            count = 1
+            if self.name in ("calloc", "realloc"):
+                count = 2
+            arguments = []
+            for index in range(count):
+                _, value = current_arch.get_ith_parameter(index)
+                arguments.append(value)
+            self.state["active"].add(tid)
+            bp = GlibcHeapTimelineReturnBreakpoint(self.state, self.name, arguments, tid)
+            self.state["returns"].add(bp)
+        except Exception as e:
+            self.state["active"].discard(tid)
+            warn("Heap timeline tracing failed: {!s}".format(e))
+        return False
+
+
+class GlibcHeapTimelineReturnBreakpoint(gdb.FinishBreakpoint):
+    """Capture allocator results when traced calls return."""
+
+    def __init__(self, state, name, arguments, tid):
+        super().__init__(gdb.newest_frame(), internal=True)
+        self.silent = True
+        self.state = state
+        self.name = name
+        self.arguments = arguments
+        self.tid = tid
+        return
+
+    def stop(self):
+        self.state["active"].discard(self.tid)
+        self.state["returns"].discard(self)
+        if not self.state["enabled"] or gdb.selected_inferior() != self.state["inferior"]:
+            return False
+        if Pid.get_tid() != self.tid:
+            return False
+        try:
+            label = "{:s}({:s})".format(self.name, ", ".join("{:#x}".format(x) for x in self.arguments))
+            result = None
+            if self.name != "free":
+                result = AddressUtil.parse_address(current_arch.return_register)
+                label += " -> {:#x}".format(result)
+            GlibcHeapTimelineCommand.capture(
+                self.state, label, "observed", self.name, self.arguments, result,
+            )
+        except Exception as e:
+            warn("Heap timeline capture failed: {!s}".format(e))
+        return False
+
+    def out_of_scope(self): # noqa: V105
+        self.state["active"].discard(self.tid)
+        self.state["returns"].discard(self)
+        return
+
+
+@register_command
+class GlibcHeapTimelineCommand(GenericCommand):
+    """Record and inspect glibc heap states and emulated allocator calls."""
+
+    _cmdline_ = "heap timeline"
+    _category_ = "05-a. Heap - Glibc"
+
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("action", nargs="?", default="start", choices=("start", "stop", "clear", "status", "mark"))
+    parser.add_argument("-a", "--arena-addr", type=AddressUtil.parse_address,
+                        help="the arena address or number to record. (default: main_arena)")
+    parser.add_argument("values", nargs="*")
+    _syntax_ = parser.format_help()
+
+    _example_ = "\n".join([
+        "{0:s}",
+        "{0:s} -a 1",
+        "{0:s} status",
+    ]).format(_cmdline_)
+
+    _note_ = "Start the web viewer when recording begins. Emulate from a selected state in the browser."
+
+    def __init__(self):
+        super().__init__(complete="use_user_complete")
+        return
+
+    def complete(self, text, word):
+        words = text.split()
+        if not words or (len(words) == 1 and not text.endswith(" ")):
+            return [name for name in ("start", "stop", "clear", "status", "mark")
+                    if name.startswith(word or "")]
+        return []
+
+    states = {}
+    exit_hook_installed = False
+    stop_hook_installed = False
+    html = r"""
+    <!doctype html>
+    <html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>Heap Timeline</title>
+    <style>
+    :root{color-scheme:dark;font:14px/1.5 system-ui,sans-serif;background:#111827;color:#e5e7eb}
+    *{box-sizing:border-box}body{margin:0;--timeline-width:260px}
+    header,main{width:max(100%,calc(var(--timeline-width) + 728px + var(--right-width,400px)))}
+    header{padding:14px 22px;border-bottom:1px solid #374151;display:flex;gap:10px;align-items:center}
+    #historyBack{margin-left:6px}#noteButton{margin-left:auto;display:flex;align-items:center;gap:6px}
+    #noteButton svg{width:17px;height:17px}.note-panel{position:absolute;right:12px;top:56px;z-index:10}
+    .note-panel{width:300px;max-width:calc(100vw - 24px);max-height:calc(100vh - 68px);overflow:auto}
+    .note-panel[hidden]{display:none}.note-panel h2{margin:0 0 8px}
+    .note-panel h3{font-size:11px;margin:10px 0 4px;color:#9ca3af;text-transform:uppercase}
+    .legend{display:grid;grid-template-columns:1fr;gap:4px}
+    .legend span{display:flex;align-items:center;gap:7px}.legend i{width:14px;height:14px;flex:none;border-radius:3px}
+    .legend .observed{background:#34d399}.legend .emulated{background:#c084fc}
+    .legend .failed{background:#f87171}
+    .legend .alloc{background:#15803d}.legend .release{background:#b91c1c}
+    .legend .changed-chunk{background:#164e63}
+    .legend .corrupt{background:#7f1d1d}.legend .data-change{background:#92400e}
+    .legend .chunk{background:linear-gradient(90deg,#34d399,#60a5fa,#fbbf24)}
+    .shortcuts{display:grid;gap:4px;font-size:12px}
+    .shortcuts kbd{display:inline-block;padding:1px 4px;border:1px solid #6b7280;border-radius:3px}
+    .shortcuts kbd{background:#111827;font:11px ui-monospace,monospace}
+    h1{font-size:20px;margin:0}h2{font-size:16px;margin:20px 0 8px}small,.muted{color:#9ca3af}
+    button{background:#374151;color:inherit;border:1px solid #6b7280;border-radius:5px;padding:6px 10px;cursor:pointer}
+    button:hover{background:#4b5563}main{display:grid}
+    main{grid-template-columns:var(--timeline-width) minmax(720px,1fr) 8px minmax(400px,var(--right-width,1.1fr))}
+    main{height:calc(100vh - 57px)}aside{display:flex;flex-direction:column;min-height:0;border-right:1px solid #374151}
+    aside{position:relative}#timelineResize{position:absolute;right:-5px;top:0;bottom:0;width:10px}
+    #timelineResize{z-index:2;cursor:col-resize;touch-action:none}
+    #timelineResize::after{content:"";position:absolute;left:4px;top:0;bottom:0;width:2px;background:#374151}
+    #timelineResize:hover::after,#timelineResize:focus-visible::after{background:#60a5fa}
+    .content,.right{overflow:auto;padding:0 20px 18px}
+    .pane-title{height:30px;display:flex;align-items:center;background:#111827}
+    .pane-title{border-bottom:1px solid #374151;color:#9ca3af;font-size:11px;font-weight:600;letter-spacing:.04em}
+    aside>.pane-title{padding:0 10px}.content>.pane-title,.right>.pane-title{margin:0 -20px 10px;padding:0 20px}
+    .content>.pane-title,.right>.pane-title{position:sticky;top:0;z-index:3}
+    .content>#title{margin:0 0 8px}.panel>h2:first-child{margin:0 0 8px}
+    .right>details.panel:first-of-type{margin-top:0}
+    #rightResize{cursor:col-resize;touch-action:none;position:relative;border-left:1px solid #374151}
+    #rightResize{border-right:1px solid #374151}
+    #rightResize::after{content:"";position:absolute;left:2px;top:0;bottom:0;width:2px;background:#374151}
+    #rightResize:hover::after,#rightResize:focus-visible::after{background:#60a5fa}
+    .timeline-tools{padding:10px;display:grid;gap:6px;border-bottom:1px solid #374151}
+    .timeline-tools input,.timeline-tools select{width:100%;background:#1f2937;color:inherit;
+    border:1px solid #6b7280;padding:6px}
+    .batch-editor{position:relative}.batch-script{display:block;width:100%;min-height:100px;resize:vertical;padding:8px}
+    .batch-script{background:#111827;color:inherit;border:1px solid #6b7280;font:13px/1.5 ui-monospace,monospace}
+    .batch-hint{position:absolute;right:24px;bottom:8px;display:flex;gap:12px;color:#9ca3af}
+    .batch-hint{background:#111827;font:11px ui-monospace,monospace}
+    .batch-script:not(:placeholder-shown)+.batch-hint .batch-tab{display:none}
+    #emulateButton{margin-top:8px}#emulateStatus{display:block;margin-top:6px}
+    #timeline{overflow:auto;min-height:0;flex:1;padding:0 10px}
+    .event{display:block;width:100%;height:52px;text-align:left;margin:0 0 2px;padding:4px 6px;font-size:11px;line-height:1.2}
+    .event{border:1px solid #374151;background:#1f2937}
+    .event.selected{border-color:#60a5fa;background:#1e3a5f}.event.virtual{border-left:4px solid #c084fc}
+    .event.real{border-left:4px solid #34d399}.event.signal{border-left-color:#ef4444}
+    .event.failed{border-left-color:#f87171}
+    .event.group{position:relative;display:flex;align-items:center;height:26px;margin-bottom:4px}
+    .event.group{border-left:4px solid #818cf8;background:#263245}
+    .event.group button{padding:2px 5px;font-size:11px;border:0;background:transparent}
+    .event.group .group-toggle{width:100%;height:100%;padding:2px 26px 2px 2px;text-align:left}
+    .event.group .group-toggle{overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+    .event.group .group-delete{position:absolute;right:3px;top:3px;width:20px;height:20px;padding:0}
+    .event.group .group-delete{color:#fca5a5;line-height:1;opacity:0}
+    .event.group:hover .group-delete,.event.group:focus-within .group-delete{opacity:1}
+    .event b,.event span{display:block;overflow:hidden}.event b{font-size:12px;white-space:nowrap}
+    .event span{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow-wrap:anywhere}
+    .error{color:#fca5a5;white-space:pre-wrap}
+    .panel{border:1px solid #374151;border-radius:6px;padding:12px;margin:12px 0;background:#1f2937}
+    details.panel{padding:8px 12px}summary{cursor:pointer;font-weight:600}details.panel>div{margin-top:10px}
+    .badge{background:#334155;border-radius:8px;padding:1px 6px;margin-left:8px;font-size:12px}
+    table{width:100%;border-collapse:collapse;font:13px/1.5 ui-monospace,monospace}
+    th,td{padding:5px 7px;text-align:left;border-bottom:1px solid #374151}
+    td{overflow-wrap:anywhere}th{color:#9ca3af}tr.changed{background:#164e63}.free{color:#fbbf24}.used{color:#86efac}
+    #chunks{overflow-x:auto}#chunks table{table-layout:fixed;min-width:650px}
+    #chunks th:first-child{width:230px}#chunks th:nth-child(2){width:75px}
+    #chunks th:nth-child(3){width:70px}#chunks th:nth-child(4){width:75px}
+    tr.heap-region td{background:#273449;color:#93c5fd;font-weight:600}
+    .unknown{color:#9ca3af}tr.corrupt td{background:#7f1d1d88}.corrupt-label{color:#fca5a5}
+    .bar{height:6px;min-width:8px;border-radius:4px;background:#34d399}.bar.free{background:#fbbf24}
+    .chain{font:13px/1.6 ui-monospace,monospace;overflow-wrap:anywhere;margin:4px 0}
+    .fold button{width:100%;text-align:left;background:#273449;border:0;color:#93c5fd}
+    tr.chunk-row{cursor:pointer}tr.chunk-row.selected{outline:2px solid #60a5fa;outline-offset:-2px}
+    .dump-controls{display:flex;gap:8px;margin:10px 0}
+    .dump-chunk{border-left:6px solid;margin:10px 0;padding:8px 10px;border-radius:4px}
+    .dump-chunk.selected{outline:1px solid #e5e7eb}.dump-chunk h3{font-size:13px;margin:0 0 6px}
+    .dump-chunk pre{overflow:auto;margin:0;white-space:pre;font:13px/1.5 ui-monospace,monospace}
+    .dump-line{display:block}.dump-word.changed{background:#92400e;color:#fff}
+    .dump-line.old-value{color:#fbbf24}.dump-line.fd-decoded{color:#93c5fd}
+    .dump-address.jump-target{background:#713f12;color:#facc15;font-weight:700;border-radius:3px}
+    .dump-line.gap{color:#9ca3af}
+    .pointer{padding:0;border:0;background:transparent;color:#93c5fd;font:inherit;text-decoration:underline}
+    </style>
+    <header><h1>Heap Timeline</h1><small id="status">Connecting</small>
+    <button id="prevEvent">Prev</button><small id="position"></small>
+    <button id="nextEvent">Next</button><button id="latest">Latest</button>
+    <button id="historyBack" hidden>Back (Esc)</button>
+    <button id="noteButton" aria-expanded="false" aria-controls="notePanel">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+    <circle cx="12" cy="12" r="9"></circle><path d="M12 11v6M12 7h.01"></path></svg>Help</button></header>
+    <div id="notePanel" class="panel note-panel" hidden><h2>Color guide</h2>
+    <h3>Timeline</h3><div class="legend">
+    <span><i class="observed"></i>Observed</span>
+    <span><i class="emulated"></i>Emulated</span>
+    <span><i class="failed"></i>Emulation failed</span></div>
+    <h3>Heap state &amp; emulation</h3><div class="legend">
+    <span><i class="alloc"></i>Allocated now</span>
+    <span><i class="release"></i>Freed now</span>
+    <span><i class="changed-chunk"></i>Changed since previous state</span>
+    <span><i class="corrupt"></i>Corrupt chunk</span></div>
+    <h3>Bins &amp; data</h3><div class="legend">
+    <span><i class="data-change"></i>Changed word</span>
+    <span><i class="chunk"></i>Chunk colors</span></div>
+    <h2>Keys</h2><div class="shortcuts">
+    <span><kbd>↑</kbd><kbd>↓</kbd> Move focus</span></div></div>
+    <main id="main"><aside><div class="pane-title">Timeline</div>
+    <div class="timeline-tools"><input id="eventSearch" placeholder="Address or text">
+    <select id="operationFilter"><option value="all">All operations</option><option value="malloc">malloc</option>
+    <option value="calloc">calloc</option><option value="realloc">realloc</option><option value="free">free</option>
+    <option value="signal">Signals</option><option value="mark">Marks</option></select>
+    <button id="clearIdentity" hidden>Show all chunks</button><small id="timelineMessage" class="error"></small>
+    </div><div id="timeline" tabindex="0" aria-label="Timeline events"></div>
+    <div id="timelineResize" role="separator" tabindex="0" aria-label="Resize timeline"
+    aria-orientation="vertical" aria-valuemin="180" aria-valuenow="260"></div></aside><div class="content">
+    <div class="pane-title">Heap state &amp; emulation</div>
+    <h2 id="title">Waiting for events</h2><div id="summary" class="muted"></div><div id="error" class="error"></div>
+    <section class="panel"><h2 id="emulateTitle">Emulated batch from selected state</h2>
+    <div class="batch-editor"><textarea id="batchScript" class="batch-script" rows="5" spellcheck="false"
+    placeholder="$1 = malloc(0x30); // save pointer&#10;free($1);&#10;free($heapbase+0x400);"></textarea>
+    <span class="batch-hint"><span class="batch-tab">Tab: insert example</span>
+    <span>Ctrl+Enter: run batch</span></span></div>
+    <button id="emulateButton" title="Ctrl+Enter" aria-keyshortcuts="Control+Enter">Emulate batch</button>
+    <small id="emulateStatus" class="muted"></small></section>
+    <section class="panel"><h2>Chunk layout</h2><div id="chunks" tabindex="0" aria-label="Chunk layout"></div></section></div>
+    <div id="rightResize" role="separator" tabindex="0" aria-label="Resize data pane"
+    aria-orientation="vertical" aria-valuemin="400"></div>
+    <div class="right"><div class="pane-title">Bins &amp; data</div>
+    <details class="panel"><summary>Bin chains <span id="binCount" class="badge">0</span></summary>
+    <div id="bins"></div></details>
+    <details class="panel"><summary>Changes from previous observation <span id="changeCount" class="badge">0</span>
+    </summary><div id="changes"></div></details>
+    <section class="panel"><h2>Chunk data</h2><div id="dumpTitle" class="muted">Select a chunk row</div>
+    <div class="dump-controls"><button id="moreLower" hidden>More at lower addresses</button></div>
+    <div id="dumpData"></div><div class="dump-controls"><button id="moreHigher" hidden>More at higher addresses</button></div>
+    </section></div></main>
+    <script>
+    let events=[];let selected=null;let selectedChunk=null;let follow=true;let loading=false;let runningBatch=false;
+    let dumpStart=0;let dumpEnd=0;let dumpVersion=0;let identityFilter=null;
+    let visibleEvents=[];let visibleOffsets=[0];let timelineOrder=[];let searchOrder=[];const historyViews=[];
+    const eventHeight=54;const groupHeight=30;
+    const expanded=new Set();const expandedDumps=new Set();const dumpCache=new Map();
+    const collapsedGroups=new Set();
+    const byId=id=>document.getElementById(id);
+    const hex=value=>value===null?'none':'0x'+value.toString(16);
+    function add(parent,tag,value,klass){const item=document.createElement(tag);item.textContent=value;
+      if(klass)item.className=klass;parent.append(item);return item}
+    function clear(id){byId(id).replaceChildren()}
+    function chunkMap(event){const map=new Map();if(event&&event.heap_base!==null){
+      for(const chunk of event.chunks)map.set(event.heap_base+chunk.start_offset,chunk)}return map}
+    function chunkSize(chunk){return chunk.size_hex||hex(chunk.size)}
+    function describe(chunk){if(!chunk)return 'none';const state=chunk.corrupt?'corrupt':
+      chunk.used===null?'unknown':chunk.used?'in use':'free';
+      return chunkSize(chunk)+' '+state+(chunk.extra?' / '+chunk.extra:'')}
+    function chunkChanged(before,after){return !before||!after||before.size!==after.size||
+      before.used!==after.used||before.corrupt!==after.corrupt||before.data_hash!==after.data_hash}
+    function eventTargets(event){return (event.targets||[]).map(item=>({
+      address:item.address-2*event.ptrsize,kind:item.role,identity:item.identity}))}
+    function previous(event){if(event.parent!==null)return events[event.parent-1];
+      for(let i=event.number-2;i>=0;i--)if(events[i].kind==='observed')return events[i];return null}
+    async function loadDump(event,chunk){const key=event.number+':'+chunk.start_offset;
+      if(!dumpCache.has(key)){const response=await fetch('/api/chunk?event='+event.number+
+          '&offset='+chunk.start_offset);
+        if(!response.ok)throw new Error('Cannot load chunk data');
+        const payload=await response.json();dumpCache.set(key,payload.hex)}
+      return dumpCache.get(key)}
+    function selectChunk(event,index,jumpAddress=null){selectedChunk={number:event.number,index,jumpAddress};
+      dumpStart=Math.max(0,index-1);dumpEnd=Math.min(event.chunks.length-1,index+1);
+      const words=16/event.ptrsize;
+      byId('dumpTitle').textContent='Around '+hex(event.heap_base+event.chunks[index].start_offset)+
+        ' / 16-byte rows, '+(words===2?'two':'four')+' '+event.ptrsize+'-byte words ('+event.endian+'-endian)';
+      const chunks=byId('chunks');let row=chunks.querySelector('tr.chunk-row[data-index="'+index+'"]');
+      if(!row){render();row=chunks.querySelector('tr.chunk-row[data-index="'+index+'"]')}
+      chunks.querySelector('tr.chunk-row.selected')?.classList.remove('selected');
+      row?.classList.add('selected');row?.scrollIntoView({block:'nearest'});
+      showDump(event,true)}
+    function addPointer(parent,event,value,label){let low=0;let high=event.chunks.length-1;let target=-1;
+      if(Number.isSafeInteger(value))while(low<=high){const middle=(low+high)>>1;
+        const start=event.heap_base+event.chunks[middle].start_offset;
+        if(value<start)high=middle-1;else{target=middle;low=middle+1}}
+      if(target>=0){const chunk=event.chunks[target];const start=event.heap_base+chunk.start_offset;
+        const length=Math.min(Math.max(chunk.size,2*event.ptrsize),chunk.captured_size??chunk.size);
+        if(value>=start+length)target=-1}
+      if(target<0){add(parent,'span',label);return}
+      const pointer=add(parent,'button',label,'pointer');pointer.title='Jump to '+hex(value);
+      pointer.onclick=()=>selectChunk(event,target,value)}
+    function drawWords(output,event,chunk,index,data,oldData){const address=event.heap_base+chunk.start_offset;
+      const wordHex=event.ptrsize*2;const rowBytes=16;const rowHex=32;const wordCount=rowBytes/event.ptrsize;
+      const addressWidth=wordHex+4;const reverse=event.endian==='little';
+      const rows=[];for(let pos=0;pos<data.length;pos+=rowHex){const bytes=data.slice(pos,pos+rowHex).match(/../g)||[];
+        const words=[];for(let offset=0;offset<rowHex;offset+=wordHex){const raw=data.slice(pos+offset,pos+offset+wordHex);
+          if(!raw)continue;
+          const value=raw.match(/../g)||[];if(reverse)value.reverse();
+          const word='0x'+value.join('').padStart(wordHex,'0');
+          const old=oldData.slice(pos+offset,pos+offset+wordHex);
+          const comparable=old.length===raw.length;
+          const oldBytes=old.match(/../g)||[];if(reverse)oldBytes.reverse();
+          const oldValue=comparable?'0x'+oldBytes.join('').padStart(wordHex,'0'):'none';
+          words.push({text:word,oldValue,changed:comparable&&raw!==old})}
+        const ascii=bytes.map(byte=>{const value=parseInt(byte,16);return value>=32&&value<=126?
+          String.fromCharCode(value):'.'}).join('');
+        const oldBytes=oldData.slice(pos,pos+rowHex).match(/../g)||[];
+        const oldAscii=oldBytes.map(byte=>{const value=parseInt(byte,16);return value>=32&&value<=126?
+          String.fromCharCode(value):'.'}).join('');
+        rows.push({address:address+pos/2,words,ascii,oldAscii,
+          changed:words.some(word=>word.changed)})}
+      const key=event.number+':'+chunk.start_offset;const preview=index!==selectedChunk.index;
+      const jump=selectedChunk?.number===event.number&&selectedChunk.index===index?selectedChunk.jumpAddress:null;
+      const full=expandedDumps.has(key);
+      const keep=new Set();for(let i=0;i<rows.length;i++){
+        const jumpRow=Number.isSafeInteger(jump)&&rows[i].address<=jump&&jump<rows[i].address+rowBytes;
+        if(full||jumpRow||(preview?i<3||i>=rows.length-2:i<6||i>=rows.length-3||rows[i].changed)){
+          for(let j=Math.max(0,i-1);j<=Math.min(rows.length-1,i+1);j++)keep.add(j)}}
+      let hidden=0;for(let i=0;i<rows.length;i++){
+        if(!keep.has(i)){hidden++;continue}
+        if(hidden){const gap=add(output,'span',hidden+' words hidden (click to expand)','dump-line gap');
+          gap.style.cursor='pointer';gap.onclick=()=>{expandedDumps.add(key);showDump(event)};hidden=0}
+        const line=add(output,'span','','dump-line');
+        const addressLabel=add(line,'span','0x'+rows[i].address.toString(16).padStart(wordHex,'0'),'dump-address');
+        if(Number.isSafeInteger(jump)&&rows[i].address<=jump&&jump<rows[i].address+rowBytes){
+          addressLabel.classList.add('jump-target');addressLabel.title='Jump target '+hex(jump)}
+        add(line,'span',': ');
+        for(const word of rows[i].words){
+          const span=add(line,'span','',word.changed?'dump-word changed':'dump-word');
+          addPointer(span,event,Number(word.text),word.text);
+          add(line,'span','  ')}
+        if(rows[i].words.length<wordCount)add(line,'span',' '.repeat((wordCount-rows[i].words.length)*(wordHex+4)));
+        add(line,'span','|'+rows[i].ascii.padEnd(rowBytes,' ')+'|');
+        const fdAddress=address+2*event.ptrsize;
+        if(rows[i].address<=fdAddress&&fdAddress<rows[i].address+rowBytes&&
+          chunk.fd_decoded!==undefined&&chunk.fd_decoded!==null){
+          const column=(fdAddress-rows[i].address)/event.ptrsize;
+          const padding=addressWidth+column*(wordHex+4)-12;
+          const decodedLine=add(output,'span',' '.repeat(padding)+'fd decoded: ','dump-line fd-decoded');
+          const decoded=Number(chunk.fd_decoded);
+          addPointer(decodedLine,event,decoded,'0x'+decoded.toString(16).padStart(wordHex,'0'))}
+        if(rows[i].changed){const oldLine=add(output,'span',' '.repeat(addressWidth-11)+'Old value: ',
+          'dump-line old-value');
+          for(const word of rows[i].words)add(oldLine,'span',word.oldValue.padEnd(wordHex+2)+'  ');
+          if(rows[i].words.length<wordCount)
+            add(oldLine,'span',' '.repeat((wordCount-rows[i].words.length)*(wordHex+4)));
+          add(oldLine,'span','|'+rows[i].oldAscii.padEnd(rowBytes,' ')+'|')}}
+      if(hidden){const gap=add(output,'span',hidden+' words hidden (click to expand)','dump-line gap');
+        gap.style.cursor='pointer';gap.onclick=()=>{expandedDumps.add(key);showDump(event)}}
+      if(full&&rows.length>12){const button=add(output,'button','Collapse unchanged words');
+        button.onclick=()=>{expandedDumps.delete(key);showDump(event)}}}
+    async function showDump(event,focus=false){const version=++dumpVersion;clear('dumpData');
+      byId('moreLower').hidden=dumpStart===0;byId('moreHigher').hidden=dumpEnd===event.chunks.length-1;
+      for(let i=dumpStart;i<=dumpEnd;i++){const chunk=event.chunks[i];
+        const address=event.heap_base+chunk.start_offset;
+        const hue=((chunk.identity||i)*137.5)%360;
+        const color='hsl('+hue+' 75% 65%)';
+        const block=add(byId('dumpData'),'section','','dump-chunk');
+        block.style.borderLeftColor=color;
+        block.style.backgroundColor='hsla('+hue+',60%,50%,.14)';
+        if(i===selectedChunk.index)block.classList.add('selected');
+        const position=i<selectedChunk.index?'Lower address':
+          i===selectedChunk.index?'Selected':'Higher address';
+        add(block,'h3',position+' / '+hex(address)+' / '+chunkSize(chunk)+
+          (address===event.top?' / top header only':chunk.corrupt?' / corrupted':''));
+        const output=add(block,'pre','Loading...');
+        if(!chunk.captured_size){output.textContent='No captured data';continue}
+        try{const data=await loadDump(event,chunk);if(version!==dumpVersion)return;
+          let oldData='';const base=previous(event);
+          if(base){const old=chunkMap(base).get(address);
+            if(old&&old.captured_size){oldData=await loadDump(base,old);if(version!==dumpVersion)return}}
+          output.textContent='';drawWords(output,event,chunk,i,data,oldData)}
+        catch(error){if(version!==dumpVersion)return;output.textContent=error.message}}
+      if(focus)requestAnimationFrame(()=>{if(version!==dumpVersion)return;
+        const block=byId('dumpData').querySelector('.selected');const pane=block.closest('.right');
+        const target=block.querySelector('.jump-target')||block;
+        pane.scrollTop+=target.getBoundingClientRect().top-pane.getBoundingClientRect().top-12})}
+    function chunkRow(table,event,chunk,index,changed,targets){const row=table.appendChild(document.createElement('tr'));
+      row.classList.add('chunk-row');row.dataset.index=String(index);row.title='Inspect chunk data';
+      if(selectedChunk?.number===event.number&&selectedChunk.index===index)row.classList.add('selected');
+      row.onclick=click=>{const selection=window.getSelection();
+        if(click.target.closest('button')||selection&&!selection.isCollapsed&&
+          row.contains(selection.anchorNode))return;
+        selectChunk(event,index);byId('chunks').focus({preventScroll:true})};
+      if(changed)row.classList.add('changed');
+      if(chunk.corrupt)row.classList.add('corrupt');
+      const address=event.heap_base+chunk.start_offset;
+      const target=targets.find(item=>item.address===address);
+      const marker=target?target.kind:null;
+      if(marker)row.style.backgroundColor=(marker==='alloc'?'#22c55e':'#f87171')+'55';
+      const addressCell=add(row,'td',hex(address)+' ');
+      if(chunk.corrupt){addressCell.style.boxShadow='inset 6px 0 #ef4444';
+        add(addressCell,'strong','CORRUPT','corrupt-label')}
+      if(marker)addressCell.style.boxShadow='inset 6px 0 '+(marker==='alloc'?'#22c55e':'#f87171');
+      const history=add(addressCell,'button','history');history.title='Filter timeline to this chunk';
+      history.onclick=()=>{historyViews.push({selected,selectedChunk:selectedChunk?{...selectedChunk}:null,
+        dumpStart,dumpEnd,identityFilter,search:byId('eventSearch').value,
+        operation:byId('operationFilter').value,follow,timelineScroll:byId('timeline').scrollTop,
+        contentScroll:document.querySelector('.content').scrollTop,
+        rightScroll:document.querySelector('.right').scrollTop});
+        byId('historyBack').hidden=false;identityFilter=chunk.identity;byId('clearIdentity').hidden=false;
+        byId('clearIdentity').textContent='Chunk #'+chunk.identity+' - Show all';
+        byId('timeline').scrollTop=0;applyTimelineFilter()};
+      add(row,'td','+'+hex(address-(chunk.region_base??event.heap_base)));
+      const size=row.appendChild(document.createElement('td'));add(size,'span',chunkSize(chunk));
+      const bar=add(size,'div','','bar'+(chunk.used?'':' free'));
+      bar.style.width=Math.min(100,Math.max(8,Math.log2(chunk.size+1)*5))+'%';
+      const state=chunk.corrupt?'corrupt':chunk.used===null?'unknown':chunk.used?'in use':'free';
+      add(row,'td',state,state==='in use'?'used':state);add(row,'td',chunk.extra)}
+    function rebuildTimelineOrder(){const children=new Map();const groups=new Map();const roots=[];
+      for(const event of events){if(event.deleted)continue;
+        if(event.group_id){if(!groups.has(event.group_id))groups.set(event.group_id,
+            {group:true,id:event.group_id,parent:event.group_parent,events:[],first:event.number});
+          groups.get(event.group_id).events.push(event);continue}
+        if(event.parent===null)roots.push(event);
+        else{if(!children.has(event.parent))children.set(event.parent,[]);
+          children.get(event.parent).push(event)}}
+      for(const group of groups.values()){
+        group.events.sort((a,b)=>a.group_step-b.group_step);
+        if(!children.has(group.parent))children.set(group.parent,[]);
+        children.get(group.parent).push(group)}
+      timelineOrder=[];searchOrder=[];
+      const stack=roots.reverse().map(node=>({node,depth:0,visible:true}));
+      while(stack.length){const {node,depth,visible}=stack.pop();node.viewIndent=depth;
+        if(node.group){if(visible)timelineOrder.push(node);
+          const show=visible&&!collapsedGroups.has(node.id);
+          for(let i=node.events.length-1;i>=0;i--)
+            stack.push({node:node.events[i],depth:depth+1,visible:show});
+          continue}
+        searchOrder.push(node);if(visible)timelineOrder.push(node);
+        const siblings=children.get(node.number)||[];
+        siblings.sort((a,b)=>(a.first||a.number)-(b.first||b.number));
+        for(let i=siblings.length-1;i>=0;i--)
+          stack.push({node:siblings[i],depth:depth+1,visible})}}
+    function matchingEvents(){const query=byId('eventSearch').value.trim().toLowerCase();
+      const operation=byId('operationFilter').value;
+      if(!query&&operation==='all'&&identityFilter===null)return timelineOrder;
+      return searchOrder.filter(event=>{
+        if(operation!=='all'&&event.operation!==operation)return false;
+        if(identityFilter!==null){const base=previous(event);
+          const old=base?.chunks.find(chunk=>chunk.identity===identityFilter);
+          const now=event.chunks.find(chunk=>chunk.identity===identityFilter);
+          const target=(event.targets||[]).some(item=>item.identity===identityFilter);
+          if(!target&&!now&&!old)return false;
+          if(!target&&old&&now&&!chunkChanged(old,now))return false}
+        if(query&&!event.label.toLowerCase().includes(query)&&
+          !event.display_id.toLowerCase().includes(query)&&
+          !event.chunks.some(chunk=>hex(event.heap_base+chunk.start_offset).includes(query)))return false;
+        return true})}
+    function timelineIndex(offset){let low=0;let high=visibleEvents.length;
+      while(low<high){const middle=(low+high)>>1;
+        if(visibleOffsets[middle+1]<=offset)low=middle+1;else high=middle}
+      return low}
+    function renderTimeline(){visibleEvents=matchingEvents();const timeline=byId('timeline');
+      visibleOffsets=[0];for(const event of visibleEvents)
+        visibleOffsets.push(visibleOffsets.at(-1)+(event.group?groupHeight:eventHeight));
+      const scroll=timeline.scrollTop;const height=timeline.clientHeight||600;
+      const first=Math.max(0,timelineIndex(scroll)-5);
+      const last=Math.min(visibleEvents.length,timelineIndex(scroll+height)+12);
+      timeline.replaceChildren();const top=add(timeline,'div','');top.style.height=visibleOffsets[first]+'px';
+      for(let i=first;i<last;i++){const event=visibleEvents[i];
+        if(event.group){const row=add(timeline,'div','','event group');
+          const indent=Math.min(event.viewIndent,8)*16;
+          row.style.marginLeft=indent+'px';row.style.width='calc(100% - '+indent+'px)';
+          const closed=collapsedGroups.has(event.id);
+          const toggle=add(row,'button',event.id+' ('+event.events.length+')','group-toggle');
+          toggle.setAttribute('aria-expanded',String(!closed));
+          toggle.title=(closed?'Expand ':'Collapse ')+event.id;
+          toggle.onclick=()=>{if(closed)collapsedGroups.delete(event.id);else collapsedGroups.add(event.id);
+            rebuildTimelineOrder();if(!timelineOrder.some(item=>item.number===selected)){
+              let parent=event.parent;
+              while(parent&&!timelineOrder.some(item=>item.number===parent))parent=events[parent-1]?.parent;
+              selected=parent||events.find(item=>!item.deleted)?.number||null;follow=false}
+            render();byId('timeline').focus({preventScroll:true})};
+          const remove=add(row,'button','×','group-delete');
+          remove.title='Delete this batch and its descendants';
+          remove.setAttribute('aria-label',remove.title);
+          remove.onclick=()=>deleteGroup(event);
+          continue}
+        const button=add(timeline,'button','','event '+(event.kind==='observed'?'real':'virtual')+
+          (event.operation==='signal'?' signal':'')+(event.kind==='failed'?' failed':'')+
+          (event.number===selected?' selected':''));
+        const indent=Math.min(event.viewIndent,8)*16;
+        button.style.marginLeft=indent+'px';button.style.width='calc(100% - '+indent+'px)';
+        button.title=event.display_id+' '+event.label;
+        add(button,'b',event.display_id+'  '+(event.operation||event.kind));
+        add(button,'span',event.label);
+        button.onclick=()=>{selected=event.number;follow=false;render();byId('timeline').focus({preventScroll:true})}}
+      const bottom=add(timeline,'div','');
+      bottom.style.height=visibleOffsets[visibleEvents.length]-visibleOffsets[last]+'px';
+      if(!visibleEvents.length)add(timeline,'p','No matching events','muted');
+      timeline.scrollTop=scroll;
+      const position=visibleEvents.filter(event=>!event.group).findIndex(event=>event.number===selected);
+      const count=visibleEvents.filter(event=>!event.group).length;
+      byId('position').textContent=position<0?'0 / '+count:position+1+' / '+count}
+    function applyTimelineFilter(){follow=false;const matches=matchingEvents();
+      if(matches.length&&!matches.some(event=>event.number===selected)){
+        const prior=matches.filter(event=>!event.group&&event.number<=selected);
+        selected=(prior.at(-1)||matches[0]).number;follow=false;
+        render();return}
+      renderTimeline()}
+    function jumpEvent(delta){const index=visibleEvents.findIndex(event=>event.number===selected);
+      if(!visibleEvents.length)return;
+      let next=Math.max(0,Math.min(visibleEvents.length-1,index+delta));
+      while(visibleEvents[next]?.group&&next+delta>=0&&next+delta<visibleEvents.length)next+=delta;
+      if(visibleEvents[next]?.group)return;
+      selected=visibleEvents[next].number;follow=false;
+      const timeline=byId('timeline');const rowTop=visibleOffsets[next];const rowBottom=visibleOffsets[next+1];
+      if(rowTop<timeline.scrollTop)timeline.scrollTop=rowTop;
+      else if(rowBottom>timeline.scrollTop+timeline.clientHeight)
+        timeline.scrollTop=rowBottom-timeline.clientHeight;
+      render()}
+    function render(){renderTimeline();clear('chunks');clear('bins');clear('changes');clear('error');
+      const event=events[selected-1];if(!event)return;
+      if(!selectedChunk||selectedChunk.number!==event.number){
+        selectedChunk=null;dumpVersion++;byId('dumpTitle').textContent='Select a chunk row';
+        clear('dumpData');byId('moreLower').hidden=true;byId('moreHigher').hidden=true}
+      byId('title').textContent=event.display_id+'  '+event.label;
+      byId('emulateTitle').textContent='Emulated batch from '+event.display_id;
+      byId('emulateButton').disabled=runningBatch||!event.replay_ready;
+      if(!runningBatch)byId('emulateStatus').textContent=event.replay_ready?'':'Snapshot unavailable for this state';
+      byId('summary').textContent=event.kind+' / arena '+event.arena_name+' / thread '+event.thread_id+
+        ' / heap base '+hex(event.heap_base)+' / top '+hex(event.top)+' / '+event.regions.length+
+        ' heaps / '+event.chunks.length+' chunks';
+      if(event.error)add(byId('error'),'p',event.error);
+      const base=previous(event);const before=chunkMap(base);const after=chunkMap(event);
+      const targets=eventTargets(event);
+      const changedAddresses=new Set([...before.keys(),...after.keys()].filter(address=>
+        chunkChanged(before.get(address),after.get(address))));
+      const visible=new Set();
+      for(let i=0;i<event.chunks.length;i++)if(i===0||event.chunks[i].region_base!==event.chunks[i-1].region_base)
+        visible.add(i);
+      if(base){for(const address of changedAddresses){
+        let index=event.chunks.findIndex(chunk=>event.heap_base+chunk.start_offset>=address);
+        if(index<0)index=event.chunks.length-1;
+        for(let i=Math.max(0,index-3);i<=Math.min(event.chunks.length-1,index+3);i++)visible.add(i)}
+        if(selectedChunk&&selectedChunk.number===event.number)visible.add(selectedChunk.index);
+        for(const target of targets){const index=event.chunks.findIndex(chunk=>
+          event.heap_base+chunk.start_offset===target.address);
+          if(index>=0)visible.add(index)}}
+      if(event.top===null&&!event.chunks.length){add(byId('chunks'),'p','Heap is not initialized','muted')}
+      else{const table=byId('chunks').appendChild(document.createElement('table'));
+        const head=table.appendChild(document.createElement('tr'));
+        for(const name of ['Address','Offset','Size','State','Bin'])add(head,'th',name);
+        for(let i=0;i<event.chunks.length;){
+          if(!base||visible.has(i)){
+            const chunk=event.chunks[i];
+            if(event.regions.length>1&&
+              (i===0||chunk.region_base!==event.chunks[i-1].region_base)){
+              const regionRow=table.appendChild(document.createElement('tr'));regionRow.className='heap-region';
+              const cell=regionRow.appendChild(document.createElement('td'));cell.colSpan=5;
+              cell.textContent='Heap region '+hex(chunk.region_base)}
+            chunkRow(table,event,chunk,i,changedAddresses.has(event.heap_base+chunk.start_offset),targets);
+            i++;continue}
+          const start=i;while(i<event.chunks.length&&!visible.has(i))i++;
+          const key=event.number+':'+start+':'+i;const count=i-start;
+          const row=table.appendChild(document.createElement('tr'));row.className='fold';
+          const cell=row.appendChild(document.createElement('td'));cell.colSpan=5;
+          const button=add(cell,'button',(expanded.has(key)?'Hide ':'Show ')+count+' unchanged chunks');
+          button.onclick=()=>{if(expanded.has(key))expanded.delete(key);else expanded.add(key);render()};
+          if(expanded.has(key))for(let j=start;j<i;j++)chunkRow(table,event,event.chunks[j],j,false,targets)}}
+      let binCount=0;for(const [name,groups] of Object.entries(event.bins)){
+        for(const [index,chain] of Object.entries(groups)){binCount++;
+          add(byId('bins'),'div',name+'['+index+']: '+chain.map(value=>
+            typeof value==='number'?hex(value):value).join(' -> '),'chain')}}
+      byId('binCount').textContent=binCount;
+      if(!binCount)add(byId('bins'),'p','Empty','muted');
+      if(!base){byId('changeCount').textContent=0;
+        add(byId('changes'),'p','No previous state','muted');return}
+      add(byId('changes'),'small','Compared with '+base.display_id+'  '+base.label);
+      const addresses=[...new Set([...before.keys(),...after.keys()])].sort((a,b)=>a-b);
+      let changeCount=0;for(const address of addresses){const a=before.get(address);const b=after.get(address);
+        if(a&&b&&a.size===b.size&&a.used===b.used&&a.corrupt===b.corrupt&&
+          a.extra===b.extra&&a.data_hash===b.data_hash)continue;
+        changeCount++;const detail=a&&b&&a.data_hash!==b.data_hash?' / data changed':'';
+        add(byId('changes'),'div',hex(address)+'  '+describe(a)+' -> '+describe(b)+detail,'chain')}
+      if(base.top!==event.top){changeCount++;
+        add(byId('changes'),'div','top: '+hex(base.top)+' -> '+hex(event.top),'chain')}
+      for(const name of new Set([...Object.keys(base.bins),...Object.keys(event.bins)])){
+        const old=base.bins[name]||{};const now=event.bins[name]||{};
+        for(const index of new Set([...Object.keys(old),...Object.keys(now)])){
+          const a=old[index]||[];const b=now[index]||[];
+          if(JSON.stringify(a)===JSON.stringify(b))continue;changeCount++;
+          add(byId('changes'),'div',name+'['+index+']: '+a.map(hex).join(' -> ')+
+            ' => '+b.map(hex).join(' -> '),'chain')}}
+      byId('changeCount').textContent=changeCount;
+      if(!changeCount)add(byId('changes'),'p','No changes','muted')}
+    function applyDeleted(numbers){let changed=false;const removed=new Set(numbers);
+      for(const number of removed){const event=events[number-1];if(!event||event.deleted)continue;
+        event.deleted=true;event.replay_ready=false;event.chunks=[];event.bins={};event.targets=[];
+        for(const key of dumpCache.keys())if(key.startsWith(number+':'))dumpCache.delete(key);
+        changed=true}
+      if(removed.has(selected)){
+        let parent=events[selected-1]?.parent;
+        while(parent&&events[parent-1]?.deleted)parent=events[parent-1]?.parent;
+        selected=parent||events.find(event=>!event.deleted)?.number||null;follow=false}
+      for(const view of historyViews)if(removed.has(view.selected)){
+        let parent=events[view.selected-1]?.parent;
+        while(parent&&events[parent-1]?.deleted)parent=events[parent-1]?.parent;
+        view.selected=parent||events.find(event=>!event.deleted)?.number||null;
+        view.selectedChunk=null}
+      if(selectedChunk&&removed.has(selectedChunk.number)){selectedChunk=null;dumpVersion++}
+      return changed}
+    async function deleteGroup(group){const message=byId('timelineMessage');message.textContent='Deleting...';
+      try{const response=await fetch('/api/batch/delete',{method:'POST',
+          headers:{'Content-Type':'application/json'},body:JSON.stringify({group:group.id})});
+        const result=await response.json();if(!response.ok)throw new Error(result.error||'Delete failed');
+        applyDeleted(result.deleted);collapsedGroups.delete(group.id);rebuildTimelineOrder();render();
+        byId('timeline').focus({preventScroll:true});
+        message.textContent='Deleted '+group.id}
+      catch(error){message.textContent=error.message}}
+    async function refresh(){if(loading)return;loading=true;try{const after=events.at(-1)?.number??0;
+        const response=await fetch('/api/events?after='+after,{cache:'no-store'});
+        if(!response.ok)throw new Error('Connection failed');const data=await response.json();
+        for(const event of data.events)events.push(event);
+        const changed=applyDeleted(data.deleted||[]);
+        if(data.events.length||changed)rebuildTimelineOrder();
+        byId('status').textContent=(data.recording?'Recording':'Stopped')+' / '+
+          events.filter(event=>!event.deleted).length+' events';
+        if(follow||!events[selected-1])selected=events.findLast(event=>!event.deleted)?.number??null;
+        if(data.events.length||changed){render();if(follow){const index=visibleEvents.findIndex(event=>event.number===selected);
+            byId('timeline').scrollTop=visibleOffsets[Math.max(0,index-4)]||0;renderTimeline()}}}
+      catch(error){byId('status').textContent='Disconnected'}
+      finally{loading=false}}
+    byId('latest').onclick=()=>{follow=true;identityFilter=null;byId('clearIdentity').hidden=true;
+      byId('eventSearch').value='';byId('operationFilter').value='all';
+      selected=events.findLast(event=>!event.deleted)?.number??null;byId('timeline').scrollTop=0;render();
+      const index=visibleEvents.findIndex(event=>event.number===selected);
+      byId('timeline').scrollTop=visibleOffsets[Math.max(0,index-4)]||0;renderTimeline()};
+    async function restoreHistory(){if(!historyViews.length)return;
+      const view=historyViews.pop();byId('historyBack').hidden=!historyViews.length;
+      selected=view.selected;selectedChunk=view.selectedChunk;dumpStart=view.dumpStart;dumpEnd=view.dumpEnd;
+      identityFilter=view.identityFilter;follow=view.follow;
+      byId('eventSearch').value=view.search;byId('operationFilter').value=view.operation;
+      byId('clearIdentity').hidden=identityFilter===null;
+      if(identityFilter!==null)byId('clearIdentity').textContent='Chunk #'+identityFilter+' - Show all';
+      byId('timeline').scrollTop=view.timelineScroll;render();
+      if(selectedChunk){const event=events[selectedChunk.number-1];if(event)await showDump(event)}
+      byId('timeline').scrollTop=view.timelineScroll;renderTimeline();
+      document.querySelector('.content').scrollTop=view.contentScroll;
+      document.querySelector('.right').scrollTop=view.rightScroll}
+    byId('historyBack').onclick=restoreHistory;
+    byId('noteButton').onclick=()=>{const panel=byId('notePanel');panel.hidden=!panel.hidden;
+      byId('noteButton').setAttribute('aria-expanded',String(!panel.hidden))};
+    function resizeTimeline(width){
+      const value=Math.round(Math.max(180,width));
+      document.body.style.setProperty('--timeline-width',value+'px');
+      byId('timelineResize').setAttribute('aria-valuenow',value)}
+    function resizeRight(width){
+      const value=Math.round(Math.max(400,width));
+      document.body.style.setProperty('--right-width',value+'px');
+      byId('rightResize').setAttribute('aria-valuenow',value)}
+    const timelineResize=byId('timelineResize');
+    timelineResize.onpointerdown=event=>{timelineResize.setPointerCapture(event.pointerId);
+      document.body.style.userSelect='none';document.body.style.cursor='col-resize'};
+    timelineResize.onpointermove=event=>{if(timelineResize.hasPointerCapture(event.pointerId)){
+      resizeTimeline(event.clientX-byId('main').getBoundingClientRect().left)}};
+    timelineResize.onpointerup=event=>{resizeTimeline(event.clientX-byId('main').getBoundingClientRect().left);
+      timelineResize.releasePointerCapture(event.pointerId)};
+    timelineResize.onlostpointercapture=()=>{document.body.style.userSelect='';document.body.style.cursor=''};
+    timelineResize.onkeydown=event=>{if(event.key!=='ArrowLeft'&&event.key!=='ArrowRight')return;
+      event.preventDefault();const width=document.querySelector('aside').getBoundingClientRect().width;
+      resizeTimeline(width+(event.key==='ArrowRight'?20:-20))};
+    const rightResize=byId('rightResize');
+    rightResize.onpointerdown=event=>{rightResize.setPointerCapture(event.pointerId);
+      document.body.style.userSelect='none';document.body.style.cursor='col-resize'};
+    rightResize.onpointermove=event=>{if(rightResize.hasPointerCapture(event.pointerId)){
+      resizeRight(byId('main').getBoundingClientRect().right-event.clientX)}};
+    rightResize.onpointerup=event=>{resizeRight(byId('main').getBoundingClientRect().right-event.clientX);
+      rightResize.releasePointerCapture(event.pointerId)};
+    rightResize.onlostpointercapture=()=>{document.body.style.userSelect='';document.body.style.cursor=''};
+    rightResize.onkeydown=event=>{if(event.key!=='ArrowLeft'&&event.key!=='ArrowRight')return;
+      event.preventDefault();const width=document.querySelector('.right').getBoundingClientRect().width;
+      resizeRight(width+(event.key==='ArrowLeft'?20:-20))};
+    rightResize.setAttribute('aria-valuenow',Math.round(document.querySelector('.right').getBoundingClientRect().width));
+    window.addEventListener('resize',()=>{
+      timelineResize.setAttribute('aria-valuenow',Math.round(document.querySelector('aside').getBoundingClientRect().width));
+      rightResize.setAttribute('aria-valuenow',Math.round(document.querySelector('.right').getBoundingClientRect().width))});
+    document.addEventListener('keydown',event=>{if(event.key!=='Escape')return;
+      if(!byId('notePanel').hidden){byId('notePanel').hidden=true;
+        byId('noteButton').setAttribute('aria-expanded','false');return}
+      if(historyViews.length)restoreHistory()});
+    byId('prevEvent').onclick=()=>jumpEvent(-1);
+    byId('nextEvent').onclick=()=>jumpEvent(1);
+    byId('clearIdentity').onclick=()=>{identityFilter=null;byId('clearIdentity').hidden=true;applyTimelineFilter()};
+    byId('eventSearch').oninput=()=>{byId('timeline').scrollTop=0;applyTimelineFilter()};
+    byId('operationFilter').onchange=()=>{byId('timeline').scrollTop=0;applyTimelineFilter()};
+    byId('timeline').onscroll=()=>renderTimeline();
+    byId('timeline').onkeydown=event=>{if(event.key!=='ArrowUp'&&event.key!=='ArrowDown')return;
+      if(event.altKey||event.ctrlKey||event.metaKey||event.shiftKey||event.isComposing)return;
+      event.preventDefault();jumpEvent(event.key==='ArrowDown'?1:-1);
+      byId('timeline').focus({preventScroll:true})};
+    byId('chunks').onkeydown=event=>{if(event.key!=='ArrowUp'&&event.key!=='ArrowDown')return;
+      if(event.altKey||event.ctrlKey||event.metaKey||event.shiftKey||event.isComposing)return;
+      const selection=window.getSelection();
+      if(selection&&!selection.isCollapsed&&byId('chunks').contains(selection.anchorNode))return;
+      const current=events[selected-1];if(!current?.chunks.length)return;
+      event.preventDefault();const step=event.key==='ArrowDown'?1:-1;
+      const index=selectedChunk?.number===current.number?selectedChunk.index:step>0?-1:current.chunks.length;
+      const next=Math.max(0,Math.min(current.chunks.length-1,index+step));
+      if(next===index)return;
+      selectChunk(current,next);byId('chunks').focus({preventScroll:true})};
+    byId('emulateButton').onclick=async()=>{const button=byId('emulateButton');
+      const script=byId('batchScript').value;if(!script.trim()){
+        byId('emulateStatus').textContent='Enter a batch script';return}
+      runningBatch=true;button.disabled=true;byId('emulateStatus').textContent='Emulating batch...';follow=false;
+      try{const response=await fetch('/api/emulate-batch',{method:'POST',
+          headers:{'Content-Type':'application/json'},body:JSON.stringify({event:selected,script})});
+        const result=await response.json();if(!response.ok)throw new Error(result.error||'Batch failed');
+        const numbers=result.events||[];const last=numbers.at(-1);
+        if(!last)throw new Error(result.error||'No events were created');
+        for(let attempt=0;attempt<30&&!events[last-1];attempt++){
+          await refresh();if(!events[last-1])await new Promise(resolve=>setTimeout(resolve,100))}
+        if(!events[last-1])throw new Error('The new events were not received');
+        identityFilter=null;byId('clearIdentity').hidden=true;
+        byId('eventSearch').value='';byId('operationFilter').value='all';
+        selected=last;render();
+        const index=visibleEvents.findIndex(event=>event.number===selected);
+        byId('timeline').scrollTop=visibleOffsets[Math.max(0,index-3)]||0;renderTimeline();
+        const name=events[last-1].display_id;
+        byId('emulateStatus').textContent=result.error?
+          'Stopped at '+name+': '+result.error:'Emulated '+numbers.length+' calls at '+name}
+      catch(error){byId('emulateStatus').textContent=error.message}
+      finally{runningBatch=false;button.disabled=!events[selected-1]?.replay_ready}};
+    byId('batchScript').onkeydown=event=>{if(event.key==='Tab'&&!event.shiftKey&&!event.altKey&&
+        !event.ctrlKey&&!event.metaKey&&!event.isComposing&&!event.currentTarget.value.trim()){
+        event.preventDefault();const editor=event.currentTarget;editor.value=editor.placeholder;
+        editor.setSelectionRange(editor.value.length,editor.value.length);return}
+      if(event.key!=='Enter'||!event.ctrlKey||event.repeat||
+        event.isComposing||event.altKey||event.metaKey||event.shiftKey)return;
+      const button=byId('emulateButton');if(button.disabled)return;
+      event.preventDefault();button.click()};
+    byId('moreLower').onclick=()=>{if(!selectedChunk)return;dumpStart=Math.max(0,dumpStart-1);
+      const event=events[selectedChunk.number-1];if(event)showDump(event)};
+    byId('moreHigher').onclick=()=>{if(!selectedChunk)return;
+      const event=events[selectedChunk.number-1];
+      if(event){dumpEnd=Math.min(event.chunks.length-1,dumpEnd+1);showDump(event)}};
+    setInterval(refresh,1000);refresh();
+    </script></html>
+    """.replace("\n    ", "\n").strip()
+
+    @staticmethod
+    def start_server(state):
+        """Serve the embedded viewer and its state and batch endpoints."""
+        if state["server"] is not None:
+            return state["url"]
+        import http.server
+        import threading
+        import urllib.parse
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                """Serve the viewer, recorded events, and chunk bytes."""
+                path, _, query = self.path.partition("?")
+                if path == "/":
+                    body = GlibcHeapTimelineCommand.html.encode("utf-8")
+                    content_type = "text/html; charset=utf-8"
+                elif path == "/api/events":
+                    after_text = urllib.parse.parse_qs(query).get("after", ["0"])[0]
+                    if not after_text.isdecimal():
+                        self.send_error(400)
+                        return
+                    after = int(after_text)
+                    payload = {"events": state["events"][after:], "recording": state["enabled"],
+                               "deleted": sorted(state["deleted"])}
+                    body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+                    content_type = "application/json; charset=utf-8"
+                elif path == "/api/chunk":
+                    params = urllib.parse.parse_qs(query)
+                    try:
+                        number = int(params["event"][0])
+                        offset = int(params["offset"][0])
+                        digest = state["data"][number][offset]
+                        compressed, stored = state["blobs"][digest]
+                    except (KeyError, IndexError, ValueError):
+                        self.send_error(404)
+                        return
+                    data = stored
+                    if compressed:
+                        data = zlib.decompress(stored)
+                    body = json.dumps({"hex": data.hex()}).encode("ascii")
+                    content_type = "application/json; charset=utf-8"
+                else:
+                    self.send_error(404)
+                    return
+                self.send_response(200)
+                self.send_header("Content-Type", content_type)
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                try:
+                    self.wfile.write(body)
+                except BrokenPipeError:
+                    pass
+                return
+
+            def do_POST(self):
+                """Dispatch batch operations to the GDB event loop."""
+                if self.path not in ("/api/emulate-batch", "/api/batch/delete"):
+                    self.send_error(404)
+                    return
+                try:
+                    batch = self.path == "/api/emulate-batch"
+                    length = int(self.headers.get("Content-Length", "0"))
+                    limit = 1024
+                    if batch:
+                        limit = 131072
+                    if not 0 < length <= limit:
+                        raise ValueError("Invalid request size")
+                    request = json.loads(self.rfile.read(length))
+                    if batch:
+                        source_number = int(request["event"])
+                        script = request["script"]
+                    else:
+                        group_id = request["group"]
+                    result = {}
+                    done = threading.Event()
+
+                    def perform():
+                        try:
+                            if batch:
+                                result.update(GlibcHeapTimelineCommand.emulate_batch(state, source_number, script))
+                            else:
+                                result["deleted"] = GlibcHeapTimelineCommand.delete_batch(state, group_id)
+                        except Exception as e:
+                            result["error"] = str(e)
+                        finally:
+                            done.set()
+                        return
+
+                    gdb.post_event(perform)
+                    timeout = 60
+                    if batch:
+                        timeout = 300
+                    if not done.wait(timeout):
+                        result = {"error": "GDB did not complete the emulation"}
+                    status = 409
+                    if (batch and "events" in result) or (not batch and "deleted" in result):
+                        status = 200
+                except (KeyError, ValueError, TypeError, RuntimeError) as e:
+                    result = {"error": str(e)}
+                    status = 400
+                body = json.dumps(result).encode("utf-8")
+                self.send_response(status)
+                self.send_header("Content-Type", "application/json; charset=utf-8")
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                try:
+                    self.wfile.write(body)
+                except BrokenPipeError:
+                    pass
+                return
+
+            def log_message(self, format, *args):
+                return
+
+        server = http.server.ThreadingHTTPServer(("0.0.0.0", 61234), Handler)
+        server.daemon_threads = True
+        state["server"] = server
+        state["url"] = "http://127.0.0.1:{:d}/".format(server.server_port)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        return state["url"]
+
+    @staticmethod
+    def stop_server(state):
+        if state["server"] is None:
+            return
+        state["server"].shutdown()
+        state["server"].server_close()
+        state["server"] = None
+        state["url"] = None
+        return
+
+    @staticmethod
+    def stop_recording(state):
+        state["enabled"] = False
+        for bp in state["breakpoints"] + list(state["returns"]):
+            if bp.is_valid():
+                bp.delete()
+        state["breakpoints"].clear()
+        state["returns"].clear()
+        state["active"].clear()
+        return
+
+    @staticmethod
+    def on_exit(event):
+        state = GlibcHeapTimelineCommand.states.get(event.inferior)
+        if state is not None:
+            GlibcHeapTimelineCommand.stop_recording(state)
+        return
+
+    @staticmethod
+    def on_stop(event):
+        if not isinstance(event, gdb.SignalEvent):
+            return
+        if event.stop_signal not in ("SIGABRT", "SIGSEGV", "SIGBUS", "SIGILL", "SIGFPE"):
+            return
+        state = GlibcHeapTimelineCommand.get_state()
+        if state is None or not state["enabled"] or state["preview_label"] is not None:
+            return
+        try:
+            GlibcHeapTimelineCommand.capture(
+                state, event.stop_signal, "observed", "signal", (), None,
+            )
+        except Exception as e:
+            warn("Heap timeline signal capture failed: {!s}".format(e))
+        return
+
+    @staticmethod
+    def get_state(create=False):
+        """Return the timeline state for the selected inferior."""
+        inferior = gdb.selected_inferior()
+        state = GlibcHeapTimelineCommand.states.get(inferior)
+        if state is not None and is_alive() and state["pid"] != inferior.pid:
+            GlibcHeapTimelineCommand.stop_recording(state)
+            GlibcHeapTimelineCommand.stop_server(state)
+            del GlibcHeapTimelineCommand.states[inferior]
+            state = None
+        if state is None and create:
+            state = {
+                "inferior": inferior, "pid": inferior.pid, "enabled": False,
+                "events": [], "serial": 0, "breakpoints": [], "returns": set(),
+                "active": set(), "preview_label": None, "preview_parent": None,
+                "preview_operation": None, "preview_arguments": (), "latest_observed": None,
+                "identity_serial": 0, "server": None, "url": None, "data": {}, "aux_data": {},
+                "blobs": {}, "observed_serial": 0, "display_ids": set(), "children": {},
+                "batch_serials": {}, "batch_context": None, "groups": {}, "deleted": set(),
+                "arena_addr": None, "arena_main": True,
+            }
+            GlibcHeapTimelineCommand.states[inferior] = state
+        return state
+
+    @staticmethod
+    def heap_regions(arena, top):
+        """Find the chunk ranges in a main arena or a chain of heap_info regions."""
+        if arena.is_main_arena:
+            base = arena.heap_base
+            mapping = ProcessMap.lookup(base)
+            if mapping is None or mapping.section is None:
+                raise OSError("Heap mapping is unavailable")
+            start = base
+            if current_arch.ptrsize == 4 and (is_x86_32() or is_riscv32() or is_ppc32()) and get_libc_version() >= (2, 26):
+                start += current_arch.ptrsize * 2
+            return [{"base": base, "start": start, "end": mapping.section.page_end, "top": top}]
+        mapping = ProcessMap.lookup(top)
+        if mapping is None or mapping.section is None:
+            raise OSError("The top chunk mapping is unavailable")
+        address = mapping.section.page_start
+        regions = []
+        seen = set()
+        while len(regions) < 256:
+            if address in seen:
+                raise OSError("heap_info chain contains a loop")
+            seen.add(address)
+            info = GlibcHeap.HeapInfo(address)
+            previous = int(info.prev)
+            start = arena.heap_base if previous == 0 else address + info.sizeof
+            end = address + int(info.size)
+            section = ProcessMap.lookup(address)
+            if (int(info.ar_ptr) != arena.addr or section is None or section.section is None
+                    or not address < start < end <= section.section.page_end):
+                raise OSError("Invalid heap_info at {:#x}".format(address))
+            regions.append({"base": address, "start": start, "end": end,
+                            "top": top if start <= top < end else None})
+            if previous == 0:
+                break
+            address = previous
+        else:
+            raise OSError("heap_info chain is too long")
+        if not any(region["top"] is not None for region in regions):
+            raise OSError("The top chunk is outside heap_info regions")
+        return sorted(regions, key=lambda region: region["start"])
+
+    @staticmethod
+    def walk_chunks(start, end, top):
+        """Walk one mapped heap region until its top, fencepost, or a corrupt header."""
+        chunks = []
+        errors = []
+        mapping = ProcessMap.lookup(start)
+        if mapping is None or mapping.section is None:
+            return chunks, ["Heap mapping is unavailable"], start
+        limit = min(end, mapping.section.page_end)
+        if end > limit:
+            errors.append("Heap region exceeds mapped memory")
+        if top is not None and not start <= top < limit:
+            errors.append("Top chunk is outside the heap mapping")
+            top = None
+        ptrsize = current_arch.ptrsize
+        alignment = GlibcHeap.HeapInfo.MALLOC_ALIGNMENT()
+        minimum = GlibcHeap.HeapInfo.MIN_SIZE()
+        endian = "big" if Endian.is_big_endian() else "little"
+        address = start
+        covered = start
+        while address < limit and len(chunks) < 100000:
+            header = read_memory(address, ptrsize * 2, safe=True)
+            if header is None or len(header) != ptrsize * 2:
+                errors.append("Unreadable chunk header at {:#x}".format(address))
+                chunks.append({
+                    "start_offset": address - start, "size": 0,
+                    "used": None, "extra": "Unreadable header", "corrupt": True,
+                })
+                break
+            size = int.from_bytes(header[ptrsize:ptrsize * 2], endian) & ~7
+            fencepost = top is None and size == ptrsize * 2 and address + size <= limit
+            chunk = {
+                "start_offset": address - start, "size": size, "used": True if fencepost else None,
+                "extra": "fencepost" if fencepost else "", "corrupt": False,
+            }
+            reason = None
+            if size < minimum and not fencepost:
+                reason = "Chunk size is too small"
+            elif size % alignment and not fencepost and (address != top or size % ptrsize):
+                reason = "Chunk size is not aligned"
+            elif address + size > limit:
+                reason = "Chunk exceeds the heap mapping"
+            elif top is not None and address < top < address + size:
+                reason = "Chunk overlaps the top chunk"
+            if reason is not None:
+                chunk["corrupt"] = True
+                chunk["extra"] = reason
+                chunk["size_hex"] = "{:#x}".format(size)
+                errors.append("{:#x}: {:s}".format(address, reason))
+            chunks.append(chunk)
+            covered = address + (ptrsize * 2 if reason is not None else size)
+            if reason is not None or address == top or fencepost:
+                break
+            address += size
+        if len(chunks) == 100000:
+            errors.append("Chunk walk stopped after 100000 entries")
+        return chunks, errors, covered
+
+    @staticmethod
+    def store_blob(state, data):
+        data = bytes(data)
+        digest = hashlib.blake2b(data, digest_size=32).digest()
+        if digest not in state["blobs"]:
+            packed = zlib.compress(data, 1)
+            if len(packed) < len(data):
+                state["blobs"][digest] = (True, packed)
+            else:
+                state["blobs"][digest] = (False, data)
+        return digest
+
+    @staticmethod
+    def make_display_id(state, parent, number):
+        """Assign a stable label to an observed or emulated state."""
+        if parent is None:
+            state["observed_serial"] += 1
+            display_id = "#{:02d}".format(state["observed_serial"])
+            indent = 0
+        else:
+            source = state["events"][parent - 1]
+            children = state["children"].setdefault(parent, [])
+            display_id = None
+            group = state["batch_context"]
+            if group is not None:
+                display_id = "{:s}-E{:d}".format(group["id"], group["step"])
+                indent = state["events"][group["parent"] - 1]["indent"] + 2
+                group["events"].append(number)
+            elif source["parent"] is None:
+                stem = source["display_id"]
+                index = 1
+                indent = 1
+            else:
+                stem, step = source["display_id"].rsplit("-E", 1)
+                candidate = "{:s}-E{:d}".format(stem, int(step) + 1)
+                if not children and candidate not in state["display_ids"]:
+                    display_id = candidate
+                    indent = source["indent"]
+                stem = source["display_id"]
+                index = 1
+                if display_id is None:
+                    indent = source["indent"] + 1
+            if display_id is None:
+                while "{:s}-E{:d}".format(stem, index) in state["display_ids"]:
+                    index += 1
+                display_id = "{:s}-E{:d}".format(stem, index)
+            children.append(number)
+        state["display_ids"].add(display_id)
+        return display_id, indent
+
+    @staticmethod
+    def capture(state, label, kind, operation=None, arguments=(), result=None):
+        """Capture heap layout, bins, and memory needed for replay."""
+        Cache.reset_gef_caches()
+        chunks = []
+        bins = {}
+        errors = []
+        heap_base = None
+        top = None
+        arena = None
+        regions = []
+        try:
+            arena = GlibcHeap.GlibcArena(state["arena_addr"])
+            str(arena)
+            heap_base = arena.heap_base
+            top = arena.top
+        except (OSError, AttributeError, gdb.MemoryError, RuntimeError, TypeError):
+            errors.append("Cannot read the selected arena")
+        if arena is not None and heap_base is not None and is_valid_addr(heap_base):
+            try:
+                regions = GlibcHeapTimelineCommand.heap_regions(arena, top)
+            except (OSError, AttributeError, gdb.MemoryError, RuntimeError, TypeError) as e:
+                errors.append("Cannot locate arena heaps: {!s}".format(e))
+        elif heap_base is not None:
+            errors.append("Heap base is outside mapped memory")
+        if not regions and state["arena_main"]:
+            heap_base = ProcessMap.get_section_base_address("[heap]")
+            mapping = ProcessMap.lookup(heap_base) if heap_base is not None else None
+            if mapping is not None and mapping.section is not None:
+                regions = [{"base": heap_base, "start": heap_base,
+                            "end": mapping.section.page_end, "top": top}]
+        if regions:
+            for region in regions:
+                walked, walk_errors, covered = GlibcHeapTimelineCommand.walk_chunks(
+                    region["start"], region["end"], region["top"],
+                )
+                region["covered_end"] = covered
+                errors.extend(walk_errors)
+                for chunk in walked:
+                    address = region["start"] + chunk["start_offset"]
+                    chunk["start_offset"] = address - heap_base
+                    chunk["region_base"] = region["base"]
+                chunks.extend(walked)
+            chunks.sort(key=lambda chunk: chunk["start_offset"])
+            bin_valid = arena is not None
+            if arena is not None:
+                getters = (
+                    ("tcache", arena.get_tcache_list),
+                    ("fast", arena.get_fastbins_list),
+                    ("unsorted", arena.get_unsortedbin_list),
+                    ("small", arena.get_smallbins_list),
+                    ("large", arena.get_largebins_list),
+                )
+                for name, getter in getters:
+                    try:
+                        groups = getter()
+                        bins[name] = {index: tuple(chain) for index, chain in groups.items() if chain}
+                        if any(isinstance(value, str) for chains in groups.values() for value in chains):
+                            errors.append("{:s} bin chain is corrupted".format(name))
+                            bin_valid = False
+                    except Exception as e:
+                        bins[name] = {0: ("Corrupted: {!s}".format(e),)}
+                        errors.append("Cannot read {:s} bins: {!s}".format(name, e))
+                        bin_valid = False
+            for chunk in chunks:
+                address = heap_base + chunk["start_offset"]
+                if address == top:
+                    chunk["used"] = False
+                    chunk["extra"] = "top"
+                elif chunk["extra"] == "fencepost":
+                    continue
+                elif not chunk["corrupt"] and bin_valid:
+                    try:
+                        current = GlibcHeap.GlibcChunk(arena, address, from_base=True)
+                        chunk["used"] = current.is_real_used()
+                        chunk["extra"] = ",".join(arena.get_bins_info(current))
+                        if "tcache" in chunk["extra"] or "fastbins" in chunk["extra"]:
+                            chunk["fd_decoded"] = current.get_fwd_ptr(True)
+                    except Exception as e:
+                        errors.append("Cannot classify chunk at {:#x}: {!s}".format(address, e))
+                        bin_valid = False
+        prior_number = state["latest_observed"]
+        if kind == "emulated":
+            prior_number = state["preview_parent"]
+        prior_event = None
+        if prior_number is not None:
+            prior_event = state["events"][prior_number - 1]
+        prior_chunks = {}
+        if prior_event is not None and prior_event["heap_base"] is not None:
+            prior_chunks = {
+                prior_event["heap_base"] + chunk["start_offset"]: chunk for chunk in prior_event["chunks"]
+            }
+        chunk_data = {}
+        aux_data = []
+        replay_ready = arena is not None and heap_base is not None and top is not None and bool(regions)
+        heap_end = None
+        current_chunks = {}
+        header_size = current_arch.ptrsize * 2
+        for chunk in chunks:
+            offset = chunk["start_offset"]
+            address = heap_base + offset
+            previous = prior_chunks.get(address)
+            if previous is not None and not (previous["used"] is False and chunk["used"] is True):
+                chunk["identity"] = previous["identity"]
+            else:
+                state["identity_serial"] += 1
+                chunk["identity"] = state["identity_serial"]
+            current_chunks[address] = chunk
+            length = max(0, chunk["size"])
+            if chunk["corrupt"]:
+                length = header_size
+            if address == top:
+                length = min(length, header_size)
+            data = read_memory(address, length, safe=True) or b""
+            chunk["captured_size"] = len(data)
+            if len(data) != length or chunk["corrupt"]:
+                replay_ready = False
+            digest = GlibcHeapTimelineCommand.store_blob(state, data)
+            chunk["data_hash"] = None
+            if data:
+                chunk["data_hash"] = digest.hex()
+            chunk_data[offset] = digest
+            if address == top and not chunk["corrupt"] and chunk["size"] > header_size:
+                if arena is not None and arena.is_main_arena:
+                    heap_end = address + chunk["size"]
+                tail = read_memory(address + header_size, chunk["size"] - header_size, safe=True)
+                if tail is None or len(tail) != chunk["size"] - header_size:
+                    replay_ready = False
+                else:
+                    aux_data.append((address + header_size, GlibcHeapTimelineCommand.store_blob(state, tail)))
+            elif address == top and not chunk["corrupt"]:
+                if arena is not None and arena.is_main_arena:
+                    heap_end = address + chunk["size"]
+        for region in regions:
+            for start, end in ((region["base"], region["start"]), (region["covered_end"], region["end"])):
+                if end <= start:
+                    continue
+                raw = read_memory(start, end - start, safe=True)
+                if raw is None or len(raw) != end - start:
+                    replay_ready = False
+                    continue
+                aux_data.append((start, GlibcHeapTimelineCommand.store_blob(state, raw)))
+        if arena is not None:
+            try:
+                main_arena = arena if arena.is_main_arena else GlibcHeap.GlibcArena()
+                if not arena.is_main_arena:
+                    main_top = main_arena.top
+                    heap_end = main_top + GlibcHeap.GlibcChunk(main_arena, main_top, from_base=True).size
+                mapping = ProcessMap.lookup(main_arena.addr)
+                section = mapping.section if mapping is not None else None
+                if section is None or not section.is_writable():
+                    replay_ready = False
+                else:
+                    start = section.page_start if section.size <= 0x100000 else main_arena.addr
+                    length = section.size if section.size <= 0x100000 else main_arena.sizeof
+                    raw = read_memory(start, length, safe=True)
+                    if raw is None or len(raw) != length:
+                        replay_ready = False
+                    else:
+                        aux_data.append((start, GlibcHeapTimelineCommand.store_blob(state, raw)))
+                tls = current_arch.get_tls()
+                if tls is None:
+                    replay_ready = False
+                else:
+                    page_size = get_pagesize()
+                    center = tls & ~(page_size - 1)
+                    arena_bytes = arena.addr.to_bytes(current_arch.ptrsize,
+                                                      "big" if Endian.is_big_endian() else "little")
+                    has_arena = False
+                    has_center = False
+                    for page in (center - page_size, center, center + page_size):
+                        mapping = ProcessMap.lookup(page)
+                        section = mapping.section if mapping is not None else None
+                        if section is None or not section.is_writable() or page + page_size > section.page_end:
+                            continue
+                        raw = read_memory(page, page_size, safe=True)
+                        if raw is None or len(raw) != page_size:
+                            continue
+                        aux_data.append((page, GlibcHeapTimelineCommand.store_blob(state, raw)))
+                        has_center = has_center or page == center
+                        has_arena = has_arena or arena_bytes in raw
+                    if not has_center:
+                        errors.append("Cannot capture thread-local allocator state")
+                        replay_ready = False
+                    elif not has_arena:
+                        errors.append("Selected thread does not own this arena")
+                        replay_ready = False
+            except (gdb.error, OSError, AttributeError, TypeError):
+                replay_ready = False
+        targets = []
+        if operation == "free" and arguments and arguments[0]:
+            targets.append({"address": arguments[0], "role": "release"})
+        if operation in ("malloc", "calloc", "realloc") and result:
+            targets.append({"address": result, "role": "alloc"})
+        if operation == "realloc" and arguments and arguments[0] and result is not None and arguments[0] != result:
+            targets.append({"address": arguments[0], "role": "release"})
+        if kind == "emulated" and operation in ("malloc", "calloc", "realloc") and result is None:
+            for address, chunk in current_chunks.items():
+                previous = prior_chunks.get(address)
+                if address != top and chunk["used"] is True and (previous is None or previous["used"] is False):
+                    targets.append({"address": address + header_size, "role": "alloc"})
+                    break
+        for target in targets:
+            address = target["address"] - header_size
+            chunk = current_chunks.get(address) or prior_chunks.get(address)
+            target["identity"] = None
+            if chunk is not None:
+                target["identity"] = chunk["identity"]
+        if heap_end is None:
+            replay_ready = False
+        state["serial"] += 1
+        parent = None
+        if kind == "emulated":
+            parent = state["preview_parent"]
+        display_id, indent = GlibcHeapTimelineCommand.make_display_id(state, parent, state["serial"])
+        group = state["batch_context"]
+        event = {
+            "number": state["serial"], "label": label, "kind": kind,
+            "heap_base": heap_base, "top": top, "chunks": chunks, "bins": bins,
+            "arena_addr": state["arena_addr"],
+            "arena_name": "main_arena" if state["arena_main"] else "{:#x}".format(state["arena_addr"]),
+            "regions": [{"base": region["base"], "start": region["start"], "end": region["end"]} for region in regions],
+            "ptrsize": current_arch.ptrsize, "endian": "big" if Endian.is_big_endian() else "little",
+            "thread_id": Pid.get_tid(),
+            "parent": parent, "error": "\n".join(errors) or None,
+            "operation": operation, "arguments": tuple(arguments), "result": result, "targets": targets,
+            "replay_ready": replay_ready, "heap_end": heap_end,
+            "display_id": display_id, "indent": indent,
+        }
+        if group is not None:
+            event.update({"group_id": group["id"], "group_parent": group["parent"], "group_step": group["step"]})
+        state["data"][event["number"]] = chunk_data
+        state["aux_data"][event["number"]] = aux_data
+        state["events"].append(event)
+        if kind == "observed":
+            state["latest_observed"] = event["number"]
+        return event
+
+    @staticmethod
+    def resolve_batch_value(expression, variables, ptrsize):
+        """Resolve a batch expression, or defer a value not yet assigned."""
+        limit = 1 << (ptrsize * 8)
+        compact = re.sub(r"\s+", "", expression)
+        tokens = re.findall(r"\$[A-Za-z][A-Za-z0-9_]*|\$[0-9]+|0[xX][0-9a-fA-F]+|[0-9]+|[+-]", compact)
+        if not tokens or "".join(tokens) != compact:
+            raise ValueError("Invalid expression: {:s}".format(expression))
+        value = 0
+        sign = 1
+        need_value = True
+        symbolic = False
+        for token in tokens:
+            if token in ("+", "-"):
+                if need_value:
+                    raise ValueError("Invalid expression: {:s}".format(expression))
+                sign = 1
+                if token == "-":
+                    sign = -1
+                need_value = True
+                continue
+            if not need_value:
+                raise ValueError("Invalid expression: {:s}".format(expression))
+            if token.startswith("$"):
+                name = token[1:]
+                if name not in variables:
+                    raise ValueError("Unknown variable: {:s}".format(token))
+                item = variables[name]
+            else:
+                base = 10
+                if token.lower().startswith("0x"):
+                    base = 16
+                item = int(token, base)
+            if item is None:
+                symbolic = True
+                item = 0
+            if not 0 <= item < limit:
+                raise ValueError("Expression is out of range: {:s}".format(expression))
+            value += sign * item
+            need_value = False
+        if need_value or (not symbolic and not 0 <= value < limit):
+            raise ValueError("Expression is out of range: {:s}".format(expression))
+        if symbolic:
+            return None
+        return value
+
+    @staticmethod
+    def emulate_batch(state, source_number, script):
+        """Validate and execute a batch from a saved heap state."""
+        if not isinstance(script, str) or not 0 < len(script) <= 65536:
+            raise ValueError("Enter a batch script of at most 65536 characters")
+        if not 1 <= source_number <= len(state["events"]):
+            raise ValueError("Unknown timeline event")
+        source = state["events"][source_number - 1]
+        if source["heap_base"] is None:
+            raise ValueError("The selected state has no heap base")
+        lengths = {"malloc": 1, "free": 1, "calloc": 2, "realloc": 2}
+        statements = []
+        for line_number, line in enumerate(script.splitlines(), 1):
+            for statement in line.split("//", 1)[0].split(";"):
+                statement = statement.strip()
+                if not statement:
+                    continue
+                match = re.fullmatch(
+                    r"(?:\$([A-Za-z][A-Za-z0-9_]*|[0-9]+)\s*=\s*)?"
+                    r"(malloc|free|calloc|realloc)\s*\(([^()]*)\)", statement,
+                )
+                if match is None:
+                    raise ValueError("Invalid statement on line {:d}: {:s}".format(line_number, statement))
+                variable, name, raw_arguments = match.groups()
+                expressions = tuple(part.strip() for part in raw_arguments.split(","))
+                if len(expressions) != lengths[name] or variable == "heapbase" or (variable and name == "free"):
+                    raise ValueError("Invalid assignment or argument count on line {:d}".format(line_number))
+                statements.append((line_number, variable, name, expressions))
+        if not statements:
+            raise ValueError("The batch has no operations")
+        known = {"heapbase": source["heap_base"]}
+        for statement in statements:
+            try:
+                for expression in statement[3]:
+                    GlibcHeapTimelineCommand.resolve_batch_value(expression, known, source["ptrsize"])
+            except ValueError as e:
+                raise ValueError("Line {:d}: {!s}".format(statement[0], e)) from e
+            if statement[1]:
+                known[statement[1]] = None
+        if state["batch_context"] is not None:
+            raise RuntimeError("Another batch is active")
+        group_number = state["batch_serials"].get(source_number, 0) + 1
+        group = {
+            "id": "{:s}-B{:d}".format(source["display_id"], group_number),
+            "parent": source_number, "events": [], "step": 0,
+        }
+        state["batch_serials"][source_number] = group_number
+        state["groups"][group["id"]] = group
+        state["batch_context"] = group
+        variables = {"heapbase": source["heap_base"]}
+        created = []
+        current = source_number
+        try:
+            for line_number, variable, name, expressions in statements:
+                try:
+                    arguments = tuple(GlibcHeapTimelineCommand.resolve_batch_value(value, variables, source["ptrsize"])
+                                      for value in expressions)
+                    group["step"] += 1
+                    event = GlibcHeapTimelineCommand.emulate_from(state, current, name, arguments, variable)
+                except Exception as e:
+                    message = "Line {:d}: {!s}".format(line_number, e)
+                    if created:
+                        return {"events": created, "error": message}
+                    raise ValueError(message) from e
+                created.append(event["number"])
+                if event["kind"] == "failed":
+                    return {"events": created, "error": "Line {:d}: {:s}".format(line_number, event["error"])}
+                if variable:
+                    if event["result"] is None:
+                        return {"events": created, "error": "Line {:d}: Return value unavailable".format(line_number)}
+                    variables[variable] = event["result"]
+                current = event["number"]
+            return {"events": created}
+        finally:
+            state["batch_context"] = None
+            if not group["events"]:
+                del state["groups"][group["id"]]
+                state["batch_serials"][source_number] -= 1
+
+    @staticmethod
+    def delete_batch(state, group_id):
+        """Remove a batch and descendants, then release unused snapshots."""
+        group = state["groups"].get(group_id)
+        if group is None or group.get("deleted"):
+            raise ValueError("Unknown batch")
+        children = {}
+        for event in state["events"]:
+            if event["parent"] is not None and not event.get("deleted"):
+                children.setdefault(event["parent"], []).append(event["number"])
+        removed = set()
+        pending = list(group["events"])
+        while pending:
+            number = pending.pop()
+            if number in removed:
+                continue
+            removed.add(number)
+            pending.extend(children.get(number, ()))
+        for number in removed:
+            event = state["events"][number - 1]
+            event.update({"deleted": True, "chunks": [], "bins": {}, "targets": [], "replay_ready": False})
+            state["data"].pop(number, None)
+            state["aux_data"].pop(number, None)
+            child_group = state["groups"].get(event.get("group_id"))
+            if child_group is not None:
+                child_group["deleted"] = True
+        state["deleted"].update(removed)
+        used = set()
+        for data in state["data"].values():
+            used.update(data.values())
+        for data in state["aux_data"].values():
+            used.update(digest for address, digest in data)
+        for digest in tuple(state["blobs"]):
+            if digest not in used:
+                del state["blobs"][digest]
+        return sorted(removed)
+
+    @staticmethod
+    def emulate_from(state, source_number, name, arguments, assignment=None):
+        """Replay one allocator call from a snapshot and restore live memory."""
+        if not is_alive() or gdb.selected_inferior() != state["inferior"]:
+            raise RuntimeError("The recorded process is not stopped")
+        thread = gdb.selected_thread()
+        if thread is None or not thread.is_stopped():
+            raise RuntimeError("Stop the selected thread before emulating")
+        if state["preview_label"] is not None:
+            raise RuntimeError("Another emulation is active")
+        lengths = {"malloc": 1, "free": 1, "calloc": 2, "realloc": 2}
+        if name not in lengths or len(arguments) != lengths[name]:
+            raise ValueError("Specify a supported operation and its arguments")
+        if not 1 <= source_number <= len(state["events"]):
+            raise ValueError("Unknown timeline event")
+        source = state["events"][source_number - 1]
+        if source["thread_id"] != Pid.get_tid():
+            raise RuntimeError("Select the thread that recorded this state before emulating")
+        header_size = source["ptrsize"] * 2
+        if any(not 0 <= value < 1 << (source["ptrsize"] * 8) for value in arguments):
+            raise ValueError("Argument exceeds the pointer width")
+        if not source["replay_ready"]:
+            raise RuntimeError("This state has no complete allocator snapshot")
+        segments = list(state["aux_data"][source_number])
+        segments.extend(
+            (source["heap_base"] + offset, digest)
+            for offset, digest in state["data"][source_number].items()
+        )
+        patches = []
+        tag = PatchCommand.PatchInfo.get_unique_tag()
+        try:
+            for address, digest in segments:
+                compressed, stored = state["blobs"][digest]
+                data = stored
+                if compressed:
+                    data = zlib.decompress(stored)
+                if not data:
+                    continue
+                mapping = ProcessMap.lookup(address)
+                section = None
+                if mapping is not None:
+                    section = mapping.section
+                if section is None or not section.is_writable() or address + len(data) > section.page_end:
+                    raise RuntimeError("Snapshot memory is no longer writable at {:#x}".format(address))
+                current = read_memory(address, len(data), safe=True)
+                if current is None or len(current) != len(data):
+                    raise RuntimeError("Cannot read current memory at {:#x}".format(address))
+                if bytes(current) == data:
+                    continue
+                patch = PatchCommand.PatchInfo(address, data, tag=tag)
+                patch.patch(silent=True)
+                patches.append(patch)
+            values = ["{:#x}".format(value) for value in arguments]
+            label = "{:s}({:s})".format(name, ", ".join(values))
+            if assignment:
+                label = "${:s} = {:s}".format(assignment, label)
+            state["preview_parent"] = source_number
+            state["preview_label"] = label
+            state["preview_operation"] = name
+            state["preview_arguments"] = tuple(arguments)
+            command = "heap try-{:s} -B {:#x} -c {:s} {:s}".format(
+                name, source["heap_end"], GefUtil.quote_gdb_argument("heap timeline mark"), " ".join(values),
+            )
+            before_serial = state["serial"]
+            try:
+                output = gdb.execute(command, to_string=True)
+            except gdb.error as e:
+                output = str(e)
+            if state["serial"] > before_serial:
+                event = state["events"][-1]
+                if name != "free":
+                    match = re.search(r"{:s} succeeded: (0x[0-9a-fA-F]+)".format(name),
+                                      Color.remove_color(output))
+                    if match:
+                        result = int(match.group(1), 16)
+                        event["result"] = result
+                        event["label"] += " -> {:#x}".format(result)
+                        event["targets"] = [target for target in event["targets"] if target["role"] != "alloc"]
+                        targets = []
+                        if result:
+                            targets.append((result, "alloc"))
+                        if name == "realloc" and arguments[0] and arguments[0] != result:
+                            targets.append((arguments[0], "release"))
+                        for address, role in targets:
+                            if any(target["address"] == address and target["role"] == role
+                                   for target in event["targets"]):
+                                continue
+                            chunk = None
+                            if event["heap_base"] is not None:
+                                chunk = next((chunk for chunk in event["chunks"]
+                                              if event["heap_base"] + chunk["start_offset"] == address - header_size), None)
+                            if chunk is None and source["heap_base"] is not None:
+                                chunk = next((chunk for chunk in source["chunks"]
+                                              if source["heap_base"] + chunk["start_offset"] == address - header_size), None)
+                            identity = None
+                            if chunk is not None:
+                                identity = chunk["identity"]
+                            event["targets"].append({"address": address, "role": role, "identity": identity})
+                return event
+            state["serial"] += 1
+            failed = dict(source)
+            display_id, indent = GlibcHeapTimelineCommand.make_display_id(state, source_number, state["serial"])
+            group = state["batch_context"]
+            for key in ("group_id", "group_parent", "group_step"):
+                failed.pop(key, None)
+            failed.update({
+                "number": state["serial"], "label": label, "kind": "failed",
+                "parent": source_number, "operation": name, "arguments": tuple(arguments),
+                "result": None, "targets": [],
+                "error": Color.remove_color(output).strip() or "Emulation did not complete",
+                "display_id": display_id, "indent": indent,
+            })
+            if group is not None:
+                failed.update({"group_id": group["id"], "group_parent": group["parent"], "group_step": group["step"]})
+            state["data"][failed["number"]] = state["data"][source_number]
+            state["aux_data"][failed["number"]] = state["aux_data"][source_number]
+            state["events"].append(failed)
+            return failed
+        finally:
+            state["preview_label"] = None
+            state["preview_parent"] = None
+            state["preview_operation"] = None
+            state["preview_arguments"] = ()
+            rollback_error = None
+            for patch in reversed(patches):
+                try:
+                    patch.revert(silent=True)
+                except Exception as e:
+                    rollback_error = e
+            Cache.reset_gef_caches()
+            if rollback_error is not None:
+                raise RuntimeError("Cannot restore current memory: {!s}".format(rollback_error))
+
+    @Decorator.parse_args
+    def do_invoke(self, args):
+        """Control recording and capture manual timeline marks."""
+        action = args.action
+        values = args.values
+        state = self.get_state()
+        if action in ("start", "mark"):
+            if not is_alive() or not (is_x86_32() or is_x86_64() or is_arm32() or is_arm64()):
+                err("A running x86_32, x86_64, ARM32, or ARM64 process is required")
+                return
+        if action == "clear":
+            if state is not None:
+                self.stop_recording(state)
+                self.stop_server(state)
+                del self.states[state["inferior"]]
+            info("Heap timeline cleared")
+            return
+        if action == "stop":
+            if state is not None:
+                self.stop_recording(state)
+                info("Recording stopped. Viewer: {:s}".format(state["url"]))
+            return
+        if action == "status":
+            if state is None or state["url"] is None:
+                err("No heap timeline is available")
+                return
+            info("Viewer: {:s}  Events: {:d}".format(state["url"], len(state["events"])))
+            return
+        if action == "start":
+            if values or (state is not None and state["enabled"]):
+                err("Invalid arguments or recording is already active")
+                return
+            addresses = {}
+            for name in ("malloc", "free", "calloc", "realloc"):
+                address = Symbol.resolve_address(name)
+                if address is None:
+                    err("Cannot resolve {:s}".format(name))
+                    return
+                addresses[name] = address
+            if addresses["malloc"] != Symbol.resolve_address("__libc_malloc"):
+                err("The process must use glibc malloc")
+                return
+            arena_address = args.arena_addr
+            if arena_address is None and state is not None:
+                arena_address = state["arena_addr"]
+            arena = GlibcHeap.get_arena(arena_address)
+            if arena is None:
+                err("Cannot select a glibc arena")
+                return
+            if state is not None and state["events"] and state["arena_addr"] != arena.addr:
+                err("Clear the timeline before selecting another arena")
+                return
+            if state is None:
+                state = self.get_state(create=True)
+            state["arena_addr"] = arena.addr
+            state["arena_main"] = arena.is_main_arena
+            baseline = self.capture(state, "baseline", "observed", "baseline")
+            if baseline is None:
+                return
+            try:
+                for name, address in addresses.items():
+                    state["breakpoints"].append(GlibcHeapTimelineEntryBreakpoint(name, address, state))
+            except Exception as e:
+                self.stop_recording(state)
+                err("Cannot set breakpoints: {!s}".format(e))
+                return
+            state["enabled"] = True
+            try:
+                url = self.start_server(state)
+            except OSError as e:
+                self.stop_recording(state)
+                err("Cannot start the viewer: {!s}".format(e))
+                return
+            if not self.exit_hook_installed:
+                EventHooking.gef_on_exit_hook(self.on_exit)
+                GlibcHeapTimelineCommand.exit_hook_installed = True
+            if not self.stop_hook_installed:
+                EventHooking.gef_on_stop_hook(self.on_stop)
+                GlibcHeapTimelineCommand.stop_hook_installed = True
+            info("Heap timeline started. Baseline [{:d}], viewer: {:s}".format(baseline["number"], url))
+            if self.from_tty and (os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")):
+                import webbrowser
+                webbrowser.open(url, new=2)
+            return
+        if state is None:
+            err("No heap timeline is available")
+            return
+        if action == "mark":
+            if len(values) > 1:
+                err("mark accepts at most one label")
+                return
+            label = "manual"
+            if values:
+                label = values[0]
+            kind = "observed"
+            operation = "mark"
+            arguments = ()
+            if state["preview_label"] is not None:
+                label = state["preview_label"]
+                kind = "emulated"
+                operation = state["preview_operation"]
+                arguments = state["preview_arguments"]
+            event = self.capture(state, label, kind, operation, arguments)
+            if event is not None:
+                info("Event [{:d}] recorded".format(event["number"]))
+            return
         return
 
 

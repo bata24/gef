@@ -479,7 +479,7 @@ For the usage and options of each command, see [docs/COMMANDS.md](docs/COMMANDS.
 ### Glibc
 
 <details>
-<summary><code>heap arenas</code>, <code>heap top</code>, <code>heap bins-simple</code>, <code>heap parse</code>, <code>heap try-malloc</code>, <code>heap try-free</code>, <code>heap try-realloc</code>, <code>heap try-calloc</code>, <code>heap tcache-index-helper</code>, <code>heap find-fake-fast</code>, <code>heap extract-heap-addr</code>, <code>heap calc-protected-fd</code>, <code>heap visual-heap</code>, <code>heap tracer</code>, <code>heap dump-image</code>, <code>heap snapshot</code>, <code>heap snapshot-compare</code></summary>
+<summary><code>heap arenas</code>, <code>heap top</code>, <code>heap bins-simple</code>, <code>heap parse</code>, <code>heap try-malloc</code>, <code>heap try-free</code>, <code>heap try-realloc</code>, <code>heap try-calloc</code>, <code>heap tcache-index-helper</code>, <code>heap find-fake-fast</code>, <code>heap extract-heap-addr</code>, <code>heap calc-protected-fd</code>, <code>heap visual-heap</code>, <code>heap tracer</code>, <code>heap timeline</code>, <code>heap dump-image</code>, <code>heap snapshot</code>, <code>heap snapshot-compare</code></summary>
 
 - Glibc heap commands have been improved. Supports up to glibc 2.43.
     - It changes the color and prints a symbol if it exists.
@@ -517,6 +517,8 @@ For the usage and options of each command, see [docs/COMMANDS.md](docs/COMMANDS.
             - ![](images/heap-visual-heap.png)
         - `heap tracer`: has been integrated from `heap-analysis-helper` and rewritten.
             - ![](images/heap-tracer.png)
+        - `heap timeline` (x86/x64/ARM32/ARM64, glibc): records heap states at `http://0.0.0.0:61234/`.
+            - ![](images/heap-timeline.png)
         - `heap dump-image`: visualizes chunks on a heap as composition image.
             - ![](images/heap-dump-image.png)
         - `heap snapshot`: takes a snapshot of the heap.
