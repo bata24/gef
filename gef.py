@@ -81834,11 +81834,12 @@ class KernelPath:
         if kversion is not None and kversion < "3.1":
             return align_to_ptrsize(12) + current_arch.ptrsize
 
-        # Since v3.1, i_mapping immediately follows i_sb and points to inode->i_data.
+        # Since v3.1, i_mapping immediately follows i_sb and points to inode->i_data, whose host points back.
+        # The backlink tells it from i_sb, as SLOB may place the super_block right after the inode.
         first_pointer = 2 + 2 + 4 + 4 + 4
         for offset in range(first_pointer, 0x100, current_arch.ptrsize):
             mapping = read_int_from_memory(inode + offset)
-            if inode + offset < mapping <= inode + 0x1000:
+            if inode + offset < mapping <= inode + 0x1000 and read_int_from_memory(mapping) == inode:
                 return offset - current_arch.ptrsize
         return None
 
@@ -81937,17 +81938,20 @@ class KernelPath:
             return offset
 
         # slow path
+        # On 32-bit, the padding before the 8-byte aligned d_name may hold a stale pointer.
+        # So take the offset only if the chain of d_parent reaches the root of a filesystem, which points to itself.
         offset_d_parent = offset_dname_name - 8 - current_arch.ptrsize
-        # skip if padding
         while offset_d_parent >= 0:
-            if is_valid_addr_addr(dentry + offset_d_parent): # roughly check
-                parent = read_int_from_memory(dentry + offset_d_parent)
-                if parent == dentry: # `dentry` is the root of its own filesystem
+            current = dentry
+            seen = set()
+            while len(seen) < 0x100 and current not in seen:
+                seen.add(current)
+                parent = read_int_from_memory(current + offset_d_parent, safe=True)
+                if parent == current:
                     return offset_d_parent
-                if (parent & 0b11) == 0: # align check
-                    parent_parent = read_int_from_memory(parent + offset_d_parent)
-                    if is_valid_addr(parent_parent):
-                        return offset_d_parent
+                if not is_valid_addr(parent) or parent & (current_arch.ptrsize - 1):
+                    break
+                current = parent
             offset_d_parent -= current_arch.ptrsize
         return None
 
@@ -213627,7 +213631,8 @@ class KernelIoUringCommand(GenericCommand, BufferingOutput):
         """Return the VFS resolver, or None. It is resolved on first use like get_task_command()."""
         if self.kpath is False:
             self.kpath = Kernel.path()
-            if not self.kpath.initialized:
+            # The offsets of struct file are left unset when no open file of the task scan was a valid sample
+            if not self.kpath.initialized or self.kpath.offset_file_dentry is None:
                 self.meta.append((self.quiet_err, "Could not resolve the VFS object layout"))
                 self.kpath = None
         return self.kpath
