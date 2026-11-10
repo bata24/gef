@@ -32935,6 +32935,9 @@ class GlibcHeapTimelineReturnBreakpoint(gdb.FinishBreakpoint):
             return False
         if Pid.get_tid() != self.tid:
             return False
+        if self.state["skip_remaining"]:
+            self.state["skip_remaining"] -= 1
+            return False
         try:
             label = "{:s}({:s})".format(self.name, ", ".join("{:#x}".format(x) for x in self.arguments))
             result = None
@@ -32963,14 +32966,14 @@ class GlibcHeapTimelineCommand(GenericCommand):
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("action", nargs="?", default="start", choices=("start", "stop", "clear", "status", "mark"))
-    parser.add_argument("-a", "--arena-addr", type=AddressUtil.parse_address,
-                        help="the arena address or number to record. (default: main_arena)")
+    parser.add_argument("--skip", type=int, default=0, metavar="N",
+                        help="skip the first N allocator returns after the baseline.")
     parser.add_argument("values", nargs="*")
     _syntax_ = parser.format_help()
 
     _example_ = "\n".join([
         "{0:s}",
-        "{0:s} -a 1",
+        "{0:s} start --skip 100",
         "{0:s} status",
     ]).format(_cmdline_)
 
@@ -32985,6 +32988,14 @@ class GlibcHeapTimelineCommand(GenericCommand):
         if not words or (len(words) == 1 and not text.endswith(" ")):
             return [name for name in ("start", "stop", "clear", "status", "mark")
                     if name.startswith(word or "")]
+        if words[0] == "start" and "--skip" not in words:
+            prefix = ""
+            if not text.endswith(" "):
+                prefix = words[-1]
+            if "--skip".startswith(prefix):
+                if word is None:
+                    return ["--skip"]
+                return ["--skip"[len(prefix) - len(word):]]
         return []
 
     states = {}
@@ -32998,7 +33009,7 @@ class GlibcHeapTimelineCommand(GenericCommand):
     :root{color-scheme:dark;font:14px/1.5 system-ui,sans-serif;background:#111827;color:#e5e7eb}
     *{box-sizing:border-box}body{margin:0;--timeline-width:260px}
     header,main{width:max(100%,calc(var(--timeline-width) + 728px + var(--right-width,400px)))}
-    header{padding:14px 22px;border-bottom:1px solid #374151;display:flex;gap:10px;align-items:center}
+    header{padding:14px 16px;border-bottom:1px solid #374151;display:flex;gap:10px;align-items:center}
     #historyBack{margin-left:6px}#noteButton{margin-left:auto;display:flex;align-items:center;gap:6px}
     #noteButton svg{width:17px;height:17px}.note-panel{position:absolute;right:12px;top:56px;z-index:10}
     .note-panel{width:300px;max-width:calc(100vw - 24px);max-height:calc(100vh - 68px);overflow:auto}
@@ -33011,11 +33022,10 @@ class GlibcHeapTimelineCommand(GenericCommand):
     .legend .alloc{background:#15803d}.legend .release{background:#b91c1c}
     .legend .changed-chunk{background:#164e63}
     .legend .corrupt{background:#7f1d1d}.legend .data-change{background:#92400e}
-    .legend .chunk{background:linear-gradient(90deg,#34d399,#60a5fa,#fbbf24)}
     .shortcuts{display:grid;gap:4px;font-size:12px}
     .shortcuts kbd{display:inline-block;padding:1px 4px;border:1px solid #6b7280;border-radius:3px}
     .shortcuts kbd{background:#111827;font:11px ui-monospace,monospace}
-    h1{font-size:20px;margin:0}h2{font-size:16px;margin:20px 0 8px}small,.muted{color:#9ca3af}
+    h1{font-size:20px;margin:0}h2{font-size:16px;margin:16px 0 6px}small,.muted{color:#9ca3af}
     button{background:#374151;color:inherit;border:1px solid #6b7280;border-radius:5px;padding:6px 10px;cursor:pointer}
     button:hover{background:#4b5563}main{display:grid}
     main{grid-template-columns:var(--timeline-width) minmax(720px,1fr) 8px minmax(400px,var(--right-width,1.1fr))}
@@ -33024,27 +33034,27 @@ class GlibcHeapTimelineCommand(GenericCommand):
     #timelineResize{z-index:2;cursor:col-resize;touch-action:none}
     #timelineResize::after{content:"";position:absolute;left:4px;top:0;bottom:0;width:2px;background:#374151}
     #timelineResize:hover::after,#timelineResize:focus-visible::after{background:#60a5fa}
-    .content,.right{overflow:auto;padding:0 20px 18px}
+    .content,.right{overflow:auto;padding:0 12px 12px}
     .pane-title{height:30px;display:flex;align-items:center;background:#111827}
     .pane-title{border-bottom:1px solid #374151;color:#9ca3af;font-size:11px;font-weight:600;letter-spacing:.04em}
-    aside>.pane-title{padding:0 10px}.content>.pane-title,.right>.pane-title{margin:0 -20px 10px;padding:0 20px}
+    aside>.pane-title{padding:0 7px}.content>.pane-title,.right>.pane-title{margin:0 -12px 8px;padding:0 12px}
     .content>.pane-title,.right>.pane-title{position:sticky;top:0;z-index:3}
-    .content>#title{margin:0 0 8px}.panel>h2:first-child{margin:0 0 8px}
+    .content>#title{margin:0 0 6px}.panel>h2:first-child{margin:0 0 6px}
     .right>details.panel:first-of-type{margin-top:0}
     #rightResize{cursor:col-resize;touch-action:none;position:relative;border-left:1px solid #374151}
     #rightResize{border-right:1px solid #374151}
     #rightResize::after{content:"";position:absolute;left:2px;top:0;bottom:0;width:2px;background:#374151}
     #rightResize:hover::after,#rightResize:focus-visible::after{background:#60a5fa}
-    .timeline-tools{padding:10px;display:grid;gap:6px;border-bottom:1px solid #374151}
+    .timeline-tools{padding:8px;display:grid;gap:5px;border-bottom:1px solid #374151}
     .timeline-tools input,.timeline-tools select{width:100%;background:#1f2937;color:inherit;
     border:1px solid #6b7280;padding:6px}
-    .batch-editor{position:relative}.batch-script{display:block;width:100%;min-height:100px;resize:vertical;padding:8px}
+    .batch-editor{position:relative}.batch-script{display:block;width:100%;min-height:100px;resize:vertical;padding:6px}
     .batch-script{background:#111827;color:inherit;border:1px solid #6b7280;font:13px/1.5 ui-monospace,monospace}
     .batch-hint{position:absolute;right:24px;bottom:8px;display:flex;gap:12px;color:#9ca3af}
     .batch-hint{background:#111827;font:11px ui-monospace,monospace}
     .batch-script:not(:placeholder-shown)+.batch-hint .batch-tab{display:none}
     #emulateButton{margin-top:8px}#emulateStatus{display:block;margin-top:6px}
-    #timeline{overflow:auto;min-height:0;flex:1;padding:0 10px}
+    #timeline{overflow:auto;min-height:0;flex:1;padding:0 7px}
     .event{display:block;width:100%;height:52px;text-align:left;margin:0 0 2px;padding:4px 6px;font-size:11px;line-height:1.2}
     .event{border:1px solid #374151;background:#1f2937}
     .event.selected{border-color:#60a5fa;background:#1e3a5f}.event.virtual{border-left:4px solid #c084fc}
@@ -33061,23 +33071,38 @@ class GlibcHeapTimelineCommand(GenericCommand):
     .event b,.event span{display:block;overflow:hidden}.event b{font-size:12px;white-space:nowrap}
     .event span{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow-wrap:anywhere}
     .error{color:#fca5a5;white-space:pre-wrap}
-    .panel{border:1px solid #374151;border-radius:6px;padding:12px;margin:12px 0;background:#1f2937}
-    details.panel{padding:8px 12px}summary{cursor:pointer;font-weight:600}details.panel>div{margin-top:10px}
+    .panel{border:1px solid #374151;border-radius:6px;padding:9px;margin:9px 0;background:#1f2937}
+    details.panel{padding:7px 9px}summary{cursor:pointer;font-weight:600}details.panel>div{margin-top:8px}
+    #emulatePanel summary{font-size:16px}
     .badge{background:#334155;border-radius:8px;padding:1px 6px;margin-left:8px;font-size:12px}
     table{width:100%;border-collapse:collapse;font:13px/1.5 ui-monospace,monospace}
-    th,td{padding:5px 7px;text-align:left;border-bottom:1px solid #374151}
-    td{overflow-wrap:anywhere}th{color:#9ca3af}tr.changed{background:#164e63}.free{color:#fbbf24}.used{color:#86efac}
+    th,td{padding:4px 6px;text-align:left;border-bottom:1px solid #374151}
+    td{overflow-wrap:anywhere}th{color:#9ca3af}.free{color:#fbbf24}.used{color:#86efac}
+    tr.changed,.dump-chunk.changed{background-color:#164e63}
+    tr.allocated,.dump-chunk.allocated{background-color:#22c55e55}
+    tr.released,.dump-chunk.released{background-color:#f8717155}
     #chunks{overflow-x:auto}#chunks table{table-layout:fixed;min-width:650px}
     #chunks th:first-child{width:230px}#chunks th:nth-child(2){width:75px}
     #chunks th:nth-child(3){width:70px}#chunks th:nth-child(4){width:75px}
     tr.heap-region td{background:#273449;color:#93c5fd;font-weight:600}
     .unknown{color:#9ca3af}tr.corrupt td{background:#7f1d1d88}.corrupt-label{color:#fca5a5}
+    tr.corrupt td:first-child{box-shadow:inset 6px 0 #ef4444}
+    tr.allocated td:first-child{box-shadow:inset 6px 0 #22c55e}
+    tr.released td:first-child{box-shadow:inset 6px 0 #f87171}
     .bar{height:6px;min-width:8px;border-radius:4px;background:#34d399}.bar.free{background:#fbbf24}
     .chain{font:13px/1.6 ui-monospace,monospace;overflow-wrap:anywhere;margin:4px 0}
+    .chain .address-link{padding:0;border:0;background:transparent;color:#93c5fd;font:inherit;text-decoration:underline}
+    .chain .address-link{user-select:text}.chain .address-link:hover{filter:brightness(1.2)}
+    .chain .bin-added{background:#7f1d1d;color:#fecaca;border-radius:3px;padding:1px 3px;font-weight:600}
+    .chain .bin-removed{background:#14532d;color:#bbf7d0;border-radius:3px;padding:1px 3px}
+    .chain .bin-removed{text-decoration:underline line-through}
+    .legend .bin-added{background:#7f1d1d}.legend .bin-removed{background:#14532d}
     .fold button{width:100%;text-align:left;background:#273449;border:0;color:#93c5fd}
     tr.chunk-row{cursor:pointer}tr.chunk-row.selected{outline:2px solid #60a5fa;outline-offset:-2px}
-    .dump-controls{display:flex;gap:8px;margin:10px 0}
-    .dump-chunk{border-left:6px solid;margin:10px 0;padding:8px 10px;border-radius:4px}
+    .dump-controls{display:flex;gap:8px;margin:8px 0}
+    .dump-chunk{border-left:6px solid #374151;margin:8px 0;padding:6px 8px;border-radius:4px}
+    .dump-chunk.corrupt{background-image:linear-gradient(#7f1d1d88,#7f1d1d88);border-left-color:#ef4444}
+    .dump-chunk.allocated{border-left-color:#22c55e}.dump-chunk.released{border-left-color:#f87171}
     .dump-chunk.selected{outline:1px solid #e5e7eb}.dump-chunk h3{font-size:13px;margin:0 0 6px}
     .dump-chunk pre{overflow:auto;margin:0;white-space:pre;font:13px/1.5 ui-monospace,monospace}
     .dump-line{display:block}.dump-word.changed{background:#92400e;color:#fff}
@@ -33085,6 +33110,11 @@ class GlibcHeapTimelineCommand(GenericCommand):
     .dump-address.jump-target{background:#713f12;color:#facc15;font-weight:700;border-radius:3px}
     .dump-line.gap{color:#9ca3af}
     .pointer{padding:0;border:0;background:transparent;color:#93c5fd;font:inherit;text-decoration:underline}
+    #addressDialog{width:min(760px,calc(100vw - 32px));max-height:calc(100vh - 32px);overflow:auto}
+    #addressDialog{background:#1f2937;color:#e5e7eb;border:1px solid #6b7280;border-radius:8px;padding:12px}
+    #addressDialog::backdrop{background:#000a}.dialog-header{display:flex;align-items:center;gap:16px}
+    .dialog-header h2{margin:0;flex:1}#addressData{overflow:auto;margin:12px 0 0;white-space:pre}
+    #addressData{font:13px/1.5 ui-monospace,monospace}
     </style>
     <header><h1>Heap Timeline</h1><small id="status">Connecting</small>
     <button id="prevEvent">Prev</button><small id="position"></small>
@@ -33104,8 +33134,9 @@ class GlibcHeapTimelineCommand(GenericCommand):
     <span><i class="changed-chunk"></i>Changed since previous state</span>
     <span><i class="corrupt"></i>Corrupt chunk</span></div>
     <h3>Bins &amp; data</h3><div class="legend">
-    <span><i class="data-change"></i>Changed word</span>
-    <span><i class="chunk"></i>Chunk colors</span></div>
+    <span><i class="bin-added"></i>Added to bin</span>
+    <span><i class="bin-removed"></i>Removed from bin</span>
+    <span><i class="data-change"></i>Changed word</span></div>
     <h2>Keys</h2><div class="shortcuts">
     <span><kbd>↑</kbd><kbd>↓</kbd> Move focus</span></div></div>
     <main id="main"><aside><div class="pane-title">Timeline</div>
@@ -33119,13 +33150,13 @@ class GlibcHeapTimelineCommand(GenericCommand):
     aria-orientation="vertical" aria-valuemin="180" aria-valuenow="260"></div></aside><div class="content">
     <div class="pane-title">Heap state &amp; emulation</div>
     <h2 id="title">Waiting for events</h2><div id="summary" class="muted"></div><div id="error" class="error"></div>
-    <section class="panel"><h2 id="emulateTitle">Emulated batch from selected state</h2>
+    <details class="panel" id="emulatePanel"><summary id="emulateTitle">Emulated batch from selected state</summary>
     <div class="batch-editor"><textarea id="batchScript" class="batch-script" rows="5" spellcheck="false"
     placeholder="$1 = malloc(0x30); // save pointer&#10;free($1);&#10;free($heapbase+0x400);"></textarea>
     <span class="batch-hint"><span class="batch-tab">Tab: insert example</span>
     <span>Ctrl+Enter: run batch</span></span></div>
     <button id="emulateButton" title="Ctrl+Enter" aria-keyshortcuts="Control+Enter">Emulate batch</button>
-    <small id="emulateStatus" class="muted"></small></section>
+    <small id="emulateStatus" class="muted"></small></details>
     <section class="panel"><h2>Chunk layout</h2><div id="chunks" tabindex="0" aria-label="Chunk layout"></div></section></div>
     <div id="rightResize" role="separator" tabindex="0" aria-label="Resize data pane"
     aria-orientation="vertical" aria-valuemin="400"></div>
@@ -33138,9 +33169,12 @@ class GlibcHeapTimelineCommand(GenericCommand):
     <div class="dump-controls"><button id="moreLower" hidden>More at lower addresses</button></div>
     <div id="dumpData"></div><div class="dump-controls"><button id="moreHigher" hidden>More at higher addresses</button></div>
     </section></div></main>
+    <dialog id="addressDialog" aria-labelledby="addressTitle"><div class="dialog-header">
+    <h2 id="addressTitle"></h2><button id="addressClose" aria-label="Close" title="Close (Esc)">×</button></div>
+    <div id="addressInfo" class="muted"></div><pre id="addressData"></pre></dialog>
     <script>
     let events=[];let selected=null;let selectedChunk=null;let follow=true;let loading=false;let runningBatch=false;
-    let dumpStart=0;let dumpEnd=0;let dumpVersion=0;let identityFilter=null;
+    let dumpStart=0;let dumpEnd=0;let dumpVersion=0;let popupVersion=0;let identityFilter=null;
     let visibleEvents=[];let visibleOffsets=[0];let timelineOrder=[];let searchOrder=[];const historyViews=[];
     const eventHeight=54;const groupHeight=30;
     const expanded=new Set();const expandedDumps=new Set();const dumpCache=new Map();
@@ -33158,16 +33192,72 @@ class GlibcHeapTimelineCommand(GenericCommand):
       return chunkSize(chunk)+' '+state+(chunk.extra?' / '+chunk.extra:'')}
     function chunkChanged(before,after){return !before||!after||before.size!==after.size||
       before.used!==after.used||before.corrupt!==after.corrupt||before.data_hash!==after.data_hash}
+    function colorChunk(node,chunk,address,changed,targets){const target=targets.find(item=>item.address===address);
+      node.classList.toggle('changed',changed);node.classList.toggle('corrupt',Boolean(chunk.corrupt));
+      node.classList.toggle('allocated',target?.kind==='alloc');
+      node.classList.toggle('released',target?.kind==='release')}
+    function addDumpLink(parent,event,address,klass=''){
+      const label=address===null?'none':typeof address==='number'?hex(address):String(address);
+      if(!event||!Number.isSafeInteger(address))return add(parent,'span',label,klass);
+      const link=add(parent,'button',label,'address-link'+(klass?' '+klass:''));
+      link.type='button';link.title='Inspect '+label+' in '+event.display_id;
+      link.onclick=()=>showAddressDump(event,address);return link}
+    function drawBinChain(event,oldEvent,name,index,chain,oldChain){const initial=oldChain===null;
+      oldChain=oldChain||[];const positions=new Map();
+      for(let i=0;i<chain.length;i++){if(!positions.has(chain[i]))positions.set(chain[i],{indices:[],next:0});
+        positions.get(chain[i]).indices.push(i)}
+      const matches=[];const retained=new Set();
+      if(initial)for(let i=0;i<chain.length;i++)retained.add(i);
+      for(const value of oldChain){const entry=positions.get(value);let position=-1;
+        if(entry&&entry.next<entry.indices.length)position=entry.indices[entry.next++];
+        matches.push(position);if(position>=0)retained.add(position)}
+      const removed=new Map();let anchor=chain.length;
+      for(let i=oldChain.length-1;i>=0;i--){if(matches[i]>=0){anchor=matches[i];continue}
+        if(!removed.has(anchor))removed.set(anchor,[]);removed.get(anchor).push(oldChain[i])}
+      const row=add(byId('bins'),'div','','chain');add(row,'span',name+'['+index+']: ');
+      let first=true;for(let i=0;i<=chain.length;i++){
+        for(const value of (removed.get(i)||[]).reverse()){
+          if(!first)add(row,'span',' -> ');first=false;
+          const node=addDumpLink(row,oldEvent,value,'bin-removed');
+          node.title=typeof value==='number'?'Removed from bin; '+node.title:'Removed from bin'}
+        if(i===chain.length)break;
+        if(!first)add(row,'span',' -> ');first=false;
+        const node=addDumpLink(row,event,chain[i],retained.has(i)?'':'bin-added');
+        if(!retained.has(i))node.title=typeof chain[i]==='number'?'Added to bin; '+node.title:'Added to bin'}}
     function eventTargets(event){return (event.targets||[]).map(item=>({
-      address:item.address-2*event.ptrsize,kind:item.role,identity:item.identity}))}
-    function previous(event){if(event.parent!==null)return events[event.parent-1];
-      for(let i=event.number-2;i>=0;i--)if(events[i].kind==='observed')return events[i];return null}
+      address:item.address-2*event.ptrsize,kind:item.role}))}
+    function previous(event){return event.comparison_parent===null?null:events[event.comparison_parent-1]}
     async function loadDump(event,chunk){const key=event.number+':'+chunk.start_offset;
       if(!dumpCache.has(key)){const response=await fetch('/api/chunk?event='+event.number+
           '&offset='+chunk.start_offset);
         if(!response.ok)throw new Error('Cannot load chunk data');
         const payload=await response.json();dumpCache.set(key,payload.hex)}
       return dumpCache.get(key)}
+    async function showAddressDump(event,address){const dialog=byId('addressDialog');const version=++popupVersion;
+      const output=byId('addressData');output.replaceChildren();output.className='';
+      byId('addressTitle').textContent=event.display_id+' / '+hex(address);
+      if(!dialog.open)dialog.showModal();
+      const index=chunkIndex(event,address);
+      if(index<0){byId('addressInfo').textContent='No recorded chunk at this address';return}
+      const chunk=event.chunks[index];const start=event.heap_base+chunk.start_offset;
+      const base=previous(event);const old=chunkMap(base).get(start);output.className='dump-chunk';
+      colorChunk(output,chunk,start,chunkChanged(old,chunk),eventTargets(event));
+      byId('addressInfo').textContent='Chunk '+hex(start)+' / '+chunkSize(chunk)+' / 16-byte rows / '+
+        event.ptrsize+'-byte words ('+event.endian+'-endian)';
+      if(!chunk.captured_size){output.textContent='No captured data';return}
+      output.textContent='Loading...';
+      try{const data=await loadDump(event,chunk);if(version!==popupVersion||!dialog.open)return;
+        let oldData='';
+        if(old&&old.captured_size){oldData=await loadDump(base,old);if(version!==popupVersion||!dialog.open)return}
+        output.textContent='';drawWords(output,event,chunk,index,data,oldData,address);
+        output.querySelector('.jump-target')?.scrollIntoView({block:'center'})}
+      catch(error){if(version===popupVersion&&dialog.open)output.textContent=error.message}}
+    function saveHistory(){historyViews.push({selected,selectedChunk:selectedChunk?{...selectedChunk}:null,
+      dumpStart,dumpEnd,identityFilter,search:byId('eventSearch').value,
+      operation:byId('operationFilter').value,follow,timelineScroll:byId('timeline').scrollTop,
+      contentScroll:document.querySelector('.content').scrollTop,
+      rightScroll:document.querySelector('.right').scrollTop});
+      byId('historyBack').hidden=false}
     function selectChunk(event,index,jumpAddress=null){selectedChunk={number:event.number,index,jumpAddress};
       dumpStart=Math.max(0,index-1);dumpEnd=Math.min(event.chunks.length-1,index+1);
       const words=16/event.ptrsize;
@@ -33177,39 +33267,48 @@ class GlibcHeapTimelineCommand(GenericCommand):
       if(!row){render();row=chunks.querySelector('tr.chunk-row[data-index="'+index+'"]')}
       chunks.querySelector('tr.chunk-row.selected')?.classList.remove('selected');
       row?.classList.add('selected');row?.scrollIntoView({block:'nearest'});
-      showDump(event,true)}
-    function addPointer(parent,event,value,label){let low=0;let high=event.chunks.length-1;let target=-1;
-      if(Number.isSafeInteger(value))while(low<=high){const middle=(low+high)>>1;
+      showDump(event,jumpAddress!==null)}
+    function chunkIndex(event,value){let low=0;let high=event.chunks.length-1;let target=-1;
+      if(!Number.isSafeInteger(value)||event.heap_base===null)return -1;
+      while(low<=high){const middle=(low+high)>>1;
         const start=event.heap_base+event.chunks[middle].start_offset;
         if(value<start)high=middle-1;else{target=middle;low=middle+1}}
       if(target>=0){const chunk=event.chunks[target];const start=event.heap_base+chunk.start_offset;
         const length=Math.min(Math.max(chunk.size,2*event.ptrsize),chunk.captured_size??chunk.size);
         if(value>=start+length)target=-1}
+      return target}
+    function addPointer(parent,event,value,label){const target=chunkIndex(event,value);
       if(target<0){add(parent,'span',label);return}
       const pointer=add(parent,'button',label,'pointer');pointer.title='Jump to '+hex(value);
-      pointer.onclick=()=>selectChunk(event,target,value)}
-    function drawWords(output,event,chunk,index,data,oldData){const address=event.heap_base+chunk.start_offset;
-      const wordHex=event.ptrsize*2;const rowBytes=16;const rowHex=32;const wordCount=rowBytes/event.ptrsize;
+      pointer.onclick=()=>{saveHistory();selectChunk(event,target,value)}}
+    function drawWords(output,event,chunk,index,data,oldData,popupAddress=null){
+      const address=event.heap_base+chunk.start_offset;
+      const wordHex=event.ptrsize*2;const rowBytes=16;const wordCount=rowBytes/event.ptrsize;
       const addressWidth=wordHex+4;const reverse=event.endian==='little';
-      const rows=[];for(let pos=0;pos<data.length;pos+=rowHex){const bytes=data.slice(pos,pos+rowHex).match(/../g)||[];
-        const words=[];for(let offset=0;offset<rowHex;offset+=wordHex){const raw=data.slice(pos+offset,pos+offset+wordHex);
-          if(!raw)continue;
+      const first=address-address%rowBytes;const rows=[];
+      for(let rowAddress=first;rowAddress<address+data.length/2;rowAddress+=rowBytes){
+        const words=[];let ascii='';let oldAscii='';
+        for(let column=0;column<wordCount;column++){
+          const offset=rowAddress+column*event.ptrsize-address;
+          const raw=offset>=0?data.slice(offset*2,offset*2+wordHex):'';
+          const old=offset>=0?oldData.slice(offset*2,offset*2+wordHex):'';
+          if(!raw){words.push(null);ascii+=' '.repeat(event.ptrsize);oldAscii+=' '.repeat(event.ptrsize);continue}
           const value=raw.match(/../g)||[];if(reverse)value.reverse();
           const word='0x'+value.join('').padStart(wordHex,'0');
-          const old=oldData.slice(pos+offset,pos+offset+wordHex);
           const comparable=old.length===raw.length;
           const oldBytes=old.match(/../g)||[];if(reverse)oldBytes.reverse();
           const oldValue=comparable?'0x'+oldBytes.join('').padStart(wordHex,'0'):'none';
-          words.push({text:word,oldValue,changed:comparable&&raw!==old})}
-        const ascii=bytes.map(byte=>{const value=parseInt(byte,16);return value>=32&&value<=126?
-          String.fromCharCode(value):'.'}).join('');
-        const oldBytes=oldData.slice(pos,pos+rowHex).match(/../g)||[];
-        const oldAscii=oldBytes.map(byte=>{const value=parseInt(byte,16);return value>=32&&value<=126?
-          String.fromCharCode(value):'.'}).join('');
-        rows.push({address:address+pos/2,words,ascii,oldAscii,
-          changed:words.some(word=>word.changed)})}
-      const key=event.number+':'+chunk.start_offset;const preview=index!==selectedChunk.index;
-      const jump=selectedChunk?.number===event.number&&selectedChunk.index===index?selectedChunk.jumpAddress:null;
+          words.push({text:word,oldValue,changed:comparable&&raw!==old});
+          for(let byte=0;byte<event.ptrsize;byte++){
+            const current=raw.slice(byte*2,byte*2+2);const prior=old.slice(byte*2,byte*2+2);
+            const character=parseInt(current,16);const priorCharacter=parseInt(prior,16);
+            ascii+=current?(character>=32&&character<=126?String.fromCharCode(character):'.'):' ';
+            oldAscii+=prior?(priorCharacter>=32&&priorCharacter<=126?String.fromCharCode(priorCharacter):'.'):' '}}
+        rows.push({address:rowAddress,words,ascii,oldAscii,changed:words.some(word=>word?.changed)})}
+      const key=event.number+':'+chunk.start_offset;const preview=popupAddress===null&&index!==selectedChunk.index;
+      const jump=popupAddress!==null?popupAddress:
+        selectedChunk?.number===event.number&&selectedChunk.index===index?selectedChunk.jumpAddress:null;
+      const redraw=()=>{if(popupAddress!==null)showAddressDump(event,popupAddress);else showDump(event)};
       const full=expandedDumps.has(key);
       const keep=new Set();for(let i=0;i<rows.length;i++){
         const jumpRow=Number.isSafeInteger(jump)&&rows[i].address<=jump&&jump<rows[i].address+rowBytes;
@@ -33218,17 +33317,18 @@ class GlibcHeapTimelineCommand(GenericCommand):
       let hidden=0;for(let i=0;i<rows.length;i++){
         if(!keep.has(i)){hidden++;continue}
         if(hidden){const gap=add(output,'span',hidden+' words hidden (click to expand)','dump-line gap');
-          gap.style.cursor='pointer';gap.onclick=()=>{expandedDumps.add(key);showDump(event)};hidden=0}
+          gap.style.cursor='pointer';gap.onclick=()=>{expandedDumps.add(key);redraw()};hidden=0}
         const line=add(output,'span','','dump-line');
         const addressLabel=add(line,'span','0x'+rows[i].address.toString(16).padStart(wordHex,'0'),'dump-address');
         if(Number.isSafeInteger(jump)&&rows[i].address<=jump&&jump<rows[i].address+rowBytes){
           addressLabel.classList.add('jump-target');addressLabel.title='Jump target '+hex(jump)}
         add(line,'span',': ');
         for(const word of rows[i].words){
-          const span=add(line,'span','',word.changed?'dump-word changed':'dump-word');
-          addPointer(span,event,Number(word.text),word.text);
+          if(word){const span=add(line,'span','',word.changed?'dump-word changed':'dump-word');
+            if(popupAddress!==null)add(span,'span',word.text);
+            else addPointer(span,event,Number(word.text),word.text)}
+          else add(line,'span',' '.repeat(wordHex+2));
           add(line,'span','  ')}
-        if(rows[i].words.length<wordCount)add(line,'span',' '.repeat((wordCount-rows[i].words.length)*(wordHex+4)));
         add(line,'span','|'+rows[i].ascii.padEnd(rowBytes,' ')+'|');
         const fdAddress=address+2*event.ptrsize;
         if(rows[i].address<=fdAddress&&fdAddress<rows[i].address+rowBytes&&
@@ -33237,26 +33337,25 @@ class GlibcHeapTimelineCommand(GenericCommand):
           const padding=addressWidth+column*(wordHex+4)-12;
           const decodedLine=add(output,'span',' '.repeat(padding)+'fd decoded: ','dump-line fd-decoded');
           const decoded=Number(chunk.fd_decoded);
-          addPointer(decodedLine,event,decoded,'0x'+decoded.toString(16).padStart(wordHex,'0'))}
+          const label='0x'+decoded.toString(16).padStart(wordHex,'0');
+          if(popupAddress!==null)add(decodedLine,'span',label);
+          else addPointer(decodedLine,event,decoded,label)}
         if(rows[i].changed){const oldLine=add(output,'span',' '.repeat(addressWidth-11)+'Old value: ',
           'dump-line old-value');
-          for(const word of rows[i].words)add(oldLine,'span',word.oldValue.padEnd(wordHex+2)+'  ');
-          if(rows[i].words.length<wordCount)
-            add(oldLine,'span',' '.repeat((wordCount-rows[i].words.length)*(wordHex+4)));
+          for(const word of rows[i].words)
+            add(oldLine,'span',(word?word.oldValue:'').padEnd(wordHex+2)+'  ');
           add(oldLine,'span','|'+rows[i].oldAscii.padEnd(rowBytes,' ')+'|')}}
       if(hidden){const gap=add(output,'span',hidden+' words hidden (click to expand)','dump-line gap');
-        gap.style.cursor='pointer';gap.onclick=()=>{expandedDumps.add(key);showDump(event)}}
+        gap.style.cursor='pointer';gap.onclick=()=>{expandedDumps.add(key);redraw()}}
       if(full&&rows.length>12){const button=add(output,'button','Collapse unchanged words');
-        button.onclick=()=>{expandedDumps.delete(key);showDump(event)}}}
+        button.onclick=()=>{expandedDumps.delete(key);redraw()}}}
     async function showDump(event,focus=false){const version=++dumpVersion;clear('dumpData');
+      const base=previous(event);const oldChunks=chunkMap(base);const targets=eventTargets(event);
       byId('moreLower').hidden=dumpStart===0;byId('moreHigher').hidden=dumpEnd===event.chunks.length-1;
       for(let i=dumpStart;i<=dumpEnd;i++){const chunk=event.chunks[i];
         const address=event.heap_base+chunk.start_offset;
-        const hue=((chunk.identity||i)*137.5)%360;
-        const color='hsl('+hue+' 75% 65%)';
         const block=add(byId('dumpData'),'section','','dump-chunk');
-        block.style.borderLeftColor=color;
-        block.style.backgroundColor='hsla('+hue+',60%,50%,.14)';
+        const old=oldChunks.get(address);colorChunk(block,chunk,address,chunkChanged(old,chunk),targets);
         if(i===selectedChunk.index)block.classList.add('selected');
         const position=i<selectedChunk.index?'Lower address':
           i===selectedChunk.index?'Selected':'Higher address';
@@ -33265,9 +33364,8 @@ class GlibcHeapTimelineCommand(GenericCommand):
         const output=add(block,'pre','Loading...');
         if(!chunk.captured_size){output.textContent='No captured data';continue}
         try{const data=await loadDump(event,chunk);if(version!==dumpVersion)return;
-          let oldData='';const base=previous(event);
-          if(base){const old=chunkMap(base).get(address);
-            if(old&&old.captured_size){oldData=await loadDump(base,old);if(version!==dumpVersion)return}}
+          let oldData='';
+          if(old&&old.captured_size){oldData=await loadDump(base,old);if(version!==dumpVersion)return}
           output.textContent='';drawWords(output,event,chunk,i,data,oldData)}
         catch(error){if(version!==dumpVersion)return;output.textContent=error.message}}
       if(focus)requestAnimationFrame(()=>{if(version!==dumpVersion)return;
@@ -33281,23 +33379,12 @@ class GlibcHeapTimelineCommand(GenericCommand):
         if(click.target.closest('button')||selection&&!selection.isCollapsed&&
           row.contains(selection.anchorNode))return;
         selectChunk(event,index);byId('chunks').focus({preventScroll:true})};
-      if(changed)row.classList.add('changed');
-      if(chunk.corrupt)row.classList.add('corrupt');
       const address=event.heap_base+chunk.start_offset;
-      const target=targets.find(item=>item.address===address);
-      const marker=target?target.kind:null;
-      if(marker)row.style.backgroundColor=(marker==='alloc'?'#22c55e':'#f87171')+'55';
+      colorChunk(row,chunk,address,changed,targets);
       const addressCell=add(row,'td',hex(address)+' ');
-      if(chunk.corrupt){addressCell.style.boxShadow='inset 6px 0 #ef4444';
-        add(addressCell,'strong','CORRUPT','corrupt-label')}
-      if(marker)addressCell.style.boxShadow='inset 6px 0 '+(marker==='alloc'?'#22c55e':'#f87171');
+      if(chunk.corrupt)add(addressCell,'strong','CORRUPT','corrupt-label');
       const history=add(addressCell,'button','history');history.title='Filter timeline to this chunk';
-      history.onclick=()=>{historyViews.push({selected,selectedChunk:selectedChunk?{...selectedChunk}:null,
-        dumpStart,dumpEnd,identityFilter,search:byId('eventSearch').value,
-        operation:byId('operationFilter').value,follow,timelineScroll:byId('timeline').scrollTop,
-        contentScroll:document.querySelector('.content').scrollTop,
-        rightScroll:document.querySelector('.right').scrollTop});
-        byId('historyBack').hidden=false;identityFilter=chunk.identity;byId('clearIdentity').hidden=false;
+      history.onclick=()=>{saveHistory();identityFilter=chunk.identity;byId('clearIdentity').hidden=false;
         byId('clearIdentity').textContent='Chunk #'+chunk.identity+' - Show all';
         byId('timeline').scrollTop=0;applyTimelineFilter()};
       add(row,'td','+'+hex(address-(chunk.region_base??event.heap_base)));
@@ -33458,12 +33545,16 @@ class GlibcHeapTimelineCommand(GenericCommand):
           const button=add(cell,'button',(expanded.has(key)?'Hide ':'Show ')+count+' unchanged chunks');
           button.onclick=()=>{if(expanded.has(key))expanded.delete(key);else expanded.add(key);render()};
           if(expanded.has(key))for(let j=start;j<i;j++)chunkRow(table,event,event.chunks[j],j,false,targets)}}
-      let binCount=0;for(const [name,groups] of Object.entries(event.bins)){
-        for(const [index,chain] of Object.entries(groups)){binCount++;
-          add(byId('bins'),'div',name+'['+index+']: '+chain.map(value=>
-            typeof value==='number'?hex(value):value).join(' -> '),'chain')}}
+      let binCount=0;let displayedBins=0;
+      for(const name of new Set([...Object.keys(event.bins),...Object.keys(base?.bins||{})])){
+        const now=event.bins[name]||{};const old=base?.bins[name]||{};
+        for(const index of new Set([...Object.keys(now),...Object.keys(old)])){
+          const chain=now[index]||[];const oldChain=base?old[index]||[]:null;
+          if(chain.length)binCount++;
+          if(!chain.length&&(!oldChain||!oldChain.length))continue;
+          displayedBins++;drawBinChain(event,base,name,index,chain,oldChain)}}
       byId('binCount').textContent=binCount;
-      if(!binCount)add(byId('bins'),'p','Empty','muted');
+      if(!displayedBins)add(byId('bins'),'p','Empty','muted');
       if(!base){byId('changeCount').textContent=0;
         add(byId('changes'),'p','No previous state','muted');return}
       add(byId('changes'),'small','Compared with '+base.display_id+'  '+base.label);
@@ -33472,16 +33563,21 @@ class GlibcHeapTimelineCommand(GenericCommand):
         if(a&&b&&a.size===b.size&&a.used===b.used&&a.corrupt===b.corrupt&&
           a.extra===b.extra&&a.data_hash===b.data_hash)continue;
         changeCount++;const detail=a&&b&&a.data_hash!==b.data_hash?' / data changed':'';
-        add(byId('changes'),'div',hex(address)+'  '+describe(a)+' -> '+describe(b)+detail,'chain')}
+        const row=add(byId('changes'),'div','','chain');
+        addDumpLink(row,b?event:base,address);
+        add(row,'span','  '+describe(a)+' -> '+describe(b)+detail)}
       if(base.top!==event.top){changeCount++;
-        add(byId('changes'),'div','top: '+hex(base.top)+' -> '+hex(event.top),'chain')}
+        const row=add(byId('changes'),'div','','chain');add(row,'span','top: ');
+        addDumpLink(row,base,base.top);add(row,'span',' -> ');addDumpLink(row,event,event.top)}
       for(const name of new Set([...Object.keys(base.bins),...Object.keys(event.bins)])){
         const old=base.bins[name]||{};const now=event.bins[name]||{};
         for(const index of new Set([...Object.keys(old),...Object.keys(now)])){
           const a=old[index]||[];const b=now[index]||[];
           if(JSON.stringify(a)===JSON.stringify(b))continue;changeCount++;
-          add(byId('changes'),'div',name+'['+index+']: '+a.map(hex).join(' -> ')+
-            ' => '+b.map(hex).join(' -> '),'chain')}}
+          const row=add(byId('changes'),'div','','chain');add(row,'span',name+'['+index+']: ');
+          for(let i=0;i<a.length;i++){if(i)add(row,'span',' -> ');addDumpLink(row,base,a[i])}
+          add(row,'span',' => ');
+          for(let i=0;i<b.length;i++){if(i)add(row,'span',' -> ');addDumpLink(row,event,b[i])}}}
       byId('changeCount').textContent=changeCount;
       if(!changeCount)add(byId('changes'),'p','No changes','muted')}
     function applyDeleted(numbers){let changed=false;const removed=new Set(numbers);
@@ -33515,7 +33611,8 @@ class GlibcHeapTimelineCommand(GenericCommand):
         const changed=applyDeleted(data.deleted||[]);
         if(data.events.length||changed)rebuildTimelineOrder();
         byId('status').textContent=(data.recording?'Recording':'Stopped')+' / '+
-          events.filter(event=>!event.deleted).length+' events';
+          events.filter(event=>!event.deleted).length+' events'+
+          (data.recording&&data.skip_remaining?' / skipping '+data.skip_remaining+' calls':'');
         if(follow||!events[selected-1])selected=events.findLast(event=>!event.deleted)?.number??null;
         if(data.events.length||changed){render();if(follow){const index=visibleEvents.findIndex(event=>event.number===selected);
             byId('timeline').scrollTop=visibleOffsets[Math.max(0,index-4)]||0;renderTimeline()}}}
@@ -33575,7 +33672,10 @@ class GlibcHeapTimelineCommand(GenericCommand):
     window.addEventListener('resize',()=>{
       timelineResize.setAttribute('aria-valuenow',Math.round(document.querySelector('aside').getBoundingClientRect().width));
       rightResize.setAttribute('aria-valuenow',Math.round(document.querySelector('.right').getBoundingClientRect().width))});
+    byId('addressClose').onclick=()=>byId('addressDialog').close();
+    byId('addressDialog').onclose=()=>popupVersion++;
     document.addEventListener('keydown',event=>{if(event.key!=='Escape')return;
+      if(byId('addressDialog').open){event.preventDefault();byId('addressDialog').close();return}
       if(!byId('notePanel').hidden){byId('notePanel').hidden=true;
         byId('noteButton').setAttribute('aria-expanded','false');return}
       if(historyViews.length)restoreHistory()});
@@ -33661,7 +33761,7 @@ class GlibcHeapTimelineCommand(GenericCommand):
                         return
                     after = int(after_text)
                     payload = {"events": state["events"][after:], "recording": state["enabled"],
-                               "deleted": sorted(state["deleted"])}
+                               "deleted": sorted(state["deleted"]), "skip_remaining": state["skip_remaining"]}
                     body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
                     content_type = "application/json; charset=utf-8"
                 elif path == "/api/chunk":
@@ -33755,7 +33855,6 @@ class GlibcHeapTimelineCommand(GenericCommand):
                 return
 
         server = http.server.ThreadingHTTPServer(("0.0.0.0", 61234), Handler)
-        server.daemon_threads = True
         state["server"] = server
         state["url"] = "http://127.0.0.1:{:d}/".format(server.server_port)
         threading.Thread(target=server.serve_forever, daemon=True).start()
@@ -33818,17 +33917,62 @@ class GlibcHeapTimelineCommand(GenericCommand):
             state = None
         if state is None and create:
             state = {
-                "inferior": inferior, "pid": inferior.pid, "enabled": False,
+                "inferior": inferior, "pid": inferior.pid, "enabled": False, "skip_remaining": 0,
                 "events": [], "serial": 0, "breakpoints": [], "returns": set(),
                 "active": set(), "preview_label": None, "preview_parent": None,
-                "preview_operation": None, "preview_arguments": (), "latest_observed": None,
+                "preview_operation": None, "preview_arguments": (),
                 "identity_serial": 0, "server": None, "url": None, "data": {}, "aux_data": {},
-                "blobs": {}, "observed_serial": 0, "display_ids": set(), "children": {},
+                "blobs": {}, "observed_serial": 0,
                 "batch_serials": {}, "batch_context": None, "groups": {}, "deleted": set(),
-                "arena_addr": None, "arena_main": True,
+                "latest_observed_by_arena": {},
             }
             GlibcHeapTimelineCommand.states[inferior] = state
         return state
+
+    @staticmethod
+    def select_arena(operation, arguments, result):
+        """Choose the arena owning an allocator target, or the current thread's arena."""
+        arenas = GlibcHeap.get_all_arenas()
+        if not arenas:
+            return None
+        target = None
+        if operation in ("malloc", "calloc", "realloc") and result:
+            target = result
+        elif operation in ("free", "realloc") and arguments and arguments[0]:
+            target = arguments[0]
+        if target is not None:
+            header = target - current_arch.ptrsize * 2
+            for arena in arenas:
+                try:
+                    regions = GlibcHeapTimelineCommand.heap_regions(arena, arena.top)
+                except (OSError, AttributeError, gdb.MemoryError, RuntimeError, TypeError):
+                    continue
+                if any(region["start"] <= header < region["end"] for region in regions):
+                    return arena
+        try:
+            tls = current_arch.get_tls()
+            if tls is not None:
+                page_size = get_pagesize()
+                center = tls & ~(page_size - 1)
+                endian = "big" if Endian.is_big_endian() else "little"
+                best = None
+                for page in (center - page_size, center, center + page_size):
+                    if page < 0:
+                        continue
+                    raw = read_memory(page, page_size, safe=True) or b""
+                    for arena in arenas:
+                        needle = arena.addr.to_bytes(current_arch.ptrsize, endian)
+                        offset = raw.find(needle)
+                        while offset >= 0:
+                            distance = abs(page + offset - tls)
+                            if best is None or distance < best[0]:
+                                best = (distance, arena)
+                            offset = raw.find(needle, offset + 1)
+                if best is not None:
+                    return best[1]
+        except (gdb.error, OSError, AttributeError, TypeError):
+            pass
+        return arenas[0]
 
     @staticmethod
     def heap_regions(arena, top):
@@ -33946,38 +34090,10 @@ class GlibcHeapTimelineCommand(GenericCommand):
         """Assign a stable label to an observed or emulated state."""
         if parent is None:
             state["observed_serial"] += 1
-            display_id = "#{:02d}".format(state["observed_serial"])
-            indent = 0
-        else:
-            source = state["events"][parent - 1]
-            children = state["children"].setdefault(parent, [])
-            display_id = None
-            group = state["batch_context"]
-            if group is not None:
-                display_id = "{:s}-E{:d}".format(group["id"], group["step"])
-                indent = state["events"][group["parent"] - 1]["indent"] + 2
-                group["events"].append(number)
-            elif source["parent"] is None:
-                stem = source["display_id"]
-                index = 1
-                indent = 1
-            else:
-                stem, step = source["display_id"].rsplit("-E", 1)
-                candidate = "{:s}-E{:d}".format(stem, int(step) + 1)
-                if not children and candidate not in state["display_ids"]:
-                    display_id = candidate
-                    indent = source["indent"]
-                stem = source["display_id"]
-                index = 1
-                if display_id is None:
-                    indent = source["indent"] + 1
-            if display_id is None:
-                while "{:s}-E{:d}".format(stem, index) in state["display_ids"]:
-                    index += 1
-                display_id = "{:s}-E{:d}".format(stem, index)
-            children.append(number)
-        state["display_ids"].add(display_id)
-        return display_id, indent
+            return "#{:02d}".format(state["observed_serial"])
+        group = state["batch_context"]
+        group["events"].append(number)
+        return "{:s}-E{:d}".format(group["id"], group["step"])
 
     @staticmethod
     def capture(state, label, kind, operation=None, arguments=(), result=None):
@@ -33991,12 +34107,14 @@ class GlibcHeapTimelineCommand(GenericCommand):
         arena = None
         regions = []
         try:
-            arena = GlibcHeap.GlibcArena(state["arena_addr"])
+            arena = GlibcHeapTimelineCommand.select_arena(operation, arguments, result)
+            if arena is None:
+                raise OSError("No glibc arena is available")
             str(arena)
             heap_base = arena.heap_base
             top = arena.top
         except (OSError, AttributeError, gdb.MemoryError, RuntimeError, TypeError):
-            errors.append("Cannot read the selected arena")
+            errors.append("Cannot read the arena")
         if arena is not None and heap_base is not None and is_valid_addr(heap_base):
             try:
                 regions = GlibcHeapTimelineCommand.heap_regions(arena, top)
@@ -34004,7 +34122,7 @@ class GlibcHeapTimelineCommand(GenericCommand):
                 errors.append("Cannot locate arena heaps: {!s}".format(e))
         elif heap_base is not None:
             errors.append("Heap base is outside mapped memory")
-        if not regions and state["arena_main"]:
+        if not regions and arena is not None and arena.is_main_arena:
             heap_base = ProcessMap.get_section_base_address("[heap]")
             mapping = ProcessMap.lookup(heap_base) if heap_base is not None else None
             if mapping is not None and mapping.section is not None:
@@ -34060,9 +34178,14 @@ class GlibcHeapTimelineCommand(GenericCommand):
                     except Exception as e:
                         errors.append("Cannot classify chunk at {:#x}: {!s}".format(address, e))
                         bin_valid = False
-        prior_number = state["latest_observed"]
+        prior_number = None
+        if arena is not None:
+            prior_number = state["latest_observed_by_arena"].get(arena.addr)
         if kind == "emulated":
             prior_number = state["preview_parent"]
+            if prior_number is not None and (arena is None or
+                                             state["events"][prior_number - 1]["arena_addr"] != arena.addr):
+                prior_number = None
         prior_event = None
         if prior_number is not None:
             prior_event = state["events"][prior_number - 1]
@@ -34193,28 +34316,34 @@ class GlibcHeapTimelineCommand(GenericCommand):
         parent = None
         if kind == "emulated":
             parent = state["preview_parent"]
-        display_id, indent = GlibcHeapTimelineCommand.make_display_id(state, parent, state["serial"])
+        display_id = GlibcHeapTimelineCommand.make_display_id(state, parent, state["serial"])
         group = state["batch_context"]
+        arena_addr = None
+        arena_name = "unknown"
+        if arena is not None:
+            arena_addr = arena.addr
+            arena_name = "{:#x}".format(arena_addr)
+            if arena.is_main_arena:
+                arena_name = "main_arena"
         event = {
             "number": state["serial"], "label": label, "kind": kind,
             "heap_base": heap_base, "top": top, "chunks": chunks, "bins": bins,
-            "arena_addr": state["arena_addr"],
-            "arena_name": "main_arena" if state["arena_main"] else "{:#x}".format(state["arena_addr"]),
+            "arena_addr": arena_addr, "arena_name": arena_name,
             "regions": [{"base": region["base"], "start": region["start"], "end": region["end"]} for region in regions],
             "ptrsize": current_arch.ptrsize, "endian": "big" if Endian.is_big_endian() else "little",
             "thread_id": Pid.get_tid(),
-            "parent": parent, "error": "\n".join(errors) or None,
-            "operation": operation, "arguments": tuple(arguments), "result": result, "targets": targets,
+            "parent": parent, "comparison_parent": prior_number, "error": "\n".join(errors) or None,
+            "operation": operation, "result": result, "targets": targets,
             "replay_ready": replay_ready, "heap_end": heap_end,
-            "display_id": display_id, "indent": indent,
+            "display_id": display_id,
         }
         if group is not None:
             event.update({"group_id": group["id"], "group_parent": group["parent"], "group_step": group["step"]})
         state["data"][event["number"]] = chunk_data
         state["aux_data"][event["number"]] = aux_data
         state["events"].append(event)
-        if kind == "observed":
-            state["latest_observed"] = event["number"]
+        if kind == "observed" and arena is not None:
+            state["latest_observed_by_arena"][arena.addr] = event["number"]
         return event
 
     @staticmethod
@@ -34373,7 +34502,7 @@ class GlibcHeapTimelineCommand(GenericCommand):
         for data in state["data"].values():
             used.update(data.values())
         for data in state["aux_data"].values():
-            used.update(digest for address, digest in data)
+            used.update(digest for _, digest in data)
         for digest in tuple(state["blobs"]):
             if digest not in used:
                 del state["blobs"][digest]
@@ -34480,16 +34609,17 @@ class GlibcHeapTimelineCommand(GenericCommand):
                 return event
             state["serial"] += 1
             failed = dict(source)
-            display_id, indent = GlibcHeapTimelineCommand.make_display_id(state, source_number, state["serial"])
+            display_id = GlibcHeapTimelineCommand.make_display_id(state, source_number, state["serial"])
             group = state["batch_context"]
             for key in ("group_id", "group_parent", "group_step"):
                 failed.pop(key, None)
             failed.update({
                 "number": state["serial"], "label": label, "kind": "failed",
-                "parent": source_number, "operation": name, "arguments": tuple(arguments),
+                "parent": source_number, "comparison_parent": source_number,
+                "operation": name,
                 "result": None, "targets": [],
                 "error": Color.remove_color(output).strip() or "Emulation did not complete",
-                "display_id": display_id, "indent": indent,
+                "display_id": display_id,
             })
             if group is not None:
                 failed.update({"group_id": group["id"], "group_parent": group["parent"], "group_step": group["step"]})
@@ -34517,6 +34647,12 @@ class GlibcHeapTimelineCommand(GenericCommand):
         """Control recording and capture manual timeline marks."""
         action = args.action
         values = args.values
+        if args.skip < 0:
+            err("--skip must be non-negative")
+            return
+        if args.skip and action != "start":
+            err("--skip is only available for start")
+            return
         state = self.get_state()
         if action in ("start", "mark"):
             if not is_alive() or not (is_x86_32() or is_x86_64() or is_arm32() or is_arm64()):
@@ -34554,20 +34690,9 @@ class GlibcHeapTimelineCommand(GenericCommand):
             if addresses["malloc"] != Symbol.resolve_address("__libc_malloc"):
                 err("The process must use glibc malloc")
                 return
-            arena_address = args.arena_addr
-            if arena_address is None and state is not None:
-                arena_address = state["arena_addr"]
-            arena = GlibcHeap.get_arena(arena_address)
-            if arena is None:
-                err("Cannot select a glibc arena")
-                return
-            if state is not None and state["events"] and state["arena_addr"] != arena.addr:
-                err("Clear the timeline before selecting another arena")
-                return
             if state is None:
                 state = self.get_state(create=True)
-            state["arena_addr"] = arena.addr
-            state["arena_main"] = arena.is_main_arena
+            state["skip_remaining"] = args.skip
             baseline = self.capture(state, "baseline", "observed", "baseline")
             if baseline is None:
                 return

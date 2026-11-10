@@ -6823,7 +6823,7 @@ Record and inspect glibc heap states and emulated allocator calls.
 ### Syntax
 
 ```text
-usage: heap timeline [-h] [{start,stop,clear,status,mark}] [values ...]
+usage: heap timeline [-h] [--skip N] [{start,stop,clear,status,mark}] [values ...]
 
 positional arguments:
   {start,stop,clear,status,mark}
@@ -6831,12 +6831,14 @@ positional arguments:
 
 options:
   -h, --help            show this help message and exit
+  --skip N              skip the first N allocator returns after the baseline.
 ```
 
 ### Examples
 
 ```gdb
 heap timeline
+heap timeline start --skip 100
 heap timeline status
 ```
 
