@@ -12644,6 +12644,82 @@ Simplified hrtimer structure (per-cpu):
   They are verified by `timer_base.cpu` and `hrtimer_clock_base.cpu_base` and `index`.
 ```
 
+## `kuffd`
+
+Display the kernel-side userfaultfd object graph.
+
+
+### Syntax
+
+```text
+usage: kuffd [-h] [-hh] [-t {auto,ctx,file}] [-p PID] [--meta] [-n] [-q] [ADDRESS]
+
+positional arguments:
+  ADDRESS               the address of struct userfaultfd_ctx or file.
+
+options:
+  -h, --help            show this help message and exit
+  -hh, --help-simple    show help without ASCII diagram.
+  -t, --type {auto,ctx,file}
+                        the type of ADDRESS. (default: auto)
+  -p, --pid PID         select contexts owned by this pid.
+  --meta                display layout and discovery information.
+  -n, --no-pager        do not use the pager.
+  -q, --quiet           show result only.
+```
+
+### Examples
+
+```gdb
+kuffd
+kuffd --pid 1337
+kuffd --type ctx 0xffff888012340000
+```
+
+### Notes
+
+```text
+userfaultfd first appeared in Linux v4.3. Older kernels are detected without scanning.
+DWARF is used when available. Without it, the layout is validated with the back pointers.
+ADDRESS with `--type ctx` skips the fd scan.
+The wait queues are transient and may be incomplete while another CPU is running.
+
+Simplified userfaultfd structure:
+
++-task_struct-+  +->+-files_struct-+  +->+-fdtable---+  +->+-files*[]----+  +->+-file---------+
+| ...         |  |  | ...          |  |  | max_fds   |  |  | [0]         |--+  | ...          |
+| files       |--+  | fdt          |--+  | fd        |--+  | ...         |     | private_data |--+
+| ...         |     | ...          |     | ...       |     | [max_fds-1] |     | ...          |  |
++-------------+     +--------------+     +-----------+     +-------------+     +--------------+  |
+                                                                                                 |
++------------------------------------------------------------------------------------------------+
+|
+|  +-userfaultfd_ctx------+     +->+-userfaultfd_wait_queue--+
++->| fault_pending_wqh    |     |  | msg                     |
+   |   lock               |     |  |   event                 |
+   |   head (unread)      |-----+  |   arg.pagefault.flags   |
+   | fault_wqh            |     |  |   arg.pagefault.address |
+   |   lock               |     |  | wq                      |
+   |   head (read)        |-----+  |   flags                 |
+   | fd_wqh               |        |   private               |--->task_struct (faulting thread)
+   | event_wqh (v4.11~)   |        |   func                  |
+   | refile_seq           |        |   entry                 |--->next userfaultfd_wait_queue
+   | refcount             |        | ctx                     |--->userfaultfd_ctx (back pointer)
+   | ...                  |        +-------------------------+
+   | mm                   |--+
+   +----------------------+  |
+                             |
+   +-------------------------+
+   |
+   |  +-mm_struct-------+     +->+-vm_area_struct-----+
+   +->| ...             |     |  | vm_start           |
+      | mmap (~v6.0)    |-----+  | vm_end             |
+      | mm_mt (v6.1~)   |        | vm_flags           |
+      | ...             |        | ...                |
+      +-----------------+        | vm_userfaultfd_ctx |--->userfaultfd_ctx (registered range)
+                                 +--------------------+
+```
+
 ## `kvfs`
 
 Display the VFS object graph of a file descriptor or VFS object.

@@ -278,7 +278,7 @@ For the usage and options of each command, see [docs/COMMANDS.md](docs/COMMANDS.
 ### Linux Advanced
 
 <details>
-<summary><code>kconfig</code>, <code>ksyscalls</code>, <code>ksysctl</code>, <code>kmod</code>, <code>kops</code>, <code>kcdev</code>, <code>kbdev</code>, <code>kfilesystems</code>, <code>kmount</code>, <code>kclock-source</code>, <code>kdmesg</code>, <code>kpipe</code>, <code>kbpf</code>, <code>ktimer</code>, <code>kpcidev</code>, <code>kipcs</code>, <code>kdevio</code>, <code>kdmabuf</code>, <code>kirq</code>, <code>knetdev</code>, <code>kworkqueue</code>, <code>kwalk</code>, <code>kpath</code>, <code>kvfs</code>, <code>ksock</code>, <code>kskb</code>, <code>klsm</code>, <code>knft</code>, <code>kio-uring</code>, <code>krefs</code>, <code>kkeyring</code></summary>
+<summary><code>kconfig</code>, <code>ksyscalls</code>, <code>ksysctl</code>, <code>kmod</code>, <code>kops</code>, <code>kcdev</code>, <code>kbdev</code>, <code>kfilesystems</code>, <code>kmount</code>, <code>kclock-source</code>, <code>kdmesg</code>, <code>kpipe</code>, <code>kbpf</code>, <code>ktimer</code>, <code>kpcidev</code>, <code>kipcs</code>, <code>kdevio</code>, <code>kdmabuf</code>, <code>kirq</code>, <code>knetdev</code>, <code>kworkqueue</code>, <code>kwalk</code>, <code>kpath</code>, <code>kvfs</code>, <code>ksock</code>, <code>kskb</code>, <code>klsm</code>, <code>knft</code>, <code>kio-uring</code>, <code>kuffd</code>, <code>krefs</code>, <code>kkeyring</code></summary>
 
 - `kconfig`: dumps the kernel config if available.
     - ![](images/kconfig.png)
@@ -343,6 +343,8 @@ For the usage and options of each command, see [docs/COMMANDS.md](docs/COMMANDS.
     - ![](images/knft.png)
 - `kio-uring`: displays the kernel-side io_uring object graph.
     - ![](images/kio-uring.png)
+- `kuffd`: displays the kernel-side userfaultfd object graph (registered ranges and the threads waiting on faults).
+    - ![](images/kuffd.png)
 - `krefs`: searches the kernel pointers that reference the specified address.
     - ![](images/krefs.png)
 - `kkeyring`: displays the keyrings referenced by tasks, or inspects an arbitrary struct key.
