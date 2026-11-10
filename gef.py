@@ -18238,7 +18238,7 @@ class HighlightCommand(GenericCommand):
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     if (sys.version_info.major, sys.version_info.minor) >= (3, 7):
-        subparsers = parser.add_subparsers(title="command", required=True)
+        subparsers = parser.add_subparsers(title="command", dest="command", required=True)
     else:
         subparsers = parser.add_subparsers(title="command")
     subparsers.add_parser("add")
@@ -20062,7 +20062,7 @@ class AuxvCommand(GenericCommand):
             num = reverse_AT_CONSTS.get(k, "?")
             name = k
             if k.startswith("AT_UNKNOWN_"):
-                num = "{:#04x}".format(int(k.removeprefix("AT_UNKNOWN_"), 16))
+                num = "{:#04x}".format(int(k[len("AT_UNKNOWN_"):], 16))
                 name = "???"
             additional_message = ""
             if k == "AT_NULL":
@@ -45197,7 +45197,7 @@ class MemoryCommand(GenericCommand):
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     if (sys.version_info.major, sys.version_info.minor) >= (3, 7):
-        subparsers = parser.add_subparsers(title="command", required=True)
+        subparsers = parser.add_subparsers(title="command", dest="command", required=True)
     else:
         subparsers = parser.add_subparsers(title="command")
     subparsers.add_parser("watch")
@@ -45855,7 +45855,7 @@ class PatchCommand(GenericCommand):
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     if (sys.version_info.major, sys.version_info.minor) >= (3, 7):
-        subparsers = parser.add_subparsers(title="command", required=True)
+        subparsers = parser.add_subparsers(title="command", dest="command", required=True)
     else:
         subparsers = parser.add_subparsers(title="command")
     subparsers.add_parser("byte")
@@ -47806,7 +47806,7 @@ class ExtraCommand(GenericCommand):
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     if (sys.version_info.major, sys.version_info.minor) >= (3, 7):
-        subparsers = parser.add_subparsers(title="command", required=True)
+        subparsers = parser.add_subparsers(title="command", dest="command", required=True)
     else:
         subparsers = parser.add_subparsers(title="command")
     subparsers.add_parser("add")
@@ -47930,7 +47930,7 @@ class CommentCommand(GenericCommand):
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     if (sys.version_info.major, sys.version_info.minor) >= (3, 7):
-        subparsers = parser.add_subparsers(title="command", required=True)
+        subparsers = parser.add_subparsers(title="command", dest="command", required=True)
     else:
         subparsers = parser.add_subparsers(title="command")
     subparsers.add_parser("add")
@@ -48522,7 +48522,7 @@ class XorMemoryCommand(GenericCommand):
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     if (sys.version_info.major, sys.version_info.minor) >= (3, 7):
-        subparsers = parser.add_subparsers(title="command", required=True)
+        subparsers = parser.add_subparsers(title="command", dest="command", required=True)
     else:
         subparsers = parser.add_subparsers(title="command")
     subparsers.add_parser("display")
@@ -48651,7 +48651,7 @@ class PatternCommand(GenericCommand):
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     if (sys.version_info.major, sys.version_info.minor) >= (3, 7):
-        subparsers = parser.add_subparsers(title="command", required=True)
+        subparsers = parser.add_subparsers(title="command", dest="command", required=True)
     else:
         subparsers = parser.add_subparsers(title="command")
     subparsers.add_parser("create")
@@ -65921,7 +65921,7 @@ class MagicCommand(GenericCommand):
             return
 
         width = AddressUtil.get_format_address_width()
-        addr = Symbol.resolve_address(sym.removeprefix("*"))
+        addr = Symbol.resolve_address(sym[1:] if sym.startswith("*") else sym)
         if addr is None:
             gef_print("{:45s} {:>{:d}s}".format(sym, "Not found", width))
             return
@@ -68356,7 +68356,7 @@ class ConvertCommand(GenericCommand, BufferingOutput):
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     if (sys.version_info.major, sys.version_info.minor) >= (3, 7):
-        subparsers = parser.add_subparsers(title="command", required=True)
+        subparsers = parser.add_subparsers(title="command", dest="command", required=True)
     else:
         subparsers = parser.add_subparsers(title="command")
     subparsers.add_parser("memory")
@@ -150726,7 +150726,7 @@ class HashCommand(GenericCommand):
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     if (sys.version_info.major, sys.version_info.minor) >= (3, 7):
-        subparsers = parser.add_subparsers(title="command", required=True)
+        subparsers = parser.add_subparsers(title="command", dest="command", required=True)
     else:
         subparsers = parser.add_subparsers(title="command")
     subparsers.add_parser("memory")
@@ -153496,7 +153496,7 @@ class JsonCommand(GenericCommand, BufferingOutput):
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     if (sys.version_info.major, sys.version_info.minor) >= (3, 7):
-        subparsers = parser.add_subparsers(title="command", required=True)
+        subparsers = parser.add_subparsers(title="command", dest="command", required=True)
     else:
         subparsers = parser.add_subparsers(title="command")
     subparsers.add_parser("memory")
@@ -153901,7 +153901,7 @@ class CrcCommand(GenericCommand, BufferingOutput):
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     if (sys.version_info.major, sys.version_info.minor) >= (3, 7):
-        subparsers = parser.add_subparsers(title="command", required=True)
+        subparsers = parser.add_subparsers(title="command", dest="command", required=True)
     else:
         subparsers = parser.add_subparsers(title="command")
     subparsers.add_parser("memory")
@@ -155068,7 +155068,7 @@ class BaseNDecodeCommand(GenericCommand, BufferingOutput):
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     if (sys.version_info.major, sys.version_info.minor) >= (3, 7):
-        subparsers = parser.add_subparsers(title="command", required=True)
+        subparsers = parser.add_subparsers(title="command", dest="command", required=True)
     else:
         subparsers = parser.add_subparsers(title="command")
     subparsers.add_parser("memory")
@@ -155271,7 +155271,7 @@ class BaseNEncodeCommand(GenericCommand, BufferingOutput):
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     if (sys.version_info.major, sys.version_info.minor) >= (3, 7):
-        subparsers = parser.add_subparsers(title="command", required=True)
+        subparsers = parser.add_subparsers(title="command", dest="command", required=True)
     else:
         subparsers = parser.add_subparsers(title="command")
     subparsers.add_parser("memory")
@@ -155483,7 +155483,7 @@ class MorseDecodeCommand(GenericCommand):
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     if (sys.version_info.major, sys.version_info.minor) >= (3, 7):
-        subparsers = parser.add_subparsers(title="command", required=True)
+        subparsers = parser.add_subparsers(title="command", dest="command", required=True)
     else:
         subparsers = parser.add_subparsers(title="command")
     subparsers.add_parser("memory")
@@ -155579,7 +155579,7 @@ class MorseEncodeCommand(GenericCommand):
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     if (sys.version_info.major, sys.version_info.minor) >= (3, 7):
-        subparsers = parser.add_subparsers(title="command", required=True)
+        subparsers = parser.add_subparsers(title="command", dest="command", required=True)
     else:
         subparsers = parser.add_subparsers(title="command")
     subparsers.add_parser("memory")
@@ -156141,7 +156141,7 @@ class DiffOutputCommand(GenericCommand):
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     if (sys.version_info.major, sys.version_info.minor) >= (3, 7):
-        subparsers = parser.add_subparsers(title="command", required=True)
+        subparsers = parser.add_subparsers(title="command", dest="command", required=True)
     else:
         subparsers = parser.add_subparsers(title="command")
     subparsers.add_parser("colordiff")
@@ -190986,7 +190986,7 @@ class OpteeTaDumpCommand(GenericCommand, BufferingOutput):
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     if (sys.version_info.major, sys.version_info.minor) >= (3, 7):
-        subparsers = parser.add_subparsers(title="command", required=True)
+        subparsers = parser.add_subparsers(title="command", dest="command", required=True)
     else:
         subparsers = parser.add_subparsers(title="command")
     subparsers.add_parser("memory")
@@ -206417,7 +206417,7 @@ class ExecUntilCommand(GenericCommand):
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     if (sys.version_info.major, sys.version_info.minor) >= (3, 7):
-        subparsers = parser.add_subparsers(title="command", required=True)
+        subparsers = parser.add_subparsers(title="command", dest="command", required=True)
     else:
         subparsers = parser.add_subparsers(title="command")
     subparsers.add_parser("call")
@@ -220705,7 +220705,7 @@ class AliasesCommand(GenericCommand):
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     if (sys.version_info.major, sys.version_info.minor) >= (3, 7):
-        subparsers = parser.add_subparsers(title="command", required=True)
+        subparsers = parser.add_subparsers(title="command", dest="command", required=True)
     else:
         subparsers = parser.add_subparsers(title="command")
     subparsers.add_parser("add")
