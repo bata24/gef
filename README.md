@@ -417,7 +417,7 @@ For the usage and options of each command, see [docs/COMMANDS.md](docs/COMMANDS.
 ### TrustZone
 
 <details>
-<summary><code>xsm</code>, <code>wsm</code>, <code>bsm</code>, <code>optee-break-ta</code>, <code>optee-smc-service-dump</code>, <code>optee-ta-dump</code>, <code>optee-shm-list</code>, <code>optee-bget-dump</code></summary>
+<summary><code>xsm</code>, <code>wsm</code>, <code>bsm</code>, <code>optee-{break-ta,smc-service-dump,ta-dump,shm-list,bget-dump}</code></summary>
 
 - `xsm`: dumps secure memory when gdb is in normal world.
     - Supported on ARM64 and ARM.
@@ -479,7 +479,7 @@ For the usage and options of each command, see [docs/COMMANDS.md](docs/COMMANDS.
 ### Glibc
 
 <details>
-<summary><code>heap arenas</code>, <code>heap top</code>, <code>heap bins-simple</code>, <code>heap parse</code>, <code>heap try-malloc</code>, <code>heap try-free</code>, <code>heap try-realloc</code>, <code>heap try-calloc</code>, <code>heap tcache-index-helper</code>, <code>heap find-fake-fast</code>, <code>heap extract-heap-addr</code>, <code>heap calc-protected-fd</code>, <code>heap visual-heap</code>, <code>heap tracer</code>, <code>heap timeline</code>, <code>heap dump-image</code>, <code>heap snapshot</code>, <code>heap snapshot-compare</code></summary>
+<summary><code>heap {arenas,top,bins-simple,parse,try-malloc,try-free,try-realloc,try-calloc,tcache-index-helper,find-fake-fast,extract-heap-addr,calc-protected-fd,visual-heap,tracer,timeline,dump-image,snapshot,snapshot-compare}</code></summary>
 
 - Glibc heap commands have been improved. Supports up to glibc 2.43.
     - It changes the color and prints a symbol if it exists.
@@ -530,7 +530,7 @@ For the usage and options of each command, see [docs/COMMANDS.md](docs/COMMANDS.
 ### uClibc-ng
 
 <details>
-<summary><code>uclibc-ng-heap-dump</code>, <code>uclibc-ng-visual-heap</code>, <code>uclibc-ng-top</code>, <code>uclibc-ng-arena</code>, <code>uclibc-ng-chunk</code>, <code>uclibc-ng-chunks</code>, <code>uclibc-ng-parse</code>, <code>uclibc-ng-bins-simple</code>, <code>uclibc-ng-dump-image</code>, <code>uclibc-ng-snapshot</code>, <code>uclibc-ng-snapshot-compare</code></summary>
+<summary><code>uclibc-ng-{heap-dump,visual-heap,top,arena,chunk,chunks,parse,bins-simple,dump-image,snapshot,snapshot-compare}</code></summary>
 
 - `uclibc-ng-heap-dump`: dumps uClibc-ng heap chunks.
     - Based on uClibc-ng malloc-standard, without an architecture restriction.
@@ -583,7 +583,7 @@ For the usage and options of each command, see [docs/COMMANDS.md](docs/COMMANDS.
 ### Other
 
 <details>
-<summary><code>tcmalloc-heap-dump</code>, <code>musl-heap-dump</code>, <code>go-heap-dump</code>, <code>tlsf-heap-dump</code>, <code>hoard-heap-dump</code>, <code>mimalloc-heap-dump</code>, <code>scalloc-heap-dump</code>, <code>snmalloc-heap-dump</code>, <code>ssmalloc-heap-dump</code>, <code>jemalloc-heap-dump</code>, <code>sfmalloc-heap-dump</code>, <code>rpmalloc-heap-dump</code>, <code>tbbmalloc-heap-dump</code>, <code>zig-heap-dump</code>, <code>mesh-heap-dump</code>, <code>streamflow-heap-dump</code>, <code>supermalloc-heap-dump</code>, <code>dlmalloc-heap-dump</code>, <code>scudo-heap-dump</code>, <code>mozjemalloc-heap-dump</code>, <code>bmalloc-heap-dump</code>, <code>libpas-heap-dump</code>, <code>zend-heap-dump</code>, <code>obmalloc-heap-dump</code>, <code>newlib-heap-dump</code></summary>
+<summary><code>{tcmalloc,musl,go,tlsf,hoard,mimalloc,scalloc,snmalloc,ssmalloc,jemalloc,sfmalloc,rpmalloc,tbbmalloc,zig,mesh,streamflow,supermalloc,dlmalloc,scudo,mozjemalloc,bmalloc,libpas,zend,obmalloc,newlib}-heap-dump</code></summary>
 
 - `tcmalloc-heap-dump`: dumps TCMalloc (gperftools, formerly google-perftools, v0.1~) free-list.
     - ![](images/tcmalloc-heap-dump.png)
