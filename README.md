@@ -479,7 +479,7 @@ For the usage and options of each command, see [docs/COMMANDS.md](docs/COMMANDS.
 ### Glibc
 
 <details>
-<summary><code>heap {arenas,top,bins-simple,parse,try-malloc,try-free,try-realloc,try-calloc,tcache-index-helper,find-fake-fast,extract-heap-addr,calc-protected-fd,visual-heap,tracer,timeline,dump-image,snapshot,snapshot-compare}</code></summary>
+<summary><code>heap {arena,arenas,bins,bins-simple,calc-protected-fd,chunk,chunks,dump-image,extract-heap-addr,find-fake-fast,parse,snapshot,snapshot-compare,tcache-index-helper,timeline,top,tracer,try-calloc,try-free,try-malloc,try-realloc,visual-heap}</code></summary>
 
 - Glibc heap commands have been improved. Supports up to glibc 2.43.
     - It changes the color and prints a symbol if it exists.
@@ -491,12 +491,29 @@ For the usage and options of each command, see [docs/COMMANDS.md](docs/COMMANDS.
     - It supports some new sub-commands.
         - `heap arenas`
             - ![](images/heap-arenas.png)
-        - `heap top`
-            - ![](images/heap-top.png)
         - `heap bins-simple`: displays the heap like pwndbg style.
             - ![](images/heap-bins-simple.png)
         - `heap parse`: displays the heap in the style of Pwngdb/angelheap.
             - ![](images/heap-parse.png)
+        - `heap calc-protected-fd`: calculates a valid value as protected fd.
+            - ![](images/heap-calc-protected-fd.png)
+        - `heap dump-image`: visualizes chunks on a heap as composition image.
+            - ![](images/heap-dump-image.png)
+        - `heap extract-heap-addr`: analyzes tcache-protected-fd introduced from glibc-2.32.
+            - ![](images/heap-extract-heap-addr.png)
+        - `heap find-fake-fast`: searches for a memory with a size-like value that can be linked to the fastbin free-list.
+            - ![](images/heap-find-fake-fast.png)
+        - `heap snapshot`: takes a snapshot of the heap.
+        - `heap snapshot-compare`: compares current heap with a previously saved heap-snapshot.
+            - ![](images/heap-snapshot-compare.png)
+        - `heap tcache-index-helper`
+            - ![](images/heap-index-helper.png)
+        - `heap timeline` (x86/x64/ARM32/ARM64, glibc): records heap states at `http://0.0.0.0:61234/`.
+            - ![](images/heap-timeline.png)
+        - `heap top`
+            - ![](images/heap-top.png)
+        - `heap tracer`: has been integrated from `heap-analysis-helper` and rewritten.
+            - ![](images/heap-tracer.png)
         - `heap try-malloc`
             - ![](images/heap-try-malloc.png)
         - `heap try-free`
@@ -505,25 +522,8 @@ For the usage and options of each command, see [docs/COMMANDS.md](docs/COMMANDS.
                 - ![](images/heap-try-free-bs.png)
         - `heap try-realloc`
         - `heap try-calloc`
-        - `heap tcache-index-helper`
-            - ![](images/heap-index-helper.png)
-        - `heap find-fake-fast`: searches for a memory with a size-like value that can be linked to the fastbin free-list.
-            - ![](images/heap-find-fake-fast.png)
-        - `heap extract-heap-addr`: analyzes tcache-protected-fd introduced from glibc-2.32.
-            - ![](images/heap-extract-heap-addr.png)
-        - `heap calc-protected-fd`: calculates a valid value as protected fd.
-            - ![](images/heap-calc-protected-fd.png)
         - `heap visual-heap`: is a colorized heap viewer.
             - ![](images/heap-visual-heap.png)
-        - `heap tracer`: has been integrated from `heap-analysis-helper` and rewritten.
-            - ![](images/heap-tracer.png)
-        - `heap timeline` (x86/x64/ARM32/ARM64, glibc): records heap states at `http://0.0.0.0:61234/`.
-            - ![](images/heap-timeline.png)
-        - `heap dump-image`: visualizes chunks on a heap as composition image.
-            - ![](images/heap-dump-image.png)
-        - `heap snapshot`: takes a snapshot of the heap.
-        - `heap snapshot-compare`: compares current heap with a previously saved heap-snapshot.
-            - ![](images/heap-snapshot-compare.png)
 
 </details>
 
