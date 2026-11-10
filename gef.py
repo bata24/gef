@@ -35500,7 +35500,7 @@ class AssembleCommand(GenericCommand):
     parser.add_argument("-H", "--hex", action="store_true", help="show in hex style.")
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("-i", "--infile", metavar="FILE", help="read assembly from a file.")
-    group.add_argument("instruction", metavar="INSTRUCTION", nargs="*", help="the code to assemble.")
+    group.add_argument("instruction", metavar="INSTRUCTION", nargs="*", default=[], help="the code to assemble.")
     _syntax_ = parser.format_help()
 
     _example_ = "\n".join([
@@ -35626,7 +35626,7 @@ class DisassembleCommand(GenericCommand):
     parser.add_argument("-e", dest="big_endian", action="store_true", help="use big-endian.")
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("-i", "--infile", metavar="FILE", help="read hex code from a file.")
-    group.add_argument("hex_code", metavar="HEX_CODE", nargs="*", help="the hex code to disassemble.")
+    group.add_argument("hex_code", metavar="HEX_CODE", nargs="*", default=[], help="the hex code to disassemble.")
     _syntax_ = parser.format_help()
 
     _example_ = "\n".join([
