@@ -33748,7 +33748,9 @@ class GlibcHeapTimelineCommand(GenericCommand):
         import urllib.parse
 
         class Handler(http.server.BaseHTTPRequestHandler):
-            def do_GET(self):
+            """Handler for embedded viewer."""
+
+            def do_GET(self): # noqa: V105
                 """Serve the viewer, recorded events, and chunk bytes."""
                 path, _, query = self.path.partition("?")
                 if path == "/":
@@ -33793,7 +33795,7 @@ class GlibcHeapTimelineCommand(GenericCommand):
                     pass
                 return
 
-            def do_POST(self):
+            def do_POST(self): # noqa: V105
                 """Dispatch batch operations to the GDB event loop."""
                 if self.path not in ("/api/emulate-batch", "/api/batch/delete"):
                     self.send_error(404)
@@ -33851,7 +33853,7 @@ class GlibcHeapTimelineCommand(GenericCommand):
                     pass
                 return
 
-            def log_message(self, format, *args):
+            def log_message(self, format, *args): # noqa: V105
                 return
 
         server = http.server.ThreadingHTTPServer(("0.0.0.0", 61234), Handler)
