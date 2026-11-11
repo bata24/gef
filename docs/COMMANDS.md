@@ -12385,6 +12385,66 @@ Simplified pipe structure:
                                                                      +-------------+
 ```
 
+## `kprocfs`
+
+Display the proc_dir_entry tree. It helps to find the entries a rootkit hides.
+
+
+### Syntax
+
+```text
+usage: kprocfs [-h] [-hh] [--meta] [-n] [-q]
+
+options:
+  -h, --help          show this help message and exit
+  -hh, --help-simple  show help without ASCII diagram.
+  --meta              display offset information.
+  -n, --no-pager      do not use the pager.
+  -q, --quiet         show result only.
+```
+
+### Examples
+
+```gdb
+kprocfs -q
+```
+
+### Notes
+
+```text
+This command requires CONFIG_RANDSTRUCT=n unless vmlinux with debug information is loaded.
+The tree is read from proc_root instead of readdir, so an entry hidden by hooking readdir or lookup is listed.
+/proc/<pid>, /proc/self, /proc/thread-self and the entries under /proc/sys are not proc_dir_entry.
+/proc/net is another tree for each network namespace (net->proc_net). The one of init_net is shown.
+proc_ops is proc_fops before v5.6, and proc_dir_ops for a directory since v5.6. Use `kops` to see the handlers.
+
+Simplified proc_dir_entry structure:
+
+[v3.19~]
++-proc_root-----+        +-proc_dir_entry-+        +-proc_dir_entry-+
+| proc_iops     |        | proc_iops      |        | ...            |
+| proc_ops      |        | proc_ops       |        | parent         |
+| ...           |        | ...            |        | subdir         |
+| parent        |        | parent         |        | subdir_node    |<-+
+| subdir        |---+    | subdir         |        |   ...          |  |
+| subdir_node   |   +--->| subdir_node    |        | name           |  |
+| name          |        |   rb_right     |---+    | mode           |  |
+| mode          |        |   rb_left      |   |    +----------------+  |
++---------------+        | name           |   |                        |
+                         | mode           |   +------------------------+
+                         +----------------+
+
+The parent of each entry points back to its directory.
+Until v3.18, subdir points to the first child, and next links the siblings.
+
++-init_net-+       +-proc_dir_entry-+
+| ...      |  +--->| ...            |
+| proc_net |--+    | parent         |--->proc_root (but not linked from proc_root)
+| ...      |       | subdir         |--->the tree of /proc/net
++----------+       | name           |--->"net"
+                   +----------------+
+```
+
 ## `krefs`
 
 Search the kernel pointers that reference the specified address.

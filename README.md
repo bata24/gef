@@ -280,7 +280,7 @@ For the usage and options of each command, see [docs/COMMANDS.md](docs/COMMANDS.
 ### Linux Advanced
 
 <details>
-<summary><code>kconfig</code>, <code>ksyscalls</code>, <code>ksysctl</code>, <code>kmod</code>, <code>kops</code>, <code>kcdev</code>, <code>kbdev</code>, <code>kfilesystems</code>, <code>kmount</code>, <code>kclock-source</code>, <code>kdmesg</code>, <code>kpipe</code>, <code>kbpf</code>, <code>ktimer</code>, <code>kpcidev</code>, <code>kipcs</code>, <code>kdevio</code>, <code>kdmabuf</code>, <code>kirq</code>, <code>knetdev</code>, <code>kworkqueue</code>, <code>kwalk</code>, <code>kpath</code>, <code>kvfs</code>, <code>ksock</code>, <code>kskb</code>, <code>klsm</code>, <code>knft</code>, <code>kio-uring</code>, <code>kuffd</code>, <code>krefs</code>, <code>kkeyring</code>, <code>kcfi-hash</code></summary>
+<summary><code>kconfig</code>, <code>ksyscalls</code>, <code>ksysctl</code>, <code>kmod</code>, <code>kops</code>, <code>kcdev</code>, <code>kbdev</code>, <code>kfilesystems</code>, <code>kmount</code>, <code>kclock-source</code>, <code>kdmesg</code>, <code>kpipe</code>, <code>kbpf</code>, <code>ktimer</code>, <code>kpcidev</code>, <code>kipcs</code>, <code>kdevio</code>, <code>kdmabuf</code>, <code>kirq</code>, <code>knetdev</code>, <code>kworkqueue</code>, <code>kwalk</code>, <code>kpath</code>, <code>kvfs</code>, <code>ksock</code>, <code>kskb</code>, <code>klsm</code>, <code>knft</code>, <code>kio-uring</code>, <code>kuffd</code>, <code>krefs</code>, <code>kkeyring</code>, <code>kcfi-hash</code>, <code>kprocfs</code></summary>
 
 - `kconfig`: dumps the kernel config if available.
     - ![](images/kconfig.png)
@@ -352,6 +352,8 @@ For the usage and options of each command, see [docs/COMMANDS.md](docs/COMMANDS.
     - ![](images/kkeyring.png)
 - `kcfi-hash`: lists the functions that share a kCFI type hash with a call target.
     - ![](images/kcfi-hash.png)
+- `kprocfs`: displays the proc_dir_entry tree. It helps to find the entries a rootkit hides from /proc.
+    - ![](images/kprocfs.png)
 
 </details>
 

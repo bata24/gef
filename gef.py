@@ -76279,6 +76279,85 @@ class KernelAddressHeuristicFinder:
 
     @staticmethod
     @Decorator.switch_to_intel_syntax
+    def get_proc_root():
+
+        def is_proc_root(x):
+            # proc_root is its own parent, and its name is "/proc": a pointer (~v3.9, v4.17~),
+            # or an inline array after `u8 namelen` (v3.10~v4.16)
+            if not is_valid_addr(x) or x % current_arch.ptrsize:
+                return False
+            data = read_memory(x, 0x400, safe=True)
+            if data is None:
+                return False
+            ptrsize = current_arch.ptrsize
+            words = slice_unpack(data, ptrsize)
+            # parent points to itself, and the child linked from the next slot (subdir) points back to it.
+            # subdir points to the first child (~v3.18) or its subdir_node (v3.19~), which is 1 or 2 pointers
+            # (rb_root_cached in v4.14~v4.16) after subdir. An empty list_head also points to itself.
+            linked = False
+            for index in range(1, len(words) - 1):
+                subdir = words[index + 1]
+                if words[index] != x or words[index - 1] == x or subdir == x:
+                    continue
+                if not KernelAddressHeuristicFinderUtil.is_kernel_space(subdir):
+                    continue
+                offset = index * ptrsize
+                for child in [subdir, subdir - offset - ptrsize * 2, subdir - offset - ptrsize * 3]:
+                    if read_int_from_memory(child + offset, safe=True) == x:
+                        linked = True
+            if not linked:
+                return False
+            # S_IFDIR | S_IRUGO | S_IXUGO
+            if p16(0o40555) not in data:
+                return False
+            if b"\x05/proc\x00" in data:
+                return True
+            for word in words:
+                if KernelAddressHeuristicFinderUtil.is_kernel_space(word) and read_memory(word, 6, safe=True) == b"/proc\x00":
+                    return True
+            return False
+
+        # plan 1 (directly)
+        if KernelAddressHeuristicFinder.USE_DIRECTLY:
+            x = Ksym.get_addr("proc_root")
+            if x:
+                return x
+
+        # plan 2 (available v3.0 or later)
+        # proc_fill_super() passes &proc_root to proc_get_inode(), at about 300th instruction with KASAN and KCOV
+        for addr in Ksym.get_addrs("proc_fill_super", match="split"):
+            res = KernelAddressHeuristicFinderUtil.disassemble_until_next_symbol(addr, 600)
+            if is_x86_64() or is_x86_32():
+                g = KernelAddressHeuristicFinderUtil.x64_x86_mov_reg_const(res)
+            elif is_arm64():
+                g = itertools.chain(
+                    KernelAddressHeuristicFinderUtil.aarch64_adrp_add(res),
+                    KernelAddressHeuristicFinderUtil.aarch64_adrp_add_add(res),
+                )
+            elif is_arm32():
+                g = itertools.chain(
+                    KernelAddressHeuristicFinderUtil.arm32_movw_movt(res),
+                    KernelAddressHeuristicFinderUtil.arm32_ldr_pc_relative(res),
+                )
+            elif is_riscv64() or is_riscv32():
+                g = KernelAddressHeuristicFinderUtil.riscv_auipc_addi(res, include_lui=is_riscv32())
+            else:
+                g = []
+            for x in g:
+                if is_proc_root(x):
+                    return x
+                # ARM32 builds the address from the one of a member (e.g., refcnt for pde_get())
+                data = read_memory(x - 0x200, 0x400, safe=True)
+                if data is None:
+                    continue
+                for index, word in enumerate(slice_unpack(data, current_arch.ptrsize)):
+                    address = x - 0x200 + index * current_arch.ptrsize
+                    if word <= x and address - word < 0x400 and address >= word and is_proc_root(word):
+                        return word
+        return None
+
+    @staticmethod
+    @Decorator.switch_to_intel_syntax
     def get_selinux_state():
         # plan 1 (directly)
         if KernelAddressHeuristicFinder.USE_DIRECTLY:
@@ -217229,6 +217308,349 @@ class KernelUserfaultfdCommand(GenericCommand, BufferingOutput):
                 self.task_name(owner["task"]), owner["task"], owner["fd"], owner["file"]))
         if not uffd_files:
             self.warn_add_out("No open userfaultfd file descriptors found")
+        self.print_output(check_terminal_size=True)
+        return
+
+
+@register_command
+class KernelProcfsCommand(GenericCommand, BufferingOutput):
+    """Display the proc_dir_entry tree. It helps to find the entries a rootkit hides."""
+
+    _cmdline_ = "kprocfs"
+    _category_ = "06-g. Qemu-system/KGDB Cooperation - Linux Advanced"
+
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("-hh", "--help-simple", action="store_true", help="show help without ASCII diagram.")
+    parser.add_argument("--meta", action="store_true", help="display offset information.")
+    parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
+    parser.add_argument("-q", "--quiet", action="store_true", help="show result only.")
+    _syntax_ = parser.format_help()
+
+    _example_ = "\n".join([
+        "{0:s} -q",
+    ]).format(_cmdline_)
+
+    _note_ = "\n".join([
+        "This command requires CONFIG_RANDSTRUCT=n unless vmlinux with debug information is loaded.",
+        "The tree is read from proc_root instead of readdir, so an entry hidden by hooking readdir or lookup is listed.",
+        "/proc/<pid>, /proc/self, /proc/thread-self and the entries under /proc/sys are not proc_dir_entry.",
+        "/proc/net is another tree for each network namespace (net->proc_net). The one of init_net is shown.",
+        "proc_ops is proc_fops before v5.6, and proc_dir_ops for a directory since v5.6. Use `kops` to see the handlers.",
+        "",
+        "Simplified proc_dir_entry structure:",
+        "",
+        "[v3.19~]",
+        "+-proc_root-----+        +-proc_dir_entry-+        +-proc_dir_entry-+",
+        "| proc_iops     |        | proc_iops      |        | ...            |",
+        "| proc_ops      |        | proc_ops       |        | parent         |",
+        "| ...           |        | ...            |        | subdir         |",
+        "| parent        |        | parent         |        | subdir_node    |<-+",
+        "| subdir        |---+    | subdir         |        |   ...          |  |",
+        "| subdir_node   |   +--->| subdir_node    |        | name           |  |",
+        "| name          |        |   rb_right     |---+    | mode           |  |",
+        "| mode          |        |   rb_left      |   |    +----------------+  |",
+        "+---------------+        | name           |   |                        |",
+        "                         | mode           |   +------------------------+",
+        "                         +----------------+",
+        "",
+        "The parent of each entry points back to its directory.",
+        "Until v3.18, subdir points to the first child, and next links the siblings.",
+        "",
+        "+-init_net-+       +-proc_dir_entry-+",
+        "| ...      |  +--->| ...            |",
+        "| proc_net |--+    | parent         |--->proc_root (but not linked from proc_root)",
+        "| ...      |       | subdir         |--->the tree of /proc/net",
+        "+----------+       | name           |--->\"net\"",
+        "                   +----------------+",
+    ])
+
+    # S_IFDIR | S_IRUGO | S_IXUGO, the mode of proc_root in all versions
+    PROC_ROOT_MODE = 0o40555
+    FILE_TYPES = (0o040000, 0o100000, 0o120000)
+    MAX_ENTRIES = 0x10000
+
+    def read_name(self, pde):
+        if self.layout["name_inline"]:
+            address = pde + self.layout["name"]
+        else:
+            address = read_int_from_memory(pde + self.layout["name"], safe=True)
+        if not address:
+            return None
+        name = read_cstring_from_memory(address, 0x100, safe=True, allow_non_ascii=True)
+        if name is not None and not name.isprintable():
+            name = name.encode("unicode_escape").decode()
+        return name
+
+    def read_mode(self, pde):
+        return read_int16_from_memory(pde + self.layout["mode"], safe=True)
+
+    def read_children(self, pde):
+        """Return the children of `pde` (not sorted), and whether the walk was incomplete."""
+        subdir = pde + self.layout["subdir"]
+        sibling = self.layout["sibling"]
+        if self.layout["link"] == "rb":
+            tree = KernelRBTree(subdir)
+            nodes = tree.parse()
+            return [node - sibling for node in nodes], bool(tree.broken)
+        children = []
+        child = read_int_from_memory(subdir, safe=True)
+        while child:
+            if child in children or not is_valid_addr(child) or len(children) >= self.MAX_ENTRIES:
+                return children, True
+            children.append(child)
+            child = read_int_from_memory(child + sibling, safe=True)
+        return children, child is None
+
+    def is_valid_layout(self):
+        """Check the layout with proc_root (its own parent, "/proc" and S_IFDIR|0555) and the back pointers."""
+        if read_int_from_memory(self.proc_root + self.layout["parent"], safe=True) != self.proc_root:
+            return False
+        if self.read_name(self.proc_root) != "/proc" or self.read_mode(self.proc_root) != self.PROC_ROOT_MODE:
+            return False
+        children, _ = self.read_children(self.proc_root)
+        if not children:
+            return False
+        for child in children:
+            if read_int_from_memory(child + self.layout["parent"], safe=True) != self.proc_root:
+                return False
+            name = self.read_name(child)
+            mode = self.read_mode(child)
+            if not name or "/" in name or mode is None or mode & 0o170000 not in self.FILE_TYPES:
+                return False
+        return True
+
+    def resolve_layout_by_debug_info(self):
+        """Return the layout from the debug information, or None."""
+        offsetof = GefUtil.offsetof
+        layout = {
+            "parent": offsetof("proc_dir_entry", "parent"),
+            "subdir": offsetof("proc_dir_entry", "subdir"),
+            "name": offsetof("proc_dir_entry", "name"),
+            "mode": offsetof("proc_dir_entry", "mode"),
+            "proc_iops": offsetof("proc_dir_entry", "proc_iops"),
+            # v5.6~
+            "proc_ops": offsetof("proc_dir_entry", "proc_ops"),
+        }
+        if layout["proc_ops"] is None:
+            layout["proc_ops"] = offsetof("proc_dir_entry", "proc_fops")
+        # v3.19~
+        layout["link"], layout["sibling"] = "rb", offsetof("proc_dir_entry", "subdir_node")
+        if layout["sibling"] is None:
+            layout["link"], layout["sibling"] = "list", offsetof("proc_dir_entry", "next")
+        layout["name_inline"] = GefUtil.member_type_code("struct proc_dir_entry", "name") == gdb.TYPE_CODE_ARRAY
+        if None in layout.values():
+            return None
+        return layout
+
+    def resolve_layout(self):
+        """Return the layout found from the invariants of proc_root and its children, or None."""
+        ptrsize = current_arch.ptrsize
+        data = read_memory(self.proc_root, 0x400, safe=True)
+        if data is None:
+            return None
+        words = slice_unpack(data, ptrsize)
+        if self.proc_root not in words:
+            return None
+        parent = words.index(self.proc_root) * ptrsize
+        # name is a pointer to "/proc" (~v3.9, v4.17~), or an inline array after `u8 namelen` (v3.10~v4.16)
+        names = []
+        for index, word in enumerate(words):
+            if KernelAddressHeuristicFinderUtil.is_kernel_space(word) and read_memory(word, 6, safe=True) == b"/proc\x00":
+                names.append((index * ptrsize, False))
+        position = data.find(b"\x05/proc\x00")
+        if position >= 0:
+            names.append((position + 1, True))
+        modes = [offset for offset in range(0, len(data) - 1, 2) if u16(data[offset:offset + 2]) == self.PROC_ROOT_MODE]
+        # the children are an rb-tree of subdir_node (v3.19~, rb_root_cached in v4.14~v4.16), or a list by next (~v3.18)
+        links = [("rb", parent + ptrsize * 2), ("rb", parent + ptrsize * 3), ("list", parent - ptrsize)]
+        for (name, name_inline), mode, (link, sibling) in itertools.product(names, modes, links):
+            self.layout = {
+                "parent": parent, "subdir": parent + ptrsize, "link": link, "sibling": sibling,
+                "name": name, "name_inline": name_inline, "mode": mode,
+            }
+            if self.is_valid_layout():
+                return self.resolve_operations(self.layout)
+        return None
+
+    def resolve_operations(self, layout):
+        """Add the offsets of proc_iops and proc_ops to `layout`, decided by the majority of the directories."""
+        # the ones of a directory hold proc_lookup and proc_readdir, and the ones of proc_root hold proc_root_lookup
+        # and proc_root_readdir; a rootkit may replace some of them, so the majority decides
+        functions = {
+            "proc_iops": {Ksym.get_addr("proc_lookup"), Ksym.get_addr("proc_root_lookup")} - {None},
+            "proc_ops": {Ksym.get_addr("proc_readdir"), Ksym.get_addr("proc_root_readdir")} - {None},
+        }
+        children, _ = self.read_children(self.proc_root)
+        directories = [self.proc_root] + [child for child in children if self.read_mode(child) & 0o170000 == 0o040000]
+        votes = collections.Counter()
+        members = {}
+        for pde in directories:
+            for offset in range(0, layout["parent"], current_arch.ptrsize):
+                ops = read_int_from_memory(pde + offset, safe=True)
+                if not ops or not KernelAddressHeuristicFinderUtil.is_kernel_space(ops):
+                    continue
+                if ops not in members:
+                    data = read_memory(ops, 0x100, safe=True)
+                    if data is None:
+                        members[ops] = set()
+                    else:
+                        members[ops] = set(slice_unpack(data, current_arch.ptrsize))
+                for key, addresses in functions.items():
+                    if members[ops] & addresses:
+                        votes[(key, offset)] += 1
+        for key in functions:
+            candidates = [(count, -offset) for (name, offset), count in votes.items() if name == key]
+            if not candidates:
+                return None
+            _, offset = max(candidates)
+            layout[key] = -offset
+        return layout
+
+    def find_proc_net(self):
+        """Return init_net->proc_net, the root of /proc/net that is not linked from proc_root, or None."""
+        init_net = KernelAddressHeuristicFinder.get_init_net()
+        if init_net is None:
+            return None
+        offset = GefUtil.offsetof("net", "proc_net")
+        if offset is None:
+            offsets = range(0, 0x800, current_arch.ptrsize)
+        else:
+            offsets = [offset]
+        children, _ = self.read_children(self.proc_root)
+        for offset in offsets:
+            pde = read_int_from_memory(init_net + offset, safe=True)
+            if not pde or not KernelAddressHeuristicFinderUtil.is_kernel_space(pde) or pde in children:
+                continue
+            if read_int_from_memory(pde + self.layout["parent"], safe=True) != self.proc_root:
+                continue
+            if self.read_name(pde) == "net":
+                return pde
+        return None
+
+    def append_entry(self, pde, path, label, prefix):
+        mode = self.read_mode(pde)
+        if mode is None:
+            mode_text = "?"
+        else:
+            mode_text = KernelVfsCommand.mode_string(mode)
+        cells = []
+        for key in ["proc_iops", "proc_ops"]:
+            value = read_int_from_memory(pde + self.layout[key], safe=True)
+            if value is None:
+                cells.append("?")
+            else:
+                cells.append("{:#018x}".format(value))
+        iops_text, ops_text = cells
+        self.out.append("{:#018x} {:10s} {:18s} {:18s} {:s}".format(pde, mode_text, iops_text, ops_text, label))
+        self.seen.add(pde)
+
+        children, broken = self.read_children(pde)
+        if broken:
+            self.warn_add_out("The children of {:s} are incomplete".format(path))
+        entries = sorted((self.read_name(child) or "?", child) for child in children)
+        for index, (name, child) in enumerate(entries):
+            if len(self.seen) >= self.MAX_ENTRIES:
+                self.warn_add_out("Stopped at the entry limit ({:#x})".format(self.MAX_ENTRIES))
+                return
+            if index == len(entries) - 1:
+                tree, next_prefix = "\u2514\u2500\u2500 ", prefix + "    "
+            else:
+                tree, next_prefix = "\u251c\u2500\u2500 ", prefix + "\u2502   "
+            parent = read_int_from_memory(child + self.layout["parent"], safe=True)
+            if parent != pde or child in self.seen:
+                # not followed; the child is not linked consistently
+                self.out.append("{:#018x} {:10s} {:18s} {:18s} {:s}{:s}{:s} [broken link]".format(
+                    child, "?", "?", "?", prefix, tree, name))
+                continue
+            self.append_entry(child, path + "/" + name, prefix + tree + name, next_prefix)
+        return
+
+    def dump_tree(self, root, path, title):
+        self.out.append(titlify("{:s}: {:#x}".format(title, root)))
+        if not self.args.quiet:
+            fmt = "{:18s} {:10s} {:18s} {:18s} {:s}"
+            legend = ["proc_dir_entry", "mode", "proc_iops", self.ops_name, "name"]
+            self.out.append(GefUtil.make_legend(fmt.format(*legend)))
+        self.append_entry(root, path, path, "")
+        return
+
+    def initialize(self):
+        self.meta = []
+        self.kversion = Kernel.version()
+        if self.kversion is None:
+            self.meta.append((self.quiet_err, "Could not find Linux kernel"))
+            return None
+        if self.kversion < "5.6":
+            self.ops_name = "proc_fops"
+        else:
+            self.ops_name = "proc_ops"
+
+        self.proc_root = KernelAddressHeuristicFinder.get_proc_root()
+        if self.proc_root is None:
+            self.meta.append((self.quiet_err, "Could not find proc_root"))
+            return None
+        self.meta.append((self.quiet_info, "proc_root: {:#x}".format(self.proc_root)))
+
+        self.layout = self.resolve_layout_by_debug_info()
+        if self.layout is not None and self.is_valid_layout():
+            self.meta.append((self.quiet_info, "layout: debug info"))
+        else:
+            if self.layout is not None:
+                # e.g., the debug information of another build
+                self.meta.append((self.quiet_warn, "The debug information does not match proc_root"))
+            self.layout = self.resolve_layout()
+            if self.layout is None:
+                message = "Could not resolve the layout (CONFIG_RANDSTRUCT=y needs the debug information)"
+                self.meta.append((self.quiet_err, message))
+                return None
+            self.meta.append((self.quiet_info, "layout: heuristic"))
+        if self.layout["link"] == "rb":
+            members = ["parent", "subdir", ("sibling", "subdir_node")]
+        else:
+            members = ["parent", "subdir", ("sibling", "next")]
+        members += ["name", "mode", "proc_iops", ("proc_ops", self.ops_name)]
+        for member in members:
+            if isinstance(member, tuple):
+                key, member = member
+            else:
+                key = member
+            self.meta.append((self.quiet_info, "offsetof(proc_dir_entry, {:s}): {:#x}".format(member, self.layout[key])))
+        if self.layout["name_inline"]:
+            self.meta.append((self.quiet_info, "name: inline array"))
+        else:
+            self.meta.append((self.quiet_info, "name: pointer"))
+
+        self.proc_net = self.find_proc_net()
+        if self.proc_net is not None:
+            self.meta.append((self.quiet_info, "init_net->proc_net: {:#x}".format(self.proc_net)))
+        elif KernelAddressHeuristicFinderUtil.has_networking_symbols() is False:
+            self.meta.append((self.quiet_info, "init_net->proc_net: unavailable (CONFIG_NET=n)"))
+        else:
+            self.meta.append((self.quiet_warn, "Could not find init_net->proc_net"))
+        return True
+
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
+    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64"))
+    @Decorator.only_if_in_kernel_or_kpti_disabled
+    def do_invoke(self, args):
+        self.args = args
+        self.quiet_info("Wait for memory scan")
+        ret = self.initialize()
+        if args.meta or not ret:
+            for func, line in self.meta:
+                func(line)
+        if not ret or args.meta:
+            return
+
+        self.out = []
+        self.seen = set()
+        self.dump_tree(self.proc_root, "/proc", "proc_root")
+        if self.proc_net is not None:
+            self.dump_tree(self.proc_net, "/proc/net", "init_net->proc_net")
+        elif KernelAddressHeuristicFinderUtil.has_networking_symbols() is not False:
+            self.warn_add_out("Could not find init_net->proc_net, so /proc/net is not shown")
         self.print_output(check_terminal_size=True)
         return
 
