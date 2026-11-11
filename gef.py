@@ -9814,7 +9814,7 @@ class SPARC(Architecture):
                     suffix = mnemo[2:]
                 conditions = {
                     "u": (3,), "g": (2,), "ug": (2, 3), "l": (1,), "ul": (1, 3), "lg": (1, 2),
-                    "ne": (1, 2, 3), "e": (0,), "ue": (0, 3), "ge": (0, 2), "uge": (0, 2, 3),
+                    "ne": (1, 2, 3), "e": (0,), "ue": (0, 3), "ge": (0, 2), "uge": (0, 2, 3), # codespell:ignore
                     "le": (0, 1), "ule": (0, 1, 3), "o": (0, 1, 2),
                 }
                 if suffix not in conditions:
@@ -11061,7 +11061,8 @@ class M68K(Architecture):
             z = bool(fpsr & (1 << 26))
             nan = bool(fpsr & (1 << 24))
             aliases = {
-                "sf": "f", "seq": "eq", "gt": "ogt", "ge": "oge", "lt": "olt", "le": "ole", "gl": "ogl", "gle": "or",
+                "sf": "f", "seq": "eq", "gt": "ogt", "ge": "oge",
+                "lt": "olt", "le": "ole", "gl": "ogl", "gle": "or", # codespell:ignore
                 "ngle": "un", "ngl": "ueq", "nle": "ugt", "nlt": "uge", "nge": "ult", "ngt": "ule", "sne": "ne", "st": "t",
             }
             conditions = {
@@ -11069,7 +11070,7 @@ class M68K(Architecture):
                 "eq": (z, "Z"),
                 "ogt": (not (nan or z or n), "!(NAN || Z || N)"),
                 "oge": (z or not (nan or n), "Z || !(NAN || N)"),
-                "olt": (n and not (nan or z), "N && !(NAN || Z)"),
+                "olt": (n and not (nan or z), "N && !(NAN || Z)"), # codespell:ignore
                 "ole": (z or (n and not nan), "Z || (N && !NAN)"),
                 "ogl": (not (nan or z), "!(NAN || Z)"),
                 "or": (not nan, "!NAN"),
@@ -25893,7 +25894,7 @@ class ReadSystemRegisterForKgdbCommand(GenericCommand):
                 ("stval", 0x143, ["handle_exception"]),
                 ("satp", 0x180, ["suspend_save_csrs", "cpu_suspend", "do_page_fault"]),
                 ("stvec", 0x105, ["suspend_save_csrs", "cpu_suspend"]),
-                ("sie", 0x104, ["suspend_save_csrs", "cpu_suspend"]),
+                ("sie", 0x104, ["suspend_save_csrs", "cpu_suspend"]), # codespell:ignore
             )
         },
     }
@@ -49133,7 +49134,7 @@ class SigreturnCommand(GenericCommand):
         for _ in range(16):
             header = read_memory(addr, 8, safe=True)
             if header is None:
-                out.append("(unreadable; FP/SIMD, SVE/SME, etc. may be present but are not shown)")
+                out.append("(unreadable; FP/SIMD, SVE/SME, etc. may be present but are not shown)") # codespell:ignore
                 break
             magic, size = u32(header[0:4]), u32(header[4:8])
             if magic == 0 and size == 0:
@@ -73337,7 +73338,7 @@ class KernelAddressHeuristicFinder:
                     return v
         elif is_riscv32() or is_riscv64():
             # plan 1 (from tp or sscratch)
-            # The kernel keeps the current task in tp, and in sscratch while the hart is in U-mode.
+            # The kernel keeps the current task in tp, and in sscratch while the hart is in U-mode. # codespell:ignore
             # Around the swap at the exception entry, either of them may hold the user tp or 0.
             priv = get_register("priv")
             if priv == 1:
@@ -73354,7 +73355,7 @@ class KernelAddressHeuristicFinder:
                 # PAGE_OFFSET is fixed to 0xc0000000 on RV32
                 if is_riscv32() and r < 0xc000_0000:
                     continue
-                # A U-mode hart cannot reach the kernel pages, so it is not validated by reading.
+                # A U-mode hart cannot reach the kernel pages, so it is not validated by reading. # codespell:ignore
                 if priv == 0 or is_valid_addr(r):
                     return r
         elif is_arm64():
@@ -95876,7 +95877,7 @@ class KernelCurrentCommand(GenericCommand):
         elif is_riscv32() or is_riscv64():
             priv = get_register("priv")
             if priv == 3:
-                return "hart is in M-mode; tp belongs to the SBI firmware"
+                return "hart is in M-mode; tp belongs to the SBI firmware" # codespell:ignore
         return "failed to resolve current task"
 
     def dump_current_by_thread(self):
@@ -112067,10 +112068,10 @@ class IdtInfoCommand(GenericCommand, BufferingOutput):
 
         idt["offset"] = val & 0xffff
         idt["segment"] = (val >> 16) & 0xffff
-        if entry_size == 16: # codespell:ignore
-            idt["ist"] = (val >> 32) & 0b111
+        if entry_size == 16:
+            idt["ist"] = (val >> 32) & 0b111 # codespell:ignore
         else:
-            idt["ist"] = 0
+            idt["ist"] = 0 # codespell:ignore
         if entry_size != 4:
             idt["gate_type"] = (val >> 40) & 0b1111
         else:
@@ -155243,7 +155244,8 @@ class BaseNCodec:
             text = text[2:-2]
         elif xbtoa:
             match = re.search(
-                r"\nxbtoa\s+[eE]nd N (\d+) ([0-9a-fA-F]+) E ([0-9a-fA-F]+) S ([0-9a-fA-F]+) R ([0-9a-fA-F]+)\s*$",
+                r"\nxbtoa\s+[eE]nd N (\d+) ([0-9a-fA-F]+) " # codespell:ignore
+                r"E ([0-9a-fA-F]+) S ([0-9a-fA-F]+) R ([0-9a-fA-F]+)\s*$",
                 text,
             )
             if not re.match(r"^xbtoa\s+[bB]egin\n", text) or match is None:
@@ -162925,7 +162927,7 @@ class KobjCommand(GenericCommand):
     # Well-known caches whose name differs from the struct, or that are frequently targeted.
     # Dedicated caches whose name already matches the struct fall through to the generic guess.
     CACHE_TYPE_HINTS = {
-        "filp": "struct file",
+        "filp": "struct file", # codespell:ignore
         "cred_jar": "struct cred",
         "names_cache": "path name buffer (PATH_MAX)",
         "files_cache": "struct files_struct",
@@ -170155,7 +170157,7 @@ class Ksym:
           "exact"   the name itself, which is not unique (`set_is_seen` can be there 3 times)
           "split"   the name, then the pieces gcc split off it (`foo.part.11`, `foo.cold.3`).
                     The dot keeps an unrelated longer name (`free_vmap_area_noflush`) out, and
-                    the type keeps the statics of `foo` (`foo.__key`, `foo.envp`) out.
+                    the type keeps the statics of `foo` (`foo.__key`, `foo.envp`) out. # codespell:ignore
           "prefix"  the name, then every longer name starting with it
           "in"      every name containing it"""
         ret = Ksym.get_kallsyms()
@@ -187058,7 +187060,7 @@ class LibpasHeapDumpCommand(GenericCommand, BufferingOutput):
         "* The local allocator bump region (payload_end-remaining .. payload_end) is memory not yet handed out.",
         "* GEF finds the cache by scanning the TLS, so debug symbols are not needed. Use -c when the scan fails.",
         "* The compact-pointer base and scale are derived from memory, so 2.50-2.54 and main all work.",
-        "* Only small segregated pages (header at the page boundary) are enumerated; medium and marge",
+        "* Only small segregated pages (header at the page boundary) are enumerated; medium and marge", # codespell:ignore
         "  segregated pages, whose header lives in a page-header table, and bitfit pages are not.",
         "* Supported on x86_64 and ARM64 only, as upstream (64-bit Linux uses libpas only on these).",
     ])
@@ -187198,7 +187200,7 @@ class LibpasHeapDumpCommand(GenericCommand, BufferingOutput):
         if len(first) >= 2 and first[1] > first[0]:
             align = object_size // (first[1] - first[0])
             shift = max(align.bit_length() - 1, 4)
-        # only small pages keep their header (and alloc_bits) at the page boundary; medium and marge
+        # only small pages keep their header (and alloc_bits) at the page boundary; medium and marge # codespell:ignore
         # pages store it in a page-header table that cannot be located without symbols
         if shift != 4:
             return None
@@ -198198,7 +198200,7 @@ class PageTableSparc32(PageTable):
         if entry & 0b11 == 2: # PTE
             paddr = ((entry >> 8) << 12) & ~(size - 1)
             self.add_leaf(level, addr, entry, va, paddr, size, self.format_flags(entry))
-        elif entry & 0b11 == 1 and level > 1: # PTD
+        elif entry & 0b11 == 1 and level > 1: # PTD # codespell:ignore
             self.add_level_line(level, addr, entry, va, va + size, "TABLE")
             table = (entry & ~0b11) << 4
             count = self.COUNTS[level - 1]
@@ -207362,7 +207364,7 @@ class ExecUntilMemaccessCommand(ExecUntilCommand):
         if is_nios2():
             return mnemo.startswith(("ld", "st", "push.n", "pop.n"))
         if is_microblaze():
-            return bool(re.fullmatch(r"(?:l(?:bu|hu|w|l)|s[bhwl])(?:i|r|x|ea)?", mnemo))
+            return bool(re.fullmatch(r"(?:l(?:bu|hu|w|l)|s[bhwl])(?:i|r|x|ea)?", mnemo)) # codespell:ignore
         if is_xtensa():
             return bool(re.fullmatch(r"(?:l(?:8ui|16[su]i|32(?:i|r|ai|e|ex)|d(?:inc|dec))|s(?:8i|16i|32(?:i|ri|c1i|e|ex|nb)))"
                                      r"(?:\.n)?|[ls]s[ix]u?", mnemo))
@@ -207370,7 +207372,7 @@ class ExecUntilMemaccessCommand(ExecUntilCommand):
             return mnemo in ("push", "pop") or "[" in operand
         if current_arch.arch == "ARC":
             return bool(re.fullmatch(r"(?:ld|st)(?:[bhwdl]|dl)?(?:_s)?|(?:push|pop)l?_s|enter_s|leave_s|ex"
-                                     r"|(?:llock|scond)[dl]?|prefetchw?", mnemo.split(".")[0]))
+                                     r"|(?:llock|scond)[dl]?|prefetchw?", mnemo.split(".")[0])) # codespell:ignore
         if is_csky():
             if mnemo in ("jmpi", "jsri", "nie", "nir"):
                 return True
@@ -210905,7 +210907,7 @@ class KuafWatchCommand(GenericCommand):
         try:
             # set breakpoints (reuse kmalloc-tracer's allocator symbol tables)
             kmalloc_syms, kfree_syms = KmallocTracerCommand.get_kmalloc_kfree_syms()
-            # Dedicated caches (task_struct, cred, filp, ...) - the usual UAF targets - are
+            # Dedicated caches (task_struct, cred, filp, ...) - the usual UAF targets - are # codespell:ignore
             # released with kmem_cache_free, not kfree, so track it as well (ptr is arg 1).
             kfree_syms = kfree_syms + [["kmem_cache_free", 1]]
             breakpoints = []
@@ -213368,7 +213370,7 @@ class KernelRefsCommand(GenericCommand, BufferingOutput):
     _example_ = "\n".join([
         "{0:s} 0xffff888012345600                        # scan the static data of the kernel image",
         "{0:s} -p 0xffff888012345600                     # scan the per-cpu areas too",
-        "{0:s} -c filp 0xffff888012345600                # scan the slab pages of the filp cache",
+        "{0:s} -c filp 0xffff888012345600                # scan the slab pages of the filp cache", # codespell:ignore
         "{0:s} -o 0xffff888045670000 0xffff888012345600  # scan one slab object (e.g. a task_struct)",
         "{0:s} -r 0xffff888012340000+0x1000 0xffff888012345600",
         "{0:s} -t 0x100 0xffff888012345600               # also catch the interior pointers",
