@@ -252,7 +252,7 @@ For the usage and options of each command, see [docs/COMMANDS.md](docs/COMMANDS.
 ### Linux Task
 
 <details>
-<summary><code>ktask</code>, <code>ksched</code>, <code>kcred</code></summary>
+<summary><code>ktask</code>, <code>ksched</code>, <code>kcred</code>, <code>kmem-task</code></summary>
 
 - `ktask`: displays each task's address.
     - ![](images/ktask.png)
@@ -272,6 +272,8 @@ For the usage and options of each command, see [docs/COMMANDS.md](docs/COMMANDS.
     - ![](images/ksched.png)
 - `kcred`: dumps the credentials of each task.
     - ![](images/kcred.png)
+- `kmem-task`: dumps the userland memory of the specified process through its own page table, like `x` or `telescope`.
+    - ![](images/kmem-task.png)
 
 </details>
 
@@ -344,7 +346,6 @@ For the usage and options of each command, see [docs/COMMANDS.md](docs/COMMANDS.
 - `kio-uring`: displays the kernel-side io_uring object graph.
     - ![](images/kio-uring.png)
 - `kuffd`: displays the kernel-side userfaultfd object graph (registered ranges and the threads waiting on faults).
-    - ![](images/kuffd.png)
 - `krefs`: searches the kernel pointers that reference the specified address.
     - ![](images/krefs.png)
 - `kkeyring`: displays the keyrings referenced by tasks, or inspects an arbitrary struct key.

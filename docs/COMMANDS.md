@@ -9397,7 +9397,7 @@ Dump page tables for ARM32 Cortex-A PL1 or PL2.
 ### Syntax
 
 ```text
-usage: pagewalk arm [-h] [-S | -s] [-L] [-N] [-P] [-Q] [-f REGEX] [-v VADDR] [-p PADDR] [-t VADDR] [--optee] [-D] [-c] [-n] [-q] [TARGET_PL]
+usage: pagewalk arm [-h] [-S | -s] [-L] [-N] [-P] [-Q] [-f REGEX] [-v VADDR] [-p PADDR] [-t VADDR] [--optee] [--ttbr0 USER_SPECIFIED_TTBR0] [--ttbcr USER_SPECIFIED_TTBCR] [-D] [-c] [-n] [-q] [TARGET_PL]
 
 positional arguments:
   TARGET_PL             target privilege level (default: current PL)
@@ -9416,6 +9416,10 @@ options:
   -p, --prange PADDR    filter by map included specified physical address.
   -t, --trace VADDR     show all level pagetables only associated specified address.
   --optee               show the secure world memory maps if used OP-TEE.
+  --ttbr0 USER_SPECIFIED_TTBR0
+                        use specified value as TTBR0.
+  --ttbcr USER_SPECIFIED_TTBCR
+                        use specified value as TTBCR.
   -D, --disable-color   disable RWX colored output
   -c, --use-cache       use previous result.
   -n, --no-pager        do not use the pager.
@@ -9431,7 +9435,7 @@ Dump page tables for ARM64 Cortex-A (ARM v8.7 base).
 ### Syntax
 
 ```text
-usage: pagewalk arm64 [-h] [-L] [-N] [-P] [-Q] [-f REGEX] [-v VADDR] [-p PADDR] [-t VADDR] [--optee] [-0] [-1] [-D] [-c] [-n] [-q] [TARGET_EL]
+usage: pagewalk arm64 [-h] [-L] [-N] [-P] [-Q] [-f REGEX] [-v VADDR] [-p PADDR] [-t VADDR] [--optee] [-0] [-1] [--ttbr0 USER_SPECIFIED_TTBR0] [-D] [-c] [-n] [-q] [TARGET_EL]
 
 positional arguments:
   TARGET_EL             target Exception Level. (default: current EL)
@@ -9450,6 +9454,8 @@ options:
   --optee               show the secure world memory maps if used OP-TEE.
   -0, --only-TTBR0_EL1  Display only TTBR0_EL1 (if target==EL1)
   -1, --only-TTBR1_EL1  display only TTBR1_EL1 (if target==EL1)
+  --ttbr0 USER_SPECIFIED_TTBR0
+                        use specified value as TTBR0_EL1.
   -D, --disable-color   disable RWX colored output
   -c, --use-cache       use previous result.
   -n, --no-pager        do not use the pager.
@@ -9551,7 +9557,7 @@ Dump page tables for RISC-V 32/64.
 ### Syntax
 
 ```text
-usage: pagewalk riscv [-h] [-L] [-N] [-P] [-Q] [-f REGEX] [-v VADDR] [-p PADDR] [-t VADDR] [-D] [-c] [-n] [-q]
+usage: pagewalk riscv [-h] [-L] [-N] [-P] [-Q] [-f REGEX] [-v VADDR] [-p PADDR] [-t VADDR] [--satp USER_SPECIFIED_SATP] [-D] [-c] [-n] [-q]
 
 options:
   -h, --help            show this help message and exit
@@ -9564,6 +9570,8 @@ options:
   -v, --vrange VADDR    filter by map included specified virtual address.
   -p, --prange PADDR    filter by map included specified physical address.
   -t, --trace VADDR     show all level pagetables only associated specified address.
+  --satp USER_SPECIFIED_SATP
+                        use specified value as satp.
   -D, --disable-color   disable RWX colored output
   -c, --use-cache       use previous result.
   -n, --no-pager        do not use the pager.
@@ -10729,6 +10737,46 @@ usage: kfiles [-h] [-n]
 options:
   -h, --help      show this help message and exit
   -n, --no-pager  do not use the pager.
+```
+
+## `kmem-task`
+
+Dump the user-land memory of a task through the page table of its mm.
+
+
+### Syntax
+
+```text
+usage: kmem-task [-h] [-t] [-n] [-q] PID /FMT ADDRESS
+
+positional arguments:
+  PID                   the process ID of the target task.
+  /FMT                  specified output format.
+  ADDRESS               the user-land virtual address of the target task to dump.
+
+options:
+  -h, --help            show this help message and exit
+  -t, --telescope-like  dereference each pointer like telescope (the count of FMT is the number of lines).
+  -n, --no-pager        do not use the pager.
+  -q, --quiet           show result only.
+```
+
+### Examples
+
+```gdb
+kmem-task 1337 /16xg 0x7ffd12345000     # like `x/16xg`
+kmem-task 1337 /8i 0x5555555551a9       # disassemble
+kmem-task -t 1337 /16 0x7ffd12345000    # like `telescope`
+```
+
+### Notes
+
+```text
+Reads the user-land memory of a task other than current through the page table of its mm->pgd.
+The page table is walked by `pagewalk` with the root register specified (--cr3, --ttbr0 or --satp).
+Pages that are not present (not faulted in yet, or swapped out) cannot be read.
+Without debug information, mm->pgd is the field whose page table maps the task's own VMAs.
+This command requires CONFIG_RANDSTRUCT=n unless vmlinux with debug information is loaded.
 ```
 
 ## `knamespaces`
