@@ -215581,6 +215581,202 @@ class KernelLsmCommand(GenericCommand, BufferingOutput):
 
 
 @register_command
+class KernelCfiHashCommand(GenericCommand, BufferingOutput):
+    """List the functions that share a kCFI type hash with a given call target."""
+
+    _cmdline_ = "kcfi-hash"
+    _category_ = "06-g. Qemu-system/KGDB Cooperation - Linux Advanced"
+
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("location", metavar="LOCATION", nargs="?",
+                        help="the call target (function pointer) address or kallsyms name.")
+    parser.add_argument("-hh", "--help-simple", action="store_true", help="show help without ASCII diagram.")
+    parser.add_argument("-H", "--hash", type=lambda x: int(x, 16) & 0xffffffff, default=None,
+                        help="list the functions carrying this 32-bit type hash instead.")
+    parser.add_argument("-l", "--limit", type=lambda x: int(x, 0), default=0x40,
+                        help="stop after this many matching functions. 0 means unlimited. (default: %(default)s)")
+    parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
+    parser.add_argument("-q", "--quiet", action="store_true", help="show result only.")
+    _syntax_ = parser.format_help()
+
+    _example_ = "\n".join([
+        "{0:s} commit_creds          # hash of commit_creds and every function sharing it",
+        "{0:s} 0xffffffff81234560    # same, by call-target address",
+        "{0:s} -H 0xe039e52a         # list every function carrying this hash",
+    ]).format(_cmdline_)
+
+    _note_ = "\n".join([
+        "kCFI (CONFIG_CFI_CLANG) places a 32-bit type hash just before every address-taken function.",
+        "An indirect call verifies the target's hash against the one expected for the pointer's type, so a",
+        "function sharing that hash may be substituted for the original even while CFI is enforced. This",
+        "shows the hash of a call target and every function that carries the same one.",
+        "",
+        "The preamble is located from the `__cfi_<func>` prefix symbol and decoded by its first bytes, which",
+        "covers both the plain kCFI form and the FineIBT form installed by boot-time patching when the CPU",
+        "supports IBT:",
+        "",
+        "  kCFI                        FineIBT",
+        "  +-__cfi_func-------+        +-__cfi_func-------+",
+        "  | movl $hash, %eax |--hash  | endbr64          |",
+        "  | nop * 11         |        | sub  $hash, reg  |--hash",
+        "  +------------------+        | jne  func+N      |",
+        "  | func: ...        |        +------------------+",
+        "  +------------------+        | func: ...        |",
+        "                              +------------------+",
+        "",
+        "- FineIBT re-hashes each type with a per-boot seed; its values differ from a kCFI boot but stay",
+        "  consistent within one boot, so comparing functions is valid in either mode.",
+        "- x86-64 only. On a kernel without CONFIG_CFI_CLANG there is no hash to read.",
+    ])
+
+    @staticmethod
+    def decode_bytes(b):
+        """Return (hash, mode) from the preamble bytes, or (None, reason)."""
+        if b is None or len(b) < 11:
+            return None, "unreadable"
+        if b[0] == 0xb8: # movl $hash, %eax
+            return struct.unpack("<I", b[1:5])[0], "kcfi"
+        if b[:4] == b"\xf3\x0f\x1e\xfa": # endbr64, FineIBT
+            if b[4] == 0x2d: # subl $hash, %eax
+                return struct.unpack("<I", b[5:9])[0], "fineibt"
+            if b[4] == 0x41: # sub/xor $hash, %r10d
+                return struct.unpack("<I", b[7:11])[0], "fineibt"
+        return None, "no-preamble"
+
+    @staticmethod
+    def cfi_offset():
+        """Return cfi_get_offset(): the distance from a function to its `__cfi_` preamble, or None."""
+        ret = Ksym.get_kallsyms()
+        if ret is None:
+            return None
+        _kallsyms, kmap = ret
+        votes = {}
+        for name, addrs in kmap.items():
+            if not name.startswith("__cfi_"):
+                continue
+            func = kmap.get(name[len("__cfi_"):])
+            if not func:
+                continue
+            off = func[0] - addrs[0]
+            if 0 < off <= 64:
+                votes[off] = votes.get(off, 0) + 1
+        if not votes:
+            return None
+        return max(votes, key=votes.get)
+
+    def read_preambles(self, addrs, size=12, gap=0x1000):
+        """Read `size` bytes at each address with few bulk reads; return {addr: bytes}."""
+        result = {}
+        addrs = sorted(set(addrs))
+        i = 0
+        while i < len(addrs):
+            j = i
+            while j + 1 < len(addrs) and addrs[j + 1] - addrs[j] <= gap:
+                j += 1
+            start = addrs[i]
+            buf = read_memory(start, addrs[j] + size - start, safe=True)
+            for k in range(i, j + 1):
+                if buf is not None:
+                    off = addrs[k] - start
+                    result[addrs[k]] = buf[off:off + size]
+                else:
+                    result[addrs[k]] = read_memory(addrs[k], size, safe=True)
+            i = j + 1
+        return result
+
+    def collect_hashes(self):
+        """Return {hash: [func name, ...]} over every `__cfi_` preamble (names sorted)."""
+        ret = Ksym.get_kallsyms()
+        if ret is None:
+            return {}
+        kallsyms, _kmap = ret
+        cfi = [(addr, name[len("__cfi_"):]) for addr, name, _typ in kallsyms if name.startswith("__cfi_")]
+        bufs = self.read_preambles([addr for addr, _name in cfi])
+        hashes = {}
+        for addr, name in cfi:
+            h, _mode = self.decode_bytes(bufs.get(addr))
+            if h is None:
+                continue
+            hashes.setdefault(h, []).append(name)
+        for names in hashes.values():
+            names.sort()
+        return hashes
+
+    def hash_of_func(self, func_addr, offset):
+        """Return (hash, mode) for the function entry `func_addr`, or (None, reason)."""
+        return self.decode_bytes(read_memory(func_addr - offset, 12, safe=True))
+
+    def resolve_location(self, text):
+        """Return the function entry address for an address expression or a kallsyms name."""
+        try:
+            return AddressUtil.normalize_address(AddressUtil.parse_address(text))
+        except (ValueError, gdb.error):
+            return Ksym.get_addr(text)
+
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
+    @Decorator.only_if_specific_arch(arch=("x86_64",))
+    @Decorator.only_if_in_kernel_or_kpti_disabled
+    def do_invoke(self, args):
+        self.out = []
+        if args.location is None and args.hash is None:
+            err("Specify a function (LOCATION) or --hash")
+            return
+
+        self.quiet_info("Wait for memory scan")
+        if Kernel.version() is None:
+            err("Could not find Linux kernel")
+            return
+
+        offset = self.cfi_offset()
+        if offset is None:
+            err("No `__cfi_` symbols; the kernel lacks CONFIG_CFI_CLANG or CONFIG_KALLSYMS_ALL")
+            return
+
+        if args.hash is not None:
+            want = args.hash
+        else:
+            func = self.resolve_location(args.location)
+            if func is None:
+                err("Could not resolve: {:s}".format(args.location))
+                return
+            want, mode = self.hash_of_func(func, offset)
+            if want is None:
+                err("No kCFI preamble at {:#x} ({:s}); not an address-taken function entry?".format(func, mode))
+                return
+            name = Symbol.format(func, ksym="prefer", bracket="") or "{:#x}".format(func)
+            self.quiet_info_add_out("Target: {:s}  {:#x}".format(name, func))
+            self.quiet_info_add_out("Type hash: {:#010x}  (mode: {:s}, cfi_get_offset: {:d})".format(want, mode, offset))
+
+        hashes = self.collect_hashes()
+        peers = hashes.get(want, [])
+        if args.hash is not None:
+            self.quiet_info_add_out("Type hash: {:#010x}  (cfi_get_offset: {:d})".format(want, offset))
+
+        if not peers:
+            self.info_add_out("No function carries this hash")
+            self.print_output(check_terminal_size=True)
+            return
+
+        if args.limit and len(peers) > args.limit:
+            shown = peers[:args.limit]
+            note = " (showing {:d})".format(len(shown))
+        else:
+            shown = peers
+            note = ""
+        self.quiet_info_add_out("Functions with this hash: {:d}{:s}".format(len(peers), note))
+        for name in shown:
+            addr = Ksym.get_addr(name)
+            if addr is None:
+                self.out.append("  {:s}".format(name))
+            else:
+                self.out.append("  {:s}  {:s}".format(AddressUtil.format_address(addr), name))
+        self.print_output(check_terminal_size=True)
+        return
+
+
+@register_command
 class KernelIoUringCommand(GenericCommand, BufferingOutput):
     """Display the kernel-side io_uring object graph."""
 

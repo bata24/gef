@@ -11138,6 +11138,62 @@ Each line is a registered range of minors, not a device node.
 Block devices are excluded from them.
 ```
 
+## `kcfi-hash`
+
+List the functions that share a kCFI type hash with a given call target.
+
+
+### Syntax
+
+```text
+usage: kcfi-hash [-h] [-hh] [-H HASH] [-l LIMIT] [-n] [-q] [LOCATION]
+
+positional arguments:
+  LOCATION            the call target (function pointer) address or kallsyms name.
+
+options:
+  -h, --help          show this help message and exit
+  -hh, --help-simple  show help without ASCII diagram.
+  -H, --hash HASH     list the functions carrying this 32-bit type hash instead.
+  -l, --limit LIMIT   stop after this many matching functions. 0 means unlimited. (default: 64)
+  -n, --no-pager      do not use the pager.
+  -q, --quiet         show result only.
+```
+
+### Examples
+
+```gdb
+kcfi-hash commit_creds          # hash of commit_creds and every function sharing it
+kcfi-hash 0xffffffff81234560    # same, by call-target address
+kcfi-hash -H 0xe039e52a         # list every function carrying this hash
+```
+
+### Notes
+
+```text
+kCFI (CONFIG_CFI_CLANG) places a 32-bit type hash just before every address-taken function.
+An indirect call verifies the target's hash against the one expected for the pointer's type, so a
+function sharing that hash may be substituted for the original even while CFI is enforced. This
+shows the hash of a call target and every function that carries the same one.
+
+The preamble is located from the `__cfi_<func>` prefix symbol and decoded by its first bytes, which
+covers both the plain kCFI form and the FineIBT form installed by boot-time patching when the CPU
+supports IBT:
+
+  kCFI                        FineIBT
+  +-__cfi_func-------+        +-__cfi_func-------+
+  | movl $hash, %eax |--hash  | endbr64          |
+  | nop * 11         |        | sub  $hash, reg  |--hash
+  +------------------+        | jne  func+N      |
+  | func: ...        |        +------------------+
+  +------------------+        | func: ...        |
+                              +------------------+
+
+- FineIBT re-hashes each type with a per-boot seed; its values differ from a kCFI boot but stay
+  consistent within one boot, so comparing functions is valid in either mode.
+- x86-64 only. On a kernel without CONFIG_CFI_CLANG there is no hash to read.
+```
+
 ## `kclock-source`
 
 Dump the clocksource list.
