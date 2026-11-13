@@ -80285,6 +80285,11 @@ class Kernel:
         return KernelIoUring.get_instance()
 
     @staticmethod
+    def cgroup():
+        """Return the cgroup resolver."""
+        return KernelCgroup.get_instance()
+
+    @staticmethod
     def socket():
         """Return the socket resolver."""
         return KernelSocket.get_instance()
@@ -218635,6 +218640,1284 @@ class KernelProcfsCommand(GenericCommand, BufferingOutput):
             self.dump_tree(self.kprocfs.proc_net, "/proc/net", "init_net->proc_net")
         elif KernelAddressHeuristicFinderUtil.has_networking_symbols() is not False:
             self.warn_add_out("Could not find init_net->proc_net, so /proc/net is not shown")
+        self.print_output(check_terminal_size=True)
+        return
+
+
+class KernelLayoutReader:
+    """The memory readers shared by the resolvers that find a layout from the invariants of the objects in memory,
+    e.g. KernelCgroup and KernelBinder."""
+
+    @staticmethod
+    def read_words(address, size):
+        """Return the words at `address`, where the readable part is used if the end is not readable."""
+        while size >= current_arch.ptrsize:
+            data = read_memory(address, size, safe=True)
+            if data is not None:
+                return slice_unpack(data, current_arch.ptrsize)
+            size //= 2
+        return None
+
+    @staticmethod
+    def read_list(head, limit=0x1000):
+        """Return the nodes linked from the list_head at `head`, or None if it is broken or too long."""
+        nodes = []
+        lh = KernelListHead(head)
+        for node in lh.iter_entries():
+            if not KernelAddressHeuristicFinderUtil.is_kernel_space(node) or len(nodes) >= limit:
+                return None
+            nodes.append(node)
+        if lh.broken:
+            return None
+        return nodes
+
+
+class KernelCgroup(KernelLayoutReader):
+    """Resolve the cgroup hierarchies from init_css_set (the layouts of css_set, cgroup, cgroup_subsys_state and
+    cgroup_root), the cgroup of each task, and the settings of the main controllers."""
+
+    CONTROLLERS = ["cpuset", "cpu", "memory", "pids", "devices", "freezer"]
+    # CGROUP_SUBSYS_COUNT is the bits of unsigned long in old kernels, so the trailing NULL slots are not counted
+    MAX_SUBSYS = 0x40
+    MAX_CGROUPS = 0x10000
+    # css_set->cgrp_links: the slots of the css_set and the cgroup from the node, in pointers
+    LINK_LAYOUTS = [
+        ("cg_cgroup_link", 2, -1),
+        ("cgrp_cset_link", -3, -4),
+    ]
+    # scale_load(NICE_0_LOAD) of the root task_group
+    NICE_0_LOADS = [1024, 1024 << 10]
+    DEFAULT_CFS_PERIOD = 100000000
+    RUNTIME_INF = 0xffff_ffff_ffff_ffff
+    DEVICE_TYPES = {1: "b", 2: "c", 4: "a"}
+
+    @classmethod
+    @Cache.cache_this_session(per_inferior=True, until_new_objfile=True)
+    def get_instance(cls):
+        return cls()
+
+    def __init__(self):
+        self.meta = []
+        self.warnings = []
+        return
+
+    def read_name(self, address, max_length=0x100):
+        return read_cstring_from_memory(address, max_length, safe=True, allow_non_ascii=True)
+
+    def get_links(self, cset):
+        """Return the cgroups that `cset` is linked to (one for each hierarchy), or None. They are distinct, which rejects
+        e.g. task_struct->children whose entries point back with parent."""
+        nodes = self.read_list(cset + self.layout["cset_links"], 0x100)
+        if nodes is None:
+            return None
+        cgroups = []
+        for node in nodes:
+            if read_int_from_memory(node + self.layout["link_cset"], safe=True) != cset:
+                return None
+            cgroups.append(read_int_from_memory(node + self.layout["link_cgrp"], safe=True))
+        if len(set(cgroups)) != len(cgroups):
+            return None
+        return cgroups
+
+    def resolve_links(self, cset):
+        """Return the layout of css_set->cgrp_links whose links point back to `cset`, or None."""
+        ptrsize = current_arch.ptrsize
+        candidates = []
+        for links, link, node, link_cset, link_cgrp in [
+            ("cgrp_links", "cgrp_cset_link", "cgrp_link", "cset", "cgrp"),
+            ("cg_links", "cg_cgroup_link", "cg_link_list", "cg", "cgrp"),
+        ]:
+            offsets = [GefUtil.offsetof("css_set", links)]
+            offsets += [GefUtil.offsetof(link, member) for member in [node, link_cset, link_cgrp]]
+            if None not in offsets:
+                candidates.append((offsets[0], [(offsets[2] - offsets[1], offsets[3] - offsets[1])]))
+        heuristic = [(cset_slot * ptrsize, cgrp_slot * ptrsize) for _, cset_slot, cgrp_slot in self.LINK_LAYOUTS]
+        # cgrp_links follows e_cset_node[CGROUP_SUBSYS_COUNT] (v3.16~)
+        candidates += [(offset, heuristic) for offset in range(0, 0x400, ptrsize)]
+        for offset, layouts in candidates:
+            nodes = self.read_list(cset + offset, 0x100)
+            if not nodes:
+                continue
+            for link_cset, link_cgrp in layouts:
+                if not all(read_int_from_memory(node + link_cset, safe=True) == cset for node in nodes):
+                    continue
+                self.layout = {"cset_links": offset, "link_cset": link_cset, "link_cgrp": link_cgrp}
+                if self.get_links(cset):
+                    return self.layout
+        return None
+
+    def resolve_task_cgroups(self, tasks):
+        """Return init_css_set and set offsetof(task_struct, cgroups), the layout of the links and subsys[], or None.
+        init_task->cgroups is init_css_set in the kernel image, and cg_list follows it (NULL unless it is linked).
+        The candidate whose subsys[] is also resolved is preferred (a kernel may have no controller)."""
+        ptrsize = current_arch.ptrsize
+        words = self.read_words(tasks[0], 0x3000)
+        if words is None:
+            return None
+        offset = GefUtil.offsetof("task_struct", "cgroups")
+        if offset is None:
+            offsets = range(0, (len(words) - 1) * ptrsize, ptrsize)
+        else:
+            offsets = [offset]
+        fallback = None
+        for offset in offsets:
+            cset = words[offset // ptrsize]
+            cg_list = words[offset // ptrsize + 1]
+            if cset % ptrsize or not KernelAddressHeuristicFinderUtil.is_kernel_space(cset):
+                continue
+            if not KernelAddressHeuristicFinderUtil.is_in_kernel_image(cset):
+                continue
+            if cg_list and not KernelAddressHeuristicFinderUtil.is_kernel_space(cg_list):
+                continue
+            self.layout = self.resolve_links(cset)
+            if self.layout is None:
+                continue
+            # the other tasks have their css_set at the same place
+            samples = [read_int_from_memory(task + offset, safe=True) for task in tasks[1:8]]
+            if not all(sample and self.get_links(sample) for sample in samples):
+                continue
+            self.layout["task_cgroups"] = offset
+            if self.resolve_subsys(cset, self.get_links(cset)):
+                return cset
+            if fallback is None:
+                fallback = (cset, dict(self.layout))
+        if fallback is None:
+            return None
+        cset, self.layout = fallback
+        return cset
+
+    def resolve_subsys(self, init_cset, roots):
+        """Set the layout of css_set->subsys[] and cgroup->subsys[]. init_css_set->subsys[i] is the root css of
+        each controller, whose cgroup is a root and points back to it. The self css of a cgroup (e.g. the root of
+        css_set->dfl_cgrp) is not the one of a controller, and the longest array is taken."""
+        ptrsize = current_arch.ptrsize
+        candidates = []
+        offsets = (GefUtil.offsetof("css_set", "subsys"), GefUtil.offsetof("cgroup", "subsys"))
+        if None not in offsets:
+            candidates.append(offsets)
+        for offset in range(0, 0x100, ptrsize):
+            css = read_int_from_memory(init_cset + offset, safe=True)
+            if not css or not KernelAddressHeuristicFinderUtil.is_kernel_space(css):
+                continue
+            cgroup = read_int_from_memory(css, safe=True)
+            if cgroup not in roots or cgroup == css:
+                continue
+            words = self.read_words(cgroup, 0x400) or []
+            candidates += [(offset, index * ptrsize) for index, word in enumerate(words) if word == css]
+        best = None
+        for cset_subsys, cgrp_subsys in candidates:
+            count = 0
+            for index in range(self.MAX_SUBSYS):
+                css = read_int_from_memory(init_cset + cset_subsys + index * ptrsize, safe=True)
+                if css is None:
+                    break
+                if css == 0:
+                    continue
+                cgroup = read_int_from_memory(css, safe=True)
+                if cgroup not in roots or cgroup == css:
+                    break
+                if read_int_from_memory(cgroup + cgrp_subsys + index * ptrsize, safe=True) != css:
+                    break
+                count = index + 1
+            if count and (best is None or count > best[2]):
+                best = (cset_subsys, cgrp_subsys, count)
+        if best is None:
+            return None
+        cset_subsys, cgrp_subsys, count = best
+        self.layout.update({"cset_subsys": cset_subsys, "cgrp_subsys": cgrp_subsys, "nr_subsys": count})
+        return True
+
+    def is_tree_layout(self, roots, children, parent):
+        """Check that the children of each root point back to it with parent, down to the grandchildren.
+        A child is not in the kernel image, and its self css points to itself since v3.16 (as the roots do),
+        which rejects e.g. cset_links with the static init_cgrp_cset_link."""
+        sibling = children - current_arch.ptrsize * 2
+        has_self = all(read_int_from_memory(root, safe=True) == root for root in roots)
+        has_image = KernelAddressHeuristicFinderUtil.get_kernel_image_range() is not None
+        found = False
+        for root in roots:
+            if read_int_from_memory(root + parent, safe=True) != 0:
+                return False
+            queue = [(root, 0)]
+            while queue:
+                cgroup, depth = queue.pop()
+                nodes = self.read_list(cgroup + children, 0x400)
+                if nodes is None:
+                    return False
+                for node in nodes:
+                    child = node - sibling
+                    if read_int_from_memory(child + parent, safe=True) != cgroup:
+                        return False
+                    if has_self and read_int_from_memory(child, safe=True) != child:
+                        return False
+                    if has_image and KernelAddressHeuristicFinderUtil.is_in_kernel_image(child):
+                        return False
+                    found = True
+                    if depth < 2:
+                        queue.append((child, depth + 1))
+        return found
+
+    def resolve_tree(self, roots):
+        """Set offsetof(cgroup, children) and offsetof(cgroup, parent), which are the ones of the self css since v3.16.
+        sibling is just before children. They are unknown when no cgroup has a child."""
+        ptrsize = current_arch.ptrsize
+        candidates = []
+        for prefix in ["self.", ""]:
+            offsets = (GefUtil.offsetof("cgroup", prefix + "children"), GefUtil.offsetof("cgroup", prefix + "parent"))
+            if None not in offsets:
+                candidates.append(offsets)
+                break
+        for root in roots:
+            words = self.read_words(root, 0x200) or []
+            for index in range(2, len(words) - 1):
+                head = root + index * ptrsize
+                if words[index] == head or not KernelAddressHeuristicFinderUtil.is_kernel_space(words[index]):
+                    continue
+                child = words[index] - (index - 2) * ptrsize
+                child_words = self.read_words(child, 0x200) or []
+                candidates += [(index * ptrsize, i * ptrsize) for i, word in enumerate(child_words) if word == root]
+        for children, parent in candidates:
+            if self.is_tree_layout(roots, children, parent):
+                self.layout.update({"cgrp_children": children, "cgrp_parent": parent})
+                return True
+        return None
+
+    def get_children(self, cgroup):
+        nodes = self.read_list(cgroup + self.layout["cgrp_children"], self.MAX_CGROUPS)
+        if nodes is None:
+            return None
+        return [node - self.layout["cgrp_children"] + current_arch.ptrsize * 2 for node in nodes]
+
+    def get_cgroup_name(self, cgroup):
+        """Return the name of `cgroup`, or None."""
+        name_type = self.layout.get("name")
+        if name_type is None:
+            return None
+        address = read_int_from_memory(cgroup + self.layout["cgrp_name"], safe=True)
+        if not address:
+            return None
+        if name_type == "kernfs":
+            address = read_int_from_memory(address + self.layout["kn_name"], safe=True)
+            if not address:
+                return None
+        elif name_type == "dentry":
+            return self.kpath.get_dentry_name(address, default=None)
+        return self.read_name(address + self.layout.get("name_offset", 0))
+
+    def resolve_name(self, roots, pairs):
+        """Set the layout of the name, which is cgroup->kn->name (v3.15~), cgroup->name (v3.10~v3.14) or the name of
+        cgroup->dentry. The kn of a child points to the kn of the parent, followed by the name."""
+        ptrsize = current_arch.ptrsize
+        candidates = []
+        kn = GefUtil.offsetof("cgroup", "kn")
+        kn_parent = GefUtil.offsetof("kernfs_node", "__parent")
+        if kn_parent is None:
+            kn_parent = GefUtil.offsetof("kernfs_node", "parent")
+        kn_name = GefUtil.offsetof("kernfs_node", "name")
+        if None not in (kn, kn_parent, kn_name):
+            candidates.append({"name": "kernfs", "cgrp_name": kn, "kn_parent": kn_parent, "kn_name": kn_name})
+        offsets = (GefUtil.offsetof("cgroup", "name"), GefUtil.offsetof("cgroup_name", "name"))
+        if None not in offsets:
+            candidates.append({"name": "cgroup_name", "cgrp_name": offsets[0], "name_offset": offsets[1]})
+        child, parent = pairs[0]
+        child_words = self.read_words(child, 0x300) or []
+        parent_words = self.read_words(parent, 0x300) or []
+        for index, (kn_child, kn) in enumerate(zip(child_words, parent_words)):
+            if kn_child in [kn, child] or not KernelAddressHeuristicFinderUtil.is_kernel_space(kn_child):
+                continue
+            words = self.read_words(kn_child, 0x80) or []
+            for i in range(len(words) - 1):
+                if words[i] == kn:
+                    candidates.append({"name": "kernfs", "cgrp_name": index * ptrsize,
+                                       "kn_parent": i * ptrsize, "kn_name": (i + 1) * ptrsize})
+            candidates.append({"name": "cgroup_name", "cgrp_name": index * ptrsize, "name_offset": ptrsize * 2})
+        # cgroup->dentry follows parent (~v3.9); KernelPath is not initialized with a pointer of another member
+        if Kernel.version() < "3.10":
+            candidates.append({"name": "dentry", "cgrp_name": self.layout["cgrp_parent"] + ptrsize})
+        for candidate in candidates:
+            for key in ["name", "cgrp_name", "kn_parent", "kn_name", "name_offset"]:
+                self.layout.pop(key, None)
+            self.layout.update(candidate)
+            if self.is_name_layout(roots, pairs):
+                return True
+        self.layout["name"] = None
+        return None
+
+    def is_name_layout(self, roots, pairs):
+        name_type = self.layout["name"]
+        if name_type == "dentry":
+            dentry = read_int_from_memory(pairs[0][0] + self.layout["cgrp_name"], safe=True)
+            self.kpath = Kernel.path()
+            try:
+                if not dentry or not self.kpath.initialize(dentry=dentry):
+                    return False
+            except (gdb.MemoryError, OverflowError):
+                return False
+        for child, parent in pairs:
+            name = self.get_cgroup_name(child)
+            if not name or not re.fullmatch(r"[\x20-\x2e\x30-\x7e]+", name):
+                return False
+            if name_type == "kernfs":
+                kn = read_int_from_memory(child + self.layout["cgrp_name"], safe=True)
+                kn_parent = read_int_from_memory(parent + self.layout["cgrp_name"], safe=True)
+                if read_int_from_memory(kn + self.layout["kn_parent"], safe=True) != kn_parent:
+                    return False
+            elif name_type == "dentry":
+                dentry = read_int_from_memory(child + self.layout["cgrp_name"], safe=True)
+                dentry_parent = read_int_from_memory(parent + self.layout["cgrp_name"], safe=True)
+                if read_int_from_memory(dentry + self.kpath.offset_d_parent, safe=True) != dentry_parent:
+                    return False
+        # the kn of the root is the one of kernfs_root (""), and cgroup_name of the root is "/"
+        for root in roots:
+            if name_type == "cgroup_name" and self.get_cgroup_name(root) != "/":
+                return False
+            if name_type == "kernfs":
+                kn = read_int_from_memory(root + self.layout["cgrp_name"], safe=True)
+                if not kn or read_int_from_memory(kn + self.layout["kn_parent"], safe=True) != 0:
+                    return False
+        return True
+
+    def read_ss_name(self, address):
+        name = read_cstring_from_memory(read_int_from_memory(address, safe=True) or 0, 0x20, safe=True)
+        if name and re.fullmatch(r"[a-z][a-z0-9_]{1,30}", name):
+            return name
+        return None
+
+    def resolve_subsys_names(self, root_csses):
+        """Return the name of each controller, which is css->ss->name (v3.11~) or the one of the cgroup_subsys
+        linked to cgroupfs_root->subsys_list (~v3.10)."""
+        ptrsize = current_arch.ptrsize
+        indexes = [index for index, css in enumerate(root_csses) if css]
+        offsets = (GefUtil.offsetof("cgroup_subsys_state", "ss"), GefUtil.offsetof("cgroup_subsys", "name"))
+        candidates = []
+        if None not in offsets:
+            candidates.append(offsets)
+        candidates += [(ptrsize, offset) for offset in range(0, 0x300, ptrsize)]
+        for css_ss, ss_name in candidates:
+            sses = [read_int_from_memory(root_csses[index] + css_ss, safe=True) for index in indexes]
+            if None in sses or len(set(sses)) != len(sses):
+                continue
+            if not all(KernelAddressHeuristicFinderUtil.is_kernel_space(ss) for ss in sses):
+                continue
+            names = [self.read_ss_name(ss + ss_name) for ss in sses]
+            if None not in names:
+                self.layout.update({"css_ss": css_ss, "ss_name": ss_name})
+                result = [None] * len(root_csses)
+                for index, name in zip(indexes, names):
+                    result[index] = name
+                return result
+        return self.resolve_subsys_list_names(len(root_csses))
+
+    def resolve_subsys_list_names(self, count):
+        """~v3.10: cgroupfs_root->subsys_list is just before top_cgroup, and it links the cgroup_subsys bound to the
+        hierarchy with sibling. cgroup_subsys->root is just before sibling, and name and subsys_id are before it."""
+        ptrsize = current_arch.ptrsize
+        entries = []
+        for hierarchy in self.hierarchies:
+            root = hierarchy["cgrp"]
+            nodes = self.read_list(root - ptrsize * 2, 0x40)
+            if nodes is None:
+                return None
+            for node in nodes:
+                if not 0 < root - (read_int_from_memory(node - ptrsize, safe=True) or 0) < 0x100:
+                    return None
+                entries.append((hierarchy, node))
+        if not entries:
+            return None
+        for name_offset in range(-ptrsize * 2, -0x100, -ptrsize):
+            names = [self.read_ss_name(node + name_offset) for _, node in entries]
+            if None in names:
+                continue
+            for id_offset in range(name_offset - 4, name_offset - 0x28, -4):
+                ids = [read_int32_from_memory(node + id_offset, safe=True) for _, node in entries]
+                if len(set(ids)) != len(ids):
+                    continue
+                if not all(subsys_id in hierarchy["bound"] for subsys_id, (hierarchy, _) in zip(ids, entries)):
+                    continue
+                self.layout.update({"ss_name": name_offset, "ss_id": id_offset})
+                result = [None] * count
+                for subsys_id, name in zip(ids, names):
+                    result[subsys_id] = name
+                return result
+        return None
+
+    def resolve_root(self):
+        """Set the layout of cgroup->root (after subsys[]), hierarchy_id (0 in the default or dummy hierarchy only)
+        and the name of a named hierarchy."""
+        ptrsize = current_arch.ptrsize
+        roots = [hierarchy["cgrp"] for hierarchy in self.hierarchies]
+        candidates = []
+        offset = GefUtil.offsetof("cgroup", "root")
+        if offset is not None:
+            candidates.append(offset)
+        start = 0
+        if self.layout["cgrp_subsys"] is not None:
+            start = self.layout["cgrp_subsys"] + self.layout["nr_subsys"] * ptrsize
+        candidates += range(start, start + 0x400, ptrsize)
+        for offset in candidates:
+            bases = [read_int_from_memory(root + offset, safe=True) or 0 for root in roots]
+            if len(set(bases)) != len(bases) or not all(0 < root - base < 0x2000 for root, base in zip(roots, bases)):
+                continue
+            if all(read_int_from_memory(entry["cgroup"] + offset, safe=True) == base
+                   for hierarchy, base in zip(self.hierarchies, bases) for entry in hierarchy["cgroups"]):
+                self.layout["cgrp_root"] = offset
+                break
+        else:
+            return None
+        has_image = KernelAddressHeuristicFinderUtil.get_kernel_image_range() is not None
+        for hierarchy, base in zip(self.hierarchies, bases):
+            hierarchy["base"] = base
+            hierarchy["static"] = has_image and KernelAddressHeuristicFinderUtil.is_in_kernel_image(base)
+
+        candidates = []
+        for struct_name in ["cgroup_root", "cgroupfs_root"]:
+            hierarchy_id = GefUtil.offsetof(struct_name, "hierarchy_id")
+            if hierarchy_id is not None:
+                candidates.append((hierarchy_id, GefUtil.offsetof(struct_name, "name")))
+                break
+        candidates += [(offset, None) for offset in range(0, ptrsize * 4, 4)]
+        for hierarchy_id, name in candidates:
+            ids = [read_int32_from_memory(base + hierarchy_id, safe=True) for base in bases]
+            if len(set(ids)) != len(ids) or ids.count(0) != 1 or not all(0 <= x < 0x10000 for x in ids):
+                continue
+            if has_image and not self.hierarchies[ids.index(0)]["static"]:
+                continue
+            others = [(hierarchy, x) for hierarchy, x in zip(self.hierarchies, ids) if not hierarchy["static"]]
+            if others and all(x == sum(1 << index for index in hierarchy["bound"]) for hierarchy, x in others):
+                continue
+            self.layout.update({"root_id": hierarchy_id, "root_name": name})
+            break
+        else:
+            if len(roots) != 1:
+                return None
+            self.layout.update({"root_id": None, "root_name": None})
+        if self.layout["root_name"] is None:
+            self.layout["root_name"] = self.find_root_name()
+        for hierarchy in self.hierarchies:
+            if self.layout["root_id"] is None:
+                hierarchy["id"] = 0
+            else:
+                hierarchy["id"] = read_int32_from_memory(hierarchy["base"] + self.layout["root_id"], safe=True)
+            hierarchy["name"] = ""
+            if self.layout["root_name"] is not None:
+                hierarchy["name"] = self.read_name(hierarchy["base"] + self.layout["root_name"], 0x40) or ""
+        return True
+
+    def find_root_name(self):
+        """Return the offset of the name of the hierarchy, which is found from a named hierarchy without controllers.
+        The name follows release_agent_path[PATH_MAX] after cgrp, or it is just before cgrp (v6.19~)."""
+        for hierarchy in self.hierarchies:
+            if hierarchy["bound"] or hierarchy["static"]:
+                continue
+            delta = hierarchy["cgrp"] - hierarchy["base"]
+            if delta > 0x1000:
+                start = delta - 0x80
+                data = read_memory(hierarchy["base"] + start, 0x80, safe=True)
+            else:
+                start = delta + 0x1000
+                data = read_memory(hierarchy["base"] + start, 0x1400, safe=True)
+            if data is None:
+                continue
+            match = re.search(rb"(?<=\x00)[A-Za-z0-9_.-]{1,63}\x00", data)
+            if match:
+                return start + match.start()
+        return None
+
+    def root_css_at(self, index):
+        return read_int_from_memory(self.init_cset + self.layout["cset_subsys"] + index * current_arch.ptrsize, safe=True)
+
+    def root_css(self, controller):
+        index = self.subsys_index.get(controller)
+        if index is None:
+            return None
+        return self.root_css_at(index)
+
+    def cpumask_words(self):
+        """Return the number of the words of a cpumask to read, which covers nr_cpu_ids."""
+        percpu = Kernel.per_cpu()
+        bits = current_arch.ptrsize * 8
+        return max(1, (max(percpu.nr_cpu_ids or 1, percpu.nr_cpus or 1) + bits - 1) // bits)
+
+    def get_css(self, cgroup, index):
+        """Return the css of the controller of `index` in `cgroup`, or None."""
+        css = read_int_from_memory(cgroup + self.layout["cgrp_subsys"] + index * current_arch.ptrsize, safe=True)
+        if css and read_int_from_memory(css, safe=True) == cgroup:
+            return css
+        return None
+
+    def resolve_css_size(self):
+        """Return sizeof(struct cgroup_subsys_state) and how it is found, or (None, None). Each controller places
+        its own members after the css. It is found from the root css of pids, the level of the cgroups and the root
+        css of cpu, in this order."""
+        ptrsize = current_arch.ptrsize
+        size = GefUtil.sizeof("cgroup_subsys_state")
+        if size:
+            return size, "debug info"
+        # pids: counter is just after the css, where it is aligned to 8 (i386 aligns the css to 4)
+        css = self.root_css("pids")
+        if css and is_64bit():
+            limit = self.find_pids_limit(css)
+            if limit is not None:
+                return limit - 8, "pids"
+        # struct cgroup (v4.5~): self, unsigned long flags, int id (~v5.4) and int level (the depth)
+        entries = [entry for hierarchy in self.hierarchies for entry in hierarchy["cgroups"]]
+        offsets = []
+        if self.layout.get("cgrp_children") is not None and any(entry["depth"] for entry in entries):
+            if all(read_int_from_memory(entry["cgroup"], safe=True) == entry["cgroup"] for entry in entries):
+                offsets = range(self.layout["cgrp_children"] + ptrsize * 2, 0x200, 4)
+        if offsets and Kernel.version() < "4.5" and self.layout.get("name") == "kernfs":
+            # v3.16~v4.4: self, unsigned long flags, int id (1 in the root), int populated_cnt and kn
+            offset = self.layout["cgrp_name"] - 8
+            for hierarchy in self.hierarchies:
+                ids = [read_int32_from_memory(entry["cgroup"] + offset, safe=True) for entry in hierarchy["cgroups"]]
+                if ids[0] != 1 or len(set(ids)) != len(ids):
+                    break
+            else:
+                return offset - ptrsize, "cgroup"
+            offsets = []
+        level = None
+        for offset in offsets:
+            if all(read_int32_from_memory(entry["cgroup"] + offset, safe=True) == entry["depth"] for entry in entries):
+                level = offset
+                break
+        # v4.14~: level (0 in the root), max_depth (INT_MAX), nr_descendants, nr_dying_descendants and
+        # max_descendants (INT_MAX), which are found without a child
+        roots = [hierarchy["cgrp"] for hierarchy in self.hierarchies]
+        if level is None and all(read_int_from_memory(root, safe=True) == root for root in roots):
+            for offset in range(ptrsize * 4, 0x300, 4):
+                values = [[read_int32_from_memory(root + offset + i * 4, safe=True) for i in [-1, 0, 3]] for root in roots]
+                if all(value == [0, 0x7fffffff, 0x7fffffff] for value in values):
+                    level = offset - 4
+                    break
+        if level is not None:
+            ids = [read_int32_from_memory(root + level - 4, safe=True) for root in roots]
+            if (is_64bit() and level % 8 == 4) or (is_32bit() and ids.count(1) == len(roots)):
+                return level - 4 - ptrsize, "cgroup"
+            return level - ptrsize, "cgroup"
+        # cpu: shares follows se and cfs_rq (sharing one allocation) after `int idle` (v6.12~), or `int idle` and
+        # the per-cpu cfs_rq
+        css = self.root_css("cpu")
+        words = None
+        if css:
+            words = self.read_words(css, 0x200)
+        for index in range(2, len(words or [])):
+            if words[index] not in self.NICE_0_LOADS:
+                continue
+            first, second = words[index - 2], words[index - 1]
+            if KernelAddressHeuristicFinderUtil.is_kernel_space(first) and 0 < second - first <= 0x10000:
+                if (second - first) % ptrsize == 0 and Kernel.version() < "6.12":
+                    return (index - 2) * ptrsize, "cpu"
+                if (second - first) % ptrsize == 0:
+                    return (index - 3) * ptrsize, "cpu"
+            if first == 0 and second and is_valid_addr(Kernel.per_cpu().addr_of(second, 0) or 0):
+                return (index - 2) * ptrsize, "cpu"
+        return None, None
+
+    def find_pids_limit(self, css):
+        """Return the offset of pids_cgroup->limit, which is PIDS_MAX (PID_MAX_LIMIT + 1) in the root."""
+        page_size = KernelAddressHeuristicFinder.consts().PAGE_SIZE
+        pids_max = [4 * 1024 * 1024 + 1, 0x8000 + 1, page_size * 8 + 1]
+        data = read_memory(css, 0x300, safe=True)
+        if data is None:
+            return None
+        # atomic64_t is aligned to 8 even on i386
+        for offset in range(0x10, len(data) - 7, 8):
+            if u64(data[offset:offset + 8]) in pids_max:
+                return offset
+        return None
+
+    def get_csses(self, controller):
+        """Return [(css, cgroup, css of the parent cgroup), ...] of `controller`."""
+        index = self.subsys_index.get(controller)
+        if index is None:
+            return []
+        csses = []
+        for hierarchy in self.hierarchies:
+            for entry in hierarchy["cgroups"]:
+                css = self.get_css(entry["cgroup"], index)
+                if css is None:
+                    continue
+                parent = None
+                if entry["parent"] is not None:
+                    parent = self.get_css(entry["parent"], index)
+                csses.append((css, entry["cgroup"], parent))
+        return csses
+
+    def read_bits(self, address, words):
+        bits = current_arch.ptrsize * 8
+        values = self.read_words(address, words * current_arch.ptrsize)
+        if values is None or len(values) < words:
+            return None
+        return {index * bits + bit for index, value in enumerate(values) for bit in range(bits) if (value >> bit) & 1}
+
+    def resolve_cpuset(self, css_size):
+        """Return the layout of struct cpuset: flags, cpus_allowed, mems_allowed, effective_cpus and effective_mems
+        (v3.17~). cpumask_var_t is a pointer if CONFIG_CPUMASK_OFFSTACK=y."""
+        ptrsize = current_arch.ptrsize
+        root = self.root_css("cpuset")
+        if not root:
+            return None
+        offsets = [GefUtil.offsetof("cpuset", member) for member in ["cpus_allowed", "mems_allowed"]]
+        if None not in offsets:
+            effective = [GefUtil.offsetof("cpuset", member) for member in ["effective_cpus", "effective_mems"]]
+            offstack = GefUtil.member_type_code("struct cpuset", "cpus_allowed") == gdb.TYPE_CODE_PTR
+            if offstack:
+                cpu_words = self.cpumask_words()
+            else:
+                cpu_words = GefUtil.member_type_size("struct cpuset", "cpus_allowed") // ptrsize
+            node_words = GefUtil.member_type_size("struct cpuset", "mems_allowed") // ptrsize
+            return {"offstack": offstack, "cpus": offsets[0], "mems": offsets[1], "effective_cpus": effective[0],
+                    "effective_mems": effective[1], "cpu_words": cpu_words, "node_words": node_words}
+        # CS_CPU_EXCLUSIVE and CS_MEM_EXCLUSIVE are set in top_cpuset (after CS_ONLINE in v3.9~v6.17)
+        if css_size is None:
+            start = ptrsize * 3
+            root_cgroup = self.hierarchies[0]["cgrp"]
+            if self.layout.get("cgrp_children") is not None and read_int_from_memory(root_cgroup, safe=True) == root_cgroup:
+                # after css->children, id, flags and serial_nr (v3.16~)
+                start = self.layout["cgrp_children"] + ptrsize * 2 + 16
+            candidates = range(start, 0x200, ptrsize)
+        else:
+            candidates = [css_size]
+        for flags in candidates:
+            value = read_int_from_memory(root + flags, safe=True)
+            if value is None or value >= 0x200 or (value & 3 != 3 and value & 6 != 6):
+                continue
+            layout = self.resolve_cpuset_masks(root, flags + ptrsize)
+            if layout is not None:
+                return layout
+        return None
+
+    def resolve_cpuset_masks(self, root, start):
+        """Return the layout of the masks of top_cpuset, where the number of the words of an inline cpumask and
+        nodemask is the smallest one that makes each mask a non-empty subset of the possible cpus or nodes."""
+        ptrsize = current_arch.ptrsize
+        bits = ptrsize * 8
+        possible = Kernel.per_cpu().get_cpu_masks().get("possible")
+        min_words = self.cpumask_words()
+        words = self.read_words(root + start, 0x800)
+        if words is None:
+            return None
+
+        def to_set(values):
+            return {index * bits + bit for index, value in enumerate(values) for bit in range(bits) if (value >> bit) & 1}
+
+        def is_cpus(cpus):
+            return cpus and (possible is None or cpus <= possible)
+
+        def is_mask_pointer(value):
+            return KernelAddressHeuristicFinderUtil.is_kernel_space(value) and is_cpus(self.read_bits(value, min_words))
+
+        for has_effective in [Kernel.version() >= "3.17", Kernel.version() < "3.17"]:
+            if is_mask_pointer(words[0]):
+                for node_words in [1, 2, 4, 8, 16]:
+                    mems = to_set(words[1:1 + node_words])
+                    if not mems:
+                        continue
+                    if not has_effective:
+                        return {"offstack": True, "cpus": start, "mems": start + ptrsize, "effective_cpus": None,
+                                "effective_mems": None, "cpu_words": min_words, "node_words": node_words}
+                    effective_mems = to_set(words[2 + node_words:2 + node_words * 2])
+                    if is_mask_pointer(words[1 + node_words]) and effective_mems and effective_mems <= mems:
+                        return {"offstack": True, "cpus": start, "mems": start + ptrsize,
+                                "effective_cpus": start + (1 + node_words) * ptrsize,
+                                "effective_mems": start + (2 + node_words) * ptrsize,
+                                "cpu_words": min_words, "node_words": node_words}
+                continue
+            for node_words in [1, 2, 4, 8, 16]:
+                for cpu_words in range(min_words, 0x81):
+                    end = cpu_words + node_words
+                    if not is_cpus(to_set(words[:cpu_words])) or not to_set(words[cpu_words:end]):
+                        continue
+                    layout = {"offstack": False, "cpus": start, "mems": start + cpu_words * ptrsize,
+                              "effective_cpus": None, "effective_mems": None,
+                              "cpu_words": cpu_words, "node_words": node_words}
+                    if not has_effective:
+                        return layout
+                    effective_cpus = to_set(words[end:end + cpu_words])
+                    effective_mems = to_set(words[end + cpu_words:end * 2])
+                    if is_cpus(effective_cpus) and effective_mems and effective_mems <= to_set(words[cpu_words:end]):
+                        layout["effective_cpus"] = start + end * ptrsize
+                        layout["effective_mems"] = start + (end + cpu_words) * ptrsize
+                        return layout
+        return None
+
+    def resolve_cpu(self, css_size):
+        """Return the layout of struct task_group: shares (CONFIG_FAIR_GROUP_SCHED=y), and the period and quota of
+        cfs_bandwidth (CONFIG_CFS_BANDWIDTH=y), which are 100ms and RUNTIME_INF in the root."""
+        root = self.root_css("cpu")
+        if not root:
+            return None
+        layout = {"shares": GefUtil.offsetof("task_group", "shares")}
+        layout["period"] = GefUtil.offsetof("task_group", "cfs_bandwidth.period")
+        layout["quota"] = GefUtil.offsetof("task_group", "cfs_bandwidth.quota")
+        dwarf = GefUtil.sizeof("task_group") is not None
+        # shares follows se and cfs_rq, after `int idle` (v6.12~v7.0), or `int idle` and cfs_rq
+        if not dwarf and css_size is not None:
+            for index in [2, 3]:
+                offset = css_size + current_arch.ptrsize * index
+                if read_int_from_memory(root + offset, safe=True) in self.NICE_0_LOADS:
+                    layout["shares"] = offset
+                    break
+        shares = None
+        if layout["shares"] is not None:
+            shares = read_int_from_memory(root + layout["shares"], safe=True)
+        if shares not in self.NICE_0_LOADS:
+            layout["shares"] = None
+        # SCHED_FIXEDPOINT_SHIFT of a 64-bit kernel (v4.7~)
+        layout["shift"] = 0
+        if shares == self.NICE_0_LOADS[1]:
+            layout["shift"] = 10
+        if dwarf:
+            return layout
+        data = read_memory(root, 0x800, safe=True)
+        if data is None:
+            return layout
+        if is_x86_32():
+            step = 4
+        else:
+            step = 8
+        start = (layout["shares"] or css_size or 0) + step - 1
+        for offset in range(start // step * step, len(data) - 15, step):
+            period, quota = u64(data[offset:offset + 8]), u64(data[offset + 8:offset + 16])
+            if period == self.DEFAULT_CFS_PERIOD and quota == self.RUNTIME_INF:
+                layout.update({"period": offset, "quota": offset + 8})
+                break
+        return layout
+
+    def resolve_memory(self, css_size):
+        """Return the layout of struct mem_cgroup: the usage and max of memory (page_counter, or res_counter ~v3.18).
+        The counter of a child points to the same one of the parent (unless use_hierarchy=0 of v1), and the root
+        follows mem_cgroup_id (v4.6~) otherwise. max is the last one of the first run of PAGE_COUNTER_MAX in the root,
+        and limit is the first one of RES_COUNTER_MAX."""
+        ptrsize = current_arch.ptrsize
+        root = self.root_css("memory")
+        if not root:
+            return None
+        page_counter_max = (1 << (ptrsize * 8 - 1)) - 1
+        if is_64bit():
+            page_counter_max //= KernelAddressHeuristicFinder.consts().PAGE_SIZE
+        layout = None
+        for counter, usage, limit in [("memory", "usage", "max"), ("memory", "count", "limit"), ("res", "usage", "limit")]:
+            offsets = [GefUtil.offsetof("mem_cgroup", counter + "." + member) for member in [usage, limit]]
+            if None not in offsets:
+                layout = {"usage": offsets[0], "max": offsets[1], "res_counter": counter == "res"}
+                layout["unlimited"] = page_counter_max
+                if layout["res_counter"]:
+                    layout["unlimited"] = read_int64_from_memory(root + offsets[1], safe=True)
+                return layout
+
+        usage = None
+        root_words = self.read_words(root, 0x400) or []
+        for css, _, parent in self.get_csses("memory"):
+            if parent is None:
+                continue
+            for index, word in enumerate(self.read_words(css, 0x400) or []):
+                if 0 < word - parent < index * ptrsize and index < len(root_words) and root_words[index] == 0:
+                    if usage is None or word - parent < usage:
+                        usage = word - parent
+        if usage is None and css_size is not None:
+            usage = css_size
+            if Kernel.version() >= "4.6" and read_int32_from_memory(root + css_size, safe=True) == 1:
+                usage += 8
+        if usage is None:
+            return None
+        data = read_memory(root + usage, 0x400, safe=True)
+        if data is None:
+            return None
+        words = slice_unpack(data, ptrsize)
+        for res_counter in [Kernel.version() < "3.19", Kernel.version() >= "3.19"]:
+            if res_counter:
+                for offset in range(8, len(data) - 7, 4):
+                    value = u64(data[offset:offset + 8])
+                    if value in [(1 << 63) - 1, (1 << 64) - 1]:
+                        return {"usage": usage, "max": usage + offset, "res_counter": True, "unlimited": value}
+                continue
+            for index in range(1, len(words)):
+                if words[index] != page_counter_max:
+                    continue
+                while index + 1 < len(words) and words[index + 1] == page_counter_max:
+                    index += 1
+                return {"usage": usage, "max": usage + index * ptrsize, "res_counter": False, "unlimited": page_counter_max}
+        return None
+
+    def resolve_pids(self, _css_size):
+        """Return the layout of struct pids_cgroup (v4.3~): counter and limit."""
+        root = self.root_css("pids")
+        if not root:
+            return None
+        page_size = KernelAddressHeuristicFinder.consts().PAGE_SIZE
+        offsets = [GefUtil.offsetof("pids_cgroup", member) for member in ["counter", "limit"]]
+        if None in offsets:
+            limit = self.find_pids_limit(root)
+            if limit is None:
+                return None
+            offsets = [limit - 8, limit]
+        unlimited = read_int64_from_memory(root + offsets[1], safe=True)
+        if unlimited not in [4 * 1024 * 1024 + 1, 0x8000 + 1, page_size * 8 + 1]:
+            return None
+        return {"counter": offsets[0], "limit": offsets[1], "unlimited": unlimited}
+
+    def is_device_item(self, item):
+        major, minor = read_int32_from_memory(item, safe=True), read_int32_from_memory(item + 4, safe=True)
+        device_type, access = read_int16_from_memory(item + 8, safe=True), read_int16_from_memory(item + 10, safe=True)
+        return None not in (major, minor) and device_type in self.DEVICE_TYPES and access in range(1, 8)
+
+    def resolve_devices(self, css_size):
+        """Return the layout of struct dev_cgroup: exceptions and behavior (v3.7~), or whitelist (~v3.6).
+        The list links dev_exception_item {u32 major, minor; short type, access; struct list_head list}.
+        behavior is {ALLOW, DENY} (~v3.9) or {NONE, ALLOW, DENY} (v3.10~), and the root allows."""
+        ptrsize = current_arch.ptrsize
+        root = self.root_css("devices")
+        if not root:
+            return None
+        layout = {"list": css_size, "behavior": None, "item": (12 + ptrsize - 1) // ptrsize * ptrsize}
+        for member in ["exceptions", "whitelist"]:
+            offset = GefUtil.offsetof("dev_cgroup", member)
+            if offset is not None:
+                layout.update({"list": offset, "behavior": GefUtil.offsetof("dev_cgroup", "behavior")})
+                break
+        else:
+            if css_size is not None and Kernel.version() >= "3.7":
+                layout["behavior"] = css_size + ptrsize * 2
+        if layout["list"] is None:
+            return None
+        if layout["behavior"] is not None:
+            allow = read_int32_from_memory(root + layout["behavior"], safe=True)
+            if allow not in [0, 1]:
+                return None
+            layout["deny"] = allow + 1
+        for css, _, _ in self.get_csses("devices"):
+            nodes = self.read_list(css + layout["list"])
+            if nodes is None or not all(self.is_device_item(node - layout["item"]) for node in nodes):
+                return None
+            if layout["behavior"] is not None and read_int32_from_memory(css + layout["behavior"], safe=True) not in [
+                    layout["deny"] - 1, layout["deny"]]:
+                return None
+        return layout
+
+    def resolve_freezer(self, css_size):
+        """Return the layout of struct freezer: state, which is the flags with CGROUP_FREEZER_ONLINE in the root
+        (v3.8~), or enum freezer_state (~v3.7)."""
+        root = self.root_css("freezer")
+        if not root:
+            return None
+        offset = GefUtil.offsetof("freezer", "state")
+        if offset is None:
+            offset = css_size
+        if offset is None:
+            return None
+        value = read_int32_from_memory(root + offset, safe=True)
+        if value not in [0, 1]:
+            return None
+        for css, _, _ in self.get_csses("freezer"):
+            state = read_int32_from_memory(css + offset, safe=True)
+            if value == 1 and (state is None or state > 0xf or state & 1 == 0):
+                return None
+            if value == 0 and state not in [0, 1, 2]:
+                return None
+        return {"state": offset, "flags": value == 1}
+
+    def get_settings(self, controller, css):
+        """Return the settings of `css` as a string, like the files of the controller."""
+        layout = self.controllers.get(controller)
+        if layout is None:
+            return None
+        items = []
+        if controller == "cpuset":
+            for name in ["cpus", "mems", "effective_cpus", "effective_mems"]:
+                offset = layout[name]
+                if offset is None:
+                    continue
+                if name.endswith("mems"):
+                    values = self.read_bits(css + offset, layout["node_words"])
+                elif layout["offstack"]:
+                    values = self.read_bits(read_int_from_memory(css + offset, safe=True) or 0, layout["cpu_words"])
+                else:
+                    values = self.read_bits(css + offset, layout["cpu_words"])
+                if values is None:
+                    items.append("{:s}=?".format(name))
+                    continue
+                # the bits from nr_cpu_ids of an inline cpumask are not initialized
+                nr_cpu_ids = Kernel.per_cpu().nr_cpu_ids
+                if nr_cpu_ids and name.endswith("cpus"):
+                    values = {x for x in values if x < nr_cpu_ids}
+                items.append("{:s}={:s}".format(name, KernelPerCpu.format_cpus(values)))
+        elif controller == "cpu":
+            if layout["shares"] is not None:
+                shares = (read_int_from_memory(css + layout["shares"], safe=True) or 0) >> layout["shift"]
+                items.append("shares={:d} weight={:d}".format(shares, (shares * 100 + 512) // 1024))
+            if layout["period"] is not None:
+                period = read_int64_from_memory(css + layout["period"], safe=True) or 0
+                quota = read_int64_from_memory(css + layout["quota"], safe=True) or 0
+                if quota == self.RUNTIME_INF:
+                    items.append("quota=max period={:d}".format(period // 1000))
+                else:
+                    items.append("quota={:d} period={:d}".format(quota // 1000, period // 1000))
+        elif controller == "memory":
+            if layout["res_counter"]:
+                usage = read_int64_from_memory(css + layout["usage"], safe=True)
+                limit = read_int64_from_memory(css + layout["max"], safe=True)
+                scale = 1
+            else:
+                usage = read_int_from_memory(css + layout["usage"], safe=True)
+                limit = read_int_from_memory(css + layout["max"], safe=True)
+                scale = KernelAddressHeuristicFinder.consts().PAGE_SIZE
+            if limit == layout["unlimited"]:
+                items.append("max=max")
+            else:
+                items.append("max={:d}".format((limit or 0) * scale))
+            items.append("current={:d}".format((usage or 0) * scale))
+        elif controller == "pids":
+            limit = read_int64_from_memory(css + layout["limit"], safe=True)
+            if limit == layout["unlimited"]:
+                items.append("max=max")
+            else:
+                items.append("max={:d}".format(limit or 0))
+            items.append("current={:d}".format(read_int64_from_memory(css + layout["counter"], safe=True) or 0))
+        elif controller == "devices":
+            exceptions = []
+            for node in self.read_list(css + layout["list"]) or []:
+                item = node - layout["item"]
+                numbers = []
+                for value in [read_int32_from_memory(item, safe=True), read_int32_from_memory(item + 4, safe=True)]:
+                    if value == 0xffffffff:
+                        numbers.append("*")
+                    else:
+                        numbers.append(str(value))
+                access = read_int16_from_memory(item + 10, safe=True) or 0
+                access = "".join(c for bit, c in [(2, "r"), (4, "w"), (1, "m")] if access & bit)
+                device_type = self.DEVICE_TYPES.get(read_int16_from_memory(item + 8, safe=True), "?")
+                exceptions.append("{:s} {:s}:{:s} {:s}".format(device_type, numbers[0], numbers[1], access))
+            if layout["behavior"] is None or read_int32_from_memory(css + layout["behavior"], safe=True) == layout["deny"]:
+                items.append("default=deny")
+            else:
+                items.append("default=allow")
+            items.append("exceptions={:s}".format(",".join(exceptions) or "none"))
+        elif controller == "freezer":
+            state = read_int32_from_memory(css + layout["state"], safe=True) or 0
+            if layout["flags"]:
+                # CGROUP_FROZEN, and CGROUP_FREEZING_SELF | CGROUP_FREEZING_PARENT
+                if state & 8:
+                    items.append("state=FROZEN")
+                elif state & 6:
+                    items.append("state=FREEZING")
+                else:
+                    items.append("state=THAWED")
+            else:
+                items.append("state={:s}".format({0: "THAWED", 1: "FREEZING", 2: "FROZEN"}.get(state, "?")))
+        return " ".join(items)
+
+    def walk_tree(self, hierarchy, cgroup, parent, depth, path, label, prefix):
+        hierarchy["cgroups"].append({"cgroup": cgroup, "parent": parent, "depth": depth, "path": path, "label": label})
+        self.paths[cgroup] = (hierarchy, path)
+        if self.layout.get("cgrp_children") is None:
+            return
+        children = self.get_children(cgroup)
+        if children is None:
+            self.warnings.append("The children of {:s} are incomplete".format(path))
+            return
+        entries = []
+        for child in children:
+            name = self.get_cgroup_name(child) or "?"
+            if not name.isprintable():
+                name = name.encode("unicode_escape").decode()
+            entries.append((name, child))
+        entries.sort()
+        for index, (name, child) in enumerate(entries):
+            if len(self.paths) >= self.MAX_CGROUPS:
+                self.warnings.append("Stopped at the cgroup limit ({:#x})".format(self.MAX_CGROUPS))
+                return
+            if index == len(entries) - 1:
+                tree, next_prefix = "\u2514\u2500\u2500 ", prefix + "    "
+            else:
+                tree, next_prefix = "\u251c\u2500\u2500 ", prefix + "\u2502   "
+            if read_int_from_memory(child + self.layout["cgrp_parent"], safe=True) != cgroup or child in self.paths:
+                self.warnings.append("{:#x} under {:s} is not linked consistently".format(child, path))
+                continue
+            self.walk_tree(hierarchy, child, cgroup, depth + 1, path.rstrip("/") + "/" + name, prefix + tree + name,
+                           next_prefix)
+        return
+
+    def initialize(self):
+        self.meta = []
+        self.warnings = []
+        self.kversion = Kernel.version()
+        if self.kversion is None:
+            self.meta.append(("err", "Could not find Linux kernel"))
+            return None
+        if Ksym.get_addr("cgroup_init") is None:
+            self.meta.append(("err", "cgroup is unavailable (CONFIG_CGROUPS=n)"))
+            return None
+
+        self.task_command = Kernel.task()
+        task_ready = self.task_command.initialize()
+        self.meta.extend(self.task_command.meta)
+        if not task_ready:
+            return None
+        self.tasks = self.task_command.get_tasks()
+        if not self.tasks:
+            self.meta.append(("err", "Could not list the tasks"))
+            return None
+
+        # task_struct->cgroups, and the roots linked to init_css_set
+        self.init_cset = self.resolve_task_cgroups([info["task"] for info in self.tasks])
+        if self.init_cset is None:
+            self.meta.append(("err", "Could not find task_struct->cgroups"))
+            return None
+        roots = self.get_links(self.init_cset)
+        layout = self.layout
+        self.meta.append(("info", "offsetof(task_struct, cgroups): {:#x}".format(layout["task_cgroups"])))
+        self.meta.append(("info", "init_css_set: {:#x}".format(self.init_cset)))
+        self.meta.append(("info", "offsetof(css_set, cgrp_links): {:#x}".format(layout["cset_links"])))
+        self.meta.append(("info", "the css_set and cgroup of a link from the node: {:+#x}, {:+#x}".format(
+            layout["link_cset"], layout["link_cgrp"])))
+        self.meta.append(("info", "Number of hierarchies: {:d}".format(len(roots))))
+
+        if "nr_subsys" not in layout:
+            self.layout.update({"cset_subsys": None, "cgrp_subsys": None, "nr_subsys": 0})
+            self.meta.append(("warn", "Could not find css_set->subsys[] (no controllers?)"))
+        else:
+            self.meta.append(("info", "offsetof(css_set, subsys): {:#x}".format(layout["cset_subsys"])))
+            self.meta.append(("info", "offsetof(cgroup, subsys): {:#x}".format(layout["cgrp_subsys"])))
+            self.meta.append(("info", "Number of controllers: {:d}".format(layout["nr_subsys"])))
+
+        if self.resolve_tree(roots):
+            self.meta.append(("info", "offsetof(cgroup, children): {:#x}".format(layout["cgrp_children"])))
+            self.meta.append(("info", "offsetof(cgroup, parent): {:#x}".format(layout["cgrp_parent"])))
+            pairs = [(child, root) for root in roots for child in self.get_children(root) or []]
+            if self.resolve_name(roots, pairs):
+                self.meta.append(("info", "name: {:s}, offset: {:#x}".format(layout["name"], layout["cgrp_name"])))
+                if layout["name"] == "kernfs":
+                    self.meta.append(("info", "offsetof(kernfs_node, parent): {:#x}".format(layout["kn_parent"])))
+                    self.meta.append(("info", "offsetof(kernfs_node, name): {:#x}".format(layout["kn_name"])))
+            else:
+                self.meta.append(("warn", "Could not find the name of a cgroup"))
+        else:
+            self.layout["cgrp_children"] = None
+            self.meta.append(("info", "cgroup->children: unknown (no cgroup has a child)"))
+
+        # the trees
+        self.paths = {}
+        self.hierarchies = []
+        for root in roots:
+            hierarchy = {"cgrp": root, "cgroups": [], "bound": [], "base": None, "static": False, "id": None, "name": ""}
+            self.walk_tree(hierarchy, root, None, 0, "/", "/", "")
+            for index in range(layout["nr_subsys"]):
+                if self.get_css(root, index):
+                    hierarchy["bound"].append(index)
+            self.hierarchies.append(hierarchy)
+
+        # the controllers
+        self.subsys_names = []
+        if layout["nr_subsys"]:
+            root_csses = [self.root_css_at(index) or 0 for index in range(layout["nr_subsys"])]
+            self.subsys_names = self.resolve_subsys_names(root_csses)
+            if self.subsys_names is None:
+                self.subsys_names = ["ss{:d}".format(index) for index in range(layout["nr_subsys"])]
+                self.meta.append(("warn", "Could not find the names of the controllers"))
+            elif "css_ss" in layout:
+                self.meta.append(("info", "offsetof(cgroup_subsys_state, ss): {:#x}".format(layout["css_ss"])))
+                self.meta.append(("info", "offsetof(cgroup_subsys, name): {:#x}".format(layout["ss_name"])))
+            self.meta.append(("info", "controllers: {:s}".format(", ".join(x or "-" for x in self.subsys_names))))
+        self.subsys_index = {name: index for index, name in enumerate(self.subsys_names) if name}
+
+        if self.resolve_root():
+            self.meta.append(("info", "offsetof(cgroup, root): {:#x}".format(layout["cgrp_root"])))
+            for key, member in [("root_id", "hierarchy_id"), ("root_name", "name")]:
+                if layout[key] is not None:
+                    self.meta.append(("info", "offsetof(cgroup_root, {:s}): {:#x}".format(member, layout[key])))
+        else:
+            for hierarchy in self.hierarchies:
+                hierarchy["id"] = None
+            self.meta.append(("warn", "Could not find cgroup->root"))
+        for hierarchy in self.hierarchies:
+            names = [self.subsys_names[index] for index in hierarchy["bound"]]
+            if hierarchy["id"] == 0:
+                names = []
+            if hierarchy["name"]:
+                names.append("name=" + hierarchy["name"])
+            if hierarchy["id"] is None:
+                hierarchy["label"] = "?:" + ",".join(names)
+            else:
+                hierarchy["label"] = "{:d}:{:s}".format(hierarchy["id"], ",".join(names))
+
+        css_size, source = self.resolve_css_size()
+        if css_size is None:
+            self.meta.append(("info", "sizeof(cgroup_subsys_state): unknown"))
+        else:
+            self.meta.append(("info", "sizeof(cgroup_subsys_state): {:#x} (from {:s})".format(css_size, source)))
+        self.controllers = {}
+        resolvers = {
+            "cpuset": self.resolve_cpuset,
+            "cpu": self.resolve_cpu,
+            "memory": self.resolve_memory,
+            "pids": self.resolve_pids,
+            "devices": self.resolve_devices,
+            "freezer": self.resolve_freezer,
+        }
+        for controller in self.CONTROLLERS:
+            if controller not in self.subsys_index:
+                continue
+            resolver = resolvers[controller]
+            try:
+                controller_layout = resolver(css_size)
+            except (gdb.MemoryError, OverflowError):
+                controller_layout = None
+            if controller_layout is None:
+                self.meta.append(("warn", "Could not resolve the layout of {:s}".format(controller)))
+                continue
+            self.controllers[controller] = controller_layout
+            for key, value in controller_layout.items():
+                if isinstance(value, int) and not isinstance(value, bool) and key not in ["unlimited", "shift", "deny"]:
+                    self.meta.append(("info", "{:s}: {:s}: {:#x}".format(controller, key, value)))
+        return True
+
+    def get_memberships(self):
+        """Return the css_set and the cgroups (None if the css_set is broken) of each task."""
+        memberships = []
+        for info in self.tasks:
+            cset = read_int_from_memory(info["task"] + self.layout["task_cgroups"], safe=True)
+            cgroups = None
+            if cset:
+                cgroups = self.get_links(cset)
+            memberships.append({"task": info["task"], "pid": info["pid"], "comm": info["comm"] or "?",
+                                "cset": cset, "cgroups": cgroups})
+        return memberships
+
+
+@register_command
+class KernelCgroupCommand(GenericCommand, BufferingOutput):
+    """Display the cgroup hierarchies, the cgroups of each task and the settings of the main controllers."""
+
+    _cmdline_ = "kcgroup"
+    _category_ = "06-g. Qemu-system/KGDB Cooperation - Linux Advanced"
+
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("-hh", "--help-simple", action="store_true", help="show help without ASCII diagram.")
+    parser.add_argument("--meta", action="store_true", help="display offset information.")
+    parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
+    parser.add_argument("-q", "--quiet", action="store_true", help="show result only.")
+    _syntax_ = parser.format_help()
+
+    _example_ = "\n".join([
+        "{0:s} -q",
+    ]).format(_cmdline_)
+
+    _note_ = "\n".join([
+        "This command requires CONFIG_RANDSTRUCT=n unless vmlinux with debug information is loaded.",
+        "The hierarchies are found from init_task->cgroups (init_css_set), which is linked to the root of each hierarchy.",
+        "Hierarchy 0 is the default hierarchy (cgroup v2) since v3.15, and the dummy hierarchy before it.",
+        "The settings of cpuset, cpu, memory, pids, devices and freezer are decoded. Only the processes are listed.",
+        "",
+        "Simplified cgroup structure:",
+        "",
+        "+-task_struct-+     +-css_set----+     +-cgrp_cset_link-+     +-cgroup---------+",
+        "| ...         |  +->| subsys[]   |--+  | cgrp           |---->| self (v3.16~)  |",
+        "| cgroups     |--+  | ...        |  |  | cset           |     |   cgroup       |",
+        "| cg_list     |     | cgrp_links |---->| cset_link      |     |   ss           |",
+        "| ...         |     | ...        |  |  | cgrp_link      |     |   sibling      |",
+        "+-------------+     +------------+  |  +----------------+     |   children     |--->sibling of the children",
+        "                                    |                         |   parent       |",
+        "                                    |                         | kn             |--->kernfs_node (name)",
+        "                                    |                         | subsys[]       |--->css of each controller",
+        "                                    |                         | root           |--->cgroup_root (hierarchy_id)",
+        "                                    |                         +----------------+",
+        "                                    |  +-cpuset, task_group, mem_cgroup, ...-+",
+        "                                    +->| css                                 |",
+        "                                       |   cgroup                            |",
+        "                                       |   ss                                |--->cgroup_subsys (name)",
+        "                                       | (the settings of the controller)    |",
+        "                                       +-------------------------------------+",
+        "",
+        "init_task->cgroups is init_css_set, which is linked to the root cgroup of every hierarchy.",
+        "Until v3.15, struct cgroup has sibling, children and parent itself, and the name is cgroup->kn (v3.15),",
+        "cgroup->name (v3.10~v3.14) or cgroup->dentry. Until v3.12, the link is cg_cgroup_link {cgrp_link_list, cgrp,",
+        "cg_link_list, cg}, and until v3.10, the controllers are linked to cgroupfs_root->subsys_list.",
+    ])
+
+    def dump_hierarchy(self, hierarchy):
+        counts = collections.Counter(cgroup for info in self.memberships for cgroup in info["cgroups"] or [])
+        base = hierarchy["base"] or hierarchy["cgrp"]
+        self.out.append(titlify("{:s}: (root: {:#x})".format(hierarchy["label"], base)))
+        width = max(len(entry["label"]) for entry in hierarchy["cgroups"])
+        fmt = "{:18s} {:>5s} {:" + str(max(width, 16)) + "s} {:s}"
+        if not self.args.quiet:
+            self.out.append(GefUtil.make_legend(fmt.format("cgroup", "tasks", "name", "controllers")))
+        for entry in hierarchy["cgroups"]:
+            names = [self.kcg.subsys_names[index] for index in range(self.kcg.layout["nr_subsys"])
+                     if self.kcg.get_css(entry["cgroup"], index)]
+            line = fmt.format("{:#018x}".format(entry["cgroup"]), str(counts[entry["cgroup"]]), entry["label"],
+                              ",".join(names) or "-")
+            self.out.append(line)
+        return
+
+    def dump_settings(self):
+        self.out.append(titlify("controller settings"))
+        width = max(len(entry["path"]) for hierarchy in self.kcg.hierarchies for entry in hierarchy["cgroups"])
+        fmt = "{:18s} {:>4s} {:10s} {:" + str(max(width, 16)) + "s} {:s}"
+        if not self.args.quiet:
+            self.out.append(GefUtil.make_legend(fmt.format("css", "hier", "controller", "path", "settings")))
+        for hierarchy in self.kcg.hierarchies:
+            for entry in hierarchy["cgroups"]:
+                for controller in self.kcg.CONTROLLERS:
+                    index = self.kcg.subsys_index.get(controller)
+                    if index is None:
+                        continue
+                    css = self.kcg.get_css(entry["cgroup"], index)
+                    if css is None:
+                        continue
+                    settings = self.kcg.get_settings(controller, css)
+                    if settings is None:
+                        settings = "(the layout is unknown)"
+                    hierarchy_id = hierarchy["label"].split(":")[0]
+                    self.out.append(fmt.format("{:#018x}".format(css), hierarchy_id, controller, entry["path"], settings))
+        return
+
+    def dump_tasks(self):
+        self.out.append(titlify("tasks"))
+        fmt = "{:18s} {:>7s} {:16s} {:18s} {:s}"
+        if not self.args.quiet:
+            self.out.append(GefUtil.make_legend(fmt.format("task", "pid", "comm", "css_set", "cgroups (id:path)")))
+        order = {hierarchy["cgrp"]: index for index, hierarchy in enumerate(self.kcg.hierarchies)}
+        for info in self.memberships:
+            items = []
+            for cgroup in info["cgroups"] or []:
+                hierarchy, path = self.kcg.paths.get(cgroup, (None, None))
+                if hierarchy is None:
+                    items.append((len(order), "?:{:#x}".format(cgroup or 0)))
+                else:
+                    items.append((order[hierarchy["cgrp"]], "{:s}:{:s}".format(hierarchy["label"].split(":")[0], path)))
+            cgroups = " ".join(text for _, text in sorted(items))
+            if info["cgroups"] is None:
+                cgroups = "(broken css_set)"
+            self.out.append("{:#018x} {:7d} {:16s} {:#018x} {:s}".format(info["task"], info["pid"], info["comm"],
+                                                                       info["cset"] or 0, cgroups))
+        return
+
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
+    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64"))
+    @Decorator.only_if_in_kernel_or_kpti_disabled
+    def do_invoke(self, args):
+        self.args = args
+        self.quiet_info("Wait for memory scan")
+        self.kcg = Kernel.cgroup()
+        ret = self.kcg.initialize()
+        if args.meta or not ret:
+            for func, line in Kernel.export_meta(self, self.kcg.meta):
+                func(line)
+        if not ret or args.meta:
+            return
+
+        self.memberships = self.kcg.get_memberships()
+        self.out = []
+        for message in self.kcg.warnings:
+            self.warn_add_out(message)
+        for hierarchy in self.kcg.hierarchies:
+            self.dump_hierarchy(hierarchy)
+        self.dump_settings()
+        self.dump_tasks()
         self.print_output(check_terminal_size=True)
         return
 

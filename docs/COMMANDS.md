@@ -11194,6 +11194,64 @@ supports IBT:
 - x86-64 only. On a kernel without CONFIG_CFI_CLANG there is no hash to read.
 ```
 
+## `kcgroup`
+
+Display the cgroup hierarchies, the cgroups of each task and the settings of the main controllers.
+
+
+### Syntax
+
+```text
+usage: kcgroup [-h] [-hh] [--meta] [-n] [-q]
+
+options:
+  -h, --help          show this help message and exit
+  -hh, --help-simple  show help without ASCII diagram.
+  --meta              display offset information.
+  -n, --no-pager      do not use the pager.
+  -q, --quiet         show result only.
+```
+
+### Examples
+
+```gdb
+kcgroup -q
+```
+
+### Notes
+
+```text
+This command requires CONFIG_RANDSTRUCT=n unless vmlinux with debug information is loaded.
+The hierarchies are found from init_task->cgroups (init_css_set), which is linked to the root of each hierarchy.
+Hierarchy 0 is the default hierarchy (cgroup v2) since v3.15, and the dummy hierarchy before it.
+The settings of cpuset, cpu, memory, pids, devices and freezer are decoded. Only the processes are listed.
+
+Simplified cgroup structure:
+
++-task_struct-+     +-css_set----+     +-cgrp_cset_link-+     +-cgroup---------+
+| ...         |  +->| subsys[]   |--+  | cgrp           |---->| self (v3.16~)  |
+| cgroups     |--+  | ...        |  |  | cset           |     |   cgroup       |
+| cg_list     |     | cgrp_links |---->| cset_link      |     |   ss           |
+| ...         |     | ...        |  |  | cgrp_link      |     |   sibling      |
++-------------+     +------------+  |  +----------------+     |   children     |--->sibling of the children
+                                    |                         |   parent       |
+                                    |                         | kn             |--->kernfs_node (name)
+                                    |                         | subsys[]       |--->css of each controller
+                                    |                         | root           |--->cgroup_root (hierarchy_id)
+                                    |                         +----------------+
+                                    |  +-cpuset, task_group, mem_cgroup, ...-+
+                                    +->| css                                 |
+                                       |   cgroup                            |
+                                       |   ss                                |--->cgroup_subsys (name)
+                                       | (the settings of the controller)    |
+                                       +-------------------------------------+
+
+init_task->cgroups is init_css_set, which is linked to the root cgroup of every hierarchy.
+Until v3.15, struct cgroup has sibling, children and parent itself, and the name is cgroup->kn (v3.15),
+cgroup->name (v3.10~v3.14) or cgroup->dentry. Until v3.12, the link is cg_cgroup_link {cgrp_link_list, cgrp,
+cg_link_list, cg}, and until v3.10, the controllers are linked to cgroupfs_root->subsys_list.
+```
+
 ## `kclock-source`
 
 Dump the clocksource list.
