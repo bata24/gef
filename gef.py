@@ -80178,6 +80178,11 @@ class Kernel:
         return KernelSkbuff.get_instance()
 
     @staticmethod
+    def block_device():
+        """Return the block device resolver."""
+        return KernelBlockDevice.get_instance()
+
+    @staticmethod
     def ipcs():
         """Return the System V IPC resolver."""
         return KernelIpcs.get_instance()
@@ -84485,10 +84490,17 @@ class KernelDevice:
     };
     """
 
+    MINORBITS = 20
+
     def __init__(self):
         self.meta = []
         self.devices = []
         return
+
+    @staticmethod
+    def split_devt(devt):
+        """Return (major, minor) of the kernel-internal dev_t (MAJOR() and MINOR() in include/linux/kdev_t.h)."""
+        return devt >> KernelDevice.MINORBITS, devt & ((1 << KernelDevice.MINORBITS) - 1)
 
     def initialize(self):
         """Collect [[device, name, devt, class_name], ...] of the devices which have devt."""
@@ -100324,42 +100336,29 @@ class KernelModuleLoadCommand(GenericCommand):
         return
 
 
-@register_command
-class KernelBlockDevicesCommand(GenericCommand, BufferingOutput):
-    """Display block device list."""
-
-    _cmdline_ = "kbdev"
-    _category_ = "06-g. Qemu-system/KGDB Cooperation - Linux Advanced"
-
-    parser = argparse.ArgumentParser(prog=_cmdline_)
-    parser.add_argument("--meta", action="store_true", help="display offset information.")
-    parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
-    parser.add_argument("-q", "--quiet", action="store_true", help="enable quiet mode.")
-    _syntax_ = parser.format_help()
-
-    _example_ = "\n".join([
-        "{0:s} -q",
-    ]).format(_cmdline_)
-
-    _note_ = "\n".join([
-        "This command requires CONFIG_RANDSTRUCT=n unless vmlinux with debug information is loaded.",
-        "",
-        "If the debug information has struct block_device, block devices are listed from the inodes of the bdev",
-        "pseudo filesystem. Otherwise, the bdev_cache dump, which does not include full slabs, is supplemented with",
-        "block devices referenced by mounted filesystems. If none are found since v5.11, devices_kset and",
-        "gendisk->part0 supply the samples. The others are found by the layout measured with them,",
-        "from the block devices in devices_kset (v5.11~) or from the inodes of the bdev pseudo filesystem (~v5.10).",
-        "",
-        "The name is built from bd_disk->disk_name and the partition number, in the same way as the kernel.",
-        "Before v5.11, bd_disk is set only while the block device is opened.",
-        "If it cannot be resolved, the name is guessed from the major/minor number and marked as `(guessed)`.",
-    ])
+class KernelBlockDevice:
+    """Resolve the block devices (`struct block_device`) and the disks (`struct gendisk`) they belong to."""
 
     BLOCK_EXT_MAJOR = 259
 
+    @classmethod
+    @Cache.cache_this_session(per_inferior=True, until_new_objfile=True)
+    def get_instance(cls):
+        return cls()
+
     def __init__(self):
-        super().__init__(complete=gdb.COMPLETE_LOCATION)
+        self.meta = []
+        # the lines shown even without --meta
+        self.errors = []
         return
+
+    def initialize(self):
+        self.meta = []
+        self.errors = []
+        if Kernel.version() is None:
+            self.meta.append(("err", "Could not find Linux kernel"))
+            return None
+        return True
 
     def initialize_dwarf(self):
         """Resolve the layout from the debug information. Return True if struct block_device is available."""
@@ -100385,10 +100384,10 @@ class KernelBlockDevicesCommand(GenericCommand, BufferingOutput):
                 if self.offset_bd_part is not None and self.offset_hd_partno is not None:
                     self.partno_kind = "part"
 
-        self.meta.append((self.quiet_info, "layout source: debug information"))
-        self.meta.append((self.quiet_info, "offsetof(block_device, bd_dev): {:#x}".format(self.offset_bd_dev)))
-        self.meta.append((self.quiet_info, "offsetof(block_device, bd_disk): {:#x}".format(self.offset_bd_disk)))
-        self.meta.append((self.quiet_info, "offsetof(gendisk, disk_name): {:#x}".format(self.offset_gendisk[3])))
+        self.meta.append(("info", "layout source: debug information"))
+        self.meta.append(("info", "offsetof(block_device, bd_dev): {:#x}".format(self.offset_bd_dev)))
+        self.meta.append(("info", "offsetof(block_device, bd_disk): {:#x}".format(self.offset_bd_disk)))
+        self.meta.append(("info", "offsetof(gendisk, disk_name): {:#x}".format(self.offset_gendisk[3])))
         return True
 
     def get_bdev_list_from_inodes(self):
@@ -100413,8 +100412,8 @@ class KernelBlockDevicesCommand(GenericCommand, BufferingOutput):
         fst = read_int_from_memory(sb + offset_s_type, safe=True)
         if not is_valid_addr(fst) or read_cstring_from_memory(read_int_from_memory(fst), safe=True) != "bdev":
             return None
-        self.meta.append((self.quiet_info, "blockdev_superblock: {:#x}".format(blockdev_superblock)))
-        self.meta.append((self.quiet_info, "offsetof(bdev_inode, vfs_inode): {:#x}".format(offset_vfs_inode)))
+        self.meta.append(("info", "blockdev_superblock: {:#x}".format(blockdev_superblock)))
+        self.meta.append(("info", "offsetof(bdev_inode, vfs_inode): {:#x}".format(offset_vfs_inode)))
 
         head = sb + offset_s_inodes
         bdevs = []
@@ -100422,7 +100421,7 @@ class KernelBlockDevicesCommand(GenericCommand, BufferingOutput):
         current = read_int_from_memory(head)
         while current != head:
             if current in seen or not is_valid_addr(current):
-                self.meta.append((self.quiet_warn, "Stopped at broken s_inodes list: {:#x}".format(current)))
+                self.meta.append(("warn", "Stopped at broken s_inodes list: {:#x}".format(current)))
                 break
             seen.add(current)
             bdevs.append(current - offset_i_sb_list - offset_vfs_inode)
@@ -100430,26 +100429,28 @@ class KernelBlockDevicesCommand(GenericCommand, BufferingOutput):
         return bdevs
 
     def get_bdev_list(self):
-        allocator = Kernel.get_slab_type()
-        if allocator == "SLUB":
-            ret = gdb.execute("slub-dump --quiet --no-pager -vv bdev_cache", to_string=True)
-        elif allocator == "SLUB_TINY":
-            ret = gdb.execute("slub-tiny-dump --quiet --no-pager bdev_cache", to_string=True)
-        elif allocator == "SLAB":
-            ret = gdb.execute("slab-dump --quiet --no-pager bdev_cache", to_string=True)
-        else:
-            self.quiet_err("Unsupported: SLOB, Unknown allocator")
+        allocator, caches = Kernel.get_slab_caches(["bdev_cache"])
+        if allocator not in ["SLUB", "SLUB_TINY", "SLAB"]:
+            self.errors.append(("err", "Unsupported: SLOB, Unknown allocator"))
             return None
 
-        bdevs = []
-        for line in ret.splitlines():
-            line = Color.remove_color(line)
-            r = re.search(r"(0x\S+) \(in-use\)", line)
-            if not r:
-                continue
-            bdev = int(r.group(1), 16)
-            bdevs.append(bdev)
-        return bdevs
+        # the in-use objects of the slab pages, in the order that `slub-dump -vv` and the others show
+        layouts = []
+        for cache in caches or []:
+            if allocator == "SLUB":
+                for page, freelist_fastpath in KernelSlub.get_cache_pages(cache):
+                    if is_valid_addr(page["address"]) and page["virt_addr"] is not None:
+                        freelist_sheaf = Kernel.slub().get_page_sheaf_objects(cache, page)
+                        layouts.append(KernelSlub.get_page_layout(cache, page, freelist_fastpath, freelist_sheaf))
+            elif allocator == "SLUB_TINY":
+                for page in KernelSlubTiny.get_cache_pages(cache):
+                    if is_valid_addr(page["address"]) and page["virt_addr"] is not None:
+                        layouts.append(KernelSlubTiny.get_page_layout(cache, page))
+            elif allocator == "SLAB":
+                for page in KernelSlab.get_cache_pages(cache):
+                    if is_valid_addr(page["address"]):
+                        layouts.append(KernelSlab.get_page_layout(cache, page))
+        return [chunk for layout in layouts for _, chunk, state, _ in layout if state == "in-use"]
 
     def get_mounted_bdev_candidates(self):
         """Get bdevs which the slab allocator lists cannot reach, as [(bdev, s_dev), ...] not yet verified.
@@ -100474,7 +100475,7 @@ class KernelBlockDevicesCommand(GenericCommand, BufferingOutput):
         except gdb.MemoryError:
             ret = None
         if not ret:
-            self.meta.append((self.quiet_warn, "Could not resolve super_block; mounted block devices are not supplemented"))
+            self.meta.append(("warn", "Could not resolve super_block; mounted block devices are not supplemented"))
             return []
 
         ptrsize = current_arch.ptrsize
@@ -100493,7 +100494,7 @@ class KernelBlockDevicesCommand(GenericCommand, BufferingOutput):
             while s_instances and s_instances not in seen and is_valid_addr(s_instances):
                 seen.add(s_instances)
                 s_dev = read_int32_from_memory(s_instances - kfs.offset_s_instances + kfs.offset_s_dev)
-                if s_dev >> 20:
+                if KernelDevice.split_devt(s_dev)[0]:
                     for distance in distances:
                         bdev = read_int_from_memory(s_instances - ptrsize * distance)
                         if is_valid_addr(bdev):
@@ -100527,7 +100528,7 @@ class KernelBlockDevicesCommand(GenericCommand, BufferingOutput):
         return self.gendisk_cache[gendisk]
 
     def is_disk_of(self, gd, dev):
-        major, minor = dev >> 20, dev & ((1 << 20) - 1)
+        major, minor = KernelDevice.split_devt(dev)
         if major == 0:
             return False
         if gd[0] == major and gd[1] <= minor < gd[1] + max(gd[2], 1):
@@ -100621,16 +100622,16 @@ class KernelBlockDevicesCommand(GenericCommand, BufferingOutput):
             else:
                 self.partno_kind, self.offset_bd_partno = "flags", self.offset_bd_dev - 4
 
-        self.meta.append((self.quiet_info, "layout source: heuristic"))
-        self.meta.append((self.quiet_info, "offsetof(block_device, bd_dev): {:#x}".format(self.offset_bd_dev)))
+        self.meta.append(("info", "layout source: heuristic"))
+        self.meta.append(("info", "offsetof(block_device, bd_dev): {:#x}".format(self.offset_bd_dev)))
         if self.offset_bd_disk is None:
-            self.meta.append((self.quiet_warn, "Could not find offsetof(block_device, bd_disk)"))
+            self.meta.append(("warn", "Could not find offsetof(block_device, bd_disk)"))
         else:
-            self.meta.append((self.quiet_info, "offsetof(block_device, bd_disk): {:#x}".format(self.offset_bd_disk)))
+            self.meta.append(("info", "offsetof(block_device, bd_disk): {:#x}".format(self.offset_bd_disk)))
         return []
 
     def get_partno(self, bdev, dev, gd):
-        major, minor = dev >> 20, dev & ((1 << 20) - 1)
+        major, minor = KernelDevice.split_devt(dev)
         if gd[0] == major and gd[1] <= minor < gd[1] + max(gd[2], 1):
             return minor - gd[1]
         if self.partno_kind == "u8":
@@ -100920,9 +100921,11 @@ class KernelBlockDevicesCommand(GenericCommand, BufferingOutput):
         dev = read_int32_from_memory(bdev + self.offset_bd_dev, safe=True)
         if dev is None:
             return 0, 0, 0
-        return dev, dev >> 20, dev & ((1 << 20) - 1)
+        major, minor = KernelDevice.split_devt(dev)
+        return dev, major, minor
 
     def get_bdevs(self):
+        """Return the list of the block devices found, which is empty if none is found (never None)."""
         self.gendisk_cache = {}
         self.device_names = {}
 
@@ -100930,10 +100933,10 @@ class KernelBlockDevicesCommand(GenericCommand, BufferingOutput):
         if dwarf:
             bdevs = self.get_bdev_list_from_inodes()
             if bdevs is not None:
-                self.meta.append((self.quiet_info, "bdev source: blockdev_superblock->s_inodes"))
+                self.meta.append(("info", "bdev source: blockdev_superblock->s_inodes"))
                 return bdevs
 
-        self.meta.append((self.quiet_info, "bdev source: bdev_cache and mounted filesystems"))
+        self.meta.append(("info", "bdev source: bdev_cache and mounted filesystems"))
         bdevs = self.get_bdev_list() or []
         candidates = self.get_mounted_bdev_candidates()
         devices = []
@@ -100942,7 +100945,8 @@ class KernelBlockDevicesCommand(GenericCommand, BufferingOutput):
             if kdev.initialize():
                 devices = kdev.devices
             else:
-                self.meta.extend(Kernel.export_meta(self, kdev.meta, demote_err=True))
+                # the devices only supplement the others, so their errors are demoted to warnings
+                self.meta.extend(("warn" if level == "err" else level, line) for level, line in kdev.meta)
         samples = bdevs + [bdev for bdev, _ in candidates]
         if not dwarf:
             bdevs.extend(self.resolve_layout(samples, devices))
@@ -100978,7 +100982,7 @@ class KernelBlockDevicesCommand(GenericCommand, BufferingOutput):
                 if samples:
                     break
         if samples:
-            self.meta.append((self.quiet_info, "bdev samples: devices_kset and gendisk->part0"))
+            self.meta.append(("info", "bdev samples: devices_kset and gendisk->part0"))
         return list(samples)
 
     def get_bdev_list_from_bd_inode(self, samples):
@@ -101038,7 +101042,7 @@ class KernelBlockDevicesCommand(GenericCommand, BufferingOutput):
                 if bdevs is not None and (best is None or len(bdevs) > len(best[1])):
                     best = (offset, bdevs)
             if best:
-                self.meta.append((self.quiet_info, "offsetof(inode, i_sb_list): {:#x}".format(best[0])))
+                self.meta.append(("info", "offsetof(inode, i_sb_list): {:#x}".format(best[0])))
                 return best[1]
         return []
 
@@ -101058,10 +101062,10 @@ class KernelBlockDevicesCommand(GenericCommand, BufferingOutput):
             for device in block_devices.get(self.get_dev_num(bdev)[0], []):
                 deltas[device - bdev] = deltas.get(device - bdev, 0) + 1
         if not deltas:
-            self.meta.append((self.quiet_warn, "Could not find offsetof(block_device, bd_device)"))
+            self.meta.append(("warn", "Could not find offsetof(block_device, bd_device)"))
             return []
         delta = max(deltas, key=deltas.get)
-        self.meta.append((self.quiet_info, "offsetof(block_device, bd_device): {:#x}".format(delta)))
+        self.meta.append(("info", "offsetof(block_device, bd_device): {:#x}".format(delta)))
 
         bdevs = []
         for devt, nodes in block_devices.items():
@@ -101072,27 +101076,8 @@ class KernelBlockDevicesCommand(GenericCommand, BufferingOutput):
         self.device_names = {device - delta: name for device, name, devt, class_name in devices if class_name == "block"}
         return bdevs
 
-    @Decorator.parse_args
-    @Decorator.only_if_gdb_running
-    @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware"))
-    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64"))
-    @Decorator.only_if_in_kernel_or_kpti_disabled
-    def do_invoke(self, args):
-        self.quiet_info("Wait for memory scan")
-
-        if Kernel.version() is None:
-            self.quiet_err("Could not find Linux kernel")
-            return
-
-        self.meta = []
-        bdevs = self.get_bdevs()
-        if args.meta or bdevs is None:
-            for func, line in self.meta:
-                func(line)
-        if bdevs is None or args.meta:
-            return
-
-        # ignore bdev if major is 0
+    def get_bdev_infos(self, bdevs):
+        """Return [[major, minor, bdev, gendisk, name], ...] of `bdevs`, ignoring the bdevs whose major is 0."""
         bdevs_with_info = []
         for bdev in set(bdevs):
             dev, major, minor = self.get_dev_num(bdev)
@@ -101114,8 +101099,319 @@ class KernelBlockDevicesCommand(GenericCommand, BufferingOutput):
             if entry[4] is None and bdev in self.device_names:
                 entry[4] = "/dev/" + self.device_names[bdev]
             if entry[4] is None:
-                entry[4] = KernelBlockDevicesCommand.get_bdev_name(major, minor) + " (guessed)"
+                entry[4] = KernelBlockDevice.get_bdev_name(major, minor) + " (guessed)"
+        return bdevs_with_info
 
+
+@register_command
+class KernelBlockDevicesCommand(GenericCommand, BufferingOutput):
+    """Display block device list."""
+
+    _cmdline_ = "kbdev"
+    _category_ = "06-g. Qemu-system/KGDB Cooperation - Linux Advanced"
+
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("--meta", action="store_true", help="display offset information.")
+    parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
+    parser.add_argument("-q", "--quiet", action="store_true", help="enable quiet mode.")
+    _syntax_ = parser.format_help()
+
+    _example_ = "\n".join([
+        "{0:s} -q",
+    ]).format(_cmdline_)
+
+    _note_ = "\n".join([
+        "This command requires CONFIG_RANDSTRUCT=n unless vmlinux with debug information is loaded.",
+        "",
+        "If the debug information has struct block_device, block devices are listed from the inodes of the bdev",
+        "pseudo filesystem. Otherwise, the bdev_cache dump, which does not include full slabs, is supplemented with",
+        "block devices referenced by mounted filesystems. If none are found since v5.11, devices_kset and",
+        "gendisk->part0 supply the samples. The others are found by the layout measured with them,",
+        "from the block devices in devices_kset (v5.11~) or from the inodes of the bdev pseudo filesystem (~v5.10).",
+        "",
+        "The name is built from bd_disk->disk_name and the partition number, in the same way as the kernel.",
+        "Before v5.11, bd_disk is set only while the block device is opened.",
+        "If it cannot be resolved, the name is guessed from the major/minor number and marked as `(guessed)`.",
+    ])
+
+    def __init__(self):
+        super().__init__(complete=gdb.COMPLETE_LOCATION)
+        return
+
+    @staticmethod
+    def get_bdev_name(major, minor):
+        # https://www.kernel.org/doc/Documentation/admin-guide/devices.txt
+        # https://github.com/lrs-lang/lib/blob/master/src/dev/lib.rs
+        dev_name_list = {
+            0: "???",
+            4: "/dev/root",
+            7: "/dev/loop{:d}",
+            9: "/dev/md{:d}",
+            11: "/dev/scd{0:d} (sr{0:d})",
+            12: "/dev/dos_cd{:d}",
+            15: "/dev/sonycd",
+            16: "/dev/gscd",
+            17: "/dev/optcd",
+            18: "/dev/sjcd",
+            20: "/dev/hitcd",
+            23: "/dev/mcd",
+            24: "/dev/cdu535",
+            29: "/dev/aztcd",
+            30: "/dev/cm205cd",
+            32: "/dev/cm206cd",
+            35: "/dev/slram",
+            37: "/dev/z2ram",
+            41: "/dev/bpcd",
+            43: "/dev/nb{:d}",
+            46: "/dev/pcd{:d}",
+            47: "/dev/pf{:d}",
+            59: "/dev/pda{:d}",
+            92: "/dev/ppdd{:d}",
+            97: "/dev/pktcdvd",
+            99: "/dev/jsfd",
+            103: "/dev/audit",
+            115: "/dev/nwfs/v{:d}",
+            147: "/dev/drbd{:d}",
+            152: "/dev/etherd/{:d}",
+            199: "/dev/vx/dsk/*/*",
+            201: "/dev/vx/dmp/*/*",
+            258: "/dev/blockrom{:d}",
+        }
+
+        if major in dev_name_list:
+            return dev_name_list[major].format(minor)
+
+        def common_pattern(kind_sep, kind_max, devstr, sym_start="a"):
+            kind = minor // kind_sep
+            num = minor % kind_sep
+            if kind < kind_max:
+                dev = "/dev/{:s}{:s}".format(devstr, chr(ord(sym_start) + kind))
+                if num:
+                    dev = "{:s}{:d}".format(dev, num)
+                return dev
+            return "???"
+
+        def common_pattern_num_p(kind_sep, kind_max, devstr, kind_offset=0):
+            kind = minor // kind_sep
+            num = minor % kind_sep
+            if kind_max is None or kind < kind_max:
+                dev = "/dev/{:s}{:d}".format(devstr, kind + kind_offset)
+                if num:
+                    dev = "{:s}p{:d}".format(dev, num)
+                return dev
+            return "???"
+
+        def iterate_pattern(kind_sep, kind_max, dev_str, sym_start):
+
+            def gen():
+                cs = "abcdefghijklmnopqrstuvwxyz"
+                yield from cs
+                for c1 in cs:
+                    for c2 in cs:
+                        yield c1 + c2
+                return
+
+            name_list = list(gen())
+            kind = minor // kind_sep
+            num = minor % kind_sep
+            if kind < (kind_max or len(name_list)):
+                offset = name_list.index(sym_start)
+                dev = "/dev/{:s}{:s}".format(dev_str, name_list[offset + kind])
+                if num:
+                    dev = "{:s}{:d}".format(dev, num)
+                return dev
+            return "???"
+
+        if major == 1:
+            if 0 <= minor < 250:
+                return "/dev/ram{:d}".format(minor)
+            elif minor == 250:
+                return "/dev/initrd"
+        elif major == 2:
+            if 0 <= minor < 128:
+                num = minor % 4
+            elif 128 <= minor < 256:
+                num = 4 + minor % 4
+            else:
+                return "???"
+            fd_type = (minor % 128) & ~0b11
+            type_dic = {
+                0: "",
+                4: "d360",
+                8: "h1200",
+                12: "u360",
+                16: "u720",
+                20: "h360",
+                24: "h720",
+                28: "u1440",
+                32: "u2880",
+                36: "CompaQ",
+                40: "h1440",
+                44: "u1680",
+                48: "h410",
+                52: "u820",
+                56: "h1476",
+                60: "u1722",
+                64: "h420",
+                68: "u830",
+                72: "h1494",
+                76: "u1743",
+                80: "h880",
+                84: "u1040",
+                88: "u1120",
+                92: "h1600",
+                96: "u1760",
+                100: "u1920",
+                104: "u3200",
+                108: "u3520",
+                112: "u3840",
+                116: "u1840",
+                120: "u800",
+                124: "u1600",
+            }
+            if fd_type in type_dic:
+                return "/dev/fd{:d}{:s}".format(num, type_dic[fd_type])
+        elif major == 3:
+            return common_pattern(64, 2, "hd", sym_start="a")
+        elif major == 8:
+            return iterate_pattern(16, 16, "sd", sym_start="a")
+        elif major == 13:
+            return common_pattern(64, 4, "xd")
+        elif major == 14:
+            return common_pattern(64, 4, "dos_hd")
+        elif major == 19:
+            if 0 <= minor < 8:
+                return "/dev/double{:d}".format(minor)
+            elif 128 <= minor < 136:
+                return "/dev/cdouble{:d}".format(minor - 128)
+        elif major == 21:
+            return common_pattern(64, 2, "mfm")
+        elif major == 22:
+            return common_pattern(64, 2, "hd", sym_start="c")
+        elif 25 <= major < 28:
+            if 0 <= minor < 4:
+                return "/dev/sbpcd{:d}".format(minor + (major - 25) * 4)
+        elif major == 28: # 28 are duplicates
+            if is_m68k():
+                return common_pattern(16, 16, "ad")
+            else:
+                if 0 <= minor < 4:
+                    return "/dev/sbpcd{:d}".format(minor + (major - 25) * 4)
+        elif major == 31:
+            if 0 <= minor < 8:
+                return "/dev/rom{:d}".format(minor)
+            elif 8 <= minor < 16:
+                return "/dev/rrom{:d}".format(minor - 8)
+            elif 16 <= minor < 24:
+                return "/dev/flash{:d}".format(minor - 16)
+            elif 24 <= minor < 32:
+                return "/dev/rflash{:d}".format(minor - 24)
+        elif 33 <= major < 35:
+            return common_pattern(64, 2, "hd", sym_start=["e", "g"][major - 33])
+        elif major == 36:
+            return common_pattern(64, 4, "ed")
+        elif major == 40:
+            if minor == 0:
+                return "/dev/eza"
+            elif 1 <= minor < 64:
+                return "/dev/eza{:d}".format(minor)
+        elif major == 44:
+            return common_pattern(16, 16, "ftl")
+        elif major == 45:
+            return common_pattern(16, 4, "pd")
+        elif 48 <= major < 56:
+            return common_pattern_num_p(8, 32, "rd/c{:d}d".format(major - 48))
+        elif 56 <= major < 58:
+            return common_pattern(64, 2, "hd", sym_start=["i", "k"][major - 56])
+        elif major == 64:
+            if minor == 0:
+                return "/dev/scramdisk/master"
+            elif 1 <= minor:
+                return "/dev/scramdisk/{:d}".format(minor)
+        elif 65 <= major < 72:
+            return iterate_pattern(16, 16, "sd", sym_start=["q", "ag", "aw", "bm", "cc", "cs", "di"][major - 65])
+        elif 72 <= major < 80:
+            return common_pattern_num_p(16, 16, "ida/c{:d}d".format(major - 72))
+        elif 80 <= major < 88:
+            return iterate_pattern(16, 16, "i2o/hd", sym_start=["a", "q", "ag", "aw", "bm", "cc", "cs", "di"][major - 80])
+        elif 88 <= major < 92:
+            return common_pattern(64, 2, "hd", sym_start=["m", "o", "q", "s"][major - 88])
+        elif major == 93:
+            return common_pattern(16, 16, "nftl")
+        elif major == 94:
+            return common_pattern(4, 26, "dasd")
+        elif major == 96:
+            return common_pattern(16, 16, "inftl")
+        elif major == 98:
+            return common_pattern(16, 26, "ubd")
+        elif major == 101:
+            return common_pattern_num_p(16, 16, "amiraid/ar")
+        elif major == 102:
+            return common_pattern(16, 16, "cbd/")
+        elif 104 <= major < 112:
+            return common_pattern_num_p(16, 16, "cciss/c{:d}d".format(major - 104))
+        elif major == 112:
+            return iterate_pattern(8, 64, "iseries/vd", sym_start="a")
+        elif major == 113:
+            return iterate_pattern(1, None, "iseries/vcd", sym_start="a")
+        elif major == 114:
+            return common_pattern_num_p(16, 16, "ataraid/d")
+        elif major == 116:
+            return common_pattern_num_p(16, 16, "umem/d")
+        elif major == 117:
+            if minor == 0:
+                return "/dev/evms/block_device"
+            elif 1 <= minor < 128:
+                return "/dev/evms/legacyname{:d}".format(minor)
+            elif 128 <= minor < 256:
+                return "/dev/evms/EVMSname{:d}".format(256 - minor)
+        elif 128 <= major < 136:
+            return iterate_pattern(16, 16, "sd", sym_start=["dy", "eo", "fe", "fu", "gk", "ha", "hq", "ig"][major - 128])
+        elif 136 <= major < 144:
+            return common_pattern_num_p(16, 16, "rd/c{:d}d".format(major - 136 + 8))
+        elif major == 153:
+            return common_pattern_num_p(16, 16, "emd/")
+        elif 160 <= major < 162:
+            return common_pattern_num_p(32, 8, "carmel/", kind_offset=(major - 160) * 8) # codespell:ignore
+        elif major == 179:
+            return common_pattern_num_p(8, None, "mmcblk")
+        elif major == 180:
+            return common_pattern(8, 26, "ub")
+        elif major == 202:
+            return common_pattern(16, 16, "xvd")
+        elif 240 <= major < 255: # LOCAL/EXPERIMENTAL USE, but maybe this is virtio when qemu-system
+            return common_pattern(16, 16, "vd")
+        elif major == 256:
+            return common_pattern(16, 16, "rfd")
+        elif major == 257:
+            return common_pattern(8, 8, "ssfdc")
+        return "???"
+
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware"))
+    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64"))
+    @Decorator.only_if_in_kernel_or_kpti_disabled
+    def do_invoke(self, args):
+        self.quiet_info("Wait for memory scan")
+
+        kbdev = Kernel.block_device()
+        if not kbdev.initialize():
+            for func, line in Kernel.export_meta(self, kbdev.meta):
+                func(line)
+            return
+
+        # every source only supplements the others, so get_bdevs() always returns a list. If nothing is found,
+        # it is reported below, and the sources that failed are in kbdev.errors and kbdev.meta
+        bdevs = kbdev.get_bdevs()
+        for func, line in Kernel.export_meta(self, kbdev.errors):
+            func(line)
+        if args.meta:
+            for func, line in Kernel.export_meta(self, kbdev.meta):
+                func(line)
+            return
+
+        bdevs_with_info = kbdev.get_bdev_infos(bdevs)
         if not bdevs_with_info:
             if bdevs:
                 self.quiet_err("Could not find any bdev (after filtering major == 0)")
