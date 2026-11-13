@@ -80298,6 +80298,11 @@ class Kernel:
         return KernelSlabContains.get_instance()
 
     @staticmethod
+    def slab_virtual():
+        """Return the CONFIG_SLAB_VIRTUAL resolver."""
+        return KernelSlabVirtual.get_instance()
+
+    @staticmethod
     def page():
         """Return the struct page resolver."""
         return KernelPage.get_instance()
@@ -204509,75 +204514,17 @@ class PhysToPageCommand(PageCommand, BufferingOutput):
         return
 
 
-@register_command
-class SlabVirtualCommand(GenericCommand):
-    """Convert between slab-virtual addresses and page addresses."""
+class KernelSlabVirtual:
+    """Resolve the layout of CONFIG_SLAB_VIRTUAL and convert slab-virtual addresses."""
 
-    _cmdline_ = "slab-virtual"
-    _category_ = "06-d. Qemu-system/KGDB Cooperation - Virt/Phys/Page"
+    @classmethod
+    @Cache.cache_this_session(per_inferior=True, until_new_objfile=True)
+    def get_instance(cls):
+        return cls()
 
-    parser = argparse.ArgumentParser(prog=_cmdline_)
-    modes = ["to_virt", "to_page", "from_virt", "from_page"]
-    parser.add_argument("mode", choices=modes, nargs="?", help="conversion mode.")
-    parser.add_argument("address", metavar="ADDRESS", nargs="?", type=AddressUtil.parse_address,
-                        help="the address to convert.")
-    parser.add_argument("--meta", action="store_true", help="display offset information.")
-    parser.add_argument("-r", "--rescan", action="store_true", help="do not use cache.")
-    parser.add_argument("-q", "--quiet", action="store_true", help="quiet execution.")
-    _syntax_ = parser.format_help()
-
-    _note_ = "\n".join([
-        "This command works only in CONFIG_SLAB_VIRTUAL=y (implemented at https://github.com/thejh/linux).",
-        "Used in the Google Kernel CTF mitigation instance.",
-        "",
-        "CONFIG_SLAB_VIRTUAL=n (normal kernel):",
-        "  Both `struct slab` and `struct page` directly manage physmap area.",
-        "",
-        "  [physmap area]",
-        "                     +------------+",
-        "                     | virt       | <-- size: 0x1000",
-        "                     +------------+",
-        "                     | ...        |",
-        "                     +------------+",
-        "  [vmemmap area]",
-        "                     +------------+",
-        "                     | page/slab  | <-- size: sizeof(page) or sizeof(slab)",
-        "                     +------------+",
-        "                     | ...        |",
-        "                     +------------+",
-        "",
-        "CONFIG_SLAB_VIRTUAL=y (mitigated kernel):",
-        "  `struct slab` no longer manages physmap area. Instead, `struct slab` manages the slab_data area.",
-        "",
-        "  [physmap area]",
-        "                     +------------+",
-        "                     | virt       | <-- size: 0x1000",
-        "                     +------------+",
-        "                     | ...        |",
-        "                     +------------+",
-        "  [vmemmap area]",
-        "                     +------------+",
-        "                     | page       | <-- size: sizeof(page)",
-        "                     +------------+",
-        "                     | ...        |",
-        "                     +------------+",
-        "  [slab_meta area]",
-        "           ^         +------------+ SLAB_BASE_ADDR (=0xfffffe8000000000)",
-        "           |         | slab       |",
-        "           |         +------------+",
-        "    SLAB_META_SIZE   | slab       | <-- meta entry size: STRUCT_SLAB_SIZE               # v6.1~v6.1.55",
-        "           |         +------------+                      or sizeof(struct slab)         # v6.1.56~v6.6, v6.12~",
-        "           |         | ...        |                      or sizeof(struct virtual_slab) # v6.6~v6.12",
-        "           v         +------------+ ",
-        "  [slab_data area]",
-        "                     +------------+ SLAB_DATA_BASE_ADDR (=0xfffffe8800000000)",
-        "                     | virt       | ",
-        "                     +------------+",
-        "                     | virt       | <-- size: 0x1000",
-        "                     +------------+",
-        "                     | ...        |",
-        "                     +------------+ SLAB_END_ADDR (=0xffffff0000000000)",
-    ])
+    def __init__(self):
+        self.meta = []
+        return
 
     @Cache.cache_this_session(cache_None=False)
     def initialize(self):
@@ -204587,13 +204534,13 @@ class SlabVirtualCommand(GenericCommand):
         P4D_SHIFT = 39
 
         self.SLAB_BASE_ADDR = (-3 << P4D_SHIFT) & 0xffff_ffff_ffff_ffff
-        self.meta.append((self.quiet_info, "SLAB_BASE_ADDR: {:#x}".format(self.SLAB_BASE_ADDR)))
+        self.meta.append(("info", "SLAB_BASE_ADDR: {:#x}".format(self.SLAB_BASE_ADDR)))
 
         self.SLAB_END_ADDR = self.SLAB_BASE_ADDR + (1 << P4D_SHIFT)
-        self.meta.append((self.quiet_info, "SLAB_END_ADDR: {:#x}".format(self.SLAB_END_ADDR)))
+        self.meta.append(("info", "SLAB_END_ADDR: {:#x}".format(self.SLAB_END_ADDR)))
 
         SLAB_VPAGES = (self.SLAB_END_ADDR - self.SLAB_BASE_ADDR) >> self.PAGE_SHIFT
-        self.meta.append((self.quiet_info, "SLAB_VPAGES: {:#x}".format(SLAB_VPAGES)))
+        self.meta.append(("info", "SLAB_VPAGES: {:#x}".format(SLAB_VPAGES)))
 
         self.sizeof_struct_page = 0x40
 
@@ -204688,7 +204635,7 @@ class SlabVirtualCommand(GenericCommand):
             """
             self.slab_meta_entry_size = 0x70 # sizeof(struct slab)
 
-        self.meta.append((self.quiet_info, "SLAB_META_SIZE: {:#x}".format(self.SLAB_META_SIZE)))
+        self.meta.append(("info", "SLAB_META_SIZE: {:#x}".format(self.SLAB_META_SIZE)))
 
         # offsetof(slab, compound_slab_head)         if kernel != 6.6
         # offsetof(virtual_slab, compound_slab_head) if kernel == 6.6
@@ -204713,7 +204660,7 @@ class SlabVirtualCommand(GenericCommand):
         compound = GefUtil.offsetof(slab_type, "compound_slab_head")
         backing = GefUtil.offsetof("slab", "backing_folio")
         if entry_size is not None and (compound is None or backing is None):
-            self.meta.append((self.quiet_err, "Unsupported slab-virtual layout in the loaded debug information"))
+            self.meta.append(("err", "Unsupported slab-virtual layout in the loaded debug information"))
             return None
         if page_size is not None:
             self.sizeof_struct_page = page_size
@@ -204734,16 +204681,16 @@ class SlabVirtualCommand(GenericCommand):
         else:
             field_source = "branch constants"
         self.layout_source = "{:s}; fields: {:s}; reservation: branch constants".format(branch, field_source)
-        self.meta.append((self.quiet_info, "layout: " + self.layout_source))
-        self.meta.append((self.quiet_info, "sizeof(struct page): {:#x}".format(self.sizeof_struct_page)))
-        self.meta.append((self.quiet_info, "single slab meta size: {:#x}".format(self.slab_meta_entry_size)))
-        self.meta.append((self.quiet_info, "offsetof({:s}, compound_slab_head): {:#x}".format(
+        self.meta.append(("info", "layout: " + self.layout_source))
+        self.meta.append(("info", "sizeof(struct page): {:#x}".format(self.sizeof_struct_page)))
+        self.meta.append(("info", "single slab meta size: {:#x}".format(self.slab_meta_entry_size)))
+        self.meta.append(("info", "offsetof({:s}, compound_slab_head): {:#x}".format(
             slab_type, self.slab_offset_compound_slab_head,
         )))
-        self.meta.append((self.quiet_info, "offsetof(slab, backing_folio): {:#x}".format(self.slab_offset_backing_folio)))
+        self.meta.append(("info", "offsetof(slab, backing_folio): {:#x}".format(self.slab_offset_backing_folio)))
 
         self.SLAB_DATA_BASE_ADDR = self.SLAB_BASE_ADDR + self.SLAB_META_SIZE
-        self.meta.append((self.quiet_info, "SLAB_DATA_BASE_ADDR: {:#x}".format(self.SLAB_DATA_BASE_ADDR)))
+        self.meta.append(("info", "SLAB_DATA_BASE_ADDR: {:#x}".format(self.SLAB_DATA_BASE_ADDR)))
 
         return True
 
@@ -204754,14 +204701,13 @@ class SlabVirtualCommand(GenericCommand):
         return address in range(self.SLAB_DATA_BASE_ADDR, self.SLAB_END_ADDR)
 
     def slab_to_virt(self, slab):
-        """Convert slab-meta (aka slab-virtual) into virt (aka slab-data)."""
+        """Convert slab-meta (aka slab-virtual) into virt (aka slab-data).
+        Return (virt, [(level, message), ...]), where virt is None on an error."""
         if not is_valid_addr(slab):
-            err("Memory Error")
-            return None
+            return None, [("err", "Memory Error")]
 
         if not self.is_slab_virtual_meta(slab):
-            err("Address is not in valid range")
-            return None
+            return None, [("err", "Address is not in valid range")]
 
         kversion = Kernel.version()
         if kversion < "6.1.56":
@@ -204771,22 +204717,23 @@ class SlabVirtualCommand(GenericCommand):
             slab_data_base = self.SLAB_DATA_BASE_ADDR
 
         slab_idx, is_not_aligned = divmod(slab - slab_base, self.slab_meta_entry_size)
+        messages = []
         if is_not_aligned:
-            warn("Address is not aligned for the size of slab ({:#x})".format(self.slab_meta_entry_size))
-        return slab_data_base + (1 << self.PAGE_SHIFT) * slab_idx
+            messages.append(("warn", "Address is not aligned for the size of slab ({:#x})".format(self.slab_meta_entry_size)))
+        return slab_data_base + (1 << self.PAGE_SHIFT) * slab_idx, messages
 
     def virt_to_slab(self, virt):
-        """Convert virt (aka slab-data) into slab (aka slab-meta or slab-virtual)."""
+        """Convert virt (aka slab-data) into slab (aka slab-meta or slab-virtual).
+        Return (slab, [(level, message), ...]), where slab is None on an error."""
         if not is_valid_addr(virt):
-            err("Memory error")
-            return None
+            return None, [("err", "Memory error")]
 
         if not self.is_slab_virtual_addr(virt):
-            err("Address is not slab address")
-            return None
+            return None, [("err", "Address is not slab address")]
 
+        messages = []
         if virt & 0xfff:
-            warn("Address is NOT aligned")
+            messages.append(("warn", "Address is NOT aligned"))
 
         kversion = Kernel.version()
         if kversion < "6.1.56":
@@ -204797,16 +204744,23 @@ class SlabVirtualCommand(GenericCommand):
 
         slab_idx = (virt - slab_data_base) >> self.PAGE_SHIFT
         slab = slab_base + slab_idx * self.slab_meta_entry_size
-        return read_int_from_memory(slab + self.slab_offset_compound_slab_head) # s->compound_head
+        return read_int_from_memory(slab + self.slab_offset_compound_slab_head), messages # s->compound_head
 
     def slab_to_page(self, slab):
-        """Convert slab (aka slab-meta) into page (aka backing_folio)."""
+        """Convert slab (aka slab-meta) into page (aka backing_folio).
+        Return (page, [(level, message), ...]), where page is None on an error."""
         if not is_valid_addr(slab):
-            err("Memory error")
-            return None
-        return read_int_from_memory(slab + self.slab_offset_backing_folio)
+            return None, [("err", "Memory error")]
 
-    def get_vmemmap_base(self):
+        if not self.is_slab_virtual_meta(slab):
+            return None, [("err", "Address is not in valid range")]
+        return read_int_from_memory(slab + self.slab_offset_backing_folio), []
+
+    def get_vmemmap_base(self, progress=None):
+        """Return (vmemmap_base, [(level, message), ...]), where vmemmap_base is None if it is not found.
+        `progress` wraps the iterable of the slow memory scan of plan 3 (e.g., in a progress bar)."""
+        messages = []
+
         # Do NOT use `KF.get_VMEMMAP_START()` here.
         # If CONFIG_KALLSYMS_ALL=n, `KF.get_VMEMMAP_START()` uses plan 3 and returns
         # slab-virtual address (NOT page address).
@@ -204815,7 +204769,7 @@ class SlabVirtualCommand(GenericCommand):
         # plan 1 (directly)
         addr = Ksym.get_addr("vmemmap_base")
         if addr:
-            return read_int_from_memory(addr)
+            return read_int_from_memory(addr), messages
 
         # plan 2 (from `slab_virt_to_phys`)
         addr = Ksym.get_addr("slab_virt_to_phys")
@@ -204823,7 +204777,7 @@ class SlabVirtualCommand(GenericCommand):
             res = gdb.execute("x/30i {:#x}".format(addr), to_string=True)
             g = KernelAddressHeuristicFinderUtil.x64_qword_ptr_rip_base(res, read_valid=True)
             for x in g:
-                return read_int_from_memory(x)
+                return read_int_from_memory(x), messages
 
         kversion = Kernel.version()
 
@@ -204837,52 +204791,56 @@ class SlabVirtualCommand(GenericCommand):
         if "6.6" <= kversion < "6.12":
             addr = KernelAddressHeuristicFinder.get_slub_addr_base()
             if not addr:
-                return None
-            self.quiet_info("slub_addr_base @ {:#x}".format(addr))
+                return None, messages
+            messages.append(("info", "slub_addr_base @ {:#x}".format(addr)))
             slub_addr_base = read_int_from_memory(addr)
 
-            slab_of_slub_addr_base = self.virt_to_slab(slub_addr_base)
+            slab_of_slub_addr_base, sub_messages = self.virt_to_slab(slub_addr_base)
+            messages += sub_messages
             addr = KernelAddressHeuristicFinder.get_slub_addr_current()
             if not addr:
-                return None
-            self.quiet_info("slub_addr_current @ {:#x}".format(addr))
+                return None, messages
+            messages.append(("info", "slub_addr_current @ {:#x}".format(addr)))
 
             slub_addr_current = read_int_from_memory(addr)
             if slub_addr_current <= slub_addr_base:
-                return None
-            slab_of_slub_addr_current = self.virt_to_slab(slub_addr_current - 1)
+                return None, messages
+            slab_of_slub_addr_current, sub_messages = self.virt_to_slab(slub_addr_current - 1)
+            messages += sub_messages
             if slab_of_slub_addr_base is None or slab_of_slub_addr_current is None:
-                return None
+                return None, messages
 
             # Scan backing_folio referenced from slab-virtual area (so slow)
             vmemmap_entries = []
-            self.quiet_info("Wait for memory scan")
-            for slab in ProgressBar(range(
-                    slab_of_slub_addr_base, slab_of_slub_addr_current + self.slab_meta_entry_size, self.slab_meta_entry_size,
-                ), disable=self.args.quiet):
+            messages.append(("info", "Wait for memory scan"))
+            entry_size = self.slab_meta_entry_size
+            slabs = range(slab_of_slub_addr_base, slab_of_slub_addr_current + entry_size, entry_size)
+            if progress is not None:
+                slabs = progress(slabs)
+            for slab in slabs:
                 backing_folio = read_int_from_memory(slab + self.slab_offset_backing_folio)
                 if not is_valid_addr(backing_folio):
                     continue
                 vmemmap_entries.append(backing_folio)
             # The masked address of min page may be vmemmap_base(likely plan 3 of `KF.get_VMEMMAP_START()`)
             if not vmemmap_entries:
-                return None
+                return None, messages
             vmemmap_base = min(vmemmap_entries) & 0xffff_ffff_c000_0000 # ~((1 << PUD_SHIFT) - 1)
-            return vmemmap_base
+            return vmemmap_base, messages
 
-        return None
+        return None, messages
 
-    def page_to_slab(self, page):
-        """Convert page (aka backing_folio) into slab (aka slab-meta/slab-virtual)."""
+    def page_to_slab(self, page, progress=None):
+        """Convert page (aka backing_folio) into slab (aka slab-meta/slab-virtual).
+        Return (slab, [(level, message), ...]), where slab is None on an error. See `get_vmemmap_base()` for `progress`."""
         if not is_valid_addr(page):
-            err("Memory error")
-            return None
+            return None, [("err", "Memory error")]
 
         # Step1: find `vmemmap_base`
-        vmemmap_base = self.get_vmemmap_base()
+        vmemmap_base, messages = self.get_vmemmap_base(progress)
         if vmemmap_base is None:
-            return None
-        self.quiet_info("vmemmap_base: {:#x}".format(vmemmap_base))
+            return None, messages
+        messages.append(("info", "vmemmap_base: {:#x}".format(vmemmap_base)))
 
         # Step2: get physical addr and mapped virtual address
         pfn = (page - vmemmap_base) // self.sizeof_struct_page
@@ -204891,8 +204849,91 @@ class SlabVirtualCommand(GenericCommand):
         # `p2v` returns 2 results (direct mapping area and slab data)
         r = AddrMap.p2v(phys_addr)
         if not r or len(r) < 2:
-            return None
-        return self.virt_to_slab(max(r))
+            return None, messages
+        slab, sub_messages = self.virt_to_slab(max(r))
+        return slab, messages + sub_messages
+
+
+@register_command
+class SlabVirtualCommand(GenericCommand):
+    """Convert between slab-virtual addresses and page addresses."""
+
+    _cmdline_ = "slab-virtual"
+    _category_ = "06-d. Qemu-system/KGDB Cooperation - Virt/Phys/Page"
+
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    modes = ["to_virt", "to_page", "from_virt", "from_page"]
+    parser.add_argument("mode", choices=modes, nargs="?", help="conversion mode.")
+    parser.add_argument("address", metavar="ADDRESS", nargs="?", type=AddressUtil.parse_address,
+                        help="the address to convert.")
+    parser.add_argument("--meta", action="store_true", help="display offset information.")
+    parser.add_argument("-r", "--rescan", action="store_true", help="do not use cache.")
+    parser.add_argument("-q", "--quiet", action="store_true", help="quiet execution.")
+    _syntax_ = parser.format_help()
+
+    _note_ = "\n".join([
+        "This command works only in CONFIG_SLAB_VIRTUAL=y (implemented at https://github.com/thejh/linux).",
+        "Used in the Google Kernel CTF mitigation instance.",
+        "",
+        "CONFIG_SLAB_VIRTUAL=n (normal kernel):",
+        "  Both `struct slab` and `struct page` directly manage physmap area.",
+        "",
+        "  [physmap area]",
+        "                     +------------+",
+        "                     | virt       | <-- size: 0x1000",
+        "                     +------------+",
+        "                     | ...        |",
+        "                     +------------+",
+        "  [vmemmap area]",
+        "                     +------------+",
+        "                     | page/slab  | <-- size: sizeof(page) or sizeof(slab)",
+        "                     +------------+",
+        "                     | ...        |",
+        "                     +------------+",
+        "",
+        "CONFIG_SLAB_VIRTUAL=y (mitigated kernel):",
+        "  `struct slab` no longer manages physmap area. Instead, `struct slab` manages the slab_data area.",
+        "",
+        "  [physmap area]",
+        "                     +------------+",
+        "                     | virt       | <-- size: 0x1000",
+        "                     +------------+",
+        "                     | ...        |",
+        "                     +------------+",
+        "  [vmemmap area]",
+        "                     +------------+",
+        "                     | page       | <-- size: sizeof(page)",
+        "                     +------------+",
+        "                     | ...        |",
+        "                     +------------+",
+        "  [slab_meta area]",
+        "           ^         +------------+ SLAB_BASE_ADDR (=0xfffffe8000000000)",
+        "           |         | slab       |",
+        "           |         +------------+",
+        "    SLAB_META_SIZE   | slab       | <-- meta entry size: STRUCT_SLAB_SIZE               # v6.1~v6.1.55",
+        "           |         +------------+                      or sizeof(struct slab)         # v6.1.56~v6.6, v6.12~",
+        "           |         | ...        |                      or sizeof(struct virtual_slab) # v6.6~v6.12",
+        "           v         +------------+ ",
+        "  [slab_data area]",
+        "                     +------------+ SLAB_DATA_BASE_ADDR (=0xfffffe8800000000)",
+        "                     | virt       | ",
+        "                     +------------+",
+        "                     | virt       | <-- size: 0x1000",
+        "                     +------------+",
+        "                     | ...        |",
+        "                     +------------+ SLAB_END_ADDR (=0xffffff0000000000)",
+    ])
+
+    def print_messages(self, messages):
+        # the errors and warnings of the conversion are shown even with --quiet
+        for level, message in messages:
+            if level == "err":
+                err(message)
+            elif level == "warn":
+                warn(message)
+            else:
+                self.quiet_info(message)
+        return
 
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
@@ -204917,44 +204958,51 @@ class SlabVirtualCommand(GenericCommand):
             err("CONFIG_SLAB_VIRTUAL=n is NOT supported")
             return
 
+        self.kslabv = Kernel.slab_virtual()
         if args.rescan:
-            Cache.clear_cache_for(self.initialize)
+            Cache.clear_cache_for(self.kslabv.initialize)
 
-        ret = self.initialize()
+        ret = self.kslabv.initialize()
         if args.meta or not ret:
-            for func, line in self.meta:
+            for func, line in Kernel.export_meta(self, self.kslabv.meta):
                 func(line)
         if not ret:
             err("Failed to initialize")
             return
 
         if ret and not args.meta:
-            self.quiet_info("layout: " + self.layout_source)
+            self.quiet_info("layout: " + self.kslabv.layout_source)
 
         if args.meta:
             return
 
         out = []
         if args.mode == "to_virt":
-            data = self.slab_to_virt(args.address)
+            data, messages = self.kslabv.slab_to_virt(args.address)
+            self.print_messages(messages)
             if data is None:
                 err("Failed to resolve")
                 return
             out.append("Slab: {:#x} -> Virt: {:#x}".format(args.address, data))
         elif args.mode == "to_page":
-            page = self.slab_to_page(args.address)
+            page, messages = self.kslabv.slab_to_page(args.address)
+            self.print_messages(messages)
             if page is None:
                 err("Failed to resolve")
                 return
             out.append("Slab: {:#x} -> Page: {:#x}".format(args.address, page))
         elif args.mode == "from_virt":
-            slab = self.virt_to_slab(args.address)
+            slab, messages = self.kslabv.virt_to_slab(args.address)
+            self.print_messages(messages)
             if slab is None:
                 err("Failed to resolve")
                 return
             out.append("Virt: {:#x} -> Slab: {:#x}".format(args.address, slab))
         elif args.mode == "from_page":
-            slab = self.page_to_slab(args.address)
+            slab, messages = self.kslabv.page_to_slab(
+                args.address, progress=lambda slabs: ProgressBar(slabs, disable=self.args.quiet),
+            )
+            self.print_messages(messages)
             if slab is None:
                 err("Failed to resolve")
                 return
