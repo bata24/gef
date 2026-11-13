@@ -37564,15 +37564,11 @@ class KernelChecksecCommand(GenericCommand):
         if kversion is not None and kversion < "5.1":
             supported = False
         else:
-            try:
-                output = gdb.execute("ksyscalls -f io_uring_setup --quiet --no-pager", to_string=True)
-                clean_output = Color.remove_color(output)
-                if re.search(r"\]\s+valid\s+io_uring_setup\s", clean_output):
-                    supported = True
-                elif re.search(r"\]\s+invalid\s+io_uring_setup\s", clean_output):
-                    supported = False
-            except gdb.error:
-                pass
+            validity = Kernel.syscall().get_validity("io_uring_setup")
+            if any(validity):
+                supported = True
+            elif validity:
+                supported = False
 
         disabled_addr = self.get_sysctl_addr("kernel.io_uring_disabled", "sysctl_io_uring_disabled")
         if disabled_addr is not None:
@@ -38770,13 +38766,13 @@ class KernelChecksecCommand(GenericCommand):
     def check_unprivileged_userfaultfd(self):
         cfg = "vm.unprivileged_userfaultfd"
 
-        stv_uff_ret = gdb.execute("ksyscalls -f userfaultfd --quiet --no-pager", to_string=True)
-        if "userfaultfd" not in stv_uff_ret:
+        validity = Kernel.syscall().get_validity("userfaultfd")
+        if not validity:
             additional = "userfaultfd syscall: Unimplemented"
             gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Syscall unsupported", "bold green"), additional))
             return
 
-        if "invalid userfaultfd" in stv_uff_ret:
+        if not all(validity):
             additional = "userfaultfd syscall: Disabled"
             gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Syscall unsupported", "bold green"), additional))
             return
@@ -38804,13 +38800,13 @@ class KernelChecksecCommand(GenericCommand):
     def check_unprivileged_bpf_disabled(self):
         cfg = "kernel.unprivileged_bpf_disabled"
 
-        stv_bpf_ret = gdb.execute("ksyscalls -f bpf --quiet --no-pager", to_string=True)
-        if "bpf" not in stv_bpf_ret:
+        validity = Kernel.syscall().get_validity("bpf")
+        if not validity:
             additional = "bpf syscall: Unimplemented"
             gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Syscall unsupported", "bold green"), additional))
             return
 
-        if "invalid bpf" in stv_bpf_ret:
+        if not all(validity):
             additional = "bpf syscall: Disabled"
             gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Syscall unsupported", "bold green"), additional))
             return
@@ -38843,18 +38839,18 @@ class KernelChecksecCommand(GenericCommand):
             gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Unimplemented", "bold red"), additional))
             return
 
-        r1 = gdb.execute("ksyscalls -f kexec_load --quiet --no-pager", to_string=True)
-        r2 = gdb.execute("ksyscalls -f kexec_file_load --quiet --no-pager", to_string=True)
-        if ("kexec_load" not in r1 or "invalid kexec_load" in r1) and \
-           ("kexec_file_load" not in r2 or "invalid kexec_file_load" in r2):
+        ksyscall = Kernel.syscall()
+        r1 = ksyscall.get_validity("kexec_load")
+        r2 = ksyscall.get_validity("kexec_file_load")
+        if (not r1 or not all(r1)) and (not r2 or not all(r2)):
             additional = ""
-            if "kexec_load" not in r1:
+            if not r1:
                 additional = "kexec_load syscall: Unimplemented"
-            elif "invalid kexec_load" in r1:
+            elif not all(r1):
                 additional = "kexec_load syscall: Disabled"
-            if "kexec_file_load" not in r2:
+            if not r2:
                 additional += ", " + "kexec_file_load syscall: Unimplemented"
-            elif "invalid kexec_file_load" in r2:
+            elif not all(r2):
                 additional += ", " + "kexec_file_load syscall: Disabled"
             gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Syscall unsupported", "bold green"), additional))
             return
@@ -74424,8 +74420,13 @@ class KernelAddressHeuristicFinder:
         else:
             addr = None
         if addr:
-            res = gdb.execute("x/100i {:#x}".format(addr), to_string=True)
+            res = KernelAddressHeuristicFinderUtil.disassemble_until_next_symbol(addr, 100)
             g = KernelAddressHeuristicFinderUtil.aarch64_adrp_add(res, read_valid=True)
+            if kversion < "4.18":
+                # The assembly entry keeps the page-aligned table in x27 without an add.
+                g = itertools.chain(g, KernelAddressHeuristicFinderUtil.common_addr_gen(
+                    res, r"adrp\s+x27,\s*(0x\w+)", 0, False, True,
+                ))
             for x in g:
                 return x
 
@@ -74451,7 +74452,9 @@ class KernelAddressHeuristicFinder:
     @staticmethod
     @Cache.cache_this_session(per_inferior=True, until_new_objfile=True)
     def get_sys_call_table_riscv(compat=False):
-        if not (is_riscv32() or is_riscv64()) or compat and not is_riscv64():
+        if not (is_riscv32() or is_riscv64()):
+            return None
+        if compat and is_riscv32():
             return None
 
         if compat:
@@ -74525,8 +74528,12 @@ class KernelAddressHeuristicFinder:
         else:
             addr = None
         if addr:
-            res = gdb.execute("x/100i {:#x}".format(addr), to_string=True)
+            res = KernelAddressHeuristicFinderUtil.disassemble_until_next_symbol(addr, 100)
             g = KernelAddressHeuristicFinderUtil.aarch64_adrp_add(res, read_valid=True)
+            if kversion < "4.18":
+                g = itertools.chain(g, KernelAddressHeuristicFinderUtil.common_addr_gen(
+                    res, r"adrp\s+x27,\s*(0x\w+)", 0, False, True,
+                ))
             for x in g:
                 return x
 
@@ -80252,6 +80259,11 @@ class Kernel:
     def sysctl():
         """Return the sysctl resolver."""
         return KernelSysctl.get_instance()
+
+    @staticmethod
+    def syscall():
+        """Return the syscall table resolver."""
+        return KernelSyscall.get_instance()
 
     @staticmethod
     def nftables():
@@ -110742,29 +110754,124 @@ class StringsCommand(GenericCommand, BufferingOutput):
         return
 
 
-@register_command
-class KernelSyscallsCommand(GenericCommand, BufferingOutput):
-    """Display syscall_table entries."""
+class KernelSyscall:
+    """Resolve the syscall tables and the validity of each entry."""
 
-    _cmdline_ = "ksyscalls"
-    _category_ = "06-g. Qemu-system/KGDB Cooperation - Linux Advanced"
-    _aliases_ = ["kst", "syscall-table-view"]
+    @classmethod
+    @Cache.cache_this_session(per_inferior=True, until_new_objfile=True)
+    def get_instance(cls):
+        return cls()
 
-    parser = argparse.ArgumentParser(prog=_cmdline_)
-    parser.add_argument("-f", "--filter", action="append", type=re.compile, default=[], help="REGEXP syscall name filter.")
-    parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
-    parser.add_argument("-q", "--quiet", action="store_true", help="enable quiet mode.")
-    _syntax_ = parser.format_help()
+    def get_tables(self, filters=None):
+        """Return the syscall tables of the current arch. "address" is None if the table is not found.
+        With `filters`, the tables without any matching entry are omitted."""
+        defs = []
+        if is_x86_32():
+            defs = [
+                ("sys_call_table (x86)", "x86", KernelAddressHeuristicFinder.get_sys_call_table_x86,
+                 Syscall.get_syscall_table("X86", "N32"), 0),
+            ]
+        elif is_x86_64():
+            defs = [
+                ("sys_call_table (x64)", "x86_64", KernelAddressHeuristicFinder.get_sys_call_table_x64,
+                 Syscall.get_syscall_table("X86", "64"), 0),
+                ("ia32_sys_call_table", "x86_32", KernelAddressHeuristicFinder.get_sys_call_table_x86,
+                 Syscall.get_syscall_table("X86", "32"), 0),
+                ("x32_sys_call_table", "x86_x32", KernelAddressHeuristicFinder.get_sys_call_table_x32,
+                 Syscall.get_syscall_table("X86", "64"), 0x4000_0000),
+            ]
+        elif is_arm32():
+            defs = [
+                ("sys_call_table (arm32)", "arm32", KernelAddressHeuristicFinder.get_sys_call_table_arm32,
+                 Syscall.get_syscall_table("ARM", "N32"), 0),
+            ]
+        elif is_arm64():
+            defs = [
+                ("sys_call_table (arm64)", "arm64", KernelAddressHeuristicFinder.get_sys_call_table_arm64,
+                 Syscall.get_syscall_table("ARM64", "ARM"), 0),
+                ("compat_sys_call_table (arm32)", "arm64_32", KernelAddressHeuristicFinder.get_sys_call_table_arm64_compat,
+                 Syscall.get_syscall_table("ARM", "32"), 0),
+            ]
+        elif is_riscv32():
+            defs = [
+                ("sys_call_table (riscv32)", "riscv32", KernelAddressHeuristicFinder.get_sys_call_table_riscv,
+                 Syscall.get_syscall_table("RISCV", "32"), 0),
+            ]
+        elif is_riscv64():
+            defs = [
+                ("sys_call_table (riscv64)", "riscv64", KernelAddressHeuristicFinder.get_sys_call_table_riscv,
+                 Syscall.get_syscall_table("RISCV", "64"), 0),
+                ("compat_sys_call_table (riscv32)", "riscv64_32",
+                 lambda: KernelAddressHeuristicFinder.get_sys_call_table_riscv(compat=True),
+                 Syscall.get_syscall_table("RISCV", "32"), 0),
+            ]
 
-    _example_ = "\n".join([
-        "{0:s}",
-        "{0:s} --filter write",
-    ]).format(_cmdline_)
+        tables = []
+        for title, abi, address_getter, syscall_list, nr_base in defs:
+            table = {"title": title, "abi": abi, "syscall_list": syscall_list, "address": None, "entries": []}
 
-    _note_ = "\n".join([
-        "On x86, Linux v6.9 and later dispatch syscalls via switch statements.",
-        "This command shows a table for readability; remaining syscall tables are used for tracing, not dispatch.",
-    ])
+            # check syscall_list
+            if syscall_list is None:
+                tables.append(table)
+                continue
+
+            # filter exists check
+            selection = None
+            if filters:
+                selection = self.get_filtered_indices(syscall_list, nr_base, filters)
+                _, filtered_indices = selection
+                if not filtered_indices:
+                    continue
+
+            # check sys_call_table_addr
+            sys_call_table_addr = address_getter()
+            if sys_call_table_addr is None:
+                tables.append(table)
+                continue
+            table["address"] = sys_call_table_addr
+
+            # parse with filtering
+            if selection is not None:
+                all_indices, filtered_indices = selection
+                function_addrs = self.scan_syscall_function_addrs(sys_call_table_addr, max(all_indices) + 1)
+                filtered_indices = tuple(i for i in filtered_indices if i < len(function_addrs))
+                parsed = self.parse_syscall_table(sys_call_table_addr, filtered_indices)
+            else:
+                parsed = self.parse_syscall_table(sys_call_table_addr)
+                function_addrs = tuple(row[2] for row in parsed)
+            if selection is not None and not parsed:
+                continue
+
+            ni_syscalls = self.get_ni_syscalls(abi)
+
+            # for duplication check
+            seen_count = {}
+            for syscall_function_addr in function_addrs:
+                seen_count[syscall_function_addr] = seen_count.get(syscall_function_addr, 0) + 1
+
+            for i, addr, syscall_function_addr, symbol, is_valid in parsed:
+                if is_arm32():
+                    symbol_addr = syscall_function_addr & ~1
+                else:
+                    symbol_addr = syscall_function_addr
+                if symbol_addr in ni_syscalls:
+                    symbol = "<{:s}>".format(ni_syscalls[symbol_addr])
+                nr = nr_base + i
+                if nr in syscall_list.nr_table:
+                    expected_name = syscall_list.nr_table[nr].name
+                else:
+                    expected_name = "<UNDEFINED_IN_THIS_ARCH>"
+                table["entries"].append({
+                    "index": i, "address": addr, "function": syscall_function_addr, "symbol": symbol,
+                    "name": expected_name, "valid": seen_count[syscall_function_addr] == 1 and is_valid,
+                })
+            tables.append(table)
+        return tables
+
+    def get_validity(self, name):
+        """Return the validity of each entry of the syscall `name`. An empty list means it is in no table."""
+        tables = self.get_tables([re.compile("^{:s}$".format(name))])
+        return [entry["valid"] for table in tables for entry in table["entries"]]
 
     @staticmethod
     def is_plausible_address(addr):
@@ -110850,7 +110957,7 @@ class KernelSyscallsCommand(GenericCommand, BufferingOutput):
         # Skip control-flow instrumentation before the actual syscall body.
         if insn.mnemonic in prefix_mnemonics:
             insn, insn2 = self.get_insn_pair(insn.address + len(insn.opcodes))
-        while insn and insn2 and (insn.mnemonic in call_mnemonics or is_x86() and insn.mnemonic == "nop"):
+        while insn and insn2 and (insn.mnemonic in call_mnemonics or (is_x86() and insn.mnemonic == "nop")):
             insn, insn2 = self.get_insn_pair(insn.address + len(insn.opcodes))
         # CONFIG_FRAME_POINTER can put mov rbp, rsp before or after the -ENOSYS return value.
         if insn and is_x86() and insn.mnemonic == "push" and insn.operands[-1] in ("rbp", "ebp"):
@@ -110870,7 +110977,7 @@ class KernelSyscallsCommand(GenericCommand, BufferingOutput):
                 err = "0xffffffda"
             if len(insn.operands) == 2 and insn.operands[-1] == err:
                 while insn2 and (
-                    insn2.mnemonic in ("pop", "leave") or insn2.mnemonic == "mov" and insn2.operands[-1] in ("rsp", "esp")
+                    insn2.mnemonic in ("pop", "leave") or (insn2.mnemonic == "mov" and insn2.operands[-1] in ("rsp", "esp"))
                 ):
                     insn2 = self.get_insn_pair(insn2.address + len(insn2.opcodes))[0]
                 if insn2 is None:
@@ -110955,7 +111062,8 @@ class KernelSyscallsCommand(GenericCommand, BufferingOutput):
             table.append([i, addr, syscall_function_addr, symbol, is_valid])
         return table
 
-    def get_filtered_indices(self, syscall_list, nr_base):
+    @staticmethod
+    def get_filtered_indices(syscall_list, nr_base, filters):
         all_indices = []
         filtered_indices = []
         for nr, entry in syscall_list.nr_table.items():
@@ -110964,33 +111072,49 @@ class KernelSyscallsCommand(GenericCommand, BufferingOutput):
             if not 0 <= i < 0x10000:
                 continue
             all_indices.append(i)
-            if self.args.filter and GefUtil.matches_regex(entry.name, self.args.filter):
+            if GefUtil.matches_regex(entry.name, filters):
                 filtered_indices.append(i)
         return tuple(sorted(all_indices)), tuple(sorted(filtered_indices))
 
-    def dump_one_syscall_table(self, title, abi, address_getter, syscall_list, nr_base=0):
+
+@register_command
+class KernelSyscallsCommand(GenericCommand, BufferingOutput):
+    """Display syscall_table entries."""
+
+    _cmdline_ = "ksyscalls"
+    _category_ = "06-g. Qemu-system/KGDB Cooperation - Linux Advanced"
+    _aliases_ = ["kst", "syscall-table-view"]
+
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("-f", "--filter", action="append", type=re.compile, default=[], help="REGEXP syscall name filter.")
+    parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
+    parser.add_argument("-q", "--quiet", action="store_true", help="enable quiet mode.")
+    _syntax_ = parser.format_help()
+
+    _example_ = "\n".join([
+        "{0:s}",
+        "{0:s} --filter write",
+    ]).format(_cmdline_)
+
+    _note_ = "\n".join([
+        "On x86, Linux v6.9 and later dispatch syscalls via switch statements.",
+        "This command shows a table for readability; remaining syscall tables are used for tracing, not dispatch.",
+    ])
+
+    def dump_one_syscall_table(self, table):
         # check syscall_list
-        if syscall_list is None:
-            self.quiet_add_out(titlify(title))
+        if table["syscall_list"] is None:
+            self.quiet_add_out(titlify(table["title"]))
             self.quiet_add_out("{} {}".format(Color.colorify("[!]", "bold red"), "Could not find the syscall table"))
             return
 
-        # filter exists check
-        selection = None
-        if self.args.filter:
-            selection = self.get_filtered_indices(syscall_list, nr_base)
-            _, filtered_indices = selection
-            if not filtered_indices:
-                return
-
         # check sys_call_table_addr
-        sys_call_table_addr = address_getter()
-        if sys_call_table_addr is None:
-            self.quiet_add_out(titlify(title))
+        if table["address"] is None:
+            self.quiet_add_out(titlify(table["title"]))
             removed_table = {
                 "x86_32": ("ia32_sys_call_table", "ia32_sys_call"),
                 "x86_x32": ("x32_sys_call_table", "x32_sys_call"),
-            }.get(abi)
+            }.get(table["abi"])
             kversion = Kernel.version()
             if removed_table and Ksym.get_addr(removed_table[1]):
                 self.quiet_add_out("{:s} is replaced by `{:s}()`.".format(*removed_table))
@@ -111001,20 +111125,7 @@ class KernelSyscallsCommand(GenericCommand, BufferingOutput):
                 self.quiet_add_out("{} {}".format(Color.colorify("[!]", "bold red"), "Could not find the symbol"))
             return
 
-        # parse with filtering
-        if selection is not None:
-            all_indices, filtered_indices = selection
-            function_addrs = self.scan_syscall_function_addrs(sys_call_table_addr, max(all_indices) + 1)
-            filtered_indices = tuple(i for i in filtered_indices if i < len(function_addrs))
-            table = self.parse_syscall_table(sys_call_table_addr, filtered_indices)
-        else:
-            table = self.parse_syscall_table(sys_call_table_addr)
-            function_addrs = tuple(row[2] for row in table)
-        if selection is not None and not table:
-            return
-
-        self.quiet_add_out(titlify(title))
-        ni_syscalls = self.get_ni_syscalls(abi)
+        self.quiet_add_out(titlify(table["title"]))
 
         # print legend
         if not self.args.quiet:
@@ -111022,85 +111133,17 @@ class KernelSyscallsCommand(GenericCommand, BufferingOutput):
             legend = ["ABI", "Index", "IsValid", "Syscall Name", "Table Address", "Function Address", "Symbol"]
             self.out.append(GefUtil.make_legend(fmt.format(*legend)))
 
-        # for duplication check
-        seen_count = {}
-        for syscall_function_addr in function_addrs:
-            seen_count[syscall_function_addr] = seen_count.get(syscall_function_addr, 0) + 1
-
         # print
-        for i, addr, syscall_function_addr, symbol, is_valid in table:
-            if is_arm32():
-                symbol_addr = syscall_function_addr & ~1
-            else:
-                symbol_addr = syscall_function_addr
-            if symbol_addr in ni_syscalls:
-                symbol = "<{:s}>".format(ni_syscalls[symbol_addr])
-            nr = nr_base + i
-            if nr in syscall_list.nr_table:
-                expected_name = syscall_list.nr_table[nr].name
-            else:
-                expected_name = "<UNDEFINED_IN_THIS_ARCH>"
-
+        for entry in table["entries"]:
             fmt = "{:8s} [{:03d}] {:7s} {:30s} {:#018x} {:#018x} {:s}"
-            if seen_count[syscall_function_addr] == 1 and is_valid: # valid entry
-                msg = fmt.format(abi, i, "valid", expected_name, addr, syscall_function_addr, symbol)
-            if seen_count[syscall_function_addr] > 1 or not is_valid: # invalid entry
-                msg = fmt.format(abi, i, "invalid", expected_name, addr, syscall_function_addr, symbol)
+            if entry["valid"]: # valid entry
+                msg = fmt.format(table["abi"], entry["index"], "valid", entry["name"], entry["address"],
+                                 entry["function"], entry["symbol"])
+            else: # invalid entry
+                msg = fmt.format(table["abi"], entry["index"], "invalid", entry["name"], entry["address"],
+                                 entry["function"], entry["symbol"])
                 msg = Color.grayify(msg)
             self.out.append(msg)
-        return
-
-    def dump_syscall_tables(self):
-        if is_x86_32():
-            self.dump_one_syscall_table(
-                "sys_call_table (x86)", "x86", KernelAddressHeuristicFinder.get_sys_call_table_x86,
-                Syscall.get_syscall_table("X86", "N32"),
-            )
-
-        elif is_x86_64():
-            self.dump_one_syscall_table(
-                "sys_call_table (x64)", "x86_64", KernelAddressHeuristicFinder.get_sys_call_table_x64,
-                Syscall.get_syscall_table("X86", "64"),
-            )
-            self.dump_one_syscall_table(
-                "ia32_sys_call_table", "x86_32", KernelAddressHeuristicFinder.get_sys_call_table_x86,
-                Syscall.get_syscall_table("X86", "32"),
-            )
-            self.dump_one_syscall_table(
-                "x32_sys_call_table", "x86_x32", KernelAddressHeuristicFinder.get_sys_call_table_x32,
-                Syscall.get_syscall_table("X86", "64"), nr_base=0x4000_0000,
-            )
-
-        elif is_arm32():
-            self.dump_one_syscall_table(
-                "sys_call_table (arm32)", "arm32", KernelAddressHeuristicFinder.get_sys_call_table_arm32,
-                Syscall.get_syscall_table("ARM", "N32"),
-            )
-
-        elif is_arm64():
-            self.dump_one_syscall_table(
-                "sys_call_table (arm64)", "arm64", KernelAddressHeuristicFinder.get_sys_call_table_arm64,
-                Syscall.get_syscall_table("ARM64", "ARM"),
-            )
-            self.dump_one_syscall_table(
-                "compat_sys_call_table (arm32)", "arm64_32", KernelAddressHeuristicFinder.get_sys_call_table_arm64_compat,
-                Syscall.get_syscall_table("ARM", "32"),
-            )
-        elif is_riscv32():
-            self.dump_one_syscall_table(
-                "sys_call_table (riscv32)", "riscv32", KernelAddressHeuristicFinder.get_sys_call_table_riscv,
-                Syscall.get_syscall_table("RISCV", "32"),
-            )
-        elif is_riscv64():
-            self.dump_one_syscall_table(
-                "sys_call_table (riscv64)", "riscv64", KernelAddressHeuristicFinder.get_sys_call_table_riscv,
-                Syscall.get_syscall_table("RISCV", "64"),
-            )
-            self.dump_one_syscall_table(
-                "compat_sys_call_table (riscv32)", "riscv64_32",
-                lambda: KernelAddressHeuristicFinder.get_sys_call_table_riscv(compat=True),
-                Syscall.get_syscall_table("RISCV", "32"),
-            )
         return
 
     @Decorator.parse_args
@@ -111110,7 +111153,8 @@ class KernelSyscallsCommand(GenericCommand, BufferingOutput):
     @Decorator.only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
         self.out = []
-        self.dump_syscall_tables()
+        for table in Kernel.syscall().get_tables(args.filter):
+            self.dump_one_syscall_table(table)
         self.print_output(check_terminal_size=True)
         return
 
@@ -166541,11 +166585,11 @@ class KernelBpfCommand(GenericCommand, BufferingOutput):
             self.quiet_err("Unsupported before v4.13")
             return
 
-        stv_bpf_ret = gdb.execute("ksyscalls -f bpf --quiet --no-pager", to_string=True)
-        if "bpf" not in stv_bpf_ret:
+        validity = Kernel.syscall().get_validity("bpf")
+        if not validity:
             self.quiet_err("bpf syscall is unimplemented")
             return
-        elif "invalid bpf" in stv_bpf_ret:
+        elif not all(validity):
             self.quiet_err("bpf syscall is disabled")
             return
 
