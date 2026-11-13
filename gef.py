@@ -80290,6 +80290,11 @@ class Kernel:
         return KernelCgroup.get_instance()
 
     @staticmethod
+    def binder():
+        """Return the Android binder resolver."""
+        return KernelBinder.get_instance()
+
+    @staticmethod
     def socket():
         """Return the socket resolver."""
         return KernelSocket.get_instance()
@@ -219918,6 +219923,939 @@ class KernelCgroupCommand(GenericCommand, BufferingOutput):
             self.dump_hierarchy(hierarchy)
         self.dump_settings()
         self.dump_tasks()
+        self.print_output(check_terminal_size=True)
+        return
+
+
+class KernelBinder(KernelLayoutReader):
+    """Resolve binder_proc from the binder fds (with the debug information or the invariants of the objects), and read
+    its binder_thread, binder_node, binder_ref, binder_transaction and binder_work."""
+
+    # enum binder_work_type, where the others vary by version
+    WORK_TRANSACTION = 1
+    WORK_TRANSACTION_COMPLETE = 2
+    MAX_ITEMS = 0x1000
+    # the keys of the layout: (key, struct, members), where the first member found in the debug information is used
+    MEMBERS = [
+        ("proc_node", "binder_proc", ["proc_node"]),
+        ("proc_threads", "binder_proc", ["threads"]),
+        ("proc_nodes", "binder_proc", ["nodes"]),
+        ("proc_refs", "binder_proc", ["refs_by_desc"]),
+        ("proc_pid", "binder_proc", ["pid"]),
+        ("proc_tsk", "binder_proc", ["tsk"]),
+        ("proc_todo", "binder_proc", ["todo"]),
+        ("proc_context", "binder_proc", ["context"]),
+        ("context_mgr_node", "binder_context", ["binder_context_mgr_node"]),
+        ("context_name", "binder_context", ["name"]),
+        ("thread_proc", "binder_thread", ["proc"]),
+        ("thread_rb", "binder_thread", ["rb_node"]),
+        ("thread_pid", "binder_thread", ["pid"]),
+        ("thread_looper", "binder_thread", ["looper"]),
+        ("thread_stack", "binder_thread", ["transaction_stack"]),
+        ("thread_todo", "binder_thread", ["todo"]),
+        ("node_id", "binder_node", ["debug_id"]),
+        ("node_work", "binder_node", ["work"]),
+        ("node_rb", "binder_node", ["rb_node"]),
+        ("node_proc", "binder_node", ["proc"]),
+        ("node_refs", "binder_node", ["refs"]),
+        ("node_internal_strong", "binder_node", ["internal_strong_refs"]),
+        ("node_local_weak", "binder_node", ["local_weak_refs"]),
+        ("node_local_strong", "binder_node", ["local_strong_refs"]),
+        ("node_ptr", "binder_node", ["ptr"]),
+        ("node_cookie", "binder_node", ["cookie"]),
+        ("node_async_todo", "binder_node", ["async_todo"]),
+        ("ref_id", "binder_ref", ["data.debug_id", "debug_id"]),
+        ("ref_desc", "binder_ref", ["data.desc", "desc"]),
+        ("ref_strong", "binder_ref", ["data.strong", "strong"]),
+        ("ref_weak", "binder_ref", ["data.weak", "weak"]),
+        ("ref_rb", "binder_ref", ["rb_node_desc"]),
+        ("ref_node_entry", "binder_ref", ["node_entry"]),
+        ("ref_proc", "binder_ref", ["proc"]),
+        ("ref_node", "binder_ref", ["node"]),
+        ("ref_death", "binder_ref", ["death"]),
+        ("work_type", "binder_work", ["type"]),
+        ("t_id", "binder_transaction", ["debug_id"]),
+        ("t_work", "binder_transaction", ["work"]),
+        ("t_from", "binder_transaction", ["from"]),
+        ("t_from_pid", "binder_transaction", ["from_pid"]),
+        ("t_from_tid", "binder_transaction", ["from_tid"]),
+        ("t_from_parent", "binder_transaction", ["from_parent"]),
+        ("t_to_proc", "binder_transaction", ["to_proc"]),
+        ("t_to_thread", "binder_transaction", ["to_thread"]),
+        ("t_to_parent", "binder_transaction", ["to_parent"]),
+        ("t_buffer", "binder_transaction", ["buffer"]),
+        ("t_code", "binder_transaction", ["code"]),
+        ("t_flags", "binder_transaction", ["flags"]),
+        ("buffer_transaction", "binder_buffer", ["transaction"]),
+        ("buffer_target_node", "binder_buffer", ["target_node"]),
+        ("buffer_data_size", "binder_buffer", ["data_size"]),
+        ("buffer_offsets_size", "binder_buffer", ["offsets_size"]),
+    ]
+    # context is v4.11~, and from_pid and from_tid are v6.5~
+    OPTIONAL_MEMBERS = ["proc_context", "context_mgr_node", "context_name", "t_from_pid", "t_from_tid"]
+
+    @classmethod
+    @Cache.cache_this_session(per_inferior=True, until_new_objfile=True)
+    def get_instance(cls):
+        return cls()
+
+    def __init__(self):
+        self.meta = []
+        self.warnings = []
+        return
+
+    def read_tree(self, owner, root, back):
+        """Return the entries of the rb-tree at `owner + root` whose member at `back` points back to `owner`, where
+        `back` is the offset from the rb_node."""
+        tree = KernelRBTree(owner + root)
+        nodes = tree.parse()
+        if tree.broken:
+            self.warnings.append("The rb-tree at {:#x} is broken".format(owner + root))
+        return [node for node in nodes if read_int_from_memory(node + back, safe=True) == owner]
+
+    def read_works(self, head):
+        """Return the binder_works linked from the list_head at `head` as [(work, type), ...], or None."""
+        nodes = self.read_list(head, self.MAX_ITEMS)
+        if nodes is None:
+            return None
+        return [(node, read_int32_from_memory(node + self.layout["work_type"], safe=True)) for node in nodes]
+
+    def is_list_head(self, address):
+        try:
+            return is_double_link_list(address)
+        except gdb.MemoryError:
+            return False
+
+    def is_binder_file(self, file):
+        """Return True if file->f_op holds binder_ioctl. f_op is in the head of struct file in all versions."""
+        f_op = GefUtil.field_int(GefUtil.typed_struct(file, "struct file"), "f_op")
+        if f_op is None:
+            candidates = self.read_words(file, 0x80) or []
+        else:
+            candidates = [f_op]
+        for ops in candidates:
+            if ops not in self.binder_fops:
+                # the file_operations are in the kernel image
+                self.binder_fops[ops] = False
+                if KernelAddressHeuristicFinderUtil.is_kernel_space(ops) and is_valid_addr(ops):
+                    if KernelAddressHeuristicFinderUtil.is_in_kernel_image(ops):
+                        self.binder_fops[ops] = self.binder_ioctl in (self.read_words(ops, 0x100) or [])
+            if self.binder_fops[ops]:
+                return True
+        return False
+
+    def is_proc(self, proc):
+        """Check a binder_proc with the back pointer of proc_node (hlist_node), and tsk that is a task of the
+        process pid. The offsets of pid and tsk are resolved by the first one."""
+        ptrsize = current_arch.ptrsize
+        if proc % ptrsize or not KernelAddressHeuristicFinderUtil.is_kernel_space(proc):
+            return False
+        node = proc + self.layout.get("proc_node", 0)
+        pprev = read_int_from_memory(node + ptrsize, safe=True)
+        if not pprev or read_int_from_memory(pprev, safe=True) != node:
+            return False
+        if "proc_pid" not in self.layout:
+            return self.resolve_proc(proc)
+        pid = read_int32_from_memory(proc + self.layout["proc_pid"], safe=True)
+        tsk = read_int_from_memory(proc + self.layout["proc_tsk"], safe=True)
+        return bool(pid) and self.tgids.get(tsk) == pid
+
+    def resolve_proc(self, proc):
+        """Set the offsets of binder_proc->pid and tsk. pid follows the 4 rb_roots (~v4.13) or waiting_threads (v4.14~),
+        and tsk follows it (or vma and vma_vm_mm until v4.13)."""
+        ptrsize = current_arch.ptrsize
+        words = self.read_words(proc, ptrsize * 16)
+        if words is None or len(words) < 16:
+            return False
+        for pid_slot in [6, 8]:
+            pid = read_int32_from_memory(proc + ptrsize * pid_slot, safe=True)
+            for tsk_slot in range(pid_slot + 1, pid_slot + 5):
+                if not pid or self.tgids.get(words[tsk_slot]) != pid:
+                    continue
+                self.layout.update({
+                    "proc_node": 0, "proc_threads": ptrsize * 2, "proc_nodes": ptrsize * 3, "proc_refs": ptrsize * 4,
+                    "proc_pid": ptrsize * pid_slot, "proc_tsk": ptrsize * tsk_slot, "fine_grained": pid_slot == 8,
+                })
+                return True
+        return False
+
+    def proc_from_file(self, file):
+        """Return file->private_data that is a binder_proc. The window can reach the next file object, so the smallest
+        offset is taken."""
+        private_data = GefUtil.field_int(GefUtil.typed_struct(file, "struct file"), "private_data")
+        if private_data is None:
+            candidates = self.read_words(file, 0x200) or []
+        else:
+            candidates = [private_data]
+        for proc in candidates:
+            if self.is_proc(proc):
+                return proc
+        return None
+
+    def collect_procs(self, found):
+        """Return the binder_procs linked from binder_procs by proc_node. Without the symbol, the head is found by
+        following pprev back to the one that is not an hlist_node, i.e., binder_procs itself."""
+        ptrsize = current_arch.ptrsize
+        offset = self.layout["proc_node"]
+        head = Ksym.get_addr("binder_procs")
+        if head is None:
+            node = found[0] + offset
+            seen = set()
+            while node not in seen and len(seen) < self.MAX_ITEMS:
+                seen.add(node)
+                pprev = read_int_from_memory(node + ptrsize, safe=True)
+                if not pprev:
+                    break
+                back = read_int_from_memory(pprev + ptrsize, safe=True)
+                if not back or read_int_from_memory(back, safe=True) != pprev:
+                    head = pprev
+                    break
+                node = pprev
+        procs = []
+        if head is not None:
+            prev, node = head, read_int_from_memory(head, safe=True)
+            while node and len(procs) < self.MAX_ITEMS and node - offset not in procs:
+                if read_int_from_memory(node + ptrsize, safe=True) != prev:
+                    self.warnings.append("binder_procs is broken at {:#x}".format(node - offset))
+                    break
+                procs.append(node - offset)
+                prev, node = node, read_int_from_memory(node, safe=True)
+        self.binder_procs = head
+        return procs + [proc for proc in found if proc not in procs]
+
+    def resolve_context(self, owners):
+        """Set the offsets of binder_proc->context and binder_context->name (v4.11~), where the name is the one of the
+        device (e.g. "binder" of /dev/binder or /dev/binderfs/binder)."""
+        ptrsize = current_arch.ptrsize
+        names = [(proc, path.rsplit("/", 1)[-1]) for proc, path in owners if path.rsplit("/", 1)[-1]]
+        if not names:
+            return False
+
+        def read_name(proc, index, slot):
+            context = read_int_from_memory(proc + index * ptrsize, safe=True)
+            pointer = read_int_from_memory((context or 0) + slot * ptrsize, safe=True)
+            return read_cstring_from_memory(pointer or 0, 0x40, safe=True)
+
+        # e.g. debugfs_entry of the first proc can lead to "binder" too, so all the procs are checked
+        proc, name = names[0]
+        words = self.read_words(proc, 0x800) or []
+        for index in range(self.layout["proc_tsk"] // ptrsize + 1, len(words)):
+            context = words[index]
+            if context % ptrsize or not KernelAddressHeuristicFinderUtil.is_kernel_space(context):
+                continue
+            if proc <= context < proc + 0x800 or context in self.task_infos:
+                continue
+            for slot, pointer in enumerate(self.read_words(context, 0x100) or []):
+                if not KernelAddressHeuristicFinderUtil.is_kernel_space(pointer):
+                    continue
+                if read_cstring_from_memory(pointer, 0x40, safe=True) != name:
+                    continue
+                if all(read_name(other, index, slot) == other_name for other, other_name in names):
+                    self.layout.update({"proc_context": index * ptrsize, "context_mgr_node": 0,
+                                        "context_name": slot * ptrsize})
+                    return True
+        return False
+
+    def resolve_thread(self, threads):
+        """Set the layout of binder_thread from [(pid of the proc, thread), ...]. pid follows rb_node (~v4.13) or
+        waiting_thread_node (v4.14~), and transaction_stack and todo follow looper (and looper_need_return)."""
+        ptrsize = current_arch.ptrsize
+        slots = [4, 6]
+        if self.layout["fine_grained"]:
+            slots = [6, 4]
+        counts = {}
+        for slot in slots:
+            counts[slot] = sum(read_int32_from_memory(thread + ptrsize * slot, safe=True) in self.tids.get(pid, ())
+                               for pid, thread in threads)
+        slot = slots[0]
+        if counts[slots[1]] > counts[slot]:
+            slot = slots[1]
+        pid = ptrsize * slot
+        if slot == 6:
+            stack = align_to_ptrsize(pid + 9)
+        else:
+            stack = align_to_ptrsize(pid + 8)
+        self.layout.update({"thread_proc": 0, "thread_rb": ptrsize, "thread_pid": pid, "thread_looper": pid + 4,
+                            "thread_stack": stack, "thread_todo": stack + ptrsize})
+        return all(self.is_list_head(thread + stack + ptrsize) for _, thread in threads)
+
+    def resolve_ref(self):
+        """Set the layout of binder_ref. Since v4.14, binder_ref_data {debug_id, desc, strong, weak} is the first.
+        Until v4.13, debug_id is the first, and desc, strong and weak follow node."""
+        ptrsize = current_arch.ptrsize
+        if self.layout["fine_grained"]:
+            rb = 16
+            self.layout.update({"ref_id": 0, "ref_desc": 4, "ref_strong": 8, "ref_weak": 12, "ref_death": rb + ptrsize * 10})
+        else:
+            rb = ptrsize
+            desc = rb + ptrsize * 10
+            self.layout.update({"ref_id": 0, "ref_desc": desc, "ref_strong": desc + 4, "ref_weak": desc + 8,
+                                "ref_death": align_to_ptrsize(desc + 12)})
+        self.layout.update({"ref_rb": rb, "ref_node_entry": rb + ptrsize * 6, "ref_proc": rb + ptrsize * 8,
+                            "ref_node": rb + ptrsize * 9})
+        return
+
+    def resolve_node(self, rbs, anchors):
+        """Set the layout of binder_node from the rb_nodes and the anchors (binder_node pointed by ref->node and
+        binder_context->binder_context_mgr_node). proc and refs follow rb_node, then 3 counters (~v4.13) or 4, ptr,
+        cookie, the flags and async_todo. ptr is 32 bits with the old 32-bit API (~v3.13, ANDROID_BINDER_IPC_32BIT)."""
+        ptrsize = current_arch.ptrsize
+        votes = collections.Counter(offset for base in anchors for offset in range(0, 0x100, 4) if base + offset in rbs)
+        if votes:
+            offset_rb, _ = votes.most_common(1)[0]
+            self.layout["node_rb_source"] = "the pointers to it"
+        elif self.layout["fine_grained"] and ptrsize == 4:
+            # debug_id, spinlock_t (4 bytes) and binder_work
+            offset_rb = ptrsize * 5
+            self.layout["node_rb_source"] = "guessed"
+        else:
+            offset_rb = ptrsize * 4
+            self.layout["node_rb_source"] = "guessed"
+        if self.layout["fine_grained"]:
+            counters = 4
+        else:
+            counters = 3
+        if ptrsize == 8:
+            options = [(8, 8)]
+        elif is_x86_32():
+            options = [(4, 4), (8, 4)]
+        else:
+            options = [(4, 4), (8, 8)]
+        sample = min(rbs, default=None)
+        for size, alignment in options:
+            if sample is None:
+                break
+            ptr = align(sample + ptrsize * 5 + counters * 4, alignment) - sample
+            todo = align_to_ptrsize(ptr + size * 2 + 4)
+            if all(self.is_list_head(rb + todo) for rb in rbs):
+                break
+        else:
+            return False
+        if sample is None:
+            size = options[0][0]
+            ptr = ptrsize * 5 + counters * 4
+            todo = align_to_ptrsize(ptr + size * 2 + 4)
+        self.layout.update({
+            "node_id": 0, "node_work": offset_rb - ptrsize * 3, "node_rb": offset_rb, "node_proc": offset_rb + ptrsize * 3,
+            "node_refs": offset_rb + ptrsize * 4, "node_internal_strong": offset_rb + ptrsize * 5,
+            "node_local_weak": offset_rb + ptrsize * 5 + 4, "node_local_strong": offset_rb + ptrsize * 5 + 8,
+            "node_ptr": offset_rb + ptr, "node_cookie": offset_rb + ptr + size, "node_flags": offset_rb + ptr + size * 2,
+            "node_async_todo": offset_rb + todo, "ptr_size": size,
+        })
+        return True
+
+    def resolve_transaction(self, transactions):
+        """Set the layout of binder_transaction. from follows debug_id and work, and from_parent follows it, or from_pid
+        and from_tid (v6.5~). to_proc is a binder_proc, and buffer->transaction points back."""
+        ptrsize = current_arch.ptrsize
+        for parent in [ptrsize * 5, ptrsize * 5 + 8]:
+            valid = []
+            for t in transactions:
+                to_proc = read_int_from_memory(t + parent + ptrsize, safe=True)
+                buffer = read_int_from_memory(t + parent + ptrsize * 5, safe=True)
+                back = read_int_from_memory((buffer or 0) + ptrsize * 6, safe=True)
+                valid.append(to_proc in self.procs and (buffer == 0 or back == t))
+            if not valid or not all(valid):
+                continue
+            if parent == ptrsize * 5:
+                self.layout.update({"t_from_pid": None, "t_from_tid": None})
+            else:
+                self.layout.update({"t_from_pid": ptrsize * 5, "t_from_tid": ptrsize * 5 + 4})
+            self.layout.update({
+                "t_id": 0, "t_work": ptrsize, "t_from": ptrsize * 4, "t_from_parent": parent, "t_to_proc": parent + ptrsize,
+                "t_to_thread": parent + ptrsize * 2, "t_to_parent": parent + ptrsize * 3, "t_buffer": parent + ptrsize * 5,
+                "t_code": parent + ptrsize * 6, "t_flags": parent + ptrsize * 6 + 4,
+                "buffer_transaction": ptrsize * 6, "buffer_target_node": ptrsize * 7, "buffer_data_size": ptrsize * 8,
+                "buffer_offsets_size": ptrsize * 9,
+            })
+            return True
+        return False
+
+    def resolve_proc_todo(self):
+        """Set offsetof(binder_proc, todo): the first list_head after tsk whose works are the ones to the proc
+        (a transaction to it, or the work of its node). A list of the others (e.g. buffers until v4.13) is skipped."""
+        ptrsize = current_arch.ptrsize
+        best = None
+        for proc, info in self.procs.items():
+            words = self.read_words(proc, 0x600) or []
+            nodes = {node + self.layout["node_work"] for node in info["nodes"]}
+            for index in range(self.layout["proc_tsk"] // ptrsize + 1, len(words) - 1):
+                if best is not None and index * ptrsize >= best:
+                    break
+                head = proc + index * ptrsize
+                if words[index] == head or not self.is_list_head(head):
+                    continue
+                works = self.read_works(head) or []
+                transactions = [work - self.layout["t_work"] for work, work_type in works if work_type == self.WORK_TRANSACTION]
+                if "t_to_proc" not in self.layout and transactions:
+                    self.resolve_transaction(transactions)
+                # all the transactions are to the proc, and at least one work is verified
+                verified = False
+                for work, work_type in works:
+                    if work_type is None or not 0 < work_type < 0x20:
+                        verified = False
+                        break
+                    if work_type == self.WORK_TRANSACTION:
+                        t = work - self.layout["t_work"]
+                        verified = read_int_from_memory(t + self.layout.get("t_to_proc", 0), safe=True) == proc
+                        if not verified:
+                            break
+                    elif work in nodes:
+                        verified = True
+                if verified:
+                    best = index * ptrsize
+        self.layout["proc_todo"] = best
+        return best is not None
+
+    def resolve_layout_by_debug_info(self):
+        """Return the layout from the debug information, or None."""
+        layout = {}
+        for key, type_name, members in self.MEMBERS:
+            for member in members:
+                layout[key] = GefUtil.offsetof(type_name, member)
+                if layout[key] is not None:
+                    break
+        layout["ptr_size"] = GefUtil.member_type_size("struct binder_node", "ptr")
+        if None in [value for key, value in layout.items() if key not in self.OPTIONAL_MEMBERS]:
+            return None
+        # the bit-fields of has_strong_ref and has_weak_ref follow cookie
+        layout["node_flags"] = layout["node_cookie"] + layout["ptr_size"]
+        # binder_ref_data (v4.14~)
+        layout["fine_grained"] = GefUtil.offsetof("binder_ref", "data") is not None
+        layout["node_rb_source"] = "debug info"
+        return layout
+
+    def get_work_names(self):
+        """Return {value: name} of enum binder_work_type from the debug information."""
+        field = GefUtil.lookup_field("struct binder_work", "type")
+        names = {self.WORK_TRANSACTION: "TRANSACTION", self.WORK_TRANSACTION_COMPLETE: "TRANSACTION_COMPLETE"}
+        if field is None:
+            return names
+        try:
+            for enumerator in field.type.strip_typedefs().fields():
+                names[int(enumerator.enumval)] = enumerator.name.replace("BINDER_WORK_", "")
+        except (gdb.error, AttributeError, TypeError):
+            pass
+        return names
+
+    def read_proc(self, proc):
+        """Return the threads, nodes and refs of `proc`."""
+        layout = self.layout
+        tsk = read_int_from_memory(proc + layout["proc_tsk"], safe=True)
+        thread_nodes = self.read_tree(proc, layout["proc_threads"], layout["thread_proc"] - layout["thread_rb"])
+        ref_nodes = self.read_tree(proc, layout["proc_refs"], layout["ref_proc"] - layout["ref_rb"])
+        info = {
+            "pid": read_int32_from_memory(proc + layout["proc_pid"], safe=True), "tsk": tsk, "context": None,
+            "owners": self.owners.get(proc, []),
+            "threads": [node - layout["thread_rb"] for node in thread_nodes],
+            "refs": [node - layout["ref_rb"] for node in ref_nodes],
+        }
+        if "node_rb" in layout:
+            back = layout["node_proc"] - layout["node_rb"]
+            info["nodes"] = [node - layout["node_rb"] for node in self.read_tree(proc, layout["proc_nodes"], back)]
+        else:
+            # binder_node->proc is 3 pointers after rb_node; the start of binder_node is resolved later
+            info["node_rbs"] = self.read_tree(proc, layout["proc_nodes"], current_arch.ptrsize * 3)
+        if layout.get("proc_context") is not None:
+            context = read_int_from_memory(proc + layout["proc_context"], safe=True)
+            name = read_int_from_memory((context or 0) + layout["context_name"], safe=True)
+            info["context"] = read_cstring_from_memory(name or 0, 0x40, safe=True)
+            info["context_mgr_node"] = read_int_from_memory((context or 0) + layout["context_mgr_node"], safe=True)
+        return info
+
+    def initialize_heuristic(self, procs, owners):
+        """Resolve the layout from the invariants of the binder_procs."""
+        ptrsize = current_arch.ptrsize
+        layout = self.layout
+        if not self.resolve_context(owners):
+            layout["proc_context"] = None
+        layout.update({"thread_proc": 0, "thread_rb": ptrsize})
+        self.resolve_ref()
+        self.procs = {proc: self.read_proc(proc) for proc in procs}
+        threads = [(info["pid"], thread) for info in self.procs.values() for thread in info["threads"]]
+        if not self.resolve_thread(threads):
+            self.meta.append(("warn", "The layout of binder_thread is not verified"))
+
+        # binder_node, whose start is found from the pointers to it
+        rbs = {rb for info in self.procs.values() for rb in info["node_rbs"]}
+        anchors = {read_int_from_memory(ref + layout["ref_node"], safe=True) for info in self.procs.values()
+                   for ref in info["refs"]}
+        anchors |= {info.get("context_mgr_node") for info in self.procs.values()}
+        anchors -= {0, None}
+        if not self.resolve_node(rbs, anchors):
+            self.meta.append(("err", "Could not resolve the layout of binder_node"))
+            return False
+        for info in self.procs.values():
+            info["nodes"] = [rb - layout["node_rb"] for rb in info.pop("node_rbs")]
+
+        # binder_transaction, from the stacks of the threads and the todo lists
+        layout.update({"work_type": ptrsize * 2, "t_work": ptrsize})
+        samples = []
+        for info in self.procs.values():
+            for thread in info["threads"]:
+                t = read_int_from_memory(thread + layout["thread_stack"], safe=True)
+                if t:
+                    samples.append(t)
+                for work, work_type in self.read_works(thread + layout["thread_todo"]) or []:
+                    if work_type == self.WORK_TRANSACTION:
+                        samples.append(work - ptrsize)
+            for node in info["nodes"]:
+                for work, work_type in self.read_works(node + layout["node_async_todo"]) or []:
+                    if work_type == self.WORK_TRANSACTION:
+                        samples.append(work - ptrsize)
+        if samples and not self.resolve_transaction(samples):
+            self.meta.append(("err", "Could not resolve the layout of binder_transaction"))
+            return False
+        if not self.resolve_proc_todo():
+            self.meta.append(("info", "binder_proc->todo: unknown (no proc has a pending work)"))
+        if "t_to_proc" not in layout:
+            self.meta.append(("info", "binder_transaction: unknown (no transaction)"))
+        return True
+
+    def initialize(self):
+        self.meta = []
+        self.warnings = []
+        self.kversion = Kernel.version()
+        if self.kversion is None:
+            self.meta.append(("err", "Could not find Linux kernel"))
+            return None
+        self.binder_ioctl = Ksym.get_addr("binder_ioctl")
+        if self.binder_ioctl is None:
+            self.meta.append(("err", "binder is unavailable (CONFIG_ANDROID_BINDER_IPC=n)"))
+            return None
+        self.meta.append(("info", "binder_ioctl: {:#x}".format(self.binder_ioctl)))
+
+        self.task_command = Kernel.task()
+        task_ready = self.task_command.initialize(files=True, threads=True)
+        self.meta.extend(self.task_command.meta)
+        if not task_ready or not self.task_command.enabled["files"]:
+            return None
+        self.task_infos = {info["task"]: info for info in self.task_command.get_tasks(threads=True)}
+        # the thread group of each task, where tsk of binder_proc is the group leader (or the opener until v4.13)
+        offset_group_leader = getattr(self.task_command, "offset_group_leader", None)
+        self.tgids = {}
+        self.tids = {}
+        for task, info in self.task_infos.items():
+            leader = None
+            if offset_group_leader is not None:
+                leader = read_int_from_memory(task + offset_group_leader, safe=True)
+            tgid = self.task_infos.get(leader, info)["pid"]
+            self.tgids[task] = tgid
+            self.tids.setdefault(tgid, set()).add(info["pid"])
+
+        # the binder fds of the processes
+        self.layout = self.resolve_layout_by_debug_info()
+        if self.layout is None:
+            self.layout = {}
+        self.binder_fops = {}
+        files = []
+        for task, info in self.task_infos.items():
+            if not info["mm"] or info["is_thread"]:
+                continue
+            entries, _ = self.task_command.get_open_files(task)
+            files += [(task, fd, file) for fd, file, _ in entries if self.is_binder_file(file)]
+        if not files:
+            self.meta.append(("err", "Could not find any binder fd"))
+            return None
+        found = [self.proc_from_file(file) for _, _, file in files]
+        if not any(found) and self.layout:
+            # e.g., the debug information of another build
+            self.meta.append(("warn", "The debug information does not match binder_proc"))
+            self.layout = {}
+            found = [self.proc_from_file(file) for _, _, file in files]
+        if not any(found):
+            self.meta.append(("err", "Could not find binder_proc (CONFIG_RANDSTRUCT=y needs the debug information)"))
+            return None
+        self.owners = {}
+        owners = []
+        for (task, fd, file), proc in zip(files, found):
+            if proc is None:
+                continue
+            try:
+                path = self.task_command.kpath.get_file_path(file)
+            except (gdb.MemoryError, OverflowError, RuntimeError):
+                # the fd is still an owner, but its unknown path cannot tell the device name to resolve_context()
+                self.owners.setdefault(proc, []).append({"task": task, "fd": fd, "file": file, "path": "???"})
+                continue
+            self.owners.setdefault(proc, []).append({"task": task, "fd": fd, "file": file, "path": path})
+            owners.append((proc, path))
+
+        procs = self.collect_procs(list(self.owners))
+        if self.binder_procs is None:
+            self.meta.append(("warn", "Could not find binder_procs, so only the binder_procs of the fds are listed"))
+        else:
+            self.meta.append(("info", "binder_procs: {:#x}".format(self.binder_procs)))
+        self.meta.append(("info", "Number of binder_procs: {:d}".format(len(procs))))
+        if self.layout.get("node_rb_source") != "debug info":
+            self.meta.append(("info", "layout: heuristic"))
+            if not self.initialize_heuristic(procs, owners):
+                return None
+        else:
+            self.meta.append(("info", "layout: debug info"))
+            self.procs = {proc: self.read_proc(proc) for proc in procs}
+        for key, type_name, members in self.MEMBERS:
+            if key not in self.layout:
+                continue
+            member = members[0]
+            if not self.layout["fine_grained"]:
+                member = members[-1]
+            value = self.layout[key]
+            if value is None:
+                value_text = "unavailable"
+            else:
+                value_text = "{:#x}".format(value)
+            self.meta.append(("info", "offsetof({:s}, {:s}): {:s}".format(type_name, member, value_text)))
+        if "node_flags" in self.layout:
+            message = "offsetof(binder_node, has_strong_ref): {:#x} (has_weak_ref is bit 2)".format(self.layout["node_flags"])
+            self.meta.append(("info", message))
+            self.meta.append(("info", "sizeof(binder_node->ptr): {:#x}".format(self.layout["ptr_size"])))
+            self.meta.append(("info", "the start of binder_node: {:s}".format(self.layout["node_rb_source"])))
+
+        self.work_names = self.get_work_names()
+        self.nodes = {node: proc for proc, info in self.procs.items() for node in info["nodes"]}
+        self.deaths = set()
+        for info in self.procs.values():
+            for ref in info["refs"]:
+                self.deaths.add(read_int_from_memory(ref + self.layout["ref_death"], safe=True))
+        self.deaths -= {0, None}
+        return True
+
+    def proc_pid(self, proc):
+        if not proc:
+            return 0
+        return read_int32_from_memory(proc + self.layout["proc_pid"], safe=True) or 0
+
+    def thread_pid(self, thread):
+        if not thread:
+            return 0
+        return read_int32_from_memory(thread + self.layout["thread_pid"], safe=True) or 0
+
+    def walk_stack(self, thread):
+        """Return [(transaction, "outgoing" or "incoming"), ...] of the transaction_stack of `thread`. A transaction
+        from the thread is followed by from_parent, and the one to the thread by to_parent."""
+        layout = self.layout
+        result = []
+        t = read_int_from_memory(thread + layout["thread_stack"], safe=True)
+        while t and len(result) < self.MAX_ITEMS and t not in [x for x, _ in result]:
+            if read_int_from_memory(t + layout["t_from"], safe=True) == thread:
+                result.append((t, "outgoing"))
+                t = read_int_from_memory(t + layout["t_from_parent"], safe=True)
+            elif read_int_from_memory(t + layout["t_to_thread"], safe=True) == thread:
+                result.append((t, "incoming"))
+                t = read_int_from_memory(t + layout["t_to_parent"], safe=True)
+            else:
+                result.append((t, "bad"))
+                break
+        return result
+
+    def work_name(self, work, work_type, thread):
+        """Return the name of a binder_work other than a transaction."""
+        if work_type in self.work_names:
+            return self.work_names[work_type]
+        if work - self.layout["node_work"] in self.nodes:
+            return "NODE"
+        if work in self.deaths:
+            return "DEATH_NOTIFICATION (type {:d})".format(work_type)
+        # binder_thread->return_error and reply_error
+        if thread and 0 < work - thread < 0x100:
+            return "RETURN_ERROR"
+        return "type {:d}".format(work_type or 0)
+
+    def read_transaction(self, t):
+        layout = self.layout
+        if layout["t_from_pid"] is None:
+            from_thread = read_int_from_memory(t + layout["t_from"], safe=True)
+            from_proc = read_int_from_memory((from_thread or 0) + layout["thread_proc"], safe=True)
+            from_text = "{:d}:{:d}".format(self.proc_pid(from_proc), self.thread_pid(from_thread))
+        else:
+            from_pid = read_int32_from_memory(t + layout["t_from_pid"], safe=True) or 0
+            from_tid = read_int32_from_memory(t + layout["t_from_tid"], safe=True) or 0
+            from_text = "{:d}:{:d}".format(from_pid, from_tid)
+        to_proc = read_int_from_memory(t + layout["t_to_proc"], safe=True)
+        to_thread = read_int_from_memory(t + layout["t_to_thread"], safe=True)
+        to_text = "{:d}:{:d}".format(self.proc_pid(to_proc), self.thread_pid(to_thread))
+        code = read_int32_from_memory(t + layout["t_code"], safe=True) or 0
+        flags = read_int32_from_memory(t + layout["t_flags"], safe=True) or 0
+        node_text, size_text = "-", "-"
+        buffer = read_int_from_memory(t + layout["t_buffer"], safe=True)
+        if buffer:
+            target = read_int_from_memory(buffer + layout["buffer_target_node"], safe=True)
+            if target:
+                node_text = str(read_int32_from_memory(target + layout["node_id"], safe=True))
+            data_size = read_int_from_memory(buffer + layout["buffer_data_size"], safe=True) or 0
+            offsets_size = read_int_from_memory(buffer + layout["buffer_offsets_size"], safe=True) or 0
+            size_text = "{:d}:{:d}".format(data_size, offsets_size)
+        return {
+            "id": read_int32_from_memory(t + layout["t_id"], safe=True), "from": from_text, "to": to_text,
+            "code": code, "flags": flags, "node": node_text, "size": size_text,
+        }
+
+    def collect_works(self, proc, info, threads):
+        """Return the transactions [(transaction, where, state), ...] and the other works [(work, where, name), ...]."""
+        layout = self.layout
+        lists = []
+        transactions = []
+        for pid, thread in threads:
+            for t, state in self.walk_stack(thread):
+                transactions.append((t, "thread {:d}".format(pid), state))
+            lists.append((thread + layout["thread_todo"], "thread {:d}".format(pid), "pending", thread))
+        if layout["proc_todo"] is not None:
+            lists.append((proc + layout["proc_todo"], "proc", "pending", None))
+        for node in info["nodes"]:
+            node_id = read_int32_from_memory(node + layout["node_id"], safe=True)
+            lists.append((node + layout["node_async_todo"], "node {:d}".format(node_id or 0), "async", None))
+        others = []
+        for head, where, state, thread in lists:
+            works = self.read_works(head)
+            if works is None:
+                self.warnings.append("The list at {:#x} is broken".format(head))
+                continue
+            for work, work_type in works:
+                if work_type == self.WORK_TRANSACTION:
+                    transactions.append((work - layout["t_work"], where, state))
+                else:
+                    others.append((work, where, self.work_name(work, work_type, thread)))
+        return transactions, others
+
+    def thread_looper(self, thread):
+        return read_int32_from_memory(thread + self.layout["thread_looper"], safe=True) or 0
+
+    def read_node(self, node):
+        """Return the members of binder_node `node`, and the pids of the procs of the refs to it."""
+        layout = self.layout
+        refs = self.read_hlist(node + layout["node_refs"])
+        procs = [self.proc_pid(read_int_from_memory(entry - layout["ref_node_entry"] + layout["ref_proc"], safe=True))
+                 for entry in refs]
+        flags = read_int8_from_memory(node + layout["node_flags"], safe=True) or 0
+        counters = [read_int32_from_memory(node + layout[key], safe=True) or 0
+                    for key in ["node_local_strong", "node_local_weak", "node_internal_strong"]]
+        if layout["ptr_size"] == 4:
+            read_ptr = read_int32_from_memory
+        else:
+            read_ptr = read_int64_from_memory
+        return {
+            "node": node, "id": read_int32_from_memory(node + layout["node_id"], safe=True) or 0, "flags": flags,
+            "procs": procs, "counters": counters, "ptr": read_ptr(node + layout["node_ptr"], safe=True) or 0,
+            "cookie": read_ptr(node + layout["node_cookie"], safe=True) or 0,
+        }
+
+    def read_ref(self, ref):
+        """Return the members of binder_ref `ref`. node_pid is None if the node is dead (it has no proc)."""
+        layout = self.layout
+        node = read_int_from_memory(ref + layout["ref_node"], safe=True) or 0
+        node_proc = read_int_from_memory(node + layout["node_proc"], safe=True)
+        node_pid = None
+        if node_proc:
+            node_pid = self.proc_pid(node_proc)
+        return {
+            "ref": ref, "id": read_int32_from_memory(ref + layout["ref_id"], safe=True),
+            "desc": read_int32_from_memory(ref + layout["ref_desc"], safe=True) or 0,
+            "node_id": read_int32_from_memory(node + layout["node_id"], safe=True), "node_pid": node_pid,
+            "strong": read_int32_from_memory(ref + layout["ref_strong"], safe=True),
+            "weak": read_int32_from_memory(ref + layout["ref_weak"], safe=True),
+            "death": read_int_from_memory(ref + layout["ref_death"], safe=True) or 0,
+        }
+
+    def read_hlist(self, head):
+        """Return the hlist_nodes linked from the hlist_head at `head`."""
+        nodes = []
+        node = read_int_from_memory(head, safe=True)
+        while node and len(nodes) < self.MAX_ITEMS and node not in nodes:
+            nodes.append(node)
+            node = read_int_from_memory(node, safe=True)
+        return nodes
+
+
+@register_command
+class KernelBinderCommand(GenericCommand, BufferingOutput):
+    """Display the binder_proc, binder_thread, binder_node, binder_ref and binder_transaction of Android binder."""
+
+    _cmdline_ = "kbinder"
+    _category_ = "06-g. Qemu-system/KGDB Cooperation - Linux Advanced"
+
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("-hh", "--help-simple", action="store_true", help="show help without ASCII diagram.")
+    parser.add_argument("-p", "--pid", type=int, help="select the binder_proc of this pid.")
+    parser.add_argument("--meta", action="store_true", help="display offset information.")
+    parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
+    parser.add_argument("-q", "--quiet", action="store_true", help="show result only.")
+    _syntax_ = parser.format_help()
+
+    _example_ = "\n".join([
+        "{0:s} -q",
+        "{0:s} --pid 1337",
+    ]).format(_cmdline_)
+
+    _note_ = "\n".join([
+        "This command requires CONFIG_RANDSTRUCT=n unless vmlinux with debug information is loaded.",
+        "binder_proc is found from file->private_data of a binder fd, and the others are linked from proc_node.",
+        "The transactions are the ones on the stack of each thread, and the pending ones in the todo of each proc and",
+        "thread and in the async_todo of each node, like /sys/kernel/debug/binder/state.",
+        "The binder written in Rust (CONFIG_ANDROID_BINDER_IPC_RUST=y) is not supported.",
+        "",
+        "Simplified binder structure:",
+        "",
+        "+-file---------+     +-binder_proc-----+       +-binder_thread-----+     +-binder_transaction-+",
+        "| ...          |  +->| proc_node       |  +--->| proc              |  +->| debug_id           |",
+        "| private_data |--+  | threads         |--+    | rb_node           |  |  | work               |",
+        "| ...          |     | nodes           |----+  | pid               |  |  | from               |--->binder_thread",
+        "+--------------+     | refs_by_desc    |--+ |  | looper            |  |  | from_parent        |",
+        "                     | refs_by_node    |  | |  | transaction_stack |--+  | to_proc            |--->binder_proc",
+        "                     | waiting_threads |  | |  | todo              |     | to_thread          |--->binder_thread",
+        "                     | pid             |  | |  +-------------------+     | to_parent          |",
+        "                     | tsk             |  | |                            | buffer             |--->binder_buffer",
+        "                     | todo            |  | |                            | code               |",
+        "                     | ...             |  | |                            | flags              |",
+        "                     | context         |  | |                            +--------------------+",
+        "                     +-----------------+  | |",
+        "                                          | |",
+        "      +-----------------------------------+ |",
+        "      |                                     |",
+        "      |  +-binder_ref-------+               |  +-binder_node-------+",
+        "      +->| data             |               +->| debug_id          |",
+        "         |   debug_id       |                  | work              |",
+        "         |   desc           |                  | rb_node           |",
+        "         |   strong, weak   |                  | proc              |--->binder_proc",
+        "         | rb_node_desc     |                  | refs              |--->node_entry of binder_ref",
+        "         | rb_node_node     |                  | ...               |",
+        "         | node_entry       |                  | ptr, cookie       |",
+        "         | proc             |--->binder_proc   | async_todo        |",
+        "         | node             |--->binder_node   +-------------------+",
+        "         | death            |",
+        "         +------------------+",
+        "",
+        "threads, nodes and refs_by_desc are rb-trees, and each entry points back to binder_proc with proc.",
+        "waiting_threads (v4.14~) and context (v4.11~) are not in old kernels. Until v4.13, binder_node has no lock before",
+        "work, and the members of data are in binder_ref itself (debug_id first, desc, strong and weak after node).",
+    ])
+
+    LOOPER_FLAGS = {
+        0x01: "REGISTERED",
+        0x02: "ENTERED",
+        0x04: "EXITED",
+        0x08: "INVALID",
+        0x10: "WAITING",
+    }
+
+    def dump_proc(self, proc, info):
+        quiet = self.args.quiet
+        comm = self.kbinder.task_infos.get(info["tsk"], {}).get("comm") or "?"
+        title = "binder_proc {:#x}: pid {:d} ({:s})".format(proc, info["pid"] or 0, comm)
+        if info["context"] is not None:
+            title += " context {:s}".format(info["context"])
+        self.out.append(titlify(title, color="bold", msg_color="bold"))
+
+        fmt = "{:18s} {:>7s} {:16s} {:>4s} {:18s} {:s}"
+        if not quiet:
+            self.out.append(GefUtil.make_legend(fmt.format("owner task", "pid", "task->comm", "fd", "file", "path")))
+        for owner in info["owners"]:
+            task_info = self.kbinder.task_infos.get(owner["task"], {})
+            self.out.append(fmt.format("{:#018x}".format(owner["task"]), str(task_info.get("pid", "?")),
+                                       task_info.get("comm") or "?", str(owner["fd"]), "{:#018x}".format(owner["file"]),
+                                       owner["path"]))
+        if not info["owners"]:
+            self.out.append("(no fd; it is being released or the fd is not found)")
+
+        threads = sorted((self.kbinder.thread_pid(thread), thread) for thread in info["threads"])
+        self.out.append(titlify("threads"))
+        fmt = "{:18s} {:>7s} {:6s} {:s}"
+        if not quiet and threads:
+            self.out.append(GefUtil.make_legend(fmt.format("binder_thread", "pid", "looper", "looper flags")))
+        for pid, thread in threads:
+            looper = self.kbinder.thread_looper(thread)
+            names, _ = GefUtil.flags_to_names(looper, self.LOOPER_FLAGS)
+            self.out.append(fmt.format("{:#018x}".format(thread), str(pid), "{:#04x}".format(looper), "|".join(names) or "-"))
+        if not threads:
+            self.out.append("none")
+
+        nodes = [self.kbinder.read_node(node) for node in info["nodes"]]
+        self.out.append(titlify("nodes"))
+        fmt = "{:18s} {:>6s} {:18s} {:18s} {:>2s} {:>2s} {:>4s} {:>4s} {:>4s} {:s}"
+        if not quiet and nodes:
+            legend = ["binder_node", "id", "ptr", "cookie", "hs", "hw", "ls", "lw", "is", "refs (proc)"]
+            self.out.append(GefUtil.make_legend(fmt.format(*legend)))
+        for entry in sorted(nodes, key=lambda entry: (entry["id"], entry["node"])):
+            procs = entry["procs"]
+            refs_text = str(len(procs))
+            if procs:
+                refs_text += " ({:s})".format(" ".join(str(x) for x in procs))
+            self.out.append(fmt.format(
+                "{:#018x}".format(entry["node"]), str(entry["id"]), "{:#018x}".format(entry["ptr"]),
+                "{:#018x}".format(entry["cookie"]), str(entry["flags"] & 1),
+                str(entry["flags"] >> 2 & 1), *[str(x) for x in entry["counters"]], refs_text))
+        if not nodes:
+            self.out.append("none")
+
+        refs = [self.kbinder.read_ref(ref) for ref in info["refs"]]
+        self.out.append(titlify("refs"))
+        fmt = "{:18s} {:>6s} {:>6s} {:>6s} {:>9s} {:>4s} {:>4s} {:s}"
+        if not quiet and refs:
+            legend = ["binder_ref", "id", "desc", "node", "node pid", "s", "w", "death"]
+            self.out.append(GefUtil.make_legend(fmt.format(*legend)))
+        for entry in sorted(refs, key=lambda entry: (entry["desc"], entry["ref"])):
+            if entry["node_pid"] is None:
+                node_pid = "dead"
+            else:
+                node_pid = str(entry["node_pid"])
+            self.out.append(fmt.format(
+                "{:#018x}".format(entry["ref"]), str(entry["id"]), str(entry["desc"]), str(entry["node_id"]), node_pid,
+                str(entry["strong"]), str(entry["weak"]), "{:#018x}".format(entry["death"])))
+        if not refs:
+            self.out.append("none")
+
+        self.out.append(titlify("transactions"))
+        if "t_to_proc" not in self.kbinder.layout:
+            self.out.append("none")
+            return
+        transactions, others = self.kbinder.collect_works(proc, info, threads)
+        fmt = "{:18s} {:>6s} {:12s} {:8s} {:>13s} {:>13s} {:>10s} {:>6s} {:>5s} {:s}"
+        if not quiet and transactions:
+            legend = ["binder_transaction", "id", "where", "state", "from", "to", "code", "flags", "node", "size"]
+            self.out.append(GefUtil.make_legend(fmt.format(*legend)))
+        for t, where, state in transactions:
+            entry = self.kbinder.read_transaction(t)
+            self.out.append(fmt.format("{:#018x}".format(t), str(entry["id"]), where, state, entry["from"], entry["to"],
+                                       "{:#x}".format(entry["code"]), "{:#x}".format(entry["flags"]), entry["node"],
+                                       entry["size"]))
+        if not transactions:
+            self.out.append("none")
+        if others:
+            self.out.append(titlify("other works"))
+            fmt = "{:18s} {:12s} {:s}"
+            if not quiet:
+                self.out.append(GefUtil.make_legend(fmt.format("binder_work", "where", "type")))
+            for work, where, name in others:
+                self.out.append(fmt.format("{:#018x}".format(work), where, name))
+        return
+
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
+    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64"))
+    @Decorator.only_if_in_kernel_or_kpti_disabled
+    def do_invoke(self, args):
+        self.args = args
+        self.quiet_info("Wait for memory scan")
+        self.kbinder = Kernel.binder()
+        ret = self.kbinder.initialize()
+        if args.meta or not ret:
+            for func, line in Kernel.export_meta(self, self.kbinder.meta):
+                func(line)
+        if not ret or args.meta:
+            return
+
+        self.out = []
+        procs = sorted((info["pid"] or 0, proc) for proc, info in self.kbinder.procs.items())
+        matched = False
+        for pid, proc in procs:
+            if args.pid is not None and pid != args.pid:
+                continue
+            matched = True
+            self.dump_proc(proc, self.kbinder.procs[proc])
+        for message in self.kbinder.warnings:
+            self.warn_add_out(message)
+        if args.pid is not None and not matched:
+            self.warn_add_out("No binder_proc of pid {:d}".format(args.pid))
         self.print_output(check_terminal_size=True)
         return
 

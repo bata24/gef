@@ -11011,6 +11011,77 @@ Before v5.11, bd_disk is set only while the block device is opened.
 If it cannot be resolved, the name is guessed from the major/minor number and marked as `(guessed)`.
 ```
 
+## `kbinder`
+
+Display the binder_proc, binder_thread, binder_node, binder_ref and binder_transaction of Android binder.
+
+
+### Syntax
+
+```text
+usage: kbinder [-h] [-hh] [-p PID] [--meta] [-n] [-q]
+
+options:
+  -h, --help          show this help message and exit
+  -hh, --help-simple  show help without ASCII diagram.
+  -p, --pid PID       select the binder_proc of this pid.
+  --meta              display offset information.
+  -n, --no-pager      do not use the pager.
+  -q, --quiet         show result only.
+```
+
+### Examples
+
+```gdb
+kbinder -q
+kbinder --pid 1337
+```
+
+### Notes
+
+```text
+This command requires CONFIG_RANDSTRUCT=n unless vmlinux with debug information is loaded.
+binder_proc is found from file->private_data of a binder fd, and the others are linked from proc_node.
+The transactions are the ones on the stack of each thread, and the pending ones in the todo of each proc and
+thread and in the async_todo of each node, like /sys/kernel/debug/binder/state.
+The binder written in Rust (CONFIG_ANDROID_BINDER_IPC_RUST=y) is not supported.
+
+Simplified binder structure:
+
++-file---------+     +-binder_proc-----+       +-binder_thread-----+     +-binder_transaction-+
+| ...          |  +->| proc_node       |  +--->| proc              |  +->| debug_id           |
+| private_data |--+  | threads         |--+    | rb_node           |  |  | work               |
+| ...          |     | nodes           |----+  | pid               |  |  | from               |--->binder_thread
++--------------+     | refs_by_desc    |--+ |  | looper            |  |  | from_parent        |
+                     | refs_by_node    |  | |  | transaction_stack |--+  | to_proc            |--->binder_proc
+                     | waiting_threads |  | |  | todo              |     | to_thread          |--->binder_thread
+                     | pid             |  | |  +-------------------+     | to_parent          |
+                     | tsk             |  | |                            | buffer             |--->binder_buffer
+                     | todo            |  | |                            | code               |
+                     | ...             |  | |                            | flags              |
+                     | context         |  | |                            +--------------------+
+                     +-----------------+  | |
+                                          | |
+      +-----------------------------------+ |
+      |                                     |
+      |  +-binder_ref-------+               |  +-binder_node-------+
+      +->| data             |               +->| debug_id          |
+         |   debug_id       |                  | work              |
+         |   desc           |                  | rb_node           |
+         |   strong, weak   |                  | proc              |--->binder_proc
+         | rb_node_desc     |                  | refs              |--->node_entry of binder_ref
+         | rb_node_node     |                  | ...               |
+         | node_entry       |                  | ptr, cookie       |
+         | proc             |--->binder_proc   | async_todo        |
+         | node             |--->binder_node   +-------------------+
+         | death            |
+         +------------------+
+
+threads, nodes and refs_by_desc are rb-trees, and each entry points back to binder_proc with proc.
+waiting_threads (v4.14~) and context (v4.11~) are not in old kernels. Until v4.13, binder_node has no lock before
+work, and the members of data are in binder_ref itself (debug_id first, desc, strong and weak after node).
+```
+
 ## `kbpf`
 
 Dump the BPF information.
