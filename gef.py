@@ -86135,7 +86135,8 @@ class KernelCred:
 
 
 class KernelMM:
-    """Resolve ``mm_struct``/``vm_area_struct`` layouts and enumerate task mappings."""
+    """Resolve `mm_struct`/`vm_area_struct` layouts and enumerate task mappings.
+    It also reads the user-land memory of a task through the page table of its mm->pgd."""
 
     VmArea = collections.namedtuple("VmArea", "start end flags file")
 
@@ -86155,10 +86156,13 @@ class KernelMM:
         self.offset_vm_flags = None
         self.offset_vm_file = None
         self.kpath = None
+        self.warnings = []
         return
 
     def initialize(self, task_addrs, offset_task_mm):
         """Resolve the VMA layout and initialize pathname resolution."""
+        # the warnings that a command stopped by an error has not printed
+        self.warnings = []
         if self.initialized:
             return True
 
@@ -86200,6 +86204,8 @@ class KernelMM:
         self.meta.append(("info", "offsetof(vm_area_struct, vm_file): {:#x}".format(self.offset_vm_file)))
 
         vma, vm_file = self.find_file_vma()
+        # an incomplete traversal only narrows the search for the sample
+        self.meta.extend(("warn", message) for message in self.pop_warnings())
         if vm_file is None:
             self.meta.append(("err", "Could not find a valid vm_file"))
             return None
@@ -86217,7 +86223,7 @@ class KernelMM:
         return True
 
     def get_task_file_names(self, task):
-        """Return the names of the files ``task`` maps, which is cheaper than their paths."""
+        """Return the names of the files `task` maps, which is cheaper than their paths."""
         mm = read_int_from_memory(task + self.offset_task_mm)
         if mm == 0:
             return []
@@ -86233,7 +86239,7 @@ class KernelMM:
         return names
 
     def get_task_maps(self, task):
-        """Return the virtual memory areas owned by ``task``."""
+        """Return the virtual memory areas owned by `task`."""
         mm = read_int_from_memory(task + self.offset_task_mm)
         if mm == 0:
             return []
@@ -86262,20 +86268,27 @@ class KernelMM:
         return None, None
 
     def iter_vmas(self, mm, max_vmas=0x100000):
-        """Iterate VMAs, warning if a cycle or the traversal limit leaves the result incomplete."""
+        """Iterate VMAs. If a cycle or the traversal limit leaves the result incomplete, the reason is added to
+        self.warnings, which the command prints (see pop_warnings())."""
         current, get_next_vma_area_struct = self.get_vm_area_struct(mm)
         seen = set()
         while current:
             if current in seen:
-                warn("VMA traversal of mm {:#x} is incomplete: cycle at {:#x}".format(mm, current))
+                self.warnings.append("VMA traversal of mm {:#x} is incomplete: cycle at {:#x}".format(mm, current))
                 return
             if len(seen) >= max_vmas:
-                warn("VMA traversal of mm {:#x} is incomplete: limit reached at {:#x}".format(mm, current))
+                message = "VMA traversal of mm {:#x} is incomplete: limit reached at {:#x}".format(mm, current)
+                self.warnings.append(message)
                 return
             seen.add(current)
             yield current
             current = get_next_vma_area_struct(current)
         return
+
+    def pop_warnings(self):
+        """Return the warnings of the VMA traversals since the last call, and clear them."""
+        warnings, self.warnings = self.warnings, []
+        return warnings
 
     @staticmethod
     @Cache.cache_this_session(per_inferior=True, until_new_objfile=True)
@@ -86349,11 +86362,12 @@ class KernelMM:
             if (cr4 >> 5) & 1:
                 offset_vm_flags += 4
         elif is_arm32():
-            ret = gdb.execute("pagewalk --no-pager --disable-color", to_string=True)
-            if "using long description" in ret:
-                offset_vm_flags = offset_vm_mm + (8 * 2)
-            else:
-                offset_vm_flags = offset_vm_mm + (4 * 2)
+            offset_vm_flags = offset_vm_mm + (4 * 2)
+            for suffix in ("", "_S"):
+                ttbcr = get_register("$TTBCR" + suffix)
+                if ttbcr is not None and ttbcr >> 31: # TTBCR.EAE marks LPAE, whose pgprot_t is 64-bit
+                    offset_vm_flags = offset_vm_mm + (8 * 2)
+                    break
         elif is_riscv32():
             # pgprot_t is an unsigned long
             offset_vm_flags = offset_vm_mm + 4 * 2
@@ -96213,6 +96227,106 @@ class KernelTask:
             lwp_task_addrs.extend(lwps)
         return list(dict.fromkeys(lwp_task_addrs))
 
+    def lwp_available(self):
+        """Return True if the offsets add_lwp_task() needs are resolved."""
+        if getattr(self, "offset_thread_group", None) is None:
+            return False
+        if "6.7" <= Kernel.version():
+            if getattr(self, "offset_signal", None) is None:
+                return False
+            if getattr(self, "offset_thread_head", None) is None:
+                return False
+        return True
+
+    def get_task_entries(self, *, threads=False, user_only=False, cred=False):
+        """Return [(task, pid, comm), ...] of every task, or [(task, pid, comm, cred, real_cred), ...] if `cred`.
+        `threads` adds the threads (LWP) when they can be listed, and `user_only` drops kernel threads.
+        A task whose members are unreadable, or whose cred is invalid, is skipped."""
+        task_addrs = KernelTask.get_task_list(self.init_task, self.offset_tasks)
+        if threads and self.lwp_available():
+            task_addrs = self.add_lwp_task(task_addrs)
+
+        entries = []
+        for task in task_addrs:
+            try:
+                pid = read_int32_from_memory(task + self.offset_pid)
+                comm = read_cstring_from_memory(task + self.offset_comm)
+                if cred:
+                    task_cred = read_int_from_memory(task + self.offset_cred)
+                    real_cred = read_int_from_memory(task + self.offset_real_cred)
+                if user_only:
+                    mm = read_int_from_memory(task + self.offset_mm)
+                    if mm == 0 or pid == 0:
+                        continue
+            except gdb.MemoryError:
+                continue
+            if not cred:
+                entries.append((task, pid, comm))
+                continue
+            if not is_valid_addr(task_cred):
+                continue
+            entries.append((task, pid, comm, task_cred, real_cred))
+        return entries
+
+    @staticmethod
+    def filter_task_entries(entries, *, pid=None, task_filter=None, cred_filter=None, comm_filter=None):
+        """Return the entries of get_task_entries() that match every given filter.
+        `cred_filter` needs the entries with cred."""
+        filtered = []
+        for entry in entries:
+            task, task_pid, comm = entry[:3]
+            if pid is not None and task_pid != pid:
+                continue
+            if task_filter and task not in task_filter:
+                continue
+            if cred_filter and entry[3] not in cred_filter:
+                continue
+            if not GefUtil.matches_regex(comm, comm_filter):
+                continue
+            filtered.append(entry)
+        return filtered
+
+    def get_task_by_pid(self, pid, safe=False):
+        """Return the task_struct whose pid is `pid`, or None.
+        The threads are searched too if this resolver is initialized with `threads=True`."""
+        task_addrs = KernelTask.get_task_list(self.init_task, self.offset_tasks)
+        if self.enabled.get("threads"):
+            task_addrs = self.add_lwp_task(task_addrs)
+        for task in task_addrs:
+            if read_int32_from_memory(task + self.offset_pid, safe=safe) == pid:
+                return task
+        return None
+
+    def get_pid_comm(self, task, safe=False):
+        """Return (pid, comm) of `task`. With `safe`, an unreadable pid is None."""
+        pid = read_int32_from_memory(task + self.offset_pid, safe=safe)
+        comm = read_cstring_from_memory(task + self.offset_comm)
+        return pid, comm
+
+    def get_file_by_fd(self, pid, fd):
+        """Return (struct file, None) of the file descriptor `fd` of `pid`, or (None, the reason) if it is unavailable.
+        This resolver must be initialized with `files=True` (and `threads=True` to find a thread)."""
+        if fd < 0:
+            return None, "FD must not be negative"
+        if self.offset_files is None or self.offset_fdt is None:
+            return None, "Could not find task_struct->files->fdt"
+        task = self.get_task_by_pid(pid)
+        if task is None:
+            return None, "Could not find the task of pid {:d}".format(pid)
+        try:
+            files = read_int_from_memory(task + self.offset_files)
+            fdt = read_int_from_memory(files + self.offset_fdt)
+            max_fds = read_int32_from_memory(fdt)
+            if fd >= max_fds:
+                return None, "FD {:d} is outside the fdtable (max_fds={:d})".format(fd, max_fds)
+            array = read_int_from_memory(fdt + current_arch.ptrsize)
+            file = read_int_from_memory(array + current_arch.ptrsize * fd)
+        except (gdb.MemoryError, OverflowError):
+            return None, "Could not read fd {:d} of pid {:d}".format(fd, pid)
+        if not is_valid_addr(file):
+            return None, "FD {:d} of pid {:d} is not open".format(fd, pid)
+        return file, None
+
     def get_regs(self, kstack, offset_ptregs):
         if is_x86_64():
             regs_name = [
@@ -96338,6 +96452,20 @@ class KernelTask:
                 "path": self.kpath.get_file_path(file),
             })
         return files, warnings
+
+    @staticmethod
+    def get_user_files():
+        """Return ([(task info, file details), ...], error) of the open files of every user process."""
+        ktask = KernelTask.get_instance()
+        if not ktask.initialize(files=True):
+            return None, next((line for level, line in reversed(ktask.meta) if level == "err"), "Could not list tasks")
+        if "files" in ktask.disabled:
+            return None, "Could not list the file descriptors: {:s}".format(ktask.disabled["files"])
+        result = []
+        for info in ktask.get_tasks(user_only=True):
+            files, _ = ktask.get_file_details(info["task"])
+            result += [(info, file) for file in files]
+        return result, None
 
     def get_sighands(self, task):
         sighand = read_int_from_memory(task + self.offset_sighand)
@@ -97666,6 +97794,8 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
 
     def dump_maps(self, task, comm_string):
         maps = self.ktask.kmm.get_task_maps(task)
+        for message in self.ktask.kmm.pop_warnings():
+            self.quiet_warn(message)
         if not maps:
             return
         self.out.append(titlify("memory map of `{:s}`".format(comm_string)))
@@ -97713,6 +97843,8 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
 
     def dump_sighands(self, task, comm_string):
         info = self.ktask.get_sighands(task)
+        for message in Kernel.mm().pop_warnings():
+            self.quiet_warn(message)
         libc = info["libc"]
         libc_names = LinuxSignal.LIBC_NAMES.get(libc, {})
         if libc:
