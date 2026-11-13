@@ -168914,12 +168914,21 @@ class Ksym:
                 return None
 
             # Restore ro_base with considering kASLR.
+            # The saved values may be of another kernel: since v6.1 the first banner lacks the build number and timestamp.
+            ro_base = version_string_address - Ksym.version_string_offset
+            if ro_base & get_pagesize_mask_low():
+                Ksym.quiet_info(quiet, "Use slow path")
+                return None
+            kernel_img = read_memory(ro_base, Ksym.ro_size, safe=True)
+            if kernel_img is None:
+                Ksym.quiet_info(quiet, "Use slow path")
+                return None
             Ksym.quiet_info(quiet, "Use fast path")
-            Ksym.ro_base = version_string_address - Ksym.version_string_offset
+            Ksym.ro_base = ro_base
             Ksym.verbose_info(verbose, "ro_base: {:#x}-{:#x}".format(Ksym.ro_base, Ksym.ro_base + Ksym.ro_size))
 
             # doit
-            Ksym.kernel_img = read_memory(Ksym.ro_base, Ksym.ro_size)
+            Ksym.kernel_img = kernel_img
             ret = Ksym.KsymParse.initialize(rescan, verbose)
             if not ret:
                 Ksym.quiet_info(quiet, "Use slow path")
@@ -170077,8 +170086,8 @@ class Ksym:
 
     @staticmethod
     def get_location_from_peek(addr):
-        """Return ``(name, offset)`` from already parsed kallsyms, or None.
-        This intentionally consults ``peek()`` rather than ``get_kallsyms()`` so a
+        """Return `(name, offset)` from already parsed kallsyms, or None.
+        This intentionally consults `peek()` rather than `get_kallsyms()` so a
         normal symbol formatter never starts the expensive remote kallsyms scan.
         """
         ret = Ksym.peek()
