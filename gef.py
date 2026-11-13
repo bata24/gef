@@ -82451,6 +82451,8 @@ class KernelPerCpu:
         pc.offsets                       # -> the raw `__per_cpu_offset[]`, [] when not SMP
         pc.is_smp                        # -> False when there is no per-cpu area at all
         pc.get_cpu_masks()               # -> {"possible": set(cpus), ...}, None when unknown
+        pc.cpu_state(1)                  # -> "  [possible, present, online]", "" when every mask is unknown
+        KernelPerCpu.format_cpus({0, 1, 2, 5})     # -> "0-2,5"
     """
 
     # which memory is readable depends on the page tables of the halted CPU
@@ -82728,6 +82730,49 @@ class KernelPerCpu:
             }
             self.cpu_masks = {kind: self.read_cpu_mask(finder()) for kind, finder in finders.items()}
         return self.cpu_masks
+
+    @staticmethod
+    def format_cpus(cpus):
+        """Return a cpu set as a cpulist string, e.g. {0, 1, 2, 5} -> "0-2,5"."""
+        if not cpus:
+            return "none"
+        ranges = []
+        for cpu in sorted(cpus):
+            if ranges and ranges[-1][1] == cpu - 1:
+                ranges[-1][1] = cpu
+            else:
+                ranges.append([cpu, cpu])
+        parts = []
+        for start, end in ranges:
+            if start == end:
+                parts.append(str(start))
+            else:
+                parts.append("{:d}-{:d}".format(start, end))
+        return ",".join(parts)
+
+    def cpu_state(self, cpu):
+        """Return the tag of `cpu` from the cpu masks, e.g. "[possible, present, online]", or ""."""
+        masks = self.get_cpu_masks()
+        possible, present, online = (masks[x] for x in ("possible", "present", "online"))
+        tags = []
+        if possible is not None:
+            if cpu in possible:
+                tags.append("possible")
+            else:
+                tags.append("not possible")
+        if present is not None and (possible is None or cpu in possible):
+            if cpu in present:
+                tags.append("present")
+            else:
+                tags.append("not present")
+        if online is not None and (possible is None or cpu in possible):
+            if cpu in online:
+                tags.append("online")
+            else:
+                tags.append("offline")
+        if not tags:
+            return ""
+        return "  [{:s}]".format(", ".join(tags))
 
     def resolve(self, addr):
         """Return (cpu, static_addr, (name, offset) or None) for a per-cpu address, or None."""
@@ -95849,36 +95894,12 @@ class KernelCurrentCommand(GenericCommand):
     parser.add_argument("-q", "--quiet", action="store_true", help="enable quiet mode.")
     _syntax_ = parser.format_help()
 
-    def get_cpu_offset(self):
-        # `Kernel.per_cpu()` is cached per stop, so it does not need one more here
-        percpu = Kernel.per_cpu()
-        if percpu.per_cpu_offset is None:
-            return None
-        self.quiet_info("__per_cpu_offset: {:#x}".format(percpu.per_cpu_offset))
-        self.quiet_info("Num of cpu: {:d} (guessed)".format(percpu.nr_cpus))
-        return percpu.offsets
-
-    @Cache.cache_this_session(cache_None=False, per_inferior=True, until_new_objfile=True)
-    def get_offset_comm(self):
-        task = Kernel.task()
-        task.initialize()
-        self.meta = Kernel.export_meta(self, task.meta)
-        return task.offset_comm
-
-    def resolve_offset_comm(self):
-        """Resolve `offsetof(task_struct, comm)` once per CPU context in this invocation.
-        This must not be called while another thread is temporarily selected unless
-        it is intended to retry in that CPU context."""
-
-        if self.offset_comm is None:
-            context = Cache.cpu_context()
-            if context not in self.comm_tried_contexts:
-                self.comm_tried_contexts.add(context)
-                self.offset_comm = self.get_offset_comm()
-        return self.offset_comm
-
     def get_comm_str(self, task_addr):
-        if self.resolve_offset_comm() is None:
+        if not self.comm_tried:
+            # resolved once per invocation, while no other thread is temporarily selected
+            self.comm_tried = True
+            self.offset_comm = KernelTask.resolve_offset_comm_on_any_cpu()
+        if self.offset_comm is None:
             return "???"
 
         comm = read_cstring_from_memory(task_addr + self.offset_comm)
@@ -95899,73 +95920,6 @@ class KernelCurrentCommand(GenericCommand):
                 return r
         return re.search(r"current: (0x\S+) (.*)", res)
 
-    def get_unavailable_reason(self):
-        if is_arm32():
-            cpsr = get_register(current_arch.flag_register)
-            if cpsr is not None and (cpsr & 0b11111) == 0b10000:
-                return "CPU is in USR mode; sp holds a user stack pointer"
-        elif is_arm64():
-            cpsr = get_register(current_arch.flag_register)
-            if cpsr is not None and ((cpsr >> 2) & 0b11) == 0:
-                return "CPU is in EL0; sp_el0 holds a user stack pointer"
-        elif is_riscv32() or is_riscv64():
-            priv = get_register("priv")
-            if priv == 3:
-                return "hart is in M-mode; tp belongs to the SBI firmware" # codespell:ignore
-        return "failed to resolve current task"
-
-    def dump_current_by_thread(self):
-        # Resolve `offsetof(task_struct, comm)` before switching to another thread.
-        # If this CPU cannot resolve it, it is retried on the other CPUs in the kernel.
-        self.resolve_offset_comm()
-        results = []
-        with ContextManager.threads(KernelPerCpu.get_cpu_threads()) as threads:
-            for thread in threads:
-                label = KernelPerCpu.get_cpu_label(thread)
-                task = KernelAddressHeuristicFinder.get_current_task_for_current_thread()
-                if task is None:
-                    results.append((label, None, self.get_unavailable_reason()))
-                    continue
-                results.append((label, task, None))
-                if is_in_kernel():
-                    self.resolve_offset_comm()
-
-        # A CPU halted in userland may not reach the kernel, so `comm` is read from the selected CPU.
-        for label, task, reason in results:
-            if task is None:
-                gef_print("current ({:s}): unavailable ({:s})".format(label, reason))
-            else:
-                gef_print("current ({:s}): {:#x} {:s}".format(label, task, self.get_comm_str(task)))
-        return
-
-    def dump_current_x86(self):
-        current_task = KernelAddressHeuristicFinder.get_current_task()
-        if not current_task:
-            self.quiet_err("Failed to resolve `current_task`")
-            return
-
-        cpu_bases = self.get_cpu_offset()
-
-        if cpu_bases:
-            # pattern 1. Offset from __per_cpu_offset.
-            self.quiet_info("current_task: {:#x}".format(current_task))
-            task_offset = current_task
-            for i, cpu_base in enumerate(cpu_bases):
-                task = KernelAddressHeuristicFinder.dereference_current_task(task_offset, cpu_base)
-                if task is None:
-                    gef_print("current (cpu{:d}): unavailable".format(i))
-                    continue
-                gef_print("current (cpu{:d}): {:#x} {:s}".format(i, task, self.get_comm_str(task)))
-        else:
-            # pattern 2: current_task is the address that stores a pointer to the current task (not per_cpu).
-            task = KernelAddressHeuristicFinder.dereference_current_task(current_task)
-            if task is not None:
-                self.quiet_info("__per_cpu_offset is unused")
-                gef_print("current: {:#x} {:s}".format(task, self.get_comm_str(task)))
-            else:
-                self.quiet_err("Failed to resolve `__per_cpu_offset`")
-        return
-
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware"))
@@ -95974,13 +95928,27 @@ class KernelCurrentCommand(GenericCommand):
     def do_invoke(self, args):
         self.quiet_info("Wait for memory scan")
 
+        tasks = KernelTask.get_current_tasks()
+        if not tasks:
+            self.quiet_err("Failed to resolve `current_task`")
+            return
+
+        # `comm` is read from the selected CPU, since a CPU halted in userland may not reach the kernel.
         self.offset_comm = None
-        self.comm_tried_contexts = set()
-        if is_arm32() or is_arm64() or is_riscv32() or is_riscv64():
-            self.dump_current_by_thread()
-        elif is_x86():
-            self.dump_current_x86()
-        if self.comm_tried_contexts and self.offset_comm is None:
+        self.comm_tried = False
+        for label, task, reason in tasks:
+            # current_task is the address that stores a pointer to the current task (not per_cpu).
+            if label is None and task is None:
+                gef_print("current: unavailable")
+            elif label is None:
+                gef_print("current: {:#x} {:s}".format(task, self.get_comm_str(task)))
+            elif task is None and reason is None:
+                gef_print("current ({:s}): unavailable".format(label))
+            elif task is None:
+                gef_print("current ({:s}): unavailable ({:s})".format(label, reason))
+            else:
+                gef_print("current ({:s}): {:#x} {:s}".format(label, task, self.get_comm_str(task)))
+        if self.comm_tried and self.offset_comm is None:
             self.quiet_err("ktask failed")
         return
 
@@ -96087,27 +96055,12 @@ class KernelTask:
 
     def get_current_task_list(self):
         current_tasks = {}
-        if is_x86():
-            current = KernelAddressHeuristicFinder.get_current_task()
-            if not current:
-                return current_tasks
-            percpu = Kernel.per_cpu()
-            if percpu.per_cpu_offset is not None:
-                bases = percpu.offsets
-            else:
-                bases = None
-            for index, base in enumerate(bases or [None]):
-                task = KernelAddressHeuristicFinder.dereference_current_task(current, base)
-                if task is None:
-                    continue
-                current_tasks.setdefault(task, []).append("cpu{:d}".format(index))
-        else:
-            with ContextManager.threads(KernelPerCpu.get_cpu_threads()) as threads:
-                for cpu in threads:
-                    task = KernelAddressHeuristicFinder.get_current_task_for_current_thread()
-                    if task is not None:
-                        label = KernelPerCpu.get_cpu_label(cpu).replace("thread ", "th")
-                        current_tasks.setdefault(task, []).append(label)
+        for label, task, _ in KernelTask.get_current_tasks():
+            if task is None:
+                continue
+            if label is None:
+                label = "cpu0"
+            current_tasks.setdefault(task, []).append(label.replace("thread ", "th"))
         result = {}
         for task, labels in current_tasks.items():
             if len(labels) > 1:
@@ -96115,6 +96068,81 @@ class KernelTask:
             else:
                 result[task] = labels[0]
         return result
+
+    @staticmethod
+    def get_current_tasks():
+        """Return [(cpu_label, task, reason), ...] of each CPU. The task is None if it is unavailable,
+        and the reason is given except on x86. The cpu_label is None if `current_task` is not per-cpu."""
+        tasks = []
+        if is_x86():
+            current = KernelAddressHeuristicFinder.get_current_task()
+            if not current:
+                return tasks
+            percpu = Kernel.per_cpu()
+            if not percpu.offsets:
+                # pattern 2: current_task is the address that stores a pointer to the current task (not per_cpu).
+                tasks.append((None, KernelAddressHeuristicFinder.dereference_current_task(current), None))
+                return tasks
+            # pattern 1: offset from __per_cpu_offset.
+            for index, base in enumerate(percpu.offsets):
+                task = KernelAddressHeuristicFinder.dereference_current_task(current, base)
+                tasks.append(("cpu{:d}".format(index), task, None))
+            return tasks
+        with ContextManager.threads(KernelPerCpu.get_cpu_threads()) as threads:
+            for thread in threads:
+                task = KernelAddressHeuristicFinder.get_current_task_for_current_thread()
+                if task is None:
+                    reason = KernelTask.get_unavailable_reason()
+                else:
+                    reason = None
+                tasks.append((KernelPerCpu.get_cpu_label(thread), task, reason))
+        return tasks
+
+    @staticmethod
+    def get_current_task():
+        """Return the current task of the selected CPU, or None."""
+        if is_x86():
+            current = KernelAddressHeuristicFinder.get_current_task()
+            if not current:
+                return None
+            percpu = Kernel.per_cpu()
+            if not percpu.offsets:
+                return KernelAddressHeuristicFinder.dereference_current_task(current)
+            thread = gdb.selected_thread()
+            cpu = KernelPerCpu.get_cpu_index(thread)
+            if cpu is None:
+                # the x86 CPUs are labeled by the index of `__per_cpu_offset`
+                cpu = thread.num - 1
+            base = percpu.get_offset(cpu)
+            if base is None:
+                return None
+            return KernelAddressHeuristicFinder.dereference_current_task(current, base)
+        return KernelAddressHeuristicFinder.get_current_task_for_current_thread()
+
+    @staticmethod
+    @Cache.cache_this_session(cache_None=False, per_inferior=True, until_new_objfile=True)
+    def resolve_offset_comm():
+        """Return `offsetof(task_struct, comm)` resolved on the selected CPU, or None."""
+        task = KernelTask.get_instance()
+        task.initialize()
+        return task.offset_comm
+
+    @staticmethod
+    def resolve_offset_comm_on_any_cpu():
+        """Return `offsetof(task_struct, comm)` resolved on the selected CPU, or None.
+        If the selected CPU cannot resolve it (e.g., it is halted in userland), it is retried on the other CPUs
+        in the kernel, except on x86. This must not be called while another thread is temporarily selected."""
+        offset_comm = KernelTask.resolve_offset_comm()
+        if offset_comm is None and (is_arm32() or is_arm64() or is_riscv32() or is_riscv64()):
+            orig_thread = gdb.selected_thread()
+            threads = (thread for thread in KernelPerCpu.get_cpu_threads() if thread != orig_thread)
+            with ContextManager.threads(threads) as threads:
+                for _ in threads:
+                    if is_in_kernel():
+                        offset_comm = KernelTask.resolve_offset_comm()
+                        if offset_comm is not None:
+                            break
+        return offset_comm
 
     def get_kstack_size(self):
         """Return the kernel stack size that `KernelTask` verified with the saved ptregs, or None.
@@ -97464,6 +97492,22 @@ class KernelTask:
                 self.disabled[option] = reason
                 self.meta.append(("warn", "Disabled --{:s}".format(self.OPTIONS[option].replace("_", "-"))))
         return
+
+    @staticmethod
+    def get_unavailable_reason():
+        if is_arm32():
+            cpsr = get_register(current_arch.flag_register)
+            if cpsr is not None and (cpsr & 0b11111) == 0b10000:
+                return "CPU is in USR mode; sp holds a user stack pointer"
+        elif is_arm64():
+            cpsr = get_register(current_arch.flag_register)
+            if cpsr is not None and ((cpsr >> 2) & 0b11) == 0:
+                return "CPU is in EL0; sp_el0 holds a user stack pointer"
+        elif is_riscv32() or is_riscv64():
+            priv = get_register("priv")
+            if priv == 3:
+                return "hart is in M-mode; tp belongs to the SBI firmware" # codespell:ignore
+        return "failed to resolve current task"
 
 
 @register_command
@@ -213119,29 +213163,6 @@ class KernelPerCpuCommand(GenericCommand, BufferingOutput):
                 parts.append("{:d}-{:d}".format(start, end))
         return ",".join(parts)
 
-    def cpu_state(self, cpu):
-        """Return the tag of `cpu` from the cpu masks, e.g. "[possible, present, online]", or ""."""
-        possible, present, online = (self.cpu_masks[x] for x in ("possible", "present", "online"))
-        tags = []
-        if possible is not None:
-            if cpu in possible:
-                tags.append("possible")
-            else:
-                tags.append("not possible")
-        if present is not None and (possible is None or cpu in possible):
-            if cpu in present:
-                tags.append("present")
-            else:
-                tags.append("not present")
-        if online is not None and (possible is None or cpu in possible):
-            if cpu in online:
-                tags.append("online")
-            else:
-                tags.append("offline")
-        if not tags:
-            return ""
-        return "  [{:s}]".format(", ".join(tags))
-
     def dump_meta(self, pc):
         if pc.per_cpu_offset is not None:
             self.quiet_info_add_out("__per_cpu_offset: {:#x}".format(pc.per_cpu_offset))
@@ -213175,7 +213196,7 @@ class KernelPerCpuCommand(GenericCommand, BufferingOutput):
             if cpus is None:
                 self.quiet_info_add_out("{:s} cpus: {:s}".format(kind, "unknown"))
             else:
-                self.quiet_info_add_out("{:s} cpus: {:s}".format(kind, self.format_cpus(cpus)))
+                self.quiet_info_add_out("{:s} cpus: {:s}".format(kind, KernelPerCpu.format_cpus(cpus)))
         return
 
     def target_cpus(self, pc):
@@ -213216,16 +213237,16 @@ class KernelPerCpuCommand(GenericCommand, BufferingOutput):
                 base = pc.get_base(cpu)
                 if base is None:
                     self.out.append("CPU{:<4d} offset: {:s}{:s}".format(
-                        cpu, AddressUtil.format_address(pc.get_offset(cpu)), self.cpu_state(cpu),
+                        cpu, AddressUtil.format_address(pc.get_offset(cpu)), pc.cpu_state(cpu),
                     ))
                 else:
                     self.out.append("CPU{:<4d} offset: {:s}  unit: {:#x}- (end unknown){:s}".format(
-                        cpu, AddressUtil.format_address(pc.get_offset(cpu)), base, self.cpu_state(cpu),
+                        cpu, AddressUtil.format_address(pc.get_offset(cpu)), base, pc.cpu_state(cpu),
                     ))
                     self.add_dump_out(base)
                 continue
             self.out.append("CPU{:<4d} offset: {:s}  unit: {:#x}-{:#x}{:s}".format(
-                cpu, AddressUtil.format_address(pc.get_offset(cpu)), rng[0], rng[1], self.cpu_state(cpu),
+                cpu, AddressUtil.format_address(pc.get_offset(cpu)), rng[0], rng[1], pc.cpu_state(cpu),
             ))
             self.add_dump_out(rng[0])
         return
