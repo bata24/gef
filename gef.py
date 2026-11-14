@@ -99618,7 +99618,7 @@ class KernelCredCommand(GenericCommand, BufferingOutput):
             return
 
         self.out.append('task: {:#018x} (pid: {:d}, comm: "{:s}")'.format(task, pid, comm))
-        self.out.append("  `- cred " + Symbol.format(cred, ksym="prefer", show_address=True, nocolor=True))
+        self.out.append("  \u2514\u2500 cred " + Symbol.format(cred, ksym="prefer", show_address=True, nocolor=True))
 
         lines = []
         lines.append(("real_cred", Symbol.format(real_cred, ksym="prefer", show_address=True, nocolor=True)))
@@ -99641,9 +99641,9 @@ class KernelCredCommand(GenericCommand, BufferingOutput):
 
         for i, (name, value) in enumerate(lines):
             if i == len(lines) - 1:
-                mark = "`-"
+                mark = "\u2514\u2500"
             else:
-                mark = "|-"
+                mark = "\u251c\u2500"
             self.out.append("     {:s} {:<15s} {:s}".format(mark, name, value))
         self.out.append("")
         return
@@ -105777,12 +105777,12 @@ class KernelVfsCommand(GenericCommand, BufferingOutput):
     def dump_inode(self, inode, prefix, mount=None):
         info = self.kpath.get_inode_info(inode, mount)
         self.out.append(prefix + "struct inode {:#018x}".format(inode))
-        self.out.append(prefix + "|- i_ino {:d} ({:#x})".format(info.ino, info.ino))
-        self.out.append(prefix + "|- i_mode 0{:06o} ({:s})".format(info.mode, KernelPath.mode_string(info.mode)))
-        self.out.append(prefix + "`- struct super_block {:#018x}".format(info.super_block))
-        self.out.append(prefix + "   |- filesystem {:s}".format(info.fstype or "???"))
-        self.out.append(prefix + "   |- s_dev {:d}:{:d} ({:#x})".format(info.major, info.minor, info.dev))
-        self.out.append(prefix + "   `- mount source {:s}".format(info.devname or "???"))
+        self.out.append(prefix + "\u251c\u2500 i_ino {:d} ({:#x})".format(info.ino, info.ino))
+        self.out.append(prefix + "\u251c\u2500 i_mode 0{:06o} ({:s})".format(info.mode, KernelPath.mode_string(info.mode)))
+        self.out.append(prefix + "\u2514\u2500 struct super_block {:#018x}".format(info.super_block))
+        self.out.append(prefix + "   \u251c\u2500 filesystem {:s}".format(info.fstype or "???"))
+        self.out.append(prefix + "   \u251c\u2500 s_dev {:d}:{:d} ({:#x})".format(info.major, info.minor, info.dev))
+        self.out.append(prefix + "   \u2514\u2500 mount source {:s}".format(info.devname or "???"))
         return
 
     def dump_dentry(self, dentry, prefix="", mount=None, path=None):
@@ -105792,12 +105792,12 @@ class KernelVfsCommand(GenericCommand, BufferingOutput):
         if path is None:
             path = kpath.decorate_pseudo_path(kpath.dentry_path(dentry), dentry) or "???"
         self.out.append(prefix + "struct dentry {:#018x}".format(dentry))
-        self.out.append(prefix + "|- d_name {!r}".format(name))
-        self.out.append(prefix + "|- path {!r}".format(path))
+        self.out.append(prefix + "\u251c\u2500 d_name {!r}".format(name))
+        self.out.append(prefix + "\u251c\u2500 path {!r}".format(path))
         if not kpath.is_inode(inode):
-            self.out.append(prefix + "`- d_inode {:#018x} (unreadable or negative dentry)".format(inode))
+            self.out.append(prefix + "\u2514\u2500 d_inode {:#018x} (unreadable or negative dentry)".format(inode))
             return
-        self.out.append(prefix + "`- d_inode")
+        self.out.append(prefix + "\u2514\u2500 d_inode")
         self.dump_inode(inode, prefix + "   ", mount)
         return
 
@@ -105808,9 +105808,9 @@ class KernelVfsCommand(GenericCommand, BufferingOutput):
         mount = vfsmnt - kpath.offset_mount_mnt
         path = kpath.get_file_path(file) or "???"
         self.out.append("struct file {:#018x}".format(file))
-        self.out.append("`- struct path f_path {:#018x}".format(file + kpath.offset_file_mnt))
-        self.out.append("   |- struct vfsmount {:#018x}".format(vfsmnt))
-        self.out.append("   `- dentry")
+        self.out.append("\u2514\u2500 struct path f_path {:#018x}".format(file + kpath.offset_file_mnt))
+        self.out.append("   \u251c\u2500 struct vfsmount {:#018x}".format(vfsmnt))
+        self.out.append("   \u2514\u2500 dentry")
         self.dump_dentry(dentry, "      ", mount, path)
         return
 
@@ -106250,13 +106250,13 @@ class KernelMount:
                 mark, child_prefix = "", ""
             else:
                 if is_last:
-                    mark = prefix + "`- "
+                    mark = prefix + "\u2514\u2500 "
                 else:
-                    mark = prefix + "|- "
+                    mark = prefix + "\u251c\u2500 "
                 if is_last:
                     child_prefix = prefix + "   "
                 else:
-                    child_prefix = prefix + "|  "
+                    child_prefix = prefix + "\u2502  "
             entries.append((mount, mark))
             children = self.get_children(mount)
             for i, child in enumerate(reversed(children)):
@@ -109039,10 +109039,16 @@ class KernelWorkqueueCommand(GenericCommand, BufferingOutput):
         width = AddressUtil.get_format_address_width()
         work_width = max(width, len("work_struct"))
         queue_width = max([24] + [len(record["owner"]["name"]) for record in records.values() if record["owner"] is not None])
+        fmt = "{:<{ww}s}  {:<10s}  {:<5s}  {:<{qw}s}  {:<{w}s}  {:<{w}s}  "
+        legend = ["work_struct", "state", "cpu", "queue", "timer", "expires"]
+        if object_address is not None:
+            fmt += "{:<12s}  "
+            legend.append("offset")
         if not self.args.quiet:
-            fmt = "{:<{ww}s}  {:<10s}  {:<5s}  {:<{qw}s}  {:<{w}s} {:s}"
-            legend = ["work_struct", "state", "cpu", "queue", "function", "symbol"]
-            self.out.append(GefUtil.make_legend(fmt.format(*legend, w=width, ww=work_width, qw=queue_width)))
+            header = fmt + "{:<{w}s} {:s}"
+            self.out.append(GefUtil.make_legend(header.format(
+                *legend, "function", "symbol", w=width, ww=work_width, qw=queue_width,
+            )))
 
         state_order = {"running": 0, "pending": 1, "inactive": 2, "delayed": 3, "idle": 4}
         def sort_key(item):
@@ -109062,22 +109068,18 @@ class KernelWorkqueueCommand(GenericCommand, BufferingOutput):
                 cpu = "-"
             else:
                 cpu = str(record["cpu"])
-            line = "{:<{ww}s}  {:<10s}  {:<5s}  {:<{qw}s}  {:s}".format(
-                "{:#0{w}x}".format(record["work"], w=width), record["state"], cpu, queue,
-                Symbol.format(
-                    record["function"], missing="NO_SYMBOL", ksym="prefer", show_address=True, nocolor=True,
-                ),
-                ww=work_width, qw=queue_width,
-            ).rstrip()
-            extras = []
+            cells = ["{:#0{w}x}".format(record["work"], w=width), record["state"], cpu, queue]
+            for name in ("timer", "expires"):
+                if record[name] is None:
+                    cells.append("-")
+                else:
+                    cells.append("{:#0{w}x}".format(record[name], w=width))
             if object_address is not None:
-                extras.append("object+{:#x}".format(record["work"] - object_address))
-            if record["timer"] is not None:
-                extras.append("timer={:#x}".format(record["timer"]))
-            if record["expires"] is not None:
-                extras.append("expires={:#x}".format(record["expires"]))
-            if extras:
-                line += "  [" + ", ".join(extras) + "]"
+                cells.append("object+{:#x}".format(record["work"] - object_address))
+            line = fmt.format(*cells, w=width, ww=work_width, qw=queue_width)
+            line += Symbol.format(
+                record["function"], missing="NO_SYMBOL", ksym="prefer", show_address=True, nocolor=True,
+            )
             self.out.append(line)
         return
 
@@ -166992,16 +166994,16 @@ class KernelSocketCommand(GenericCommand, BufferingOutput):
         queue = self.ksocket.get_queue(sk, off)
         head, qlen, skbs = queue["address"], queue["qlen"], queue["skbs"]
         if qlen:
-            self.out.append("     |- {:<14s} {:#018x} ({:d} skb)".format(name, head, qlen))
+            self.out.append("     \u251c\u2500 {:<14s} {:#018x} ({:d} skb)".format(name, head, qlen))
         else:
-            self.out.append("     |- {:<14s} {:#018x} ({:d} skb)".format(name, head, 0))
+            self.out.append("     \u251c\u2500 {:<14s} {:#018x} ({:d} skb)".format(name, head, 0))
         if self.args.list_skb and skbs:
             for idx, skb in enumerate(skbs):
-                self.out.append("     |    [{:d}] {:#018x}".format(idx, skb))
+                self.out.append("     \u2502    [{:d}] {:#018x}".format(idx, skb))
                 if self.args.dump:
-                    self.dump_skb_data(skb, "     |        ")
+                    self.dump_skb_data(skb, "     \u2502        ")
             if queue["truncated"]:
-                self.out.append("     |    ... (truncated by 4096-skb limit; qlen={:d})".format(qlen))
+                self.out.append("     \u2502    ... (truncated by 4096-skb limit; qlen={:d})".format(qlen))
         return
 
     def dump_skb_data(self, skb, prefix):
@@ -167029,25 +167031,27 @@ class KernelSocketCommand(GenericCommand, BufferingOutput):
         if file:
             parts.insert(0, "file: {:#018x}".format(file))
         self.out.append("  " + "  ".join(parts))
-        self.out.append("  `- sock {:#018x}".format(sk))
+        self.out.append("  \u2514\u2500 sock {:#018x}".format(sk))
 
         # family / state
         fam = info["family"]
         if fam is not None:
-            self.out.append("     |- {:<14s} {:s}".format("family", self.ksocket.AF_FAMILY.get(fam, str(fam))))
+            self.out.append("     \u251c\u2500 {:<14s} {:s}".format("family", self.ksocket.AF_FAMILY.get(fam, str(fam))))
             st = info["state"]
             proto_name = (info["protocol_name"] or info["protocol_symbol"] or "").lower()
             if proto_name.startswith(("tcp", "mptcp")):
                 state = self.ksocket.SK_STATE.get(st)
             else:
                 state = None
-            self.out.append("     |- {:<14s} {:s}".format("state", state or "{:#x}".format(st)))
+            self.out.append("     \u251c\u2500 {:<14s} {:s}".format("state", state or "{:#x}".format(st)))
 
         # socket->{type,state}
         if socket:
             stype, sstate = info["type"], info["socket_state"]
-            self.out.append("     |- {:<14s} {:s}".format("type", self.ksocket.SOCK_TYPE.get(stype, str(stype))))
-            self.out.append("     |- {:<14s} {:s}".format("socket_state", self.ksocket.SS_STATE.get(sstate, str(sstate))))
+            self.out.append("     \u251c\u2500 {:<14s} {:s}".format("type", self.ksocket.SOCK_TYPE.get(stype, str(stype))))
+            self.out.append("     \u251c\u2500 {:<14s} {:s}".format(
+                "socket_state", self.ksocket.SS_STATE.get(sstate, str(sstate)),
+            ))
 
         # protocol
         prot, prot_sym, prot_iname = info["protocol"], info["protocol_symbol"], info["protocol_name"]
@@ -167060,19 +167064,19 @@ class KernelSocketCommand(GenericCommand, BufferingOutput):
                 annot = " <{:s}>".format(prot_sym)
             else:
                 annot = ""
-            self.out.append("     |- {:<14s} {:s} ({:#x}{:s})".format("protocol", proto_disp, prot, annot))
+            self.out.append("     \u251c\u2500 {:<14s} {:s} ({:#x}{:s})".format("protocol", proto_disp, prot, annot))
 
         # queues
         queues = info["queues"]
         if not queues:
-            self.out.append("     |- {:<14s} ??? (layout could not be resolved)".format("queues"))
+            self.out.append("     \u251c\u2500 {:<14s} ??? (layout could not be resolved)".format("queues"))
         for name in ("receive_queue", "write_queue", "error_queue"):
             if name in queues:
                 self.dump_queue(sk, name, queues[name])
 
         # callbacks
         if info["callbacks"]:
-            self.out.append("     `- callbacks")
+            self.out.append("     \u2514\u2500 callbacks")
             for label, p, nm, _, _ in info["callbacks"]:
                 if nm:
                     self.out.append("        {:<16s} {:#018x} <{:s}>".format(label, p, nm))
@@ -214786,6 +214790,8 @@ class KernelPerCpuCommand(GenericCommand, BufferingOutput):
     @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
     @Decorator.only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
+        self.quiet_info("Wait for memory scan")
+
         if Kernel.version() is None:
             err("Could not find Linux kernel")
             return
@@ -222075,13 +222081,13 @@ class KernelNftablesCommand(GenericCommand, BufferingOutput):
             status = child["status"]
             entry_last = index == len(children) - 1
             if entry_last:
-                connector = "`- "
+                connector = "\u2514\u2500 "
             else:
-                connector = "|- "
+                connector = "\u251c\u2500 "
             if entry_last:
                 extension = "   "
             else:
-                extension = "|  "
+                extension = "\u2502  "
             if kind == "chains":
                 if rules is None:
                     rules_text = ""
@@ -222101,7 +222107,7 @@ class KernelNftablesCommand(GenericCommand, BufferingOutput):
                 if self.args.verbose:
                     for line in self.chain_detail(entry, table["family"]):
                         if rules:
-                            self.out.append(prefix + extension + "|  " + line)
+                            self.out.append(prefix + extension + "\u2502  " + line)
                         else:
                             self.out.append(prefix + extension + "   " + line)
                     if rules:
@@ -222110,9 +222116,9 @@ class KernelNftablesCommand(GenericCommand, BufferingOutput):
                     names = [expr["name"] for expr in rule["exprs"]]
                     rule_last = rule_index == len(rules) - 1
                     if rule_last:
-                        rule_connector = "`- "
+                        rule_connector = "\u2514\u2500 "
                     else:
-                        rule_connector = "|- "
+                        rule_connector = "\u251c\u2500 "
                     if names:
                         suffix = " [{:s}]".format(", ".join(names))
                     else:
@@ -222132,7 +222138,7 @@ class KernelNftablesCommand(GenericCommand, BufferingOutput):
                         if rule_last:
                             self.out.append(prefix + extension + "   " + "   " + line)
                         else:
-                            self.out.append(prefix + extension + "|  " + "   " + line)
+                            self.out.append(prefix + extension + "\u2502  " + "   " + line)
             elif kind == "sets":
                 info = self.knft.sets.parse_set(entry, elements=not self.args.no_elements)
                 expected = info["nelems"]
@@ -222154,15 +222160,15 @@ class KernelNftablesCommand(GenericCommand, BufferingOutput):
                 if self.args.verbose:
                     for line in self.set_detail(entry):
                         if info["elements"]:
-                            self.out.append(prefix + extension + "|  " + line)
+                            self.out.append(prefix + extension + "\u2502  " + line)
                         else:
                             self.out.append(prefix + extension + "   " + line)
                 for element_index, element in enumerate(info["elements"]):
                     element_last = element_index == len(info["elements"]) - 1
                     if element_last:
-                        element_conn = "`- "
+                        element_conn = "\u2514\u2500 "
                     else:
-                        element_conn = "|- "
+                        element_conn = "\u251c\u2500 "
                     key = "0x" + element["key"].hex()
                     if element["key_end"] is not None:
                         key += "-0x" + element["key_end"].hex()
@@ -222211,13 +222217,13 @@ class KernelNftablesCommand(GenericCommand, BufferingOutput):
         for table_index, (table, children) in enumerate(selected):
             table_last = table_index == len(selected) - 1
             if table_last:
-                table_connector = "`- "
+                table_connector = "\u2514\u2500 "
             else:
-                table_connector = "|- "
+                table_connector = "\u251c\u2500 "
             if table_last:
                 text = "  "
             else:
-                text = "| "
+                text = "\u2502 "
             meta = []
             if table["family"] is not None:
                 meta.append(KernelNftables.FAMILIES.get(table["family"], "family{:d}".format(table["family"])))
@@ -222233,7 +222239,7 @@ class KernelNftablesCommand(GenericCommand, BufferingOutput):
                 detail = self.table_detail(table, nftables)
                 if detail:
                     if children:
-                        self.out.append(text + "|  " + detail)
+                        self.out.append(text + "\u2502  " + detail)
                     else:
                         self.out.append(text + "   " + detail)
             self.dump_table(table, text, children)
