@@ -80300,80 +80300,6 @@ class Kernel:
         return KernelAddressHeuristicFinder.consts().PAGE_SIZE
 
     @staticmethod
-    def get_riscv_page_layout():
-        allocator = Kernel.get_slab_type()
-        names = ["kmalloc-8", "kmalloc-16", "kmalloc-32", "kmalloc-64", "kmalloc-128", "kmalloc-256"]
-        if allocator == "SLUB":
-            resolver = Kernel.slub()
-            if not resolver.initialize():
-                return None
-            caches = resolver.walk_caches(names, list(range(resolver.ncpus)), simple=True,
-                                          skip_page2virt=True, cpu_sheaves=False)[1:]
-        elif allocator == "SLUB_TINY":
-            resolver = Kernel.slub_tiny()
-            if not resolver.initialize():
-                return None
-            caches = resolver.walk_caches(names, simple=True, skip_page2virt=True)[1:]
-        elif allocator == "SLAB":
-            resolver = Kernel.slab()
-            if not resolver.initialize():
-                return None
-            caches = resolver.walk_caches(names, [], simple=True)[1:]
-        elif allocator == "SLOB":
-            resolver = Kernel.slob()
-            if not resolver.initialize():
-                return None
-            caches, freelists = resolver.walk_caches([], simple=True)
-        else:
-            return None
-
-        pages = []
-        if allocator == "SLOB":
-            for page_list in freelists.values():
-                pages.extend(page_list)
-        for cache in caches:
-            if allocator == "SLUB":
-                for cpu in cache.get("kmem_cache_cpu", {}).values():
-                    pages.append(cpu.get("active_page", {}))
-                    pages.extend(cpu.get("partial_pages", []))
-                for node in cache.get("nodes_partial", []) + cache.get("nodes_full", []):
-                    pages.extend(node)
-            elif allocator == "SLUB_TINY":
-                for node in cache.get("nodes", []):
-                    pages.extend(node)
-            elif allocator == "SLAB":
-                for node in cache.get("nodes", []):
-                    for page_list in node.values():
-                        pages.extend(page_list)
-
-        pairs = set()
-        pagesize = Kernel.slab_page_size()
-        for page in pages:
-            virt = page.get("virt_addr") or page.get("s_mem_base")
-            if not page.get("address") or not virt:
-                continue
-            phys = AddrMap.v2p(virt & -pagesize)
-            if phys is not None:
-                pairs.add((page["address"], phys // pagesize))
-                if len(pairs) >= 32:
-                    break
-
-        best = None
-        for (page1, pfn1), (page2, pfn2) in itertools.combinations(pairs, 2):
-            if pfn1 == pfn2:
-                continue
-            size, remainder = divmod(page2 - page1, pfn2 - pfn1)
-            if remainder or not 24 <= size <= 256 or size % current_arch.ptrsize:
-                continue
-            base = page1 - pfn1 * size
-            matches = sum(page == base + pfn * size for page, pfn in pairs)
-            if matches >= 2 and (best is None or matches > best[0]):
-                best = (matches, base, size)
-        if best is None:
-            return None
-        return best[1:]
-
-    @staticmethod
     @Cache.cache_this_session(cache_None=False, per_inferior=True)
     def get_slab_type():
         if not is_alive():
@@ -164086,7 +164012,7 @@ class KernelBuddy:
         };
         """
         # page->lru
-        self.offset_lru = PageInfoCommand.get_page_layout()["lru"]
+        self.offset_lru = KernelPage.get_page_layout()["lru"]
 
         return True
 
@@ -164816,18 +164742,18 @@ class KernelBuddyContains:
         return None
 
     def get_buddy_order(self, page):
-        order = read_int_from_memory(page + PageInfoCommand.get_page_layout()["private"], safe=True)
+        order = read_int_from_memory(page + KernelPage.get_page_layout()["private"], safe=True)
         if order is None or order >= self.buddy.MAX_ORDER:
             return None
         return order
 
     @staticmethod
     def is_page_buddy(page):
-        slot6_raw = read_int32_from_memory(page + PageInfoCommand.get_page_layout()["mapcount"], safe=True)
+        slot6_raw = read_int32_from_memory(page + KernelPage.get_page_layout()["mapcount"], safe=True)
         if slot6_raw is None:
             return False
-        slot6_kind = PageInfoCommand.get_slot6_kind(slot6_raw)
-        return PageInfoCommand.is_buddy_free(slot6_raw, slot6_kind)
+        slot6_kind = KernelPage.get_slot6_kind(slot6_raw)
+        return KernelPage.is_buddy_free(slot6_raw, slot6_kind)
 
     def find_head_page(self, page, pfn):
         for order in range(self.buddy.MAX_ORDER):
@@ -203788,8 +203714,8 @@ class KernelPage:
     def initialize(self):
         self.meta = []
 
-        if not (is_x86_64() or is_x86_32() or is_arm64() or is_arm32()) and (is_riscv64() or is_riscv32()):
-            layout = Kernel.get_riscv_page_layout()
+        if is_riscv64() or is_riscv32():
+            layout = self.get_riscv_page_layout()
             if layout is None:
                 self.meta.append(("err", "Could not resolve the RISC-V page array"))
                 return None
@@ -203907,6 +203833,65 @@ class KernelPage:
                 return None
 
         return True
+
+    @staticmethod
+    def get_riscv_page_layout():
+        allocator = Kernel.get_slab_type()
+        names = ["kmalloc-8", "kmalloc-16", "kmalloc-32", "kmalloc-64", "kmalloc-128", "kmalloc-256"]
+        if allocator == "SLUB":
+            resolver = Kernel.slub()
+            if not resolver.initialize():
+                return None
+            caches = resolver.walk_caches(names, list(range(resolver.ncpus)), simple=True,
+                                          skip_page2virt=True, cpu_sheaves=False)[1:]
+            pages = [page for cache in caches for page, _ in KernelSlub.get_cache_pages(cache)]
+        elif allocator == "SLUB_TINY":
+            resolver = Kernel.slub_tiny()
+            if not resolver.initialize():
+                return None
+            caches = resolver.walk_caches(names, simple=True, skip_page2virt=True)[1:]
+            pages = [page for cache in caches for page in KernelSlubTiny.get_cache_pages(cache)]
+        elif allocator == "SLAB":
+            resolver = Kernel.slab()
+            if not resolver.initialize():
+                return None
+            caches = resolver.walk_caches(names, [], simple=True)[1:]
+            pages = [page for cache in caches for page in KernelSlab.get_cache_pages(cache)]
+        elif allocator == "SLOB":
+            resolver = Kernel.slob()
+            if not resolver.initialize():
+                return None
+            _, freelists = resolver.walk_caches([], simple=True)
+            pages = [page for page_list in freelists.values() for page in page_list]
+        else:
+            return None
+
+        pairs = set()
+        pagesize = Kernel.slab_page_size()
+        for page in pages:
+            virt = page.get("virt_addr") or page.get("s_mem_base")
+            if not page.get("address") or not virt:
+                continue
+            phys = AddrMap.v2p(virt & -pagesize)
+            if phys is not None:
+                pairs.add((page["address"], phys // pagesize))
+                if len(pairs) >= 32:
+                    break
+
+        best = None
+        for (page1, pfn1), (page2, pfn2) in itertools.combinations(pairs, 2):
+            if pfn1 == pfn2:
+                continue
+            size, remainder = divmod(page2 - page1, pfn2 - pfn1)
+            if remainder or not 24 <= size <= 256 or size % current_arch.ptrsize:
+                continue
+            base = page1 - pfn1 * size
+            matches = sum(page == base + pfn * size for page, pfn in pairs)
+            if matches >= 2 and (best is None or matches > best[0]):
+                best = (matches, base, size)
+        if best is None:
+            return None
+        return best[1:]
 
     def get_section_mem_map(self, section_id):
         limit = self.NR_MEM_SECTIONS
@@ -204079,6 +204064,660 @@ class KernelPage:
         if phys is None:
             return None
         return self.phys2page(phys & mask)
+
+    """
+    struct page { // v4.18~
+        memdesc_flags_t flags;
+        union { ... }; // 5 words (8-byte aligned on v5.1~v5.12 with 64-bit dma_addr_t except x86_32)
+        union {
+            unsigned int page_type;
+            atomic_t _mapcount;
+            unsigned int active; // SLAB (~v6.7)
+            int units; // SLOB (~v6.3)
+        };
+        atomic_t _refcount;
+        ...
+    };
+
+    struct page { // v3.1~v4.17
+        unsigned long flags;
+        union { struct address_space *mapping; atomic_t compound_mapcount; ... };
+        union { pgoff_t index; void *freelist; };
+        union { // 8 bytes
+            unsigned counters; // SLUB
+            unsigned int active; // SLAB
+            struct {
+                union { atomic_t _mapcount; int units; ... }; // SLOB uses units
+                atomic_t _refcount; // _count before v4.6
+            };
+        };
+        union { struct list_head lru; struct { unsigned long compound_head; unsigned char compound_dtor; ... }; ... };
+        union { unsigned long private; struct page *first_page; ... }; // first_page is ~v4.3
+        ...
+    };
+
+    struct page { // ~v3.0
+        unsigned long flags;
+        atomic_t _count;
+        union { atomic_t _mapcount; ... };
+        union { struct { unsigned long private; struct address_space *mapping; }; struct page *first_page; ... };
+        ...
+    };
+    """
+
+    @staticmethod
+    def get_flags_dic():
+        kversion = Kernel.version()
+
+        # PG_uncached, PG_hwpoison, PG_young, PG_idle, PG_arch_2, PG_arch3:
+        # Because it varies depending on the environment, GEF does not support it
+        if kversion < "4.4":
+            # CONFIG_PAGEFLAGS_EXTENDED is y if 64BIT || SPARSEMEM_VMEMMAP || !SPARSEMEM
+            consts = KernelAddressHeuristicFinder.consts()
+            if is_64bit() or consts is None or not consts.CONFIG_SPARSEMEM:
+                flags_dic = {
+                    0x0000_0000_0000_0001: "PG_locked",
+                    0x0000_0000_0000_0002: "PG_error",
+                    0x0000_0000_0000_0004: "PG_referenced",
+                    0x0000_0000_0000_0008: "PG_uptodate",
+                    0x0000_0000_0000_0010: "PG_dirty",
+                    0x0000_0000_0000_0020: "PG_lru",
+                    0x0000_0000_0000_0040: "PG_active",
+                    0x0000_0000_0000_0080: "PG_slab",
+                    0x0000_0000_0000_0100: "PG_owner_priv_1",
+                    0x0000_0000_0000_0200: "PG_arch_1",
+                    0x0000_0000_0000_0400: "PG_reserved",
+                    0x0000_0000_0000_0800: "PG_private",
+                    0x0000_0000_0000_1000: "PG_private_2",
+                    0x0000_0000_0000_2000: "PG_writeback",
+                    0x0000_0000_0000_4000: "PG_head",
+                    0x0000_0000_0000_8000: "PG_tail",
+                    0x0000_0000_0001_0000: "PG_swapcache",
+                    0x0000_0000_0002_0000: "PG_mappedtodisk",
+                    0x0000_0000_0004_0000: "PG_reclaim",
+                    0x0000_0000_0008_0000: "PG_swapbacked",
+                    0x0000_0000_0010_0000: "PG_unevictable",
+                    0x0000_0000_0020_0000: "PG_mlocked", # CONFIG_MMU is always defined
+                }
+            else:
+                flags_dic = {
+                    0x0000_0000_0000_0001: "PG_locked",
+                    0x0000_0000_0000_0002: "PG_error",
+                    0x0000_0000_0000_0004: "PG_referenced",
+                    0x0000_0000_0000_0008: "PG_uptodate",
+                    0x0000_0000_0000_0010: "PG_dirty",
+                    0x0000_0000_0000_0020: "PG_lru",
+                    0x0000_0000_0000_0040: "PG_active",
+                    0x0000_0000_0000_0080: "PG_slab",
+                    0x0000_0000_0000_0100: "PG_owner_priv_1",
+                    0x0000_0000_0000_0200: "PG_arch_1",
+                    0x0000_0000_0000_0400: "PG_reserved",
+                    0x0000_0000_0000_0800: "PG_private",
+                    0x0000_0000_0000_1000: "PG_private_2",
+                    0x0000_0000_0000_2000: "PG_writeback",
+                    0x0000_0000_0000_4000: "PG_compound",
+                    0x0000_0000_0000_8000: "PG_swapcache",
+                    0x0000_0000_0001_0000: "PG_mappedtodisk",
+                    0x0000_0000_0002_0000: "PG_reclaim",
+                    0x0000_0000_0004_0000: "PG_swapbacked",
+                    0x0000_0000_0008_0000: "PG_unevictable",
+                    0x0000_0000_0010_0000: "PG_mlocked", # CONFIG_MMU is always defined
+                }
+        elif "4.4" <= kversion < "4.10":
+            flags_dic = {
+                0x0000_0000_0000_0001: "PG_locked",
+                0x0000_0000_0000_0002: "PG_error",
+                0x0000_0000_0000_0004: "PG_referenced",
+                0x0000_0000_0000_0008: "PG_uptodate",
+                0x0000_0000_0000_0010: "PG_dirty",
+                0x0000_0000_0000_0020: "PG_lru",
+                0x0000_0000_0000_0040: "PG_active",
+                0x0000_0000_0000_0080: "PG_slab",
+                0x0000_0000_0000_0100: "PG_owner_priv_1",
+                0x0000_0000_0000_0200: "PG_arch_1",
+                0x0000_0000_0000_0400: "PG_reserved",
+                0x0000_0000_0000_0800: "PG_private",
+                0x0000_0000_0000_1000: "PG_private_2",
+                0x0000_0000_0000_2000: "PG_writeback",
+                0x0000_0000_0000_4000: "PG_head",
+                0x0000_0000_0000_8000: "PG_swapcache",
+                0x0000_0000_0001_0000: "PG_mappedtodisk",
+                0x0000_0000_0002_0000: "PG_reclaim",
+                0x0000_0000_0004_0000: "PG_swapbacked",
+                0x0000_0000_0008_0000: "PG_unevictable",
+                0x0000_0000_0010_0000: "PG_mlocked", # CONFIG_MMU is always defined
+            }
+        elif "4.10" <= kversion < "4.20":
+            flags_dic = {
+                0x0000_0000_0000_0001: "PG_locked",
+                0x0000_0000_0000_0002: "PG_error",
+                0x0000_0000_0000_0004: "PG_referenced",
+                0x0000_0000_0000_0008: "PG_uptodate",
+                0x0000_0000_0000_0010: "PG_dirty",
+                0x0000_0000_0000_0020: "PG_lru",
+                0x0000_0000_0000_0040: "PG_active",
+                0x0000_0000_0000_0080: "PG_waiters",
+                0x0000_0000_0000_0100: "PG_slab",
+                0x0000_0000_0000_0200: "PG_owner_priv_1",
+                0x0000_0000_0000_0400: "PG_arch_1",
+                0x0000_0000_0000_0800: "PG_reserved",
+                0x0000_0000_0000_1000: "PG_private",
+                0x0000_0000_0000_2000: "PG_private_2",
+                0x0000_0000_0000_4000: "PG_writeback",
+                0x0000_0000_0000_8000: "PG_head",
+                0x0000_0000_0001_0000: "PG_mappedtodisk",
+                0x0000_0000_0002_0000: "PG_reclaim",
+                0x0000_0000_0004_0000: "PG_swapbacked",
+                0x0000_0000_0008_0000: "PG_unevictable",
+                0x0000_0000_0010_0000: "PG_mlocked", # CONFIG_MMU is always defined
+            }
+        elif "4.20" <= kversion < "6.6":
+            flags_dic = {
+                0x0000_0000_0000_0001: "PG_locked",
+                0x0000_0000_0000_0002: "PG_referenced",
+                0x0000_0000_0000_0004: "PG_uptodate",
+                0x0000_0000_0000_0008: "PG_dirty",
+                0x0000_0000_0000_0010: "PG_lru",
+                0x0000_0000_0000_0020: "PG_active",
+                0x0000_0000_0000_0040: "PG_workingset",
+                0x0000_0000_0000_0080: "PG_waiters",
+                0x0000_0000_0000_0100: "PG_error",
+                0x0000_0000_0000_0200: "PG_slab",
+                0x0000_0000_0000_0400: "PG_owner_priv_1",
+                0x0000_0000_0000_0800: "PG_arch_1",
+                0x0000_0000_0000_1000: "PG_reserved",
+                0x0000_0000_0000_2000: "PG_private",
+                0x0000_0000_0000_4000: "PG_private_2",
+                0x0000_0000_0000_8000: "PG_writeback",
+                0x0000_0000_0001_0000: "PG_head",
+                0x0000_0000_0002_0000: "PG_mappedtodisk",
+                0x0000_0000_0004_0000: "PG_reclaim",
+                0x0000_0000_0008_0000: "PG_swapbacked",
+                0x0000_0000_0010_0000: "PG_unevictable",
+                0x0000_0000_0020_0000: "PG_mlocked", # CONFIG_MMU is always defined
+            }
+        elif "6.6" <= kversion < "6.10":
+            flags_dic = {
+                0x0000_0000_0000_0001: "PG_locked",
+                0x0000_0000_0000_0002: "PG_writeback",
+                0x0000_0000_0000_0004: "PG_referenced",
+                0x0000_0000_0000_0008: "PG_uptodate",
+                0x0000_0000_0000_0010: "PG_dirty",
+                0x0000_0000_0000_0020: "PG_lru",
+                0x0000_0000_0000_0040: "PG_head",
+                0x0000_0000_0000_0080: "PG_waiters",
+                0x0000_0000_0000_0100: "PG_active",
+                0x0000_0000_0000_0200: "PG_workingset",
+                0x0000_0000_0000_0400: "PG_error",
+                0x0000_0000_0000_0800: "PG_slab",
+                0x0000_0000_0000_1000: "PG_owner_priv_1",
+                0x0000_0000_0000_2000: "PG_arch_1",
+                0x0000_0000_0000_4000: "PG_reserved",
+                0x0000_0000_0000_8000: "PG_private",
+                0x0000_0000_0001_0000: "PG_private_2",
+                0x0000_0000_0002_0000: "PG_mappedtodisk",
+                0x0000_0000_0004_0000: "PG_reclaim",
+                0x0000_0000_0008_0000: "PG_swapbacked",
+                0x0000_0000_0010_0000: "PG_unevictable",
+                0x0000_0000_0020_0000: "PG_mlocked", # CONFIG_MMU is always defined
+            }
+        elif "6.10" <= kversion < "6.12":
+            flags_dic = {
+                0x0000_0000_0000_0001: "PG_locked",
+                0x0000_0000_0000_0002: "PG_writeback",
+                0x0000_0000_0000_0004: "PG_referenced",
+                0x0000_0000_0000_0008: "PG_uptodate",
+                0x0000_0000_0000_0010: "PG_dirty",
+                0x0000_0000_0000_0020: "PG_lru",
+                0x0000_0000_0000_0040: "PG_head",
+                0x0000_0000_0000_0080: "PG_waiters",
+                0x0000_0000_0000_0100: "PG_active",
+                0x0000_0000_0000_0200: "PG_workingset",
+                0x0000_0000_0000_0400: "PG_error",
+                0x0000_0000_0000_0800: "PG_owner_priv_1",
+                0x0000_0000_0000_1000: "PG_arch_1",
+                0x0000_0000_0000_2000: "PG_reserved",
+                0x0000_0000_0000_4000: "PG_private",
+                0x0000_0000_0000_8000: "PG_private_2",
+                0x0000_0000_0001_0000: "PG_mappedtodisk",
+                0x0000_0000_0002_0000: "PG_reclaim",
+                0x0000_0000_0004_0000: "PG_swapbacked",
+                0x0000_0000_0008_0000: "PG_unevictable",
+                0x0000_0000_0010_0000: "PG_mlocked", # CONFIG_MMU is always defined
+            }
+        elif "6.12" <= kversion < "6.14":
+            flags_dic = {
+                0x0000_0000_0000_0001: "PG_locked",
+                0x0000_0000_0000_0002: "PG_writeback",
+                0x0000_0000_0000_0004: "PG_referenced",
+                0x0000_0000_0000_0008: "PG_uptodate",
+                0x0000_0000_0000_0010: "PG_dirty",
+                0x0000_0000_0000_0020: "PG_lru",
+                0x0000_0000_0000_0040: "PG_head",
+                0x0000_0000_0000_0080: "PG_waiters",
+                0x0000_0000_0000_0100: "PG_active",
+                0x0000_0000_0000_0200: "PG_workingset",
+                0x0000_0000_0000_0400: "PG_owner_priv_1",
+                0x0000_0000_0000_0800: "PG_owner_2",
+                0x0000_0000_0000_1000: "PG_arch_1",
+                0x0000_0000_0000_2000: "PG_reserved",
+                0x0000_0000_0000_4000: "PG_private",
+                0x0000_0000_0000_8000: "PG_private_2",
+                0x0000_0000_0001_0000: "PG_reclaim",
+                0x0000_0000_0002_0000: "PG_swapbacked",
+                0x0000_0000_0004_0000: "PG_unevictable",
+                0x0000_0000_0008_0000: "PG_mlocked", # CONFIG_MMU is always defined
+            }
+        elif "6.14" <= kversion:
+            flags_dic = {
+                0x0000_0000_0000_0001: "PG_locked",
+                0x0000_0000_0000_0002: "PG_writeback",
+                0x0000_0000_0000_0004: "PG_referenced",
+                0x0000_0000_0000_0008: "PG_uptodate",
+                0x0000_0000_0000_0010: "PG_dirty",
+                0x0000_0000_0000_0020: "PG_lru",
+                0x0000_0000_0000_0040: "PG_head",
+                0x0000_0000_0000_0080: "PG_waiters",
+                0x0000_0000_0000_0100: "PG_active",
+                0x0000_0000_0000_0200: "PG_workingset",
+                0x0000_0000_0000_0400: "PG_owner_priv_1",
+                0x0000_0000_0000_0800: "PG_owner_2",
+                0x0000_0000_0000_1000: "PG_arch_1",
+                0x0000_0000_0000_2000: "PG_reserved",
+                0x0000_0000_0000_4000: "PG_private",
+                0x0000_0000_0000_8000: "PG_private_2",
+                0x0000_0000_0001_0000: "PG_reclaim",
+                0x0000_0000_0002_0000: "PG_swapbacked",
+                0x0000_0000_0004_0000: "PG_unevictable",
+                0x0000_0000_0008_0000: "PG_dropbehind",
+                0x0000_0000_0010_0000: "PG_mlocked", # CONFIG_MMU is always defined
+            }
+        return flags_dic
+
+    @staticmethod
+    def has_flag(flags_value, name):
+        return any(flags_value & k for k, v in KernelPage.get_flags_dic().items() if v == name)
+
+    @staticmethod
+    def get_flags_str(flags_value):
+        flags, _ = GefUtil.flags_to_names(flags_value, KernelPage.get_flags_dic())
+
+        flags_str = "|".join(flags)
+        if flags_str == "":
+            flags_str = "none"
+        return flags_str
+
+    @staticmethod
+    def get_pagetype_str(flags_value):
+        kversion = Kernel.version()
+        if kversion < "4.18":
+            # _mapcount itself is PAGE_*_MAPCOUNT_VALUE
+            flags_dic = {
+                -128: "PG_buddy",
+                -256: "PG_balloon", # 3.18~
+                -512: "PG_kmemcg", # 4.8~
+            }
+            return flags_dic.get(u2i(flags_value, 32), "none")
+        elif "4.18" <= kversion < "5.1":
+            flags_dic = {
+                0x0000_0080: "PG_buddy",
+                0x0000_0100: "PG_balloon",
+                0x0000_0200: "PG_kmemcg",
+                0x0000_0400: "PG_table",
+            }
+        elif "5.1" <= kversion < "5.3":
+            flags_dic = {
+                0x0000_0080: "PG_buddy",
+                0x0000_0100: "PG_offline",
+                0x0000_0200: "PG_kmemcg",
+                0x0000_0400: "PG_table",
+            }
+        elif "5.3" <= kversion < "5.11":
+            flags_dic = {
+                0x0000_0080: "PG_buddy",
+                0x0000_0100: "PG_offline",
+                0x0000_0200: "PG_kmemcg",
+                0x0000_0400: "PG_table",
+                0x0000_0800: "PG_guard",
+            }
+        elif "5.11" <= kversion < "6.9":
+            flags_dic = {
+                0x0000_0080: "PG_buddy",
+                0x0000_0100: "PG_offline",
+                0x0000_0200: "PG_table",
+                0x0000_0400: "PG_guard",
+            }
+        elif "6.9" <= kversion < "6.10":
+            flags_dic = {
+                0x0000_0080: "PG_buddy",
+                0x0000_0100: "PG_offline",
+                0x0000_0200: "PG_table",
+                0x0000_0400: "PG_guard",
+                0x0000_0800: "PG_hugetlb",
+            }
+        elif "6.10" <= kversion < "6.11":
+            flags_dic = {
+                0x0000_0080: "PG_buddy",
+                0x0000_0100: "PG_offline",
+                0x0000_0200: "PG_table",
+                0x0000_0400: "PG_guard",
+                0x0000_0800: "PG_hugetlb",
+                0x0000_1000: "PG_slab",
+            }
+        elif "6.11" <= kversion < "6.12":
+            flags_dic = {
+                0x4000_0000: "PG_buddy",
+                0x2000_0000: "PG_offline",
+                0x1000_0000: "PG_table",
+                0x0800_0000: "PG_guard",
+                0x0400_0000: "PG_hugetlb",
+                0x0200_0000: "PG_slab",
+                0x0100_0000: "PG_zsmalloc",
+            }
+        elif "6.12" <= kversion:
+            flags_dic = {
+                0xf0: "PGTY_buddy",
+                0xf1: "PGTY_offline",
+                0xf2: "PGTY_table",
+                0xf3: "PGTY_guard",
+                0xf4: "PGTY_hugetlb",
+                0xf5: "PGTY_slab",
+                0xf6: "PGTY_zsmalloc",
+                0xf7: "PGTY_unaccepted",
+                0xf8: "PGTY_large_kmalloc", # 6.15~
+            }
+
+        if kversion < "6.12":
+            flags, _ = GefUtil.flags_to_names(~flags_value, flags_dic)
+            flags_str = "|".join(flags)
+            if flags_str == "":
+                flags_str = "none"
+        else:
+            type_value = (flags_value >> 24) & 0xff
+            flags_str = flags_dic.get(type_value, "none")
+        return flags_str
+
+    @staticmethod
+    @Cache.cache_this_session(cache_None=False, per_inferior=True, until_new_objfile=True)
+    def get_sizeof_struct_page():
+        size = GefUtil.sizeof("page")
+        if size is None:
+            consts = KernelAddressHeuristicFinder.consts()
+            if consts is not None:
+                size = consts.sizeof_struct_page
+        return size
+
+    @staticmethod
+    def get_union_offset():
+        for member in ("compound_head", "compound_info"):
+            offset = GefUtil.offsetof("page", member)
+            if offset:
+                return offset
+
+        # A 64-bit dma_addr_t (e.g., ARM LPAE) aligns the first union to 8 on v5.1~v5.12, except x86_32.
+        # Since stable kernels backported its replacement with unsigned long[2], the data decides it, not the version.
+        ptrsize = current_arch.ptrsize
+        if ptrsize == 8 or is_x86_32():
+            return ptrsize
+        ret = Kernel.get_page_virt_pair()
+        sizeof_struct_page = KernelPage.get_sizeof_struct_page()
+        if not ret or not sizeof_struct_page:
+            return ptrsize
+        # The padding before the union is never written, but the first word of the union usually is.
+        written = set()
+        for i in range(-16, 17):
+            for offset in (4, 8):
+                if read_int32_from_memory(ret[0] + sizeof_struct_page * i + offset, safe=True):
+                    written.add(offset)
+        if written == {8}:
+            return 8
+        return ptrsize
+
+    @staticmethod
+    @Cache.cache_this_session(cache_None=False, per_inferior=True, until_new_objfile=True)
+    def get_page_layout():
+        kversion = Kernel.version()
+        if kversion is None:
+            return None
+
+        ptrsize = current_arch.ptrsize
+        layout = {}
+        if kversion < "3.1":
+            layout.update(refcount=ptrsize, mapcount=ptrsize + 4, private=ptrsize + 8, mapping=ptrsize * 2 + 8)
+            layout.update(first_page=ptrsize + 8, lru=ptrsize * 4 + 8)
+        elif kversion < "4.18":
+            layout.update(mapping=ptrsize, mapcount=ptrsize * 3, refcount=ptrsize * 3 + 4, private=ptrsize * 5 + 8)
+            layout["lru"] = ptrsize * 3 + 8
+            if kversion < "4.4":
+                layout["first_page"] = ptrsize * 5 + 8
+            else:
+                layout.update(compound_head=ptrsize * 3 + 8, compound_dtor=ptrsize * 4 + 8)
+            if kversion >= "4.5":
+                layout["entire_mapcount"] = (1, ptrsize) # page[1].compound_mapcount
+        else:
+            union = KernelPage.get_union_offset()
+            mapcount = union + align(ptrsize * 5, union)
+            layout.update(lru=union, compound_head=union, mapping=union + ptrsize * 2, private=union + ptrsize * 4)
+            layout.update(mapcount=mapcount, refcount=mapcount + 4)
+            # (index of struct page, offset) of compound_mapcount (~v6.2) or folio->_entire_mapcount (v6.3~)
+            if kversion < "6.6":
+                layout["compound_dtor"] = union + ptrsize
+                layout["entire_mapcount"] = (1, union + ptrsize + 4)
+            elif kversion < "6.10":
+                layout["entire_mapcount"] = (1, ptrsize * 3)
+            elif kversion < "6.15":
+                layout["entire_mapcount"] = (1, ptrsize * 2 + 4)
+            elif ptrsize == 8:
+                layout["entire_mapcount"] = (1, ptrsize * 2 + 8)
+            else:
+                layout["entire_mapcount"] = (2, ptrsize * 4)
+        return layout
+
+    @staticmethod
+    def decode_compound_info(page_addr, compound_info):
+        # Old encoding: compound_info == head_page | 1
+        head_page = AddressUtil.normalize_address(compound_info - 1)
+        if head_page < page_addr and is_valid_addr(head_page):
+            return head_page
+
+        # New encoding: compound_info == mask | 1
+        head_page = page_addr & compound_info
+        if head_page != page_addr and is_valid_addr(head_page):
+            return head_page
+        return None
+
+    @staticmethod
+    def get_head_page(page_addr):
+        layout = KernelPage.get_page_layout()
+        flags = read_int_from_memory(page_addr)
+
+        # ~v4.3: PG_tail (or PG_compound with PG_reclaim) and page->first_page
+        if "first_page" in layout:
+            is_tail = KernelPage.has_flag(flags, "PG_tail")
+            if KernelPage.has_flag(flags, "PG_compound"):
+                is_tail = KernelPage.has_flag(flags, "PG_reclaim")
+            if not is_tail:
+                return page_addr
+            head_page = read_int_from_memory(page_addr + layout["first_page"])
+            if head_page < page_addr and is_valid_addr(head_page):
+                return head_page
+            return None
+
+        compound_info = read_int_from_memory(page_addr + layout["compound_head"])
+        if compound_info & 1:
+            return KernelPage.decode_compound_info(page_addr, compound_info)
+
+        # HugeTLB vmemmap optimization (v5.18~v7.0) maps the struct pages of tail pages to those of the head page,
+        # so a tail page may look like a head page. The next struct page has the true link (page_fixed_fake_head).
+        if KernelPage.has_flag(flags, "PG_head") and KernelPage.get_sizeof_struct_page():
+            next_page = page_addr + KernelPage.get_sizeof_struct_page()
+            next_info = read_int_from_memory(next_page + layout["compound_head"], safe=True)
+            if next_info and next_info & 1:
+                head_page = KernelPage.decode_compound_info(next_page, next_info)
+                if head_page is not None and head_page < page_addr:
+                    return head_page
+        return page_addr
+
+    @staticmethod
+    def get_pfn(page, page_shift):
+        """Return the page frame number of the struct page `page`, or None."""
+        if not is_valid_addr(page):
+            return None
+        phys = Kernel.page2phys(page)
+        if phys is None:
+            return None
+        return phys >> page_shift
+
+    @staticmethod
+    def get_folio_order(folio, sizeof_struct_page):
+        """Return folio_order() of the struct folio (= the head struct page) `folio`."""
+        # folio_order(): a large folio keeps its order in the low byte of _flags_1 (the flags of page[1])
+        if not KernelPage.has_flag(read_int_from_memory(folio), "PG_head"):
+            return 0
+        return read_int_from_memory(folio + sizeof_struct_page) & 0xff
+
+    @staticmethod
+    def get_direct_map_virt(page, phys):
+        """Return the virtual address of the physical address `phys` of the struct page `page`, or None."""
+        # the same resolution as buddy-dump: physmap + phys, or page2virt when it falls outside the direct map
+        if is_riscv32() or is_riscv64():
+            return Kernel.page2virt(page)
+        consts = KernelAddressHeuristicFinder.consts()
+        page_offset = KernelAddressHeuristicFinder.get_PAGE_OFFSET()
+        if is_arm64():
+            physmap = consts.physmap_base
+        elif is_arm32():
+            phys_offset = consts.PHYS_OFFSET
+            if page_offset is None or phys_offset is None:
+                physmap = None
+            else:
+                physmap = page_offset - phys_offset
+        else:
+            physmap = page_offset
+        if physmap is not None:
+            # check the range before normalizing, or a 32-bit PA of 4 GiB or more wraps into the direct map
+            virt = physmap + phys
+            page_offset_end = KernelAddressHeuristicFinder.get_PAGE_OFFSET_END()
+            if page_offset is None or page_offset_end is None:
+                return AddressUtil.normalize_address(virt)
+            if page_offset <= virt < page_offset_end:
+                return virt
+        return Kernel.page2virt(page)
+
+    @staticmethod
+    def get_slot6_kind(slot6_raw):
+        slot6_s32 = u2i(slot6_raw, 32)
+        kversion = Kernel.version()
+
+        if kversion >= "6.12":
+            pgty_mapcount_underflow_shifted = u2i(0xff << 24, 32)
+            has_type = slot6_s32 < pgty_mapcount_underflow_shifted
+        elif  kversion >= "6.11":
+            page_mapcount_reserve = u2i(0xffff0000, 32)
+            has_type = slot6_s32 < page_mapcount_reserve
+        elif kversion >= "4.18":
+            page_mapcount_reserve = -128
+            has_type = slot6_s32 < page_mapcount_reserve
+        else:
+            # PAGE_BUDDY_MAPCOUNT_VALUE, PAGE_BALLOON_MAPCOUNT_VALUE, PAGE_KMEMCG_MAPCOUNT_VALUE
+            has_type = slot6_s32 in (-128, -256, -512)
+
+        if has_type:
+            return "type"
+        return "mapcount"
+
+    @staticmethod
+    def get_userspace_mapcount_info(page_addr, head_page, slot6_raw, slot6_kind):
+        # the same as page_mapcount() (~v6.10) or folio_precise_page_mapcount() (v6.11~)
+        layout = KernelPage.get_page_layout()
+        kversion = Kernel.version()
+
+        head_flags = read_int_from_memory(head_page)
+        is_compound = head_page != page_addr
+        is_compound |= KernelPage.has_flag(head_flags, "PG_head") or KernelPage.has_flag(head_flags, "PG_compound")
+        if slot6_kind == "slab":
+            return None, None, None
+        if slot6_kind == "type" and (not is_compound or "slab" in KernelPage.get_pagetype_str(slot6_raw)):
+            return None, None, None
+
+        mapcount_raw = read_int32_from_memory(page_addr + layout["mapcount"])
+        if slot6_kind == "type" and head_page == page_addr:
+            mapcount = 0 # page_type of a large folio (e.g., hugetlb)
+        else:
+            # Defensive clamp. In normal cases, _mapcount raw starts at -1,
+            # so decoded mapcount should never be negative.
+            mapcount = max(u2i(mapcount_raw, 32) + 1, 0)
+
+        sizeof_struct_page = KernelPage.get_sizeof_struct_page()
+        if not is_compound or "entire_mapcount" not in layout or not sizeof_struct_page:
+            return mapcount_raw, None, mapcount
+
+        second_page = head_page + sizeof_struct_page
+        if "4.8" <= kversion < "6.2":
+            # file THP counts its PMD mappings in page->_mapcount; PageAnon(), PageHuge() (HUGETLB_PAGE_DTOR)
+            is_anon = read_int_from_memory(head_page + layout["mapping"]) & 1
+            is_hugetlb = read_int32_from_memory(second_page + layout["compound_dtor"]) & 0xff == 2
+            if not is_anon and not (is_hugetlb and Ksym.get_addr("hugetlb_fault")):
+                return mapcount_raw, None, mapcount
+
+        index, offset = layout["entire_mapcount"]
+        if index == 2 and read_int_from_memory(second_page) & 0xff == 1:
+            entire_mapcount = 0 # an order-1 folio has no page[2] on 32-bit (v6.15~)
+        else:
+            entire_mapcount = u2i(read_int32_from_memory(head_page + sizeof_struct_page * index + offset), 32) + 1
+        mapcount += entire_mapcount
+        if "4.5" <= kversion < "6.2":
+            # PageDoubleMap() adds one to each _mapcount of the PMD-mapped THP that is also mapped by PTEs
+            if kversion < "5.10":
+                pg_double_map = "PG_private_2"
+            else:
+                pg_double_map = "PG_workingset"
+            if KernelPage.has_flag(read_int_from_memory(second_page), pg_double_map):
+                mapcount -= 1
+        return mapcount_raw, entire_mapcount, max(mapcount, 0)
+
+    @staticmethod
+    def is_buddy_free(slot6_raw, slot6_kind):
+        if slot6_kind != "type":
+            return False
+        kversion = Kernel.version()
+        if kversion < "4.18":
+            return u2i(slot6_raw, 32) == -128
+        if "4.18" <= kversion < "6.11":
+            return bool((~slot6_raw) & 0x0000_0080)
+        if "6.11" <= kversion < "6.12":
+            return bool((~slot6_raw) & 0x4000_0000)
+        if "6.12" <= kversion:
+            return ((slot6_raw >> 24) & 0xff) == 0xf0
+        return False
+
+    @staticmethod
+    def get_page_info(page_addr):
+        """Return the decoded fields of the struct page `page_addr` as a dict, or None if its compound head
+        page cannot be resolved. The fields except `head_page` and `is_tailpage` are read from the head page."""
+        layout = KernelPage.get_page_layout()
+        info_page_addr = KernelPage.get_head_page(page_addr)
+        if info_page_addr is None:
+            return None
+        is_tailpage = info_page_addr != page_addr
+
+        flags = read_int_from_memory(info_page_addr)
+        slot6_raw = read_int32_from_memory(info_page_addr + layout["mapcount"])
+        slot6_kind = KernelPage.get_slot6_kind(slot6_raw)
+        # SLUB's counters (~v4.17), SLAB's active and SLOB's units share _mapcount, and PG_slab is a page flag until v6.10
+        if KernelPage.has_flag(flags, "PG_slab"):
+            slot6_kind = "slab"
+        mapcount_raw, entire_mapcount, userspace_mapcount = KernelPage.get_userspace_mapcount_info(
+            page_addr, info_page_addr, slot6_raw, slot6_kind,
+        )
+        refcount = read_int32_from_memory(info_page_addr + layout["refcount"])
+        buddy_free = KernelPage.is_buddy_free(slot6_raw, slot6_kind)
+        return {
+            "head_page": info_page_addr, "is_tailpage": is_tailpage, "flags": flags,
+            "slot6_raw": slot6_raw, "slot6_kind": slot6_kind, "mapcount_raw": mapcount_raw,
+            "entire_mapcount": entire_mapcount, "userspace_mapcount": userspace_mapcount,
+            "refcount": refcount, "in_buddy_list": buddy_free,
+        }
 
 
 @register_command
@@ -205491,24 +206130,20 @@ class PageInfoCommand(GenericCommand):
         return False
 
     def dump_page_info(self, page_addr, virt_addr, user_virt_addr):
-        layout = self.get_page_layout()
-        info_page_addr = self.get_head_page(page_addr)
-        if info_page_addr is None:
+        page_info = KernelPage.get_page_info(page_addr)
+        if page_info is None:
             err("Failed to resolve compound head page")
             return
-        is_tailpage = info_page_addr != page_addr
-
-        flags = read_int_from_memory(info_page_addr)
-        slot6_raw = read_int32_from_memory(info_page_addr + layout["mapcount"])
-        slot6_kind = self.get_slot6_kind(slot6_raw)
-        # SLUB's counters (~v4.17), SLAB's active and SLOB's units share _mapcount, and PG_slab is a page flag until v6.10
-        if self.has_flag(flags, "PG_slab"):
-            slot6_kind = "slab"
-        mapcount_raw, entire_mapcount, userspace_mapcount = self.get_userspace_mapcount_info(
-            page_addr, info_page_addr, slot6_raw, slot6_kind,
-        )
-        refcount = read_int32_from_memory(info_page_addr + layout["refcount"])
-        buddy_free = self.is_buddy_free(slot6_raw, slot6_kind)
+        info_page_addr = page_info["head_page"]
+        is_tailpage = page_info["is_tailpage"]
+        flags = page_info["flags"]
+        slot6_raw = page_info["slot6_raw"]
+        slot6_kind = page_info["slot6_kind"]
+        mapcount_raw = page_info["mapcount_raw"]
+        entire_mapcount = page_info["entire_mapcount"]
+        userspace_mapcount = page_info["userspace_mapcount"]
+        refcount = page_info["refcount"]
+        buddy_free = page_info["in_buddy_list"]
 
         if user_virt_addr is not None:
             gef_print("Virt            : {:s}".format(
@@ -205523,7 +206158,7 @@ class PageInfoCommand(GenericCommand):
             ))
 
         gef_print("flags           : {:s} ({:s})".format(
-            AddressUtil.format_address(flags), PageInfoCommand.get_flags_str(flags),
+            AddressUtil.format_address(flags), KernelPage.get_flags_str(flags),
         ))
         gef_print("is_tailpage     : {}".format(is_tailpage))
         if is_tailpage:
@@ -205533,7 +206168,7 @@ class PageInfoCommand(GenericCommand):
         if slot6_kind == "type":
             gef_print("  page_type          : {:#x} ({:s})".format(
                 slot6_raw & 0xffffffff,
-                PageInfoCommand.get_pagetype_str(slot6_raw),
+                KernelPage.get_pagetype_str(slot6_raw),
             ))
         elif slot6_kind == "mapcount":
             gef_print("  mapcountraw        : {:#x}".format(mapcount_raw & 0xffffffff))
@@ -205557,7 +206192,7 @@ class PageInfoCommand(GenericCommand):
     @Decorator.only_if_specific_gdb_mode(mode=("qemu-system",))
     @Decorator.only_if_in_kernel
     def do_invoke(self, args):
-        if self.get_page_layout() is None:
+        if KernelPage.get_page_layout() is None:
             err("Could not find Linux kernel")
             return
 
@@ -223306,7 +223941,7 @@ class GefUtil:
             flags = [read_int_from_memory(entry - offset, safe=True) for offset in (4, 8)]
             if None in flags:
                 continue
-            candidates = [offset for offset, value in zip((4, 8), flags) if PageInfoCommand.has_flag(value, "PG_slab")]
+            candidates = [offset for offset, value in zip((4, 8), flags) if KernelPage.has_flag(value, "PG_slab")]
             if len(candidates) == 1:
                 return candidates[0]
         return current_arch.ptrsize
