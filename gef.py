@@ -75257,42 +75257,31 @@ class KernelAddressHeuristicFinder:
                 # the used vmap tree is available, make sure it is contained in
                 # the candidate vmalloc range before accepting the candidate.
                 if vmalloc_start is not None:
-                    res = gdb.execute("vmalloc-dump --quiet --no-pager --only-used", to_string=True)
-                    if res:
-                        res = Color.remove_color(res)
-                        lines = res.splitlines()
-                        if len(lines) >= 2:
-                            _, _, vrange, _, *_ = lines[1].split()
-                            s, _ = vrange.split("-")
-                            s = int(s, 16)
-                            vmalloc_size_tb = KernelAddressHeuristicFinder.consts().VMALLOC_SIZE_TB
-                            if vmalloc_size_tb is not None:
-                                vmalloc_size = vmalloc_size_tb << 40
-                                if vmalloc_start <= s < vmalloc_start + vmalloc_size:
-                                    return vmalloc_start
-                                vmalloc_start = None
+                    result = Kernel.vmalloc().get_areas(only_used=True)
+                    if result and result["areas"]:
+                        _, s, _, _, _ = result["areas"][0]
+                        vmalloc_size_tb = KernelAddressHeuristicFinder.consts().VMALLOC_SIZE_TB
+                        if vmalloc_size_tb is not None:
+                            vmalloc_size = vmalloc_size_tb << 40
+                            if vmalloc_start <= s < vmalloc_start + vmalloc_size:
+                                return vmalloc_start
+                            vmalloc_start = None
 
-        # plan 4 (from vmalloc-dump)
+        # plan 4 (from the free vmap areas)
         if kversion and "5.2" <= kversion:
-            res = gdb.execute("vmalloc-dump --quiet --no-pager --only-freed", to_string=True)
+            result = Kernel.vmalloc().get_areas(only_freed=True)
             """
             #    state  virtual address                       size               flags
             0    freed  0x0000000000000001-0xffffc90000000000 0xffffc8ffffffffff
             """
-            if res:
-                res = Color.remove_color(res)
-                lines = res.splitlines()
-                if len(lines) >= 2:
-                    _, _, vrange, _, *_ = lines[1].split()
-                    s, e = vrange.split("-")
-                    s = int(s, 16)
-                    e = int(e, 16)
-                    if s == 1:
-                        return e
+            if result and result["areas"]:
+                _, s, e, _, _ = result["areas"][0]
+                if s == 1:
+                    return e
 
-        # plan 5 (from vmalloc-dump and pagewalk)
+        # plan 5 (from the used vmap areas and the kernel memory map)
         if kversion:
-            res = gdb.execute("vmalloc-dump --quiet --no-pager --only-used", to_string=True)
+            result = Kernel.vmalloc().get_areas(only_used=True)
             """
             [vmalloc-dump; x64]
             #    state  virtual address                       size               flags
@@ -75310,35 +75299,30 @@ class KernelAddressHeuristicFinder:
             0x00000000c1b83000-0x00000000dffe0000 - 0x1e45d000 - - [RWX KERN]
             0x00000000e07e0000-0x00000000e07e1000 - 0x1000     - - [RWX KERN]
             """
-            if res:
-                res = Color.remove_color(res)
-                lines = res.splitlines()
-                if len(lines) >= 2:
-                    _, _, vrange, _, *_ = lines[1].split()
-                    s, _ = vrange.split("-")
-                    s = int(s, 16)
+            if result and result["areas"]:
+                _, s, _, _, _ = result["areas"][0]
 
-                    # incontinuity check
-                    klayout = Kernel.layout()
-                    prev = None
-                    for entry in klayout.maps:
-                        if entry.vstart == s:
-                            break
-                        prev = entry.vstart
+                # incontinuity check
+                klayout = Kernel.layout()
+                prev = None
+                for entry in klayout.maps:
+                    if entry.vstart == s:
+                        break
+                    prev = entry.vstart
 
-                    if prev is not None:
-                        if is_64bit():
-                            mask = 0xffff_ff00_0000_0000
-                            if (prev & mask) != (s & mask):
-                                if (s & 0x0fff_ffff) == 0:
-                                    return s
-                        else:
-                            mask = 0xff00_0000
-                            if (prev & mask) != (s & mask):
-                                if (s & 0x0fff) == 0:
-                                    return s
+                if prev is not None:
+                    if is_64bit():
+                        mask = 0xffff_ff00_0000_0000
+                        if (prev & mask) != (s & mask):
+                            if (s & 0x0fff_ffff) == 0:
+                                return s
                     else:
-                        return s
+                        mask = 0xff00_0000
+                        if (prev & mask) != (s & mask):
+                            if (s & 0x0fff) == 0:
+                                return s
+                else:
+                    return s
         if is_x86_64():
             return vmalloc_start
         return None
@@ -203222,25 +203206,28 @@ class KernelVMMapCommand(GenericCommand, BufferingOutput):
 
         self.quiet_info("Resolving buddy")
 
+        # the free pages that `buddy-dump --sort` lists
+        kversion = Kernel.version()
+        if kversion is None or kversion < "3.0":
+            return
+        kbuddy = Kernel.buddy()
         try:
-            res = gdb.execute("buddy-dump --quiet --no-pager --sort", to_string=True)
+            nodes = kbuddy.get_nodes(quiet=True)
+            if nodes is None:
+                return
+            free_pages = []
+            for entry in kbuddy.get_sorted_entries(nodes):
+                virt = kbuddy.get_entry_addresses(entry)["virt"]
+                free_pages.append((virt, entry["size"], entry["cpu_num"]))
         except gdb.error:
             return
 
-        for line in res.splitlines():
-            line = Color.remove_color(line)
-            if not line.startswith("    "):
+        for virt, size, cpu_num in free_pages:
+            if virt is None: # maybe x86 highmem
                 continue
 
-            _page_str, size_str, virt_str, _phys_str, *pcp = line.split()
-
-            if "???" in virt_str: # maybe x86 highmem
-                continue
-
-            size = int(size_str[5:], 16)
-            virt = int(virt_str[5:].split("-")[0], 16)
-            if pcp:
-                description = "free page in buddy allocator {:s}".format(" ".join(pcp))
+            if cpu_num is not None:
+                description = "free page in buddy allocator (pcp, cpu={:d})".format(cpu_num)
             else:
                 description = "free page in buddy allocator"
             self.insert_region(virt, size, description, merge=False)
@@ -203249,42 +203236,24 @@ class KernelVMMapCommand(GenericCommand, BufferingOutput):
     def resolve_kstack(self):
         self.quiet_info("Resolving kstack")
 
-        try:
-            res = gdb.execute("ktask --quiet --no-pager --print-thread", to_string=True)
-        except gdb.error:
+        ktask = Kernel.task()
+        if not ktask.initialize(threads=True):
             return
-
-        # calc kstack address pattern
-        kstacks = []
-        for line in res.splitlines():
-            line = line.split()
-            if len(line) < 2 or line[-2] == "-":
-                continue
-            try:
-                kstack = int(line[-2], 16)
-            except ValueError:
-                continue
-            kstacks.append(kstack & 0xffff)
+        tasks = ktask.get_tasks(include_current=True, threads=ktask.enabled["threads"])
+        tasks = [info for info in tasks if info["kstack"] is not None]
 
         # calc kstack size
-        kstack_size = Kernel.task().get_kstack_size()
+        kstack_size = ktask.get_kstack_size()
         if kstack_size is None:
-            kstacks = sorted(set(kstacks))
+            # from the address pattern of kstacks
+            kstacks = sorted({info["kstack"] & 0xffff for info in tasks})
             kstack_size = min((b - a for a, b in zip(kstacks, kstacks[1:])),
                               default=KernelAddressHeuristicFinder.consts().PAGE_SIZE * 2)
 
         # kstack
-        for line in res.splitlines():
-            elems = line.split()
-            if len(elems) < 4 or elems[-2] == "-":
-                continue
-            try:
-                pid, kstack = int(elems[3]), int(elems[-2], 16)
-                process_name = line.split(maxsplit=4)[4][:16].strip()
-            except (ValueError, IndexError):
-                continue
-            description = "kstack PID:{:d} ({:s})".format(pid, process_name)
-            self.insert_region(kstack, kstack_size, description)
+        for info in tasks:
+            description = "kstack PID:{:d} ({:s})".format(info["pid"], info["comm"])
+            self.insert_region(info["kstack"], kstack_size, description)
         return
 
     def resolve_userland(self):
@@ -203293,42 +203262,23 @@ class KernelVMMapCommand(GenericCommand, BufferingOutput):
         # If current is a kernel thread, the userland memory map details will not be displayed.
         # Even if you are in a kernel thread, you may be able to see the userland memory map,
         # but it takes time to identify which process it belongs to.
-        try:
-            res = gdb.execute("kcurrent --quiet", to_string=True)
-            r = KernelCurrentCommand.search_selected_thread(res)
-            if not r:
-                return
-            curr_task = int(r.group(1), 16)
-        except Exception:
+        curr_task = KernelTask.get_current_task()
+        if not curr_task:
             return
 
-        try:
-            res = gdb.execute(f"ktask --quiet --no-pager -u --task-filter {curr_task:#x}", to_string=True)
-            if not res:
-                return
-            res = gdb.execute(f"ktask --quiet --no-pager -u --task-filter {curr_task:#x} -m", to_string=True)
-        except gdb.error:
+        ktask = Kernel.task()
+        if not ktask.initialize(maps=True) or "maps" in ktask.disabled:
             return
-
-        pid = -1
-        comm = "?"
-        for line in res.splitlines():
-            if not line.startswith("0x"):
-                continue
-            line = line.split()
-
-            # process name
-            if "-" not in line[0]:
-                pid, comm = int(line[3]), line[4]
-                continue
-
-            # map name
-            addr_start, addr_end = line[0].split("-")
-            addr_start = int(addr_start, 16)
-            addr_end = int(addr_end, 16)
-            map_size = addr_end - addr_start
-            description = "PID:{:d} ({:s}) {:s}".format(pid, comm, " ".join(line[2:]))
-            self.insert_region(addr_start, map_size, description.rstrip())
+        tasks = ktask.get_tasks(task_filter=[curr_task], user_only=True)
+        if not tasks:
+            return
+        pid, comm = tasks[0]["pid"], tasks[0]["comm"]
+        maps = ktask.kmm.get_task_maps(curr_task)
+        for message in ktask.kmm.pop_warnings():
+            self.quiet_warn(message)
+        for vm_area in maps:
+            description = "PID:{:d} ({:s}) {:s}".format(pid, comm, vm_area.file)
+            self.insert_region(vm_area.start, vm_area.end - vm_area.start, description.rstrip())
         return
 
     def resolve_full_slub(self):
@@ -203348,25 +203298,20 @@ class KernelVMMapCommand(GenericCommand, BufferingOutput):
             current = region.addr_start
             while current < region.addr_end:
                 try:
-                    res = Kernel.get_slab_contains(current)
+                    obj = Kernel.get_slab_object(current, allow_unaligned=False)
                 except gdb.error:
                     break
-                if not res:
+                if not obj:
                     current += KernelAddressHeuristicFinder.consts().PAGE_SIZE
                     continue
 
-                r = re.search(r"name: (\S+)  .+  num_pages: (\S+)", res)
-                if not r:
-                    current += KernelAddressHeuristicFinder.consts().PAGE_SIZE
-                    continue
-
-                name = r.group(1)
+                name = obj["name"]
                 # something is wrong
                 if name and not all(x in String.STRING_PRINTABLE for x in name):
                     current += KernelAddressHeuristicFinder.consts().PAGE_SIZE
                     continue
 
-                num_pages = int(r.group(2), 16)
+                num_pages = obj["num_pages"]
                 # something is wrong
                 if num_pages == 0:
                     current += KernelAddressHeuristicFinder.consts().PAGE_SIZE
@@ -203385,31 +203330,13 @@ class KernelVMMapCommand(GenericCommand, BufferingOutput):
             return
         self.quiet_info("Resolving slub")
 
-        try:
-            res = gdb.execute("slub-dump --quiet --no-pager -vv", to_string=True)
-        except gdb.error:
-            return
-
-        name, address, size = None, None, None
-        for line in res.splitlines():
-            line = Color.remove_color(line)
-            r = re.search(r"name: (.+)", line)
-            if r:
-                name = Color.remove_color(r.group(1))
-                continue
-            r = re.search(r"virtual address: (0x[0-9a-fA-F]+)", line)
-            if r:
-                address = Color.remove_color(r.group(1))
-                address = int(address, 16)
-                continue
-            r = re.search(r"num pages: (\d+)", line)
-            if r:
-                size = int(r.group(1)) * KernelAddressHeuristicFinder.consts().PAGE_SIZE
-                description = "slab cache ({:s})".format(name)
-                if address:
-                    self.insert_region(address, size, description, merge=False)
-                address, size = None, None # for detect logic error. name will be reused until next parsing
-                continue
+        _, caches = Kernel.get_slab_caches()
+        page_size = KernelAddressHeuristicFinder.consts().PAGE_SIZE
+        for cache in caches or []:
+            for page, _ in KernelSlub.get_cache_pages(cache):
+                if is_valid_addr(page["address"]) and page["virt_addr"]:
+                    description = "slab cache ({:s})".format(cache["name"])
+                    self.insert_region(page["virt_addr"], page["num_pages"] * page_size, description, merge=False)
 
         self.resolve_full_slub()
         return
@@ -203420,31 +203347,13 @@ class KernelVMMapCommand(GenericCommand, BufferingOutput):
             return
         self.quiet_info("Resolving slab")
 
-        try:
-            res = gdb.execute("slab-dump --quiet --no-pager", to_string=True)
-        except gdb.error:
-            return
-
-        name, address, size = None, None, None
-        for line in res.splitlines():
-            line = Color.remove_color(line)
-            r = re.search(r"name: (.+)", line)
-            if r:
-                name = Color.remove_color(r.group(1))
-                continue
-            r = re.search(r"virtual address \(s_mem & ~0x[0-9a-f]+\): (0x[0-9a-fA-F]+)", line)
-            if r:
-                address = Color.remove_color(r.group(1))
-                address = int(address, 16)
-                continue
-            r = re.search(r"num pages: (\d+)", line)
-            if r:
-                size = int(r.group(1)) * KernelAddressHeuristicFinder.consts().PAGE_SIZE
-                description = "slab cache ({:s})".format(name)
-                if address:
-                    self.insert_region(address, size, description, merge=False)
-                address, size = None, None # for detect logic error. name will be reused until next parsing
-                continue
+        _, caches = Kernel.get_slab_caches()
+        page_size = KernelAddressHeuristicFinder.consts().PAGE_SIZE
+        for cache in caches or []:
+            for page in KernelSlab.get_cache_pages(cache):
+                if is_valid_addr(page["address"]) and page.get("s_mem_base"):
+                    description = "slab cache ({:s})".format(cache["name"])
+                    self.insert_region(page["s_mem_base"], cache["pagesperslab"] * page_size, description, merge=False)
         return
 
     def resolve_slob(self):
@@ -203453,27 +203362,14 @@ class KernelVMMapCommand(GenericCommand, BufferingOutput):
             return
         self.quiet_info("Resolving slob")
 
-        try:
-            res = gdb.execute("slob-dump --quiet --no-pager", to_string=True)
-        except gdb.error:
+        resolver = Kernel.slob()
+        if not resolver.initialize():
             return
-
-        address, size = None, None
-        for line in res.splitlines():
-            line = Color.remove_color(line)
-            r = re.search(r"virtual address: (0x[0-9a-fA-F]+)", line)
-            if r:
-                address = Color.remove_color(r.group(1))
-                address = int(address, 16)
-                continue
-            r = re.search(r"num pages: (\d+)", line)
-            if r:
-                size = int(r.group(1)) * KernelAddressHeuristicFinder.consts().PAGE_SIZE
-                description = "slab cache"
-                if address:
-                    self.insert_region(address, size, description, merge=False)
-                address, size = None, None # for detect logic error
-                continue
+        _, freelist = resolver.walk_caches([])
+        page_size = KernelAddressHeuristicFinder.consts().PAGE_SIZE
+        for page in freelist["large"] + freelist["medium"] + freelist["small"]:
+            if page["virt_addr"]:
+                self.insert_region(page["virt_addr"], page["num_pages"] * page_size, "slab cache", merge=False)
         return
 
     def resolve_slub_tiny(self):
@@ -203482,31 +203378,13 @@ class KernelVMMapCommand(GenericCommand, BufferingOutput):
             return
         self.quiet_info("Resolving slub-tiny")
 
-        try:
-            res = gdb.execute("slub-tiny-dump --quiet --no-pager", to_string=True)
-        except gdb.error:
-            return
-
-        name, address, size = None, None, None
-        for line in res.splitlines():
-            line = Color.remove_color(line)
-            r = re.search(r"name: (.+)", line)
-            if r:
-                name = Color.remove_color(r.group(1))
-                continue
-            r = re.search(r"virtual address: (0x[0-9a-fA-F]+)", line)
-            if r:
-                address = Color.remove_color(r.group(1))
-                address = int(address, 16)
-                continue
-            r = re.search(r"num pages: (\d+)", line)
-            if r:
-                size = int(r.group(1)) * KernelAddressHeuristicFinder.consts().PAGE_SIZE
-                description = "slab cache ({:s})".format(name)
-                if address:
-                    self.insert_region(address, size, description, merge=False)
-                address, size = None, None # for detect logic error. name will be reused
-                continue
+        _, caches = Kernel.get_slab_caches()
+        page_size = KernelAddressHeuristicFinder.consts().PAGE_SIZE
+        for cache in caches or []:
+            for page in KernelSlubTiny.get_cache_pages(cache):
+                if is_valid_addr(page["address"]) and page["virt_addr"]:
+                    description = "slab cache ({:s})".format(cache["name"])
+                    self.insert_region(page["virt_addr"], page["num_pages"] * page_size, description, merge=False)
         return
 
     def resolve_each_slab(self):
