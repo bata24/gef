@@ -99237,59 +99237,23 @@ class KernelSchedCommand(GenericCommand, BufferingOutput):
         return True
 
     def get_current_map(self):
-        """Run `kcurrent` once, returning its "current" lines and a {task: cpu_label} map."""
-        try:
-            res = gdb.execute("kcurrent --quiet", to_string=True)
-        except gdb.error:
-            res = ""
-
+        """Return the "current" lines of each CPU and a {task: cpu_label} map."""
         lines = []
         current_map = {}
-        for line in Color.remove_color(res).splitlines():
-            line = line.strip()
-            r = re.search(r"current \(([^)]+)\): (0x\S+) (.*)", line)
-            if r:
-                lines.append(line)
-                current_map[int(r.group(2), 16)] = r.group(1)
+        for label, task, reason in KernelTask.get_current_tasks():
+            if label is None and task is None:
                 continue
-            r = re.search(r"current: (0x\S+) (.*)", line)
-            if r:
-                lines.append("current (cpu0): " + line[len("current: "):])
-                current_map[int(r.group(1), 16)] = "cpu0"
-            elif line.startswith("current ("):
-                lines.append(line) # "unavailable (...)"
+            if label is None:
+                label = "cpu0"
+            if task is None and reason is None:
+                lines.append("current ({:s}): unavailable".format(label))
+            elif task is None:
+                lines.append("current ({:s}): unavailable ({:s})".format(label, reason))
+            else:
+                comm = read_cstring_from_memory(task + self.task_command.offset_comm)
+                lines.append("current ({:s}): {:#x} {:s}".format(label, task, comm or "???"))
+                current_map[task] = label
         return lines, current_map
-
-    def collect_entries(self):
-        task_command = self.task_command
-        task_addrs = KernelTask.get_task_list(task_command.init_task, task_command.offset_tasks)
-        if self.args.print_thread and self.lwp_available():
-            task_addrs = task_command.add_lwp_task(task_addrs)
-
-        entries = []
-        for task in task_addrs:
-            try:
-                pid = read_int32_from_memory(task + task_command.offset_pid)
-                comm = read_cstring_from_memory(task + task_command.offset_comm)
-                if self.args.user_process_only:
-                    mm = read_int_from_memory(task + task_command.offset_mm)
-                    if mm == 0 or pid == 0:
-                        continue
-            except gdb.MemoryError:
-                continue
-            entries.append((task, pid, comm))
-        return entries
-
-    def lwp_available(self):
-        task_command = self.task_command
-        if getattr(task_command, "offset_thread_group", None) is None:
-            return False
-        if "6.7" <= Kernel.version():
-            if getattr(task_command, "offset_signal", None) is None:
-                return False
-            if getattr(task_command, "offset_thread_head", None) is None:
-                return False
-        return True
 
     def cpu_str(self, task, info, current_map):
         if task in current_map:
@@ -99383,9 +99347,7 @@ class KernelSchedCommand(GenericCommand, BufferingOutput):
                     return task, pid, comm
         # the idle task of each secondary cpu is not linked from init_task, but kcurrent shows it
         if addr is not None and addr in current_map:
-            task_command = self.task_command
-            pid = read_int32_from_memory(addr + task_command.offset_pid, safe=True)
-            comm = read_cstring_from_memory(addr + task_command.offset_comm)
+            pid, comm = self.task_command.get_pid_comm(addr, safe=True)
             if pid is not None:
                 return addr, pid, comm
         return None
@@ -99407,7 +99369,7 @@ class KernelSchedCommand(GenericCommand, BufferingOutput):
         if args.meta:
             return
 
-        entries = self.collect_entries()
+        entries = self.task_command.get_task_entries(threads=args.print_thread, user_only=args.user_process_only)
         if not entries:
             self.quiet_info("Nothing to dump")
             return
@@ -99430,9 +99392,7 @@ class KernelSchedCommand(GenericCommand, BufferingOutput):
                 self.out.append("  " + line)
             self.out.append("")
 
-        selected = entries
-        if args.filter:
-            selected = [e for e in entries if GefUtil.matches_regex(e[2], args.filter)]
+        selected = KernelTask.filter_task_entries(entries, comm_filter=args.filter)
         if not selected:
             err("No task matched")
             return
