@@ -39051,7 +39051,7 @@ class KernelChecksecCommand(GenericCommand):
             gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Disabled", "bold green"), additional))
             return
 
-        btf_range = KtypesCommand.get_btf_addr()
+        btf_range = Kernel.get_btf_addr()
         if btf_range is not None:
             additional = "BTF header: Found at {:#x} (__start_BTF hidden)".format(btf_range[0])
             gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Enabled", "bold red"), additional))
@@ -80358,6 +80358,48 @@ class Kernel:
     def dmesg():
         """Return the printk ring resolver."""
         return KernelDmesg.get_instance()
+
+    @staticmethod
+    def get_btf_addr():
+        """Return (address, size) of the BTF of vmlinux (__start_BTF, or the BTF header found in the kernel image),
+        or None."""
+        start = Ksym.get_addr("__start_BTF")
+        end = Ksym.get_addr("__stop_BTF")
+        if start is not None or end is not None:
+            if start is None or end is None or end <= start:
+                return None
+            return start, end - start
+
+        kernel_img = Ksym.kernel_img
+        ro_base = Ksym.ro_base
+        if not kernel_img:
+            layout = Kernel.layout(use_iomem=False)
+            ro_base = layout.ro_base
+            if ro_base is None or not layout.ro_size:
+                return None
+            kernel_img = read_memory(ro_base, layout.ro_size, safe=True)
+            if kernel_img is None:
+                return None
+        endian = Endian.arrow_str()
+        header_fmt = endian + "HBBIIIII"
+        header_size = struct.calcsize(header_fmt)
+        magic = struct.pack(endian + "H", 0xeb9f)
+        pos = kernel_img.find(magic)
+        while 0 <= pos <= len(kernel_img) - header_size:
+            header = struct.unpack_from(header_fmt, kernel_img, pos)
+            version = header[1]
+            header_len, type_off, type_len, str_off, str_len = header[3:]
+            payload_end = header_len + max(type_off + type_len, str_off + str_len)
+            str_start = pos + header_len + str_off
+            # The BTF of BPF programs embedded in the kernel (e.g. bpf_preload) does not have task_struct.
+            if (version == 1 and header_len >= header_size and type_len and str_len
+                    and type_off + type_len <= str_off and payload_end <= len(kernel_img) - pos
+                    and kernel_img[str_start:str_start + 1] == b"\0"
+                    and b"\0task_struct\0" in kernel_img[str_start:str_start + str_len]):
+                return ro_base + pos, payload_end
+            pos = kernel_img.find(magic, pos + 1)
+
+        return None
 
     @staticmethod
     def nftables():
@@ -169011,48 +169053,8 @@ class KtypesCommand(GenericCommand, BufferingOutput):
         h = hashlib.sha256(abi.encode() + content).hexdigest()
         return os.path.join(GEF_TEMP_DIR, "ktypes-" + h)
 
-    @staticmethod
-    def get_btf_addr():
-        start = Ksym.get_addr("__start_BTF")
-        end = Ksym.get_addr("__stop_BTF")
-        if start is not None or end is not None:
-            if start is None or end is None or end <= start:
-                return None
-            return start, end - start
-
-        kernel_img = Ksym.kernel_img
-        ro_base = Ksym.ro_base
-        if not kernel_img:
-            layout = Kernel.layout(use_iomem=False)
-            ro_base = layout.ro_base
-            if ro_base is None or not layout.ro_size:
-                return None
-            kernel_img = read_memory(ro_base, layout.ro_size, safe=True)
-            if kernel_img is None:
-                return None
-        endian = Endian.arrow_str()
-        header_fmt = endian + "HBBIIIII"
-        header_size = struct.calcsize(header_fmt)
-        magic = struct.pack(endian + "H", 0xeb9f)
-        pos = kernel_img.find(magic)
-        while 0 <= pos <= len(kernel_img) - header_size:
-            header = struct.unpack_from(header_fmt, kernel_img, pos)
-            version = header[1]
-            header_len, type_off, type_len, str_off, str_len = header[3:]
-            payload_end = header_len + max(type_off + type_len, str_off + str_len)
-            str_start = pos + header_len + str_off
-            # The BTF of BPF programs embedded in the kernel (e.g. bpf_preload) does not have task_struct.
-            if (version == 1 and header_len >= header_size and type_len and str_len
-                    and type_off + type_len <= str_off and payload_end <= len(kernel_img) - pos
-                    and kernel_img[str_start:str_start + 1] == b"\0"
-                    and b"\0task_struct\0" in kernel_img[str_start:str_start + str_len]):
-                return ro_base + pos, payload_end
-            pos = kernel_img.find(magic, pos + 1)
-
-        return None
-
     def build_header_file(self):
-        addr_size = self.get_btf_addr()
+        addr_size = Kernel.get_btf_addr()
         if addr_size is None:
             warn("Could not find a valid BTF range; this kernel may be CONFIG_DEBUG_INFO_BTF=n")
             return None
