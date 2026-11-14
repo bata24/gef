@@ -162818,12 +162818,6 @@ class KobjCommand(GenericCommand):
         "user_namespace": "struct user_namespace",
     }
 
-    def run(self, cmd):
-        try:
-            return Color.remove_color(gdb.execute(cmd, to_string=True))
-        except gdb.error:
-            return ""
-
     def emit(self, label, value):
         gef_print("{:14s}{}".format(label, value))
         return
@@ -162935,29 +162929,32 @@ class KobjCommand(GenericCommand):
             return "struct {:s} (guessed from cache name)".format(name), conf_maybe
         return "object from '{:s}' cache (type unknown)".format(name), conf_maybe
 
-    def parse_slab(self, out):
-        """Parse slab-contains output. Returns dict on success, None if not a slab object."""
-        m = re.search(r"^name: (\S+)\s+object_size: (\S+) \(chunk_size: (0x\S+)\)\s+num_pages: (0x\S+)", out, re.M)
-        if not m:
+    def get_slab(self, addr):
+        """Return the slab object of `addr` as `slab-contains` resolves it, or None if it is not a slab object."""
+        allocator = Kernel.get_slab_type()
+        if allocator not in ["SLUB", "SLUB_TINY", "SLAB"]:
+            return None
+        resolver = Kernel.slab_contains()
+        if self.rr:
+            Cache.clear_cache_for(resolver.initialize)
+        if not resolver.initialize(allocator):
+            return None
+        obj = resolver.get_slab_object(addr)
+        if "name" not in obj:
             return None
         result = {
-            "name": m.group(1), "object_size": int(m.group(2), 0), "chunk_size": int(m.group(3), 16),
-            "object_base": None, "offset": 0, "state": None,
+            "name": obj["name"], "object_size": obj["object_size"], "chunk_size": obj["chunk_size"],
+            "object_base": obj["object_base"], "offset": obj["offset"], "state": None,
         }
-        m = re.search(r"^object_base: (0x\S+)", out, re.M)
-        if m:
-            result["object_base"] = int(m.group(1), 16)
-        m = re.search(r"remarks: unaligned \(offset: \+(0x\S+)\)", out)
-        if m:
-            result["offset"] = int(m.group(1), 16)
-        if "before first object" in out or "after last object" in out:
+        if obj["object_base"] is None:
+            # before the first object or in the slab padding
             result["offset"] = -1
             result["padding"] = True
-        m = re.search(r"^status: (freed|in-use)", out, re.M)
-        if m:
-            if m.group(1) == "freed":
+        elif not obj["error"]:
+            freed = resolver.is_freed(obj["object_base"], obj["name"])
+            if freed:
                 result["state"] = "freed"
-            else:
+            elif freed is not None:
                 result["state"] = "allocated"
         return result
 
@@ -163019,31 +163016,65 @@ class KobjCommand(GenericCommand):
             return None
         return sorted({entry["name"] for entry in matches if entry["alias"] != "-" and entry["name"] != name})
 
+    def get_page_state(self, addr):
+        """Return (in_buddy_list, refcount, page_type) of the page containing addr as `pageinfo` decodes it,
+        or None if the page metadata is unavailable. page_type is "" if the page has no type."""
+        # the same conditions as `pageinfo`, which runs only in qemu-system mode and in kernel context
+        if not is_qemu_system() or not is_in_kernel():
+            return None
+        try:
+            if KernelPage.get_page_layout() is None:
+                return None
+            page_addr = Kernel.virt2page(addr & get_pagesize_mask_high())
+            if page_addr is None or not is_valid_addr(page_addr):
+                return None
+            page_info = KernelPage.get_page_info(page_addr)
+            if page_info is None:
+                return None
+            ptype = ""
+            if page_info["slot6_kind"] == "type":
+                ptype = KernelPage.get_pagetype_str(page_info["slot6_raw"])
+        except Exception:
+            # like the `pageinfo` command, a failed decode means that the page metadata is unavailable
+            return None
+        return page_info["in_buddy_list"], page_info["refcount"], ptype
+
+    def get_buddy_block(self, addr):
+        """Return (order, size) of the free buddy block containing addr as `buddy-contains -L` resolves it, or None."""
+        try:
+            kversion = Kernel.version()
+            if kversion is None or kversion < "3.0":
+                return None
+            kcontains = Kernel.buddy_contains()
+            if not kcontains.buddy.initialize():
+                return None
+            kcontains.buddy.resolve_migratetype_names()
+            if not kcontains.initialize():
+                return None
+            result = kcontains.get_page_block(addr)
+        except Exception:
+            return None
+        if result["error"] or result["status"] not in ("head", "tail"):
+            return None
+        return result["order"], Kernel.slab_page_size() << result["order"]
+
     def report_page_alloc(self, addr):
-        pi = self.run("pageinfo {:#x}".format(addr)) or ""
-        buddy_match = re.search(r"^in_buddy_list\s*:\s*(True|False)\s*$", pi, re.M)
-        refcount_match = re.search(r"^refcount\s*:\s*(0x[0-9a-fA-F]+)\s*$", pi, re.M)
-        if not buddy_match or not refcount_match:
+        page_state = self.get_page_state(addr)
+        if page_state is None:
             self.emit("Allocator", "unknown (not slab; page metadata unavailable)")
             self.emit("State", "unknown")
             self.emit("Candidate", "not a slab object; buddy/page-type data unavailable on this target")
             self.emit("Confidence", "low")
             return
 
-        ptype = ""
-        m = re.search(r"page_type\s*:\s*\S+ \((.+)\)", pi)
-        if m:
-            ptype = m.group(1)
-        refcount = int(refcount_match.group(1), 16)
-        in_buddy = buddy_match.group(1) == "True"
+        in_buddy, refcount, ptype = page_state
 
         self.emit("Allocator", "buddy (page allocator)")
         if in_buddy:
             self.emit("State", self.color_state("freed"))
-            block = self.run("buddy-contains -L {:#x}".format(addr))
-            m = re.search(r"order: (\d+) \((0x\S+) bytes", block)
-            if m:
-                self.emit("Block", "order {:s} ({:s} bytes)".format(m.group(1), m.group(2)))
+            block = self.get_buddy_block(addr)
+            if block:
+                self.emit("Block", "order {:d} ({:#x} bytes)".format(*block))
             self.emit("Candidate", "free page block in buddy allocator")
             self.emit("Confidence", "medium")
             return
@@ -163064,7 +163095,7 @@ class KobjCommand(GenericCommand):
 
     def report_lowmem(self, addr):
         page = Kernel.virt2page(addr & -KernelAddressHeuristicFinder.consts().PAGE_SIZE)
-        slab = self.parse_slab(self.run("slab-contains {:s}{:#x}".format(self.rr, addr)))
+        slab = self.get_slab(addr)
         if slab:
             self.report_slab(addr, page, slab)
             return
@@ -163118,25 +163149,24 @@ class KobjCommand(GenericCommand):
 
     def find_vmalloc_chunk(self, addr):
         """Return (start, end, flags) of the vmalloc used chunk containing addr, or None."""
-        if self.rr:
-            out = self.run("vmalloc-dump {:s} --quiet --no-pager --only-used".format(self.rr))
-        else:
-            out = self.run("vmalloc-dump {:s} --quiet --no-pager --only-used".format(""))
-        for line in out.splitlines():
-            fields = line.split()
-            if len(fields) < 4 or fields[1] != "in-use" or "-" not in fields[2]:
+        try:
+            kvmalloc = Kernel.vmalloc()
+            if self.rr:
+                Cache.clear_cache_for(kvmalloc.initialize)
+            if not kvmalloc.initialize():
+                return None
+            result = kvmalloc.get_areas(only_used=True)
+        except Exception:
+            return None
+        if result is None:
+            return None
+        for state, va_start, va_end, _va_size, flags in result["areas"]:
+            if state != "in-use" or not va_start <= addr < va_end:
                 continue
-            try:
-                start_str, end_str = fields[2].split("-")
-                start, end = int(start_str, 16), int(end_str, 16)
-            except ValueError:
-                continue
-            if start <= addr < end:
-                if len(fields) > 4:
-                    flags = " ".join(fields[4:])
-                else:
-                    flags = ""
-                return start, end, flags
+            # the same notation as `vmalloc-dump`
+            if flags is None:
+                return va_start, va_end, "-"
+            return va_start, va_end, "{:#x}".format(flags)
         return None
 
     def emit_vmalloc_chunk(self, addr, chunk, candidate_prefix):
