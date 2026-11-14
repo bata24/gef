@@ -38899,21 +38899,14 @@ class KernelChecksecCommand(GenericCommand):
                 except (gdb.error, TypeError):
                     pass
         elif supported_cfgs:
-            # A ksysctl tree walk is slow, so resolve all namespace limits in one pass.
-            filters = " ".join("-f {:s}".format(cfg) for cfg in supported_cfgs)
+            # A sysctl tree walk is slow, so resolve all namespace limits in one pass.
+            # ~5.13: int with proc_dointvec_minmax, 5.14~: long with proc_doulongvec_minmax
             try:
-                ret = gdb.execute("ksysctl --quiet --no-pager {:s}".format(filters), to_string=True)
+                ksysctl = Kernel.sysctl()
+                if ksysctl.initialize():
+                    addrs = ksysctl.get_data_addresses(supported_cfgs)
             except gdb.error:
-                ret = ""
-            for line in Color.remove_color(ret).splitlines():
-                fields = line.split()
-                if len(fields) < 3 or fields[0] not in supported_cfgs:
-                    continue
-                try:
-                    # ~5.13: int with proc_dointvec_minmax, 5.14~: long with proc_doulongvec_minmax
-                    addrs[fields[0]] = (int(fields[1], 16), int(fields[2], 16))
-                except ValueError:
-                    pass
+                pass
 
         for kv, cfg in cfgs:
             if kversion < kv:
@@ -92650,6 +92643,9 @@ class KernelSysctl:
         self.initialized = False
         self.sysctl_table_root = KernelAddressHeuristicFinder.get_sysctl_table_root()
         if self.sysctl_table_root is None:
+            if Ksym.get_kallsyms() is not None and not Ksym.get_addrs("unregister_sysctl_table", match="split"):
+                self.meta.append(("info", "sysctl is unavailable (CONFIG_SYSCTL=n)"))
+                return None
             self.meta.append(("err", "Could not find sysctl_table_root"))
             return None
         self.meta.append(("info", "sysctl_table_root: {:#x}".format(self.sysctl_table_root)))
@@ -92688,11 +92684,21 @@ class KernelSysctl:
     @staticmethod
     @Cache.cache_this_session(per_inferior=True, until_new_objfile=True)
     def get(sym):
+        """Return the data address of the sysctl entry `sym`, or None."""
+        ksysctl = KernelSysctl.get_instance()
         try:
-            res = gdb.execute("ksysctl --quiet --no-pager --exact --filter {:s}".format(sym), to_string=True)
-            return int(res.split()[1], 16)
-        except (gdb.error, IndexError, ValueError):
+            if not ksysctl.initialize():
+                return None
+            for entry in ksysctl.walk():
+                if entry.path != sym:
+                    continue
+                data = ksysctl.parse_entry(entry)
+                if data.address and data.maxlen and is_valid_addr(data.address):
+                    return data.address
+                return None
+        except gdb.error:
             return None
+        return None
 
     def walk(self, skip_symlink=False, progress=None):
         """Yield every data-bearing sysctl entry from all selected roots."""
@@ -92717,6 +92723,109 @@ class KernelSysctl:
             ctset = read_int_from_memory(entry.header + self.offset_set)
             namespace = self.ctset_namespaces.get(ctset, "-")
         return self.Data(maxlen, address, handler, ctset, namespace)
+
+    def get_data_value(self, data, verbose=False, decimal=False):
+        """Return (data address, decoded value) strings of the parsed entry `data` as ksysctl shows them,
+        or None if it is hidden without `verbose` (an invalid data address or a zero maxlen)."""
+        if not data.address:
+            return "-", "-"
+        if not is_valid_addr(data.address):
+            if not verbose:
+                return None
+            return "{:#018x}".format(data.address), "-"
+
+        address = "{:#018x}".format(data.address)
+        if data.maxlen == 0:
+            if not verbose:
+                return None
+            return address, "-"
+        try:
+            value = self.decode_value(data, self.get_handler_type(data.handler), decimal=decimal)
+        except gdb.MemoryError:
+            value = "???"
+        return address, value
+
+    def decode_value(self, data, handler_type, decimal=False):
+        """Decode the value of `data` as `handler_type` (see get_handler_type) reads it.
+        Integers are in hex, or in decimal with `decimal`."""
+        # some handlers take the net namespace as data (e.g., proc_fib_multipath_hash_seed)
+        if data.address == self.init_net:
+            return "-"
+        maxlen = min(data.maxlen, 0x1000)
+        if handler_type == "static_key":
+            # the value is `enabled`, the first member of struct static_key
+            handler_type, maxlen = (4, True, ""), 4
+        if handler_type == "string":
+            value = read_cstring_from_memory(data.address, max_length=maxlen)
+            if value is not None:
+                return "{!r}".format(value)
+        elif handler_type == "wrapped-string":
+            # data of a wrapper is a string only if it is printable text padded with NUL
+            text = read_memory(data.address, maxlen).rstrip(b"\0")
+            if 0 < len(text) < maxlen and all(chr(x) in String.STRING_PRINTABLE for x in text):
+                return "{!r}".format(String.bytes2str(text))
+        elif handler_type == "bitmap":
+            # maxlen is the number of bits, and the data points to the bitmap since v3.16
+            bitmap = data.address
+            if "3.16" <= Kernel.version():
+                bitmap = read_int_from_memory(bitmap)
+            if not bitmap:
+                return "-"
+            nbits = data.maxlen
+            word_bits = current_arch.ptrsize * 8
+            raw = read_memory(bitmap, (nbits + word_bits - 1) // word_bits * current_arch.ptrsize)
+            words = slice_unpack(raw, current_arch.ptrsize)
+            bits = {i * word_bits + j for i, w in enumerate(words) if w for j in range(word_bits) if w >> j & 1}
+            return KernelPerCpu.format_cpus({x for x in bits if x < nbits})
+        elif handler_type is not None:
+            size, signed, unit = handler_type
+            if size is None:
+                size = maxlen
+            elif size == 0:
+                size = current_arch.ptrsize
+            if size in [1, 2, 4, 8]:
+                count = maxlen // size
+            else:
+                count = 0
+            if count:
+                max_count = 0x10
+                raw = read_memory(data.address, min(count, max_count) * size)
+                if decimal:
+                    values = []
+                    for value in slice_unpack(raw, size):
+                        if signed:
+                            values.append(str(u2i(value, size * 8)))
+                        else:
+                            values.append(str(value))
+                else:
+                    values = ["{:#x}".format(x) for x in slice_unpack(raw, size)]
+                if count > max_count:
+                    values.append("...")
+                if unit:
+                    values.append(unit)
+                return " ".join(values)
+        raw = read_memory(data.address, min(maxlen, 0x10))
+        raw_hex = raw.hex()
+        if maxlen > 0x10:
+            return "raw:{:s}...".format(raw_hex)
+        return "raw:{:s}".format(raw_hex)
+
+    def get_data_addresses(self, paths):
+        """Return {path: (data address, maxlen)} of the entries in `paths` that ksysctl lists without `--verbose`,
+        i.e., with a valid data address and a non-zero maxlen. A path seen more than once keeps the last entry.
+        A memory read error stops the walk, keeping what was found, as ksysctl does."""
+        found = {}
+        try:
+            for entry in self.walk():
+                if entry.path not in paths:
+                    continue
+                data = self.parse_entry(entry)
+                if not data.address or not is_valid_addr(data.address) or data.maxlen == 0:
+                    continue
+                found[entry.path] = (data.address, data.maxlen)
+        except gdb.MemoryError:
+            pass
+        return found
 
     def resolve_layout_by_debug_info(self):
         """Resolve the structure offsets from the loaded debug information. Return False if any is missing."""
@@ -104371,94 +104480,12 @@ class KernelSysctlCommand(GenericCommand, BufferingOutput):
                     return True
             return False
 
-    def get_data_value(self, data):
-        if not data.address:
-            return "-", "-"
-        if not is_valid_addr(data.address):
-            if not self.args.verbose:
-                return None
-            return "{:#018x}".format(data.address), "-"
-
-        address = "{:#018x}".format(data.address)
-        if data.maxlen == 0:
-            if not self.args.verbose:
-                return None
-            return address, "-"
-        try:
-            value = self.decode_value(data, self.ksysctl.get_handler_type(data.handler))
-        except gdb.MemoryError:
-            value = "???"
-        return address, value
-
-    def decode_value(self, data, handler_type):
-        # some handlers take the net namespace as data (e.g., proc_fib_multipath_hash_seed)
-        if data.address == self.ksysctl.init_net:
-            return "-"
-        maxlen = min(data.maxlen, 0x1000)
-        if handler_type == "static_key":
-            # the value is `enabled`, the first member of struct static_key
-            handler_type, maxlen = (4, True, ""), 4
-        if handler_type == "string":
-            value = read_cstring_from_memory(data.address, max_length=maxlen)
-            if value is not None:
-                return "{!r}".format(value)
-        elif handler_type == "wrapped-string":
-            # data of a wrapper is a string only if it is printable text padded with NUL
-            text = read_memory(data.address, maxlen).rstrip(b"\0")
-            if 0 < len(text) < maxlen and all(chr(x) in String.STRING_PRINTABLE for x in text):
-                return "{!r}".format(String.bytes2str(text))
-        elif handler_type == "bitmap":
-            # maxlen is the number of bits, and the data points to the bitmap since v3.16
-            bitmap = data.address
-            if "3.16" <= Kernel.version():
-                bitmap = read_int_from_memory(bitmap)
-            if not bitmap:
-                return "-"
-            nbits = data.maxlen
-            word_bits = current_arch.ptrsize * 8
-            raw = read_memory(bitmap, (nbits + word_bits - 1) // word_bits * current_arch.ptrsize)
-            words = slice_unpack(raw, current_arch.ptrsize)
-            bits = {i * word_bits + j for i, w in enumerate(words) if w for j in range(word_bits) if w >> j & 1}
-            return KernelPerCpuCommand.format_cpus({x for x in bits if x < nbits})
-        elif handler_type is not None:
-            size, signed, unit = handler_type
-            if size is None:
-                size = maxlen
-            elif size == 0:
-                size = current_arch.ptrsize
-            if size in [1, 2, 4, 8]:
-                count = maxlen // size
-            else:
-                count = 0
-            if count:
-                max_count = 0x10
-                raw = read_memory(data.address, min(count, max_count) * size)
-                if self.args.decimal:
-                    values = []
-                    for value in slice_unpack(raw, size):
-                        if signed:
-                            values.append(str(u2i(value, size * 8)))
-                        else:
-                            values.append(str(value))
-                else:
-                    values = ["{:#x}".format(x) for x in slice_unpack(raw, size)]
-                if count > max_count:
-                    values.append("...")
-                if unit:
-                    values.append(unit)
-                return " ".join(values)
-        raw = read_memory(data.address, min(maxlen, 0x10))
-        raw_hex = raw.hex()
-        if maxlen > 0x10:
-            return "raw:{:s}...".format(raw_hex)
-        return "raw:{:s}".format(raw_hex)
-
     def dump_data(self, entry):
         if not self.should_be_print(entry.path):
             return
 
         data = self.ksysctl.parse_entry(entry, include_namespace=self.args.verbose)
-        value = self.get_data_value(data)
+        value = self.ksysctl.get_data_value(data, verbose=self.args.verbose, decimal=self.args.decimal)
         if value is None:
             return
         data_addr_str, data_val = value
