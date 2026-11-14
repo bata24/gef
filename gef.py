@@ -76566,6 +76566,8 @@ class KernelAddressHeuristicFinder:
                     g = KernelAddressHeuristicFinderUtil.aarch64_adrp_ldr(res)
                 elif is_arm32():
                     g = KernelAddressHeuristicFinderUtil.arm32_movw_movt(res)
+                elif is_riscv32() or is_riscv64():
+                    g = KernelAddressHeuristicFinderUtil.riscv_load(res, mnemonic="lw", include_lui=is_riscv32())
                 for x in g:
                     return x
 
@@ -76582,6 +76584,8 @@ class KernelAddressHeuristicFinder:
                     g = KernelAddressHeuristicFinderUtil.aarch64_adrp_ldr(res)
                 elif is_arm32():
                     g = KernelAddressHeuristicFinderUtil.arm32_movw_movt(res)
+                elif is_riscv32() or is_riscv64():
+                    g = KernelAddressHeuristicFinderUtil.riscv_load(res, mnemonic="lw", include_lui=is_riscv32())
                 for x in g:
                     return x
 
@@ -76596,6 +76600,8 @@ class KernelAddressHeuristicFinder:
                 g = KernelAddressHeuristicFinderUtil.aarch64_adrp_ldrb(res)
             elif is_arm32():
                 g = KernelAddressHeuristicFinderUtil.arm32_movw_movt(res)
+            elif is_riscv32() or is_riscv64():
+                g = KernelAddressHeuristicFinderUtil.riscv_load(res, mnemonic="lbu", include_lui=is_riscv32())
             for x in g:
                 return x
         return None
@@ -80302,6 +80308,11 @@ class Kernel:
     def seccomp():
         """Return the seccomp resolver."""
         return KernelSeccomp.get_instance()
+
+    @staticmethod
+    def lsm():
+        """Return the Linux Security Module resolver."""
+        return KernelLsm.get_instance()
 
     @staticmethod
     def keyring():
@@ -215187,90 +215198,18 @@ class KernelRefsCommand(GenericCommand, BufferingOutput):
         return
 
 
-@register_command
-class KernelLsmCommand(GenericCommand, BufferingOutput):
-    """Dump the registered Linux Security Module hooks."""
+class KernelLsm:
+    """Resolve the registered Linux Security Module hooks and the LSM security blobs of the tasks.
 
-    _cmdline_ = "klsm"
-    _category_ = "06-g. Qemu-system/KGDB Cooperation - Linux Advanced"
+    The layout of the LSM framework changed twice, and all three are supported:
 
-    parser = argparse.ArgumentParser(prog=_cmdline_)
-    parser.add_argument("hook", metavar="HOOK", nargs="*", help="the hook point name, or a part of it. (e.g., file_open)")
-    parser.add_argument("-hh", "--help-simple", action="store_true", help="show help without ASCII diagram.")
-    parser.add_argument("-a", "--all", action="store_true", help="also show the hook points that have no callback.")
-    parser.add_argument("--task", action="store_true", help="show the LSM security blobs of each task instead of the hooks.")
-    parser.add_argument("-p", "--pid", type=lambda x: int(x, 0), help="with --task, filter by task pid.")
-    parser.add_argument("-T", "--task-filter", action="append", type=AddressUtil.parse_address, default=[],
-                        help="with --task, filter by specific task_struct address.")
-    parser.add_argument("-f", "--filter", action="append", type=re.compile, default=[],
-                        help="with --task, comm string REGEXP filter.")
-    parser.add_argument("-v", "--verbose", action="store_true",
-                        help="with --task, decode the blobs of the open files of each task too.")
-    parser.add_argument("--meta", action="store_true", help="display offset information.")
-    parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
-    parser.add_argument("-q", "--quiet", action="store_true", help="show result only.")
-    _syntax_ = parser.format_help()
+      ~v4.1  : a single `struct security_operations` pointed to by `security_ops`
+      v4.2~  : `security_hook_heads`, an array of the lists of `struct security_hook_list`
+      v6.12~ : one static call slot per (hook point, LSM), `__SCK__lsm_static_call_*`
 
-    _example_ = "\n".join([
-        "{0:s}                   # list every hook point that has a callback",
-        "{0:s} file_open         # list the callbacks of the hook points matching `file_open`",
-        "{0:s} -a                # list every hook point including the empty ones",
-        "{0:s} --task            # list the security blob and the LSM labels of each task",
-        "{0:s} --task -p 1337    # decode the blobs of the task, its cred and its open files and inodes",
-    ]).format(_cmdline_)
-
-    _note_ = "\n".join([
-        "The layout of the LSM framework changed twice, and all three are supported:",
-        "",
-        "  ~v4.1  : a single `struct security_operations` pointed to by `security_ops`",
-        "  v4.2~  : `security_hook_heads`, an array of the lists of `struct security_hook_list`",
-        "  v6.12~ : one static call slot per (hook point, LSM), `__SCK__lsm_static_call_*`",
-        "",
-        "+-security_ops(~v4.1)-+",
-        "| name[]              |",
-        "| ptrace_access_check |--> callback",
-        "| ptrace_traceme      |--> callback",
-        "| ...                 |",
-        "+---------------------+",
-        "",
-        "+-security_hook_heads(v4.2~)-+     +-security_hook_list--+",
-        "| ptrace_access_check        |---->| list                |--> next hook_list",
-        "| ptrace_traceme             |     | head                |--> the head at the left",
-        "| ...                        |     | hook                |--> callback",
-        '+----------------------------+     | lsm (v4.12~)        |--> "selinux"',
-        "                                   +---------------------+",
-        "",
-        "+-__SCK__lsm_static_call_<hook>_<N>(v6.12~)-+",
-        "| func                                      |--> callback",
-        "+-------------------------------------------+",
-        "",
-        "Before v6.12, hook point names are recovered from each `security_*` dispatcher and",
-        "the head or member offset it references. A head that no dispatcher pointed at is",
-        "shown as `hook[NN]`. On v6.12 and later, names are read from generated static-call",
-        "symbols such as `__SCK__lsm_static_call_<hook>_<N>`.",
-        "",
-        "When CONFIG_KALLSYMS_ALL=n removes these data symbols, x86 decodes the trampolines",
-        "`__SCT__lsm_static_call_<hook>_<N>` (text symbols), and the other architectures take",
-        "the keys each `security_*` dispatcher loads. The latter names a hook point after its",
-        "dispatcher and misses the ones no dispatcher calls (e.g., inode_free_security_rcu).",
-        "",
-        "`--task` follows the security blobs instead. Until v5.0 the active major LSM owns each",
-        "blob as a whole. From v5.1 the LSMs share one blob per object, and the offset of each",
-        "part is read from `<lsm>_blob_sizes`; without the symbol it is guessed from the samples.",
-        "",
-        "+-task_struct-+                    +-cred-----+     +-file-------+    +-inode------+",
-        "| security    |--> blob (v5.1~)    | ...      |     | ...        |    | i_sb       |",
-        "| cred        |------------------->| security |-+   | f_security |-+  | i_mapping  |",
-        "+-------------+                    +----------+ |   +------------+ |  | i_security |-+",
-        "                                                |                  |  +------------+ |",
-        "   +-blob--------------+ <----------------------+------------------+-----------------+",
-        "   | part of LSM A     | <-- offset from <lsmA>_blob_sizes.lbs_*",
-        "   | part of LSM B     | <-- offset from <lsmB>_blob_sizes.lbs_*",
-        "   +-------------------+",
-        "",
-        "SELinux, Smack, AppArmor, TOMOYO and Landlock parts are decoded. This mode requires",
-        "CONFIG_RANDSTRUCT=n unless vmlinux with debug information is loaded.",
-    ])
+    The blobs are owned as a whole by the active major LSM until v5.0. From v5.1 the LSMs share one blob per
+    object, and the offset of each part is read from `<lsm>_blob_sizes` or guessed from the samples.
+    """
 
     SCK_PREFIX = "__SCK__lsm_static_call_"
     SCT_PREFIX = "__SCT__lsm_static_call_"
@@ -215294,9 +215233,46 @@ class KernelLsmCommand(GenericCommand, BufferingOutput):
         ("yama", "yama_"),
     )
 
-    @staticmethod
-    def format_addr(value):
-        return Color.colorify(AddressUtil.format_address(value), "bold blue")
+    StaticCalls = collections.namedtuple("StaticCalls", "source hooks lsms")
+    HookHeads = collections.namedtuple(
+        "HookHeads", "start end nr_names off_head stride is_list_head node_size has_lsm rows lsms",
+    )
+    SecurityOps = collections.namedtuple("SecurityOps", "addr ops lsm rows")
+
+    @classmethod
+    @Cache.cache_this_session(per_inferior=True, until_new_objfile=True)
+    def get_instance(cls):
+        return cls()
+
+    def __init__(self):
+        self.meta = []
+        self.klayout = None
+        self.task_command = None
+        self.task_addrs = []
+        self.security_offsets = {}
+        self.blob_layout = {}
+        return
+
+    def initialize(self):
+        """Reset the state of the previous invocation and resolve the kernel memory layout `is_kernel_text()` uses."""
+        self.meta = []
+        self.klayout = Kernel.layout()
+        self.task_command = None
+        self.task_addrs = []
+        self.security_offsets = {}
+        self.blob_layout = {}
+        return True
+
+    def initialize_tasks(self, files=False):
+        """Resolve the task_struct layout, with the open files if `files`. Its meta lines are kept in `self.meta`."""
+        self.meta = []
+        task_command = Kernel.task()
+        task_ready = task_command.initialize(files=files)
+        self.meta.extend(task_command.meta)
+        if not task_ready:
+            return None
+        self.task_command = task_command
+        return True
 
     def read_cstring(self, addr, size=32):
         """Read a NUL-terminated ASCII string, or return '' if it is not one."""
@@ -215461,8 +215437,8 @@ class KernelLsmCommand(GenericCommand, BufferingOutput):
         prefixes = []
         if lsm:
             prefixes.append("{:s}_".format(lsm))
-            prefixes += [p for name, p in KernelLsmCommand.LSM_PREFIXES if name == lsm]
-        prefixes += [p for _name, p in KernelLsmCommand.LSM_PREFIXES]
+            prefixes += [p for name, p in KernelLsm.LSM_PREFIXES if name == lsm]
+        prefixes += [p for _name, p in KernelLsm.LSM_PREFIXES]
         for prefix in sorted(set(prefixes), key=len, reverse=True):
             if func_name.startswith(prefix) and len(func_name) > len(prefix):
                 return func_name[len(prefix):]
@@ -215801,7 +215777,10 @@ class KernelLsmCommand(GenericCommand, BufferingOutput):
                     hooks.setdefault("{:s} (another hook point {:d})".format(hook, i), entries)
         return hooks
 
-    def dump_static_calls(self):
+    def get_static_calls(self):
+        """Return StaticCalls(the source the slots were resolved from, {hook name: [(slot, key or trampoline address,
+        callback, callback name), ...]}, the LSMs inferred from the callbacks). An empty slot has no entry.
+        The source is None if no static call is found."""
         sources = [
             ("the static call keys", self.collect_static_calls),
             ("the static call trampolines", self.collect_static_call_trampolines),
@@ -215814,15 +215793,7 @@ class KernelLsmCommand(GenericCommand, BufferingOutput):
                 source = name
                 break
         if not hooks:
-            self.err_add_out("Could not find the static calls of the hook points")
-            return
-        self.quiet_info_add_out("LSM framework: static calls (v6.12 or later)")
-        self.quiet_info_add_out("Static calls resolved from: {:s}".format(source))
-        self.quiet_info_add_out("Number of the hook points: {:d}".format(len(hooks)))
-        if source == "the static call trampolines":
-            where = "trampoline"
-        else:
-            where = "key"
+            return self.StaticCalls(None, {}, set())
 
         resolved = {}
         lsms = set()
@@ -215837,24 +215808,7 @@ class KernelLsmCommand(GenericCommand, BufferingOutput):
                 if lsm:
                     lsms.add(lsm)
             resolved[hook] = callbacks
-        self.dump_lsm_list(lsms)
-
-        for hook in sorted(resolved):
-            callbacks = resolved[hook]
-            if not callbacks and not self.args.all:
-                continue
-            if not self.match_filter(hook):
-                continue
-            self.out.append("{:s} ({:d} callbacks)".format(hook, len(callbacks)))
-            for slot, addr, func, name in callbacks:
-                line = "    {:s} <{:s}>".format(self.format_addr(func), name or "NO_SYMBOL")
-                lsm = self.lsm_of_callback(name)
-                if lsm:
-                    line += " [{:s}]".format(lsm)
-                if self.args.meta:
-                    line += "  (slot {:d}, {:s} {:s})".format(slot, where, self.format_addr(addr))
-                self.out.append(line)
-        return
+        return self.StaticCalls(source, resolved, lsms)
 
     def lsm_of_callback(self, name):
         """Guess which LSM a callback belongs to from its name, or None if it is unknown."""
@@ -216035,7 +215989,9 @@ class KernelLsmCommand(GenericCommand, BufferingOutput):
                         break
         return lo, hi
 
-    def dump_hook_heads(self):
+    def get_hook_heads(self):
+        """Return HookHeads of the security_hook_heads array, or None if it is not found.
+        `rows` is [(index, head, hook name or None, broken list, [(node, callback, callback name, lsm), ...]), ...]."""
         ptrsize = current_arch.ptrsize
         refs = self.collect_hook_head_refs()
         anchors = self.find_head_anchors(refs)
@@ -216071,8 +216027,7 @@ class KernelLsmCommand(GenericCommand, BufferingOutput):
             refs, anchors, stride, lambda x: walk(x) is not None, lambda x: walk(x) == [], base, sizeof,
         )
         if start is None:
-            self.err_add_out("Could not find `security_hook_heads`")
-            return
+            return None
 
         # A dispatcher may call another hook point first (e.g. inode_xattr_skipcap from security_inode_setxattr() and
         # security_inode_removexattr() on v6.10~), so a head that only one dispatcher refers to is taken first.
@@ -216104,19 +216059,6 @@ class KernelLsmCommand(GenericCommand, BufferingOutput):
             for offset, name in member_names.items():
                 name_by_head[start + offset] = name
 
-        self.quiet_info_add_out("LSM framework: security_hook_heads (v4.2 - v6.11)")
-        self.quiet_info_add_out("security_hook_heads: {:s}-{:s}".format(self.format_addr(start), self.format_addr(end)))
-        self.quiet_info_add_out("Number of the recovered hook point names: {:d}".format(len(name_by_head)))
-        if self.args.meta:
-            self.quiet_info_add_out("offsetof(security_hook_list, head): {:#x}".format(off_head * ptrsize))
-
-        if self.args.meta:
-            if is_list_head:
-                head_kind = "list_head"
-            else:
-                head_kind = "hlist_head"
-            self.quiet_info_add_out("sizeof(each head): {:#x} ({:s})".format(stride, head_kind))
-
         chains = []
         nodes_seen = set()
         for i in range((end - start) // stride):
@@ -216131,12 +216073,6 @@ class KernelLsmCommand(GenericCommand, BufferingOutput):
         sorted_nodes = sorted(nodes_seen)
         node_size = min((b - a for a, b in zip(sorted_nodes, sorted_nodes[1:]) if b > a), default=None)
         has_lsm = node_size is not None and node_size >= (off_head + 3) * ptrsize
-        if self.args.meta and node_size is not None:
-            if has_lsm:
-                suffix = ""
-            else:
-                suffix = " (no `lsm` member)"
-            self.quiet_info_add_out("sizeof(security_hook_list): {:#x}{:s}".format(node_size, suffix))
 
         rows = []
         lsms = set()
@@ -216165,29 +216101,9 @@ class KernelLsmCommand(GenericCommand, BufferingOutput):
                 if name:
                     name += " (guessed)"
             rows.append((i, head, name, nodes is None, callbacks))
-        self.dump_lsm_list(lsms)
-
-        for i, head, name, broken, callbacks in rows:
-            if not callbacks and not broken and not self.args.all:
-                continue
-            label = name or "hook[{:d}]".format(i)
-            if not self.match_filter(label):
-                continue
-            if broken:
-                line = "{:s} (broken list)".format(label)
-            else:
-                line = "{:s} ({:d} callbacks)".format(label, len(callbacks))
-            if self.args.meta:
-                line += "  (head {:s})".format(self.format_addr(head))
-            self.out.append(line)
-            for node, func, func_name, lsm in callbacks:
-                line = "    {:s} <{:s}>".format(self.format_addr(func), func_name or "NO_SYMBOL")
-                if lsm:
-                    line += " [{:s}]".format(lsm)
-                if self.args.meta:
-                    line += "  (hook_list {:s})".format(self.format_addr(node))
-                self.out.append(line)
-        return
+        return self.HookHeads(
+            start, end, len(name_by_head), off_head, stride, is_list_head, node_size, has_lsm, rows, lsms,
+        )
 
     #
     # v4.1 or earlier: a single struct security_operations
@@ -216238,23 +216154,15 @@ class KernelLsmCommand(GenericCommand, BufferingOutput):
                 text += 1
         return text >= 4
 
-    def dump_security_ops(self):
+    def get_security_ops(self):
+        """Return SecurityOps(the address of `security_ops`, its value, the name of the LSM it holds,
+        [(member offset, callback, callback name, hook name, lsm), ...]), or None if it is not found."""
         ptrsize = current_arch.ptrsize
         addr, ops, offsets = self.find_security_ops()
         if addr is None or not ops:
-            self.err_add_out("Could not find `security_ops`; this kernel may be CONFIG_SECURITY=n")
-            return
+            return None
 
         lsm = self.read_cstring(ops, 16)
-        self.quiet_info_add_out("LSM framework: security_ops (v4.1 or earlier)")
-        self.quiet_info_add_out("security_ops: {:s} -> {:s}{:s}".format(
-            self.format_addr(addr), self.format_addr(ops),
-            " " + Symbol.format(ops, ksym="prefer", missing="NO_SYMBOL"),
-        ))
-        if lsm:
-            self.dump_lsm_list({lsm})
-        else:
-            self.dump_lsm_list(set())
 
         # the largest member the dispatchers touch is the tightest bound on the struct;
         # the next symbol only bounds it when the struct itself has a symbol
@@ -216296,25 +216204,7 @@ class KernelLsmCommand(GenericCommand, BufferingOutput):
             else:
                 miss += 1
             i += 1
-
-        self.quiet_info_add_out("Number of the registered hooks: {:d}".format(len(rows)))
-        for disp, func, func_name, name, hook_lsm in rows:
-            label = name or "hook[{:#x}]".format(disp)
-            if not self.match_filter(label):
-                continue
-            line = "{:s}".format(label)
-            if self.args.meta:
-                line += " (+{:#x})".format(disp)
-            self.out.append(line)
-            formatted_func = self.format_addr(func)
-            if hook_lsm:
-                hook_label = " [{:s}]".format(hook_lsm)
-            else:
-                hook_label = ""
-            self.out.append("    {:s} <{:s}>{:s}".format(
-                formatted_func, func_name or "NO_SYMBOL", hook_label,
-            ))
-        return
+        return self.SecurityOps(addr, ops, lsm, rows)
 
     #
     # --task: the security blobs of task_struct, cred, file and inode
@@ -216896,31 +216786,309 @@ class KernelLsmCommand(GenericCommand, BufferingOutput):
             return None
         return inode
 
+    def get_hook_kind(self, kversion):
+        """Return the layout of the hook points: "static_calls" (v6.12~), "hook_heads" (v4.2 - v6.11) or
+        "security_ops" (~v4.1), or None if no LSM dispatcher was found."""
+        if Ksym.get_addrs(self.SCK_PREFIX, match="prefix"):
+            return "static_calls"
+        if not self.has_lsm_framework():
+            return None
+        if kversion >= "6.12":
+            return "static_calls"
+        if kversion >= "4.2":
+            return "hook_heads"
+        return "security_ops"
+
+    def has_lsm_framework(self):
+        """Return True if this kernel looks like CONFIG_SECURITY=y.
+        A kernel built without it keeps only a handful of `security_*` stubs, while the
+        framework brings one dispatcher per hook point."""
+        ret = Ksym.get_kallsyms()
+        if ret is None:
+            return True
+        kallsyms, _kallsyms_map = ret
+        count = sum(1 for _a, name, typ in kallsyms
+                    if name.startswith("security_") and typ.lower() in ("t", "w"))
+        return count >= 16
+
     def detect_lsms(self, kversion):
         """Return the set of the active LSMs, recovered from the registered hooks."""
-        saved_out = self.out
-        self.out = []
-        self.detected_lsms = set()
-        try:
-            self.dump_hooks(kversion)
-        finally:
-            self.out = saved_out
-        return self.detected_lsms
+        kind = self.get_hook_kind(kversion)
+        if kind == "static_calls":
+            return set(self.get_static_calls().lsms)
+        if kind == "hook_heads":
+            heads = self.get_hook_heads()
+            if heads is None:
+                return set()
+            return set(heads.lsms)
+        if kind == "security_ops":
+            security_ops = self.get_security_ops()
+            if security_ops is None or not security_ops.lsm:
+                return set()
+            return {security_ops.lsm}
+        return set()
+
+    def collect_task_blobs(self, kversion, detail=False):
+        """Return (the active LSMs, [(task, pid, comm, cred, cred->security, task->security), ...]) of every task.
+        The offsets of the security members are resolved into `self.security_offsets`, and the part each LSM owns in
+        each blob into `self.blob_layout`. With `detail`, the open files and their inodes are sampled too, which
+        needs `initialize_tasks(files=True)`. The list is None if cred->security is not found."""
+        task_command = self.task_command
+        self.task_addrs = KernelTask.get_task_list(task_command.init_task, task_command.offset_tasks)
+        lsms = self.detect_lsms(kversion)
+
+        tasks = []
+        for task in self.task_addrs:
+            pid = read_int32_from_memory(task + task_command.offset_pid, safe=True)
+            comm = read_cstring_from_memory(task + task_command.offset_comm, safe=True)
+            cred = read_int_from_memory(task + task_command.offset_cred, safe=True)
+            if pid is not None and comm is not None and cred and is_valid_addr(cred):
+                tasks.append((task, pid, comm, cred))
+        files = []
+        if detail and getattr(task_command, "kpath", None) is not None:
+            files = [file for task in tasks for _fd, file in self.get_task_files(task[0])][:0x400]
+        self.security_offsets = offsets = self.resolve_security_offsets(lsms, [x[3] for x in tasks], files)
+        if "cred" not in offsets:
+            return lsms, None
+
+        def read_blob(kind, obj):
+            if kind in offsets:
+                return read_int_from_memory(obj + offsets[kind], safe=True)
+            return None
+
+        entries = [(task, pid, comm, cred, read_blob("cred", cred), read_blob("task", task)) for task, pid, comm, cred in tasks]
+        inodes = [x for x in dict.fromkeys(self.get_file_inode(file) for file in files) if x]
+        samples = {"cred": [(e[4], e[3]) for e in entries], "task": [(e[5], e[0]) for e in entries]}
+        samples.update(
+            {"file": [(read_blob("file", x), x) for x in files], "inode": [(read_blob("inode", x), x) for x in inodes]}
+        )
+        self.blob_layout = self.resolve_blob_layout(lsms, {kind: v for kind, v in samples.items() if kind in offsets})
+        return lsms, entries
+
+
+@register_command
+class KernelLsmCommand(GenericCommand, BufferingOutput):
+    """Dump the registered Linux Security Module hooks."""
+
+    _cmdline_ = "klsm"
+    _category_ = "06-g. Qemu-system/KGDB Cooperation - Linux Advanced"
+
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("hook", metavar="HOOK", nargs="*", help="the hook point name, or a part of it. (e.g., file_open)")
+    parser.add_argument("-hh", "--help-simple", action="store_true", help="show help without ASCII diagram.")
+    parser.add_argument("-a", "--all", action="store_true", help="also show the hook points that have no callback.")
+    parser.add_argument("--task", action="store_true", help="show the LSM security blobs of each task instead of the hooks.")
+    parser.add_argument("-p", "--pid", type=lambda x: int(x, 0), help="with --task, filter by task pid.")
+    parser.add_argument("-T", "--task-filter", action="append", type=AddressUtil.parse_address, default=[],
+                        help="with --task, filter by specific task_struct address.")
+    parser.add_argument("-f", "--filter", action="append", type=re.compile, default=[],
+                        help="with --task, comm string REGEXP filter.")
+    parser.add_argument("-v", "--verbose", action="store_true",
+                        help="with --task, decode the blobs of the open files of each task too.")
+    parser.add_argument("--meta", action="store_true", help="display offset information.")
+    parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
+    parser.add_argument("-q", "--quiet", action="store_true", help="show result only.")
+    _syntax_ = parser.format_help()
+
+    _example_ = "\n".join([
+        "{0:s}                   # list every hook point that has a callback",
+        "{0:s} file_open         # list the callbacks of the hook points matching `file_open`",
+        "{0:s} -a                # list every hook point including the empty ones",
+        "{0:s} --task            # list the security blob and the LSM labels of each task",
+        "{0:s} --task -p 1337    # decode the blobs of the task, its cred and its open files and inodes",
+    ]).format(_cmdline_)
+
+    _note_ = "\n".join([
+        "The layout of the LSM framework changed twice, and all three are supported:",
+        "",
+        "  ~v4.1  : a single `struct security_operations` pointed to by `security_ops`",
+        "  v4.2~  : `security_hook_heads`, an array of the lists of `struct security_hook_list`",
+        "  v6.12~ : one static call slot per (hook point, LSM), `__SCK__lsm_static_call_*`",
+        "",
+        "+-security_ops(~v4.1)-+",
+        "| name[]              |",
+        "| ptrace_access_check |--> callback",
+        "| ptrace_traceme      |--> callback",
+        "| ...                 |",
+        "+---------------------+",
+        "",
+        "+-security_hook_heads(v4.2~)-+     +-security_hook_list--+",
+        "| ptrace_access_check        |---->| list                |--> next hook_list",
+        "| ptrace_traceme             |     | head                |--> the head at the left",
+        "| ...                        |     | hook                |--> callback",
+        '+----------------------------+     | lsm (v4.12~)        |--> "selinux"',
+        "                                   +---------------------+",
+        "",
+        "+-__SCK__lsm_static_call_<hook>_<N>(v6.12~)-+",
+        "| func                                      |--> callback",
+        "+-------------------------------------------+",
+        "",
+        "Before v6.12, hook point names are recovered from each `security_*` dispatcher and",
+        "the head or member offset it references. A head that no dispatcher pointed at is",
+        "shown as `hook[NN]`. On v6.12 and later, names are read from generated static-call",
+        "symbols such as `__SCK__lsm_static_call_<hook>_<N>`.",
+        "",
+        "When CONFIG_KALLSYMS_ALL=n removes these data symbols, x86 decodes the trampolines",
+        "`__SCT__lsm_static_call_<hook>_<N>` (text symbols), and the other architectures take",
+        "the keys each `security_*` dispatcher loads. The latter names a hook point after its",
+        "dispatcher and misses the ones no dispatcher calls (e.g., inode_free_security_rcu).",
+        "",
+        "`--task` follows the security blobs instead. Until v5.0 the active major LSM owns each",
+        "blob as a whole. From v5.1 the LSMs share one blob per object, and the offset of each",
+        "part is read from `<lsm>_blob_sizes`; without the symbol it is guessed from the samples.",
+        "",
+        "+-task_struct-+                    +-cred-----+     +-file-------+    +-inode------+",
+        "| security    |--> blob (v5.1~)    | ...      |     | ...        |    | i_sb       |",
+        "| cred        |------------------->| security |-+   | f_security |-+  | i_mapping  |",
+        "+-------------+                    +----------+ |   +------------+ |  | i_security |-+",
+        "                                                |                  |  +------------+ |",
+        "   +-blob--------------+ <----------------------+------------------+-----------------+",
+        "   | part of LSM A     | <-- offset from <lsmA>_blob_sizes.lbs_*",
+        "   | part of LSM B     | <-- offset from <lsmB>_blob_sizes.lbs_*",
+        "   +-------------------+",
+        "",
+        "SELinux, Smack, AppArmor, TOMOYO and Landlock parts are decoded. This mode requires",
+        "CONFIG_RANDSTRUCT=n unless vmlinux with debug information is loaded.",
+    ])
+
+    @staticmethod
+    def format_addr(value):
+        return Color.colorify(AddressUtil.format_address(value), "bold blue")
+
+    def dump_static_calls(self):
+        source, resolved, lsms = self.klsm.get_static_calls()
+        if source is None:
+            self.err_add_out("Could not find the static calls of the hook points")
+            return
+        self.quiet_info_add_out("LSM framework: static calls (v6.12 or later)")
+        self.quiet_info_add_out("Static calls resolved from: {:s}".format(source))
+        self.quiet_info_add_out("Number of the hook points: {:d}".format(len(resolved)))
+        if source == "the static call trampolines":
+            where = "trampoline"
+        else:
+            where = "key"
+
+        self.dump_lsm_list(lsms)
+
+        for hook in sorted(resolved):
+            callbacks = resolved[hook]
+            if not callbacks and not self.args.all:
+                continue
+            if not self.match_filter(hook):
+                continue
+            self.out.append("{:s} ({:d} callbacks)".format(hook, len(callbacks)))
+            for slot, addr, func, name in callbacks:
+                line = "    {:s} <{:s}>".format(self.format_addr(func), name or "NO_SYMBOL")
+                lsm = self.klsm.lsm_of_callback(name)
+                if lsm:
+                    line += " [{:s}]".format(lsm)
+                if self.args.meta:
+                    line += "  (slot {:d}, {:s} {:s})".format(slot, where, self.format_addr(addr))
+                self.out.append(line)
+        return
+
+    def dump_hook_heads(self):
+        ptrsize = current_arch.ptrsize
+        heads = self.klsm.get_hook_heads()
+        if heads is None:
+            self.err_add_out("Could not find `security_hook_heads`")
+            return
+        start, end, off_head, stride = heads.start, heads.end, heads.off_head, heads.stride
+
+        self.quiet_info_add_out("LSM framework: security_hook_heads (v4.2 - v6.11)")
+        self.quiet_info_add_out("security_hook_heads: {:s}-{:s}".format(self.format_addr(start), self.format_addr(end)))
+        self.quiet_info_add_out("Number of the recovered hook point names: {:d}".format(heads.nr_names))
+        if self.args.meta:
+            self.quiet_info_add_out("offsetof(security_hook_list, head): {:#x}".format(off_head * ptrsize))
+
+        if self.args.meta:
+            if heads.is_list_head:
+                head_kind = "list_head"
+            else:
+                head_kind = "hlist_head"
+            self.quiet_info_add_out("sizeof(each head): {:#x} ({:s})".format(stride, head_kind))
+
+        if self.args.meta and heads.node_size is not None:
+            if heads.has_lsm:
+                suffix = ""
+            else:
+                suffix = " (no `lsm` member)"
+            self.quiet_info_add_out("sizeof(security_hook_list): {:#x}{:s}".format(heads.node_size, suffix))
+
+        self.dump_lsm_list(heads.lsms)
+
+        for i, head, name, broken, callbacks in heads.rows:
+            if not callbacks and not broken and not self.args.all:
+                continue
+            label = name or "hook[{:d}]".format(i)
+            if not self.match_filter(label):
+                continue
+            if broken:
+                line = "{:s} (broken list)".format(label)
+            else:
+                line = "{:s} ({:d} callbacks)".format(label, len(callbacks))
+            if self.args.meta:
+                line += "  (head {:s})".format(self.format_addr(head))
+            self.out.append(line)
+            for node, func, func_name, lsm in callbacks:
+                line = "    {:s} <{:s}>".format(self.format_addr(func), func_name or "NO_SYMBOL")
+                if lsm:
+                    line += " [{:s}]".format(lsm)
+                if self.args.meta:
+                    line += "  (hook_list {:s})".format(self.format_addr(node))
+                self.out.append(line)
+        return
+
+    def dump_security_ops(self):
+        security_ops = self.klsm.get_security_ops()
+        if security_ops is None:
+            self.err_add_out("Could not find `security_ops`; this kernel may be CONFIG_SECURITY=n")
+            return
+
+        addr, ops, lsm, rows = security_ops
+        self.quiet_info_add_out("LSM framework: security_ops (v4.1 or earlier)")
+        self.quiet_info_add_out("security_ops: {:s} -> {:s}{:s}".format(
+            self.format_addr(addr), self.format_addr(ops),
+            " " + Symbol.format(ops, ksym="prefer", missing="NO_SYMBOL"),
+        ))
+        if lsm:
+            self.dump_lsm_list({lsm})
+        else:
+            self.dump_lsm_list(set())
+
+        self.quiet_info_add_out("Number of the registered hooks: {:d}".format(len(rows)))
+        for disp, func, func_name, name, hook_lsm in rows:
+            label = name or "hook[{:#x}]".format(disp)
+            if not self.match_filter(label):
+                continue
+            line = "{:s}".format(label)
+            if self.args.meta:
+                line += " (+{:#x})".format(disp)
+            self.out.append(line)
+            formatted_func = self.format_addr(func)
+            if hook_lsm:
+                hook_label = " [{:s}]".format(hook_lsm)
+            else:
+                hook_label = ""
+            self.out.append("    {:s} <{:s}>{:s}".format(
+                formatted_func, func_name or "NO_SYMBOL", hook_label,
+            ))
+        return
 
     def format_parts(self, kind, obj, blob, indent):
         lines = []
         if blob:
-            blob_entries = self.blob_layout.get(kind, [])
+            blob_entries = self.klsm.blob_layout.get(kind, [])
         else:
             blob_entries = []
         for lsm, offset, _how in blob_entries:
-            decodable = kind in self.DECODABLE_BLOBS.get(lsm, ())
+            decodable = kind in KernelLsm.DECODABLE_BLOBS.get(lsm, ())
             if offset is None:
                 if decodable:
                     lines.append("{:s}[{:s} +?] (unknown offset)".format(indent, lsm))
                 continue
             label = "{:s}[{:s} +{:#x}]".format(indent, lsm, offset)
-            decoded = self.decode_blob(lsm, kind, blob + offset, obj)
+            decoded = self.klsm.decode_blob(lsm, kind, blob + offset, obj)
             if decoded is not None:
                 lines.append("{:s} {:s}".format(label, decoded[1]))
                 continue
@@ -216943,21 +217111,21 @@ class KernelLsmCommand(GenericCommand, BufferingOutput):
         labels = []
         for kind, obj, blob in [("cred", cred, cred_blob), ("task", task, task_blob)]:
             if blob:
-                blob_entries = self.blob_layout.get(kind, [])
+                blob_entries = self.klsm.blob_layout.get(kind, [])
             else:
                 blob_entries = []
             for lsm, offset, _how in blob_entries:
                 if offset is None:
                     decoded = None
                 else:
-                    decoded = self.decode_blob(lsm, kind, blob + offset, obj)
+                    decoded = self.klsm.decode_blob(lsm, kind, blob + offset, obj)
                 if decoded and decoded[0]:
                     labels.append("{:s}:{:s}".format(lsm, decoded[0]))
         return labels
 
     def dump_task_detail(self, entry):
         task, pid, comm, cred, cred_blob, task_blob = entry
-        offsets = self.security_offsets
+        offsets = self.klsm.security_offsets
         self.out.append('task: {:s} (pid: {:d}, comm: "{:s}")'.format(AddressUtil.format_address(task), pid, comm))
         self.out.append(
             "    cred->security  {:s} (cred: {:s})".format(
@@ -216969,12 +217137,12 @@ class KernelLsmCommand(GenericCommand, BufferingOutput):
             self.out.append("    task->security  {:s}".format(AddressUtil.format_address(task_blob or 0)))
             self.out.extend(self.format_parts("task", task, task_blob, " " * 8))
         if "file" in offsets or "inode" in offsets:
-            for fd, file in self.get_task_files(task):
-                inode = self.get_file_inode(file)
+            for fd, file in self.klsm.get_task_files(task):
+                inode = self.klsm.get_file_inode(file)
                 self.out.append(
                     "    fd {:<3d} {:s} (file: {:s}, inode: {:s})".format(
                         fd,
-                        self.task_command.kpath.get_file_path(file),
+                        self.klsm.task_command.kpath.get_file_path(file),
                         AddressUtil.format_address(file),
                         AddressUtil.format_address(inode or 0),
                     )
@@ -216994,7 +217162,7 @@ class KernelLsmCommand(GenericCommand, BufferingOutput):
             legend = ["task", "pid", "comm", "cred->security", "task->security", "labels"]
             self.out.append(GefUtil.make_legend(fmt.format(*legend)))
         for task, pid, comm, cred, cred_blob, task_blob in entries:
-            if "task" not in self.security_offsets:
+            if "task" not in self.klsm.security_offsets:
                 task_blob_str = "-"
             else:
                 task_blob_str = AddressUtil.format_address(task_blob or 0)
@@ -217007,48 +217175,17 @@ class KernelLsmCommand(GenericCommand, BufferingOutput):
     def dump_task_blobs(self, kversion):
         args = self.args
         detail = bool(args.verbose or args.pid is not None or args.task_filter or args.filter)
-        self.meta = []
-        task_command = Kernel.task()
-        task_ready = task_command.initialize(files=detail)
-        self.meta.extend(Kernel.export_meta(self, task_command.meta))
-        if not task_ready:
-            task_command = None
-        if args.meta or task_command is None:
-            for func, line in self.meta:
+        task_ready = self.klsm.initialize_tasks(files=detail)
+        if args.meta or not task_ready:
+            for func, line in Kernel.export_meta(self, self.klsm.meta):
                 func(line)
-        if task_command is None:
+        if not task_ready:
             return
-        self.task_command = task_command
-        self.task_addrs = KernelTask.get_task_list(task_command.init_task, task_command.offset_tasks)
-        lsms = self.detect_lsms(kversion)
-
-        tasks = []
-        for task in self.task_addrs:
-            pid = read_int32_from_memory(task + task_command.offset_pid, safe=True)
-            comm = read_cstring_from_memory(task + task_command.offset_comm, safe=True)
-            cred = read_int_from_memory(task + task_command.offset_cred, safe=True)
-            if pid is not None and comm is not None and cred and is_valid_addr(cred):
-                tasks.append((task, pid, comm, cred))
-        files = []
-        if detail and getattr(task_command, "kpath", None) is not None:
-            files = [file for task in tasks for _fd, file in self.get_task_files(task[0])][:0x400]
-        self.security_offsets = offsets = self.resolve_security_offsets(lsms, [x[3] for x in tasks], files)
-        if "cred" not in offsets:
+        lsms, entries = self.klsm.collect_task_blobs(kversion, detail)
+        if entries is None:
             self.err_add_out("Could not find cred->security; this kernel may be CONFIG_SECURITY=n")
             return
-
-        def read_blob(kind, obj):
-            if kind in offsets:
-                return read_int_from_memory(obj + offsets[kind], safe=True)
-            return None
-
-        entries = [(task, pid, comm, cred, read_blob("cred", cred), read_blob("task", task)) for task, pid, comm, cred in tasks]
-        inodes = [x for x in dict.fromkeys(self.get_file_inode(file) for file in files) if x]
-        samples = {"cred": [(e[4], e[3]) for e in entries], "task": [(e[5], e[0]) for e in entries]}
-        samples.update(
-            {"file": [(read_blob("file", x), x) for x in files], "inode": [(read_blob("inode", x), x) for x in inodes]}
-        )
-        self.blob_layout = self.resolve_blob_layout(lsms, {kind: v for kind, v in samples.items() if kind in offsets})
+        offsets = self.klsm.security_offsets
 
         self.dump_lsm_list(lsms)
         members = {
@@ -217061,7 +217198,7 @@ class KernelLsmCommand(GenericCommand, BufferingOutput):
             if args.meta and kind in offsets:
                 self.quiet_info_add_out("offsetof({:s}): {:#x}".format(members[kind], offsets[kind]))
         for kind in ("task", "cred", "file", "inode"):
-            parts = self.blob_layout.get(kind)
+            parts = self.klsm.blob_layout.get(kind)
             if parts:
                 labels = []
                 for lsm, offset, how in parts:
@@ -217091,7 +217228,6 @@ class KernelLsmCommand(GenericCommand, BufferingOutput):
         return
 
     def dump_lsm_list(self, lsms):
-        self.detected_lsms = set(lsms)
         if lsms:
             self.quiet_info_add_out("LSMs detected or inferred from hooks: {:s}".format(", ".join(sorted(lsms))))
         return
@@ -217102,29 +217238,16 @@ class KernelLsmCommand(GenericCommand, BufferingOutput):
         return any(h in name for h in self.args.hook)
 
     def dump_hooks(self, kversion):
-        if Ksym.get_addrs(self.SCK_PREFIX, match="prefix"):
+        kind = self.klsm.get_hook_kind(kversion)
+        if kind == "static_calls":
             self.dump_static_calls()
-        elif not self.has_lsm_framework():
+        elif kind is None:
             self.err_add_out("No LSM dispatcher was found; this kernel may be CONFIG_SECURITY=n")
-        elif kversion >= "6.12":
-            self.dump_static_calls()
-        elif kversion >= "4.2":
+        elif kind == "hook_heads":
             self.dump_hook_heads()
         else:
             self.dump_security_ops()
         return
-
-    def has_lsm_framework(self):
-        """Return True if this kernel looks like CONFIG_SECURITY=y.
-        A kernel built without it keeps only a handful of `security_*` stubs, while the
-        framework brings one dispatcher per hook point."""
-        ret = Ksym.get_kallsyms()
-        if ret is None:
-            return True
-        kallsyms, _kallsyms_map = ret
-        count = sum(1 for _a, name, typ in kallsyms
-                    if name.startswith("security_") and typ.lower() in ("t", "w"))
-        return count >= 16
 
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
@@ -217143,7 +217266,8 @@ class KernelLsmCommand(GenericCommand, BufferingOutput):
             err("Could not find Linux kernel")
             return
 
-        self.klayout = Kernel.layout()
+        self.klsm = Kernel.lsm()
+        self.klsm.initialize()
 
         if args.task:
             self.dump_task_blobs(kversion)
