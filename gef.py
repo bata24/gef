@@ -164022,6 +164022,21 @@ class KernelBuddy:
             nodes.append({"index": self.node_ids[index], "address": node, "zones": self.walk_node(node, options)})
         return nodes
 
+    @staticmethod
+    def get_sorted_entries(nodes):
+        """Return the entries of all per-cpu and free_area lists in `nodes` (see `get_nodes()`) sorted by page."""
+        entries = []
+        for node in nodes:
+            for zone in node["zones"]:
+                for lists in zone.get("per_cpu_pageset", {}).values():
+                    for pcp_list in lists:
+                        entries.extend(pcp_list["entries"])
+                for free_area in zone.get("free_area", []):
+                    for free_list in free_area["free_lists"]:
+                        entries.extend(free_list["entries"])
+        entries.sort(key=lambda entry: entry["page"])
+        return entries
+
     def get_entry_addresses(self, entry, *, skip_phys=False, for_sort=False, use_physmap=False, maps=None):
         if for_sort:
             virt = Kernel.page2virt(entry["page"])
@@ -164894,16 +164909,7 @@ class BuddyDumpCommand(GenericCommand, BufferingOutput):
         return "  mtype: {:d} (={:s})".format(free_list["mtype"], free_list["mtype_name"])
 
     def make_output_for_sort(self, nodes):
-        entries = []
-        for node in nodes:
-            for zone in node["zones"]:
-                for lists in zone.get("per_cpu_pageset", {}).values():
-                    for pcp_list in lists:
-                        entries.extend(pcp_list["entries"])
-                for free_area in zone.get("free_area", []):
-                    for free_list in free_area["free_lists"]:
-                        entries.extend(free_list["entries"])
-        entries.sort(key=lambda entry: entry["page"])
+        entries = self.kbuddy.get_sorted_entries(nodes)
 
         prev_virt = None
         prev_size = None
