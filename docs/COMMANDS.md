@@ -10651,6 +10651,56 @@ options:
 ```
 
 # 06-f. Qemu-system/KGDB Cooperation - Linux Task
+## `kbt`
+
+Scan the saved kernel stacks of inactive tasks for text addresses (like crash `bt -t`).
+
+
+### Syntax
+
+```text
+usage: kbt [-h] [-hh] [-f FILTER] [-t] [--meta] [-n] [-q] [PID|TASK_ADDRESS]
+
+positional arguments:
+  PID|TASK_ADDRESS     select a task by its pid or task_struct address.
+
+options:
+  -h, --help           show this help message and exit
+  -hh, --help-simple   show help without ASCII diagram.
+  -f, --filter FILTER  comm string REGEXP filter.
+  -t, --print-thread   display by thread (LWP), not by process.
+  --meta               display offset information.
+  -n, --no-pager       do not use the pager.
+  -q, --quiet          enable quiet mode.
+```
+
+### Examples
+
+```gdb
+kbt            # scan the saved kernel stack of each inactive process
+kbt 1          # select PID 1
+kbt -t -f ssh  # include threads and filter by comm
+```
+
+### Notes
+
+```text
++-task_struct------+      +-kernel stack----+
+| stack            |----->| (thread_info)   |
+| ...              |      | ...             |
+| thread.sp        |----->| saved context   |
++------------------+      | text addresses  |
+                          | ...             |
+                          | saved pt_regs   |
+                          +-----------------+
+
+ARM uses thread_info.cpu_context.sp, and ARM64 uses thread.cpu_context.sp.
+The saved pc/ra is also shown on ARM and RISC-V. Running tasks are skipped because their saved
+context is stale. Text addresses are candidates, including stale values and function pointers;
+this is a stack scan, not a frame unwinder. User registers are available with `ktask -r`.
+This command requires CONFIG_RANDSTRUCT=n unless vmlinux with debug information is loaded.
+```
+
 ## `kcred`
 
 Dump the credentials of each task.

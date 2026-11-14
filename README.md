@@ -252,7 +252,7 @@ For the usage and options of each command, see [docs/COMMANDS.md](docs/COMMANDS.
 ### Linux Task
 
 <details>
-<summary><code>ktask</code>, <code>ksched</code>, <code>kcred</code>, <code>kmem-task</code></summary>
+<summary><code>ktask</code>, <code>ksched</code>, <code>kcred</code>, <code>kmem-task</code>, <code>kbt</code></summary>
 
 - `ktask`: displays each task's address.
     - ![](images/ktask.png)
@@ -274,6 +274,8 @@ For the usage and options of each command, see [docs/COMMANDS.md](docs/COMMANDS.
     - ![](images/kcred.png)
 - `kmem-task`: dumps the userland memory of the specified process through its own page table, like `x` or `telescope`.
     - ![](images/kmem-task.png)
+- `kbt`: scans inactive tasks' kernel stacks from the saved stack pointer for text addresses.
+    - ![](images/kbt.png)
 
 </details>
 

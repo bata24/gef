@@ -99206,6 +99206,220 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
 
 
 @register_command
+class KernelBacktraceCommand(GenericCommand, BufferingOutput):
+    """Scan the saved kernel stacks of inactive tasks for text addresses."""
+
+    _cmdline_ = "kbt"
+    _category_ = "06-f. Qemu-system/KGDB Cooperation - Linux Task"
+
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("-hh", "--help-simple", action="store_true", help="show help without ASCII diagram.")
+    parser.add_argument("target", metavar="PID|TASK_ADDRESS", nargs="?",
+                        help="select a task by its pid or task_struct address.")
+    parser.add_argument("-f", "--filter", action="append", type=re.compile, default=[], help="comm string REGEXP filter.")
+    parser.add_argument("-t", "--print-thread", action="store_true", help="display by thread (LWP), not by process.")
+    parser.add_argument("--meta", action="store_true", help="display offset information.")
+    parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
+    parser.add_argument("-q", "--quiet", action="store_true", help="enable quiet mode.")
+    _syntax_ = parser.format_help()
+
+    _example_ = "\n".join([
+        "{0:s}            # scan the saved kernel stack of each inactive process",
+        "{0:s} 1          # select PID 1",
+        "{0:s} -t -f ssh  # include threads and filter by comm",
+    ]).format(_cmdline_)
+
+    _note_ = "\n".join([
+        "+-task_struct------+      +-kernel stack----+",
+        "| stack            |----->| (thread_info)   |",
+        "| ...              |      | ...             |",
+        "| thread.sp        |----->| saved context   |",
+        "+------------------+      | text addresses  |",
+        "                          | ...             |",
+        "                          | saved pt_regs   |",
+        "                          +-----------------+",
+        "",
+        "ARM uses thread_info.cpu_context.sp, and ARM64 uses thread.cpu_context.sp.",
+        "The saved pc/ra is also shown on ARM and RISC-V. Running tasks are skipped because their saved",
+        "context is stale. Text addresses are candidates, including stale values and function pointers;",
+        "this is a stack scan, not a frame unwinder. User registers are available with `ktask -r`.",
+        "This command requires CONFIG_RANDSTRUCT=n unless vmlinux with debug information is loaded.",
+    ])
+
+    def initialize(self):
+        self.ktask = Kernel.task()
+        ret = self.ktask.initialize(threads=self.args.print_thread)
+        self.meta = Kernel.export_meta(self, self.ktask.meta)
+        if not ret:
+            return None
+        if self.ktask.offset_stack is None:
+            self.meta.append((self.err_add_out, "Could not find task_struct->stack"))
+            return None
+        self.kstack_size = self.ktask.get_kstack_size()
+        if self.kstack_size is None:
+            self.meta.append((self.err_add_out, "Could not resolve the kernel stack size"))
+            return None
+        self.meta.append((self.info_add_out, "kstack size: {:#x}".format(self.kstack_size)))
+        self.tasks = self.ktask.get_tasks(include_current=True, threads=self.ktask.enabled["threads"])
+        self.text = KernelText(Kernel.layout())
+        ptrsize = current_arch.ptrsize
+        candidates = []
+
+        # fast path
+        if is_arm32():
+            offset = GefUtil.offsetof("task_struct", "thread_info.cpu_context.sp")
+            if offset is not None:
+                candidates.append(("task", offset))
+            offset = GefUtil.offsetof("thread_info", "cpu_context.sp")
+            if offset is not None:
+                candidates.append(("stack", offset))
+        else:
+            if is_arm64():
+                member = "thread.cpu_context.sp"
+            else:
+                member = "thread.sp"
+            offset = GefUtil.offsetof("task_struct", member)
+            if offset is not None:
+                candidates.append(("task", offset))
+
+        # slow path: the instructions that save sp identify the member, independently of the kernel version.
+        if not candidates:
+            if is_x86():
+                names = ("__switch_to_asm", "__schedule", "schedule")
+            elif is_arm64():
+                names = ("cpu_switch_to",)
+            else:
+                names = ("__switch_to",)
+            for name in names:
+                for addr in Ksym.get_addrs(name, match="split"):
+                    res = KernelAddressHeuristicFinderUtil.disassemble_until_next_symbol(addr, 2000)
+                    if is_x86():
+                        pattern = r"\bmov\s+(?:QWORD|DWORD) PTR \[\w+\+0x([0-9a-f]+)\],(?:rsp|esp)\b"
+                        candidates.extend(("task", int(m, 16)) for m in re.findall(pattern, res))
+                    elif is_arm64():
+                        for m in re.findall(r"\bmov\s+x10,\s*#(0x[0-9a-f]+|\d+)", res):
+                            candidates.append(("task", int(m, 0) + ptrsize * 11))
+                    elif is_arm32():
+                        for m in re.findall(r"\badd\s+(?:ip|r12),\s*r1,\s*#(0x[0-9a-f]+|\d+)", res):
+                            offset = int(m, 0) + ptrsize * 8
+                            candidates.extend([("task", offset), ("stack", offset)])
+                    elif is_riscv32() or is_riscv64():
+                        for m in re.findall(r"\b(?:sd|sw)\s+sp,\s*(\d+)\(a0\)", res):
+                            candidates.append(("task", int(m)))
+                        for m in re.findall(r"\bli\s+a4,\s*(\d+)", res):
+                            candidates.append(("task", int(m) + ptrsize))
+                        pattern = r"\blui\s+a4,(0x[0-9a-f]+).*?\baddiw?\s+a4,a4,(-?\d+)"
+                        for high, low in re.findall(pattern, res, re.DOTALL):
+                            candidates.append(("task", (int(high, 16) << 12) + int(low) + ptrsize))
+                if candidates:
+                    break
+
+        self.sp_base, self.offset_sp = None, None
+        samples = [task for task in self.tasks if task["kstack"] and not task["current"]]
+        for base, offset in dict.fromkeys(candidates):
+            checked = 0
+            for task in samples:
+                if base == "stack":
+                    address = task["kstack"]
+                else:
+                    address = task["task"]
+                sp = read_int_from_memory(address + offset, safe=True)
+                if not sp:
+                    continue
+                if sp % ptrsize or not task["kstack"] <= sp < task["kstack"] + self.kstack_size:
+                    break
+                checked += 1
+            else:
+                if checked:
+                    self.sp_base, self.offset_sp = base, offset
+                    break
+        if self.offset_sp is None:
+            self.meta.append((self.err_add_out, "Could not resolve the saved kernel stack pointer"))
+            return None
+        self.meta.append((self.info_add_out, "saved sp: {:s}+{:#x}".format(self.sp_base, self.offset_sp)))
+        return True
+
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
+    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64"))
+    @Decorator.only_if_in_kernel_or_kpti_disabled
+    def do_invoke(self, args):
+        self.quiet_info("Wait for memory scan")
+        self.out = []
+        ret = self.initialize()
+        if args.meta or not ret:
+            for func, line in self.meta:
+                func(line)
+        if not ret or args.meta:
+            self.print_output(check_terminal_size=True)
+            return
+
+        tasks = [task for task in self.tasks if GefUtil.matches_regex(task["comm"], args.filter)]
+        if args.target is not None:
+            if args.target.isdigit():
+                target = int(args.target)
+            else:
+                target = AddressUtil.parse_address(args.target)
+            tasks = [task for task in tasks if target in (task["pid"], task["task"])]
+            if not tasks:
+                err("No task matched `{:s}`".format(args.target))
+                return
+
+        for task in ProgressBar(tasks, desc="task", disable=args.quiet):
+            self.out.append(titlify("PID {:d} ({:s}) task={:#x}".format(task["pid"], task["comm"], task["task"])))
+            if task["current"]:
+                self.info_add_out("Running on {:s}; saved context is stale, skipped".format(task["current"]))
+                continue
+            kstack = task["kstack"]
+            if not kstack:
+                self.warn_add_out("Kernel stack is unavailable")
+                continue
+            if self.sp_base == "stack":
+                address = kstack + self.offset_sp
+            else:
+                address = task["task"] + self.offset_sp
+            sp = read_int_from_memory(address, safe=True)
+            if sp is None or sp % current_arch.ptrsize or not kstack <= sp < kstack + self.kstack_size:
+                self.warn_add_out("Saved kernel stack pointer is unavailable or outside the stack")
+                continue
+            self.out.append("saved sp={:#x}, stack={:#x}-{:#x}".format(sp, kstack, kstack + self.kstack_size))
+            slots = []
+            if is_arm32() or is_arm64():
+                pc = read_int_from_memory(address + current_arch.ptrsize, safe=True)
+                slots.append((address + current_arch.ptrsize, pc))
+            elif is_riscv32() or is_riscv64():
+                pc = read_int_from_memory(address - current_arch.ptrsize, safe=True)
+                slots.append((address - current_arch.ptrsize, pc))
+            data = read_memory(sp, kstack + self.kstack_size - sp, safe=True)
+            if data is None:
+                self.warn_add_out("Failed to read the saved kernel stack")
+                continue
+            slots.extend((sp + i * current_arch.ptrsize, pc) for i, pc in enumerate(slice_unpack(data, current_arch.ptrsize)))
+            count = 0
+            for slot, pc in slots:
+                if not pc:
+                    continue
+                if is_arm32():
+                    pc &= ~1
+                elif is_arm64() and (pc >> 55) & 1:
+                    pc |= 0xffff_0000_0000_0000
+                if not self.text.in_kernel_text(pc) and not self.text.in_module_text(pc):
+                    continue
+                self.out.append("#{:<3d} [{:#x}] {:s}".format(
+                    count, slot, Symbol.format(pc, missing="NO_SYMBOL", show_address=True),
+                ))
+                count += 1
+            if not count:
+                self.info_add_out("No text addresses found on the saved kernel stack")
+            self.out.append("")
+        if not tasks:
+            self.quiet_info("Nothing to dump")
+        self.print_output(check_terminal_size=True)
+        return
+
+
+@register_command
 class KernelFilesCommand(GenericCommand):
     """Display open files for each process (shortcut for `ktask -quF`)."""
 
