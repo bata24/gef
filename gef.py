@@ -209533,6 +209533,616 @@ class ThunkTracerCommand(GenericCommand):
         return
 
 
+class KernelAllocTracer:
+    """Resolve what the kernel allocator tracers need (kmalloc-tracer, kmalloc-allocated-by, kuaf-watch, kpage-watch and
+    ktrace, and their breakpoints): the current task, the slab cache of an object, the hooked allocator symbols of each
+    kernel version and the struct page passed to the slab hooks. Nothing here prints; see KernelAllocTracerOutput."""
+
+    @staticmethod
+    def create_option_info(args, target_task=None):
+        dic = {
+            "print_null": args.print_null,
+            "backtrace": args.backtrace,
+            "filter": args.filter,
+            "dump_chunk": args.dump_chunk,
+            "task_name": getattr(args, "task_name", []),
+            "target_task": target_task,
+        }
+        option_info = GefUtil.dict_to_namedtuple("OptionInfo", dic)
+        return option_info
+
+    @staticmethod
+    def clear_disabled_breakpoints(name, force=False, owner=None):
+        if owner is not None:
+            breakpoints = GefUtil.get_owned_breakpoints(owner)
+        else:
+            breakpoints = gdb.breakpoints() or ()
+        for bp in breakpoints:
+            try:
+                if bp.__class__.__name__ != name:
+                    continue
+                if force is False and bp.enabled:
+                    continue
+                bp.delete()
+            except Exception:
+                pass
+        return
+
+    @staticmethod
+    @Cache.cache_this_session(cache_None=False)
+    def get_extra_info():
+        kslub = Kernel.slub()
+        KernelSlub.warmup_page2virt()
+        if not kslub.initialize():
+            return None
+        dic = {
+            "kmem_cache_offset_name": kslub.kmem_cache_offset_name,
+            "kmem_cache_offset_size": kslub.kmem_cache_offset_size,
+            "page_offset_slab_cache": kslub.page_offset_slab_cache,
+        }
+        if None in dic.values():
+            return None
+        return GefUtil.dict_to_namedtuple("ExtraInfo", dic)
+
+    @staticmethod
+    def get_task():
+        task = KernelTask.get_current_task()
+        if not task:
+            return 0, ""
+        offset_comm = KernelTask.resolve_offset_comm()
+        if offset_comm is None:
+            return task, "???"
+        return task, read_cstring_from_memory(task + offset_comm) or "???"
+
+    @staticmethod
+    def get_offset_pid():
+        """Return offsetof(task_struct, pid), or None if the task layout is not resolved."""
+        ktask = Kernel.task()
+        if ktask.initialize():
+            return ktask.offset_pid
+        return None
+
+    @staticmethod
+    def get_task_info(offset_pid=None):
+        """Return (task, comm, pid, cpu) of the current context. pid is None without `offset_pid`."""
+        cpu = KernelPerCpu.get_cpu_index(gdb.selected_thread())
+        task_addr, comm = KernelAllocTracer.get_task()
+        if task_addr and offset_pid is not None:
+            pid = read_int32_from_memory(task_addr + offset_pid)
+        else:
+            pid = None
+        return task_addr, comm, pid, cpu
+
+    @staticmethod
+    def virt2name_and_size(vaddr):
+        obj = Kernel.get_slab_object(vaddr, allow_unaligned=False)
+        if not obj:
+            return None
+        return obj["name"], obj["object_size"]
+
+    @staticmethod
+    def resolve_slab_object(addr):
+        """Resolve (object_base, cache_name, object_size, state) for a slab address, or None."""
+        obj = Kernel.get_slab_object(addr)
+        if not obj:
+            return None
+        freed = KernelSlabContains.is_freed(obj["object_base"], obj["name"])
+        if freed:
+            state = "freed"
+        elif freed is None:
+            state = None
+        else:
+            state = "allocated"
+        return obj["object_base"], obj["name"], obj["object_size"], state
+
+    @staticmethod
+    def get_kmem_cache_name_offset(allocator):
+        """Return offsetof(kmem_cache, name) resolved by the resolver of `allocator` as its dump command (e.g.
+        `slub-dump --meta`) shows it, or None."""
+        if allocator in ("SLUB", "SLUB_TINY"):
+            # slub-dump and slub-tiny-dump resolve page2virt first
+            KernelSlub.warmup_page2virt()
+        if allocator == "SLUB":
+            if not Kernel.version():
+                return None
+            resolver = Kernel.slub()
+        elif allocator == "SLUB_TINY":
+            resolver = Kernel.slub_tiny()
+        elif allocator == "SLAB":
+            resolver = Kernel.slab()
+        else:
+            return None
+        # the offset is resolved early, so it is available even if a later step of the initialization fails
+        resolver.initialize()
+        return getattr(resolver, "kmem_cache_offset_name", None)
+
+    @staticmethod
+    def get_kmem_cache_name(kmem_cache, name_offset):
+        """Return the name of `kmem_cache`, or None."""
+        if name_offset is None or not kmem_cache:
+            return None
+        try:
+            name_ptr = read_int_from_memory(kmem_cache + name_offset)
+            return read_cstring_from_memory(name_ptr)
+        except gdb.error:
+            return None
+
+    @staticmethod
+    def get_kmalloc_kfree_syms():
+        # `kmalloc` is always inlined and not exported, so its symbol cannot be identified.
+        # Therefore, you must set a breakpoint in a function that is exported instead of kmalloc.
+        # This can be done by checking EXPORT_SYMBOL, and a tool to automate this is dev/update-kmalloc-tracer.
+        # The same symbol may be found multiple times from different *.c files, and they can be treated as the same.
+        """
+        [3.0~3.15]
+        EXPORT_SYMBOL(__kmalloc);
+        EXPORT_SYMBOL(__kmalloc_node);
+        EXPORT_SYMBOL(__kmalloc_node_track_caller);
+        EXPORT_SYMBOL(__kmalloc_track_caller);
+        EXPORT_SYMBOL(__krealloc);
+        EXPORT_SYMBOL(kfree);
+        EXPORT_SYMBOL(kmalloc_order_trace);
+        EXPORT_SYMBOL(kmem_cache_alloc);
+        EXPORT_SYMBOL(kmem_cache_alloc_node);
+        EXPORT_SYMBOL(kmem_cache_alloc_node_trace);
+        EXPORT_SYMBOL(kmem_cache_alloc_trace);
+        EXPORT_SYMBOL(krealloc);
+        [3.16~5.5]
+        EXPORT_SYMBOL(__kmalloc);
+        EXPORT_SYMBOL(__kmalloc_node);
+        EXPORT_SYMBOL(__kmalloc_node_track_caller);
+        EXPORT_SYMBOL(__kmalloc_track_caller);
+        EXPORT_SYMBOL(__krealloc);
+        EXPORT_SYMBOL(kfree);
+        EXPORT_SYMBOL(kmalloc_order);
+        EXPORT_SYMBOL(kmalloc_order_trace);
+        EXPORT_SYMBOL(kmem_cache_alloc);
+        EXPORT_SYMBOL(kmem_cache_alloc_node);
+        EXPORT_SYMBOL(kmem_cache_alloc_node_trace);
+        EXPORT_SYMBOL(kmem_cache_alloc_trace);
+        EXPORT_SYMBOL(krealloc);
+        [5.6~5.17]
+        EXPORT_SYMBOL(__kmalloc);
+        EXPORT_SYMBOL(__kmalloc_node);
+        EXPORT_SYMBOL(__kmalloc_node_track_caller);
+        EXPORT_SYMBOL(__kmalloc_track_caller);
+        EXPORT_SYMBOL(kfree);
+        EXPORT_SYMBOL(kmalloc_order);
+        EXPORT_SYMBOL(kmalloc_order_trace);
+        EXPORT_SYMBOL(kmem_cache_alloc);
+        EXPORT_SYMBOL(kmem_cache_alloc_node);
+        EXPORT_SYMBOL(kmem_cache_alloc_node_trace);
+        EXPORT_SYMBOL(kmem_cache_alloc_trace);
+        EXPORT_SYMBOL(krealloc);
+        [5.18~6.0]
+        EXPORT_SYMBOL(__kmalloc);
+        EXPORT_SYMBOL(__kmalloc_node);
+        EXPORT_SYMBOL(__kmalloc_node_track_caller);
+        EXPORT_SYMBOL(__kmalloc_track_caller);
+        EXPORT_SYMBOL(kfree);
+        EXPORT_SYMBOL(kmalloc_order);
+        EXPORT_SYMBOL(kmalloc_order_trace);
+        EXPORT_SYMBOL(kmem_cache_alloc);
+        EXPORT_SYMBOL(kmem_cache_alloc_lru);
+        EXPORT_SYMBOL(kmem_cache_alloc_node);
+        EXPORT_SYMBOL(kmem_cache_alloc_node_trace);
+        EXPORT_SYMBOL(kmem_cache_alloc_trace);
+        EXPORT_SYMBOL(krealloc);
+        [6.1~6.9]
+        EXPORT_SYMBOL(__kmalloc);
+        EXPORT_SYMBOL(__kmalloc_node);
+        EXPORT_SYMBOL(__kmalloc_node_track_caller);
+        EXPORT_SYMBOL(kfree);
+        EXPORT_SYMBOL(kmalloc_large);
+        EXPORT_SYMBOL(kmalloc_large_node);
+        EXPORT_SYMBOL(kmalloc_node_trace);
+        EXPORT_SYMBOL(kmalloc_trace);
+        EXPORT_SYMBOL(kmem_cache_alloc);
+        EXPORT_SYMBOL(kmem_cache_alloc_lru);
+        EXPORT_SYMBOL(kmem_cache_alloc_node);
+        EXPORT_SYMBOL(krealloc);
+        [6.10]
+        EXPORT_SYMBOL(__kmalloc_node_noprof);
+        EXPORT_SYMBOL(__kmalloc_noprof);
+        EXPORT_SYMBOL(kfree);
+        EXPORT_SYMBOL(kmalloc_large_node_noprof);
+        EXPORT_SYMBOL(kmalloc_large_noprof);
+        EXPORT_SYMBOL(kmalloc_node_trace_noprof);
+        EXPORT_SYMBOL(kmalloc_node_track_caller_noprof);
+        EXPORT_SYMBOL(kmalloc_trace_noprof);
+        EXPORT_SYMBOL(kmem_cache_alloc_lru_noprof);
+        EXPORT_SYMBOL(kmem_cache_alloc_node_noprof);
+        EXPORT_SYMBOL(kmem_cache_alloc_noprof);
+        EXPORT_SYMBOL(krealloc_noprof);
+        [6.11~6.17]
+        EXPORT_SYMBOL(__kmalloc_cache_node_noprof);
+        EXPORT_SYMBOL(__kmalloc_cache_noprof);
+        EXPORT_SYMBOL(__kmalloc_large_node_noprof);
+        EXPORT_SYMBOL(__kmalloc_large_noprof);
+        EXPORT_SYMBOL(__kmalloc_node_noprof);
+        EXPORT_SYMBOL(__kmalloc_node_track_caller_noprof);
+        EXPORT_SYMBOL(__kmalloc_noprof);
+        EXPORT_SYMBOL(kfree);
+        EXPORT_SYMBOL(kmem_cache_alloc_lru_noprof);
+        EXPORT_SYMBOL(kmem_cache_alloc_node_noprof);
+        EXPORT_SYMBOL(kmem_cache_alloc_noprof);
+        EXPORT_SYMBOL(krealloc_noprof);
+        [6.18~]
+        EXPORT_SYMBOL(__kmalloc_cache_node_noprof);
+        EXPORT_SYMBOL(__kmalloc_cache_noprof);
+        EXPORT_SYMBOL(__kmalloc_large_node_noprof);
+        EXPORT_SYMBOL(__kmalloc_large_noprof);
+        EXPORT_SYMBOL(__kmalloc_node_noprof);
+        EXPORT_SYMBOL(__kmalloc_node_track_caller_noprof);
+        EXPORT_SYMBOL(__kmalloc_noprof);
+        EXPORT_SYMBOL(kfree);
+        EXPORT_SYMBOL(kmem_cache_alloc_lru_noprof);
+        EXPORT_SYMBOL(kmem_cache_alloc_node_noprof);
+        EXPORT_SYMBOL(kmem_cache_alloc_noprof);
+        EXPORT_SYMBOL(krealloc_node_align_noprof);
+        EXPORT_SYMBOL_GPL(kfree_nolock);
+        EXPORT_SYMBOL_GPL(kmalloc_nolock_noprof);
+        """
+
+        # This list may be incomplete.
+        # If you know of any memory-allocating functions that may be freed with kfree, please let me know.
+        # The number is the argument index of the size. -1 means index 0 is `struct kmem_cache*`.
+        kversion = Kernel.version()
+        if kversion < "3.16":
+            kmalloc_syms = [
+                ["__kmalloc", 0],
+                ["__kmalloc_node", 0],
+                ["__kmalloc_node_track_caller", 0],
+                ["__kmalloc_track_caller", 0],
+                ["__krealloc", 1],
+                ["kmalloc_order_trace", 0],
+                ["kmem_cache_alloc", -1],
+                ["kmem_cache_alloc_node", -1],
+                ["kmem_cache_alloc_node_trace", 3],
+                ["kmem_cache_alloc_trace", 2],
+                ["krealloc", 1],
+            ]
+        elif kversion < "5.6":
+            kmalloc_syms = [
+                ["__kmalloc", 0],
+                ["__kmalloc_node", 0],
+                ["__kmalloc_node_track_caller", 0],
+                ["__kmalloc_track_caller", 0],
+                ["__krealloc", 1],
+                ["kmalloc_order", 0],
+                ["kmalloc_order_trace", 0],
+                ["kmem_cache_alloc", -1],
+                ["kmem_cache_alloc_node", -1],
+                ["kmem_cache_alloc_node_trace", 3],
+                ["kmem_cache_alloc_trace", 2],
+                ["krealloc", 1],
+            ]
+        elif kversion < "5.18":
+            kmalloc_syms = [
+                ["__kmalloc", 0],
+                ["__kmalloc_node", 0],
+                ["__kmalloc_node_track_caller", 0],
+                ["__kmalloc_track_caller", 0],
+                ["kmalloc_order", 0],
+                ["kmalloc_order_trace", 0],
+                ["kmem_cache_alloc", -1],
+                ["kmem_cache_alloc_node", -1],
+                ["kmem_cache_alloc_node_trace", 3],
+                ["kmem_cache_alloc_trace", 2],
+                ["krealloc", 1],
+            ]
+        elif kversion < "6.1":
+            kmalloc_syms = [
+                ["__kmalloc", 0],
+                ["__kmalloc_node", 0],
+                ["__kmalloc_node_track_caller", 0],
+                ["__kmalloc_track_caller", 0],
+                ["kmalloc_order", 0],
+                ["kmalloc_order_trace", 0],
+                ["kmem_cache_alloc", -1],
+                ["kmem_cache_alloc_lru", -1],
+                ["kmem_cache_alloc_node", -1],
+                ["kmem_cache_alloc_node_trace", 3],
+                ["kmem_cache_alloc_trace", 2],
+                ["krealloc", 1],
+            ]
+        elif kversion < "6.10":
+            kmalloc_syms = [
+                ["__kmalloc", 0],
+                ["__kmalloc_node", 0],
+                ["__kmalloc_node_track_caller", 0],
+                ["kmalloc_large", 0],
+                ["kmalloc_large_node", 0],
+                ["kmalloc_node_trace", 3],
+                ["kmalloc_trace", 2],
+                ["kmem_cache_alloc", -1],
+                ["kmem_cache_alloc_lru", -1],
+                ["kmem_cache_alloc_node", -1],
+                ["krealloc", 1],
+            ]
+        elif kversion < "6.11":
+            kmalloc_syms = [
+                ["__kmalloc_node_noprof", 0],
+                ["__kmalloc_noprof", 0],
+                ["kmalloc_large_node_noprof", 0],
+                ["kmalloc_large_noprof", 0],
+                ["kmalloc_node_trace_noprof", 3],
+                ["kmalloc_node_track_caller_noprof", 0],
+                ["kmalloc_trace_noprof", 2],
+                ["kmem_cache_alloc_lru_noprof", -1],
+                ["kmem_cache_alloc_node_noprof", -1],
+                ["kmem_cache_alloc_noprof", -1],
+                ["krealloc_noprof", 1],
+            ]
+        elif kversion < "6.18":
+            kmalloc_syms = [
+                ["__kmalloc_cache_node_noprof", 3],
+                ["__kmalloc_cache_noprof", 2],
+                ["__kmalloc_large_node_noprof", 0],
+                ["__kmalloc_large_noprof", 0],
+                ["__kmalloc_node_noprof", 0],
+                ["__kmalloc_node_track_caller_noprof", 0],
+                ["__kmalloc_noprof", 0],
+                ["kmem_cache_alloc_lru_noprof", -1],
+                ["kmem_cache_alloc_node_noprof", -1],
+                ["kmem_cache_alloc_noprof", -1],
+                ["krealloc_noprof", 1],
+            ]
+        else:
+            kmalloc_syms = [
+                ["__kmalloc_cache_node_noprof", 3],
+                ["__kmalloc_cache_noprof", 2],
+                ["__kmalloc_large_node_noprof", 0],
+                ["__kmalloc_large_noprof", 0],
+                ["__kmalloc_node_noprof", 0],
+                ["__kmalloc_node_track_caller_noprof", 0],
+                ["__kmalloc_noprof", 0],
+                ["kmem_cache_alloc_lru_noprof", -1],
+                ["kmem_cache_alloc_node_noprof", -1],
+                ["kmem_cache_alloc_noprof", -1],
+                ["krealloc_node_align_noprof", 1],
+                ["kmalloc_nolock_noprof", 0],
+            ]
+
+        if kversion < "6.18":
+            kfree_syms = [
+                ["kfree", 0],
+            ]
+        else:
+            kfree_syms = [
+                ["kfree", 0],
+                ["kfree_nolock", 0],
+            ]
+        return kmalloc_syms, kfree_syms
+
+    @staticmethod
+    def get_alloc_free_pages_syms():
+        """
+        [3.0~5.12]
+        EXPORT_SYMBOL(__alloc_pages_nodemask);
+        EXPORT_SYMBOL(__free_pages);
+        [5.13~6.9]
+        EXPORT_SYMBOL(__alloc_pages);
+        EXPORT_SYMBOL(__free_pages);
+        [6.10~6.13]
+        EXPORT_SYMBOL(__alloc_pages_noprof);
+        EXPORT_SYMBOL(__free_pages);
+        [6.14~]
+        EXPORT_SYMBOL(__alloc_frozen_pages_noprof);
+        EXPORT_SYMBOL(__free_pages);
+        """
+
+        # This list may be incomplete.
+        # If you know of any memory-allocating functions that may be freed with kfree, please let me know.
+        # The number is the argument index of the order.
+        kversion = Kernel.version()
+        if kversion < "5.13":
+            alloc_pages_sym = [
+                ["__alloc_pages_nodemask", 1],
+            ]
+        elif kversion < "6.10":
+            alloc_pages_sym = [
+                ["__alloc_pages", 1],
+            ]
+        elif kversion < "6.14":
+            alloc_pages_sym = [
+                ["__alloc_pages_noprof", 1],
+            ]
+        else:
+            alloc_pages_sym = [
+                ["__alloc_frozen_pages_noprof", 1],
+            ]
+
+        free_pages_sym = [
+            ["__free_pages", 0, 1],
+        ]
+        return alloc_pages_sym, free_pages_sym
+
+    @staticmethod
+    def get_page_alloc_syms(kversion):
+        if kversion < "5.13":
+            return [["__alloc_pages_nodemask", 1]]
+        elif kversion < "6.10":
+            return [["__alloc_pages", 1]]
+        elif kversion < "6.14":
+            return [["__alloc_pages_noprof", 1]]
+        else:
+            # v6.15+: the nolock allocator (e.g. for BPF) takes pages from the freelists by itself.
+            # alloc_pages_nolock_noprof() of v6.18+ calls alloc_frozen_pages_nolock_noprof().
+            syms = [["__alloc_frozen_pages_noprof", 1]]
+            sym, func_addr = KernelAllocTracer.first_resolvable(["alloc_frozen_pages_nolock_noprof",
+                                                                 "alloc_pages_nolock_noprof", "try_alloc_pages_noprof"])
+            if sym:
+                # (gfp_flags, nid, order) or (nid, order)
+                if sym == "alloc_frozen_pages_nolock_noprof":
+                    syms.append([sym, 2])
+                else:
+                    syms.append([sym, 1])
+            return syms
+
+    @staticmethod
+    def get_page_bulk_alloc_syms(kversion):
+        # order-0 pages allocated in bulk (e.g. vmalloc, page_pool) are taken from the pcp lists by itself.
+        # [sym, whether page_list comes before page_array]
+        if kversion >= "6.14":
+            return ["alloc_pages_bulk_noprof", False]
+        elif kversion >= "6.10":
+            return ["alloc_pages_bulk_noprof", True]
+        elif kversion >= "5.13":
+            return ["__alloc_pages_bulk", True]
+        else:
+            return [None, None]
+
+    @staticmethod
+    def get_page_free_syms(kversion):
+        # Hook the functions reached only after the refcount dropped to zero (not __free_pages,
+        # which also runs for a put that does not free). [sym, index of page, index of order or None]
+        if kversion >= "6.14":
+            # v6.15+: __free_pages -> ___free_pages -> __free_frozen_pages, skipping free_frozen_pages.
+            sym, func_addr = KernelAllocTracer.first_resolvable(["__free_frozen_pages", "free_frozen_pages"])
+            if sym:
+                return [[sym, 0, 1]]
+            return []
+        elif kversion >= "6.10":
+            return [["free_unref_page", 0, 1]]
+        elif kversion >= "5.14":
+            return [["free_unref_page", 0, 1], ["__free_pages_ok", 0, 1]]
+        elif kversion >= "4.15":
+            return [["free_unref_page", 0, None], ["__free_pages_ok", 0, 1]]
+        else:
+            return [["free_hot_cold_page", 0, None], ["__free_pages_ok", 0, 1]]
+
+    @staticmethod
+    def get_page_batch_free_syms(kversion):
+        # order-0 pages freed in bulk skip the functions above and go straight to the pcp lists.
+        # Before v4.15 free_hot_cold_page_list calls free_hot_cold_page per page, so it needs no hook.
+        if kversion >= "6.9":
+            return ["free_unref_folios", "folio_batch"]
+        elif kversion >= "4.15":
+            return ["free_unref_page_list", "list"]
+        else:
+            return [None, None]
+
+    @staticmethod
+    def get_slab_page_syms(allocator, kversion):
+        # The function that hands a fresh page to a cache, and the one that gives it back,
+        # as ordered candidates (the caller hooks the first that resolves). SLAB uses different
+        # symbols than SLUB, and its inner helpers are often inlined, so an outer one is tried too.
+        # {sym: how the page is passed (see get_slab_hook_page)}
+        if allocator == "SLAB":
+            if kversion < "3.13":
+                return {"kmem_getpages": "virt"}, {"kmem_freepages": "virt", "slab_destroy": "slab_desc"}
+            return {"kmem_getpages": "page", "cache_grow_begin": "page"}, {"kmem_freepages": "page", "slab_destroy": "page"}
+        return {"allocate_slab": "page"}, {"__free_slab": "page"}
+
+    @staticmethod
+    def first_resolvable(syms):
+        for sym in syms:
+            func_addr = Ksym.get_addr(sym)
+            if func_addr:
+                return sym, func_addr
+        return None, None
+
+    @staticmethod
+    def get_slab_hook_page(value, page_kind):
+        """Return the struct page of `value` passed to a slab hook as `page_kind` (see get_slab_page_syms)."""
+        # SLAB before v3.13 passes page_address(page), and its slab_destroy() takes the slab descriptor
+        if page_kind == "virt":
+            if value:
+                return Kernel.virt2page(value)
+            return None
+        if page_kind == "slab_desc":
+            # struct slab { struct list_head list; unsigned long colouroff; void *s_mem; ... }
+            colouroff = read_int_from_memory(value + current_arch.ptrsize * 2)
+            s_mem = read_int_from_memory(value + current_arch.ptrsize * 3)
+            return Kernel.virt2page(s_mem - colouroff)
+        return value
+
+
+class KernelAllocTracerOutput:
+    """Print what the kernel allocator tracers observe, and set their breakpoints with the progress output.
+    These helpers print by design: they run in the stop handlers of the tracer breakpoints, or while a tracer sets
+    its breakpoints. The kernel data they print is resolved by KernelAllocTracer."""
+
+    @staticmethod
+    def print_backtrace(backtrace):
+        if not backtrace:
+            return
+
+        try:
+            frame = gdb.newest_frame()
+            while frame and frame.is_valid():
+                addr = frame.pc()
+                if not is_valid_addr(addr):
+                    break
+                gef_print("  " + Symbol.format(addr, missing="NO_SYMBOL", show_address=True, nocolor=True))
+                frame = frame.older()
+        except gdb.error:
+            return
+
+    @staticmethod
+    def dump_chunk(dump, loc):
+        if not dump:
+            return
+        if not is_valid_addr(loc):
+            err("Invalid address")
+            return
+        gdb.execute("dereference -n {:#x} 8".format(loc))
+        return
+
+    @staticmethod
+    def set_bp_to_kmalloc_kfree(option_info, extra_info):
+        kmalloc_syms, kfree_syms = KernelAllocTracer.get_kmalloc_kfree_syms()
+
+        breakpoints = []
+        missing = []
+        for sym, index_of_size_arg in kmalloc_syms:
+            func_addr = Ksym.get_addr(sym)
+            if func_addr:
+                gef_print(sym + ": ", end="")
+                bp = KmallocBreakpoint(func_addr, sym, index_of_size_arg, option_info, extra_info)
+                breakpoints.append(bp)
+            else:
+                missing.append(sym)
+        for sym, index_of_addr_arg in kfree_syms:
+            func_addr = Ksym.get_addr(sym)
+            if func_addr:
+                gef_print(sym + ": ", end="")
+                bp = KfreeBreakpoint(func_addr, sym, index_of_addr_arg, option_info, extra_info)
+                breakpoints.append(bp)
+            else:
+                missing.append(sym)
+        if missing:
+            warn("Unresolved hooks: {:s}".format(", ".join(missing)))
+        return breakpoints
+
+    @staticmethod
+    def set_bp_to_alloc_free_pages(option_info, extra_info):
+        alloc_pages_sym, free_pages_sym = KernelAllocTracer.get_alloc_free_pages_syms()
+
+        breakpoints = []
+        missing = []
+        for sym, index_of_order_arg in alloc_pages_sym:
+            func_addr = Ksym.get_addr(sym)
+            if func_addr:
+                gef_print(sym + ": ", end="")
+                bp = AllocPagesBreakpoint(func_addr, sym, index_of_order_arg, option_info, extra_info)
+                breakpoints.append(bp)
+            else:
+                missing.append(sym)
+        for sym, index_of_addr_arg, index_of_order_arg in free_pages_sym:
+            func_addr = Ksym.get_addr(sym)
+            if func_addr:
+                gef_print(sym + ": ", end="")
+                bp = FreePagesBreakpoint(func_addr, sym, index_of_addr_arg, index_of_order_arg, option_info, extra_info)
+                breakpoints.append(bp)
+            else:
+                missing.append(sym)
+        if missing:
+            warn("Unresolved hooks: {:s}".format(", ".join(missing)))
+        return breakpoints
+
+
 class KmallocBreakpoint(gdb.Breakpoint):
     """Create a breakpoint to print information of kmalloc."""
 
