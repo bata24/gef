@@ -39086,7 +39086,9 @@ class KernelChecksecCommand(GenericCommand):
             operands = re.sub(r"\s+(?://|@|;|# ).*$", "", m.group(2))
             if re.fullmatch(r"call\w*|jmp\w*|ret\w*|bl|blx|blr|br|b|bx", mnemonic):
                 return None
-            if re.match(r"pop|ldm", mnemonic) and re.search(r"\bpc\b", operands) or operands.split(",")[0].strip() == "pc":
+            if re.match(r"pop|ldm", mnemonic) and re.search(r"\bpc\b", operands):
+                return None
+            if operands.split(",")[0].strip() == "pc":
                 return None
             if not re.search(reg_re, operands):
                 continue
@@ -39228,7 +39230,9 @@ class KernelChecksecCommand(GenericCommand):
         for (base, off), value in stores.items():
             if value == ["arg", 1]:
                 path = stores.get((base, off - current_arch.ptrsize))
-                if path == ["arg", 0] or path and path[0] == "const":
+                if path == ["arg", 0]:
+                    return path
+                if path and path[0] == "const":
                     return path
         return None
 
@@ -39375,7 +39379,7 @@ class KernelChecksecCommand(GenericCommand):
     def check_CONFIG_FUSE_FS(self):
         cfg = "CONFIG_FUSE_FS"
         name, value = self.get_config(cfg)
-        if value == "y" or value is None and Ksym.get_addr("fuse_do_open"):
+        if value == "y" or (value is None and Ksym.get_addr("fuse_do_open")):
             if value:
                 additional = self.config_str(name, value)
             else:
@@ -154470,7 +154474,7 @@ class CrcFileCommand(CrcCommand):
 
     @Decorator.parse_args
     def do_invoke(self, args):
-        if args.start < 0 or args.size is not None and args.size < 0:
+        if args.start < 0 or (args.size is not None and args.size < 0):
             err("Invalid range")
             return
         self.out = []
@@ -155276,7 +155280,7 @@ class BaseNCodec:
                     values.append(charset.index(char))
                 except ValueError as exc:
                     raise ValueError("Invalid base85 character {!r}".format(char)) from exc
-            if len(block) == 1 or xbtoa and padding:
+            if len(block) == 1 or (xbtoa and padding):
                 raise ValueError("Incorrect base85 length")
             values.extend([84] * padding)
             value = sum(digit * 85 ** power for power, digit in enumerate(reversed(values)))
@@ -181350,7 +181354,7 @@ class JemallocV5(JemallocBase):
                         if nodes is None:
                             continue
                         nodes = slice_unpack(nodes, self.ptrsize)
-                        if all(not node or node % self.ptrsize == 0 and self.word_at(pages, node) is not None
+                        if all(not node or (node % self.ptrsize == 0 and self.word_at(pages, node) is not None)
                                for node in nodes):
                             return parent
             leaves = parents
@@ -184208,7 +184212,7 @@ class ScudoHeapDumpCommand(GenericCommand, BufferingOutput):
                         invalid += 1
                         continue
                     for group, group_base, batches_size, batches in result:
-                        if group is not None and group_base is None or len(batches) != batches_size:
+                        if (group is not None and group_base is None) or len(batches) != batches_size:
                             invalid += 1
                         for _, _, x in batches:
                             if x is None:
@@ -185995,7 +185999,9 @@ class MuslHeapDumpCommand(GenericCommand, BufferingOutput):
         for index in range(max(count, 0)):
             address = area.slots + area.meta_size * index
             meta = self.read_meta(address)
-            if not meta.mem or meta.sizeclass not in range(48) and meta.sizeclass != 63:
+            if not meta.mem:
+                continue
+            if meta.sizeclass not in range(48) and meta.sizeclass != 63:
                 continue
             if meta.last_idx > 31 or meta.avail_mask & meta.freed_mask:
                 continue
