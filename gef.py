@@ -80274,6 +80274,11 @@ class Kernel:
         return KernelCharDevice.get_instance()
 
     @staticmethod
+    def pci_device():
+        """Return the PCI device resolver."""
+        return KernelPciDevice.get_instance()
+
+    @staticmethod
     def ipcs():
         """Return the System V IPC resolver."""
         return KernelIpcs.get_instance()
@@ -108911,54 +108916,22 @@ class KernelResourceLayout:
         return flags_str.replace("IORESOURCE_", "")
 
 
-@register_command
-class KernelPciDeviceCommand(GenericCommand, BufferingOutput):
-    """Dump the PCI devices."""
+class KernelPciDevice:
+    """Resolve the PCI buses and devices reachable from pci_root_buses, and their descriptions in pci.ids."""
 
-    _cmdline_ = "kpcidev"
-    _category_ = "06-g. Qemu-system/KGDB Cooperation - Linux Advanced"
+    @classmethod
+    @Cache.cache_this_session(per_inferior=True, until_new_objfile=True)
+    def get_instance(cls):
+        return cls()
 
-    parser = argparse.ArgumentParser(prog=_cmdline_)
-    parser.add_argument("--meta", action="store_true", help="display offset information.")
-    parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
-    parser.add_argument("-v", "--verbose", action="store_true", help="enable verbose mode.")
-    parser.add_argument("-q", "--quiet", action="store_true", help="enable quiet mode.")
-    _syntax_ = parser.format_help()
-
-    _note_ = "\n".join([
-        "Simplified pcidev structure:",
-        "",
-        "+----------------+   +-pci_bus--------+",
-        "| pci_root_buses |-->| node.next      |-->...",
-        "+----------------+   | node.prev      |",
-        "                     | parent         |    +-pci_dev----------+",
-        "                     | children.next  | +->| bus_list.next    |-->...",
-        "                     | children.prev  | |  | bus_list.prev    |",
-        "                     | devices.next   |-+  | ...              |",
-        "                     | devices.prev   |    | vendor           |",
-        "                     | ...            |    | device           |",
-        "                     | dev            |    | subsystem_vendor |",
-        "                     |   kobj         |    | subsystem_device |",
-        "                     |     name       |    | class            |",
-        "                     | ...            |    | revision         |",
-        "                     +----------------+    | dev              |",
-        "                                           |   kobj           |",
-        "                                           |     name         |",
-        "                                           | ...              |",
-        "                                           | +-resource[0]-+  |",
-        "                                           | | start       |  |",
-        "                                           | | end         |  |",
-        "                                           | | name        |  |",
-        "                                           | | flags       |  |",
-        "                                           | | ...         |  |",
-        "                                           | +-resource[1]-+  |",
-        "                                           | | ...         |  |",
-        "                                           | +-------------+  |",
-        "                                           | | ...         |  |",
-        "                                           | +-------------+  |",
-        "                                           | ...              |",
-        "                                           +------------------+",
-    ])
+    def __init__(self):
+        self.meta = []
+        self.incomplete = []
+        # True if initialize() failed because no PCI devices were found
+        self.no_devices = False
+        # the output of `monitor info qtree`, read once per invocation by find_qemu_device()
+        self.qtree = None
+        return
 
     def type_offset(self, type_name, member, fallback=None):
         offset = GefUtil.offsetof(type_name, member)
@@ -109070,11 +109043,13 @@ class KernelPciDeviceCommand(GenericCommand, BufferingOutput):
     def initialize(self):
         self.meta = []
         self.incomplete = []
+        self.no_devices = False
+        self.qtree = None
         self.pci_root_buses = KernelAddressHeuristicFinder.get_pci_root_buses()
         if not self.pci_root_buses:
-            self.meta.append((self.quiet_err, "Could not find pci_root_buses"))
+            self.meta.append(("err", "Could not find pci_root_buses"))
             return None
-        self.meta.append((self.quiet_info, "pci_root_buses: {:#x}".format(self.pci_root_buses)))
+        self.meta.append(("info", "pci_root_buses: {:#x}".format(self.pci_root_buses)))
 
         # pci_bus->{node,children,devices,dev}
         """
@@ -109167,20 +109142,23 @@ class KernelPciDeviceCommand(GenericCommand, BufferingOutput):
         self.offset_pci_dev_revision = self.type_offset("struct pci_dev", "revision", self.offset_pci_dev_class + 4)
 
         self.root_buses = self.list_items(self.pci_root_buses, self.offset_pci_bus_node)
+        # walk_buses() lists the children and the devices of each bus again and records their reasons itself,
+        # so only the reasons of the root bus list are kept for it
+        self.root_incomplete = list(self.incomplete)
         if not self.root_buses:
-            self.meta.append((warn, "No PCI devices found"))
+            self.no_devices = True
             return None
         self.buses = self.get_all_buses(self.root_buses)
         self.offset_pci_bus_dev, bus_source = self.find_name_offset(
             self.buses, self.type_offset("struct pci_bus", "dev.kobj.name"), r"[0-9a-fA-F]{4}:[0-9a-fA-F]{2}",
         )
         if self.offset_pci_bus_dev is None:
-            self.meta.append((self.quiet_err, "Could not find pci_bus->dev"))
+            self.meta.append(("err", "Could not find pci_bus->dev"))
             return None
         bus_dev_offset = self.type_offset("struct pci_bus", "dev")
         if bus_source == "DWARF" and bus_dev_offset is not None:
-            self.meta.append((self.quiet_info, "offsetof(pci_bus, dev): {:#x} (DWARF)".format(bus_dev_offset)))
-        self.meta.append((self.quiet_info, "offsetof(pci_bus, dev.kobj.name): {:#x} ({:s})".format(
+            self.meta.append(("info", "offsetof(pci_bus, dev): {:#x} (DWARF)".format(bus_dev_offset)))
+        self.meta.append(("info", "offsetof(pci_bus, dev.kobj.name): {:#x} ({:s})".format(
             self.offset_pci_bus_dev, bus_source,
         )))
 
@@ -109188,19 +109166,19 @@ class KernelPciDeviceCommand(GenericCommand, BufferingOutput):
         for bus in self.buses:
             devices.extend(self.list_items(bus + self.offset_pci_bus_devices, self.offset_pci_dev_bus_list))
         if not devices:
-            self.meta.append((warn, "No PCI devices found"))
+            self.no_devices = True
             return None
         self.offset_pci_dev_dev, dev_source = self.find_name_offset(
             devices, self.type_offset("struct pci_dev", "dev.kobj.name"),
             r"[0-9a-fA-F]{4}:[0-9a-fA-F]{2}:[0-9a-fA-F]{2}\.[0-7]",
         )
         if self.offset_pci_dev_dev is None:
-            self.meta.append((self.quiet_err, "Could not find pci_dev->dev"))
+            self.meta.append(("err", "Could not find pci_dev->dev"))
             return None
         pci_dev_offset = self.type_offset("struct pci_dev", "dev")
         if dev_source == "DWARF" and pci_dev_offset is not None:
-            self.meta.append((self.quiet_info, "offsetof(pci_dev, dev): {:#x} (DWARF)".format(pci_dev_offset)))
-        self.meta.append((self.quiet_info, "offsetof(pci_dev, dev.kobj.name): {:#x} ({:s})".format(
+            self.meta.append(("info", "offsetof(pci_dev, dev): {:#x} (DWARF)".format(pci_dev_offset)))
+        self.meta.append(("info", "offsetof(pci_dev, dev.kobj.name): {:#x} ({:s})".format(
             self.offset_pci_dev_dev, dev_source,
         )))
 
@@ -109217,35 +109195,38 @@ class KernelPciDeviceCommand(GenericCommand, BufferingOutput):
             if resource_offset is not None:
                 break
         if resource_offset is None:
-            self.meta.append((self.quiet_err, "Could not find pci_dev->resource"))
+            self.meta.append(("err", "Could not find pci_dev->resource"))
             return None
         self.offset_pci_dev_resource = resource_offset
         self.sizeof_resource = self.resource_layout["size"]
         self.meta.append(
-            (self.quiet_info, "offsetof(pci_dev, resource): {:#x} ({:s})".format(resource_offset, resource_source))
+            ("info", "offsetof(pci_dev, resource): {:#x} ({:s})".format(resource_offset, resource_source))
         )
-        self.meta.append((self.quiet_info, "struct resource: source={:s}, size={:#x}, resource_size_t={:d}".format(
+        self.meta.append(("info", "struct resource: source={:s}, size={:#x}, resource_size_t={:d}".format(
             self.resource_layout["source"], self.sizeof_resource, self.resource_layout["width"],
         )))
 
         # pci.ids
         pci_ids_file_name = "/usr/share/misc/pci.ids"
         if os.path.exists(pci_ids_file_name) and os.path.getsize(pci_ids_file_name) > 0:
-            self.meta.append((self.quiet_info, "use {:s}".format(pci_ids_file_name)))
-            content = open(pci_ids_file_name).read()
+            self.meta.append(("info", "use {:s}".format(pci_ids_file_name)))
+            with open(pci_ids_file_name) as f:
+                content = f.read()
         else:
             pci_ids_file_name = os.path.join(GEF_TEMP_DIR, "pci.ids")
             if os.path.exists(pci_ids_file_name) and os.path.getsize(pci_ids_file_name) > 0:
-                self.meta.append((self.quiet_info, "use {:s}".format(pci_ids_file_name)))
-                content = open(pci_ids_file_name).read()
+                self.meta.append(("info", "use {:s}".format(pci_ids_file_name)))
+                with open(pci_ids_file_name) as f:
+                    content = f.read()
             else:
                 url = "https://raw.githubusercontent.com/pciutils/pciids/master/pci.ids"
-                self.meta.append((self.quiet_info, "use {:s}".format(url)))
+                self.meta.append(("info", "use {:s}".format(url)))
                 content = String.bytes2str(http_get(url) or "")
                 if content:
-                    open(pci_ids_file_name, "w").write(content)
+                    with open(pci_ids_file_name, "w") as f:
+                        f.write(content)
                 else:
-                    self.meta.append((self.quiet_info, "Connection timed out: {:s}".format(url)))
+                    self.meta.append(("info", "Connection timed out: {:s}".format(url)))
         self.pci_ids = self.parse_pci_ids(content)
         return True
 
@@ -109306,7 +109287,8 @@ class KernelPciDeviceCommand(GenericCommand, BufferingOutput):
                     continue
         return dic
 
-    def get_description(self, base_class, sub_class, prgif, vendor, device, subv, subd):
+    def lookup_description(self, base_class, sub_class, prgif, vendor, device, subv, subd):
+        """Return (class description, device description) from pci.ids."""
         # The information provided by the programming interface (prgif) is too detailed,
         # so it is not used.
         class_str = self.pci_ids.get(("C", base_class, sub_class), None)
@@ -109322,85 +109304,71 @@ class KernelPciDeviceCommand(GenericCommand, BufferingOutput):
             device_str = self.pci_ids.get(vendor, None)
         if device_str is None:
             device_str = "???"
+        return class_str, device_str
 
-        qemu_monitor_out = ""
-        if is_qemu_system():
-            dev = ""
-            res = gdb.execute("monitor info qtree", to_string=True)
-            target = "pci id {:04x}:{:04x} (sub {:04x}:{:04x})".format(vendor, device, subv, subd)
-            for line in res.splitlines():
-                m = re.search('dev: (.+), id ".*"', line)
-                if m:
-                    dev = m.group(1)
-                    continue
-                if target in line:
-                    qemu_monitor_out = " ({:s})".format(Color.boldify(dev))
-                    break
-
-        return "{:s} / {:s}".format(class_str, device_str) + qemu_monitor_out
+    def find_qemu_device(self, vendor, device, subv, subd):
+        """Return the qemu device name of the PCI id in `monitor info qtree`, or None if it is not found.
+        `monitor info qtree` is executed at the first call after initialize(), and its output is reused."""
+        if not is_qemu_system():
+            return None
+        if self.qtree is None:
+            self.qtree = gdb.execute("monitor info qtree", to_string=True)
+        dev = ""
+        target = "pci id {:04x}:{:04x} (sub {:04x}:{:04x})".format(vendor, device, subv, subd)
+        for line in self.qtree.splitlines():
+            m = re.search('dev: (.+), id ".*"', line)
+            if m:
+                dev = m.group(1)
+                continue
+            if target in line:
+                return dev
+        return None
 
     @staticmethod
-    def get_flags_str(flags_value):
-        flags_dic = {
-            0x8000_0000: "IORESOURCE_BUSY",
-            0x4000_0000: "IORESOURCE_AUTO",
-            0x2000_0000: "IORESOURCE_UNSET",
-            0x1000_0000: "IORESOURCE_DISABLED",
-            0x0800_0000: "IORESOURCE_EXCLUSIVE",
-            0x0400_0000: "IORESOURCE_SYSRAM_MERGEABLE",
-            0x0200_0000: "IORESOURCE_SYSRAM_DRIVER_MANAGED",
-            0x0100_0000: "IORESOURCE_SYSRAM",
-            0x0040_0000: "IORESOURCE_MUXED",
-            0x0020_0000: "IORESOURCE_WINDOW",
-            0x0010_0000: "IORESOURCE_MEM_64",
-            0x0008_0000: "IORESOURCE_STARTALIGN",
-            0x0004_0000: "IORESOURCE_SIZEALIGN",
-            0x0002_0000: "IORESOURCE_SHADOWABLE",
-            0x0001_0000: "IORESOURCE_RANGELENGTH",
-            0x0000_8000: "IORESOURCE_CACHEABLE",
-            0x0000_4000: "IORESOURCE_READONLY",
-            0x0000_2000: "IORESOURCE_PREFETCH",
-            0x0000_1000: "IORESOURCE_BUS",
-            0x0000_0800: "IORESOURCE_DMA",
-            0x0000_0400: "IORESOURCE_IRQ",
-            0x0000_0200: "IORESOURCE_MEM",
-            0x0000_0100: "IORESOURCE_IO",
-        }
-        flags, _ = GefUtil.flags_to_names(flags_value, flags_dic)
-
-        if "IORESOURCE_IO" in flags and "IORESOURCE_MEM" in flags:
-            flags.remove("IORESOURCE_IO")
-            flags.remove("IORESOURCE_MEM")
-            flags.append("IORESOURCE_REG")
-
-        flags_str = "|".join(flags)
-        if flags_str == "":
-            flags_str = "none"
-        return flags_str.replace("IORESOURCE_", "")
-
-    def search_label(self, start, end):
+    def search_labels(start, end):
+        """Return the regions [(start, end + 1, attr, name), ...] of `monitor info mtree -f` in [start, end],
+        or None if it is not qemu-system."""
         if not is_qemu_system():
-            return []
-
-        label_list = []
+            return None
+        regions = []
         for s, e, attr, name in QemuMonitor.get_mtree_regions():
             if not (start <= s and e - 1 <= end):
                 continue
+            regions.append((s, e, attr, name))
+        return regions
 
-            line = "      -> {:016x}-{:016x} ({:s}): {:s}".format(s, e - 1, attr, name)
-            if line not in label_list:
-                label_list.append(line)
+    def walk_buses(self, resources=False):
+        """Walk the buses from the root buses in depth-first order. Return [{"bus", "name", "devices"}, ...] of the
+        valid buses (see `walk_devices()`). The reasons why the walk is incomplete are added to self.incomplete,
+        after those of the root bus list found by `initialize()`."""
+        self.seen_bus = set()
+        self.seen_dev = set()
+        self.incomplete = list(self.root_incomplete)
+        buses = []
+        stack = list(reversed(self.root_buses))
+        while stack:
+            bus = stack.pop()
+            if bus in self.seen_bus:
+                self.incomplete.append("duplicate PCI bus at {:#x}".format(bus))
+                continue
+            self.seen_bus.add(bus)
+            name_ptr = read_int_from_memory(bus + self.offset_pci_bus_dev, safe=True)
+            if name_ptr and is_valid_addr(name_ptr):
+                bus_name = read_cstring_from_memory(name_ptr, safe=True)
+            else:
+                bus_name = None
+            if not bus_name or not re.fullmatch(r"[0-9a-fA-F]{4}:[0-9a-fA-F]{2}", bus_name):
+                self.incomplete.append("invalid pci_bus name at {:#x}".format(bus))
+                continue
+            buses.append({"bus": bus, "name": bus_name, "devices": self.walk_devices(bus, resources)})
+            children = self.list_items(bus + self.offset_pci_bus_children, self.offset_pci_bus_node)
+            stack.extend(reversed(children))
+        return buses
 
-        if label_list == []:
-            label_list.append("      -> No results found from `monitor info mtree -f`")
-        return label_list
-
-    def walk_devices(self, bus):
-        if not self.args.quiet:
-            fmt = "{:18s} {:12s} {:7s} {:10s} {:10s} {:3s} {:s}"
-            legend = ["pci_dev", "name", "class", "vendor:dev", "subsystem", "rev", "description"]
-            self.out.append(GefUtil.make_legend(fmt.format(*legend)))
-
+    def walk_devices(self, bus, resources=False):
+        """Return [{"dev", "name", "vendor", "device", "sub_vendor", "sub_device", "revision", "class"}, ...] of the
+        valid pci_devs on `bus`, with "resources" (see `read_resources()`) if `resources` is True."""
+        devices = []
         for dev in self.list_items(bus + self.offset_pci_bus_devices, self.offset_pci_dev_bus_list):
             if dev in self.seen_dev:
                 self.incomplete.append("duplicate PCI device at {:#x}".format(dev))
@@ -109429,37 +109397,138 @@ class KernelPciDeviceCommand(GenericCommand, BufferingOutput):
                 self.incomplete.append("unreadable PCI device at {:#x}".format(dev))
                 continue
 
+            entry = {
+                "dev": dev, "name": dev_name, "vendor": vendor, "device": device,
+                "sub_vendor": sub_vendor, "sub_device": sub_device, "revision": revision, "class": class_val,
+            }
+            if resources:
+                entry["resources"] = self.read_resources(dev, dev_name)
+            devices.append(entry)
+        return devices
+
+    def read_resources(self, dev, dev_name):
+        """Return [(index, start, end, flags), ...] of the assigned pci_dev->resource[] of `dev`."""
+        resources = []
+        for i in range(16):
+            resource_i = dev + self.offset_pci_dev_resource + self.sizeof_resource * i
+            resource_name_ptr = read_int_from_memory(resource_i + self.resource_layout["name"], safe=True)
+            if not resource_name_ptr or not is_valid_addr(resource_name_ptr):
+                continue
+            if read_cstring_from_memory(resource_name_ptr, safe=True) != dev_name:
+                continue
+            resource_i_start = KernelResourceLayout.read_size(
+                resource_i + self.resource_layout["start"], self.resource_layout["width"],
+            )
+            resource_i_end = KernelResourceLayout.read_size(
+                resource_i + self.resource_layout["end"], self.resource_layout["width"],
+            )
+            resource_i_flags = read_int_from_memory(resource_i + self.resource_layout["flags"], safe=True)
+            if None in (resource_i_start, resource_i_end, resource_i_flags):
+                self.incomplete.append("unreadable PCI resource at {:#x}".format(resource_i))
+                break
+            if resource_i_start == 0 and resource_i_end == 0:
+                continue
+            resources.append((i, resource_i_start, resource_i_end, resource_i_flags))
+        return resources
+
+
+@register_command
+class KernelPciDeviceCommand(GenericCommand, BufferingOutput):
+    """Dump the PCI devices."""
+
+    _cmdline_ = "kpcidev"
+    _category_ = "06-g. Qemu-system/KGDB Cooperation - Linux Advanced"
+
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("--meta", action="store_true", help="display offset information.")
+    parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
+    parser.add_argument("-v", "--verbose", action="store_true", help="enable verbose mode.")
+    parser.add_argument("-q", "--quiet", action="store_true", help="enable quiet mode.")
+    _syntax_ = parser.format_help()
+
+    _note_ = "\n".join([
+        "Simplified pcidev structure:",
+        "",
+        "+----------------+   +-pci_bus--------+",
+        "| pci_root_buses |-->| node.next      |-->...",
+        "+----------------+   | node.prev      |",
+        "                     | parent         |    +-pci_dev----------+",
+        "                     | children.next  | +->| bus_list.next    |-->...",
+        "                     | children.prev  | |  | bus_list.prev    |",
+        "                     | devices.next   |-+  | ...              |",
+        "                     | devices.prev   |    | vendor           |",
+        "                     | ...            |    | device           |",
+        "                     | dev            |    | subsystem_vendor |",
+        "                     |   kobj         |    | subsystem_device |",
+        "                     |     name       |    | class            |",
+        "                     | ...            |    | revision         |",
+        "                     +----------------+    | dev              |",
+        "                                           |   kobj           |",
+        "                                           |     name         |",
+        "                                           | ...              |",
+        "                                           | +-resource[0]-+  |",
+        "                                           | | start       |  |",
+        "                                           | | end         |  |",
+        "                                           | | name        |  |",
+        "                                           | | flags       |  |",
+        "                                           | | ...         |  |",
+        "                                           | +-resource[1]-+  |",
+        "                                           | | ...         |  |",
+        "                                           | +-------------+  |",
+        "                                           | | ...         |  |",
+        "                                           | +-------------+  |",
+        "                                           | ...              |",
+        "                                           +------------------+",
+    ])
+
+    def get_description(self, base_class, sub_class, prgif, vendor, device, subv, subd):
+        class_str, device_str = self.kpci.lookup_description(base_class, sub_class, prgif, vendor, device, subv, subd)
+        qemu_device = self.kpci.find_qemu_device(vendor, device, subv, subd)
+        if qemu_device is None:
+            qemu_monitor_out = ""
+        else:
+            qemu_monitor_out = " ({:s})".format(Color.boldify(qemu_device))
+        return "{:s} / {:s}".format(class_str, device_str) + qemu_monitor_out
+
+    def search_label(self, start, end):
+        regions = self.kpci.search_labels(start, end)
+        if regions is None:
+            return []
+
+        label_list = []
+        for s, e, attr, name in regions:
+            line = "      -> {:016x}-{:016x} ({:s}): {:s}".format(s, e - 1, attr, name)
+            if line not in label_list:
+                label_list.append(line)
+
+        if label_list == []:
+            label_list.append("      -> No results found from `monitor info mtree -f`")
+        return label_list
+
+    def dump_devices(self, devices):
+        if not self.args.quiet:
+            fmt = "{:18s} {:12s} {:7s} {:10s} {:10s} {:3s} {:s}"
+            legend = ["pci_dev", "name", "class", "vendor:dev", "subsystem", "rev", "description"]
+            self.out.append(GefUtil.make_legend(fmt.format(*legend)))
+
+        for entry in devices:
+            class_val = entry["class"]
             prgif = class_val & 0xff
             sub_class = (class_val >> 8) & 0xff
             base_class = (class_val >> 16) & 0xff
+            vendor, device = entry["vendor"], entry["device"]
+            sub_vendor, sub_device = entry["sub_vendor"], entry["sub_device"]
             desc = self.get_description(base_class, sub_class, prgif, vendor, device, sub_vendor, sub_device)
             self.out.append("{:#018x} {:s} {:02x}{:02x}:{:02x} {:04x}:{:04x}  {:04x}:{:04x}  {:02x}  {:s}".format(
-                dev, dev_name, base_class, sub_class, prgif, vendor, device, sub_vendor, sub_device, revision, desc,
+                entry["dev"], entry["name"], base_class, sub_class, prgif, vendor, device, sub_vendor, sub_device,
+                entry["revision"], desc,
             ))
 
             if not self.args.verbose:
                 continue
-            for i in range(16):
-                resource_i = dev + self.offset_pci_dev_resource + self.sizeof_resource * i
-                resource_name_ptr = read_int_from_memory(resource_i + self.resource_layout["name"], safe=True)
-                if not resource_name_ptr or not is_valid_addr(resource_name_ptr):
-                    continue
-                if read_cstring_from_memory(resource_name_ptr, safe=True) != dev_name:
-                    continue
-                resource_i_start = KernelResourceLayout.read_size(
-                    resource_i + self.resource_layout["start"], self.resource_layout["width"],
-                )
-                resource_i_end = KernelResourceLayout.read_size(
-                    resource_i + self.resource_layout["end"], self.resource_layout["width"],
-                )
-                resource_i_flags = read_int_from_memory(resource_i + self.resource_layout["flags"], safe=True)
-                if None in (resource_i_start, resource_i_end, resource_i_flags):
-                    self.incomplete.append("unreadable PCI resource at {:#x}".format(resource_i))
-                    break
-                if resource_i_start == 0 and resource_i_end == 0:
-                    continue
+            for i, resource_i_start, resource_i_end, resource_i_flags in entry["resources"]:
                 resource_i_size = resource_i_end - resource_i_start + 1
-                flag_str = KernelPciDeviceCommand.get_flags_str(resource_i_flags)
+                flag_str = KernelResourceLayout.get_flags_str(resource_i_flags)
                 if (resource_i_flags & 0x300) == 0x300:
                     type_str = "RegOffs"
                 elif resource_i_flags & 0x100:
@@ -109475,30 +109544,11 @@ class KernelPciDeviceCommand(GenericCommand, BufferingOutput):
         return
 
     def dump_pci(self):
-        self.seen_bus = set()
-        self.seen_dev = set()
-        self.incomplete = list(self.incomplete)
-        stack = list(reversed(self.root_buses))
-        while stack:
-            bus = stack.pop()
-            if bus in self.seen_bus:
-                self.incomplete.append("duplicate PCI bus at {:#x}".format(bus))
-                continue
-            self.seen_bus.add(bus)
-            name_ptr = read_int_from_memory(bus + self.offset_pci_bus_dev, safe=True)
-            if name_ptr and is_valid_addr(name_ptr):
-                bus_name = read_cstring_from_memory(name_ptr, safe=True)
-            else:
-                bus_name = None
-            if not bus_name or not re.fullmatch(r"[0-9a-fA-F]{4}:[0-9a-fA-F]{2}", bus_name):
-                self.incomplete.append("invalid pci_bus name at {:#x}".format(bus))
-                continue
-            self.out.append(titlify("Bus {:s}: {:#x}".format(bus_name, bus)))
-            self.walk_devices(bus)
-            children = self.list_items(bus + self.offset_pci_bus_children, self.offset_pci_bus_node)
-            stack.extend(reversed(children))
-        if self.incomplete:
-            self.out.extend("Incomplete: {:s}".format(reason) for reason in self.incomplete)
+        for bus in self.kpci.walk_buses(resources=self.args.verbose):
+            self.out.append(titlify("Bus {:s}: {:#x}".format(bus["name"], bus["bus"])))
+            self.dump_devices(bus["devices"])
+        if self.kpci.incomplete:
+            self.out.extend("Incomplete: {:s}".format(reason) for reason in self.kpci.incomplete)
         return
 
     @Decorator.parse_args
@@ -109509,10 +109559,14 @@ class KernelPciDeviceCommand(GenericCommand, BufferingOutput):
     def do_invoke(self, args):
         self.quiet_info("Wait for memory scan")
 
-        ret = self.initialize()
+        self.kpci = Kernel.pci_device()
+        ret = self.kpci.initialize()
         if args.meta or not ret:
-            for func, line in self.meta:
+            for func, line in Kernel.export_meta(self, self.kpci.meta):
                 func(line)
+            if self.kpci.no_devices:
+                # unlike the meta lines, it is shown even in quiet mode
+                warn("No PCI devices found")
         if not ret:
             return
 
